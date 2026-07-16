@@ -1,0 +1,18 @@
+{
+  "name": "scoutline-skills",
+  "owner": "vikasagarwal101",
+  "metadata": {
+    "version": "1.0.0",
+    "description": "Scoutline skills for investigating web, repository, and visual sources"
+  },
+  "plugins": [
+    {
+      "name": "scoutline",
+      "description": "Scoutline source investigation tools",
+      "skills": [
+        "./skills/scoutline"
+      ],
+      "strict": false
+    }
+  ]
+}

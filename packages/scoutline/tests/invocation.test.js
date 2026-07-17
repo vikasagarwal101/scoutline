@@ -1,0 +1,427 @@
+/**
+ * In-process tests for the Command Invocation Seam (P1-02).
+ *
+ * These tests exercise the pure `invokeCommand` contract from
+ * DESIGN.md §2 using a recording fake adapter. They verify:
+ *   - data/text success paths
+ *   - presentation override selection for text-oriented modes
+ *   - notice ordering and isolation
+ *   - single-stdout-write / single-structured-stderr-write invariants
+ *   - behaviour-selected and error-derived exit codes
+ *   - dependency-log restoration ordering (runQuietly restores before output)
+ *   - invocation isolation across consecutive calls
+ *   - deterministic json envelopes via injected `now`
+ */
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { invokeCommand } from "../dist/command-invocation.js";
+import { ScoutlineError, ValidationError } from "../dist/lib/errors.js";
+
+/**
+ * Build a fake adapter that records every interaction into arrays
+ * and an ordered event log. Each adapter instance is independent so
+ * consecutive invocations cannot share state.
+ */
+function createRecordingAdapter(overrides = {}) {
+  const stdout = [];
+  const stderr = [];
+  const events = [];
+  const adapter = {
+    stdoutIsTTY: false,
+    stdinIsTTY: false,
+    environmentOutputMode: undefined,
+    readStdin: async () => "",
+    writeStdout: (value) => {
+      stdout.push(value);
+      events.push(["writeStdout", value]);
+    },
+    writeStderr: (value) => {
+      stderr.push(value);
+      events.push(["writeStderr", value]);
+    },
+    runQuietly: async (operation) => {
+      events.push(["suppress"]);
+      try {
+        return await operation();
+      } finally {
+        events.push(["restore"]);
+      }
+    },
+    setExitCode: (value) => {
+      events.push(["setExitCode", value]);
+    },
+    ...overrides,
+  };
+  return { adapter, stdout, stderr, events };
+}
+
+describe("invokeCommand — success paths", () => {
+  it("data result in data mode writes formatted data to stdout and returns 0", async () => {
+    const { adapter, stdout, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      async () => ({ kind: "data", data: { count: 2 } }),
+      "data",
+    );
+    assert.strictEqual(status, 0);
+    assert.strictEqual(stdout.length, 1);
+    assert.strictEqual(stdout[0], JSON.stringify({ count: 2 }));
+    assert.deepStrictEqual(stderr, []);
+  });
+
+  it("text result writes the text directly regardless of output mode", async () => {
+    const { adapter, stdout } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      async () => ({ kind: "text", text: "hello world" }),
+      "data",
+    );
+    assert.strictEqual(status, 0);
+    assert.strictEqual(stdout.length, 1);
+    assert.strictEqual(stdout[0], "hello world");
+  });
+
+  it("presentation override is selected for the requested text-oriented mode", async () => {
+    const { adapter, stdout } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      async () => ({
+        kind: "data",
+        data: { items: [1, 2] },
+        presentations: { compact: "compact-form", markdown: "md-form" },
+      }),
+      "compact",
+    );
+    assert.strictEqual(status, 0);
+    assert.strictEqual(stdout[0], "compact-form");
+  });
+
+  it("falls back to base data when text-oriented mode has no presentation override", async () => {
+    const { adapter, stdout } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      async () => ({
+        kind: "data",
+        data: { items: [1, 2] },
+        presentations: { markdown: "md-form" },
+      }),
+      "tty",
+    );
+    assert.strictEqual(status, 0);
+    assert.strictEqual(stdout[0], JSON.stringify({ items: [1, 2] }));
+  });
+
+  it("does not use presentations for data-oriented modes", async () => {
+    const { adapter, stdout } = createRecordingAdapter();
+    await invokeCommand(
+      adapter,
+      async () => ({
+        kind: "data",
+        data: { x: 1 },
+        presentations: { compact: "should-not-be-used" },
+      }),
+      "data",
+    );
+    assert.strictEqual(stdout[0], JSON.stringify({ x: 1 }));
+  });
+
+  it("returns behaviour-selected nonzero exit code on success", async () => {
+    const { adapter } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      async () => ({ kind: "data", data: null, exitCode: 2 }),
+      "data",
+    );
+    assert.strictEqual(status, 2);
+  });
+
+  it("text result can carry a nonzero exit code", async () => {
+    const { adapter } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      async () => ({ kind: "text", text: "warning output", exitCode: 2 }),
+      "data",
+    );
+    assert.strictEqual(status, 2);
+  });
+});
+
+describe("invokeCommand — json envelope", () => {
+  it("produces a deterministic json envelope with injected now", async () => {
+    const { adapter, stdout } = createRecordingAdapter();
+    await invokeCommand(
+      adapter,
+      async () => ({ kind: "data", data: { value: 42 } }),
+      "json",
+      () => 1234,
+    );
+    assert.strictEqual(
+      stdout[0],
+      JSON.stringify({ success: true, data: { value: 42 }, timestamp: 1234 }),
+    );
+  });
+
+  it("produces an indented pretty envelope", async () => {
+    const { adapter, stdout } = createRecordingAdapter();
+    await invokeCommand(
+      adapter,
+      async () => ({ kind: "data", data: { value: 42 } }),
+      "pretty",
+      () => 1234,
+    );
+    assert.ok(stdout[0].includes("\n"));
+    const parsed = JSON.parse(stdout[0]);
+    assert.strictEqual(parsed.success, true);
+    assert.deepStrictEqual(parsed.data, { value: 42 });
+    assert.strictEqual(parsed.timestamp, 1234);
+  });
+});
+
+describe("invokeCommand — single-write invariants", () => {
+  it("writes to stdout exactly once on success", async () => {
+    const { adapter, stdout } = createRecordingAdapter();
+    await invokeCommand(
+      adapter,
+      async () => ({ kind: "data", data: { ok: true } }),
+      "json",
+      () => 1234,
+    );
+    assert.strictEqual(stdout.length, 1);
+  });
+
+  it("writes exactly one structured stderr value on thrown normalized error", async () => {
+    const { adapter, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      async () => {
+        throw new ScoutlineError("boom", "API_ERROR", { statusCode: 500 });
+      },
+      "data",
+    );
+    assert.strictEqual(status, 1);
+    assert.strictEqual(stderr.length, 1);
+    const parsed = JSON.parse(stderr[0]);
+    assert.strictEqual(parsed.success, false);
+    assert.strictEqual(parsed.error, "boom");
+    assert.strictEqual(parsed.code, "API_ERROR");
+  });
+});
+
+describe("invokeCommand — error conversion", () => {
+  it("converts a thrown ValidationError into VALIDATION_ERROR stderr and exit 1", async () => {
+    const { adapter, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      async () => {
+        throw new ValidationError("bad input", "fix it");
+      },
+      "data",
+    );
+    assert.strictEqual(status, 1);
+    const parsed = JSON.parse(stderr[0]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.strictEqual(parsed.error, "bad input");
+    assert.strictEqual(parsed.help, "fix it");
+  });
+
+  it("converts a thrown plain Error into UNKNOWN_ERROR stderr and exit 1", async () => {
+    const { adapter, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      async () => {
+        throw new Error("unexpected");
+      },
+      "data",
+    );
+    assert.strictEqual(status, 1);
+    const parsed = JSON.parse(stderr[0]);
+    assert.strictEqual(parsed.code, "UNKNOWN_ERROR");
+    assert.strictEqual(parsed.error, "unexpected");
+  });
+
+  it("uses ScoutlineError exit code for thrown normalized error", async () => {
+    const { adapter } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      async () => {
+        throw new ScoutlineError("config issue", "FILE_ERROR", { exitCode: 3 });
+      },
+      "data",
+    );
+    assert.strictEqual(status, 3);
+  });
+
+  it("formats errors in pretty mode when output mode is pretty", async () => {
+    const { adapter, stderr } = createRecordingAdapter();
+    await invokeCommand(
+      adapter,
+      async () => {
+        throw new Error("fail");
+      },
+      "pretty",
+    );
+    assert.ok(stderr[0].includes("\n"), "pretty error should be indented");
+  });
+});
+
+describe("invokeCommand — notices", () => {
+  it("flushes notices to stderr in encounter order", async () => {
+    const { adapter, stderr } = createRecordingAdapter();
+    await invokeCommand(
+      adapter,
+      async (ctx) => {
+        ctx.notice("first");
+        ctx.notice("second");
+        ctx.notice("third");
+        return { kind: "data", data: {} };
+      },
+      "data",
+    );
+    assert.deepStrictEqual(stderr, ["first", "second", "third"]);
+  });
+
+  it("flushes notices even when the command throws", async () => {
+    const { adapter, stderr } = createRecordingAdapter();
+    await invokeCommand(
+      adapter,
+      async (ctx) => {
+        ctx.notice("before failure");
+        throw new Error("fail");
+      },
+      "data",
+    );
+    assert.strictEqual(stderr.length, 2);
+    assert.strictEqual(stderr[0], "before failure");
+    JSON.parse(stderr[1]);
+  });
+
+  it("does not write notices to stdout", async () => {
+    const { adapter, stdout, stderr } = createRecordingAdapter();
+    await invokeCommand(
+      adapter,
+      async (ctx) => {
+        ctx.notice("stderr only");
+        return { kind: "data", data: {} };
+      },
+      "data",
+    );
+    assert.strictEqual(stdout.length, 1);
+    assert.deepStrictEqual(stderr, ["stderr only"]);
+  });
+});
+
+describe("invokeCommand — dependency-log restoration ordering", () => {
+  it("restores dependency logging before writing notices and output", async () => {
+    const { adapter, events } = createRecordingAdapter();
+    await invokeCommand(
+      adapter,
+      async (ctx) => {
+        ctx.notice("a notice");
+        return { kind: "data", data: { x: 1 } };
+      },
+      "data",
+    );
+    const restoreIndex = events.findIndex((e) => e[0] === "restore");
+    const writeStderrIndex = events.findIndex((e) => e[0] === "writeStderr");
+    const writeStdoutIndex = events.findIndex((e) => e[0] === "writeStdout");
+    assert.notStrictEqual(restoreIndex, -1);
+    assert.notStrictEqual(writeStderrIndex, -1);
+    assert.notStrictEqual(writeStdoutIndex, -1);
+    assert.ok(restoreIndex < writeStderrIndex, "restore must precede writeStderr");
+    assert.ok(restoreIndex < writeStdoutIndex, "restore must precede writeStdout");
+  });
+
+  it("restores dependency logging before writing error output on throw", async () => {
+    const { adapter, events } = createRecordingAdapter();
+    await invokeCommand(
+      adapter,
+      async (ctx) => {
+        ctx.notice("notice before throw");
+        throw new Error("boom");
+      },
+      "data",
+    );
+    const restoreIndex = events.findIndex((e) => e[0] === "restore");
+    const firstWriteIndex = events.findIndex((e) => e[0] === "writeStderr");
+    assert.notStrictEqual(restoreIndex, -1);
+    assert.notStrictEqual(firstWriteIndex, -1);
+    assert.ok(restoreIndex < firstWriteIndex, "restore must precede first stderr write");
+  });
+});
+
+describe("invokeCommand — invocation isolation", () => {
+  it("does not share state between two consecutive invocations", async () => {
+    const rec1 = createRecordingAdapter();
+    await invokeCommand(
+      rec1.adapter,
+      async (ctx) => {
+        ctx.notice("from first");
+        return { kind: "data", data: { run: 1 } };
+      },
+      "data",
+    );
+
+    const rec2 = createRecordingAdapter();
+    await invokeCommand(
+      rec2.adapter,
+      async (ctx) => {
+        ctx.notice("from second");
+        return { kind: "data", data: { run: 2 } };
+      },
+      "json",
+      () => 9999,
+    );
+
+    // First invocation: data mode, no envelope
+    assert.deepStrictEqual(rec1.stderr, ["from first"]);
+    assert.strictEqual(rec1.stdout[0], JSON.stringify({ run: 1 }));
+
+    // Second invocation: json mode, envelope with injected timestamp
+    assert.deepStrictEqual(rec2.stderr, ["from second"]);
+    const parsed2 = JSON.parse(rec2.stdout[0]);
+    assert.strictEqual(parsed2.success, true);
+    assert.deepStrictEqual(parsed2.data, { run: 2 });
+    assert.strictEqual(parsed2.timestamp, 9999);
+
+    // No cross-contamination
+    assert.ok(!rec1.stdout[0].includes("9999"));
+    assert.ok(!rec2.stderr.includes("from first"));
+  });
+});
+
+describe("invokeCommand — command context", () => {
+  it("context exposes adapter stdin TTY state and delegates readStdin", async () => {
+    const stdinContent = "piped input data";
+    const { adapter } = createRecordingAdapter({
+      stdinIsTTY: false,
+      readStdin: async () => stdinContent,
+    });
+    let capturedTTY = undefined;
+    let capturedStdin = undefined;
+    await invokeCommand(
+      adapter,
+      async (ctx) => {
+        capturedTTY = ctx.stdinIsTTY;
+        capturedStdin = await ctx.readStdin();
+        return { kind: "data", data: {} };
+      },
+      "data",
+    );
+    assert.strictEqual(capturedTTY, false);
+    assert.strictEqual(capturedStdin, stdinContent);
+  });
+
+  it("context stdinIsTTY reflects adapter state", async () => {
+    const { adapter } = createRecordingAdapter({ stdinIsTTY: true });
+    let capturedTTY = undefined;
+    await invokeCommand(
+      adapter,
+      async (ctx) => {
+        capturedTTY = ctx.stdinIsTTY;
+        return { kind: "data", data: {} };
+      },
+      "data",
+    );
+    assert.strictEqual(capturedTTY, true);
+  });
+});

@@ -11,18 +11,28 @@ import("../dist/index.js")
     });
     adapter.setExitCode(status);
   })
-  .catch((err) => {
-    console.error(
-      JSON.stringify(
-        {
-          success: false,
-          error: err.message,
-          code: "LOAD_ERROR",
-          help: 'Make sure to run "npm run build" before running scoutline',
-        },
-        null,
-        2,
-      ),
-    );
+  .catch(async (err) => {
+    try {
+      const { formatLoadFailure } = await import(
+        "../dist/node-command-invocation-adapter.js"
+      );
+      console.error(formatLoadFailure(err));
+    } catch {
+      // If the dist module is unavailable for any reason, fall back to a
+      // best-effort envelope. We do not let a missing helper hide the
+      // original load error from the user.
+      console.error(
+        JSON.stringify(
+          {
+            success: false,
+            error: err && err.message ? err.message : String(err),
+            code: "LOAD_ERROR",
+            help: 'Make sure to run "npm run build" before running scoutline',
+          },
+          null,
+          2,
+        ),
+      );
+    }
     process.exit(1);
   });

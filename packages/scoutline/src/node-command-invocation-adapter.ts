@@ -15,6 +15,28 @@
  */
 
 import type { CommandInvocationAdapter } from "./command-invocation.js";
+import { redactCredentialString, configuredSecrets } from "./lib/redact.js";
+
+/**
+ * Format a fatal load-failure message for the executable entrypoint.
+ *
+ * `bin/scoutline.js` calls this from its dynamic-import `.catch` handler
+ * to produce the structured `LOAD_ERROR` envelope that reaches stderr.
+ * P4-01 ensures the embedded message is run through the shared
+ * `redactCredentialString` so any credential material in the import
+ * error text is replaced before the value is emitted.
+ */
+export function formatLoadFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const redacted = redactCredentialString(message, configuredSecrets());
+  const payload: Record<string, unknown> = {
+    success: false,
+    error: redacted,
+    code: "LOAD_ERROR",
+    help: 'Make sure to run "npm run build" before running scoutline',
+  };
+  return JSON.stringify(payload, null, 2);
+}
 
 export function createNodeCommandInvocationAdapter(): CommandInvocationAdapter {
   return {

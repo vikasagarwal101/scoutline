@@ -94,4 +94,47 @@ describe("scoutline executable smoke", () => {
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("load failure redaction strips credential-shaped substrings from the message", async () => {
+    // Reuse the same isolated-binary trick: copy bin/scoutline.js into a
+    // tmp dir without dist, then run with credential-bearing env vars.
+    // The dynamic import failure must surface a structured LOAD_ERROR
+    // envelope whose `error` field is free of the credential material.
+    const tmpDir = path.join("/tmp", `scoutline-load-redact-${process.pid}`);
+    mkdirSync(tmpDir, { recursive: true });
+    const tmpBin = path.join(tmpDir, "scoutline.js");
+    copyFileSync(CLI_PATH, tmpBin);
+    const secret = "smoke-load-secret-XYZ";
+    const secretAlias = "smoke-load-secret-alias-UVW";
+    const secretM = "smoke-load-secret-minimax-AAA";
+    try {
+      const result = await new Promise((resolve, reject) => {
+        const proc = spawn(process.execPath, [tmpBin, "--help"], {
+          env: {
+            ...process.env,
+            Z_AI_API_KEY: secret,
+            ZAI_API_KEY: secretAlias,
+            MINIMAX_API_KEY: secretM,
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        proc.stdout.on("data", (c) => (stdout += c));
+        proc.stderr.on("data", (c) => (stderr += c));
+        proc.on("close", (code) => resolve({ stdout, stderr, code: code ?? 0 }));
+        proc.on("error", reject);
+      });
+      assert.strictEqual(result.code, 1);
+      const stderr = result.stderr;
+      const err = JSON.parse(stderr);
+      assert.strictEqual(err.success, false);
+      assert.strictEqual(err.code, "LOAD_ERROR");
+      assert.ok(!stderr.includes(secret), `stderr leaked Z_AI_API_KEY: ${stderr}`);
+      assert.ok(!stderr.includes(secretAlias), `stderr leaked ZAI_API_KEY: ${stderr}`);
+      assert.ok(!stderr.includes(secretM), `stderr leaked MINIMAX_API_KEY: ${stderr}`);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

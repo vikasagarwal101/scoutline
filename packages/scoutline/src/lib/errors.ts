@@ -14,7 +14,13 @@
  * `formatErrorOutput` helper is preserved so Phase 1 command handlers
  * keep compiling; the pure invocation-local replacement lives in
  * `./output.js` (DESIGN.md §3) and replaces it in P1-10.
+ *
+ * P4-01 routes both the legacy and the invocation-local error
+ * formatters through `lib/redact.js` so redaction is a single source of
+ * truth.
  */
+
+import { redactCredentialString, configuredSecrets } from "./redact.js";
 
 export type ScoutlineErrorCode =
   | "AUTH_ERROR"
@@ -175,19 +181,27 @@ export class FileError extends ZaiError {
 // `ZAI_OUTPUT_MODE` env var for pretty-print decisions. The pure,
 // invocation-local replacement lives in `./output.js` (DESIGN.md §3) and
 // replaces this helper in P1-10.
+//
+// P4-01: every field that reaches the public envelope is run through the
+// shared `redactCredentialString` from `./redact.js` so credential
+// material embedded in `message` or `help` is replaced with
+// `[REDACTED]` before the value reaches stdout/stderr. The configured
+// Provider credentials from the process environment are passed in as
+// extra replacement targets.
 // ---------------------------------------------------------------------------
 
 export function formatErrorOutput(error: unknown): string {
   const pretty =
     typeof process !== "undefined" && process.env && process.env.ZAI_OUTPUT_MODE === "pretty";
+  const secrets = configuredSecrets();
   if (error instanceof ScoutlineError) {
     const payload: Record<string, unknown> = {
       success: false,
-      error: error.message,
+      error: redactCredentialString(error.message, secrets),
       code: error.code,
     };
     if (error.help) {
-      payload.help = error.help;
+      payload.help = redactCredentialString(error.help, secrets);
     }
     if (typeof error.statusCode === "number") {
       payload.statusCode = error.statusCode;
@@ -199,7 +213,7 @@ export function formatErrorOutput(error: unknown): string {
     return JSON.stringify(
       {
         success: false,
-        error: error.message,
+        error: redactCredentialString(error.message, secrets),
         code: "UNKNOWN_ERROR",
       },
       null,
@@ -210,7 +224,7 @@ export function formatErrorOutput(error: unknown): string {
   return JSON.stringify(
     {
       success: false,
-      error: String(error),
+      error: redactCredentialString(String(error), secrets),
       code: "UNKNOWN_ERROR",
     },
     null,

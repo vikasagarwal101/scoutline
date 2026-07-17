@@ -13,6 +13,7 @@
 import type { OutputMode } from "./lib/output.js";
 import { formatSuccessOutput, formatErrorOutput } from "./lib/output.js";
 import { getErrorExitCode } from "./lib/errors.js";
+import { redactSecrets, configuredSecrets } from "./lib/redact.js";
 
 export type TextOutputMode = "compact" | "markdown" | "refs" | "tty";
 
@@ -120,7 +121,15 @@ export async function invokeCommand(
     for (const notice of notices) {
       adapter.writeStderr(notice);
     }
-    adapter.writeStderr(formatErrorOutput(error, outputMode));
+    // Recursively redact the thrown value at the outward boundary so any
+    // credential-shaped field embedded in the error tree — whether in
+    // `message`, `cause`, or any custom field — is replaced with the
+    // redaction marker before formatting. `formatErrorOutput` then
+    // performs an additional string-level pass on the message/help
+    // fields it actually serialises.
+    const secrets = configuredSecrets();
+    const redactedError = redactSecrets(error, secrets) as unknown;
+    adapter.writeStderr(formatErrorOutput(redactedError, outputMode));
     return getErrorExitCode(error);
   }
 

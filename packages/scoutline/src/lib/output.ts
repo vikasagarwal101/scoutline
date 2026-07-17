@@ -13,6 +13,8 @@
  * `invokeCommand` and the Node Adapter.
  */
 
+import { redactCredentialString, configuredSecrets } from "./redact.js";
+
 export const OUTPUT_MODES = [
   "data",
   "json",
@@ -42,31 +44,6 @@ export type Response<T = unknown> = SuccessResponse<T> | ErrorResponse;
 
 export function isOutputMode(value: unknown): value is OutputMode {
   return typeof value === "string" && (OUTPUT_MODES as readonly string[]).includes(value);
-}
-
-/**
- * Strip credential-shaped substrings from a public-facing string.
- *
- * Applied to the `help` (and `error`) fields emitted by
- * `formatErrorOutput` so accidental credential leakage in error messages
- * is replaced with a redaction marker before it reaches stdout/stderr.
- * The set of patterns matches DESIGN.md §16 (Z_AI_API_KEY, ZAI_API_KEY,
- * MINIMAX_API_KEY, Bearer authorization values, x-api-key values, and
- * embedded credential strings). The full secret value is dropped, not
- * echoed.
- */
-function redactCredentialString(input: string): string {
-  let result = input;
-  // Bearer authorization values (anywhere in the string). Case-insensitive
-  // per DESIGN §16 so `bearer`, `BEARER`, etc. are all redacted.
-  result = result.replace(/Bearer\s+\S+/gi, "[REDACTED]");
-  // x-api-key values.
-  result = result.replace(/x-api-key\s*[=:]\s*\S+/gi, "[REDACTED]");
-  // Known credential env-var assignments. Case-insensitive per DESIGN §16.
-  result = result.replace(/Z_AI_API_KEY\s*=\s*\S+/gi, "[REDACTED]");
-  result = result.replace(/ZAI_API_KEY\s*=\s*\S+/gi, "[REDACTED]");
-  result = result.replace(/MINIMAX_API_KEY\s*=\s*\S+/gi, "[REDACTED]");
-  return result;
 }
 
 /**
@@ -134,6 +111,7 @@ export function formatSuccessOutput<T>(
  */
 export function formatErrorOutput(value: unknown, mode: OutputMode): string {
   const indent = mode === "pretty" ? 2 : 0;
+  const secrets = configuredSecrets();
 
   let payload: Record<string, unknown>;
 
@@ -150,11 +128,11 @@ export function formatErrorOutput(value: unknown, mode: OutputMode): string {
     const rawError = typeof err.message === "string" ? err.message : String(err.message);
     payload = {
       success: false,
-      error: redactCredentialString(rawError),
+      error: redactCredentialString(rawError, secrets),
       code: typeof err.code === "string" ? err.code : "UNKNOWN_ERROR",
     };
     if (typeof err.help === "string" && err.help.length > 0) {
-      payload.help = redactCredentialString(err.help);
+      payload.help = redactCredentialString(err.help, secrets);
     }
     if (typeof err.statusCode === "number") {
       payload.statusCode = err.statusCode;
@@ -162,13 +140,13 @@ export function formatErrorOutput(value: unknown, mode: OutputMode): string {
   } else if (value instanceof Error) {
     payload = {
       success: false,
-      error: redactCredentialString(value.message),
+      error: redactCredentialString(value.message, secrets),
       code: "UNKNOWN_ERROR",
     };
   } else {
     payload = {
       success: false,
-      error: redactCredentialString(String(value)),
+      error: redactCredentialString(String(value), secrets),
       code: "UNKNOWN_ERROR",
     };
   }

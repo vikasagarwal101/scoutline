@@ -376,3 +376,109 @@ describe("ZaiMcpClient — error normalization (Fixup B — B2 + B6b)", () => {
     assert.strictEqual(parsed.code, "API_ERROR");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fixup D — B2-remaining: INIT path raw-body scrubbing.
+//
+// registerManual() failures used to embed the raw error strings into the
+// public ApiError message (`Failed to register MCP servers: <errors>`).
+// If the Provider returned a raw response body in the registration errors,
+// it leaked to public output. The init path must scrub the same way the
+// tool-call path does (Fixup B).
+// ---------------------------------------------------------------------------
+
+describe("ZaiMcpClient — init path raw-body scrubbing (Fixup D — B2-remaining)", () => {
+  const INIT_RAW_BODY = '{"error":"RAW_INIT_BODY","detail":"<html>secret</html>"}';
+
+  // Disable the on-disk tool cache and redirect the response cache into a
+  // temp dir so listTools() always reaches init() instead of being
+  // short-circuited by a stale entry. Mirrors the first describe block.
+  let tempDir;
+  let originalCacheDir;
+  let originalToolCache;
+  before(async () => {
+    originalCacheDir = process.env.ZAI_CACHE_DIR;
+    originalToolCache = process.env.ZAI_MCP_TOOL_CACHE;
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), TEMP_PREFIX));
+    process.env.ZAI_CACHE_DIR = tempDir;
+    process.env.ZAI_MCP_TOOL_CACHE = "0";
+  });
+  after(async () => {
+    if (originalCacheDir === undefined) delete process.env.ZAI_CACHE_DIR;
+    else process.env.ZAI_CACHE_DIR = originalCacheDir;
+    if (originalToolCache === undefined) delete process.env.ZAI_MCP_TOOL_CACHE;
+    else process.env.ZAI_MCP_TOOL_CACHE = originalToolCache;
+    if (tempDir) {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  /**
+   * Build a client whose UTCP factory returns a fake whose registerManual
+   * reports a failure carrying a raw Provider body in the errors array.
+   * `listTools` / `callToolRaw` trigger `init()` which hits the failure.
+   */
+  function clientWithRegistrationFailure() {
+    const fake = new FakeUtcpClient({
+      discoveredTools: [],
+      registerManualResult: { success: false, errors: [INIT_RAW_BODY] },
+    });
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      noCache: true,
+      disableRetry: true,
+    });
+    return { client, fake };
+  }
+
+  it("registerManual failure does not embed the raw body in the public error", async () => {
+    const { client } = clientWithRegistrationFailure();
+    try {
+      await assert.rejects(client.listTools(), (err) => {
+        assert.strictEqual(err.code, "API_ERROR");
+        assert.ok(
+          !err.message.includes("RAW_INIT_BODY"),
+          `raw body leaked into init message: ${err.message}`,
+        );
+        assert.ok(!err.message.includes("<html>"), `html leaked into init message: ${err.message}`);
+        return true;
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("registerManual failure preserves statusCode 500 for retry classification", async () => {
+    const { client } = clientWithRegistrationFailure();
+    try {
+      await assert.rejects(client.listTools(), (err) => {
+        assert.strictEqual(err.code, "API_ERROR");
+        assert.strictEqual(err.statusCode, 500, `expected 500, got ${err.statusCode}`);
+        return true;
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("raw init body never reaches formatErrorOutput public envelope", async () => {
+    const { client } = clientWithRegistrationFailure();
+    let captured;
+    try {
+      try {
+        await client.listTools();
+      } catch (err) {
+        captured = err;
+      }
+    } finally {
+      await client.close();
+    }
+    const formatted = formatErrorOutput(captured, "data");
+    assert.ok(
+      !formatted.includes("RAW_INIT_BODY"),
+      `raw init body reached public output: ${formatted}`,
+    );
+    const parsed = JSON.parse(formatted);
+    assert.strictEqual(parsed.code, "API_ERROR");
+  });
+});

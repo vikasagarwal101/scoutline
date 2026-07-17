@@ -33,7 +33,7 @@ import { createMiniMaxSdk } from "../dist/providers/minimax/sdk-client.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
 import { readFixture } from "./helpers/fixtures.js";
 import { executeProviderOperation } from "../dist/lib/execution.js";
-import { ApiError, AuthError, NetworkError } from "../dist/lib/errors.js";
+import { ApiError, AuthError, NetworkError, TimeoutError } from "../dist/lib/errors.js";
 import { formatErrorOutput } from "../dist/lib/output.js";
 
 const TEST_API_KEY = "test-minimax-api-key-DO-NOT-LEAK";
@@ -484,6 +484,24 @@ describe("MiniMax Search Adapter — failure normalization", () => {
     await assert.rejects(runWithError(new Error("operation timed out after 30s")), (err) => {
       assert.strictEqual(err.code, "TIMEOUT_ERROR");
       assert.strictEqual(isRetryableByExecution(err), true);
+      return true;
+    });
+  });
+
+  it("preserves the original TimeoutError duration instead of re-reading env (Fixup D)", async () => {
+    // A typed TimeoutError carries a duration. The Adapter must rewrap it
+    // preserving that duration, not reconstruct it from an ambient
+    // process.env.MINIMAX_TIMEOUT that may differ from the injected env.
+    const originalDuration = 12345;
+    await assert.rejects(runWithError(new TimeoutError(originalDuration)), (err) => {
+      assert.strictEqual(err.code, "TIMEOUT_ERROR");
+      assert.ok(err instanceof TimeoutError, "rewrapped error is a TimeoutError");
+      assert.strictEqual(
+        err.durationMs,
+        originalDuration,
+        `duration must be preserved as ${originalDuration}, got ${err.durationMs}`,
+      );
+      assert.match(err.message, new RegExp(`${originalDuration}ms`));
       return true;
     });
   });

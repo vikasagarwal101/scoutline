@@ -14,6 +14,12 @@ export class FakeUtcpClient {
     this.resultsByName = options.resultsByName || {};
     /** @type {Record<string, Error> | ((name: string, args: Record<string, unknown>) => Error)} */
     this.errorsByName = options.errorsByName || {};
+    /**
+     * When set, registerManual() returns this result instead of the default
+     * success. Use `{ success: false, errors: [...] }` to exercise the init
+     * error path (Fixup D — B2).
+     */
+    this.registerManualResult = options.registerManualResult || null;
     this.closeCount = 0;
     this.registerManualCalls = 0;
     this.getToolsCalls = 0;
@@ -25,6 +31,9 @@ export class FakeUtcpClient {
 
   registerManual(_template) {
     this.registerManualCalls += 1;
+    if (this.registerManualResult) {
+      return Promise.resolve(this.registerManualResult);
+    }
     return Promise.resolve({ success: true, errors: [] });
   }
 

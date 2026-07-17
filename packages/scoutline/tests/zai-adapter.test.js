@@ -19,7 +19,13 @@ import { getMcpToolName } from "../dist/lib/mcp-config.js";
 import { FakeUtcpClient } from "./helpers/fake-utcp-client.js";
 import { readFixture } from "./helpers/fixtures.js";
 import { executeProviderOperation } from "../dist/lib/execution.js";
-import { ConfigurationError, ApiError, AuthError, NetworkError } from "../dist/lib/errors.js";
+import {
+  ConfigurationError,
+  ApiError,
+  AuthError,
+  NetworkError,
+  TimeoutError,
+} from "../dist/lib/errors.js";
 import { formatErrorOutput } from "../dist/lib/output.js";
 
 const SEARCH_TOOL_PUBLIC_NAME = getMcpToolName("search", "web_search_prime");
@@ -284,6 +290,34 @@ describe("Z.AI Search Adapter — error normalization", () => {
   it("maps timeout to TIMEOUT_ERROR", async () => {
     await assert.rejects(runWithError("operation timed out after 30s"), (err) => {
       assert.match(err.code || "", /TIMEOUT_ERROR/);
+      return true;
+    });
+  });
+
+  it("preserves the original TimeoutError duration instead of re-reading env (Fixup D)", async () => {
+    // A typed TimeoutError thrown by the lower-level mcp-client carries a
+    // duration. The Adapter must rewrap it preserving that duration, not
+    // reconstruct it from an ambient process.env.Z_AI_TIMEOUT that may
+    // differ from the injected env.
+    const originalDuration = 12345;
+    const fixture = await readFixture("providers", "zai", "tools.json");
+    const factory = makeClientFactory({
+      discoveredTools: fixture.tools,
+      errorsByName: {
+        "scoutline_zai.search.web_search_prime": new TimeoutError(originalDuration),
+      },
+    });
+    const descriptor = createZaiDescriptor({ clientFactory: factory });
+    const adapter = descriptor.create({ env: { Z_AI_API_KEY: TEST_API_KEY } });
+    await assert.rejects(adapter.search.invoke({ query: "q" }), (err) => {
+      assert.strictEqual(err.code, "TIMEOUT_ERROR");
+      assert.ok(err instanceof TimeoutError, "rewrapped error is a TimeoutError");
+      assert.strictEqual(
+        err.durationMs,
+        originalDuration,
+        `duration must be preserved as ${originalDuration}, got ${err.durationMs}`,
+      );
+      assert.match(err.message, new RegExp(`${originalDuration}ms`));
       return true;
     });
   });

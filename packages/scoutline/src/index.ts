@@ -414,21 +414,31 @@ function visionOperationForCommand(command: string): VisionOperation {
 }
 
 /**
- * Parse and validate the `--count` flag value (Fixup C — B11). Per
- * DESIGN.md §7, count must be a finite safe integer >= 0. Invalid
- * values (NaN, negative, non-integer, Infinity) throw `ValidationError`
- * BEFORE any Provider resolution or invocation. The parser's flag
- * extraction is not strict about value vs. flag for hyphen-prefixed
- * tokens, so a defensive regex pre-check rejects any string the
- * downstream `parseInt` would silently coerce to NaN or a negative
- * integer.
+ * Parse and validate the `--count` flag value (Fixup C — B11, Fixup D). Per
+ * DESIGN.md §7, count must be a safe integer >= 0. Invalid values (NaN,
+ * negative, non-integer, Infinity, values above Number.MAX_SAFE_INTEGER)
+ * throw `ValidationError` BEFORE any Provider resolution or invocation.
  *
- * Exported for testing so the validation can be exercised without
- * going through the CLI parser (which does not deliver negative numbers
- * as flag values today).
+ * Fixup D hardens two gaps:
+ *   - `--count` without a value parses to `true`; that is a user error,
+ *     not an absent flag, and now throws VALIDATION_ERROR instead of being
+ *     silently treated as absent.
+ *   - Uses `Number.isSafeInteger` instead of `Number.isFinite` +
+ *     `Number.isInteger` so values above 2^53-1 are rejected rather than
+ *     silently rounded.
+ *
+ * Exported for testing so the validation can be exercised without going
+ * through the CLI parser (which does not deliver negative numbers as flag
+ * values today).
  */
 export function parseAndValidateCount(raw: unknown): number | undefined {
-  if (raw === undefined || raw === true || raw === "") return undefined;
+  if (raw === undefined || raw === "") return undefined;
+  if (raw === true) {
+    throw new ValidationError(
+      "Count requires a numeric value.",
+      "Use a non-negative integer (e.g. --count 5).",
+    );
+  }
   const str = typeof raw === "string" ? raw : String(raw);
   if (!/^\d+$/.test(str)) {
     throw new ValidationError(
@@ -437,9 +447,9 @@ export function parseAndValidateCount(raw: unknown): number | undefined {
     );
   }
   const parsed = Number(str);
-  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 0) {
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
     throw new ValidationError(
-      `Invalid --count value "${str}": must be a non-negative integer`,
+      `Invalid --count value "${str}": must be a non-negative safe integer`,
       "Use a non-negative integer (e.g. --count 5).",
     );
   }
@@ -457,6 +467,14 @@ async function handleSearch(
     deps.invocation.writeStdout(SEARCH_HELP);
     return 0;
   }
+
+  // Fixup D — B11: validate --count BEFORE Provider resolution and the
+  // configured/credential check. A syntax error in a CLI argument must
+  // not depend on whether credentials are present: `search q --count nope`
+  // with NO credentials must surface VALIDATION_ERROR (exit 1), not
+  // CONFIGURATION_ERROR (exit 3). Order: parse global options -> validate
+  // count -> resolve provider -> check configured -> dispatch.
+  const count = parseAndValidateCount(flags.count);
 
   // Resolve the Provider ONLY inside shared Search (DESIGN.md §6). Other
   // command families carry the parsed flag but never resolve or validate
@@ -493,13 +511,6 @@ async function handleSearch(
         .map((f) => f.trim())
         .filter(Boolean)
     : undefined;
-
-  // Fixup C — B11: validate --count BEFORE dispatch. Per DESIGN.md §7
-  // count must be a finite safe integer >= 0 (0 returns no results).
-  // Invalid values (NaN, negative, non-integer, Infinity) fail fast
-  // here as VALIDATION_ERROR — previously they reached the search
-  // command as silently-truncating 0-result runs.
-  const count = parseAndValidateCount(flags.count);
 
   return invokeCommand(
     deps.invocation,

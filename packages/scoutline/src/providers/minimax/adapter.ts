@@ -183,7 +183,10 @@ function normalizeMiniMaxError(error: unknown): Error {
     return new NetworkError("MiniMax network error");
   }
   if (error instanceof TimeoutError) {
-    return new TimeoutError(parseInt(process.env.MINIMAX_TIMEOUT || "30000", 10));
+    // Fixup D: preserve the original error's duration instead of
+    // reconstructing it from an ambient process.env that may differ from
+    // the injected env. The rewrapped error carries the same duration.
+    return new TimeoutError(error.durationMs);
   }
   if (error instanceof ApiError) {
     const statusCode = inferStatusCode("", error.statusCode);

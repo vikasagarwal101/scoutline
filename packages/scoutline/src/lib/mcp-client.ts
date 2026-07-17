@@ -20,7 +20,14 @@ import {
   projectInternalToolName,
   MCP_MANUAL_NAME,
 } from "./mcp-config.js";
-import { ApiError, AuthError, ConfigurationError, NetworkError, TimeoutError, ValidationError } from "./errors.js";
+import {
+  ApiError,
+  AuthError,
+  ConfigurationError,
+  NetworkError,
+  TimeoutError,
+  ValidationError,
+} from "./errors.js";
 import { loadConfig, getMcpEndpoints } from "./config.js";
 import { redactTool } from "./redact.js";
 import { buildCacheKey, readCache, writeCache } from "./cache.js";
@@ -122,7 +129,20 @@ export class ZaiMcpClient {
       const result = await this.client.registerManual(buildMcpCallTemplate(this.options));
 
       if (!result.success) {
-        throw new ApiError(`Failed to register MCP servers: ${result.errors.join(", ")}`, 500);
+        // Fixup D — B2: registration errors may carry raw Provider
+        // response bodies (NFR-006). Surface a clean message to the public
+        // error envelope; write the raw detail to stderr as a best-effort
+        // debugging notice. The statusCode (500) is preserved for retry
+        // classification. This mirrors the message-scrubbing Fixup B
+        // applied to the tool-call error path.
+        if (Array.isArray(result.errors) && result.errors.length > 0) {
+          try {
+            process.stderr.write(`MCP registration errors: ${result.errors.join(", ")}\n`);
+          } catch {
+            // stderr notice is best-effort; never fail init on a write.
+          }
+        }
+        throw new ApiError("MCP tool registration failed", 500);
       }
 
       this.isInitialized = true;

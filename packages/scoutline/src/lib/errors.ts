@@ -167,6 +167,13 @@ export class NetworkError extends ZaiError {
 }
 
 export class TimeoutError extends ZaiError {
+  /**
+   * The configured timeout duration that elapsed, in milliseconds. Kept as
+   * a first-class field (Fixup D) so an Adapter rewrapping a typed
+   * `TimeoutError` can preserve the original duration instead of re-reading
+   * an ambient `process.env` value that may differ from the injected env.
+   */
+  readonly durationMs: number;
   constructor(timeoutMs: number) {
     super(
       `Request timed out after ${timeoutMs}ms`,
@@ -174,6 +181,7 @@ export class TimeoutError extends ZaiError {
       undefined,
       "Try again or increase timeout with Z_AI_TIMEOUT env var",
     );
+    this.durationMs = timeoutMs;
   }
 }
 

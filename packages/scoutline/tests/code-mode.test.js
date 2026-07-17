@@ -127,3 +127,88 @@ describe("ZaiCodeModeClient — raw Provider body scrubbing (Fixup C — B-code-
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fixup D — B2-remaining: INIT path raw-body scrubbing for Code Mode.
+//
+// registerManual() failures used to embed the raw error strings into the
+// public ApiError message. If the Provider returned a raw response body in
+// the registration errors, it leaked to public output. The init path must
+// scrub the same way the factory-rejection path does.
+// ---------------------------------------------------------------------------
+
+describe("ZaiCodeModeClient — init registration raw-body scrubbing (Fixup D — B2-remaining)", () => {
+  const INIT_RAW_BODY = '{"error":"RAW_CODE_MODE_INIT_BODY","detail":"<html>secret</html>"}';
+
+  /** Build a client whose factory returns a fake that fails registerManual. */
+  function clientWithRegistrationFailure() {
+    const fakeClient = {
+      registerManual() {
+        return Promise.resolve({ success: false, errors: [INIT_RAW_BODY] });
+      },
+      callToolChain() {
+        return Promise.reject(new Error("should not reach callToolChain"));
+      },
+      getAllToolsTypeScriptInterfaces() {
+        return Promise.reject(new Error("should not reach getAllToolsTypeScriptInterfaces"));
+      },
+      close() {
+        return Promise.resolve();
+      },
+    };
+    return new ZaiCodeModeClient({
+      clientFactory: async () => fakeClient,
+    });
+  }
+
+  it("registerManual failure does not embed the raw body in the public error", async () => {
+    const client = clientWithRegistrationFailure();
+    try {
+      await assert.rejects(client.callToolChain("code"), (err) => {
+        assert.strictEqual(err.code, "API_ERROR");
+        assert.ok(
+          !err.message.includes("RAW_CODE_MODE_INIT_BODY"),
+          `raw body leaked into init message: ${err.message}`,
+        );
+        assert.ok(!err.message.includes("<html>"), `html leaked into init message: ${err.message}`);
+        return true;
+      });
+    } finally {
+      await client.close().catch(() => {});
+    }
+  });
+
+  it("registerManual failure preserves statusCode 500 for retry classification", async () => {
+    const client = clientWithRegistrationFailure();
+    try {
+      await assert.rejects(client.callToolChain("code"), (err) => {
+        assert.strictEqual(err.code, "API_ERROR");
+        assert.strictEqual(err.statusCode, 500, `expected 500, got ${err.statusCode}`);
+        return true;
+      });
+    } finally {
+      await client.close().catch(() => {});
+    }
+  });
+
+  it("raw init body never reaches formatErrorOutput public envelope", async () => {
+    const client = clientWithRegistrationFailure();
+    let captured;
+    try {
+      try {
+        await client.callToolChain("code");
+      } catch (err) {
+        captured = err;
+      }
+    } finally {
+      await client.close().catch(() => {});
+    }
+    const formatted = formatErrorOutput(captured, "data");
+    assert.ok(
+      !formatted.includes("RAW_CODE_MODE_INIT_BODY"),
+      `raw init body reached public output: ${formatted}`,
+    );
+    const parsed = JSON.parse(formatted);
+    assert.strictEqual(parsed.code, "API_ERROR");
+  });
+});

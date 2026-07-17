@@ -5,13 +5,7 @@
 import { CodeModeUtcpClient } from "@utcp/code-mode";
 import "@utcp/mcp";
 import { buildMcpCallTemplate } from "./mcp-config.js";
-import {
-  ApiError,
-  AuthError,
-  ConfigurationError,
-  NetworkError,
-  TimeoutError,
-} from "./errors.js";
+import { ApiError, AuthError, ConfigurationError, NetworkError, TimeoutError } from "./errors.js";
 
 const DEFAULT_TIMEOUT_MS = parseInt(process.env.Z_AI_TIMEOUT || "30000", 10);
 
@@ -53,7 +47,19 @@ export class ZaiCodeModeClient {
       this.client = await factory();
       const result = await this.client.registerManual(buildMcpCallTemplate());
       if (!result.success) {
-        throw new ApiError(`Failed to register MCP servers: ${result.errors.join(", ")}`, 500);
+        // Fixup D — B2: registration errors may carry raw Provider
+        // response bodies (NFR-006). Surface a clean message to the public
+        // error envelope; write the raw detail to stderr as a best-effort
+        // debugging notice. The statusCode (500) is preserved for retry
+        // classification. Mirrors the mcp-client init scrubbing.
+        if (Array.isArray(result.errors) && result.errors.length > 0) {
+          try {
+            process.stderr.write(`Code Mode registration errors: ${result.errors.join(", ")}\n`);
+          } catch {
+            // stderr notice is best-effort; never fail init on a write.
+          }
+        }
+        throw new ApiError("Code Mode tool registration failed", 500);
       }
       this.isInitialized = true;
     } catch (error) {

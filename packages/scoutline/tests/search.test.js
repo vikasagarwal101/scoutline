@@ -542,11 +542,64 @@ describe("--count flag validation (Fixup C — B11)", () => {
   });
 });
 
-describe("parseAndValidateCount — direct validation contract (Fixup C — B11)", () => {
-  it("returns undefined when the raw value is undefined / true / empty", () => {
+// ---------------------------------------------------------------------------
+// Fixup D — B11-remaining: count validation ordering.
+//
+// Count validation MUST run BEFORE Provider resolution and the
+// configured/credential check. A syntax error in a CLI argument must not
+// depend on whether credentials are present. This test deliberately uses
+// NO credentials and the REAL built-in descriptors (no fake injection) so
+// the actual CLI flow is exercised: `search q --count nope` with no
+// credentials must surface VALIDATION_ERROR (exit 1), NOT
+// CONFIGURATION_ERROR (exit 3).
+// ---------------------------------------------------------------------------
+
+describe("--count validation ordering vs credential check (Fixup D — B11-remaining)", () => {
+  it("invalid --count with NO credentials yields VALIDATION_ERROR (exit 1), not CONFIGURATION_ERROR (exit 3)", async () => {
+    const { adapter, stderr } = createTestAdapter();
+    // No providerDescriptors override -> real BUILT_IN_PROVIDER_DESCRIPTORS.
+    // No credentials in env -> the Provider is unconfigured. Count
+    // validation MUST fire first.
+    const status = await main(["search", "q", "--count", "nope"], {
+      invocation: adapter,
+      env: {},
+    });
+    assert.strictEqual(status, 1, "invalid count must exit 1 even with no credentials");
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(
+      parsed.code,
+      "VALIDATION_ERROR",
+      `expected VALIDATION_ERROR, got ${parsed.code}`,
+    );
+    assert.match(parsed.error, /count/i);
+  });
+
+  it("--count without a value with NO credentials yields VALIDATION_ERROR (exit 1)", async () => {
+    const { adapter, stderr } = createTestAdapter();
+    const status = await main(["search", "q", "--count"], {
+      invocation: adapter,
+      env: {},
+    });
+    assert.strictEqual(status, 1, "--count without value must exit 1");
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+  });
+});
+
+describe("parseAndValidateCount — direct validation contract (Fixup C — B11, Fixup D)", () => {
+  it("returns undefined when the raw value is undefined / empty", () => {
     assert.strictEqual(parseAndValidateCount(undefined), undefined);
-    assert.strictEqual(parseAndValidateCount(true), undefined);
     assert.strictEqual(parseAndValidateCount(""), undefined);
+  });
+
+  it("throws VALIDATION_ERROR for --count without a value (parser delivers true)", () => {
+    // Fixup D: `--count` without a value is a user error, not an absent
+    // flag. The parser delivers `true`; this must surface as
+    // VALIDATION_ERROR, not silently treated as absent.
+    assert.throws(
+      () => parseAndValidateCount(true),
+      (err) => err.code === "VALIDATION_ERROR",
+    );
   });
 
   it("returns the parsed integer for valid non-negative inputs", () => {
@@ -557,21 +610,59 @@ describe("parseAndValidateCount — direct validation contract (Fixup C — B11)
   });
 
   it("rejects a negative integer with VALIDATION_ERROR", () => {
-    assert.throws(() => parseAndValidateCount("-5"), (err) => err.code === "VALIDATION_ERROR");
+    assert.throws(
+      () => parseAndValidateCount("-5"),
+      (err) => err.code === "VALIDATION_ERROR",
+    );
   });
 
   it("rejects a non-integer string with VALIDATION_ERROR", () => {
-    assert.throws(() => parseAndValidateCount("1.5"), (err) => err.code === "VALIDATION_ERROR");
-    assert.throws(() => parseAndValidateCount("nope"), (err) => err.code === "VALIDATION_ERROR");
-    assert.throws(() => parseAndValidateCount("Infinity"), (err) => err.code === "VALIDATION_ERROR");
-    assert.throws(() => parseAndValidateCount("NaN"), (err) => err.code === "VALIDATION_ERROR");
-    assert.throws(() => parseAndValidateCount("5x"), (err) => err.code === "VALIDATION_ERROR");
+    assert.throws(
+      () => parseAndValidateCount("1.5"),
+      (err) => err.code === "VALIDATION_ERROR",
+    );
+    assert.throws(
+      () => parseAndValidateCount("nope"),
+      (err) => err.code === "VALIDATION_ERROR",
+    );
+    assert.throws(
+      () => parseAndValidateCount("Infinity"),
+      (err) => err.code === "VALIDATION_ERROR",
+    );
+    assert.throws(
+      () => parseAndValidateCount("NaN"),
+      (err) => err.code === "VALIDATION_ERROR",
+    );
+    assert.throws(
+      () => parseAndValidateCount("5x"),
+      (err) => err.code === "VALIDATION_ERROR",
+    );
   });
 
   it("rejects leading-sign input the parser would silently coerce", () => {
     // The strict `^\d+$` regex catches `"+5"` and `"-5"` so they cannot
     // bypass the check by being non-canonical numeric strings.
-    assert.throws(() => parseAndValidateCount("+5"), (err) => err.code === "VALIDATION_ERROR");
+    assert.throws(
+      () => parseAndValidateCount("+5"),
+      (err) => err.code === "VALIDATION_ERROR",
+    );
+  });
+
+  it("rejects values above Number.MAX_SAFE_INTEGER (Fixup D — isSafeInteger)", () => {
+    // 2^53 exceeds MAX_SAFE_INTEGER (2^53 - 1). Previously accepted by
+    // Number.isFinite + Number.isInteger and silently rounded.
+    const tooBig = String(Number.MAX_SAFE_INTEGER + 2);
+    assert.throws(
+      () => parseAndValidateCount(tooBig),
+      (err) => err.code === "VALIDATION_ERROR",
+    );
+  });
+
+  it("accepts Number.MAX_SAFE_INTEGER exactly", () => {
+    assert.strictEqual(
+      parseAndValidateCount(String(Number.MAX_SAFE_INTEGER)),
+      Number.MAX_SAFE_INTEGER,
+    );
   });
 });
 

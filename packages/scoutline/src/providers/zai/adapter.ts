@@ -332,7 +332,10 @@ function normalizeZaiError(error: unknown): Error {
     return new NetworkError("Z.AI network error");
   }
   if (error instanceof TimeoutError) {
-    return new TimeoutError(parseInt(process.env.Z_AI_TIMEOUT || "30000", 10));
+    // Fixup D: preserve the original error's duration instead of
+    // reconstructing it from an ambient process.env that may differ from
+    // the injected env. The rewrapped error carries the same duration.
+    return new TimeoutError(error.durationMs);
   }
   if (error instanceof ApiError) {
     const statusCode = inferStatusCode("", error.statusCode);

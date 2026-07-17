@@ -162,11 +162,12 @@ describe("Legacy subclasses (compat)", () => {
     assert.ok(err.help?.includes("internet"));
   });
 
-  it("TimeoutError encodes the timeout duration", () => {
+  it("TimeoutError encodes the timeout duration and exposes durationMs (Fixup D)", () => {
     const err = new TimeoutError(30000);
     assert.ok(err.message.includes("30000"));
     assert.strictEqual(err.code, "TIMEOUT_ERROR");
     assert.ok(err.help?.includes("Z_AI_TIMEOUT"));
+    assert.strictEqual(err.durationMs, 30000);
   });
 
   it("FileError accepts an optional help hint", () => {

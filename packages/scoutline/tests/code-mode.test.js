@@ -18,7 +18,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { ZaiCodeModeClient } from "../dist/lib/code-mode.js";
 import { formatErrorOutput } from "../dist/lib/output.js";
-import { AuthError } from "../dist/lib/errors.js";
+import { ApiError, AuthError } from "../dist/lib/errors.js";
 
 const RAW_BODY = '{"error":"RAW_CODE_MODE_BODY","detail":"<html>secret</html>"}';
 
@@ -210,5 +210,43 @@ describe("ZaiCodeModeClient â€” init registration raw-body scrubbing (Fixup D â€
     );
     const parsed = JSON.parse(formatted);
     assert.strictEqual(parsed.code, "API_ERROR");
+  });
+
+  it("registerManual failure never writes the raw body directly to process stderr", async () => {
+    const client = clientWithRegistrationFailure();
+    const writes = [];
+    const originalWrite = process.stderr.write;
+    process.stderr.write = function (chunk) {
+      writes.push(String(chunk));
+      return true;
+    };
+    try {
+      await assert.rejects(client.callToolChain("code"));
+    } finally {
+      process.stderr.write = originalWrite;
+      await client.close().catch(() => {});
+    }
+    const outwardText = writes.join("");
+    assert.ok(
+      !outwardText.includes("RAW_CODE_MODE_INIT_BODY"),
+      `raw init body reached process stderr: ${outwardText}`,
+    );
+  });
+
+  it("typed init ApiError is rewrapped without its raw message while preserving status", async () => {
+    const client = codeModeThrowing(new ApiError(INIT_RAW_BODY, 503));
+    try {
+      await assert.rejects(client.callToolChain("code"), (err) => {
+        assert.strictEqual(err.code, "API_ERROR");
+        assert.strictEqual(err.statusCode, 503);
+        assert.ok(
+          !err.message.includes("RAW_CODE_MODE_INIT_BODY"),
+          `typed init ApiError leaked: ${err.message}`,
+        );
+        return true;
+      });
+    } finally {
+      await client.close().catch(() => {});
+    }
   });
 });

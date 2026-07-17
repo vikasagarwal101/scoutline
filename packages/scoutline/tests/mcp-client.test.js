@@ -26,6 +26,7 @@ import { getMcpToolName, MCP_MANUAL_NAME } from "../dist/lib/mcp-config.js";
 import { FakeUtcpClient } from "./helpers/fake-utcp-client.js";
 import { readFixture } from "./helpers/fixtures.js";
 import { formatErrorOutput } from "../dist/lib/output.js";
+import { ApiError } from "../dist/lib/errors.js";
 
 // Public dotted identity the production code constructs via getMcpToolName.
 const PUBLIC_SEARCH_NAME = getMcpToolName("search", "web_search_prime");
@@ -480,5 +481,46 @@ describe("ZaiMcpClient — init path raw-body scrubbing (Fixup D — B2-remainin
     );
     const parsed = JSON.parse(formatted);
     assert.strictEqual(parsed.code, "API_ERROR");
+  });
+
+  it("registerManual failure never writes the raw body directly to process stderr", async () => {
+    const { client } = clientWithRegistrationFailure();
+    const writes = [];
+    const originalWrite = process.stderr.write;
+    process.stderr.write = function (chunk) {
+      writes.push(String(chunk));
+      return true;
+    };
+    try {
+      await assert.rejects(client.listTools());
+    } finally {
+      process.stderr.write = originalWrite;
+      await client.close();
+    }
+    const outwardText = writes.join("");
+    assert.ok(
+      !outwardText.includes("RAW_INIT_BODY"),
+      `raw init body reached process stderr: ${outwardText}`,
+    );
+  });
+
+  it("typed init ApiError is rewrapped without its raw message while preserving status", async () => {
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => {
+        throw new ApiError(INIT_RAW_BODY, 503);
+      },
+      noCache: true,
+      disableRetry: true,
+    });
+    try {
+      await assert.rejects(client.callToolRaw(PUBLIC_SEARCH_NAME, { search_query: "q" }), (err) => {
+        assert.strictEqual(err.code, "API_ERROR");
+        assert.strictEqual(err.statusCode, 503);
+        assert.ok(!err.message.includes("RAW_INIT_BODY"), `typed init ApiError leaked: ${err.message}`);
+        return true;
+      });
+    } finally {
+      await client.close();
+    }
   });
 });

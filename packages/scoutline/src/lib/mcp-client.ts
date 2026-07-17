@@ -129,19 +129,8 @@ export class ZaiMcpClient {
       const result = await this.client.registerManual(buildMcpCallTemplate(this.options));
 
       if (!result.success) {
-        // Fixup D — B2: registration errors may carry raw Provider
-        // response bodies (NFR-006). Surface a clean message to the public
-        // error envelope; write the raw detail to stderr as a best-effort
-        // debugging notice. The statusCode (500) is preserved for retry
-        // classification. This mirrors the message-scrubbing Fixup B
-        // applied to the tool-call error path.
-        if (Array.isArray(result.errors) && result.errors.length > 0) {
-          try {
-            process.stderr.write(`MCP registration errors: ${result.errors.join(", ")}\n`);
-          } catch {
-            // stderr notice is best-effort; never fail init on a write.
-          }
-        }
+        // Registration errors may carry raw Provider response bodies.
+        // Never copy them into either the public error or process stderr.
         throw new ApiError("MCP tool registration failed", 500);
       }
 
@@ -150,7 +139,10 @@ export class ZaiMcpClient {
       this.initPromise = null;
 
       if (error instanceof ApiError) {
-        throw error;
+        // A factory may reject with a typed ApiError whose message embeds a
+        // raw Provider body. Preserve only the status used for retry
+        // classification and replace the message at this outward boundary.
+        throw new ApiError("MCP initialization failed", error.statusCode ?? 500);
       }
 
       // NFR-001 + Fixup C — B8: a missing or invalid credential surfaces

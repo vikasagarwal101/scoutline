@@ -47,18 +47,8 @@ export class ZaiCodeModeClient {
       this.client = await factory();
       const result = await this.client.registerManual(buildMcpCallTemplate());
       if (!result.success) {
-        // Fixup D — B2: registration errors may carry raw Provider
-        // response bodies (NFR-006). Surface a clean message to the public
-        // error envelope; write the raw detail to stderr as a best-effort
-        // debugging notice. The statusCode (500) is preserved for retry
-        // classification. Mirrors the mcp-client init scrubbing.
-        if (Array.isArray(result.errors) && result.errors.length > 0) {
-          try {
-            process.stderr.write(`Code Mode registration errors: ${result.errors.join(", ")}\n`);
-          } catch {
-            // stderr notice is best-effort; never fail init on a write.
-          }
-        }
+        // Registration errors may carry raw Provider response bodies.
+        // Never copy them into either the public error or process stderr.
         throw new ApiError("Code Mode tool registration failed", 500);
       }
       this.isInitialized = true;
@@ -66,7 +56,10 @@ export class ZaiCodeModeClient {
       this.initPromise = null;
 
       if (error instanceof ApiError) {
-        throw error;
+        // A factory may reject with a typed ApiError whose message embeds a
+        // raw Provider body. Preserve only the status used for retry
+        // classification and replace the message at this outward boundary.
+        throw new ApiError("Code Mode initialization failed", error.statusCode ?? 500);
       }
 
       // NFR-001 + Fixup C — B8: a missing or invalid credential surfaces

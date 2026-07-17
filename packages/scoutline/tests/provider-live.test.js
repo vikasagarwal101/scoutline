@@ -317,3 +317,309 @@ describeIfLive("Provider live Vision — MiniMax", () => {
     assertVisionConformance(text);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Live Quota conformance (P4-02/P4-03, DESIGN.md §13, ADR-0001)
+//
+// Exercises the real Provider quota endpoints (Z.AI monitor API, MiniMax
+// direct remains endpoint) through BOTH end-to-end `main` dispatch AND
+// direct Adapter invocation. The assertion NEVER snapshots specific
+// counts or percentages (they change over time); it checks the normalized
+// dashboard shape only.
+// ---------------------------------------------------------------------------
+
+/**
+ * Capture a `main` dispatch: returns the exit code plus redacted
+ * stdout/stderr envelopes. Used by quota tests where all-provider mode
+ * may legitimately yield a non-zero exit (any provider failure -> 1).
+ */
+async function captureMain(args, env) {
+  const writes = [];
+  const adapter = {
+    ...createNodeCommandInvocationAdapter(),
+    writeStdout(value) {
+      writes.push(["out", value]);
+    },
+    writeStderr(value) {
+      writes.push(["err", value]);
+    },
+  };
+  const code = await main(args, { invocation: adapter, env });
+  const stdout = writes
+    .filter((w) => w[0] === "out")
+    .map((w) => w[1])
+    .join("\n")
+    .trim();
+  const stderr = writes
+    .filter((w) => w[0] === "err")
+    .map((w) => w[1])
+    .join("\n")
+    .trim();
+  return { code, stdout, stderr };
+}
+
+function parseEnvelope(stderr, stdout) {
+  try {
+    return JSON.parse(stderr || stdout);
+  } catch {
+    return { success: false, error: stderr || stdout, code: "UNKNOWN_ERROR" };
+  }
+}
+
+/**
+ * Invoke `scoutline quota` end-to-end through `main`. Returns the parsed
+ * `QuotaDashboard`. Rejects with a redacted envelope on non-zero exit.
+ */
+async function runLiveQuota(args, env) {
+  const { code, stdout, stderr } = await captureMain(args, env);
+  if (code !== 0) {
+    const envelope = parseEnvelope(stderr, stdout);
+    throw new Error(
+      `live quota failed (exit ${code}): ${envelope.code || "UNKNOWN_ERROR"}: ${envelope.error || ""}`.trim(),
+    );
+  }
+  return JSON.parse(stdout);
+}
+
+/**
+ * Assert a normalized `QuotaDashboard` shape without snapshotting values.
+ * Percentages are finite numbers clamped to 0..100; categories carry the
+ * required name/unit/current window.
+ */
+function assertQuotaDashboardShape(dashboard, expectedProvider) {
+  assert.ok(dashboard && typeof dashboard === "object", "dashboard must be an object");
+  assert.strictEqual(dashboard.schemaVersion, 1, "schemaVersion must be 1");
+  assert.strictEqual(
+    dashboard.effectiveProvider,
+    expectedProvider,
+    `effectiveProvider must be ${expectedProvider}`,
+  );
+  assert.ok(Array.isArray(dashboard.providers), "providers must be an array");
+  return dashboard.providers;
+}
+
+/**
+ * Assert a single successful `ProviderQuotaSuccess` entry. Used for both
+ * default-mode dashboard entries and direct Adapter invocation results.
+ */
+function assertQuotaSuccessShape(entry, expectedProvider) {
+  assert.ok(entry && typeof entry === "object", "quota entry must be an object");
+  assert.strictEqual(entry.provider, expectedProvider, `provider must be ${expectedProvider}`);
+  assert.strictEqual(entry.status, "ok", "status must be ok");
+  assert.ok(Array.isArray(entry.categories), "categories must be an array");
+  assert.ok(entry.categories.length > 0, "categories must be nonempty");
+  for (const [i, cat] of entry.categories.entries()) {
+    assert.ok(typeof cat.name === "string" && cat.name.length > 0, `category ${i} name nonempty`);
+    assert.ok(cat.unit === "requests" || cat.unit === "tokens", `category ${i} unit valid`);
+    assert.ok(cat.current && typeof cat.current === "object", `category ${i} current window`);
+    const pct = cat.current.remainingPercent;
+    assert.ok(
+      typeof pct === "number" && Number.isFinite(pct) && pct >= 0 && pct <= 100,
+      `category ${i} remainingPercent in 0..100`,
+    );
+  }
+}
+
+describeIfLive("Provider live Quota — Z.AI", () => {
+  it("Normal quota through the public scoutline command returns a schema-version-1 dashboard", async () => {
+    if (!requireConfigured(zaiConfigured)) {
+      assert.fail("Z_AI_API_KEY is required for live-release mode but was not provided");
+      return;
+    }
+    if (!zaiConfigured) return;
+    const dashboard = await runLiveQuota(["quota"], {
+      ...process.env,
+      Z_AI_API_KEY: ZAI_KEY,
+    });
+    const providers = assertQuotaDashboardShape(dashboard, "zai");
+    assert.strictEqual(providers.length, 1, "default mode lists exactly one provider");
+    assertQuotaSuccessShape(providers[0], "zai");
+  });
+
+  it("Z.AI Adapter quota invoked directly returns a conformant ProviderQuotaSuccess", async () => {
+    if (!zaiConfigured) return;
+    const descriptor = createZaiDescriptor();
+    const adapter = descriptor.create({ env: { Z_AI_API_KEY: ZAI_KEY } });
+    assert.strictEqual(
+      typeof adapter.quota,
+      "object",
+      "Z.AI descriptor must expose a Quota capability",
+    );
+    const result = await adapter.quota.invoke();
+    assertQuotaSuccessShape(result, "zai");
+  });
+});
+
+describeIfLive("Provider live Quota — MiniMax", () => {
+  it("Normal quota through the public scoutline command returns a schema-version-1 dashboard", async () => {
+    if (!requireConfigured(minimaxConfigured)) {
+      assert.fail("MINIMAX_API_KEY is required for live-release mode but was not provided");
+      return;
+    }
+    if (!minimaxConfigured) return;
+    const dashboard = await runLiveQuota(["--provider", "minimax", "quota"], {
+      ...process.env,
+      MINIMAX_API_KEY: MINIMAX_KEY,
+    });
+    const providers = assertQuotaDashboardShape(dashboard, "minimax");
+    assert.strictEqual(providers.length, 1, "default mode lists exactly one provider");
+    assertQuotaSuccessShape(providers[0], "minimax");
+    // MiniMax categories are named by model.
+    for (const cat of providers[0].categories) {
+      assert.ok(cat.unit === "requests", "MiniMax category unit is requests");
+    }
+  });
+
+  it("MiniMax Adapter quota invoked directly returns a conformant ProviderQuotaSuccess", async () => {
+    if (!minimaxConfigured) return;
+    const descriptor = createMiniMaxDescriptor();
+    const adapter = descriptor.create({ env: { MINIMAX_API_KEY: MINIMAX_KEY } });
+    assert.strictEqual(
+      typeof adapter.quota,
+      "object",
+      "MiniMax descriptor must expose a Quota capability",
+    );
+    const result = await adapter.quota.invoke();
+    assertQuotaSuccessShape(result, "minimax");
+  });
+});
+
+describeIfLive("Provider live Quota — all providers", () => {
+  it("quota --all-providers lists every configured provider in registry order", async () => {
+    if (!requireConfigured(zaiConfigured && minimaxConfigured)) {
+      assert.fail("Both Z_AI_API_KEY and MINIMAX_API_KEY are required for live-release mode");
+      return;
+    }
+    if (!zaiConfigured || !minimaxConfigured) return;
+    const { code, stdout } = await captureMain(["quota", "--all-providers"], {
+      ...process.env,
+      Z_AI_API_KEY: ZAI_KEY,
+      MINIMAX_API_KEY: MINIMAX_KEY,
+    });
+    const dashboard = JSON.parse(stdout);
+    assertQuotaDashboardShape(dashboard, "zai");
+    // Registry order is zai, then minimax.
+    assert.deepStrictEqual(
+      dashboard.providers.map((p) => p.provider),
+      ["zai", "minimax"],
+      "registry order preserved",
+    );
+    // Each entry is either success or failure; both are valid live.
+    const allOk = dashboard.providers.every((p) => p.status === "ok");
+    const anyError = dashboard.providers.some((p) => p.status === "error");
+    if (allOk) {
+      assert.strictEqual(code, 0, "exit 0 when every configured provider succeeds");
+      for (const entry of dashboard.providers) {
+        assertQuotaSuccessShape(entry, entry.provider);
+      }
+    } else {
+      assert.ok(anyError, "at least one error entry present");
+      assert.strictEqual(code, 1, "exit 1 when any configured provider fails");
+      for (const entry of dashboard.providers) {
+        assert.ok(entry.status === "ok" || entry.status === "error", "entry status is ok or error");
+        if (entry.status === "ok") assertQuotaSuccessShape(entry, entry.provider);
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live Doctor conformance (P4-04, DESIGN.md §14)
+//
+// Exercises the real Provider connectivity probes (Z.AI tool discovery,
+// MiniMax raw quota probe) through end-to-end `main` dispatch. Under
+// --no-tools no transport is constructed and configured providers are
+// reported as skipped (tools-disabled).
+// ---------------------------------------------------------------------------
+
+/**
+ * Invoke `scoutline doctor` end-to-end through `main`. Returns the parsed
+ * `DiagnosticsReport`. Rejects with a redacted envelope on non-zero exit.
+ */
+async function runLiveDoctor(args, env) {
+  const { code, stdout, stderr } = await captureMain(args, env);
+  if (code !== 0) {
+    const envelope = parseEnvelope(stderr, stdout);
+    throw new Error(
+      `live doctor failed (exit ${code}): ${envelope.code || "UNKNOWN_ERROR"}: ${envelope.error || ""}`.trim(),
+    );
+  }
+  return JSON.parse(stdout);
+}
+
+describeIfLive("Provider live Doctor — full probes", () => {
+  it("doctor returns a schema-version-1 report with both providers probed", async () => {
+    if (!requireConfigured(zaiConfigured && minimaxConfigured)) {
+      assert.fail("Both Z_AI_API_KEY and MINIMAX_API_KEY are required for live-release mode");
+      return;
+    }
+    if (!zaiConfigured || !minimaxConfigured) return;
+    const report = await runLiveDoctor(["doctor"], {
+      ...process.env,
+      Z_AI_API_KEY: ZAI_KEY,
+      MINIMAX_API_KEY: MINIMAX_KEY,
+    });
+    assert.strictEqual(report.schemaVersion, 1, "schemaVersion must be 1");
+    // Exactly two entries in registry order.
+    assert.deepStrictEqual(
+      report.providers.map((p) => p.provider),
+      ["zai", "minimax"],
+      "both built-in providers listed in registry order",
+    );
+    // Each configured provider probe succeeds against the live endpoint.
+    for (const entry of report.providers) {
+      assert.strictEqual(entry.configured, true, `${entry.provider} is configured`);
+      assert.strictEqual(entry.status, "ok", `${entry.provider} probe succeeded`);
+    }
+    // Shared capabilities include the base four (attested specialized ops
+    // extend this list, so a subset check tracks attestation state).
+    const shared = [...report.sharedCapabilities];
+    for (const cap of ["search", "vision.interpret-image", "quota", "diagnostics"]) {
+      assert.ok(shared.includes(cap), `sharedCapabilities includes ${cap}`);
+    }
+    // Z.AI-only capabilities.
+    const zaiOnly = [...report.zaiOnlyCapabilities];
+    for (const cap of [
+      "reader",
+      "repository-exploration",
+      "raw-provider-tools",
+      "code-mode",
+      "image-diff",
+      "video-analysis",
+    ]) {
+      assert.ok(zaiOnly.includes(cap), `zaiOnlyCapabilities includes ${cap}`);
+    }
+  });
+});
+
+describeIfLive("Provider live Doctor — no-tools", () => {
+  it("doctor --no-tools skips every configured provider (tools-disabled) and exits 0", async () => {
+    if (!requireConfigured(zaiConfigured && minimaxConfigured)) {
+      assert.fail("Both Z_AI_API_KEY and MINIMAX_API_KEY are required for live-release mode");
+      return;
+    }
+    if (!zaiConfigured || !minimaxConfigured) return;
+    const { code, stdout } = await captureMain(["doctor", "--no-tools"], {
+      ...process.env,
+      Z_AI_API_KEY: ZAI_KEY,
+      MINIMAX_API_KEY: MINIMAX_KEY,
+    });
+    assert.strictEqual(code, 0, "tools-disabled does not fail the report");
+    const report = JSON.parse(stdout);
+    assert.strictEqual(report.schemaVersion, 1);
+    assert.deepStrictEqual(
+      report.providers.map((p) => p.provider),
+      ["zai", "minimax"],
+      "both built-in providers listed",
+    );
+    for (const entry of report.providers) {
+      assert.strictEqual(entry.configured, true, `${entry.provider} is configured`);
+      assert.strictEqual(entry.status, "skipped", `${entry.provider} is skipped`);
+      assert.strictEqual(
+        entry.reason,
+        "tools-disabled",
+        `${entry.provider} reason is tools-disabled`,
+      );
+    }
+  });
+});

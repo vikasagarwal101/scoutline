@@ -61,11 +61,12 @@ const MINIMAX_RAW_DENY = [
   "model_name",
   "end_time",
   "weekly_end_time",
-  "remains_percentage",
-  "weekly_used",
-  "weekly_total",
-  "weekly_remains_percentage",
-  "total",
+  "current_interval_remaining_percent",
+  "current_interval_usage_count",
+  "current_interval_total_count",
+  "current_weekly_usage_count",
+  "current_weekly_total_count",
+  "current_weekly_remaining_percent",
 ];
 
 // ---------------------------------------------------------------------------
@@ -315,12 +316,18 @@ describe("MiniMax quota normalization", () => {
   it("sorts categories ascending by model name", () => {
     const normalized = normalizeMiniMaxQuota({
       model_remains: [
-        { model_name: "zeta", used: 1, total: 10, remains_percentage: 90, end_time: 1700000000000 },
+        {
+          model_name: "zeta",
+          current_interval_usage_count: 1,
+          current_interval_total_count: 10,
+          current_interval_remaining_percent: 90,
+          end_time: 1700000000000,
+        },
         {
           model_name: "alpha",
-          used: 1,
-          total: 10,
-          remains_percentage: 90,
+          current_interval_usage_count: 1,
+          current_interval_total_count: 10,
+          current_interval_remaining_percent: 90,
           end_time: 1700000000000,
         },
       ],

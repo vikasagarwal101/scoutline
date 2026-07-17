@@ -44,18 +44,21 @@ import {
 } from "./quota-client.js";
 
 // ---------------------------------------------------------------------------
-// Raw MiniMax model_remains entry shape (characterized 1.0.16 fields only)
+// Raw MiniMax model_remains entry shape (characterized against the live
+// /v1/api/openplatform/coding_plan/remains endpoint).
 // ---------------------------------------------------------------------------
 
 interface MiniMaxModelRemains {
   model_name?: unknown;
-  used?: unknown;
-  total?: unknown;
-  remains_percentage?: unknown;
+  // Current interval window.
+  current_interval_usage_count?: unknown;
+  current_interval_total_count?: unknown;
+  current_interval_remaining_percent?: unknown;
   end_time?: unknown;
-  weekly_used?: unknown;
-  weekly_total?: unknown;
-  weekly_remains_percentage?: unknown;
+  // Weekly window.
+  current_weekly_usage_count?: unknown;
+  current_weekly_total_count?: unknown;
+  current_weekly_remaining_percent?: unknown;
   weekly_end_time?: unknown;
 }
 
@@ -98,24 +101,24 @@ export function normalizeMiniMaxQuota(raw: unknown): ProviderQuotaSuccess {
     }
 
     const current = buildQuotaWindow({
-      used: readNumber(record.used),
-      limit: readNumber(record.total),
-      explicitRemainingPercent: readNumber(record.remains_percentage),
+      used: readNumber(record.current_interval_usage_count),
+      limit: readNumber(record.current_interval_total_count),
+      explicitRemainingPercent: readNumber(record.current_interval_remaining_percent),
       resetsAtEpochMs: readNumber(record.end_time),
     });
 
     const category: QuotaCategory = { name, unit: "requests", current };
 
     const hasWeekly =
-      readNumber(record.weekly_used) !== undefined ||
-      readNumber(record.weekly_total) !== undefined ||
-      readNumber(record.weekly_remains_percentage) !== undefined ||
+      readNumber(record.current_weekly_usage_count) !== undefined ||
+      readNumber(record.current_weekly_total_count) !== undefined ||
+      readNumber(record.current_weekly_remaining_percent) !== undefined ||
       readNumber(record.weekly_end_time) !== undefined;
     if (hasWeekly) {
       category.weekly = buildQuotaWindow({
-        used: readNumber(record.weekly_used),
-        limit: readNumber(record.weekly_total),
-        explicitRemainingPercent: readNumber(record.weekly_remains_percentage),
+        used: readNumber(record.current_weekly_usage_count),
+        limit: readNumber(record.current_weekly_total_count),
+        explicitRemainingPercent: readNumber(record.current_weekly_remaining_percent),
         resetsAtEpochMs: readNumber(record.weekly_end_time),
       });
     }

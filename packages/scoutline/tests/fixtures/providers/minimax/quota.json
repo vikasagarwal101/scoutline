@@ -2,21 +2,30 @@
   "model_remains": [
     {
       "model_name": "zorla-x",
-      "used": 50,
-      "total": 200,
-      "remains_percentage": 75,
+      "current_interval_usage_count": 50,
+      "current_interval_total_count": 200,
+      "current_interval_remaining_percent": 75,
+      "current_interval_status": 1,
+      "start_time": 1699900000000,
       "end_time": 1700000000000,
-      "weekly_used": 200,
-      "weekly_total": 1000,
-      "weekly_remains_percentage": 80,
-      "weekly_end_time": 1700500000000
+      "remains_time": 3600000,
+      "current_weekly_usage_count": 200,
+      "current_weekly_total_count": 1000,
+      "current_weekly_remaining_percent": 80,
+      "current_weekly_status": 3,
+      "weekly_start_time": 1699900000000,
+      "weekly_end_time": 1700500000000,
+      "weekly_remains_time": 36000000
     },
     {
       "model_name": "abab6.5s-chat",
-      "used": 30,
-      "total": 100,
-      "remains_percentage": 70,
-      "end_time": 1700000000000
+      "current_interval_usage_count": 30,
+      "current_interval_total_count": 100,
+      "current_interval_remaining_percent": 70,
+      "current_interval_status": 1,
+      "start_time": 1699900000000,
+      "end_time": 1700000000000,
+      "remains_time": 3600000
     }
   ]
 }

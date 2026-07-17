@@ -22,7 +22,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "node scripts/generate-minimax-vision-revisions.mjs && tsc",
     "dev": "tsc --watch",
     "test": "npm run test:offline",
     "test:offline": "npm run build && node scripts/run-tests.mjs offline",

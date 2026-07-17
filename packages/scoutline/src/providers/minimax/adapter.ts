@@ -66,6 +66,12 @@ import {
   type MiniMaxQuotaClientDeps,
   type MiniMaxQuotaFetch,
 } from "./quota-client.js";
+import {
+  isMiniMaxVisionOperationSupported,
+  listSupportedMiniMaxVisionOperations,
+  SPECIALIZED_VISION_OPERATION_SET,
+  type SpecializedVisionOperation,
+} from "./vision-conformance.js";
 
 // ---------------------------------------------------------------------------
 // Provider-owned credential fingerprint
@@ -282,11 +288,26 @@ function createMiniMaxSearchCapability(options: MiniMaxSearchCapabilityOptions):
 // ---------------------------------------------------------------------------
 
 /**
- * Vision operations the MiniMax Adapter implements. Only the general
- * single-image interpretation is wired in the base release; specialized
- * operations arrive in Phase 5.
+ * Decide whether the MiniMax Adapter supports a Vision operation.
+ *
+ * `interpret-image` is supported unconditionally (the base release
+ * wires it through `sdk.vision.describe`). Specialized operations
+ * (`ui-artifact`, `extract-text`, `diagnose-error`, `diagram`,
+ * `chart`) are gated by the compiled conformance registry
+ * (DESIGN.md §15) — at P5-02 every entry is pending, so every
+ * specialized operation is unsupported here. `diff` and `video`
+ * remain Z.AI-only and are never supported by MiniMax.
+ *
+ * Pure: no Provider call, no env read, no I/O. The conformance query
+ * is a snapshot read of a frozen registry assembled at module load.
  */
-const MINIMAX_VISION_OPERATIONS: ReadonlySet<VisionOperation> = new Set(["interpret-image"]);
+function supportsMiniMaxVisionOperation(operation: VisionOperation): boolean {
+  if (operation === "interpret-image") return true;
+  if (SPECIALIZED_VISION_OPERATION_SET.has(operation as SpecializedVisionOperation)) {
+    return isMiniMaxVisionOperationSupported(operation);
+  }
+  return false;
+}
 
 interface MiniMaxVisionCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
@@ -309,11 +330,27 @@ function createMiniMaxVisionCapability(options: MiniMaxVisionCapabilityOptions):
 
   const capability: VisionCapability = {
     supports(operation: VisionOperation): boolean {
-      return MINIMAX_VISION_OPERATIONS.has(operation);
+      return supportsMiniMaxVisionOperation(operation);
     },
 
     async invoke(request: VisionRequest): Promise<string> {
+      // Fail closed BEFORE any credential, media, or SDK access. The
+      // support decision is the single registry-driven gate; every
+      // specialized operation stays unsupported at P5-02 because every
+      // registry entry is pending.
+      if (!supportsMiniMaxVisionOperation(request.operation)) {
+        throw new UnsupportedCapabilityError(
+          "minimax",
+          visionOperationToCapability(request.operation),
+        );
+      }
       if (request.operation !== "interpret-image") {
+        // A specialized operation that the registry says is supported
+        // would route through its operation-specific Module here. At
+        // P5-02 this branch is unreachable because the registry gate
+        // above rejects every specialized operation. Throw a clean
+        // UnsupportedCapabilityError so the fail-closed invariant is
+        // explicit even if a future change reorders the checks.
         throw new UnsupportedCapabilityError(
           "minimax",
           visionOperationToCapability(request.operation),
@@ -436,12 +473,21 @@ export function createMiniMaxDescriptor(
       return typeof key === "string" && /\S/.test(key);
     },
     capabilities(): ReadonlySet<ProviderCapability> {
-      return new Set<ProviderCapability>([
+      // Base capabilities always advertised by MiniMax. Specialized
+      // Vision operations (`vision.ui-artifact`, etc.) are advertised
+      // only when their conformance registry entry is supported
+      // (DESIGN.md §15). At P5-02 every entry is pending, so the set
+      // reduces to the base four.
+      const caps: Set<ProviderCapability> = new Set<ProviderCapability>([
         "search",
         "vision.interpret-image",
         "quota",
         "diagnostics",
       ]);
+      for (const op of listSupportedMiniMaxVisionOperations()) {
+        caps.add(visionOperationToCapability(op) as ProviderCapability);
+      }
+      return caps;
     },
     create(context: ProviderContext): ProviderAdapter {
       const search = createMiniMaxSearchCapability({

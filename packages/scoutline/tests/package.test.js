@@ -195,7 +195,7 @@ describe("scoutline package — root export and metadata", () => {
     assert.deepStrictEqual(
       pkg.files,
       ["bin", "dist"],
-      "package.json \"files\" allowlist must be exactly [\"bin\", \"dist\"]",
+      'package.json "files" allowlist must be exactly ["bin", "dist"]',
     );
   });
 });
@@ -218,10 +218,7 @@ describe("scoutline package — npm pack contents", () => {
 
     // Spot-check: the compiled `dist/index.js` and `bin/scoutline.js`
     // must both be present so the package is consumable.
-    assert.ok(
-      paths.includes("dist/index.js"),
-      "pack must include dist/index.js (compiled main)",
-    );
+    assert.ok(paths.includes("dist/index.js"), "pack must include dist/index.js (compiled main)");
     assert.ok(
       paths.includes("bin/scoutline.js"),
       "pack must include bin/scoutline.js (executable entrypoint)",
@@ -268,8 +265,10 @@ describe("scoutline package — npm pack contents", () => {
     const out = await runNpmPackDryRun();
     const summary = out[0] || {};
     assert.ok(summary.size > 0, "npm pack summary.size must be > 0");
-    assert.ok(typeof summary.filename === "string" && summary.filename.endsWith(".tgz"),
-      "npm pack summary.filename must be a .tgz path");
+    assert.ok(
+      typeof summary.filename === "string" && summary.filename.endsWith(".tgz"),
+      "npm pack summary.filename must be a .tgz path",
+    );
   });
 });
 
@@ -296,10 +295,7 @@ describe("scoutline package — tarball install round-trip", () => {
         `expected a .tgz path from npm pack, got ${tarballPath}`,
       );
       const tarballStat = await fs.stat(tarballPath);
-      assert.ok(
-        tarballStat.size > 0,
-        `tarball must have non-zero size, got ${tarballStat.size}`,
-      );
+      assert.ok(tarballStat.size > 0, `tarball must have non-zero size, got ${tarballStat.size}`);
 
       // 2. Install the tarball into the second temp dir with
       //    --offline --ignore-scripts --no-audit --no-fund. This must
@@ -308,7 +304,13 @@ describe("scoutline package — tarball install round-trip", () => {
       await installTarballOffline(tarballPath, installDir);
 
       // 3. Verify the installed bin shim is present and executable.
-      const installedBin = path.join(installDir, "node_modules", "scoutline", "bin", "scoutline.js");
+      const installedBin = path.join(
+        installDir,
+        "node_modules",
+        "scoutline",
+        "bin",
+        "scoutline.js",
+      );
       const installedPkg = path.join(installDir, "node_modules", "scoutline", "package.json");
       await fs.access(installedBin);
       await fs.access(installedPkg);
@@ -328,7 +330,11 @@ describe("scoutline package — tarball install round-trip", () => {
         proc.on("error", reject);
         proc.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
       });
-      assert.strictEqual(helpResult.code, 0, `installed --help exited ${helpResult.code}: ${helpResult.stderr}`);
+      assert.strictEqual(
+        helpResult.code,
+        0,
+        `installed --help exited ${helpResult.code}: ${helpResult.stderr}`,
+      );
       assert.ok(
         helpResult.stdout.includes("scoutline"),
         `installed --help must mention scoutline, got: ${helpResult.stdout.slice(0, 200)}`,
@@ -337,13 +343,7 @@ describe("scoutline package — tarball install round-trip", () => {
       // 5. Verify the root `main` export loads without performing side
       //    effects (NFR-003). Spawn a child Node process that imports
       //    the installed module and reports whether it executed.
-      const installedIndex = path.join(
-        installDir,
-        "node_modules",
-        "scoutline",
-        "dist",
-        "index.js",
-      );
+      const installedIndex = path.join(installDir, "node_modules", "scoutline", "dist", "index.js");
       const installedIndexUrl = pathToFileURL(installedIndex).href;
       const script =
         `import(${JSON.stringify(installedIndexUrl)})` +
@@ -376,6 +376,140 @@ describe("scoutline package — tarball install round-trip", () => {
       assert.strictEqual(importResult.code, 0, `installed import exited ${importResult.code}`);
     } finally {
       // 6. Clean up both directories regardless of outcome.
+      await fs.rm(base, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Compiled Vision conformance registry (P5-02, DESIGN.md §15)
+// ---------------------------------------------------------------------------
+
+describe("scoutline package — compiled MiniMax vision conformance registry (P5-02)", () => {
+  /**
+   * Derive the local supported-operation set from the source registry,
+   * pack + extract the tarball, import its compiled Vision conformance
+   * Module, and assert the installed set and compiled attestations
+   * match the source. Pending and failed entries remain unsupported in
+   * the installed tarball just as they do in the source tree.
+   */
+  it("installed tarball exposes the same supported specialized vision operations as the source registry", async () => {
+    // 1. Compute the local supported-operation set from the compiled
+    //    dist (built before this test runs).
+    const localConformance = await import("../dist/providers/minimax/vision-conformance.js");
+    const localSupported = new Set(localConformance.listSupportedMiniMaxVisionOperations());
+    const localAttestationCount = (await import("../dist/providers/minimax/vision-attestations.js"))
+      .MINIMAX_VISION_ATTESTATIONS.length;
+
+    // 2. Pack + extract + install the tarball in temp dirs.
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-conf-"));
+    const packDir = path.join(base, "pack");
+    const installDir = path.join(base, "install");
+    await fs.mkdir(packDir, { recursive: true });
+    await fs.mkdir(installDir, { recursive: true });
+
+    try {
+      const tarballPath = await packToDir(packDir);
+      await installTarballOffline(tarballPath, installDir);
+
+      // 3. Import the installed conformance Module from the installed
+      //    dist surface. This proves the registry compiles into the
+      //    shipped package.
+      const installedIndex = path.join(
+        installDir,
+        "node_modules",
+        "scoutline",
+        "dist",
+        "providers",
+        "minimax",
+        "vision-conformance.js",
+      );
+      const installedIndexUrl = pathToFileURL(installedIndex).href;
+      const installed = await import(installedIndexUrl);
+
+      // 4. The installed supported set must match the local set.
+      const installedSupported = new Set(installed.listSupportedMiniMaxVisionOperations());
+      assert.deepStrictEqual(
+        [...installedSupported].sort(),
+        [...localSupported].sort(),
+        "installed supported set must match local supported set",
+      );
+
+      // 5. Every specialized operation must currently be unsupported
+      //    at P5-02 (no operation should be advertised yet).
+      for (const op of ["ui-artifact", "extract-text", "diagnose-error", "diagram", "chart"]) {
+        assert.strictEqual(
+          installed.isMiniMaxVisionOperationSupported(op),
+          false,
+          `${op} must remain unsupported in the installed package at P5-02`,
+        );
+      }
+
+      // 6. The installed attestation manifest must have the same count
+      //    as the source manifest (zero at P5-02).
+      const installedAttestations = await import(
+        pathToFileURL(
+          path.join(
+            installDir,
+            "node_modules",
+            "scoutline",
+            "dist",
+            "providers",
+            "minimax",
+            "vision-attestations.js",
+          ),
+        ).href
+      );
+      assert.strictEqual(
+        installedAttestations.MINIMAX_VISION_ATTESTATIONS.length,
+        localAttestationCount,
+        "installed attestation manifest count must match local",
+      );
+    } finally {
+      await fs.rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it("installed tarball exposes the same generated mapping revisions as the source registry", async () => {
+    const localRevisions = (await import("../dist/providers/minimax/vision-revisions.js"))
+      .MINIMAX_VISION_MAPPING_REVISIONS;
+
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-rev-"));
+    const packDir = path.join(base, "pack");
+    const installDir = path.join(base, "install");
+    await fs.mkdir(packDir, { recursive: true });
+    await fs.mkdir(installDir, { recursive: true });
+
+    try {
+      const tarballPath = await packToDir(packDir);
+      await installTarballOffline(tarballPath, installDir);
+
+      const installedRevisions = (
+        await import(
+          pathToFileURL(
+            path.join(
+              installDir,
+              "node_modules",
+              "scoutline",
+              "dist",
+              "providers",
+              "minimax",
+              "vision-revisions.js",
+            ),
+          ).href
+        )
+      ).MINIMAX_VISION_MAPPING_REVISIONS;
+
+      // Every revision must match exactly. At P5-02 all five are the
+      // "pending-no-mapping-module" placeholder.
+      for (const op of ["ui-artifact", "extract-text", "diagnose-error", "diagram", "chart"]) {
+        assert.strictEqual(
+          installedRevisions[op],
+          localRevisions[op],
+          `installed ${op} revision must match local`,
+        );
+      }
+    } finally {
       await fs.rm(base, { recursive: true, force: true });
     }
   });

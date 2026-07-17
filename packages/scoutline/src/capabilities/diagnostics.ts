@@ -12,7 +12,9 @@
  * execution owns the retry policy.
  *
  * Boundary rules (ARCHITECTURE.md §2):
- *   - Imports only Provider identity types and shared errors.
+ *   - Imports Provider identity types, shared errors, the Vision
+ *     operation→capability mapping, and the MiniMax specialized Vision
+ *     conformance registry metadata (a pure snapshot, no transport).
  *   - Imports no Provider transport, no Provider Adapter, no command
  *     presentation.
  *
@@ -29,6 +31,8 @@
 
 import type { ProviderCapability, ProviderId } from "../providers/types.js";
 import { ScoutlineError, type ScoutlineErrorCode } from "../lib/errors.js";
+import { visionOperationToCapability } from "./vision.js";
+import { listSupportedMiniMaxVisionOperations } from "../providers/minimax/vision-conformance.js";
 
 // ---------------------------------------------------------------------------
 // Report shapes (DESIGN.md §14 — copied exactly)
@@ -77,15 +81,22 @@ export interface DiagnosticsCapability {
 
 /**
  * Capabilities supported by every Provider in the base release (DESIGN.md
- * §14). Specialized Vision operations move into shared metadata only when
- * their compiled conformance entry is supported.
+ * §14, §15). The four base capabilities are static; specialized Vision
+ * operations move into shared metadata only when their compiled
+ * conformance registry entry is supported. At P5-02 every specialized
+ * entry is pending, so this list reduces to the base four. P5-03's
+ * attested mappings automatically extend this list through the single
+ * registry query — there is no parallel support list to maintain.
  */
-export const SHARED_CAPABILITIES: readonly ProviderCapability[] = [
-  "search",
-  "vision.interpret-image",
-  "quota",
-  "diagnostics",
-];
+export const SHARED_CAPABILITIES: readonly ProviderCapability[] = buildSharedCapabilities();
+
+function buildSharedCapabilities(): readonly ProviderCapability[] {
+  const caps: ProviderCapability[] = ["search", "vision.interpret-image", "quota", "diagnostics"];
+  for (const op of listSupportedMiniMaxVisionOperations()) {
+    caps.push(visionOperationToCapability(op));
+  }
+  return Object.freeze(caps);
+}
 
 /**
  * Capabilities that remain Z.AI-only in the base release (DESIGN.md §14),

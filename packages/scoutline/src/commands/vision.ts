@@ -16,9 +16,14 @@
  */
 
 import type { CommandContext, CommandResult } from "../command-invocation.js";
-import type { VisionCapability, VisionRequest } from "../capabilities/vision.js";
+import type { VisionCapability, VisionRequest, VisionOperation } from "../capabilities/vision.js";
 import { executeProviderOperation } from "../lib/execution.js";
 import { ValidationError } from "../lib/errors.js";
+import {
+  isMiniMaxVisionOperationSupported,
+  SPECIALIZED_VISION_OPERATION_SET,
+  type SpecializedVisionOperation,
+} from "../providers/minimax/vision-conformance.js";
 
 type OutputType = "code" | "prompt" | "spec" | "description";
 
@@ -32,6 +37,86 @@ const DEFAULT_PROMPTS = {
   diff: "Compare these two UI screenshots and identify differences.",
   video: "Analyze this video content.",
 };
+
+/**
+ * Render the MiniMax support suffix for a Vision operation's help line.
+ * Derives from the conformance registry so help, doctor, and the
+ * Adapter descriptor agree on a single source of truth (DESIGN.md §15).
+ *
+ *   - Specialized ops pending/fail/missing attestation: " (Z.AI; MiniMax gated)"
+ *   - Specialized ops supported: " (Z.AI + MiniMax)"
+ *   - `interpret-image`: no suffix (the help line already calls out
+ *     the shared Provider surface).
+ *   - `diff` and `video`: " (Z.AI only)" — never supported by MiniMax.
+ */
+function miniMaxSupportSuffix(operation: VisionOperation): string {
+  if (operation === "interpret-image") return "";
+  if (operation === "diff" || operation === "video") return " (Z.AI only)";
+  if (SPECIALIZED_VISION_OPERATION_SET.has(operation as SpecializedVisionOperation)) {
+    return isMiniMaxVisionOperationSupported(operation)
+      ? " (Z.AI + MiniMax)"
+      : " (Z.AI; MiniMax gated)";
+  }
+  return "";
+}
+
+/**
+ * Build the Vision help text. Specialized-operation support derives
+ * from the conformance registry, so P5-03's attested mappings flip
+ * their help lines automatically without editing this template.
+ */
+function buildVisionHelp(): string {
+  const uiSuffix = miniMaxSupportSuffix("ui-artifact");
+  const extractSuffix = miniMaxSupportSuffix("extract-text");
+  const diagnoseSuffix = miniMaxSupportSuffix("diagnose-error");
+  const diagramSuffix = miniMaxSupportSuffix("diagram");
+  const chartSuffix = miniMaxSupportSuffix("chart");
+  const diffSuffix = miniMaxSupportSuffix("diff");
+  const videoSuffix = miniMaxSupportSuffix("video");
+
+  return `
+Vision Commands - Analyze images and video (Z.AI + MiniMax)
+
+Usage: scoutline vision <command> <source> [prompt] [options]
+
+Provider selection (precedence: explicit flag, then SCOUTLINE_PROVIDER, then zai):
+  --provider <zai|minimax>   Select the vision provider (default: zai)
+  SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
+
+Commands:
+  analyze <image> [prompt]            General image interpretation (shared: Z.AI + MiniMax)
+  ui-to-code <image> [prompt]         Convert UI screenshot to code${uiSuffix}
+  extract-text <image> [prompt]       OCR for code, terminals, documents${extractSuffix}
+  diagnose-error <image> [prompt]     Analyze error screenshots${diagnoseSuffix}
+  diagram <image> [prompt]            Interpret technical diagrams${diagramSuffix}
+  chart <image> [prompt]              Analyze data visualizations${chartSuffix}
+  diff <expected> <actual> [prompt]   Compare two UI screenshots${diffSuffix}
+  video <video> [prompt]              Analyze video content${videoSuffix}
+
+Options:
+  --language <lang>  Programming language hint (extract-text)
+  --context <ctx>    Error context (diagnose-error)
+  --type <type>      Diagram type hint (diagram)
+  --focus <focus>    Analysis focus (chart)
+  --output <type>    Output type for ui-to-code: code, prompt, spec, description
+
+Constraints:
+  Z.AI images: <=5MB, JPG/PNG/JPEG ; Z.AI videos: <=8MB, MP4/MOV/M4V (URLs supported)
+  MiniMax images: <=50MB, JPG/JPEG/PNG/WebP
+
+Examples:
+  scoutline vision analyze ./screenshot.png "What's in this image?"
+  scoutline --provider minimax vision analyze ./shot.png
+  scoutline vision ui-to-code ./design.png --output code
+  scoutline vision extract-text ./code.png --language python
+  scoutline vision diagnose-error ./error.png --context "during npm install"
+  scoutline vision diagram ./arch.png --type architecture
+  scoutline vision diff ./expected.png ./actual.png "Check alignment"
+  scoutline vision video ./demo.mp4 "Summarize the key steps"
+`.trim();
+}
+
+export const VISION_HELP = buildVisionHelp();
 
 /**
  * Shared Vision execution dependencies. The Capability is the selected
@@ -257,46 +342,3 @@ export async function video(
   const result = await runVision({ operation: "video", source: videoSource, instruction }, deps);
   return { kind: "data", data: result };
 }
-
-// Help text
-export const VISION_HELP = `
-Vision Commands - Analyze images and video (Z.AI + MiniMax)
-
-Usage: scoutline vision <command> <source> [prompt] [options]
-
-Provider selection (precedence: explicit flag, then SCOUTLINE_PROVIDER, then zai):
-  --provider <zai|minimax>   Select the vision provider (default: zai)
-  SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
-
-Commands:
-  analyze <image> [prompt]            General image interpretation (shared: Z.AI + MiniMax)
-  ui-to-code <image> [prompt]         Convert UI screenshot to code
-                                      (Z.AI; MiniMax gated — unavailable until conformance)
-  extract-text <image> [prompt]       OCR for code, terminals, documents (Z.AI; MiniMax gated)
-  diagnose-error <image> [prompt]     Analyze error screenshots (Z.AI; MiniMax gated)
-  diagram <image> [prompt]            Interpret technical diagrams (Z.AI; MiniMax gated)
-  chart <image> [prompt]              Analyze data visualizations (Z.AI; MiniMax gated)
-  diff <expected> <actual> [prompt]   Compare two UI screenshots (Z.AI only)
-  video <video> [prompt]              Analyze video content (Z.AI only)
-
-Options:
-  --language <lang>  Programming language hint (extract-text)
-  --context <ctx>    Error context (diagnose-error)
-  --type <type>      Diagram type hint (diagram)
-  --focus <focus>    Analysis focus (chart)
-  --output <type>    Output type for ui-to-code: code, prompt, spec, description
-
-Constraints:
-  Z.AI images: <=5MB, JPG/PNG/JPEG ; Z.AI videos: <=8MB, MP4/MOV/M4V (URLs supported)
-  MiniMax images: <=50MB, JPG/JPEG/PNG/WebP
-
-Examples:
-  scoutline vision analyze ./screenshot.png "What's in this image?"
-  scoutline --provider minimax vision analyze ./shot.png
-  scoutline vision ui-to-code ./design.png --output code
-  scoutline vision extract-text ./code.png --language python
-  scoutline vision diagnose-error ./error.png --context "during npm install"
-  scoutline vision diagram ./arch.png --type architecture
-  scoutline vision diff ./expected.png ./actual.png "Check alignment"
-  scoutline vision video ./demo.mp4 "Summarize the key steps"
-`.trim();

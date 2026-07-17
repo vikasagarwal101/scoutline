@@ -141,8 +141,16 @@ export function getErrorExitCode(error: unknown): number {
 // ---------------------------------------------------------------------------
 
 export class AuthError extends ZaiError {
-  constructor(message: string) {
-    super(message, "AUTH_ERROR", 401, "Check your Z_AI_API_KEY is valid and has sufficient quota");
+  // Fixup C — W2: AuthError help text is Provider-neutral. The default
+  // message points at "your Provider credentials" instead of naming a
+  // specific env var, since the same AuthError surfaces for any Provider
+  // transport failure (including MiniMax). Callers that DO know which
+  // Provider failed can pass `keyName` to tighten the guidance.
+  constructor(message: string, keyName?: string) {
+    const help = keyName
+      ? `Check that ${keyName} is valid and has sufficient quota for the active Provider`
+      : "Check that your Provider credentials are valid and have sufficient quota";
+    super(message, "AUTH_ERROR", 401, help);
   }
 }
 

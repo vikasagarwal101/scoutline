@@ -160,6 +160,20 @@ describe("MiniMax config — loadMiniMaxConfig", () => {
     );
   });
 
+  // Fixup C — W1: a scheme-only value (e.g. `https://` or `https:/`) was
+  // previously accepted and only had its trailing slash normalised. The
+  // resulting `https:/` is not a valid absolute URL and would break the
+  // SDK construction path. Reject any URL without a host component.
+  it("rejects scheme-only HTTPS URLs that have no host (Fixup C — W1)", () => {
+    for (const bad of ["https://", "https:/", "HTTPS://"]) {
+      assert.throws(
+        () => loadMiniMaxConfig({ MINIMAX_API_KEY: "k", MINIMAX_BASE_URL: bad }),
+        (err) => /MINIMAX_BASE_URL/.test(err.message),
+        `expected rejection for ${JSON.stringify(bad)}`,
+      );
+    }
+  });
+
   it("rejects an unknown region", () => {
     assert.throws(() => loadMiniMaxConfig({ MINIMAX_API_KEY: "k", MINIMAX_REGION: "eu" }));
     assert.throws(() => loadMiniMaxConfig({ MINIMAX_API_KEY: "k", MINIMAX_REGION: "GLOBAL" }));

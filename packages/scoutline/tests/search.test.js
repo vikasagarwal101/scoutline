@@ -463,6 +463,119 @@ describe("search command — count is not forwarded and applied after normalizat
 });
 
 // ---------------------------------------------------------------------------
+// Global CLI --count validation (Fixup C — B11).
+//
+// Per DESIGN.md §7: "Command `count` must be a finite safe integer
+// greater than or equal to zero; zero returns no results after cache
+// and normalization." The CLI flag parser used to accept any string and
+// pass `parseInt` output downstream. NaN, negatives, non-integers, and
+// Infinity reached the search command as silently-truncating 0-result
+// runs. Invalid counts must fail fast at parse time with VALIDATION_ERROR
+// (exit 1), before any Provider resolution or invocation.
+//
+// Note: the existing CLI parser cannot deliver a hyphen-prefixed value
+// (e.g. `--count -5`) to the flag, since it treats any `-`-prefixed
+// token as a flag of its own. The negative-count case is therefore
+// exercised against the exported `parseAndValidateCount` helper below —
+// it is defensive for any programmatic caller and any future parser
+// upgrade that allows `--count=-5`.
+// ---------------------------------------------------------------------------
+
+import { parseAndValidateCount } from "../dist/index.js";
+
+describe("--count flag validation (Fixup C — B11)", () => {
+  // Run main() with a fake descriptor whose search.invoke returns an
+  // organic set. Invalid counts must fail with VALIDATION_ERROR (exit 1)
+  // BEFORE invoking the Adapter.
+  async function runCount(args) {
+    const { adapter, stderr } = createTestAdapter();
+    const m = makeMainDeps();
+    const status = await main(["search", "foo", ...args], {
+      ...m.deps,
+      invocation: adapter,
+    });
+    return { status, stderr, invokes: [...m.zaiInvokes, ...m.minimaxInvokes] };
+  }
+
+  it("rejects a non-numeric --count with VALIDATION_ERROR (exit 1)", async () => {
+    const { status, stderr, invokes } = await runCount(["--count", "nope"]);
+    assert.strictEqual(status, 1, "invalid count must exit 1");
+    assert.strictEqual(invokes.length, 0, "no Adapter invocation on invalid count");
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.match(parsed.error, /count/i);
+  });
+
+  it("rejects a non-integer --count with VALIDATION_ERROR (exit 1)", async () => {
+    const { status, stderr, invokes } = await runCount(["--count", "1.5"]);
+    assert.strictEqual(status, 1, "non-integer count must exit 1");
+    assert.strictEqual(invokes.length, 0);
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+  });
+
+  it("rejects an Infinity-shaped --count with VALIDATION_ERROR (exit 1)", async () => {
+    const { status, stderr, invokes } = await runCount(["--count", "Infinity"]);
+    assert.strictEqual(status, 1);
+    assert.strictEqual(invokes.length, 0);
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+  });
+
+  it("accepts a valid positive integer --count and forwards it through the search", async () => {
+    const { status, invokes } = await runCount(["--count", "2"]);
+    assert.strictEqual(status, 0);
+    assert.strictEqual(invokes.length, 1);
+  });
+
+  it("accepts --count 0 (zero returns no results per DESIGN.md §7)", async () => {
+    const { status, invokes } = await runCount(["--count", "0"]);
+    assert.strictEqual(status, 0);
+    assert.strictEqual(invokes.length, 1, "Adapter still invoked; count 0 truncates results");
+  });
+
+  it("absent --count omits the field and invokes the Adapter", async () => {
+    const { status, invokes } = await runCount([]);
+    assert.strictEqual(status, 0);
+    assert.strictEqual(invokes.length, 1);
+    assert.strictEqual(invokes[0].count, undefined);
+  });
+});
+
+describe("parseAndValidateCount — direct validation contract (Fixup C — B11)", () => {
+  it("returns undefined when the raw value is undefined / true / empty", () => {
+    assert.strictEqual(parseAndValidateCount(undefined), undefined);
+    assert.strictEqual(parseAndValidateCount(true), undefined);
+    assert.strictEqual(parseAndValidateCount(""), undefined);
+  });
+
+  it("returns the parsed integer for valid non-negative inputs", () => {
+    assert.strictEqual(parseAndValidateCount("0"), 0);
+    assert.strictEqual(parseAndValidateCount("1"), 1);
+    assert.strictEqual(parseAndValidateCount("42"), 42);
+    assert.strictEqual(parseAndValidateCount(7), 7);
+  });
+
+  it("rejects a negative integer with VALIDATION_ERROR", () => {
+    assert.throws(() => parseAndValidateCount("-5"), (err) => err.code === "VALIDATION_ERROR");
+  });
+
+  it("rejects a non-integer string with VALIDATION_ERROR", () => {
+    assert.throws(() => parseAndValidateCount("1.5"), (err) => err.code === "VALIDATION_ERROR");
+    assert.throws(() => parseAndValidateCount("nope"), (err) => err.code === "VALIDATION_ERROR");
+    assert.throws(() => parseAndValidateCount("Infinity"), (err) => err.code === "VALIDATION_ERROR");
+    assert.throws(() => parseAndValidateCount("NaN"), (err) => err.code === "VALIDATION_ERROR");
+    assert.throws(() => parseAndValidateCount("5x"), (err) => err.code === "VALIDATION_ERROR");
+  });
+
+  it("rejects leading-sign input the parser would silently coerce", () => {
+    // The strict `^\d+$` regex catches `"+5"` and `"-5"` so they cannot
+    // bypass the check by being non-canonical numeric strings.
+    assert.throws(() => parseAndValidateCount("+5"), (err) => err.code === "VALIDATION_ERROR");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // MiniMax rejects unsupported controls before SDK factory access
 // ---------------------------------------------------------------------------
 
@@ -655,6 +768,40 @@ describe("global --provider parsing and routing", () => {
     assert.strictEqual(err.code, "VALIDATION_ERROR");
     assert.ok(/provider/i.test(err.error));
     assert.strictEqual(m.zaiInvokes.length, 0);
+  });
+
+  // Fixup C — B10: pre-invocation validation errors (invalid --provider,
+  // missing credential, count parsing, etc.) must respect the
+  // requested output mode. Previously the outer catch hardcoded
+  // "data" mode for every pre-invocation error, so a user invoking
+  // `--output-format pretty` got compact JSON for any provider error.
+  it("a pre-invocation error respects the requested output mode (Fixup C — B10)", async () => {
+    const { adapter, stderr } = createTestAdapter();
+    const m = makeMainDeps();
+    const status = await main(
+      ["--output-format", "pretty", "--provider", "openai", "search", "foo"],
+      { ...m.deps, invocation: adapter },
+    );
+    assert.strictEqual(status, 1);
+    // pretty mode emits indented (multi-line) JSON.
+    assert.ok(stderr[0].includes("\n"), `expected indented envelope, got: ${stderr[0]}`);
+    const err = JSON.parse(stderr[0]);
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
+  });
+
+  it("a pre-invocation error respects json mode (Fixup C — B10)", async () => {
+    const { adapter, stderr } = createTestAdapter();
+    const m = makeMainDeps();
+    const status = await main(
+      ["--output-format", "json", "--provider", "openai", "search", "foo"],
+      { ...m.deps, invocation: adapter },
+    );
+    assert.strictEqual(status, 1);
+    const err = JSON.parse(stderr[0]);
+    assert.strictEqual(err.success, false);
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
+    // json mode keeps the envelope single-line.
+    assert.ok(!stderr[0].includes("\n"), `json envelope should be single-line: ${stderr[0]}`);
   });
 
   it("an unconfigured effective provider fails with CONFIGURATION_ERROR exit 3 (Fixup A — B5)", async () => {

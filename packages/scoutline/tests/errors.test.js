@@ -126,10 +126,27 @@ describe("UnsupportedOptionError", () => {
 });
 
 describe("Legacy subclasses (compat)", () => {
-  it("AuthError still ships an AUTH_ERROR code with status 401", () => {
+  // Fixup C — W2: AuthError help text is generic (Provider-neutral),
+  // not bound to Z_AI_API_KEY. The same AuthError surfaces for any
+  // Provider transport failure, including MiniMax, so naming a single
+  // env var would mislead callers configured against a different one.
+  it("AuthError ships an AUTH_ERROR code with status 401 and a Provider-neutral help message", () => {
     const err = new AuthError("Invalid key");
     assert.strictEqual(err.code, "AUTH_ERROR");
     assert.strictEqual(err.statusCode, 401);
+    assert.ok(typeof err.help === "string" && err.help.length > 0);
+    assert.ok(
+      !/Z_AI_API_KEY|ZAI_API_KEY|MINIMAX_API_KEY/.test(err.help),
+      `help text must be Provider-neutral: ${err.help}`,
+    );
+    assert.ok(/credential|provider|key/i.test(err.help));
+  });
+
+  it("AuthError accepts a Provider-specific override for the help text", () => {
+    // When the caller knows which Provider failed, the help can be
+    // tightened by passing a `keyName` second argument. The default
+    // constructor signature is unchanged (back-compat).
+    const err = new AuthError("Invalid key", "Z_AI_API_KEY");
     assert.ok(err.help?.includes("Z_AI_API_KEY"));
   });
 

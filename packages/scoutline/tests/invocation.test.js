@@ -17,6 +17,38 @@ import assert from "node:assert/strict";
 import { invokeCommand } from "../dist/command-invocation.js";
 import { ScoutlineError, ValidationError, ConfigurationError } from "../dist/lib/errors.js";
 
+// ---------------------------------------------------------------------------
+// Fixup C — B8 (NFR-001): clear Provider credentials for the entire file.
+// Some tests in this suite exercise command handlers (tools, read, repo,
+// code) that construct a real `ZaiMcpClient` / `ZaiCodeModeClient`. When
+// `Z_AI_API_KEY` or `MINIMAX_API_KEY` is present in the ambient
+// environment, those constructors try to initialise UTCP transports and
+// make real network calls — violating NFR-001 ("Ordinary CI shall require
+// no Provider credentials and shall perform no live Provider calls").
+//
+// Strip the three Provider credential env vars before any test in this
+// file runs and restore them after, so the offline suite is hermetic
+// regardless of the shell environment it is launched from.
+// ---------------------------------------------------------------------------
+
+const PROVIDER_ENV_VARS = ["Z_AI_API_KEY", "ZAI_API_KEY", "MINIMAX_API_KEY"];
+const savedProviderEnv = {};
+
+before(() => {
+  for (const key of PROVIDER_ENV_VARS) {
+    savedProviderEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+});
+
+after(() => {
+  for (const key of PROVIDER_ENV_VARS) {
+    const saved = savedProviderEnv[key];
+    if (saved === undefined) delete process.env[key];
+    else process.env[key] = saved;
+  }
+});
+
 /**
  * Build SearchExecutionDependencies from a query->results map (P2-05).
  * The search command now receives an injected SearchCapability and
@@ -707,7 +739,12 @@ describe("invokeCommand — read and repo routed through the seam (P1-05)", () =
 });
 
 describe("invokeCommand — tools routed through the seam (P1-06)", () => {
-  it("showTool throws ValidationError for an unknown tool", async () => {
+  it("showTool fails fast with ConfigurationError when Provider credentials are missing (Fixup C — B8)", async () => {
+    // Fixup C — B8 (NFR-001): showTool must NEVER reach the network in the
+    // offline suite. The file-scoped `before` hook cleared
+    // Z_AI_API_KEY/ZAI_API_KEY/MINIMAX_API_KEY so the handler fails fast
+    // at init() with ConfigurationError (exit 3) instead of registering
+    // MCP servers against a real endpoint.
     const { showTool } = await import("../dist/commands/tools.js");
     const { adapter, stderr } = createRecordingAdapter();
     const status = await invokeCommand(
@@ -715,10 +752,10 @@ describe("invokeCommand — tools routed through the seam (P1-06)", () => {
       (ctx) => showTool("nonexistent.tool", {}, ctx),
       "data",
     );
-    assert.strictEqual(status, 1);
+    assert.strictEqual(status, 3, "missing credentials must exit 3");
     const parsed = JSON.parse(stderr[stderr.length - 1]);
-    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
-    assert.match(parsed.error, /Unknown tool/);
+    assert.strictEqual(parsed.code, "CONFIGURATION_ERROR");
+    assert.match(parsed.error, /Z_AI_API_KEY/);
   });
 
   it("listTools and showTool signatures do not accept or resolve a Provider ID", async () => {
@@ -744,7 +781,11 @@ describe("invokeCommand — tools routed through the seam (P1-06)", () => {
     assert.ok(noProviderId, "tools.ts must not reference a Provider ID");
   });
 
-  it("callTool surfaces unknown-tool ApiError as a structured stderr value with exit 1", async () => {
+  it("callTool fails fast with ConfigurationError when Provider credentials are missing (Fixup C — B8)", async () => {
+    // Fixup C — B8 (NFR-001): callTool must NEVER reach the network in
+    // the offline suite. Even with --dry-run, the handler still calls
+    // resolveToolName() which triggers init() against UTCP — credentials
+    // must be checked first.
     const { callTool } = await import("../dist/commands/tools.js");
     const { adapter, stderr } = createRecordingAdapter();
     const status = await invokeCommand(
@@ -752,11 +793,11 @@ describe("invokeCommand — tools routed through the seam (P1-06)", () => {
       (ctx) => callTool("scoutline.zai.test.tool", { json: '{"foo":"bar"}', dryRun: true }, ctx),
       "data",
     );
-    assert.strictEqual(status, 1);
+    assert.strictEqual(status, 3, "missing credentials must exit 3");
     assert.ok(stderr.length >= 1);
     const parsed = JSON.parse(stderr[stderr.length - 1]);
     assert.strictEqual(parsed.success, false);
-    assert.match(parsed.error, /Unknown tool/);
+    assert.strictEqual(parsed.code, "CONFIGURATION_ERROR");
   });
 
   it("callTool's parseToolArgs routes invalid --json to a structured ValidationError", async () => {

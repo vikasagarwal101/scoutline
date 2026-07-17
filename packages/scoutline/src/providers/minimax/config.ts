@@ -75,6 +75,25 @@ export function loadMiniMaxConfig(env: NodeJS.ProcessEnv): MiniMaxConfig {
       BASE_URL_HELP,
     );
   } else {
+    // Fixup C — W1: reject scheme-only URLs (no host). The previous
+    // accept-and-normalize path turned `https://` into `https:/`, which
+    // is not a valid URL and breaks SDK construction. Parse the URL and
+    // require a non-empty host.
+    let parsed: URL;
+    try {
+      parsed = new URL(baseUrlRaw);
+    } catch {
+      throw new ConfigurationError(
+        `MINIMAX_BASE_URL must be an absolute HTTPS URL with a host (got "${baseUrlRaw}")`,
+        BASE_URL_HELP,
+      );
+    }
+    if (parsed.host.length === 0) {
+      throw new ConfigurationError(
+        `MINIMAX_BASE_URL must include a host (got "${baseUrlRaw}")`,
+        BASE_URL_HELP,
+      );
+    }
     // Remove exactly one trailing slash so the SDK receives a clean base.
     baseUrl = baseUrlRaw.replace(/\/$/, "");
   }

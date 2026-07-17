@@ -5,14 +5,36 @@
 import { CodeModeUtcpClient } from "@utcp/code-mode";
 import "@utcp/mcp";
 import { buildMcpCallTemplate } from "./mcp-config.js";
-import { ApiError, AuthError, NetworkError, TimeoutError } from "./errors.js";
+import {
+  ApiError,
+  AuthError,
+  ConfigurationError,
+  NetworkError,
+  TimeoutError,
+} from "./errors.js";
 
 const DEFAULT_TIMEOUT_MS = parseInt(process.env.Z_AI_TIMEOUT || "30000", 10);
+
+/**
+ * Constructor options for {@link ZaiCodeModeClient}.
+ *
+ * `clientFactory` is a behaviour-preserving injection seam: when omitted
+ * the production path uses `CodeModeUtcpClient.create()`. Tests inject a
+ * fake to drive the error path without spinning up a real UTCP client.
+ */
+export interface ZaiCodeModeClientOptions {
+  clientFactory?: () => Promise<CodeModeUtcpClient>;
+}
 
 export class ZaiCodeModeClient {
   private client: CodeModeUtcpClient | null = null;
   private initPromise: Promise<void> | null = null;
   private isInitialized = false;
+  private options: ZaiCodeModeClientOptions;
+
+  constructor(options: ZaiCodeModeClientOptions = {}) {
+    this.options = options;
+  }
 
   static getPromptTemplate(): string {
     return CodeModeUtcpClient.AGENT_PROMPT_TEMPLATE;
@@ -27,7 +49,8 @@ export class ZaiCodeModeClient {
 
   private async _doInit(): Promise<void> {
     try {
-      this.client = await CodeModeUtcpClient.create();
+      const factory = this.options.clientFactory || (() => CodeModeUtcpClient.create());
+      this.client = await factory();
       const result = await this.client.registerManual(buildMcpCallTemplate());
       if (!result.success) {
         throw new ApiError(`Failed to register MCP servers: ${result.errors.join(", ")}`, 500);
@@ -40,13 +63,24 @@ export class ZaiCodeModeClient {
         throw error;
       }
 
+      // NFR-001 + Fixup C — B8: a missing or invalid credential surfaces
+      // as ConfigurationError (exit 3). The handler MUST fail fast before
+      // making any real network call. Propagating the typed
+      // ConfigurationError directly also keeps the public envelope's
+      // `code` field correct.
+      if (error instanceof ConfigurationError) {
+        throw error;
+      }
+
       if (error instanceof Error) {
         if (
           error.message.includes("401") ||
           error.message.includes("403") ||
           error.message.includes("auth")
         ) {
-          throw new AuthError(`Authentication failed: ${error.message}`);
+          // NFR-006: do not embed the underlying message — it may carry a
+          // raw Provider response body. The stable code is the classifier.
+          throw new AuthError("Authentication failed");
         }
         if (error.message.includes("timeout") || error.message.includes("ETIMEDOUT")) {
           throw new TimeoutError(DEFAULT_TIMEOUT_MS);
@@ -56,14 +90,11 @@ export class ZaiCodeModeClient {
           error.message.includes("network") ||
           error.message.includes("fetch")
         ) {
-          throw new NetworkError(error.message);
+          throw new NetworkError("Code Mode network error");
         }
       }
 
-      throw new ApiError(
-        `Code Mode initialization failed: ${error instanceof Error ? error.message : String(error)}`,
-        500,
-      );
+      throw new ApiError("Code Mode initialization failed", 500);
     }
   }
 

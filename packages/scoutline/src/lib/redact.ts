@@ -48,7 +48,9 @@ const REDACTED = "[REDACTED]";
  *
  * Replaces:
  *   - Bearer authorization values (any case).
- *   - x-api-key assignments (any case, `=`, `:`, or whitespace).
+ *   - x-api-key assignments (any case; `=`, `:`, or whitespace as the
+ *     key/value separator — covers both `x-api-key=value` and
+ *     `x-api-key value`).
  *   - Z_AI_API_KEY, ZAI_API_KEY, MINIMAX_API_KEY assignments.
  *   - The literal credentials passed in `extraSecrets` (each value is
  *     replaced wherever it appears; empty strings are skipped).
@@ -57,7 +59,11 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   if (typeof input !== "string") return input;
   let result = input;
   result = result.replace(/Bearer\s+\S+/gi, REDACTED);
-  result = result.replace(/x-api-key\s*[=:]\s*\S+/gi, REDACTED);
+  // Fixup C — W3: the class accepts either `=`, `:`, or any whitespace
+  // as the key/value separator. The trailing `\S+` consumes the secret
+  // value; the entire `key + separator + value` span is replaced with
+  // the redaction marker.
+  result = result.replace(/x-api-key[\s=:]+[^\s,;"'`]+/gi, REDACTED);
   result = result.replace(/Z_AI_API_KEY\s*=\s*\S+/gi, REDACTED);
   result = result.replace(/ZAI_API_KEY\s*=\s*\S+/gi, REDACTED);
   result = result.replace(/MINIMAX_API_KEY\s*=\s*\S+/gi, REDACTED);

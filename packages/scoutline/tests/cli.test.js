@@ -29,6 +29,22 @@ describe("CLI Help Commands", () => {
     assert.ok(stdout.includes("doctor"));
   });
 
+  // Fixup C — W5: top-level help text must reflect provider-aware
+  // behavior — mention --provider, identify shared vs Z.AI-only
+  // capabilities, and note that quota/doctor are provider-aware.
+  it("main help is provider-aware (Fixup C — W5)", async () => {
+    const { stdout, code } = await runProcess(["--help"], {
+      env: { Z_AI_API_KEY: TEST_KEY },
+    });
+    assert.strictEqual(code, 0);
+    assert.match(stdout, /--provider/, "mentions --provider");
+    assert.match(stdout, /minimax/i, "mentions MiniMax");
+    assert.match(stdout, /shared/i, "calls out shared capabilities");
+    assert.match(stdout, /Provider-aware/i, "notes quota/doctor are provider-aware");
+    // The legacy "Z.AI-only" framing must NOT be the only framing.
+    assert.ok(!/Z\.AI MCP services/.test(stdout), "main help must no longer say 'Z.AI MCP services'");
+  });
+
   it("should show main help with -h", async () => {
     const { stdout, code } = await runProcess(["-h"], {
       env: { Z_AI_API_KEY: TEST_KEY },

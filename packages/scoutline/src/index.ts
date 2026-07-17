@@ -40,25 +40,33 @@ const require = createRequire(import.meta.url);
 const { version: VERSION } = require("../package.json") as { version: string };
 
 const MAIN_HELP = `
-scoutline v${VERSION} - CLI for Z.AI MCP services
+scoutline v${VERSION} - Multimodal source investigation CLI
 
 Usage: scoutline <command> [args] [options]
 
 Commands:
-  vision   Image and video analysis (MCP)
-  search   Real-time web search
-  read     Fetch and parse web pages
-  repo     GitHub repository exploration
-  quota    Authoritative Z.AI plan usage (calls remaining, reset time)
-  tools    List available MCP tools
-  tool     Show a tool schema
-  call     Call a tool directly
-  doctor   Environment + connectivity checks
-  code     Execute TypeScript tool chains (Code Mode)
+  vision   Image and video analysis (Z.AI; MiniMax for interpret-image)
+  search   Real-time web search (shared: Z.AI + MiniMax)
+  read     Fetch and parse web pages (Z.AI only)
+  repo     GitHub repository exploration (Z.AI only)
+  quota    Provider-aware plan usage (calls remaining, reset time)
+  tools    List available MCP tools (Z.AI)
+  tool     Show a tool schema (Z.AI)
+  call     Call a tool directly (Z.AI)
+  doctor   Provider-aware environment + connectivity checks
+  code     Execute TypeScript tool chains (Code Mode, Z.AI)
+
+Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER, then zai):
+  --provider <zai|minimax>   Select the active Provider for shared capabilities
+  SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
+
+Shared capabilities accept --provider. Z.AI-only commands (read, repo,
+tools, tool, call, code) carry the flag but ignore it. Quota and doctor
+report per-Provider; --provider picks the effective Provider for metadata.
 
 Global Options:
-  --output-format <data|json|pretty|compact|markdown|refs>  Output mode (default: data)
-  -O <mode>                                                  Alias for --output-format
+  --output-format <data|json|pretty|compact|markdown|refs|tty>  Output mode (default: data)
+  -O <mode>                                                     Alias for --output-format
 
 Help:
   scoutline --help
@@ -405,6 +413,39 @@ function visionOperationForCommand(command: string): VisionOperation {
   }
 }
 
+/**
+ * Parse and validate the `--count` flag value (Fixup C — B11). Per
+ * DESIGN.md §7, count must be a finite safe integer >= 0. Invalid
+ * values (NaN, negative, non-integer, Infinity) throw `ValidationError`
+ * BEFORE any Provider resolution or invocation. The parser's flag
+ * extraction is not strict about value vs. flag for hyphen-prefixed
+ * tokens, so a defensive regex pre-check rejects any string the
+ * downstream `parseInt` would silently coerce to NaN or a negative
+ * integer.
+ *
+ * Exported for testing so the validation can be exercised without
+ * going through the CLI parser (which does not deliver negative numbers
+ * as flag values today).
+ */
+export function parseAndValidateCount(raw: unknown): number | undefined {
+  if (raw === undefined || raw === true || raw === "") return undefined;
+  const str = typeof raw === "string" ? raw : String(raw);
+  if (!/^\d+$/.test(str)) {
+    throw new ValidationError(
+      `Invalid --count value "${str}": must be a non-negative integer`,
+      "Use a non-negative integer (e.g. --count 5).",
+    );
+  }
+  const parsed = Number(str);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 0) {
+    throw new ValidationError(
+      `Invalid --count value "${str}": must be a non-negative integer`,
+      "Use a non-negative integer (e.g. --count 5).",
+    );
+  }
+  return parsed;
+}
+
 async function handleSearch(
   args: string[],
   outputMode: OutputMode,
@@ -453,13 +494,20 @@ async function handleSearch(
         .filter(Boolean)
     : undefined;
 
+  // Fixup C — B11: validate --count BEFORE dispatch. Per DESIGN.md §7
+  // count must be a finite safe integer >= 0 (0 returns no results).
+  // Invalid values (NaN, negative, non-integer, Infinity) fail fast
+  // here as VALIDATION_ERROR — previously they reached the search
+  // command as silently-truncating 0-result runs.
+  const count = parseAndValidateCount(flags.count);
+
   return invokeCommand(
     deps.invocation,
     (context) =>
       search(
         query,
         {
-          count: flags.count ? parseInt(flags.count as string, 10) : undefined,
+          count,
           domain: flags.domain as string,
           recency: flags.recency as "oneDay" | "oneWeek" | "oneMonth" | "oneYear" | "noLimit",
           contentSize: flags["content-size"] as "medium" | "high",
@@ -894,6 +942,13 @@ export async function main(
 
   const { outputFormat, forcePretty, forceRaw, provider, rest } = extractGlobalOptions([...args]);
 
+  // Fixup C — B10: resolve the output mode BEFORE the dispatch try/catch.
+  // An invalid explicit mode still surfaces as a typed ValidationError,
+  // but the surface formatter uses the user's REQUESTED mode (or the
+  // best deterministic fallback) so the envelope matches what the user
+  // asked for. Pre-invocation validation errors (provider resolution,
+  // missing credentials, count parsing, etc.) MUST honour the requested
+  // output mode the same way handler errors do.
   let outputMode: OutputMode;
   try {
     outputMode = resolveOutputMode(
@@ -903,6 +958,8 @@ export async function main(
       invocation,
     );
   } catch (error) {
+    // The explicit mode is invalid — fall back to a deterministic
+    // compact form so we can still surface a structured error envelope.
     invocation.writeStderr(formatErrorOutput(error, "data", secrets));
     return getErrorExitCode(error);
   }
@@ -961,14 +1018,18 @@ export async function main(
               `Unknown command: ${command}`,
               'Run "scoutline --help" for available commands',
             ),
-            "data",
+            outputMode,
             secrets,
           ),
         );
         return 1;
     }
   } catch (error) {
-    invocation.writeStderr(formatErrorOutput(error, "data", secrets));
+    // Fixup C — B10: pre-invocation validation errors (provider
+    // resolution, missing credential, count parsing, etc.) MUST be
+    // formatted in the resolved output mode — they used to be hardcoded
+    // to "data" regardless of what the user asked for.
+    invocation.writeStderr(formatErrorOutput(error, outputMode, secrets));
     return getErrorExitCode(error);
   }
 }

@@ -249,6 +249,31 @@ describe("redactCredentialString — single-string redaction", () => {
     assert.strictEqual(redactCredentialString(`MINIMAX_API_KEY=${M_KEY}`), "[REDACTED]");
   });
 
+  // Fixup C — W3: the regex now also covers whitespace-separated forms
+  // (`x-api-key abc123`, `x-api-key   abc123`) since real Provider/transport
+  // errors occasionally emit headers that way. The match must consume
+  // the trailing value and replace the entire `key + value` span.
+  it("redacts whitespace-separated x-api-key assignments (Fixup C — W3)", () => {
+    assert.strictEqual(
+      redactCredentialString(`x-api-key ${Z_KEY}`),
+      "[REDACTED]",
+      "single space between key and value",
+    );
+    assert.strictEqual(
+      redactCredentialString(`x-api-key   ${Z_KEY}`),
+      "[REDACTED]",
+      "multiple spaces between key and value",
+    );
+    assert.strictEqual(
+      redactCredentialString(`x-api-key\t${Z_KEY}`),
+      "[REDACTED]",
+      "tab between key and value",
+    );
+    // The previously supported colon/equals forms must still match.
+    assert.strictEqual(redactCredentialString(`x-api-key=${Z_KEY}`), "[REDACTED]");
+    assert.strictEqual(redactCredentialString(`x-api-key: ${Z_KEY}`), "[REDACTED]");
+  });
+
   it("redacts embedded credential strings in URLs", () => {
     const out = redactCredentialString(`endpoint: ${EMBEDDED}`);
     assert.ok(!out.includes(M_KEY), `still contains secret: ${out}`);

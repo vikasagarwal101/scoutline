@@ -20,7 +20,7 @@ import {
   projectInternalToolName,
   MCP_MANUAL_NAME,
 } from "./mcp-config.js";
-import { ApiError, AuthError, NetworkError, TimeoutError, ValidationError } from "./errors.js";
+import { ApiError, AuthError, ConfigurationError, NetworkError, TimeoutError, ValidationError } from "./errors.js";
 import { loadConfig, getMcpEndpoints } from "./config.js";
 import { redactTool } from "./redact.js";
 import { buildCacheKey, readCache, writeCache } from "./cache.js";
@@ -130,6 +130,16 @@ export class ZaiMcpClient {
       this.initPromise = null;
 
       if (error instanceof ApiError) {
+        throw error;
+      }
+
+      // NFR-001 + Fixup C — B8: a missing or invalid credential surfaces
+      // as ConfigurationError (exit 3). The dispatched handler must fail
+      // fast, BEFORE making any real network call. Propagating the typed
+      // ConfigurationError directly also keeps the public envelope's
+      // `code` field correct — wrapping it as ApiError would lie about
+      // the failure class.
+      if (error instanceof ConfigurationError) {
         throw error;
       }
 

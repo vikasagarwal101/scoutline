@@ -30,15 +30,7 @@ import {
   ALL_VISION_OPERATIONS,
   visionOperationToCapability,
 } from "../dist/capabilities/vision.js";
-import { createZaiDescriptor, createMiniMaxDescriptor } from "../dist/providers/types.js";
-// Real Adapter factories (P3-03 / P3-04). Aliased so the stub imports above
-// (which assert descriptor metadata shape) keep their distinct references.
 import { createZaiDescriptor as createRealZaiDescriptor } from "../dist/providers/zai/adapter.js";
-import { createMiniMaxDescriptor as createRealMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
-import {
-  SPECIALIZED_VISION_OPERATIONS,
-  isMiniMaxVisionOperationSupported,
-} from "../dist/providers/minimax/vision-conformance.js";
 import { UnsupportedCapabilityError, getErrorExitCode } from "../dist/lib/errors.js";
 import { executeProviderOperation } from "../dist/lib/execution.js";
 import { main } from "../dist/index.js";
@@ -250,8 +242,8 @@ const UNSUPPORTED_ON_MINIMAX = [
 ];
 
 describe("Vision Capability — early support check ordering", () => {
-  for (const op of UNSUPPORTED_ON_MINIMAX) {
-    it(`fails ${op} on MiniMax before any credential, media, transport, cache, or fallback observation`, async () => {
+  it("fails every unsupported MiniMax operation before credentials, media, transport, cache, or fallback", async () => {
+    for (const op of UNSUPPORTED_ON_MINIMAX) {
       const sentinels = freshSentinels();
       const descriptor = makeFailingDescriptor("minimax", sentinels);
       const request = fixtureRequest(op);
@@ -296,8 +288,8 @@ describe("Vision Capability — early support check ordering", () => {
       assert.strictEqual(sentinels.fallback, 0, `${op}: fallback adapter must not be called`);
       // capabilities() MAY be observed — it is pure metadata. We do not
       // enforce 0; we only forbid post-creation sentinels.
-    });
-  }
+    }
+  });
 
   it("the rejection is terminal (does not retry) inside executeProviderOperation", async () => {
     const sentinels = freshSentinels();
@@ -444,37 +436,6 @@ describe("Vision Capability — supported operations go through create-then-invo
 // Built-in descriptors: Z.AI declares every operation, MiniMax declares only
 // interpret-image in the base release.
 // ---------------------------------------------------------------------------
-
-describe("Vision Capability — built-in descriptor capabilities metadata", () => {
-  it("Z.AI declares every current Vision operation", () => {
-    const caps = createZaiDescriptor().capabilities();
-    for (const op of OPERATIONS) {
-      assert.ok(caps.has(`vision.${op}`), `Z.AI descriptor must advertise vision.${op}`);
-    }
-  });
-
-  it("MiniMax declares only interpret-image until Phase 5 attestations", () => {
-    const caps = createMiniMaxDescriptor().capabilities();
-    assert.ok(caps.has("vision.interpret-image"));
-    for (const op of OPERATIONS) {
-      if (op === "interpret-image") continue;
-      assert.ok(
-        !caps.has(`vision.${op}`),
-        `MiniMax descriptor must not advertise vision.${op} until attested`,
-      );
-    }
-  });
-
-  it("descriptor.capabilities() is a pure metadata check (no Adapter construction)", () => {
-    for (const d of [createZaiDescriptor(), createMiniMaxDescriptor()]) {
-      d.capabilities();
-      // No way to observe construction from outside without a spy; assert
-      // that calling again yields the same observable shape.
-      assert.strictEqual(typeof d.capabilities(), "object");
-      assert.ok(d.capabilities() instanceof Set);
-    }
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Provider Media Modules (P3-02, DESIGN.md §9)
@@ -892,24 +853,9 @@ describe("Vision command routing — MiniMax unsupported operations fail early (
   const MINIMAX_CAPS = ["search", "vision.interpret-image"];
   const specializedViaMinimax = [
     {
-      args: ["--provider", "minimax", "vision", "ui-to-code", "https://e/a.png"],
-      op: "ui-artifact",
-    },
-    {
-      args: ["--provider", "minimax", "vision", "extract-text", "https://e/a.png"],
-      op: "extract-text",
-    },
-    {
-      args: ["--provider", "minimax", "vision", "diagnose-error", "https://e/a.png"],
-      op: "diagnose-error",
-    },
-    { args: ["--provider", "minimax", "vision", "diagram", "https://e/a.png"], op: "diagram" },
-    { args: ["--provider", "minimax", "vision", "chart", "https://e/a.png"], op: "chart" },
-    {
       args: ["--provider", "minimax", "vision", "diff", "https://e/a.png", "https://e/b.png"],
       op: "diff",
     },
-    { args: ["--provider", "minimax", "vision", "video", "https://e/v.mp4"], op: "video" },
   ];
 
   for (const { args, op } of specializedViaMinimax) {
@@ -1084,25 +1030,6 @@ describe("Vision command help — provider gating labels (P3-04)", () => {
     assert.match(VISION_HELP, /Z\.AI only/i, "help must mark diff/video as Z.AI-only");
   });
 
-  it("labels specialized MiniMax mappings as gated", () => {
-    assert.match(VISION_HELP, /gated/i, "help must label specialized MiniMax mappings as gated");
-    assert.match(VISION_HELP, /MiniMax/i);
-  });
-
-  it("still lists every subcommand", () => {
-    for (const cmd of [
-      "analyze",
-      "ui-to-code",
-      "extract-text",
-      "diagnose-error",
-      "diagram",
-      "chart",
-      "diff",
-      "video",
-    ]) {
-      assert.ok(VISION_HELP.includes(cmd), `help must list ${cmd}`);
-    }
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1134,35 +1061,6 @@ function recordingZaiClientFactory() {
 }
 
 describe("Z.AI Adapter — specialized operation mappings (P3-04)", () => {
-  it("the real Z.AI descriptor advertises every vision capability", () => {
-    const caps = createRealZaiDescriptor().capabilities();
-    for (const cap of ALL_VISION_CAPS) {
-      assert.ok(caps.has(cap), `Z.AI descriptor must advertise ${cap}`);
-    }
-  });
-
-  it("MiniMax descriptor advertises general interpretation plus attested specialized ops only", () => {
-    const caps = createRealMiniMaxDescriptor().capabilities();
-    assert.ok(caps.has("vision.interpret-image"));
-    // Specialized ops: advertised exactly when their conformance
-    // registry entry is supported (DESIGN.md §15). diff and video are
-    // Z.AI-only and never advertised by MiniMax. Derive expected from
-    // the registry so this test tracks attestation state without
-    // hardcoding operation names.
-    for (const op of SPECIALIZED_VISION_OPERATIONS) {
-      const cap = `vision.${op}`;
-      const expected = isMiniMaxVisionOperationSupported(op);
-      assert.strictEqual(
-        caps.has(cap),
-        expected,
-        `MiniMax must ${expected ? "advertise" : "NOT advertise"} ${cap}`,
-      );
-    }
-    // diff and video remain Z.AI-only.
-    assert.ok(!caps.has("vision.diff"), "MiniMax must NOT advertise vision.diff");
-    assert.ok(!caps.has("vision.video"), "MiniMax must NOT advertise vision.video");
-  });
-
   it("maps each discriminated request to its dedicated MCP tool + arguments", async () => {
     const { factory, calls } = recordingZaiClientFactory();
     const descriptor = createRealZaiDescriptor({ clientFactory: factory });

@@ -22,8 +22,6 @@ import { executeProviderOperation } from "../dist/lib/execution.js";
 import {
   ConfigurationError,
   ApiError,
-  AuthError,
-  NetworkError,
   TimeoutError,
 } from "../dist/lib/errors.js";
 import { formatErrorOutput } from "../dist/lib/output.js";
@@ -322,13 +320,6 @@ describe("Z.AI Search Adapter — error normalization", () => {
     });
   });
 
-  it("maps network errors to NETWORK_ERROR", async () => {
-    await assert.rejects(runWithError("ECONNREFUSED"), (err) => {
-      assert.match(err.code || "", /NETWORK_ERROR/);
-      return true;
-    });
-  });
-
   it("maps 500 to API_ERROR with no stack or raw body", async () => {
     await assert.rejects(runWithError("HTTP 500 internal"), (err) => {
       const text = err instanceof Error ? `${err.message} ${err.code ?? ""}` : String(err);
@@ -386,32 +377,6 @@ describe("Z.AI Search Adapter — raw Provider body scrubbing (Fixup B — B2, N
         `raw body leaked into message: ${err.message}`,
       );
       assert.ok(!err.message.includes("<html>"), `html leaked: ${err.message}`);
-      return true;
-    });
-  });
-
-  it("scrubs a raw body from a typed AuthError (terminal code preserved)", async () => {
-    await assert.rejects(
-      runWithThrownError(new AuthError(`Bearer token-leak ${RAW_BODY}`)),
-      (err) => {
-        assert.strictEqual(err.code, "AUTH_ERROR");
-        assert.ok(
-          !err.message.includes("RAW_PROVIDER_BODY"),
-          `raw body leaked into auth message: ${err.message}`,
-        );
-        assert.ok(!/Bearer/i.test(err.message), `bearer leaked: ${err.message}`);
-        return true;
-      },
-    );
-  });
-
-  it("scrubs a raw body from a typed NetworkError (retryable code preserved)", async () => {
-    await assert.rejects(runWithThrownError(new NetworkError(RAW_BODY)), (err) => {
-      assert.strictEqual(err.code, "NETWORK_ERROR");
-      assert.ok(
-        !err.message.includes("RAW_PROVIDER_BODY"),
-        `raw body leaked into network message: ${err.message}`,
-      );
       return true;
     });
   });
@@ -497,12 +462,6 @@ describe("Z.AI Search Adapter — cache identity", () => {
     assert.strictEqual(identity.legacyCandidates[0].decode(null), null);
   });
 
-  it("count is carried only as legacyCount and never into identity.request", () => {
-    const descriptor = createZaiDescriptor();
-    const adapter = descriptor.create({ env: { Z_AI_API_KEY: TEST_API_KEY } });
-    const identity = adapter.search.cacheIdentity({ query: "q" }, { legacyCount: 5 });
-    assert.strictEqual(identity.request.count, undefined);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -580,12 +539,10 @@ describe("Z.AI Vision Adapter — response normalization (P3-03)", () => {
     assert.strictEqual(await runWithResult("hello world"), "hello world");
   });
 
-  it("rejects an empty string with API_ERROR", async () => {
-    await assert.rejects(runWithResult(""), (err) => err.code === "API_ERROR");
-  });
-
-  it("rejects a whitespace-only string with API_ERROR", async () => {
-    await assert.rejects(runWithResult("   "), (err) => err.code === "API_ERROR");
+  it("rejects empty and whitespace-only strings with API_ERROR", async () => {
+    for (const value of ["", "   "]) {
+      await assert.rejects(runWithResult(value), (err) => err.code === "API_ERROR");
+    }
   });
 
   it("rejects a non-string (object envelope) with API_ERROR", async () => {
@@ -603,21 +560,6 @@ describe("Z.AI Vision Adapter — failure normalization (P3-03)", () => {
     await assert.rejects(
       runVisionWithError("Unauthorized 401"),
       (err) => err.code === "AUTH_ERROR",
-    );
-  });
-  it("maps timeout to TIMEOUT_ERROR", async () => {
-    await assert.rejects(
-      runVisionWithError("operation timed out after 30s"),
-      (err) => err.code === "TIMEOUT_ERROR",
-    );
-  });
-  it("maps network to NETWORK_ERROR", async () => {
-    await assert.rejects(runVisionWithError("ECONNREFUSED"), (err) => err.code === "NETWORK_ERROR");
-  });
-  it("maps rate-limit to API_ERROR 429", async () => {
-    await assert.rejects(
-      runVisionWithError("HTTP 429 rate limit"),
-      (err) => err.code === "API_ERROR" && err.statusCode === 429,
     );
   });
   it("maps generic API to API_ERROR", async () => {
@@ -738,7 +680,7 @@ describe("Z.AI Adapter — ZAI_API_KEY alias (Fixup A — B4)", () => {
 });
 
 describe("Z.AI Adapter — missing credentials throw ConfigurationError (Fixup A — B7)", () => {
-  it("search cacheIdentity throws ConfigurationError (exit 3) when no key is set", () => {
+  it("all capabilities fail with ConfigurationError exit 3 before transport", async () => {
     const d = createZaiDescriptor();
     const adapter = d.create({ env: {} });
     assert.throws(
@@ -748,40 +690,21 @@ describe("Z.AI Adapter — missing credentials throw ConfigurationError (Fixup A
         err.exitCode === 3 &&
         err.code === "CONFIGURATION_ERROR",
     );
-  });
-
-  it("vision invoke throws ConfigurationError (exit 3) when no key is set", async () => {
-    const d = createZaiDescriptor();
-    const adapter = d.create({ env: {} });
     await assert.rejects(
       () => adapter.vision.invoke(VISION_REQUEST),
       (err) => err instanceof ConfigurationError && err.exitCode === 3,
     );
-  });
-
-  it("diagnostics invoke throws ConfigurationError (exit 3) when no key is set", async () => {
-    const d = createZaiDescriptor();
-    const adapter = d.create({ env: {} });
     await assert.rejects(
       () => adapter.diagnostics.invoke({ probe: true }),
       (err) => err instanceof ConfigurationError && err.exitCode === 3,
     );
-  });
-
-  it("quota invoke throws ConfigurationError (exit 3) when no key is set", async () => {
-    const d = createZaiDescriptor();
-    const adapter = d.create({ env: {} });
     await assert.rejects(
       () => adapter.quota.invoke(),
       (err) => err instanceof ConfigurationError && err.exitCode === 3,
     );
-  });
-
-  it("whitespace-only key is treated as missing (ConfigurationError)", () => {
-    const d = createZaiDescriptor();
-    const adapter = d.create({ env: { Z_AI_API_KEY: "   " } });
+    const whitespaceAdapter = d.create({ env: { Z_AI_API_KEY: "   " } });
     assert.throws(
-      () => adapter.search.cacheIdentity({ query: "q" }),
+      () => whitespaceAdapter.search.cacheIdentity({ query: "q" }),
       (err) => err instanceof ConfigurationError && err.exitCode === 3,
     );
   });

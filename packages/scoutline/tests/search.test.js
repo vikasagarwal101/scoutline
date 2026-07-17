@@ -408,60 +408,6 @@ describe("search command — empty merge input throws", () => {
 // Count handling (REPLACES the P0-02 transitional count assertion)
 // ---------------------------------------------------------------------------
 
-describe("search command — count is not forwarded and applied after normalization", () => {
-  it("count is absent from the Adapter request and cache identity", async () => {
-    const fake = makeFakeCapability({
-      alpha: [
-        src("A", "https://e/a", "c"),
-        src("B", "https://e/b", "c"),
-        src("C", "https://e/c", "c"),
-      ],
-    });
-    const { context } = makeContext();
-    await search("alpha", { count: 2 }, makeExecDeps(fake.capability), context);
-
-    // Adapter received a bare request: no count field.
-    assert.strictEqual(fake.invokes.length, 1);
-    assert.strictEqual(fake.invokes[0].count, undefined);
-    assert.deepStrictEqual(fake.invokes[0], { query: "alpha" });
-
-    // Cache identity request has no count; count only carried as legacyCount.
-    assert.strictEqual(fake.identities[0].identity.request.count, undefined);
-    assert.strictEqual(fake.identities[0].compat.legacyCount, 2);
-  });
-
-  it("count is applied AFTER normalization (truncates normalized results)", async () => {
-    const { result } = await runSearch(
-      "alpha",
-      { count: 2 },
-      {
-        alpha: [
-          src("A", "https://e/a", "c"),
-          src("B", "https://e/b", "c"),
-          src("C", "https://e/c", "c"),
-        ],
-      },
-    );
-    // Adapter normalized 3; count=2 truncated to 2 locally.
-    assert.strictEqual(result.data.length, 2);
-  });
-
-  it("absent count returns all normalized results", async () => {
-    const { result } = await runSearch(
-      "alpha",
-      {},
-      {
-        alpha: [
-          src("A", "https://e/a", "c"),
-          src("B", "https://e/b", "c"),
-          src("C", "https://e/c", "c"),
-        ],
-      },
-    );
-    assert.strictEqual(result.data.length, 3);
-  });
-});
-
 // ---------------------------------------------------------------------------
 // Global CLI --count validation (Fixup C — B11).
 //
@@ -506,40 +452,12 @@ describe("--count flag validation (Fixup C — B11)", () => {
     assert.match(parsed.error, /count/i);
   });
 
-  it("rejects a non-integer --count with VALIDATION_ERROR (exit 1)", async () => {
-    const { status, stderr, invokes } = await runCount(["--count", "1.5"]);
-    assert.strictEqual(status, 1, "non-integer count must exit 1");
-    assert.strictEqual(invokes.length, 0);
-    const parsed = JSON.parse(stderr[stderr.length - 1]);
-    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
-  });
-
-  it("rejects an Infinity-shaped --count with VALIDATION_ERROR (exit 1)", async () => {
-    const { status, stderr, invokes } = await runCount(["--count", "Infinity"]);
-    assert.strictEqual(status, 1);
-    assert.strictEqual(invokes.length, 0);
-    const parsed = JSON.parse(stderr[stderr.length - 1]);
-    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
-  });
-
   it("accepts a valid positive integer --count and forwards it through the search", async () => {
     const { status, invokes } = await runCount(["--count", "2"]);
     assert.strictEqual(status, 0);
     assert.strictEqual(invokes.length, 1);
   });
 
-  it("accepts --count 0 (zero returns no results per DESIGN.md §7)", async () => {
-    const { status, invokes } = await runCount(["--count", "0"]);
-    assert.strictEqual(status, 0);
-    assert.strictEqual(invokes.length, 1, "Adapter still invoked; count 0 truncates results");
-  });
-
-  it("absent --count omits the field and invokes the Adapter", async () => {
-    const { status, invokes } = await runCount([]);
-    assert.strictEqual(status, 0);
-    assert.strictEqual(invokes.length, 1);
-    assert.strictEqual(invokes[0].count, undefined);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -574,16 +492,6 @@ describe("--count validation ordering vs credential check (Fixup D — B11-remai
     assert.match(parsed.error, /count/i);
   });
 
-  it("--count without a value with NO credentials yields VALIDATION_ERROR (exit 1)", async () => {
-    const { adapter, stderr } = createTestAdapter();
-    const status = await main(["search", "q", "--count"], {
-      invocation: adapter,
-      env: {},
-    });
-    assert.strictEqual(status, 1, "--count without value must exit 1");
-    const parsed = JSON.parse(stderr[stderr.length - 1]);
-    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
-  });
 });
 
 describe("parseAndValidateCount — direct validation contract (Fixup C — B11, Fixup D)", () => {

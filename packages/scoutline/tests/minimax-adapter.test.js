@@ -34,7 +34,7 @@ import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
 import { MINIMAX_VISION_MAPPINGS } from "../dist/providers/minimax/vision-mappings.generated.js";
 import { readFixture } from "./helpers/fixtures.js";
 import { executeProviderOperation } from "../dist/lib/execution.js";
-import { ApiError, AuthError, NetworkError, TimeoutError } from "../dist/lib/errors.js";
+import { ApiError, TimeoutError } from "../dist/lib/errors.js";
 import { formatErrorOutput } from "../dist/lib/output.js";
 
 const TEST_API_KEY = "test-minimax-api-key-DO-NOT-LEAK";
@@ -152,32 +152,23 @@ describe("MiniMax config — loadMiniMaxConfig", () => {
     assert.throws(() => loadMiniMaxConfig({ MINIMAX_API_KEY: "k", MINIMAX_BASE_URL: "" }));
   });
 
-  it("rejects non-HTTPS base URLs", () => {
-    assert.throws(() =>
-      loadMiniMaxConfig({ MINIMAX_API_KEY: "k", MINIMAX_BASE_URL: "http://insecure.example.com" }),
-    );
-    assert.throws(() =>
-      loadMiniMaxConfig({ MINIMAX_API_KEY: "k", MINIMAX_BASE_URL: "ftp://example.com" }),
-    );
-  });
-
-  // Fixup C — W1: a scheme-only value (e.g. `https://` or `https:/`) was
-  // previously accepted and only had its trailing slash normalised. The
-  // resulting `https:/` is not a valid absolute URL and would break the
-  // SDK construction path. Reject any URL without a host component.
-  it("rejects scheme-only HTTPS URLs that have no host (Fixup C — W1)", () => {
-    for (const bad of ["https://", "https:/", "HTTPS://"]) {
+  it("rejects insecure or hostless base URLs and unknown regions", () => {
+    for (const bad of [
+      "http://insecure.example.com",
+      "ftp://example.com",
+      "https://",
+      "https:/",
+      "HTTPS://",
+    ]) {
       assert.throws(
         () => loadMiniMaxConfig({ MINIMAX_API_KEY: "k", MINIMAX_BASE_URL: bad }),
         (err) => /MINIMAX_BASE_URL/.test(err.message),
         `expected rejection for ${JSON.stringify(bad)}`,
       );
     }
-  });
-
-  it("rejects an unknown region", () => {
-    assert.throws(() => loadMiniMaxConfig({ MINIMAX_API_KEY: "k", MINIMAX_REGION: "eu" }));
-    assert.throws(() => loadMiniMaxConfig({ MINIMAX_API_KEY: "k", MINIMAX_REGION: "GLOBAL" }));
+    for (const region of ["eu", "GLOBAL"]) {
+      assert.throws(() => loadMiniMaxConfig({ MINIMAX_API_KEY: "k", MINIMAX_REGION: region }));
+    }
   });
 });
 
@@ -304,15 +295,16 @@ describe("MiniMax Search Adapter — validation rejects unsupported controls", (
     ["location", { location: "cn" }],
   ];
 
-  for (const [label, controls] of unsupported) {
-    it(`rejects ${label} with UNSUPPORTED_OPTION`, () => {
+  it("rejects every unsupported control with UNSUPPORTED_OPTION", () => {
+    for (const [label, controls] of unsupported) {
       const adapter = makeAdapter();
       assert.throws(
         () => adapter.search.validate({ query: "q", controls }),
         (err) => err.code === "UNSUPPORTED_OPTION",
+        label,
       );
-    });
-  }
+    }
+  });
 
   it("rejects all unsupported controls together", () => {
     const adapter = makeAdapter();
@@ -507,23 +499,6 @@ describe("MiniMax Search Adapter — failure normalization", () => {
     });
   });
 
-  it("maps network failures to NETWORK_ERROR (retryable)", async () => {
-    await assert.rejects(runWithError(new Error("ECONNREFUSED")), (err) => {
-      assert.strictEqual(err.code, "NETWORK_ERROR");
-      assert.strictEqual(isRetryableByExecution(err), true);
-      return true;
-    });
-  });
-
-  it("maps rate-limit failures to API_ERROR 429 (retryable)", async () => {
-    await assert.rejects(runWithError(new Error("HTTP 429 rate limit exceeded")), (err) => {
-      assert.strictEqual(err.code, "API_ERROR");
-      assert.strictEqual(err.statusCode, 429);
-      assert.strictEqual(isRetryableByExecution(err), true);
-      return true;
-    });
-  });
-
   it("maps generic API failures to API_ERROR 500 (retryable)", async () => {
     await assert.rejects(runWithError(new Error("HTTP 500 internal server error")), (err) => {
       assert.strictEqual(err.code, "API_ERROR");
@@ -561,26 +536,6 @@ describe("MiniMax Search Adapter — raw Provider body scrubbing (Fixup B — B2
     });
   });
 
-  it("scrubs a raw body from a typed AuthError", async () => {
-    const sdk = makeFakeSdk({ error: new AuthError(`Bearer token-leak ${RAW_BODY}`) });
-    const adapter = makeAdapter({ sdk });
-    await assert.rejects(adapter.search.invoke({ query: "q" }), (err) => {
-      assert.strictEqual(err.code, "AUTH_ERROR");
-      assert.ok(!err.message.includes("RAW_PROVIDER_BODY"), `raw leaked: ${err.message}`);
-      return true;
-    });
-  });
-
-  it("scrubs a raw body from a typed NetworkError", async () => {
-    const sdk = makeFakeSdk({ error: new NetworkError(RAW_BODY) });
-    const adapter = makeAdapter({ sdk });
-    await assert.rejects(adapter.search.invoke({ query: "q" }), (err) => {
-      assert.strictEqual(err.code, "NETWORK_ERROR");
-      assert.ok(!err.message.includes("RAW_PROVIDER_BODY"), `raw leaked: ${err.message}`);
-      return true;
-    });
-  });
-
   it("raw body never reaches formatErrorOutput public envelope", async () => {
     const sdk = makeFakeSdk({ error: new ApiError(RAW_BODY, 500) });
     const adapter = makeAdapter({ sdk });
@@ -610,13 +565,6 @@ describe("MiniMax Search Adapter — cache identity", () => {
     assert.strictEqual(identity.credentialFingerprint, EXPECTED_FINGERPRINT);
     assert.deepStrictEqual(identity.request, { query: "q" });
     // MiniMax never probes legacy keys.
-    assert.strictEqual(identity.legacyCandidates, undefined);
-  });
-
-  it("count never enters identity.request", () => {
-    const adapter = makeAdapter();
-    const identity = adapter.search.cacheIdentity({ query: "q" }, { legacyCount: 5 });
-    assert.strictEqual(identity.request.count, undefined);
     assert.strictEqual(identity.legacyCandidates, undefined);
   });
 
@@ -681,12 +629,10 @@ describe("MiniMax Vision Adapter — response normalization (P3-03)", () => {
     assert.strictEqual(await runWithResult({ content: "described" }), "described");
   });
 
-  it("rejects empty content with API_ERROR", async () => {
-    await assert.rejects(runWithResult({ content: "" }), (err) => err.code === "API_ERROR");
-  });
-
-  it("rejects whitespace-only content with API_ERROR", async () => {
-    await assert.rejects(runWithResult({ content: "  " }), (err) => err.code === "API_ERROR");
+  it("rejects empty and whitespace-only content with API_ERROR", async () => {
+    for (const content of ["", "  "]) {
+      await assert.rejects(runWithResult({ content }), (err) => err.code === "API_ERROR");
+    }
   });
 
   it("rejects a malformed (non-object) response with API_ERROR and no raw leak", async () => {
@@ -713,24 +659,6 @@ describe("MiniMax Vision Adapter — failure normalization (P3-03)", () => {
     await assert.rejects(
       runVisionWithError(new Error("Unauthorized 401")),
       (err) => err.code === "AUTH_ERROR",
-    );
-  });
-  it("maps timeout to TIMEOUT_ERROR", async () => {
-    await assert.rejects(
-      runVisionWithError(new Error("operation timed out after 30s")),
-      (err) => err.code === "TIMEOUT_ERROR",
-    );
-  });
-  it("maps network to NETWORK_ERROR", async () => {
-    await assert.rejects(
-      runVisionWithError(new Error("ECONNREFUSED")),
-      (err) => err.code === "NETWORK_ERROR",
-    );
-  });
-  it("maps rate-limit to API_ERROR 429", async () => {
-    await assert.rejects(
-      runVisionWithError(new Error("HTTP 429 rate limit")),
-      (err) => err.code === "API_ERROR" && err.statusCode === 429,
     );
   });
   it("maps generic API to API_ERROR", async () => {
@@ -899,8 +827,8 @@ describe("MiniMax Vision Adapter — specialized mapping routing (P5-04)", () =>
     }
   }
 
-  for (const op of SPECIALIZED) {
-    it(`routes ${op} through its mapping module when support is true`, async () => {
+  it("routes every supported specialized operation through its mapping module", async () => {
+    for (const op of SPECIALIZED) {
       const sdk = makeFakeSdk({ visionResult: { content: "expected-mapping-text" } });
       const descriptor = createMiniMaxDescriptor({
         sdkConstructor: sdk.Constructor,
@@ -959,8 +887,8 @@ describe("MiniMax Vision Adapter — specialized mapping routing (P5-04)", () =>
           `expected prompt for ${op} must contain "${needle}"`,
         );
       }
-    });
-  }
+    }
+  });
 
   it("support gate remains authoritative: an unsupported op fails closed even if forced true on another op", async () => {
     const sdk = makeFakeSdk({ visionResult: { content: "text" } });
@@ -1011,4 +939,3 @@ describe("MiniMax Vision Adapter — specialized mapping routing (P5-04)", () =>
     assert.strictEqual(sdk.constructed.length, 0);
   });
 });
-

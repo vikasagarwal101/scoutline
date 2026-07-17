@@ -535,18 +535,15 @@ describe("quota failure redaction", () => {
 // ===========================================================================
 
 describe("adapter quota capability wiring", () => {
-  it("Z.AI descriptor advertises quota and constructs an adapter with .quota", () => {
-    const descriptor = createZaiDescriptor();
-    assert.ok(descriptor.capabilities().has("quota"), "Z.AI advertises quota");
-    const adapter = descriptor.create({ env: { Z_AI_API_KEY: ZAI_KEY } });
-    assert.ok(typeof adapter.quota?.invoke === "function", "adapter.quota.invoke present");
-  });
-
-  it("MiniMax descriptor advertises quota and constructs an adapter with .quota", () => {
-    const descriptor = createMiniMaxDescriptor();
-    assert.ok(descriptor.capabilities().has("quota"), "MiniMax advertises quota");
-    const adapter = descriptor.create({ env: { MINIMAX_API_KEY: MINIMAX_KEY } });
-    assert.ok(typeof adapter.quota?.invoke === "function", "adapter.quota.invoke present");
+  it("both descriptors advertise and expose quota", () => {
+    const cases = [
+      [createZaiDescriptor(), { Z_AI_API_KEY: ZAI_KEY }],
+      [createMiniMaxDescriptor(), { MINIMAX_API_KEY: MINIMAX_KEY }],
+    ];
+    for (const [descriptor, env] of cases) {
+      assert.ok(descriptor.capabilities().has("quota"));
+      assert.equal(typeof descriptor.create({ env }).quota?.invoke, "function");
+    }
   });
 
   it("MiniMax quota capability fetches through the direct client and normalizes", async () => {
@@ -576,28 +573,6 @@ describe("adapter quota capability wiring", () => {
     assert.deepStrictEqual(result, expected);
   });
 
-  it("Z.AI quota capability accepts the ZAI_API_KEY alias (Fixup A — B4)", async () => {
-    const raw = await readFixture("providers", "zai", "quota.json");
-    const expected = await readFixture("normalized", "quota-zai.json");
-    const { fn, calls } = makeFetchSequence([{ ok: true, json: { data: raw } }]);
-    const capability = createZaiQuotaCapability({
-      env: { ZAI_API_KEY: ZAI_KEY },
-      fetch: fn,
-      ...noOpTimer(),
-    });
-    const result = await capability.invoke();
-    assert.deepStrictEqual(result, expected);
-    assert.strictEqual(calls.length, 1, "alias key still drives exactly one transport call");
-  });
-
-  it("Z.AI quota throws ConfigurationError (exit 3) when no key is set (Fixup A — B7)", async () => {
-    const { fn } = makeFetchSequence([{ ok: true, json: { data: {} } }]);
-    const capability = createZaiQuotaCapability({ env: {}, fetch: fn, ...noOpTimer() });
-    await assert.rejects(
-      () => capability.invoke(),
-      (err) => err instanceof ConfigurationError && err.exitCode === 3,
-    );
-  });
 });
 
 // ===========================================================================

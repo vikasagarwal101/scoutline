@@ -623,18 +623,33 @@ test("P5-02: registry exports exactly the five specialized operations", () => {
 
 // Operations whose mapping Module exists and whose offline conformance
 // state has been promoted to "pass" by a landed P5-03 task. Each P5-03
-// commit adds exactly one operation here. live stays "pending" for every
-// promoted op until a separate opt-in live attestation runs with
-// credentials; runtime support therefore remains false for all of them.
+// commit adds exactly one operation here. live stays "pending" until a
+// separate opt-in live attestation runs with credentials.
 const PROMOTED_OPS = new Set(["ui-artifact", "extract-text", "diagnose-error", "diagram", "chart"]);
 
-test("registry: baseline ops pending/pending; promoted ops pass/pending; no op carries an attestation yet", () => {
+// Operations whose live attestation has landed (live state "pass" AND
+// a compiled attestation entry is present). These operations are
+// runtime-supported and advertised in shared capabilities. Derived
+// from the registry so future attestations flip the derived tests
+// below automatically; the non-regression test at the end of this
+// file pins the exact attested set.
+const ATTESTED_OPS = new Set(
+  SPECIALIZED_VISION_OPERATIONS.filter(
+    (op) =>
+      MINIMAX_VISION_CONFORMANCE_REGISTRY[op].live === "pass" &&
+      MINIMAX_VISION_CONFORMANCE_REGISTRY[op].attestation !== undefined,
+  ),
+);
+
+// Promoted ops whose live attestation has NOT landed yet (live state
+// still "pending", no compiled attestation). These are unsupported at
+// runtime despite having an offline-conformant mapping Module.
+const UNATTESTED_PROMOTED_OPS = new Set([...PROMOTED_OPS].filter((op) => !ATTESTED_OPS.has(op)));
+
+test("registry: baseline ops pending/pending; promoted ops pass; attested ops live=pass with attestation", () => {
   for (const op of SPECIALIZED_VISION_OPERATIONS) {
     const entry = MINIMAX_VISION_CONFORMANCE_REGISTRY[op];
     assert.ok(entry, `entry for ${op} must exist`);
-    // live is pending for EVERY op until the opt-in live attestation runs.
-    assert.equal(entry.live, "pending", `${op} live must be pending (no live attestation yet)`);
-    assert.equal(entry.attestation, undefined, `${op} must carry no attestation yet`);
     assert.equal(
       entry.implementationId,
       MINIMAX_VISION_IMPLEMENTATION_ID,
@@ -651,15 +666,27 @@ test("registry: baseline ops pending/pending; promoted ops pass/pending; no op c
     } else {
       assert.equal(entry.offline, "pending", `${op} offline must be pending (baseline)`);
     }
+    if (ATTESTED_OPS.has(op)) {
+      // Live attestation has landed: live state is "pass" and the
+      // compiled attestation entry is attached.
+      assert.equal(entry.live, "pass", `${op} live must be pass (attested)`);
+      assert.ok(entry.attestation, `${op} must carry a compiled attestation`);
+    } else {
+      // No live attestation yet: live state stays "pending" and no
+      // attestation may be attached.
+      assert.equal(entry.live, "pending", `${op} live must be pending (no live attestation yet)`);
+      assert.equal(entry.attestation, undefined, `${op} must carry no attestation yet`);
+    }
   }
 });
 
-test("P5-02: isMiniMaxVisionOperationSupported returns false for every specialized operation", () => {
+test("P5-02: isMiniMaxVisionOperationSupported returns true only for attested operations", () => {
   for (const op of SPECIALIZED_VISION_OPERATIONS) {
+    const expected = ATTESTED_OPS.has(op);
     assert.equal(
       isMiniMaxVisionOperationSupported(op),
-      false,
-      `${op} must be unsupported at P5-02 (pending/pending, no attestation)`,
+      expected,
+      `${op}: support must be ${expected} (attested=${expected})`,
     );
   }
 });
@@ -675,17 +702,30 @@ test("P5-02: isMiniMaxVisionOperationSupported returns false for non-registry op
   }
 });
 
-test("P5-02: listSupportedMiniMaxVisionOperations returns an empty list at P5-02", () => {
+test("P5-02: listSupportedMiniMaxVisionOperations returns exactly the attested set in canonical order", () => {
   const supported = listSupportedMiniMaxVisionOperations();
-  assert.deepEqual([...supported], [], "no specialized operation is supported at P5-02");
+  // ATTESTED_OPS is built by filtering SPECIALIZED_VISION_OPERATIONS,
+  // so its iteration order is the canonical order; the supported list
+  // is filtered the same way and must match exactly. The
+  // non-regression test at the end of the file pins the exact set.
+  assert.deepEqual(
+    [...supported],
+    [...ATTESTED_OPS],
+    "supported list must equal the attested set (canonical order)",
+  );
 });
 
-test("P5-02: MiniMax adapter descriptor does not advertise any specialized vision capability at P5-02", () => {
+test("P5-02: MiniMax adapter descriptor advertises exactly the attested specialized vision capabilities", () => {
   const descriptor = createMiniMaxDescriptor();
   const caps = descriptor.capabilities();
   for (const op of SPECIALIZED_VISION_OPERATIONS) {
     const capId = `vision.${op}`;
-    assert.ok(!caps.has(capId), `${capId} must NOT be advertised at P5-02 (registry pending)`);
+    const expected = ATTESTED_OPS.has(op);
+    assert.equal(
+      caps.has(capId),
+      expected,
+      `${capId}: descriptor advertisement must be ${expected}`,
+    );
   }
   // Base capabilities must still be present.
   for (const cap of ["search", "vision.interpret-image", "quota", "diagnostics"]) {
@@ -693,14 +733,15 @@ test("P5-02: MiniMax adapter descriptor does not advertise any specialized visio
   }
 });
 
-test("P5-02: MiniMax adapter vision capability reports supports=false for every specialized op", () => {
+test("P5-02: MiniMax adapter vision capability reports supports() consistently with the registry", () => {
   const descriptor = createMiniMaxDescriptor();
   const adapter = descriptor.create({ env: { MINIMAX_API_KEY: "test-key-not-sent" } });
   for (const op of SPECIALIZED_VISION_OPERATIONS) {
+    const expected = ATTESTED_OPS.has(op);
     assert.equal(
       adapter.vision.supports(op),
-      false,
-      `adapter.vision.supports(${op}) must be false at P5-02`,
+      expected,
+      `adapter.vision.supports(${op}) must equal registry support (${expected})`,
     );
   }
   // interpret-image must remain supported.
@@ -711,11 +752,12 @@ test("P5-02: MiniMax adapter vision capability reports supports=false for every 
   );
 });
 
-test("P5-02: specialized ops fail with UNSUPPORTED_CAPABILITY before key, media, or SDK access", async () => {
-  // The MiniMax adapter must fail closed for every specialized op
-  // BEFORE any credential, media resolution, or SDK construction. The
-  // spy SDK records any construction; zero constructions prove the
-  // fail-closed ordering.
+test("P5-02: unattested specialized ops fail with UNSUPPORTED_CAPABILITY before key, media, or SDK access", async () => {
+  // The MiniMax adapter must fail closed for every unattested
+  // specialized op BEFORE any credential, media resolution, or SDK
+  // construction. The spy SDK records any construction; zero
+  // constructions prove the fail-closed ordering. Attested ops are
+  // exercised separately (they pass the gate and would reach the SDK).
   let sdkConstructions = 0;
   const spySdk = {
     search: {
@@ -738,7 +780,7 @@ test("P5-02: specialized ops fail with UNSUPPORTED_CAPABILITY before key, media,
   const descriptor = createMiniMaxDescriptor({ sdkConstructor: SpyCtor });
   const adapter = descriptor.create({ env: {} });
 
-  for (const op of SPECIALIZED_VISION_OPERATIONS) {
+  for (const op of UNATTESTED_PROMOTED_OPS) {
     sdkConstructions = 0;
     const request = makeMinimalRequest(op);
     await assert.rejects(adapter.vision.invoke(request), (err) => {
@@ -754,9 +796,10 @@ test("P5-02: specialized ops fail with UNSUPPORTED_CAPABILITY before key, media,
   }
 });
 
-test("P5-02: VISION_HELP still shows every specialized op as MiniMax gated", () => {
-  // Help derives from the registry. At P5-02 all five specialized ops
-  // must read "MiniMax gated"; diff and video must read "Z.AI only".
+test("P5-02: VISION_HELP shows attested ops as supported and unattested as MiniMax gated", () => {
+  // Help derives from the registry. Attested specialized ops must read
+  // "(Z.AI + MiniMax)"; unattested specialized ops must read
+  // "(Z.AI; MiniMax gated)"; diff and video must read "(Z.AI only)".
   for (const op of SPECIALIZED_VISION_OPERATIONS) {
     const needle = helpNeedleFor(op);
     assert.ok(VISION_HELP.includes(needle), `VISION_HELP must include "${needle}" for ${op}`);
@@ -764,20 +807,42 @@ test("P5-02: VISION_HELP still shows every specialized op as MiniMax gated", () 
   assert.ok(VISION_HELP.includes("(Z.AI only)"), "diff/video must remain Z.AI-only in help");
 });
 
-test("P5-02: SHARED_CAPABILITIES is exactly the base four at P5-02", () => {
+test("P5-02: SHARED_CAPABILITIES is the base four plus attested specialized ops", () => {
+  // SHARED_CAPABILITIES is built by appending each attested op (in
+  // canonical order) to the base four. ATTESTED_OPS iterates in
+  // canonical order because it is derived from
+  // SPECIALIZED_VISION_OPERATIONS.
+  const expected = [
+    "search",
+    "vision.interpret-image",
+    "quota",
+    "diagnostics",
+    ...[...ATTESTED_OPS].map((op) => `vision.${op}`),
+  ];
   assert.deepEqual(
     [...SHARED_CAPABILITIES],
-    ["search", "vision.interpret-image", "quota", "diagnostics"],
-    "no specialized op is in shared capabilities at P5-02",
+    expected,
+    "SHARED_CAPABILITIES must be the base four plus exactly the attested specialized ops",
   );
 });
 
-test("P5-02: compiled attestations manifest is empty at P5-02", () => {
-  assert.deepEqual(
-    [...MINIMAX_VISION_ATTESTATIONS],
-    [],
-    "no attestation may be compiled in at P5-02",
+test("P5-02: compiled attestations manifest carries exactly one entry per attested op", () => {
+  assert.equal(
+    MINIMAX_VISION_ATTESTATIONS.length,
+    ATTESTED_OPS.size,
+    "manifest length must equal the attested op count",
   );
+  const manifestOps = MINIMAX_VISION_ATTESTATIONS.map((a) => a.operation);
+  assert.deepEqual(
+    manifestOps,
+    [...ATTESTED_OPS],
+    "manifest operations must exactly match the attested set (canonical order)",
+  );
+  // Every manifest entry must validate against the schema.
+  for (const att of MINIMAX_VISION_ATTESTATIONS) {
+    const errors = validateAttestation(att);
+    assert.deepEqual(errors, [], `attestation for ${att.operation} must be valid`);
+  }
 });
 
 test("generated mappings map keys exactly match the promoted operations set", () => {
@@ -1064,9 +1129,16 @@ test("P5-02: no environment value can override registry state, fixture version, 
       beforeSupported,
       "support query must be invariant under env changes",
     );
-    // No specialized op may suddenly be supported.
-    for (const v of afterSupported) {
-      assert.equal(v, false, "no env override may enable a specialized op");
+    // No env value may flip an op's support: attested ops stay
+    // supported, unattested ops stay unsupported.
+    for (let i = 0; i < SPECIALIZED_VISION_OPERATIONS.length; i++) {
+      const op = SPECIALIZED_VISION_OPERATIONS[i];
+      const expected = ATTESTED_OPS.has(op);
+      assert.equal(
+        afterSupported[i],
+        expected,
+        `env override must not flip ${op} support (expected ${expected})`,
+      );
     }
   } finally {
     for (const key of probes) {
@@ -1475,19 +1547,22 @@ function makeMinimalRequest(op) {
 }
 
 function helpNeedleFor(op) {
-  // Each specialized op's help line ends with "(Z.AI; MiniMax gated)"
-  // when unsupported. Find that exact substring.
+  // Each specialized op's help line ends with "(Z.AI + MiniMax)" when
+  // attested (registry-supported) or "(Z.AI; MiniMax gated)" when
+  // pending. Derived from the registry so the needle matches the
+  // current support state.
+  const suffix = ATTESTED_OPS.has(op) ? "(Z.AI + MiniMax)" : "(Z.AI; MiniMax gated)";
   switch (op) {
     case "ui-artifact":
-      return "ui-to-code <image> [prompt]         Convert UI screenshot to code (Z.AI; MiniMax gated)";
+      return `ui-to-code <image> [prompt]         Convert UI screenshot to code ${suffix}`;
     case "extract-text":
-      return "extract-text <image> [prompt]       OCR for code, terminals, documents (Z.AI; MiniMax gated)";
+      return `extract-text <image> [prompt]       OCR for code, terminals, documents ${suffix}`;
     case "diagnose-error":
-      return "diagnose-error <image> [prompt]     Analyze error screenshots (Z.AI; MiniMax gated)";
+      return `diagnose-error <image> [prompt]     Analyze error screenshots ${suffix}`;
     case "diagram":
-      return "diagram <image> [prompt]            Interpret technical diagrams (Z.AI; MiniMax gated)";
+      return `diagram <image> [prompt]            Interpret technical diagrams ${suffix}`;
     case "chart":
-      return "chart <image> [prompt]              Analyze data visualizations (Z.AI; MiniMax gated)";
+      return `chart <image> [prompt]              Analyze data visualizations ${suffix}`;
     default:
       throw new Error(`helpNeedleFor: unknown op ${op}`);
   }
@@ -1719,18 +1794,21 @@ test("P5-03: each promoted mapping composes a correct prompt and passes offline 
       assert.equal(r.passed, true, `${op}: assertion ${r.id} must pass: ${r.failureReason ?? ""}`);
     }
 
-    // Unsupported at runtime: live state is still pending.
+    // Runtime support mirrors the registry: attested ops are supported,
+    // unattested promoted ops are unsupported (live state still pending).
     assert.equal(
       isMiniMaxVisionOperationSupported(op),
-      false,
-      `${op}: must be unsupported while live state is pending`,
+      ATTESTED_OPS.has(op),
+      `${op}: runtime support must match attested state (attested=${ATTESTED_OPS.has(op)})`,
     );
   }
 });
 
-test("P5-03: each promoted mapping stays fail-closed at runtime (no SDK construction)", async () => {
-  // The adapter gate stays closed for every specialized op while live is
-  // pending. This proves the pending mapping does not invoke the SDK.
+test("P5-03: each unattested promoted mapping stays fail-closed at runtime (no SDK construction)", async () => {
+  // The adapter gate stays closed for every promoted op whose live
+  // attestation has not landed (live state still pending). This proves
+  // a pending mapping does not invoke the SDK. Attested ops pass the
+  // gate and are exercised separately.
   let sdkConstructions = 0;
   const spySdk = {
     vision: {
@@ -1745,7 +1823,7 @@ test("P5-03: each promoted mapping stays fail-closed at runtime (no SDK construc
   }
   const descriptor = createMiniMaxDescriptor({ sdkConstructor: SpyCtor });
   const adapter = descriptor.create({ env: {} });
-  for (const op of PROMOTED_OPS) {
+  for (const op of UNATTESTED_PROMOTED_OPS) {
     sdkConstructions = 0;
     assert.equal(adapter.vision.supports(op), false, `${op} supports() must be false`);
     await assert.rejects(adapter.vision.invoke(makeMinimalRequest(op)), (err) => {
@@ -1777,6 +1855,108 @@ test("P5-03: adding a mapping does not enable or alter any other operation", () 
       MINIMAX_VISION_MAPPING_REVISIONS[op],
       "pending-no-mapping-module",
       `${op} revision must remain placeholder`,
+    );
+  }
+});
+
+// ===========================================================================
+// P5-03 attestation non-regression
+// ===========================================================================
+//
+// Pins the exact set of operations that the live attestation script has
+// promoted to runtime support. The rest of the suite derives expected
+// support from `ATTESTED_OPS` (which is itself derived from the
+// registry), so those tests auto-update when a new attestation lands.
+// This block is the one place that hardcodes the current attested set:
+// if an attestation is accidentally added or removed, this test fails
+// and forces a deliberate update with a review of the public surface
+// (help text, descriptor, doctor report, tarball).
+
+test("P5-03 non-regression: exactly ui-artifact and diagnose-error are attested (runtime-supported)", () => {
+  // Pin the exact attested set in canonical order. The
+  // `listSupportedMiniMaxVisionOperations` query must return exactly
+  // these two operations, in this order.
+  assert.deepEqual(
+    [...listSupportedMiniMaxVisionOperations()],
+    ["ui-artifact", "diagnose-error"],
+    "the attested runtime-supported set must be exactly ui-artifact and diagnose-error",
+  );
+  // The derived ATTESTED_OPS constant (used by every test above) must
+  // agree with the hardcoded pin.
+  assert.deepEqual([...ATTESTED_OPS], ["ui-artifact", "diagnose-error"]);
+});
+
+test("P5-03 non-regression: the other three specialized ops remain unsupported", () => {
+  // Hardcoded pin for the unsupported set; together with the test
+  // above this proves the registry has exactly two supported + three
+  // unsupported specialized operations (five total).
+  const unsupported = ["extract-text", "diagram", "chart"];
+  for (const op of unsupported) {
+    assert.equal(
+      isMiniMaxVisionOperationSupported(op),
+      false,
+      `${op} must remain unsupported at runtime`,
+    );
+    assert.ok(!ATTESTED_OPS.has(op), `${op} must not appear in ATTESTED_OPS`);
+  }
+  // Sanity: the supported + unsupported sets partition SPECIALIZED_VISION_OPERATIONS.
+  assert.equal(
+    ATTESTED_OPS.size + unsupported.length,
+    SPECIALIZED_VISION_OPERATIONS.length,
+    "attested + unsupported must cover every specialized op",
+  );
+});
+
+test("P5-03 non-regression: MiniMax descriptor advertises exactly the attested specialized ops", () => {
+  // Descriptor is the public advertisement surface. Derive the
+  // expected set from the registry so adding a new attestation
+  // automatically extends the expected advertisement; the pin in the
+  // first non-regression test catches accidental additions.
+  const descriptor = createMiniMaxDescriptor();
+  const caps = descriptor.capabilities();
+  const expectedAdvertised = new Set([...ATTESTED_OPS].map((op) => `vision.${op}`));
+  for (const op of SPECIALIZED_VISION_OPERATIONS) {
+    const cap = `vision.${op}`;
+    if (expectedAdvertised.has(cap)) {
+      assert.ok(caps.has(cap), `descriptor must advertise attested op ${cap}`);
+    } else {
+      assert.ok(!caps.has(cap), `descriptor must NOT advertise unattested op ${cap}`);
+    }
+  }
+  // diff/video/interpret-image sanity (Z.AI-only or unconditionally shared).
+  assert.ok(caps.has("vision.interpret-image"), "interpret-image must always be advertised");
+  assert.ok(!caps.has("vision.diff"), "diff is Z.AI-only");
+  assert.ok(!caps.has("vision.video"), "video is Z.AI-only");
+});
+
+test("P5-03 non-regression: isMiniMaxVisionOperationSupported is consistent with the descriptor and registry", () => {
+  // The support query, the descriptor, the registry's attestation
+  // attachment, and the ATTESTED_OPS constant must all agree op-by-op.
+  const descriptor = createMiniMaxDescriptor();
+  const caps = descriptor.capabilities();
+  for (const op of SPECIALIZED_VISION_OPERATIONS) {
+    const cap = `vision.${op}`;
+    const fromQuery = isMiniMaxVisionOperationSupported(op);
+    const fromRegistry =
+      MINIMAX_VISION_CONFORMANCE_REGISTRY[op].live === "pass" &&
+      MINIMAX_VISION_CONFORMANCE_REGISTRY[op].attestation !== undefined &&
+      MINIMAX_VISION_CONFORMANCE_REGISTRY[op].attestation.operation === op;
+    const fromDescriptor = caps.has(cap);
+    const fromConstant = ATTESTED_OPS.has(op);
+    assert.equal(
+      fromQuery,
+      fromConstant,
+      `${op}: support query (${fromQuery}) must match ATTESTED_OPS (${fromConstant})`,
+    );
+    assert.equal(
+      fromQuery,
+      fromRegistry,
+      `${op}: support query (${fromQuery}) must match registry attestation (${fromRegistry})`,
+    );
+    assert.equal(
+      fromQuery,
+      fromDescriptor,
+      `${op}: support query (${fromQuery}) must match descriptor advertisement (${fromDescriptor})`,
     );
   }
 });

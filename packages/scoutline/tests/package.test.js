@@ -435,18 +435,21 @@ describe("scoutline package — compiled MiniMax vision conformance registry (P5
         "installed supported set must match local supported set",
       );
 
-      // 5. Every specialized operation must currently be unsupported
-      //    at P5-02 (no operation should be advertised yet).
+      // 5. The installed per-op support bits must match the local
+      //    registry's bits exactly (attested ops supported, others
+      //    not). Derive the expected bit from the local registry so
+      //    this test tracks attestation state without hardcoding.
       for (const op of ["ui-artifact", "extract-text", "diagnose-error", "diagram", "chart"]) {
+        const expected = localConformance.isMiniMaxVisionOperationSupported(op);
         assert.strictEqual(
           installed.isMiniMaxVisionOperationSupported(op),
-          false,
-          `${op} must remain unsupported in the installed package at P5-02`,
+          expected,
+          `${op}: installed support bit must match local (${expected})`,
         );
       }
 
       // 6. The installed attestation manifest must have the same count
-      //    as the source manifest (zero at P5-02).
+      //    as the source manifest (registry-derived count).
       const installedAttestations = await import(
         pathToFileURL(
           path.join(
@@ -500,7 +503,8 @@ describe("scoutline package — compiled MiniMax vision conformance registry (P5
         )
       ).MINIMAX_VISION_MAPPING_REVISIONS;
 
-      // Every revision must match exactly. At P5-02 all five are the
+      // Every revision must match exactly. Promoted ops carry a real
+      // SHA-256 digest; baseline ops (none currently) would carry the
       // "pending-no-mapping-module" placeholder.
       for (const op of ["ui-artifact", "extract-text", "diagnose-error", "diagram", "chart"]) {
         assert.strictEqual(

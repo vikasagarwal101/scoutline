@@ -359,6 +359,15 @@ function formatAttestationEntry(att) {
  * `readonly VisionAttestation[]` literal `[]`; we insert before the
  * closing `];`. Uses {@link locateManifestSpan} to find the array
  * literal span precisely (not the `[` in the type annotation).
+ *
+ * Separator handling: {@link formatAttestationEntry} emits every entry
+ * with a trailing comma (e.g. `  },`), so when appending after an
+ * existing entry we must NOT add another comma — that would produce
+ * `},,`. We strip trailing whitespace from the existing body and use a
+ * bare newline as the separator when the body already ends with `,`;
+ * otherwise (defensive: a hand-edited last entry without a trailing
+ * comma) we insert the comma ourselves. The new entry always ends with
+ * its own trailing comma, matching the existing style.
  */
 function injectEntryIntoManifest(content, entry) {
   const { openIdx, closeIdx } = locateManifestSpan(content);
@@ -369,10 +378,11 @@ function injectEntryIntoManifest(content, entry) {
   if (!hasEntries) {
     return `${prefix}\n${entry}\n${suffix}`;
   }
-  // Append after the last existing entry (trim trailing whitespace
-  // before the close, then add a comma + newline + the new entry).
+  // Append after the last existing entry. Trim trailing whitespace so
+  // the new entry lands on its own line right before the closing `];`.
   const trimmed = between.replace(/\s+$/, "");
-  return `${prefix}${trimmed},\n${entry}\n${suffix}`;
+  const separator = trimmed.endsWith(",") ? "\n" : ",\n";
+  return `${prefix}${trimmed}${separator}${entry}\n${suffix}`;
 }
 
 /**

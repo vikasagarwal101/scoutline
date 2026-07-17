@@ -46,6 +46,10 @@ import {
 } from "../dist/capabilities/diagnostics.js";
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
+import {
+  SPECIALIZED_VISION_OPERATIONS,
+  isMiniMaxVisionOperationSupported,
+} from "../dist/providers/minimax/vision-conformance.js";
 import { redactSecrets, configuredSecrets } from "../dist/lib/redact.js";
 import { NetworkError, AuthError, ScoutlineError } from "../dist/lib/errors.js";
 
@@ -149,10 +153,21 @@ describe("doctor diagnostics — report metadata (P4-04)", () => {
 
     assert.strictEqual(report.schemaVersion, 1);
     assert.strictEqual(report.effectiveProvider, "zai");
-    assert.deepStrictEqual(
-      [...SHARED_CAPABILITIES],
-      ["search", "vision.interpret-image", "quota", "diagnostics"],
-    );
+    // SHARED_CAPABILITIES is built from the base four plus each
+    // specialized op whose compiled registry entry is supported
+    // (DESIGN.md §14, §15). Derive the expected value from the same
+    // registry query so this test tracks attestation state without
+    // hardcoding operation names.
+    const expectedShared = [
+      "search",
+      "vision.interpret-image",
+      "quota",
+      "diagnostics",
+      ...SPECIALIZED_VISION_OPERATIONS.filter((op) => isMiniMaxVisionOperationSupported(op)).map(
+        (op) => `vision.${op}`,
+      ),
+    ];
+    assert.deepStrictEqual([...SHARED_CAPABILITIES], expectedShared);
     assert.deepStrictEqual(
       [...ZAI_ONLY_CAPABILITIES],
       [

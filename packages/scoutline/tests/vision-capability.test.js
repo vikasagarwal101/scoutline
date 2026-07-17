@@ -35,6 +35,10 @@ import { createZaiDescriptor, createMiniMaxDescriptor } from "../dist/providers/
 // (which assert descriptor metadata shape) keep their distinct references.
 import { createZaiDescriptor as createRealZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { createMiniMaxDescriptor as createRealMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
+import {
+  SPECIALIZED_VISION_OPERATIONS,
+  isMiniMaxVisionOperationSupported,
+} from "../dist/providers/minimax/vision-conformance.js";
 import { UnsupportedCapabilityError, getErrorExitCode } from "../dist/lib/errors.js";
 import { executeProviderOperation } from "../dist/lib/execution.js";
 import { main } from "../dist/index.js";
@@ -1137,13 +1141,26 @@ describe("Z.AI Adapter — specialized operation mappings (P3-04)", () => {
     }
   });
 
-  it("MiniMax descriptor still advertises only general interpretation", () => {
+  it("MiniMax descriptor advertises general interpretation plus attested specialized ops only", () => {
     const caps = createRealMiniMaxDescriptor().capabilities();
     assert.ok(caps.has("vision.interpret-image"));
-    for (const cap of ALL_VISION_CAPS) {
-      if (cap === "vision.interpret-image") continue;
-      assert.ok(!caps.has(cap), `MiniMax must NOT advertise ${cap} until Phase 5`);
+    // Specialized ops: advertised exactly when their conformance
+    // registry entry is supported (DESIGN.md §15). diff and video are
+    // Z.AI-only and never advertised by MiniMax. Derive expected from
+    // the registry so this test tracks attestation state without
+    // hardcoding operation names.
+    for (const op of SPECIALIZED_VISION_OPERATIONS) {
+      const cap = `vision.${op}`;
+      const expected = isMiniMaxVisionOperationSupported(op);
+      assert.strictEqual(
+        caps.has(cap),
+        expected,
+        `MiniMax must ${expected ? "advertise" : "NOT advertise"} ${cap}`,
+      );
     }
+    // diff and video remain Z.AI-only.
+    assert.ok(!caps.has("vision.diff"), "MiniMax must NOT advertise vision.diff");
+    assert.ok(!caps.has("vision.video"), "MiniMax must NOT advertise vision.video");
   });
 
   it("maps each discriminated request to its dedicated MCP tool + arguments", async () => {

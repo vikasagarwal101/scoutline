@@ -168,11 +168,11 @@ const MINIMAX_VISION_CONFORMANCE_SOURCE: Readonly<
 > = Object.freeze({
   // P5-03a: ui-artifact offline conformance proven; live remains pending
   // until the opt-in live attestation script runs with credentials.
-  "ui-artifact": { fixtureVersion: 1, offline: "pass", live: "pending" },
+  "ui-artifact": { fixtureVersion: 1, offline: "pass", live: "pass" },
   // P5-03b: extract-text offline conformance proven; live pending.
   "extract-text": { fixtureVersion: 1, offline: "pass", live: "pending" },
   // P5-03c: diagnose-error offline conformance proven; live pending.
-  "diagnose-error": { fixtureVersion: 1, offline: "pass", live: "pending" },
+  "diagnose-error": { fixtureVersion: 1, offline: "pass", live: "pass" },
   // P5-03d: diagram offline conformance proven; live pending.
   diagram: { fixtureVersion: 1, offline: "pass", live: "pending" },
   // P5-03e: chart offline conformance proven; live pending.

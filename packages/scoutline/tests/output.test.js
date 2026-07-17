@@ -1,15 +1,17 @@
 /**
  * Unit tests for pure output formatting.
  *
- * P1-01 asserts the new pure output contract: `isOutputMode`,
+ * P1-01 asserted the pure output contract: `isOutputMode`,
  * `formatSuccessOutput`, and `formatErrorOutput` are invocation-local and
  * free of mutable global state, environment mutation, and console writes.
- * The legacy mutable `setOutputMode` / `getOutputMode` / `outputSuccess` /
- * `outputError` surface remains for Phase 1 consumers and is removed in
- * P1-10.
+ * P1-10 asserts the mutable output surface is fully gone: no
+ * `setOutputMode`, no mutable output mode, no `ZAI_OUTPUT_MODE` mutation,
+ * no command console write, and no command process exit.
  */
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   OUTPUT_MODES,
   isOutputMode,
@@ -22,15 +24,10 @@ import { ZaiError } from "../dist/lib/errors.js";
 
 describe("OUTPUT_MODES", () => {
   it("exposes the full canonical output mode list", () => {
-    assert.deepStrictEqual([...OUTPUT_MODES], [
-      "data",
-      "json",
-      "pretty",
-      "compact",
-      "markdown",
-      "refs",
-      "tty",
-    ]);
+    assert.deepStrictEqual(
+      [...OUTPUT_MODES],
+      ["data", "json", "pretty", "compact", "markdown", "refs", "tty"],
+    );
   });
 });
 
@@ -266,5 +263,70 @@ describe("response builder compatibility exports", () => {
     assert.strictEqual(out.error, "went wrong");
     assert.strictEqual(out.code, undefined);
     assert.strictEqual(out.help, undefined);
+  });
+});
+
+describe("output module — no mutable output state (P1-10)", () => {
+  function readSrc(rel) {
+    return readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+  }
+
+  it("does not export setOutputMode, getOutputMode, outputSuccess, outputError, or output", async () => {
+    const mod = await import("../dist/lib/output.js");
+    assert.strictEqual(mod.setOutputMode, undefined, "setOutputMode must be removed");
+    assert.strictEqual(mod.getOutputMode, undefined, "getOutputMode must be removed");
+    assert.strictEqual(mod.outputSuccess, undefined, "outputSuccess must be removed");
+    assert.strictEqual(mod.outputError, undefined, "outputError must be removed");
+    assert.strictEqual(mod.output, undefined, "output must be removed");
+  });
+
+  it("output.ts source has no mutable output mode, ZAI_OUTPUT_MODE mutation, console write, or process.exit", () => {
+    const src = readSrc("../src/lib/output.ts");
+    assert.ok(!/\bsetOutputMode\b/.test(src), "no setOutputMode identifier");
+    assert.ok(!/\bgetOutputMode\b/.test(src), "no getOutputMode identifier");
+    assert.ok(!/\boutputSuccess\b/.test(src), "no outputSuccess identifier");
+    assert.ok(!/\boutputError\b/.test(src), "no outputError identifier");
+    assert.ok(!/let\s+outputMode\b/.test(src), "no mutable outputMode variable");
+    assert.ok(!/ZAI_OUTPUT_MODE/.test(src), "no ZAI_OUTPUT_MODE mutation");
+    assert.ok(!/console\.(log|error)/.test(src), "no console writes");
+    assert.ok(!/process\.exit\b/.test(src), "no process.exit");
+  });
+
+  it("no command module writes to the console or calls process.exit", () => {
+    const commandFiles = [
+      "../src/commands/doctor.ts",
+      "../src/commands/quota.ts",
+      "../src/commands/search.ts",
+      "../src/commands/read.ts",
+      "../src/commands/repo.ts",
+      "../src/commands/tools.ts",
+      "../src/commands/code.ts",
+      "../src/commands/vision.ts",
+    ];
+    for (const rel of commandFiles) {
+      const src = readSrc(rel);
+      assert.ok(!/console\.(log|error)/.test(src), `${rel} must not write to the console`);
+      assert.ok(!/process\.exit\b/.test(src), `${rel} must not call process.exit`);
+    }
+  });
+
+  it("no command module references the removed mutable output API", () => {
+    const commandFiles = [
+      "../src/commands/doctor.ts",
+      "../src/commands/quota.ts",
+      "../src/commands/search.ts",
+      "../src/commands/read.ts",
+      "../src/commands/repo.ts",
+      "../src/commands/tools.ts",
+      "../src/commands/code.ts",
+      "../src/commands/vision.ts",
+    ];
+    for (const rel of commandFiles) {
+      const src = readSrc(rel);
+      assert.ok(
+        !/\bsetOutputMode\b|\bgetOutputMode\b|\boutputSuccess\b|\boutputError\b/.test(src),
+        `${rel} must not reference the mutable output API`,
+      );
+    }
   });
 });

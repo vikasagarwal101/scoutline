@@ -1,13 +1,16 @@
 /**
  * Output formatting for Scoutline.
  *
- * P1-01 adds the pure, invocation-local API from DESIGN.md §3:
- *   OUTPUT_MODES, OutputMode, isOutputMode,
- *   formatSuccessOutput, formatErrorOutput.
+ * This Module exposes the pure, invocation-local output contract from
+ * DESIGN.md §3: OUTPUT_MODES, OutputMode, isOutputMode,
+ * formatSuccessOutput, and formatErrorOutput. The pure `success` and
+ * `error` response builders are retained as utility constructors.
  *
- * The legacy mutable API (setOutputMode / getOutputMode / outputSuccess /
- * outputError / output) is preserved as a compatibility surface for
- * Phase 1 command handlers and is removed in P1-10.
+ * P1-10 removed the mutable output surface: there is no module-level output
+ * mode, no mode setter/getter, no side-effecting success/error writers, no
+ * output-mode environment mutation, and no console writes or process
+ * termination here. Command presentation and process writes flow through
+ * `invokeCommand` and the Node Adapter.
  */
 
 export const OUTPUT_MODES = [
@@ -38,10 +41,7 @@ export interface ErrorResponse {
 export type Response<T = unknown> = SuccessResponse<T> | ErrorResponse;
 
 export function isOutputMode(value: unknown): value is OutputMode {
-  return (
-    typeof value === "string" &&
-    (OUTPUT_MODES as readonly string[]).includes(value)
-  );
+  return typeof value === "string" && (OUTPUT_MODES as readonly string[]).includes(value);
 }
 
 /**
@@ -93,11 +93,7 @@ export function formatSuccessOutput<T>(
 
   if (mode === "json" || mode === "pretty") {
     const indent = mode === "pretty" ? 2 : 0;
-    return JSON.stringify(
-      { success: true, data, timestamp: now() },
-      null,
-      indent,
-    );
+    return JSON.stringify({ success: true, data, timestamp: now() }, null, indent);
   }
 
   // Text-oriented modes: prefer an explicitly selected command
@@ -109,8 +105,7 @@ export function formatSuccessOutput<T>(
     (data as { presentations?: unknown }).presentations !== null &&
     typeof (data as { presentations?: unknown }).presentations === "object"
   ) {
-    const presentations = (data as { presentations: Record<string, unknown> })
-      .presentations;
+    const presentations = (data as { presentations: Record<string, unknown> }).presentations;
     const override = presentations[mode];
     if (typeof override === "string") {
       return override;
@@ -142,10 +137,7 @@ export function formatErrorOutput(value: unknown, mode: OutputMode): string {
   let payload: Record<string, unknown>;
 
   const isShapedError =
-    value !== null &&
-    typeof value === "object" &&
-    "message" in value &&
-    "code" in value;
+    value !== null && typeof value === "object" && "message" in value && "code" in value;
 
   if (isShapedError) {
     const err = value as {
@@ -154,8 +146,7 @@ export function formatErrorOutput(value: unknown, mode: OutputMode): string {
       help?: unknown;
       statusCode?: unknown;
     };
-    const rawError =
-      typeof err.message === "string" ? err.message : String(err.message);
+    const rawError = typeof err.message === "string" ? err.message : String(err.message);
     payload = {
       success: false,
       error: redactCredentialString(rawError),
@@ -185,26 +176,13 @@ export function formatErrorOutput(value: unknown, mode: OutputMode): string {
 }
 
 // ---------------------------------------------------------------------------
-// Compatibility exports — kept temporarily for Phase 1 command handlers.
-// P1-10 removes the mutable state and these side-effecting helpers; until
-// then, command code in P1-04..P1-09 keeps compiling unchanged.
+// Pure response builders. These construct plain response objects and perform
+// no I/O. They are retained as utility constructors; the side-effecting
+// mutable output surface (mode setter/getter, the success/error writers, the
+// module-level mode variable, output-mode env mutation, and process
+// termination) was removed in P1-10. Command presentation and process writes
+// now flow exclusively through `invokeCommand` and the Node Adapter.
 // ---------------------------------------------------------------------------
-
-let outputMode: OutputMode =
-  (typeof process !== "undefined" && process.env
-    ? (process.env.ZAI_OUTPUT_MODE as OutputMode)
-    : undefined) || "data";
-
-export function setOutputMode(mode: OutputMode): void {
-  outputMode = mode;
-  if (typeof process !== "undefined" && process.env) {
-    process.env.ZAI_OUTPUT_MODE = mode;
-  }
-}
-
-export function getOutputMode(): OutputMode {
-  return outputMode;
-}
 
 export function success<T>(data: T): SuccessResponse<T> {
   return {
@@ -214,56 +192,11 @@ export function success<T>(data: T): SuccessResponse<T> {
   };
 }
 
-export function error(
-  message: string,
-  code?: string,
-  help?: string,
-): ErrorResponse {
+export function error(message: string, code?: string, help?: string): ErrorResponse {
   return {
     success: false,
     error: message,
     ...(code && { code }),
     ...(help && { help }),
   };
-}
-
-export function output<T>(response: Response<T>): void {
-  const pretty = outputMode === "pretty";
-  console.log(JSON.stringify(response, null, pretty ? 2 : 0));
-}
-
-export function outputSuccess<T>(data: T): void {
-  // Search-specific text formats; data is expected to be a pre-formatted string.
-  if (
-    outputMode === "compact" ||
-    outputMode === "markdown" ||
-    outputMode === "refs" ||
-    outputMode === "tty"
-  ) {
-    if (typeof data === "string") {
-      console.log(data);
-      return;
-    }
-    console.log(JSON.stringify(data, null, 0));
-    return;
-  }
-  if (outputMode === "data") {
-    if (typeof data === "string") {
-      console.log(data);
-      return;
-    }
-    console.log(JSON.stringify(data, null, 0));
-    return;
-  }
-  output(success(data));
-}
-
-export function outputError(
-  message: string,
-  code?: string,
-  help?: string,
-): void {
-  const pretty = outputMode === "pretty";
-  console.error(JSON.stringify(error(message, code, help), null, pretty ? 2 : 0));
-  process.exit(1);
 }

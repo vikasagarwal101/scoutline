@@ -254,7 +254,8 @@ describe("MiniMax descriptor — metadata", () => {
     assert.strictEqual(d.id, "minimax");
     const caps = d.capabilities();
     assert.ok(caps.has("search"));
-    assert.ok(!caps.has("quota"));
+    // P4-02 wires quota; diagnostics arrive in P4-04.
+    assert.ok(caps.has("quota"));
     assert.ok(!caps.has("diagnostics"));
   });
 

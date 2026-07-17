@@ -1,0 +1,35 @@
+{
+  "provider": "minimax",
+  "status": "ok",
+  "categories": [
+    {
+      "name": "abab6.5s-chat",
+      "unit": "requests",
+      "current": {
+        "used": 30,
+        "limit": 100,
+        "remaining": 70,
+        "remainingPercent": 70,
+        "resetsAt": "2023-11-14T22:13:20.000Z"
+      }
+    },
+    {
+      "name": "zorla-x",
+      "unit": "requests",
+      "current": {
+        "used": 50,
+        "limit": 200,
+        "remaining": 150,
+        "remainingPercent": 75,
+        "resetsAt": "2023-11-14T22:13:20.000Z"
+      },
+      "weekly": {
+        "used": 200,
+        "limit": 1000,
+        "remaining": 800,
+        "remainingPercent": 80,
+        "resetsAt": "2023-11-20T17:06:40.000Z"
+      }
+    }
+  ]
+}

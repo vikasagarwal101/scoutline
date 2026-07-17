@@ -1,0 +1,27 @@
+{
+  "provider": "zai",
+  "status": "ok",
+  "plan": "pro",
+  "categories": [
+    {
+      "name": "requests",
+      "unit": "requests",
+      "current": {
+        "used": 750,
+        "limit": 1000,
+        "remaining": 250,
+        "durationSeconds": 18000,
+        "remainingPercent": 25,
+        "resetsAt": "2023-11-14T22:13:20.000Z"
+      }
+    },
+    {
+      "name": "tokens",
+      "unit": "tokens",
+      "current": {
+        "remainingPercent": 40,
+        "resetsAt": "2023-11-14T22:13:20.000Z"
+      }
+    }
+  ]
+}

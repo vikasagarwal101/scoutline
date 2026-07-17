@@ -1,18 +1,20 @@
 /**
- * Z.AI Monitor API client — quota and usage endpoints.
+ * Z.AI Monitor API client — compatibility delegate (P4-02).
+ *
+ * The Z.AI fetch mechanics moved to
+ * {@link ../providers/zai/monitor-client.js} so the Provider Adapter owns
+ * its transport. This module retains every existing export as a thin
+ * delegate so current imports keep working while command Modules migrate
+ * to the normalized Provider-quota Interface (ADR-0001).
  *
  * Distinct from the MCP/coding endpoints:
  *   - Base: https://api.z.ai  (no /api/coding/paas/v4 prefix)
  *   - Auth quirk: try `Authorization: <key>` first; on 401 retry with `Bearer <key>`
- *
- * Reference: /run/media/vikas/devdrive/glm-usage-indicator/API.md
  */
 
 import { getApiKey } from "./config.js";
 import { ApiError, AuthError, NetworkError, TimeoutError } from "./errors.js";
-
-const MONITOR_BASE = process.env.ZAI_MONITOR_BASE_URL || "https://api.z.ai";
-const TIMEOUT_MS = parseInt(process.env.Z_AI_TIMEOUT || "30000", 10);
+import { fetchZaiMonitorPath } from "../providers/zai/monitor-client.js";
 
 export interface ToolUsage {
   modelCode: string;
@@ -50,78 +52,31 @@ export interface ModelUsageTotal {
   modelSummaryList?: Array<{ modelName: string; totalTokens: number; sortOrder: number }>;
 }
 
-async function fetchWithAuth(path: string, params?: Record<string, string>): Promise<unknown> {
-  const apiKey = getApiKey();
-  const url = new URL(MONITOR_BASE + path);
-  if (params) {
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  }
-
-  // The monitor API accepts the key with OR without Bearer prefix.
-  // Try raw first; on 401, retry with Bearer.
-  for (const authValue of [apiKey, `Bearer ${apiKey}`]) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
-    try {
-      const res = await fetch(url, {
-        method: "GET",
-        headers: {
-          Authorization: authValue,
-          "Accept-Language": "en-US,en",
-          "Content-Type": "application/json",
-        },
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      if (res.status === 401 && authValue === apiKey) {
-        // Retry with Bearer prefix
-        continue;
-      }
-
-      if (!res.ok) {
-        const text = await res.text();
-        let msg = `HTTP ${res.status}: ${text}`;
-        try {
-          const j = JSON.parse(text);
-          msg = j.message || j.error?.message || msg;
-        } catch {
-          // keep raw text
-        }
-        if (res.status === 401 || res.status === 403) {
-          throw new AuthError(`Monitor API auth failed: ${msg}`);
-        }
-        throw new ApiError(msg, res.status);
-      }
-
-      const body = (await res.json()) as { data?: unknown };
-      // Endpoint wraps responses in { data: {...} } — unwrap.
-      return body.data ?? body;
-    } catch (err) {
-      clearTimeout(timeoutId);
-      if (err instanceof AuthError || err instanceof ApiError) throw err;
-      if (err instanceof Error) {
-        if (err.name === "AbortError") throw new TimeoutError(TIMEOUT_MS);
-        if (err.message.includes("fetch") || err.message.includes("ECONNREFUSED")) {
-          throw new NetworkError(err.message);
-        }
-      }
-      throw err;
-    }
-  }
-  throw new AuthError("Monitor API rejected both auth schemes");
-}
-
+/**
+ * Back-compat delegate. Resolves the API key through the shared config
+ * accessor and delegates the fetch to the Provider-local monitor client.
+ */
 export async function getQuotaLimit(): Promise<QuotaLimit> {
-  const data = (await fetchWithAuth("/api/monitor/usage/quota/limit")) as Partial<QuotaLimit>;
+  const apiKey = getApiKey();
+  const data = (await fetchZaiMonitorPath(
+    apiKey,
+    "/api/monitor/usage/quota/limit",
+    undefined,
+    {},
+  )) as Partial<QuotaLimit>;
   return {
     level: data.level || "unknown",
     limits: data.limits || [],
   };
 }
 
+/**
+ * Back-compat delegate for the model-usage endpoint. Unused by commands
+ * today; preserved so the public export surface is unchanged.
+ */
 export async function getModelUsage(startTime: string, endTime: string): Promise<ModelUsageTotal> {
-  const data = (await fetchWithAuth("/api/monitor/usage/model-usage", {
+  const apiKey = getApiKey();
+  const data = (await fetchZaiMonitorPath(apiKey, "/api/monitor/usage/model-usage", {
     startTime,
     endTime,
   })) as { totalUsage?: ModelUsageTotal };
@@ -154,3 +109,7 @@ export function formatResetTime(epochMs: number): string {
   const days = Math.floor(hours / 24);
   return `${days}d`;
 }
+
+// Re-export the normalized error classes so existing imports from this
+// module keep resolving.
+export { ApiError, AuthError, NetworkError, TimeoutError };

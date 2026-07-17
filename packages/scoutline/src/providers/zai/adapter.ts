@@ -62,6 +62,8 @@ import {
 } from "../../lib/mcp-client.js";
 import { buildCacheKey } from "../../lib/cache.js";
 import { resolveImageSource, resolveVideoSource } from "./media.js";
+import { createZaiQuotaCapability, type ZaiQuotaCapabilityOptions } from "./quota.js";
+import type { ZaiMonitorFetch } from "./monitor-client.js";
 
 const SEARCH_TOOL_PUBLIC_NAME = getMcpToolName("search", "web_search_prime");
 const VISION_ANALYZE_TOOL_PUBLIC_NAME = getMcpToolName("vision", "analyze_image");
@@ -592,6 +594,23 @@ function defaultZaiClientFactory(options: ZaiMcpClientOptions): ZaiAdapterClient
 export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): ProviderDescriptor {
   const clientFactory = dependencies?.clientFactory ?? defaultZaiClientFactory;
 
+  // Quota-monitor transport injection (tests). Production uses the
+  // global fetch and timers resolved inside the monitor client.
+  const quotaTransport: {
+    fetch?: ZaiMonitorFetch;
+    setTimeout?: typeof setTimeout;
+    clearTimeout?: typeof clearTimeout;
+  } = {};
+  if (dependencies?.quotaFetch) {
+    quotaTransport.fetch = dependencies.quotaFetch as ZaiMonitorFetch;
+  }
+  if (dependencies?.quotaSetTimeout) {
+    quotaTransport.setTimeout = dependencies.quotaSetTimeout;
+  }
+  if (dependencies?.quotaClearTimeout) {
+    quotaTransport.clearTimeout = dependencies.quotaClearTimeout;
+  }
+
   return {
     id: "zai",
     isConfigured(env: NodeJS.ProcessEnv): boolean {
@@ -609,6 +628,7 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
         "vision.chart",
         "vision.diff",
         "vision.video",
+        "quota",
       ]);
     },
     create(context: ProviderContext): ProviderAdapter {
@@ -620,7 +640,9 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
         env: context.env,
         clientFactory,
       });
-      return { id: "zai", search, vision };
+      const quotaOptions: ZaiQuotaCapabilityOptions = { env: context.env, ...quotaTransport };
+      const quota = createZaiQuotaCapability(quotaOptions);
+      return { id: "zai", search, vision, quota };
     },
   };
 }

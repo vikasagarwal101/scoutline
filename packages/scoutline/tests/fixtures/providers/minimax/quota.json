@@ -1,0 +1,22 @@
+{
+  "model_remains": [
+    {
+      "model_name": "zorla-x",
+      "used": 50,
+      "total": 200,
+      "remains_percentage": 75,
+      "end_time": 1700000000000,
+      "weekly_used": 200,
+      "weekly_total": 1000,
+      "weekly_remains_percentage": 80,
+      "weekly_end_time": 1700500000000
+    },
+    {
+      "model_name": "abab6.5s-chat",
+      "used": 30,
+      "total": 100,
+      "remains_percentage": 70,
+      "end_time": 1700000000000
+    }
+  ]
+}

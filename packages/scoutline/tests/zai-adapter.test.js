@@ -115,8 +115,8 @@ describe("Z.AI Search Adapter — descriptor metadata", () => {
     assert.strictEqual(descriptor.id, "zai");
     const caps = descriptor.capabilities();
     assert.ok(caps.has("search"));
-    // No Vision/quota/diagnostics in Phase 2.
-    assert.ok(!caps.has("quota"));
+    // P4-02 wires quota; diagnostics arrive in P4-04.
+    assert.ok(caps.has("quota"));
     assert.ok(!caps.has("diagnostics"));
   });
 

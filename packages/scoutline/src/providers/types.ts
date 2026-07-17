@@ -22,6 +22,7 @@
 
 import type { SearchCapability } from "../capabilities/search.js";
 import type { VisionCapability } from "../capabilities/vision.js";
+import type { QuotaCapability } from "../capabilities/quota.js";
 
 // ---------------------------------------------------------------------------
 // Provider identity
@@ -75,6 +76,7 @@ export interface ProviderAdapter {
   readonly id: ProviderId;
   readonly search?: SearchCapability;
   readonly vision?: VisionCapability;
+  readonly quota?: QuotaCapability;
 }
 
 // ---------------------------------------------------------------------------
@@ -117,9 +119,7 @@ export function getProviderDescriptor(
   const list = descriptors ?? BUILT_IN_PROVIDER_DESCRIPTORS;
   const descriptor = list.find((d) => d.id === id);
   if (!descriptor) {
-    throw new Error(
-      `Unknown provider "${id}". Built-in providers: ${PROVIDER_IDS.join(", ")}.`,
-    );
+    throw new Error(`Unknown provider "${id}". Built-in providers: ${PROVIDER_IDS.join(", ")}.`);
   }
   return descriptor;
 }
@@ -200,6 +200,23 @@ export interface LegacySearchClientPort {
   close(): Promise<void>;
 }
 
+/**
+ * Injectable fetch response for quota transports (duck-typed). The
+ * injected fetch returns this minimal shape so tests pass a plain object
+ * without depending on the DOM `Response` type.
+ */
+export interface ProviderQuotaFetchResponse {
+  readonly ok: boolean;
+  readonly status: number;
+  text(): Promise<string>;
+  json(): Promise<unknown>;
+}
+
+export type ProviderQuotaFetch = (
+  input: string | URL,
+  init: Record<string, unknown>,
+) => Promise<ProviderQuotaFetchResponse>;
+
 /** Dependencies the Phase 2 Search wiring would inject into the registry. */
 export interface SearchDependencies {
   clientFactory(options: ZaiMcpClientOptions): LegacySearchClientPort;
@@ -211,16 +228,17 @@ export interface SearchDependencies {
  * execution.
  */
 export interface ZaiAdapterClientPort {
-  callToolRaw<T>(
-    name: string,
-    args: Record<string, unknown>,
-  ): Promise<T>;
+  callToolRaw<T>(name: string, args: Record<string, unknown>): Promise<T>;
   close(): Promise<void>;
 }
 
 /** Dependencies the Z.AI Search Adapter accepts through injection. */
 export interface ZaiAdapterDependencies {
   clientFactory(options: ZaiMcpClientOptions): ZaiAdapterClientPort;
+  /** Optional Z.AI quota-monitor transport injection (tests). */
+  readonly quotaFetch?: ProviderQuotaFetch;
+  readonly quotaSetTimeout?: typeof setTimeout;
+  readonly quotaClearTimeout?: typeof clearTimeout;
 }
 
 /**
@@ -229,6 +247,10 @@ export interface ZaiAdapterDependencies {
  */
 export interface MiniMaxAdapterDependencies {
   readonly sdkConstructor?: MiniMaxSdkConstructor;
+  /** Optional MiniMax direct quota transport injection (tests). */
+  readonly quotaFetch?: ProviderQuotaFetch;
+  readonly quotaSetTimeout?: typeof setTimeout;
+  readonly quotaClearTimeout?: typeof clearTimeout;
 }
 
 /**
@@ -237,11 +259,7 @@ export interface MiniMaxAdapterDependencies {
  * references the implementation.
  */
 export interface MiniMaxSdkConstructor {
-  new (options: {
-    apiKey: string;
-    region: "global" | "cn";
-    baseUrl: string;
-  }): MiniMaxSdkPort;
+  new (options: { apiKey: string; region: "global" | "cn"; baseUrl: string }): MiniMaxSdkPort;
 }
 
 /** Narrow MiniMax SDK surface used by the Adapter. */
@@ -294,9 +312,7 @@ export function createZaiDescriptor(
       ]);
     },
     create() {
-      throw new Error(
-        "Z.AI Search Adapter is not yet implemented; arrives in P2-03.",
-      );
+      throw new Error("Z.AI Search Adapter is not yet implemented; arrives in P2-03.");
     },
   };
 }
@@ -322,9 +338,7 @@ export function createMiniMaxDescriptor(
       return new Set<ProviderCapability>(["search", "vision.interpret-image"]);
     },
     create() {
-      throw new Error(
-        "MiniMax Search Adapter is not yet implemented; arrives in P2-04.",
-      );
+      throw new Error("MiniMax Search Adapter is not yet implemented; arrives in P2-04.");
     },
   };
 }

@@ -58,6 +58,8 @@ import {
 import { loadMiniMaxConfig } from "./config.js";
 import { createMiniMaxSdk } from "./sdk-client.js";
 import { resolveImageSource } from "./media.js";
+import { createMiniMaxQuotaCapability, type MiniMaxQuotaCapabilityOptions } from "./quota.js";
+import type { MiniMaxQuotaFetch } from "./quota-client.js";
 
 // ---------------------------------------------------------------------------
 // Provider-owned credential fingerprint
@@ -328,6 +330,23 @@ export function createMiniMaxDescriptor(
 ): ProviderDescriptor {
   const sdkConstructor = dependencies?.sdkConstructor;
 
+  // Direct quota transport injection (tests). Production uses the
+  // global fetch and timers resolved inside the quota client.
+  const quotaTransport: {
+    fetch?: MiniMaxQuotaFetch;
+    setTimeout?: typeof setTimeout;
+    clearTimeout?: typeof clearTimeout;
+  } = {};
+  if (dependencies?.quotaFetch) {
+    quotaTransport.fetch = dependencies.quotaFetch as MiniMaxQuotaFetch;
+  }
+  if (dependencies?.quotaSetTimeout) {
+    quotaTransport.setTimeout = dependencies.quotaSetTimeout;
+  }
+  if (dependencies?.quotaClearTimeout) {
+    quotaTransport.clearTimeout = dependencies.quotaClearTimeout;
+  }
+
   return {
     id: "minimax",
     isConfigured(env: NodeJS.ProcessEnv): boolean {
@@ -335,7 +354,7 @@ export function createMiniMaxDescriptor(
       return typeof key === "string" && /\S/.test(key);
     },
     capabilities(): ReadonlySet<ProviderCapability> {
-      return new Set<ProviderCapability>(["search", "vision.interpret-image"]);
+      return new Set<ProviderCapability>(["search", "vision.interpret-image", "quota"]);
     },
     create(context: ProviderContext): ProviderAdapter {
       const search = createMiniMaxSearchCapability({
@@ -346,7 +365,9 @@ export function createMiniMaxDescriptor(
         env: context.env,
         sdkConstructor,
       });
-      return { id: "minimax", search, vision };
+      const quotaOptions: MiniMaxQuotaCapabilityOptions = { env: context.env, ...quotaTransport };
+      const quota = createMiniMaxQuotaCapability(quotaOptions);
+      return { id: "minimax", search, vision, quota };
     },
   };
 }

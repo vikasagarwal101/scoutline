@@ -1,0 +1,20 @@
+{
+  "result": [
+    {
+      "refer": "r1",
+      "title": "Sanitized result one",
+      "link": "https://example.test/one",
+      "media": "example.test",
+      "content": "Sanitized summary one.",
+      "icon": ""
+    },
+    {
+      "refer": "r2",
+      "title": "Sanitized result two",
+      "link": "https://example.test/two",
+      "media": "example.test",
+      "content": "Sanitized summary two.",
+      "icon": ""
+    }
+  ]
+}

@@ -1,0 +1,111 @@
+{
+  "public_identities": {
+    "scoutline.zai.search.web_search_prime": {
+      "manual": "scoutline.zai",
+      "server": "search",
+      "tool": "web_search_prime"
+    }
+  },
+  "tools": [
+    {
+      "name": "scoutline_zai.search.web_search_prime",
+      "description": "Web search via Z.AI WebSearchPrime (sanitized fixture).",
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "search_query": { "type": "string", "description": "Query text." },
+          "count": { "type": "integer", "description": "Result count." },
+          "search_domain_filter": { "type": "string" },
+          "search_recency_filter": {
+            "type": "string",
+            "enum": ["oneDay", "oneWeek", "oneMonth", "oneYear", "noLimit"]
+          },
+          "content_size": { "type": "string", "enum": ["medium", "high"] },
+          "location": { "type": "string", "enum": ["cn", "us"] }
+        },
+        "required": ["search_query"],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "refer": { "type": "string" },
+            "title": { "type": "string" },
+            "link": { "type": "string" },
+            "media": { "type": "string" },
+            "content": { "type": "string" },
+            "icon": { "type": "string" },
+            "publish_date": { "type": "string" }
+          }
+        }
+      },
+      "tags": ["search", "zai", "web"],
+      "tool_call_template": {
+        "call_template_type": "mcp",
+        "name": "scoutline_zai",
+        "config": {
+          "mcpServers": {
+            "search": {
+              "transport": "http",
+              "url": "https://example.test/search"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "scoutline_zai.reader.webReader",
+      "description": "Web reader via Z.AI (sanitized fixture).",
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string" }
+        },
+        "required": ["url"]
+      },
+      "outputs": { "type": "string" },
+      "tags": ["reader", "zai"],
+      "tool_call_template": {
+        "call_template_type": "mcp",
+        "name": "scoutline_zai",
+        "config": {
+          "mcpServers": {
+            "reader": {
+              "transport": "http",
+              "url": "https://example.test/reader"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "scoutline_zai.zread.search_doc",
+      "description": "ZRead documentation search (sanitized fixture).",
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "repo_name": { "type": "string" },
+          "query": { "type": "string" },
+          "language": { "type": "string", "enum": ["zh", "en"] }
+        },
+        "required": ["repo_name", "query"]
+      },
+      "outputs": { "type": "string" },
+      "tags": ["zread", "repo"],
+      "tool_call_template": {
+        "call_template_type": "mcp",
+        "name": "scoutline_zai",
+        "config": {
+          "mcpServers": {
+            "zread": {
+              "transport": "http",
+              "url": "https://example.test/zread"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

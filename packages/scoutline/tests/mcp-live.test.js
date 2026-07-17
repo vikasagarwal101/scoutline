@@ -11,6 +11,15 @@
  *   ZAI_TEST_REPO_FILE=README.md
  *   ZAI_TEST_REPO_DIR=path/inside/repo
  *   ZAI_TEST_VIDEO_SOURCE=/path/to/video.mp4 (or URL)
+ *
+ * P0-03 splits the test names so tool discovery, Normal Search, and raw
+ * mapped coverage each have distinct intent:
+ *   - "discovers tools and validates tool schemas" — UTCP discovery.
+ *   - "includes expected core tools" — discovery presence assertions.
+ *   - "Normal Search via webSearch reports translation defect" — P0-03
+ *     baseline; P2-03 converts it into a passing regression test.
+ *   - "calls every discovered tool via mapped raw names (Z.AI transport
+ *     check)" — raw mapped coverage as a Z.AI transport check.
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -107,7 +116,61 @@ describeLive("MCP Live Tests", () => {
     }
   });
 
-  it("calls every discovered tool (mapped coverage)", async () => {
+  it("Normal Search via webSearch reports translation defect (P0-03 baseline)", async () => {
+    // P2-03 condition: webSearch returns a non-empty Z.AI result array when
+    // called with the same public dotted operation name passed here. Before
+    // P2-03, the public name is forwarded to UTCP which only knows the
+    // sanitized internal name, so the call must fail with a name-mismatch
+    // error that explicitly identifies one of the two identities.
+    //
+    // Execution note: the successful internal UTCP operation name is
+    //   "scoutline_zai.search.web_search_prime"
+    // — the manual segment is rewritten from dots to underscores during
+    // UTCP manual registration. The public dotted name is
+    //   "scoutline.zai.search.web_search_prime"
+    // (see getMcpToolName("search", "web_search_prime")). No credentials or
+    // Provider response content are logged.
+    const publicName = getMcpToolName("search", "web_search_prime");
+    const internalName = "scoutline_zai.search.web_search_prime";
+
+    // Unique query guarantees an empty response cache so the call must
+    // hit UTCP and surface the translation defect rather than a cached
+    // prior result.
+    const query = `scoutline-mcp-translation-defect-${Date.now()}`;
+    let captured;
+    try {
+      await client.webSearch({
+        query,
+        count: 1,
+        recencyFilter: "noLimit",
+        contentSize: "medium",
+      });
+      assert.fail(
+        "webSearch must throw before P2-03 — public name is forwarded verbatim to UTCP",
+      );
+    } catch (err) {
+      captured = err instanceof Error ? err.message : String(err);
+    }
+
+    // Reject generic transport failures (timeouts, auth, network) that
+    // would mask the actual translation defect.
+    const generic = /timeout|ETIMEDOUT|\b401\b|\b403\b|auth(entication| orized)?|ECONNREFUSED|fetch failed/i;
+    assert.ok(
+      !generic.test(captured),
+      `webSearch failed for a generic transport reason, not a name mismatch: ${captured}`,
+    );
+
+    // The error must identify either the public dotted identity or the
+    // sanitized internal UTCP identity as the unknown operation.
+    const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`${escape(publicName)}|${escape(internalName)}`);
+    assert.ok(
+      re.test(captured),
+      `expected error to identify public/internal operation mismatch, got: ${captured}`,
+    );
+  });
+
+  it("calls every discovered tool via mapped raw names (Z.AI transport check)", async () => {
     const repo = process.env.ZAI_TEST_REPO || "vikasagarwal101/scoutline";
     const repoFile = process.env.ZAI_TEST_REPO_FILE || "README.md";
     const repoDir = process.env.ZAI_TEST_REPO_DIR;

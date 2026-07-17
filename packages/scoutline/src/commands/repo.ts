@@ -1,11 +1,14 @@
 /**
  * Repo commands for GitHub repository exploration (ZRead)
+ *
+ * P1-05: each command returns a CommandResult instead of writing
+ * directly to stdout/stderr. Validation errors are thrown and converted
+ * by invokeCommand.
  */
 
 import { ZReadMcpClient } from "../lib/mcp-client.js";
-import { outputSuccess } from "../lib/output.js";
-import { formatErrorOutput, ValidationError } from "../lib/errors.js";
-import { silenceConsole, restoreConsole } from "../lib/silence.js";
+import { ValidationError } from "../lib/errors.js";
+import type { CommandContext, CommandResult } from "../command-invocation.js";
 import path from "node:path";
 
 function validateRepo(repo: string): void {
@@ -116,74 +119,57 @@ export async function repoSearch(
   repo: string,
   query: string,
   options: RepoSearchOptions = {},
-): Promise<void> {
-  try {
-    validateRepo(repo);
-    if (options.language && options.language !== "en" && options.language !== "zh") {
-      throw new ValidationError('Language must be "en" or "zh"');
-    }
-  } catch (error) {
-    console.error(formatErrorOutput(error));
-    process.exit(1);
+  _context?: CommandContext,
+): Promise<CommandResult> {
+  validateRepo(repo);
+  if (options.language && options.language !== "en" && options.language !== "zh") {
+    throw new ValidationError('Language must be "en" or "zh"');
   }
 
-  silenceConsole();
   const client = new ZReadMcpClient({ enableVision: false, noCache: options.noCache });
   try {
-    try {
-      const language = options.language || "en";
-      const results = await client.searchDoc(repo, query, language);
-      outputSuccess(truncateText(results, options.maxChars));
-    } finally {
-      await client.close().catch(() => {});
-      restoreConsole();
-    }
-  } catch (error) {
-    console.error(formatErrorOutput(error));
-    process.exit(1);
+    const language = options.language || "en";
+    const results = await client.searchDoc(repo, query, language);
+    return { kind: "data", data: truncateText(results, options.maxChars) };
+  } finally {
+    await client.close().catch(() => {});
   }
 }
 
-export async function repoTree(repo: string, options: RepoTreeOptions = {}): Promise<void> {
-  try {
-    validateRepo(repo);
-    if (options.depth !== undefined) {
-      const depthValue = Number(options.depth);
-      if (!Number.isFinite(depthValue) || depthValue < 1) {
-        throw new ValidationError("Depth must be a positive integer");
-      }
+export async function repoTree(
+  repo: string,
+  options: RepoTreeOptions = {},
+  _context?: CommandContext,
+): Promise<CommandResult> {
+  validateRepo(repo);
+  if (options.depth !== undefined) {
+    const depthValue = Number(options.depth);
+    if (!Number.isFinite(depthValue) || depthValue < 1) {
+      throw new ValidationError("Depth must be a positive integer");
     }
-  } catch (error) {
-    console.error(formatErrorOutput(error));
-    process.exit(1);
   }
 
-  silenceConsole();
   const client = new ZReadMcpClient({ enableVision: false, noCache: options.noCache });
   try {
-    try {
-      const depth = Math.max(1, Math.floor(options.depth || 1));
-      const dirPath = normalizeDirPath(options.path);
-      if (depth === 1) {
-        const structure = await client.getRepoStructure(repo, dirPath);
-        outputSuccess(structure);
-        return;
-      }
+    const depth = Math.max(1, Math.floor(options.depth || 1));
+    const dirPath = normalizeDirPath(options.path);
+    if (depth === 1) {
+      const structure = await client.getRepoStructure(repo, dirPath);
+      return { kind: "data", data: structure };
+    }
 
-      const snapshots = await collectTreeSnapshots(client, repo, dirPath, depth);
-      outputSuccess({
+    const snapshots = await collectTreeSnapshots(client, repo, dirPath, depth);
+    return {
+      kind: "data",
+      data: {
         repo,
         depth,
         basePath: dirPath || "/",
         snapshots,
-      });
-    } finally {
-      await client.close().catch(() => {});
-      restoreConsole();
-    }
-  } catch (error) {
-    console.error(formatErrorOutput(error));
-    process.exit(1);
+      },
+    };
+  } finally {
+    await client.close().catch(() => {});
   }
 }
 
@@ -191,27 +177,16 @@ export async function repoRead(
   repo: string,
   path: string,
   options: RepoReadOptions = {},
-): Promise<void> {
-  try {
-    validateRepo(repo);
-  } catch (error) {
-    console.error(formatErrorOutput(error));
-    process.exit(1);
-  }
+  _context?: CommandContext,
+): Promise<CommandResult> {
+  validateRepo(repo);
 
-  silenceConsole();
   const client = new ZReadMcpClient({ enableVision: false, noCache: options.noCache });
   try {
-    try {
-      const content = await client.readFile(repo, path);
-      outputSuccess(truncateText(content, options.maxChars));
-    } finally {
-      await client.close().catch(() => {});
-      restoreConsole();
-    }
-  } catch (error) {
-    console.error(formatErrorOutput(error));
-    process.exit(1);
+    const content = await client.readFile(repo, path);
+    return { kind: "data", data: truncateText(content, options.maxChars) };
+  } finally {
+    await client.close().catch(() => {});
   }
 }
 

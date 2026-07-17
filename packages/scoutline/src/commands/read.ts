@@ -1,12 +1,24 @@
 /**
  * Web reader command using Z.AI WebReader MCP
+ *
+ * P1-05: returns a CommandResult instead of writing directly to
+ * stdout/stderr. Notices (URL rewrite hint, truncation warning, extract
+ * count) flow through the invocation context; errors are thrown and
+ * converted by invokeCommand.
+ *
+ * Behaviour preserved from Phase 0:
+ *   - By default the data is the page content (string).
+ *   - With --full-envelope the data is the structured reader envelope.
+ *   - With -O json/pretty (without --full-envelope) the data is also the
+ *     envelope so consumers always get the structured object in JSON
+ *     modes. The `outputMode` parameter is passed by the dispatcher.
  */
 
 import { ZaiMcpClient } from "../lib/mcp-client.js";
-import { outputSuccess, getOutputMode } from "../lib/output.js";
-import { formatErrorOutput, ValidationError } from "../lib/errors.js";
-import { silenceConsole, restoreConsole } from "../lib/silence.js";
+import { ValidationError } from "../lib/errors.js";
 import { extract, isExtractMode, type ExtractMode } from "../lib/extract.js";
+import type { CommandContext, CommandResult } from "../command-invocation.js";
+import type { OutputMode } from "../lib/output.js";
 
 export interface ReadOptions {
   format?: "markdown" | "text";
@@ -76,86 +88,76 @@ function truncate(
   return { text: content.slice(0, max - 1).trimEnd() + "…", originalLen, truncated: true };
 }
 
-export async function read(url: string, options: ReadOptions = {}): Promise<void> {
-  // Validate URL first (before silencing)
+export async function read(
+  url: string,
+  options: ReadOptions = {},
+  outputMode?: OutputMode,
+  context?: CommandContext,
+): Promise<CommandResult> {
+  // Validate URL first (before any client work).
   if (!url.startsWith("http://") && !url.startsWith("https://")) {
-    console.error(
-      formatErrorOutput(new ValidationError("URL must start with http:// or https://")),
-    );
-    process.exit(1);
+    throw new ValidationError("URL must start with http:// or https://");
   }
 
   if (options.extract && !isExtractMode(options.extract)) {
-    console.error(
-      formatErrorOutput(
-        new ValidationError(
-          `Invalid --extract mode: ${options.extract}. Use one of: code, links, tables, headings`,
-        ),
-      ),
+    throw new ValidationError(
+      `Invalid --extract mode: ${options.extract}. Use one of: code, links, tables, headings`,
     );
-    process.exit(1);
   }
 
   const finalUrl = maybeRewriteToRaw(url);
-  if (finalUrl !== url) {
-    process.stderr.write(`ℹ️  rewrote gist URL to raw form: ${finalUrl}\n`);
+  if (finalUrl !== url && context) {
+    context.notice(`ℹ️  rewrote gist URL to raw form: ${finalUrl}`);
   }
 
-  silenceConsole();
   const client = new ZaiMcpClient({ enableVision: false, noCache: options.noCache });
   try {
-    try {
-      const response = await client.webRead({
-        url: finalUrl,
-        format: options.format || "markdown",
-        retainImages: !options.noImages,
-        withLinksSummary: options.withLinks,
-        timeout: options.timeout,
-        noCache: options.noCache,
-        noGfm: options.noGfm,
-        keepImgDataUrl: options.keepImgDataUrl,
-        withImagesSummary: options.withImagesSummary,
-      });
+    const response = await client.webRead({
+      url: finalUrl,
+      format: options.format || "markdown",
+      retainImages: !options.noImages,
+      withLinksSummary: options.withLinks,
+      timeout: options.timeout,
+      noCache: options.noCache,
+      noGfm: options.noGfm,
+      keepImgDataUrl: options.keepImgDataUrl,
+      withImagesSummary: options.withImagesSummary,
+    });
 
-      const { content: rawContent } = extractContent(response);
+    const { content: rawContent } = extractContent(response);
 
-      // --extract short-circuits: returns the extracted slice as a JSON array,
-      // bypassing truncation and envelope logic.
-      if (options.extract) {
-        const extracted = extract(rawContent, options.extract);
-        process.stderr.write(`ℹ️  extracted ${extracted.length} ${options.extract}\n`);
-        outputSuccess(extracted);
-        return;
+    // --extract short-circuits: returns the extracted slice as a JSON array,
+    // bypassing truncation and envelope logic.
+    if (options.extract) {
+      const extracted = extract(rawContent, options.extract);
+      if (context) {
+        context.notice(`ℹ️  extracted ${extracted.length} ${options.extract}`);
       }
-
-      const { text, originalLen, truncated } = truncate(rawContent, options.maxChars);
-
-      if (truncated) {
-        process.stderr.write(
-          `⚠️  content truncated from ${originalLen.toLocaleString()} to ${text.length.toLocaleString()} chars; use a higher --max-chars or omit it for full content\n`,
-        );
-      }
-
-      // Default: content-only (drops title/metadata/external envelope).
-      // --full-envelope or --output-format json/pretty keeps the structured object.
-      const wantEnvelope =
-        options.fullEnvelope || getOutputMode() === "json" || getOutputMode() === "pretty";
-      if (wantEnvelope) {
-        const envelope =
-          response && typeof response === "object"
-            ? { ...(response as object), content: text }
-            : { content: text };
-        outputSuccess(envelope);
-      } else {
-        outputSuccess(text);
-      }
-    } finally {
-      await client.close().catch(() => {});
-      restoreConsole();
+      return { kind: "data", data: extracted };
     }
-  } catch (error) {
-    console.error(formatErrorOutput(error));
-    process.exit(1);
+
+    const { text, originalLen, truncated } = truncate(rawContent, options.maxChars);
+
+    if (truncated && context) {
+      context.notice(
+        `⚠️  content truncated from ${originalLen.toLocaleString()} to ${text.length.toLocaleString()} chars; use a higher --max-chars or omit it for full content`,
+      );
+    }
+
+    // Default: content-only (drops title/metadata/external envelope).
+    // --full-envelope, json, or pretty keeps the structured object.
+    const wantEnvelope =
+      options.fullEnvelope || outputMode === "json" || outputMode === "pretty";
+    if (wantEnvelope) {
+      const envelope =
+        response && typeof response === "object"
+          ? { ...(response as object), content: text }
+          : { content: text };
+      return { kind: "data", data: envelope };
+    }
+    return { kind: "data", data: text };
+  } finally {
+    await client.close().catch(() => {});
   }
 }
 

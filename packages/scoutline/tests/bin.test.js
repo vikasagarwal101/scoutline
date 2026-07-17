@@ -183,27 +183,27 @@ describe("missing positional values: message, code, stream, exit", () => {
     assert.ok(err.error.includes("Missing image sources"));
   });
 
-  it("repo tree with no repo → INVALID_ARGS exit 1", async () => {
+  it("repo tree with no repo → VALIDATION_ERROR exit 1", async () => {
     const r = await runProcess(["repo", "tree"], { env: BASE_ENV });
     assert.strictEqual(r.code, 1);
     const err = JSON.parse(r.stderr);
-    assert.strictEqual(err.code, "INVALID_ARGS");
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
     assert.ok(err.error.includes("Missing repo"));
   });
 
-  it("repo search with no query → INVALID_ARGS exit 1", async () => {
+  it("repo search with no query → VALIDATION_ERROR exit 1", async () => {
     const r = await runProcess(["repo", "search", "owner/repo"], { env: BASE_ENV });
     assert.strictEqual(r.code, 1);
     const err = JSON.parse(r.stderr);
-    assert.strictEqual(err.code, "INVALID_ARGS");
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
     assert.ok(err.error.includes("Missing repo or query"));
   });
 
-  it("repo read with no path → INVALID_ARGS exit 1", async () => {
+  it("repo read with no path → VALIDATION_ERROR exit 1", async () => {
     const r = await runProcess(["repo", "read", "owner/repo"], { env: BASE_ENV });
     assert.strictEqual(r.code, 1);
     const err = JSON.parse(r.stderr);
-    assert.strictEqual(err.code, "INVALID_ARGS");
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
     assert.ok(err.error.includes("Missing repo or path"));
   });
 

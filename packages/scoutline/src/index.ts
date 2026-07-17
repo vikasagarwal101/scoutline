@@ -336,89 +336,144 @@ async function handleSearch(
   );
 }
 
-async function handleRead(args: string[]): Promise<void> {
+async function handleRead(
+  args: string[],
+  outputMode: OutputMode,
+  deps: { invocation: CommandInvocationAdapter },
+): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
   if (flags.help || flags.h || positional.length === 0) {
-    console.log(READ_HELP);
-    return;
+    deps.invocation.writeStdout(READ_HELP);
+    return 0;
   }
 
   const url = positional[0];
 
-  await read(url, {
-    format: flags.format as "markdown" | "text",
-    noImages: flags["no-images"] === true,
-    noCache: flags["no-cache"] === true,
-    withLinks: flags["with-links"] === true,
-    timeout: flags.timeout ? parseInt(flags.timeout as string, 10) : undefined,
-    noGfm: flags["no-gfm"] === true,
-    keepImgDataUrl: flags["keep-img-data-url"] === true,
-    withImagesSummary: flags["with-images-summary"] === true,
-    maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
-    fullEnvelope: flags["full-envelope"] === true,
-    extract: isExtractMode(flags.extract as string) ? (flags.extract as ExtractMode) : undefined,
-  });
+  return invokeCommand(
+    deps.invocation,
+    (context) =>
+      read(
+        url,
+        {
+          format: flags.format as "markdown" | "text",
+          noImages: flags["no-images"] === true,
+          noCache: flags["no-cache"] === true,
+          withLinks: flags["with-links"] === true,
+          timeout: flags.timeout ? parseInt(flags.timeout as string, 10) : undefined,
+          noGfm: flags["no-gfm"] === true,
+          keepImgDataUrl: flags["keep-img-data-url"] === true,
+          withImagesSummary: flags["with-images-summary"] === true,
+          maxChars: flags["max-chars"]
+            ? parseInt(flags["max-chars"] as string, 10)
+            : undefined,
+          fullEnvelope: flags["full-envelope"] === true,
+          extract: isExtractMode(flags.extract as string)
+            ? (flags.extract as ExtractMode)
+            : undefined,
+        },
+        outputMode,
+        context,
+      ),
+    outputMode,
+  );
 }
 
-async function handleRepo(args: string[]): Promise<void> {
+async function handleRepo(
+  args: string[],
+  outputMode: OutputMode,
+  deps: { invocation: CommandInvocationAdapter },
+): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
   if (flags.help || flags.h || positional.length === 0) {
-    console.log(REPO_HELP);
-    return;
+    deps.invocation.writeStdout(REPO_HELP);
+    return 0;
   }
 
   const command = positional[0];
   const repo = positional[1];
 
   switch (command) {
-    case "search":
+    case "search": {
       const query = positional.slice(2).join(" ");
       if (!repo || !query) {
-        outputError(
+        throw new ValidationError(
           "Missing repo or query",
-          "INVALID_ARGS",
           "Usage: scoutline repo search <owner/repo> <query>",
         );
       }
-      await repoSearch(repo, query, {
-        language: flags.language as "en" | "zh",
-        maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
-        noCache: flags["no-cache"] === true,
-      });
-      break;
+      return invokeCommand(
+        deps.invocation,
+        (context) =>
+          repoSearch(
+            repo,
+            query,
+            {
+              language: flags.language as "en" | "zh",
+              maxChars: flags["max-chars"]
+                ? parseInt(flags["max-chars"] as string, 10)
+                : undefined,
+              noCache: flags["no-cache"] === true,
+            },
+            context,
+          ),
+        outputMode,
+      );
+    }
 
-    case "tree":
+    case "tree": {
       if (!repo) {
-        outputError("Missing repo", "INVALID_ARGS", "Usage: scoutline repo tree <owner/repo>");
+        throw new ValidationError(
+          "Missing repo",
+          "Usage: scoutline repo tree <owner/repo>",
+        );
       }
-      await repoTree(repo, {
-        path: flags.path as string,
-        depth: flags.depth ? parseInt(flags.depth as string, 10) : undefined,
-        noCache: flags["no-cache"] === true,
-      });
-      break;
+      return invokeCommand(
+        deps.invocation,
+        (context) =>
+          repoTree(
+            repo,
+            {
+              path: flags.path as string,
+              depth: flags.depth ? parseInt(flags.depth as string, 10) : undefined,
+              noCache: flags["no-cache"] === true,
+            },
+            context,
+          ),
+        outputMode,
+      );
+    }
 
-    case "read":
+    case "read": {
       const path = positional[2];
       if (!repo || !path) {
-        outputError(
+        throw new ValidationError(
           "Missing repo or path",
-          "INVALID_ARGS",
           "Usage: scoutline repo read <owner/repo> <path>",
         );
       }
-      await repoRead(repo, path, {
-        maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
-        noCache: flags["no-cache"] === true,
-      });
-      break;
+      return invokeCommand(
+        deps.invocation,
+        (context) =>
+          repoRead(
+            repo,
+            path,
+            {
+              maxChars: flags["max-chars"]
+                ? parseInt(flags["max-chars"] as string, 10)
+                : undefined,
+              noCache: flags["no-cache"] === true,
+            },
+            context,
+          ),
+        outputMode,
+      );
+    }
 
     default:
-      outputError(
+      throw new ValidationError(
         `Unknown repo command: ${command}`,
-        "INVALID_ARGS",
         'Run "scoutline repo --help" for available commands',
       );
   }
@@ -579,48 +634,50 @@ export async function main(
   const command = rest[0];
   const commandArgs = rest.slice(1);
 
-  switch (command) {
-    case "vision":
-      await handleVision(commandArgs);
-      break;
-    case "search":
-      await handleSearch(commandArgs, outputMode, { invocation });
-      break;
-    case "read":
-      await handleRead(commandArgs);
-      break;
-    case "repo":
-      await handleRepo(commandArgs);
-      break;
-    case "tools":
-      await handleTools(commandArgs);
-      break;
-    case "tool":
-      await handleTool(commandArgs);
-      break;
-    case "call":
-      await handleCall(commandArgs);
-      break;
-    case "doctor":
-      await handleDoctor(commandArgs);
-      break;
-    case "quota":
-      await handleQuota(commandArgs);
-      break;
-    case "code":
-      await handleCode(commandArgs);
-      break;
-    default:
-      invocation.writeStderr(
-        formatErrorOutput(
-          new ValidationError(
-            `Unknown command: ${command}`,
-            'Run "scoutline --help" for available commands',
+  try {
+    switch (command) {
+      case "vision":
+        await handleVision(commandArgs);
+        break;
+      case "search":
+        return await handleSearch(commandArgs, outputMode, { invocation });
+      case "read":
+        return await handleRead(commandArgs, outputMode, { invocation });
+      case "repo":
+        return await handleRepo(commandArgs, outputMode, { invocation });
+      case "tools":
+        await handleTools(commandArgs);
+        break;
+      case "tool":
+        await handleTool(commandArgs);
+        break;
+      case "call":
+        await handleCall(commandArgs);
+        break;
+      case "doctor":
+        await handleDoctor(commandArgs);
+        break;
+      case "quota":
+        await handleQuota(commandArgs);
+        break;
+      case "code":
+        await handleCode(commandArgs);
+        break;
+      default:
+        invocation.writeStderr(
+          formatErrorOutput(
+            new ValidationError(
+              `Unknown command: ${command}`,
+              'Run "scoutline --help" for available commands',
+            ),
+            "data",
           ),
-          "data",
-        ),
-      );
-      return 1;
+        );
+        return 1;
+    }
+  } catch (error) {
+    invocation.writeStderr(formatErrorOutput(error, "data"));
+    return getErrorExitCode(error);
   }
 
   return 0;

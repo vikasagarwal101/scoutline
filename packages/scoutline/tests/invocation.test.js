@@ -523,3 +523,92 @@ describe("invokeCommand — search command routed through the seam (P1-04)", () 
     ]);
   });
 });
+
+
+describe("invokeCommand — read and repo routed through the seam (P1-05)", () => {
+  it("read rejects URLs that aren't http/https", async () => {
+    const { read } = await import("../dist/commands/read.js");
+    const { adapter, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      (ctx) => read("ftp://example.com/file", {}, "data", ctx),
+      "data",
+    );
+    assert.strictEqual(status, 1);
+    const parsed = JSON.parse(stderr[0]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.match(parsed.error, /URL must start with/);
+  });
+
+  it("read rejects unknown --extract modes", async () => {
+    const { read } = await import("../dist/commands/read.js");
+    const { adapter, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      (ctx) => read("https://example.com/x", { extract: "bogus" }, "data", ctx),
+      "data",
+    );
+    assert.strictEqual(status, 1);
+    const parsed = JSON.parse(stderr[0]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.match(parsed.error, /Invalid --extract mode/);
+  });
+
+  it("repoTree throws ValidationError on invalid repo format through the seam", async () => {
+    const { repoTree } = await import("../dist/commands/repo.js");
+    const { adapter, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      (ctx) => repoTree("invalid-format", {}, ctx),
+      "data",
+    );
+    assert.strictEqual(status, 1);
+    assert.strictEqual(stderr.length, 1);
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.success, false);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.match(parsed.error, /Invalid repository format/);
+  });
+
+  it("repoTree rejects non-positive depth through the seam", async () => {
+    const { repoTree } = await import("../dist/commands/repo.js");
+    const { adapter, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      (ctx) => repoTree("owner/repo", { depth: 0 }, ctx),
+      "data",
+    );
+    assert.strictEqual(status, 1);
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.match(parsed.error, /Depth must be a positive integer/);
+  });
+
+  it("repoSearch validation rejects an invalid language", async () => {
+    const { repoSearch } = await import("../dist/commands/repo.js");
+    const { adapter, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      (ctx) => repoSearch("owner/repo", "query", { language: "fr" }, ctx),
+      "data",
+    );
+    assert.strictEqual(status, 1);
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.match(parsed.error, /Language must be/);
+  });
+
+  it("repoRead throws ValidationError on invalid repo format through the seam", async () => {
+    const { repoRead } = await import("../dist/commands/repo.js");
+    const { adapter, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      (ctx) => repoRead("badrepo", "README.md", {}, ctx),
+      "data",
+    );
+    assert.strictEqual(status, 1);
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.match(parsed.error, /Invalid repository format/);
+  });
+});

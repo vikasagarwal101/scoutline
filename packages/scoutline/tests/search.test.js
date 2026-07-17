@@ -20,6 +20,7 @@ import assert from "node:assert/strict";
 import { search, SEARCH_HELP } from "../dist/commands/search.js";
 import { main } from "../dist/index.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
+import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { readFixture } from "./helpers/fixtures.js";
 
 // ---------------------------------------------------------------------------
@@ -384,6 +385,117 @@ describe("search command — invokes the capability once per sub-query", () => {
   });
 });
 
+describe("search command — concurrent merge and client lifecycle", () => {
+  it("starts sub-queries concurrently and preserves query order when completion is reversed", async () => {
+    const gates = new Map();
+    let active = 0;
+    let maxActive = 0;
+    const capability = {
+      validate() {},
+      cacheIdentity(request) {
+        return {
+          provider: "zai",
+          capability: "search",
+          credentialFingerprint: "merge-fp",
+          request,
+          legacyCandidates: [],
+        };
+      },
+      invoke(request) {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        return new Promise((resolve) => {
+          gates.set(request.query, (value) => {
+            active -= 1;
+            resolve(value);
+          });
+        });
+      },
+    };
+    const pending = search(
+      "first|second",
+      { merge: true, noCache: true },
+      makeExecDeps(capability),
+      makeContext().context,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(maxActive, 2, "both sub-queries must be in flight together");
+    gates.get("second")([src("Second", "https://e/second", "second")]);
+    gates.get("first")([src("First", "https://e/first", "first")]);
+    const result = await pending;
+    assert.deepStrictEqual(
+      result.data.map((entry) => entry.title),
+      ["First", "Second"],
+      "completion order must not reorder query-ranked results",
+    );
+  });
+
+  it("uses a distinct provider client per merged query and closes every client", async () => {
+    const clients = [];
+    const descriptor = createZaiDescriptor({
+      clientFactory: () => {
+        const state = { closed: false };
+        clients.push(state);
+        return {
+          async callToolRaw(_name, args) {
+            return [
+              {
+                title: args.search_query,
+                link: `https://e/${args.search_query}`,
+                content: "ok",
+              },
+            ];
+          },
+          async close() {
+            state.closed = true;
+          },
+        };
+      },
+    });
+    const capability = descriptor.create({ env: { Z_AI_API_KEY: "k" } }).search;
+    await search(
+      "alpha|beta",
+      { merge: true, noCache: true },
+      makeExecDeps(capability),
+      makeContext().context,
+    );
+    assert.strictEqual(clients.length, 2);
+    assert.ok(clients.every((client) => client.closed));
+  });
+
+  it("closes every created provider client when one merged query fails", async () => {
+    const clients = [];
+    const descriptor = createZaiDescriptor({
+      clientFactory: () => {
+        const state = { closed: false };
+        clients.push(state);
+        return {
+          async callToolRaw(_name, args) {
+            if (args.search_query === "bad") throw new Error("HTTP 404 not found");
+            return [{ title: "good", link: "https://e/good", content: "ok" }];
+          },
+          async close() {
+            state.closed = true;
+          },
+        };
+      },
+    });
+    const capability = descriptor.create({ env: { Z_AI_API_KEY: "k" } }).search;
+    await assert.rejects(
+      search(
+        "good|bad",
+        { merge: true, noCache: true },
+        makeExecDeps(capability),
+        makeContext().context,
+      ),
+      (error) => error.code === "API_ERROR" && error.statusCode === 404,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(clients.length, 2);
+    assert.ok(clients.every((client) => client.closed));
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Empty merge input
 // ---------------------------------------------------------------------------
@@ -625,7 +737,7 @@ function createTestAdapter(overrides = {}) {
 }
 
 /** Build a fake descriptor whose adapter.search.invoke is observable. */
-function makeFakeDescriptor(id) {
+function makeFakeDescriptor(id, results = []) {
   const invokes = [];
   return {
     descriptor: {
@@ -647,7 +759,7 @@ function makeFakeDescriptor(id) {
           },
           async invoke(r) {
             invokes.push(r);
-            return [];
+            return results.map((entry) => ({ ...entry }));
           },
         },
       }),
@@ -695,6 +807,64 @@ function makeMainDeps() {
     minimaxInvokes: reg.minimaxInvokes,
   };
 }
+
+describe("top-level Search composition", () => {
+  it("runs Z.AI parse → selection → capability → normalized stdout", async () => {
+    const zai = makeFakeDescriptor("zai", [
+      { title: "Z.AI result", url: "https://e/zai", summary: "normalized" },
+    ]);
+    const minimax = makeFakeDescriptor("minimax");
+    const { adapter, stdout, stderr } = createTestAdapter();
+    const status = await main(["search", "provider flow"], {
+      invocation: adapter,
+      env: { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k" },
+      providerDescriptors: [zai.descriptor, minimax.descriptor],
+      searchCache: makeExecDeps({}).cache,
+      searchSleep: async () => {},
+      searchRandom: () => 0.5,
+    });
+    assert.strictEqual(status, 0);
+    assert.deepStrictEqual(stderr, []);
+    assert.deepStrictEqual(JSON.parse(stdout[0]), [
+      {
+        rank: 1,
+        title: "Z.AI result",
+        url: "https://e/zai",
+        summary: "normalized",
+      },
+    ]);
+    assert.strictEqual(zai.invokes.length, 1);
+    assert.strictEqual(minimax.invokes.length, 0);
+  });
+
+  it("runs MiniMax parse → selection → capability → normalized stdout", async () => {
+    const zai = makeFakeDescriptor("zai");
+    const minimax = makeFakeDescriptor("minimax", [
+      { title: "MiniMax result", url: "https://e/minimax", summary: "normalized" },
+    ]);
+    const { adapter, stdout, stderr } = createTestAdapter();
+    const status = await main(["--provider", "minimax", "search", "provider flow"], {
+      invocation: adapter,
+      env: { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k" },
+      providerDescriptors: [zai.descriptor, minimax.descriptor],
+      searchCache: makeExecDeps({}).cache,
+      searchSleep: async () => {},
+      searchRandom: () => 0.5,
+    });
+    assert.strictEqual(status, 0);
+    assert.deepStrictEqual(stderr, []);
+    assert.deepStrictEqual(JSON.parse(stdout[0]), [
+      {
+        rank: 1,
+        title: "MiniMax result",
+        url: "https://e/minimax",
+        summary: "normalized",
+      },
+    ]);
+    assert.strictEqual(zai.invokes.length, 0);
+    assert.strictEqual(minimax.invokes.length, 1);
+  });
+});
 
 describe("global --provider parsing and routing", () => {
   it("--provider after the Search token routes to the selected Adapter", async () => {

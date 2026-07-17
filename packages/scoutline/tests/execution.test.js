@@ -258,6 +258,78 @@ describe("executeSearch — ordered execution", () => {
 // Count behaviour
 // ---------------------------------------------------------------------------
 
+describe("executeSearch — cache failure and bypass semantics", () => {
+  it("--no-cache bypasses a cached value, invokes the provider, and performs no write", async () => {
+    const cap = makeCapability({
+      results: [{ title: "fresh", url: "https://fresh.test", summary: "fresh" }],
+    });
+    const cache = {
+      async get() {
+        throw new Error("cache reads must be bypassed");
+      },
+      async set() {
+        throw new Error("cache writes must be bypassed");
+      },
+    };
+    const result = await executeSearch(
+      cap,
+      { query: "fresh" },
+      { noCache: true },
+      baseDeps(cache, makeSleep(), makeRandom()),
+    );
+    assert.deepStrictEqual(result, [
+      { title: "fresh", url: "https://fresh.test", summary: "fresh" },
+    ]);
+    assert.strictEqual(cap.invokeCount, 1);
+  });
+
+  it("cache read failures surface before provider invocation", async () => {
+    const cap = makeCapability();
+    const failure = new Error("cache read failed");
+    const cache = {
+      async get() {
+        throw failure;
+      },
+      async set() {
+        assert.fail("write must not run after a read failure");
+      },
+    };
+    await assert.rejects(
+      executeSearch(
+        cap,
+        { query: "q" },
+        baseOptions(),
+        baseDeps(cache, makeSleep(), makeRandom()),
+      ),
+      failure,
+    );
+    assert.strictEqual(cap.invokeCount, 0);
+  });
+
+  it("cache write failures surface after a successful provider invocation", async () => {
+    const cap = makeCapability();
+    const failure = new Error("cache write failed");
+    const cache = {
+      async get() {
+        return null;
+      },
+      async set() {
+        throw failure;
+      },
+    };
+    await assert.rejects(
+      executeSearch(
+        cap,
+        { query: "q" },
+        baseOptions(),
+        baseDeps(cache, makeSleep(), makeRandom()),
+      ),
+      failure,
+    );
+    assert.strictEqual(cap.invokeCount, 1);
+  });
+});
+
 describe("executeSearch — count truncation", () => {
   const results = [1, 2, 3, 4].map((n) => ({
     title: `T${n}`,

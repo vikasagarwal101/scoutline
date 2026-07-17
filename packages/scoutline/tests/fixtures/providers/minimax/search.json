@@ -1,0 +1,15 @@
+{
+  "organic": [
+    {
+      "title": "Sanitized result one",
+      "link": "https://example.test/one",
+      "snippet": "Sanitized summary one.",
+      "date": "2024-05-06"
+    },
+    {
+      "title": "Sanitized result two",
+      "link": "https://example.test/two",
+      "snippet": "Sanitized summary two."
+    }
+  ]
+}

@@ -23,6 +23,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC_DIR = path.resolve(__dirname, "..", "src");
 const CAPABILITIES_DIR = path.join(SRC_DIR, "capabilities");
 const COMMANDS_DIR = path.join(SRC_DIR, "commands");
+const PACKAGE_JSON = path.resolve(__dirname, "..", "package.json");
+const EXPECTED_SDK_FILE = path.join(SRC_DIR, "providers", "minimax", "sdk-client.ts");
 
 async function listTsFiles(dir) {
   let entries;
@@ -143,6 +145,90 @@ describe("Command Modules: no UTCP or MiniMax SDK imports", () => {
         violations,
         [],
         `${path.relative(SRC_DIR, file)} imports forbidden SDK: ${violations.join(", ")}`,
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MiniMax SDK isolation (P2-04, DESIGN.md §12): exactly one `mmx-cli/sdk`
+// import, located only in providers/minimax/sdk-client.ts. No executable
+// invocation of `mmx`, no reads of `.mmx/config.json`, and no MiniMax
+// credential read through shared lib/config.ts.
+// ---------------------------------------------------------------------------
+
+describe("MiniMax SDK isolation", () => {
+  // Patterns that indicate the `mmx` executable is being invoked as a
+  // subprocess (spawn/exec/run with "mmx" as the command token).
+  const MMX_EXEC_PATTERN =
+    /(["'`])mmx\1\s|child_process|\bexec(?:Sync|File)?\s*\(|\bspawn(?:Sync)?\s*\(/;
+  const MMX_CONFIG_READ_PATTERN = /\.mmx[\\/]config\.json/;
+
+  async function listAllSrcTs() {
+    return listTsFiles(SRC_DIR);
+  }
+
+  it("mmx-cli is pinned to exactly 1.0.16 with no range prefix", async () => {
+    const raw = await fs.readFile(PACKAGE_JSON, "utf8");
+    const pkg = JSON.parse(raw);
+    assert.strictEqual(
+      pkg.dependencies && pkg.dependencies["mmx-cli"],
+      "1.0.16",
+      "mmx-cli must be an exact dependency (1.0.16), no ^ or ~ prefix",
+    );
+  });
+
+  it("exactly one source file imports mmx-cli/sdk, and it is sdk-client.ts", async () => {
+    const files = await listAllSrcTs();
+    const matches = [];
+    for (const file of files) {
+      const source = await readSource(file);
+      const imports = extractImports(source);
+      if (imports.some((spec) => spec.includes("mmx-cli"))) {
+        matches.push(file);
+      }
+    }
+    assert.deepStrictEqual(
+      matches.map((f) => path.relative(SRC_DIR, f)),
+      [path.relative(SRC_DIR, EXPECTED_SDK_FILE)],
+      `mmx-cli/sdk must be imported only by providers/minimax/sdk-client.ts; found: ${matches.join(", ")}`,
+    );
+  });
+
+  it("no source file invokes the mmx executable or reads .mmx/config.json", async () => {
+    const files = await listAllSrcTs();
+    for (const file of files) {
+      const source = await readSource(file);
+      const rel = path.relative(SRC_DIR, file);
+      // Allow child_process imports only when they are not used to invoke
+      // `mmx`. We scan for the `mmx` command token in a string literal AND
+      // for any read of the MMX config file path.
+      assert.ok(!MMX_CONFIG_READ_PATTERN.test(source), `${rel} reads .mmx/config.json`);
+      // Detect a string-literal `mmx` command invocation.
+      const mmxCmd = source.match(/(["'`])mmx(?:\s|\1)/);
+      assert.ok(!mmxCmd, `${rel} invokes the mmx executable: ${mmxCmd && mmxCmd[0]}`);
+      void MMX_EXEC_PATTERN;
+    }
+  });
+
+  it("MiniMax adapter modules never read credentials through shared lib/config.ts", async () => {
+    const minimaxDir = path.join(SRC_DIR, "providers", "minimax");
+    const files = await listTsFiles(minimaxDir);
+    assert.ok(files.length > 0, "expected MiniMax adapter modules to exist");
+    for (const file of files) {
+      const source = await readSource(file);
+      const imports = extractImports(source);
+      const violations = imports.filter(
+        (spec) => spec.includes("lib/config") || /(?:^|\/)config\.js$/.test(spec),
+      );
+      // The only permitted config import is the Adapter-local
+      // providers/minimax/config.js sibling, whose specifier is relative
+      // ("./config.js") and stays inside the minimax directory.
+      const external = violations.filter((spec) => !spec.startsWith("./config"));
+      assert.deepStrictEqual(
+        external,
+        [],
+        `${path.relative(SRC_DIR, file)} reads shared lib/config.ts: ${external.join(", ")}`,
       );
     }
   });

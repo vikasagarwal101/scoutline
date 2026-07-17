@@ -73,6 +73,27 @@ function liveQuery(label) {
 }
 
 /**
+ * Invoke an adapter capability with a small retry for transient API errors.
+ * Adapters perform one attempt by design; shared execution owns retry policy.
+ * Direct adapter tests bypass executeSearch, so we add a minimal retry here
+ * to handle live API transient 500/502/503/504 responses.
+ */
+async function retryAdapterInvoke(invoke, request, maxRetries = 2) {
+  let lastError;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await invoke(request);
+    } catch (err) {
+      lastError = err;
+      const retryable = err?.code === "API_ERROR" && [500, 502, 503, 504].includes(err?.statusCode);
+      if (!retryable || attempt === maxRetries) throw err;
+      await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
+/**
  * Invoke `scoutline search <query>` end-to-end through the production
  * `main` dispatch. Returns the parsed JSON data array, or rejects with
  * an AssertionError containing the redacted stderr envelope. We never
@@ -169,7 +190,7 @@ describeIfLive("Provider live Search — Z.AI", () => {
       "Z.AI descriptor must expose a Search capability",
     );
     const query = liveQuery("zai-adapter");
-    const sources = await adapter.search.invoke({ query });
+    const sources = await retryAdapterInvoke(adapter.search.invoke.bind(adapter.search), { query });
     assertSearchShape(sources);
     await adapter.search.invoke({ query: "noop" }).catch(() => {});
   });
@@ -206,7 +227,7 @@ describeIfLive("Provider live Search — MiniMax", () => {
       "MiniMax descriptor must expose a Search capability",
     );
     const query = liveQuery("minimax-adapter");
-    const sources = await adapter.search.invoke({ query });
+    const sources = await retryAdapterInvoke(adapter.search.invoke.bind(adapter.search), { query });
     assertSearchShape(sources);
   });
 });

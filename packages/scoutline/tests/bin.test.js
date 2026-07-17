@@ -307,4 +307,23 @@ describe("main(args, dependencies) in-process: returns numeric status", () => {
     assert.strictEqual(status, 0);
     assert.match(stdout[0].trim(), /^\d+\.\d+\.\d+$/);
   });
+
+  it("plumbs dependencies.now through to invokeCommand for a deterministic timestamp", async () => {
+    // `code prompt` is a pure offline command (static prompt template, no
+    // network/config). In json mode its success envelope carries a timestamp
+    // sourced from `now`. Asserting an exact injected value proves the
+    // dependencies.now seam flows main -> handler -> invokeCommand.
+    const FIXED = 1_700_000_000_000;
+    const { adapter, stdout } = createTestAdapter();
+    const status = await main(["--output-format", "json", "code", "prompt"], {
+      invocation: adapter,
+      env: {},
+      now: () => FIXED,
+    });
+    assert.strictEqual(status, 0);
+    assert.strictEqual(stdout.length, 1);
+    const parsed = JSON.parse(stdout[0]);
+    assert.strictEqual(parsed.success, true);
+    assert.strictEqual(parsed.timestamp, FIXED);
+  });
 });

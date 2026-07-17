@@ -57,14 +57,15 @@ export function isOutputMode(value: unknown): value is OutputMode {
  */
 function redactCredentialString(input: string): string {
   let result = input;
-  // Bearer authorization values (anywhere in the string).
-  result = result.replace(/Bearer\s+\S+/g, "[REDACTED]");
+  // Bearer authorization values (anywhere in the string). Case-insensitive
+  // per DESIGN §16 so `bearer`, `BEARER`, etc. are all redacted.
+  result = result.replace(/Bearer\s+\S+/gi, "[REDACTED]");
   // x-api-key values.
   result = result.replace(/x-api-key\s*[=:]\s*\S+/gi, "[REDACTED]");
-  // Known credential env-var assignments.
-  result = result.replace(/Z_AI_API_KEY\s*=\s*\S+/g, "[REDACTED]");
-  result = result.replace(/ZAI_API_KEY\s*=\s*\S+/g, "[REDACTED]");
-  result = result.replace(/MINIMAX_API_KEY\s*=\s*\S+/g, "[REDACTED]");
+  // Known credential env-var assignments. Case-insensitive per DESIGN §16.
+  result = result.replace(/Z_AI_API_KEY\s*=\s*\S+/gi, "[REDACTED]");
+  result = result.replace(/ZAI_API_KEY\s*=\s*\S+/gi, "[REDACTED]");
+  result = result.replace(/MINIMAX_API_KEY\s*=\s*\S+/gi, "[REDACTED]");
   return result;
 }
 

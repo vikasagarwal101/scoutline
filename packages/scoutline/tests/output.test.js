@@ -207,6 +207,22 @@ describe("formatErrorOutput", () => {
     assert.ok(!out.includes("xyz"));
   });
 
+  it("redacts credentials regardless of letter case (DESIGN §16)", () => {
+    // Mixed- and lower-case credential carriers must be redacted, not just
+    // the exact-case forms. DESIGN §16 mandates case-insensitive redaction.
+    const err = {
+      message:
+        "Failed: bearer SECRETLOW z_ai_api_key=lower1 Z_ai_API_KEY=mixed2 minimax_api_key=mixed3 X-API-KEY:headerval",
+      code: "NETWORK_ERROR",
+    };
+    const out = formatErrorOutput(err, "json");
+    assert.ok(!out.includes("SECRETLOW"), "lowercase bearer token must be redacted");
+    assert.ok(!out.includes("lower1"), "lowercase z_ai_api_key must be redacted");
+    assert.ok(!out.includes("mixed2"), "mixed-case Z_ai_API_KEY must be redacted");
+    assert.ok(!out.includes("mixed3"), "lowercase minimax_api_key must be redacted");
+    assert.ok(!out.includes("headerval"), "mixed-case x-api-key must be redacted");
+  });
+
   it("does not share state between calls with different modes", () => {
     const err = new ZaiError("boom", "API_ERROR", 500);
     const data = formatErrorOutput(err, "data");

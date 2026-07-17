@@ -163,10 +163,27 @@ function resolveOutputMode(
   return "data";
 }
 
+/**
+ * Dependencies threaded from `main` into every command handler.
+ *
+ * `now` flows onward to `invokeCommand` (DESIGN §2) as its optional fourth
+ * argument so success envelopes carry deterministic timestamps under test.
+ * `env` is the injectable environment seam: it is plumbed to the handler
+ * boundary here so Phase 2 can route it into `CommandContext` /
+ * `ProviderContext` without reshaping the dispatch layer again. Commands
+ * still read `process.env` directly today; that migration is Phase 2 and
+ * intentionally out of scope for this plumbing fix.
+ */
+interface HandlerDependencies {
+  readonly invocation: CommandInvocationAdapter;
+  readonly env: NodeJS.ProcessEnv;
+  readonly now?: () => number;
+}
+
 async function handleVision(
   args: string[],
   outputMode: OutputMode,
-  deps: { invocation: CommandInvocationAdapter },
+  deps: HandlerDependencies,
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
@@ -185,6 +202,7 @@ async function handleVision(
         deps.invocation,
         (context) => vision.analyze(source, prompt, context),
         outputMode,
+        deps.now,
       );
 
     case "ui-to-code": {
@@ -199,6 +217,7 @@ async function handleVision(
             context,
           ),
         outputMode,
+        deps.now,
       );
     }
 
@@ -207,6 +226,7 @@ async function handleVision(
         deps.invocation,
         (context) => vision.extractText(source, prompt, flags.language as string, context),
         outputMode,
+        deps.now,
       );
 
     case "diagnose-error":
@@ -214,6 +234,7 @@ async function handleVision(
         deps.invocation,
         (context) => vision.diagnoseError(source, prompt, flags.context as string, context),
         outputMode,
+        deps.now,
       );
 
     case "diagram":
@@ -221,6 +242,7 @@ async function handleVision(
         deps.invocation,
         (context) => vision.diagram(source, prompt, flags.type as string, context),
         outputMode,
+        deps.now,
       );
 
     case "chart":
@@ -228,6 +250,7 @@ async function handleVision(
         deps.invocation,
         (context) => vision.chart(source, prompt, flags.focus as string, context),
         outputMode,
+        deps.now,
       );
 
     case "diff": {
@@ -237,6 +260,7 @@ async function handleVision(
         deps.invocation,
         (context) => vision.diff(source, actual, diffPrompt, context),
         outputMode,
+        deps.now,
       );
     }
 
@@ -245,6 +269,7 @@ async function handleVision(
         deps.invocation,
         (context) => vision.video(source, prompt, context),
         outputMode,
+        deps.now,
       );
 
     default:
@@ -258,7 +283,7 @@ async function handleVision(
 async function handleSearch(
   args: string[],
   outputMode: OutputMode,
-  deps: { invocation: CommandInvocationAdapter },
+  deps: HandlerDependencies,
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
@@ -299,13 +324,14 @@ async function handleSearch(
         context,
       ),
     outputMode,
+    deps.now,
   );
 }
 
 async function handleRead(
   args: string[],
   outputMode: OutputMode,
-  deps: { invocation: CommandInvocationAdapter },
+  deps: HandlerDependencies,
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
@@ -340,13 +366,14 @@ async function handleRead(
         context,
       ),
     outputMode,
+    deps.now,
   );
 }
 
 async function handleRepo(
   args: string[],
   outputMode: OutputMode,
-  deps: { invocation: CommandInvocationAdapter },
+  deps: HandlerDependencies,
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
@@ -381,6 +408,7 @@ async function handleRepo(
             context,
           ),
         outputMode,
+        deps.now,
       );
     }
 
@@ -401,6 +429,7 @@ async function handleRepo(
             context,
           ),
         outputMode,
+        deps.now,
       );
     }
 
@@ -425,6 +454,7 @@ async function handleRepo(
             context,
           ),
         outputMode,
+        deps.now,
       );
     }
 
@@ -439,7 +469,7 @@ async function handleRepo(
 async function handleTools(
   args: string[],
   outputMode: OutputMode,
-  deps: { invocation: CommandInvocationAdapter },
+  deps: HandlerDependencies,
 ): Promise<number> {
   const { flags } = parseArgs(args);
 
@@ -461,13 +491,14 @@ async function handleTools(
         context,
       ),
     outputMode,
+    deps.now,
   );
 }
 
 async function handleTool(
   args: string[],
   outputMode: OutputMode,
-  deps: { invocation: CommandInvocationAdapter },
+  deps: HandlerDependencies,
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
@@ -480,13 +511,14 @@ async function handleTool(
     deps.invocation,
     (context) => showTool(positional[0], { enableVision: flags.vision !== false }, context),
     outputMode,
+    deps.now,
   );
 }
 
 async function handleCall(
   args: string[],
   outputMode: OutputMode,
-  deps: { invocation: CommandInvocationAdapter },
+  deps: HandlerDependencies,
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
@@ -510,13 +542,14 @@ async function handleCall(
         context,
       ),
     outputMode,
+    deps.now,
   );
 }
 
 async function handleDoctor(
   args: string[],
   outputMode: OutputMode,
-  deps: { invocation: CommandInvocationAdapter },
+  deps: HandlerDependencies,
 ): Promise<number> {
   const { flags } = parseArgs(args);
 
@@ -537,13 +570,14 @@ async function handleDoctor(
         context,
       ),
     outputMode,
+    deps.now,
   );
 }
 
 async function handleQuota(
   args: string[],
   outputMode: OutputMode,
-  deps: { invocation: CommandInvocationAdapter },
+  deps: HandlerDependencies,
 ): Promise<number> {
   const { flags } = parseArgs(args);
 
@@ -552,13 +586,13 @@ async function handleQuota(
     return 0;
   }
 
-  return invokeCommand(deps.invocation, () => quota({}), outputMode);
+  return invokeCommand(deps.invocation, () => quota({}), outputMode, deps.now);
 }
 
 async function handleCode(
   args: string[],
   outputMode: OutputMode,
-  deps: { invocation: CommandInvocationAdapter },
+  deps: HandlerDependencies,
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
@@ -581,6 +615,7 @@ async function handleCode(
         deps.invocation,
         (context) => runCodeFile(filePath, { timeout, includeLogs }, context),
         outputMode,
+        deps.now,
       );
     }
     case "eval": {
@@ -592,15 +627,22 @@ async function handleCode(
         deps.invocation,
         (context) => evalCode(code, { timeout, includeLogs }, context),
         outputMode,
+        deps.now,
       );
     }
     case "interfaces":
-      return invokeCommand(deps.invocation, (context) => printInterfaces(context), outputMode);
+      return invokeCommand(
+        deps.invocation,
+        (context) => printInterfaces(context),
+        outputMode,
+        deps.now,
+      );
     case "prompt":
       return invokeCommand(
         deps.invocation,
         async (context) => printPromptTemplate(context),
         outputMode,
+        deps.now,
       );
     default:
       throw new ValidationError(
@@ -620,7 +662,7 @@ export async function main(
   args: readonly string[],
   dependencies: MainDependencies,
 ): Promise<number> {
-  const { invocation } = dependencies;
+  const { invocation, env, now } = dependencies;
 
   const { outputFormat, forcePretty, forceRaw, rest } = extractGlobalOptions([...args]);
 
@@ -653,25 +695,25 @@ export async function main(
   try {
     switch (command) {
       case "vision":
-        return await handleVision(commandArgs, outputMode, { invocation });
+        return await handleVision(commandArgs, outputMode, { invocation, env, now });
       case "search":
-        return await handleSearch(commandArgs, outputMode, { invocation });
+        return await handleSearch(commandArgs, outputMode, { invocation, env, now });
       case "read":
-        return await handleRead(commandArgs, outputMode, { invocation });
+        return await handleRead(commandArgs, outputMode, { invocation, env, now });
       case "repo":
-        return await handleRepo(commandArgs, outputMode, { invocation });
+        return await handleRepo(commandArgs, outputMode, { invocation, env, now });
       case "tools":
-        return await handleTools(commandArgs, outputMode, { invocation });
+        return await handleTools(commandArgs, outputMode, { invocation, env, now });
       case "tool":
-        return await handleTool(commandArgs, outputMode, { invocation });
+        return await handleTool(commandArgs, outputMode, { invocation, env, now });
       case "call":
-        return await handleCall(commandArgs, outputMode, { invocation });
+        return await handleCall(commandArgs, outputMode, { invocation, env, now });
       case "doctor":
-        return await handleDoctor(commandArgs, outputMode, { invocation });
+        return await handleDoctor(commandArgs, outputMode, { invocation, env, now });
       case "quota":
-        return await handleQuota(commandArgs, outputMode, { invocation });
+        return await handleQuota(commandArgs, outputMode, { invocation, env, now });
       case "code":
-        return await handleCode(commandArgs, outputMode, { invocation });
+        return await handleCode(commandArgs, outputMode, { invocation, env, now });
       default:
         invocation.writeStderr(
           formatErrorOutput(

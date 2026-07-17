@@ -21,9 +21,7 @@ import {
   getProviderDescriptor,
   getConfiguredProviderDescriptors,
 } from "../dist/providers/selection.js";
-import {
-  ValidationError,
-} from "../dist/lib/errors.js";
+import { ValidationError } from "../dist/lib/errors.js";
 
 // ---------------------------------------------------------------------------
 // parseProviderId: accepts and normalizes valid Provider IDs
@@ -62,10 +60,7 @@ describe("parseProviderId: invalid input throws ValidationError", () => {
       }
       assert.ok(captured instanceof ValidationError, "must throw ValidationError");
       assert.strictEqual(captured.code, "VALIDATION_ERROR");
-      assert.ok(
-        captured.help && /zai|minimax/.test(captured.help),
-        "help must list accepted IDs",
-      );
+      assert.ok(captured.help && /zai|minimax/.test(captured.help), "help must list accepted IDs");
     });
   }
 });
@@ -78,17 +73,67 @@ describe("resolveProviderId: precedence table", () => {
   const cases = [
     { name: "default zai when both are absent", explicit: undefined, env: {}, expected: "zai" },
     { name: "explicit zai wins over default", explicit: "zai", env: {}, expected: "zai" },
-    { name: "explicit minimax wins over default", explicit: "minimax", env: {}, expected: "minimax" },
-    { name: "explicit wins over environment", explicit: "zai", env: { SCOUTLINE_PROVIDER: "minimax" }, expected: "zai" },
-    { name: "explicit minimax wins over environment zai", explicit: "minimax", env: { SCOUTLINE_PROVIDER: "zai" }, expected: "minimax" },
-    { name: "environment minimax is the fallback", explicit: undefined, env: { SCOUTLINE_PROVIDER: "minimax" }, expected: "minimax" },
+    {
+      name: "explicit minimax wins over default",
+      explicit: "minimax",
+      env: {},
+      expected: "minimax",
+    },
+    {
+      name: "explicit wins over environment",
+      explicit: "zai",
+      env: { SCOUTLINE_PROVIDER: "minimax" },
+      expected: "zai",
+    },
+    {
+      name: "explicit minimax wins over environment zai",
+      explicit: "minimax",
+      env: { SCOUTLINE_PROVIDER: "zai" },
+      expected: "minimax",
+    },
+    {
+      name: "environment minimax is the fallback",
+      explicit: undefined,
+      env: { SCOUTLINE_PROVIDER: "minimax" },
+      expected: "minimax",
+    },
     { name: "mixed case explicit is normalized", explicit: "  ZAI  ", env: {}, expected: "zai" },
-    { name: "mixed case environment is normalized", explicit: undefined, env: { SCOUTLINE_PROVIDER: "MiniMax" }, expected: "minimax" },
-    { name: "empty explicit does not fall through", explicit: "", env: { SCOUTLINE_PROVIDER: "minimax" }, throws: true },
-    { name: "whitespace explicit does not fall through", explicit: "   ", env: { SCOUTLINE_PROVIDER: "minimax" }, throws: true },
-    { name: "unknown explicit does not fall through", explicit: "openai", env: { SCOUTLINE_PROVIDER: "minimax" }, throws: true },
-    { name: "unknown environment throws", explicit: undefined, env: { SCOUTLINE_PROVIDER: "openai" }, throws: true },
-    { name: "empty environment throws", explicit: undefined, env: { SCOUTLINE_PROVIDER: "" }, throws: true },
+    {
+      name: "mixed case environment is normalized",
+      explicit: undefined,
+      env: { SCOUTLINE_PROVIDER: "MiniMax" },
+      expected: "minimax",
+    },
+    {
+      name: "empty explicit does not fall through",
+      explicit: "",
+      env: { SCOUTLINE_PROVIDER: "minimax" },
+      throws: true,
+    },
+    {
+      name: "whitespace explicit does not fall through",
+      explicit: "   ",
+      env: { SCOUTLINE_PROVIDER: "minimax" },
+      throws: true,
+    },
+    {
+      name: "unknown explicit does not fall through",
+      explicit: "openai",
+      env: { SCOUTLINE_PROVIDER: "minimax" },
+      throws: true,
+    },
+    {
+      name: "unknown environment throws",
+      explicit: undefined,
+      env: { SCOUTLINE_PROVIDER: "openai" },
+      throws: true,
+    },
+    {
+      name: "empty environment throws",
+      explicit: undefined,
+      env: { SCOUTLINE_PROVIDER: "" },
+      throws: true,
+    },
   ];
   for (const c of cases) {
     it(c.name, () => {
@@ -132,8 +177,43 @@ describe("resolveProviderId: credential independence", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Descriptor double: pure metadata, side-effect-free creation
+// FR-003: default selection NEVER consults credentials (Fixup A — B5)
 // ---------------------------------------------------------------------------
+
+describe("resolveProviderId: default never consults credentials (FR-003, Fixup A — B5)", () => {
+  // A registry where `zai` is NOT configured: only minimax has a key.
+  // Pre-fix this threw ValidationError ("Default provider zai is not
+  // registered") because the default branch consulted credentials.
+  function minimaxOnlyRegistry() {
+    return [
+      {
+        id: "zai",
+        isConfigured: (env) => Boolean(env.Z_AI_API_KEY),
+        capabilities: () => new Set(["search"]),
+        create: () => ({ id: "zai" }),
+      },
+      {
+        id: "minimax",
+        isConfigured: (env) => Boolean(env.MINIMAX_API_KEY),
+        capabilities: () => new Set(["search"]),
+        create: () => ({ id: "minimax" }),
+      },
+    ];
+  }
+
+  it("returns the default zai even when zai is unconfigured and descriptors are passed", () => {
+    const descriptors = minimaxOnlyRegistry();
+    const env = { MINIMAX_API_KEY: "k" }; // no Z.AI key
+    const got = resolveProviderId(undefined, env, descriptors);
+    assert.strictEqual(got, "zai", "default selection must not be inferred from credentials");
+  });
+
+  it("returns the default zai with no credentials at all, descriptors passed", () => {
+    const descriptors = minimaxOnlyRegistry();
+    const got = resolveProviderId(undefined, {}, descriptors);
+    assert.strictEqual(got, "zai");
+  });
+});
 
 describe("ProviderDescriptor double", () => {
   function makeDouble(id, caps, configured) {
@@ -232,10 +312,7 @@ describe("ProviderDescriptor double", () => {
       ["minimax"],
     );
 
-    const both = getConfiguredProviderDescriptors(
-      { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k" },
-      all,
-    );
+    const both = getConfiguredProviderDescriptors({ Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k" }, all);
     assert.deepStrictEqual(
       both.map((d) => d.id),
       ["zai", "minimax"],
@@ -273,10 +350,7 @@ describe("resolveProviderId ordering: validation before descriptor resolution", 
       },
     ];
     // Force the production default descriptor lookup to fail first.
-    assert.throws(
-      () => resolveProviderId("bogus", {}, fakeDescriptors),
-      ValidationError,
-    );
+    assert.throws(() => resolveProviderId("bogus", {}, fakeDescriptors), ValidationError);
     assert.strictEqual(factoryInvoked, false, "factory must not run on invalid explicit");
   });
 

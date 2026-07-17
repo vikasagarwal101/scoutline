@@ -19,6 +19,7 @@ import { getMcpToolName } from "../dist/lib/mcp-config.js";
 import { FakeUtcpClient } from "./helpers/fake-utcp-client.js";
 import { readFixture } from "./helpers/fixtures.js";
 import { executeProviderOperation } from "../dist/lib/execution.js";
+import { ConfigurationError } from "../dist/lib/errors.js";
 
 const SEARCH_TOOL_PUBLIC_NAME = getMcpToolName("search", "web_search_prime");
 const VISION_TOOL_PUBLIC_NAME = getMcpToolName("vision", "analyze_image");
@@ -557,5 +558,99 @@ describe("Z.AI Vision Adapter — shared execution owns retries (P3-03)", () => 
     );
     assert.strictEqual(factory.created.length, 1, "exactly one transport attempt");
     assert.strictEqual(sleeps.length, 0, "no delay for terminal failure");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Credential alias + missing-credential exit code (Fixup A — B4, B7)
+// ---------------------------------------------------------------------------
+
+describe("Z.AI Adapter — ZAI_API_KEY alias (Fixup A — B4)", () => {
+  it("isConfigured is true when only ZAI_API_KEY is set", () => {
+    const d = createZaiDescriptor();
+    assert.strictEqual(d.isConfigured({ ZAI_API_KEY: "k" }), true);
+    assert.strictEqual(d.isConfigured({ ZAI_API_KEY: "   " }), false);
+    assert.strictEqual(d.isConfigured({ ZAI_API_KEY: "" }), false);
+  });
+
+  it("Z_AI_API_KEY takes precedence over ZAI_API_KEY (fingerprint proof)", () => {
+    const d = createZaiDescriptor();
+    const primaryFp = crypto.createHash("sha256").update("primary-key").digest("hex");
+    const adapter = d.create({
+      env: { Z_AI_API_KEY: "primary-key", ZAI_API_KEY: "alias-key" },
+    });
+    const identity = adapter.search.cacheIdentity({ query: "q" });
+    assert.strictEqual(identity.credentialFingerprint, primaryFp);
+  });
+
+  it("search resolves the credential fingerprint from ZAI_API_KEY alone", () => {
+    const aliasFp = crypto.createHash("sha256").update("alias-key").digest("hex");
+    const d = createZaiDescriptor();
+    const adapter = d.create({ env: { ZAI_API_KEY: "alias-key" } });
+    const identity = adapter.search.cacheIdentity({ query: "q" });
+    assert.strictEqual(identity.credentialFingerprint, aliasFp);
+  });
+
+  it("search invoke works end-to-end with only ZAI_API_KEY set", async () => {
+    const fixture = await readFixture("providers", "zai", "tools.json");
+    const searchResult = (await readFixture("providers", "zai", "search.json")).result;
+    const factory = makeClientFactory({
+      discoveredTools: fixture.tools,
+      resultsByName: { "scoutline_zai.search.web_search_prime": searchResult },
+    });
+    const descriptor = createZaiDescriptor({ clientFactory: factory });
+    const adapter = descriptor.create({ env: { ZAI_API_KEY: TEST_API_KEY } });
+    const out = await adapter.search.invoke({ query: "alias" });
+    assert.ok(Array.isArray(out) && out.length > 0);
+  });
+});
+
+describe("Z.AI Adapter — missing credentials throw ConfigurationError (Fixup A — B7)", () => {
+  it("search cacheIdentity throws ConfigurationError (exit 3) when no key is set", () => {
+    const d = createZaiDescriptor();
+    const adapter = d.create({ env: {} });
+    assert.throws(
+      () => adapter.search.cacheIdentity({ query: "q" }),
+      (err) =>
+        err instanceof ConfigurationError &&
+        err.exitCode === 3 &&
+        err.code === "CONFIGURATION_ERROR",
+    );
+  });
+
+  it("vision invoke throws ConfigurationError (exit 3) when no key is set", async () => {
+    const d = createZaiDescriptor();
+    const adapter = d.create({ env: {} });
+    await assert.rejects(
+      () => adapter.vision.invoke(VISION_REQUEST),
+      (err) => err instanceof ConfigurationError && err.exitCode === 3,
+    );
+  });
+
+  it("diagnostics invoke throws ConfigurationError (exit 3) when no key is set", async () => {
+    const d = createZaiDescriptor();
+    const adapter = d.create({ env: {} });
+    await assert.rejects(
+      () => adapter.diagnostics.invoke({ probe: true }),
+      (err) => err instanceof ConfigurationError && err.exitCode === 3,
+    );
+  });
+
+  it("quota invoke throws ConfigurationError (exit 3) when no key is set", async () => {
+    const d = createZaiDescriptor();
+    const adapter = d.create({ env: {} });
+    await assert.rejects(
+      () => adapter.quota.invoke(),
+      (err) => err instanceof ConfigurationError && err.exitCode === 3,
+    );
+  });
+
+  it("whitespace-only key is treated as missing (ConfigurationError)", () => {
+    const d = createZaiDescriptor();
+    const adapter = d.create({ env: { Z_AI_API_KEY: "   " } });
+    assert.throws(
+      () => adapter.search.cacheIdentity({ query: "q" }),
+      (err) => err instanceof ConfigurationError && err.exitCode === 3,
+    );
   });
 });

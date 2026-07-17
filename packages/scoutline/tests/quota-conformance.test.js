@@ -568,6 +568,29 @@ describe("adapter quota capability wiring", () => {
     const result = await capability.invoke();
     assert.deepStrictEqual(result, expected);
   });
+
+  it("Z.AI quota capability accepts the ZAI_API_KEY alias (Fixup A — B4)", async () => {
+    const raw = await readFixture("providers", "zai", "quota.json");
+    const expected = await readFixture("normalized", "quota-zai.json");
+    const { fn, calls } = makeFetchSequence([{ ok: true, json: { data: raw } }]);
+    const capability = createZaiQuotaCapability({
+      env: { ZAI_API_KEY: ZAI_KEY },
+      fetch: fn,
+      ...noOpTimer(),
+    });
+    const result = await capability.invoke();
+    assert.deepStrictEqual(result, expected);
+    assert.strictEqual(calls.length, 1, "alias key still drives exactly one transport call");
+  });
+
+  it("Z.AI quota throws ConfigurationError (exit 3) when no key is set (Fixup A — B7)", async () => {
+    const { fn } = makeFetchSequence([{ ok: true, json: { data: {} } }]);
+    const capability = createZaiQuotaCapability({ env: {}, fetch: fn, ...noOpTimer() });
+    await assert.rejects(
+      () => capability.invoke(),
+      (err) => err instanceof ConfigurationError && err.exitCode === 3,
+    );
+  });
 });
 
 // ===========================================================================

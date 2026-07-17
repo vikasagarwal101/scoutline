@@ -28,12 +28,19 @@ import type {
   QuotaCategory,
 } from "../../capabilities/quota.js";
 import { buildQuotaWindow } from "../../capabilities/quota.js";
-import { ApiError, AuthError, NetworkError, TimeoutError } from "../../lib/errors.js";
+import {
+  ApiError,
+  AuthError,
+  ConfigurationError,
+  NetworkError,
+  TimeoutError,
+} from "../../lib/errors.js";
 import {
   fetchZaiQuotaLimit,
   type ZaiMonitorDeps,
   type ZaiRawQuotaLimit,
 } from "./monitor-client.js";
+import { requireZaiApiKey } from "./credentials.js";
 
 // ---------------------------------------------------------------------------
 // Raw Z.AI limit shapes
@@ -151,7 +158,8 @@ function normalizeZaiQuotaError(error: unknown): Error {
     error instanceof AuthError ||
     error instanceof ApiError ||
     error instanceof NetworkError ||
-    error instanceof TimeoutError
+    error instanceof TimeoutError ||
+    error instanceof ConfigurationError
   ) {
     return error;
   }
@@ -177,10 +185,10 @@ export function createZaiQuotaCapability(options: ZaiQuotaCapabilityOptions): Qu
   const { env, ...transportDeps } = options;
   return {
     async invoke(): Promise<ProviderQuotaSuccess> {
-      const apiKey = env.Z_AI_API_KEY;
-      if (typeof apiKey !== "string" || apiKey.trim().length === 0) {
-        throw new AuthError("Z.AI API key is not configured");
-      }
+      // Shared credential resolver (Fixup A — B4/B7): honours the
+      // ZAI_API_KEY alias and treats a missing key as a configuration
+      // failure (ConfigurationError, exit 3).
+      const apiKey = requireZaiApiKey(env);
       try {
         const raw = await fetchZaiQuotaLimit(apiKey, transportDeps);
         return normalizeZaiQuota(raw);

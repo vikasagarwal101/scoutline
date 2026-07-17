@@ -19,17 +19,13 @@
  * resolve or validate it.
  */
 
-import type { ProviderDescriptor, ProviderId } from "./types.js";
-import {
-  PROVIDER_IDS,
-  getConfiguredProviderDescriptors,
-  getProviderDescriptor,
-} from "./types.js";
+import type { ProviderId } from "./types.js";
+import { PROVIDER_IDS } from "./types.js";
 import { ValidationError } from "../lib/errors.js";
 
 // Re-export descriptor helpers at the selection boundary so command
 // Modules need only a single import.
-export { getProviderDescriptor, getConfiguredProviderDescriptors };
+export { getProviderDescriptor, getConfiguredProviderDescriptors } from "./types.js";
 
 /**
  * Accepted Provider IDs shown in the help message when validation fails.
@@ -77,14 +73,14 @@ export function parseProviderId(value: string): ProviderId {
  * `env` defaults to `process.env` for production callers; tests pass
  * an explicit object so they do not touch process globals.
  *
- * `descriptors` is accepted for forward compatibility with P2-05's
- * selection-with-validation hook. P2-01 only uses it to guarantee that
- * an explicitly empty value is rejected before any descriptor lookup.
+ * FR-003: provider selection is NEVER inferred from available
+ * credentials. The default branch always returns `"zai"`; whether the
+ * effective Provider is configured is a question for the caller (which
+ * throws `ConfigurationError`, exit 3), not for selection.
  */
 export function resolveProviderId(
   explicitProvider: string | undefined,
   env: NodeJS.ProcessEnv = process.env,
-  descriptors?: readonly ProviderDescriptor[],
 ): ProviderId {
   // 1. Explicit option — present (including empty) and invalid if empty/unknown.
   if (explicitProvider !== undefined) {
@@ -98,23 +94,9 @@ export function resolveProviderId(
     return parseProviderId(envValue);
   }
 
-  // 3. Compatibility default. `descriptors` is consulted to surface a
-  //    configuration-style error when the default Provider is unavailable,
-  //    but only when the caller passes descriptors and `zai` is missing.
-  //    Tests that omit descriptors take the plain default.
-  if (descriptors !== undefined) {
-    const configured = getConfiguredProviderDescriptors(env, descriptors);
-    const hasZai = configured.some((d) => d.id === "zai");
-    if (!hasZai) {
-      // The default `zai` is not registered. Surface this as a validation
-      // error so callers receive actionable feedback rather than a silent
-      // miss.
-      throw new ValidationError(
-        `Default provider "zai" is not registered. ${ACCEPTED_IDS_HELP}`,
-        ACCEPTED_IDS_HELP,
-      );
-    }
-  }
-
+  // 3. Compatibility default. No credentials, descriptors, or
+  //    configuration participate (FR-003). The "is the effective
+  //    Provider configured?" check lives in the dispatch caller, which
+  //    surfaces a missing credential as ConfigurationError (exit 3).
   return "zai";
 }

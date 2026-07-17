@@ -656,6 +656,69 @@ describe("global --provider parsing and routing", () => {
     assert.ok(/provider/i.test(err.error));
     assert.strictEqual(m.zaiInvokes.length, 0);
   });
+
+  it("an unconfigured effective provider fails with CONFIGURATION_ERROR exit 3 (Fixup A — B5)", async () => {
+    // Selection MUST return the default zai even when zai is unconfigured
+    // (FR-003). The dispatch layer then reports the missing credential as
+    // a configuration failure (exit 3), not a validation/registry error.
+    function makeConfiguredDescriptor(id) {
+      const invokes = [];
+      return {
+        descriptor: {
+          id,
+          isConfigured: (env) =>
+            id === "zai" ? Boolean(env.Z_AI_API_KEY) : Boolean(env.MINIMAX_API_KEY),
+          capabilities: () => new Set(["search"]),
+          create: () => ({
+            id,
+            search: {
+              validate() {},
+              cacheIdentity(r) {
+                return {
+                  provider: id,
+                  capability: "search",
+                  credentialFingerprint: "fp-" + id,
+                  request: r,
+                  legacyCandidates: [],
+                };
+              },
+              async invoke(r) {
+                invokes.push(r);
+                return [];
+              },
+            },
+          }),
+        },
+        invokes,
+      };
+    }
+    const zai = makeConfiguredDescriptor("zai");
+    const minimax = makeConfiguredDescriptor("minimax");
+    const store = new Map();
+    const searchCache = {
+      async get(key) {
+        return store.has(key) ? store.get(key) : null;
+      },
+      async set(key, value) {
+        store.set(key, value);
+      },
+    };
+    const { adapter, stderr } = createTestAdapter();
+    const status = await main(["search", "foo"], {
+      invocation: adapter,
+      // Only a minimax key is present: zai is unconfigured, but it is
+      // still the effective default provider.
+      env: { MINIMAX_API_KEY: "k" },
+      providerDescriptors: [zai.descriptor, minimax.descriptor],
+      searchCache,
+      searchSleep: async () => {},
+      searchRandom: () => 0.5,
+    });
+    assert.strictEqual(status, 3, "missing credentials must exit 3");
+    const err = JSON.parse(stderr[0]);
+    assert.strictEqual(err.code, "CONFIGURATION_ERROR");
+    assert.strictEqual(zai.invokes.length, 0, "no invoke when unconfigured");
+  });
 });
 
 // ---------------------------------------------------------------------------

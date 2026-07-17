@@ -20,7 +20,12 @@ import {
 } from "./commands/code.js";
 import { isOutputMode, OUTPUT_MODES, type OutputMode } from "./lib/output.js";
 import { formatErrorOutput } from "./lib/output.js";
-import { ValidationError, UnsupportedCapabilityError, getErrorExitCode } from "./lib/errors.js";
+import {
+  ConfigurationError,
+  ValidationError,
+  UnsupportedCapabilityError,
+  getErrorExitCode,
+} from "./lib/errors.js";
 import { invokeCommand, type CommandInvocationAdapter } from "./command-invocation.js";
 import { defaultResponseCache, type ResponseCache } from "./lib/cache.js";
 import { resolveProviderId } from "./providers/selection.js";
@@ -234,12 +239,9 @@ async function handleVision(
 
   // Resolve the effective Provider for Vision (DESIGN.md §6). Invalid
   // explicit/env input fails here with VALIDATION_ERROR before any Vision
-  // support check or media access.
-  const providerId: ProviderId = resolveProviderId(
-    deps.provider,
-    deps.env,
-    deps.providerDescriptors,
-  );
+  // support check or media access. Selection never consults credentials
+  // (FR-003); the configured check below is the caller's responsibility.
+  const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
   const descriptor = getProviderDescriptor(providerId, deps.providerDescriptors);
 
   // Gate the operation on descriptor metadata BEFORE Adapter construction.
@@ -250,6 +252,15 @@ async function handleVision(
   const capabilityId = visionOperationToCapability(operation);
   if (!descriptor.capabilities().has(capabilityId)) {
     throw new UnsupportedCapabilityError(providerId, capabilityId);
+  }
+  // FR-003: selection returns the default zai even when unconfigured. The
+  // dispatch layer surfaces a missing credential as ConfigurationError
+  // (exit 3), AFTER the capability support check (FR-023) but before any
+  // Adapter construction or media access (Fixup A — B5).
+  if (!descriptor.isConfigured(deps.env)) {
+    throw new ConfigurationError(
+      `Provider "${providerId}" is not configured. Set the required API key.`,
+    );
   }
   const adapter = descriptor.create({ env: deps.env });
   const visionCapability = adapter.vision;
@@ -399,15 +410,22 @@ async function handleSearch(
   // Resolve the Provider ONLY inside shared Search (DESIGN.md §6). Other
   // command families carry the parsed flag but never resolve or validate
   // it. An invalid explicit/env value throws VALIDATION_ERROR here, before
-  // any Adapter construction or invocation.
-  const providerId: ProviderId = resolveProviderId(
-    deps.provider,
-    deps.env,
-    deps.providerDescriptors,
-  );
+  // any Adapter construction or invocation. Selection never consults
+  // credentials (FR-003); the configured check below is the caller's
+  // responsibility (Fixup A — B5).
+  const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
   const descriptor = getProviderDescriptor(providerId, deps.providerDescriptors);
   if (!descriptor.capabilities().has("search")) {
     throw new UnsupportedCapabilityError(providerId, "search");
+  }
+  // FR-003: selection returns the default zai even when unconfigured. The
+  // dispatch layer surfaces a missing credential as ConfigurationError
+  // (exit 3), AFTER the capability support check (FR-023) but before any
+  // Adapter construction (Fixup A — B5).
+  if (!descriptor.isConfigured(deps.env)) {
+    throw new ConfigurationError(
+      `Provider "${providerId}" is not configured. Set the required API key.`,
+    );
   }
   const adapter = descriptor.create({ env: deps.env });
   const capability: SearchCapability | undefined = adapter.search;

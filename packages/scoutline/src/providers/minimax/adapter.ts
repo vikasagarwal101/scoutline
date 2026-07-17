@@ -50,6 +50,7 @@ import type { DiagnosticsCapability, DiagnosticOptions } from "../../capabilitie
 import {
   ApiError,
   AuthError,
+  ConfigurationError,
   NetworkError,
   TimeoutError,
   UnsupportedCapabilityError,
@@ -77,7 +78,13 @@ function credentialFingerprint(apiKey: string): string {
 function resolveApiKey(env: NodeJS.ProcessEnv): string {
   const key = env.MINIMAX_API_KEY;
   if (typeof key !== "string" || key.trim().length === 0) {
-    throw new AuthError("MINIMAX_API_KEY is not configured");
+    // Missing credentials are a configuration failure (exit 3), not an
+    // auth failure. AuthError (exit 1) is reserved for a credential the
+    // Provider REJECTED (Fixup A — B7). This mirrors loadMiniMaxConfig.
+    throw new ConfigurationError(
+      "MINIMAX_API_KEY environment variable is required",
+      'export MINIMAX_API_KEY="your-api-key"',
+    );
   }
   return key;
 }
@@ -150,7 +157,8 @@ function normalizeMiniMaxError(error: unknown): Error {
     error instanceof NetworkError ||
     error instanceof TimeoutError ||
     error instanceof ValidationError ||
-    error instanceof UnsupportedOptionError
+    error instanceof UnsupportedOptionError ||
+    error instanceof ConfigurationError
   ) {
     return error;
   }

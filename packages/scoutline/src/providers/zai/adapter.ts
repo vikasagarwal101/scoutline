@@ -62,6 +62,7 @@ import {
   type ZaiMcpClientOptions as McpClientOptions,
 } from "../../lib/mcp-client.js";
 import { buildCacheKey } from "../../lib/cache.js";
+import { isZaiConfigured, requireZaiApiKey } from "./credentials.js";
 import { resolveImageSource, resolveVideoSource } from "./media.js";
 import { createZaiQuotaCapability, type ZaiQuotaCapabilityOptions } from "./quota.js";
 import type { ZaiMonitorFetch } from "./monitor-client.js";
@@ -195,14 +196,11 @@ interface ZaiSearchCapabilityOptions {
 function createZaiSearchCapability(options: ZaiSearchCapabilityOptions): SearchCapability {
   const { env, clientFactory } = options;
 
+  // Credential resolution is shared (Fixup A — B4/B7): the alias
+  // `ZAI_API_KEY` is accepted and a missing key is a configuration
+  // failure (ConfigurationError, exit 3), not an auth failure.
   function resolveApiKey(): string {
-    const key = env.Z_AI_API_KEY;
-    if (typeof key !== "string" || !/\S/.test(key)) {
-      // Validation/credential errors are terminal; surface as AUTH so
-      // callers see a clear, normalized failure.
-      throw new AuthError("Z.AI API key is not configured");
-    }
-    return key;
+    return requireZaiApiKey(env);
   }
 
   const capability: SearchCapability = {
@@ -402,12 +400,9 @@ interface ZaiVisionCapabilityOptions {
 function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionCapability {
   const { env, clientFactory } = options;
 
+  // Shared credential resolver (Fixup A — B4/B7).
   function resolveApiKey(): string {
-    const key = env.Z_AI_API_KEY;
-    if (typeof key !== "string" || !/\S/.test(key)) {
-      throw new AuthError("Z.AI API key is not configured");
-    }
-    return key;
+    return requireZaiApiKey(env);
   }
 
   const capability: VisionCapability = {
@@ -581,10 +576,9 @@ function createZaiDiagnosticsCapability(
   return {
     async invoke(diagOptions: DiagnosticOptions): Promise<void> {
       if (!diagOptions.probe) return;
-      const apiKey = env.Z_AI_API_KEY;
-      if (typeof apiKey !== "string" || !/\S/.test(apiKey)) {
-        throw new AuthError("Z.AI API key is not configured");
-      }
+      // Shared credential resolver (Fixup A — B4/B7): missing key is a
+      // configuration failure (ConfigurationError, exit 3).
+      requireZaiApiKey(env);
       // Disable client-owned cache and retry so shared execution is the
       // single policy owner. Diagnostics needs no vision MCP server.
       const clientOptions: ZaiMcpClientOptions = {
@@ -665,8 +659,8 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
   return {
     id: "zai",
     isConfigured(env: NodeJS.ProcessEnv): boolean {
-      const key = env.Z_AI_API_KEY;
-      return typeof key === "string" && /\S/.test(key);
+      // Shared resolver honours the ZAI_API_KEY alias (Fixup A — B4).
+      return isZaiConfigured(env);
     },
     capabilities(): ReadonlySet<ProviderCapability> {
       return new Set<ProviderCapability>([

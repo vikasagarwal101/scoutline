@@ -521,6 +521,15 @@ describe("MiniMax Search Adapter — cache identity", () => {
     assert.strictEqual(identity.request.count, undefined);
     assert.strictEqual(identity.legacyCandidates, undefined);
   });
+
+  it("missing credential throws ConfigurationError exit 3 (Fixup A — B7)", () => {
+    const d = createMiniMaxDescriptor();
+    const adapter = d.create({ env: {} });
+    assert.throws(
+      () => adapter.search.cacheIdentity({ query: "q" }),
+      (err) => err.code === "CONFIGURATION_ERROR" && err.exitCode === 3,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

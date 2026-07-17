@@ -626,7 +626,7 @@ test("P5-02: registry exports exactly the five specialized operations", () => {
 // commit adds exactly one operation here. live stays "pending" for every
 // promoted op until a separate opt-in live attestation runs with
 // credentials; runtime support therefore remains false for all of them.
-const PROMOTED_OPS = new Set(["ui-artifact", "extract-text", "diagnose-error"]);
+const PROMOTED_OPS = new Set(["ui-artifact", "extract-text", "diagnose-error", "diagram"]);
 
 test("registry: baseline ops pending/pending; promoted ops pass/pending; no op carries an attestation yet", () => {
   for (const op of SPECIALIZED_VISION_OPERATIONS) {
@@ -1681,7 +1681,7 @@ const PROMOTED_HINT_SPEC = {
   "ui-artifact": { intentMarker: "page regions", optionLabel: "Requested output form:" },
   "extract-text": { intentMarker: "verbatim", optionLabel: null },
   "diagnose-error": { intentMarker: "error class", optionLabel: "Context:" },
-  diagram: { intentMarker: "labeled node", optionLabel: "Diagram type:" },
+  diagram: { intentMarker: "report each node", optionLabel: "Diagram type:" },
   chart: { intentMarker: "axis", optionLabel: "Focus:" },
 };
 

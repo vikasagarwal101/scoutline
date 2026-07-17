@@ -172,12 +172,16 @@ function resolveOutputMode(
   return "data";
 }
 
-async function handleVision(args: string[]): Promise<void> {
+async function handleVision(
+  args: string[],
+  outputMode: OutputMode,
+  deps: { invocation: CommandInvocationAdapter },
+): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
   if (flags.help || flags.h || positional.length === 0) {
-    console.log(vision.VISION_HELP);
-    return;
+    deps.invocation.writeStdout(vision.VISION_HELP);
+    return 0;
   }
 
   const command = positional[0];
@@ -186,104 +190,75 @@ async function handleVision(args: string[]): Promise<void> {
 
   switch (command) {
     case "analyze":
-      if (!source) {
-        outputError(
-          "Missing image source",
-          "INVALID_ARGS",
-          "Usage: scoutline vision analyze <image> [prompt]",
-        );
-      }
-      await vision.analyze(source, prompt);
-      break;
-
-    case "ui-to-code":
-      if (!source) {
-        outputError(
-          "Missing image source",
-          "INVALID_ARGS",
-          "Usage: scoutline vision ui-to-code <image> [prompt]",
-        );
-      }
-      const outputType = (flags.output as string) || "code";
-      await vision.uiToCode(
-        source,
-        prompt,
-        outputType as "code" | "prompt" | "spec" | "description",
+      return invokeCommand(
+        deps.invocation,
+        (context) => vision.analyze(source, prompt, context),
+        outputMode,
       );
-      break;
+
+    case "ui-to-code": {
+      const outputType = (flags.output as string) || "code";
+      return invokeCommand(
+        deps.invocation,
+        (context) =>
+          vision.uiToCode(
+            source,
+            prompt,
+            outputType as "code" | "prompt" | "spec" | "description",
+            context,
+          ),
+        outputMode,
+      );
+    }
 
     case "extract-text":
-      if (!source) {
-        outputError(
-          "Missing image source",
-          "INVALID_ARGS",
-          "Usage: scoutline vision extract-text <image> [prompt] [--language <lang>]",
-        );
-      }
-      await vision.extractText(source, prompt, flags.language as string);
-      break;
+      return invokeCommand(
+        deps.invocation,
+        (context) => vision.extractText(source, prompt, flags.language as string, context),
+        outputMode,
+      );
 
     case "diagnose-error":
-      if (!source) {
-        outputError(
-          "Missing image source",
-          "INVALID_ARGS",
-          "Usage: scoutline vision diagnose-error <image> [prompt] [--context <ctx>]",
-        );
-      }
-      await vision.diagnoseError(source, prompt, flags.context as string);
-      break;
+      return invokeCommand(
+        deps.invocation,
+        (context) => vision.diagnoseError(source, prompt, flags.context as string, context),
+        outputMode,
+      );
 
     case "diagram":
-      if (!source) {
-        outputError(
-          "Missing image source",
-          "INVALID_ARGS",
-          "Usage: scoutline vision diagram <image> [prompt] [--type <type>]",
-        );
-      }
-      await vision.diagram(source, prompt, flags.type as string);
-      break;
+      return invokeCommand(
+        deps.invocation,
+        (context) => vision.diagram(source, prompt, flags.type as string, context),
+        outputMode,
+      );
 
     case "chart":
-      if (!source) {
-        outputError(
-          "Missing image source",
-          "INVALID_ARGS",
-          "Usage: scoutline vision chart <image> [prompt] [--focus <focus>]",
-        );
-      }
-      await vision.chart(source, prompt, flags.focus as string);
-      break;
+      return invokeCommand(
+        deps.invocation,
+        (context) => vision.chart(source, prompt, flags.focus as string, context),
+        outputMode,
+      );
 
-    case "diff":
+    case "diff": {
       const actual = positional[2];
       const diffPrompt = positional[3];
-      if (!source || !actual) {
-        outputError(
-          "Missing image sources",
-          "INVALID_ARGS",
-          "Usage: scoutline vision diff <expected> <actual> [prompt]",
-        );
-      }
-      await vision.diff(source, actual, diffPrompt);
-      break;
+      return invokeCommand(
+        deps.invocation,
+        (context) => vision.diff(source, actual, diffPrompt, context),
+        outputMode,
+      );
+    }
 
     case "video":
-      if (!source) {
-        outputError(
-          "Missing video source",
-          "INVALID_ARGS",
-          "Usage: scoutline vision video <video> [prompt]",
-        );
-      }
-      await vision.video(source, prompt);
-      break;
+      return invokeCommand(
+        deps.invocation,
+        (context) => vision.video(source, prompt, context),
+        outputMode,
+      );
 
     default:
-      outputError(
+      throw new ValidationError(
         `Unknown vision command: ${command}`,
-        "INVALID_ARGS",
         'Run "scoutline vision --help" for available commands',
       );
   }
@@ -691,8 +666,7 @@ export async function main(
   try {
     switch (command) {
       case "vision":
-        await handleVision(commandArgs);
-        break;
+        return await handleVision(commandArgs, outputMode, { invocation });
       case "search":
         return await handleSearch(commandArgs, outputMode, { invocation });
       case "read":

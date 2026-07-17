@@ -158,28 +158,28 @@ describe("invalid output modes: one JSON error to stderr, exit 1", () => {
 });
 
 describe("missing positional values: message, code, stream, exit", () => {
-  it("vision analyze with no source → INVALID_ARGS exit 1 on stderr", async () => {
+  it("vision analyze with no source → VALIDATION_ERROR exit 1 on stderr", async () => {
     const r = await runProcess(["vision", "analyze"], { env: BASE_ENV });
     assert.strictEqual(r.code, 1);
     const err = JSON.parse(r.stderr);
     assert.strictEqual(err.success, false);
-    assert.strictEqual(err.code, "INVALID_ARGS");
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
     assert.ok(err.error.includes("Missing image source"));
   });
 
-  it("vision video with no source → INVALID_ARGS exit 1", async () => {
+  it("vision video with no source → VALIDATION_ERROR exit 1", async () => {
     const r = await runProcess(["vision", "video"], { env: BASE_ENV });
     assert.strictEqual(r.code, 1);
     const err = JSON.parse(r.stderr);
-    assert.strictEqual(err.code, "INVALID_ARGS");
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
     assert.ok(err.error.includes("Missing video source"));
   });
 
-  it("vision diff with only one image → INVALID_ARGS exit 1", async () => {
+  it("vision diff with only one image → VALIDATION_ERROR exit 1", async () => {
     const r = await runProcess(["vision", "diff", "a.png"], { env: BASE_ENV });
     assert.strictEqual(r.code, 1);
     const err = JSON.parse(r.stderr);
-    assert.strictEqual(err.code, "INVALID_ARGS");
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
     assert.ok(err.error.includes("Missing image sources"));
   });
 

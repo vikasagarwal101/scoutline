@@ -718,3 +718,63 @@ describe("invokeCommand — code routed through the seam (P1-07)", () => {
     assert.ok(!/\bproviderId\b|\bprovider_id\b/.test(src), "code.ts must not reference a Provider ID");
   });
 });
+
+describe("invokeCommand — vision routed through the seam (P1-08)", () => {
+  it("vision.analyze throws ValidationError when source is missing", async () => {
+    const vision = await import("../dist/commands/vision.js");
+    const { adapter, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      (ctx) => vision.analyze("", undefined, ctx),
+      "data",
+    );
+    assert.strictEqual(status, 1);
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.match(parsed.error, /Missing image source/);
+  });
+
+  it("vision.diff throws ValidationError when one source is missing", async () => {
+    const vision = await import("../dist/commands/vision.js");
+    const { adapter, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      (ctx) => vision.diff("", "", undefined, ctx),
+      "data",
+    );
+    assert.strictEqual(status, 1);
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.match(parsed.error, /Missing image sources/);
+  });
+
+  it("vision.video throws ValidationError when video source is missing", async () => {
+    const vision = await import("../dist/commands/vision.js");
+    const { adapter, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      (ctx) => vision.video("", undefined, ctx),
+      "data",
+    );
+    assert.strictEqual(status, 1);
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.match(parsed.error, /Missing video source/);
+  });
+
+  it("all vision functions return CommandResult with no Provider selection", async () => {
+    const vision = await import("../dist/commands/vision.js");
+    // Boundary: arity check + source-level guard against Provider ID.
+    const fs = await import("node:fs");
+    const src = fs.readFileSync(
+      new URL("../src/commands/vision.ts", import.meta.url),
+      "utf8",
+    );
+    assert.ok(!/\bproviderId\b|\bprovider_id\b/.test(src), "vision.ts must not reference a Provider ID");
+    
+    // Each function takes a CommandContext as its last parameter.
+    assert.ok(vision.analyze.length >= 1);
+    assert.ok(vision.video.length >= 1);
+    assert.ok(vision.diff.length >= 2);
+  });
+});

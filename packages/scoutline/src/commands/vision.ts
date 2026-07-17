@@ -1,12 +1,15 @@
 /**
  * Vision commands using Z.AI Vision MCP server
+ *
+ * P1-08: each command returns a CommandResult instead of writing
+ * directly to stdout/stderr. Z.AI media preparation and client calls
+ * remain unchanged; client cleanup still occurs on success and failure.
  */
 
 import { ZaiMcpClient } from "../lib/mcp-client.js";
 import { resolveImageSource, resolveVideoSource } from "../lib/image.js";
-import { outputSuccess } from "../lib/output.js";
-import { formatErrorOutput } from "../lib/errors.js";
-import { silenceConsole, restoreConsole } from "../lib/silence.js";
+import { ValidationError } from "../lib/errors.js";
+import type { CommandContext, CommandResult } from "../command-invocation.js";
 
 type OutputType = "code" | "prompt" | "spec" | "description";
 
@@ -22,161 +25,171 @@ const DEFAULT_PROMPTS = {
 };
 
 async function withClient<T>(fn: (client: ZaiMcpClient) => Promise<T>): Promise<T> {
-  silenceConsole();
   const client = new ZaiMcpClient();
   try {
-    const result = await fn(client);
-    return result;
-  } catch (error) {
-    restoreConsole();
-    throw error;
+    return await fn(client);
   } finally {
     await client.close().catch(() => {});
-    restoreConsole();
   }
 }
 
 export async function analyze(
   imageSource: string,
   prompt: string = DEFAULT_PROMPTS.analyze,
-): Promise<void> {
-  try {
-    const image = resolveImageSource(imageSource);
-    const result = await withClient((client) =>
-      client.visionAnalyze({ imageSource: image, prompt }),
+  context?: CommandContext,
+): Promise<CommandResult> {
+  if (!imageSource) {
+    throw new ValidationError(
+      "Missing image source",
+      "Usage: scoutline vision analyze <image> [prompt]",
     );
-    outputSuccess(result);
-  } catch (error) {
-    console.error(formatErrorOutput(error));
-    process.exit(1);
   }
+  const image = resolveImageSource(imageSource);
+  const result = await withClient((client) =>
+    client.visionAnalyze({ imageSource: image, prompt }),
+  );
+  return { kind: "data", data: result };
 }
 
 export async function uiToCode(
   imageSource: string,
   prompt: string = DEFAULT_PROMPTS.uiToCode,
   outputType: OutputType = "code",
-): Promise<void> {
-  try {
-    const image = resolveImageSource(imageSource);
-    const result = await withClient((client) =>
-      client.visionUiToArtifact({ imageSource: image, outputType, prompt }),
+  context?: CommandContext,
+): Promise<CommandResult> {
+  if (!imageSource) {
+    throw new ValidationError(
+      "Missing image source",
+      "Usage: scoutline vision ui-to-code <image> [prompt]",
     );
-    outputSuccess(result);
-  } catch (error) {
-    console.error(formatErrorOutput(error));
-    process.exit(1);
   }
+  const image = resolveImageSource(imageSource);
+  const result = await withClient((client) =>
+    client.visionUiToArtifact({ imageSource: image, outputType, prompt }),
+  );
+  return { kind: "data", data: result };
 }
 
 export async function extractText(
   imageSource: string,
   prompt: string = DEFAULT_PROMPTS.extractText,
   language?: string,
-): Promise<void> {
-  try {
-    const image = resolveImageSource(imageSource);
-    const result = await withClient((client) =>
-      client.visionExtractText({
-        imageSource: image,
-        prompt,
-        programmingLanguage: language,
-      }),
+  context?: CommandContext,
+): Promise<CommandResult> {
+  if (!imageSource) {
+    throw new ValidationError(
+      "Missing image source",
+      "Usage: scoutline vision extract-text <image> [prompt] [--language <lang>]",
     );
-    outputSuccess(result);
-  } catch (error) {
-    console.error(formatErrorOutput(error));
-    process.exit(1);
   }
+  const image = resolveImageSource(imageSource);
+  const result = await withClient((client) =>
+    client.visionExtractText({
+      imageSource: image,
+      prompt,
+      programmingLanguage: language,
+    }),
+  );
+  return { kind: "data", data: result };
 }
 
 export async function diagnoseError(
   imageSource: string,
   prompt: string = DEFAULT_PROMPTS.diagnoseError,
-  context?: string,
-): Promise<void> {
-  try {
-    const image = resolveImageSource(imageSource);
-    const result = await withClient((client) =>
-      client.visionDiagnoseError({ imageSource: image, prompt, context }),
+  contextFlag?: string,
+  context?: CommandContext,
+): Promise<CommandResult> {
+  if (!imageSource) {
+    throw new ValidationError(
+      "Missing image source",
+      "Usage: scoutline vision diagnose-error <image> [prompt] [--context <ctx>]",
     );
-    outputSuccess(result);
-  } catch (error) {
-    console.error(formatErrorOutput(error));
-    process.exit(1);
   }
+  const image = resolveImageSource(imageSource);
+  const result = await withClient((client) =>
+    client.visionDiagnoseError({ imageSource: image, prompt, context: contextFlag }),
+  );
+  return { kind: "data", data: result };
 }
 
 export async function diagram(
   imageSource: string,
   prompt: string = DEFAULT_PROMPTS.diagram,
   diagramType?: string,
-): Promise<void> {
-  try {
-    const image = resolveImageSource(imageSource);
-    const result = await withClient((client) =>
-      client.visionDiagram({ imageSource: image, prompt, diagramType }),
+  context?: CommandContext,
+): Promise<CommandResult> {
+  if (!imageSource) {
+    throw new ValidationError(
+      "Missing image source",
+      "Usage: scoutline vision diagram <image> [prompt] [--type <type>]",
     );
-    outputSuccess(result);
-  } catch (error) {
-    console.error(formatErrorOutput(error));
-    process.exit(1);
   }
+  const image = resolveImageSource(imageSource);
+  const result = await withClient((client) =>
+    client.visionDiagram({ imageSource: image, prompt, diagramType }),
+  );
+  return { kind: "data", data: result };
 }
 
 export async function chart(
   imageSource: string,
   prompt: string = DEFAULT_PROMPTS.chart,
   focus?: string,
-): Promise<void> {
-  try {
-    const image = resolveImageSource(imageSource);
-    const result = await withClient((client) =>
-      client.visionChart({ imageSource: image, prompt, focus }),
+  context?: CommandContext,
+): Promise<CommandResult> {
+  if (!imageSource) {
+    throw new ValidationError(
+      "Missing image source",
+      "Usage: scoutline vision chart <image> [prompt] [--focus <focus>]",
     );
-    outputSuccess(result);
-  } catch (error) {
-    console.error(formatErrorOutput(error));
-    process.exit(1);
   }
+  const image = resolveImageSource(imageSource);
+  const result = await withClient((client) =>
+    client.visionChart({ imageSource: image, prompt, focus }),
+  );
+  return { kind: "data", data: result };
 }
 
 export async function diff(
   expectedSource: string,
   actualSource: string,
   prompt: string = DEFAULT_PROMPTS.diff,
-): Promise<void> {
-  try {
-    const expectedImage = resolveImageSource(expectedSource);
-    const actualImage = resolveImageSource(actualSource);
-    const result = await withClient((client) =>
-      client.visionDiff({
-        expectedImageSource: expectedImage,
-        actualImageSource: actualImage,
-        prompt,
-      }),
+  context?: CommandContext,
+): Promise<CommandResult> {
+  if (!expectedSource || !actualSource) {
+    throw new ValidationError(
+      "Missing image sources",
+      "Usage: scoutline vision diff <expected> <actual> [prompt]",
     );
-    outputSuccess(result);
-  } catch (error) {
-    console.error(formatErrorOutput(error));
-    process.exit(1);
   }
+  const expectedImage = resolveImageSource(expectedSource);
+  const actualImage = resolveImageSource(actualSource);
+  const result = await withClient((client) =>
+    client.visionDiff({
+      expectedImageSource: expectedImage,
+      actualImageSource: actualImage,
+      prompt,
+    }),
+  );
+  return { kind: "data", data: result };
 }
 
 export async function video(
   videoSource: string,
   prompt: string = DEFAULT_PROMPTS.video,
-): Promise<void> {
-  try {
-    const videoPath = resolveVideoSource(videoSource);
-    const result = await withClient((client) =>
-      client.visionVideo({ videoSource: videoPath, prompt }),
+  context?: CommandContext,
+): Promise<CommandResult> {
+  if (!videoSource) {
+    throw new ValidationError(
+      "Missing video source",
+      "Usage: scoutline vision video <video> [prompt]",
     );
-    outputSuccess(result);
-  } catch (error) {
-    console.error(formatErrorOutput(error));
-    process.exit(1);
   }
+  const videoPath = resolveVideoSource(videoSource);
+  const result = await withClient((client) =>
+    client.visionVideo({ videoSource: videoPath, prompt }),
+  );
+  return { kind: "data", data: result };
 }
 
 // Help text

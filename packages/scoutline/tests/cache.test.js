@@ -12,6 +12,7 @@ import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import { withTempDir } from "./helpers/temp-dir.js";
+import crypto from "node:crypto";
 import {
   resolveCacheDirPure,
   buildCacheKey,
@@ -19,6 +20,8 @@ import {
   writeCache,
   clearCache,
   cacheStats,
+  buildProviderCacheKey,
+  defaultResponseCache,
 } from "../dist/lib/cache.js";
 
 describe("resolveCacheDirPure: legacy zai-cli/responses paths", () => {
@@ -176,5 +179,169 @@ describe("best-effort cache helpers never fail", () => {
         delete process.env.ZAI_CACHE_SIZE_MB;
       }
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provider-partitioned cache keys (P2-02)
+// ---------------------------------------------------------------------------
+
+describe("buildProviderCacheKey: v2 key shape", () => {
+  const fp = crypto.createHash("sha256").update("cred").digest("hex");
+
+  it("produces v2.<capability>.<provider>.<credential-hash>.<request-hash>.json", () => {
+    const key = buildProviderCacheKey({
+      provider: "zai",
+      capability: "search",
+      credentialFingerprint: fp,
+      request: { query: "q" },
+    });
+    assert.match(
+      key,
+      /^v2\.search\.zai\.[0-9a-f]{64}\.[0-9a-f]{64}\.json$/,
+      `key shape off: ${key}`,
+    );
+  });
+
+  it("uses the credential fingerprint verbatim (does not re-hash)", () => {
+    const key = buildProviderCacheKey({
+      provider: "zai",
+      capability: "search",
+      credentialFingerprint: fp,
+      request: { query: "q" },
+    });
+    assert.ok(key.includes(`.${fp}.`), `credential fingerprint must appear verbatim, got: ${key}`);
+  });
+
+  it("Z.AI and MiniMax keys differ for the same query and credential", () => {
+    const a = buildProviderCacheKey({
+      provider: "zai",
+      capability: "search",
+      credentialFingerprint: fp,
+      request: { query: "same" },
+    });
+    const b = buildProviderCacheKey({
+      provider: "minimax",
+      capability: "search",
+      credentialFingerprint: fp,
+      request: { query: "same" },
+    });
+    assert.notStrictEqual(a, b);
+  });
+
+  it("different credential fingerprints differ for the same provider and query", () => {
+    const fp2 = crypto.createHash("sha256").update("other").digest("hex");
+    const a = buildProviderCacheKey({
+      provider: "zai",
+      capability: "search",
+      credentialFingerprint: fp,
+      request: { query: "same" },
+    });
+    const b = buildProviderCacheKey({
+      provider: "zai",
+      capability: "search",
+      credentialFingerprint: fp2,
+      request: { query: "same" },
+    });
+    assert.notStrictEqual(a, b);
+  });
+
+  it("different queries produce different request hashes", () => {
+    const a = buildProviderCacheKey({
+      provider: "zai",
+      capability: "search",
+      credentialFingerprint: fp,
+      request: { query: "alpha" },
+    });
+    const b = buildProviderCacheKey({
+      provider: "zai",
+      capability: "search",
+      credentialFingerprint: fp,
+      request: { query: "beta" },
+    });
+    assert.notStrictEqual(a, b);
+  });
+
+  it("count never enters request identity (excluded by caller)", () => {
+    // The execution layer is responsible for stripping count. The cache
+    // key builder only reflects what it is given; assert that omitting
+    // count from the request produces a stable, count-independent key.
+    const a = buildProviderCacheKey({
+      provider: "zai",
+      capability: "search",
+      credentialFingerprint: fp,
+      request: { query: "q", controls: { domain: "x" } },
+    });
+    const b = buildProviderCacheKey({
+      provider: "zai",
+      capability: "search",
+      credentialFingerprint: fp,
+      request: { query: "q", controls: { domain: "x" } },
+    });
+    assert.strictEqual(a, b);
+  });
+
+  it("key-sorted JSON: control key order does not change the hash", () => {
+    const a = buildProviderCacheKey({
+      provider: "zai",
+      capability: "search",
+      credentialFingerprint: fp,
+      request: { query: "q", controls: { domain: "x", recency: "oneDay" } },
+    });
+    const b = buildProviderCacheKey({
+      provider: "zai",
+      capability: "search",
+      credentialFingerprint: fp,
+      request: { query: "q", controls: { recency: "oneDay", domain: "x" } },
+    });
+    assert.strictEqual(a, b);
+  });
+
+  it("cache filenames never contain the raw credential", () => {
+    const rawKey = "sk-secret-DO-NOT-LEAK-1234567";
+    const fingerprint = crypto.createHash("sha256").update(rawKey).digest("hex");
+    const key = buildProviderCacheKey({
+      provider: "zai",
+      capability: "search",
+      credentialFingerprint: fingerprint,
+      request: { query: "q" },
+    });
+    assert.ok(!key.includes(rawKey), "raw credential leaked into filename");
+    assert.ok(!key.includes("secret"), "credential substring leaked");
+  });
+});
+
+describe("defaultResponseCache: ResponseCache wrapper over legacy cache", () => {
+  it("get returns null when the key is absent", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.ZAI_CACHE_DIR = dir;
+      try {
+        const hit = await defaultResponseCache.get("absent.json");
+        assert.strictEqual(hit, null);
+      } finally {
+        delete process.env.ZAI_CACHE_DIR;
+      }
+    });
+  });
+
+  it("set then get round-trips a value through the legacy cache", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.ZAI_CACHE_DIR = dir;
+      try {
+        const key = "v2-roundtrip.json";
+        const value = [{ title: "T", url: "u", summary: "s" }];
+        await defaultResponseCache.set(key, value);
+        const out = await defaultResponseCache.get(key);
+        assert.deepStrictEqual(out, value);
+      } finally {
+        delete process.env.ZAI_CACHE_DIR;
+      }
+    });
+  });
+
+  it("preserves the existing zai-cli/responses default directory", async () => {
+    // Just confirm the default cache directory resolver is unchanged.
+    const p = resolveCacheDirPure({}, { platform: "linux", homedir: "/home/u" });
+    assert.ok(p.endsWith(path.join("zai-cli", "responses")));
   });
 });

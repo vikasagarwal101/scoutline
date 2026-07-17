@@ -9,6 +9,12 @@
  *
  * Default TTL: 24h. Default size cap: 100MB. LRU eviction when full.
  * Disable per-call with --no-cache.
+ *
+ * P2-02 extends this module with provider-partitioned keys
+ * (`buildProviderCacheKey`) and a `ResponseCache` adapter that lets
+ * shared execution read and write through the same on-disk store without
+ * duplicating TTL or eviction logic. Existing exports and directory
+ * resolution are unchanged.
  */
 
 import crypto from "node:crypto";
@@ -16,6 +22,7 @@ import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { getApiKey } from "./config.js";
+import type { ProviderId } from "../providers/types.js";
 
 const DEFAULT_TTL_MS = parseInt(process.env.ZAI_CACHE_TTL_MS || "", 10) || 24 * 60 * 60 * 1000;
 const DEFAULT_SIZE_CAP_BYTES =
@@ -199,3 +206,82 @@ export async function cacheStats(): Promise<{
     enabled: CACHE_ENABLED,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Provider-partitioned cache (DESIGN.md §11)
+// ---------------------------------------------------------------------------
+
+/**
+ * Response cache surface consumed by shared execution
+ * (`executeSearch`, future `executeVision`, etc.). Production wires
+ * {@link defaultResponseCache} to the existing on-disk implementation;
+ * tests inject in-memory doubles.
+ */
+export interface ResponseCache {
+  get<T>(key: string): Promise<T | null>;
+  set<T>(key: string, value: T): Promise<void>;
+}
+
+/**
+ * Inputs to a provider-partitioned cache key. `credentialFingerprint`
+ * is the full lowercase SHA-256 hex digest of the active credential
+ * supplied by the Adapter; it is NEVER re-hashed by cache code.
+ * `request` is the normalized Capability request whose recursively
+ * key-sorted JSON becomes the request hash.
+ */
+export interface ProviderCacheKeyInput {
+  readonly provider: ProviderId;
+  readonly capability: string;
+  readonly credentialFingerprint: string;
+  readonly request: unknown;
+}
+
+/**
+ * Recursively sort object keys so `JSON.stringify` produces a stable
+ * representation regardless of insertion order. Arrays preserve order
+ * (positional meaning) and primitives pass through unchanged.
+ */
+function sortKeysDeep(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((element) => sortKeysDeep(element));
+  }
+  if (value && typeof value === "object") {
+    const input = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(input).sort()) {
+      out[key] = sortKeysDeep(input[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Build a provider-partitioned cache key.
+ *
+ * Shape: `v2.<capability>.<provider>.<credential-hash>.<request-hash>.json`
+ *
+ * `<credential-hash>` is the Adapter-supplied fingerprint verbatim.
+ * `<request-hash>` is the full SHA-256 hex digest of recursively
+ * key-sorted JSON of the request. The key never contains a raw
+ * credential.
+ */
+export function buildProviderCacheKey(input: ProviderCacheKeyInput): string {
+  const sorted = sortKeysDeep(input.request);
+  const requestHash = crypto.createHash("sha256").update(JSON.stringify(sorted)).digest("hex");
+  return `v2.${input.capability}.${input.provider}.${input.credentialFingerprint}.${requestHash}.json`;
+}
+
+/**
+ * Default `ResponseCache` bound to the existing on-disk store. Reads
+ * and writes flow through `readCache`/`writeCache`, so TTL, eviction,
+ * and directory resolution remain identical to the legacy path.
+ */
+export const defaultResponseCache: ResponseCache = {
+  get<T>(key: string): Promise<T | null> {
+    return readCache<T>(key);
+  },
+  set<T>(key: string, value: T): Promise<void> {
+    return writeCache<T>(key, value);
+  },
+};

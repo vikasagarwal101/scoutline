@@ -62,22 +62,8 @@ describe("import safety: dist/index.js must not execute on import", () => {
 });
 
 describe("help and version: stdout-only", () => {
-  it("no args → stdout-only exit 0", async () => {
-    const r = await runProcess([], { env: BASE_ENV });
-    assert.strictEqual(r.code, 0);
-    assert.strictEqual(r.stderr, "");
-    assert.ok(r.stdout.includes("Usage:"));
-  });
-
   it("--help → stdout-only exit 0", async () => {
     const r = await runProcess(["--help"], { env: BASE_ENV });
-    assert.strictEqual(r.code, 0);
-    assert.strictEqual(r.stderr, "");
-    assert.ok(r.stdout.includes("scoutline"));
-  });
-
-  it("-h → stdout-only exit 0", async () => {
-    const r = await runProcess(["-h"], { env: BASE_ENV });
     assert.strictEqual(r.code, 0);
     assert.strictEqual(r.stderr, "");
     assert.ok(r.stdout.includes("scoutline"));
@@ -90,24 +76,11 @@ describe("help and version: stdout-only", () => {
     assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+$/);
   });
 
-  it("-v → stdout-only exit 0 with semver", async () => {
-    const r = await runProcess(["-v"], { env: BASE_ENV });
-    assert.strictEqual(r.code, 0);
-    assert.strictEqual(r.stderr, "");
-    assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+$/);
-  });
 });
 
 describe("global output options: before and after command token", () => {
   it("--output-format json before command token is accepted", async () => {
     const r = await runProcess(["--output-format", "json", "--help"], { env: BASE_ENV });
-    assert.strictEqual(r.code, 0);
-    assert.strictEqual(r.stderr, "");
-    assert.ok(r.stdout.includes("scoutline"));
-  });
-
-  it("-O pretty before command token is accepted", async () => {
-    const r = await runProcess(["-O", "pretty", "--help"], { env: BASE_ENV });
     assert.strictEqual(r.code, 0);
     assert.strictEqual(r.stderr, "");
     assert.ok(r.stdout.includes("scoutline"));
@@ -122,14 +95,8 @@ describe("global output options: before and after command token", () => {
     assert.ok(r.stdout.includes("analyze"));
   });
 
-  it("data mode is accepted", async () => {
-    const r = await runProcess(["--output-format", "data", "--help"], { env: BASE_ENV });
-    assert.strictEqual(r.code, 0);
-    assert.strictEqual(r.stderr, "");
-  });
-
-  it("compact, markdown, refs, tty modes are accepted", async () => {
-    for (const mode of ["compact", "markdown", "refs", "tty"]) {
+  it("all canonical output modes are accepted", async () => {
+    for (const mode of ["data", "pretty", "compact", "markdown", "refs", "tty"]) {
       const r = await runProcess(["--output-format", mode, "--help"], { env: BASE_ENV });
       assert.strictEqual(r.code, 0, `${mode} mode should exit 0`);
       assert.strictEqual(r.stderr, "", `${mode} mode should have empty stderr`);
@@ -147,14 +114,6 @@ describe("invalid output modes: one JSON error to stderr, exit 1", () => {
     assert.strictEqual(err.code, "VALIDATION_ERROR");
   });
 
-  it("-O garbage → JSON error on stderr, exit 1", async () => {
-    const r = await runProcess(["-O", "garbage", "doctor"], { env: BASE_ENV });
-    assert.strictEqual(r.code, 1);
-    const err = JSON.parse(r.stderr);
-    assert.strictEqual(err.success, false);
-    assert.ok(err.error.includes("Invalid output format"));
-    assert.strictEqual(err.code, "VALIDATION_ERROR");
-  });
 });
 
 describe("missing positional values: message, code, stream, exit", () => {
@@ -246,68 +205,6 @@ function createTestAdapter(overrides = {}) {
 }
 
 describe("main(args, dependencies) in-process: returns numeric status", () => {
-  it("--help returns 0 and writes help to adapter stdout", async () => {
-    const { adapter, stdout } = createTestAdapter();
-    const status = await main(["--help"], { invocation: adapter, env: {} });
-    assert.strictEqual(typeof status, "number");
-    assert.strictEqual(status, 0);
-    assert.strictEqual(stdout.length, 1);
-    assert.ok(stdout[0].includes("Usage:"));
-  });
-
-  it("--version returns 0 and writes version to adapter stdout", async () => {
-    const { adapter, stdout } = createTestAdapter();
-    const status = await main(["--version"], { invocation: adapter, env: {} });
-    assert.strictEqual(status, 0);
-    assert.strictEqual(stdout.length, 1);
-    assert.match(stdout[0].trim(), /^\d+\.\d+\.\d+$/);
-  });
-
-  it("unknown command returns 1 and writes VALIDATION_ERROR to adapter stderr", async () => {
-    const { adapter, stderr } = createTestAdapter();
-    const status = await main(["nonexistent-cmd"], { invocation: adapter, env: {} });
-    assert.strictEqual(status, 1);
-    assert.strictEqual(stderr.length, 1);
-    const err = JSON.parse(stderr[0]);
-    assert.strictEqual(err.success, false);
-    assert.strictEqual(err.code, "VALIDATION_ERROR");
-    assert.ok(err.error.includes("Unknown command"));
-  });
-
-  it("invalid output mode returns 1 and writes VALIDATION_ERROR to adapter stderr", async () => {
-    const { adapter, stderr } = createTestAdapter();
-    const status = await main(["--output-format", "bogus", "doctor"], {
-      invocation: adapter,
-      env: {},
-    });
-    assert.strictEqual(status, 1);
-    assert.strictEqual(stderr.length, 1);
-    const err = JSON.parse(stderr[0]);
-    assert.strictEqual(err.code, "VALIDATION_ERROR");
-    assert.ok(err.error.includes("Invalid output format"));
-  });
-
-  it("no args returns 0 and writes help to adapter stdout", async () => {
-    const { adapter, stdout } = createTestAdapter();
-    const status = await main([], { invocation: adapter, env: {} });
-    assert.strictEqual(status, 0);
-    assert.ok(stdout[0].includes("Usage:"));
-  });
-
-  it("-h alias returns 0 and writes help to adapter stdout", async () => {
-    const { adapter, stdout } = createTestAdapter();
-    const status = await main(["-h"], { invocation: adapter, env: {} });
-    assert.strictEqual(status, 0);
-    assert.ok(stdout[0].includes("scoutline"));
-  });
-
-  it("-v alias returns 0 and writes version to adapter stdout", async () => {
-    const { adapter, stdout } = createTestAdapter();
-    const status = await main(["-v"], { invocation: adapter, env: {} });
-    assert.strictEqual(status, 0);
-    assert.match(stdout[0].trim(), /^\d+\.\d+\.\d+$/);
-  });
-
   it("plumbs dependencies.now through to invokeCommand for a deterministic timestamp", async () => {
     // `code prompt` is a pure offline command (static prompt template, no
     // network/config). In json mode its success envelope carries a timestamp

@@ -84,40 +84,22 @@ function expectRetryable(ErrorFactory) {
 }
 
 describe("provider errors — terminal classification (no retries)", () => {
-  it(
-    "ValidationError is terminal",
-    expectImmediateReject(() => new ValidationError("bad")),
-  );
-  it(
-    "AuthError is terminal",
-    expectImmediateReject(() => new AuthError("nope")),
-  );
-  it(
-    "UnsupportedCapabilityError is terminal",
-    expectImmediateReject(() => new UnsupportedCapabilityError("minimax", "vision.video")),
-  );
-  it(
-    "UnsupportedOptionError is terminal",
-    expectImmediateReject(() => new UnsupportedOptionError("minimax", "search", "recency")),
-  );
-
-  it("non-retryable API status codes (400, 401, 403, 404, 422) are terminal", async () => {
-    for (const code of [400, 401, 403, 404, 422]) {
-      const deps = makeDeps();
-      let calls = 0;
-      await assert.rejects(
-        executeProviderOperation(
-          "search",
-          async () => {
-            calls += 1;
-            throw new ApiError(`http ${code}`, code);
-          },
-          deps,
-          { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 1, jitterMs: 0 },
-        ),
-      );
-      assert.strictEqual(calls, 1, `status ${code} must not retry`);
-      assert.strictEqual(deps.sleeps.length, 0);
+  it("validation, auth, unsupported, and non-retryable API errors are terminal", async () => {
+    const cases = [
+      ["validation", () => new ValidationError("bad")],
+      ["auth", () => new AuthError("nope")],
+      ["unsupported capability", () => new UnsupportedCapabilityError("minimax", "vision.video")],
+      ["unsupported option", () => new UnsupportedOptionError("minimax", "search", "recency")],
+      ...[400, 401, 403, 404, 422].map((code) => [
+        `API ${code}`,
+        () => new ApiError(`http ${code}`, code),
+      ]),
+    ];
+    for (const [label, factory] of cases) {
+      await expectImmediateReject(factory)().catch((error) => {
+        error.message = `${label}: ${error.message}`;
+        throw error;
+      });
     }
   });
 });
@@ -131,26 +113,11 @@ describe("provider errors — retryable classification", () => {
     "NetworkError is retryable",
     expectRetryable(() => new NetworkError("down")),
   );
-  it(
-    "ApiError 429 is retryable",
-    expectRetryable(() => new ApiError("rate", 429)),
-  );
-  it(
-    "ApiError 500 is retryable",
-    expectRetryable(() => new ApiError("s", 500)),
-  );
-  it(
-    "ApiError 502 is retryable",
-    expectRetryable(() => new ApiError("s", 502)),
-  );
-  it(
-    "ApiError 503 is retryable",
-    expectRetryable(() => new ApiError("s", 503)),
-  );
-  it(
-    "ApiError 504 is retryable",
-    expectRetryable(() => new ApiError("s", 504)),
-  );
+  it("API 429 and retryable 5xx statuses are retryable", async () => {
+    for (const code of [429, 500, 502, 503, 504]) {
+      await expectRetryable(() => new ApiError(`http ${code}`, code))();
+    }
+  });
 });
 
 describe("provider errors — explicit retryable flag is honoured as a safety hatch", () => {
@@ -216,13 +183,9 @@ describe("provider errors — non-ScoutlineError never retries", () => {
 });
 
 describe("provider errors — exit codes", () => {
-  it("ValidationError exits 1", () => {
+  it("normalized and unknown terminal errors exit 1", () => {
     assert.strictEqual(getErrorExitCode(new ValidationError("x")), 1);
-  });
-  it("UnsupportedCapabilityError exits 1", () => {
     assert.strictEqual(getErrorExitCode(new UnsupportedCapabilityError("minimax", "search")), 1);
-  });
-  it("unknown errors default to exit 1", () => {
     assert.strictEqual(getErrorExitCode(new Error("x")), 1);
   });
 });

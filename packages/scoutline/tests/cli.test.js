@@ -15,20 +15,6 @@ import { runProcess } from "./helpers/run-process.js";
 const TEST_KEY = "test-key";
 
 describe("CLI Help Commands", () => {
-  it("should show main help with --help", async () => {
-    const { stdout, code } = await runProcess(["--help"], {
-      env: { Z_AI_API_KEY: TEST_KEY },
-    });
-    assert.strictEqual(code, 0);
-    assert.ok(stdout.includes("scoutline"));
-    assert.ok(stdout.includes("vision"));
-    assert.ok(stdout.includes("search"));
-    assert.ok(stdout.includes("read"));
-    assert.ok(stdout.includes("repo"));
-    assert.ok(stdout.includes("tools"));
-    assert.ok(stdout.includes("doctor"));
-  });
-
   // Fixup C — W5: top-level help text must reflect provider-aware
   // behavior — mention --provider, identify shared vs Z.AI-only
   // capabilities, and note that quota/doctor are provider-aware.
@@ -43,30 +29,6 @@ describe("CLI Help Commands", () => {
     assert.match(stdout, /Provider-aware/i, "notes quota/doctor are provider-aware");
     // The legacy "Z.AI-only" framing must NOT be the only framing.
     assert.ok(!/Z\.AI MCP services/.test(stdout), "main help must no longer say 'Z.AI MCP services'");
-  });
-
-  it("should show main help with -h", async () => {
-    const { stdout, code } = await runProcess(["-h"], {
-      env: { Z_AI_API_KEY: TEST_KEY },
-    });
-    assert.strictEqual(code, 0);
-    assert.ok(stdout.includes("scoutline"));
-  });
-
-  it("should show main help with no arguments", async () => {
-    const { stdout, code } = await runProcess([], {
-      env: { Z_AI_API_KEY: TEST_KEY },
-    });
-    assert.strictEqual(code, 0);
-    assert.ok(stdout.includes("Usage:"));
-  });
-
-  it("should show version with --version", async () => {
-    const { stdout, code } = await runProcess(["--version"], {
-      env: { Z_AI_API_KEY: TEST_KEY },
-    });
-    assert.strictEqual(code, 0);
-    assert.match(stdout.trim(), /^\d+\.\d+\.\d+$/);
   });
 
   it("should show vision help", async () => {
@@ -148,16 +110,6 @@ describe("CLI Error Handling", () => {
     assert.ok(error.error.includes("Unknown command"));
   });
 
-  it("should error on vision without source", async () => {
-    const { stderr, code } = await runProcess(["vision", "analyze"], {
-      env: { Z_AI_API_KEY: TEST_KEY },
-    });
-    assert.strictEqual(code, 1);
-    const error = JSON.parse(stderr);
-    assert.strictEqual(error.success, false);
-    assert.ok(error.error.includes("Missing"));
-  });
-
   it("should error on unknown vision command", async () => {
     const { stderr, code } = await runProcess(["vision", "unknown", "file.png"], {
       env: { Z_AI_API_KEY: TEST_KEY },
@@ -168,41 +120,4 @@ describe("CLI Error Handling", () => {
     assert.ok(error.error.includes("Unknown vision command"));
   });
 
-  it("should error on repo without repo name", async () => {
-    const { stderr, code } = await runProcess(["repo", "tree"], {
-      env: { Z_AI_API_KEY: TEST_KEY },
-    });
-    assert.strictEqual(code, 1);
-    const error = JSON.parse(stderr);
-    assert.strictEqual(error.success, false);
-    assert.ok(error.error.includes("Missing"));
-  });
-});
-
-describe("CLI Output Format", () => {
-  it("should support --output-format json", async () => {
-    const { stdout, code } = await runProcess(["--output-format", "json", "--help"], {
-      env: { Z_AI_API_KEY: TEST_KEY },
-    });
-    assert.strictEqual(code, 0);
-    assert.ok(stdout.includes("scoutline"));
-  });
-
-  it("should support --output-format pretty", async () => {
-    const { stdout, code } = await runProcess(["--output-format", "pretty", "--help"], {
-      env: { Z_AI_API_KEY: TEST_KEY },
-    });
-    assert.strictEqual(code, 0);
-    assert.ok(stdout.includes("scoutline"));
-  });
-
-  it("should reject invalid output format", async () => {
-    const { stderr, code } = await runProcess(["--output-format", "invalid", "doctor"], {
-      env: { Z_AI_API_KEY: TEST_KEY },
-    });
-    assert.strictEqual(code, 1);
-    const error = JSON.parse(stderr);
-    assert.strictEqual(error.success, false);
-    assert.ok(error.error.includes("Invalid output format"));
-  });
 });

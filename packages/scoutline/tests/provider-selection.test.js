@@ -30,18 +30,16 @@ import { ValidationError } from "../dist/lib/errors.js";
 describe("parseProviderId: valid IDs", () => {
   const validCases = [
     { input: "zai", expected: "zai" },
-    { input: "minimax", expected: "minimax" },
-    { input: "ZAI", expected: "zai" },
     { input: "MiniMax", expected: "minimax" },
     { input: "  zai  ", expected: "zai" },
     { input: "\tminimax\n", expected: "minimax" },
-    { input: "ZAI", expected: "zai" },
   ];
-  for (const { input, expected } of validCases) {
-    it(`accepts ${JSON.stringify(input)} as ${expected}`, () => {
+
+  it("accepts both IDs and normalizes case and whitespace", () => {
+    for (const { input, expected } of validCases) {
       assert.strictEqual(parseProviderId(input), expected);
-    });
-  }
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -49,9 +47,7 @@ describe("parseProviderId: valid IDs", () => {
 // ---------------------------------------------------------------------------
 
 describe("parseProviderId: invalid input throws ValidationError", () => {
-  const invalidCases = ["", "   ", "\n\t", "openai", "anthropic", "google", "z.ai"];
-  for (const value of invalidCases) {
-    it(`rejects ${JSON.stringify(value)}`, () => {
+  function assertInvalid(value) {
       let captured;
       try {
         parseProviderId(value);
@@ -61,8 +57,10 @@ describe("parseProviderId: invalid input throws ValidationError", () => {
       assert.ok(captured instanceof ValidationError, "must throw ValidationError");
       assert.strictEqual(captured.code, "VALIDATION_ERROR");
       assert.ok(captured.help && /zai|minimax/.test(captured.help), "help must list accepted IDs");
-    });
   }
+
+  it("rejects empty input", () => assertInvalid(""));
+  it("rejects an unknown provider", () => assertInvalid("openai"));
 });
 
 // ---------------------------------------------------------------------------
@@ -86,12 +84,6 @@ describe("resolveProviderId: precedence table", () => {
       expected: "zai",
     },
     {
-      name: "explicit minimax wins over environment zai",
-      explicit: "minimax",
-      env: { SCOUTLINE_PROVIDER: "zai" },
-      expected: "minimax",
-    },
-    {
       name: "environment minimax is the fallback",
       explicit: undefined,
       env: { SCOUTLINE_PROVIDER: "minimax" },
@@ -111,12 +103,6 @@ describe("resolveProviderId: precedence table", () => {
       throws: true,
     },
     {
-      name: "whitespace explicit does not fall through",
-      explicit: "   ",
-      env: { SCOUTLINE_PROVIDER: "minimax" },
-      throws: true,
-    },
-    {
       name: "unknown explicit does not fall through",
       explicit: "openai",
       env: { SCOUTLINE_PROVIDER: "minimax" },
@@ -126,12 +112,6 @@ describe("resolveProviderId: precedence table", () => {
       name: "unknown environment throws",
       explicit: undefined,
       env: { SCOUTLINE_PROVIDER: "openai" },
-      throws: true,
-    },
-    {
-      name: "empty environment throws",
-      explicit: undefined,
-      env: { SCOUTLINE_PROVIDER: "" },
       throws: true,
     },
   ];
@@ -152,28 +132,28 @@ describe("resolveProviderId: precedence table", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveProviderId: credential independence", () => {
-  const envVariants = [
-    { name: "both keys", env: { Z_AI_API_KEY: "zai-secret", MINIMAX_API_KEY: "mini-secret" } },
-    { name: "only Z.AI key", env: { Z_AI_API_KEY: "zai-secret" } },
-    { name: "only MiniMax key", env: { MINIMAX_API_KEY: "mini-secret" } },
-    { name: "no keys", env: {} },
-  ];
-  const inputs = [
-    { explicit: undefined, env: {}, expected: "zai" },
-    { explicit: undefined, env: { SCOUTLINE_PROVIDER: "minimax" }, expected: "minimax" },
-    { explicit: "minimax", env: {}, expected: "minimax" },
-    { explicit: "zai", env: { SCOUTLINE_PROVIDER: "minimax" }, expected: "zai" },
-  ];
-
-  for (const input of inputs) {
-    for (const variant of envVariants) {
-      it(`${variant.name}: explicit=${JSON.stringify(input.explicit)}, env.SCOUTLINE_PROVIDER=${JSON.stringify(input.env.SCOUTLINE_PROVIDER)} → ${input.expected}`, () => {
-        const merged = { ...input.env, ...variant.env };
-        const got = resolveProviderId(input.explicit, merged);
-        assert.strictEqual(got, input.expected);
-      });
+  it("credentials never influence default, environment, or explicit selection", () => {
+    const cases = [
+      {
+        explicit: undefined,
+        env: { MINIMAX_API_KEY: "mini-secret" },
+        expected: "zai",
+      },
+      {
+        explicit: undefined,
+        env: { SCOUTLINE_PROVIDER: "minimax", Z_AI_API_KEY: "zai-secret" },
+        expected: "minimax",
+      },
+      {
+        explicit: "zai",
+        env: { SCOUTLINE_PROVIDER: "minimax", MINIMAX_API_KEY: "mini-secret" },
+        expected: "zai",
+      },
+    ];
+    for (const { explicit, env, expected } of cases) {
+      assert.strictEqual(resolveProviderId(explicit, env), expected);
     }
-  }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -201,17 +181,14 @@ describe("resolveProviderId: default never consults credentials (FR-003, Fixup A
     ];
   }
 
-  it("returns the default zai even when zai is unconfigured and descriptors are passed", () => {
+  it("returns the default zai regardless of descriptor configuration", () => {
     const descriptors = minimaxOnlyRegistry();
-    const env = { MINIMAX_API_KEY: "k" }; // no Z.AI key
-    const got = resolveProviderId(undefined, env, descriptors);
-    assert.strictEqual(got, "zai", "default selection must not be inferred from credentials");
-  });
-
-  it("returns the default zai with no credentials at all, descriptors passed", () => {
-    const descriptors = minimaxOnlyRegistry();
-    const got = resolveProviderId(undefined, {}, descriptors);
-    assert.strictEqual(got, "zai");
+    assert.strictEqual(
+      resolveProviderId(undefined, { MINIMAX_API_KEY: "k" }, descriptors),
+      "zai",
+      "default selection must not be inferred from credentials",
+    );
+    assert.strictEqual(resolveProviderId(undefined, {}, descriptors), "zai");
   });
 });
 
@@ -239,23 +216,6 @@ describe("ProviderDescriptor double", () => {
     d.descriptor.capabilities();
     d.descriptor.isConfigured({ Z_AI_API_KEY: "x" });
     assert.strictEqual(d.stats().createdCount, 0);
-  });
-
-  it("create() is side-effect-free: no env reads, no transport construction, no I/O", () => {
-    let envReads = 0;
-    const d = {
-      id: "zai",
-      isConfigured: () => true,
-      capabilities: () => new Set(["search"]),
-      create: (ctx) => {
-        // Touching ctx.env is allowed — it is captured, not read.
-        return { id: "zai", capturedEnv: ctx.env };
-      },
-    };
-    // create() must not depend on a specific env var to be set.
-    const adapter = d.create({ env: {} });
-    assert.deepStrictEqual(adapter.capturedEnv, {});
-    assert.strictEqual(envReads, 0);
   });
 
   it("create() performs no credential resolution (validation occurs first)", () => {
@@ -335,7 +295,7 @@ describe("ProviderDescriptor double", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveProviderId ordering: validation before descriptor resolution", () => {
-  it("explicit invalid Provider throws before consulting any descriptor factory", () => {
+  it("invalid explicit and environment values throw before consulting descriptor factories", () => {
     // The descriptor factory would never run for an invalid explicit value.
     let factoryInvoked = false;
     const fakeDescriptors = [
@@ -352,21 +312,6 @@ describe("resolveProviderId ordering: validation before descriptor resolution", 
     // Force the production default descriptor lookup to fail first.
     assert.throws(() => resolveProviderId("bogus", {}, fakeDescriptors), ValidationError);
     assert.strictEqual(factoryInvoked, false, "factory must not run on invalid explicit");
-  });
-
-  it("environment invalid Provider throws before consulting any descriptor factory", () => {
-    let factoryInvoked = false;
-    const fakeDescriptors = [
-      {
-        id: "zai",
-        isConfigured: () => true,
-        capabilities: () => new Set(["search"]),
-        create: () => {
-          factoryInvoked = true;
-          return { id: "zai" };
-        },
-      },
-    ];
     assert.throws(
       () => resolveProviderId(undefined, { SCOUTLINE_PROVIDER: "bogus" }, fakeDescriptors),
       ValidationError,

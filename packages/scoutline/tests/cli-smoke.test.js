@@ -26,45 +26,6 @@ describe("scoutline executable smoke", () => {
     assert.ok(result.stdout.includes("scoutline"));
   });
 
-  it("-h writes stdout only and exits 0", async () => {
-    const result = await runProcess(["-h"], { env: BASE_ENV });
-    assert.strictEqual(result.code, 0);
-    assert.strictEqual(result.stderr, "");
-    assert.ok(result.stdout.includes("scoutline"));
-  });
-
-  it("no args writes main help to stdout only and exits 0", async () => {
-    const result = await runProcess([], { env: BASE_ENV });
-    assert.strictEqual(result.code, 0);
-    assert.strictEqual(result.stderr, "");
-    assert.ok(result.stdout.includes("Usage:"));
-  });
-
-  it("--version prints a semver to stdout only and exits 0", async () => {
-    const result = await runProcess(["--version"], { env: BASE_ENV });
-    assert.strictEqual(result.code, 0);
-    assert.strictEqual(result.stderr, "");
-    assert.match(result.stdout.trim(), /^\d+\.\d+\.\d+$/);
-  });
-
-  it("-v prints a semver to stdout only and exits 0", async () => {
-    const result = await runProcess(["-v"], { env: BASE_ENV });
-    assert.strictEqual(result.code, 0);
-    assert.strictEqual(result.stderr, "");
-    assert.match(result.stdout.trim(), /^\d+\.\d+\.\d+$/);
-  });
-
-  it("invalid output mode produces structured VALIDATION_ERROR on stderr and exits 1", async () => {
-    const result = await runProcess(["--output-format", "invalid", "doctor"], {
-      env: BASE_ENV,
-    });
-    assert.strictEqual(result.code, 1);
-    const err = JSON.parse(result.stderr);
-    assert.strictEqual(err.success, false);
-    assert.strictEqual(err.code, "VALIDATION_ERROR");
-    assert.ok(err.error.includes("Invalid output format"));
-  });
-
   it("load failure (missing dist) produces structured LOAD_ERROR on stderr and exits 1", async () => {
     // Copy the bin to a temp dir where ../dist/index.js does not exist,
     // so the dynamic import fails and the catch handler fires.

@@ -111,6 +111,66 @@ function makeMiniMaxCapability(rawResult) {
 }
 
 // ---------------------------------------------------------------------------
+// Vision conformance: same interpret-image request, same normalized text (P3-03)
+// ---------------------------------------------------------------------------
+
+const VISION_CONFORMANCE_REQUEST = {
+  operation: "interpret-image",
+  source: "https://example.test/conformance.png",
+  instruction: "Describe this image.",
+};
+const VISION_CONFORMANCE_EXPECTED = "A clear description of the shared conformance image.";
+
+/**
+ * Z.AI Vision Capability factory: accepts a raw direct-text result and
+ * returns the descriptor's Vision Capability.
+ */
+function makeZaiVisionCapability(rawResult) {
+  const factory = (options) => {
+    const fake = new FakeUtcpClient({
+      discoveredTools: [{ name: "scoutline_zai.vision.analyze_image" }],
+      resultsByName: { "scoutline_zai.vision.analyze_image": rawResult },
+    });
+    return {
+      options,
+      async callToolRaw(name, args) {
+        return fake.callTool("scoutline_zai.vision.analyze_image", args);
+      },
+      async close() {
+        return fake.close();
+      },
+    };
+  };
+  const descriptor = createZaiDescriptor({ clientFactory: factory });
+  const adapter = descriptor.create({ env: { Z_AI_API_KEY: "k" } });
+  return adapter.vision;
+}
+
+/**
+ * MiniMax Vision Capability factory: accepts a raw characterized envelope
+ * and returns the descriptor's Vision Capability.
+ */
+function makeMiniMaxVisionCapability(rawResult) {
+  const Constructor = function FakeMiniMaxSdk() {
+    return {
+      search: {
+        async query() {
+          throw new Error("unused");
+        },
+      },
+      vision: {
+        async describe() {
+          return rawResult;
+        },
+      },
+    };
+  };
+  const descriptor = createMiniMaxDescriptor({ sdkConstructor: Constructor });
+  const adapter = descriptor.create({ env: { MINIMAX_API_KEY: "k" } });
+  return adapter.vision;
+}
+
+// ---------------------------------------------------------------------------
 // Search conformance: both Adapters converge on the shared normalized form
 // ---------------------------------------------------------------------------
 
@@ -150,10 +210,7 @@ describe("Search Adapter conformance — shared normalized output", () => {
         },
       ],
     };
-    const minimaxNormalized = await runSearchConformance(
-      makeMiniMaxCapability,
-      minimaxRaw,
-    );
+    const minimaxNormalized = await runSearchConformance(makeMiniMaxCapability, minimaxRaw);
     assert.deepStrictEqual(minimaxNormalized, expected);
   });
 
@@ -263,5 +320,32 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
       !/import\s*\(\s*["'][^"']*provider/.test(indexSource),
       "src/index.ts must not dynamically import Provider descriptors",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Vision conformance (P3-03): both Adapters converge on the same text
+// ---------------------------------------------------------------------------
+
+describe("Vision Adapter conformance — shared normalized output (P3-03)", () => {
+  it("both built-in Adapters normalize interpret-image to the same text", async () => {
+    // Z.AI returns a direct-text result.
+    const zaiVision = makeZaiVisionCapability(VISION_CONFORMANCE_EXPECTED);
+    const zaiResult = await zaiVision.invoke(VISION_CONFORMANCE_REQUEST);
+    assert.strictEqual(zaiResult, VISION_CONFORMANCE_EXPECTED);
+
+    // MiniMax returns the characterized { content } envelope (loaded fixture).
+    const minimaxEnvelope = await readFixture("providers", "minimax", "vision.json");
+    assert.strictEqual(minimaxEnvelope.content, VISION_CONFORMANCE_EXPECTED);
+    const minimaxVision = makeMiniMaxVisionCapability(minimaxEnvelope);
+    const minimaxResult = await minimaxVision.invoke(VISION_CONFORMANCE_REQUEST);
+    assert.strictEqual(minimaxResult, VISION_CONFORMANCE_EXPECTED);
+  });
+
+  it("normalized Vision output carries no Provider-only envelope fields", async () => {
+    const zaiVision = makeZaiVisionCapability("plain text");
+    const out = await zaiVision.invoke(VISION_CONFORMANCE_REQUEST);
+    assert.strictEqual(typeof out, "string");
+    assert.ok(!out.includes("{"), "Vision text must not leak a Provider envelope");
   });
 });

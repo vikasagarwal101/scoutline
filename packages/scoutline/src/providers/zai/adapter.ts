@@ -43,11 +43,18 @@ import type {
   SearchRequest,
   SearchSource,
 } from "../../capabilities/search.js";
+import type {
+  VisionCapability,
+  VisionOperation,
+  VisionRequest,
+} from "../../capabilities/vision.js";
+import { visionOperationToCapability } from "../../capabilities/vision.js";
 import {
   ApiError,
   AuthError,
   NetworkError,
   TimeoutError,
+  UnsupportedCapabilityError,
   ValidationError,
 } from "../../lib/errors.js";
 import { getMcpToolName } from "../../lib/mcp-config.js";
@@ -56,8 +63,21 @@ import {
   type ZaiMcpClientOptions as McpClientOptions,
 } from "../../lib/mcp-client.js";
 import { buildCacheKey } from "../../lib/cache.js";
+import { resolveImageSource } from "./media.js";
 
 const SEARCH_TOOL_PUBLIC_NAME = getMcpToolName("search", "web_search_prime");
+const VISION_ANALYZE_TOOL_PUBLIC_NAME = getMcpToolName("vision", "analyze_image");
+
+// ---------------------------------------------------------------------------
+// Vision Capability — operations wired in this Adapter (P3-03)
+// ---------------------------------------------------------------------------
+
+/**
+ * Vision operations the Z.AI Adapter implements. P3-03 wires only the
+ * general single-image interpretation; specialized operations arrive in
+ * P3-04. The descriptor advertises only what this Adapter supports.
+ */
+const ZAI_VISION_OPERATIONS: ReadonlySet<VisionOperation> = new Set(["interpret-image"]);
 
 // ---------------------------------------------------------------------------
 // Provider-owned legacy cache candidate
@@ -329,6 +349,102 @@ function normalizeZaiSearchResults(raw: readonly WebSearchResult[]): readonly Se
 }
 
 // ---------------------------------------------------------------------------
+// Vision Capability (DESIGN.md §8, §9 — P3-03)
+// ---------------------------------------------------------------------------
+
+interface ZaiVisionCapabilityOptions {
+  readonly env: NodeJS.ProcessEnv;
+  readonly clientFactory: ZaiAdapterDependencies["clientFactory"];
+}
+
+/**
+ * Build the Z.AI Vision Capability. Maps `interpret-image` to the
+ * `vision.analyze_image` MCP operation through the same raw-tool path as
+ * Search. The validated image source maps to `image_source`; the
+ * instruction maps to `prompt`. Only a nonempty text result is normalized;
+ * Provider envelopes and error bodies stay inside the Adapter.
+ *
+ * Vision never uses the response cache (FR-022) and never retries inside
+ * the Adapter transport; shared execution owns the retry policy.
+ */
+function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionCapability {
+  const { env, clientFactory } = options;
+
+  function resolveApiKey(): string {
+    const key = env.Z_AI_API_KEY;
+    if (typeof key !== "string" || !/\S/.test(key)) {
+      throw new AuthError("Z.AI API key is not configured");
+    }
+    return key;
+  }
+
+  const capability: VisionCapability = {
+    supports(operation: VisionOperation): boolean {
+      return ZAI_VISION_OPERATIONS.has(operation);
+    },
+
+    async invoke(request: VisionRequest): Promise<string> {
+      // Only interpret-image is wired in P3-03; specialized operations
+      // are gated by supports() and fail closed before reaching here.
+      if (request.operation !== "interpret-image") {
+        throw new UnsupportedCapabilityError("zai", visionOperationToCapability(request.operation));
+      }
+
+      // Credential resolved for the transport; media resolved to the
+      // validated Z.AI image source (absolute path or HTTP(S) URL) —
+      // the media module never reads file content.
+      resolveApiKey();
+      const imageSource = resolveImageSource(request.source);
+
+      // Disable client-owned cache and retry so shared execution is the
+      // single policy owner. Vision enables the Z.AI vision MCP server.
+      const clientOptions: ZaiMcpClientOptions = {
+        enableVision: true,
+        noCache: true,
+        disableRetry: true,
+      };
+      const client = clientFactory(clientOptions);
+      try {
+        const args: Record<string, unknown> = {
+          image_source: imageSource,
+          prompt: request.instruction,
+        };
+        const raw = await invokeZaiVision(client, VISION_ANALYZE_TOOL_PUBLIC_NAME, args);
+        return normalizeZaiVisionResult(raw);
+      } finally {
+        await client.close().catch(() => {});
+      }
+    },
+  };
+
+  return capability;
+}
+
+async function invokeZaiVision(
+  client: ZaiAdapterClientPort,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  try {
+    return await client.callToolRaw<unknown>(toolName, args);
+  } catch (error) {
+    throw normalizeZaiError(error);
+  }
+}
+
+/**
+ * Normalize the Z.AI vision result to a nonempty text string. The
+ * `vision.analyze_image` MCP operation returns direct text; an empty,
+ * whitespace-only, or non-string value is a malformed result.
+ */
+function normalizeZaiVisionResult(raw: unknown): string {
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    return raw;
+  }
+  throw new ApiError("Z.AI vision returned an empty or malformed result", 500);
+}
+
+// ---------------------------------------------------------------------------
 // Descriptor factory
 // ---------------------------------------------------------------------------
 
@@ -373,14 +489,18 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
       return typeof key === "string" && /\S/.test(key);
     },
     capabilities(): ReadonlySet<ProviderCapability> {
-      return new Set<ProviderCapability>(["search"]);
+      return new Set<ProviderCapability>(["search", "vision.interpret-image"]);
     },
     create(context: ProviderContext): ProviderAdapter {
       const search = createZaiSearchCapability({
         env: context.env,
         clientFactory,
       });
-      return { id: "zai", search };
+      const vision = createZaiVisionCapability({
+        env: context.env,
+        clientFactory,
+      });
+      return { id: "zai", search, vision };
     },
   };
 }

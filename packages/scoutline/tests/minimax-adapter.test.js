@@ -24,6 +24,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import crypto from "node:crypto";
 
@@ -31,9 +32,16 @@ import { loadMiniMaxConfig } from "../dist/providers/minimax/config.js";
 import { createMiniMaxSdk } from "../dist/providers/minimax/sdk-client.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
 import { readFixture } from "./helpers/fixtures.js";
+import { executeProviderOperation } from "../dist/lib/execution.js";
 
 const TEST_API_KEY = "test-minimax-api-key-DO-NOT-LEAK";
 const EXPECTED_FINGERPRINT = crypto.createHash("sha256").update(TEST_API_KEY).digest("hex");
+
+const VISION_REQUEST = {
+  operation: "interpret-image",
+  source: "https://example.test/image.png",
+  instruction: "Describe this image.",
+};
 
 // ---------------------------------------------------------------------------
 // Fake MiniMax SDK constructor. Captures construction options and the
@@ -41,10 +49,12 @@ const EXPECTED_FINGERPRINT = crypto.createHash("sha256").update(TEST_API_KEY).di
 // construction so the env-override window is observable.
 // ---------------------------------------------------------------------------
 
-function makeFakeSdk({ result, error } = {}) {
+function makeFakeSdk({ result, error, visionResult, visionError, visionErrorFn } = {}) {
   const constructed = [];
   const observedEnvAtConstruction = [];
   const queryCalls = [];
+  const visionDescribeCalls = [];
+  let visionCallIndex = 0;
   const Constructor = function MockMiniMaxSdk(options) {
     constructed.push(options);
     // Capture the env state the SDK would see during construction.
@@ -58,13 +68,20 @@ function makeFakeSdk({ result, error } = {}) {
         },
       },
       vision: {
-        async describe() {
-          throw new Error("vision not used in Phase 2");
+        async describe(req) {
+          visionCallIndex += 1;
+          visionDescribeCalls.push(req);
+          if (visionErrorFn) {
+            const e = visionErrorFn(visionCallIndex);
+            if (e) throw e;
+          }
+          if (visionError) throw visionError;
+          return visionResult;
         },
       },
     };
   };
-  return { Constructor, constructed, observedEnvAtConstruction, queryCalls };
+  return { Constructor, constructed, observedEnvAtConstruction, queryCalls, visionDescribeCalls };
 }
 
 function makeAdapter({ sdk } = {}, env = { MINIMAX_API_KEY: TEST_API_KEY }) {
@@ -502,5 +519,181 @@ describe("MiniMax Search Adapter — cache identity", () => {
     const identity = adapter.search.cacheIdentity({ query: "q" }, { legacyCount: 5 });
     assert.strictEqual(identity.request.count, undefined);
     assert.strictEqual(identity.legacyCandidates, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Vision Adapter (P3-03, DESIGN.md §8, §9, §12): interpret-image → sdk.vision.describe
+// ---------------------------------------------------------------------------
+
+describe("MiniMax Vision Adapter — interpret-image mapping (P3-03)", () => {
+  it("advertises the vision.interpret-image capability", () => {
+    const descriptor = createMiniMaxDescriptor();
+    assert.ok(
+      descriptor.capabilities().has("vision.interpret-image"),
+      "MiniMax descriptor must advertise vision.interpret-image",
+    );
+  });
+
+  it("maps validated source to image and instruction to optional prompt; sdk.vision.describe invoked once", async () => {
+    const sdk = makeFakeSdk({ visionResult: { content: "A clear scene." } });
+    const adapter = makeAdapter({ sdk });
+    const out = await adapter.vision.invoke(VISION_REQUEST);
+    assert.strictEqual(out, "A clear scene.");
+
+    assert.strictEqual(sdk.constructed.length, 1, "SDK constructed once");
+    assert.strictEqual(sdk.visionDescribeCalls.length, 1, "sdk.vision.describe invoked once");
+    assert.strictEqual(sdk.visionDescribeCalls[0].image, "https://example.test/image.png");
+    assert.strictEqual(sdk.visionDescribeCalls[0].prompt, "Describe this image.");
+  });
+
+  it("resolves a local image to an absolute path before mapping", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "mm-vision-"));
+    try {
+      const img = path.join(tmp, "local.png");
+      await fs.writeFile(img, Buffer.from([0]));
+      const sdk = makeFakeSdk({ visionResult: { content: "ok" } });
+      const adapter = makeAdapter({ sdk });
+      await adapter.vision.invoke({ ...VISION_REQUEST, source: img });
+      assert.strictEqual(sdk.visionDescribeCalls[0].image, path.resolve(img));
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("MiniMax Vision Adapter — response normalization (P3-03)", () => {
+  async function runWithResult(visionResult) {
+    const sdk = makeFakeSdk({ visionResult });
+    const adapter = makeAdapter({ sdk });
+    return adapter.vision.invoke(VISION_REQUEST);
+  }
+
+  it("accepts the characterized { content } envelope", async () => {
+    assert.strictEqual(await runWithResult({ content: "described" }), "described");
+  });
+
+  it("rejects empty content with API_ERROR", async () => {
+    await assert.rejects(runWithResult({ content: "" }), (err) => err.code === "API_ERROR");
+  });
+
+  it("rejects whitespace-only content with API_ERROR", async () => {
+    await assert.rejects(runWithResult({ content: "  " }), (err) => err.code === "API_ERROR");
+  });
+
+  it("rejects a malformed (non-object) response with API_ERROR and no raw leak", async () => {
+    await assert.rejects(runWithResult("not-an-object"), (err) => {
+      assert.strictEqual(err.code, "API_ERROR");
+      assert.ok(!/not-an-object/.test(err.message), `raw payload leaked: ${err.message}`);
+      return true;
+    });
+  });
+
+  it("rejects a missing content field with API_ERROR", async () => {
+    await assert.rejects(runWithResult({ other: "x" }), (err) => err.code === "API_ERROR");
+  });
+});
+
+describe("MiniMax Vision Adapter — failure normalization (P3-03)", () => {
+  async function runVisionWithError(error) {
+    const sdk = makeFakeSdk({ visionError: error });
+    const adapter = makeAdapter({ sdk });
+    return adapter.vision.invoke(VISION_REQUEST);
+  }
+
+  it("maps auth failures to AUTH_ERROR", async () => {
+    await assert.rejects(
+      runVisionWithError(new Error("Unauthorized 401")),
+      (err) => err.code === "AUTH_ERROR",
+    );
+  });
+  it("maps timeout to TIMEOUT_ERROR", async () => {
+    await assert.rejects(
+      runVisionWithError(new Error("operation timed out after 30s")),
+      (err) => err.code === "TIMEOUT_ERROR",
+    );
+  });
+  it("maps network to NETWORK_ERROR", async () => {
+    await assert.rejects(
+      runVisionWithError(new Error("ECONNREFUSED")),
+      (err) => err.code === "NETWORK_ERROR",
+    );
+  });
+  it("maps rate-limit to API_ERROR 429", async () => {
+    await assert.rejects(
+      runVisionWithError(new Error("HTTP 429 rate limit")),
+      (err) => err.code === "API_ERROR" && err.statusCode === 429,
+    );
+  });
+  it("maps generic API to API_ERROR", async () => {
+    await assert.rejects(
+      runVisionWithError(new Error("HTTP 500 internal")),
+      (err) => err.code === "API_ERROR",
+    );
+  });
+});
+
+describe("MiniMax Vision Adapter — cache bypass (P3-03, FR-022)", () => {
+  it("never touches a cache spy (Vision has no cache dependency)", async () => {
+    const cacheSpy = {
+      getCalls: 0,
+      setCalls: 0,
+      async get() {
+        this.getCalls += 1;
+        throw new Error("CACHE_GET_FORBIDDEN");
+      },
+      async set() {
+        this.setCalls += 1;
+        throw new Error("CACHE_SET_FORBIDDEN");
+      },
+    };
+    const sdk = makeFakeSdk({ visionResult: { content: "text" } });
+    const adapter = makeAdapter({ sdk });
+    const sleeps = [];
+    const out = await executeProviderOperation(
+      "vision",
+      () => adapter.vision.invoke(VISION_REQUEST),
+      { sleep: async (ms) => sleeps.push(ms), random: () => 0.5 },
+    );
+    assert.strictEqual(out, "text");
+    assert.strictEqual(cacheSpy.getCalls, 0, "Vision must not read the cache");
+    assert.strictEqual(cacheSpy.setCalls, 0, "Vision must not write the cache");
+  });
+});
+
+describe("MiniMax Vision Adapter — shared execution owns retries (P3-03)", () => {
+  it("transient-then-success: exactly two transport attempts, one injected delay", async () => {
+    const sdk = makeFakeSdk({
+      visionResult: { content: "recovered text" },
+      visionErrorFn: (n) => (n === 1 ? new Error("ECONNRESET network") : null),
+    });
+    const adapter = makeAdapter({ sdk });
+    const sleeps = [];
+    const out = await executeProviderOperation(
+      "vision",
+      () => adapter.vision.invoke(VISION_REQUEST),
+      { sleep: async (ms) => sleeps.push(ms), random: () => 0.5 },
+    );
+    assert.strictEqual(out, "recovered text");
+    // Two SDK constructions = two adapter transport attempts.
+    assert.strictEqual(sdk.constructed.length, 2, "exactly two transport attempts");
+    assert.strictEqual(sdk.visionDescribeCalls.length, 2);
+    // One injected delay between the two attempts.
+    assert.strictEqual(sleeps.length, 1, "exactly one injected delay");
+  });
+
+  it("terminal failure: one attempt, no delay", async () => {
+    const sdk = makeFakeSdk({ visionError: new Error("Unauthorized 401") });
+    const adapter = makeAdapter({ sdk });
+    const sleeps = [];
+    await assert.rejects(
+      executeProviderOperation("vision", () => adapter.vision.invoke(VISION_REQUEST), {
+        sleep: async (ms) => sleeps.push(ms),
+        random: () => 0.5,
+      }),
+      (err) => err.code === "AUTH_ERROR",
+    );
+    assert.strictEqual(sdk.constructed.length, 1, "exactly one transport attempt");
+    assert.strictEqual(sleeps.length, 0, "no delay for terminal failure");
   });
 });

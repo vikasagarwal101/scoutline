@@ -40,16 +40,24 @@ import type {
   SearchRequest,
   SearchSource,
 } from "../../capabilities/search.js";
+import type {
+  VisionCapability,
+  VisionOperation,
+  VisionRequest,
+} from "../../capabilities/vision.js";
+import { visionOperationToCapability } from "../../capabilities/vision.js";
 import {
   ApiError,
   AuthError,
   NetworkError,
   TimeoutError,
+  UnsupportedCapabilityError,
   ValidationError,
   UnsupportedOptionError,
 } from "../../lib/errors.js";
 import { loadMiniMaxConfig } from "./config.js";
 import { createMiniMaxSdk } from "./sdk-client.js";
+import { resolveImageSource } from "./media.js";
 
 // ---------------------------------------------------------------------------
 // Provider-owned credential fingerprint
@@ -225,6 +233,85 @@ function createMiniMaxSearchCapability(options: MiniMaxSearchCapabilityOptions):
 }
 
 // ---------------------------------------------------------------------------
+// Vision Capability (DESIGN.md §8, §9, §12 — P3-03)
+// ---------------------------------------------------------------------------
+
+/**
+ * Vision operations the MiniMax Adapter implements. Only the general
+ * single-image interpretation is wired in the base release; specialized
+ * operations arrive in Phase 5.
+ */
+const MINIMAX_VISION_OPERATIONS: ReadonlySet<VisionOperation> = new Set(["interpret-image"]);
+
+interface MiniMaxVisionCapabilityOptions {
+  readonly env: NodeJS.ProcessEnv;
+  readonly sdkConstructor?: MiniMaxAdapterDependencies["sdkConstructor"];
+}
+
+/**
+ * Build the MiniMax Vision Capability. Maps `interpret-image` to
+ * `sdk.vision.describe`. The validated image source maps to `image`; the
+ * instruction maps to the optional `prompt`. Only a nonempty text result
+ * (extracted from the characterized `{ content }` envelope) is normalized.
+ *
+ * Media is resolved after the configuration check; the SDK performs
+ * data-URI conversion, so the media module never reads file content.
+ * Vision never uses the response cache (FR-022); shared execution owns
+ * the retry policy.
+ */
+function createMiniMaxVisionCapability(options: MiniMaxVisionCapabilityOptions): VisionCapability {
+  const { env, sdkConstructor } = options;
+
+  const capability: VisionCapability = {
+    supports(operation: VisionOperation): boolean {
+      return MINIMAX_VISION_OPERATIONS.has(operation);
+    },
+
+    async invoke(request: VisionRequest): Promise<string> {
+      if (request.operation !== "interpret-image") {
+        throw new UnsupportedCapabilityError(
+          "minimax",
+          visionOperationToCapability(request.operation),
+        );
+      }
+
+      // Configuration check (credential) before media resolution.
+      const config = loadMiniMaxConfig(env);
+      const image = resolveImageSource(request.source);
+
+      try {
+        const sdk = createMiniMaxSdk(config, sdkConstructor);
+        const describeRequest: { image: string; prompt?: string } = { image };
+        if (request.instruction && request.instruction.length > 0) {
+          describeRequest.prompt = request.instruction;
+        }
+        const raw = await sdk.vision.describe(describeRequest);
+        return normalizeMiniMaxVisionResult(raw);
+      } catch (error) {
+        throw normalizeMiniMaxError(error);
+      }
+    },
+  };
+
+  return capability;
+}
+
+/**
+ * Normalize the MiniMax vision result to a nonempty text string. The
+ * characterized `VlmResponse` envelope is `{ content: string }`; any other
+ * shape, or an empty content, is a malformed result.
+ */
+function normalizeMiniMaxVisionResult(raw: unknown): string {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const record = raw as { content?: unknown };
+    if (typeof record.content === "string" && record.content.trim().length > 0) {
+      return record.content;
+    }
+  }
+  throw new ApiError("MiniMax vision returned a malformed response", 500);
+}
+
+// ---------------------------------------------------------------------------
 // Descriptor factory
 // ---------------------------------------------------------------------------
 
@@ -248,14 +335,18 @@ export function createMiniMaxDescriptor(
       return typeof key === "string" && /\S/.test(key);
     },
     capabilities(): ReadonlySet<ProviderCapability> {
-      return new Set<ProviderCapability>(["search"]);
+      return new Set<ProviderCapability>(["search", "vision.interpret-image"]);
     },
     create(context: ProviderContext): ProviderAdapter {
       const search = createMiniMaxSearchCapability({
         env: context.env,
         sdkConstructor,
       });
-      return { id: "minimax", search };
+      const vision = createMiniMaxVisionCapability({
+        env: context.env,
+        sdkConstructor,
+      });
+      return { id: "minimax", search, vision };
     },
   };
 }

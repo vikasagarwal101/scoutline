@@ -626,7 +626,7 @@ test("P5-02: registry exports exactly the five specialized operations", () => {
 // commit adds exactly one operation here. live stays "pending" for every
 // promoted op until a separate opt-in live attestation runs with
 // credentials; runtime support therefore remains false for all of them.
-const PROMOTED_OPS = new Set(["ui-artifact"]);
+const PROMOTED_OPS = new Set(["ui-artifact", "extract-text"]);
 
 test("registry: baseline ops pending/pending; promoted ops pass/pending; no op carries an attestation yet", () => {
   for (const op of SPECIALIZED_VISION_OPERATIONS) {
@@ -1659,48 +1659,78 @@ function countOccurrences(haystack, needle) {
 }
 
 // ---------------------------------------------------------------------------
-// P5-03a: ui-artifact mapping
+// P5-03: per-mapping prompt composition + offline semantic conformance
 // ---------------------------------------------------------------------------
+//
+// One data-driven test covers every promoted operation. Each operation
+// is also exercised by the fail-closed adapter test below. Adding an
+// operation is a one-line change: add it to PROMOTED_OPS and to
+// PROMOTED_HINT_SPEC, then create its Module and flip its registry
+// offline state.
 
-test("P5-03a: ui-artifact mapping composes the correct prompt (instruction intact, output-type hint once)", async () => {
-  const { prompt, text, caseData } = await runMappingWithFakeSdk("ui-artifact");
-  // User instruction remains intact and verbatim.
-  assert.ok(
-    prompt.includes(caseData.request.instruction),
-    "ui-artifact: user instruction must appear verbatim in the prompt",
-  );
-  // The selected outputType is represented exactly once as an operation hint.
-  const hint = "code";
-  const hintCount = countOccurrences(prompt, hint);
-  assert.ok(
-    hintCount >= 1 && countOccurrences(prompt, "Requested output form") === 1,
-    "ui-artifact: the output-type option must be rendered exactly once",
-  );
-  // The intent segment must not duplicate the user instruction.
-  assert.equal(
-    countOccurrences(prompt, caseData.request.instruction),
-    1,
-    "ui-artifact: user instruction must appear exactly once",
-  );
+/**
+ * Per-operation prompt hint contract.
+ *  - intentMarker: a lowercase substring proving the intent segment is
+ *    present (distinct from the fixture instruction's phrasing).
+ *  - optionLabel: when non-null, the operation renders an optional
+ *    field from the fixture (outputType / context / diagramType /
+ *    focus) under this exact label; it must appear exactly once. null
+ *    means the fixture provides no optional field for this op.
+ */
+const PROMOTED_HINT_SPEC = {
+  "ui-artifact": { intentMarker: "page regions", optionLabel: "Requested output form:" },
+  "extract-text": { intentMarker: "verbatim", optionLabel: null },
+  "diagnose-error": { intentMarker: "error class", optionLabel: "Context:" },
+  diagram: { intentMarker: "labeled node", optionLabel: "Diagram type:" },
+  chart: { intentMarker: "axis", optionLabel: "Focus:" },
+};
 
-  // Semantics: regions AND code-form must pass against the crafted output.
-  const results = evaluateAssertions(caseData.assertions, text);
-  for (const r of results) {
+test("P5-03: each promoted mapping composes a correct prompt and passes offline semantics", async () => {
+  for (const op of PROMOTED_OPS) {
+    const { prompt, text, caseData } = await runMappingWithFakeSdk(op);
+
+    // User instruction remains intact and appears exactly once.
     assert.equal(
-      r.passed,
-      true,
-      `ui-artifact: assertion ${r.id} must pass: ${r.failureReason ?? ""}`,
+      countOccurrences(prompt, caseData.request.instruction),
+      1,
+      `${op}: user instruction must appear verbatim exactly once`,
+    );
+
+    const spec = PROMOTED_HINT_SPEC[op];
+    assert.ok(spec, `${op}: missing hint spec`);
+    // Intent marker present (proves the operation intent segment landed).
+    assert.ok(
+      prompt.toLowerCase().includes(spec.intentMarker),
+      `${op}: prompt must include intent marker "${spec.intentMarker}"`,
+    );
+    // Optional hint rendered exactly once when the fixture provides it.
+    if (spec.optionLabel !== null) {
+      assert.equal(
+        countOccurrences(prompt, spec.optionLabel),
+        1,
+        `${op}: option label "${spec.optionLabel}" must appear exactly once`,
+      );
+    }
+
+    // Semantics: every fixture assertion must pass against the crafted
+    // VLM output routed through the mapping's normalize path.
+    const results = evaluateAssertions(caseData.assertions, text);
+    for (const r of results) {
+      assert.equal(r.passed, true, `${op}: assertion ${r.id} must pass: ${r.failureReason ?? ""}`);
+    }
+
+    // Unsupported at runtime: live state is still pending.
+    assert.equal(
+      isMiniMaxVisionOperationSupported(op),
+      false,
+      `${op}: must be unsupported while live state is pending`,
     );
   }
 });
 
-test("P5-03a: ui-artifact mapping stays unsupported at runtime (live=pending)", () => {
-  assert.equal(
-    isMiniMaxVisionOperationSupported("ui-artifact"),
-    false,
-    "ui-artifact must be unsupported while live state is pending",
-  );
-  // The adapter must fail closed for ui-artifact before any SDK access.
+test("P5-03: each promoted mapping stays fail-closed at runtime (no SDK construction)", async () => {
+  // The adapter gate stays closed for every specialized op while live is
+  // pending. This proves the pending mapping does not invoke the SDK.
   let sdkConstructions = 0;
   const spySdk = {
     vision: {
@@ -1715,34 +1745,31 @@ test("P5-03a: ui-artifact mapping stays unsupported at runtime (live=pending)", 
   }
   const descriptor = createMiniMaxDescriptor({ sdkConstructor: SpyCtor });
   const adapter = descriptor.create({ env: {} });
-  assert.equal(adapter.vision.supports("ui-artifact"), false);
-  return assert
-    .rejects(
-      adapter.vision.invoke({
-        operation: "ui-artifact",
-        source: "ui-artifact.png",
-        instruction: "x",
-        outputType: "code",
-      }),
-      (err) => {
-        assert.equal(err.code, "UNSUPPORTED_CAPABILITY");
-        return true;
-      },
-    )
-    .then(() => {
-      assert.equal(sdkConstructions, 0, "ui-artifact must fail before SDK construction");
+  for (const op of PROMOTED_OPS) {
+    sdkConstructions = 0;
+    assert.equal(adapter.vision.supports(op), false, `${op} supports() must be false`);
+    await assert.rejects(adapter.vision.invoke(makeMinimalRequest(op)), (err) => {
+      assert.equal(
+        err.code,
+        "UNSUPPORTED_CAPABILITY",
+        `${op} must fail with UNSUPPORTED_CAPABILITY`,
+      );
+      return true;
     });
+    assert.equal(sdkConstructions, 0, `${op} must fail before SDK construction`);
+  }
 });
 
-test("P5-03a: adding the ui-artifact mapping did not enable or alter any other operation", () => {
+test("P5-03: adding a mapping does not enable or alter any other operation", () => {
   // Every non-promoted op must remain pending with a placeholder
-  // revision and no module. This is the per-mapping independence guard.
+  // revision and no module. This is the per-mapping independence guard,
+  // re-run after each promotion.
   for (const op of SPECIALIZED_VISION_OPERATIONS) {
-    if (op === "ui-artifact") continue;
+    if (PROMOTED_OPS.has(op)) continue;
     assert.equal(
       MINIMAX_VISION_CONFORMANCE_REGISTRY[op].offline,
       "pending",
-      `${op} must remain pending (ui-artifact addition must not alter it)`,
+      `${op} must remain pending (promoted mapping must not alter it)`,
     );
     assert.equal(isMiniMaxVisionOperationSupported(op), false, `${op} must remain unsupported`);
     assert.ok(MINIMAX_VISION_MAPPINGS[op] === undefined, `${op} must not have a module yet`);

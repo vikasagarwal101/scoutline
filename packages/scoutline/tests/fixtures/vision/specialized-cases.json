@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "notes": "Phase 5 P5-01 specialized vision conformance cases. No Provider responses, no credentials, no expected prose snapshots. Semantic assertions only.",
+  "cases": [
+    {
+      "operation": "ui-artifact",
+      "fixtureVersion": 1,
+      "image": "ui-artifact.png",
+      "request": {
+        "source": "ui-artifact.png",
+        "instruction": "Produce the markup for the visible UI regions.",
+        "outputType": "code"
+      },
+      "assertions": [
+        {
+          "id": "ui-artifact.regions",
+          "type": "regions",
+          "regions": ["Header", "Sidebar", "Content", "Footer"]
+        },
+        {
+          "id": "ui-artifact.code-form",
+          "type": "code-form",
+          "landmarks": ["Header", "Sidebar", "Content", "Footer"],
+          "codeTokens": ["<header", "</header>", "<aside", "</aside>", "<main", "</main>", "<footer", "</footer>", "<div"]
+        }
+      ]
+    },
+    {
+      "operation": "extract-text",
+      "fixtureVersion": 1,
+      "image": "extract-text.png",
+      "request": {
+        "source": "extract-text.png",
+        "instruction": "Transcribe the visible text exactly, preserving line breaks."
+      },
+      "assertions": [
+        {
+          "id": "extract-text.lines",
+          "type": "text-lines",
+          "lines": [
+            "Line 1: Hello",
+            "Line 2: World",
+            "Line 3: Test"
+          ]
+        }
+      ]
+    },
+    {
+      "operation": "diagnose-error",
+      "fixtureVersion": 1,
+      "image": "diagnose-error.png",
+      "request": {
+        "source": "diagnose-error.png",
+        "instruction": "Diagnose the rendered error and suggest a remediation.",
+        "context": "Script attempted to fetch a remote resource."
+      },
+      "assertions": [
+        {
+          "id": "diagnose-error.class",
+          "type": "diagnose-error",
+          "errorClass": "TimeoutError",
+          "causalClue": "network timeout",
+          "remediation": ["retry", "check connection"]
+        }
+      ]
+    },
+    {
+      "operation": "diagram",
+      "fixtureVersion": 1,
+      "image": "diagram.png",
+      "request": {
+        "source": "diagram.png",
+        "instruction": "List every labeled node and the direction of each connection.",
+        "diagramType": "flowchart"
+      },
+      "assertions": [
+        {
+          "id": "diagram.nodes",
+          "type": "diagram",
+          "nodes": ["Start", "Process", "End"],
+          "edges": [
+            { "from": "Start", "to": "Process" },
+            { "from": "Process", "to": "End" }
+          ]
+        }
+      ]
+    },
+    {
+      "operation": "chart",
+      "fixtureVersion": 1,
+      "image": "chart.png",
+      "request": {
+        "source": "chart.png",
+        "instruction": "Identify the chart subject, axes, and the dominant trend.",
+        "focus": "Quarterly trend"
+      },
+      "assertions": [
+        {
+          "id": "chart.trend",
+          "type": "chart",
+          "title": "Quarterly Sales",
+          "axes": { "x": "Quarter", "y": "Revenue" },
+          "trend": "increasing",
+          "forbiddenTrends": ["decreasing", "flat", "no change"]
+        }
+      ]
+    }
+  ]
+}

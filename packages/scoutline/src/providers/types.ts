@@ -6,18 +6,22 @@
  * Adapter bound to a Provider context. No transport, no I/O, no
  * credential reads occur outside Capability invocation.
  *
- * Phase 2 (P2-01) declares only the Search Capability; Vision, quota,
- * and diagnostics attach to the `ProviderAdapter` interface in later
- * phases. The `ProviderCapability` union already enumerates them so
- * descriptor metadata stays forward-compatible.
+ * Phase 2 (P2-01) declares only the Search Capability; Phase 3 (P3-01)
+ * adds the `vision?: VisionCapability` slot on `ProviderAdapter` and
+ * declares the matching descriptor metadata. Quota and diagnostics
+ * attach to the `ProviderAdapter` interface in later phases. The
+ * `ProviderCapability` union already enumerates them so descriptor
+ * metadata stays forward-compatible.
  *
- * `BUILT_IN_PROVIDER_DESCRIPTORS` is intentionally empty in Phase 2; the
- * production registry waits for P2-05, after both real Search Adapters
- * exist. Selection functions and tests operate on explicit descriptor
- * lists through `getProviderDescriptor` and `getConfiguredProviderDescriptors`.
+ * `BUILT_IN_PROVIDER_DESCRIPTORS` is intentionally empty in this stub
+ * file; the production registry waits for P2-05, after both real
+ * Search Adapters exist. Selection functions and tests operate on
+ * explicit descriptor lists through `getProviderDescriptor` and
+ * `getConfiguredProviderDescriptors`.
  */
 
 import type { SearchCapability } from "../capabilities/search.js";
+import type { VisionCapability } from "../capabilities/vision.js";
 
 // ---------------------------------------------------------------------------
 // Provider identity
@@ -63,14 +67,14 @@ export interface ProviderContext {
 }
 
 /**
- * Provider Adapter contract (Phase 2 shape). Each Capability that the
- * Provider supports becomes a property on this interface. Phase 3 adds
- * `vision?: VisionCapability`; Phase 4 adds `quota?: QuotaCapability`
- * and a `diagnose?` method.
+ * Provider Adapter contract (Phase 3 shape). Each Capability that the
+ * Provider supports becomes a property on this interface. Phase 4 adds
+ * `quota?: QuotaCapability` and a `diagnose?` method.
  */
 export interface ProviderAdapter {
   readonly id: ProviderId;
   readonly search?: SearchCapability;
+  readonly vision?: VisionCapability;
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +261,9 @@ export interface MiniMaxSdkPort {
 /**
  * Build the Z.AI Provider Descriptor. Phase 2 returns a stub that
  * advertises the search Capability; P2-03 supplies the real Adapter.
+ * P3-01 extends the capability set with every current Vision operation
+ * so descriptor metadata advertises the Capability before any Adapter
+ * is constructed; the real `vision` slot arrives in P3-03.
  *
  * The stub keeps the Provider registerable from day one while the
  * Search Adapter is implemented in P2-03. Throwing inside `create()`
@@ -274,7 +281,17 @@ export function createZaiDescriptor(
       return typeof key === "string" && /\S/.test(key);
     },
     capabilities() {
-      return new Set<ProviderCapability>(["search"]);
+      return new Set<ProviderCapability>([
+        "search",
+        "vision.interpret-image",
+        "vision.ui-artifact",
+        "vision.extract-text",
+        "vision.diagnose-error",
+        "vision.diagram",
+        "vision.chart",
+        "vision.diff",
+        "vision.video",
+      ]);
     },
     create() {
       throw new Error(
@@ -287,6 +304,9 @@ export function createZaiDescriptor(
 /**
  * Build the MiniMax Provider Descriptor. Phase 2 returns a stub that
  * advertises the search Capability; P2-04 supplies the real Adapter.
+ * P3-01 advertises the general `vision.interpret-image` Capability
+ * while leaving every specialized operation out until Phase 5
+ * attests individual specialized mappings.
  */
 export function createMiniMaxDescriptor(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -299,7 +319,7 @@ export function createMiniMaxDescriptor(
       return typeof key === "string" && /\S/.test(key);
     },
     capabilities() {
-      return new Set<ProviderCapability>(["search"]);
+      return new Set<ProviderCapability>(["search", "vision.interpret-image"]);
     },
     create() {
       throw new Error(

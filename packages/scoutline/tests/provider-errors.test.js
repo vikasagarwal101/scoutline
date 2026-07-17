@@ -226,3 +226,32 @@ describe("provider errors — exit codes", () => {
     assert.strictEqual(getErrorExitCode(new Error("x")), 1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// P3-01 — Vision capability error shape
+//
+// Unsupported Vision capabilities identify Provider AND Capability, use
+// exit 1, are non-retryable, and contain no source path or credential.
+// The shared `isRetryableError` (used by the retry layer) returns false.
+// ---------------------------------------------------------------------------
+
+describe("provider errors — Vision capability error shape (P3-01)", () => {
+  it("UnsupportedCapabilityError for vision identifies provider and capability", () => {
+    const err = new UnsupportedCapabilityError("minimax", "vision.diff");
+    assert.strictEqual(err.code, "UNSUPPORTED_CAPABILITY");
+    assert.strictEqual(err.name, "UnsupportedCapabilityError");
+    assert.match(err.message, /minimax/);
+    assert.match(err.message, /vision\.diff/);
+    assert.strictEqual(err.retryable, false);
+    assert.strictEqual(getErrorExitCode(err), 1);
+  });
+
+  it("error does not leak source paths or credentials in its message", () => {
+    const err = new UnsupportedCapabilityError("minimax", "vision.video");
+    // The constructor only takes provider + capability; if either used
+    // untrusted input here the leak test below would catch it. We guard
+    // against future maintainers expanding the signature.
+    assert.ok(!/\/secrets\//.test(err.message));
+    assert.ok(!/credential/i.test(err.message));
+  });
+});

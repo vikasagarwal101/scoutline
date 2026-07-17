@@ -17,7 +17,16 @@ import {
   printPromptTemplate,
   CODE_HELP,
 } from "./commands/code.js";
-import { outputError, setOutputMode, type OutputMode } from "./lib/output.js";
+import {
+  outputError,
+  setOutputMode,
+  isOutputMode,
+  OUTPUT_MODES,
+  type OutputMode,
+} from "./lib/output.js";
+import { formatErrorOutput } from "./lib/output.js";
+import { ValidationError, getErrorExitCode } from "./lib/errors.js";
+import type { CommandInvocationAdapter } from "./command-invocation.js";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -135,14 +144,29 @@ function extractGlobalOptions(args: string[]): {
   return { outputFormat, forcePretty, forceRaw, rest };
 }
 
-function applyOutputMode(mode?: string): void {
-  const valid: string[] = ["data", "json", "pretty", "compact", "markdown", "refs", "tty"];
-  if (!mode) return;
-  if (valid.includes(mode)) {
-    setOutputMode(mode as OutputMode);
-    return;
+function resolveOutputMode(
+  explicit: string | undefined,
+  forcePretty: boolean,
+  forceRaw: boolean,
+  adapter: CommandInvocationAdapter,
+): OutputMode {
+  if (explicit !== undefined) {
+    if (!isOutputMode(explicit)) {
+      throw new ValidationError(
+        `Invalid output format: ${explicit}`,
+        `Use one of: ${OUTPUT_MODES.join(", ")}`,
+      );
+    }
+    return explicit;
   }
-  outputError(`Invalid output format: ${mode}`, "INVALID_ARGS", `Use one of: ${valid.join(", ")}`);
+  if (forcePretty) return "tty";
+  if (forceRaw) return "data";
+  const envMode = adapter.environmentOutputMode;
+  if (typeof envMode === "string" && isOutputMode(envMode)) {
+    return envMode;
+  }
+  if (adapter.stdoutIsTTY) return "tty";
+  return "data";
 }
 
 async function handleVision(args: string[]): Promise<void> {
@@ -494,31 +518,43 @@ async function handleCode(args: string[]): Promise<void> {
   }
 }
 
-export async function main(args: string[]): Promise<void> {
-  const cleanArgs =
-    args[0]?.includes("node") || args[0]?.includes("scoutline") ? args.slice(2) : args;
+export interface MainDependencies {
+  readonly invocation: CommandInvocationAdapter;
+  readonly env: NodeJS.ProcessEnv;
+  readonly now?: () => number;
+}
 
-  const { outputFormat, forcePretty, forceRaw, rest } = extractGlobalOptions(cleanArgs);
-  // Resolve effective mode: explicit -O wins; else --pretty-output / --raw;
-  // else auto: "tty" when stdout is a TTY, "data" when piped.
-  if (outputFormat) {
-    applyOutputMode(outputFormat);
-  } else if (forcePretty) {
-    setOutputMode("tty");
-  } else if (forceRaw) {
-    setOutputMode("data");
-  } else if (process.stdout.isTTY) {
-    setOutputMode("tty");
-  } // else: default "data" mode (set at module load in output.ts)
+export async function main(
+  args: readonly string[],
+  dependencies: MainDependencies,
+): Promise<number> {
+  const { invocation } = dependencies;
+
+  const { outputFormat, forcePretty, forceRaw, rest } = extractGlobalOptions([...args]);
+
+  let outputMode: OutputMode;
+  try {
+    outputMode = resolveOutputMode(
+      outputFormat,
+      forcePretty ?? false,
+      forceRaw ?? false,
+      invocation,
+    );
+  } catch (error) {
+    invocation.writeStderr(formatErrorOutput(error, "data"));
+    return getErrorExitCode(error);
+  }
+
+  setOutputMode(outputMode);
 
   if (rest.length === 0 || rest[0] === "--help" || rest[0] === "-h") {
-    console.log(MAIN_HELP);
-    return;
+    invocation.writeStdout(MAIN_HELP);
+    return 0;
   }
 
   if (rest[0] === "--version" || rest[0] === "-v") {
-    console.log(VERSION);
-    return;
+    invocation.writeStdout(VERSION);
+    return 0;
   }
 
   const command = rest[0];
@@ -556,27 +592,17 @@ export async function main(args: string[]): Promise<void> {
       await handleCode(commandArgs);
       break;
     default:
-      outputError(
-        `Unknown command: ${command}`,
-        "INVALID_ARGS",
-        'Run "scoutline --help" for available commands',
+      invocation.writeStderr(
+        formatErrorOutput(
+          new ValidationError(
+            `Unknown command: ${command}`,
+            'Run "scoutline --help" for available commands',
+          ),
+          "data",
+        ),
       );
+      return 1;
   }
-}
 
-main(process.argv)
-  .then(() => process.exit(0))
-  .catch((error) => {
-    console.error(
-      JSON.stringify(
-        {
-          success: false,
-          error: error.message,
-          code: "FATAL_ERROR",
-        },
-        null,
-        2,
-      ),
-    );
-    process.exit(1);
-  });
+  return 0;
+}

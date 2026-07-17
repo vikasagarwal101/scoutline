@@ -3,13 +3,63 @@
  *
  * Characterizes shipped behaviour for help/version, global output options,
  * and missing positional value messages for Vision and repo exploration.
+ * P1-03 adds the import-safety subprocess test and in-process main tests.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import * as path from "node:path";
 import { runProcess } from "./helpers/run-process.js";
+import { main } from "../dist/index.js";
 
 const TEST_KEY = "test-key";
 const BASE_ENV = { Z_AI_API_KEY: TEST_KEY };
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DIST_INDEX = path.resolve(__dirname, "..", "dist", "index.js");
+
+/**
+ * Spawn a node subprocess that imports a module URL and reports
+ * whether the import resolved without executing the program.
+ */
+function spawnImportCheck(modulePath) {
+  const url = pathToFileURL(path.resolve(modulePath));
+  const script = `import(${JSON.stringify(url.href)})
+    .then(() => { process.stderr.write("IMPORT_RESOLVED\\n"); })
+    .catch((e) => { process.stderr.write("IMPORT_REJECTED:" + e.message + "\\n"); });`;
+  return new Promise((resolve, reject) => {
+    const proc = spawn(process.execPath, ["--input-type=module", "-e", script], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (c) => (stdout += c));
+    proc.stderr.on("data", (c) => (stderr += c));
+    proc.on("error", reject);
+    proc.on("close", (code) => resolve({ stdout, stderr, code: code ?? 0 }));
+  });
+}
+
+function pathToFileURL(p) {
+  return new URL("file://" + p);
+}
+
+describe("import safety: dist/index.js must not execute on import", () => {
+  it("importing dist/index.js produces no stdout and resolves normally", async () => {
+    const result = await spawnImportCheck(DIST_INDEX);
+    assert.strictEqual(
+      result.stdout,
+      "",
+      "importing must not write to stdout — main should not execute",
+    );
+    assert.ok(
+      result.stderr.includes("IMPORT_RESOLVED"),
+      "import should resolve without executing the program",
+    );
+    assert.strictEqual(result.code, 0);
+  });
+});
 
 describe("help and version: stdout-only", () => {
   it("no args → stdout-only exit 0", async () => {
@@ -94,7 +144,7 @@ describe("invalid output modes: one JSON error to stderr, exit 1", () => {
     const err = JSON.parse(r.stderr);
     assert.strictEqual(err.success, false);
     assert.ok(err.error.includes("Invalid output format"));
-    assert.strictEqual(err.code, "INVALID_ARGS");
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
   });
 
   it("-O garbage → JSON error on stderr, exit 1", async () => {
@@ -103,6 +153,7 @@ describe("invalid output modes: one JSON error to stderr, exit 1", () => {
     const err = JSON.parse(r.stderr);
     assert.strictEqual(err.success, false);
     assert.ok(err.error.includes("Invalid output format"));
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
   });
 });
 
@@ -170,5 +221,90 @@ describe("missing positional values: message, code, stream, exit", () => {
     const err = JSON.parse(r.stderr);
     assert.strictEqual(err.code, "INVALID_ARGS");
     assert.ok(err.error.includes("Missing code string"));
+  });
+});
+
+/**
+ * Build a fake adapter that records stdout/stderr writes for in-process
+ * main tests. The adapter does not touch real process streams.
+ */
+function createTestAdapter(overrides = {}) {
+  const stdout = [];
+  const stderr = [];
+  const adapter = {
+    stdoutIsTTY: false,
+    stdinIsTTY: false,
+    environmentOutputMode: undefined,
+    readStdin: async () => "",
+    writeStdout: (v) => stdout.push(v),
+    writeStderr: (v) => stderr.push(v),
+    runQuietly: async (op) => op(),
+    setExitCode: () => {},
+    ...overrides,
+  };
+  return { adapter, stdout, stderr };
+}
+
+describe("main(args, dependencies) in-process: returns numeric status", () => {
+  it("--help returns 0 and writes help to adapter stdout", async () => {
+    const { adapter, stdout } = createTestAdapter();
+    const status = await main(["--help"], { invocation: adapter, env: {} });
+    assert.strictEqual(typeof status, "number");
+    assert.strictEqual(status, 0);
+    assert.strictEqual(stdout.length, 1);
+    assert.ok(stdout[0].includes("Usage:"));
+  });
+
+  it("--version returns 0 and writes version to adapter stdout", async () => {
+    const { adapter, stdout } = createTestAdapter();
+    const status = await main(["--version"], { invocation: adapter, env: {} });
+    assert.strictEqual(status, 0);
+    assert.strictEqual(stdout.length, 1);
+    assert.match(stdout[0].trim(), /^\d+\.\d+\.\d+$/);
+  });
+
+  it("unknown command returns 1 and writes VALIDATION_ERROR to adapter stderr", async () => {
+    const { adapter, stderr } = createTestAdapter();
+    const status = await main(["nonexistent-cmd"], { invocation: adapter, env: {} });
+    assert.strictEqual(status, 1);
+    assert.strictEqual(stderr.length, 1);
+    const err = JSON.parse(stderr[0]);
+    assert.strictEqual(err.success, false);
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
+    assert.ok(err.error.includes("Unknown command"));
+  });
+
+  it("invalid output mode returns 1 and writes VALIDATION_ERROR to adapter stderr", async () => {
+    const { adapter, stderr } = createTestAdapter();
+    const status = await main(["--output-format", "bogus", "doctor"], {
+      invocation: adapter,
+      env: {},
+    });
+    assert.strictEqual(status, 1);
+    assert.strictEqual(stderr.length, 1);
+    const err = JSON.parse(stderr[0]);
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
+    assert.ok(err.error.includes("Invalid output format"));
+  });
+
+  it("no args returns 0 and writes help to adapter stdout", async () => {
+    const { adapter, stdout } = createTestAdapter();
+    const status = await main([], { invocation: adapter, env: {} });
+    assert.strictEqual(status, 0);
+    assert.ok(stdout[0].includes("Usage:"));
+  });
+
+  it("-h alias returns 0 and writes help to adapter stdout", async () => {
+    const { adapter, stdout } = createTestAdapter();
+    const status = await main(["-h"], { invocation: adapter, env: {} });
+    assert.strictEqual(status, 0);
+    assert.ok(stdout[0].includes("scoutline"));
+  });
+
+  it("-v alias returns 0 and writes version to adapter stdout", async () => {
+    const { adapter, stdout } = createTestAdapter();
+    const status = await main(["-v"], { invocation: adapter, env: {} });
+    assert.strictEqual(status, 0);
+    assert.match(stdout[0].trim(), /^\d+\.\d+\.\d+$/);
   });
 });

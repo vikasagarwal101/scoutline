@@ -7,9 +7,16 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { copyFileSync, mkdirSync, rmSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import * as path from "node:path";
 import { runProcess } from "./helpers/run-process.js";
 
 const BASE_ENV = { Z_AI_API_KEY: "smoke-test-key" };
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const CLI_PATH = path.resolve(__dirname, "..", "bin", "scoutline.js");
 
 describe("scoutline executable smoke", () => {
   it("--help writes stdout only and exits 0", async () => {
@@ -45,5 +52,46 @@ describe("scoutline executable smoke", () => {
     assert.strictEqual(result.code, 0);
     assert.strictEqual(result.stderr, "");
     assert.match(result.stdout.trim(), /^\d+\.\d+\.\d+$/);
+  });
+
+  it("invalid output mode produces structured VALIDATION_ERROR on stderr and exits 1", async () => {
+    const result = await runProcess(["--output-format", "invalid", "doctor"], {
+      env: BASE_ENV,
+    });
+    assert.strictEqual(result.code, 1);
+    const err = JSON.parse(result.stderr);
+    assert.strictEqual(err.success, false);
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
+    assert.ok(err.error.includes("Invalid output format"));
+  });
+
+  it("load failure (missing dist) produces structured LOAD_ERROR on stderr and exits 1", async () => {
+    // Copy the bin to a temp dir where ../dist/index.js does not exist,
+    // so the dynamic import fails and the catch handler fires.
+    const tmpDir = path.join("/tmp", `scoutline-load-test-${process.pid}`);
+    mkdirSync(tmpDir, { recursive: true });
+    const tmpBin = path.join(tmpDir, "scoutline.js");
+    copyFileSync(CLI_PATH, tmpBin);
+    try {
+      const result = await new Promise((resolve, reject) => {
+        const proc = spawn(process.execPath, [tmpBin, "--help"], {
+          env: { ...process.env, ...BASE_ENV },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        proc.stdout.on("data", (c) => (stdout += c));
+        proc.stderr.on("data", (c) => (stderr += c));
+        proc.on("close", (code) => resolve({ stdout, stderr, code: code ?? 0 }));
+        proc.on("error", reject);
+      });
+      assert.strictEqual(result.code, 1);
+      const err = JSON.parse(result.stderr);
+      assert.strictEqual(err.success, false);
+      assert.strictEqual(err.code, "LOAD_ERROR");
+      assert.ok(err.error.length > 0);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-18
+
 ### Added
 - Provider selection (`--provider <zai|minimax>` / `SCOUTLINE_PROVIDER` /
   default `zai`) for shared capabilities: `search`, `vision analyze`,

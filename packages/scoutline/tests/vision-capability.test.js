@@ -31,8 +31,15 @@ import {
   visionOperationToCapability,
 } from "../dist/capabilities/vision.js";
 import { createZaiDescriptor, createMiniMaxDescriptor } from "../dist/providers/types.js";
+// Real Adapter factories (P3-03 / P3-04). Aliased so the stub imports above
+// (which assert descriptor metadata shape) keep their distinct references.
+import { createZaiDescriptor as createRealZaiDescriptor } from "../dist/providers/zai/adapter.js";
+import { createMiniMaxDescriptor as createRealMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
 import { UnsupportedCapabilityError, getErrorExitCode } from "../dist/lib/errors.js";
 import { executeProviderOperation } from "../dist/lib/execution.js";
+import { main } from "../dist/index.js";
+import { VISION_HELP } from "../dist/commands/vision.js";
+import { getMcpToolName } from "../dist/lib/mcp-config.js";
 
 // P3-02 — Provider media modules (DESIGN.md §9)
 import * as nodeFsp from "node:fs/promises";
@@ -685,5 +692,568 @@ describe("lib/image.ts compatibility — Phase 0 behavior retained (P3-02)", () 
     // processImageSource returns the encoded data URI for local files.
     const processed = compatProcessImageSource(img);
     assert.strictEqual(processed, encoded);
+  });
+});
+
+// ===========================================================================
+// P3-04 — Vision command selection + live conformance (DESIGN.md §6, §8)
+//
+// The Normal Vision commands route through Provider selection: the dispatch
+// resolves the effective Provider, gates the operation against descriptor
+// metadata BEFORE any Adapter construction or media access, then injects the
+// selected Adapter's VisionCapability. Commands build the discriminated
+// VisionRequest; the support check decides availability; no command branches
+// on a Provider ID.
+// ===========================================================================
+
+/**
+ * Run `scoutline vision ...` end-to-end through `main` with an in-memory
+ * recording invocation adapter. Returns the aggregated stdout/stderr and
+ * exit code. Used for offline command-routing assertions.
+ */
+function runVisionMain(args, { env = {}, providerDescriptors } = {}) {
+  const writes = [];
+  const invocation = {
+    stdoutIsTTY: false,
+    stdinIsTTY: false,
+    environmentOutputMode: undefined,
+    readStdin: async () => "",
+    writeStdout(v) {
+      writes.push(["out", v]);
+    },
+    writeStderr(v) {
+      writes.push(["err", v]);
+    },
+    runQuietly: async (op) => op(),
+    setExitCode() {},
+  };
+  return main(args, {
+    invocation,
+    env,
+    now: () => 1_700_000_000_000,
+    providerDescriptors,
+    searchSleep: async () => {},
+    searchRandom: () => 0.5,
+  }).then((code) => {
+    const stdout = writes
+      .filter((w) => w[0] === "out")
+      .map((w) => w[1])
+      .join("\n")
+      .trim();
+    const stderr = writes
+      .filter((w) => w[0] === "err")
+      .map((w) => w[1])
+      .join("\n")
+      .trim();
+    return { code, stdout, stderr };
+  });
+}
+
+/** Every vision capability id, used by recording descriptors. */
+const ALL_VISION_CAPS = [
+  "vision.interpret-image",
+  "vision.ui-artifact",
+  "vision.extract-text",
+  "vision.diagnose-error",
+  "vision.diagram",
+  "vision.chart",
+  "vision.diff",
+  "vision.video",
+];
+
+/**
+ * Build a recording descriptor whose Vision Capability records every
+ * invocation and returns a scripted (or request-derived) text. `create()`
+ * is observable so ordering tests can prove it is NOT reached for
+ * unsupported operations.
+ */
+function recordingDescriptor(id, options = {}) {
+  const createCalls = [];
+  const invokeCalls = [];
+  const caps = new Set(options.capabilities ?? ["search", ...ALL_VISION_CAPS]);
+  const descriptor = {
+    id,
+    isConfigured: () => true,
+    capabilities: () => caps,
+    create() {
+      createCalls.push(1);
+      return {
+        id,
+        vision: {
+          supports(op) {
+            return caps.has(`vision.${op}`);
+          },
+          async invoke(request) {
+            invokeCalls.push(request);
+            if (options.throwOnInvoke) throw options.throwOnInvoke;
+            return typeof options.result === "function"
+              ? options.result(request)
+              : (options.result ?? `text:${id}:${request.operation}`);
+          },
+        },
+      };
+    },
+  };
+  return { descriptor, createCalls, invokeCalls, caps };
+}
+
+/**
+ * Build a descriptor that throws a unique sentinel from `create()`. Used to
+ * prove the descriptor-level support gate rejects unsupported operations
+ * BEFORE Adapter construction.
+ */
+function sentinelDescriptor(id, advertisedCaps) {
+  return {
+    id,
+    isConfigured: () => true,
+    capabilities: () => new Set(advertisedCaps),
+    create() {
+      throw new Error(`SENTINEL_CREATE_REACHED:${id}`);
+    },
+  };
+}
+
+function assertStderrError(parsed, expectedCode) {
+  assert.ok(parsed, "stderr must carry a structured error envelope");
+  assert.strictEqual(
+    parsed.code,
+    expectedCode,
+    `expected ${expectedCode}, got ${parsed && parsed.code}: ${parsed && parsed.error}`,
+  );
+}
+
+describe("Vision command routing — Provider selection for analyze (P3-04)", () => {
+  it("default Provider is Z.AI: raw source + instruction reach the Z.AI Capability", async () => {
+    const zai = recordingDescriptor("zai");
+    const minimax = recordingDescriptor("minimax");
+    const { code, stdout } = await runVisionMain(
+      ["vision", "analyze", "https://example.test/img.png", "describe the shapes"],
+      { env: {}, providerDescriptors: [zai.descriptor, minimax.descriptor] },
+    );
+    assert.strictEqual(code, 0);
+    assert.strictEqual(zai.invokeCalls.length, 1, "Z.AI capability must be invoked once");
+    assert.strictEqual(minimax.invokeCalls.length, 0, "MiniMax must not be invoked");
+    assert.strictEqual(zai.invokeCalls[0].operation, "interpret-image");
+    assert.strictEqual(zai.invokeCalls[0].source, "https://example.test/img.png");
+    assert.strictEqual(zai.invokeCalls[0].instruction, "describe the shapes");
+    // Normalized text returned without Provider field access (no envelope).
+    assert.strictEqual(stdout, JSON.stringify(`text:zai:interpret-image`));
+  });
+
+  it("SCOUTLINE_PROVIDER=minimax selects MiniMax for analyze", async () => {
+    const zai = recordingDescriptor("zai");
+    const minimax = recordingDescriptor("minimax");
+    const { code } = await runVisionMain(["vision", "analyze", "https://example.test/img.png"], {
+      env: { SCOUTLINE_PROVIDER: "minimax" },
+      providerDescriptors: [zai.descriptor, minimax.descriptor],
+    });
+    assert.strictEqual(code, 0);
+    assert.strictEqual(minimax.invokeCalls.length, 1);
+    assert.strictEqual(zai.invokeCalls.length, 0);
+    assert.strictEqual(minimax.invokeCalls[0].operation, "interpret-image");
+  });
+
+  it("explicit --provider minimax overrides the environment default", async () => {
+    const zai = recordingDescriptor("zai");
+    const minimax = recordingDescriptor("minimax");
+    const { code } = await runVisionMain(
+      ["--provider", "minimax", "vision", "analyze", "https://example.test/img.png"],
+      { env: {}, providerDescriptors: [zai.descriptor, minimax.descriptor] },
+    );
+    assert.strictEqual(code, 0);
+    assert.strictEqual(minimax.invokeCalls.length, 1);
+    assert.strictEqual(zai.invokeCalls.length, 0);
+  });
+
+  it("analyze without a prompt uses the default instruction", async () => {
+    const zai = recordingDescriptor("zai");
+    await runVisionMain(["vision", "analyze", "https://example.test/img.png"], {
+      env: {},
+      providerDescriptors: [zai.descriptor],
+    });
+    assert.strictEqual(zai.invokeCalls.length, 1);
+    assert.ok(
+      typeof zai.invokeCalls[0].instruction === "string" &&
+        zai.invokeCalls[0].instruction.length > 0,
+      "default instruction must be a nonempty string",
+    );
+  });
+});
+
+describe("Vision command routing — MiniMax unsupported operations fail early (P3-04)", () => {
+  // MiniMax advertises ONLY general single-image interpretation in the base
+  // release (FR-023, FR-025). Every specialized operation, diff, and video
+  // must fail with UNSUPPORTED_CAPABILITY BEFORE key access, source stat,
+  // SDK construction, cache access, or any Z.AI fallback.
+  const MINIMAX_CAPS = ["search", "vision.interpret-image"];
+  const specializedViaMinimax = [
+    {
+      args: ["--provider", "minimax", "vision", "ui-to-code", "https://e/a.png"],
+      op: "ui-artifact",
+    },
+    {
+      args: ["--provider", "minimax", "vision", "extract-text", "https://e/a.png"],
+      op: "extract-text",
+    },
+    {
+      args: ["--provider", "minimax", "vision", "diagnose-error", "https://e/a.png"],
+      op: "diagnose-error",
+    },
+    { args: ["--provider", "minimax", "vision", "diagram", "https://e/a.png"], op: "diagram" },
+    { args: ["--provider", "minimax", "vision", "chart", "https://e/a.png"], op: "chart" },
+    {
+      args: ["--provider", "minimax", "vision", "diff", "https://e/a.png", "https://e/b.png"],
+      op: "diff",
+    },
+    { args: ["--provider", "minimax", "vision", "video", "https://e/v.mp4"], op: "video" },
+  ];
+
+  for (const { args, op } of specializedViaMinimax) {
+    it(`MiniMax ${op} → UNSUPPORTED_CAPABILITY before create() or Z.AI fallback`, async () => {
+      // A sentinel MiniMax whose create() betrays any construction, plus a
+      // Z.AI fallback sentinel whose invoke() betrays any fallback. The
+      // support gate must reject before either is observed.
+      const mm = sentinelDescriptor("minimax", MINIMAX_CAPS);
+      let zaiFallbackObserved = false;
+      const zaiFallback = {
+        id: "zai",
+        isConfigured: () => true,
+        capabilities: () => new Set(["search", ...ALL_VISION_CAPS]),
+        create() {
+          return {
+            id: "zai",
+            vision: {
+              supports: () => true,
+              async invoke() {
+                zaiFallbackObserved = true;
+                throw new Error("SENTINEL_ZAI_FALLBACK_REACHED");
+              },
+            },
+          };
+        },
+      };
+      const { code, stderr } = await runVisionMain(args, {
+        env: { MINIMAX_API_KEY: "k" },
+        providerDescriptors: [mm, zaiFallback],
+      });
+      assert.strictEqual(code, 1);
+      let parsed;
+      try {
+        parsed = JSON.parse(stderr);
+      } catch {
+        assert.fail(`stderr must be a structured error envelope, got: ${stderr}`);
+      }
+      assertStderrError(parsed, "UNSUPPORTED_CAPABILITY");
+      assert.match(parsed.error, /minimax/i, "error must identify MiniMax");
+      assert.match(parsed.error, new RegExp(`vision.${op}`), "error must identify the capability");
+      assert.strictEqual(zaiFallbackObserved, false, "must NOT fall back to Z.AI (FR-024)");
+    });
+  }
+
+  it("MiniMax analyze (general interpretation) IS supported and reaches the Capability", async () => {
+    const minimax = recordingDescriptor("minimax", { capabilities: MINIMAX_CAPS });
+    const { code } = await runVisionMain(
+      ["--provider", "minimax", "vision", "analyze", "https://example.test/img.png"],
+      { env: { MINIMAX_API_KEY: "k" }, providerDescriptors: [minimax.descriptor] },
+    );
+    assert.strictEqual(code, 0);
+    assert.strictEqual(minimax.invokeCalls.length, 1);
+    assert.strictEqual(minimax.invokeCalls[0].operation, "interpret-image");
+    assert.strictEqual(minimax.createCalls.length, 1, "create() is reached for a supported op");
+  });
+});
+
+describe("Vision command routing — Z.AI preserves specialized operations (P3-04)", () => {
+  // Z.AI maps every current operation (DESIGN.md §8). Selecting Z.AI must
+  // preserve Phase 1 behaviour: each specialized command builds the correct
+  // discriminated VisionRequest with its dedicated arguments, and the
+  // request reaches the Z.AI Vision Capability unchanged.
+  it("each specialized command builds its discriminated request with dedicated args", async () => {
+    const zai = recordingDescriptor("zai", {
+      result: (req) => `ok:${req.operation}`,
+    });
+    const dispatch = (args) =>
+      runVisionMain(args, { env: {}, providerDescriptors: [zai.descriptor] });
+
+    await dispatch(["vision", "ui-to-code", "https://e/a.png", "--output", "spec"]);
+    await dispatch(["vision", "extract-text", "https://e/a.png", "--language", "rust"]);
+    await dispatch(["vision", "diagnose-error", "https://e/a.png", "--context", "during build"]);
+    await dispatch(["vision", "diagram", "https://e/a.png", "--type", "sequence"]);
+    await dispatch(["vision", "chart", "https://e/a.png", "--focus", "left axis"]);
+    await dispatch(["vision", "diff", "https://e/exp.png", "https://e/act.png"]);
+    await dispatch(["vision", "video", "https://e/clip.mp4"]);
+
+    const ops = zai.invokeCalls.map((r) => r.operation);
+    assert.deepStrictEqual(ops, [
+      "ui-artifact",
+      "extract-text",
+      "diagnose-error",
+      "diagram",
+      "chart",
+      "diff",
+      "video",
+    ]);
+
+    const [ui, text, diag, dia, chart, diff, vid] = zai.invokeCalls;
+    assert.strictEqual(ui.source, "https://e/a.png");
+    assert.strictEqual(ui.outputType, "spec");
+    assert.ok(typeof ui.instruction === "string" && ui.instruction.length > 0);
+
+    assert.strictEqual(text.source, "https://e/a.png");
+    assert.strictEqual(text.programmingLanguage, "rust");
+
+    assert.strictEqual(diag.source, "https://e/a.png");
+    assert.strictEqual(diag.context, "during build");
+
+    assert.strictEqual(dia.source, "https://e/a.png");
+    assert.strictEqual(dia.diagramType, "sequence");
+
+    assert.strictEqual(chart.source, "https://e/a.png");
+    assert.strictEqual(chart.focus, "left axis");
+
+    assert.strictEqual(diff.expectedSource, "https://e/exp.png");
+    assert.strictEqual(diff.actualSource, "https://e/act.png");
+    assert.ok(typeof diff.instruction === "string" && diff.instruction.length > 0);
+
+    assert.strictEqual(vid.source, "https://e/clip.mp4");
+    assert.ok(typeof vid.instruction === "string" && vid.instruction.length > 0);
+  });
+
+  it("Z.AI analyze and video return normalized text on stdout without a Provider envelope", async () => {
+    const zai = recordingDescriptor("zai", { result: "normalized vision text" });
+    const a = await runVisionMain(["vision", "analyze", "https://e/a.png"], {
+      env: {},
+      providerDescriptors: [zai.descriptor],
+    });
+    assert.strictEqual(a.code, 0);
+    assert.strictEqual(a.stdout, JSON.stringify("normalized vision text"));
+  });
+});
+
+describe("Vision command routing — invalid Provider fails before support or media (P3-04)", () => {
+  it("explicit unknown Provider → VALIDATION_ERROR before any descriptor lookup", async () => {
+    let createReached = false;
+    const zai = {
+      id: "zai",
+      isConfigured: () => true,
+      capabilities: () => new Set(["search", ...ALL_VISION_CAPS]),
+      create() {
+        createReached = true;
+        return {
+          id: "zai",
+          vision: {
+            supports: () => true,
+            async invoke() {
+              return "x";
+            },
+          },
+        };
+      },
+    };
+    const { code, stderr } = await runVisionMain(
+      ["--provider", "bogus", "vision", "analyze", "https://e/a.png"],
+      { env: {}, providerDescriptors: [zai] },
+    );
+    assert.strictEqual(code, 1);
+    let parsed;
+    try {
+      parsed = JSON.parse(stderr);
+    } catch {
+      assert.fail(`stderr must be structured, got: ${stderr}`);
+    }
+    assertStderrError(parsed, "VALIDATION_ERROR");
+    assert.strictEqual(
+      createReached,
+      false,
+      "must fail before Adapter construction or media access",
+    );
+  });
+});
+
+describe("Vision command help — provider gating labels (P3-04)", () => {
+  it("identifies general interpretation as shared across providers", () => {
+    assert.match(VISION_HELP, /shared/i, "help must label general interpretation as shared");
+    assert.match(VISION_HELP, /interpret|analyze/i);
+  });
+
+  it("labels diff and video as Z.AI-only", () => {
+    assert.match(VISION_HELP, /Z\.AI only/i, "help must mark diff/video as Z.AI-only");
+  });
+
+  it("labels specialized MiniMax mappings as gated", () => {
+    assert.match(VISION_HELP, /gated/i, "help must label specialized MiniMax mappings as gated");
+    assert.match(VISION_HELP, /MiniMax/i);
+  });
+
+  it("still lists every subcommand", () => {
+    for (const cmd of [
+      "analyze",
+      "ui-to-code",
+      "extract-text",
+      "diagnose-error",
+      "diagram",
+      "chart",
+      "diff",
+      "video",
+    ]) {
+      assert.ok(VISION_HELP.includes(cmd), `help must list ${cmd}`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Real Z.AI Adapter: specialized operation → MCP tool/arg mappings (P3-04)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a recording ZaiAdapterClientPort that captures every callToolRaw
+ * invocation. Used to prove the Adapter maps each discriminated request to
+ * its dedicated MCP tool name and arguments.
+ */
+function recordingZaiClientFactory() {
+  const calls = [];
+  const port = {
+    callToolRaw(name, args) {
+      calls.push({ name, args });
+      return Promise.resolve("ok text");
+    },
+    close() {
+      return Promise.resolve();
+    },
+  };
+  return {
+    factory() {
+      return port;
+    },
+    calls,
+  };
+}
+
+describe("Z.AI Adapter — specialized operation mappings (P3-04)", () => {
+  it("the real Z.AI descriptor advertises every vision capability", () => {
+    const caps = createRealZaiDescriptor().capabilities();
+    for (const cap of ALL_VISION_CAPS) {
+      assert.ok(caps.has(cap), `Z.AI descriptor must advertise ${cap}`);
+    }
+  });
+
+  it("MiniMax descriptor still advertises only general interpretation", () => {
+    const caps = createRealMiniMaxDescriptor().capabilities();
+    assert.ok(caps.has("vision.interpret-image"));
+    for (const cap of ALL_VISION_CAPS) {
+      if (cap === "vision.interpret-image") continue;
+      assert.ok(!caps.has(cap), `MiniMax must NOT advertise ${cap} until Phase 5`);
+    }
+  });
+
+  it("maps each discriminated request to its dedicated MCP tool + arguments", async () => {
+    const { factory, calls } = recordingZaiClientFactory();
+    const descriptor = createRealZaiDescriptor({ clientFactory: factory });
+    const adapter = descriptor.create({ env: { Z_AI_API_KEY: "test-key" } });
+    const img = "https://example.test/a.png";
+
+    await adapter.vision.invoke({ operation: "interpret-image", source: img, instruction: "p" });
+    await adapter.vision.invoke({
+      operation: "ui-artifact",
+      source: img,
+      instruction: "p",
+      outputType: "spec",
+    });
+    await adapter.vision.invoke({
+      operation: "extract-text",
+      source: img,
+      instruction: "p",
+      programmingLanguage: "rust",
+    });
+    await adapter.vision.invoke({
+      operation: "diagnose-error",
+      source: img,
+      instruction: "p",
+      context: "ctx",
+    });
+    await adapter.vision.invoke({
+      operation: "diagram",
+      source: img,
+      instruction: "p",
+      diagramType: "sequence",
+    });
+    await adapter.vision.invoke({
+      operation: "chart",
+      source: img,
+      instruction: "p",
+      focus: "left",
+    });
+    await adapter.vision.invoke({
+      operation: "diff",
+      expectedSource: "https://example.test/exp.png",
+      actualSource: "https://example.test/act.png",
+      instruction: "p",
+    });
+    await adapter.vision.invoke({
+      operation: "video",
+      source: "https://example.test/v.mp4",
+      instruction: "p",
+    });
+
+    const expected = [
+      { name: getMcpToolName("vision", "analyze_image"), args: { image_source: img, prompt: "p" } },
+      {
+        name: getMcpToolName("vision", "ui_to_artifact"),
+        args: { image_source: img, output_type: "spec", prompt: "p" },
+      },
+      {
+        name: getMcpToolName("vision", "extract_text_from_screenshot"),
+        args: { image_source: img, prompt: "p", programming_language: "rust" },
+      },
+      {
+        name: getMcpToolName("vision", "diagnose_error_screenshot"),
+        args: { image_source: img, prompt: "p", context: "ctx" },
+      },
+      {
+        name: getMcpToolName("vision", "understand_technical_diagram"),
+        args: { image_source: img, prompt: "p", diagram_type: "sequence" },
+      },
+      {
+        name: getMcpToolName("vision", "analyze_data_visualization"),
+        args: { image_source: img, prompt: "p", analysis_focus: "left" },
+      },
+      {
+        name: getMcpToolName("vision", "ui_diff_check"),
+        args: {
+          expected_image_source: "https://example.test/exp.png",
+          actual_image_source: "https://example.test/act.png",
+          prompt: "p",
+        },
+      },
+      {
+        name: getMcpToolName("vision", "analyze_video"),
+        args: { video_source: "https://example.test/v.mp4", prompt: "p" },
+      },
+    ];
+
+    assert.strictEqual(calls.length, expected.length, "one transport call per operation");
+    for (let i = 0; i < expected.length; i += 1) {
+      assert.strictEqual(calls[i].name, expected[i].name, `call ${i}: tool name`);
+      assert.deepStrictEqual(calls[i].args, expected[i].args, `call ${i}: args`);
+    }
+  });
+
+  it("normalizes only nonempty text for every operation", async () => {
+    const descriptor = createRealZaiDescriptor({
+      clientFactory: () => ({
+        callToolRaw: () => Promise.resolve("   "),
+        close: () => Promise.resolve(),
+      }),
+    });
+    const adapter = descriptor.create({ env: { Z_AI_API_KEY: "k" } });
+    await assert.rejects(
+      adapter.vision.invoke({
+        operation: "ui-artifact",
+        source: "https://example.test/a.png",
+        instruction: "p",
+        outputType: "code",
+      }),
+      (err) => err.code === "API_ERROR",
+    );
   });
 });

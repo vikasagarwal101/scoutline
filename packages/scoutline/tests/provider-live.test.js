@@ -29,6 +29,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
@@ -141,9 +144,7 @@ describeIfLive("Provider live Search — Z.AI", () => {
     if (!requireConfigured(zaiConfigured)) {
       // Release mode requires the credential; the runner preflight should
       // have already failed. Defensive guard.
-      assert.fail(
-        "Z_AI_API_KEY is required for live-release mode but was not provided",
-      );
+      assert.fail("Z_AI_API_KEY is required for live-release mode but was not provided");
       return;
     }
     if (!zaiConfigured) {
@@ -151,10 +152,10 @@ describeIfLive("Provider live Search — Z.AI", () => {
       return;
     }
     const query = liveQuery("zai");
-    const data = await runLiveSearch(
-      ["search", query, "--count", "3", "--no-cache"],
-      { ...process.env, Z_AI_API_KEY: ZAI_KEY },
-    );
+    const data = await runLiveSearch(["search", query, "--count", "3", "--no-cache"], {
+      ...process.env,
+      Z_AI_API_KEY: ZAI_KEY,
+    });
     assertSearchShape(data);
   });
 
@@ -162,7 +163,11 @@ describeIfLive("Provider live Search — Z.AI", () => {
     if (!zaiConfigured) return;
     const descriptor = createZaiDescriptor();
     const adapter = descriptor.create({ env: { Z_AI_API_KEY: ZAI_KEY } });
-    assert.strictEqual(typeof adapter.search, "object", "Z.AI descriptor must expose a Search capability");
+    assert.strictEqual(
+      typeof adapter.search,
+      "object",
+      "Z.AI descriptor must expose a Search capability",
+    );
     const query = liveQuery("zai-adapter");
     const sources = await adapter.search.invoke({ query });
     assertSearchShape(sources);
@@ -177,9 +182,7 @@ describeIfLive("Provider live Search — Z.AI", () => {
 describeIfLive("Provider live Search — MiniMax", () => {
   it("Normal Search through the public scoutline command returns the documented shape", async () => {
     if (!requireConfigured(minimaxConfigured)) {
-      assert.fail(
-        "MINIMAX_API_KEY is required for live-release mode but was not provided",
-      );
+      assert.fail("MINIMAX_API_KEY is required for live-release mode but was not provided");
       return;
     }
     if (!minimaxConfigured) {
@@ -197,9 +200,120 @@ describeIfLive("Provider live Search — MiniMax", () => {
     if (!minimaxConfigured) return;
     const descriptor = createMiniMaxDescriptor();
     const adapter = descriptor.create({ env: { MINIMAX_API_KEY: MINIMAX_KEY } });
-    assert.strictEqual(typeof adapter.search, "object", "MiniMax descriptor must expose a Search capability");
+    assert.strictEqual(
+      typeof adapter.search,
+      "object",
+      "MiniMax descriptor must expose a Search capability",
+    );
     const query = liveQuery("minimax-adapter");
     const sources = await adapter.search.invoke({ query });
     assertSearchShape(sources);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live general Vision conformance (P3-04, FR-026)
+//
+// One repository-owned fixture (tests/fixtures/vision/general.png) plus a
+// versioned instruction with semantic predicates (general.json) is run
+// through BOTH Provider Adapters when explicitly opted in. An unconfigured
+// Provider is skipped under `test:live`; `test:live:release` requires both.
+//
+// Semantic shape only:
+//   - The assertion NEVER stores, logs, or snapshots a live response, key,
+//     authorization value, or raw Provider body.
+//   - It checks nonempty text and a conservative set of required concept
+//     groups derived from the fixture's observable content. Prose is never
+//     compared word-for-word.
+// ---------------------------------------------------------------------------
+
+const visionFixtureDir = fileURLToPath(new URL("../tests/fixtures/vision/", import.meta.url));
+const visionSpec = JSON.parse(readFileSync(path.join(visionFixtureDir, "general.json"), "utf8"));
+const visionImagePath = path.join(visionFixtureDir, visionSpec.image);
+
+/**
+ * Invoke `scoutline vision analyze <fixture> <instruction>` end-to-end
+ * through `main`. Returns the normalized text. On failure, surfaces only
+ * the structured error code (never the response body).
+ */
+async function runLiveVision(args, env) {
+  const writes = [];
+  const adapter = {
+    ...createNodeCommandInvocationAdapter(),
+    writeStdout(value) {
+      writes.push(["out", value]);
+    },
+    writeStderr(value) {
+      writes.push(["err", value]);
+    },
+  };
+  const code = await main(args, { invocation: adapter, env });
+  const stdout = writes
+    .filter((w) => w[0] === "out")
+    .map((w) => w[1])
+    .join("\n")
+    .trim();
+  const stderr = writes
+    .filter((w) => w[0] === "err")
+    .map((w) => w[1])
+    .join("\n")
+    .trim();
+  if (code !== 0) {
+    let envelope;
+    try {
+      envelope = JSON.parse(stderr || stdout);
+    } catch {
+      envelope = { code: "UNKNOWN_ERROR", error: stderr || stdout };
+    }
+    throw new Error(
+      `live vision failed (exit ${code}): ${envelope.code || "UNKNOWN_ERROR"}`.trim(),
+    );
+  }
+  // `vision analyze` in data mode writes the normalized text as a JSON string.
+  return JSON.parse(stdout);
+}
+
+/**
+ * Assert the live Vision text satisfies the fixture's semantic predicates.
+ * Never logs the response text; failure messages name only the missing
+ * concept group, not the prose.
+ */
+function assertVisionConformance(text) {
+  assert.ok(typeof text === "string", "vision result must be a string");
+  assert.ok(text.trim().length > 0, "vision result must be nonempty (forbiddenEmpty)");
+  const lower = text.toLowerCase();
+  for (const group of visionSpec.predicates.requiredAnyOfGroups) {
+    const hit = group.some((term) => lower.includes(term));
+    assert.ok(hit, `vision result must mention one of: ${group.join(", ")} (content redacted)`);
+  }
+}
+
+describeIfLive("Provider live Vision — Z.AI", () => {
+  it("general single-image interpretation returns conformant nonempty text", async () => {
+    if (!requireConfigured(zaiConfigured)) {
+      assert.fail("Z_AI_API_KEY is required for live-release mode but was not provided");
+      return;
+    }
+    if (!zaiConfigured) return;
+    const text = await runLiveVision(
+      ["vision", "analyze", visionImagePath, visionSpec.instruction],
+      { ...process.env, Z_AI_API_KEY: ZAI_KEY },
+    );
+    assertVisionConformance(text);
+  });
+});
+
+describeIfLive("Provider live Vision — MiniMax", () => {
+  it("general single-image interpretation returns conformant nonempty text", async () => {
+    if (!requireConfigured(minimaxConfigured)) {
+      assert.fail("MINIMAX_API_KEY is required for live-release mode but was not provided");
+      return;
+    }
+    if (!minimaxConfigured) return;
+    const text = await runLiveVision(
+      ["--provider", "minimax", "vision", "analyze", visionImagePath, visionSpec.instruction],
+      { ...process.env, MINIMAX_API_KEY: MINIMAX_KEY },
+    );
+    assertVisionConformance(text);
   });
 });

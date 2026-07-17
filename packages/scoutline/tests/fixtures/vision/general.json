@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "operation": "interpret-image",
+  "fixtureVersion": 1,
+  "image": "general.png",
+  "instruction": "Describe this image. Identify the dominant shape, its color, and the background color.",
+  "predicates": {
+    "forbiddenEmpty": true,
+    "requiredAnyOfGroups": [
+      ["square", "rectangle", "block", "box"],
+      ["black", "dark"],
+      ["white", "light"]
+    ]
+  },
+  "notes": "Semantic conformance only. Do NOT snapshot prose word-for-word. The fixture image is a centered black square on a white field; require nonempty text that mentions a square-like shape plus the black/white contrast. Never store a live response, key, authorization value, or raw provider body."
+}

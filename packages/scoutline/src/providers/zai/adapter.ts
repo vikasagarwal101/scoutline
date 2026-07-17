@@ -48,13 +48,11 @@ import type {
   VisionOperation,
   VisionRequest,
 } from "../../capabilities/vision.js";
-import { visionOperationToCapability } from "../../capabilities/vision.js";
 import {
   ApiError,
   AuthError,
   NetworkError,
   TimeoutError,
-  UnsupportedCapabilityError,
   ValidationError,
 } from "../../lib/errors.js";
 import { getMcpToolName } from "../../lib/mcp-config.js";
@@ -63,21 +61,52 @@ import {
   type ZaiMcpClientOptions as McpClientOptions,
 } from "../../lib/mcp-client.js";
 import { buildCacheKey } from "../../lib/cache.js";
-import { resolveImageSource } from "./media.js";
+import { resolveImageSource, resolveVideoSource } from "./media.js";
 
 const SEARCH_TOOL_PUBLIC_NAME = getMcpToolName("search", "web_search_prime");
 const VISION_ANALYZE_TOOL_PUBLIC_NAME = getMcpToolName("vision", "analyze_image");
 
 // ---------------------------------------------------------------------------
-// Vision Capability — operations wired in this Adapter (P3-03)
+// Vision Capability — operations wired in this Adapter (P3-03, P3-04)
 // ---------------------------------------------------------------------------
 
 /**
- * Vision operations the Z.AI Adapter implements. P3-03 wires only the
- * general single-image interpretation; specialized operations arrive in
- * P3-04. The descriptor advertises only what this Adapter supports.
+ * Public dotted MCP tool names for every Z.AI Vision operation. Each
+ * resolves internally through the P2-03 name-translation fix. The Adapter
+ * invokes only the raw tool path; it does NOT call the high-level
+ * `ZaiMcpClient` wrapper methods.
  */
-const ZAI_VISION_OPERATIONS: ReadonlySet<VisionOperation> = new Set(["interpret-image"]);
+const VISION_UI_TO_ARTIFACT_TOOL_PUBLIC_NAME = getMcpToolName("vision", "ui_to_artifact");
+const VISION_EXTRACT_TEXT_TOOL_PUBLIC_NAME = getMcpToolName(
+  "vision",
+  "extract_text_from_screenshot",
+);
+const VISION_DIAGNOSE_ERROR_TOOL_PUBLIC_NAME = getMcpToolName(
+  "vision",
+  "diagnose_error_screenshot",
+);
+const VISION_DIAGRAM_TOOL_PUBLIC_NAME = getMcpToolName("vision", "understand_technical_diagram");
+const VISION_CHART_TOOL_PUBLIC_NAME = getMcpToolName("vision", "analyze_data_visualization");
+const VISION_DIFF_TOOL_PUBLIC_NAME = getMcpToolName("vision", "ui_diff_check");
+const VISION_VIDEO_TOOL_PUBLIC_NAME = getMcpToolName("vision", "analyze_video");
+
+/**
+ * Vision operations the Z.AI Adapter implements. P3-03 wired the general
+ * single-image interpretation; P3-04 adds every specialized operation so
+ * selecting Z.AI preserves Phase 1 behaviour (DESIGN.md §8: "Z.AI maps
+ * all current operations to dedicated MCP operations"). The descriptor
+ * advertises exactly what this set contains.
+ */
+const ZAI_VISION_OPERATIONS: ReadonlySet<VisionOperation> = new Set([
+  "interpret-image",
+  "ui-artifact",
+  "extract-text",
+  "diagnose-error",
+  "diagram",
+  "chart",
+  "diff",
+  "video",
+]);
 
 // ---------------------------------------------------------------------------
 // Provider-owned legacy cache candidate
@@ -384,17 +413,13 @@ function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionC
     },
 
     async invoke(request: VisionRequest): Promise<string> {
-      // Only interpret-image is wired in P3-03; specialized operations
-      // are gated by supports() and fail closed before reaching here.
-      if (request.operation !== "interpret-image") {
-        throw new UnsupportedCapabilityError("zai", visionOperationToCapability(request.operation));
-      }
-
-      // Credential resolved for the transport; media resolved to the
-      // validated Z.AI image source (absolute path or HTTP(S) URL) —
-      // the media module never reads file content.
+      // Credential resolved for the transport; media resolved inside
+      // `buildZaiVisionInvocation` to the validated Z.AI source (absolute
+      // path or HTTP(S) URL) — the media module never reads file content.
+      // Unsupported operations never reach here: the descriptor-level
+      // gate and `supports()` reject first (defence in depth).
       resolveApiKey();
-      const imageSource = resolveImageSource(request.source);
+      const { toolName, args } = buildZaiVisionInvocation(request);
 
       // Disable client-owned cache and retry so shared execution is the
       // single policy owner. Vision enables the Z.AI vision MCP server.
@@ -405,11 +430,7 @@ function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionC
       };
       const client = clientFactory(clientOptions);
       try {
-        const args: Record<string, unknown> = {
-          image_source: imageSource,
-          prompt: request.instruction,
-        };
-        const raw = await invokeZaiVision(client, VISION_ANALYZE_TOOL_PUBLIC_NAME, args);
+        const raw = await invokeZaiVision(client, toolName, args);
         return normalizeZaiVisionResult(raw);
       } finally {
         await client.close().catch(() => {});
@@ -418,6 +439,95 @@ function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionC
   };
 
   return capability;
+}
+
+/**
+ * Map a discriminated `VisionRequest` to its dedicated Z.AI MCP tool name
+ * and arguments, resolving media through the Z.AI media Module. Field
+ * names mirror the characterized transport schema (see `mcp-client.ts`
+ * and the live discovery fixtures). Optional fields are omitted when
+ * absent so the Provider receives the same request shape Phase 1 sent.
+ */
+function buildZaiVisionInvocation(request: VisionRequest): {
+  toolName: string;
+  args: Record<string, unknown>;
+} {
+  switch (request.operation) {
+    case "interpret-image":
+      return {
+        toolName: VISION_ANALYZE_TOOL_PUBLIC_NAME,
+        args: {
+          image_source: resolveImageSource(request.source),
+          prompt: request.instruction,
+        },
+      };
+    case "ui-artifact":
+      return {
+        toolName: VISION_UI_TO_ARTIFACT_TOOL_PUBLIC_NAME,
+        args: {
+          image_source: resolveImageSource(request.source),
+          output_type: request.outputType,
+          prompt: request.instruction,
+        },
+      };
+    case "extract-text": {
+      const args: Record<string, unknown> = {
+        image_source: resolveImageSource(request.source),
+        prompt: request.instruction,
+      };
+      if (request.programmingLanguage) {
+        args.programming_language = request.programmingLanguage;
+      }
+      return { toolName: VISION_EXTRACT_TEXT_TOOL_PUBLIC_NAME, args };
+    }
+    case "diagnose-error": {
+      const args: Record<string, unknown> = {
+        image_source: resolveImageSource(request.source),
+        prompt: request.instruction,
+      };
+      if (request.context) {
+        args.context = request.context;
+      }
+      return { toolName: VISION_DIAGNOSE_ERROR_TOOL_PUBLIC_NAME, args };
+    }
+    case "diagram": {
+      const args: Record<string, unknown> = {
+        image_source: resolveImageSource(request.source),
+        prompt: request.instruction,
+      };
+      if (request.diagramType) {
+        args.diagram_type = request.diagramType;
+      }
+      return { toolName: VISION_DIAGRAM_TOOL_PUBLIC_NAME, args };
+    }
+    case "chart": {
+      const args: Record<string, unknown> = {
+        image_source: resolveImageSource(request.source),
+        prompt: request.instruction,
+      };
+      if (request.focus) {
+        args.analysis_focus = request.focus;
+      }
+      return { toolName: VISION_CHART_TOOL_PUBLIC_NAME, args };
+    }
+    case "diff":
+      return {
+        toolName: VISION_DIFF_TOOL_PUBLIC_NAME,
+        args: {
+          expected_image_source: resolveImageSource(request.expectedSource),
+          actual_image_source: resolveImageSource(request.actualSource),
+          prompt: request.instruction,
+        },
+      };
+    case "video":
+      return {
+        toolName: VISION_VIDEO_TOOL_PUBLIC_NAME,
+        args: {
+          video_source: resolveVideoSource(request.source),
+          prompt: request.instruction,
+        },
+      };
+  }
 }
 
 async function invokeZaiVision(
@@ -489,7 +599,17 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
       return typeof key === "string" && /\S/.test(key);
     },
     capabilities(): ReadonlySet<ProviderCapability> {
-      return new Set<ProviderCapability>(["search", "vision.interpret-image"]);
+      return new Set<ProviderCapability>([
+        "search",
+        "vision.interpret-image",
+        "vision.ui-artifact",
+        "vision.extract-text",
+        "vision.diagnose-error",
+        "vision.diagram",
+        "vision.chart",
+        "vision.diff",
+        "vision.video",
+      ]);
     },
     create(context: ProviderContext): ProviderAdapter {
       const search = createZaiSearchCapability({

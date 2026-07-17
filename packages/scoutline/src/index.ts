@@ -3,6 +3,7 @@
  */
 
 import * as vision from "./commands/vision.js";
+import type { VisionExecutionDependencies } from "./commands/vision.js";
 import { search, SEARCH_HELP } from "./commands/search.js";
 import { read, READ_HELP } from "./commands/read.js";
 import { repoSearch, repoTree, repoRead, REPO_HELP } from "./commands/repo.js";
@@ -26,6 +27,7 @@ import { resolveProviderId } from "./providers/selection.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS, getProviderDescriptor } from "./providers/registry.js";
 import type { ProviderDescriptor, ProviderId } from "./providers/types.js";
 import type { SearchCapability } from "./capabilities/search.js";
+import { visionOperationToCapability, type VisionOperation } from "./capabilities/vision.js";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -225,11 +227,50 @@ async function handleVision(
   const source = positional[1];
   const prompt = positional[2];
 
+  // Map the subcommand to its Vision operation. Unknown subcommands are
+  // a parse-time VALIDATION_ERROR and are rejected before any Provider
+  // resolution, support check, or media access.
+  const operation = visionOperationForCommand(command);
+
+  // Resolve the effective Provider for Vision (DESIGN.md §6). Invalid
+  // explicit/env input fails here with VALIDATION_ERROR before any Vision
+  // support check or media access.
+  const providerId: ProviderId = resolveProviderId(
+    deps.provider,
+    deps.env,
+    deps.providerDescriptors,
+  );
+  const descriptor = getProviderDescriptor(providerId, deps.providerDescriptors);
+
+  // Gate the operation on descriptor metadata BEFORE Adapter construction.
+  // An unsupported operation (e.g. MiniMax for any specialized op, diff, or
+  // video) fails with UNSUPPORTED_CAPABILITY before credentials, media,
+  // transport, cache, or any Z.AI fallback (FR-023, FR-024). No command
+  // branches on a Provider ID: the support check alone decides availability.
+  const capabilityId = visionOperationToCapability(operation);
+  if (!descriptor.capabilities().has(capabilityId)) {
+    throw new UnsupportedCapabilityError(providerId, capabilityId);
+  }
+  const adapter = descriptor.create({ env: deps.env });
+  const visionCapability = adapter.vision;
+  if (!visionCapability || !visionCapability.supports(operation)) {
+    throw new UnsupportedCapabilityError(providerId, capabilityId);
+  }
+
+  // Vision bypasses the response cache (FR-022). The shared execution
+  // primitives (sleep/random) are the same ones Search consumes; they
+  // drive retry backoff deterministically under test.
+  const visionDeps: VisionExecutionDependencies = {
+    capability: visionCapability,
+    sleep: deps.searchSleep,
+    random: deps.searchRandom,
+  };
+
   switch (command) {
     case "analyze":
       return invokeCommand(
         deps.invocation,
-        (context) => vision.analyze(source, prompt, context),
+        (context) => vision.analyze(source, prompt, visionDeps, context),
         outputMode,
         deps.now,
       );
@@ -243,6 +284,7 @@ async function handleVision(
             source,
             prompt,
             outputType as "code" | "prompt" | "spec" | "description",
+            visionDeps,
             context,
           ),
         outputMode,
@@ -253,7 +295,8 @@ async function handleVision(
     case "extract-text":
       return invokeCommand(
         deps.invocation,
-        (context) => vision.extractText(source, prompt, flags.language as string, context),
+        (context) =>
+          vision.extractText(source, prompt, flags.language as string, visionDeps, context),
         outputMode,
         deps.now,
       );
@@ -261,7 +304,8 @@ async function handleVision(
     case "diagnose-error":
       return invokeCommand(
         deps.invocation,
-        (context) => vision.diagnoseError(source, prompt, flags.context as string, context),
+        (context) =>
+          vision.diagnoseError(source, prompt, flags.context as string, visionDeps, context),
         outputMode,
         deps.now,
       );
@@ -269,7 +313,7 @@ async function handleVision(
     case "diagram":
       return invokeCommand(
         deps.invocation,
-        (context) => vision.diagram(source, prompt, flags.type as string, context),
+        (context) => vision.diagram(source, prompt, flags.type as string, visionDeps, context),
         outputMode,
         deps.now,
       );
@@ -277,7 +321,7 @@ async function handleVision(
     case "chart":
       return invokeCommand(
         deps.invocation,
-        (context) => vision.chart(source, prompt, flags.focus as string, context),
+        (context) => vision.chart(source, prompt, flags.focus as string, visionDeps, context),
         outputMode,
         deps.now,
       );
@@ -287,7 +331,7 @@ async function handleVision(
       const diffPrompt = positional[3];
       return invokeCommand(
         deps.invocation,
-        (context) => vision.diff(source, actual, diffPrompt, context),
+        (context) => vision.diff(source, actual, diffPrompt, visionDeps, context),
         outputMode,
         deps.now,
       );
@@ -296,11 +340,42 @@ async function handleVision(
     case "video":
       return invokeCommand(
         deps.invocation,
-        (context) => vision.video(source, prompt, context),
+        (context) => vision.video(source, prompt, visionDeps, context),
         outputMode,
         deps.now,
       );
 
+    default:
+      throw new ValidationError(
+        `Unknown vision command: ${command}`,
+        'Run "scoutline vision --help" for available commands',
+      );
+  }
+}
+
+/**
+ * Map a Vision subcommand to its discriminated operation id. Used by
+ * `handleVision` to gate the operation against descriptor metadata before
+ * Adapter construction. Unknown subcommands throw `ValidationError`.
+ */
+function visionOperationForCommand(command: string): VisionOperation {
+  switch (command) {
+    case "analyze":
+      return "interpret-image";
+    case "ui-to-code":
+      return "ui-artifact";
+    case "extract-text":
+      return "extract-text";
+    case "diagnose-error":
+      return "diagnose-error";
+    case "diagram":
+      return "diagram";
+    case "chart":
+      return "chart";
+    case "diff":
+      return "diff";
+    case "video":
+      return "video";
     default:
       throw new ValidationError(
         `Unknown vision command: ${command}`,

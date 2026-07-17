@@ -1,15 +1,29 @@
 /**
- * Doctor command for environment and MCP diagnostics
+ * Doctor command for environment and MCP diagnostics.
+ *
+ * P1-09: returns a `CommandResult` instead of writing to stdout/stderr and
+ * terminating. Dependency-log suppression is owned by the invocation seam's
+ * `runQuietly` (via `invokeCommand`); this handler no longer silences or
+ * restores the console itself. Errors propagate to `invokeCommand`, which
+ * converts them into one structured stderr value.
  */
 
 import { ZaiMcpClient } from "../lib/mcp-client.js";
-import { outputSuccess } from "../lib/output.js";
-import { formatErrorOutput } from "../lib/errors.js";
-import { silenceConsole, restoreConsole } from "../lib/silence.js";
+import type { CommandContext, CommandResult } from "../command-invocation.js";
 
 export interface DoctorOptions {
   noTools?: boolean;
   enableVision?: boolean;
+}
+
+/**
+ * Behaviour-preserving optional dependencies for testing the doctor command.
+ * Omitted dependencies use the current {@link ZaiMcpClient} constructor.
+ */
+export interface DoctorDependencies {
+  clientFactory?: (options: {
+    enableVision?: boolean;
+  }) => Pick<ZaiMcpClient, "listTools" | "close">;
 }
 
 function getNodeMajor(): number {
@@ -17,7 +31,11 @@ function getNodeMajor(): number {
   return parseInt(major, 10);
 }
 
-export async function doctor(options: DoctorOptions = {}): Promise<void> {
+export async function doctor(
+  options: DoctorOptions = {},
+  deps: DoctorDependencies = {},
+  _context?: CommandContext,
+): Promise<CommandResult> {
   const apiKey = process.env.Z_AI_API_KEY || process.env.ZAI_API_KEY;
   const mode = (process.env.Z_AI_MODE || process.env.PLATFORM_MODE || "ZAI").toUpperCase();
   const nodeMajor = getNodeMajor();
@@ -34,13 +52,15 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
     },
   };
 
+  // Env-only path: skip tool discovery when requested or when no credential
+  // is present (no transport is constructed).
   if (options.noTools || !apiKey) {
-    outputSuccess(report);
-    return;
+    return { kind: "data", data: report };
   }
 
-  silenceConsole();
-  const client = new ZaiMcpClient({ enableVision: options.enableVision });
+  const clientFactory =
+    deps.clientFactory || ((opts) => new ZaiMcpClient({ enableVision: opts.enableVision }));
+  const client = clientFactory({ enableVision: options.enableVision });
   try {
     const tools = await client.listTools();
     const byServer = tools.reduce<Record<string, number>>((acc, tool) => {
@@ -55,14 +75,9 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
       servers: byServer,
     };
 
-    outputSuccess(report);
-  } catch (error) {
-    restoreConsole();
-    console.error(formatErrorOutput(error));
-    process.exit(1);
+    return { kind: "data", data: report };
   } finally {
     await client.close().catch(() => {});
-    restoreConsole();
   }
 }
 

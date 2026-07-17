@@ -524,7 +524,6 @@ describe("invokeCommand — search command routed through the seam (P1-04)", () 
   });
 });
 
-
 describe("invokeCommand — read and repo routed through the seam (P1-05)", () => {
   it("read rejects URLs that aren't http/https", async () => {
     const { read } = await import("../dist/commands/read.js");
@@ -628,7 +627,6 @@ describe("invokeCommand — tools routed through the seam (P1-06)", () => {
     assert.match(parsed.error, /Unknown tool/);
   });
 
-
   it("listTools and showTool signatures do not accept or resolve a Provider ID", async () => {
     // Boundary assertion: the public command functions in tools.ts must
     // neither accept a Provider ID parameter nor surface one through their
@@ -686,11 +684,7 @@ describe("invokeCommand — code routed through the seam (P1-07)", () => {
   it("printPromptTemplate returns the prompt template through the seam", async () => {
     const { printPromptTemplate } = await import("../dist/commands/code.js");
     const { adapter, stdout } = createRecordingAdapter();
-    await invokeCommand(
-      adapter,
-      async (ctx) => printPromptTemplate(ctx),
-      "data",
-    );
+    await invokeCommand(adapter, async (ctx) => printPromptTemplate(ctx), "data");
     assert.strictEqual(stdout.length, 1);
     // Template is a non-empty string (ZaiCodeModeClient.getPromptTemplate).
     assert.strictEqual(typeof stdout[0], "string");
@@ -711,11 +705,11 @@ describe("invokeCommand — code routed through the seam (P1-07)", () => {
     assert.ok(code.evalCode.length <= 3);
     // No Provider selection: confirm the source has no "providerId".
     const fs = await import("node:fs");
-    const src = fs.readFileSync(
-      new URL("../src/commands/code.ts", import.meta.url),
-      "utf8",
+    const src = fs.readFileSync(new URL("../src/commands/code.ts", import.meta.url), "utf8");
+    assert.ok(
+      !/\bproviderId\b|\bprovider_id\b/.test(src),
+      "code.ts must not reference a Provider ID",
     );
-    assert.ok(!/\bproviderId\b|\bprovider_id\b/.test(src), "code.ts must not reference a Provider ID");
   });
 });
 
@@ -751,11 +745,7 @@ describe("invokeCommand — vision routed through the seam (P1-08)", () => {
   it("vision.video throws ValidationError when video source is missing", async () => {
     const vision = await import("../dist/commands/vision.js");
     const { adapter, stderr } = createRecordingAdapter();
-    const status = await invokeCommand(
-      adapter,
-      (ctx) => vision.video("", undefined, ctx),
-      "data",
-    );
+    const status = await invokeCommand(adapter, (ctx) => vision.video("", undefined, ctx), "data");
     assert.strictEqual(status, 1);
     const parsed = JSON.parse(stderr[stderr.length - 1]);
     assert.strictEqual(parsed.code, "VALIDATION_ERROR");
@@ -766,15 +756,207 @@ describe("invokeCommand — vision routed through the seam (P1-08)", () => {
     const vision = await import("../dist/commands/vision.js");
     // Boundary: arity check + source-level guard against Provider ID.
     const fs = await import("node:fs");
-    const src = fs.readFileSync(
-      new URL("../src/commands/vision.ts", import.meta.url),
-      "utf8",
+    const src = fs.readFileSync(new URL("../src/commands/vision.ts", import.meta.url), "utf8");
+    assert.ok(
+      !/\bproviderId\b|\bprovider_id\b/.test(src),
+      "vision.ts must not reference a Provider ID",
     );
-    assert.ok(!/\bproviderId\b|\bprovider_id\b/.test(src), "vision.ts must not reference a Provider ID");
-    
+
     // Each function takes a CommandContext as its last parameter.
     assert.ok(vision.analyze.length >= 1);
     assert.ok(vision.video.length >= 1);
     assert.ok(vision.diff.length >= 2);
+  });
+});
+
+describe("invokeCommand — doctor routed through the seam (P1-09)", () => {
+  it("doctor env-only check returns a CommandResult with env + node, no mcp section", async () => {
+    const { doctor } = await import("../dist/commands/doctor.js");
+    const { adapter, stdout, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      (ctx) => doctor({ noTools: true }, {}, ctx),
+      "data",
+    );
+    assert.strictEqual(status, 0);
+    assert.strictEqual(stdout.length, 1);
+    const report = JSON.parse(stdout[0]);
+    assert.ok(report.env, "report has env section");
+    assert.strictEqual(typeof report.env.apiKeyPresent, "boolean");
+    assert.ok(report.node, "report has node section");
+    assert.strictEqual(typeof report.node.visionMcpCompatible, "boolean");
+    assert.strictEqual(report.mcp, undefined, "no mcp section when noTools");
+    assert.deepStrictEqual(stderr, []);
+  });
+
+  it("doctor discovers current Z.AI tools via the injected client and reports toolCount/servers", async () => {
+    const { doctor } = await import("../dist/commands/doctor.js");
+    const { adapter, stdout } = createRecordingAdapter();
+    const fakeClient = {
+      async listTools() {
+        return [
+          { name: "scoutline.zai.search" },
+          { name: "scoutline.zai.read" },
+          { name: "scoutline.zread.tree" },
+          { name: "scoutline.zread.file" },
+        ];
+      },
+      async close() {},
+    };
+    const status = await invokeCommand(
+      adapter,
+      (ctx) => doctor({ enableVision: false }, { clientFactory: () => fakeClient }, ctx),
+      "data",
+    );
+    assert.strictEqual(status, 0);
+    const report = JSON.parse(stdout[0]);
+    assert.strictEqual(report.mcp.toolCount, 4);
+    assert.deepStrictEqual(report.mcp.servers, { zai: 2, zread: 2 });
+  });
+
+  it("doctor omits mcp section when no API key is present (env-only, no transport)", async () => {
+    const { doctor } = await import("../dist/commands/doctor.js");
+    const { adapter, stdout } = createRecordingAdapter();
+    // Clear key so doctor takes the env-only path without constructing a client.
+    const savedZai = process.env.Z_AI_API_KEY;
+    const savedLegacy = process.env.ZAI_API_KEY;
+    delete process.env.Z_AI_API_KEY;
+    delete process.env.ZAI_API_KEY;
+    let clientConstructed = false;
+    try {
+      await invokeCommand(
+        adapter,
+        (ctx) =>
+          doctor(
+            {},
+            {
+              clientFactory: () => {
+                clientConstructed = true;
+                return {
+                  async listTools() {
+                    return [];
+                  },
+                  async close() {},
+                };
+              },
+            },
+            ctx,
+          ),
+        "data",
+      );
+    } finally {
+      if (savedZai !== undefined) process.env.Z_AI_API_KEY = savedZai;
+      else delete process.env.Z_AI_API_KEY;
+      if (savedLegacy !== undefined) process.env.ZAI_API_KEY = savedLegacy;
+      else delete process.env.ZAI_API_KEY;
+    }
+    const report = JSON.parse(stdout[0]);
+    assert.strictEqual(report.env.apiKeyPresent, false);
+    assert.strictEqual(report.mcp, undefined);
+    assert.strictEqual(clientConstructed, false, "no transport constructed without a key");
+  });
+});
+
+describe("invokeCommand — quota routed through the seam (P1-09)", () => {
+  // Raw monitor-API response shape used to drive quota normalization offline.
+  // NOTE: this quota output shape is deliberately characterized here; it is
+  // replaced by ADR-0001 (ProviderCapability shape) in P4-02.
+  function rawQuotaResponse() {
+    return {
+      level: "pro",
+      limits: [
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 100,
+          currentValue: 42,
+          remaining: 58,
+          percentage: 42,
+          nextResetTime: Date.now() + 3_600_000,
+          usageDetails: [
+            { modelCode: "search-prime", usage: 20 },
+            { modelCode: "web-reader", usage: 12 },
+          ],
+        },
+        {
+          type: "TOKENS_LIMIT",
+          unit: 1,
+          number: 1,
+          percentage: 15,
+          nextResetTime: Date.now() + 86_400_000,
+        },
+      ],
+    };
+  }
+
+  it("quota returns the current Z.AI normalization shape as base data", async () => {
+    const { quota } = await import("../dist/commands/quota.js");
+    const { adapter, stdout } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      () => quota({}, { quotaFetcher: async () => rawQuotaResponse() }),
+      "data",
+    );
+    assert.strictEqual(status, 0);
+    const data = JSON.parse(stdout[0]);
+    assert.strictEqual(data.plan, "pro");
+    assert.ok(data.timeWindow, "timeWindow normalized");
+    assert.strictEqual(data.timeWindow.used, 42);
+    assert.strictEqual(data.timeWindow.limit, 100);
+    assert.strictEqual(data.timeWindow.remaining, 58);
+    assert.strictEqual(data.timeWindow.percentage, 42);
+    assert.strictEqual(data.timeWindow.windowHours, 5);
+    assert.ok(data.timeWindow.resetsAt, "resetsAt ISO string");
+    assert.ok(data.timeWindow.resetsIn, "resetsIn human string");
+    assert.deepStrictEqual(data.timeWindow.byTool, [
+      { modelCode: "search-prime", usage: 20 },
+      { modelCode: "web-reader", usage: 12 },
+    ]);
+    assert.ok(data.tokens, "tokens normalized");
+    assert.strictEqual(data.tokens.percentage, 15);
+  });
+
+  it("quota tty presentation uses the pretty dashboard format", async () => {
+    const { quota } = await import("../dist/commands/quota.js");
+    const { adapter, stdout } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      () => quota({}, { quotaFetcher: async () => rawQuotaResponse() }),
+      "tty",
+    );
+    assert.strictEqual(status, 0);
+    assert.strictEqual(stdout.length, 1);
+    // The pretty format is a multi-line dashboard (progress bars), not JSON.
+    assert.ok(stdout[0].includes("Z.AI Coding Plan"), "pretty header present");
+    assert.ok(stdout[0].includes("Time window"), "time-window section present");
+    assert.ok(stdout[0].includes("Token budget"), "token section present");
+    assert.throws(() => JSON.parse(stdout[0]), "tty presentation is not JSON");
+  });
+
+  it("quota surfaces a thrown ConfigurationError (missing key) as one structured stderr value, exit 3", async () => {
+    const { quota } = await import("../dist/commands/quota.js");
+    const { adapter, stderr } = createRecordingAdapter();
+    // Default quotaFetcher path calls getQuotaLimit → getApiKey which throws
+    // ConfigurationError when no key is configured.
+    const savedZai = process.env.Z_AI_API_KEY;
+    const savedLegacy = process.env.ZAI_API_KEY;
+    delete process.env.Z_AI_API_KEY;
+    delete process.env.ZAI_API_KEY;
+    let status;
+    try {
+      status = await invokeCommand(adapter, () => quota({}), "data");
+    } finally {
+      if (savedZai !== undefined) process.env.Z_AI_API_KEY = savedZai;
+      else delete process.env.Z_AI_API_KEY;
+      if (savedLegacy !== undefined) process.env.ZAI_API_KEY = savedLegacy;
+      else delete process.env.ZAI_API_KEY;
+    }
+    assert.strictEqual(status, 3);
+    assert.strictEqual(stderr.length, 1, "exactly one structured stderr value");
+    const parsed = JSON.parse(stderr[0]);
+    assert.strictEqual(parsed.success, false);
+    assert.strictEqual(parsed.code, "CONFIGURATION_ERROR");
+    assert.ok(parsed.error.includes("Z_AI_API_KEY"));
   });
 });

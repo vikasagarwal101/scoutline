@@ -17,19 +17,10 @@ import {
   printPromptTemplate,
   CODE_HELP,
 } from "./commands/code.js";
-import {
-  outputError,
-  setOutputMode,
-  isOutputMode,
-  OUTPUT_MODES,
-  type OutputMode,
-} from "./lib/output.js";
+import { isOutputMode, OUTPUT_MODES, type OutputMode } from "./lib/output.js";
 import { formatErrorOutput } from "./lib/output.js";
 import { ValidationError, getErrorExitCode } from "./lib/errors.js";
-import {
-  invokeCommand,
-  type CommandInvocationAdapter,
-} from "./command-invocation.js";
+import { invokeCommand, type CommandInvocationAdapter } from "./command-invocation.js";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -339,9 +330,7 @@ async function handleRead(
           noGfm: flags["no-gfm"] === true,
           keepImgDataUrl: flags["keep-img-data-url"] === true,
           withImagesSummary: flags["with-images-summary"] === true,
-          maxChars: flags["max-chars"]
-            ? parseInt(flags["max-chars"] as string, 10)
-            : undefined,
+          maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
           fullEnvelope: flags["full-envelope"] === true,
           extract: isExtractMode(flags.extract as string)
             ? (flags.extract as ExtractMode)
@@ -386,9 +375,7 @@ async function handleRepo(
             query,
             {
               language: flags.language as "en" | "zh",
-              maxChars: flags["max-chars"]
-                ? parseInt(flags["max-chars"] as string, 10)
-                : undefined,
+              maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
               noCache: flags["no-cache"] === true,
             },
             context,
@@ -399,10 +386,7 @@ async function handleRepo(
 
     case "tree": {
       if (!repo) {
-        throw new ValidationError(
-          "Missing repo",
-          "Usage: scoutline repo tree <owner/repo>",
-        );
+        throw new ValidationError("Missing repo", "Usage: scoutline repo tree <owner/repo>");
       }
       return invokeCommand(
         deps.invocation,
@@ -435,9 +419,7 @@ async function handleRepo(
             repo,
             path,
             {
-              maxChars: flags["max-chars"]
-                ? parseInt(flags["max-chars"] as string, 10)
-                : undefined,
+              maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
               noCache: flags["no-cache"] === true,
             },
             context,
@@ -531,29 +513,46 @@ async function handleCall(
   );
 }
 
-async function handleDoctor(args: string[]): Promise<void> {
+async function handleDoctor(
+  args: string[],
+  outputMode: OutputMode,
+  deps: { invocation: CommandInvocationAdapter },
+): Promise<number> {
   const { flags } = parseArgs(args);
 
   if (flags.help || flags.h) {
-    console.log(DOCTOR_HELP);
-    return;
+    deps.invocation.writeStdout(DOCTOR_HELP);
+    return 0;
   }
 
-  await doctor({
-    noTools: flags["no-tools"] === true,
-    enableVision: flags.vision !== false,
-  });
+  return invokeCommand(
+    deps.invocation,
+    (context) =>
+      doctor(
+        {
+          noTools: flags["no-tools"] === true,
+          enableVision: flags.vision !== false,
+        },
+        {},
+        context,
+      ),
+    outputMode,
+  );
 }
 
-async function handleQuota(args: string[]): Promise<void> {
+async function handleQuota(
+  args: string[],
+  outputMode: OutputMode,
+  deps: { invocation: CommandInvocationAdapter },
+): Promise<number> {
   const { flags } = parseArgs(args);
 
   if (flags.help || flags.h) {
-    console.log(QUOTA_HELP);
-    return;
+    deps.invocation.writeStdout(QUOTA_HELP);
+    return 0;
   }
 
-  await quota({});
+  return invokeCommand(deps.invocation, () => quota({}), outputMode);
 }
 
 async function handleCode(
@@ -576,10 +575,7 @@ async function handleCode(
     case "run": {
       const filePath = positional[1];
       if (!filePath) {
-        throw new ValidationError(
-          "Missing code file",
-          "Usage: scoutline code run <file>",
-        );
+        throw new ValidationError("Missing code file", "Usage: scoutline code run <file>");
       }
       return invokeCommand(
         deps.invocation,
@@ -590,10 +586,7 @@ async function handleCode(
     case "eval": {
       const code = positional.slice(1).join(" ");
       if (!code) {
-        throw new ValidationError(
-          "Missing code string",
-          "Usage: scoutline code eval <code>",
-        );
+        throw new ValidationError("Missing code string", "Usage: scoutline code eval <code>");
       }
       return invokeCommand(
         deps.invocation,
@@ -602,11 +595,7 @@ async function handleCode(
       );
     }
     case "interfaces":
-      return invokeCommand(
-        deps.invocation,
-        (context) => printInterfaces(context),
-        outputMode,
-      );
+      return invokeCommand(deps.invocation, (context) => printInterfaces(context), outputMode);
     case "prompt":
       return invokeCommand(
         deps.invocation,
@@ -648,8 +637,6 @@ export async function main(
     return getErrorExitCode(error);
   }
 
-  setOutputMode(outputMode);
-
   if (rest.length === 0 || rest[0] === "--help" || rest[0] === "-h") {
     invocation.writeStdout(MAIN_HELP);
     return 0;
@@ -680,11 +667,9 @@ export async function main(
       case "call":
         return await handleCall(commandArgs, outputMode, { invocation });
       case "doctor":
-        await handleDoctor(commandArgs);
-        break;
+        return await handleDoctor(commandArgs, outputMode, { invocation });
       case "quota":
-        await handleQuota(commandArgs);
-        break;
+        return await handleQuota(commandArgs, outputMode, { invocation });
       case "code":
         return await handleCode(commandArgs, outputMode, { invocation });
       default:
@@ -703,6 +688,4 @@ export async function main(
     invocation.writeStderr(formatErrorOutput(error, "data"));
     return getErrorExitCode(error);
   }
-
-  return 0;
 }

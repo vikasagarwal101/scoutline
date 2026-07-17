@@ -1,10 +1,14 @@
 /**
  * Configuration characterization tests.
  *
- * Tests the precedence and alias behaviour of Z.AI environment variables.
- * Process-level config (loadConfig, getApiKey) terminates the process when the
- * key is missing — those cases are exercised by spawning a tiny Node child
- * script that imports dist/lib/config.js.
+ * Tests the precedence and alias behaviour of Z.AI environment variables and
+ * the normalized error contract for configuration accessors.
+ *
+ * P1-09: `loadConfig` and `getApiKey` THROW `ConfigurationError` (exit 3)
+ * instead of terminating the process. The missing-key path is now testable
+ * in-process without spawning children. The precedence/alias paths still
+ * spawn a child that imports dist/lib/config.js so each case runs with an
+ * isolated environment.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -12,6 +16,8 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import * as path from "node:path";
 import { runProcess } from "./helpers/run-process.js";
+import { loadConfig, getApiKey } from "../dist/lib/config.js";
+import { ConfigurationError } from "../dist/lib/errors.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_JS = path.resolve(__dirname, "..", "dist", "lib", "config.js");
@@ -20,8 +26,9 @@ const CONFIG_JS = path.resolve(__dirname, "..", "dist", "lib", "config.js");
  * Spawn a child Node process that imports dist/lib/config.js with the given
  * env. Resolves with { stdout, stderr, code } or rejects after timeoutMs.
  *
- * The child writes a JSON line on success describing the loaded config;
- * loadConfig terminates the process with exit 3 when no key is set.
+ * The child writes a JSON line on success describing the loaded config.
+ * (When no key is set loadConfig now throws ConfigurationError inside the
+ * child; the missing-key contract is asserted in-process below instead.)
  */
 function runConfig(env, { timeoutMs = 8000 } = {}) {
   return new Promise((resolve, reject) => {
@@ -76,15 +83,90 @@ describe("Z_AI_API_KEY precedence and aliases", () => {
     assert.strictEqual(out.apiKey, "legacy-key");
   });
 
-  it("missing key causes exit 3 without hanging", async () => {
-    const r = await runConfig({
-      Z_AI_API_KEY: "",
-      ZAI_API_KEY: "",
+  it("missing key causes loadConfig to throw ConfigurationError (in-process, no transport)", () => {
+    const savedZai = process.env.Z_AI_API_KEY;
+    const savedLegacy = process.env.ZAI_API_KEY;
+    delete process.env.Z_AI_API_KEY;
+    delete process.env.ZAI_API_KEY;
+    try {
+      assert.throws(
+        () => loadConfig(),
+        (err) => {
+          assert.ok(err instanceof ConfigurationError, "should be ConfigurationError");
+          assert.strictEqual(err.exitCode, 3);
+          assert.strictEqual(err.code, "CONFIGURATION_ERROR");
+          assert.ok(err.message.includes("Z_AI_API_KEY"));
+          return true;
+        },
+      );
+    } finally {
+      if (savedZai !== undefined) process.env.Z_AI_API_KEY = savedZai;
+      else delete process.env.Z_AI_API_KEY;
+      if (savedLegacy !== undefined) process.env.ZAI_API_KEY = savedLegacy;
+      else delete process.env.ZAI_API_KEY;
+    }
+  });
+});
+
+describe("configuration accessors throw ConfigurationError", () => {
+  function withClearedKey(fn) {
+    const savedZai = process.env.Z_AI_API_KEY;
+    const savedLegacy = process.env.ZAI_API_KEY;
+    delete process.env.Z_AI_API_KEY;
+    delete process.env.ZAI_API_KEY;
+    try {
+      return fn();
+    } finally {
+      if (savedZai !== undefined) process.env.Z_AI_API_KEY = savedZai;
+      else delete process.env.Z_AI_API_KEY;
+      if (savedLegacy !== undefined) process.env.ZAI_API_KEY = savedLegacy;
+      else delete process.env.ZAI_API_KEY;
+    }
+  }
+
+  it("loadConfig throws a single structured ConfigurationError with exit 3 and no transport", () => {
+    withClearedKey(() => {
+      assert.throws(
+        () => loadConfig(),
+        (err) => {
+          assert.ok(err instanceof ConfigurationError);
+          assert.strictEqual(err.exitCode, 3);
+          assert.strictEqual(err.code, "CONFIGURATION_ERROR");
+          // No transport/authorization fields leak onto the thrown error.
+          assert.strictEqual(err.statusCode, undefined);
+          assert.ok(err.message.includes("Z_AI_API_KEY"));
+          return true;
+        },
+      );
     });
-    assert.strictEqual(r.code, 3);
-    const err = JSON.parse(r.stderr);
-    assert.strictEqual(err.success, false);
-    assert.ok(err.error.includes("Z_AI_API_KEY"));
+  });
+
+  it("getApiKey throws ConfigurationError with exit 3 and no transport", () => {
+    withClearedKey(() => {
+      assert.throws(
+        () => getApiKey(),
+        (err) => {
+          assert.ok(err instanceof ConfigurationError);
+          assert.strictEqual(err.exitCode, 3);
+          assert.strictEqual(err.code, "CONFIGURATION_ERROR");
+          return true;
+        },
+      );
+    });
+  });
+
+  it("configuration failure is testable in-process without a subprocess hang", () => {
+    // The whole point of P1-09: a thrown error reaches the caller instead
+    // of process.exit(3). This test would hang under the old contract.
+    let threw = false;
+    withClearedKey(() => {
+      try {
+        getApiKey();
+      } catch {
+        threw = true;
+      }
+    });
+    assert.strictEqual(threw, true);
   });
 });
 
@@ -150,14 +232,22 @@ describe("timeout precedence and default", () => {
 });
 
 describe("missing credential through the CLI", () => {
-  it("scoutline quota with no key exits 3 with no hang", async () => {
+  it("scoutline quota with no key returns one structured error, exit 3, and no transport", async () => {
     const r = await runProcess(["quota"], {
       env: { Z_AI_API_KEY: "", ZAI_API_KEY: "" },
       timeoutMs: 8000,
     });
     assert.strictEqual(r.code, 3);
-    const err = JSON.parse(r.stderr);
+    // Exactly one structured stderr value (the invocation seam converts the
+    // thrown ConfigurationError into a single envelope write).
+    const lines = r.stderr.trim().split("\n");
+    assert.strictEqual(lines.length, 1, "exactly one stderr line");
+    const err = JSON.parse(lines[0]);
     assert.strictEqual(err.success, false);
+    assert.strictEqual(err.code, "CONFIGURATION_ERROR");
     assert.ok(err.error.includes("Z_AI_API_KEY"));
+    // No transport/authorization leakage in the public envelope.
+    assert.strictEqual(err.statusCode, undefined);
+    assert.strictEqual(err.authorization, undefined);
   });
 });

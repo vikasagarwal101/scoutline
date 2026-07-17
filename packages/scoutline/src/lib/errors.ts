@@ -65,12 +65,7 @@ export class ScoutlineError extends Error {
  * their defaults (`false` / `1`).
  */
 export class ZaiError extends ScoutlineError {
-  constructor(
-    message: string,
-    code: string,
-    statusCode?: number,
-    help?: string,
-  ) {
+  constructor(message: string, code: string, statusCode?: number, help?: string) {
     super(message, code, { statusCode, help });
     this.name = "ZaiError";
   }
@@ -112,9 +107,10 @@ export class UnsupportedOptionError extends ScoutlineError {
 export class ConfigurationError extends ScoutlineError {
   constructor(message: string, help?: string) {
     // Configuration failures use exit 3 to distinguish them from
-    // ordinary command failures (DESIGN.md §4, GATE-1). The public code
-    // remains in the documented union.
-    super(message, "FILE_ERROR", { help, exitCode: 3 });
+    // ordinary command failures (DESIGN.md §4, GATE-1). The public code is
+    // CONFIGURATION_ERROR; the previous "FILE_ERROR" code was semantically
+    // wrong (FILE_ERROR is reserved for file/media failures in Phase 3).
+    super(message, "CONFIGURATION_ERROR", { help, exitCode: 3 });
     this.name = "ConfigurationError";
   }
 }
@@ -140,12 +136,7 @@ export function getErrorExitCode(error: unknown): number {
 
 export class AuthError extends ZaiError {
   constructor(message: string) {
-    super(
-      message,
-      "AUTH_ERROR",
-      401,
-      "Check your Z_AI_API_KEY is valid and has sufficient quota",
-    );
+    super(message, "AUTH_ERROR", 401, "Check your Z_AI_API_KEY is valid and has sufficient quota");
   }
 }
 
@@ -188,9 +179,7 @@ export class FileError extends ZaiError {
 
 export function formatErrorOutput(error: unknown): string {
   const pretty =
-    typeof process !== "undefined" &&
-    process.env &&
-    process.env.ZAI_OUTPUT_MODE === "pretty";
+    typeof process !== "undefined" && process.env && process.env.ZAI_OUTPUT_MODE === "pretty";
   if (error instanceof ScoutlineError) {
     const payload: Record<string, unknown> = {
       success: false,

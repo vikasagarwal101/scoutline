@@ -2,6 +2,8 @@
  * Configuration and environment loading for Scoutline
  */
 
+import { ConfigurationError } from "./errors.js";
+
 export interface ZaiConfig {
   apiKey: string;
   mode: "ZAI" | "ZHIPU";
@@ -26,28 +28,23 @@ const MCP_ENDPOINTS = {
   WEB_READER: "https://api.z.ai/api/mcp/web_reader/mcp",
 } as const;
 
+const MISSING_KEY_HELP = [
+  "To set it:",
+  '  export Z_AI_API_KEY="your-api-key"',
+  "",
+  "Get your API key at:",
+  "  https://z.ai/manage-apikey/apikey-list",
+].join("\n");
+
 export function loadConfig(): ZaiConfig {
   const apiKey = process.env.Z_AI_API_KEY || process.env.ZAI_API_KEY;
 
   if (!apiKey) {
-    console.error(
-      JSON.stringify(
-        {
-          success: false,
-          error: "Z_AI_API_KEY environment variable is required",
-          help: [
-            "To set it:",
-            '  export Z_AI_API_KEY="your-api-key"',
-            "",
-            "Get your API key at:",
-            "  https://z.ai/manage-apikey/apikey-list",
-          ].join("\n"),
-        },
-        null,
-        2,
-      ),
-    );
-    process.exit(3);
+    // P1-09: throw a normalized ConfigurationError (exit 3) instead of
+    // terminating the process. Callers route through invokeCommand, which
+    // converts the thrown error into one structured stderr value. No
+    // transport is constructed and no process streams are touched here.
+    throw new ConfigurationError("Z_AI_API_KEY environment variable is required", MISSING_KEY_HELP);
   }
 
   const mode = (process.env.Z_AI_MODE || process.env.PLATFORM_MODE || "ZAI").toUpperCase() as
@@ -74,18 +71,11 @@ export function getMcpEndpoints() {
 export function getApiKey(): string {
   const apiKey = process.env.Z_AI_API_KEY || process.env.ZAI_API_KEY;
   if (!apiKey) {
-    console.error(
-      JSON.stringify(
-        {
-          success: false,
-          error: "Z_AI_API_KEY environment variable is required",
-          help: 'export Z_AI_API_KEY="your-api-key"',
-        },
-        null,
-        2,
-      ),
+    // P1-09: throw instead of process.exit(3); see loadConfig for rationale.
+    throw new ConfigurationError(
+      "Z_AI_API_KEY environment variable is required",
+      'export Z_AI_API_KEY="your-api-key"',
     );
-    process.exit(3);
   }
   return apiKey;
 }

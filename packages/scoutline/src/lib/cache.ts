@@ -27,16 +27,41 @@ interface CacheEntry<T> {
   data: T;
 }
 
-function resolveCacheDir(): string {
-  const explicit = process.env.ZAI_CACHE_DIR;
-  if (explicit) return explicit;
-  const xdg = process.env.XDG_CACHE_HOME;
-  // Retain the adapter cache location until provider configuration is generalized.
-  if (xdg) return path.join(xdg, "zai-cli", "responses");
-  if (process.platform === "darwin") {
-    return path.join(os.homedir(), "Library", "Caches", "zai-cli", "responses");
+export interface CacheDirEnvironment {
+  readonly ZAI_CACHE_DIR?: string | undefined;
+  readonly XDG_CACHE_HOME?: string | undefined;
+}
+
+export interface CacheDirPlatform {
+  readonly platform: NodeJS.Platform;
+  readonly homedir: string;
+}
+
+/**
+ * Pure cache-directory resolver. Accepts environment and platform explicitly
+ * so tests can assert path resolution without touching process globals.
+ * The process-backed {@link resolveCacheDir} wraps this with live state.
+ */
+export function resolveCacheDirPure(env: CacheDirEnvironment, plat: CacheDirPlatform): string {
+  if (env.ZAI_CACHE_DIR) return env.ZAI_CACHE_DIR;
+  if (env.XDG_CACHE_HOME) {
+    // Retain the adapter cache location until provider configuration is generalized.
+    return path.join(env.XDG_CACHE_HOME, "zai-cli", "responses");
   }
-  return path.join(os.homedir(), ".cache", "zai-cli", "responses");
+  if (plat.platform === "darwin") {
+    return path.join(plat.homedir, "Library", "Caches", "zai-cli", "responses");
+  }
+  return path.join(plat.homedir, ".cache", "zai-cli", "responses");
+}
+
+function resolveCacheDir(): string {
+  return resolveCacheDirPure(
+    {
+      ZAI_CACHE_DIR: process.env.ZAI_CACHE_DIR,
+      XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
+    },
+    { platform: process.platform, homedir: os.homedir() },
+  );
 }
 
 /**

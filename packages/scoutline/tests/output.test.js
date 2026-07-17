@@ -1,8 +1,14 @@
 /**
- * Unit tests for output formatting
+ * Unit tests for output formatting.
+ *
+ * P0-02 keeps the shipped success/error builders and characterizes the public
+ * contract: success carries a number timestamp derived from Date.now(). Later
+ * phases will add an explicit `now` injection port; for now we assert the
+ * shipped behaviour (monotonic timestamps) and that public errors contain no
+ * stack or cause.
  */
 import { describe, it, beforeEach } from "node:test";
-import assert from "node:assert";
+import assert from "node:assert/strict";
 import { setOutputMode, getOutputMode, success, error } from "../dist/lib/output.js";
 
 describe("Output Mode", () => {
@@ -80,5 +86,17 @@ describe("Response Builders", () => {
   it("should not include help if not provided", () => {
     const response = error("Error", "CODE");
     assert.strictEqual(response.help, undefined);
+  });
+
+  it("success timestamps are derived from Date.now() — monotonic", async () => {
+    // P0-02 characterization: the shipped builder uses Date.now(). Later
+    // phases (P1-01) will add an explicit `now` injection port; here we
+    // assert the current contract only.
+    const a = success({ x: 1 }).timestamp;
+    await new Promise((r) => setTimeout(r, 5));
+    const b = success({ x: 2 }).timestamp;
+    assert.ok(typeof a === "number");
+    assert.ok(typeof b === "number");
+    assert.ok(b > a);
   });
 });

@@ -22,6 +22,17 @@ export interface SearchOptions {
   merge?: boolean;
 }
 
+/**
+ * Behaviour-preserving optional dependencies for testing the search command.
+ * Omitted dependencies use the current {@link ZaiMcpClient} constructor.
+ */
+export interface SearchDependencies {
+  clientFactory?: (options: {
+    enableVision: boolean;
+    noCache: boolean;
+  }) => Pick<ZaiMcpClient, "webSearch" | "close">;
+}
+
 interface FormattedResult {
   rank: number;
   title: string;
@@ -110,8 +121,18 @@ function renderTextFormat(
   return lines.join("\n");
 }
 
-export async function search(query: string, options: SearchOptions = {}): Promise<void> {
+export async function search(
+  query: string,
+  options: SearchOptions = {},
+  deps: SearchDependencies = {},
+): Promise<void> {
   silenceConsole();
+
+  // Default client factory preserves shipped behaviour. Tests may inject a
+  // fake without touching ZaiMcpClient.
+  const clientFactory =
+    deps.clientFactory ||
+    ((opts) => new ZaiMcpClient({ enableVision: opts.enableVision, noCache: opts.noCache }));
 
   // Split query on `|` if --merge is set. Empty fragments are dropped.
   // A literal pipe in a single query can be escaped as `\|` (won't split).
@@ -141,8 +162,8 @@ export async function search(query: string, options: SearchOptions = {}): Promis
       // responses. Single-query path keeps the cheaper shared-client flow.
       let allResults;
       if (isMerge) {
-        const clients = subQueries.map(
-          () => new ZaiMcpClient({ enableVision: false, noCache: options.noCache }),
+        const clients = subQueries.map(() =>
+          clientFactory({ enableVision: false, noCache: Boolean(options.noCache) }),
         );
         try {
           allResults = await Promise.all(
@@ -161,7 +182,7 @@ export async function search(query: string, options: SearchOptions = {}): Promis
           await Promise.all(clients.map((c) => c.close().catch(() => {})));
         }
       } else {
-        const client = new ZaiMcpClient({ enableVision: false, noCache: options.noCache });
+        const client = clientFactory({ enableVision: false, noCache: Boolean(options.noCache) });
         try {
           allResults = [
             await client.webSearch({

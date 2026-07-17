@@ -69,15 +69,28 @@ export interface WebSearchResult {
 }
 
 /**
+ * Constructor options for {@link ZaiMcpClient}.
+ *
+ * `utcpFactory` is a behaviour-preserving injection seam: when omitted the
+ * production path uses `UtcpClient.create()`. Tests inject a fake to avoid
+ * touching process globals.
+ */
+export interface ZaiMcpClientOptions {
+  enableVision?: boolean;
+  noCache?: boolean;
+  utcpFactory?: () => Promise<UtcpClient>;
+}
+
+/**
  * Unified MCP client for all Z.AI MCP services
  */
 export class ZaiMcpClient {
   private client: UtcpClient | null = null;
   private initPromise: Promise<void> | null = null;
   private isInitialized = false;
-  private options: { enableVision?: boolean; noCache?: boolean };
+  private options: ZaiMcpClientOptions;
 
-  constructor(options: { enableVision?: boolean; noCache?: boolean } = {}) {
+  constructor(options: ZaiMcpClientOptions = {}) {
     this.options = options;
   }
 
@@ -97,7 +110,8 @@ export class ZaiMcpClient {
 
   private async _doInit(): Promise<void> {
     try {
-      this.client = await UtcpClient.create();
+      const factory = this.options.utcpFactory || (() => UtcpClient.create());
+      this.client = await factory();
       const result = await this.client.registerManual(buildMcpCallTemplate(this.options));
 
       if (!result.success) {
@@ -613,7 +627,7 @@ export class ZaiMcpClient {
 
 // Legacy exports for backward compatibility
 export class ZReadMcpClient extends ZaiMcpClient {
-  constructor(options: { enableVision?: boolean; noCache?: boolean } = {}) {
+  constructor(options: ZaiMcpClientOptions = {}) {
     super(options);
   }
 

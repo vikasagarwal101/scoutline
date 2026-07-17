@@ -3,6 +3,10 @@
  *
  * All subprocess tests use the shared runProcess helper. The CLI is built
  * before these tests run by `npm run test:offline`.
+ *
+ * P0-02 adds bin.test.js as the focused command-grammar characterization
+ * surface; the tests here retain their broader coverage of help, version,
+ * and error handling flows.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -161,28 +165,25 @@ describe("CLI Error Handling", () => {
 
 describe("CLI Output Format", () => {
   it("should support --output-format json", async () => {
-    const { stdout, code } = await runProcess(
-      ["--output-format", "json", "--help"],
-      { env: { Z_AI_API_KEY: TEST_KEY } },
-    );
+    const { stdout, code } = await runProcess(["--output-format", "json", "--help"], {
+      env: { Z_AI_API_KEY: TEST_KEY },
+    });
     assert.strictEqual(code, 0);
     assert.ok(stdout.includes("scoutline"));
   });
 
   it("should support --output-format pretty", async () => {
-    const { stdout, code } = await runProcess(
-      ["--output-format", "pretty", "--help"],
-      { env: { Z_AI_API_KEY: TEST_KEY } },
-    );
+    const { stdout, code } = await runProcess(["--output-format", "pretty", "--help"], {
+      env: { Z_AI_API_KEY: TEST_KEY },
+    });
     assert.strictEqual(code, 0);
     assert.ok(stdout.includes("scoutline"));
   });
 
   it("should reject invalid output format", async () => {
-    const { stderr, code } = await runProcess(
-      ["--output-format", "invalid", "doctor"],
-      { env: { Z_AI_API_KEY: TEST_KEY } },
-    );
+    const { stderr, code } = await runProcess(["--output-format", "invalid", "doctor"], {
+      env: { Z_AI_API_KEY: TEST_KEY },
+    });
     assert.strictEqual(code, 1);
     const error = JSON.parse(stderr);
     assert.strictEqual(error.success, false);

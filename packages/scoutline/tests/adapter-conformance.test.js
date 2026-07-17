@@ -37,32 +37,40 @@ const SRC_DIR = path.resolve(__dirname, "..", "src");
 const CONFORMANCE_REQUEST = { query: "conformance query" };
 
 /**
- * Invoke the SAME request through a SearchCapability and compare the
- * normalized output to the shared fixture. Provider branching is
- * forbidden: every Adapter must converge on this shape.
+ * Conformance function: invoke the SAME {@link CONFORMANCE_REQUEST} through
+ * a Capability produced by an Adapter factory (fed a Provider-shaped raw
+ * fixture), and compare the normalized output to the shared fixture.
+ *
+ * Provider branching is forbidden: every Adapter must converge on this
+ * shape. The expected fixture does NOT branch by Provider.
+ *
+ * Returns the full normalized list (for additional assertions the test
+ * may want to add, such as "no Provider-only fields leak through").
  */
-async function assertSearchConformance(capability, expected) {
+async function runSearchConformance(createCapability, rawFixture) {
+  const capability = createCapability(rawFixture);
   const normalized = await capability.invoke(CONFORMANCE_REQUEST);
-  assert.deepStrictEqual(
-    [...normalized].map((s) => ({ ...s })),
-    expected,
-  );
+  return [...normalized].map((s) => ({ ...s }));
 }
 
 // ---------------------------------------------------------------------------
-// Fake transports per Adapter
+// Fake transports per Adapter (Adapter factories; the conformance function
+// feeds them a Provider-shaped raw fixture)
 // ---------------------------------------------------------------------------
 
-// Z.AI: fake clientFactory built on FakeUtcpClient (mirrors zai-adapter
-// tests). Returns the scripted raw WebSearchResult[] for the search tool.
+/**
+ * Z.AI Adapter factory: accepts a raw `WebSearchResult[]`, builds a fake
+ * `ZaiAdapterClientPort` via the `clientFactory` dependency, and returns
+ * the descriptor's Search Capability. The fake mirrors the discovered-
+ * name path used by the production Z.AI Search Adapter.
+ */
 function makeZaiCapability(rawResult) {
-  const created = [];
   const factory = (options) => {
     const fake = new FakeUtcpClient({
       discoveredTools: [{ name: "scoutline_zai.search.web_search_prime" }],
       resultsByName: { "scoutline_zai.search.web_search_prime": rawResult },
     });
-    const port = {
+    return {
       options,
       async callToolRaw(name, args) {
         return fake.callTool("scoutline_zai.search.web_search_prime", args);
@@ -71,19 +79,19 @@ function makeZaiCapability(rawResult) {
         return fake.close();
       },
     };
-    created.push(port);
-    return port;
   };
   const descriptor = createZaiDescriptor({ clientFactory: factory });
   const adapter = descriptor.create({ env: { Z_AI_API_KEY: "k" } });
-  return { capability: adapter.search, created };
+  return adapter.search;
 }
 
-// MiniMax: fake sdkConstructor returning the scripted raw response.
+/**
+ * MiniMax Adapter factory: accepts a raw MiniMax-shaped envelope, builds a
+ * fake SDK constructor that returns the scripted response, and returns
+ * the descriptor's Search Capability.
+ */
 function makeMiniMaxCapability(rawResult) {
-  const constructed = [];
-  const Constructor = function FakeMiniMaxSdk(options) {
-    constructed.push(options);
+  const Constructor = function FakeMiniMaxSdk(_options) {
     return {
       search: {
         async query() {
@@ -99,7 +107,7 @@ function makeMiniMaxCapability(rawResult) {
   };
   const descriptor = createMiniMaxDescriptor({ sdkConstructor: Constructor });
   const adapter = descriptor.create({ env: { MINIMAX_API_KEY: "k" } });
-  return { capability: adapter.search, constructed };
+  return adapter.search;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,8 +132,8 @@ describe("Search Adapter conformance — shared normalized output", () => {
         content: "Shared normalized summary two.",
       },
     ];
-    const zai = makeZaiCapability(zaiRaw);
-    await assertSearchConformance(zai.capability, expected);
+    const zaiNormalized = await runSearchConformance(makeZaiCapability, zaiRaw);
+    assert.deepStrictEqual(zaiNormalized, expected);
 
     // MiniMax raw response (organic title/link/snippet).
     const minimaxRaw = {
@@ -142,8 +150,35 @@ describe("Search Adapter conformance — shared normalized output", () => {
         },
       ],
     };
-    const minimax = makeMiniMaxCapability(minimaxRaw);
-    await assertSearchConformance(minimax.capability, expected);
+    const minimaxNormalized = await runSearchConformance(
+      makeMiniMaxCapability,
+      minimaxRaw,
+    );
+    assert.deepStrictEqual(minimaxNormalized, expected);
+  });
+
+  it("normalized output drops Provider-only fields (refer, icon, media, publish_date)", async () => {
+    const zaiRaw = [
+      {
+        title: "Has extra fields",
+        link: "https://example.test/extra",
+        content: "Should keep only normalized fields.",
+        refer: "r1",
+        media: "example.test",
+        icon: "https://example.test/icon.png",
+        publish_date: "2025-01-01",
+      },
+    ];
+    const normalized = await runSearchConformance(makeZaiCapability, zaiRaw);
+    const allowed = new Set(["title", "url", "summary", "source", "date"]);
+    for (const entry of normalized) {
+      for (const key of Object.keys(entry)) {
+        assert.ok(
+          allowed.has(key),
+          `normalized entry should not include Provider-only field "${key}"`,
+        );
+      }
+    }
   });
 });
 

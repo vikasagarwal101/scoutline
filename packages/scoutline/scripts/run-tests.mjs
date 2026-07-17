@@ -12,6 +12,11 @@
  * Modes clear live env vars in spawned Node child processes so live tests
  * cannot accidentally run under offline/smoke. The runner enumerates test
  * files explicitly via fs.readdir() (sorted) to avoid shell glob assumptions.
+ *
+ * Live modes also auto-set SCOUTLINE_LIVE_TESTS=1 in the spawned Node child
+ * processes so `npm run test:live` / `npm run test:live:release` is itself
+ * the explicit opt-in. npm test and prepublishOnly (which run as `offline`)
+ * CLEAR that variable, so credentials alone never trigger live tests.
  */
 import { spawn } from "node:child_process";
 import { readdirSync } from "node:fs";
@@ -52,11 +57,30 @@ function selectFiles(mode) {
   }
 }
 
+/**
+ * Build the spawned Node child's environment. The runner is the single
+ * authoritative gate for live opt-in: `npm test` and `prepublishOnly` (which
+ * run as `offline`) clear SCOUTLINE_LIVE_TESTS and ZAI_LIVE_TESTS so live
+ * tests cannot accidentally run under offline/smoke. Live modes set
+ * SCOUTLINE_LIVE_TESTS=1 explicitly; running a live mode is the explicit
+ * opt-in. `mcp-live.test.js` continues to gate on ZAI_LIVE_TESTS, which
+ * callers set themselves (the legacy opt-in path).
+ */
 function childEnvFor(mode) {
   const env = { ...process.env };
   if (mode === "offline" || mode === "smoke") {
+    // Belt-and-suspenders: clear BOTH live opt-in variables even if
+    // credentials exist. This guarantees that a stray `SCOUTLINE_LIVE_TESTS=1`
+    // in the shell environment cannot accidentally trigger live tests when
+    // the user runs `npm test` or `npm publish` (which invokes
+    // `prepublishOnly`).
     env.SCOUTLINE_LIVE_TESTS = "";
     env.ZAI_LIVE_TESTS = "";
+  } else if (mode === "live" || mode === "live-release") {
+    // Live modes are themselves the explicit opt-in: set the gate so the
+    // spawned child sees it. We do NOT inherit a possibly-unset
+    // SCOUTLINE_LIVE_TESTS from the shell.
+    env.SCOUTLINE_LIVE_TESTS = "1";
   }
   return env;
 }

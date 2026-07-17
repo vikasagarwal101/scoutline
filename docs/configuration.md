@@ -155,8 +155,10 @@ holds:
   version, Implementation identity (`mmx-cli-sdk@1.0.16`), and
   generated mapping revision.
 
-In the current release every specialized operation has offline `pass`
-and live `pending`. The MiniMax Adapter fails closed with
+In the current release, `ui-artifact` and `diagnose-error` are
+live-attested and supported at runtime. The remaining three operations
+(`extract-text`, `diagram`, `chart`) have offline `pass` and live
+`pending`. The MiniMax Adapter fails closed with
 `UNSUPPORTED_CAPABILITY` for every specialized operation; the shared
 `vision` invocation helper transparently falls back to Z.AI, which
 supports every operation.

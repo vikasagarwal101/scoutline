@@ -33,6 +33,40 @@ All notable changes to this project will be documented in this file.
   and fatal shell errors. Covers `Z_AI_API_KEY`, `ZAI_API_KEY`,
   `MINIMAX_API_KEY`, Bearer / `x-api-key` values, and embedded credential
   strings.
+- Specialized MiniMax Vision conformance registry and attestation workflow.
+  Five operations (`ui-artifact`, `extract-text`, `diagnose-error`,
+  `diagram`, `chart`) have dedicated prompt-composition modules with
+  offline-conformance fixtures, generated SHA-256 mapping revisions, and a
+  per-operation live attestation script. Two operations (`ui-artifact`,
+  `diagnose-error`) are live-attested and enabled at runtime; the remaining
+  three are offline-pass but pending live conformance.
+
+### Fixed
+- Raw Provider response bodies no longer leak to public error output.
+  Adapter error normalization, MCP init paths, and Code Mode init paths
+  now surface clean typed messages while preserving error codes and status
+  for retry classification.
+- `ZAI_API_KEY` alias fully honored by the Z.AI adapter (was only accepted
+  by `lib/config.ts`; the adapter read `Z_AI_API_KEY` exclusively).
+- Provider selection default (`zai`) no longer consults credentials or
+  descriptors (FR-003 compliance). The "is configured?" check moved to
+  the dispatch layer.
+- Missing credentials throw `ConfigurationError` (exit 3) instead of
+  `AuthError` (exit 1). `AuthError` is reserved for Provider-rejected
+  credentials (401/403).
+- Retry classification corrected: HTTP 404 is terminal (was retried as
+  500); unexpected-system errors map to positive 500 (was negative -500,
+  which escaped retry).
+- Injected `MainDependencies.env` credentials properly redacted (was
+  reading ambient `process.env` only).
+- Invalid `--count` values rejected with `VALIDATION_ERROR` before provider
+  resolution or credential checks. `--count` without a value is an error.
+  Uses `Number.isSafeInteger`.
+- Offline test suite makes zero network calls regardless of ambient
+  credentials (NFR-001 compliance).
+- Pre-invocation errors (invalid provider, invalid output mode) respect
+  the requested output format.
+- `TimeoutError` preserves original duration when rewrapped by adapters.
 
 ### Changed
 - Quota output is now a schema-version-1 normalized `QuotaDashboard`

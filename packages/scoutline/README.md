@@ -109,11 +109,11 @@ remain Z.AI-only in the base release.
 | --- | --- | --- | --- |
 | `search` | Yes | Yes | MiniMax rejects domain/recency/content-size/location controls |
 | `vision.interpret-image` (analyze) | Yes | Yes | Provider-specific media limits; uncached |
-| `vision.ui-artifact` (ui-to-code) | Yes | Pending | Implemented, pending live conformance (see below) |
-| `vision.extract-text` | Yes | Pending | Implemented, pending live conformance (see below) |
-| `vision.diagnose-error` | Yes | Pending | Implemented, pending live conformance (see below) |
-| `vision.diagram` | Yes | Pending | Implemented, pending live conformance (see below) |
-| `vision.chart` | Yes | Pending | Implemented, pending live conformance (see below) |
+| `vision.ui-artifact` (ui-to-code) | Yes | Available | Live-attested; conformance-gated |
+| `vision.extract-text` | Yes | Pending | Implemented, pending live conformance |
+| `vision.diagnose-error` | Yes | Available | Live-attested; conformance-gated |
+| `vision.diagram` | Yes | Pending | Implemented, pending live conformance |
+| `vision.chart` | Yes | Pending | Implemented, pending live conformance |
 | `vision.diff` (image diff) | Yes | No | Base-release Z.AI-only |
 | `vision.video` | Yes | No | Base-release Z.AI-only |
 | `quota` | Yes | Yes | Normalized `QuotaDashboard` (ADR-0001) |
@@ -149,11 +149,13 @@ operation is only routable through MiniMax when **every** condition holds:
 - a sanitized compiled attestation matches the operation, fixture version,
   Implementation identity, and generated mapping revision.
 
-In the current release every specialized operation has offline `pass` and
-live `pending`, and no attestations are compiled in — so every
-specialized operation is **unsupported at runtime**. The CLI surfaces
-`UNSUPPORTED_CAPABILITY` and falls back to Z.AI (the Z.AI Provider
-supports every operation in the base release).
+In the current release, `ui-artifact` and `diagnose-error` have offline
+`pass`, live `pass`, and compiled attestations — they are **supported at
+runtime** through MiniMax. The remaining three operations (`extract-text`,
+`diagram`, `chart`) have offline `pass` and live `pending`; they are
+**unsupported at runtime** and surface `UNSUPPORTED_CAPABILITY`. The CLI
+falls back to Z.AI (the Z.AI Provider supports every operation in the
+base release).
 
 No environment variable, flag, or configuration value can promote a
 mapping to supported. Support is driven exclusively by the compiled

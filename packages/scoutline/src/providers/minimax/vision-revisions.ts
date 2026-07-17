@@ -27,5 +27,5 @@ export const MINIMAX_VISION_MAPPING_REVISIONS: Readonly<
   "extract-text": "78758cfc03e282c2609eb4e05fab392be62d9b6d38c8911bf245f74206ccbf0e",
   "diagnose-error": "f83d602a6177041d131cb05b4164e0529b04154a5651e042cea66f566d94d893",
   "diagram": "0828b3e3c60a1f207dcd8ce4f83cf4855fef45f24436870b53a380065487e5d5",
-  "chart": "pending-no-mapping-module",
+  "chart": "b930eac3e997e20c481abbaff4e756dced7a82a085bba770ec57ea34690c2259",
 });

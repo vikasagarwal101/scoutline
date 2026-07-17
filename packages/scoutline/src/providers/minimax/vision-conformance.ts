@@ -175,7 +175,8 @@ const MINIMAX_VISION_CONFORMANCE_SOURCE: Readonly<
   "diagnose-error": { fixtureVersion: 1, offline: "pass", live: "pending" },
   // P5-03d: diagram offline conformance proven; live pending.
   diagram: { fixtureVersion: 1, offline: "pass", live: "pending" },
-  chart: { fixtureVersion: 1, offline: "pending", live: "pending" },
+  // P5-03e: chart offline conformance proven; live pending.
+  chart: { fixtureVersion: 1, offline: "pass", live: "pending" },
 });
 
 // ---------------------------------------------------------------------------

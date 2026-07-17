@@ -1,6 +1,8 @@
 # Product Roadmap
 
-This roadmap contains the selected Scoutline capabilities and the provider boundary required to grow beyond its current Z.AI adapter. It is ordered by shared foundations and implementation risk, not by release date.
+This roadmap contains the selected Scoutline capabilities and the Provider
+boundary required to grow beyond the initial Z.AI Adapter. It is ordered by
+shared foundations and implementation risk, not by release date.
 
 ## Product Principles
 
@@ -8,90 +10,85 @@ This roadmap contains the selected Scoutline capabilities and the provider bound
 - Keep normal commands deterministic wrappers around named operations; Code Mode remains the explicit escape hatch for arbitrary tool chains.
 - Keep local artifacts, local context, and cached responses separate so users control what leaves their machine.
 - Make every new operation testable without a live API where practical.
-- Keep provider adapters behind a stable Scoutline command and tool contract.
+- Keep Provider Adapters behind a stable Scoutline command and Capability contract. Adding a Provider must never require changing command modules, Capability interfaces, normalized fixtures, or outward result shapes.
 
 ## Phase 0: Provider Boundary
 
-Scoutline begins with the existing Z.AI adapter and keeps its current internal API and configuration intact. New providers must be introduced as adapters, not as provider-specific command forks.
+Scoutline begins with the existing Z.AI Adapter and keeps its current internal API and configuration intact. New Providers must be introduced as Adapters, not as Provider-specific command forks.
 
 - Qualify raw provider tools as `scoutline.<provider>.<service>.<tool>`; version 0.1 exposes Z.AI tools as `scoutline.zai.*`.
-- Define provider-neutral command capabilities for search, reading, repository exploration, and vision before adding a second provider.
-- Add explicit provider selection and validation only when a second adapter exists; do not add speculative configuration now.
+- Define provider-neutral command Capabilities for search, reading, repository exploration, and vision before adding a second Provider.
+- Add explicit Provider selection and validation only when a second Adapter exists; do not add speculative configuration now.
 - Preserve Z.AI endpoint and `Z_AI_*`/`ZAI_*` configuration behavior during the transition.
 
-Acceptance: the current Z.AI adapter is reachable through the `scoutline.zai.*` namespace and provider-specific behavior remains covered by existing command tests.
+Acceptance: the current Z.AI Adapter is reachable through the `scoutline.zai.*` namespace and Provider-specific behavior remains covered by existing command tests.
 
-## Phase 1: Research Workflow
+## Phase 1: Provider Isolation Foundation
 
-### Research Command
+Add a second built-in Provider Adapter behind the same command surface, then
+document and ship the base release.
 
-Add `scoutline research <query>` as a first-class composition of the existing search and reader commands.
+- Introduce `src/providers/selection.ts` with explicit precedence
+  (`--provider` > `SCOUTLINE_PROVIDER` > `zai`) and `VALIDATION_ERROR` for
+  unknown values. Credentials never participate.
+- Keep Z.AI-only command families (Reader, repository exploration, raw tools,
+  Code Mode) accepting but ignoring Provider selection.
+- Move Provider field mapping, media rules, credential resolution, and
+  transport construction into per-Provider Adapter Modules. Commands consume
+  only Capability interfaces.
+- Ship the MiniMax Token Plan Adapter using `mmx-cli/sdk@1.0.16` as a
+  transitional transport. Pin the SDK version exactly; the Adapter exposes
+  only Search and general single-image Vision in the base release.
+- Ship provider-partitioned cache keys (`v2.<capability>.<provider>.<credential-hash>.<request-hash>.json`)
+  with legacy `zai-cli` keys preserved as Adapter-owned read-through
+  candidates.
+- Ship normalized `QuotaDashboard` (ADR-0001) and `DiagnosticsReport`
+  schema-version-1 contracts. Provider-only fields must not cross either
+  Interface.
+- Ship the base-release documentation and packaging gate (GATE-4): update
+  `README.md`, `docs/`, `skills/scoutline/`, `CHANGELOG.md`, the
+  `prepublishOnly` script, and the tarball install test in
+  `tests/package.test.js`.
 
-- Search for a query, choose a bounded set of results, fetch each page, and emit a cited source bundle.
-- Support domain, recency, source-count, reader-format, extraction, and output-format controls.
-- Produce deterministic Markdown and JSON output containing source URL, title, fetch status, extracted content, and citations. Do not present unsourced generated claims as research results.
-- Reuse the existing MCP client, response cache, URL validation, extraction, and output contracts.
+Acceptance: the base release passes Phase 0 through Phase 4 offline gates, the
+normalized quota and diagnostics contracts hold for both Providers, and
+`npm pack --dry-run` includes the required compiled output while excluding
+tests, fixtures, local planning artifacts, and credential-shaped files.
 
-Acceptance: an offline unit test covers source selection and rendering; a mocked integration test proves search-to-read orchestration and failure isolation.
+## Phase 2: MiniMax Specialized Vision (conformance-gated)
 
-### Local Context
+Enable MiniMax Vision operations beyond general single-image interpretation.
 
-Add `research --context <file>` and `--context-stdin` to refine source selection and output organization from local Markdown or text.
+- Move specialized mappings (`ui-to-code`, `extract-text`, `diagnose-error`,
+  `diagram`, `chart`) into the MiniMax Adapter one at a time.
+- Each operation is gated by its offline and live attestation
+  (`providers/minimax/vision-attestations.ts`). Support is enabled only when
+  both states are `pass`, the implementation identity matches, and every
+  assertion passed.
+- Image diff and video remain out of scope.
+- Update the Capability matrix and Capability metadata automatically from the
+  compiled conformance entry; do not maintain a separate registry.
 
-- Parse context locally and derive query terms, sections, or user questions before making remote calls.
-- Enforce explicit size limits and clear errors for unreadable or binary files.
-- Record only the context file path and content hash in saved metadata by default, never its contents.
-- Do not silently transmit the local file to an external service.
+Acceptance: each specialized operation ships its own attestation; command
+help, doctor, and runtime support reflect the compiled registry without a
+separate flag.
 
-Acceptance: context influences client-side ranking and grouping in tests while the outbound MCP request contains only the selected search query.
+## Phase 3: Direct MiniMax Transport
 
-## Phase 2: Durable Artifacts and Batch Work
+Replace the transitional `mmx-cli/sdk` transport with direct MiniMax
+endpoint calls.
 
-### Result Persistence
+- Replace the SDK transport for Search and Vision. The narrow quota transport
+  already lives in `providers/minimax/quota-client.ts`.
+- Run the existing Search, Vision, quota, diagnostics, media, error, and live
+  conformance suite under the direct Implementation.
+- After parity, remove `mmx-cli` from `package.json` and the lockfile.
+- Re-attest every enabled specialized Vision mapping under the
+  direct-transport implementation identity.
 
-Add `--save <path>` to supported commands and a local `history` command for saved artifact metadata.
-
-- Save an explicit artifact rather than exposing implementation cache entries.
-- Include schema version, CLI version, timestamp, command arguments with secrets redacted, output format, and result payload.
-- Support Markdown and JSON artifacts; refuse accidental overwrite unless `--force` is given.
-- Keep artifacts outside the response-cache directory by default.
-
-Acceptance: tests verify redaction, deterministic metadata shape, overwrite protection, and round-trip reading of saved JSON.
-
-### Batch Execution
-
-Add `scoutline batch <manifest>` for repeatable groups of supported CLI operations.
-
-- Define a versioned JSON manifest with named operations, arguments, output locations, and dependency-free bounded concurrency.
-- Return one structured result per operation and continue after independent failures unless `--fail-fast` is supplied.
-- Reuse command-level validators and client methods rather than shelling out to the executable.
-- Support a dry-run mode that validates the manifest without network requests.
-
-Acceptance: tests cover manifest validation, concurrency limits, partial failures, dry runs, and saved per-operation artifacts.
-
-### Vision Batch
-
-Build `vision batch` on the generic batch runner rather than a separate scheduler.
-
-- Accept an explicit manifest and optionally a file glob; require an output directory for multi-item runs.
-- Apply one named vision operation and prompt template per input.
-- Bound concurrency conservatively because each operation starts or uses an MCP transport and can be expensive.
-- Save machine-readable per-input outcomes and a concise summary report.
-
-Acceptance: mocked vision tests cover glob expansion, rejected files, concurrency, output naming, and partial failure behavior.
-
-## Phase 3: Repository Briefing
-
-### Repository Brief
-
-Add `scoutline repo brief <owner/repo>` for a deterministic initial repository orientation.
-
-- Combine the existing ZRead tree, targeted search, and file-read primitives.
-- Report repository structure, detected documentation and entry points, selected files, and the evidence URL/path for every conclusion.
-- Provide `--path`, `--depth`, `--focus`, and `--max-chars` controls to keep results bounded.
-- Avoid unsupported claims about architecture; show the source files that support each summary item.
-
-Acceptance: fixture-based tests verify stable output, bounded reads, path filtering, and evidence links.
+No release date is currently planned for the direct-transport replacement.
+Until it ships, Scoutline continues to pin `mmx-cli@1.0.16` exactly and to
+document the SDK as a transitional Implementation.
 
 ## Phase 4: Streaming Transport
 
@@ -111,5 +108,9 @@ Acceptance: tests validate event ordering, valid JSONL framing, cancellation cle
 - Cache inspection and replay commands.
 - Serving the CLI itself as an MCP server.
 - Additional search source-quality controls beyond the existing filtering and merge behavior.
+- Dynamic Provider loading, user-supplied Adapter files, or external Adapter packages.
+- Cache path migration; legacy `zai-cli` keys remain readable but are never rewritten.
+- Automatic Provider fallback or Provider inference from credentials.
+- MiniMax Reader, repository exploration, raw tools, Code Mode, image diff, or video analysis.
 
 These capabilities can be reconsidered only after the selected roadmap proves a concrete need for them.

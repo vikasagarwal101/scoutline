@@ -1,20 +1,53 @@
 # Configuration
 
-Scoutline reads configuration from environment variables. Set the API key before using any network-backed command:
+Scoutline reads configuration from environment variables. Set the API key
+before using any network-backed command:
 
 ```bash
 export Z_AI_API_KEY="your-api-key"
 ```
 
-`ZAI_API_KEY` remains accepted for compatibility, but new setups should use `Z_AI_API_KEY`.
+`ZAI_API_KEY` remains accepted for compatibility, but new setups should use
+`Z_AI_API_KEY`.
 
-Scoutline currently uses the Z.AI provider adapter. Raw tool calls are qualified as `scoutline.zai.<service>.<tool>` so future providers can receive their own namespace without changing the Scoutline command surface.
+## Provider Selection
+
+Shared commands (`search`, `vision`, `quota`, `doctor`) accept the global
+`--provider <zai|minimax>` flag. When the flag is omitted the value of the
+`SCOUTLINE_PROVIDER` environment variable is consulted; when neither is
+supplied Scoutline falls back to the compatibility default `zai`.
+
+Resolution precedence (highest first):
+
+1. `--provider <zai|minimax>` on the command line
+2. `SCOUTLINE_PROVIDER`
+3. `zai` (default)
+
+Provider selection is never inferred from which credentials happen to be
+present. Unknown or empty values fail fast with `VALIDATION_ERROR` before any
+Provider invocation.
+
+Reader, repository exploration, raw tools, and Code Mode accept the flag but
+ignore it; they continue to use Z.AI and do not validate the supplied value.
+
+```bash
+# 1. Flag wins
+scoutline --provider minimax search "React 19 features"
+
+# 2. Environment variable when no flag is supplied
+export SCOUTLINE_PROVIDER=minimax
+scoutline quota
+
+# 3. Default Z.AI when nothing is supplied
+scoutline search "TypeScript best practices"
+```
 
 ## Core Settings
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `Z_AI_API_KEY` | Required | Z.AI API key. |
+| `Z_AI_API_KEY` | Required for Z.AI | Z.AI API key. |
+| `ZAI_API_KEY` | Alias for `Z_AI_API_KEY` | Compatibility alias. |
 | `Z_AI_MODE` or `PLATFORM_MODE` | `ZAI` | Selects `ZAI` or `ZHIPU` base URLs. |
 | `Z_AI_BASE_URL` | Mode-specific URL | Overrides the API base URL. |
 | `Z_AI_TIMEOUT` | `30000` | Request timeout in milliseconds. |
@@ -22,6 +55,50 @@ Scoutline currently uses the Z.AI provider adapter. Raw tool calls are qualified
 | `Z_AI_TEMPERATURE` | `0.8` | Vision generation temperature. |
 | `Z_AI_TOP_P` | `0.6` | Vision generation top-p value. |
 | `Z_AI_MAX_TOKENS` | `32768` | Vision response token limit. |
+| `SCOUTLINE_PROVIDER` | (none) | Selects the effective Provider (`zai` or `minimax`) for shared capabilities. |
+
+## MiniMax Token Plan Settings
+
+The MiniMax Adapter is configured through three MiniMax-specific environment
+variables. Scoutline does not read `~/.mmx/config.json`, reuse `mmx` OAuth
+state, or persist MiniMax credentials anywhere on disk.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MINIMAX_API_KEY` | Required for MiniMax | MiniMax Token Plan API key. |
+| `MINIMAX_REGION` | `global` | Selects the MiniMax region. Accepted values: `global`, `cn`. |
+| `MINIMAX_BASE_URL` | Region URL | Absolute HTTPS override for the MiniMax endpoint. Overrides the region URL for every MiniMax operation. |
+
+Region base URLs:
+
+| Region | Base URL |
+| --- | --- |
+| `global` | `https://api.minimax.io` |
+| `cn` | `https://api.minimaxi.com` |
+
+Rules:
+
+- `MINIMAX_API_KEY` is required and non-empty. Whitespace-only is invalid.
+- `MINIMAX_REGION` defaults to `global` when unset. Empty or unknown values
+  are invalid, not absent.
+- `MINIMAX_BASE_URL` must be an absolute HTTPS URL. Exactly one trailing slash
+  is removed.
+- An explicit `MINIMAX_BASE_URL` overrides the region URL for Search,
+  Vision, quota, and diagnostics.
+- MiniMax environment names do not appear in shared `lib/config.ts`. They
+  live exclusively under `providers/minimax/`.
+- Scoutline does not invoke the `mmx` executable or require a global
+  installation.
+
+```bash
+export MINIMAX_API_KEY="your-minimax-key"
+export MINIMAX_REGION=cn             # optional: defaults to "global"
+export MINIMAX_BASE_URL=https://api.example.test   # optional: HTTPS override
+
+scoutline --provider minimax search "AI policy"
+scoutline --provider minimax quota
+scoutline doctor --provider minimax
+```
 
 ## Output Modes
 
@@ -60,8 +137,25 @@ Search, reader, and ZRead responses are cached locally unless a command receives
 | `ZAI_MCP_TOOL_CACHE_TTL_MS` | 24 hours | Tool-discovery cache freshness window. |
 | `ZAI_MCP_CACHE_DIR` | Platform cache directory | Overrides the tool-discovery cache directory. |
 
-On Linux, the default response cache location is `~/.cache/scoutline/responses` unless `XDG_CACHE_HOME` is defined.
+On Linux, the default response cache location is `~/.cache/scoutline/responses`
+unless `XDG_CACHE_HOME` is defined. The legacy `zai-cli` cache directory
+(`~/.cache/zai-cli/responses`) is preserved as a read-only fallback for Z.AI
+entries that pre-date provider partitioning; old entries are never migrated or
+deleted.
+
+Cache keys are partitioned by Provider: new keys have the shape
+`v2.<capability>.<provider>.<credential-hash>.<request-hash>.json`. The
+credential hash is supplied by the Adapter (a SHA-256 fingerprint); it is
+never re-hashed by cache code. Z.AI entries written before the Provider
+partitioning remain readable as Adapter-owned candidates; their decoder is
+Provider-owned because the old entries contain Provider response fields.
 
 ## Security
 
-Keep `Z_AI_API_KEY` in your shell profile, secret manager, or CI secret store. Do not put it in command arguments, committed files, generated reports, or bug reports.
+Keep credentials in your shell profile, secret manager, or CI secret store.
+Do not put them in command arguments, committed files, generated reports, or
+bug reports. Scoutline applies recursive, case-insensitive redaction of every
+configured credential (`Z_AI_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`,
+Bearer / `x-api-key` values, embedded credential strings) at every outward
+boundary: output, errors, diagnostics, quota failures, cached metadata, and
+fatal shell errors.

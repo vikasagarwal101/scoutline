@@ -14,13 +14,22 @@
  *     so anything outside that allowlist must be rejected.
  *   - Pin `mmx-cli` to exactly `1.0.16` (no range prefix), preserving
  *     the P2-04 MiniMax SDK isolation contract.
+ *   - Install successfully into a fresh temporary directory from the
+ *     generated tarball, expose its `bin` executable, and import its
+ *     root `main` export without performing side effects. This is the
+ *     NFR-001 / NFR-003 install-safety gate; the install uses
+ *     `--offline --ignore-scripts --no-audit --no-fund` and relies on
+ *     the surrounding `npm install`/`npm ci` of the package itself
+ *     having already populated the local npm cache. The test NEVER
+ *     contacts the npm registry.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(__dirname, "..");
@@ -62,6 +71,89 @@ function runNpmPackDryRun() {
       } catch (err) {
         reject(new Error(`npm pack --dry-run emitted invalid JSON: ${err.message}`));
       }
+    });
+  });
+}
+
+/**
+ * Run `npm pack --json --pack-destination <destDir>` against the package
+ * and return the resulting tarball path. Uses the default registry
+ * settings because `npm pack` does not perform any network resolution
+ * for the package itself; only the tarball metadata is emitted.
+ */
+function packToDir(destDir) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("npm", ["pack", "--json", "--pack-destination", destDir], {
+      cwd: PACKAGE_ROOT,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (d) => (stdout += d.toString()));
+    proc.stderr.on("data", (d) => (stderr += d.toString()));
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`npm pack exited ${code}: ${stderr}`));
+        return;
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(stdout);
+      } catch (err) {
+        reject(new Error(`npm pack emitted invalid JSON: ${err.message}\nstdout=${stdout}`));
+        return;
+      }
+      const entry = Array.isArray(parsed) ? parsed[0] : parsed;
+      const filename = entry && typeof entry.filename === "string" ? entry.filename : null;
+      if (!filename) {
+        reject(new Error(`npm pack response missing filename: ${stdout}`));
+        return;
+      }
+      const tarballPath = path.join(destDir, path.basename(filename));
+      resolve(tarballPath);
+    });
+  });
+}
+
+/**
+ * Install a local tarball into `destDir` using offline-only npm. This
+ * relies on the local cache having been populated by the preceding
+ * `npm ci` / `npm install` of the package itself; no registry contact
+ * occurs.
+ */
+function installTarballOffline(tarballPath, destDir) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(
+      "npm",
+      [
+        "install",
+        "--offline",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--prefix",
+        destDir,
+        tarballPath,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (d) => (stdout += d.toString()));
+    proc.stderr.on("data", (d) => (stderr += d.toString()));
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code !== 0) {
+        reject(
+          new Error(
+            `npm install --offline exited ${code}: ${stderr || stdout}\n` +
+              `Ensure the local npm cache is populated (run \`npm ci\` first).`,
+          ),
+        );
+        return;
+      }
+      resolve();
     });
   });
 }
@@ -178,5 +270,113 @@ describe("scoutline package — npm pack contents", () => {
     assert.ok(summary.size > 0, "npm pack summary.size must be > 0");
     assert.ok(typeof summary.filename === "string" && summary.filename.endsWith(".tgz"),
       "npm pack summary.filename must be a .tgz path");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tarball install round-trip (NFR-001, NFR-003)
+// ---------------------------------------------------------------------------
+
+describe("scoutline package — tarball install round-trip", () => {
+  it("installs into a fresh directory and exposes bin + import-safe main", async () => {
+    // Use two adjacent temp directories: one for the generated tarball
+    // and one for the install prefix. Both are removed in `finally`
+    // even if the install or assertions fail.
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-pack-"));
+    const packDir = path.join(base, "pack");
+    const installDir = path.join(base, "install");
+    await fs.mkdir(packDir, { recursive: true });
+    await fs.mkdir(installDir, { recursive: true });
+
+    try {
+      // 1. Build the tarball in the first temp dir.
+      const tarballPath = await packToDir(packDir);
+      assert.ok(
+        tarballPath.endsWith(".tgz"),
+        `expected a .tgz path from npm pack, got ${tarballPath}`,
+      );
+      const tarballStat = await fs.stat(tarballPath);
+      assert.ok(
+        tarballStat.size > 0,
+        `tarball must have non-zero size, got ${tarballStat.size}`,
+      );
+
+      // 2. Install the tarball into the second temp dir with
+      //    --offline --ignore-scripts --no-audit --no-fund. This must
+      //    NEVER contact the npm registry; it relies on the local cache
+      //    populated by the surrounding `npm ci` of the package itself.
+      await installTarballOffline(tarballPath, installDir);
+
+      // 3. Verify the installed bin shim is present and executable.
+      const installedBin = path.join(installDir, "node_modules", "scoutline", "bin", "scoutline.js");
+      const installedPkg = path.join(installDir, "node_modules", "scoutline", "package.json");
+      await fs.access(installedBin);
+      await fs.access(installedPkg);
+      const installedManifest = JSON.parse(await fs.readFile(installedPkg, "utf8"));
+      assert.strictEqual(installedManifest.name, "scoutline", "installed package name mismatch");
+
+      // 4. Verify the installed bin runs `--help` successfully. This
+      //    exercises the published entry point end-to-end.
+      const helpResult = await new Promise((resolve, reject) => {
+        const proc = spawn(process.execPath, [installedBin, "--help"], {
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        proc.stdout.on("data", (d) => (stdout += d.toString()));
+        proc.stderr.on("data", (d) => (stderr += d.toString()));
+        proc.on("error", reject);
+        proc.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
+      });
+      assert.strictEqual(helpResult.code, 0, `installed --help exited ${helpResult.code}: ${helpResult.stderr}`);
+      assert.ok(
+        helpResult.stdout.includes("scoutline"),
+        `installed --help must mention scoutline, got: ${helpResult.stdout.slice(0, 200)}`,
+      );
+
+      // 5. Verify the root `main` export loads without performing side
+      //    effects (NFR-003). Spawn a child Node process that imports
+      //    the installed module and reports whether it executed.
+      const installedIndex = path.join(
+        installDir,
+        "node_modules",
+        "scoutline",
+        "dist",
+        "index.js",
+      );
+      const installedIndexUrl = pathToFileURL(installedIndex).href;
+      const script =
+        `import(${JSON.stringify(installedIndexUrl)})` +
+        `.then((m) => process.stderr.write("IMPORT_OK:" + (typeof m.main) + "\\n"))` +
+        `.catch((e) => process.stderr.write("IMPORT_REJECTED:" + e.message + "\\n"));`;
+      const importResult = await new Promise((resolve, reject) => {
+        const proc = spawn(process.execPath, ["--input-type=module", "-e", script], {
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        proc.stdout.on("data", (d) => (stdout += d.toString()));
+        proc.stderr.on("data", (d) => (stderr += d.toString()));
+        proc.on("error", reject);
+        proc.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
+      });
+      assert.strictEqual(
+        importResult.stdout,
+        "",
+        `importing installed dist/index.js must not write to stdout (got: ${importResult.stdout.slice(0, 200)})`,
+      );
+      assert.ok(
+        importResult.stderr.startsWith("IMPORT_OK:"),
+        `installed import should report main as a function, got: ${importResult.stderr.slice(0, 200)}`,
+      );
+      assert.ok(
+        importResult.stderr.includes("function"),
+        `installed main must be a function, got: ${importResult.stderr.slice(0, 200)}`,
+      );
+      assert.strictEqual(importResult.code, 0, `installed import exited ${importResult.code}`);
+    } finally {
+      // 6. Clean up both directories regardless of outcome.
+      await fs.rm(base, { recursive: true, force: true });
+    }
   });
 });

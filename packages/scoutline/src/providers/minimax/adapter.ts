@@ -68,10 +68,11 @@ import {
 } from "./quota-client.js";
 import {
   isMiniMaxVisionOperationSupported,
-  listSupportedMiniMaxVisionOperations,
   SPECIALIZED_VISION_OPERATION_SET,
+  SPECIALIZED_VISION_OPERATIONS,
   type SpecializedVisionOperation,
 } from "./vision-conformance.js";
+import { MINIMAX_VISION_MAPPINGS } from "./vision-mappings.generated.js";
 
 // ---------------------------------------------------------------------------
 // Provider-owned credential fingerprint
@@ -288,6 +289,21 @@ function createMiniMaxSearchCapability(options: MiniMaxSearchCapabilityOptions):
 // ---------------------------------------------------------------------------
 
 /**
+ * Resolve the support check function used by the MiniMax Vision
+ * Capability. Production delegates to the compiled conformance
+ * registry. Tests may pass `dependencies.isSpecializedVisionOperationSupported`
+ * to force specific operations into the supported path so the routing
+ * branch can be exercised deterministically.
+ */
+type SpecializedSupportCheck = (operation: SpecializedVisionOperation) => boolean;
+function resolveSpecializedSupportCheck(
+  injected: MiniMaxAdapterDependencies["isSpecializedVisionOperationSupported"],
+): SpecializedSupportCheck {
+  if (injected) return injected;
+  return (operation) => isMiniMaxVisionOperationSupported(operation);
+}
+
+/**
  * Decide whether the MiniMax Adapter supports a Vision operation.
  *
  * `interpret-image` is supported unconditionally (the base release
@@ -300,11 +316,19 @@ function createMiniMaxSearchCapability(options: MiniMaxSearchCapabilityOptions):
  *
  * Pure: no Provider call, no env read, no I/O. The conformance query
  * is a snapshot read of a frozen registry assembled at module load.
+ *
+ * `isSpecialized` is the injected support check (or the compiled
+ * registry query). Tests pass it via
+ * `dependencies.isSpecializedVisionOperationSupported`; production
+ * passes nothing and the registry query is used.
  */
-function supportsMiniMaxVisionOperation(operation: VisionOperation): boolean {
+function supportsMiniMaxVisionOperation(
+  operation: VisionOperation,
+  isSpecialized: SpecializedSupportCheck,
+): boolean {
   if (operation === "interpret-image") return true;
   if (SPECIALIZED_VISION_OPERATION_SET.has(operation as SpecializedVisionOperation)) {
-    return isMiniMaxVisionOperationSupported(operation);
+    return isSpecialized(operation as SpecializedVisionOperation);
   }
   return false;
 }
@@ -312,6 +336,7 @@ function supportsMiniMaxVisionOperation(operation: VisionOperation): boolean {
 interface MiniMaxVisionCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly sdkConstructor?: MiniMaxAdapterDependencies["sdkConstructor"];
+  readonly isSpecializedVisionOperationSupported?: MiniMaxAdapterDependencies["isSpecializedVisionOperationSupported"];
 }
 
 /**
@@ -320,17 +345,25 @@ interface MiniMaxVisionCapabilityOptions {
  * instruction maps to the optional `prompt`. Only a nonempty text result
  * (extracted from the characterized `{ content }` envelope) is normalized.
  *
+ * Specialized operations route through their operation-specific mapping
+ * Module when the support check returns true. The support decision is
+ * derived from the compiled conformance registry; tests may inject a
+ * forced-support function via `options.isSpecializedVisionOperationSupported`
+ * so the routing branch can be exercised without flipping a compiled
+ * attestation (DESIGN.md §15).
+ *
  * Media is resolved after the configuration check; the SDK performs
  * data-URI conversion, so the media module never reads file content.
  * Vision never uses the response cache (FR-022); shared execution owns
  * the retry policy.
  */
 function createMiniMaxVisionCapability(options: MiniMaxVisionCapabilityOptions): VisionCapability {
-  const { env, sdkConstructor } = options;
+  const { env, sdkConstructor, isSpecializedVisionOperationSupported } = options;
+  const isSpecialized = resolveSpecializedSupportCheck(isSpecializedVisionOperationSupported);
 
   const capability: VisionCapability = {
     supports(operation: VisionOperation): boolean {
-      return supportsMiniMaxVisionOperation(operation);
+      return supportsMiniMaxVisionOperation(operation, isSpecialized);
     },
 
     async invoke(request: VisionRequest): Promise<string> {
@@ -338,19 +371,7 @@ function createMiniMaxVisionCapability(options: MiniMaxVisionCapabilityOptions):
       // support decision is the single registry-driven gate; every
       // specialized operation stays unsupported at P5-02 because every
       // registry entry is pending.
-      if (!supportsMiniMaxVisionOperation(request.operation)) {
-        throw new UnsupportedCapabilityError(
-          "minimax",
-          visionOperationToCapability(request.operation),
-        );
-      }
-      if (request.operation !== "interpret-image") {
-        // A specialized operation that the registry says is supported
-        // would route through its operation-specific Module here. At
-        // P5-02 this branch is unreachable because the registry gate
-        // above rejects every specialized operation. Throw a clean
-        // UnsupportedCapabilityError so the fail-closed invariant is
-        // explicit even if a future change reorders the checks.
+      if (!supportsMiniMaxVisionOperation(request.operation, isSpecialized)) {
         throw new UnsupportedCapabilityError(
           "minimax",
           visionOperationToCapability(request.operation),
@@ -359,6 +380,38 @@ function createMiniMaxVisionCapability(options: MiniMaxVisionCapabilityOptions):
 
       // Configuration check (credential) before media resolution.
       const config = loadMiniMaxConfig(env);
+
+      // Specialized operations compose the prompt through their mapping
+      // Module. The mapping Module is the single source of intent,
+      // option formatting, and result normalization for that operation
+      // (DESIGN.md §15). When the support gate is open but the Module is
+      // somehow missing, surface an `API_ERROR` — the routing invariant
+      // is broken only via a coding bug, never via runtime drift.
+      if (request.operation !== "interpret-image") {
+        const specializedOp = request.operation as SpecializedVisionOperation;
+        const mapping = MINIMAX_VISION_MAPPINGS[specializedOp];
+        if (!mapping) {
+          throw new ApiError(
+            `MiniMax vision mapping for ${specializedOp} is supported but no mapping Module is wired`,
+            500,
+          );
+        }
+        // Specialized requests always carry a `source`; the support gate
+        // above excludes `diff` (no `source`) and `video` (unsupported).
+        const image = resolveImageSource(
+          (request as { source: string }).source,
+        );
+        const prompt = mapping.composePrompt(request);
+
+        try {
+          const sdk = createMiniMaxSdk(config, sdkConstructor);
+          const raw = await sdk.vision.describe({ image, prompt });
+          return mapping.normalizeResult(raw);
+        } catch (error) {
+          throw normalizeMiniMaxError(error);
+        }
+      }
+
       const image = resolveImageSource(request.source);
 
       try {
@@ -448,6 +501,8 @@ export function createMiniMaxDescriptor(
   dependencies?: MiniMaxAdapterDependencies,
 ): ProviderDescriptor {
   const sdkConstructor = dependencies?.sdkConstructor;
+  const isSpecializedVisionOperationSupported =
+    dependencies?.isSpecializedVisionOperationSupported;
 
   // Direct quota transport injection (tests). Production uses the
   // global fetch and timers resolved inside the quota client.
@@ -475,17 +530,25 @@ export function createMiniMaxDescriptor(
     capabilities(): ReadonlySet<ProviderCapability> {
       // Base capabilities always advertised by MiniMax. Specialized
       // Vision operations (`vision.ui-artifact`, etc.) are advertised
-      // only when their conformance registry entry is supported
-      // (DESIGN.md §15). At P5-02 every entry is pending, so the set
-      // reduces to the base four.
+      // only when their conformance support check returns true
+      // (DESIGN.md §15). Production derives this from the compiled
+      // registry; tests may force specific operations into the
+      // advertised set via
+      // `dependencies.isSpecializedVisionOperationSupported` so the
+      // routing branch can be exercised without flipping attestations.
       const caps: Set<ProviderCapability> = new Set<ProviderCapability>([
         "search",
         "vision.interpret-image",
         "quota",
         "diagnostics",
       ]);
-      for (const op of listSupportedMiniMaxVisionOperations()) {
-        caps.add(visionOperationToCapability(op) as ProviderCapability);
+      const isSpecialized = resolveSpecializedSupportCheck(
+        isSpecializedVisionOperationSupported,
+      );
+      for (const op of SPECIALIZED_VISION_OPERATIONS) {
+        if (isSpecialized(op)) {
+          caps.add(visionOperationToCapability(op) as ProviderCapability);
+        }
       }
       return caps;
     },
@@ -497,6 +560,7 @@ export function createMiniMaxDescriptor(
       const vision = createMiniMaxVisionCapability({
         env: context.env,
         sdkConstructor,
+        isSpecializedVisionOperationSupported,
       });
       const quotaOptions: MiniMaxQuotaCapabilityOptions = { env: context.env, ...quotaTransport };
       const quota = createMiniMaxQuotaCapability(quotaOptions);

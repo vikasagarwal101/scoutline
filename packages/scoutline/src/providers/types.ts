@@ -255,6 +255,17 @@ export interface MiniMaxAdapterDependencies {
   readonly quotaFetch?: ProviderQuotaFetch;
   readonly quotaSetTimeout?: typeof setTimeout;
   readonly quotaClearTimeout?: typeof clearTimeout;
+  /**
+   * Optional injection point for the specialized-vision support check
+   * (`MiniMaxAdapterDependencies.isSpecializedVisionOperationSupported`).
+   * Production never sets this; tests pass a forced-support function so
+   * the routing branch can be exercised deterministically without
+   * flipping a compiled registry attestation. When omitted, the Adapter
+   * delegates to the compiled conformance registry query.
+   */
+  readonly isSpecializedVisionOperationSupported?: (
+    operation: import("./minimax/vision-conformance.js").SpecializedVisionOperation,
+  ) => boolean;
 }
 
 /**

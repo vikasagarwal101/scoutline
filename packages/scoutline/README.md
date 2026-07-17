@@ -109,11 +109,11 @@ remain Z.AI-only in the base release.
 | --- | --- | --- | --- |
 | `search` | Yes | Yes | MiniMax rejects domain/recency/content-size/location controls |
 | `vision.interpret-image` (analyze) | Yes | Yes | Provider-specific media limits; uncached |
-| `vision.ui-artifact` (ui-to-code) | Yes | No | Phase 5 conformance-gated |
-| `vision.extract-text` | Yes | No | Phase 5 conformance-gated |
-| `vision.diagnose-error` | Yes | No | Phase 5 conformance-gated |
-| `vision.diagram` | Yes | No | Phase 5 conformance-gated |
-| `vision.chart` | Yes | No | Phase 5 conformance-gated |
+| `vision.ui-artifact` (ui-to-code) | Yes | Pending | Implemented, pending live conformance (see below) |
+| `vision.extract-text` | Yes | Pending | Implemented, pending live conformance (see below) |
+| `vision.diagnose-error` | Yes | Pending | Implemented, pending live conformance (see below) |
+| `vision.diagram` | Yes | Pending | Implemented, pending live conformance (see below) |
+| `vision.chart` | Yes | Pending | Implemented, pending live conformance (see below) |
 | `vision.diff` (image diff) | Yes | No | Base-release Z.AI-only |
 | `vision.video` | Yes | No | Base-release Z.AI-only |
 | `quota` | Yes | Yes | Normalized `QuotaDashboard` (ADR-0001) |
@@ -131,6 +131,62 @@ Media limits for general single-image interpretation:
 | MiniMax | JPG, JPEG, PNG, WebP | 50 MiB |
 
 Vision results are never written to the local response cache.
+
+### Specialized MiniMax Vision Mappings
+
+The five specialized MiniMax Vision operations (`ui-artifact`,
+`extract-text`, `diagnose-error`, `diagram`, `chart`) are **implemented**
+in this release. Each operation has a dedicated prompt-composition Module
+under `packages/scoutline/src/providers/minimax/vision-mappings/` and a
+generated mapping revision committed to source.
+
+Runtime support for these operations is gated by the compiled conformance
+registry (`src/providers/minimax/vision-conformance.ts`). A specialized
+operation is only routable through MiniMax when **every** condition holds:
+
+- offline conformance state is `pass`,
+- live conformance state is `pass`,
+- a sanitized compiled attestation matches the operation, fixture version,
+  Implementation identity, and generated mapping revision.
+
+In the current release every specialized operation has offline `pass` and
+live `pending`, and no attestations are compiled in — so every
+specialized operation is **unsupported at runtime**. The CLI surfaces
+`UNSUPPORTED_CAPABILITY` and falls back to Z.AI (the Z.AI Provider
+supports every operation in the base release).
+
+No environment variable, flag, or configuration value can promote a
+mapping to supported. Support is driven exclusively by the compiled
+registry state.
+
+#### Enabling live support
+
+Live support is gated on a per-operation live attestation. The
+attestation script requires explicit opt-in and `MINIMAX_API_KEY`:
+
+```bash
+SCOUTLINE_LIVE_TESTS=1 node scripts/attest-minimax-vision.mjs --operation chart
+```
+
+Replace `chart` with `ui-artifact`, `extract-text`, `diagnose-error`,
+or `diagram`. The script runs one fixture against the live Provider,
+evaluates the semantic assertions in memory, and either:
+
+- writes a sanitized attestation entry to
+  `src/providers/minimax/vision-attestations.ts`, flips the registry's
+  `live` state to `pass`, and verifies runtime support becomes `true`;
+  OR
+- sets the registry's `live` state to `fail` if the semantics do not
+  hold. No success attestation is written and the mapping remains
+  unsupported.
+
+The next `npm run build` recompiles the registry with the new
+attestation and the operation becomes routable through MiniMax.
+
+Help text, `doctor`, and the Adapter's descriptor metadata all derive
+from the same registry, so once a mapping is promoted it appears on
+every runtime surface automatically — there is no second support list
+to update.
 
 ## Usage
 

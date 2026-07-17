@@ -123,6 +123,78 @@ Use `scoutline --help` for the complete list of output aliases and command-speci
 | `ZAI_MCP_VISION_RETRY_COUNT` | `2` | Retries for vision tool calls. |
 | `ZAI_MCP_RETRY_COUNT` | `1` | Retries for other MCP tool calls. |
 
+## Specialized MiniMax Vision Mappings
+
+The five specialized MiniMax Vision operations are implemented as
+operation-specific prompt-composition Modules under
+`packages/scoutline/src/providers/minimax/vision-mappings/`:
+
+| Operation | CLI subcommand | Module |
+| --- | --- | --- |
+| `ui-artifact` | `scoutline vision ui-to-code` | `ui-artifact.ts` |
+| `extract-text` | `scoutline vision extract-text` | `extract-text.ts` |
+| `diagnose-error` | `scoutline vision diagnose-error` | `diagnose-error.ts` |
+| `diagram` | `scoutline vision diagram` | `diagram.ts` |
+| `chart` | `scoutline vision chart` | `chart.ts` |
+
+Each Module routes through `sdk.vision.describe` with one image — there
+is no dedicated MiniMax operation. The shared prompt composition helpers
+live in `vision-mappings/common.ts`; changing that file intentionally
+invalidates every mapping's revision.
+
+### Conformance gating
+
+Runtime support for a specialized operation is decided by the compiled
+conformance registry (`src/providers/minimax/vision-conformance.ts`). A
+mapping becomes routable through MiniMax only when **every** condition
+holds:
+
+- offline conformance state is `pass`,
+- live conformance state is `pass`,
+- a sanitized compiled attestation matches the operation, fixture
+  version, Implementation identity (`mmx-cli-sdk@1.0.16`), and
+  generated mapping revision.
+
+In the current release every specialized operation has offline `pass`
+and live `pending`. The MiniMax Adapter fails closed with
+`UNSUPPORTED_CAPABILITY` for every specialized operation; the shared
+`vision` invocation helper transparently falls back to Z.AI, which
+supports every operation.
+
+**No environment variable, flag, or configuration value can promote a
+mapping to supported.** Support is driven exclusively by the compiled
+registry state. Re-running `npm run build` does not change support on
+its own — a live attestation must be recorded first.
+
+### Live attestation
+
+Live attestation requires explicit opt-in and a real `MINIMAX_API_KEY`:
+
+```bash
+SCOUTLINE_LIVE_TESTS=1 node scripts/attest-minimax-vision.mjs --operation chart
+```
+
+Replace `chart` with one of the other specialized operations. The script:
+
+1. Loads the operation's fixture image and the matching Module.
+2. Calls the live Provider with the composed prompt.
+3. Evaluates the fixture's semantic assertions in memory against the
+   returned text (the text itself is never written to disk).
+4. On success, appends a sanitized attestation entry to
+   `src/providers/minimax/vision-attestations.ts`, flips the registry's
+   `live` state to `pass`, and verifies that
+   `isMiniMaxVisionOperationSupported(op)` returns `true`.
+5. On failure, sets the registry's `live` state to `fail`. No
+   attestation is committed and the mapping remains unsupported.
+
+Re-run `npm run build` after a successful attestation so the registry
+is recompiled with the new attestation and the operation becomes
+routable at runtime.
+
+The diff (`vision.diff`) and video (`vision.video`) operations are
+intentionally **not** registry entries and remain Z.AI-only in the base
+release.
+
 ## Response Cache
 
 Search, reader, and ZRead responses are cached locally unless a command receives `--no-cache`. The cache is best-effort, keyed by API-key hash plus request-affecting arguments, and stores no cleartext API key.

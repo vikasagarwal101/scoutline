@@ -50,10 +50,65 @@ Unsupported capability "vision.diff" for provider minimax
 ```
 
 MiniMax supports general single-image interpretation (`scoutline vision
-analyze`) in the base release. Two-image comparison (`vision diff`), video
-analysis (`vision video`), and the specialized mappings (`ui-to-code`,
-`extract-text`, `diagnose-error`, `diagram`, `chart`) are Z.AI-only until
-their Phase 5 conformance gates pass.
+analyze`) in the base release. Two-image comparison (`vision diff`) and
+video analysis (`vision video`) are **permanently** Z.AI-only and are
+never registry entries.
+
+The five specialized mappings (`ui-artifact`, `extract-text`,
+`diagnose-error`, `diagram`, `chart`) are **implemented** but their
+runtime support is gated by the compiled conformance registry. They are
+unsupported until a live attestation records a passing `live` state
+plus a sanitized compiled attestation that matches the operation,
+fixture version, Implementation identity, and generated mapping
+revision.
+
+The most common reason a specialized mapping is reported as
+`UNSUPPORTED_CAPABILITY`:
+
+| Cause | What to check |
+| --- | --- |
+| Live attestation has not been recorded | `MINIMAX_VISION_CONFORMANCE_REGISTRY[op].live === "pending"` |
+| Live semantics failed | `MINIMAX_VISION_CONFORMANCE_REGISTRY[op].live === "fail"` — the previous attestation was rejected |
+| SDK Implementation identity changed | The compiled attestation's `implementationId` no longer matches `mmx-cli-sdk@1.0.16` |
+| Mapping revision changed | The compiled attestation's `mappingRevision` no longer matches `MINIMAX_VISION_MAPPING_REVISIONS[op]` |
+| Fixture version bumped | The compiled attestation's `fixtureVersion` no longer matches the entry's `fixtureVersion` |
+
+`MINIMAX_VISION_CONFORMANCE_REGISTRY` and `MINIMAX_VISION_MAPPING_REVISIONS`
+are exposed from the built package, so you can inspect every entry:
+
+```bash
+node -e 'import("./packages/scoutline/dist/providers/minimax/vision-conformance.js").then(m => console.log(m.MINIMAX_VISION_CONFORMANCE_REGISTRY))'
+```
+
+### Rerunning live conformance
+
+Live conformance is opt-in and requires a real `MINIMAX_API_KEY`. From
+`packages/scoutline`:
+
+```bash
+SCOUTLINE_LIVE_TESTS=1 node scripts/attest-minimax-vision.mjs --operation chart
+```
+
+Replace `chart` with the operation you want to attest. The script
+evaluates the fixture semantics in memory and either commits a sanitized
+attestation (success) or sets the registry's `live` state to `fail`
+(failure). Run `npm run build` afterwards so the registry is recompiled
+with the new state.
+
+No environment value can promote a mapping to supported on its own —
+only the attestation script can write the attestation entry that the
+registry validates.
+
+### Adapter routing
+
+When a specialized mapping's live state is `pass` and the compiled
+attestation matches, the MiniMax Adapter routes the request through the
+matching `vision-mappings/<op>.ts` Module. The Module composes the
+prompt, the Adapter invokes `sdk.vision.describe` with the resolved
+image, and the Module's normalizer extracts the `{ content }` envelope.
+If the Module is somehow missing while the registry gate is open, the
+Adapter surfaces `API_ERROR` — this should not happen at runtime and
+indicates a coding bug rather than runtime drift.
 
 ## The executable reports `LOAD_ERROR`
 

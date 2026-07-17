@@ -31,6 +31,7 @@ import crypto from "node:crypto";
 import { loadMiniMaxConfig } from "../dist/providers/minimax/config.js";
 import { createMiniMaxSdk } from "../dist/providers/minimax/sdk-client.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
+import { MINIMAX_VISION_MAPPINGS } from "../dist/providers/minimax/vision-mappings.generated.js";
 import { readFixture } from "./helpers/fixtures.js";
 import { executeProviderOperation } from "../dist/lib/execution.js";
 import { ApiError, AuthError, NetworkError, TimeoutError } from "../dist/lib/errors.js";
@@ -804,3 +805,210 @@ describe("MiniMax Vision Adapter — shared execution owns retries (P3-03)", () 
     assert.strictEqual(sleeps.length, 0, "no delay for terminal failure");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Specialized mapping routing (P5-04)
+// ---------------------------------------------------------------------------
+//
+// At runtime the MiniMax adapter's specialized-vision gate is closed
+// because every conformance registry entry stays `live=pending` until
+// a live attestation runs. These tests force the support check to true
+// for each of the five specialized operations, drive
+// `adapter.vision.invoke()` through the public Adapter API, and verify
+// the request is routed through the matching `MINIMAX_VISION_MAPPINGS`
+// Module so `sdk.vision.describe` receives the composed prompt and the
+// raw result is normalized by the Module's normalizer.
+//
+// The injection point is `MiniMaxAdapterDependencies.isSpecializedVisionOperationSupported`.
+// Production never sets it; tests pass a forced-support function so the
+// routing branch can be exercised deterministically without flipping a
+// compiled attestation.
+
+describe("MiniMax Vision Adapter — specialized mapping routing (P5-04)", () => {
+  const SPECIALIZED = [
+    "ui-artifact",
+    "extract-text",
+    "diagnose-error",
+    "diagram",
+    "chart",
+  ];
+
+  /**
+   * Build a request and its expected composed prompt for one operation.
+   * The request uses representative option values so all segments render.
+   */
+  function makeRequestAndExpectedPrompt(op) {
+    switch (op) {
+      case "ui-artifact":
+        return {
+          image: "https://example.test/screenshot.png",
+          request: {
+            operation: op,
+            source: "https://example.test/screenshot.png",
+            instruction: "Recover the header bar markup.",
+            outputType: "code",
+          },
+          promptNeedles: ["Recover the header bar markup.", "page regions", "code (markup)"],
+        };
+      case "extract-text":
+        return {
+          image: "https://example.test/snippet.png",
+          request: {
+            operation: op,
+            source: "https://example.test/snippet.png",
+            instruction: "Recover every line verbatim.",
+            programmingLanguage: "python",
+          },
+          promptNeedles: ["Recover every line verbatim.", "verbatim", "Programming language"],
+        };
+      case "diagnose-error":
+        return {
+          image: "https://example.test/error.png",
+          request: {
+            operation: op,
+            source: "https://example.test/error.png",
+            instruction: "Diagnose the error.",
+            context: "production trace",
+          },
+          promptNeedles: ["Diagnose the error.", "error class", "Context"],
+        };
+      case "diagram":
+        return {
+          image: "https://example.test/diagram.png",
+          request: {
+            operation: op,
+            source: "https://example.test/diagram.png",
+            instruction: "List every node.",
+            diagramType: "flowchart",
+          },
+          promptNeedles: ["List every node.", "report each node", "Diagram type"],
+        };
+      case "chart":
+        return {
+          image: "https://example.test/chart.png",
+          request: {
+            operation: op,
+            source: "https://example.test/chart.png",
+            instruction: "Identify the dominant trend.",
+            focus: "latency",
+          },
+          promptNeedles: ["Identify the dominant trend.", "analyze the chart", "Focus"],
+        };
+      default:
+        throw new Error(`unexpected op ${op}`);
+    }
+  }
+
+  for (const op of SPECIALIZED) {
+    it(`routes ${op} through its mapping module when support is true`, async () => {
+      const sdk = makeFakeSdk({ visionResult: { content: "expected-mapping-text" } });
+      const descriptor = createMiniMaxDescriptor({
+        sdkConstructor: sdk.Constructor,
+        // Force the support gate open for this op so we can drive the
+        // routing branch without flipping compiled registry state.
+        isSpecializedVisionOperationSupported: (candidate) => candidate === op,
+      });
+      const adapter = descriptor.create({ env: { MINIMAX_API_KEY: TEST_API_KEY } });
+
+      // Metadata must reflect the forced support so descriptor capabilities
+      // agree with the runtime gate.
+      const advertised = descriptor.capabilities();
+      assert.ok(
+        advertised.has(`vision.${op}`),
+        `descriptor must advertise vision.${op} when support is forced true`,
+      );
+      assert.equal(
+        adapter.vision.supports(op),
+        true,
+        `adapter.vision.supports(${op}) must report true when force-injected`,
+      );
+
+      // Build the request and a captured composed prompt via the same
+      // mapping Module the adapter will use.
+      const module = MINIMAX_VISION_MAPPINGS[op];
+      assert.ok(module, `${op} mapping module must be wired in`);
+      const { request, promptNeedles, image } = makeRequestAndExpectedPrompt(op);
+      const expectedPrompt = module.composePrompt(request);
+
+      const out = await adapter.vision.invoke(request);
+      assert.strictEqual(out, "expected-mapping-text", "normalized mapping text");
+
+      // Routing assertions: the adapter passed the composed prompt and
+      // the resolved image to sdk.vision.describe.
+      assert.strictEqual(sdk.constructed.length, 1, "SDK constructed once");
+      assert.strictEqual(sdk.visionDescribeCalls.length, 1, "sdk.vision.describe invoked once");
+      assert.strictEqual(
+        sdk.visionDescribeCalls[0].image,
+        image,
+        "sdk.vision.describe received the resolved image",
+      );
+      assert.strictEqual(
+        sdk.visionDescribeCalls[0].prompt,
+        expectedPrompt,
+        `sdk.vision.describe must receive the prompt composed by ${op}'s mapping module`,
+      );
+
+      // Cross-check the expected prompt actually contains the operation's
+      // known landmark substrings — proves the right Module is wired.
+      // Case-insensitive match: each Module capitalizes its own intent
+      // text, while the needles are conventional lowercase probes.
+      const lowered = expectedPrompt.toLowerCase();
+      for (const needle of promptNeedles) {
+        assert.ok(
+          lowered.includes(needle.toLowerCase()),
+          `expected prompt for ${op} must contain "${needle}"`,
+        );
+      }
+    });
+  }
+
+  it("support gate remains authoritative: an unsupported op fails closed even if forced true on another op", async () => {
+    const sdk = makeFakeSdk({ visionResult: { content: "text" } });
+    const descriptor = createMiniMaxDescriptor({
+      sdkConstructor: sdk.Constructor,
+      // Force one op to supported, but not the other specialized ops.
+      isSpecializedVisionOperationSupported: (candidate) => candidate === "chart",
+    });
+    const adapter = descriptor.create({ env: { MINIMAX_API_KEY: TEST_API_KEY } });
+
+    // chart is supported, ui-artifact is not.
+    assert.equal(adapter.vision.supports("chart"), true);
+    assert.equal(adapter.vision.supports("ui-artifact"), false);
+
+    await assert.rejects(
+      adapter.vision.invoke({
+        operation: "ui-artifact",
+        source: "https://example.test/x.png",
+        instruction: "x",
+        outputType: "code",
+      }),
+      (err) => err.code === "UNSUPPORTED_CAPABILITY",
+    );
+    // And critically, no SDK construction happened during the failed call.
+    assert.strictEqual(sdk.constructed.length, 0, "no SDK construction for an unsupported op");
+  });
+
+  it("forces-off: support=false on every specialized op keeps the adapter fail-closed (production default)", async () => {
+    const sdk = makeFakeSdk({ visionResult: { content: "text" } });
+    // Explicitly force false everywhere. The Adapter's production path
+    // uses the compiled registry; the forced function is an exact drop-in.
+    const descriptor = createMiniMaxDescriptor({
+      sdkConstructor: sdk.Constructor,
+      isSpecializedVisionOperationSupported: () => false,
+    });
+    const adapter = descriptor.create({ env: { MINIMAX_API_KEY: TEST_API_KEY } });
+    for (const op of SPECIALIZED) {
+      assert.equal(adapter.vision.supports(op), false);
+      await assert.rejects(
+        adapter.vision.invoke({
+          operation: op,
+          source: "x.png",
+          instruction: "x",
+        }),
+        (err) => err.code === "UNSUPPORTED_CAPABILITY",
+      );
+    }
+    assert.strictEqual(sdk.constructed.length, 0);
+  });
+});
+

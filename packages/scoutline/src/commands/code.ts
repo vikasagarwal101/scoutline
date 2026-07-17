@@ -1,78 +1,68 @@
 /**
  * Code Mode commands for tool chaining
+ *
+ * P1-07: each command returns a CommandResult instead of writing
+ * directly to stdout/stderr. stdin is read through CommandContext rather
+ * than the process stream. No Provider selection is added; Phase 0
+ * Code Mode semantics (run, eval, logs, timeout, interfaces, prompt
+ * template) are preserved.
  */
 
 import * as fs from "node:fs/promises";
 import { ZaiCodeModeClient } from "../lib/code-mode.js";
-import { outputSuccess } from "../lib/output.js";
-import { formatErrorOutput } from "../lib/errors.js";
-import { silenceConsole, restoreConsole } from "../lib/silence.js";
+import type { CommandContext, CommandResult } from "../command-invocation.js";
 
 export interface CodeRunOptions {
   timeout?: number;
   includeLogs?: boolean;
 }
 
-export async function runCodeFile(filePath: string, options: CodeRunOptions = {}): Promise<void> {
+export async function runCodeFile(
+  filePath: string,
+  options: CodeRunOptions = {},
+  context?: CommandContext,
+): Promise<CommandResult> {
   const code = await fs.readFile(filePath, "utf8");
 
-  silenceConsole();
   const codeClient = new ZaiCodeModeClient();
   try {
     const result = await codeClient.callToolChain(code, options.timeout);
-    if (options.includeLogs) {
-      outputSuccess(result);
-    } else {
-      outputSuccess(result.result);
-    }
-  } catch (error) {
-    restoreConsole();
-    console.error(formatErrorOutput(error));
-    process.exit(1);
+    const data = options.includeLogs ? result : result.result;
+    return { kind: "data", data };
   } finally {
     await codeClient.close().catch(() => {});
-    restoreConsole();
   }
 }
 
-export async function evalCode(code: string, options: CodeRunOptions = {}): Promise<void> {
-  silenceConsole();
+export async function evalCode(
+  code: string,
+  options: CodeRunOptions = {},
+  context?: CommandContext,
+): Promise<CommandResult> {
   const codeClient = new ZaiCodeModeClient();
   try {
     const result = await codeClient.callToolChain(code, options.timeout);
-    if (options.includeLogs) {
-      outputSuccess(result);
-    } else {
-      outputSuccess(result.result);
-    }
-  } catch (error) {
-    restoreConsole();
-    console.error(formatErrorOutput(error));
-    process.exit(1);
+    const data = options.includeLogs ? result : result.result;
+    return { kind: "data", data };
   } finally {
     await codeClient.close().catch(() => {});
-    restoreConsole();
   }
 }
 
-export async function printInterfaces(): Promise<void> {
-  silenceConsole();
+export async function printInterfaces(
+  context?: CommandContext,
+): Promise<CommandResult> {
   const codeClient = new ZaiCodeModeClient();
   try {
     const interfaces = await codeClient.getAllInterfaces();
-    outputSuccess(interfaces);
-  } catch (error) {
-    restoreConsole();
-    console.error(formatErrorOutput(error));
-    process.exit(1);
+    return { kind: "data", data: interfaces };
   } finally {
     await codeClient.close().catch(() => {});
-    restoreConsole();
   }
 }
 
-export function printPromptTemplate(): void {
-  outputSuccess(ZaiCodeModeClient.getPromptTemplate());
+export function printPromptTemplate(context?: CommandContext): CommandResult {
+  return { kind: "data", data: ZaiCodeModeClient.getPromptTemplate() };
 }
 
 // Help text

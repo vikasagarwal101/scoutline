@@ -581,12 +581,16 @@ async function handleQuota(args: string[]): Promise<void> {
   await quota({});
 }
 
-async function handleCode(args: string[]): Promise<void> {
+async function handleCode(
+  args: string[],
+  outputMode: OutputMode,
+  deps: { invocation: CommandInvocationAdapter },
+): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
   if (flags.help || flags.h || positional.length === 0) {
-    console.log(CODE_HELP);
-    return;
+    deps.invocation.writeStdout(CODE_HELP);
+    return 0;
   }
 
   const command = positional[0];
@@ -597,29 +601,46 @@ async function handleCode(args: string[]): Promise<void> {
     case "run": {
       const filePath = positional[1];
       if (!filePath) {
-        outputError("Missing code file", "INVALID_ARGS", "Usage: scoutline code run <file>");
+        throw new ValidationError(
+          "Missing code file",
+          "Usage: scoutline code run <file>",
+        );
       }
-      await runCodeFile(filePath, { timeout, includeLogs });
-      break;
+      return invokeCommand(
+        deps.invocation,
+        (context) => runCodeFile(filePath, { timeout, includeLogs }, context),
+        outputMode,
+      );
     }
     case "eval": {
       const code = positional.slice(1).join(" ");
       if (!code) {
-        outputError("Missing code string", "INVALID_ARGS", "Usage: scoutline code eval <code>");
+        throw new ValidationError(
+          "Missing code string",
+          "Usage: scoutline code eval <code>",
+        );
       }
-      await evalCode(code, { timeout, includeLogs });
-      break;
+      return invokeCommand(
+        deps.invocation,
+        (context) => evalCode(code, { timeout, includeLogs }, context),
+        outputMode,
+      );
     }
     case "interfaces":
-      await printInterfaces();
-      break;
+      return invokeCommand(
+        deps.invocation,
+        (context) => printInterfaces(context),
+        outputMode,
+      );
     case "prompt":
-      printPromptTemplate();
-      break;
+      return invokeCommand(
+        deps.invocation,
+        async (context) => printPromptTemplate(context),
+        outputMode,
+      );
     default:
-      outputError(
+      throw new ValidationError(
         `Unknown code command: ${command}`,
-        "INVALID_ARGS",
         'Run "scoutline code --help" for available commands',
       );
   }
@@ -691,8 +712,7 @@ export async function main(
         await handleQuota(commandArgs);
         break;
       case "code":
-        await handleCode(commandArgs);
-        break;
+        return await handleCode(commandArgs, outputMode, { invocation });
       default:
         invocation.writeStderr(
           formatErrorOutput(

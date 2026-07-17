@@ -681,3 +681,40 @@ describe("invokeCommand — tools routed through the seam (P1-06)", () => {
     assert.match(parsed.error, /Invalid JSON/);
   });
 });
+
+describe("invokeCommand — code routed through the seam (P1-07)", () => {
+  it("printPromptTemplate returns the prompt template through the seam", async () => {
+    const { printPromptTemplate } = await import("../dist/commands/code.js");
+    const { adapter, stdout } = createRecordingAdapter();
+    await invokeCommand(
+      adapter,
+      async (ctx) => printPromptTemplate(ctx),
+      "data",
+    );
+    assert.strictEqual(stdout.length, 1);
+    // Template is a non-empty string (ZaiCodeModeClient.getPromptTemplate).
+    assert.strictEqual(typeof stdout[0], "string");
+    assert.ok(stdout[0].length > 0);
+  });
+
+  it("printInterfaces and eval/run preserve Phase 0 code-mode semantics", async () => {
+    const code = await import("../dist/commands/code.js");
+    // Function arity sanity: all four signatures accept (..., context?)
+    // and return Promise<CommandResult> (or CommandResult for prompt).
+    assert.strictEqual(typeof code.printInterfaces, "function");
+    assert.strictEqual(typeof code.printPromptTemplate, "function");
+    assert.strictEqual(typeof code.runCodeFile, "function");
+    assert.strictEqual(typeof code.evalCode, "function");
+    // runCodeFile: (filePath, options, context?) → length 3 max
+    // evalCode: (code, options, context?) → length 3 max
+    assert.ok(code.runCodeFile.length <= 3);
+    assert.ok(code.evalCode.length <= 3);
+    // No Provider selection: confirm the source has no "providerId".
+    const fs = await import("node:fs");
+    const src = fs.readFileSync(
+      new URL("../src/commands/code.ts", import.meta.url),
+      "utf8",
+    );
+    assert.ok(!/\bproviderId\b|\bprovider_id\b/.test(src), "code.ts must not reference a Provider ID");
+  });
+});

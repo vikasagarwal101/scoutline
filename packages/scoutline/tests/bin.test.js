@@ -207,19 +207,19 @@ describe("missing positional values: message, code, stream, exit", () => {
     assert.ok(err.error.includes("Missing repo or path"));
   });
 
-  it("code run with no file → INVALID_ARGS exit 1", async () => {
+  it("code run with no file → VALIDATION_ERROR exit 1", async () => {
     const r = await runProcess(["code", "run"], { env: BASE_ENV });
     assert.strictEqual(r.code, 1);
     const err = JSON.parse(r.stderr);
-    assert.strictEqual(err.code, "INVALID_ARGS");
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
     assert.ok(err.error.includes("Missing code file"));
   });
 
-  it("code eval with no string → INVALID_ARGS exit 1", async () => {
+  it("code eval with no string → VALIDATION_ERROR exit 1", async () => {
     const r = await runProcess(["code", "eval"], { env: BASE_ENV });
     assert.strictEqual(r.code, 1);
     const err = JSON.parse(r.stderr);
-    assert.strictEqual(err.code, "INVALID_ARGS");
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
     assert.ok(err.error.includes("Missing code string"));
   });
 });

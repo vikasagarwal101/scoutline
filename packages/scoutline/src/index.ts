@@ -9,7 +9,7 @@ import { read, READ_HELP } from "./commands/read.js";
 import { repoSearch, repoTree, repoRead, REPO_HELP } from "./commands/repo.js";
 import { listTools, showTool, callTool, TOOLS_HELP, CALL_HELP } from "./commands/tools.js";
 import { doctor, DOCTOR_HELP } from "./commands/doctor.js";
-import { quota, QUOTA_HELP } from "./commands/quota.js";
+import { quota, buildQuotaDashboard, QUOTA_HELP } from "./commands/quota.js";
 import { isExtractMode, type ExtractMode } from "./lib/extract.js";
 import {
   runCodeFile,
@@ -714,7 +714,31 @@ async function handleQuota(
     return 0;
   }
 
-  return invokeCommand(deps.invocation, () => quota({}), outputMode, deps.now);
+  const allProviders = flags["all-providers"] === true;
+  // Resolve the effective Provider ID for dashboard metadata. Config
+  // validation is owned by the dashboard builder (ConfigurationError,
+  // exit 3) so an unconfigured default is reported as configuration, not
+  // a registry error. Descriptors are intentionally NOT passed here so
+  // all-provider mode is not blocked by an unconfigured effective.
+  const effectiveProvider = resolveProviderId(deps.provider, deps.env);
+
+  return invokeCommand(
+    deps.invocation,
+    () =>
+      quota({
+        buildDashboard: () =>
+          buildQuotaDashboard({
+            allProviders,
+            effectiveProvider,
+            descriptors: deps.providerDescriptors,
+            env: deps.env,
+            sleep: deps.searchSleep,
+            random: deps.searchRandom,
+          }),
+      }),
+    outputMode,
+    deps.now,
+  );
 }
 
 async function handleCode(

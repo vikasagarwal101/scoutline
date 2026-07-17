@@ -73,63 +73,97 @@ export function formatSearchResultsPretty(results: SearchResultLike[]): string {
   return lines.join("\n");
 }
 
-interface QuotaLike {
-  plan?: string;
-  timeWindow?: {
+import type { QuotaDashboard } from "../capabilities/quota.js";
+
+interface QuotaCategoryLike {
+  name: string;
+  unit: "requests" | "tokens";
+  current: {
     used?: number;
     limit?: number;
     remaining?: number;
-    percentage?: number;
-    windowHours?: number;
-    resetsIn?: string | null;
-    byTool?: Array<{ modelCode?: string; usage?: number }>;
-  } | null;
-  tokens?: { percentage?: number; resetsIn?: string | null } | null;
+    remainingPercent: number;
+    resetsAt?: string;
+  };
+  weekly?: {
+    remainingPercent: number;
+  };
 }
 
-/** ASCII progress bar: 20 chars wide. */
-function progressBar(pct: number): string {
+interface QuotaSuccessLike {
+  provider: string;
+  status: "ok";
+  plan?: string;
+  categories: QuotaCategoryLike[];
+}
+
+interface QuotaFailureLike {
+  provider: string;
+  status: "error";
+  error: { message: string };
+}
+
+/**
+ * Remaining-percentage progress bar: 20 chars wide. Low remaining is
+ * red (tight quota), high remaining is green. The bar represents the
+ * REMAINING share, not the used share.
+ */
+function remainingBar(pct: number): string {
   const filled = Math.round((pct / 100) * 20);
   const bar = "█".repeat(filled) + "░".repeat(20 - filled);
-  const colorFn = pct >= 90 ? color.red : pct >= 70 ? color.yellow : color.green;
+  const colorFn = pct < 30 ? color.red : pct < 70 ? color.yellow : color.green;
   return colorFn(bar);
 }
 
-export function formatQuotaPretty(q: QuotaLike): string {
-  const lines: string[] = [];
-  lines.push("");
-  lines.push(`  ${color.bold("Z.AI Coding Plan")} — ${color.magenta(q.plan || "unknown")} tier`);
-  lines.push("");
+function formatResetLabel(resetsAt: string | undefined): string {
+  if (!resetsAt) return "";
+  return `resets ${color.gray(resetsAt)}`;
+}
 
-  if (q.timeWindow) {
-    const tw = q.timeWindow;
-    const pct = tw.percentage ?? 0;
-    const resetTxt = tw.resetsIn ? `resets in ${color.dim(tw.resetsIn)}` : "";
+function renderCategory(category: QuotaCategoryLike, lines: string[]): void {
+  const current = category.current;
+  const pct = current.remainingPercent;
+  const resetTxt = formatResetLabel(current.resetsAt);
+  lines.push(`    ${color.bold(category.name)}  ${remainingBar(pct)}  ${pct}% remaining`);
+  const counts: string[] = [];
+  if (typeof current.used === "number" && typeof current.limit === "number") {
+    counts.push(`${current.used}/${current.limit}`);
+  }
+  if (typeof current.remaining === "number") {
+    counts.push(`${color.green(`${current.remaining} left`)}`);
+  }
+  if (counts.length > 0 || resetTxt) {
+    lines.push(`      ${[...counts, resetTxt].filter(Boolean).join("  ·  ")}`);
+  }
+  if (category.weekly) {
+    const w = category.weekly;
     lines.push(
-      `  ${color.bold(`Time window`)} ${color.gray(`(${tw.windowHours || 5}h rolling)`)}  ${resetTxt}`,
+      `      ${color.gray("weekly")} ${remainingBar(w.remainingPercent)} ${w.remainingPercent}%`,
     );
-    lines.push("");
-    lines.push(`  ${progressBar(pct)}  ${tw.used ?? 0}/${tw.limit ?? 0} calls (${pct}%)`);
-    if (tw.remaining !== undefined) {
-      lines.push(`  ${color.green(`${tw.remaining} remaining`)}`);
-    }
-    if (tw.byTool && tw.byTool.length > 0) {
-      lines.push("");
-      const sorted = [...tw.byTool].sort((a, b) => (b.usage || 0) - (a.usage || 0));
-      for (const t of sorted) {
-        lines.push(`    ${color.gray("•")} ${t.modelCode}: ${t.usage || 0}`);
+  }
+}
+
+/**
+ * Provider-neutral TTY rendering of a {@link QuotaDashboard}. Each
+ * Provider entry is labelled with its Provider id and each category by
+ * its normalized name; progress bars represent the REMAINING percentage.
+ */
+export function formatQuotaDashboard(dashboard: QuotaDashboard): string {
+  const lines: string[] = [""];
+  for (const entry of dashboard.providers) {
+    if (entry.status === "ok") {
+      const success = entry as QuotaSuccessLike;
+      const planTxt = success.plan ? ` ${color.gray(`(${success.plan})`)}` : "";
+      lines.push(`  ${color.bold(success.provider)}${planTxt}`);
+      for (const category of success.categories) {
+        renderCategory(category, lines);
       }
+    } else {
+      const failure = entry as QuotaFailureLike;
+      lines.push(`  ${color.bold(failure.provider)} ${color.red("error")}`);
+      lines.push(`    ${color.dim(failure.error.message)}`);
     }
     lines.push("");
   }
-
-  if (q.tokens) {
-    const pct = q.tokens.percentage ?? 0;
-    const resetTxt = q.tokens.resetsIn ? `resets in ${color.dim(q.tokens.resetsIn)}` : "";
-    lines.push(`  ${color.bold("Token budget")}  ${resetTxt}`);
-    lines.push(`  ${progressBar(pct)}  ${pct}% used`);
-    lines.push("");
-  }
-
   return lines.join("\n");
 }

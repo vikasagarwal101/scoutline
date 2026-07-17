@@ -15,7 +15,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { invokeCommand } from "../dist/command-invocation.js";
-import { ScoutlineError, ValidationError } from "../dist/lib/errors.js";
+import { ScoutlineError, ValidationError, ConfigurationError } from "../dist/lib/errors.js";
 
 /**
  * Build SearchExecutionDependencies from a query->results map (P2-05).
@@ -869,106 +869,115 @@ describe("invokeCommand — doctor routed through the seam (P1-09)", () => {
   });
 });
 
-describe("invokeCommand — quota routed through the seam (P1-09)", () => {
-  // Raw monitor-API response shape used to drive quota normalization offline.
-  // NOTE: this quota output shape is deliberately characterized here; it is
-  // replaced by ADR-0001 (ProviderCapability shape) in P4-02.
-  function rawQuotaResponse() {
+describe("invokeCommand — quota routed through the seam (P4-03)", () => {
+  // A schema-version-1 QuotaDashboard with a single Z.AI success entry,
+  // matching the normalized Provider-quota Interface (ADR-0001).
+  function zaiDashboard() {
     return {
-      level: "pro",
-      limits: [
+      schemaVersion: 1,
+      effectiveProvider: "zai",
+      providers: [
         {
-          type: "TIME_LIMIT",
-          unit: 5,
-          number: 1,
-          usage: 100,
-          currentValue: 42,
-          remaining: 58,
-          percentage: 42,
-          nextResetTime: Date.now() + 3_600_000,
-          usageDetails: [
-            { modelCode: "search-prime", usage: 20 },
-            { modelCode: "web-reader", usage: 12 },
+          provider: "zai",
+          status: "ok",
+          plan: "pro",
+          categories: [
+            {
+              name: "requests",
+              unit: "requests",
+              current: {
+                used: 42,
+                limit: 100,
+                remaining: 58,
+                remainingPercent: 58,
+                resetsAt: "2023-11-14T22:13:20.000Z",
+              },
+            },
           ],
-        },
-        {
-          type: "TOKENS_LIMIT",
-          unit: 1,
-          number: 1,
-          percentage: 15,
-          nextResetTime: Date.now() + 86_400_000,
         },
       ],
     };
   }
 
-  it("quota returns the current Z.AI normalization shape as base data", async () => {
+  it("quota returns the normalized dashboard as base data", async () => {
     const { quota } = await import("../dist/commands/quota.js");
     const { adapter, stdout } = createRecordingAdapter();
     const status = await invokeCommand(
       adapter,
-      () => quota({}, { quotaFetcher: async () => rawQuotaResponse() }),
+      () => quota({ buildDashboard: async () => zaiDashboard() }),
       "data",
     );
     assert.strictEqual(status, 0);
     const data = JSON.parse(stdout[0]);
-    assert.strictEqual(data.plan, "pro");
-    assert.ok(data.timeWindow, "timeWindow normalized");
-    assert.strictEqual(data.timeWindow.used, 42);
-    assert.strictEqual(data.timeWindow.limit, 100);
-    assert.strictEqual(data.timeWindow.remaining, 58);
-    assert.strictEqual(data.timeWindow.percentage, 42);
-    assert.strictEqual(data.timeWindow.windowHours, 5);
-    assert.ok(data.timeWindow.resetsAt, "resetsAt ISO string");
-    assert.ok(data.timeWindow.resetsIn, "resetsIn human string");
-    assert.deepStrictEqual(data.timeWindow.byTool, [
-      { modelCode: "search-prime", usage: 20 },
-      { modelCode: "web-reader", usage: 12 },
-    ]);
-    assert.ok(data.tokens, "tokens normalized");
-    assert.strictEqual(data.tokens.percentage, 15);
+    assert.strictEqual(data.schemaVersion, 1);
+    assert.strictEqual(data.effectiveProvider, "zai");
+    assert.strictEqual(data.providers[0].status, "ok");
+    assert.strictEqual(data.providers[0].plan, "pro");
+    assert.strictEqual(data.providers[0].categories[0].current.remainingPercent, 58);
   });
 
-  it("quota tty presentation uses the pretty dashboard format", async () => {
+  it("quota tty presentation renders provider and category with remaining percentage", async () => {
     const { quota } = await import("../dist/commands/quota.js");
     const { adapter, stdout } = createRecordingAdapter();
     const status = await invokeCommand(
       adapter,
-      () => quota({}, { quotaFetcher: async () => rawQuotaResponse() }),
+      () => quota({ buildDashboard: async () => zaiDashboard() }),
       "tty",
     );
     assert.strictEqual(status, 0);
     assert.strictEqual(stdout.length, 1);
-    // The pretty format is a multi-line dashboard (progress bars), not JSON.
-    assert.ok(stdout[0].includes("Z.AI Coding Plan"), "pretty header present");
-    assert.ok(stdout[0].includes("Time window"), "time-window section present");
-    assert.ok(stdout[0].includes("Token budget"), "token section present");
-    assert.throws(() => JSON.parse(stdout[0]), "tty presentation is not JSON");
+    const tty = stdout[0];
+    assert.ok(tty.includes("zai"), "provider label present");
+    assert.ok(tty.includes("requests"), "category name present");
+    assert.ok(/58%/.test(tty), "remaining percentage present");
+    assert.throws(() => JSON.parse(tty), "tty presentation is not JSON");
   });
 
   it("quota surfaces a thrown ConfigurationError (missing key) as one structured stderr value, exit 3", async () => {
     const { quota } = await import("../dist/commands/quota.js");
     const { adapter, stderr } = createRecordingAdapter();
-    // Default quotaFetcher path calls getQuotaLimit → getApiKey which throws
-    // ConfigurationError when no key is configured.
-    const savedZai = process.env.Z_AI_API_KEY;
-    const savedLegacy = process.env.ZAI_API_KEY;
-    delete process.env.Z_AI_API_KEY;
-    delete process.env.ZAI_API_KEY;
-    let status;
-    try {
-      status = await invokeCommand(adapter, () => quota({}), "data");
-    } finally {
-      if (savedZai !== undefined) process.env.Z_AI_API_KEY = savedZai;
-      else delete process.env.Z_AI_API_KEY;
-      if (savedLegacy !== undefined) process.env.ZAI_API_KEY = savedLegacy;
-      else delete process.env.ZAI_API_KEY;
-    }
+    // The default buildDashboard path resolves the effective Provider and
+    // throws ConfigurationError when it is unconfigured (no key).
+    const status = await invokeCommand(
+      adapter,
+      () =>
+        quota({
+          buildDashboard: async () => {
+            throw new ConfigurationError("Z_AI_API_KEY environment variable is required");
+          },
+        }),
+      "data",
+    );
     assert.strictEqual(status, 3);
     assert.strictEqual(stderr.length, 1, "exactly one structured stderr value");
     const parsed = JSON.parse(stderr[0]);
     assert.strictEqual(parsed.success, false);
     assert.strictEqual(parsed.code, "CONFIGURATION_ERROR");
     assert.ok(parsed.error.includes("Z_AI_API_KEY"));
+  });
+
+  it("quota dashboard with a failure entry yields exit 1", async () => {
+    const { quota } = await import("../dist/commands/quota.js");
+    const { adapter } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      () =>
+        quota({
+          buildDashboard: async () => ({
+            schemaVersion: 1,
+            effectiveProvider: "zai",
+            providers: [
+              zaiDashboard().providers[0],
+              {
+                provider: "minimax",
+                status: "error",
+                error: { code: "AUTH_ERROR", message: "minimax down" },
+              },
+            ],
+          }),
+        }),
+      "data",
+    );
+    assert.strictEqual(status, 1);
   });
 });

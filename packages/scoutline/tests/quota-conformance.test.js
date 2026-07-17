@@ -36,9 +36,10 @@ import {
 import { fetchMiniMaxQuota } from "../dist/providers/minimax/quota-client.js";
 import { executeProviderOperation } from "../dist/lib/execution.js";
 import { redactSecrets } from "../dist/lib/redact.js";
-import { ScoutlineError } from "../dist/lib/errors.js";
+import { ScoutlineError, ConfigurationError } from "../dist/lib/errors.js";
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
+import { buildQuotaDashboard } from "../dist/commands/quota.js";
 
 const ZAI_KEY = "zai-secret-key-DO-NOT-LEAK";
 const MINIMAX_KEY = "minimax-secret-key-DO-NOT-LEAK";
@@ -566,5 +567,237 @@ describe("adapter quota capability wiring", () => {
     });
     const result = await capability.invoke();
     assert.deepStrictEqual(result, expected);
+  });
+});
+
+// ===========================================================================
+// 9. Quota dashboard — default and all-provider (P4-03)
+// ===========================================================================
+
+/**
+ * Build a fake descriptor whose Adapter exposes a QuotaCapability that
+ * either resolves `result` or throws `error`. `configured` toggles
+ * `isConfigured`.
+ */
+function makeQuotaDescriptor(id, { result, error, configured = true }) {
+  let invokes = 0;
+  return {
+    id,
+    isConfigured: () => configured,
+    capabilities: () => new Set(["quota"]),
+    create: () => ({
+      id,
+      quota: {
+        async invoke() {
+          invokes += 1;
+          if (error) throw error;
+          return result;
+        },
+      },
+    }),
+    invokeCount: () => invokes,
+  };
+}
+
+const ZAI_SUCCESS = {
+  provider: "zai",
+  status: "ok",
+  plan: "pro",
+  categories: [{ name: "requests", unit: "requests", current: { remainingPercent: 25 } }],
+};
+const MINIMAX_SUCCESS = {
+  provider: "minimax",
+  status: "ok",
+  categories: [{ name: "abab6.5s", unit: "requests", current: { remainingPercent: 70 } }],
+};
+
+const sleep = async () => {};
+const random = () => 0;
+
+describe("quota dashboard — default mode (effective provider)", () => {
+  it("returns the effective provider's normalized success in a schema-version-1 dashboard", async () => {
+    const zai = makeQuotaDescriptor("zai", { result: ZAI_SUCCESS });
+    const dashboard = await buildQuotaDashboard({
+      allProviders: false,
+      effectiveProvider: "zai",
+      descriptors: [zai],
+      env: { Z_AI_API_KEY: "k" },
+      sleep,
+      random,
+    });
+    assert.strictEqual(dashboard.schemaVersion, 1);
+    assert.strictEqual(dashboard.effectiveProvider, "zai");
+    assert.strictEqual(dashboard.providers.length, 1);
+    assert.strictEqual(dashboard.providers[0].status, "ok");
+    assert.strictEqual(dashboard.providers[0].provider, "zai");
+  });
+
+  it("works for each effective Provider", async () => {
+    const mm = makeQuotaDescriptor("minimax", { result: MINIMAX_SUCCESS });
+    const dashboard = await buildQuotaDashboard({
+      allProviders: false,
+      effectiveProvider: "minimax",
+      descriptors: [mm],
+      env: { MINIMAX_API_KEY: "k" },
+      sleep,
+      random,
+    });
+    assert.strictEqual(dashboard.providers[0].provider, "minimax");
+  });
+
+  it("fails with a configuration error before transport when the effective provider is unconfigured", async () => {
+    const zai = makeQuotaDescriptor("zai", { result: ZAI_SUCCESS, configured: false });
+    await assert.rejects(
+      () =>
+        buildQuotaDashboard({
+          allProviders: false,
+          effectiveProvider: "zai",
+          descriptors: [zai],
+          env: {},
+          sleep,
+          random,
+        }),
+      (err) => err instanceof ConfigurationError,
+    );
+    assert.strictEqual(zai.invokeCount(), 0, "transport never constructed");
+  });
+
+  it("default-mode quota failure propagates through the ordinary error path", async () => {
+    const zai = makeQuotaDescriptor("zai", {
+      error: new ScoutlineError("nope", "AUTH_ERROR"),
+    });
+    await assert.rejects(
+      () =>
+        buildQuotaDashboard({
+          allProviders: false,
+          effectiveProvider: "zai",
+          descriptors: [zai],
+          env: { Z_AI_API_KEY: "k" },
+          sleep,
+          random,
+        }),
+      (err) => err instanceof ScoutlineError && err.code === "AUTH_ERROR",
+    );
+  });
+});
+
+describe("quota dashboard — all-provider mode", () => {
+  it("queries every configured descriptor in registry order and no unconfigured one", async () => {
+    const zai = makeQuotaDescriptor("zai", { result: ZAI_SUCCESS });
+    const minimax = makeQuotaDescriptor("minimax", {
+      result: MINIMAX_SUCCESS,
+      configured: false,
+    });
+    const dashboard = await buildQuotaDashboard({
+      allProviders: true,
+      effectiveProvider: "zai",
+      descriptors: [zai, minimax],
+      env: { Z_AI_API_KEY: "k" },
+      sleep,
+      random,
+    });
+    assert.strictEqual(dashboard.providers.length, 1, "unconfigured not invoked");
+    assert.strictEqual(dashboard.providers[0].provider, "zai");
+    assert.strictEqual(minimax.invokeCount(), 0);
+  });
+
+  it("keeps both a success and a failure, redacts the failure, exit-relevant", async () => {
+    const zai = makeQuotaDescriptor("zai", { result: ZAI_SUCCESS });
+    const minimax = makeQuotaDescriptor("minimax", {
+      error: new ScoutlineError(`fail ${ZAI_KEY} ${MINIMAX_KEY}`, "API_ERROR"),
+    });
+    const dashboard = await buildQuotaDashboard({
+      allProviders: true,
+      effectiveProvider: "zai",
+      descriptors: [zai, minimax],
+      env: { Z_AI_API_KEY: ZAI_KEY, MINIMAX_API_KEY: MINIMAX_KEY },
+      sleep,
+      random,
+    });
+    assert.strictEqual(dashboard.providers.length, 2);
+    assert.strictEqual(dashboard.providers[0].provider, "zai");
+    assert.strictEqual(dashboard.providers[0].status, "ok");
+    assert.strictEqual(dashboard.providers[1].provider, "minimax");
+    assert.strictEqual(dashboard.providers[1].status, "error");
+    const serialized = JSON.stringify(dashboard);
+    assert.ok(!serialized.includes(ZAI_KEY), "Z.AI credential redacted");
+    assert.ok(!serialized.includes(MINIMAX_KEY), "MiniMax credential redacted");
+  });
+
+  it("returns a configuration failure when no provider is configured", async () => {
+    const zai = makeQuotaDescriptor("zai", { result: ZAI_SUCCESS, configured: false });
+    const minimax = makeQuotaDescriptor("minimax", {
+      result: MINIMAX_SUCCESS,
+      configured: false,
+    });
+    await assert.rejects(
+      () =>
+        buildQuotaDashboard({
+          allProviders: true,
+          effectiveProvider: "zai",
+          descriptors: [zai, minimax],
+          env: {},
+          sleep,
+          random,
+        }),
+      (err) => err instanceof ConfigurationError,
+    );
+  });
+
+  it("effectiveProvider is metadata only and an unconfigured effective is not invoked", async () => {
+    const zai = makeQuotaDescriptor("zai", { result: ZAI_SUCCESS, configured: false });
+    const minimax = makeQuotaDescriptor("minimax", { result: MINIMAX_SUCCESS });
+    const dashboard = await buildQuotaDashboard({
+      allProviders: true,
+      effectiveProvider: "zai",
+      descriptors: [zai, minimax],
+      env: { MINIMAX_API_KEY: "k" },
+      sleep,
+      random,
+    });
+    assert.strictEqual(dashboard.effectiveProvider, "zai");
+    assert.strictEqual(zai.invokeCount(), 0, "unconfigured effective not invoked");
+    assert.strictEqual(dashboard.providers.length, 1);
+    assert.strictEqual(dashboard.providers[0].provider, "minimax");
+  });
+
+  it("preserves registry order in the providers array", async () => {
+    const zai = makeQuotaDescriptor("zai", { result: ZAI_SUCCESS });
+    const minimax = makeQuotaDescriptor("minimax", { result: MINIMAX_SUCCESS });
+    const dashboard = await buildQuotaDashboard({
+      allProviders: true,
+      effectiveProvider: "zai",
+      descriptors: [zai, minimax],
+      env: { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k" },
+      sleep,
+      random,
+    });
+    assert.deepStrictEqual(
+      dashboard.providers.map((p) => p.provider),
+      ["zai", "minimax"],
+    );
+  });
+});
+
+describe("quota dashboard — no raw provider field leaks", () => {
+  it("real adapters produce dashboards free of raw Z.AI/MiniMax field names", async () => {
+    const zaiRaw = await readFixture("providers", "zai", "quota.json");
+    const zaiDescriptor = createZaiDescriptor({
+      quotaFetch: makeFetchSequence([{ ok: true, json: { data: zaiRaw } }]).fn,
+      ...noOpTimer(),
+    });
+    const dashboard = await buildQuotaDashboard({
+      allProviders: false,
+      effectiveProvider: "zai",
+      descriptors: [zaiDescriptor],
+      env: { Z_AI_API_KEY: ZAI_KEY },
+      sleep,
+      random,
+    });
+    const keys = new Set();
+    collectKeys(dashboard, keys);
+    for (const denied of [...ZAI_RAW_DENY, ...MINIMAX_RAW_DENY]) {
+      assert.ok(!keys.has(denied), `raw field "${denied}" leaked into dashboard`);
+    }
   });
 });

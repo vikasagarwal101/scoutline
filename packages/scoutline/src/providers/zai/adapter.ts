@@ -48,6 +48,7 @@ import type {
   VisionOperation,
   VisionRequest,
 } from "../../capabilities/vision.js";
+import type { DiagnosticsCapability, DiagnosticOptions } from "../../capabilities/diagnostics.js";
 import {
   ApiError,
   AuthError,
@@ -557,6 +558,53 @@ function normalizeZaiVisionResult(raw: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
+// Diagnostics Capability (DESIGN.md §14 — P4-04)
+// ---------------------------------------------------------------------------
+
+interface ZaiDiagnosticsCapabilityOptions {
+  readonly env: NodeJS.ProcessEnv;
+  readonly clientFactory: ZaiAdapterDependencies["clientFactory"];
+}
+
+/**
+ * Build the Z.AI DiagnosticsCapability. Z.AI connectivity is probed
+ * through tool discovery: a UTCP client is constructed and `listTools`
+ * is called once. The probe authenticates and verifies the MCP
+ * transport without a generative request. Shared execution wraps this
+ * in the retry policy; the Adapter transport performs one attempt.
+ */
+function createZaiDiagnosticsCapability(
+  options: ZaiDiagnosticsCapabilityOptions,
+): DiagnosticsCapability {
+  const { env, clientFactory } = options;
+
+  return {
+    async invoke(diagOptions: DiagnosticOptions): Promise<void> {
+      if (!diagOptions.probe) return;
+      const apiKey = env.Z_AI_API_KEY;
+      if (typeof apiKey !== "string" || !/\S/.test(apiKey)) {
+        throw new AuthError("Z.AI API key is not configured");
+      }
+      // Disable client-owned cache and retry so shared execution is the
+      // single policy owner. Diagnostics needs no vision MCP server.
+      const clientOptions: ZaiMcpClientOptions = {
+        enableVision: false,
+        noCache: true,
+        disableRetry: true,
+      };
+      const client = clientFactory(clientOptions);
+      try {
+        await client.listTools();
+      } catch (error) {
+        throw normalizeZaiError(error);
+      } finally {
+        await client.close().catch(() => {});
+      }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Descriptor factory
 // ---------------------------------------------------------------------------
 
@@ -577,6 +625,9 @@ function defaultZaiClientFactory(options: ZaiMcpClientOptions): ZaiAdapterClient
   return {
     callToolRaw<T>(name: string, args: Record<string, unknown>): Promise<T> {
       return client.callToolRaw<T>(name, args);
+    },
+    listTools(): Promise<unknown[]> {
+      return client.listTools();
     },
     close(): Promise<void> {
       return client.close();
@@ -629,6 +680,7 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
         "vision.diff",
         "vision.video",
         "quota",
+        "diagnostics",
       ]);
     },
     create(context: ProviderContext): ProviderAdapter {
@@ -642,7 +694,11 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
       });
       const quotaOptions: ZaiQuotaCapabilityOptions = { env: context.env, ...quotaTransport };
       const quota = createZaiQuotaCapability(quotaOptions);
-      return { id: "zai", search, vision, quota };
+      const diagnostics = createZaiDiagnosticsCapability({
+        env: context.env,
+        clientFactory,
+      });
+      return { id: "zai", search, vision, quota, diagnostics };
     },
   };
 }

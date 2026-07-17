@@ -115,9 +115,9 @@ describe("Z.AI Search Adapter — descriptor metadata", () => {
     assert.strictEqual(descriptor.id, "zai");
     const caps = descriptor.capabilities();
     assert.ok(caps.has("search"));
-    // P4-02 wires quota; diagnostics arrive in P4-04.
+    // P4-02 wires quota; P4-04 wires diagnostics.
     assert.ok(caps.has("quota"));
-    assert.ok(!caps.has("diagnostics"));
+    assert.ok(caps.has("diagnostics"));
   });
 
   it("isConfigured is true only when Z_AI_API_KEY has non-whitespace", () => {

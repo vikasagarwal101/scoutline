@@ -781,91 +781,66 @@ describe("invokeCommand — vision routed through the seam (P1-08)", () => {
   });
 });
 
-describe("invokeCommand — doctor routed through the seam (P1-09)", () => {
-  it("doctor env-only check returns a CommandResult with env + node, no mcp section", async () => {
+describe("invokeCommand — doctor routed through the seam (P4-04)", () => {
+  it("doctor returns a schema-version-1 diagnostics report rendered through the seam", async () => {
     const { doctor } = await import("../dist/commands/doctor.js");
     const { adapter, stdout, stderr } = createRecordingAdapter();
     const status = await invokeCommand(
       adapter,
-      (ctx) => doctor({ noTools: true }, {}, ctx),
+      () =>
+        doctor({
+          buildReport: async () => ({
+            schemaVersion: 1,
+            effectiveProvider: "zai",
+            sharedCapabilities: ["search", "vision.interpret-image", "quota", "diagnostics"],
+            zaiOnlyCapabilities: ["reader"],
+            node: { version: process.version, visionMcpCompatible: true },
+            providers: [
+              { provider: "zai", configured: true, capabilities: ["search"], status: "ok" },
+            ],
+          }),
+        }),
       "data",
     );
     assert.strictEqual(status, 0);
     assert.strictEqual(stdout.length, 1);
     const report = JSON.parse(stdout[0]);
-    assert.ok(report.env, "report has env section");
-    assert.strictEqual(typeof report.env.apiKeyPresent, "boolean");
-    assert.ok(report.node, "report has node section");
-    assert.strictEqual(typeof report.node.visionMcpCompatible, "boolean");
-    assert.strictEqual(report.mcp, undefined, "no mcp section when noTools");
+    assert.strictEqual(report.schemaVersion, 1);
+    assert.strictEqual(report.effectiveProvider, "zai");
+    assert.strictEqual(report.providers[0].status, "ok");
     assert.deepStrictEqual(stderr, []);
   });
 
-  it("doctor discovers current Z.AI tools via the injected client and reports toolCount/servers", async () => {
+  it("doctor propagates the computed exit code when a probe fails", async () => {
     const { doctor } = await import("../dist/commands/doctor.js");
     const { adapter, stdout } = createRecordingAdapter();
-    const fakeClient = {
-      async listTools() {
-        return [
-          { name: "scoutline.zai.search" },
-          { name: "scoutline.zai.read" },
-          { name: "scoutline.zread.tree" },
-          { name: "scoutline.zread.file" },
-        ];
-      },
-      async close() {},
-    };
     const status = await invokeCommand(
       adapter,
-      (ctx) => doctor({ enableVision: false }, { clientFactory: () => fakeClient }, ctx),
+      () =>
+        doctor({
+          buildReport: async () => ({
+            schemaVersion: 1,
+            effectiveProvider: "zai",
+            sharedCapabilities: [],
+            zaiOnlyCapabilities: [],
+            node: { version: process.version, visionMcpCompatible: true },
+            providers: [
+              {
+                provider: "zai",
+                configured: true,
+                capabilities: ["search"],
+                status: "error",
+                error: { code: "AUTH_ERROR", message: "nope" },
+              },
+            ],
+          }),
+        }),
       "data",
     );
-    assert.strictEqual(status, 0);
+    assert.strictEqual(status, 1);
     const report = JSON.parse(stdout[0]);
-    assert.strictEqual(report.mcp.toolCount, 4);
-    assert.deepStrictEqual(report.mcp.servers, { zai: 2, zread: 2 });
-  });
-
-  it("doctor omits mcp section when no API key is present (env-only, no transport)", async () => {
-    const { doctor } = await import("../dist/commands/doctor.js");
-    const { adapter, stdout } = createRecordingAdapter();
-    // Clear key so doctor takes the env-only path without constructing a client.
-    const savedZai = process.env.Z_AI_API_KEY;
-    const savedLegacy = process.env.ZAI_API_KEY;
-    delete process.env.Z_AI_API_KEY;
-    delete process.env.ZAI_API_KEY;
-    let clientConstructed = false;
-    try {
-      await invokeCommand(
-        adapter,
-        (ctx) =>
-          doctor(
-            {},
-            {
-              clientFactory: () => {
-                clientConstructed = true;
-                return {
-                  async listTools() {
-                    return [];
-                  },
-                  async close() {},
-                };
-              },
-            },
-            ctx,
-          ),
-        "data",
-      );
-    } finally {
-      if (savedZai !== undefined) process.env.Z_AI_API_KEY = savedZai;
-      else delete process.env.Z_AI_API_KEY;
-      if (savedLegacy !== undefined) process.env.ZAI_API_KEY = savedLegacy;
-      else delete process.env.ZAI_API_KEY;
-    }
-    const report = JSON.parse(stdout[0]);
-    assert.strictEqual(report.env.apiKeyPresent, false);
-    assert.strictEqual(report.mcp, undefined);
-    assert.strictEqual(clientConstructed, false, "no transport constructed without a key");
+    assert.strictEqual(report.providers[0].status, "error");
+    assert.strictEqual(stdout.length, 1, "failed entries are still rendered");
   });
 });
 

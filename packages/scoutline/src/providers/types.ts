@@ -23,6 +23,7 @@
 import type { SearchCapability } from "../capabilities/search.js";
 import type { VisionCapability } from "../capabilities/vision.js";
 import type { QuotaCapability } from "../capabilities/quota.js";
+import type { DiagnosticsCapability } from "../capabilities/diagnostics.js";
 
 // ---------------------------------------------------------------------------
 // Provider identity
@@ -70,13 +71,14 @@ export interface ProviderContext {
 /**
  * Provider Adapter contract (Phase 3 shape). Each Capability that the
  * Provider supports becomes a property on this interface. Phase 4 adds
- * `quota?: QuotaCapability` and a `diagnose?` method.
+ * `quota?: QuotaCapability` and `diagnostics?: DiagnosticsCapability`.
  */
 export interface ProviderAdapter {
   readonly id: ProviderId;
   readonly search?: SearchCapability;
   readonly vision?: VisionCapability;
   readonly quota?: QuotaCapability;
+  readonly diagnostics?: DiagnosticsCapability;
 }
 
 // ---------------------------------------------------------------------------
@@ -225,10 +227,12 @@ export interface SearchDependencies {
 /**
  * Narrow surface a Z.AI Search Adapter uses from `ZaiMcpClient`. The
  * Adapter only invokes raw tools; cache and retry policy live in shared
- * execution.
+ * execution. `listTools` is the tool-discovery surface the Z.AI
+ * diagnostics capability probes (DESIGN.md §14).
  */
 export interface ZaiAdapterClientPort {
   callToolRaw<T>(name: string, args: Record<string, unknown>): Promise<T>;
+  listTools(): Promise<unknown[]>;
   close(): Promise<void>;
 }
 
@@ -309,6 +313,7 @@ export function createZaiDescriptor(
         "vision.chart",
         "vision.diff",
         "vision.video",
+        "diagnostics",
       ]);
     },
     create() {
@@ -335,7 +340,7 @@ export function createMiniMaxDescriptor(
       return typeof key === "string" && /\S/.test(key);
     },
     capabilities() {
-      return new Set<ProviderCapability>(["search", "vision.interpret-image"]);
+      return new Set<ProviderCapability>(["search", "vision.interpret-image", "diagnostics"]);
     },
     create() {
       throw new Error("MiniMax Search Adapter is not yet implemented; arrives in P2-04.");

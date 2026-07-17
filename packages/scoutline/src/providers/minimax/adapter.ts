@@ -46,6 +46,7 @@ import type {
   VisionRequest,
 } from "../../capabilities/vision.js";
 import { visionOperationToCapability } from "../../capabilities/vision.js";
+import type { DiagnosticsCapability, DiagnosticOptions } from "../../capabilities/diagnostics.js";
 import {
   ApiError,
   AuthError,
@@ -59,7 +60,11 @@ import { loadMiniMaxConfig } from "./config.js";
 import { createMiniMaxSdk } from "./sdk-client.js";
 import { resolveImageSource } from "./media.js";
 import { createMiniMaxQuotaCapability, type MiniMaxQuotaCapabilityOptions } from "./quota.js";
-import type { MiniMaxQuotaFetch } from "./quota-client.js";
+import {
+  fetchMiniMaxQuota,
+  type MiniMaxQuotaClientDeps,
+  type MiniMaxQuotaFetch,
+} from "./quota-client.js";
 
 // ---------------------------------------------------------------------------
 // Provider-owned credential fingerprint
@@ -314,6 +319,45 @@ function normalizeMiniMaxVisionResult(raw: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
+// Diagnostics Capability (DESIGN.md §12, §14 — P4-04)
+// ---------------------------------------------------------------------------
+
+/**
+ * Options for the MiniMax DiagnosticsCapability. Configuration is
+ * loaded from `env`; transport dependencies (`fetch`, timer) are the
+ * same Adapter-local quota transport used by the quota Capability so
+ * tests inject a single fake for both.
+ */
+export interface MiniMaxDiagnosticsCapabilityOptions extends MiniMaxQuotaClientDeps {
+  readonly env: NodeJS.ProcessEnv;
+}
+
+/**
+ * Build the MiniMax DiagnosticsCapability. MiniMax connectivity is
+ * probed through a raw single-attempt quota inspection
+ * ({@link fetchMiniMaxQuota}), NOT `QuotaCapability.invoke()`, because
+ * the remains endpoint authenticates without a generative request.
+ * There is NO nested retry wrapper here — shared execution owns the
+ * retry policy; this transport performs exactly one attempt.
+ */
+function createMiniMaxDiagnosticsCapability(
+  options: MiniMaxDiagnosticsCapabilityOptions,
+): DiagnosticsCapability {
+  const { env, ...transportDeps } = options;
+  return {
+    async invoke(diagOptions: DiagnosticOptions): Promise<void> {
+      if (!diagOptions.probe) return;
+      const config = loadMiniMaxConfig(env);
+      try {
+        await fetchMiniMaxQuota(config, transportDeps);
+      } catch (error) {
+        throw normalizeMiniMaxError(error);
+      }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Descriptor factory
 // ---------------------------------------------------------------------------
 
@@ -354,7 +398,12 @@ export function createMiniMaxDescriptor(
       return typeof key === "string" && /\S/.test(key);
     },
     capabilities(): ReadonlySet<ProviderCapability> {
-      return new Set<ProviderCapability>(["search", "vision.interpret-image", "quota"]);
+      return new Set<ProviderCapability>([
+        "search",
+        "vision.interpret-image",
+        "quota",
+        "diagnostics",
+      ]);
     },
     create(context: ProviderContext): ProviderAdapter {
       const search = createMiniMaxSearchCapability({
@@ -367,7 +416,11 @@ export function createMiniMaxDescriptor(
       });
       const quotaOptions: MiniMaxQuotaCapabilityOptions = { env: context.env, ...quotaTransport };
       const quota = createMiniMaxQuotaCapability(quotaOptions);
-      return { id: "minimax", search, vision, quota };
+      const diagnostics = createMiniMaxDiagnosticsCapability({
+        env: context.env,
+        ...quotaTransport,
+      });
+      return { id: "minimax", search, vision, quota, diagnostics };
     },
   };
 }

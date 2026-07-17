@@ -260,9 +260,9 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     for (const d of BUILT_IN_PROVIDER_DESCRIPTORS) {
       const caps = d.capabilities();
       assert.ok(caps.has("search"), `${d.id} should advertise search`);
-      // P4-02 wires quota metadata; diagnostics arrive in P4-04.
+      // P4-02 wires quota metadata; P4-04 wires diagnostics.
       assert.ok(caps.has("quota"));
-      assert.ok(!caps.has("diagnostics"));
+      assert.ok(caps.has("diagnostics"));
     }
     const zai = getProviderDescriptor("zai");
     assert.strictEqual(zai.isConfigured({ Z_AI_API_KEY: "k" }), true);

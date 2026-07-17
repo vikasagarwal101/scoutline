@@ -8,7 +8,7 @@ import { search, SEARCH_HELP } from "./commands/search.js";
 import { read, READ_HELP } from "./commands/read.js";
 import { repoSearch, repoTree, repoRead, REPO_HELP } from "./commands/repo.js";
 import { listTools, showTool, callTool, TOOLS_HELP, CALL_HELP } from "./commands/tools.js";
-import { doctor, DOCTOR_HELP } from "./commands/doctor.js";
+import { doctor, buildDiagnosticsReport, DOCTOR_HELP } from "./commands/doctor.js";
 import { quota, buildQuotaDashboard, QUOTA_HELP } from "./commands/quota.js";
 import { isExtractMode, type ExtractMode } from "./lib/extract.js";
 import {
@@ -686,17 +686,27 @@ async function handleDoctor(
     return 0;
   }
 
+  const noTools = flags["no-tools"] === true;
+  // Resolve the effective Provider ID for report metadata, mirroring
+  // Search/Vision/quota. Descriptors are intentionally NOT passed here so
+  // the report always lists every built-in Provider even when the
+  // effective Provider is unconfigured.
+  const effectiveProvider = resolveProviderId(deps.provider, deps.env);
+
   return invokeCommand(
     deps.invocation,
-    (context) =>
-      doctor(
-        {
-          noTools: flags["no-tools"] === true,
-          enableVision: flags.vision !== false,
-        },
-        {},
-        context,
-      ),
+    () =>
+      doctor({
+        buildReport: () =>
+          buildDiagnosticsReport({
+            noTools,
+            effectiveProvider,
+            descriptors: deps.providerDescriptors,
+            env: deps.env,
+            sleep: deps.searchSleep,
+            random: deps.searchRandom,
+          }),
+      }),
     outputMode,
     deps.now,
   );

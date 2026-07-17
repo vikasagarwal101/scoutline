@@ -254,9 +254,9 @@ describe("MiniMax descriptor — metadata", () => {
     assert.strictEqual(d.id, "minimax");
     const caps = d.capabilities();
     assert.ok(caps.has("search"));
-    // P4-02 wires quota; diagnostics arrive in P4-04.
+    // P4-02 wires quota; P4-04 wires diagnostics.
     assert.ok(caps.has("quota"));
-    assert.ok(!caps.has("diagnostics"));
+    assert.ok(caps.has("diagnostics"));
   });
 
   it("isConfigured is true only when MINIMAX_API_KEY has non-whitespace", () => {

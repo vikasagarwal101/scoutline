@@ -1,96 +1,258 @@
 /**
- * Doctor command for environment and MCP diagnostics.
+ * Doctor command — Provider-aware diagnostics (P4-04, DESIGN.md §14).
  *
- * P1-09: returns a `CommandResult` instead of writing to stdout/stderr and
- * terminating. Dependency-log suppression is owned by the invocation seam's
- * `runQuietly` (via `invokeCommand`); this handler no longer silences or
- * restores the console itself. Errors propagate to `invokeCommand`, which
- * converts them into one structured stderr value.
+ * The command is presentation-only: it receives a report builder through
+ * injected dependencies and wraps the resulting {@link DiagnosticsReport}
+ * as base data with a computed exit code. Provider resolution, capability
+ * probing, settled collection, and failure redaction live in
+ * {@link buildDiagnosticsReport} so the command never imports a Provider
+ * transport (ZaiMcpClient, monitor client, or environment credential
+ * reads) directly.
+ *
+ * Exit semantics (DESIGN.md §14):
+ *   - Missing effective Provider credentials -> exit 1.
+ *   - Any configured probe error -> exit 1 (successful entries preserved).
+ *   - All configured probes succeed, or only tools-disabled skips -> exit 0.
+ *
+ * Under `--no-tools` the command returns after metadata + configured-state
+ * evaluation and constructs no Adapter and no transport (FR-034).
  */
 
-import { ZaiMcpClient } from "../lib/mcp-client.js";
-import type { CommandContext, CommandResult } from "../command-invocation.js";
+import type { CommandResult } from "../command-invocation.js";
+import type {
+  DiagnosticsCapability,
+  DiagnosticsReport,
+  ProviderDiagnostic,
+} from "../capabilities/diagnostics.js";
+import {
+  SHARED_CAPABILITIES,
+  ZAI_ONLY_CAPABILITIES,
+  diagnosticErrorFromError,
+} from "../capabilities/diagnostics.js";
+import { executeProviderOperation } from "../lib/execution.js";
+import { UnsupportedCapabilityError } from "../lib/errors.js";
+import { redactSecrets, configuredSecrets } from "../lib/redact.js";
+import type { ProviderDescriptor, ProviderId, ProviderCapability } from "../providers/types.js";
 
-export interface DoctorOptions {
-  noTools?: boolean;
-  enableVision?: boolean;
+// ---------------------------------------------------------------------------
+// Report builder
+// ---------------------------------------------------------------------------
+
+export interface DoctorDiagnosticsDependencies {
+  readonly noTools: boolean;
+  readonly effectiveProvider: ProviderId;
+  readonly descriptors: readonly ProviderDescriptor[];
+  readonly env: NodeJS.ProcessEnv;
+  readonly sleep: (ms: number) => Promise<void>;
+  readonly random: () => number;
+}
+
+interface AdapterWithDiagnostics {
+  readonly diagnostics?: DiagnosticsCapability;
 }
 
 /**
- * Behaviour-preserving optional dependencies for testing the doctor command.
- * Omitted dependencies use the current {@link ZaiMcpClient} constructor.
+ * Static Provider metadata gathered before any probe. Each entry is
+ * promoted to a full {@link ProviderDiagnostic} once its status is
+ * resolved (skipped, ok, or error).
  */
-export interface DoctorDependencies {
-  clientFactory?: (options: {
-    enableVision?: boolean;
-  }) => Pick<ZaiMcpClient, "listTools" | "close">;
+interface ProviderDiagnosticBase {
+  readonly provider: ProviderId;
+  readonly configured: boolean;
+  readonly capabilities: readonly ProviderCapability[];
 }
 
-function getNodeMajor(): number {
+function nodeMajor(): number {
   const [major] = process.versions.node.split(".");
   return parseInt(major, 10);
 }
 
-export async function doctor(
-  options: DoctorOptions = {},
-  deps: DoctorDependencies = {},
-  _context?: CommandContext,
-): Promise<CommandResult> {
-  const apiKey = process.env.Z_AI_API_KEY || process.env.ZAI_API_KEY;
-  const mode = (process.env.Z_AI_MODE || process.env.PLATFORM_MODE || "ZAI").toUpperCase();
-  const nodeMajor = getNodeMajor();
+/**
+ * Probe one Provider's connectivity through shared execution. The Adapter
+ * transport performs a single attempt (Z.AI tool discovery or MiniMax raw
+ * quota probe); the retry policy lives in
+ * `executeProviderOperation("diagnostics", ...)`.
+ */
+async function probeProvider(
+  descriptor: ProviderDescriptor,
+  env: NodeJS.ProcessEnv,
+  sleep: (ms: number) => Promise<void>,
+  random: () => number,
+): Promise<void> {
+  const adapter = descriptor.create({ env }) as AdapterWithDiagnostics;
+  const capability = adapter.diagnostics;
+  if (!capability) {
+    throw new UnsupportedCapabilityError(descriptor.id, "diagnostics");
+  }
+  return executeProviderOperation("diagnostics", () => capability.invoke({ probe: true }), {
+    sleep,
+    random,
+  });
+}
 
-  const report: Record<string, unknown> = {
-    env: {
-      apiKeyPresent: Boolean(apiKey),
-      mode,
-      baseUrl: process.env.Z_AI_BASE_URL || undefined,
-    },
+/**
+ * Build a schema-version-1 {@link DiagnosticsReport}. Report metadata is
+ * built from static descriptors without constructing any Adapter. Under
+ * `--no-tools` the command returns after metadata + configured-state
+ * evaluation. Otherwise each configured Provider is probed through
+ * shared execution with settled collection, preserving registry order
+ * and normalized redacted failures.
+ */
+export async function buildDiagnosticsReport(
+  deps: DoctorDiagnosticsDependencies,
+): Promise<DiagnosticsReport> {
+  const secrets = configuredSecrets(deps.env);
+
+  const baseEntries: ProviderDiagnosticBase[] = deps.descriptors.map((descriptor) => ({
+    provider: descriptor.id,
+    configured: descriptor.isConfigured(deps.env),
+    capabilities: [...descriptor.capabilities()],
+  }));
+
+  const providers: ProviderDiagnostic[] = deps.noTools
+    ? baseEntries.map((entry) => ({
+        ...entry,
+        status: "skipped" as const,
+        reason: entry.configured ? ("tools-disabled" as const) : ("not-configured" as const),
+      }))
+    : await probeEntries(baseEntries, deps, secrets);
+
+  return {
+    schemaVersion: 1,
+    effectiveProvider: deps.effectiveProvider,
+    sharedCapabilities: SHARED_CAPABILITIES,
+    zaiOnlyCapabilities: ZAI_ONLY_CAPABILITIES,
     node: {
-      version: process.versions.node,
-      visionMcpCompatible: nodeMajor >= 22,
+      version: process.version,
+      visionMcpCompatible: nodeMajor() >= 22,
     },
+    providers,
   };
+}
 
-  // Env-only path: skip tool discovery when requested or when no credential
-  // is present (no transport is constructed).
-  if (options.noTools || !apiKey) {
-    return { kind: "data", data: report };
-  }
+/**
+ * Probe every configured Provider in registry order using settled
+ * collection. Unconfigured entries are skipped (not-configured) and do
+ * NOT fail the report. A configured probe failure is normalized and
+ * recursively redacted before joining the report; successful entries
+ * are preserved alongside it.
+ */
+async function probeEntries(
+  baseEntries: ProviderDiagnosticBase[],
+  deps: DoctorDiagnosticsDependencies,
+  secrets: string[],
+): Promise<ProviderDiagnostic[]> {
+  const configuredIndexes = baseEntries
+    .map((entry, index) => (entry.configured ? index : -1))
+    .filter((index) => index >= 0);
 
-  const clientFactory =
-    deps.clientFactory || ((opts) => new ZaiMcpClient({ enableVision: opts.enableVision }));
-  const client = clientFactory({ enableVision: options.enableVision });
-  try {
-    const tools = await client.listTools();
-    const byServer = tools.reduce<Record<string, number>>((acc, tool) => {
-      const parts = tool.name.split(".");
-      const server = parts.length >= 2 ? parts[1] : "unknown";
-      acc[server] = (acc[server] || 0) + 1;
-      return acc;
-    }, {});
+  const settled = await Promise.allSettled(
+    configuredIndexes.map((index) =>
+      probeProvider(deps.descriptors[index], deps.env, deps.sleep, deps.random),
+    ),
+  );
 
-    report.mcp = {
-      toolCount: tools.length,
-      servers: byServer,
-    };
+  let settledCursor = 0;
+  return baseEntries.map((entry) => {
+    if (!entry.configured) {
+      return { ...entry, status: "skipped" as const, reason: "not-configured" as const };
+    }
+    const result = settled[settledCursor++];
+    if (result.status === "fulfilled") {
+      return { ...entry, status: "ok" as const };
+    }
+    const redacted = redactSecrets(diagnosticErrorFromError(result.reason), secrets) as NonNullable<
+      ProviderDiagnostic["error"]
+    >;
+    return { ...entry, status: "error" as const, error: redacted };
+  });
+}
 
-    return { kind: "data", data: report };
-  } finally {
-    await client.close().catch(() => {});
-  }
+// ---------------------------------------------------------------------------
+// Exit code
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the doctor exit code from a finalized report. Exit 1 when the
+ * effective Provider is unconfigured or any configured probe errored;
+ * otherwise exit 0. A tools-disabled or not-configured skip on a
+ * non-effective Provider never fails the report.
+ */
+export function doctorExitCode(report: DiagnosticsReport): number {
+  const effective = report.providers.find((p) => p.provider === report.effectiveProvider);
+  if (!effective || !effective.configured) return 1;
+  if (report.providers.some((p) => p.status === "error")) return 1;
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Command
+// ---------------------------------------------------------------------------
+
+export interface DoctorOptions {
+  noTools?: boolean;
+}
+
+/**
+ * Injectable dependencies for the doctor command. `buildReport` resolves
+ * the diagnostics report; the command only wraps it for presentation and
+ * exit-code selection.
+ */
+export interface DoctorCommandDependencies {
+  readonly buildReport: () => Promise<DiagnosticsReport>;
+}
+
+/**
+ * Run the doctor command. Returns the diagnostics report as base data
+ * with a computed exit code (1 when the effective Provider is
+ * unconfigured or any configured probe failed; otherwise 0).
+ */
+export async function doctor(
+  deps: DoctorCommandDependencies,
+): Promise<CommandResult<DiagnosticsReport>> {
+  const report = await deps.buildReport();
+  return {
+    kind: "data",
+    data: report,
+    exitCode: doctorExitCode(report),
+  };
 }
 
 export const DOCTOR_HELP = `
-Doctor - Check environment and MCP connectivity
+Doctor - Provider-aware environment and connectivity diagnostics
 
 Usage: scoutline doctor [options]
 
+Reports a schema-version-1 diagnostics report listing every built-in
+Provider (zai, minimax) with its configured state, declared
+Capabilities, and connectivity status. The effective Provider (resolved
+from --provider, SCOUTLINE_PROVIDER, or the default zai) is the
+Provider that serves the shared Capabilities:
+
+  search, vision.interpret-image, quota, diagnostics
+
+Z.AI connectivity is probed through MCP tool discovery; MiniMax
+connectivity through a single raw quota probe that authenticates
+without a generative request.
+
+The following Capabilities are Z.AI-only in the base release and are
+not selected by the effective Provider for other families:
+  reader, repository-exploration, raw-provider-tools, code-mode,
+  image-diff, video-analysis
+
 Options:
-  --no-tools   Skip tool discovery (env-only check)
-  --no-vision  Skip vision MCP server (faster startup)
+  --no-tools   Skip every connectivity probe (metadata-only). Under
+               --no-tools no Provider transport is constructed: a
+               configured Provider is reported as skipped
+               (tools-disabled) and does not fail the report.
+
+Exit codes:
+  0  All configured probes succeeded (or only tools-disabled skips).
+  1  The effective Provider is unconfigured or any configured probe
+     failed; successful entries are still reported.
 
 Examples:
-  scoutline doctor
-  scoutline doctor --no-tools
+  scoutline doctor                 # full diagnostics
+  scoutline doctor --provider minimax
+  scoutline doctor --no-tools      # metadata only, no transport
 `.trim();

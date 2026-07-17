@@ -22,7 +22,7 @@
  *     non-retryable, no source path or credential leak.
  *   - `descriptor.capabilities()` is a pure metadata check.
  */
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 
 import {
@@ -30,15 +30,40 @@ import {
   ALL_VISION_OPERATIONS,
   visionOperationToCapability,
 } from "../dist/capabilities/vision.js";
-import {
-  createZaiDescriptor,
-  createMiniMaxDescriptor,
-} from "../dist/providers/types.js";
-import {
-  UnsupportedCapabilityError,
-  getErrorExitCode,
-} from "../dist/lib/errors.js";
+import { createZaiDescriptor, createMiniMaxDescriptor } from "../dist/providers/types.js";
+import { UnsupportedCapabilityError, getErrorExitCode } from "../dist/lib/errors.js";
 import { executeProviderOperation } from "../dist/lib/execution.js";
+
+// P3-02 — Provider media modules (DESIGN.md §9)
+import * as nodeFsp from "node:fs/promises";
+import * as nodeOs from "node:os";
+import * as nodePath from "node:path";
+import {
+  resolveImageSource as zaiResolveImageSource,
+  resolveVideoSource as zaiResolveVideoSource,
+} from "../dist/providers/zai/media.js";
+import { resolveImageSource as minimaxResolveImageSource } from "../dist/providers/minimax/media.js";
+import {
+  isUrl as compatIsUrl,
+  validateImageSource as compatValidateImageSource,
+  encodeImageToBase64 as compatEncodeImageToBase64,
+  processImageSource as compatProcessImageSource,
+  resolveImageSource as compatResolveImageSource,
+} from "../dist/lib/image.js";
+
+// Provider media limits (DESIGN.md §9). MiB = 1024 * 1024.
+const ZAI_MAX_IMAGE = 5 * 1024 * 1024; // 5 MiB
+const ZAI_MAX_VIDEO = 8 * 1024 * 1024; // 8 MiB
+const MINIMAX_MAX_IMAGE = 50 * 1024 * 1024; // 50 MiB
+
+/** Create a sparse file of exactly `size` bytes (hole, not allocated). */
+async function makeSparseFile(dir, name, size) {
+  const filePath = nodePath.join(dir, name);
+  const handle = await nodeFsp.open(filePath, "w");
+  await handle.truncate(size);
+  await handle.close();
+  return filePath;
+}
 
 // ---------------------------------------------------------------------------
 // Every operation in the discriminated union
@@ -57,10 +82,7 @@ const OPERATIONS = [
 
 describe("Vision Capability — discriminated union coverage", () => {
   it("exports every operation as part of the public set", () => {
-    assert.deepStrictEqual(
-      [...ALL_VISION_OPERATIONS].sort(),
-      [...OPERATIONS].sort(),
-    );
+    assert.deepStrictEqual([...ALL_VISION_OPERATIONS].sort(), [...OPERATIONS].sort());
   });
 
   it("maps each operation to a stable vision.<operation> capability id", () => {
@@ -223,32 +245,32 @@ describe("Vision Capability — early support check ordering", () => {
       const descriptor = makeFailingDescriptor("minimax", sentinels);
       const request = fixtureRequest(op);
 
-      await assert.rejects(
-        invokeVision(descriptor, request, { env: process.env }),
-        (err) => {
-          assert.ok(
-            err instanceof UnsupportedCapabilityError,
-            `expected UnsupportedCapabilityError, got ${err && err.constructor && err.constructor.name}`,
-          );
-          assert.strictEqual(err.code, "UNSUPPORTED_CAPABILITY");
-          // The error identifies Provider AND Capability in its message
-          // (DESIGN.md §4; the existing class stores them only in the
-          // message, not as public fields).
-          assert.match(err.message, /minimax/, `message must identify provider: ${err.message}`);
-          assert.match(err.message, /vision\./, `message must identify capability: ${err.message}`);
-          // Exit 1 and non-retryable.
-          assert.strictEqual(getErrorExitCode(err), 1);
-          assert.strictEqual(err.retryable, false);
-          // The error carries no source path or credential value.
-          const serialized = JSON.stringify({
-            message: err.message,
-            help: err.help,
-          });
-          assert.ok(!/\/secrets\//.test(serialized), `error leaks source path: ${serialized}`);
-          assert.ok(!/credentials\.png/.test(serialized), `error leaks source filename: ${serialized}`);
-          return true;
-        },
-      );
+      await assert.rejects(invokeVision(descriptor, request, { env: process.env }), (err) => {
+        assert.ok(
+          err instanceof UnsupportedCapabilityError,
+          `expected UnsupportedCapabilityError, got ${err && err.constructor && err.constructor.name}`,
+        );
+        assert.strictEqual(err.code, "UNSUPPORTED_CAPABILITY");
+        // The error identifies Provider AND Capability in its message
+        // (DESIGN.md §4; the existing class stores them only in the
+        // message, not as public fields).
+        assert.match(err.message, /minimax/, `message must identify provider: ${err.message}`);
+        assert.match(err.message, /vision\./, `message must identify capability: ${err.message}`);
+        // Exit 1 and non-retryable.
+        assert.strictEqual(getErrorExitCode(err), 1);
+        assert.strictEqual(err.retryable, false);
+        // The error carries no source path or credential value.
+        const serialized = JSON.stringify({
+          message: err.message,
+          help: err.help,
+        });
+        assert.ok(!/\/secrets\//.test(serialized), `error leaks source path: ${serialized}`);
+        assert.ok(
+          !/credentials\.png/.test(serialized),
+          `error leaks source filename: ${serialized}`,
+        );
+        return true;
+      });
 
       // The support check MUST NOT have called create() or any other
       // observation point. capabilities() is the only allowed pre-create
@@ -361,11 +383,7 @@ describe("Vision Capability — supported operations go through create-then-invo
           };
         },
       };
-      const out = await invokeVision(
-        descriptor,
-        fixtureRequest(op),
-        { env: process.env },
-      );
+      const out = await invokeVision(descriptor, fixtureRequest(op), { env: process.env });
       assert.strictEqual(out, `zai:${op}`);
     }
   });
@@ -403,7 +421,11 @@ describe("Vision Capability — supported operations go through create-then-invo
       (err) => err instanceof UnsupportedCapabilityError,
     );
     assert.strictEqual(invokeCalls, 0, "Adapter.invoke must not be called when supports()==false");
-    assert.strictEqual(sentinels.create, 1, "Descriptor.create IS allowed here (the descriptor advertised it)");
+    assert.strictEqual(
+      sentinels.create,
+      1,
+      "Descriptor.create IS allowed here (the descriptor advertised it)",
+    );
   });
 });
 
@@ -416,10 +438,7 @@ describe("Vision Capability — built-in descriptor capabilities metadata", () =
   it("Z.AI declares every current Vision operation", () => {
     const caps = createZaiDescriptor().capabilities();
     for (const op of OPERATIONS) {
-      assert.ok(
-        caps.has(`vision.${op}`),
-        `Z.AI descriptor must advertise vision.${op}`,
-      );
+      assert.ok(caps.has(`vision.${op}`), `Z.AI descriptor must advertise vision.${op}`);
     }
   });
 
@@ -443,5 +462,228 @@ describe("Vision Capability — built-in descriptor capabilities metadata", () =
       assert.strictEqual(typeof d.capabilities(), "object");
       assert.ok(d.capabilities() instanceof Set);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provider Media Modules (P3-02, DESIGN.md §9)
+//
+// Commands pass raw path-or-URL strings; Provider media Modules own format,
+// size, existence, and absolute-path rules. Media Modules never read file
+// content (Z.AI MCP receives the absolute path; the MiniMax SDK owns
+// data-URI conversion). lib/image.ts remains a Phase 0 compatibility export.
+// ---------------------------------------------------------------------------
+
+describe("Provider Media Module — Z.AI (P3-02)", () => {
+  let tmpDir;
+  before(async () => {
+    tmpDir = await nodeFsp.mkdtemp(nodePath.join(nodeOs.tmpdir(), "scoutline-zai-media-"));
+  });
+  after(async () => {
+    await nodeFsp.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("accepts case-insensitive JPG/JPEG/PNG at exactly 5 MiB and one byte below", async () => {
+    for (const ext of [".jpg", ".JPG", ".jpeg", ".JPEG", ".png", ".PNG"]) {
+      const atLimit = await makeSparseFile(tmpDir, `at${ext}`, ZAI_MAX_IMAGE);
+      const below = await makeSparseFile(tmpDir, `below${ext}`, ZAI_MAX_IMAGE - 1);
+      assert.strictEqual(
+        zaiResolveImageSource(atLimit),
+        nodePath.resolve(atLimit),
+        `Z.AI image at 5 MiB with ${ext} must resolve to absolute path`,
+      );
+      assert.strictEqual(
+        zaiResolveImageSource(below),
+        nodePath.resolve(below),
+        `Z.AI image below 5 MiB with ${ext} must resolve to absolute path`,
+      );
+    }
+  });
+
+  it("rejects one byte over the 5 MiB image limit with VALIDATION_ERROR", async () => {
+    const over = await makeSparseFile(tmpDir, "over-limit.png", ZAI_MAX_IMAGE + 1);
+    assert.throws(
+      () => zaiResolveImageSource(over),
+      (err) => err.code === "VALIDATION_ERROR",
+    );
+  });
+
+  it("rejects WebP images with VALIDATION_ERROR", async () => {
+    const webp = await makeSparseFile(tmpDir, "webp.webp", 1024);
+    assert.throws(
+      () => zaiResolveImageSource(webp),
+      (err) => err.code === "VALIDATION_ERROR",
+    );
+  });
+
+  it("preserves the Phase 0 video extension set and 8 MiB limit", async () => {
+    const exts = [".mp4", ".mov", ".m4v", ".avi", ".webm", ".wmv"];
+    for (const ext of exts) {
+      const atLimit = await makeSparseFile(tmpDir, `vid${ext}`, ZAI_MAX_VIDEO);
+      const below = await makeSparseFile(tmpDir, `vidbelow${ext}`, ZAI_MAX_VIDEO - 1);
+      assert.strictEqual(
+        zaiResolveVideoSource(atLimit),
+        nodePath.resolve(atLimit),
+        `Z.AI video at 8 MiB with ${ext} must resolve`,
+      );
+      assert.strictEqual(zaiResolveVideoSource(below), nodePath.resolve(below));
+    }
+    const overVid = await makeSparseFile(tmpDir, "vidover.mp4", ZAI_MAX_VIDEO + 1);
+    assert.throws(
+      () => zaiResolveVideoSource(overVid),
+      (err) => err.code === "VALIDATION_ERROR",
+    );
+  });
+
+  it("rejects an unsupported video extension with VALIDATION_ERROR", async () => {
+    const bad = await makeSparseFile(tmpDir, "bad.mkv", 1024);
+    assert.throws(
+      () => zaiResolveVideoSource(bad),
+      (err) => err.code === "VALIDATION_ERROR",
+    );
+  });
+
+  it("rejects a missing local image with FILE_ERROR", () => {
+    const missing = nodePath.join(tmpDir, "does-not-exist.png");
+    assert.throws(
+      () => zaiResolveImageSource(missing),
+      (err) => err.code === "FILE_ERROR",
+    );
+  });
+
+  it("rejects a missing local video with FILE_ERROR", () => {
+    const missing = nodePath.join(tmpDir, "does-not-exist.mp4");
+    assert.throws(
+      () => zaiResolveVideoSource(missing),
+      (err) => err.code === "FILE_ERROR",
+    );
+  });
+
+  it("passes HTTP(S) URLs through without local filesystem access", () => {
+    for (const url of ["http://example.test/image.png", "https://example.test/image.jpg"]) {
+      assert.strictEqual(zaiResolveImageSource(url), url);
+      assert.strictEqual(zaiResolveVideoSource(url), url);
+    }
+  });
+
+  it("rejects non-HTTP URL-like strings with VALIDATION_ERROR", () => {
+    for (const bad of ["ftp://example.test/x.png", "file:///tmp/x.png"]) {
+      assert.throws(
+        () => zaiResolveImageSource(bad),
+        (err) => err.code === "VALIDATION_ERROR",
+      );
+    }
+  });
+
+  it("never reads file content (returns an absolute path, never a data URI)", async () => {
+    const img = await makeSparseFile(tmpDir, "noread.png", 1024);
+    const result = zaiResolveImageSource(img);
+    assert.ok(
+      !result.startsWith("data:"),
+      `Z.AI media must return a path, not encoded content: ${result}`,
+    );
+    assert.strictEqual(result, nodePath.resolve(img));
+  });
+});
+
+describe("Provider Media Module — MiniMax (P3-02)", () => {
+  let tmpDir;
+  before(async () => {
+    tmpDir = await nodeFsp.mkdtemp(nodePath.join(nodeOs.tmpdir(), "scoutline-minimax-media-"));
+  });
+  after(async () => {
+    await nodeFsp.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("accepts case-insensitive JPG/JPEG/PNG/WebP at exactly 50 MiB and one byte below", async () => {
+    for (const ext of [".jpg", ".jpeg", ".png", ".webp", ".WEBP"]) {
+      const atLimit = await makeSparseFile(tmpDir, `at${ext}`, MINIMAX_MAX_IMAGE);
+      const below = await makeSparseFile(tmpDir, `below${ext}`, MINIMAX_MAX_IMAGE - 1);
+      assert.strictEqual(
+        minimaxResolveImageSource(atLimit),
+        nodePath.resolve(atLimit),
+        `MiniMax image at 50 MiB with ${ext} must resolve to absolute path`,
+      );
+      assert.strictEqual(minimaxResolveImageSource(below), nodePath.resolve(below));
+    }
+  });
+
+  it("rejects one byte over the 50 MiB image limit with VALIDATION_ERROR", async () => {
+    const over = await makeSparseFile(tmpDir, "over-limit.png", MINIMAX_MAX_IMAGE + 1);
+    assert.throws(
+      () => minimaxResolveImageSource(over),
+      (err) => err.code === "VALIDATION_ERROR",
+    );
+  });
+
+  it("rejects a missing local image with FILE_ERROR", () => {
+    const missing = nodePath.join(tmpDir, "does-not-exist.png");
+    assert.throws(
+      () => minimaxResolveImageSource(missing),
+      (err) => err.code === "FILE_ERROR",
+    );
+  });
+
+  it("passes HTTP(S) URLs through without local filesystem access", () => {
+    for (const url of ["http://example.test/image.png", "https://example.test/image.webp"]) {
+      assert.strictEqual(minimaxResolveImageSource(url), url);
+    }
+  });
+
+  it("rejects non-HTTP URL-like strings with VALIDATION_ERROR", () => {
+    assert.throws(
+      () => minimaxResolveImageSource("ftp://example.test/x.png"),
+      (err) => err.code === "VALIDATION_ERROR",
+    );
+  });
+
+  it("never reads file content (returns an absolute path, never a data URI)", async () => {
+    const img = await makeSparseFile(tmpDir, "noread.png", 1024);
+    const result = minimaxResolveImageSource(img);
+    assert.ok(
+      !result.startsWith("data:"),
+      `MiniMax media must return a path, not encoded content: ${result}`,
+    );
+    assert.strictEqual(result, nodePath.resolve(img));
+  });
+});
+
+describe("lib/image.ts compatibility — Phase 0 behavior retained (P3-02)", () => {
+  let tmpDir;
+  before(async () => {
+    tmpDir = await nodeFsp.mkdtemp(nodePath.join(nodeOs.tmpdir(), "scoutline-compat-image-"));
+  });
+  after(async () => {
+    await nodeFsp.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("exports isUrl, validateImageSource, encodeImageToBase64, processImageSource, resolveImageSource unchanged", async () => {
+    assert.strictEqual(typeof compatIsUrl, "function");
+    assert.strictEqual(typeof compatValidateImageSource, "function");
+    assert.strictEqual(typeof compatEncodeImageToBase64, "function");
+    assert.strictEqual(typeof compatProcessImageSource, "function");
+    assert.strictEqual(typeof compatResolveImageSource, "function");
+
+    // isUrl Phase 0 behavior.
+    assert.strictEqual(compatIsUrl("https://example.test"), true);
+    assert.strictEqual(compatIsUrl("http://example.test"), true);
+    assert.strictEqual(compatIsUrl("/tmp/file.png"), false);
+
+    // Small valid image: validate -> resolve (absolute path) -> encode (data URI).
+    const img = await makeSparseFile(tmpDir, "tiny.png", 4);
+    compatValidateImageSource(img); // does not throw
+    const resolved = compatResolveImageSource(img);
+    assert.strictEqual(resolved, nodePath.resolve(img));
+
+    // base64 conversion export still produces a data URI.
+    const encoded = compatEncodeImageToBase64(img);
+    assert.ok(
+      encoded.startsWith("data:image/png;base64,"),
+      `expected Phase 0 data URI, got: ${encoded}`,
+    );
+
+    // processImageSource returns the encoded data URI for local files.
+    const processed = compatProcessImageSource(img);
+    assert.strictEqual(processed, encoded);
   });
 });

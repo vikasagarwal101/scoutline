@@ -18,6 +18,45 @@ import { invokeCommand } from "../dist/command-invocation.js";
 import { ScoutlineError, ValidationError } from "../dist/lib/errors.js";
 
 /**
+ * Build SearchExecutionDependencies from a query->results map (P2-05).
+ * The search command now receives an injected SearchCapability and
+ * shared execution dependencies instead of a clientFactory. Each
+ * capability.invoke returns the scripted normalized results for the
+ * request query.
+ */
+function makeSearchExecDeps(resultsByQuery = {}) {
+  const capability = {
+    validate() {},
+    cacheIdentity(request) {
+      return {
+        provider: "zai",
+        capability: "search",
+        credentialFingerprint: "fp",
+        request,
+        legacyCandidates: [],
+      };
+    },
+    async invoke(request) {
+      return resultsByQuery[request.query] ?? [];
+    },
+  };
+  const store = new Map();
+  return {
+    capability,
+    cache: {
+      async get(key) {
+        return store.has(key) ? store.get(key) : null;
+      },
+      async set(key, value) {
+        store.set(key, value);
+      },
+    },
+    sleep: async () => {},
+    random: () => 0.5,
+  };
+}
+
+/**
  * Build a fake adapter that records every interaction into arrays
  * and an ordered event log. Each adapter instance is independent so
  * consecutive invocations cannot share state.
@@ -436,23 +475,10 @@ describe("invokeCommand — search command routed through the seam (P1-04)", () 
         search(
           "rust|rust tokio",
           { merge: true },
-          {
-            clientFactory: () => ({
-              async webSearch() {
-                return [
-                  {
-                    refer: "r",
-                    title: "Rust async",
-                    link: "https://e/r1",
-                    media: "",
-                    content: "c",
-                    icon: "",
-                  },
-                ];
-              },
-              async close() {},
-            }),
-          },
+          makeSearchExecDeps({
+            rust: [{ title: "Rust async", url: "https://e/r1", summary: "c" }],
+            "rust tokio": [{ title: "Rust async", url: "https://e/r1", summary: "c" }],
+          }),
           ctx,
         ),
       "compact",
@@ -470,7 +496,7 @@ describe("invokeCommand — search command routed through the seam (P1-04)", () 
     const { adapter, stderr } = createRecordingAdapter();
     const status = await invokeCommand(
       adapter,
-      (ctx) => search("|||", { merge: true }, {}, ctx),
+      (ctx) => search("|||", { merge: true }, makeSearchExecDeps(), ctx),
       "data",
     );
     assert.strictEqual(status, 1);
@@ -490,23 +516,9 @@ describe("invokeCommand — search command routed through the seam (P1-04)", () 
         search(
           "alpha",
           {},
-          {
-            clientFactory: () => ({
-              async webSearch() {
-                return [
-                  {
-                    refer: "r",
-                    title: "Alpha",
-                    link: "https://e/a",
-                    media: "",
-                    content: "summary",
-                    icon: "",
-                  },
-                ];
-              },
-              async close() {},
-            }),
-          },
+          makeSearchExecDeps({
+            alpha: [{ title: "Alpha", url: "https://e/a", summary: "summary" }],
+          }),
           ctx,
         ),
       "data",

@@ -1,0 +1,12 @@
+[
+  {
+    "title": "Conformance result one",
+    "url": "https://example.test/one",
+    "summary": "Shared normalized summary one."
+  },
+  {
+    "title": "Conformance result two",
+    "url": "https://example.test/two",
+    "summary": "Shared normalized summary two."
+  }
+]

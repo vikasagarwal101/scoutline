@@ -1,14 +1,26 @@
 /**
- * Web search command using Z.AI WebSearchPrime MCP
+ * Web search command.
  *
- * P1-04: returns a CommandResult instead of writing directly to
- * stdout/stderr. Notices (e.g., merge summaries) flow through the
- * invocation context; errors are thrown and converted by invokeCommand.
+ * P2-05: the command receives an injected SearchCapability and shared
+ * execution dependencies instead of constructing a Provider client.
+ * The command owns query splitting, parallel scheduling, normalized
+ * merge, rank, occurrence, truncation, projection, notices, and
+ * presentations; the Adapter owns credentials, transport, and Provider
+ * field mapping. Count is applied AFTER normalization by shared
+ * execution and never enters an Adapter request or cache identity.
  */
 
-import { ZaiMcpClient } from "../lib/mcp-client.js";
-import { formatSearchResultsPretty } from "../lib/tty.js";
 import type { CommandContext, CommandResult, DataCommandResult } from "../command-invocation.js";
+import type {
+  SearchCapability,
+  SearchControls,
+  SearchRequest,
+  SearchSource,
+} from "../capabilities/search.js";
+import type { ResponseCache } from "../lib/cache.js";
+import type { RetryPolicy } from "../lib/execution.js";
+import { executeSearch } from "../lib/execution.js";
+import { formatSearchResultsPretty } from "../lib/tty.js";
 
 type RecencyFilter = "oneDay" | "oneWeek" | "oneMonth" | "oneYear" | "noLimit";
 
@@ -25,14 +37,17 @@ export interface SearchOptions {
 }
 
 /**
- * Behaviour-preserving optional dependencies for testing the search command.
- * Omitted dependencies use the current {@link ZaiMcpClient} constructor.
+ * Shared execution dependencies the search command consumes. The
+ * Capability and cache/sleep/random are injected so tests run fully
+ * offline; production wires the real Adapter from the selected Provider
+ * and the default on-disk cache.
  */
-export interface SearchDependencies {
-  clientFactory?: (options: {
-    enableVision: boolean;
-    noCache: boolean;
-  }) => Pick<ZaiMcpClient, "webSearch" | "close">;
+export interface SearchExecutionDependencies {
+  readonly capability: SearchCapability;
+  readonly cache: ResponseCache;
+  readonly sleep: (ms: number) => Promise<void>;
+  readonly random: () => number;
+  readonly retryPolicy?: RetryPolicy;
 }
 
 interface FormattedResult {
@@ -65,6 +80,20 @@ function filterFields(result: FormattedResult, fields?: string[]): Partial<Forma
 }
 
 /**
+ * Build Provider controls from command options. Every field is optional;
+ * an Adapter that does not accept a control (MiniMax) rejects it inside
+ * `validate` before any SDK access (FR-012).
+ */
+function buildControls(options: SearchOptions): SearchControls | undefined {
+  const controls: SearchControls = {};
+  if (options.domain) controls.domain = options.domain;
+  if (options.recency) controls.recency = options.recency;
+  if (options.contentSize) controls.contentSize = options.contentSize;
+  if (options.location) controls.location = options.location;
+  return Object.keys(controls).length > 0 ? controls : undefined;
+}
+
+/**
  * Merge results from N parallel sub-queries: dedupe by URL, rank by
  * (occurrence count desc, then best position asc). First sub-query's
  * title/summary wins for each URL (highest-priority query).
@@ -82,8 +111,6 @@ function mergeResults(byQuery: FormattedResult[][]): FormattedResult[] {
           ...r,
           occurrences: 1,
           bestPos: r.rank,
-          // Keep title/summary from the EARLIEST sub-query that surfaced it.
-          // r already has those since we're iterating in order.
         });
       }
     }
@@ -93,7 +120,6 @@ function mergeResults(byQuery: FormattedResult[][]): FormattedResult[] {
     if (b.occurrences !== a.occurrences) return b.occurrences - a.occurrences;
     return a.bestPos - b.bestPos;
   });
-  // Re-rank
   return merged.map((r, i) => {
     const { bestPos: _bp, ...rest } = r;
     void _bp;
@@ -121,10 +147,6 @@ function renderTextFormat(
   return lines.join("\n");
 }
 
-/**
- * Build the four text-mode presentations for the search results.
- * The data-oriented result is the (possibly field-filtered) result array.
- */
 function buildPresentations(
   formattedResults: FormattedResult[],
 ): NonNullable<DataCommandResult["presentations"]> {
@@ -136,17 +158,28 @@ function buildPresentations(
   };
 }
 
+/** Format a normalized SearchSource[] into ranked FormattedResult[]. */
+function formatSources(sources: readonly SearchSource[], maxSummary?: number): FormattedResult[] {
+  return sources.map((s, i) => {
+    const formatted: FormattedResult = {
+      rank: i + 1,
+      title: s.title,
+      url: s.url,
+      summary: truncate(s.summary, maxSummary),
+    };
+    if (s.source) formatted.source = s.source;
+    if (s.date) formatted.date = s.date;
+    return formatted;
+  });
+}
+
 export async function search(
   query: string,
   options: SearchOptions = {},
-  deps: SearchDependencies = {},
+  deps: SearchExecutionDependencies,
   context?: CommandContext,
 ): Promise<CommandResult> {
-  // Default client factory preserves shipped behaviour. Tests may inject a
-  // fake without touching ZaiMcpClient.
-  const clientFactory =
-    deps.clientFactory ||
-    ((opts) => new ZaiMcpClient({ enableVision: opts.enableVision, noCache: opts.noCache }));
+  const { capability, cache, sleep, random, retryPolicy } = deps;
 
   // Split query on `|` if --merge is set. Empty fragments are dropped.
   // A literal pipe in a single query can be escaped as `\|` (won't split).
@@ -162,61 +195,28 @@ export async function search(
   }
 
   const isMerge = subQueries.length > 1;
-
-  // For merge, spawn one client per sub-query — the UTCP client isn't
-  // concurrency-safe so sharing one client across parallel calls corrupts
-  // responses. Single-query path keeps the cheaper shared-client flow.
-  let allResults;
-  if (isMerge) {
-    const clients = subQueries.map(() =>
-      clientFactory({ enableVision: false, noCache: Boolean(options.noCache) }),
-    );
-    try {
-      allResults = await Promise.all(
-        subQueries.map((q, i) =>
-          clients[i].webSearch({
-            query: q,
-            count: options.count,
-            domainFilter: options.domain,
-            recencyFilter: options.recency,
-            contentSize: options.contentSize,
-            location: options.location,
-          }),
-        ),
-      );
-    } finally {
-      await Promise.all(clients.map((c) => c.close().catch(() => {})));
-    }
-  } else {
-    const client = clientFactory({ enableVision: false, noCache: Boolean(options.noCache) });
-    try {
-      allResults = [
-        await client.webSearch({
-          query: subQueries[0],
+  const controls = buildControls(options);
+  const executionDeps = { cache, sleep, random };
+  // One executeSearch per sub-query. Each Adapter isolates its own
+  // transport per invocation, so the command does not manage client
+  // counts or close transports.
+  const perQuerySources = await Promise.all(
+    subQueries.map((q) => {
+      const request: SearchRequest = controls ? { query: q, controls } : { query: q };
+      return executeSearch(
+        capability,
+        request,
+        {
           count: options.count,
-          domainFilter: options.domain,
-          recencyFilter: options.recency,
-          contentSize: options.contentSize,
-          location: options.location,
-        }),
-      ];
-    } finally {
-      await client.close().catch(() => {});
-    }
-  }
-
-  // Format each sub-query's results, then merge if needed.
-  const perQueryFormatted: FormattedResult[][] = allResults.map((results) =>
-    Array.isArray(results)
-      ? results.map((r, i) => ({
-          rank: i + 1,
-          title: r.title,
-          url: r.link,
-          summary: truncate(r.content, options.maxSummary),
-          ...(r.media ? { source: r.media } : {}),
-          ...(r.publish_date ? { date: r.publish_date } : {}),
-        }))
-      : [],
+          noCache: options.noCache,
+          retryPolicy,
+        },
+        executionDeps,
+      );
+    }),
+  );
+  const perQueryFormatted: FormattedResult[][] = perQuerySources.map((sources) =>
+    formatSources(sources, options.maxSummary),
   );
 
   const formattedResults: FormattedResult[] = isMerge
@@ -231,28 +231,34 @@ export async function search(
 
   const presentations = buildPresentations(formattedResults);
 
-  // --fields only affects data-oriented modes (data/json/pretty); the text
-  // presentations intentionally ignore it because they only project the
-  // fields they actually use (rank/title/url/summary/occurrences).
-  const data = options.fields && options.fields.length > 0
-    ? formattedResults.map((r) => filterFields(r, options.fields))
-    : formattedResults;
+  const data =
+    options.fields && options.fields.length > 0
+      ? formattedResults.map((r) => filterFields(r, options.fields))
+      : formattedResults;
 
   return { kind: "data", data, presentations };
 }
 
 // Help text
 export const SEARCH_HELP = `
-Search Command - Real-time web search using Z.AI WebSearchPrime MCP
+Search Command - Real-time web search (Z.AI or MiniMax)
 
 Usage: scoutline search <query> [options]
 
+Provider selection (precedence: explicit flag, then SCOUTLINE_PROVIDER, then zai):
+  --provider <zai|minimax>   Select the search provider (default: zai)
+  SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
+
+Note: --domain, --recency, --content-size, and --location are Z.AI-only
+controls. They are rejected (UNSUPPORTED_OPTION) before invocation when
+--provider minimax is selected.
+
 Options:
-  --domain <d>        Limit to specific domain (e.g., github.com)
-  --recency <r>       Filter by time: oneDay, oneWeek, oneMonth, oneYear, noLimit
-  --content-size <s>  Content size: medium, high
-  --location <l>      Location hint: cn, us
-  --count <n>         Limit number of results
+  --domain <d>        Limit to specific domain (Z.AI only; e.g., github.com)
+  --recency <r>       Filter by time (Z.AI only): oneDay, oneWeek, oneMonth, oneYear, noLimit
+  --content-size <s>  Content size (Z.AI only): medium, high
+  --location <l>      Location hint (Z.AI only): cn, us
+  --count <n>         Limit number of results (applied after normalization)
   --max-summary <n>   Truncate each result summary to <n> chars (JSON modes only)
   --fields <a,b,c>    Field allowlist for JSON output (e.g. title,url)
   --merge             Treat the query as multiple sub-queries split on '|'.
@@ -270,7 +276,8 @@ Output formats (--output-format / -O):
 Examples:
   scoutline search "React 19 new features"
   scoutline search "Node.js security" --domain nodejs.org
-  scoutline search "AI news" --recency oneWeek
+  scoutline --provider minimax search "AI news"
+  SCOUTLINE_PROVIDER=minimax scoutline search "AI news"
   scoutline search "x" -O compact                    # ultra-compact
   scoutline search "x" -O markdown --max-summary 80  # chat-ready
   scoutline search "x" --fields title,url            # field-filtered JSON

@@ -19,8 +19,13 @@ import {
 } from "./commands/code.js";
 import { isOutputMode, OUTPUT_MODES, type OutputMode } from "./lib/output.js";
 import { formatErrorOutput } from "./lib/output.js";
-import { ValidationError, getErrorExitCode } from "./lib/errors.js";
+import { ValidationError, UnsupportedCapabilityError, getErrorExitCode } from "./lib/errors.js";
 import { invokeCommand, type CommandInvocationAdapter } from "./command-invocation.js";
+import { defaultResponseCache, type ResponseCache } from "./lib/cache.js";
+import { resolveProviderId } from "./providers/selection.js";
+import { BUILT_IN_PROVIDER_DESCRIPTORS, getProviderDescriptor } from "./providers/registry.js";
+import type { ProviderDescriptor, ProviderId } from "./providers/types.js";
+import type { SearchCapability } from "./capabilities/search.js";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -110,12 +115,14 @@ function extractGlobalOptions(args: string[]): {
   outputFormat?: string;
   forcePretty?: boolean;
   forceRaw?: boolean;
+  provider?: string;
   rest: string[];
 } {
   const rest: string[] = [];
   let outputFormat: string | undefined;
   let forcePretty = false;
   let forceRaw = false;
+  let provider: string | undefined;
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
@@ -132,10 +139,19 @@ function extractGlobalOptions(args: string[]): {
       forceRaw = true;
       continue;
     }
+    if (arg === "--provider") {
+      // Global option: accepted before OR after the command token. It is
+      // removed from the rest stream so command-local positional parsing
+      // never observes it. Only shared Search resolves/validates it; the
+      // Z.AI-only command families carry it but never consult it.
+      provider = args[i + 1];
+      i += 1;
+      continue;
+    }
     rest.push(arg);
   }
 
-  return { outputFormat, forcePretty, forceRaw, rest };
+  return { outputFormat, forcePretty, forceRaw, provider, rest };
 }
 
 function resolveOutputMode(
@@ -173,11 +189,24 @@ function resolveOutputMode(
  * `ProviderContext` without reshaping the dispatch layer again. Commands
  * still read `process.env` directly today; that migration is Phase 2 and
  * intentionally out of scope for this plumbing fix.
+ *
+ * `provider` is the parsed global `--provider` flag. Only shared Search
+ * resolves/validates it; Z.AI-only command families carry it but never
+ * consult it. `providerDescriptors` is the injectable registry (tests
+ * pass doubles; production uses the static built-in list). The shared
+ * Search execution dependencies (`searchCache`, `searchSleep`,
+ * `searchRandom`) default to the on-disk cache and real sleep/random in
+ * production; tests inject in-memory doubles.
  */
 interface HandlerDependencies {
   readonly invocation: CommandInvocationAdapter;
   readonly env: NodeJS.ProcessEnv;
   readonly now?: () => number;
+  readonly provider?: string;
+  readonly providerDescriptors: readonly ProviderDescriptor[];
+  readonly searchCache: ResponseCache;
+  readonly searchSleep: (ms: number) => Promise<void>;
+  readonly searchRandom: () => number;
 }
 
 async function handleVision(
@@ -292,6 +321,25 @@ async function handleSearch(
     return 0;
   }
 
+  // Resolve the Provider ONLY inside shared Search (DESIGN.md §6). Other
+  // command families carry the parsed flag but never resolve or validate
+  // it. An invalid explicit/env value throws VALIDATION_ERROR here, before
+  // any Adapter construction or invocation.
+  const providerId: ProviderId = resolveProviderId(
+    deps.provider,
+    deps.env,
+    deps.providerDescriptors,
+  );
+  const descriptor = getProviderDescriptor(providerId, deps.providerDescriptors);
+  if (!descriptor.capabilities().has("search")) {
+    throw new UnsupportedCapabilityError(providerId, "search");
+  }
+  const adapter = descriptor.create({ env: deps.env });
+  const capability: SearchCapability | undefined = adapter.search;
+  if (!capability) {
+    throw new UnsupportedCapabilityError(providerId, "search");
+  }
+
   const query = positional.join(" ");
 
   const fieldsRaw = flags.fields as string | undefined;
@@ -320,7 +368,12 @@ async function handleSearch(
           noCache: flags["no-cache"] === true,
           merge: flags.merge === true,
         },
-        {},
+        {
+          capability,
+          cache: deps.searchCache,
+          sleep: deps.searchSleep,
+          random: deps.searchRandom,
+        },
         context,
       ),
     outputMode,
@@ -656,15 +709,35 @@ export interface MainDependencies {
   readonly invocation: CommandInvocationAdapter;
   readonly env: NodeJS.ProcessEnv;
   readonly now?: () => number;
+  /**
+   * Injectable Provider registry. Production defaults to the static
+   * built-in descriptors; tests pass doubles to route Search through a
+   * fake Adapter without touching real transports.
+   */
+  readonly providerDescriptors?: readonly ProviderDescriptor[];
+  /**
+   * Injectable shared-Search execution dependencies. Production defaults
+   * to the on-disk cache and real sleep/random; tests inject in-memory
+   * doubles for deterministic, offline behaviour.
+   */
+  readonly searchCache?: ResponseCache;
+  readonly searchSleep?: (ms: number) => Promise<void>;
+  readonly searchRandom?: () => number;
 }
+
+const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function main(
   args: readonly string[],
   dependencies: MainDependencies,
 ): Promise<number> {
   const { invocation, env, now } = dependencies;
+  const providerDescriptors = dependencies.providerDescriptors ?? BUILT_IN_PROVIDER_DESCRIPTORS;
+  const searchCache = dependencies.searchCache ?? defaultResponseCache;
+  const searchSleep = dependencies.searchSleep ?? realSleep;
+  const searchRandom = dependencies.searchRandom ?? Math.random;
 
-  const { outputFormat, forcePretty, forceRaw, rest } = extractGlobalOptions([...args]);
+  const { outputFormat, forcePretty, forceRaw, provider, rest } = extractGlobalOptions([...args]);
 
   let outputMode: OutputMode;
   try {
@@ -692,28 +765,39 @@ export async function main(
   const command = rest[0];
   const commandArgs = rest.slice(1);
 
+  const handlerDeps: HandlerDependencies = {
+    invocation,
+    env,
+    now,
+    provider,
+    providerDescriptors,
+    searchCache,
+    searchSleep,
+    searchRandom,
+  };
+
   try {
     switch (command) {
       case "vision":
-        return await handleVision(commandArgs, outputMode, { invocation, env, now });
+        return await handleVision(commandArgs, outputMode, handlerDeps);
       case "search":
-        return await handleSearch(commandArgs, outputMode, { invocation, env, now });
+        return await handleSearch(commandArgs, outputMode, handlerDeps);
       case "read":
-        return await handleRead(commandArgs, outputMode, { invocation, env, now });
+        return await handleRead(commandArgs, outputMode, handlerDeps);
       case "repo":
-        return await handleRepo(commandArgs, outputMode, { invocation, env, now });
+        return await handleRepo(commandArgs, outputMode, handlerDeps);
       case "tools":
-        return await handleTools(commandArgs, outputMode, { invocation, env, now });
+        return await handleTools(commandArgs, outputMode, handlerDeps);
       case "tool":
-        return await handleTool(commandArgs, outputMode, { invocation, env, now });
+        return await handleTool(commandArgs, outputMode, handlerDeps);
       case "call":
-        return await handleCall(commandArgs, outputMode, { invocation, env, now });
+        return await handleCall(commandArgs, outputMode, handlerDeps);
       case "doctor":
-        return await handleDoctor(commandArgs, outputMode, { invocation, env, now });
+        return await handleDoctor(commandArgs, outputMode, handlerDeps);
       case "quota":
-        return await handleQuota(commandArgs, outputMode, { invocation, env, now });
+        return await handleQuota(commandArgs, outputMode, handlerDeps);
       case "code":
-        return await handleCode(commandArgs, outputMode, { invocation, env, now });
+        return await handleCode(commandArgs, outputMode, handlerDeps);
       default:
         invocation.writeStderr(
           formatErrorOutput(

@@ -7,12 +7,13 @@
  * TypeScript compiler runs.
  *
  * The operation map connects each specialized Vision operation id to
- * its mapping Module (`vision-mappings/{op}.ts`). Currently 2 of 5 operations have Modules.
+ * its mapping Module (`vision-mappings/{op}.ts`). Currently 3 of 5 operations have Modules.
  */
 
 import type { SpecializedVisionOperation } from "./vision-conformance.js";
 import { uiArtifactMapping } from "./vision-mappings/ui-artifact.js";
 import { extractTextMapping } from "./vision-mappings/extract-text.js";
+import { diagnoseErrorMapping } from "./vision-mappings/diagnose-error.js";
 
 /**
  * The interface every operation-specific mapping Module implements.
@@ -35,4 +36,5 @@ export const MINIMAX_VISION_MAPPINGS: Readonly<
 > = Object.freeze({
   "ui-artifact": uiArtifactMapping,
   "extract-text": extractTextMapping,
+  "diagnose-error": diagnoseErrorMapping,
 });

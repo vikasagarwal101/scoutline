@@ -171,7 +171,8 @@ const MINIMAX_VISION_CONFORMANCE_SOURCE: Readonly<
   "ui-artifact": { fixtureVersion: 1, offline: "pass", live: "pending" },
   // P5-03b: extract-text offline conformance proven; live pending.
   "extract-text": { fixtureVersion: 1, offline: "pass", live: "pending" },
-  "diagnose-error": { fixtureVersion: 1, offline: "pending", live: "pending" },
+  // P5-03c: diagnose-error offline conformance proven; live pending.
+  "diagnose-error": { fixtureVersion: 1, offline: "pass", live: "pending" },
   diagram: { fixtureVersion: 1, offline: "pending", live: "pending" },
   chart: { fixtureVersion: 1, offline: "pending", live: "pending" },
 });

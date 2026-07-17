@@ -25,7 +25,7 @@ export const MINIMAX_VISION_MAPPING_REVISIONS: Readonly<
 > = Object.freeze({
   "ui-artifact": "f359d5cda2f0f6fc7b8b1308a8842ede7a09b8c5517c46e205a46881afeb5290",
   "extract-text": "78758cfc03e282c2609eb4e05fab392be62d9b6d38c8911bf245f74206ccbf0e",
-  "diagnose-error": "pending-no-mapping-module",
+  "diagnose-error": "f83d602a6177041d131cb05b4164e0529b04154a5651e042cea66f566d94d893",
   "diagram": "pending-no-mapping-module",
   "chart": "pending-no-mapping-module",
 });

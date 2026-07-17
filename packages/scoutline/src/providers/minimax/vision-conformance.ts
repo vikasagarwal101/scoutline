@@ -166,7 +166,9 @@ interface VisionConformanceSource {
 const MINIMAX_VISION_CONFORMANCE_SOURCE: Readonly<
   Record<SpecializedVisionOperation, VisionConformanceSource>
 > = Object.freeze({
-  "ui-artifact": { fixtureVersion: 1, offline: "pending", live: "pending" },
+  // P5-03a: ui-artifact offline conformance proven; live remains pending
+  // until the opt-in live attestation script runs with credentials.
+  "ui-artifact": { fixtureVersion: 1, offline: "pass", live: "pending" },
   "extract-text": { fixtureVersion: 1, offline: "pending", live: "pending" },
   "diagnose-error": { fixtureVersion: 1, offline: "pending", live: "pending" },
   diagram: { fixtureVersion: 1, offline: "pending", live: "pending" },

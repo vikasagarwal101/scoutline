@@ -7,10 +7,12 @@
  * TypeScript compiler runs.
  *
  * The operation map connects each specialized Vision operation id to
- * its mapping Module (`vision-mappings/{op}.ts`). No operation-specific Modules exist yet, so the map is empty (P5-02 state).
+ * its mapping Module (`vision-mappings/{op}.ts`). Currently 1 of 5 operations have Modules.
  */
 
 import type { SpecializedVisionOperation } from "./vision-conformance.js";
+import { uiArtifactMapping } from "./vision-mappings/ui-artifact.js";
+
 /**
  * The interface every operation-specific mapping Module implements.
  * Defined here so the generated map has a stable type even when the
@@ -29,4 +31,6 @@ export interface MiniMaxVisionMappingModule {
  */
 export const MINIMAX_VISION_MAPPINGS: Readonly<
   Partial<Record<SpecializedVisionOperation, MiniMaxVisionMappingModule>>
-> = Object.freeze({});
+> = Object.freeze({
+  "ui-artifact": uiArtifactMapping,
+});

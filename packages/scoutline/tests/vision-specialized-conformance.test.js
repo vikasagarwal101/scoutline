@@ -621,13 +621,20 @@ test("P5-02: registry exports exactly the five specialized operations", () => {
   }
 });
 
-test("P5-02: every entry is pending/pending with no attestation at registry source", () => {
+// Operations whose mapping Module exists and whose offline conformance
+// state has been promoted to "pass" by a landed P5-03 task. Each P5-03
+// commit adds exactly one operation here. live stays "pending" for every
+// promoted op until a separate opt-in live attestation runs with
+// credentials; runtime support therefore remains false for all of them.
+const PROMOTED_OPS = new Set(["ui-artifact"]);
+
+test("registry: baseline ops pending/pending; promoted ops pass/pending; no op carries an attestation yet", () => {
   for (const op of SPECIALIZED_VISION_OPERATIONS) {
     const entry = MINIMAX_VISION_CONFORMANCE_REGISTRY[op];
     assert.ok(entry, `entry for ${op} must exist`);
-    assert.equal(entry.offline, "pending", `${op} offline must be pending at P5-02`);
-    assert.equal(entry.live, "pending", `${op} live must be pending at P5-02`);
-    assert.equal(entry.attestation, undefined, `${op} must carry no attestation at P5-02`);
+    // live is pending for EVERY op until the opt-in live attestation runs.
+    assert.equal(entry.live, "pending", `${op} live must be pending (no live attestation yet)`);
+    assert.equal(entry.attestation, undefined, `${op} must carry no attestation yet`);
     assert.equal(
       entry.implementationId,
       MINIMAX_VISION_IMPLEMENTATION_ID,
@@ -639,6 +646,11 @@ test("P5-02: every entry is pending/pending with no attestation at registry sour
       Number.isInteger(entry.fixtureVersion) && entry.fixtureVersion > 0,
       `${op} fixtureVersion must be a positive integer`,
     );
+    if (PROMOTED_OPS.has(op)) {
+      assert.equal(entry.offline, "pass", `${op} offline must be pass (P5-03 promoted)`);
+    } else {
+      assert.equal(entry.offline, "pending", `${op} offline must be pending (baseline)`);
+    }
   }
 });
 
@@ -768,17 +780,32 @@ test("P5-02: compiled attestations manifest is empty at P5-02", () => {
   );
 });
 
-test("P5-02: generated mappings map is empty at P5-02", () => {
-  assert.deepEqual(Object.keys(MINIMAX_VISION_MAPPINGS), [], "no operation Module exists at P5-02");
+test("generated mappings map keys exactly match the promoted operations set", () => {
+  assert.deepEqual(
+    [...Object.keys(MINIMAX_VISION_MAPPINGS)].sort(),
+    [...PROMOTED_OPS].sort(),
+    "mappings map must contain exactly the operations with a landed mapping Module",
+  );
 });
 
-test("P5-02: every mapping revision is the pending placeholder at P5-02", () => {
+test("mapping revisions: baseline ops use placeholder; promoted ops use a real SHA-256", () => {
   for (const op of SPECIALIZED_VISION_OPERATIONS) {
-    assert.equal(
-      MINIMAX_VISION_MAPPING_REVISIONS[op],
-      "pending-no-mapping-module",
-      `${op} revision must be the pending placeholder at P5-02`,
-    );
+    const rev = MINIMAX_VISION_MAPPING_REVISIONS[op];
+    if (PROMOTED_OPS.has(op)) {
+      assert.match(rev, /^[0-9a-f]{64}$/, `${op} revision must be a real SHA-256 hex digest`);
+      // Registry entry must agree with the generated revision.
+      assert.equal(
+        MINIMAX_VISION_CONFORMANCE_REGISTRY[op].mappingRevision,
+        rev,
+        `${op} registry mappingRevision must equal the generated revision`,
+      );
+    } else {
+      assert.equal(
+        rev,
+        "pending-no-mapping-module",
+        `${op} revision must remain the placeholder (no module yet)`,
+      );
+    }
   }
 });
 
@@ -1562,3 +1589,167 @@ function parseRevisionsFile(filePath) {
   }
   return out;
 }
+
+// ===========================================================================
+// P5-03 — Independently attested specialized Vision mappings
+// ===========================================================================
+//
+// Each landed P5-03 task (a..e) adds one operation's mapping Module and
+// flips that operation's offline conformance state to "pass". The live
+// leg stays "pending" because live attestation requires credentials and
+// explicit opt-in (SCOUTLINE_LIVE_TESTS=1) and is run separately by the
+// user via scripts/attest-minimax-vision.mjs. Until then the mapping is
+// proven correct OFFLINE (prompt composition + semantic evaluation via a
+// fake SDK) but stays unsupported at runtime.
+//
+// The adapter is NOT modified in P5-03: its support gate stays closed
+// for every specialized op while live="pending". These tests exercise
+// the mapping Module directly through the generated operation map,
+// simulating the exact describe-compose-normalize flow the adapter would
+// run once the live attestation opens the gate.
+
+/** Index fixture cases by operation for the mapping tests. */
+const CASES_BY_OP = new Map(loadFixtureFile(FIXTURE_FILE).map((c) => [c.operation, c]));
+
+/**
+ * Run one operation's mapping through a fake SDK that returns crafted
+ * VLM output satisfying every fixture assertion. Returns the composed
+ * prompt and the normalized result text. Mirrors the adapter's intended
+ * describe flow: compose prompt -> sdk.vision.describe({image,prompt})
+ * -> module.normalizeResult(raw).
+ */
+async function runMappingWithFakeSdk(op) {
+  const caseData = CASES_BY_OP.get(op);
+  assert.ok(caseData, `fixture case for ${op} must exist`);
+  const module = MINIMAX_VISION_MAPPINGS[op];
+  assert.ok(module, `${op} mapping Module must be wired into MINIMAX_VISION_MAPPINGS`);
+  const prompt = module.composePrompt(caseData.request);
+  // Craft a single realistic VLM response that satisfies every assertion
+  // for this case (the same helper the evaluator tests use).
+  const crafted = craftSatisfyingText(caseData);
+  const fakeSdk = {
+    vision: {
+      async describe(req) {
+        // Confirm the adapter-intended call shape: one image + prompt.
+        assert.equal(typeof req.image, "string", `${op}: describe must receive an image string`);
+        assert.equal(req.prompt, prompt, `${op}: describe must receive the composed prompt`);
+        return { content: crafted };
+      },
+    },
+  };
+  const raw = await fakeSdk.vision.describe({ image: caseData.request.source, prompt });
+  const text = module.normalizeResult(raw);
+  return { prompt, text, caseData };
+}
+
+/**
+ * Count non-overlapping occurrences of a substring (case-insensitive).
+ */
+function countOccurrences(haystack, needle) {
+  if (!needle) return 0;
+  const lower = haystack.toLowerCase();
+  const needleLower = needle.toLowerCase();
+  let count = 0;
+  let idx = 0;
+  while ((idx = lower.indexOf(needleLower, idx)) !== -1) {
+    count++;
+    idx += needleLower.length;
+  }
+  return count;
+}
+
+// ---------------------------------------------------------------------------
+// P5-03a: ui-artifact mapping
+// ---------------------------------------------------------------------------
+
+test("P5-03a: ui-artifact mapping composes the correct prompt (instruction intact, output-type hint once)", async () => {
+  const { prompt, text, caseData } = await runMappingWithFakeSdk("ui-artifact");
+  // User instruction remains intact and verbatim.
+  assert.ok(
+    prompt.includes(caseData.request.instruction),
+    "ui-artifact: user instruction must appear verbatim in the prompt",
+  );
+  // The selected outputType is represented exactly once as an operation hint.
+  const hint = "code";
+  const hintCount = countOccurrences(prompt, hint);
+  assert.ok(
+    hintCount >= 1 && countOccurrences(prompt, "Requested output form") === 1,
+    "ui-artifact: the output-type option must be rendered exactly once",
+  );
+  // The intent segment must not duplicate the user instruction.
+  assert.equal(
+    countOccurrences(prompt, caseData.request.instruction),
+    1,
+    "ui-artifact: user instruction must appear exactly once",
+  );
+
+  // Semantics: regions AND code-form must pass against the crafted output.
+  const results = evaluateAssertions(caseData.assertions, text);
+  for (const r of results) {
+    assert.equal(
+      r.passed,
+      true,
+      `ui-artifact: assertion ${r.id} must pass: ${r.failureReason ?? ""}`,
+    );
+  }
+});
+
+test("P5-03a: ui-artifact mapping stays unsupported at runtime (live=pending)", () => {
+  assert.equal(
+    isMiniMaxVisionOperationSupported("ui-artifact"),
+    false,
+    "ui-artifact must be unsupported while live state is pending",
+  );
+  // The adapter must fail closed for ui-artifact before any SDK access.
+  let sdkConstructions = 0;
+  const spySdk = {
+    vision: {
+      async describe() {
+        throw new Error("UNREACHABLE");
+      },
+    },
+  };
+  function SpyCtor() {
+    sdkConstructions += 1;
+    return spySdk;
+  }
+  const descriptor = createMiniMaxDescriptor({ sdkConstructor: SpyCtor });
+  const adapter = descriptor.create({ env: {} });
+  assert.equal(adapter.vision.supports("ui-artifact"), false);
+  return assert
+    .rejects(
+      adapter.vision.invoke({
+        operation: "ui-artifact",
+        source: "ui-artifact.png",
+        instruction: "x",
+        outputType: "code",
+      }),
+      (err) => {
+        assert.equal(err.code, "UNSUPPORTED_CAPABILITY");
+        return true;
+      },
+    )
+    .then(() => {
+      assert.equal(sdkConstructions, 0, "ui-artifact must fail before SDK construction");
+    });
+});
+
+test("P5-03a: adding the ui-artifact mapping did not enable or alter any other operation", () => {
+  // Every non-promoted op must remain pending with a placeholder
+  // revision and no module. This is the per-mapping independence guard.
+  for (const op of SPECIALIZED_VISION_OPERATIONS) {
+    if (op === "ui-artifact") continue;
+    assert.equal(
+      MINIMAX_VISION_CONFORMANCE_REGISTRY[op].offline,
+      "pending",
+      `${op} must remain pending (ui-artifact addition must not alter it)`,
+    );
+    assert.equal(isMiniMaxVisionOperationSupported(op), false, `${op} must remain unsupported`);
+    assert.ok(MINIMAX_VISION_MAPPINGS[op] === undefined, `${op} must not have a module yet`);
+    assert.equal(
+      MINIMAX_VISION_MAPPING_REVISIONS[op],
+      "pending-no-mapping-module",
+      `${op} revision must remain placeholder`,
+    );
+  }
+});

@@ -23,7 +23,7 @@ import type { SpecializedVisionOperation } from "./vision-conformance.js";
 export const MINIMAX_VISION_MAPPING_REVISIONS: Readonly<
   Record<SpecializedVisionOperation, string>
 > = Object.freeze({
-  "ui-artifact": "pending-no-mapping-module",
+  "ui-artifact": "f359d5cda2f0f6fc7b8b1308a8842ede7a09b8c5517c46e205a46881afeb5290",
   "extract-text": "pending-no-mapping-module",
   "diagnose-error": "pending-no-mapping-module",
   "diagram": "pending-no-mapping-module",

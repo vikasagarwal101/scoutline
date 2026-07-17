@@ -1,102 +1,270 @@
 /**
- * Unit tests for output formatting.
+ * Unit tests for pure output formatting.
  *
- * P0-02 keeps the shipped success/error builders and characterizes the public
- * contract: success carries a number timestamp derived from Date.now(). Later
- * phases will add an explicit `now` injection port; for now we assert the
- * shipped behaviour (monotonic timestamps) and that public errors contain no
- * stack or cause.
+ * P1-01 asserts the new pure output contract: `isOutputMode`,
+ * `formatSuccessOutput`, and `formatErrorOutput` are invocation-local and
+ * free of mutable global state, environment mutation, and console writes.
+ * The legacy mutable `setOutputMode` / `getOutputMode` / `outputSuccess` /
+ * `outputError` surface remains for Phase 1 consumers and is removed in
+ * P1-10.
  */
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { setOutputMode, getOutputMode, success, error } from "../dist/lib/output.js";
+import {
+  OUTPUT_MODES,
+  isOutputMode,
+  formatSuccessOutput,
+  formatErrorOutput,
+  success,
+  error,
+} from "../dist/lib/output.js";
+import { ZaiError } from "../dist/lib/errors.js";
 
-describe("Output Mode", () => {
-  beforeEach(() => {
-    setOutputMode("data");
-  });
-
-  it("should default to data mode", () => {
-    assert.strictEqual(getOutputMode(), "data");
-  });
-
-  it("should set json mode", () => {
-    setOutputMode("json");
-    assert.strictEqual(getOutputMode(), "json");
-  });
-
-  it("should set pretty mode", () => {
-    setOutputMode("pretty");
-    assert.strictEqual(getOutputMode(), "pretty");
-  });
-
-  it("should set environment variable", () => {
-    setOutputMode("json");
-    assert.strictEqual(process.env.ZAI_OUTPUT_MODE, "json");
+describe("OUTPUT_MODES", () => {
+  it("exposes the full canonical output mode list", () => {
+    assert.deepStrictEqual([...OUTPUT_MODES], [
+      "data",
+      "json",
+      "pretty",
+      "compact",
+      "markdown",
+      "refs",
+      "tty",
+    ]);
   });
 });
 
-describe("Response Builders", () => {
-  it("should create success response", () => {
-    const response = success({ key: "value" });
-    assert.strictEqual(response.success, true);
-    assert.deepStrictEqual(response.data, { key: "value" });
-    assert.ok(typeof response.timestamp === "number");
-    assert.ok(response.timestamp > 0);
+describe("isOutputMode", () => {
+  it("recognises every canonical mode", () => {
+    for (const mode of OUTPUT_MODES) {
+      assert.strictEqual(isOutputMode(mode), true);
+    }
   });
 
-  it("should create success response with string data", () => {
-    const response = success("Hello");
-    assert.strictEqual(response.success, true);
-    assert.strictEqual(response.data, "Hello");
+  it("rejects unknown strings", () => {
+    assert.strictEqual(isOutputMode("xml"), false);
+    assert.strictEqual(isOutputMode("JSON"), false);
+    assert.strictEqual(isOutputMode(""), false);
   });
 
-  it("should create success response with array data", () => {
-    const response = success([1, 2, 3]);
-    assert.strictEqual(response.success, true);
-    assert.deepStrictEqual(response.data, [1, 2, 3]);
+  it("rejects non-string values", () => {
+    assert.strictEqual(isOutputMode(undefined), false);
+    assert.strictEqual(isOutputMode(null), false);
+    assert.strictEqual(isOutputMode(7), false);
+    assert.strictEqual(isOutputMode({}), false);
+  });
+});
+
+describe("formatSuccessOutput", () => {
+  const FROZEN_NOW = 1_700_000_000_000;
+
+  it("data mode emits raw JSON-encoded data without a success envelope", () => {
+    const out = formatSuccessOutput({ count: 2 }, "data", () => FROZEN_NOW);
+    assert.strictEqual(out, JSON.stringify({ count: 2 }));
   });
 
-  it("should create error response", () => {
-    const response = error("Something went wrong");
-    assert.strictEqual(response.success, false);
-    assert.strictEqual(response.error, "Something went wrong");
+  it("json mode emits the success envelope using the injected `now` value", () => {
+    const out = formatSuccessOutput({ count: 2 }, "json", () => FROZEN_NOW);
+    const parsed = JSON.parse(out);
+    assert.deepStrictEqual(parsed, {
+      success: true,
+      data: { count: 2 },
+      timestamp: FROZEN_NOW,
+    });
   });
 
-  it("should create error response with code", () => {
-    const response = error("Error", "ERR_CODE");
-    assert.strictEqual(response.success, false);
-    assert.strictEqual(response.error, "Error");
-    assert.strictEqual(response.code, "ERR_CODE");
+  it("pretty mode emits an indented success envelope", () => {
+    const out = formatSuccessOutput({ count: 2 }, "pretty", () => FROZEN_NOW);
+    assert.strictEqual(out.includes("\n"), true);
+    const parsed = JSON.parse(out);
+    assert.strictEqual(parsed.success, true);
+    assert.deepStrictEqual(parsed.data, { count: 2 });
+    assert.strictEqual(parsed.timestamp, FROZEN_NOW);
   });
 
-  it("should create error response with code and help", () => {
-    const response = error("Error", "ERR_CODE", "Try this instead");
-    assert.strictEqual(response.success, false);
-    assert.strictEqual(response.error, "Error");
-    assert.strictEqual(response.code, "ERR_CODE");
-    assert.strictEqual(response.help, "Try this instead");
+  it("text-oriented modes return the explicitly selected command presentation", () => {
+    const data = {
+      data: { count: 2 },
+      presentations: {
+        compact: "compact-form",
+        markdown: "markdown-form",
+        refs: "refs-form",
+        tty: "tty-form",
+      },
+    };
+    assert.strictEqual(formatSuccessOutput(data, "compact"), "compact-form");
+    assert.strictEqual(formatSuccessOutput(data, "markdown"), "markdown-form");
+    assert.strictEqual(formatSuccessOutput(data, "refs"), "refs-form");
+    assert.strictEqual(formatSuccessOutput(data, "tty"), "tty-form");
   });
 
-  it("should not include code if not provided", () => {
-    const response = error("Error");
-    assert.strictEqual(response.code, undefined);
+  it("text-oriented modes fall back to JSON when no presentation override exists", () => {
+    const out = formatSuccessOutput({ count: 2 }, "compact");
+    assert.strictEqual(out, JSON.stringify({ count: 2 }));
   });
 
-  it("should not include help if not provided", () => {
-    const response = error("Error", "CODE");
-    assert.strictEqual(response.help, undefined);
+  it("defaults the timestamp source to Date.now when no `now` is injected", () => {
+    const before = Date.now();
+    const out = formatSuccessOutput({ count: 2 }, "json");
+    const after = Date.now();
+    const parsed = JSON.parse(out);
+    assert.ok(parsed.timestamp >= before);
+    assert.ok(parsed.timestamp <= after);
   });
 
-  it("success timestamps are derived from Date.now() — monotonic", async () => {
-    // P0-02 characterization: the shipped builder uses Date.now(). Later
-    // phases (P1-01) will add an explicit `now` injection port; here we
-    // assert the current contract only.
-    const a = success({ x: 1 }).timestamp;
-    await new Promise((r) => setTimeout(r, 5));
-    const b = success({ x: 2 }).timestamp;
-    assert.ok(typeof a === "number");
-    assert.ok(typeof b === "number");
-    assert.ok(b > a);
+  it("does not mutate ZAI_OUTPUT_MODE across calls", () => {
+    const envBefore = process.env.ZAI_OUTPUT_MODE;
+    formatSuccessOutput({ a: 1 }, "compact");
+    formatSuccessOutput({ b: 2 }, "tty");
+    formatSuccessOutput({ c: 3 }, "refs");
+    assert.strictEqual(process.env.ZAI_OUTPUT_MODE, envBefore);
+  });
+
+  it("does not share state between two calls with different modes", () => {
+    const a = formatSuccessOutput({ id: "a" }, "data");
+    const b = formatSuccessOutput({ id: "b" }, "json", () => 42);
+    const c = formatSuccessOutput({ id: "c" }, "pretty", () => 99);
+    assert.strictEqual(a, JSON.stringify({ id: "a" }));
+    assert.strictEqual(JSON.parse(b).data.id, "b");
+    assert.strictEqual(JSON.parse(b).timestamp, 42);
+    assert.strictEqual(JSON.parse(c).data.id, "c");
+    assert.strictEqual(JSON.parse(c).timestamp, 99);
+    assert.notStrictEqual(a, b);
+    assert.notStrictEqual(b, c);
+  });
+
+  it("does not write to stdout or stderr", () => {
+    const originalLog = console.log;
+    const originalError = console.error;
+    let logCalls = 0;
+    let errorCalls = 0;
+    console.log = () => {
+      logCalls += 1;
+    };
+    console.error = () => {
+      errorCalls += 1;
+    };
+    try {
+      formatSuccessOutput({ a: 1 }, "json", () => 1);
+      formatSuccessOutput({ a: 1 }, "pretty", () => 1);
+      formatSuccessOutput({ a: 1 }, "compact");
+      formatSuccessOutput({ a: 1 }, "tty");
+      formatSuccessOutput({ a: 1 }, "data");
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+    }
+    assert.strictEqual(logCalls, 0);
+    assert.strictEqual(errorCalls, 0);
+  });
+});
+
+describe("formatErrorOutput", () => {
+  it("data mode emits a compact error envelope", () => {
+    const err = new ZaiError("boom", "API_ERROR", 500);
+    const out = formatErrorOutput(err, "data");
+    const parsed = JSON.parse(out);
+    assert.strictEqual(parsed.success, false);
+    assert.strictEqual(parsed.error, "boom");
+    assert.strictEqual(parsed.code, "API_ERROR");
+    assert.strictEqual(parsed.statusCode, 500);
+  });
+
+  it("pretty mode emits an indented error envelope", () => {
+    const err = new ZaiError("boom", "API_ERROR", 500);
+    const out = formatErrorOutput(err, "pretty");
+    assert.strictEqual(out.includes("\n"), true);
+    const parsed = JSON.parse(out);
+    assert.strictEqual(parsed.success, false);
+    assert.strictEqual(parsed.error, "boom");
+  });
+
+  it("omits stack trace from the public envelope", () => {
+    const err = new Error("deep boom");
+    err.stack = "Error: deep boom\n    at internal:1:1";
+    const out = formatErrorOutput(err, "json");
+    const parsed = JSON.parse(out);
+    assert.strictEqual(parsed.stack, undefined);
+  });
+
+  it("omits cause from the public envelope", () => {
+    const err = new Error("outer");
+    err.cause = new Error("inner secret");
+    const out = formatErrorOutput(err, "json");
+    const parsed = JSON.parse(out);
+    assert.strictEqual(parsed.cause, undefined);
+  });
+
+  it("omits raw response bodies, authorization data, and known credentials", () => {
+    const err = {
+      message: "Request failed",
+      code: "NETWORK_ERROR",
+      help: "Check authorization header: Bearer abc.def.ghi",
+      responseBody: "Authorization: Bearer abc.def.ghi\nZ_AI_API_KEY=xyz",
+      Z_AI_API_KEY: "xyz",
+      authorization: "Bearer abc.def.ghi",
+    };
+    const out = formatErrorOutput(err, "pretty");
+    assert.ok(!out.includes("Bearer abc.def.ghi"));
+    assert.ok(!out.includes("Z_AI_API_KEY=xyz"));
+    assert.ok(!out.includes("xyz"));
+  });
+
+  it("does not share state between calls with different modes", () => {
+    const err = new ZaiError("boom", "API_ERROR", 500);
+    const data = formatErrorOutput(err, "data");
+    const pretty = formatErrorOutput(err, "pretty");
+    assert.ok(!data.includes("\n"));
+    assert.ok(pretty.includes("\n"));
+    assert.notStrictEqual(data, pretty);
+  });
+
+  it("does not write to stdout or stderr", () => {
+    const originalLog = console.log;
+    const originalError = console.error;
+    let logCalls = 0;
+    let errorCalls = 0;
+    console.log = () => {
+      logCalls += 1;
+    };
+    console.error = () => {
+      errorCalls += 1;
+    };
+    try {
+      formatErrorOutput(new Error("x"), "data");
+      formatErrorOutput(new Error("x"), "pretty");
+      formatErrorOutput(new Error("x"), "json");
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+    }
+    assert.strictEqual(logCalls, 0);
+    assert.strictEqual(errorCalls, 0);
+  });
+});
+
+describe("response builder compatibility exports", () => {
+  it("`success` returns the documented SuccessResponse shape (pure compat export)", () => {
+    const out = success({ key: "value" });
+    assert.strictEqual(out.success, true);
+    assert.deepStrictEqual(out.data, { key: "value" });
+    assert.ok(typeof out.timestamp === "number");
+    assert.ok(out.timestamp > 0);
+  });
+
+  it("`error` returns the documented ErrorResponse shape (pure compat export)", () => {
+    const out = error("went wrong", "API_ERROR", "fix it");
+    assert.strictEqual(out.success, false);
+    assert.strictEqual(out.error, "went wrong");
+    assert.strictEqual(out.code, "API_ERROR");
+    assert.strictEqual(out.help, "fix it");
+  });
+
+  it("`error` omits optional fields when not provided", () => {
+    const out = error("went wrong");
+    assert.strictEqual(out.success, false);
+    assert.strictEqual(out.error, "went wrong");
+    assert.strictEqual(out.code, undefined);
+    assert.strictEqual(out.help, undefined);
   });
 });

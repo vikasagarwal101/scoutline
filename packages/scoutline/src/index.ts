@@ -479,48 +479,81 @@ async function handleRepo(
   }
 }
 
-async function handleTools(args: string[]): Promise<void> {
+async function handleTools(
+  args: string[],
+  outputMode: OutputMode,
+  deps: { invocation: CommandInvocationAdapter },
+): Promise<number> {
   const { flags } = parseArgs(args);
 
   if (flags.help || flags.h) {
-    console.log(TOOLS_HELP);
-    return;
+    deps.invocation.writeStdout(TOOLS_HELP);
+    return 0;
   }
 
-  await listTools({
-    filter: flags.filter as string,
-    full: flags.full === true,
-    typescript: flags.typescript === true || flags.ts === true,
-    enableVision: flags.vision !== false,
-  });
+  return invokeCommand(
+    deps.invocation,
+    (context) =>
+      listTools(
+        {
+          filter: flags.filter as string,
+          full: flags.full === true,
+          typescript: flags.typescript === true || flags.ts === true,
+          enableVision: flags.vision !== false,
+        },
+        context,
+      ),
+    outputMode,
+  );
 }
 
-async function handleTool(args: string[]): Promise<void> {
+async function handleTool(
+  args: string[],
+  outputMode: OutputMode,
+  deps: { invocation: CommandInvocationAdapter },
+): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
   if (flags.help || flags.h || positional.length === 0) {
-    console.log(TOOLS_HELP);
-    return;
+    deps.invocation.writeStdout(TOOLS_HELP);
+    return 0;
   }
 
-  await showTool(positional[0], { enableVision: flags.vision !== false });
+  return invokeCommand(
+    deps.invocation,
+    (context) => showTool(positional[0], { enableVision: flags.vision !== false }, context),
+    outputMode,
+  );
 }
 
-async function handleCall(args: string[]): Promise<void> {
+async function handleCall(
+  args: string[],
+  outputMode: OutputMode,
+  deps: { invocation: CommandInvocationAdapter },
+): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
   if (flags.help || flags.h || positional.length === 0) {
-    console.log(CALL_HELP);
-    return;
+    deps.invocation.writeStdout(CALL_HELP);
+    return 0;
   }
 
-  await callTool(positional[0], {
-    json: flags.json as string,
-    file: flags.file as string,
-    stdin: flags.stdin === true,
-    dryRun: flags["dry-run"] === true,
-    enableVision: flags.vision !== false,
-  });
+  return invokeCommand(
+    deps.invocation,
+    (context) =>
+      callTool(
+        positional[0],
+        {
+          json: flags.json as string,
+          file: flags.file as string,
+          stdin: flags.stdin === true,
+          dryRun: flags["dry-run"] === true,
+          enableVision: flags.vision !== false,
+        },
+        context,
+      ),
+    outputMode,
+  );
 }
 
 async function handleDoctor(args: string[]): Promise<void> {
@@ -646,14 +679,11 @@ export async function main(
       case "repo":
         return await handleRepo(commandArgs, outputMode, { invocation });
       case "tools":
-        await handleTools(commandArgs);
-        break;
+        return await handleTools(commandArgs, outputMode, { invocation });
       case "tool":
-        await handleTool(commandArgs);
-        break;
+        return await handleTool(commandArgs, outputMode, { invocation });
       case "call":
-        await handleCall(commandArgs);
-        break;
+        return await handleCall(commandArgs, outputMode, { invocation });
       case "doctor":
         await handleDoctor(commandArgs);
         break;

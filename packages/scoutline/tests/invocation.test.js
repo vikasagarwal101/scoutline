@@ -612,3 +612,72 @@ describe("invokeCommand — read and repo routed through the seam (P1-05)", () =
     assert.match(parsed.error, /Invalid repository format/);
   });
 });
+
+describe("invokeCommand — tools routed through the seam (P1-06)", () => {
+  it("showTool throws ValidationError for an unknown tool", async () => {
+    const { showTool } = await import("../dist/commands/tools.js");
+    const { adapter, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      (ctx) => showTool("nonexistent.tool", {}, ctx),
+      "data",
+    );
+    assert.strictEqual(status, 1);
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.match(parsed.error, /Unknown tool/);
+  });
+
+
+  it("listTools and showTool signatures do not accept or resolve a Provider ID", async () => {
+    // Boundary assertion: the public command functions in tools.ts must
+    // neither accept a Provider ID parameter nor surface one through their
+    // return values. P2-05 introduces Provider selection; until then this
+    // invariant is encoded in source.
+    const tools = await import("../dist/commands/tools.js");
+    const listLen = tools.listTools.length;
+    const showLen = tools.showTool.length;
+    const callLen = tools.callTool.length;
+    // listTools: (options, context?) → length 2 max
+    // showTool: (name, options, context?) → length 3 max
+    // callTool: (toolName, options, context?) → length 3 max
+    assert.ok(listLen <= 2, `listTools arity grew: ${listLen}`);
+    assert.ok(showLen <= 3, `showTool arity grew: ${showLen}`);
+    assert.ok(callLen <= 3, `callTool arity grew: ${callLen}`);
+    // Source-level: no "provider" identifier in the public parameter names.
+    const src = await import("node:fs").then((fs) =>
+      fs.readFileSync(new URL("../src/commands/tools.ts", import.meta.url), "utf8"),
+    );
+    const noProviderId = !/\bproviderId\b|\bprovider_id\b/.test(src);
+    assert.ok(noProviderId, "tools.ts must not reference a Provider ID");
+  });
+
+  it("callTool surfaces unknown-tool ApiError as a structured stderr value with exit 1", async () => {
+    const { callTool } = await import("../dist/commands/tools.js");
+    const { adapter, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      (ctx) => callTool("scoutline.zai.test.tool", { json: '{"foo":"bar"}', dryRun: true }, ctx),
+      "data",
+    );
+    assert.strictEqual(status, 1);
+    assert.ok(stderr.length >= 1);
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.success, false);
+    assert.match(parsed.error, /Unknown tool/);
+  });
+
+  it("callTool's parseToolArgs routes invalid --json to a structured ValidationError", async () => {
+    const { callTool } = await import("../dist/commands/tools.js");
+    const { adapter, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      (ctx) => callTool("scoutline.zai.test.tool", { json: "{not-json" }, ctx),
+      "data",
+    );
+    assert.strictEqual(status, 1);
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.match(parsed.error, /Invalid JSON/);
+  });
+});

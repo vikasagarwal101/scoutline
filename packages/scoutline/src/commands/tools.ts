@@ -1,24 +1,18 @@
 /**
  * Meta commands: tool discovery, schema inspection, and raw calls
+ *
+ * P1-06: each command returns a CommandResult instead of writing
+ * directly to stdout/stderr. stdin is read through CommandContext
+ * rather than the process stream directly. The public `scoutline.zai.*`
+ * tool names are preserved; no Provider selection is introduced.
  */
 
 import * as fs from "node:fs/promises";
 import { ZaiMcpClient } from "../lib/mcp-client.js";
 import { ZaiCodeModeClient } from "../lib/code-mode.js";
-import { outputSuccess } from "../lib/output.js";
-import { formatErrorOutput, ValidationError } from "../lib/errors.js";
-import { silenceConsole, restoreConsole } from "../lib/silence.js";
+import { ValidationError } from "../lib/errors.js";
 import { redactTool } from "../lib/redact.js";
-
-async function readStdin(): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => (data += chunk));
-    process.stdin.on("end", () => resolve(data));
-    process.stdin.on("error", reject);
-  });
-}
+import type { CommandContext, CommandResult } from "../command-invocation.js";
 
 export interface ToolsOptions {
   filter?: string;
@@ -27,25 +21,20 @@ export interface ToolsOptions {
   enableVision?: boolean;
 }
 
-export async function listTools(options: ToolsOptions = {}): Promise<void> {
+export async function listTools(
+  options: ToolsOptions = {},
+  context?: CommandContext,
+): Promise<CommandResult> {
   if (options.typescript) {
-    silenceConsole();
     const codeClient = new ZaiCodeModeClient();
     try {
       const interfaces = await codeClient.getAllInterfaces();
-      outputSuccess(interfaces);
-    } catch (error) {
-      restoreConsole();
-      console.error(formatErrorOutput(error));
-      process.exit(1);
+      return { kind: "data", data: interfaces };
     } finally {
       await codeClient.close().catch(() => {});
-      restoreConsole();
     }
-    return;
   }
 
-  silenceConsole();
   const client = new ZaiMcpClient({ enableVision: options.enableVision });
   try {
     const tools = await client.listTools();
@@ -54,38 +43,29 @@ export async function listTools(options: ToolsOptions = {}): Promise<void> {
       : tools;
 
     if (options.full) {
-      outputSuccess(filtered.map((tool) => redactTool(tool)));
-      return;
+      return { kind: "data", data: filtered.map((tool) => redactTool(tool)) };
     }
 
-    outputSuccess(filtered.map((tool) => tool.name));
-  } catch (error) {
-    restoreConsole();
-    console.error(formatErrorOutput(error));
-    process.exit(1);
+    return { kind: "data", data: filtered.map((tool) => tool.name) };
   } finally {
     await client.close().catch(() => {});
-    restoreConsole();
   }
 }
 
-export async function showTool(name: string, options: ToolsOptions = {}): Promise<void> {
-  silenceConsole();
+export async function showTool(
+  name: string,
+  options: ToolsOptions = {},
+  context?: CommandContext,
+): Promise<CommandResult> {
   const client = new ZaiMcpClient({ enableVision: options.enableVision });
   try {
     const tool = await client.getTool(name);
     if (!tool) {
-      restoreConsole();
       throw new ValidationError(`Unknown tool: ${name}`);
     }
-    outputSuccess(redactTool(tool));
-  } catch (error) {
-    restoreConsole();
-    console.error(formatErrorOutput(error));
-    process.exit(1);
+    return { kind: "data", data: redactTool(tool) };
   } finally {
     await client.close().catch(() => {});
-    restoreConsole();
   }
 }
 
@@ -97,7 +77,16 @@ export interface CallToolOptions {
   enableVision?: boolean;
 }
 
-async function parseToolArgs(options: CallToolOptions): Promise<Record<string, unknown>> {
+/**
+ * Parse tool arguments from one of three sources: --json inline, --file,
+ * or stdin (when --stdin or stdin is not a TTY). The caller's
+ * CommandContext is required so stdin reads route through the invocation
+ * adapter rather than `process.stdin` directly.
+ */
+async function parseToolArgs(
+  options: CallToolOptions,
+  context: CommandContext,
+): Promise<Record<string, unknown>> {
   if (options.json) {
     const raw = options.json.trim();
     const value = raw.startsWith("@") ? await fs.readFile(raw.slice(1), "utf8") : raw;
@@ -109,8 +98,8 @@ async function parseToolArgs(options: CallToolOptions): Promise<Record<string, u
     return JSON.parse(value);
   }
 
-  if (options.stdin || !process.stdin.isTTY) {
-    const value = await readStdin();
+  if (options.stdin || !context.stdinIsTTY) {
+    const value = await context.readStdin();
     if (value.trim().length === 0) {
       return {};
     }
@@ -120,37 +109,37 @@ async function parseToolArgs(options: CallToolOptions): Promise<Record<string, u
   return {};
 }
 
-export async function callTool(toolName: string, options: CallToolOptions = {}): Promise<void> {
+export async function callTool(
+  toolName: string,
+  options: CallToolOptions = {},
+  context?: CommandContext,
+): Promise<CommandResult> {
+  if (!context) {
+    throw new Error("callTool requires a CommandContext (for stdin access)");
+  }
+
   let args: Record<string, unknown>;
   try {
-    args = await parseToolArgs(options);
+    args = await parseToolArgs(options, context);
   } catch (error) {
     if (error instanceof SyntaxError) {
-      console.error(formatErrorOutput(new ValidationError(`Invalid JSON: ${error.message}`)));
-      process.exit(1);
+      throw new ValidationError(`Invalid JSON: ${error.message}`);
     }
     throw error;
   }
 
-  silenceConsole();
   const client = new ZaiMcpClient({ enableVision: options.enableVision });
   try {
     const resolved = await client.resolveToolName(toolName);
 
     if (options.dryRun) {
-      outputSuccess({ tool: resolved, args });
-      return;
+      return { kind: "data", data: { tool: resolved, args } };
     }
 
     const result = await client.callToolRaw(resolved, args);
-    outputSuccess(result);
-  } catch (error) {
-    restoreConsole();
-    console.error(formatErrorOutput(error));
-    process.exit(1);
+    return { kind: "data", data: result };
   } finally {
     await client.close().catch(() => {});
-    restoreConsole();
   }
 }
 

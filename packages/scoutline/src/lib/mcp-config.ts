@@ -145,3 +145,35 @@ export function buildMcpCallTemplate(options: McpTemplateOptions = {}) {
 export function getMcpToolName(server: McpServerName, tool: string): string {
   return `${MCP_MANUAL_NAME}.${MCP_SERVERS[server]}.${tool}`;
 }
+
+// ---------------------------------------------------------------------------
+// Discovery-name translation (P2-03, DESIGN.md §7)
+// ---------------------------------------------------------------------------
+
+/**
+ * UTCP-sanitized form of {@link MCP_MANUAL_NAME}. UTCP rewrites the dots
+ * in the manual-segment name to underscores during registration, so every
+ * discovered tool name begins with this prefix. The public dotted form is
+ * what callers see; the internal sanitized form is what UTCP accepts at
+ * invocation time. The translation between the two lives in the Z.AI
+ * Implementation; central `getMcpToolName` is unchanged.
+ */
+export const MCP_INTERNAL_NAME_PREFIX = "scoutline_zai";
+
+/**
+ * Project an internal (UTCP-sanitized) tool name to its stable public
+ * dotted form. Only the manual-segment prefix is rewritten; tool leaf
+ * names and server segments pass through verbatim. Unknown shapes
+ * (custom tools registered without the manual prefix) are returned
+ * unchanged so callers still see them.
+ */
+export function projectInternalToolName(internalName: string): string {
+  if (internalName === MCP_INTERNAL_NAME_PREFIX) {
+    return MCP_MANUAL_NAME;
+  }
+  const dottedPrefix = `${MCP_INTERNAL_NAME_PREFIX}.`;
+  if (internalName.startsWith(dottedPrefix)) {
+    return `${MCP_MANUAL_NAME}.${internalName.slice(dottedPrefix.length)}`;
+  }
+  return internalName;
+}

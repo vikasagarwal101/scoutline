@@ -14,7 +14,12 @@ import crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { buildMcpCallTemplate, getMcpToolName } from "./mcp-config.js";
+import {
+  buildMcpCallTemplate,
+  getMcpToolName,
+  projectInternalToolName,
+  MCP_MANUAL_NAME,
+} from "./mcp-config.js";
 import { ApiError, AuthError, NetworkError, TimeoutError, ValidationError } from "./errors.js";
 import { loadConfig, getMcpEndpoints } from "./config.js";
 import { redactTool } from "./redact.js";
@@ -26,9 +31,6 @@ const DEFAULT_RETRY_MAX_MS = parseInt(process.env.ZAI_MCP_RETRY_MAX_MS || "8000"
 const DEFAULT_RETRY_JITTER_MS = parseInt(process.env.ZAI_MCP_RETRY_JITTER_MS || "250", 10);
 const TOOL_CACHE_VERSION = 1;
 const DEFAULT_TOOL_CACHE_TTL_MS = parseInt(process.env.ZAI_MCP_TOOL_CACHE_TTL_MS || "86400000", 10);
-const TOOL_CACHE_ENABLED = !["0", "false"].includes(
-  (process.env.ZAI_MCP_TOOL_CACHE || "1").toLowerCase(),
-);
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -74,10 +76,15 @@ export interface WebSearchResult {
  * `utcpFactory` is a behaviour-preserving injection seam: when omitted the
  * production path uses `UtcpClient.create()`. Tests inject a fake to avoid
  * touching process globals.
+ *
+ * `disableRetry` (P2-03) lets the Z.AI Search Adapter hand retry policy
+ * to shared execution. When omitted, the client retains its existing
+ * direct-client retry behaviour.
  */
 export interface ZaiMcpClientOptions {
   enableVision?: boolean;
   noCache?: boolean;
+  disableRetry?: boolean;
   utcpFactory?: () => Promise<UtcpClient>;
 }
 
@@ -177,7 +184,7 @@ export class ZaiMcpClient {
   }
 
   private async callToolUncached<T>(toolName: string, args: Record<string, unknown>): Promise<T> {
-    const maxRetries = this.getRetryCount(toolName);
+    const maxRetries = this.options.disableRetry ? 0 : this.getRetryCount(toolName);
     let attempt = 0;
 
     while (true) {
@@ -307,7 +314,11 @@ export class ZaiMcpClient {
   }
 
   private async readToolsCache(refresh: boolean): Promise<Tool[] | null> {
-    if (!TOOL_CACHE_ENABLED || refresh) {
+    // Re-check the env var at call time so tests can disable the
+    // on-disk tool cache without restarting the process. Production
+    // behaviour is unchanged when the env var is unset.
+    const enabled = !["0", "false"].includes((process.env.ZAI_MCP_TOOL_CACHE || "1").toLowerCase());
+    if (!enabled || refresh) {
       return null;
     }
     if (DEFAULT_TOOL_CACHE_TTL_MS <= 0) {
@@ -334,7 +345,8 @@ export class ZaiMcpClient {
   }
 
   private async writeToolsCache(tools: Tool[]): Promise<void> {
-    if (!TOOL_CACHE_ENABLED || DEFAULT_TOOL_CACHE_TTL_MS <= 0) {
+    const enabled = !["0", "false"].includes((process.env.ZAI_MCP_TOOL_CACHE || "1").toLowerCase());
+    if (!enabled || DEFAULT_TOOL_CACHE_TTL_MS <= 0) {
       return;
     }
     try {
@@ -352,9 +364,25 @@ export class ZaiMcpClient {
   }
 
   /**
-   * List all discovered tools from registered MCP servers
+   * List all discovered tools from registered MCP servers.
+   *
+   * Returns the PUBLIC projected view: internal UTCP names (e.g.
+   * `scoutline_zai.search.web_search_prime`) are rewritten to the
+   * stable dotted form (e.g. `scoutline.zai.search.web_search_prime`).
+   * The private unprojected discovery list is retained for invocation
+   * through {@link getTool} / {@link resolveToolName}.
    */
   async listTools(refresh: boolean = false): Promise<Tool[]> {
+    const tools = await this.discoverTools(refresh);
+    return tools.map((tool) => ({ ...tool, name: projectInternalToolName(tool.name) }));
+  }
+
+  /**
+   * Private unprojected discovery list. Tools keep their exact UTCP
+   * names so {@link getTool} can resolve public aliases back to the
+   * internal invocation identity.
+   */
+  private async discoverTools(refresh: boolean = false): Promise<Tool[]> {
     const cached = await this.readToolsCache(refresh);
     if (cached) {
       return cached;
@@ -370,19 +398,46 @@ export class ZaiMcpClient {
   }
 
   /**
-   * Find a tool by exact name or by suffix match
+   * Find a tool by exact internal name, public dotted name, or leaf
+   * suffix. Resolution order:
+   *   1. Exact discovered name (e.g. `scoutline_zai.search.web_search_prime`).
+   *   2. Public dotted name (e.g. `scoutline.zai.search.web_search_prime`):
+   *      derive the provider-relative suffix after the public prefix and
+   *      match exactly one discovered name ending in `.<suffix>`. Zero or
+   *      multiple matches fail.
+   *   3. Legacy short-suffix fallback: a single discovered name ending in
+   *      `.<name>` (e.g. for callers that pass only `web_search_prime`).
+   *
+   * Public names never replace the private discovered-name record — the
+   * returned {@link Tool} always carries its internal UTCP name.
    */
   async getTool(toolName: string): Promise<Tool | undefined> {
-    let tools = await this.listTools();
-    let exact = tools.find((tool) => tool.name === toolName);
-    if (exact) return exact;
-    let suffix = tools.find((tool) => tool.name.endsWith(`.${toolName}`));
-    if (suffix) return suffix;
+    let tools = await this.discoverTools(false);
+    let found = this.findToolByResolvedName(tools, toolName);
+    if (found) return found;
 
-    tools = await this.listTools(true);
-    exact = tools.find((tool) => tool.name === toolName);
+    tools = await this.discoverTools(true);
+    return this.findToolByResolvedName(tools, toolName);
+  }
+
+  private findToolByResolvedName(tools: Tool[], name: string): Tool | undefined {
+    // 1. Exact internal name wins before any aliasing.
+    const exact = tools.find((tool) => tool.name === name);
     if (exact) return exact;
-    return tools.find((tool) => tool.name.endsWith(`.${toolName}`));
+
+    // 2. Public prefix → suffix match. Exactly one discovered name must
+    //    end in `.<suffix>`; zero or multiple matches fail.
+    const publicPrefix = `${MCP_MANUAL_NAME}.`;
+    if (name.startsWith(publicPrefix)) {
+      const suffix = name.slice(publicPrefix.length);
+      const matches = tools.filter((tool) => tool.name.endsWith(`.${suffix}`));
+      if (matches.length === 1) return matches[0];
+      return undefined;
+    }
+
+    // 3. Legacy short-suffix fallback for callers that pass only a leaf
+    //    or partial name. Preserves the pre-P2-03 loose-match behaviour.
+    return tools.find((tool) => tool.name.endsWith(`.${name}`));
   }
 
   /**

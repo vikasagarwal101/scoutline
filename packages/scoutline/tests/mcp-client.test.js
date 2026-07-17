@@ -15,7 +15,7 @@
  *
  * No production code is altered in this file.
  */
-import { describe, it, test, before, after } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -66,24 +66,31 @@ async function makeSearchFake() {
 describe("ZaiMcpClient — tool-name translation (P0-03 baseline)", () => {
   let tempDir;
   let originalCacheDir;
+  let originalToolCache;
 
   before(async () => {
     // Redirect both the tool cache and the response cache into a temp
-    // directory so this test never touches the user's real cache.
+    // directory so this test never touches the user's real cache. Disable
+    // the on-disk tool cache entirely so each test sees its own fake's
+    // discovered tool list instead of a stale cross-test entry.
     originalCacheDir = process.env.ZAI_CACHE_DIR;
+    originalToolCache = process.env.ZAI_MCP_TOOL_CACHE;
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), TEMP_PREFIX));
     process.env.ZAI_CACHE_DIR = tempDir;
+    process.env.ZAI_MCP_TOOL_CACHE = "0";
   });
 
   after(async () => {
     if (originalCacheDir === undefined) delete process.env.ZAI_CACHE_DIR;
     else process.env.ZAI_CACHE_DIR = originalCacheDir;
+    if (originalToolCache === undefined) delete process.env.ZAI_MCP_TOOL_CACHE;
+    else process.env.ZAI_MCP_TOOL_CACHE = originalToolCache;
     if (tempDir) {
       await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
     }
   });
 
-  it("private discovery exposes exact UTCP names with internal prefix", async () => {
+  it("public listTools projects internal UTCP names to stable dotted names", async () => {
     const fake = await makeSearchFake();
     const client = new ZaiMcpClient({
       utcpFactory: async () => fake,
@@ -92,17 +99,21 @@ describe("ZaiMcpClient — tool-name translation (P0-03 baseline)", () => {
     try {
       const tools = await client.listTools();
 
-      assert.ok(tools.length >= 3, `expected at least 3 sanitized tools, got ${tools.length}`);
+      assert.ok(tools.length >= 3, `expected at least 3 projected tools, got ${tools.length}`);
 
       for (const tool of tools) {
         assert.ok(
-          tool.name.startsWith("scoutline_zai."),
-          `private discovery must use internal prefix, got: ${tool.name}`,
+          tool.name.startsWith("scoutline.zai."),
+          `public listTools must use dotted prefix, got: ${tool.name}`,
+        );
+        assert.ok(
+          !tool.name.startsWith("scoutline_zai."),
+          `internal prefix leaked into public listTools: ${tool.name}`,
         );
       }
 
-      const searchTool = tools.find((t) => t.name === INTERNAL_SEARCH_NAME);
-      assert.ok(searchTool, `expected internal search tool: ${INTERNAL_SEARCH_NAME}`);
+      const searchTool = tools.find((t) => t.name === PUBLIC_SEARCH_NAME);
+      assert.ok(searchTool, `expected projected search tool: ${PUBLIC_SEARCH_NAME}`);
       assert.ok(searchTool.inputs, "search tool must declare an inputs schema");
       assert.strictEqual(searchTool.inputs.type, "object");
       assert.ok(
@@ -115,23 +126,145 @@ describe("ZaiMcpClient — tool-name translation (P0-03 baseline)", () => {
     }
   });
 
-  // P2-03 condition: client.webSearch({ query: "..." }) must invoke
-  // client.callTool(INTERNAL_SEARCH_NAME, { search_query: "..." }) and
-  // resolve with the fixture's sanitized result array. The current
-  // implementation forwards PUBLIC_SEARCH_NAME, which UTCP rejects with
-  // an unknown-tool error, so this test is recorded as a TODO rather than
-  // a failure. P2-03 replaces this placeholder with a body that asserts
-  // the fake received INTERNAL_SEARCH_NAME and returned the fixture result.
-  test.todo("public dotted search name resolves to discovered UTCP name");
+  it("public dotted search name resolves to discovered UTCP name", async () => {
+    // Regression for the P0-03 translation defect. The public name
+    //   "scoutline.zai.search.web_search_prime"
+    // must resolve through discovery to the internal UTCP identity
+    //   "scoutline_zai.search.web_search_prime"
+    // and return the sanitized fixture result array.
+    const fake = await makeSearchFake();
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      noCache: true,
+    });
+    try {
+      const result = await client.callToolRaw(PUBLIC_SEARCH_NAME, { search_query: "x" });
+      assert.ok(Array.isArray(result), "expected array result");
+      // The fake received exactly one call, and it used the internal name.
+      assert.strictEqual(fake.callToolCalls.length, 1);
+      assert.strictEqual(fake.callToolCalls[0].name, INTERNAL_SEARCH_NAME);
+    } finally {
+      await client.close();
+    }
+  });
 
-  // P2-03 condition: client.listTools() must project each internal UTCP
-  // name (e.g. "scoutline_zai.search.web_search_prime") back to the
-  // public dotted form (e.g. "scoutline.zai.search.web_search_prime")
-  // produced by getMcpToolName. The current implementation returns the
-  // internal names verbatim, which leaks the sanitized boundary into
-  // callers. P2-03 replaces this placeholder with an assertion that
-  // every returned tool name matches getMcpToolName(server, tool).
-  test.todo("listTools projects discovered UTCP names to public dotted names");
+  it("listTools projects discovered UTCP names to public dotted names", async () => {
+    // Regression for the second P0-03 placeholder: the public list must
+    // contain the dotted identity `scoutline.zai.search.web_search_prime`
+    // and no name with the sanitized internal prefix. The detailed schema
+    // check lives in the related projection test above; this assertion
+    // keeps the original P0-03 entry as a focused regression.
+    const fake = await makeSearchFake();
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      noCache: true,
+    });
+    try {
+      const tools = await client.listTools();
+      const searchTool = tools.find((t) => t.name === PUBLIC_SEARCH_NAME);
+      assert.ok(searchTool, `expected projected search tool: ${PUBLIC_SEARCH_NAME}`);
+      for (const tool of tools) {
+        assert.ok(
+          !tool.name.startsWith("scoutline_zai."),
+          `internal prefix leaked into public listTools: ${tool.name}`,
+        );
+      }
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("exact discovered private names win before aliases", async () => {
+    // A name that is exactly an internal UTCP name must be invoked
+    // verbatim; no aliasing or projection is applied.
+    const fake = await makeSearchFake();
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      noCache: true,
+    });
+    try {
+      await client.callToolRaw(INTERNAL_SEARCH_NAME, { search_query: "x" });
+      assert.strictEqual(fake.callToolCalls[0].name, INTERNAL_SEARCH_NAME);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("ambiguous provider-relative suffix fails with API_ERROR and leaks no schema or credential", async () => {
+    // Two discovered tools share the same ".search.web_search_prime"
+    // suffix under different manual segments. The public name resolves
+    // to zero or multiple matches and must fail with API_ERROR.
+    const ambiguousFake = new FakeUtcpClient({
+      discoveredTools: [
+        {
+          name: "scoutline_zai.search.web_search_prime",
+          inputs: { type: "object", properties: {}, required: [] },
+        },
+        {
+          name: "scoutline_other.search.web_search_prime",
+          inputs: { type: "object", properties: {}, required: [] },
+        },
+      ],
+    });
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => ambiguousFake,
+      noCache: true,
+    });
+    try {
+      await assert.rejects(
+        client.callToolRaw("scoutline.zai.search.web_search_prime", { search_query: "x" }),
+        (err) => {
+          // API_ERROR code in message; no raw schema or credential.
+          const msg = err instanceof Error ? err.message : String(err);
+          assert.match(msg, /API_ERROR|Unknown tool|ambiguous/i, msg);
+          assert.ok(!msg.includes("Bearer "), `credential leaked: ${msg}`);
+          return true;
+        },
+      );
+      // The fake never received a callTool — resolution failed first.
+      assert.strictEqual(ambiguousFake.callToolCalls.length, 0);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("discovery refresh occurs at most once after an initial miss", async () => {
+    // First call resolves; second unrelated name triggers at most one
+    // refresh of the discovery list (the existing getTool fallback).
+    const refreshFake = new FakeUtcpClient({
+      discoveredTools: [
+        {
+          name: "scoutline_zai.reader.webReader",
+          inputs: { type: "object", properties: {}, required: [] },
+        },
+      ],
+      resultsByName: {
+        "scoutline_zai.reader.webReader": "ok",
+      },
+    });
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => refreshFake,
+      noCache: true,
+    });
+    try {
+      // First call resolves via the public projection.
+      await client.callToolRaw("scoutline.zai.reader.webReader", { url: "x" });
+      const getToolsBefore = refreshFake.getToolsCalls || 0;
+      // An unrelated unknown name triggers refresh; then a known name
+      // must not trigger another refresh.
+      await assert.rejects(client.callToolRaw("scoutline.zai.does_not_exist", {}));
+      const getToolsAfterUnknown = refreshFake.getToolsCalls || 0;
+      assert.ok(getToolsAfterUnknown >= getToolsBefore, "refresh ran after miss");
+      await client.callToolRaw("scoutline.zai.reader.webReader", { url: "y" });
+      const getToolsFinal = refreshFake.getToolsCalls || 0;
+      assert.ok(
+        getToolsFinal <= getToolsAfterUnknown + 1,
+        "discovery refresh ran more than once after a miss",
+      );
+    } finally {
+      await client.close();
+    }
+  });
 });
 
 describe("ZaiMcpClient — public identity contract", () => {

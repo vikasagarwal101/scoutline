@@ -16,6 +16,7 @@ export class FakeUtcpClient {
     this.errorsByName = options.errorsByName || {};
     this.closeCount = 0;
     this.registerManualCalls = 0;
+    this.getToolsCalls = 0;
   }
 
   setDiscoveredTools(tools) {
@@ -28,6 +29,7 @@ export class FakeUtcpClient {
   }
 
   getTools() {
+    this.getToolsCalls += 1;
     return Promise.resolve(this.discoveredTools.slice());
   }
 

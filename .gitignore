@@ -20,3 +20,11 @@ yarn-error.log*
 # Editors
 .vscode/
 .idea/
+
+.claude/
+.serena/
+.gitnexus/
+AGENTS.md
+CLAUDE.md
+/docs/plans/
+

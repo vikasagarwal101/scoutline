@@ -493,11 +493,14 @@ describe("doctor diagnostics — help text (P4-04)", () => {
 // ---------------------------------------------------------------------------
 
 describe("doctor diagnostics — recursive redaction (P4-04)", () => {
-  it("diagnostic failures are redacted so both Provider credentials are absent", async () => {
+  it("diagnostic failures scrub Provider credentials so both are absent (Fixup B — B2)", async () => {
     const env = { Z_AI_API_KEY: ZAI_KEY, MINIMAX_API_KEY: MINIMAX_KEY };
-    // AuthError instances pass through Provider normalizers unchanged, so
-    // their messages (with embedded credentials) reach the report and
-    // exercise recursive redaction as a defence-in-depth.
+    // Fixup B (B2): the Provider normalizers now re-wrap typed transport
+    // errors (AuthError) with sanitized messages, so an embedded
+    // credential is scrubbed at the adapter boundary BEFORE it reaches
+    // the report. This is a stronger guarantee than relying on recursive
+    // redaction alone; we assert both the credential absence and the
+    // clean normalized message, then defence-in-depth redaction on top.
     const descriptors = [
       makeZaiDescriptor({
         listToolsImpl: () => {
@@ -516,9 +519,13 @@ describe("doctor diagnostics — recursive redaction (P4-04)", () => {
     const secrets = configuredSecrets(env);
     const redacted = redactSecrets(report, secrets);
     const serialized = JSON.stringify(redacted);
+    // Core safety property: neither credential reaches the report.
     assert.ok(!serialized.includes(ZAI_KEY), "Z.AI credential absent");
     assert.ok(!serialized.includes(MINIMAX_KEY), "MiniMax credential absent");
-    assert.ok(serialized.includes("[REDACTED]"), "redaction marker present");
+    // The credentials were scrubbed at the source (clean normalized
+    // auth messages), not merely redacted downstream.
+    assert.ok(/Z\.AI authentication failed/.test(serialized), "Z.AI auth message scrubbed");
+    assert.ok(/MiniMax authentication failed/.test(serialized), "MiniMax auth message scrubbed");
   });
 
   it("diagnosticErrorFromError maps ScoutlineError to code+message and drops unknown codes", () => {

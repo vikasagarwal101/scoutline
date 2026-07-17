@@ -14,7 +14,7 @@
  *     environment fallback, explicit precedence, default Z.AI, invalid).
  *   - Assert Reader/repo/tools/code ignore an invalid SCOUTLINE_PROVIDER.
  */
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 
 import { search, SEARCH_HELP } from "../dist/commands/search.js";
@@ -718,6 +718,91 @@ describe("global --provider parsing and routing", () => {
     const err = JSON.parse(stderr[0]);
     assert.strictEqual(err.code, "CONFIGURATION_ERROR");
     assert.strictEqual(zai.invokes.length, 0, "no invoke when unconfigured");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fixup B — B3: injected MainDependencies.env credentials drive redaction.
+// A secret present ONLY in MainDependencies.env (not in process.env) must
+// still be redacted from public error output. This is the end-to-end proof
+// that the env->secrets threading reaches invokeCommand + formatErrorOutput.
+// ---------------------------------------------------------------------------
+
+describe("main — redaction uses injected env credentials (Fixup B — B3)", () => {
+  const INJECTED_ONLY = "ZAI_INJECTED_ONLY_SECRET_DO_NOT_LEAK";
+
+  let savedKey;
+  before(() => {
+    savedKey = process.env.Z_AI_API_KEY;
+    delete process.env.Z_AI_API_KEY;
+    delete process.env.ZAI_API_KEY;
+    delete process.env.MINIMAX_API_KEY;
+  });
+  after(() => {
+    if (savedKey === undefined) delete process.env.Z_AI_API_KEY;
+    else process.env.Z_AI_API_KEY = savedKey;
+  });
+
+  it("redacts a secret present only in MainDependencies.env from error output", async () => {
+    // Fake ZAI descriptor whose search.invoke throws an error that embeds
+    // the injected env credential. The dispatch layer threads
+    // configuredSecrets(env) to invokeCommand, so the credential must be
+    // redacted even though it is absent from process.env.
+    const zaiDescriptor = {
+      id: "zai",
+      isConfigured: (env) => Boolean(env.Z_AI_API_KEY),
+      capabilities: () => new Set(["search"]),
+      create: () => ({
+        id: "zai",
+        search: {
+          validate() {},
+          cacheIdentity(r) {
+            return {
+              provider: "zai",
+              capability: "search",
+              credentialFingerprint: "fp-zai",
+              request: r,
+              legacyCandidates: [],
+            };
+          },
+          async invoke() {
+            const err = new Error(`provider rejected key=${INJECTED_ONLY}`);
+            err.code = "API_ERROR";
+            err.statusCode = 500;
+            throw err;
+          },
+        },
+      }),
+    };
+
+    const store = new Map();
+    const searchCache = {
+      async get(key) {
+        return store.has(key) ? store.get(key) : null;
+      },
+      async set(key, value) {
+        store.set(key, value);
+      },
+    };
+    const { adapter, stderr } = createTestAdapter();
+    const status = await main(["search", "foo"], {
+      invocation: adapter,
+      // The secret lives ONLY here — not in process.env.
+      env: { Z_AI_API_KEY: INJECTED_ONLY },
+      providerDescriptors: [zaiDescriptor],
+      searchCache,
+      searchSleep: async () => {},
+      searchRandom: () => 0.5,
+    });
+
+    assert.ok(status > 0, "error path returns nonzero");
+    const formatted = stderr[0];
+    assert.ok(
+      !formatted.includes(INJECTED_ONLY),
+      `injected-only env secret leaked to output: ${formatted}`,
+    );
+    const parsed = JSON.parse(formatted);
+    assert.ok(parsed.error.includes("[REDACTED]"), `expected redaction: ${parsed.error}`);
   });
 });
 

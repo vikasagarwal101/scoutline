@@ -139,7 +139,9 @@ export class ZaiMcpClient {
           error.message.includes("403") ||
           error.message.includes("auth")
         ) {
-          throw new AuthError(`Authentication failed: ${error.message}`);
+          // NFR-006: do not embed the underlying message — it may carry a
+          // raw Provider response body. The stable code is the classifier.
+          throw new AuthError("Authentication failed");
         }
         if (error.message.includes("timeout") || error.message.includes("ETIMEDOUT")) {
           throw new TimeoutError(DEFAULT_TIMEOUT_MS);
@@ -149,14 +151,11 @@ export class ZaiMcpClient {
           error.message.includes("network") ||
           error.message.includes("fetch")
         ) {
-          throw new NetworkError(error.message);
+          throw new NetworkError("MCP network error");
         }
       }
 
-      throw new ApiError(
-        `MCP initialization failed: ${error instanceof Error ? error.message : String(error)}`,
-        500,
-      );
+      throw new ApiError("MCP initialization failed", 500);
     }
   }
 
@@ -223,23 +222,25 @@ export class ZaiMcpClient {
 
         if (error instanceof Error) {
           if (error.message.includes("401") || error.message.includes("403")) {
-            throw new AuthError(`Authentication failed: ${error.message}`);
+            // NFR-006: the underlying message may carry a raw Provider
+            // response body; surface only the stable code for classification.
+            throw new AuthError("Authentication failed");
           }
           if (error.message.includes("timeout") || error.message.includes("ETIMEDOUT")) {
             throw new TimeoutError(DEFAULT_TIMEOUT_MS);
           }
           if (error.message.includes("ECONNREFUSED") || error.message.includes("network")) {
-            throw new NetworkError(error.message);
+            throw new NetworkError("MCP network error");
           }
           if (error.message.includes("-500") || error.message.includes("Unexpected system error")) {
-            throw new ApiError(error.message, -500);
+            // B6b: an unexpected-system failure is a 500-equivalent and
+            // MUST be retryable. Emit statusCode 500 (never a negative
+            // code the execution layer can't match) with a clean message.
+            throw new ApiError("MCP unexpected system error", 500);
           }
         }
 
-        throw new ApiError(
-          `MCP tool call failed: ${error instanceof Error ? error.message : String(error)}`,
-          500,
-        );
+        throw new ApiError("MCP tool call failed", 500);
       }
     }
   }

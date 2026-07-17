@@ -19,7 +19,8 @@ import { getMcpToolName } from "../dist/lib/mcp-config.js";
 import { FakeUtcpClient } from "./helpers/fake-utcp-client.js";
 import { readFixture } from "./helpers/fixtures.js";
 import { executeProviderOperation } from "../dist/lib/execution.js";
-import { ConfigurationError } from "../dist/lib/errors.js";
+import { ConfigurationError, ApiError, AuthError, NetworkError } from "../dist/lib/errors.js";
+import { formatErrorOutput } from "../dist/lib/output.js";
 
 const SEARCH_TOOL_PUBLIC_NAME = getMcpToolName("search", "web_search_prime");
 const VISION_TOOL_PUBLIC_NAME = getMcpToolName("vision", "analyze_image");
@@ -301,6 +302,103 @@ describe("Z.AI Search Adapter — error normalization", () => {
       assert.ok(!/at\s+\w+\.\w+\(/.test(text), `stack leaked: ${text}`);
       return true;
     });
+  });
+
+  // Fixup B — B6a: HTTP 404 is terminal (resource not found), not a
+  // retried 500. inferStatusCode must map a 404 message to its real
+  // status (404), which the execution layer classifies as terminal.
+  it("maps 404 to API_ERROR 404 (terminal, not retried as 500)", async () => {
+    for (const msg of ["HTTP 404 not found", "Resource not found (404)"]) {
+      await assert.rejects(runWithError(msg), (err) => {
+        assert.strictEqual(err.code, "API_ERROR");
+        assert.strictEqual(err.statusCode, 404, `404 must map to 404, got ${err.statusCode}`);
+        // Execution-layer retry set is exactly 429,500,502,503,504.
+        assert.ok(
+          ![429, 500, 502, 503, 504].includes(err.statusCode),
+          "404 must not be in the retryable set",
+        );
+        return true;
+      });
+    }
+  });
+});
+
+describe("Z.AI Search Adapter — raw Provider body scrubbing (Fixup B — B2, NFR-006)", () => {
+  // Inject a pre-typed transport error (as the lower-level mcp-client
+  // would throw) carrying a raw Provider response body, and assert the
+  // Adapter boundary strips it from the public message while preserving
+  // code + statusCode for retry classification.
+  async function runWithThrownError(thrownError) {
+    const fixture = await readFixture("providers", "zai", "tools.json");
+    const factory = makeClientFactory({
+      discoveredTools: fixture.tools,
+      errorsByName: {
+        "scoutline_zai.search.web_search_prime": thrownError,
+      },
+    });
+    const descriptor = createZaiDescriptor({ clientFactory: factory });
+    const adapter = descriptor.create({ env: { Z_AI_API_KEY: TEST_API_KEY } });
+    return adapter.search.invoke({ query: "q" });
+  }
+
+  const RAW_BODY = '{"error":"RAW_PROVIDER_BODY","detail":"<html>secret</html>"}';
+
+  it("scrubs a raw body from a typed ApiError and preserves statusCode", async () => {
+    await assert.rejects(runWithThrownError(new ApiError(RAW_BODY, 503)), (err) => {
+      assert.strictEqual(err.code, "API_ERROR");
+      assert.strictEqual(err.statusCode, 503, "statusCode preserved for retry classification");
+      assert.ok(
+        !err.message.includes("RAW_PROVIDER_BODY"),
+        `raw body leaked into message: ${err.message}`,
+      );
+      assert.ok(!err.message.includes("<html>"), `html leaked: ${err.message}`);
+      return true;
+    });
+  });
+
+  it("scrubs a raw body from a typed AuthError (terminal code preserved)", async () => {
+    await assert.rejects(
+      runWithThrownError(new AuthError(`Bearer token-leak ${RAW_BODY}`)),
+      (err) => {
+        assert.strictEqual(err.code, "AUTH_ERROR");
+        assert.ok(
+          !err.message.includes("RAW_PROVIDER_BODY"),
+          `raw body leaked into auth message: ${err.message}`,
+        );
+        assert.ok(!/Bearer/i.test(err.message), `bearer leaked: ${err.message}`);
+        return true;
+      },
+    );
+  });
+
+  it("scrubs a raw body from a typed NetworkError (retryable code preserved)", async () => {
+    await assert.rejects(runWithThrownError(new NetworkError(RAW_BODY)), (err) => {
+      assert.strictEqual(err.code, "NETWORK_ERROR");
+      assert.ok(
+        !err.message.includes("RAW_PROVIDER_BODY"),
+        `raw body leaked into network message: ${err.message}`,
+      );
+      return true;
+    });
+  });
+
+  it("raw body never reaches formatErrorOutput public envelope", async () => {
+    // End-to-end: the normalized message that reaches the public output
+    // contract must not contain the raw Provider body.
+    let captured;
+    try {
+      await runWithThrownError(new ApiError(RAW_BODY, 500));
+    } catch (err) {
+      captured = err;
+    }
+    const formatted = formatErrorOutput(captured, "data");
+    const parsed = JSON.parse(formatted);
+    assert.ok(
+      !formatted.includes("RAW_PROVIDER_BODY"),
+      `raw body reached public output: ${formatted}`,
+    );
+    assert.ok(!parsed.error.includes("<html>"), `html reached public output: ${formatted}`);
+    assert.strictEqual(parsed.code, "API_ERROR");
   });
 });
 

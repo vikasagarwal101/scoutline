@@ -33,6 +33,8 @@ import { createMiniMaxSdk } from "../dist/providers/minimax/sdk-client.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
 import { readFixture } from "./helpers/fixtures.js";
 import { executeProviderOperation } from "../dist/lib/execution.js";
+import { ApiError, AuthError, NetworkError } from "../dist/lib/errors.js";
+import { formatErrorOutput } from "../dist/lib/output.js";
 
 const TEST_API_KEY = "test-minimax-api-key-DO-NOT-LEAK";
 const EXPECTED_FINGERPRINT = crypto.createHash("sha256").update(TEST_API_KEY).digest("hex");
@@ -496,6 +498,69 @@ describe("MiniMax Search Adapter — failure normalization", () => {
       assert.strictEqual(isRetryableByExecution(err), true);
       return true;
     });
+  });
+
+  // Fixup B — B6a: HTTP 404 is terminal, not a retried 500.
+  it("maps 404 to API_ERROR 404 (terminal, not retried as 500)", async () => {
+    for (const msg of ["HTTP 404 not found", "Resource not found (404)"]) {
+      await assert.rejects(runWithError(new Error(msg)), (err) => {
+        assert.strictEqual(err.code, "API_ERROR");
+        assert.strictEqual(err.statusCode, 404, `404 must map to 404, got ${err.statusCode}`);
+        assert.strictEqual(isRetryableByExecution(err), false);
+        return true;
+      });
+    }
+  });
+});
+
+describe("MiniMax Search Adapter — raw Provider body scrubbing (Fixup B — B2, NFR-006)", () => {
+  const RAW_BODY = '{"error":"RAW_PROVIDER_BODY","detail":"<html>secret</html>"}';
+
+  it("scrubs a raw body from a typed ApiError and preserves statusCode", async () => {
+    const sdk = makeFakeSdk({ error: new ApiError(RAW_BODY, 503) });
+    const adapter = makeAdapter({ sdk });
+    await assert.rejects(adapter.search.invoke({ query: "q" }), (err) => {
+      assert.strictEqual(err.code, "API_ERROR");
+      assert.strictEqual(err.statusCode, 503, "statusCode preserved for retry classification");
+      assert.ok(!err.message.includes("RAW_PROVIDER_BODY"), `raw leaked: ${err.message}`);
+      assert.ok(!err.message.includes("<html>"), `html leaked: ${err.message}`);
+      return true;
+    });
+  });
+
+  it("scrubs a raw body from a typed AuthError", async () => {
+    const sdk = makeFakeSdk({ error: new AuthError(`Bearer token-leak ${RAW_BODY}`) });
+    const adapter = makeAdapter({ sdk });
+    await assert.rejects(adapter.search.invoke({ query: "q" }), (err) => {
+      assert.strictEqual(err.code, "AUTH_ERROR");
+      assert.ok(!err.message.includes("RAW_PROVIDER_BODY"), `raw leaked: ${err.message}`);
+      return true;
+    });
+  });
+
+  it("scrubs a raw body from a typed NetworkError", async () => {
+    const sdk = makeFakeSdk({ error: new NetworkError(RAW_BODY) });
+    const adapter = makeAdapter({ sdk });
+    await assert.rejects(adapter.search.invoke({ query: "q" }), (err) => {
+      assert.strictEqual(err.code, "NETWORK_ERROR");
+      assert.ok(!err.message.includes("RAW_PROVIDER_BODY"), `raw leaked: ${err.message}`);
+      return true;
+    });
+  });
+
+  it("raw body never reaches formatErrorOutput public envelope", async () => {
+    const sdk = makeFakeSdk({ error: new ApiError(RAW_BODY, 500) });
+    const adapter = makeAdapter({ sdk });
+    let captured;
+    try {
+      await adapter.search.invoke({ query: "q" });
+    } catch (err) {
+      captured = err;
+    }
+    const formatted = formatErrorOutput(captured, "data");
+    assert.ok(!formatted.includes("RAW_PROVIDER_BODY"), `raw body reached output: ${formatted}`);
+    const parsed = JSON.parse(formatted);
+    assert.strictEqual(parsed.code, "API_ERROR");
   });
 });
 

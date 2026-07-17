@@ -12,7 +12,7 @@
  *   - invocation isolation across consecutive calls
  *   - deterministic json envelopes via injected `now`
  */
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { invokeCommand } from "../dist/command-invocation.js";
 import { ScoutlineError, ValidationError, ConfigurationError } from "../dist/lib/errors.js";
@@ -300,6 +300,88 @@ describe("invokeCommand — error conversion", () => {
       "pretty",
     );
     assert.ok(stderr[0].includes("\n"), "pretty error should be indented");
+  });
+});
+
+describe("invokeCommand — injected-secret redaction (Fixup B — B3)", () => {
+  // A secret that exists ONLY in the injected secrets list (never in
+  // process.env) must still be redacted from public stderr output. This
+  // proves the redaction seam honours injected credentials rather than
+  // reading ambient process.env (W2 completeness).
+  const INJECTED_ONLY_SECRET = "INJECTED_ONLY_SECRET_VALUE_XYZ";
+
+  // Ensure the fixture is truly absent from the ambient environment so
+  // the assertion can only pass via the injected-secrets plumbing.
+  let saved;
+  before(() => {
+    saved = process.env.Z_AI_API_KEY;
+    delete process.env.Z_AI_API_KEY;
+    delete process.env.ZAI_API_KEY;
+    delete process.env.MINIMAX_API_KEY;
+  });
+  after(() => {
+    if (saved === undefined) delete process.env.Z_AI_API_KEY;
+    else process.env.Z_AI_API_KEY = saved;
+  });
+
+  it("redacts an injected-only secret from a thrown error message", async () => {
+    const { adapter, stderr } = createRecordingAdapter();
+    await invokeCommand(
+      adapter,
+      async () => {
+        throw new Error(`provider rejected key=${INJECTED_ONLY_SECRET}`);
+      },
+      "data",
+      undefined,
+      [INJECTED_ONLY_SECRET],
+    );
+    const formatted = stderr[0];
+    assert.ok(
+      !formatted.includes(INJECTED_ONLY_SECRET),
+      `injected-only secret leaked: ${formatted}`,
+    );
+    const parsed = JSON.parse(formatted);
+    assert.ok(parsed.error.includes("[REDACTED]"), `expected redaction marker: ${parsed.error}`);
+  });
+
+  it("redacts an injected-only secret embedded in help text", async () => {
+    const { adapter, stderr } = createRecordingAdapter();
+    await invokeCommand(
+      adapter,
+      async () => {
+        throw new ScoutlineError(`failure using ${INJECTED_ONLY_SECRET}`, "AUTH_ERROR", {
+          help: `re-check the key ${INJECTED_ONLY_SECRET}`,
+        });
+      },
+      "data",
+      undefined,
+      [INJECTED_ONLY_SECRET],
+    );
+    const parsed = JSON.parse(stderr[0]);
+    assert.ok(!parsed.error.includes(INJECTED_ONLY_SECRET), `secret in error: ${stderr[0]}`);
+    assert.ok(!parsed.help.includes(INJECTED_ONLY_SECRET), `secret in help: ${stderr[0]}`);
+  });
+
+  it("falls back to process.env secrets when no secrets are injected", async () => {
+    // Backward-compat: callers that don't pass the secrets arg still get
+    // process.env-based redaction (existing behaviour preserved).
+    process.env.Z_AI_API_KEY = "AMBIENT_ENV_SECRET_ABC";
+    try {
+      const { adapter, stderr } = createRecordingAdapter();
+      await invokeCommand(
+        adapter,
+        async () => {
+          throw new Error("key=AMBIENT_ENV_SECRET_ABC rejected");
+        },
+        "data",
+      );
+      assert.ok(
+        !stderr[0].includes("AMBIENT_ENV_SECRET_ABC"),
+        `ambient secret leaked: ${stderr[0]}`,
+      );
+    } finally {
+      delete process.env.Z_AI_API_KEY;
+    }
   });
 });
 

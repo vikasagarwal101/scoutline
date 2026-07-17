@@ -103,6 +103,7 @@ export async function invokeCommand(
   behavior: (context: CommandContext) => Promise<CommandResult>,
   outputMode: OutputMode,
   now: () => number = Date.now,
+  secrets?: string[],
 ): Promise<number> {
   const notices: string[] = [];
 
@@ -127,9 +128,13 @@ export async function invokeCommand(
     // redaction marker before formatting. `formatErrorOutput` then
     // performs an additional string-level pass on the message/help
     // fields it actually serialises.
-    const secrets = configuredSecrets();
-    const redactedError = redactSecrets(error, secrets) as unknown;
-    adapter.writeStderr(formatErrorOutput(redactedError, outputMode));
+    //
+    // B3: secrets resolved from an injected env (MainDependencies.env)
+    // are honoured here so a credential that exists only in the injected
+    // env is redacted even when absent from ambient process.env.
+    const resolvedSecrets = secrets ?? configuredSecrets();
+    const redactedError = redactSecrets(error, resolvedSecrets) as unknown;
+    adapter.writeStderr(formatErrorOutput(redactedError, outputMode, resolvedSecrets));
     return getErrorExitCode(error);
   }
 

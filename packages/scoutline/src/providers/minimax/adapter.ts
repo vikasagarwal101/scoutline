@@ -139,10 +139,23 @@ function normalizeMiniMaxSearchResults(raw: unknown): readonly SearchSource[] {
 }
 
 // ---------------------------------------------------------------------------
-// Failure normalization: stable public codes, no raw payloads
+// Failure normalization: stable public codes, no raw payloads (NFR-006)
 // ---------------------------------------------------------------------------
 
-function inferStatusCode(lower: string): number {
+/**
+ * Resolve a stable HTTP-style status code for retry classification.
+ * Explicit terminal client errors (404, 400, 410, 422) map to their
+ * real codes; retryable server errors (500, 502, 503, 504) map to
+ * themselves. Unknown failures default to 500 (transient). When the
+ * caller already carries a numeric status (a typed ApiError), that
+ * status is honoured directly (DESIGN.md §10).
+ */
+function inferStatusCode(lower: string, known?: number): number {
+  if (typeof known === "number" && Number.isFinite(known)) return known;
+  if (lower.includes("404") || lower.includes("not found")) return 404;
+  if (lower.includes("400") || lower.includes("bad request")) return 400;
+  if (lower.includes("410") || lower.includes("gone")) return 410;
+  if (lower.includes("422") || lower.includes("unprocessable")) return 422;
   if (lower.includes("500") || lower.includes("internal")) return 500;
   if (lower.includes("502") || lower.includes("bad gateway")) return 502;
   if (lower.includes("503") || lower.includes("service unavailable")) return 503;
@@ -151,16 +164,30 @@ function inferStatusCode(lower: string): number {
 }
 
 function normalizeMiniMaxError(error: unknown): Error {
+  // Configuration/option/validation errors carry clean, human-authored
+  // messages and are safe to surface verbatim.
   if (
-    error instanceof AuthError ||
-    error instanceof ApiError ||
-    error instanceof NetworkError ||
-    error instanceof TimeoutError ||
     error instanceof ValidationError ||
     error instanceof UnsupportedOptionError ||
     error instanceof ConfigurationError
   ) {
     return error;
+  }
+  // Re-wrap typed transport errors with sanitized messages so a raw
+  // Provider response body embedded upstream never survives. Code +
+  // statusCode (retry signal) are preserved.
+  if (error instanceof AuthError) {
+    return new AuthError("MiniMax authentication failed");
+  }
+  if (error instanceof NetworkError) {
+    return new NetworkError("MiniMax network error");
+  }
+  if (error instanceof TimeoutError) {
+    return new TimeoutError(parseInt(process.env.MINIMAX_TIMEOUT || "30000", 10));
+  }
+  if (error instanceof ApiError) {
+    const statusCode = inferStatusCode("", error.statusCode);
+    return new ApiError("MiniMax request failed", statusCode);
   }
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();

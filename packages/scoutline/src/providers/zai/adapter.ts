@@ -308,17 +308,35 @@ async function invokeZaiSearch(
 
 /**
  * Map a Provider failure into a normalized error. Numeric codes, raw
- * response bodies, and UTCP stack data are discarded.
+ * response bodies, and UTCP stack data are discarded (NFR-006).
+ *
+ * Typed transport errors thrown by the lower-level client (AuthError,
+ * ApiError, NetworkError, TimeoutError) are re-wrapped with sanitized
+ * messages so a raw Provider response body embedded upstream never
+ * survives to public output. The `statusCode` is preserved so the
+ * shared execution layer can classify retryability (DESIGN.md §10).
+ * Our own `ValidationError` (from Capability `validate()`) carries a
+ * clean, human-authored message and is returned verbatim.
  */
 function normalizeZaiError(error: unknown): Error {
-  if (
-    error instanceof AuthError ||
-    error instanceof ApiError ||
-    error instanceof NetworkError ||
-    error instanceof TimeoutError ||
-    error instanceof ValidationError
-  ) {
+  // Validation messages are authored by Scoutline and are safe to surface.
+  if (error instanceof ValidationError) {
     return error;
+  }
+  // Re-wrap typed transport errors with clean messages. The raw message
+  // is discarded; only code + statusCode (retry signal) survive.
+  if (error instanceof AuthError) {
+    return new AuthError("Z.AI authentication failed");
+  }
+  if (error instanceof NetworkError) {
+    return new NetworkError("Z.AI network error");
+  }
+  if (error instanceof TimeoutError) {
+    return new TimeoutError(parseInt(process.env.Z_AI_TIMEOUT || "30000", 10));
+  }
+  if (error instanceof ApiError) {
+    const statusCode = inferStatusCode("", error.statusCode);
+    return new ApiError("Z.AI request failed", statusCode);
   }
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
@@ -346,7 +364,23 @@ function normalizeZaiError(error: unknown): Error {
   return new ApiError("Z.AI search request failed", inferStatusCode(lower));
 }
 
-function inferStatusCode(lower: string): number {
+/**
+ * Resolve a stable HTTP-style status code for retry classification.
+ * Explicit client errors (404, 400, 410, 422) map to their real codes
+ * so the execution layer treats them as terminal (DESIGN.md §10).
+ * Retryable server errors (429, 500, 502, 503, 504) map to themselves.
+ * An unknown failure defaults to 500 (transient), preserving shipped
+ * behaviour for genuine "unexpected system" conditions.
+ *
+ * When the caller already carries a numeric status (a typed ApiError),
+ * that status is honoured directly so retryability is never lost.
+ */
+function inferStatusCode(lower: string, known?: number): number {
+  if (typeof known === "number" && Number.isFinite(known)) return known;
+  if (lower.includes("404") || lower.includes("not found")) return 404;
+  if (lower.includes("400") || lower.includes("bad request")) return 400;
+  if (lower.includes("410") || lower.includes("gone")) return 410;
+  if (lower.includes("422") || lower.includes("unprocessable")) return 422;
   if (lower.includes("429") || lower.includes("rate limit")) return 429;
   if (lower.includes("500") || lower.includes("internal")) return 500;
   if (lower.includes("502") || lower.includes("bad gateway")) return 502;

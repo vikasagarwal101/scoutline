@@ -28,6 +28,7 @@ import {
 } from "./lib/errors.js";
 import { invokeCommand, type CommandInvocationAdapter } from "./command-invocation.js";
 import { defaultResponseCache, type ResponseCache } from "./lib/cache.js";
+import { configuredSecrets } from "./lib/redact.js";
 import { resolveProviderId } from "./providers/selection.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS, getProviderDescriptor } from "./providers/registry.js";
 import type { ProviderDescriptor, ProviderId } from "./providers/types.js";
@@ -208,6 +209,7 @@ function resolveOutputMode(
 interface HandlerDependencies {
   readonly invocation: CommandInvocationAdapter;
   readonly env: NodeJS.ProcessEnv;
+  readonly secrets: string[];
   readonly now?: () => number;
   readonly provider?: string;
   readonly providerDescriptors: readonly ProviderDescriptor[];
@@ -284,6 +286,7 @@ async function handleVision(
         (context) => vision.analyze(source, prompt, visionDeps, context),
         outputMode,
         deps.now,
+        deps.secrets,
       );
 
     case "ui-to-code": {
@@ -300,6 +303,7 @@ async function handleVision(
           ),
         outputMode,
         deps.now,
+        deps.secrets,
       );
     }
 
@@ -310,6 +314,7 @@ async function handleVision(
           vision.extractText(source, prompt, flags.language as string, visionDeps, context),
         outputMode,
         deps.now,
+        deps.secrets,
       );
 
     case "diagnose-error":
@@ -319,6 +324,7 @@ async function handleVision(
           vision.diagnoseError(source, prompt, flags.context as string, visionDeps, context),
         outputMode,
         deps.now,
+        deps.secrets,
       );
 
     case "diagram":
@@ -327,6 +333,7 @@ async function handleVision(
         (context) => vision.diagram(source, prompt, flags.type as string, visionDeps, context),
         outputMode,
         deps.now,
+        deps.secrets,
       );
 
     case "chart":
@@ -335,6 +342,7 @@ async function handleVision(
         (context) => vision.chart(source, prompt, flags.focus as string, visionDeps, context),
         outputMode,
         deps.now,
+        deps.secrets,
       );
 
     case "diff": {
@@ -345,6 +353,7 @@ async function handleVision(
         (context) => vision.diff(source, actual, diffPrompt, visionDeps, context),
         outputMode,
         deps.now,
+        deps.secrets,
       );
     }
 
@@ -354,6 +363,7 @@ async function handleVision(
         (context) => vision.video(source, prompt, visionDeps, context),
         outputMode,
         deps.now,
+        deps.secrets,
       );
 
     default:
@@ -471,6 +481,7 @@ async function handleSearch(
       ),
     outputMode,
     deps.now,
+    deps.secrets,
   );
 }
 
@@ -513,6 +524,7 @@ async function handleRead(
       ),
     outputMode,
     deps.now,
+    deps.secrets,
   );
 }
 
@@ -555,6 +567,7 @@ async function handleRepo(
           ),
         outputMode,
         deps.now,
+        deps.secrets,
       );
     }
 
@@ -576,6 +589,7 @@ async function handleRepo(
           ),
         outputMode,
         deps.now,
+        deps.secrets,
       );
     }
 
@@ -601,6 +615,7 @@ async function handleRepo(
           ),
         outputMode,
         deps.now,
+        deps.secrets,
       );
     }
 
@@ -638,6 +653,7 @@ async function handleTools(
       ),
     outputMode,
     deps.now,
+    deps.secrets,
   );
 }
 
@@ -658,6 +674,7 @@ async function handleTool(
     (context) => showTool(positional[0], { enableVision: flags.vision !== false }, context),
     outputMode,
     deps.now,
+    deps.secrets,
   );
 }
 
@@ -689,6 +706,7 @@ async function handleCall(
       ),
     outputMode,
     deps.now,
+    deps.secrets,
   );
 }
 
@@ -727,6 +745,7 @@ async function handleDoctor(
       }),
     outputMode,
     deps.now,
+    deps.secrets,
   );
 }
 
@@ -766,6 +785,7 @@ async function handleQuota(
       }),
     outputMode,
     deps.now,
+    deps.secrets,
   );
 }
 
@@ -796,6 +816,7 @@ async function handleCode(
         (context) => runCodeFile(filePath, { timeout, includeLogs }, context),
         outputMode,
         deps.now,
+        deps.secrets,
       );
     }
     case "eval": {
@@ -808,6 +829,7 @@ async function handleCode(
         (context) => evalCode(code, { timeout, includeLogs }, context),
         outputMode,
         deps.now,
+        deps.secrets,
       );
     }
     case "interfaces":
@@ -816,6 +838,7 @@ async function handleCode(
         (context) => printInterfaces(context),
         outputMode,
         deps.now,
+        deps.secrets,
       );
     case "prompt":
       return invokeCommand(
@@ -823,6 +846,7 @@ async function handleCode(
         async (context) => printPromptTemplate(context),
         outputMode,
         deps.now,
+        deps.secrets,
       );
     default:
       throw new ValidationError(
@@ -863,6 +887,10 @@ export async function main(
   const searchCache = dependencies.searchCache ?? defaultResponseCache;
   const searchSleep = dependencies.searchSleep ?? realSleep;
   const searchRandom = dependencies.searchRandom ?? Math.random;
+  // Resolve configured Provider credentials from the INJECTED env (B3) so
+  // redaction follows the same environment the handlers see — a secret
+  // that exists only in MainDependencies.env is still redacted from output.
+  const secrets = configuredSecrets(env);
 
   const { outputFormat, forcePretty, forceRaw, provider, rest } = extractGlobalOptions([...args]);
 
@@ -875,7 +903,7 @@ export async function main(
       invocation,
     );
   } catch (error) {
-    invocation.writeStderr(formatErrorOutput(error, "data"));
+    invocation.writeStderr(formatErrorOutput(error, "data", secrets));
     return getErrorExitCode(error);
   }
 
@@ -895,6 +923,7 @@ export async function main(
   const handlerDeps: HandlerDependencies = {
     invocation,
     env,
+    secrets,
     now,
     provider,
     providerDescriptors,
@@ -933,12 +962,13 @@ export async function main(
               'Run "scoutline --help" for available commands',
             ),
             "data",
+            secrets,
           ),
         );
         return 1;
     }
   } catch (error) {
-    invocation.writeStderr(formatErrorOutput(error, "data"));
+    invocation.writeStderr(formatErrorOutput(error, "data", secrets));
     return getErrorExitCode(error);
   }
 }

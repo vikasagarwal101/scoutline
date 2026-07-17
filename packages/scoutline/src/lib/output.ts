@@ -108,10 +108,16 @@ export function formatSuccessOutput<T>(
  * cause, raw response body, and any non-envelope property of the input
  * are never serialised. Credential-shaped substrings inside `help` and
  * `error` are redacted.
+ *
+ * The optional `secrets` argument lets a caller thread the credentials
+ * resolved from an injected environment (e.g. `MainDependencies.env`)
+ * into redaction, so a secret that exists only in the injected env —
+ * and not in ambient `process.env` — is still redacted (Fixup B — B3).
+ * When omitted, configured secrets are read from `process.env`.
  */
-export function formatErrorOutput(value: unknown, mode: OutputMode): string {
+export function formatErrorOutput(value: unknown, mode: OutputMode, secrets?: string[]): string {
   const indent = mode === "pretty" ? 2 : 0;
-  const secrets = configuredSecrets();
+  const resolvedSecrets = secrets ?? configuredSecrets();
 
   let payload: Record<string, unknown>;
 
@@ -128,11 +134,11 @@ export function formatErrorOutput(value: unknown, mode: OutputMode): string {
     const rawError = typeof err.message === "string" ? err.message : String(err.message);
     payload = {
       success: false,
-      error: redactCredentialString(rawError, secrets),
+      error: redactCredentialString(rawError, resolvedSecrets),
       code: typeof err.code === "string" ? err.code : "UNKNOWN_ERROR",
     };
     if (typeof err.help === "string" && err.help.length > 0) {
-      payload.help = redactCredentialString(err.help, secrets);
+      payload.help = redactCredentialString(err.help, resolvedSecrets);
     }
     if (typeof err.statusCode === "number") {
       payload.statusCode = err.statusCode;
@@ -140,13 +146,13 @@ export function formatErrorOutput(value: unknown, mode: OutputMode): string {
   } else if (value instanceof Error) {
     payload = {
       success: false,
-      error: redactCredentialString(value.message, secrets),
+      error: redactCredentialString(value.message, resolvedSecrets),
       code: "UNKNOWN_ERROR",
     };
   } else {
     payload = {
       success: false,
-      error: redactCredentialString(String(value), secrets),
+      error: redactCredentialString(String(value), resolvedSecrets),
       code: "UNKNOWN_ERROR",
     };
   }

@@ -25,6 +25,7 @@ import { ZaiMcpClient } from "../dist/lib/mcp-client.js";
 import { getMcpToolName, MCP_MANUAL_NAME } from "../dist/lib/mcp-config.js";
 import { FakeUtcpClient } from "./helpers/fake-utcp-client.js";
 import { readFixture } from "./helpers/fixtures.js";
+import { formatErrorOutput } from "../dist/lib/output.js";
 
 // Public dotted identity the production code constructs via getMcpToolName.
 const PUBLIC_SEARCH_NAME = getMcpToolName("search", "web_search_prime");
@@ -279,5 +280,99 @@ describe("ZaiMcpClient — public identity contract", () => {
       getMcpToolName("search", "web_search_prime"),
       "scoutline.zai.search.web_search_prime",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fixup B — error normalization in the low-level MCP client.
+//
+// B2: raw Provider response bodies must not be embedded into public error
+//     messages (NFR-006). The client throws stable typed errors whose
+//     messages are sanitized; downstream redaction is defence-in-depth.
+// B6b: an "unexpected system error" / "-500" is a 500-equivalent (retryable),
+//     NOT a negative status code the execution layer can't match.
+//
+// Each client is constructed with disableRetry:true so the error path is
+// exercised exactly once without retry/backoff loops.
+// ---------------------------------------------------------------------------
+
+describe("ZaiMcpClient — error normalization (Fixup B — B2 + B6b)", () => {
+  const RAW_BODY = '{"error":"RAW_PROVIDER_BODY","detail":"<html>secret</html>"}';
+
+  async function clientThrowing(thrownError) {
+    const fixture = await readFixture("providers", "zai", "tools.json");
+    const fake = new FakeUtcpClient({
+      discoveredTools: fixture.tools,
+      errorsByName: { [INTERNAL_SEARCH_NAME]: thrownError },
+    });
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      noCache: true,
+      disableRetry: true,
+    });
+    return { client, fake };
+  }
+
+  it("B6b: unexpected-system/-500 maps to API_ERROR statusCode 500 (retryable), not -500", async () => {
+    const { client } = await clientThrowing(new Error("Unexpected system error -500"));
+    try {
+      await assert.rejects(client.callToolRaw(PUBLIC_SEARCH_NAME, { search_query: "x" }), (err) => {
+        assert.strictEqual(err.code, "API_ERROR", `code: ${err.message}`);
+        assert.strictEqual(err.statusCode, 500, `expected 500, got ${err.statusCode}`);
+        // The execution-layer retry set is exactly 429,500,502,503,504.
+        assert.ok([429, 500, 502, 503, 504].includes(err.statusCode));
+        return true;
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("B2: a generic tool-call failure does not embed the raw Provider body", async () => {
+    const { client } = await clientThrowing(new Error(`provider said: ${RAW_BODY}`));
+    try {
+      await assert.rejects(client.callToolRaw(PUBLIC_SEARCH_NAME, { search_query: "x" }), (err) => {
+        assert.strictEqual(err.code, "API_ERROR");
+        assert.ok(!err.message.includes("RAW_PROVIDER_BODY"), `raw body leaked: ${err.message}`);
+        assert.ok(!err.message.includes("<html>"), `html leaked: ${err.message}`);
+        return true;
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("B2: an auth failure does not embed the raw Provider body", async () => {
+    const { client } = await clientThrowing(new Error(`401 unauthorized: ${RAW_BODY}`));
+    try {
+      await assert.rejects(client.callToolRaw(PUBLIC_SEARCH_NAME, { search_query: "x" }), (err) => {
+        assert.strictEqual(err.code, "AUTH_ERROR");
+        assert.ok(
+          !err.message.includes("RAW_PROVIDER_BODY"),
+          `raw body leaked into auth message: ${err.message}`,
+        );
+        return true;
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("B2: raw body never reaches formatErrorOutput public envelope", async () => {
+    const { client } = await clientThrowing(new Error(`provider said: ${RAW_BODY}`));
+    let captured;
+    try {
+      try {
+        await client.callToolRaw(PUBLIC_SEARCH_NAME, { search_query: "x" });
+      } catch (err) {
+        captured = err;
+      }
+    } finally {
+      await client.close();
+    }
+    const formatted = formatErrorOutput(captured, "data");
+    assert.ok(!formatted.includes("RAW_PROVIDER_BODY"), `raw body reached output: ${formatted}`);
+    const parsed = JSON.parse(formatted);
+    assert.strictEqual(parsed.code, "API_ERROR");
   });
 });

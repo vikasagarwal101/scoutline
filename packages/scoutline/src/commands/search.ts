@@ -1,12 +1,14 @@
 /**
  * Web search command using Z.AI WebSearchPrime MCP
+ *
+ * P1-04: returns a CommandResult instead of writing directly to
+ * stdout/stderr. Notices (e.g., merge summaries) flow through the
+ * invocation context; errors are thrown and converted by invokeCommand.
  */
 
 import { ZaiMcpClient } from "../lib/mcp-client.js";
-import { outputSuccess, getOutputMode } from "../lib/output.js";
-import { formatErrorOutput } from "../lib/errors.js";
-import { silenceConsole, restoreConsole } from "../lib/silence.js";
 import { formatSearchResultsPretty } from "../lib/tty.js";
+import type { CommandContext, CommandResult, DataCommandResult } from "../command-invocation.js";
 
 type RecencyFilter = "oneDay" | "oneWeek" | "oneMonth" | "oneYear" | "noLimit";
 
@@ -69,7 +71,7 @@ function filterFields(result: FormattedResult, fields?: string[]): Partial<Forma
  */
 function mergeResults(byQuery: FormattedResult[][]): FormattedResult[] {
   const map = new Map<string, FormattedResult & { occurrences: number; bestPos: number }>();
-  for (const [qIdx, results] of byQuery.entries()) {
+  for (const [, results] of byQuery.entries()) {
     for (const r of results) {
       const existing = map.get(r.url);
       if (existing) {
@@ -84,8 +86,6 @@ function mergeResults(byQuery: FormattedResult[][]): FormattedResult[] {
           // r already has those since we're iterating in order.
         });
       }
-      // Suppress unused-var warning
-      void qIdx;
     }
   }
   const merged = Array.from(map.values());
@@ -121,13 +121,27 @@ function renderTextFormat(
   return lines.join("\n");
 }
 
+/**
+ * Build the four text-mode presentations for the search results.
+ * The data-oriented result is the (possibly field-filtered) result array.
+ */
+function buildPresentations(
+  formattedResults: FormattedResult[],
+): NonNullable<DataCommandResult["presentations"]> {
+  return {
+    compact: renderTextFormat(formattedResults, "compact"),
+    markdown: renderTextFormat(formattedResults, "markdown"),
+    refs: renderTextFormat(formattedResults, "refs"),
+    tty: formatSearchResultsPretty(formattedResults),
+  };
+}
+
 export async function search(
   query: string,
   options: SearchOptions = {},
   deps: SearchDependencies = {},
-): Promise<void> {
-  silenceConsole();
-
+  context?: CommandContext,
+): Promise<CommandResult> {
   // Default client factory preserves shipped behaviour. Tests may inject a
   // fake without touching ZaiMcpClient.
   const clientFactory =
@@ -143,105 +157,88 @@ export async function search(
       .map((q) => q.replace(/\\\|/g, "|").trim())
       .filter((q) => q.length > 0);
     if (subQueries.length === 0) {
-      restoreConsole();
-      console.error(
-        formatErrorOutput(
-          new Error("--merge requires at least one non-empty query (split with '|')"),
-        ),
-      );
-      process.exit(1);
+      throw new Error("--merge requires at least one non-empty query (split with '|')");
     }
   }
 
   const isMerge = subQueries.length > 1;
 
-  try {
+  // For merge, spawn one client per sub-query — the UTCP client isn't
+  // concurrency-safe so sharing one client across parallel calls corrupts
+  // responses. Single-query path keeps the cheaper shared-client flow.
+  let allResults;
+  if (isMerge) {
+    const clients = subQueries.map(() =>
+      clientFactory({ enableVision: false, noCache: Boolean(options.noCache) }),
+    );
     try {
-      // For merge, spawn one client per sub-query — the UTCP client isn't
-      // concurrency-safe so sharing one client across parallel calls corrupts
-      // responses. Single-query path keeps the cheaper shared-client flow.
-      let allResults;
-      if (isMerge) {
-        const clients = subQueries.map(() =>
-          clientFactory({ enableVision: false, noCache: Boolean(options.noCache) }),
-        );
-        try {
-          allResults = await Promise.all(
-            subQueries.map((q, i) =>
-              clients[i].webSearch({
-                query: q,
-                count: options.count,
-                domainFilter: options.domain,
-                recencyFilter: options.recency,
-                contentSize: options.contentSize,
-                location: options.location,
-              }),
-            ),
-          );
-        } finally {
-          await Promise.all(clients.map((c) => c.close().catch(() => {})));
-        }
-      } else {
-        const client = clientFactory({ enableVision: false, noCache: Boolean(options.noCache) });
-        try {
-          allResults = [
-            await client.webSearch({
-              query: subQueries[0],
-              count: options.count,
-              domainFilter: options.domain,
-              recencyFilter: options.recency,
-              contentSize: options.contentSize,
-              location: options.location,
-            }),
-          ];
-        } finally {
-          await client.close().catch(() => {});
-        }
-      }
-
-      // Format each sub-query's results, then merge if needed.
-      const perQueryFormatted: FormattedResult[][] = allResults.map((results) =>
-        Array.isArray(results)
-          ? results.map((r, i) => ({
-              rank: i + 1,
-              title: r.title,
-              url: r.link,
-              summary: truncate(r.content, options.maxSummary),
-              ...(r.media ? { source: r.media } : {}),
-              ...(r.publish_date ? { date: r.publish_date } : {}),
-            }))
-          : [],
+      allResults = await Promise.all(
+        subQueries.map((q, i) =>
+          clients[i].webSearch({
+            query: q,
+            count: options.count,
+            domainFilter: options.domain,
+            recencyFilter: options.recency,
+            contentSize: options.contentSize,
+            location: options.location,
+          }),
+        ),
       );
-
-      const formattedResults: FormattedResult[] = isMerge
-        ? mergeResults(perQueryFormatted)
-        : perQueryFormatted[0] || [];
-
-      if (isMerge) {
-        process.stderr.write(
-          `ℹ️  merged ${subQueries.length} queries → ${formattedResults.length} unique results\n`,
-        );
-      }
-
-      restoreConsole();
-      const mode = getOutputMode();
-      if (mode === "tty") {
-        outputSuccess(formatSearchResultsPretty(formattedResults));
-      } else if (mode === "compact" || mode === "markdown" || mode === "refs") {
-        outputSuccess(renderTextFormat(formattedResults, mode));
-      } else if (options.fields && options.fields.length > 0) {
-        outputSuccess(formattedResults.map((r) => filterFields(r, options.fields)));
-      } else {
-        outputSuccess(formattedResults);
-      }
     } finally {
-      restoreConsole();
+      await Promise.all(clients.map((c) => c.close().catch(() => {})));
     }
-  } catch (error) {
-    restoreConsole();
-    console.error(formatErrorOutput(error));
-    process.exit(1);
+  } else {
+    const client = clientFactory({ enableVision: false, noCache: Boolean(options.noCache) });
+    try {
+      allResults = [
+        await client.webSearch({
+          query: subQueries[0],
+          count: options.count,
+          domainFilter: options.domain,
+          recencyFilter: options.recency,
+          contentSize: options.contentSize,
+          location: options.location,
+        }),
+      ];
+    } finally {
+      await client.close().catch(() => {});
+    }
   }
+
+  // Format each sub-query's results, then merge if needed.
+  const perQueryFormatted: FormattedResult[][] = allResults.map((results) =>
+    Array.isArray(results)
+      ? results.map((r, i) => ({
+          rank: i + 1,
+          title: r.title,
+          url: r.link,
+          summary: truncate(r.content, options.maxSummary),
+          ...(r.media ? { source: r.media } : {}),
+          ...(r.publish_date ? { date: r.publish_date } : {}),
+        }))
+      : [],
+  );
+
+  const formattedResults: FormattedResult[] = isMerge
+    ? mergeResults(perQueryFormatted)
+    : perQueryFormatted[0] || [];
+
+  if (isMerge && context) {
+    context.notice(
+      `ℹ️  merged ${subQueries.length} queries → ${formattedResults.length} unique results`,
+    );
+  }
+
+  const presentations = buildPresentations(formattedResults);
+
+  // --fields only affects data-oriented modes (data/json/pretty); the text
+  // presentations intentionally ignore it because they only project the
+  // fields they actually use (rank/title/url/summary/occurrences).
+  const data = options.fields && options.fields.length > 0
+    ? formattedResults.map((r) => filterFields(r, options.fields))
+    : formattedResults;
+
+  return { kind: "data", data, presentations };
 }
 
 // Help text

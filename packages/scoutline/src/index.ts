@@ -26,7 +26,10 @@ import {
 } from "./lib/output.js";
 import { formatErrorOutput } from "./lib/output.js";
 import { ValidationError, getErrorExitCode } from "./lib/errors.js";
-import type { CommandInvocationAdapter } from "./command-invocation.js";
+import {
+  invokeCommand,
+  type CommandInvocationAdapter,
+} from "./command-invocation.js";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -286,12 +289,16 @@ async function handleVision(args: string[]): Promise<void> {
   }
 }
 
-async function handleSearch(args: string[]): Promise<void> {
+async function handleSearch(
+  args: string[],
+  outputMode: OutputMode,
+  deps: { invocation: CommandInvocationAdapter },
+): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
   if (flags.help || flags.h || positional.length === 0) {
-    console.log(SEARCH_HELP);
-    return;
+    deps.invocation.writeStdout(SEARCH_HELP);
+    return 0;
   }
 
   const query = positional.join(" ");
@@ -304,17 +311,29 @@ async function handleSearch(args: string[]): Promise<void> {
         .filter(Boolean)
     : undefined;
 
-  await search(query, {
-    count: flags.count ? parseInt(flags.count as string, 10) : undefined,
-    domain: flags.domain as string,
-    recency: flags.recency as "oneDay" | "oneWeek" | "oneMonth" | "oneYear" | "noLimit",
-    contentSize: flags["content-size"] as "medium" | "high",
-    location: flags.location as "cn" | "us",
-    maxSummary: flags["max-summary"] ? parseInt(flags["max-summary"] as string, 10) : undefined,
-    fields: fields && fields.length > 0 ? fields : undefined,
-    noCache: flags["no-cache"] === true,
-    merge: flags.merge === true,
-  });
+  return invokeCommand(
+    deps.invocation,
+    (context) =>
+      search(
+        query,
+        {
+          count: flags.count ? parseInt(flags.count as string, 10) : undefined,
+          domain: flags.domain as string,
+          recency: flags.recency as "oneDay" | "oneWeek" | "oneMonth" | "oneYear" | "noLimit",
+          contentSize: flags["content-size"] as "medium" | "high",
+          location: flags.location as "cn" | "us",
+          maxSummary: flags["max-summary"]
+            ? parseInt(flags["max-summary"] as string, 10)
+            : undefined,
+          fields: fields && fields.length > 0 ? fields : undefined,
+          noCache: flags["no-cache"] === true,
+          merge: flags.merge === true,
+        },
+        {},
+        context,
+      ),
+    outputMode,
+  );
 }
 
 async function handleRead(args: string[]): Promise<void> {
@@ -565,7 +584,7 @@ export async function main(
       await handleVision(commandArgs);
       break;
     case "search":
-      await handleSearch(commandArgs);
+      await handleSearch(commandArgs, outputMode, { invocation });
       break;
     case "read":
       await handleRead(commandArgs);

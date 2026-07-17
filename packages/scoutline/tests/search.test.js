@@ -1,22 +1,24 @@
 /**
- * Search command characterization tests.
+ * Search command characterization tests (P1-04 — returned CommandResult).
  *
- * P0-02 captures shipped behaviour of the search command, including merge,
- * rank, dedupe, occurrence sort, presentation modes, and the transitional
- * assertion that `count` currently enters the Z.AI client request (replaced
- * with local truncation in P2-05).
+ * P0-02 captured shipped behaviour of the search command. P1-04 replaces
+ * stdout-capture assertions with assertions on the returned
+ * {@link CommandResult}: `data` carries the data-mode payload and
+ * `presentations` carries the four text-mode overrides. The transitional
+ * assertion that `count` currently enters the Z.AI client request (to be
+ * replaced with local truncation in P2-05) is preserved.
  *
  * Tests inject the SearchDependencies.clientFactory seam to avoid any
  * network or UTCP construction. The injected fake must expose webSearch()
- * and close().
+ * and close(). Notices produced via context.notice() are captured with a
+ * stub CommandContext so the merge-info path can be asserted without
+ * subprocess streams.
  */
-import { describe, it, afterEach } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { search } from "../dist/commands/search.js";
-import { setOutputMode, getOutputMode } from "../dist/lib/output.js";
 
 const REAL_KEY = "test-key";
-const ORIGINAL_MODE = getOutputMode();
 
 /**
  * Create a fake search client that returns scripted results in call order.
@@ -69,101 +71,26 @@ async function withKey(fn) {
 }
 
 /**
- * Capture stdout by replacing process.stdout.write with a pass-through
- * wrapper. The node:test runner relies on process.stdout for IPC between
- * the test subprocess and parent; fully replacing the write method
- * silently drops test results. The wrapper forwards ALL writes to the
- * original so the test runner keeps working, and returns the accumulated
- * buffer for assertions.
+ * Run search with a fake client and a stub invocation context, returning
+ * the CommandResult and any captured notices.
  */
-function captureStdout() {
-  const original = process.stdout.write.bind(process.stdout);
-  let buf = "";
-  process.stdout.write = (chunk, ...args) => {
-    buf += chunk.toString();
-    return original(chunk, ...args);
-  };
-  return () => {
-    process.stdout.write = original;
-    return buf;
-  };
-}
-
-function silenceStderr() {
-  const original = process.stderr.write.bind(process.stderr);
-  process.stderr.write = () => true;
-  return () => {
-    process.stderr.write = original;
-  };
-}
-
-afterEach(() => {
-  setOutputMode(ORIGINAL_MODE);
-});
-
-/**
- * Extract the search command output from a noisy stdout buffer.
- * The buffer contains both search output (a single JSON line or text
- * block) and test-runner protocol noise. In data mode, the search output
- * is the last line starting with '['. In text modes, it's the non-TAP text.
- */
-function extractSearchJson(buf) {
-  const lines = buf.split("\n");
-  // The search JSON array is the last non-empty line starting with '['.
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (line.startsWith("[")) {
-      return JSON.parse(line);
-    }
-  }
-  throw new Error("No JSON array found in captured stdout");
-}
-
-function extractSearchText(buf) {
-  // For text modes (compact/markdown/refs), the search output is
-  // the non-TAP, non-empty content. Extract lines that are part of
-  // the search results.
-  const lines = buf.split("\n").filter((l) => {
-    const t = l.trimStart();
-    return (
-      t.length > 0 &&
-      !t.startsWith("#") &&
-      !t.startsWith("ok ") &&
-      !t.startsWith("not ok") &&
-      !t.startsWith("TAP") &&
-      !t.startsWith("1..") &&
-      !t.startsWith("{") &&
-      !t.startsWith('"type"') &&
-      t !== "..." &&
-      !t.startsWith("duration_ms") &&
-      !t.startsWith("tests ") &&
-      !t.startsWith("suites ") &&
-      !t.startsWith("pass ") &&
-      !t.startsWith("fail ")
-    );
-  });
-  return lines.join("\n");
-}
-
-/**
- * Helper: run search with a fake client and capture stdout in data mode.
- * Returns the parsed JSON array.
- */
-async function searchJson(query, options, resultsByCall) {
+async function searchResult(query, options, resultsByCall) {
   const client = makeScriptedClient(resultsByCall);
-  return withKey(async () => {
-    setOutputMode("data");
-    const restoreErr = silenceStderr();
-    const getStdout = captureStdout();
-    await search(query, options, { clientFactory: singletonFactory(client) });
-    restoreErr();
-    return extractSearchJson(getStdout());
-  });
+  const notices = [];
+  const context = {
+    stdinIsTTY: false,
+    readStdin: async () => "",
+    notice: (msg) => notices.push(msg),
+  };
+  const result = await withKey(async () =>
+    search(query, options, { clientFactory: singletonFactory(client) }, context),
+  );
+  return { result, client, notices };
 }
 
-describe("search command — rank assignment and field projection (single query)", () => {
+describe("search command — returned data result (rank assignment and field projection)", () => {
   it("assigns ranks starting at 1 and projects title/url/summary/source/date", async () => {
-    const parsed = await searchJson("alpha", {}, [
+    const { result } = await searchResult("alpha", {}, [
       [
         {
           refer: "r",
@@ -184,7 +111,8 @@ describe("search command — rank assignment and field projection (single query)
         },
       ],
     ]);
-    assert.deepStrictEqual(parsed, [
+    assert.strictEqual(result.kind, "data");
+    assert.deepStrictEqual(result.data, [
       {
         rank: 1,
         title: "Alpha",
@@ -204,7 +132,7 @@ describe("search command — rank assignment and field projection (single query)
   });
 
   it("results with no media or publish_date omit source and date", async () => {
-    const parsed = await searchJson("x", {}, [
+    const { result } = await searchResult("x", {}, [
       [
         {
           refer: "r",
@@ -216,14 +144,14 @@ describe("search command — rank assignment and field projection (single query)
         },
       ],
     ]);
-    assert.strictEqual(parsed[0].source, undefined);
-    assert.strictEqual(parsed[0].date, undefined);
+    assert.strictEqual(result.data[0].source, undefined);
+    assert.strictEqual(result.data[0].date, undefined);
   });
 });
 
 describe("search command — summary truncation", () => {
   it("truncates summaries beyond max-summary with ellipsis", async () => {
-    const client = makeScriptedClient([
+    const { result } = await searchResult("alpha", { maxSummary: 10 }, [
       [
         {
           refer: "r",
@@ -235,21 +163,13 @@ describe("search command — summary truncation", () => {
         },
       ],
     ]);
-    await withKey(async () => {
-      setOutputMode("data");
-      const restoreErr = silenceStderr();
-      const getStdout = captureStdout();
-      await search("alpha", { maxSummary: 10 }, { clientFactory: singletonFactory(client) });
-      restoreErr();
-      const parsed = extractSearchJson(getStdout());
-      assert.ok(parsed[0].summary.length <= 10);
-      assert.match(parsed[0].summary, /…$/);
-    });
+    assert.ok(result.data[0].summary.length <= 10);
+    assert.match(result.data[0].summary, /…$/);
   });
 
   it("does not truncate when max-summary is absent", async () => {
     const longText = "y".repeat(100);
-    const parsed = await searchJson("x", {}, [
+    const { result } = await searchResult("x", {}, [
       [
         {
           refer: "r",
@@ -261,43 +181,33 @@ describe("search command — summary truncation", () => {
         },
       ],
     ]);
-    assert.strictEqual(parsed[0].summary, longText);
+    assert.strictEqual(result.data[0].summary, longText);
   });
 });
 
 describe("search command — field projection", () => {
-  it("--fields allowlist restricts JSON output to named keys", async () => {
-    const client = makeScriptedClient([
+  it("--fields allowlist restricts the data payload to named keys", async () => {
+    const { result } = await searchResult(
+      "alpha",
+      { fields: ["title", "url"] },
       [
-        {
-          refer: "r",
-          title: "Alpha",
-          link: "https://example.com/a",
-          media: "example.com",
-          content: "First summary",
-          icon: "",
-        },
+        [
+          {
+            refer: "r",
+            title: "Alpha",
+            link: "https://example.com/a",
+            media: "example.com",
+            content: "First summary",
+            icon: "",
+          },
+        ],
       ],
-    ]);
-    await withKey(async () => {
-      setOutputMode("data");
-      const restoreErr = silenceStderr();
-      const getStdout = captureStdout();
-      await search(
-        "alpha",
-        { fields: ["title", "url"] },
-        {
-          clientFactory: singletonFactory(client),
-        },
-      );
-      restoreErr();
-      const parsed = extractSearchJson(getStdout());
-      assert.deepStrictEqual(parsed, [{ title: "Alpha", url: "https://example.com/a" }]);
-    });
+    );
+    assert.deepStrictEqual(result.data, [{ title: "Alpha", url: "https://example.com/a" }]);
   });
 });
 
-describe("search command — compact / markdown / refs presentation modes", () => {
+describe("search command — text presentation overrides", () => {
   const resultSet = [
     [
       {
@@ -319,118 +229,109 @@ describe("search command — compact / markdown / refs presentation modes", () =
     ],
   ];
 
-  it("compact mode: 'title — url' per line", async () => {
-    const client = makeScriptedClient(resultSet);
-    await withKey(async () => {
-      setOutputMode("compact");
-      const restoreErr = silenceStderr();
-      const getStdout = captureStdout();
-      await search("alpha", {}, { clientFactory: singletonFactory(client) });
-      restoreErr();
-      const text = extractSearchText(getStdout());
-      assert.strictEqual(text, "Alpha — https://example.com/a\nBeta — https://example.com/b");
-    });
+  it("compact presentation is 'title — url' per line", async () => {
+    const { result } = await searchResult("alpha", {}, resultSet);
+    assert.strictEqual(
+      result.presentations.compact,
+      "Alpha — https://example.com/a\nBeta — https://example.com/b",
+    );
   });
 
-  it("markdown mode: numbered links with summaries", async () => {
-    const client = makeScriptedClient(resultSet);
-    await withKey(async () => {
-      setOutputMode("markdown");
-      const restoreErr = silenceStderr();
-      const getStdout = captureStdout();
-      await search("alpha", {}, { clientFactory: singletonFactory(client) });
-      restoreErr();
-      const text = extractSearchText(getStdout());
-      assert.ok(text.includes("1. [Alpha](https://example.com/a)"));
-      assert.ok(text.includes("First summary"));
-    });
+  it("markdown presentation is numbered links with summaries", async () => {
+    const { result } = await searchResult("alpha", {}, resultSet);
+    assert.ok(result.presentations.markdown.includes("1. [Alpha](https://example.com/a)"));
+    assert.ok(result.presentations.markdown.includes("First summary"));
   });
 
-  it("refs mode: citation lines", async () => {
-    const client = makeScriptedClient(resultSet);
-    await withKey(async () => {
-      setOutputMode("refs");
-      const restoreErr = silenceStderr();
-      const getStdout = captureStdout();
-      await search("alpha", {}, { clientFactory: singletonFactory(client) });
-      restoreErr();
-      const text = extractSearchText(getStdout());
-      assert.ok(text.includes("[1]"));
-      assert.ok(text.includes("Alpha — https://example.com/a"));
-    });
+  it("refs presentation is citation-style lines", async () => {
+    const { result } = await searchResult("alpha", {}, resultSet);
+    assert.ok(result.presentations.refs.includes("[1]"));
+    assert.ok(result.presentations.refs.includes("Alpha — https://example.com/a"));
+  });
+
+  it("tty presentation is the human-friendly formatted block", async () => {
+    const { result } = await searchResult("alpha", {}, resultSet);
+    // TTY presentation should contain both titles (no exact format guarantee
+    // beyond "includes the page titles and URLs").
+    assert.ok(result.presentations.tty.includes("Alpha"));
+    assert.ok(result.presentations.tty.includes("https://example.com/a"));
+    assert.ok(result.presentations.tty.includes("Beta"));
+  });
+
+  it("empty results yield empty compact and markdown presentations", async () => {
+    const { result } = await searchResult("alpha", {}, [[]]);
+    assert.deepStrictEqual(result.data, []);
+    assert.strictEqual(result.presentations.compact, "");
+    assert.strictEqual(result.presentations.markdown, "");
+    assert.strictEqual(result.presentations.refs, "");
   });
 });
 
 describe("search command — merge: exact-URL dedupe and occurrence ranking", () => {
   it("dedupes overlapping URLs and ranks by occurrence then best position", async () => {
-    const client = makeScriptedClient([
+    const { result } = await searchResult(
+      "a|b|c",
+      { merge: true },
       [
-        {
-          refer: "r",
-          title: "A1",
-          link: "https://e/shared",
-          media: "",
-          content: "shared A",
-          icon: "",
-        },
-        {
-          refer: "r",
-          title: "A2",
-          link: "https://e/only-a",
-          media: "",
-          content: "only A",
-          icon: "",
-        },
+        [
+          {
+            refer: "r",
+            title: "A1",
+            link: "https://e/shared",
+            media: "",
+            content: "shared A",
+            icon: "",
+          },
+          {
+            refer: "r",
+            title: "A2",
+            link: "https://e/only-a",
+            media: "",
+            content: "only A",
+            icon: "",
+          },
+        ],
+        [
+          {
+            refer: "r",
+            title: "B1",
+            link: "https://e/shared",
+            media: "",
+            content: "shared B",
+            icon: "",
+          },
+          {
+            refer: "r",
+            title: "B2",
+            link: "https://e/only-b",
+            media: "",
+            content: "only B",
+            icon: "",
+          },
+        ],
+        [
+          {
+            refer: "r",
+            title: "C1",
+            link: "https://e/only-c",
+            media: "",
+            content: "only C",
+            icon: "",
+          },
+        ],
       ],
-      [
-        {
-          refer: "r",
-          title: "B1",
-          link: "https://e/shared",
-          media: "",
-          content: "shared B",
-          icon: "",
-        },
-        {
-          refer: "r",
-          title: "B2",
-          link: "https://e/only-b",
-          media: "",
-          content: "only B",
-          icon: "",
-        },
-      ],
-      [
-        {
-          refer: "r",
-          title: "C1",
-          link: "https://e/only-c",
-          media: "",
-          content: "only C",
-          icon: "",
-        },
-      ],
-    ]);
+    );
 
-    await withKey(async () => {
-      setOutputMode("data");
-      const restoreErr = silenceStderr();
-      const getStdout = captureStdout();
-      await search("a|b|c", { merge: true }, { clientFactory: singletonFactory(client) });
-      restoreErr();
-      const parsed = extractSearchJson(getStdout());
-
-      const shared = parsed.find((r) => r.url === "https://e/shared");
-      assert.strictEqual(shared.occurrences, 2);
-      // Earliest query's title/summary wins for a deduped URL.
-      assert.strictEqual(shared.title, "A1");
-      assert.strictEqual(shared.summary, "shared A");
-      // Shared URL has bestPos 1 across two queries → rank 1.
-      assert.strictEqual(parsed[0].url, "https://e/shared");
-      // Single-occurrence results in merge mode carry occurrences: 1.
-      const onlyA = parsed.find((r) => r.url === "https://e/only-a");
-      assert.strictEqual(onlyA.occurrences, 1);
-    });
+    const shared = result.data.find((r) => r.url === "https://e/shared");
+    assert.strictEqual(shared.occurrences, 2);
+    // Earliest query's title/summary wins for a deduped URL.
+    assert.strictEqual(shared.title, "A1");
+    assert.strictEqual(shared.summary, "shared A");
+    // Shared URL has bestPos 1 across two queries → rank 1.
+    assert.strictEqual(result.data[0].url, "https://e/shared");
+    // Single-occurrence results in merge mode carry occurrences: 1.
+    const onlyA = result.data.find((r) => r.url === "https://e/only-a");
+    assert.strictEqual(onlyA.occurrences, 1);
   });
 
   it("escaped pipes do not split, and empty fragments are dropped", async () => {
@@ -439,13 +340,18 @@ describe("search command — merge: exact-URL dedupe and occurrence ranking", ()
       [{ refer: "r", title: "T", link: "https://e/x", media: "", content: "c", icon: "" }],
     ]);
     await withKey(async () => {
-      setOutputMode("data");
-      const restoreErr = silenceStderr();
-      const getStdout = captureStdout();
+      const context = {
+        stdinIsTTY: false,
+        readStdin: async () => "",
+        notice: () => {},
+      };
       const escaped = String.raw`a\|b`;
-      await search(escaped, { merge: true }, { clientFactory: singletonFactory(client1) });
-      restoreErr();
-      getStdout();
+      await search(
+        escaped,
+        { merge: true },
+        { clientFactory: singletonFactory(client1) },
+        context,
+      );
       assert.strictEqual(client1.calls.length, 1);
       assert.strictEqual(client1.calls[0].query, "a|b");
     });
@@ -456,59 +362,81 @@ describe("search command — merge: exact-URL dedupe and occurrence ranking", ()
       [{ refer: "r", title: "T2", link: "https://e/y", media: "", content: "c", icon: "" }],
     ]);
     await withKey(async () => {
-      setOutputMode("data");
-      const restoreErr = silenceStderr();
-      const getStdout = captureStdout();
-      await search("a||b|", { merge: true }, { clientFactory: singletonFactory(client2) });
-      restoreErr();
-      getStdout();
+      const context = {
+        stdinIsTTY: false,
+        readStdin: async () => "",
+        notice: () => {},
+      };
+      await search(
+        "a||b|",
+        { merge: true },
+        { clientFactory: singletonFactory(client2) },
+        context,
+      );
       assert.strictEqual(client2.calls.length, 2);
     });
   });
 
   it("occurrence badge appears only when occurrences > 1", async () => {
-    const client = makeScriptedClient([
+    const { result } = await searchResult(
+      "a|b",
+      { merge: true },
       [
-        {
-          refer: "r",
-          title: "Shared",
-          link: "https://e/s",
-          media: "",
-          content: "c",
-          icon: "",
-        },
+        [
+          {
+            refer: "r",
+            title: "Shared",
+            link: "https://e/s",
+            media: "",
+            content: "c",
+            icon: "",
+          },
+        ],
+        [
+          {
+            refer: "r",
+            title: "Shared2",
+            link: "https://e/s",
+            media: "",
+            content: "c2",
+            icon: "",
+          },
+          {
+            refer: "r",
+            title: "Solo",
+            link: "https://e/solo",
+            media: "",
+            content: "c3",
+            icon: "",
+          },
+        ],
       ],
+    );
+    const shared = result.data.find((r) => r.url === "https://e/s");
+    const solo = result.data.find((r) => r.url === "https://e/solo");
+    assert.strictEqual(shared.occurrences, 2);
+    assert.strictEqual(solo.occurrences, 1);
+  });
+
+  it("merge emits a context.notice summarizing the merge", async () => {
+    const { notices } = await searchResult(
+      "rust|rust tokio|rust runtime",
+      { merge: true },
       [
-        {
-          refer: "r",
-          title: "Shared2",
-          link: "https://e/s",
-          media: "",
-          content: "c2",
-          icon: "",
-        },
-        {
-          refer: "r",
-          title: "Solo",
-          link: "https://e/solo",
-          media: "",
-          content: "c3",
-          icon: "",
-        },
+        [
+          { refer: "r", title: "R1", link: "https://e/r1", media: "", content: "c", icon: "" },
+        ],
+        [
+          { refer: "r", title: "R2", link: "https://e/r2", media: "", content: "c", icon: "" },
+        ],
+        [
+          { refer: "r", title: "R3", link: "https://e/r3", media: "", content: "c", icon: "" },
+        ],
       ],
-    ]);
-    await withKey(async () => {
-      setOutputMode("data");
-      const restoreErr = silenceStderr();
-      const getStdout = captureStdout();
-      await search("a|b", { merge: true }, { clientFactory: singletonFactory(client) });
-      restoreErr();
-      const parsed = extractSearchJson(getStdout());
-      const shared = parsed.find((r) => r.url === "https://e/s");
-      const solo = parsed.find((r) => r.url === "https://e/solo");
-      assert.strictEqual(shared.occurrences, 2);
-      assert.strictEqual(solo.occurrences, 1);
-    });
+    );
+    assert.strictEqual(notices.length, 1);
+    assert.match(notices[0], /merged 3 queries/);
+    assert.match(notices[0], /3 unique results/);
   });
 });
 
@@ -540,12 +468,12 @@ describe("search command — concurrent clients and lifecycle", () => {
     };
 
     await withKey(async () => {
-      setOutputMode("data");
-      const restoreErr = silenceStderr();
-      const getStdout = captureStdout();
-      await search("a|b|c", { merge: true }, { clientFactory: fakeFactory });
-      restoreErr();
-      getStdout();
+      const context = {
+        stdinIsTTY: false,
+        readStdin: async () => "",
+        notice: () => {},
+      };
+      await search("a|b|c", { merge: true }, { clientFactory: fakeFactory }, context);
       assert.strictEqual(created.length, 3);
       assert.strictEqual(closed.length, 3);
     });
@@ -576,12 +504,12 @@ describe("search command — concurrent clients and lifecycle", () => {
     };
 
     await withKey(async () => {
-      setOutputMode("data");
-      const restoreErr = silenceStderr();
-      const getStdout = captureStdout();
-      await search("only", {}, { clientFactory: fakeFactory });
-      restoreErr();
-      getStdout();
+      const context = {
+        stdinIsTTY: false,
+        readStdin: async () => "",
+        notice: () => {},
+      };
+      await search("only", {}, { clientFactory: fakeFactory }, context);
       assert.strictEqual(created, 1);
       assert.strictEqual(closed, 1);
     });
@@ -602,26 +530,79 @@ describe("search command — concurrent clients and lifecycle", () => {
     };
 
     await withKey(async () => {
-      setOutputMode("data");
-      const restoreErr = silenceStderr();
-      const getStdout = captureStdout();
-      // search() calls process.exit(1) on error — intercept it.
-      const originalExit = process.exit;
-      process.exit = (code) => {
-        throw new Error(`__exit_${code}__`);
+      const context = {
+        stdinIsTTY: false,
+        readStdin: async () => "",
+        notice: () => {},
       };
+      let caught = null;
       try {
-        await search("a|b", { merge: true }, { clientFactory: fakeFactory });
-        assert.fail("should have exited");
+        await search("a|b", { merge: true }, { clientFactory: fakeFactory }, context);
       } catch (e) {
-        assert.match(e.message, /__exit_1__/);
-      } finally {
-        process.exit = originalExit;
-        restoreErr();
-        getStdout();
+        caught = e;
       }
+      assert.ok(caught instanceof Error, "search should throw on failure");
+      assert.match(caught.message, /provider failure/);
       assert.strictEqual(closed.length, 2);
     });
+  });
+
+  it("single-query failure closes the one client", async () => {
+    const closed = [];
+    const fakeFactory = () => {
+      const c = {
+        async webSearch() {
+          throw new Error("provider failure");
+        },
+        async close() {
+          closed.push(c);
+        },
+      };
+      return c;
+    };
+
+    await withKey(async () => {
+      const context = {
+        stdinIsTTY: false,
+        readStdin: async () => "",
+        notice: () => {},
+      };
+      let caught = null;
+      try {
+        await search("only", {}, { clientFactory: fakeFactory }, context);
+      } catch (e) {
+        caught = e;
+      }
+      assert.ok(caught instanceof Error);
+      assert.strictEqual(closed.length, 1);
+    });
+  });
+});
+
+describe("search command — empty merge input throws", () => {
+  it("--merge with only empty fragments throws without invoking the client", async () => {
+    const client = makeScriptedClient([[]]);
+    let caught = null;
+    await withKey(async () => {
+      const context = {
+        stdinIsTTY: false,
+        readStdin: async () => "",
+        notice: () => {},
+      };
+      try {
+        await search(
+          "|||",
+          { merge: true },
+          { clientFactory: singletonFactory(client) },
+          context,
+        );
+      } catch (e) {
+        caught = e;
+      }
+    });
+    assert.ok(caught instanceof Error);
+    assert.match(caught.message, /merge requires at least one non-empty query/);
+    assert.strictEqual(client.calls.length, 0);
   });
 });
 
@@ -633,12 +614,17 @@ describe("search command — transitional assertion: count enters Z.AI request",
       [{ refer: "r", title: "T", link: "https://e/x", media: "", content: "c", icon: "" }],
     ]);
     await withKey(async () => {
-      setOutputMode("data");
-      const restoreErr = silenceStderr();
-      const getStdout = captureStdout();
-      await search("alpha", { count: 7 }, { clientFactory: singletonFactory(client) });
-      restoreErr();
-      getStdout();
+      const context = {
+        stdinIsTTY: false,
+        readStdin: async () => "",
+        notice: () => {},
+      };
+      await search(
+        "alpha",
+        { count: 7 },
+        { clientFactory: singletonFactory(client) },
+        context,
+      );
       assert.strictEqual(client.calls[0].count, 7);
     });
   });

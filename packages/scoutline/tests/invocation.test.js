@@ -425,3 +425,101 @@ describe("invokeCommand — command context", () => {
     assert.strictEqual(capturedTTY, true);
   });
 });
+
+describe("invokeCommand — search command routed through the seam (P1-04)", () => {
+  it("routes search's compact presentation to stdout and surfaces merge notices on stderr", async () => {
+    const { search } = await import("../dist/commands/search.js");
+    const { adapter, stdout, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      (ctx) =>
+        search(
+          "rust|rust tokio",
+          { merge: true },
+          {
+            clientFactory: () => ({
+              async webSearch() {
+                return [
+                  {
+                    refer: "r",
+                    title: "Rust async",
+                    link: "https://e/r1",
+                    media: "",
+                    content: "c",
+                    icon: "",
+                  },
+                ];
+              },
+              async close() {},
+            }),
+          },
+          ctx,
+        ),
+      "compact",
+    );
+    assert.strictEqual(status, 0);
+    assert.strictEqual(stdout.length, 1);
+    assert.ok(stdout[0].includes("Rust async"));
+    assert.ok(stdout[0].includes("https://e/r1"));
+    assert.strictEqual(stderr.length, 1);
+    assert.match(stderr[0], /merged 2 queries/);
+  });
+
+  it("routes search errors to stderr as a structured VALIDATION_ERROR-equivalent envelope and returns exit 1", async () => {
+    const { search } = await import("../dist/commands/search.js");
+    const { adapter, stderr } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      (ctx) => search("|||", { merge: true }, {}, ctx),
+      "data",
+    );
+    assert.strictEqual(status, 1);
+    assert.strictEqual(stderr.length, 1);
+    const parsed = JSON.parse(stderr[0]);
+    assert.strictEqual(parsed.success, false);
+    assert.match(parsed.error, /merge requires at least one non-empty query/);
+    assert.strictEqual(parsed.code, "UNKNOWN_ERROR");
+  });
+
+  it("search in data mode emits the raw JSON data result on stdout", async () => {
+    const { search } = await import("../dist/commands/search.js");
+    const { adapter, stdout } = createRecordingAdapter();
+    await invokeCommand(
+      adapter,
+      (ctx) =>
+        search(
+          "alpha",
+          {},
+          {
+            clientFactory: () => ({
+              async webSearch() {
+                return [
+                  {
+                    refer: "r",
+                    title: "Alpha",
+                    link: "https://e/a",
+                    media: "",
+                    content: "summary",
+                    icon: "",
+                  },
+                ];
+              },
+              async close() {},
+            }),
+          },
+          ctx,
+        ),
+      "data",
+    );
+    assert.strictEqual(stdout.length, 1);
+    const parsed = JSON.parse(stdout[0]);
+    assert.deepStrictEqual(parsed, [
+      {
+        rank: 1,
+        title: "Alpha",
+        url: "https://e/a",
+        summary: "summary",
+      },
+    ]);
+  });
+});

@@ -25,6 +25,7 @@ export {
   NetworkError,
   TimeoutError,
   FileError,
+  QuotaError,
   isRetryableError,
   getErrorExitCode,
 } from "./errors.js";

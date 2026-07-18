@@ -24,6 +24,10 @@
  */
 
 import type { SearchCapability, SearchRequest, SearchSource } from "../capabilities/search.js";
+import type {
+  RepositoryOperation,
+  RepositoryOperationKind,
+} from "../capabilities/repository.js";
 import { ScoutlineError } from "./errors.js";
 import { buildProviderCacheKey, type ResponseCache } from "./cache.js";
 
@@ -52,17 +56,37 @@ export interface ExecutionDependencies {
   random(): number;
 }
 
-/** Provider operations that share a single retry policy table. */
-export type ProviderOperation = "search" | "vision" | "quota" | "diagnostics";
+/**
+ * Provider operations that share a single retry policy table.
+ *
+ * The four legacy values identify Provider Capabilities that have a
+ * 1:1 Capability-to-operation mapping (`"search"`, `"vision"`, ...)
+ * The three repository operations are composed from the P6-02
+ * {@link RepositoryOperationKind} source of truth so a future change
+ * to that union (e.g. adding a fourth repository kind) propagates
+ * here without further manual upkeep.
+ */
+export type ProviderOperation =
+  | "search"
+  | "vision"
+  | "quota"
+  | "diagnostics"
+  | RepositoryOperationKind;
 
 const DEFAULT_BASE_DELAY_MS = 500;
 const DEFAULT_MAX_DELAY_MS = 8000;
 const DEFAULT_JITTER_MS = 250;
 
 /**
- * Default retry policy per operation. Search, quota, and diagnostics
- * allow one retry; Vision allows two to preserve shipped Z.AI
- * behaviour. Base delay 500 ms, max delay 8000 ms, jitter up to 250 ms.
+ * Default retry policy per operation. Search, quota, diagnostics, and
+ * the three repository operations allow one retry; Vision allows two
+ * to preserve shipped Z.AI behaviour. Base delay 500 ms, max delay
+ * 8000 ms, jitter up to 250 ms.
+ *
+ * The repository operations inherit the existing single-retry
+ * non-Vision policy (DESIGN.md §18) without altering the behaviour
+ * of Search/Vision/Quota/Diagnostics; the new values are routed
+ * through the same default branch as Search/Quota/Diagnostics.
  */
 export function defaultRetryPolicy(operation: ProviderOperation): RetryPolicy {
   const base = {
@@ -76,6 +100,9 @@ export function defaultRetryPolicy(operation: ProviderOperation): RetryPolicy {
     case "search":
     case "quota":
     case "diagnostics":
+    case "repository-search":
+    case "repository-read-file":
+    case "repository-list-directory":
     default:
       return { ...base, maxRetries: 1 };
   }
@@ -229,4 +256,133 @@ export async function executeSearch(
 
   // 8. Local count truncation.
   return applyCount(result, options.count);
+}
+
+// ---------------------------------------------------------------------------
+// Repository execution (DESIGN.md §18, §10)
+// ---------------------------------------------------------------------------
+
+/**
+ * Options for {@link executeRepositoryOperation}. `noCache` bypasses
+ * the provider-partitioned cache and the legacy read-through cache
+ * for both reads and writes; it never bypasses validation, identity,
+ * invoke, or retry semantics. `retryPolicy` overrides the default
+ * single-retry non-Vision policy from {@link defaultRetryPolicy}.
+ */
+export interface ExecuteRepositoryOptions {
+  noCache?: boolean;
+  retryPolicy?: RetryPolicy;
+}
+
+/**
+ * Generic cache + retry executor for every cacheable Repository
+ * Capability operation (Search, Read File, Directory Listing).
+ *
+ * The observable order is fixed and exhaustively enumerated in
+ * DESIGN.md §18:
+ *
+ *   1. `operation.validate(request)` — throws `ValidationError`
+ *      synchronously before any cache or Adapter work.
+ *   2. `operation.cacheIdentity(request)` — Adapter computes the
+ *      provider-partitioned cache key and ordered legacy candidates
+ *      from the validated request and a single resolved credential.
+ *   3. Read the provider-partitioned cache key and pass the raw value
+ *      through `operation.decodeCached`. A valid decode returns
+ *      immediately; `null` is a miss; malformed values never propagate
+ *      through a generic cast.
+ *   4. For each legacy candidate, in declaration order, read the
+ *      legacy key and pass it through the candidate's `decode`. A
+ *      valid legacy hit is written through to the normalized key
+ *      (the legacy file is never changed or deleted) and returned.
+ *      A malformed legacy value is a miss.
+ *   5. `operation.invoke(request)` is wrapped through
+ *      `executeProviderOperation` with the existing single-retry
+ *      non-Vision policy. Each retry creates a fresh Adapter
+ *      transport attempt; cache hits create no transport.
+ *   6. The normalized result is written to the provider-partitioned
+ *      cache key.
+ *
+ * `--no-cache` skips steps 3, 4, and 6. It never skips validation
+ * (1), identity (2), invoke (5), or retry semantics.
+ *
+ * `executeRepositoryOperation` imports no Z.AI, MiniMax, MCP, UTCP,
+ * command-output, BFS, selection, or presentation module.
+ */
+export async function executeRepositoryOperation<Request, Result>(
+  operation: RepositoryOperation<Request, Result>,
+  request: Request,
+  options: ExecuteRepositoryOptions,
+  dependencies: ExecutionDependencies,
+): Promise<Result> {
+  // 1. Validate Capability request.
+  operation.validate(request);
+
+  // 2. Adapter-owned cache identity (after validation). The Adapter
+  //    resolves its credential exactly once and returns legacy
+  //    candidates alongside the full fingerprint and canonical
+  //    request. Candidate construction performs no ambient
+  //    environment read.
+  const identity = operation.cacheIdentity(request);
+
+  // 3. Provider-partitioned cache key.
+  //
+  // The key namespace is `<capability>-<operation>` rather than the
+  // umbrella Capability alone, so File and Directory operations —
+  // which share the `{ repository, path }` request shape — cannot
+  // collide. This composes the existing `buildProviderCacheKey` slot
+  // without mutating `buildProviderCacheKey` or its existing callers
+  // (Search, Vision, Quota, Diagnostics still pass a single Capability
+  // name). The canonical request object is unchanged; only the
+  // capability argument gains the operation suffix.
+  const newKey = buildProviderCacheKey({
+    provider: identity.provider,
+    capability: `${identity.capability}-${identity.operation}`,
+    credentialFingerprint: identity.credentialFingerprint,
+    request: identity.request,
+  });
+
+  if (!options.noCache) {
+    const raw = await dependencies.cache.get<unknown>(newKey);
+    if (raw !== null) {
+      const decoded = operation.decodeCached(raw);
+      if (decoded !== null) {
+        return decoded;
+      }
+      // Malformed normalized value: treat as a miss and fall through.
+    }
+
+    // 4. Ordered legacy candidates. Each candidate's decode is
+    //    total — invalid raw data is a miss. A valid legacy hit
+    //    populates the new key but the legacy file is never
+    //    changed or deleted.
+    for (const candidate of identity.legacyCandidates) {
+      const legacyRaw = await dependencies.cache.get<unknown>(candidate.key);
+      if (legacyRaw === null) continue;
+      const decoded = candidate.decode(legacyRaw);
+      if (decoded !== null) {
+        await dependencies.cache.set(newKey, decoded);
+        return decoded;
+      }
+    }
+  }
+
+  // 5. Retry-wrapped invoke. Auth, Validation, Unsupported, and
+  //    exhausted Quota failures are terminal; transient timeout,
+  //    network, and 5xx/429-equivalent failures get one retry.
+  const result = await executeProviderOperation(
+    // `operation.kind` is `RepositoryOperationKind`, which is
+    // composed into `ProviderOperation` directly — no cast needed
+    // and a future kind union change propagates automatically.
+    operation.kind,
+    () => operation.invoke(request),
+    dependencies,
+    options.retryPolicy,
+  );
+
+  // 6. Cache the full normalized result before returning.
+  if (!options.noCache) {
+    await dependencies.cache.set(newKey, result);
+  }
+
+  return result;
 }

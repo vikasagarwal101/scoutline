@@ -121,6 +121,32 @@ export class ConfigurationError extends ScoutlineError {
   }
 }
 
+/**
+ * Normalized concrete quota-exhaustion error (DESIGN.md §18, PRD FR-090).
+ *
+ * P6 introduces this construction path because the public code (`QUOTA_ERROR`,
+ * status 429, terminal retry) has been declared since P1 but no concrete
+ * class existed. The Adapters and shared execution surface this class for
+ * Provider-side exhausted-quota conditions; `formatErrorOutput` and the
+ * invocation adapter apply the standard redaction/envelope so credential
+ * material and Provider bodies never reach the public envelope.
+ *
+ * Retry semantics are intentionally terminal: an exhausted quota cannot be
+ * resolved by another attempt. The shared retry classifier in
+ * `lib/execution.ts` relies on `retryable === false` here.
+ */
+export class QuotaError extends ScoutlineError {
+  constructor(message?: string, help?: string) {
+    super(message ?? "Provider quota has been exhausted", "QUOTA_ERROR", {
+      statusCode: 429,
+      help,
+      retryable: false,
+      exitCode: 1,
+    });
+    this.name = "QuotaError";
+  }
+}
+
 export function isRetryableError(error: unknown): boolean {
   if (error instanceof ScoutlineError) {
     return error.retryable;

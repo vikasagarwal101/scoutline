@@ -25,6 +25,7 @@ import {
   NetworkError,
   TimeoutError,
   FileError,
+  QuotaError,
   isRetryableError,
   getErrorExitCode,
   formatErrorOutput,
@@ -174,6 +175,76 @@ describe("Legacy subclasses (compat)", () => {
     const err = new FileError("File not found", "Check the path");
     assert.strictEqual(err.code, "FILE_ERROR");
     assert.strictEqual(err.help, "Check the path");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P6-03 — QuotaError (DESIGN.md §18, PRD FR-090). The concrete normalized
+// class is the public construction path for Provider-side exhausted-quota
+// conditions. It carries the documented public code, status, terminal
+// retry behaviour, and exit code. Redaction is applied by the public
+// envelope (`formatErrorOutput`, invocation adapter) so credential material
+// and Provider bodies never reach the wire.
+// ---------------------------------------------------------------------------
+
+describe("QuotaError — concrete normalized construction", () => {
+  it("uses QUOTA_ERROR code, status 429, terminal retry, and exit 1", () => {
+    const err = new QuotaError();
+    assert.strictEqual(err.code, "QUOTA_ERROR");
+    assert.strictEqual(err.statusCode, 429);
+    assert.strictEqual(err.retryable, false);
+    assert.strictEqual(err.exitCode, 1);
+    assert.strictEqual(err.name, "QuotaError");
+    assert.ok(typeof err.message === "string" && err.message.length > 0);
+  });
+
+  it("accepts an explicit message and optional sanitized help", () => {
+    const err = new QuotaError(
+      "quota exhausted for the active provider",
+      "Upgrade your plan or wait until the next reset window",
+    );
+    assert.strictEqual(err.message, "quota exhausted for the active provider");
+    assert.strictEqual(err.help, "Upgrade your plan or wait until the next reset window");
+  });
+
+  it("extends ScoutlineError and is recognised by the shared taxonomy", () => {
+    const err = new QuotaError();
+    assert.ok(err instanceof ScoutlineError);
+    assert.ok(err instanceof QuotaError);
+    assert.strictEqual(getErrorExitCode(err), 1);
+  });
+
+  it("is treated as terminal by isRetryableError", () => {
+    const err = new QuotaError();
+    assert.strictEqual(isRetryableError(err), false);
+  });
+
+  it("surfaces through formatErrorOutput with the documented public envelope", () => {
+    const err = new QuotaError("quota exhausted for the active provider");
+    const parsed = JSON.parse(formatErrorOutput(err));
+    assert.strictEqual(parsed.success, false);
+    assert.strictEqual(parsed.code, "QUOTA_ERROR");
+    assert.strictEqual(parsed.statusCode, 429);
+    assert.strictEqual(parsed.error, "quota exhausted for the active provider");
+    // No stack, cause, or other internal fields on the public envelope.
+    assert.strictEqual(parsed.stack, undefined);
+    assert.strictEqual(parsed.cause, undefined);
+  });
+
+  // P6-03A: QuotaError must be reachable through the public
+  // `src/lib/index.ts` barrel so programmatic consumers can build
+  // and surface quota errors without depending on the inner errors
+  // module path. Lock the barrel surface here so a future barrel
+  // edit cannot silently drop the export.
+  it("is exported through the public lib barrel (`src/lib/index.ts`)", async () => {
+    const barrel = await import("../dist/lib/index.js");
+    assert.strictEqual(typeof barrel.QuotaError, "function");
+    const err = new barrel.QuotaError("barrel test");
+    assert.ok(err instanceof QuotaError);
+    assert.strictEqual(err.code, "QUOTA_ERROR");
+    assert.strictEqual(err.statusCode, 429);
+    assert.strictEqual(err.retryable, false);
+    assert.strictEqual(err.exitCode, 1);
   });
 });
 

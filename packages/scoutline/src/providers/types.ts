@@ -24,6 +24,7 @@ import type { SearchCapability } from "../capabilities/search.js";
 import type { VisionCapability } from "../capabilities/vision.js";
 import type { QuotaCapability } from "../capabilities/quota.js";
 import type { DiagnosticsCapability } from "../capabilities/diagnostics.js";
+import type { RepositoryCapability } from "../capabilities/repository.js";
 
 // ---------------------------------------------------------------------------
 // Provider identity
@@ -72,6 +73,10 @@ export interface ProviderContext {
  * Provider Adapter contract (Phase 3 shape). Each Capability that the
  * Provider supports becomes a property on this interface. Phase 4 adds
  * `quota?: QuotaCapability` and `diagnostics?: DiagnosticsCapability`.
+ * Phase 6 adds `repository?: RepositoryCapability` (P6-04); descriptor
+ * capability metadata is the authoritative advertisement — the slot
+ * here is only the implementation handle used by tests and the future
+ * Explorer layer.
  */
 export interface ProviderAdapter {
   readonly id: ProviderId;
@@ -79,6 +84,7 @@ export interface ProviderAdapter {
   readonly vision?: VisionCapability;
   readonly quota?: QuotaCapability;
   readonly diagnostics?: DiagnosticsCapability;
+  readonly repository?: RepositoryCapability;
 }
 
 // ---------------------------------------------------------------------------
@@ -243,6 +249,14 @@ export interface ZaiAdapterDependencies {
   readonly quotaFetch?: ProviderQuotaFetch;
   readonly quotaSetTimeout?: typeof setTimeout;
   readonly quotaClearTimeout?: typeof clearTimeout;
+  /**
+   * Optional Repository Capability close-bound override in
+   * milliseconds (P6-04A). When omitted, the production default of
+   * 2000 ms (matching `ZaiMcpClient.close`) applies. Tests inject a
+   * shorter bound to keep the never-resolving-close test bounded
+   * below the production default.
+   */
+  readonly repositoryCloseTimeoutMs?: number;
 }
 
 /**

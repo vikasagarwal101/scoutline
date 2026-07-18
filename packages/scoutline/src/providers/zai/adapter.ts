@@ -65,6 +65,7 @@ import { buildCacheKey } from "../../lib/cache.js";
 import { isZaiConfigured, requireZaiApiKey } from "./credentials.js";
 import { resolveImageSource, resolveVideoSource } from "./media.js";
 import { createZaiQuotaCapability, type ZaiQuotaCapabilityOptions } from "./quota.js";
+import { createZaiRepositoryCapability } from "./repository.js";
 import type { ZaiMonitorFetch } from "./monitor-client.js";
 
 const SEARCH_TOOL_PUBLIC_NAME = getMcpToolName("search", "web_search_prime");
@@ -729,7 +730,23 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
         env: context.env,
         clientFactory,
       });
-      return { id: "zai", search, vision, quota, diagnostics };
+      // P6-04: wire the Repository Capability so tests and the future
+      // Explorer layer (P6-05+) can reach the implementation through
+      // `adapter.repository`. The descriptor's `capabilities()` set is
+      // intentionally NOT updated in this ticket — Repository support is
+      // NOT yet advertised. The Explorer layer that consumes this slot
+      // will be the first external consumer. P6-04A forwards the
+      // optional `repositoryCloseTimeoutMs` test seam; production
+      // leaves it undefined and the capability uses the documented
+      // 2000 ms default.
+      const repository = createZaiRepositoryCapability({
+        env: context.env,
+        clientFactory,
+        ...(dependencies?.repositoryCloseTimeoutMs !== undefined && {
+          closeTimeoutMs: dependencies.repositoryCloseTimeoutMs,
+        }),
+      });
+      return { id: "zai", search, vision, quota, diagnostics, repository };
     },
   };
 }

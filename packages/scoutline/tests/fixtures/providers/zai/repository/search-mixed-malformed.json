@@ -1,0 +1,5 @@
+{
+  "description": "Mixed-malformed ZRead search_doc response: contains a well-formed excerpt PLUS an unmatched opening excerpt tag. The characterized Search grammar requires all <excerpt> framing to be balanced; this response must fail.",
+  "operation": "search_doc",
+  "raw": "<excerpt>\nWell-formed excerpt that closes cleanly.\n</excerpt>\n<excerpt>\nSecond excerpt that opens but never closes — the framing is unbalanced.\n- bullet 1\n- bullet 2"
+}

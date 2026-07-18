@@ -1,0 +1,5 @@
+{
+  "description": "Valid ZRead get_repo_structure response for nested directory (sanitized). Same <structure> wrapper as root; same Unicode branch glyph grammar; sibling order preserved.",
+  "operation": "get_repo_structure",
+  "raw": "<structure>\npackages/\n├── react/\n├── react-dom/\n├── react-reconciler/\n└── shared/\n</structure>"
+}

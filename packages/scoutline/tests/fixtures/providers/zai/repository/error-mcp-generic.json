@@ -1,0 +1,5 @@
+{
+  "description": "Generic string-encoded MCP failure (no Provider payload or credential recorded). Characterization only — proves a generic encoded error cannot satisfy a valid-success fixture for any repository operation.",
+  "operation": "error_fixture",
+  "raw": "MCP error -500\nerror.code: 9999\nerror.message: internal failure"
+}

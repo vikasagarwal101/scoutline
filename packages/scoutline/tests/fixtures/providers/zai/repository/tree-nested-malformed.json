@@ -1,0 +1,5 @@
+{
+  "description": "Malformed ZRead get_repo_structure nested response: outer wrapper is missing entirely. Adapter must reject before consulting any line.",
+  "operation": "get_repo_structure",
+  "raw": "packages/\n├── react/\n├── react-dom/\n└── shared/"
+}

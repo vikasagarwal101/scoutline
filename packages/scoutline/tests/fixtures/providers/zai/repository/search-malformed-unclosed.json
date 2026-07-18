@@ -1,0 +1,5 @@
+{
+  "description": "Malformed ZRead search_doc response: <excerpt> opening tag without a matching closing tag. Must be rejected as malformed before any excerpt text is consumed.",
+  "operation": "search_doc",
+  "raw": "<excerpt>\nOpened excerpt that never closes.\n- bullet 1\n- bullet 2"
+}

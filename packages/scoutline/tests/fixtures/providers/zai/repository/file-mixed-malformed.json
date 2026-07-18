@@ -1,0 +1,5 @@
+{
+  "description": "Mixed-malformed ZRead read_file response: surrounding/trailing data outside the outer wrapper. The characterized File grammar is a whole-response wrapper (only whitespace allowed outside); this response must fail even though a wrapper is present.",
+  "operation": "read_file",
+  "raw": "Leading prose that precedes the wrapper is not allowed.\n<file_content>\n# Project README\n\nBody content here.\n</file_content>\nTrailing prose that follows the wrapper is not allowed."
+}

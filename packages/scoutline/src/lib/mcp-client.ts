@@ -482,37 +482,87 @@ export class ZaiMcpClient {
     return this.callTool<T>(resolved, args);
   }
 
+  /**
+   * P6-01A: invoke a tool while preserving the public dotted tool name as
+   * the cache identity, then resolve to the internal sanitized identity
+   * only on a cache miss.
+   *
+   * The legacy v0.2 repository cache contract (P0–P2) keyed entries under
+   * the public dotted name and returned them before any transport work.
+   * A naive `callToolRaw` migration routes through `resolveToolName` first,
+   * which forces discovery, registration, and `init()` even when a v0.2
+   * hit is present. This helper restores the legacy cache identity and
+   * skips discovery on hits while keeping the translation fix for misses.
+   *
+   * Other callers (`callTool`, `callToolRaw`, Vision, Search, Reader, raw
+   * tools) are unchanged.
+   */
+  private async callToolWithPublicCacheIdentity<T>(
+    publicToolName: string,
+    args: Record<string, unknown>,
+  ): Promise<T> {
+    const cacheable = !this.options.noCache && !publicToolName.includes(".vision.");
+    if (!cacheable) {
+      // No-cache path: resolve the internal identity and invoke directly.
+      const internal = await this.resolveToolName(publicToolName);
+      return this.callToolUncached<T>(internal, args);
+    }
+    const key = buildCacheKey(publicToolName, args);
+    const hit = await readCache<T>(key);
+    if (hit !== null) return hit;
+    const internal = await this.resolveToolName(publicToolName);
+    try {
+      const result = await this.callToolUncached<T>(internal, args);
+      await writeCache(key, result);
+      return result;
+    } catch (err) {
+      throw err;
+    }
+  }
+
   // ============ ZRead Methods ============
 
   /**
    * Search documentation and code in a GitHub repository
    */
   async zreadSearch(repo: string, query: string, language?: "zh" | "en"): Promise<string> {
-    return this.callTool<string>(getMcpToolName("zread", "search_doc"), {
-      repo_name: repo,
-      query,
-      ...(language && { language }),
-    });
+    // P6-01 / P6-01A: route through `callToolWithPublicCacheIdentity` so
+    //   - the public dotted name is preserved as the cache identity
+    //     (legacy v0.2 cache hits still return without transport work);
+    //   - on a cache miss the public name is resolved to the discovered
+    //     internal UTCP identity before invocation (fixes the public-name
+    //     translation regression);
+    // The legacy `ZReadMcpClient.searchDoc` wrapper delegates here.
+    return this.callToolWithPublicCacheIdentity<string>(
+      getMcpToolName("zread", "search_doc"),
+      { repo_name: repo, query, ...(language && { language }) },
+    );
   }
 
   /**
    * Get the directory structure of a GitHub repository
    */
   async zreadTree(repo: string, dirPath?: string): Promise<string> {
-    return this.callTool<string>(getMcpToolName("zread", "get_repo_structure"), {
-      repo_name: repo,
-      ...(dirPath && { dir_path: dirPath }),
-    });
+    // P6-01 / P6-01A: see `zreadSearch` for the cache identity and
+    // translation rationale. The legacy `ZReadMcpClient.getRepoStructure`
+    // wrapper delegates here.
+    return this.callToolWithPublicCacheIdentity<string>(
+      getMcpToolName("zread", "get_repo_structure"),
+      { repo_name: repo, ...(dirPath && { dir_path: dirPath }) },
+    );
   }
 
   /**
    * Read a file from a GitHub repository
    */
   async zreadFile(repo: string, path: string): Promise<string> {
-    return this.callTool<string>(getMcpToolName("zread", "read_file"), {
-      repo_name: repo,
-      file_path: path,
-    });
+    // P6-01 / P6-01A: see `zreadSearch` for the cache identity and
+    // translation rationale. The legacy `ZReadMcpClient.readFile` wrapper
+    // delegates here.
+    return this.callToolWithPublicCacheIdentity<string>(
+      getMcpToolName("zread", "read_file"),
+      { repo_name: repo, file_path: path },
+    );
   }
 
   // ============ Web Search Methods ============

@@ -1,0 +1,5 @@
+{
+  "description": "String-encoded MCP quota failure (no Provider payload or credential recorded). Characterization only — proves the success parser must NOT accept this shape. Public taxonomy belongs to P6-04.",
+  "operation": "error_fixture",
+  "raw": "MCP error -429\nerror.code: 1310\nerror.message: Weekly/Monthly Limit Exhausted\nreset: 2026-08-08 06:07:26"
+}

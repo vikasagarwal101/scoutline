@@ -21,8 +21,9 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { ZaiMcpClient } from "../dist/lib/mcp-client.js";
+import { ZaiMcpClient, ZReadMcpClient } from "../dist/lib/mcp-client.js";
 import { getMcpToolName, MCP_MANUAL_NAME } from "../dist/lib/mcp-config.js";
+import { buildCacheKey, writeCache } from "../dist/lib/cache.js";
 import { FakeUtcpClient } from "./helpers/fake-utcp-client.js";
 import { readFixture } from "./helpers/fixtures.js";
 import { formatErrorOutput } from "../dist/lib/output.js";
@@ -519,6 +520,439 @@ describe("ZaiMcpClient — init path raw-body scrubbing (Fixup D — B2-remainin
         assert.ok(!err.message.includes("RAW_INIT_BODY"), `typed init ApiError leaked: ${err.message}`);
         return true;
       });
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P6-01 — public ZRead wrapper names resolve through discovered internal
+// identity.
+//
+// The P2-03 translation change introduced `callToolRaw()` to route public
+// dotted ZRead names through `resolveToolName()` before invoking UTCP. The
+// three convenience wrappers (`searchDoc`, `getRepoStructure`, `readFile`
+// on the legacy `ZReadMcpClient`) previously bypassed that path and called
+// `callTool()` with the public dotted name. UTCP only accepts the
+// sanitized internal identity (`scoutline_zai.zread.*`), so the legacy
+// wrappers failed before the Provider could answer.
+//
+// Each test below:
+//   - configures the FakeUtcpClient with the INTERNAL names in
+//     `discoveredTools` and `resultsByName`, exactly mirroring a real UTCP
+//     registration that only ever knows the sanitized identity;
+//   - sets the PUBLIC dotted name as an explicit error (UTCP behaviour for a
+//     name outside its registry);
+//   - invokes the public wrapper and asserts the fake received the call with
+//     the internal identity, returning the fixture result.
+//
+// These tests describe the intended wrapper behaviour; they FAIL against the
+// pre-fix `mcp-client.ts` because the wrappers bypass discovery.
+// ---------------------------------------------------------------------------
+
+describe("ZaiMcpClient — legacy ZRead wrappers resolve through discovered identity (P6-01)", () => {
+  // Same public-vs-internal shape as Search, applied to each ZRead operation.
+  const PUBLIC_SEARCH_DOC = getMcpToolName("zread", "search_doc");
+  const PUBLIC_GET_REPO_STRUCTURE = getMcpToolName("zread", "get_repo_structure");
+  const PUBLIC_READ_FILE = getMcpToolName("zread", "read_file");
+  const INTERNAL_SEARCH_DOC = `${MCP_MANUAL_NAME.replace(/\./g, "_")}.zread.search_doc`;
+  const INTERNAL_GET_REPO_STRUCTURE = `${MCP_MANUAL_NAME.replace(/\./g, "_")}.zread.get_repo_structure`;
+  const INTERNAL_READ_FILE = `${MCP_MANUAL_NAME.replace(/\./g, "_")}.zread.read_file`;
+
+  // Sanity: the public identity and the internal identity must differ. If
+  // they collapse the translation defect silently disappears and the tests
+  // below would no longer describe the intended boundary.
+  assert.notStrictEqual(PUBLIC_SEARCH_DOC, INTERNAL_SEARCH_DOC);
+  assert.notStrictEqual(PUBLIC_GET_REPO_STRUCTURE, INTERNAL_GET_REPO_STRUCTURE);
+  assert.notStrictEqual(PUBLIC_READ_FILE, INTERNAL_READ_FILE);
+
+  const discoveredZreadTools = [
+    {
+      name: INTERNAL_SEARCH_DOC,
+      inputs: {
+        type: "object",
+        properties: {
+          repo_name: { type: "string" },
+          query: { type: "string" },
+          language: { type: "string", enum: ["zh", "en"] },
+        },
+        required: ["repo_name", "query"],
+      },
+      outputs: { type: "string" },
+    },
+    {
+      name: INTERNAL_GET_REPO_STRUCTURE,
+      inputs: {
+        type: "object",
+        properties: {
+          repo_name: { type: "string" },
+          dir_path: { type: "string" },
+        },
+        required: ["repo_name"],
+      },
+      outputs: { type: "string" },
+    },
+    {
+      name: INTERNAL_READ_FILE,
+      inputs: {
+        type: "object",
+        properties: {
+          repo_name: { type: "string" },
+          file_path: { type: "string" },
+        },
+        required: ["repo_name", "file_path"],
+      },
+      outputs: { type: "string" },
+    },
+  ];
+
+  function wirePublicAsUnknown(fake) {
+    // UTCP rejects names outside its registry. Mirror that by mapping the
+    // public dotted name to an explicit unknown-tool error. The wrapper
+    // MUST resolve through discovery and never callTool with the dotted
+    // form.
+    for (const publicName of [
+      PUBLIC_SEARCH_DOC,
+      PUBLIC_GET_REPO_STRUCTURE,
+      PUBLIC_READ_FILE,
+    ]) {
+      fake.errorsByName[publicName] = new Error(
+        `Tool not found in UTCP manual: ${publicName}`,
+      );
+    }
+  }
+
+  it("zreadSearch public name resolves to the discovered internal identity", async () => {
+    const fake = new FakeUtcpClient({
+      discoveredTools: discoveredZreadTools,
+      resultsByName: { [INTERNAL_SEARCH_DOC]: "<excerpt>hello</excerpt>" },
+    });
+    wirePublicAsUnknown(fake);
+
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      noCache: true,
+    });
+    try {
+      const result = await client.zreadSearch("acme/widgets", "hello", "en");
+      assert.strictEqual(result, "<excerpt>hello</excerpt>");
+      assert.strictEqual(fake.callToolCalls.length, 1);
+      assert.strictEqual(fake.callToolCalls[0].name, INTERNAL_SEARCH_DOC);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("zreadTree public name resolves to the discovered internal identity", async () => {
+    const fake = new FakeUtcpClient({
+      discoveredTools: discoveredZreadTools,
+      resultsByName: { [INTERNAL_GET_REPO_STRUCTURE]: "<structure>x/</structure>" },
+    });
+    wirePublicAsUnknown(fake);
+
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      noCache: true,
+    });
+    try {
+      const result = await client.zreadTree("acme/widgets", "packages");
+      assert.strictEqual(result, "<structure>x/</structure>");
+      assert.strictEqual(fake.callToolCalls.length, 1);
+      assert.strictEqual(fake.callToolCalls[0].name, INTERNAL_GET_REPO_STRUCTURE);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("zreadFile public name resolves to the discovered internal identity", async () => {
+    const fake = new FakeUtcpClient({
+      discoveredTools: discoveredZreadTools,
+      resultsByName: { [INTERNAL_READ_FILE]: "<file_content>hi</file_content>" },
+    });
+    wirePublicAsUnknown(fake);
+
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      noCache: true,
+    });
+    try {
+      const result = await client.zreadFile("acme/widgets", "README.md");
+      assert.strictEqual(result, "<file_content>hi</file_content>");
+      assert.strictEqual(fake.callToolCalls.length, 1);
+      assert.strictEqual(fake.callToolCalls[0].name, INTERNAL_READ_FILE);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("the wrappers never invoke UTCP with the public dotted ZRead name", async () => {
+    // Defensive: a single end-to-end pass that checks all three wrappers,
+    // asserting the fake received exactly one call per wrapper, each with
+    // the internal identity and never with the public dotted name.
+    const fake = new FakeUtcpClient({
+      discoveredTools: discoveredZreadTools,
+      resultsByName: {
+        [INTERNAL_SEARCH_DOC]: "ok-search",
+        [INTERNAL_GET_REPO_STRUCTURE]: "ok-tree",
+        [INTERNAL_READ_FILE]: "ok-file",
+      },
+    });
+    wirePublicAsUnknown(fake);
+
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      noCache: true,
+    });
+    try {
+      await client.zreadSearch("acme/widgets", "hello", "en");
+      await client.zreadTree("acme/widgets");
+      await client.zreadFile("acme/widgets", "README.md");
+
+      assert.strictEqual(fake.callToolCalls.length, 3);
+      const invokedNames = fake.callToolCalls.map((c) => c.name);
+      assert.deepStrictEqual(invokedNames, [
+        INTERNAL_SEARCH_DOC,
+        INTERNAL_GET_REPO_STRUCTURE,
+        INTERNAL_READ_FILE,
+      ]);
+      for (const publicName of [
+        PUBLIC_SEARCH_DOC,
+        PUBLIC_GET_REPO_STRUCTURE,
+        PUBLIC_READ_FILE,
+      ]) {
+        assert.ok(
+          !invokedNames.includes(publicName),
+          `wrapper invoked UTCP with public dotted name ${publicName}`,
+        );
+      }
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("legacy ZReadMcpClient wrappers (searchDoc/getRepoStructure/readFile) also resolve", async () => {
+    // The legacy convenience wrappers on `ZReadMcpClient` delegate to the
+    // internal `zreadSearch/zreadTree/zreadFile` methods. P6-01 requires
+    // both the modern and the legacy public names to resolve through the
+    // discovered internal identity so the repo command's older call sites
+    // continue to work after the migration.
+    const fake = new FakeUtcpClient({
+      discoveredTools: discoveredZreadTools,
+      resultsByName: {
+        [INTERNAL_SEARCH_DOC]: "ok-search",
+        [INTERNAL_GET_REPO_STRUCTURE]: "ok-tree",
+        [INTERNAL_READ_FILE]: "ok-file",
+      },
+    });
+    wirePublicAsUnknown(fake);
+
+    const client = new ZReadMcpClient({
+      utcpFactory: async () => fake,
+      noCache: true,
+    });
+    try {
+      await client.searchDoc("acme/widgets", "hello", "en");
+      await client.getRepoStructure("acme/widgets");
+      await client.readFile("acme/widgets", "README.md");
+
+      const invokedNames = fake.callToolCalls.map((c) => c.name);
+      assert.deepStrictEqual(invokedNames, [
+        INTERNAL_SEARCH_DOC,
+        INTERNAL_GET_REPO_STRUCTURE,
+        INTERNAL_READ_FILE,
+      ]);
+      for (const publicName of [
+        PUBLIC_SEARCH_DOC,
+        PUBLIC_GET_REPO_STRUCTURE,
+        PUBLIC_READ_FILE,
+      ]) {
+        assert.ok(
+          !invokedNames.includes(publicName),
+          `legacy wrapper invoked UTCP with public dotted name ${publicName}`,
+        );
+      }
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P6-01A — ZRead wrappers preserve the legacy v0.2 public-name cache
+// identity and skip discovery/registration/UTCP invocation on a cache hit.
+//
+// The v0.2 repository cache contract (P0–P2) keyed entries under the public
+// dotted tool name and returned them before any transport work. A naive
+// `callToolRaw` migration routes through `resolveToolName` first, which
+// forces discovery and registration even when a v0.2 hit is present. The
+// fix introduces a ZRead-scoped cache-identity helper that:
+//   - reads and writes cache entries under the public dotted name;
+//   - skips discovery/registration/UTCP entirely on a hit;
+//   - resolves to the internal sanitized identity only on a miss.
+//
+// Each test below seeds a v0.2-shaped cache entry under the public name
+// and asserts no fake counter moved during the call.
+// ---------------------------------------------------------------------------
+
+describe("ZaiMcpClient — ZRead wrappers preserve public cache identity (P6-01A)", () => {
+  const PUBLIC_SEARCH_DOC = getMcpToolName("zread", "search_doc");
+  const PUBLIC_GET_REPO_STRUCTURE = getMcpToolName("zread", "get_repo_structure");
+  const PUBLIC_READ_FILE = getMcpToolName("zread", "read_file");
+
+  // `buildCacheKey` reads the API key to namespace the cache key. The
+  // legacy v0.2 contract used `Z_AI_API_KEY` as the namespace, so seed a
+  // fixed value and restore the previous environment around the suite.
+  let tempDir;
+  let originalCacheDir;
+  let originalToolCache;
+  let originalApiKey;
+  const TEST_API_KEY = "p6-01a-cache-identity-fixture";
+
+  before(async () => {
+    originalCacheDir = process.env.ZAI_CACHE_DIR;
+    originalToolCache = process.env.ZAI_MCP_TOOL_CACHE;
+    originalApiKey = process.env.Z_AI_API_KEY;
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), TEMP_PREFIX));
+    process.env.ZAI_CACHE_DIR = tempDir;
+    process.env.ZAI_MCP_TOOL_CACHE = "0";
+    process.env.Z_AI_API_KEY = TEST_API_KEY;
+  });
+
+  after(async () => {
+    if (originalCacheDir === undefined) delete process.env.ZAI_CACHE_DIR;
+    else process.env.ZAI_CACHE_DIR = originalCacheDir;
+    if (originalToolCache === undefined) delete process.env.ZAI_MCP_TOOL_CACHE;
+    else process.env.ZAI_MCP_TOOL_CACHE = originalToolCache;
+    if (originalApiKey === undefined) delete process.env.Z_AI_API_KEY;
+    else process.env.Z_AI_API_KEY = originalApiKey;
+    if (tempDir) {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  // The fake registers every callback. We do NOT want it called at all on
+  // a cache hit — that is the regression we are proving the fix prevents.
+  function unusedFake() {
+    const fake = new FakeUtcpClient({ discoveredTools: [] });
+    // If the fake is touched on a hit, every counter must remain zero.
+    return fake;
+  }
+
+  it("zreadSearch returns a legacy public-key cache hit without discovery", async () => {
+    const fake = unusedFake();
+    const args = { repo_name: "acme/widgets", query: "hello", language: "en" };
+    const key = buildCacheKey(PUBLIC_SEARCH_DOC, args);
+    await writeCache(key, "<excerpt>cached</excerpt>");
+
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      // noCache is intentionally NOT set — the v0.2 hit must apply.
+    });
+    try {
+      const result = await client.zreadSearch("acme/widgets", "hello", "en");
+      assert.strictEqual(result, "<excerpt>cached</excerpt>");
+      assert.strictEqual(fake.registerManualCalls, 0, "registerManual must not run on cache hit");
+      assert.strictEqual(fake.getToolsCalls, 0, "getTools must not run on cache hit");
+      assert.strictEqual(fake.callToolCalls.length, 0, "callTool must not run on cache hit");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("zreadTree returns a legacy public-key cache hit without discovery", async () => {
+    const fake = unusedFake();
+    const args = { repo_name: "acme/widgets", dir_path: "packages" };
+    const key = buildCacheKey(PUBLIC_GET_REPO_STRUCTURE, args);
+    await writeCache(key, "<structure>cached/</structure>");
+
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+    });
+    try {
+      const result = await client.zreadTree("acme/widgets", "packages");
+      assert.strictEqual(result, "<structure>cached/</structure>");
+      assert.strictEqual(fake.registerManualCalls, 0);
+      assert.strictEqual(fake.getToolsCalls, 0);
+      assert.strictEqual(fake.callToolCalls.length, 0);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("zreadFile returns a legacy public-key cache hit without discovery", async () => {
+    const fake = unusedFake();
+    const args = { repo_name: "acme/widgets", file_path: "README.md" };
+    const key = buildCacheKey(PUBLIC_READ_FILE, args);
+    await writeCache(key, "<file_content>cached</file_content>");
+
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+    });
+    try {
+      const result = await client.zreadFile("acme/widgets", "README.md");
+      assert.strictEqual(result, "<file_content>cached</file_content>");
+      assert.strictEqual(fake.registerManualCalls, 0);
+      assert.strictEqual(fake.getToolsCalls, 0);
+      assert.strictEqual(fake.callToolCalls.length, 0);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("legacy ZReadMcpClient.searchDoc returns a v0.2 cache hit without discovery", async () => {
+    const fake = unusedFake();
+    const args = { repo_name: "acme/widgets", query: "hello", language: "en" };
+    const key = buildCacheKey(PUBLIC_SEARCH_DOC, args);
+    await writeCache(key, "<excerpt>legacy-hit</excerpt>");
+
+    const client = new ZReadMcpClient({
+      utcpFactory: async () => fake,
+    });
+    try {
+      const result = await client.searchDoc("acme/widgets", "hello", "en");
+      assert.strictEqual(result, "<excerpt>legacy-hit</excerpt>");
+      assert.strictEqual(fake.registerManualCalls, 0);
+      assert.strictEqual(fake.getToolsCalls, 0);
+      assert.strictEqual(fake.callToolCalls.length, 0);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("callToolRaw semantics for non-ZRead callers are unchanged", async () => {
+    // P6-01A guardrail: the cache-identity fix is scoped to the ZRead
+    // wrappers only. A non-ZRead public caller must still resolve through
+    // `resolveToolName` and pass the internal identity to `callTool` —
+    // `callToolRaw` is not modified.
+    const fake = new FakeUtcpClient({
+      discoveredTools: [
+        {
+          name: "scoutline_zai.search.web_search_prime",
+          inputs: { type: "object", properties: {}, required: ["search_query"] },
+        },
+      ],
+      resultsByName: { "scoutline_zai.search.web_search_prime": "ok" },
+    });
+    fake.errorsByName["scoutline.zai.search.web_search_prime"] = new Error(
+      "Tool not found in UTCP manual: scoutline.zai.search.web_search_prime",
+    );
+
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      noCache: true,
+    });
+    try {
+      const result = await client.callToolRaw("scoutline.zai.search.web_search_prime", {
+        search_query: "x",
+      });
+      assert.strictEqual(result, "ok");
+      assert.strictEqual(fake.callToolCalls.length, 1);
+      assert.strictEqual(
+        fake.callToolCalls[0].name,
+        "scoutline_zai.search.web_search_prime",
+        "callToolRaw must continue to invoke UTCP under the internal name",
+      );
     } finally {
       await client.close();
     }

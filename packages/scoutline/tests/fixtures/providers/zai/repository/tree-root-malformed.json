@@ -1,0 +1,5 @@
+{
+  "description": "Malformed ZRead get_repo_structure root response: contains a <structure> wrapper but the lines inside lack the documented Unicode branch glyphs, so no immediate entries can be parsed.",
+  "operation": "get_repo_structure",
+  "raw": "<structure>\nfacebook-react/\nplain-line-without-glyphs.txt\nanother-bad-line\n</structure>"
+}

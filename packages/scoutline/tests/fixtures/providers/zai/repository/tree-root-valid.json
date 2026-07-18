@@ -1,0 +1,5 @@
+{
+  "description": "Valid ZRead get_repo_structure response for repository root (sanitized). <structure> wrapper contains Unicode branch glyphs (├── / └──) and trailing '/' marks directories. Provider sibling order is preserved.",
+  "operation": "get_repo_structure",
+  "raw": "<structure>\nfacebook-react/\n├── LICENSE\n├── README.md\n├── packages/\n├── public/\n├── src/\n├── tests/\n└── yarn.lock\n</structure>"
+}

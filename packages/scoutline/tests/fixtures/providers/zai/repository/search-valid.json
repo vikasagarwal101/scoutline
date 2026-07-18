@@ -1,0 +1,5 @@
+{
+  "description": "Valid ZRead search_doc response (sanitized). Multiple ordered <excerpt> blocks with arbitrary inner Markdown/code/HTML-like markup spanning excerpt boundaries.",
+  "operation": "search_doc",
+  "raw": "<excerpt>\n## useState\n\n`useState` is a Hook that lets you add state to function components.\n\n```js\nconst [count, setCount] = useState(0);\n```\n\nSee <a href=\"docs/hooks.html#usestate\">Hooks reference</a>.\n</excerpt>\n<excerpt>\n### Updates and batching\n\nState updates may be batched. The following snippet shows the documented <em>batching</em> rule:\n\n- functional updates preserve identity\n- object spreads create new identities\n</excerpt>\n<excerpt>\nPlain prose excerpt with no markup at all.\n</excerpt>"
+}

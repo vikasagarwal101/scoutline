@@ -1,0 +1,5 @@
+{
+  "description": "Malformed ZRead read_file response: missing <file_content> wrapper. Body content is preserved text but the missing outer framing makes it a malformed Adapter failure.",
+  "operation": "read_file",
+  "raw": "# README\n\nThis body has no outer file_content wrapper and must be rejected as malformed."
+}

@@ -1,0 +1,5 @@
+{
+  "description": "Mixed-malformed ZRead get_repo_structure response: contains a valid Unicode-branch entry alongside a sibling line that lacks the branch glyph. The characterized Tree grammar requires every immediate entry to use the documented glyph; this response must fail.",
+  "operation": "get_repo_structure",
+  "raw": "<structure>\n├── LICENSE\nREADME-no-glyph-on-this-line\n├── src/\n</structure>"
+}

@@ -1,0 +1,5 @@
+{
+  "description": "Malformed ZRead read_file response: <file_content> opening tag without matching closing tag. Adapter must reject before consuming body.",
+  "operation": "read_file",
+  "raw": "<file_content>\nOpened file body that never closes."
+}

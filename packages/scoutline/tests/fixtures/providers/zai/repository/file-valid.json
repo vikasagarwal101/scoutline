@@ -1,0 +1,5 @@
+{
+  "description": "Valid ZRead read_file response (sanitized). Opaque <file_content> wrapper around Markdown/HTML body. Wrapper is Adapter-private and discarded by the normalized result.",
+  "operation": "read_file",
+  "raw": "<file_content>\n# Project README\n\nThis repository demonstrates the fixture format.\n\n## Installation\n\n```bash\nnpm install\n```\n\n## License\n\nMIT — see <a href=\"LICENSE\">LICENSE</a>.\n</file_content>"
+}

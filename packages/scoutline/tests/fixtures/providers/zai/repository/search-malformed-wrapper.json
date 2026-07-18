@@ -1,0 +1,5 @@
+{
+  "description": "Malformed ZRead search_doc response: missing <excerpt> wrapper entirely. Live probes confirm Z.AI does not return an unwrapped success grammar — this case is a malformed failure, not a valid empty result.",
+  "operation": "search_doc",
+  "raw": "This response has no excerpt framing at all and must be rejected as malformed."
+}

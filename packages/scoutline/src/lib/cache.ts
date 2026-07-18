@@ -85,6 +85,66 @@ export function buildCacheKey(command: string, requestArgs: Record<string, unkno
   return `${command}.${keyHash}.${argsHash}.json`;
 }
 
+// ---------------------------------------------------------------------------
+// P6-02 — Pure legacy repository cache key builder (DESIGN.md §18)
+//
+// The Repository Capability supplies its own cache identity through
+// `buildProviderCacheKey`. The legacy Z.AI v0.2 keys produced by
+// `buildCacheKey` are read-through candidates — they were the production
+// path until P6 ships. The Z.AI Adapter reconstructs those legacy
+// filenames exactly so a v0.2 cache entry remains valid as a miss-free
+// read-through source.
+//
+// This helper:
+//   - is PURE (no `process.env` reads, no `getApiKey` calls);
+//   - accepts the resolved `apiKey`, `publicToolName`, and
+//     insertion-ordered `args` explicitly;
+//   - reproduces the v0.2 algorithm byte-for-byte;
+//   - is a SEPARATE symbol from `buildCacheKey` and does NOT call or
+//     wrap it.
+//
+// Algorithm (DESIGN.md §18):
+//   credentialPart = sha256(apiKey).hex.slice(0, 12)
+//   argumentPart   = sha256(JSON.stringify({ command: publicToolName,
+//                                            args })).hex.slice(0, 24)
+//   key            = `${publicToolName}.${credentialPart}.${argumentPart}.json`
+//
+// Legacy argument insertion order is fixed per operation (DESIGN.md §18):
+//   - Search:    args = { repo_name, query, language }
+//   - File:      args = { repo_name, file_path }
+//   - Directory: args = { repo_name }                       (root)
+//   - Directory: args = { repo_name, dir_path }            (non-root)
+//
+// The Adapter passes `args` in the documented order; this helper does
+// not reorder, normalize, or sort keys.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the exact v0.2 legacy repository cache key. Pure: the caller
+ * MUST supply the already-resolved credential. The function never reads
+ * `process.env` and never calls `getApiKey`. `args` is serialized in
+ * its insertion order via `JSON.stringify`.
+ *
+ * The result never contains the raw credential — only the first 12 hex
+ * chars of `sha256(apiKey)`.
+ */
+export function buildLegacyRepositoryCacheKey(
+  apiKey: string,
+  publicToolName: string,
+  args: Record<string, unknown>,
+): string {
+  // SHA-256(apiKey) → first 12 hex chars.
+  const credentialPart = crypto.createHash("sha256").update(apiKey).digest("hex").slice(0, 12);
+  // SHA-256(JSON.stringify({command,args})) → first 24 hex chars.
+  const argumentPayload = JSON.stringify({ command: publicToolName, args });
+  const argumentPart = crypto
+    .createHash("sha256")
+    .update(argumentPayload)
+    .digest("hex")
+    .slice(0, 24);
+  return `${publicToolName}.${credentialPart}.${argumentPart}.json`;
+}
+
 export function isCacheEnabled(): boolean {
   return CACHE_ENABLED;
 }

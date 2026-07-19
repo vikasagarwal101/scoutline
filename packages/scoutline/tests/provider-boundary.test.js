@@ -393,7 +393,7 @@ describe("Production reachability — every Phase 2 Module is wired into the shi
 });
 
 // ---------------------------------------------------------------------------
-// Repository Explorer boundary (P6-06, ARCHITECTURE.md §2, NFR-004).
+// Repository Explorer boundary (P6-06/P6-07, ARCHITECTURE.md §2, NFR-004).
 //
 // `commands/repository-explorer.ts` is the provider-neutral consumer
 // of the Repository Capability contract. It MUST NOT import any
@@ -401,15 +401,12 @@ describe("Production reachability — every Phase 2 Module is wired into the shi
 // tool name, or Provider response type. Provider-specific facts
 // (ZRead grammar, credentials, transports) remain Adapter-internal.
 //
-// LEGACY DISPATCH (commands/repo.ts): the legacy `repo` command still
-// owns its direct `ZReadMcpClient` import and dispatches through it
-// at runtime. P6-07 exclusively owns the dispatch cutover that
-// replaces it with the new Explorer path; P6-06 deliberately does
-// NOT touch `commands/repo.ts` and does NOT write an assertion that
-// could only pass by prematurely doing P6-07. The explicit
-// legacy-still-present assertion below documents the temporary
-// exception: the moment P6-07 removes the `ZReadMcpClient` import,
-// that assertion flips to assert its absence.
+// `commands/repo.ts` is now (P6-07) a thin handler over the Explorer
+// and the injected Repository Capability. It MUST NOT import any
+// concrete Provider client, raw MCP name, raw ZRead parser,
+// traversal transport, cache policy, retry, or close — those concerns
+// live in the Adapter and shared execution layers reached through
+// `adapter.repository`.
 // ---------------------------------------------------------------------------
 
 describe("Repository Explorer: imports no concrete Provider transport (P6-06)", () => {
@@ -543,23 +540,96 @@ describe("Repository Explorer: imports no concrete Provider transport (P6-06)", 
     );
   });
 
-  it("commands/repo.ts legacy ZReadMcpClient dispatch is still active until P6-07 cuts it over", async () => {
-    // P6-06 deliberately does NOT touch commands/repo.ts and does NOT
-    // write an assertion that requires P6-07's dispatch cutover to
-    // have landed. The legacy `repo` command still owns its direct
-    // `ZReadMcpClient` import and dispatches through it at runtime;
-    // the new Explorer-based dispatch path is wired by P6-07 only.
-    // This assertion locks the temporary exception so the cutover
-    // cannot drift away silently: when P6-07 removes the import, the
-    // assertion must be flipped to assert absence.
+  it("commands/repo.ts owns no Provider client, raw MCP name, parser, traversal, cache, retry, or close (P6-07)", async () => {
+    // P6-07 cuts the legacy `repo` dispatch over to the Provider
+    // Capability + Explorer path. The handler must NOT import any
+    // concrete Provider client, MCP client, raw-tool namespace
+    // library, or Provider response type. Provider-specific facts
+    // (ZRead grammar, credentials, transports, cache policy,
+    // retry, close) live in the Adapter and shared execution
+    // layers reached through `adapter.repository`.
     const source = await fs.readFile(path.join(COMMANDS_DIR, "repo.ts"), "utf8");
+    const imports = extractImports(source);
+
+    // No concrete Provider client, MCP client, or raw-tool config.
+    const forbiddenImports = [
+      "../lib/mcp-client.js",
+      "../lib/mcp-config.js",
+      "../providers/zai/adapter.js",
+      "../providers/zai/repository.js",
+      "../providers/minimax/adapter.js",
+      "../providers/registry.js",
+      "@utcp/sdk",
+      "@utcp/mcp",
+      "@utcp/code-mode",
+      "mmx-cli",
+    ];
+    const importHits = imports.filter((spec) =>
+      forbiddenImports.some((bad) => spec === bad || spec.startsWith(bad)),
+    );
+    assert.deepStrictEqual(
+      importHits,
+      [],
+      `src/commands/repo.ts must not import Provider clients, raw-tool namespaces, or Adapter Modules: ${importHits.join(", ")}`,
+    );
+
+    // No Provider-only symbols. The repo handlers reach the
+    // Provider exclusively through the injected
+    // `RepositoryCapability`.
+    const forbiddenSymbols = [
+      "ZaiMcpClient",
+      "ZReadMcpClient",
+      "ZaiAdapterClientPort",
+      "ZaiAdapterDependencies",
+      "ZaiMcpClientOptions",
+      "WebSearchResult",
+      "LegacyZaiSearchParams",
+      "LegacySearchClientPort",
+      "MiniMaxSdkPort",
+      "MiniMaxSdkConstructor",
+      "MiniMaxAdapterDependencies",
+      "createZaiDescriptor",
+      "createMiniMaxDescriptor",
+      "createZaiRepositoryCapability",
+    ];
+    const symbolHits = forbiddenSymbols.filter((sym) => new RegExp(`\\b${sym}\\b`).test(source));
+    assert.deepStrictEqual(
+      symbolHits,
+      [],
+      `src/commands/repo.ts must not reference Provider-only symbols: ${symbolHits.join(", ")}`,
+    );
+
+    // No `new ZReadMcpClient(` / `new ZaiMcpClient(` construction,
+    // no `.close()` transport lifecycle owned by the handler, and
+    // no `finally` block (which historically gated transport
+    // teardown). Cache and retry policy are owned by shared
+    // execution; the handler must not call them directly.
     assert.ok(
-      /ZReadMcpClient/.test(source),
-      "commands/repo.ts retains the legacy ZReadMcpClient import (and dispatch) until P6-07",
+      !/new\s+ZReadMcpClient\s*\(/.test(source),
+      "src/commands/repo.ts must not construct ZReadMcpClient",
     );
     assert.ok(
-      /new ZReadMcpClient/.test(source),
-      "commands/repo.ts still constructs ZReadMcpClient directly (legacy dispatch active)",
+      !/new\s+ZaiMcpClient\s*\(/.test(source),
+      "src/commands/repo.ts must not construct ZaiMcpClient",
+    );
+    assert.ok(
+      !/\bfinally\s*\{/.test(source),
+      "src/commands/repo.ts must not own transport-teardown finally blocks",
+    );
+    // The handler is allowed to call explorerSearch/ReadFile/Tree;
+    // it must not reach a raw `searchDoc` / `readFile` /
+    // `getRepoStructure` ZRead method directly.
+    assert.ok(
+      !/\.searchDoc\s*\(/.test(source),
+      "src/commands/repo.ts must not call raw ZRead searchDoc",
+    );
+    assert.ok(
+      !/\.readFile\s*\(/.test(source),
+      "src/commands/repo.ts must not call raw ZRead readFile",
+    );
+    assert.ok(
+      !/\.getRepoStructure\s*\(/.test(source),
+      "src/commands/repo.ts must not call raw ZRead getRepoStructure",
     );
   });
 });

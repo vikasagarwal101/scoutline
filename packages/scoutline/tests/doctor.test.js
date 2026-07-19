@@ -484,16 +484,16 @@ describe("doctor diagnostics — probe mechanism and retry (P4-04)", () => {
 // Help text
 // ---------------------------------------------------------------------------
 
-describe("doctor diagnostics — help text (P4-04, P6-06A)", () => {
-  it("states Z.AI advertises and supplies repository-exploration, MiniMax advertises and supplies neither, and the repo command cutover is pending P6-07 without claiming current runtime behavior", () => {
+describe("doctor diagnostics — help text (P4-04, P6-07)", () => {
+  it("states Z.AI advertises and supplies repository-exploration, MiniMax advertises and supplies neither, and the repo command cutover is the current runtime behavior", () => {
     assert.ok(/doctor/i.test(DOCTOR_HELP), "mentions doctor");
     assert.ok(/effective/i.test(DOCTOR_HELP), "mentions effective Provider");
 
     // P6-06A: help must state the descriptor-level facts that hold
     // today. Z.AI advertises repository-exploration AND the Adapter
     // supplies it; MiniMax does neither. These are registered
-    // metadata facts, not runtime claims about the public repo
-    // dispatcher.
+    // metadata facts that also hold at runtime now that P6-07 has
+    // cut the public repo dispatcher over to the Provider path.
     assert.ok(
       /Z\.AI descriptor\s+metadata advertises repository-exploration/.test(DOCTOR_HELP) ||
         /Z\.AI advertises repository-exploration/.test(DOCTOR_HELP),
@@ -504,32 +504,38 @@ describe("doctor diagnostics — help text (P4-04, P6-06A)", () => {
       "help must state MiniMax advertises and supplies neither repository-exploration",
     );
 
-    // P6-06A critical boundary: help MUST explicitly mark the repo
-    // command Provider-selection cutover as pending P6-07. It must
-    // NOT claim the cutover has already happened.
+    // P6-07 cutover: help MUST state that public 'repo' commands
+    // participate in Provider selection today. It must NOT carry
+    // any leftover pending-P6-07 / legacy-dispatcher wording.
     assert.ok(
-      /pending P6-07/.test(DOCTOR_HELP),
-      "help must explicitly mark the repo Provider-selection cutover as pending P6-07",
+      /participate in Provider selection/.test(DOCTOR_HELP),
+      "help must state that repo participates in Provider selection",
     );
     assert.ok(
-      /legacy/.test(DOCTOR_HELP),
-      "help must acknowledge the legacy repo dispatch path is still active",
+      /UNSUPPORTED_CAPABILITY/.test(DOCTOR_HELP),
+      "help must state that unsupported Provider selection returns UNSUPPORTED_CAPABILITY",
+    );
+    assert.ok(
+      !/pending P6-07/.test(DOCTOR_HELP),
+      "help must not still claim the cutover is pending P6-07",
+    );
+    assert.ok(
+      !/legacy ZRead dispatch path/.test(DOCTOR_HELP),
+      "help must not still claim the legacy ZRead dispatch path is active",
+    );
+    assert.ok(
+      !/legacy repo dispatcher/.test(DOCTOR_HELP),
+      "help must not still reference the legacy repo dispatcher",
     );
 
-    // P6-06A false-claim guard: the b14ed71 help claimed that
-    // 'repo --provider minimax' currently returns UNSUPPORTED_CAPABILITY.
-    // That is not true at this stage — the legacy dispatcher does not
-    // consult --provider and a credential-clean MiniMax selection
-    // currently returns CONFIGURATION_ERROR (Z_AI_API_KEY required).
-    // The new help must NOT carry any current-tense claim that
-    // 'repo --provider minimax' already returns UNSUPPORTED_CAPABILITY.
+    // P6-06A false-claim guard, retained: help must NOT carry a
+    // current-tense claim that 'repo --provider minimax' returns
+    // UNSUPPORTED_CAPABILITY without the surrounding cutover
+    // language. The new help frames UNSUPPORTED_CAPABILITY as the
+    // selected-Provider outcome, not as an isolated minimax fact.
     assert.ok(
       !/repo\s+--provider\s+minimax\s+returns\s+UNSUPPORTED_CAPABILITY/.test(DOCTOR_HELP),
-      "help must not claim 'repo --provider minimax' currently returns UNSUPPORTED_CAPABILITY",
-    );
-    assert.ok(
-      !/repo commands honor\s+--provider/.test(DOCTOR_HELP),
-      "help must not claim the repo commands currently honor --provider routing",
+      "help must not claim 'repo --provider minimax' currently returns UNSUPPORTED_CAPABILITY as an isolated fact",
     );
 
     // Avoid a stale hand-maintained capability list. The derived

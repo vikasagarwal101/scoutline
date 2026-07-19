@@ -33,6 +33,7 @@ import { resolveProviderId } from "./providers/selection.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS, getProviderDescriptor } from "./providers/registry.js";
 import type { ProviderDescriptor, ProviderId } from "./providers/types.js";
 import type { SearchCapability } from "./capabilities/search.js";
+import type { ExecutionDependencies } from "./lib/execution.js";
 import { visionOperationToCapability, type VisionOperation } from "./capabilities/vision.js";
 import { createRequire } from "node:module";
 
@@ -48,7 +49,8 @@ Commands:
   vision   Image and video analysis (Z.AI; MiniMax for interpret-image)
   search   Real-time web search (shared: Z.AI + MiniMax)
   read     Fetch and parse web pages (Z.AI only)
-  repo     GitHub repository exploration (Z.AI only)
+  repo     GitHub repository exploration (Provider Capability; Z.AI supports it,
+           MiniMax returns UNSUPPORTED_CAPABILITY)
   quota    Provider-aware plan usage (calls remaining, reset time)
   tools    List available MCP tools (Z.AI)
   tool     Show a tool schema (Z.AI)
@@ -60,9 +62,13 @@ Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER, then zai):
   --provider <zai|minimax>   Select the active Provider for shared capabilities
   SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
 
-Shared capabilities accept --provider. Z.AI-only commands (read, repo,
-tools, tool, call, code) carry the flag but ignore it. Quota and doctor
-report per-Provider; --provider picks the effective Provider for metadata.
+Shared capabilities accept --provider. The 'repo' command participates in
+Provider selection: Z.AI advertises and supplies the repository-exploration
+Capability; MiniMax does not advertise it, so selecting MiniMax (explicitly
+or via SCOUTLINE_PROVIDER) returns UNSUPPORTED_CAPABILITY with no fallback.
+Z.AI-only commands (read, tools, tool, call, code) carry the flag but ignore
+it. Quota and doctor report per-Provider; --provider picks the effective
+Provider for metadata.
 
 Global Options:
   --output-format <data|json|pretty|compact|markdown|refs|tty>  Output mode (default: data)
@@ -206,13 +212,21 @@ function resolveOutputMode(
  * still read `process.env` directly today; that migration is Phase 2 and
  * intentionally out of scope for this plumbing fix.
  *
- * `provider` is the parsed global `--provider` flag. Only shared Search
- * resolves/validates it; Z.AI-only command families carry it but never
+ * `provider` is the parsed global `--provider` flag. Shared Search and
+ * the P6-07 Repository commands resolve/validate it; the Z.AI-only
+ * command families (read, tools, tool, call, code) carry it but never
  * consult it. `providerDescriptors` is the injectable registry (tests
  * pass doubles; production uses the static built-in list). The shared
  * Search execution dependencies (`searchCache`, `searchSleep`,
  * `searchRandom`) default to the on-disk cache and real sleep/random in
  * production; tests inject in-memory doubles.
+ *
+ * `repositoryCache`, `repositorySleep`, and `repositoryRandom` are the
+ * analogous seams for the P6-07 Repository commands. They default to
+ * the same production values as Search (single on-disk cache, real
+ * sleep, Math.random) but stay as separate optional MainDependencies
+ * so repository tests can inject isolated in-memory doubles without
+ * touching Search state. They are not a rename of the Search seams.
  */
 interface HandlerDependencies {
   readonly invocation: CommandInvocationAdapter;
@@ -224,6 +238,9 @@ interface HandlerDependencies {
   readonly searchCache: ResponseCache;
   readonly searchSleep: (ms: number) => Promise<void>;
   readonly searchRandom: () => number;
+  readonly repositoryCache: ResponseCache;
+  readonly repositorySleep: (ms: number) => Promise<void>;
+  readonly repositoryRandom: () => number;
 }
 
 async function handleVision(
@@ -602,27 +619,101 @@ async function handleRepo(
   const command = positional[0];
   const repo = positional[1];
 
+  // Parse-level validation. Subcommand grammar and required positionals
+  // are validated BEFORE Provider resolution, capability support check,
+  // configuration check, Adapter construction, or any
+  // operation/cacheIdentity/credential/cache/transport work. The
+  // pre-dispatch `configuredSecrets(env)` redaction read in `main` is
+  // the only permitted credential-related read before this point; it is
+  // not selected-Provider resolution and is covered separately by the
+  // ordering tests.
+  let searchQuery: string | undefined;
+  let readPath: string | undefined;
+  if (command === "search") {
+    searchQuery = positional.slice(2).join(" ");
+    if (!repo || !searchQuery) {
+      throw new ValidationError(
+        "Missing repo or query",
+        "Usage: scoutline repo search <owner/repo> <query>",
+      );
+    }
+  } else if (command === "tree") {
+    if (!repo) {
+      throw new ValidationError("Missing repo", "Usage: scoutline repo tree <owner/repo>");
+    }
+  } else if (command === "read") {
+    readPath = positional[2];
+    if (!repo || !readPath) {
+      throw new ValidationError(
+        "Missing repo or path",
+        "Usage: scoutline repo read <owner/repo> <path>",
+      );
+    }
+  } else {
+    throw new ValidationError(
+      `Unknown repo command: ${command}`,
+      'Run "scoutline repo --help" for available commands',
+    );
+  }
+
+  // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
+  // explicit --provider > SCOUTLINE_PROVIDER > default zai. Selection
+  // never consults credentials (FR-003) and never branches on Provider
+  // ID; an unknown explicit/env value throws VALIDATION_ERROR here.
+  const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
+  const descriptor = getProviderDescriptor(providerId, deps.providerDescriptors);
+
+  // Capability support check BEFORE `descriptor.isConfigured`,
+  // `descriptor.create`, Adapter access, operation validation/
+  // cacheIdentity, credential use, cache, or transport. Unsupported
+  // MiniMax (explicit or environment) returns UNSUPPORTED_CAPABILITY
+  // with no fallback to Z.AI; zero selected-Provider work occurs.
+  if (!descriptor.capabilities().has("repository-exploration")) {
+    throw new UnsupportedCapabilityError(providerId, "repository-exploration");
+  }
+
+  // FR-003: selection returns the default zai even when unconfigured.
+  // Supported-but-unconfigured Z.AI surfaces a missing credential as
+  // ConfigurationError (exit 3) AFTER the support metadata check and
+  // BEFORE `descriptor.create`.
+  if (!descriptor.isConfigured(deps.env)) {
+    throw new ConfigurationError(
+      `Provider "${providerId}" is not configured. Set the required API key.`,
+    );
+  }
+
+  const adapter = descriptor.create({ env: deps.env });
+  const capability = adapter.repository;
+  // Defensive fail-closed: the descriptor advertised support but the
+  // Adapter omitted the handle. Treat as unsupported so a registry
+  // mismatch can never reach transport.
+  if (!capability) {
+    throw new UnsupportedCapabilityError(providerId, "repository-exploration");
+  }
+
+  // Shared Repository execution dependencies. The cache/sleep/random
+  // default to the same production values as Search but are kept as
+  // separate optional MainDependencies so repository tests can inject
+  // isolated in-memory doubles.
+  const executionDeps: ExecutionDependencies = {
+    cache: deps.repositoryCache,
+    sleep: deps.repositorySleep,
+    random: deps.repositoryRandom,
+  };
+
   switch (command) {
     case "search": {
-      const query = positional.slice(2).join(" ");
-      if (!repo || !query) {
-        throw new ValidationError(
-          "Missing repo or query",
-          "Usage: scoutline repo search <owner/repo> <query>",
-        );
-      }
+      const language = flags.language as "en" | "zh" | undefined;
+      const maxChars = flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined;
+      const noCache = flags["no-cache"] === true;
       return invokeCommand(
         deps.invocation,
-        (context) =>
+        () =>
           repoSearch(
             repo,
-            query,
-            {
-              language: flags.language as "en" | "zh",
-              maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
-              noCache: flags["no-cache"] === true,
-            },
-            context,
+            searchQuery as string,
+            { language, maxChars, noCache },
+            { capability, execution: executionDeps },
           ),
         outputMode,
         deps.now,
@@ -631,20 +722,16 @@ async function handleRepo(
     }
 
     case "tree": {
-      if (!repo) {
-        throw new ValidationError("Missing repo", "Usage: scoutline repo tree <owner/repo>");
-      }
+      const treePath = flags.path as string | undefined;
+      const depth = flags.depth ? parseInt(flags.depth as string, 10) : undefined;
+      const noCache = flags["no-cache"] === true;
       return invokeCommand(
         deps.invocation,
-        (context) =>
+        () =>
           repoTree(
             repo,
-            {
-              path: flags.path as string,
-              depth: flags.depth ? parseInt(flags.depth as string, 10) : undefined,
-              noCache: flags["no-cache"] === true,
-            },
-            context,
+            { path: treePath, depth, noCache },
+            { capability, execution: executionDeps },
           ),
         outputMode,
         deps.now,
@@ -653,24 +740,16 @@ async function handleRepo(
     }
 
     case "read": {
-      const path = positional[2];
-      if (!repo || !path) {
-        throw new ValidationError(
-          "Missing repo or path",
-          "Usage: scoutline repo read <owner/repo> <path>",
-        );
-      }
+      const maxChars = flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined;
+      const noCache = flags["no-cache"] === true;
       return invokeCommand(
         deps.invocation,
-        (context) =>
+        () =>
           repoRead(
             repo,
-            path,
-            {
-              maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
-              noCache: flags["no-cache"] === true,
-            },
-            context,
+            readPath as string,
+            { maxChars, noCache },
+            { capability, execution: executionDeps },
           ),
         outputMode,
         deps.now,
@@ -679,6 +758,9 @@ async function handleRepo(
     }
 
     default:
+      // Unreachable: the parse-level validation above already rejected
+      // unknown subcommands. Keep a defensive throw so the dispatch
+      // table stays total.
       throw new ValidationError(
         `Unknown repo command: ${command}`,
         'Run "scoutline repo --help" for available commands',
@@ -933,6 +1015,16 @@ export interface MainDependencies {
   readonly searchCache?: ResponseCache;
   readonly searchSleep?: (ms: number) => Promise<void>;
   readonly searchRandom?: () => number;
+  /**
+   * Injectable shared-Repository execution dependencies (P6-07).
+   * Production defaults to the same on-disk cache and real sleep/random
+   * as Search; tests inject in-memory doubles so Repository dispatch
+   * tests stay isolated from Search state. These are NOT a rename of
+   * the Search seams.
+   */
+  readonly repositoryCache?: ResponseCache;
+  readonly repositorySleep?: (ms: number) => Promise<void>;
+  readonly repositoryRandom?: () => number;
 }
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -946,6 +1038,12 @@ export async function main(
   const searchCache = dependencies.searchCache ?? defaultResponseCache;
   const searchSleep = dependencies.searchSleep ?? realSleep;
   const searchRandom = dependencies.searchRandom ?? Math.random;
+  // P6-07: Repository execution defaults to the same production values
+  // as Search but stays as separate optional MainDependencies so
+  // repository tests can inject isolated in-memory doubles.
+  const repositoryCache = dependencies.repositoryCache ?? defaultResponseCache;
+  const repositorySleep = dependencies.repositorySleep ?? realSleep;
+  const repositoryRandom = dependencies.repositoryRandom ?? Math.random;
   // Resolve configured Provider credentials from the INJECTED env (B3) so
   // redaction follows the same environment the handlers see — a secret
   // that exists only in MainDependencies.env is still redacted from output.
@@ -998,6 +1096,9 @@ export async function main(
     searchCache,
     searchSleep,
     searchRandom,
+    repositoryCache,
+    repositorySleep,
+    repositoryRandom,
   };
 
   try {

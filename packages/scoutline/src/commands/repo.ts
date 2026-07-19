@@ -1,16 +1,45 @@
 /**
- * Repo commands for GitHub repository exploration (ZRead)
+ * Repo commands — thin handlers over the Repository Explorer (P6-07,
+ * DESIGN.md §18, §11, PRD FR-080–FR-088).
  *
- * P1-05: each command returns a CommandResult instead of writing
- * directly to stdout/stderr. Validation errors are thrown and converted
- * by invokeCommand.
+ * Each handler applies parse-level defaults/validation, builds the
+ * Explorer request, and returns the normalized Explorer result as
+ * base data. The handlers own NO Provider client, raw MCP name,
+ * ZRead parser, traversal transport, cache policy, retry, or close.
+ *
+ * Provider selection, capability support, configuration, Adapter
+ * construction, and adapter.repository agreement live in
+ * `src/index.ts`. The Explorer receives a `RepositoryCapability`
+ * plus shared `ExecutionDependencies` and owns path canonicalization,
+ * BFS, maxChars projection, and result projection.
+ *
+ * Handler interface (P6-07A): mirrors the shared Search command
+ * pattern. `deps: RepoHandlerDependencies` is REQUIRED — production
+ * and direct tests cross the same compile-checked Interface. An
+ * optional trailing `CommandContext` follows when a caller wants to
+ * surface per-invocation context; the handlers do not currently read
+ * it. A `CommandContext` is NOT a valid substitute for `deps`: a
+ * direct caller who omits `deps` fails loudly with a TypeError
+ * before reaching the Explorer rather than silently degrading.
  */
 
-import { ZReadMcpClient } from "../lib/mcp-client.js";
-import { ValidationError } from "../lib/errors.js";
 import type { CommandContext, CommandResult } from "../command-invocation.js";
-import path from "node:path";
+import type { RepositoryCapability } from "../capabilities/repository.js";
+import type { ExecutionDependencies } from "../lib/execution.js";
+import { OUTPUT_MODES } from "../lib/output.js";
+import { explorerSearch, explorerReadFile, explorerTree } from "./repository-explorer.js";
+import { ValidationError } from "../lib/errors.js";
 
+// ---------------------------------------------------------------------------
+// Parse-level validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate the repository string at parse time. Preserves the
+ * existing at-least-one-slash rule and exact message so direct
+ * handler tests keep their contract. The Explorer re-runs an
+ * identical check as a defensive backstop.
+ */
 function validateRepo(repo: string): void {
   if (!repo.includes("/")) {
     throw new ValidationError(
@@ -18,6 +47,10 @@ function validateRepo(repo: string): void {
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Option and dependency types
+// ---------------------------------------------------------------------------
 
 export interface RepoSearchOptions {
   language?: "en" | "zh";
@@ -36,89 +69,32 @@ export interface RepoReadOptions {
   noCache?: boolean;
 }
 
-function truncateText(text: string, max?: number): string {
-  if (!max || max <= 0 || text.length <= max) return text;
-  return text.slice(0, max - 1).trimEnd() + "…";
+/**
+ * Dependencies injected by `src/index.ts` after Provider selection,
+ * capability support check, configuration check, Adapter
+ * construction, and adapter.repository agreement. The handlers
+ * never resolve a Provider descriptor themselves. Required — a
+ * caller that omits `deps` is malformed and fails loudly.
+ */
+export interface RepoHandlerDependencies {
+  readonly capability: RepositoryCapability;
+  readonly execution: ExecutionDependencies;
 }
 
-interface TreeSnapshot {
-  path: string;
-  structure: string;
-}
+// ---------------------------------------------------------------------------
+// Handlers — thin wrappers over the Explorer
+// ---------------------------------------------------------------------------
 
-function extractStructureBlock(structure: string): string[] {
-  const match = structure.match(/<structure>\n([\s\S]*?)\n<\/structure>/);
-  const block = match ? match[1] : structure;
-  return block
-    .split("\n")
-    .map((line) => line.replace(/\r/g, ""))
-    .filter(Boolean);
-}
-
-function extractImmediateDirectories(structure: string, basePath: string): string[] {
-  const lines = extractStructureBlock(structure);
-  const directories: string[] = [];
-
-  for (const line of lines) {
-    const match = line.match(/^([│\s]*)(├──|└──)\s(.+)$/);
-    if (!match) continue;
-    const prefix = match[1] || "";
-    const name = (match[3] || "").trim();
-    const normalizedPrefix = prefix.replace(/│/g, " ");
-    const level = Math.floor(normalizedPrefix.length / 4);
-
-    if (level !== 0) continue;
-    if (!name.endsWith("/")) continue;
-
-    const dirName = name.slice(0, -1);
-    const fullPath = basePath ? path.posix.join(basePath, dirName) : dirName;
-    directories.push(fullPath);
-  }
-
-  return directories;
-}
-
-function normalizeDirPath(value?: string): string | undefined {
-  if (!value) return undefined;
-  const trimmed = value.trim();
-  if (!trimmed || trimmed === "/" || trimmed === ".") return undefined;
-  return trimmed.replace(/^\/+/, "").replace(/\/+$/, "");
-}
-
-async function collectTreeSnapshots(
-  client: ZReadMcpClient,
-  repo: string,
-  basePath: string | undefined,
-  depth: number,
-): Promise<TreeSnapshot[]> {
-  const snapshots: TreeSnapshot[] = [];
-  const seen = new Set<string>();
-  const queue: Array<{ path: string; level: number }> = [{ path: basePath || "", level: 1 }];
-
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    const key = current.path;
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    const structure = await client.getRepoStructure(repo, current.path || undefined);
-    snapshots.push({ path: current.path || "/", structure });
-
-    if (current.level >= depth) continue;
-
-    const children = extractImmediateDirectories(structure, current.path);
-    for (const child of children) {
-      queue.push({ path: child, level: current.level + 1 });
-    }
-  }
-
-  return snapshots;
-}
-
+/**
+ * Repository Search. Validates parse-level request shape, delegates
+ * to the Explorer with the injected Repository Capability, and
+ * returns the normalized Search result as base data.
+ */
 export async function repoSearch(
   repo: string,
   query: string,
-  options: RepoSearchOptions = {},
+  options: RepoSearchOptions,
+  deps: RepoHandlerDependencies,
   _context?: CommandContext,
 ): Promise<CommandResult> {
   validateRepo(repo);
@@ -126,19 +102,25 @@ export async function repoSearch(
     throw new ValidationError('Language must be "en" or "zh"');
   }
 
-  const client = new ZReadMcpClient({ enableVision: false, noCache: options.noCache });
-  try {
-    const language = options.language || "en";
-    const results = await client.searchDoc(repo, query, language);
-    return { kind: "data", data: truncateText(results, options.maxChars) };
-  } finally {
-    await client.close().catch(() => {});
-  }
+  const result = await explorerSearch(
+    deps.capability,
+    { repository: repo, query, language: options.language },
+    { noCache: options.noCache, maxChars: options.maxChars },
+    deps.execution,
+  );
+  return { kind: "data", data: result };
 }
 
+/**
+ * Repository Tree. Validates parse-level request shape (including
+ * depth), delegates to the Explorer's BFS traversal, and returns
+ * the normalized Tree result as base data. Tree is never
+ * character-limited; `maxChars` is intentionally not accepted.
+ */
 export async function repoTree(
   repo: string,
-  options: RepoTreeOptions = {},
+  options: RepoTreeOptions,
+  deps: RepoHandlerDependencies,
   _context?: CommandContext,
 ): Promise<CommandResult> {
   validateRepo(repo);
@@ -149,50 +131,52 @@ export async function repoTree(
     }
   }
 
-  const client = new ZReadMcpClient({ enableVision: false, noCache: options.noCache });
-  try {
-    const depth = Math.max(1, Math.floor(options.depth || 1));
-    const dirPath = normalizeDirPath(options.path);
-    if (depth === 1) {
-      const structure = await client.getRepoStructure(repo, dirPath);
-      return { kind: "data", data: structure };
-    }
-
-    const snapshots = await collectTreeSnapshots(client, repo, dirPath, depth);
-    return {
-      kind: "data",
-      data: {
-        repo,
-        depth,
-        basePath: dirPath || "/",
-        snapshots,
-      },
-    };
-  } finally {
-    await client.close().catch(() => {});
-  }
+  const result = await explorerTree(
+    deps.capability,
+    { repository: repo, path: options.path, depth: options.depth },
+    { noCache: options.noCache },
+    deps.execution,
+  );
+  return { kind: "data", data: result };
 }
 
+/**
+ * Repository File read. Validates parse-level request shape,
+ * delegates to the Explorer with the injected Repository Capability,
+ * and returns the normalized File result as base data.
+ */
 export async function repoRead(
   repo: string,
   path: string,
-  options: RepoReadOptions = {},
+  options: RepoReadOptions,
+  deps: RepoHandlerDependencies,
   _context?: CommandContext,
 ): Promise<CommandResult> {
   validateRepo(repo);
 
-  const client = new ZReadMcpClient({ enableVision: false, noCache: options.noCache });
-  try {
-    const content = await client.readFile(repo, path);
-    return { kind: "data", data: truncateText(content, options.maxChars) };
-  } finally {
-    await client.close().catch(() => {});
-  }
+  const result = await explorerReadFile(
+    deps.capability,
+    { repository: repo, path },
+    { noCache: options.noCache, maxChars: options.maxChars },
+    deps.execution,
+  );
+  return { kind: "data", data: result };
 }
 
-// Help text
+// ---------------------------------------------------------------------------
+// Help
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical output-mode list for `--output-format`. Derived from the
+ * shared `OUTPUT_MODES` contract so the help text cannot drift from
+ * the accepted set. Joined with " | " for inline display under
+ * Common Options below.
+ */
+const OUTPUT_MODE_LIST = OUTPUT_MODES.join(" | ");
+
 export const REPO_HELP = `
-Repo Commands - Explore GitHub repositories using ZRead
+Repo Commands - Explore GitHub repositories (Provider Capability)
 
 Usage: scoutline repo <command> <owner/repo> [args]
 
@@ -212,6 +196,34 @@ Tree Options:
 Read Options:
   --max-chars <n>     Truncate file content to <n> chars
 
+Common Options:
+  --no-cache                 Bypass the response cache for this invocation
+  --provider <id>            Override the active Provider (zai | minimax)
+  --output-format <mode>     One of: ${OUTPUT_MODE_LIST} (default: data)
+  -O <mode>                  Alias for --output-format
+
+Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER,
+then zai):
+  - The 'repo' command participates in Provider selection.
+  - Z.AI advertises the repository-exploration Capability and supplies
+    the Adapter; selecting zai routes Search/File/Tree through it.
+  - MiniMax does NOT advertise repository-exploration. Selecting
+    minimax (explicitly or via SCOUTLINE_PROVIDER) returns
+    UNSUPPORTED_CAPABILITY with no fallback to Z.AI.
+
+Output format (intentional schema-version-1 migration):
+  - search: {schemaVersion, repository, query, language, excerpts:[{text}],
+             truncated, originalTextLength}
+  - read:   {schemaVersion, repository, path, content, truncated,
+             originalContentLength}
+  - tree:   {schemaVersion, repository, path, depth,
+             snapshots:[{repository, path, entries:[{name, path, kind}]}]}
+  Root path is the empty string "". --max-chars applies only to
+  search/read content; tree is never character-limited.
+  Text-oriented modes (compact, markdown, refs, tty) fall back to the
+  same JSON value when the command supplies no presentation override;
+  repo results never do.
+
 Examples:
   scoutline repo search facebook/react "server components"
   scoutline repo search facebook/react "server components" --language en --max-chars 2000
@@ -219,19 +231,11 @@ Examples:
   scoutline repo tree vercel/next.js --path packages --depth 2
   scoutline repo read anthropics/anthropic-sdk-python src/anthropic/client.py
   scoutline repo read facebook/react README.md --max-chars 3000
+  scoutline --provider minimax repo search owner/repo query   # UNSUPPORTED_CAPABILITY
 
 Notes:
   - Repository must be public
   - Use "owner/repo" format (e.g., "facebook/react")
   - Paths are relative to repository root
-  - Depth >1 returns structured snapshots (use --output-format pretty for readability)
-
-Output format (search):
-  Search results array
-
-Output format (tree):
-  Repository structure object
-
-Output format (read):
-  File contents
+  - Depth >= 1 returns structured snapshots; depth 1 is also structured
 `.trim();

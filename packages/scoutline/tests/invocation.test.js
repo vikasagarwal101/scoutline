@@ -679,14 +679,83 @@ describe("invokeCommand — read and repo routed through the seam (P1-05)", () =
     assert.match(parsed.error, /Invalid --extract mode/);
   });
 
+  // -------------------------------------------------------------------------
+  // P6-07A/07B: direct repo handler tests cross the SAME required
+  // Interface as production. `RepoHandlerDependencies` is required at
+  // the TypeScript level and the compiled declaration; runtime
+  // requiredness is not pinned by a native TypeError test (JavaScript
+  // ignores TS required parameters). The validation-only cases below
+  // pass the real fake-deps shape but short-circuit on validation
+  // before the Explorer is touched. The success cases prove a valid
+  // direct call returns schema-version-1 data through the same
+  // Explorer/shared-execution Interface production uses. The
+  // compile-checked contract is enforced by `npm run build`.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Build the fake RepoHandlerDependencies used by every direct repo
+   * handler test in this file. The fake capability's operations are
+   * permissive (the Explorer pre-validation has already run by the
+   * time invoke runs); each impl is supplied by the test. The
+   * execution layer is in-memory and deterministic.
+   */
+  async function makeRepoDeps({ search, readFile, listDirectory } = {}) {
+    const { RepoHandlerDependencies } = await import("../dist/commands/repo.js");
+    void RepoHandlerDependencies; // interface import is type-only; no runtime export expected.
+    const capability = {
+      search: makeFakeRepoOp("repository-search", search),
+      readFile: makeFakeRepoOp("repository-read-file", readFile),
+      listDirectory: makeFakeRepoOp("repository-list-directory", listDirectory),
+    };
+    const store = new Map();
+    const execution = {
+      cache: {
+        async get(key) {
+          return store.has(key) ? store.get(key) : null;
+        },
+        async set(key, value) {
+          store.set(key, value);
+        },
+      },
+      sleep: async () => {},
+      random: () => 0.5,
+    };
+    return { capability, execution };
+  }
+
+  /** Single fake RepositoryOperation with permissive validate/identity. */
+  function makeFakeRepoOp(kind, impl) {
+    return {
+      kind,
+      validate() {},
+      cacheIdentity(request) {
+        return {
+          provider: "zai",
+          capability: "repository-exploration",
+          operation: kind,
+          credentialFingerprint: "fake-fingerprint-fixed",
+          request,
+          legacyCandidates: [],
+        };
+      },
+      decodeCached(value) {
+        if (value && typeof value === "object" && !Array.isArray(value)) return value;
+        return null;
+      },
+      async invoke(request) {
+        if (typeof impl !== "function") {
+          throw new Error(`fake ${kind} invoke not configured`);
+        }
+        return impl(request);
+      },
+    };
+  }
+
   it("repoTree throws ValidationError on invalid repo format through the seam", async () => {
     const { repoTree } = await import("../dist/commands/repo.js");
+    const deps = await makeRepoDeps();
     const { adapter, stderr } = createRecordingAdapter();
-    const status = await invokeCommand(
-      adapter,
-      (ctx) => repoTree("invalid-format", {}, ctx),
-      "data",
-    );
+    const status = await invokeCommand(adapter, () => repoTree("invalid-format", {}, deps), "data");
     assert.strictEqual(status, 1);
     assert.strictEqual(stderr.length, 1);
     const parsed = JSON.parse(stderr[stderr.length - 1]);
@@ -697,10 +766,11 @@ describe("invokeCommand — read and repo routed through the seam (P1-05)", () =
 
   it("repoTree rejects non-positive depth through the seam", async () => {
     const { repoTree } = await import("../dist/commands/repo.js");
+    const deps = await makeRepoDeps();
     const { adapter, stderr } = createRecordingAdapter();
     const status = await invokeCommand(
       adapter,
-      (ctx) => repoTree("owner/repo", { depth: 0 }, ctx),
+      () => repoTree("owner/repo", { depth: 0 }, deps),
       "data",
     );
     assert.strictEqual(status, 1);
@@ -711,10 +781,11 @@ describe("invokeCommand — read and repo routed through the seam (P1-05)", () =
 
   it("repoSearch validation rejects an invalid language", async () => {
     const { repoSearch } = await import("../dist/commands/repo.js");
+    const deps = await makeRepoDeps();
     const { adapter, stderr } = createRecordingAdapter();
     const status = await invokeCommand(
       adapter,
-      (ctx) => repoSearch("owner/repo", "query", { language: "fr" }, ctx),
+      () => repoSearch("owner/repo", "query", { language: "fr" }, deps),
       "data",
     );
     assert.strictEqual(status, 1);
@@ -725,16 +796,87 @@ describe("invokeCommand — read and repo routed through the seam (P1-05)", () =
 
   it("repoRead throws ValidationError on invalid repo format through the seam", async () => {
     const { repoRead } = await import("../dist/commands/repo.js");
+    const deps = await makeRepoDeps();
     const { adapter, stderr } = createRecordingAdapter();
     const status = await invokeCommand(
       adapter,
-      (ctx) => repoRead("badrepo", "README.md", {}, ctx),
+      () => repoRead("badrepo", "README.md", {}, deps),
       "data",
     );
     assert.strictEqual(status, 1);
     const parsed = JSON.parse(stderr[stderr.length - 1]);
     assert.strictEqual(parsed.code, "VALIDATION_ERROR");
     assert.match(parsed.error, /Invalid repository format/);
+  });
+
+  it("repoSearch direct success returns schema-version-1 data through the seam (P6-07A)", async () => {
+    const { repoSearch } = await import("../dist/commands/repo.js");
+    const deps = await makeRepoDeps({
+      search: () => ({
+        schemaVersion: 1,
+        repository: "owner/repo",
+        query: "query",
+        language: "en",
+        excerpts: [{ text: "alpha" }],
+        truncated: false,
+        originalTextLength: "alpha".length,
+      }),
+    });
+    const { adapter, stdout } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      () => repoSearch("owner/repo", "query", {}, deps),
+      "data",
+    );
+    assert.strictEqual(status, 0);
+    const parsed = JSON.parse(stdout[0]);
+    assert.strictEqual(parsed.schemaVersion, 1);
+    assert.strictEqual(parsed.repository, "owner/repo");
+    assert.deepStrictEqual(parsed.excerpts, [{ text: "alpha" }]);
+  });
+
+  it("repoTree direct success returns schema-version-1 structured tree at depth 1 (P6-07A)", async () => {
+    const { repoTree } = await import("../dist/commands/repo.js");
+    const deps = await makeRepoDeps({
+      listDirectory: () => ({
+        repository: "owner/repo",
+        path: "",
+        entries: [{ name: "README.md", path: "README.md", kind: "file" }],
+      }),
+    });
+    const { adapter, stdout } = createRecordingAdapter();
+    const status = await invokeCommand(adapter, () => repoTree("owner/repo", {}, deps), "data");
+    assert.strictEqual(status, 0);
+    const parsed = JSON.parse(stdout[0]);
+    assert.strictEqual(parsed.schemaVersion, 1);
+    assert.strictEqual(parsed.depth, 1);
+    assert.strictEqual(parsed.snapshots.length, 1);
+    assert.strictEqual(parsed.snapshots[0].path, "");
+  });
+
+  it("repoRead direct success returns schema-version-1 file data through the seam (P6-07A)", async () => {
+    const { repoRead } = await import("../dist/commands/repo.js");
+    const deps = await makeRepoDeps({
+      readFile: () => ({
+        schemaVersion: 1,
+        repository: "owner/repo",
+        path: "README.md",
+        content: "hi",
+        truncated: false,
+        originalContentLength: 2,
+      }),
+    });
+    const { adapter, stdout } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      () => repoRead("owner/repo", "README.md", {}, deps),
+      "data",
+    );
+    assert.strictEqual(status, 0);
+    const parsed = JSON.parse(stdout[0]);
+    assert.strictEqual(parsed.schemaVersion, 1);
+    assert.strictEqual(parsed.path, "README.md");
+    assert.strictEqual(parsed.content, "hi");
   });
 });
 

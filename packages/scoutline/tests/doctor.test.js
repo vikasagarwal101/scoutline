@@ -484,26 +484,54 @@ describe("doctor diagnostics — probe mechanism and retry (P4-04)", () => {
 // Help text
 // ---------------------------------------------------------------------------
 
-describe("doctor diagnostics — help text (P4-04, P6-06)", () => {
-  it("identifies the effective Provider for shared Capabilities, states that repo participates in Provider selection, and notes MiniMax returns UNSUPPORTED_CAPABILITY", () => {
+describe("doctor diagnostics — help text (P4-04, P6-06A)", () => {
+  it("states Z.AI advertises and supplies repository-exploration, MiniMax advertises and supplies neither, and the repo command cutover is pending P6-07 without claiming current runtime behavior", () => {
     assert.ok(/doctor/i.test(DOCTOR_HELP), "mentions doctor");
     assert.ok(/effective/i.test(DOCTOR_HELP), "mentions effective Provider");
-    // P6-06: help must stop claiming repository is outside Provider
-    // selection. State plainly that repo participates in selection
-    // and `repo --provider minimax` returns UNSUPPORTED_CAPABILITY
-    // because MiniMax does not advertise repository-exploration.
+
+    // P6-06A: help must state the descriptor-level facts that hold
+    // today. Z.AI advertises repository-exploration AND the Adapter
+    // supplies it; MiniMax does neither. These are registered
+    // metadata facts, not runtime claims about the public repo
+    // dispatcher.
     assert.ok(
-      /[Rr]epository(?: exploration)? participates in [Pp]rovider selection/.test(DOCTOR_HELP),
-      "help must state repo participates in Provider selection",
+      /Z\.AI descriptor\s+metadata advertises repository-exploration/.test(DOCTOR_HELP) ||
+        /Z\.AI advertises repository-exploration/.test(DOCTOR_HELP),
+      "help must state Z.AI advertises repository-exploration at the descriptor level",
     );
     assert.ok(
-      /UNSUPPORTED_CAPABILITY/.test(DOCTOR_HELP),
-      "help must mention UNSUPPORTED_CAPABILITY for repo --provider minimax",
+      /MiniMax advertises and supplies neither/.test(DOCTOR_HELP),
+      "help must state MiniMax advertises and supplies neither repository-exploration",
+    );
+
+    // P6-06A critical boundary: help MUST explicitly mark the repo
+    // command Provider-selection cutover as pending P6-07. It must
+    // NOT claim the cutover has already happened.
+    assert.ok(
+      /pending P6-07/.test(DOCTOR_HELP),
+      "help must explicitly mark the repo Provider-selection cutover as pending P6-07",
     );
     assert.ok(
-      /MiniMax does not\s+advertise repository-exploration/.test(DOCTOR_HELP),
-      "help must explain MiniMax does not advertise repository-exploration",
+      /legacy/.test(DOCTOR_HELP),
+      "help must acknowledge the legacy repo dispatch path is still active",
     );
+
+    // P6-06A false-claim guard: the b14ed71 help claimed that
+    // 'repo --provider minimax' currently returns UNSUPPORTED_CAPABILITY.
+    // That is not true at this stage — the legacy dispatcher does not
+    // consult --provider and a credential-clean MiniMax selection
+    // currently returns CONFIGURATION_ERROR (Z_AI_API_KEY required).
+    // The new help must NOT carry any current-tense claim that
+    // 'repo --provider minimax' already returns UNSUPPORTED_CAPABILITY.
+    assert.ok(
+      !/repo\s+--provider\s+minimax\s+returns\s+UNSUPPORTED_CAPABILITY/.test(DOCTOR_HELP),
+      "help must not claim 'repo --provider minimax' currently returns UNSUPPORTED_CAPABILITY",
+    );
+    assert.ok(
+      !/repo commands honor\s+--provider/.test(DOCTOR_HELP),
+      "help must not claim the repo commands currently honor --provider routing",
+    );
+
     // Avoid a stale hand-maintained capability list. The derived
     // Z.AI-only values come from descriptors, so help must NOT carry
     // a parallel hand-curated list of "reader, raw-provider-tools,

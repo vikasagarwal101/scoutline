@@ -238,14 +238,21 @@ Z.AI connectivity is probed through MCP tool discovery; MiniMax
 connectivity through a single raw quota probe that authenticates
 without a generative request.
 
-Repository exploration participates in Provider selection. The repo
-commands honor --provider / SCOUTLINE_PROVIDER like every other
-Capability-based command: selecting a Provider that does not
-advertise repository-exploration fails closed with
-UNSUPPORTED_CAPABILITY before credential resolution, transport
-construction, or any fallback. In particular, 'repo --provider
-minimax' returns UNSUPPORTED_CAPABILITY because MiniMax does not
-advertise repository-exploration; Z.AI advertises and supplies it.
+Repository exploration is a Provider Capability. Z.AI descriptor
+metadata advertises repository-exploration and the Z.AI Adapter
+supplies it; MiniMax advertises and supplies neither. The
+sharedCapabilities and zaiOnlyCapabilities fields above reflect that
+descriptor state (repository-exploration currently appears in
+zaiOnlyCapabilities).
+
+Public 'repo' commands still use the legacy ZRead dispatch path at
+this stage. Provider-selection routing for 'repo' — honoring
+--provider / SCOUTLINE_PROVIDER, failing closed with
+UNSUPPORTED_CAPABILITY when the selected Provider does not advertise
+repository-exploration, and replacing the direct ZReadMcpClient
+construction with the descriptor/Adapter path — is pending P6-07.
+Until that cutover lands, explicit --provider selection is not
+consulted by the legacy repo dispatcher.
 
 Options:
   --no-tools   Skip every connectivity probe (metadata-only). Under

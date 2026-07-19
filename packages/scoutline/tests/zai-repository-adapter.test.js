@@ -249,18 +249,17 @@ before(async () => {
 });
 
 // ===========================================================================
-// Descriptor metadata is unchanged (P6-04 ticket: do NOT advertise
-// repository support / add registry metadata).
+// Descriptor metadata advertises repository support (P6-06 ticket:
+// register repository capability metadata). P6-04 introduced the
+// Adapter handle; P6-06 flips descriptor capabilities() so Provider
+// selection and Doctor inventory derive from a single source of truth.
 // ===========================================================================
 
-describe("Z.AI Repository Adapter — descriptor metadata (P6-04)", () => {
-  it("capabilities() does not advertise 'repository-exploration'", () => {
+describe("Z.AI Repository Adapter — descriptor metadata (P6-06)", () => {
+  it("capabilities() advertises 'repository-exploration'", () => {
     const descriptor = createZaiDescriptor();
     const caps = descriptor.capabilities();
-    assert.ok(
-      !caps.has("repository-exploration"),
-      "Repository must NOT be advertised in this ticket",
-    );
+    assert.ok(caps.has("repository-exploration"), "Repository must be advertised after P6-06");
   });
 
   it("descriptor creation is side-effect-free (no transport, no I/O)", async () => {

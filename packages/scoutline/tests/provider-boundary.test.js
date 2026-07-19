@@ -46,6 +46,9 @@ const EXECUTION_FILE = path.join(SRC_DIR, "lib", "execution.ts");
 const SEARCH_COMMAND_FILE = path.join(COMMANDS_DIR, "search.ts");
 const PACKAGE_JSON = path.join(PACKAGE_ROOT, "package.json");
 const EXPECTED_SDK_FILE = path.join(SRC_DIR, "providers", "minimax", "sdk-client.ts");
+const REPOSITORY_EXPLORER_FILE = path.join(COMMANDS_DIR, "repository-explorer.ts");
+const DOCTOR_COMMAND_FILE = path.join(COMMANDS_DIR, "doctor.ts");
+const DIAGNOSTICS_CAPABILITY_FILE = path.join(CAPABILITIES_DIR, "diagnostics.ts");
 
 async function listTsFiles(dir) {
   let entries;
@@ -360,7 +363,10 @@ describe("Production reachability — every Phase 2 Module is wired into the shi
     { module: "src/command-invocation.ts" },
     // Only reachable through bin/scoutline.js's dynamic import of
     // `dist/node-command-invocation-adapter.js`. Check both forms.
-    { module: "src/node-command-invocation-adapter.ts", alt: "bin/node-command-invocation-adapter.js" },
+    {
+      module: "src/node-command-invocation-adapter.ts",
+      alt: "bin/node-command-invocation-adapter.js",
+    },
   ];
 
   it("src/index.ts and bin/scoutline.js collectively reach every Phase 2 Module", async () => {
@@ -383,6 +389,178 @@ describe("Production reachability — every Phase 2 Module is wired into the shi
           `(inIndex=${inIndex}, inBin=${inBin})`,
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Repository Explorer boundary (P6-06, ARCHITECTURE.md §2, NFR-004).
+//
+// `commands/repository-explorer.ts` is the provider-neutral consumer
+// of the Repository Capability contract. It MUST NOT import any
+// concrete Provider client, Adapter implementation, MCP/UTCP raw
+// tool name, or Provider response type. Provider-specific facts
+// (ZRead grammar, credentials, transports) remain Adapter-internal.
+//
+// LEGACY DISPATCH (commands/repo.ts): the legacy `repo` command still
+// owns its direct `ZReadMcpClient` import and dispatches through it
+// at runtime. P6-07 exclusively owns the dispatch cutover that
+// replaces it with the new Explorer path; P6-06 deliberately does
+// NOT touch `commands/repo.ts` and does NOT write an assertion that
+// could only pass by prematurely doing P6-07. The explicit
+// legacy-still-present assertion below documents the temporary
+// exception: the moment P6-07 removes the `ZReadMcpClient` import,
+// that assertion flips to assert its absence.
+// ---------------------------------------------------------------------------
+
+describe("Repository Explorer: imports no concrete Provider transport (P6-06)", () => {
+  /**
+   * Provider-only symbols that must NEVER appear in the Explorer
+   * source. The Explorer consumes a `RepositoryCapability`
+   * injected through `executeRepositoryOperation`; it never reaches
+   * into a Provider Adapter, raw tool name, or response type.
+   */
+  const FORBIDDEN_PROVIDER_SYMBOLS = [
+    "ZaiMcpClient",
+    "ZReadMcpClient",
+    "ZaiAdapterClientPort",
+    "ZaiAdapterDependencies",
+    "ZaiMcpClientOptions",
+    "WebSearchResult",
+    "LegacyZaiSearchParams",
+    "LegacySearchClientPort",
+    "MiniMaxSdkPort",
+    "MiniMaxSdkConstructor",
+    "MiniMaxAdapterDependencies",
+    "createZaiDescriptor",
+    "createMiniMaxDescriptor",
+    "createZaiRepositoryCapability",
+  ];
+  /**
+   * Module specifiers that the Explorer MUST NOT import. Concrete
+   * Adapter Modules, the production registry (which transitively
+   * loads the Adapters), the MCP/UTCP clients, and the raw-tool
+   * namespace library all stay out.
+   */
+  const FORBIDDEN_IMPORTS = [
+    "../providers/zai/adapter.js",
+    "../providers/zai/repository.js",
+    "../providers/minimax/adapter.js",
+    "../providers/registry.js",
+    "../lib/mcp-client.js",
+    "../lib/mcp-config.js",
+    "@utcp/sdk",
+    "@utcp/mcp",
+    "@utcp/code-mode",
+    "mmx-cli",
+  ];
+
+  it("Repository Explorer source contains no Provider client, Adapter, or response symbol", async () => {
+    const source = await fs.readFile(REPOSITORY_EXPLORER_FILE, "utf8");
+    const hits = FORBIDDEN_PROVIDER_SYMBOLS.filter((sym) =>
+      new RegExp(`\\b${sym}\\b`).test(source),
+    );
+    assert.deepStrictEqual(
+      hits,
+      [],
+      `src/commands/repository-explorer.ts must not reference Provider-only symbols: ${hits.join(", ")}`,
+    );
+  });
+
+  it("Repository Explorer does not import a concrete Adapter, registry, or transport Module", async () => {
+    const source = await fs.readFile(REPOSITORY_EXPLORER_FILE, "utf8");
+    const imports = extractImports(source);
+    const hits = imports.filter((spec) =>
+      FORBIDDEN_IMPORTS.some((bad) => spec === bad || spec.startsWith(bad)),
+    );
+    assert.deepStrictEqual(
+      hits,
+      [],
+      `src/commands/repository-explorer.ts must not import Provider Modules: ${hits.join(", ")}`,
+    );
+  });
+
+  it("Doctor command stays free of Provider transport imports (P6-06 derivation path)", async () => {
+    // The Doctor command now derives sharedCapabilities and
+    // zaiOnlyCapabilities from descriptors passed through deps.
+    // It MUST NOT reach into a concrete Adapter Module, the
+    // production registry (which transitively loads Adapters), or
+    // any transport layer.
+    const source = await fs.readFile(DOCTOR_COMMAND_FILE, "utf8");
+    const imports = extractImports(source);
+    const forbidden = [
+      "../providers/zai/adapter.js",
+      "../providers/zai/repository.js",
+      "../providers/minimax/adapter.js",
+      "../providers/registry.js",
+      "../lib/mcp-client.js",
+      "../lib/mcp-config.js",
+      "@utcp/sdk",
+      "@utcp/mcp",
+      "@utcp/code-mode",
+      "mmx-cli",
+    ];
+    const hits = imports.filter((spec) =>
+      forbidden.some((bad) => spec === bad || spec.startsWith(bad)),
+    );
+    assert.deepStrictEqual(
+      hits,
+      [],
+      `src/commands/doctor.ts must not import Provider transports or the production registry: ${hits.join(", ")}`,
+    );
+  });
+
+  it("Diagnostics Capability Module stays Provider-neutral (P6-06)", async () => {
+    // diagnostics.ts is allowed to import the `ProviderDescriptor`
+    // type and `ProviderCapability` from providers/types.js plus
+    // shared errors. P6-06 removed the previous vision-operation and
+    // MiniMax vision-conformance imports; the inventory is now
+    // descriptor-derived. The Module MUST NOT import any concrete
+    // Adapter, the production registry (which transitively loads
+    // Adapters), a Provider transport, or any vision-conformance
+    // registry — derivation goes through the descriptors passed in.
+    const source = await fs.readFile(DIAGNOSTICS_CAPABILITY_FILE, "utf8");
+    const imports = extractImports(source);
+    const forbidden = [
+      "../providers/zai/adapter.js",
+      "../providers/zai/repository.js",
+      "../providers/minimax/adapter.js",
+      "../providers/minimax/vision-conformance.js",
+      "../providers/registry.js",
+      "../lib/mcp-client.js",
+      "../lib/mcp-config.js",
+      "@utcp/sdk",
+      "@utcp/mcp",
+      "@utcp/code-mode",
+      "mmx-cli",
+    ];
+    const hits = imports.filter((spec) =>
+      forbidden.some((bad) => spec === bad || spec.startsWith(bad)),
+    );
+    assert.deepStrictEqual(
+      hits,
+      [],
+      `src/capabilities/diagnostics.ts must not import Provider transports, adapters, or vision-conformance: ${hits.join(", ")}`,
+    );
+  });
+
+  it("commands/repo.ts legacy ZReadMcpClient dispatch is still active until P6-07 cuts it over", async () => {
+    // P6-06 deliberately does NOT touch commands/repo.ts and does NOT
+    // write an assertion that requires P6-07's dispatch cutover to
+    // have landed. The legacy `repo` command still owns its direct
+    // `ZReadMcpClient` import and dispatches through it at runtime;
+    // the new Explorer-based dispatch path is wired by P6-07 only.
+    // This assertion locks the temporary exception so the cutover
+    // cannot drift away silently: when P6-07 removes the import, the
+    // assertion must be flipped to assert absence.
+    const source = await fs.readFile(path.join(COMMANDS_DIR, "repo.ts"), "utf8");
+    assert.ok(
+      /ZReadMcpClient/.test(source),
+      "commands/repo.ts retains the legacy ZReadMcpClient import (and dispatch) until P6-07",
+    );
+    assert.ok(
+      /new ZReadMcpClient/.test(source),
+      "commands/repo.ts still constructs ZReadMcpClient directly (legacy dispatch active)",
+    );
   });
 });
 

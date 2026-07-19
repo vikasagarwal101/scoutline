@@ -31,11 +31,16 @@
  *   - implements Search, File, and Directory Listing only. Tree
  *     projection, BFS, depth/path policy, and `--max-chars` all
  *     belong to the Explorer layer (P6-05+) or the command layer.
- *   - does NOT advertise Repository support on the descriptor
- *     metadata. `createZaiDescriptor.capabilities()` is unchanged;
- *     this module is reachable through `ProviderAdapter.repository`
- *     for tests and future Explorer integration, but no registry,
- *     selection, or command cutover is performed in this ticket.
+ *   - descriptor metadata sequencing: P6-04 introduced this Adapter
+ *     handle and wired it through `ProviderAdapter.repository`
+ *     WITHOUT advertising `repository-exploration` on
+ *     `createZaiDescriptor.capabilities()`; P6-06 then flipped the
+ *     descriptor to advertise `repository-exploration` so Provider
+ *     selection and Doctor inventory derive from a single source of
+ *     truth. This module itself still owns no registry, selection,
+ *     or command cutover — `commands/repo.ts` continues to dispatch
+ *     through the legacy `ZReadMcpClient` until P6-07 exclusively
+ *     owns that dispatch cutover.
  */
 
 import crypto from "node:crypto";
@@ -953,10 +958,17 @@ function normalizeMcpInvokeError(error: unknown): Error {
 
 // ---------------------------------------------------------------------------
 // Capability factory — wired into `createZaiDescriptor().create()` so the
-// implementation is production-reachable through the adapter object even
-// though the descriptor's `capabilities()` set does NOT yet advertise
-// `repository-exploration`. The Explorer layer (P6-05+) is the first
-// external consumer.
+// implementation is production-reachable through the adapter object.
+// Historical sequencing: P6-04 introduced the Adapter handle and the
+// `ProviderAdapter.repository` slot WITHOUT advertising
+// `repository-exploration` on the descriptor; P6-06 then flipped
+// `createZaiDescriptor.capabilities()` to advertise
+// `repository-exploration` so Provider selection and Doctor inventory
+// derive from a single source of truth. This module still owns no
+// registry, selection, or command cutover — the Explorer (P6-05) is
+// the first external consumer of the Capability, and `commands/repo.ts`
+// continues to dispatch through the legacy `ZReadMcpClient` until P6-07
+// exclusively owns that dispatch cutover.
 // ---------------------------------------------------------------------------
 
 /**

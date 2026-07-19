@@ -25,8 +25,8 @@ import type {
   ProviderDiagnostic,
 } from "../capabilities/diagnostics.js";
 import {
-  SHARED_CAPABILITIES,
-  ZAI_ONLY_CAPABILITIES,
+  deriveSharedCapabilities,
+  deriveZaiOnlyCapabilities,
   diagnosticErrorFromError,
 } from "../capabilities/diagnostics.js";
 import { executeProviderOperation } from "../lib/execution.js";
@@ -91,12 +91,14 @@ async function probeProvider(
 }
 
 /**
- * Build a schema-version-1 {@link DiagnosticsReport}. Report metadata is
- * built from static descriptors without constructing any Adapter. Under
- * `--no-tools` the command returns after metadata + configured-state
- * evaluation. Otherwise each configured Provider is probed through
- * shared execution with settled collection, preserving registry order
- * and normalized redacted failures.
+ * Build a schema-version-1 {@link DiagnosticsReport}. Inventory
+ * (`sharedCapabilities`, `zaiOnlyCapabilities`) is derived purely from
+ * `deps.descriptors` — no descriptor.create(), no transport, no
+ * production registry import. Under `--no-tools` the command returns
+ * after metadata + configured-state evaluation. Otherwise each
+ * configured Provider is probed through shared execution with settled
+ * collection, preserving registry order and normalized redacted
+ * failures.
  */
 export async function buildDiagnosticsReport(
   deps: DoctorDiagnosticsDependencies,
@@ -120,8 +122,8 @@ export async function buildDiagnosticsReport(
   return {
     schemaVersion: 1,
     effectiveProvider: deps.effectiveProvider,
-    sharedCapabilities: SHARED_CAPABILITIES,
-    zaiOnlyCapabilities: ZAI_ONLY_CAPABILITIES,
+    sharedCapabilities: deriveSharedCapabilities(deps.descriptors),
+    zaiOnlyCapabilities: deriveZaiOnlyCapabilities(deps.descriptors),
     node: {
       version: process.version,
       visionMcpCompatible: nodeMajor() >= 22,
@@ -227,18 +229,23 @@ Reports a schema-version-1 diagnostics report listing every built-in
 Provider (zai, minimax) with its configured state, declared
 Capabilities, and connectivity status. The effective Provider (resolved
 from --provider, SCOUTLINE_PROVIDER, or the default zai) is the
-Provider that serves the shared Capabilities:
-
-  search, vision.interpret-image, quota, diagnostics
+Provider that serves the shared Capabilities shared across every
+built-in descriptor. The sharedCapabilities and zaiOnlyCapabilities
+fields are derived from descriptor metadata, so they always reflect
+the descriptors passed to this command.
 
 Z.AI connectivity is probed through MCP tool discovery; MiniMax
 connectivity through a single raw quota probe that authenticates
 without a generative request.
 
-The following Capabilities are Z.AI-only in the base release and are
-not selected by the effective Provider for other families:
-  reader, repository-exploration, raw-provider-tools, code-mode,
-  image-diff, video-analysis
+Repository exploration participates in Provider selection. The repo
+commands honor --provider / SCOUTLINE_PROVIDER like every other
+Capability-based command: selecting a Provider that does not
+advertise repository-exploration fails closed with
+UNSUPPORTED_CAPABILITY before credential resolution, transport
+construction, or any fallback. In particular, 'repo --provider
+minimax' returns UNSUPPORTED_CAPABILITY because MiniMax does not
+advertise repository-exploration; Z.AI advertises and supplies it.
 
 Options:
   --no-tools   Skip every connectivity probe (metadata-only). Under
@@ -249,7 +256,7 @@ Options:
 Exit codes:
   0  All configured probes succeeded (or only tools-disabled skips).
   1  The effective Provider is unconfigured or any configured probe
-     failed; successful entries are still reported.
+      failed; successful entries are still reported.
 
 Examples:
   scoutline doctor                 # full diagnostics

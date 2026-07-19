@@ -27,8 +27,9 @@ import { MINIMAX_VISION_MAPPING_REVISIONS } from "../dist/providers/minimax/visi
 import { MINIMAX_VISION_ATTESTATIONS } from "../dist/providers/minimax/vision-attestations.js";
 import { MINIMAX_VISION_MAPPINGS } from "../dist/providers/minimax/vision-mappings.generated.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
+import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { VISION_HELP } from "../dist/commands/vision.js";
-import { SHARED_CAPABILITIES } from "../dist/capabilities/diagnostics.js";
+import { deriveSharedCapabilities } from "../dist/capabilities/diagnostics.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_FILE = resolve(__dirname, "fixtures", "vision", "specialized-cases.json");
@@ -172,13 +173,30 @@ test("Vision help and shared diagnostics capabilities project registry support",
     assert.ok(VISION_HELP.includes(helpNeedleFor(op)));
   }
   assert.ok(VISION_HELP.includes("(Z.AI only)"));
-  assert.deepEqual([...SHARED_CAPABILITIES], [
-    "search",
-    "vision.interpret-image",
-    "quota",
-    "diagnostics",
-    ...[...ATTESTED_OPS].map((op) => `vision.${op}`),
-  ]);
+  // P6-06: Doctor's sharedCapabilities is now derived from descriptor
+  // intersection (Z.AI ∩ MiniMax, in Z.AI's declared capability order)
+  // rather than a hand-maintained base list. The derived list MUST
+  // contain every capability advertised by both built-ins — including
+  // any specialized op that is currently attested by MiniMax — and
+  // MUST NOT contain capabilities MiniMax lacks (e.g. vision.diff,
+  // vision.video, repository-exploration).
+  const shared = deriveSharedCapabilities([createZaiDescriptor(), createMiniMaxDescriptor()]);
+  // Base capabilities both Providers advertise.
+  for (const cap of ["search", "vision.interpret-image", "quota", "diagnostics"]) {
+    assert.ok(shared.includes(cap), `shared includes ${cap}`);
+  }
+  // Specialized ops appear iff attested by MiniMax (Z.AI always has them).
+  for (const op of SPECIALIZED_VISION_OPERATIONS) {
+    assert.equal(
+      shared.includes(`vision.${op}`),
+      ATTESTED_OPS.has(op),
+      `vision.${op} in shared iff attested`,
+    );
+  }
+  // Capabilities MiniMax does not advertise stay out of shared.
+  for (const cap of ["vision.diff", "vision.video", "repository-exploration"]) {
+    assert.ok(!shared.includes(cap), `shared excludes ${cap}`);
+  }
 });
 
 test("compiled attestation manifest matches the attested set", () => {
@@ -231,7 +249,10 @@ test("registry validation rejects missing, unknown, and forbidden operation keys
   ];
   for (const { label, registry, pattern } of cases) {
     const errors = validateConformanceRegistry(registry);
-    assert.ok(errors.some((error) => pattern.test(error)), `${label}: ${errors.join("; ")}`);
+    assert.ok(
+      errors.some((error) => pattern.test(error)),
+      `${label}: ${errors.join("; ")}`,
+    );
   }
 });
 
@@ -250,7 +271,10 @@ test("registry validation rejects malformed entry fields", () => {
       chart: { ...MINIMAX_VISION_CONFORMANCE_REGISTRY.chart, ...override },
     };
     const errors = validateConformanceRegistry(registry);
-    assert.ok(errors.some((error) => pattern.test(error)), `${label}: ${errors.join("; ")}`);
+    assert.ok(
+      errors.some((error) => pattern.test(error)),
+      `${label}: ${errors.join("; ")}`,
+    );
   }
 });
 
@@ -262,7 +286,10 @@ test("attestation validation rejects malformed identity fields", () => {
     ["implementation", { implementationId: "" }],
   ];
   for (const [label, override] of cases) {
-    assert.ok(validateAttestation({ ...makeFakeAttestation("chart"), ...override }).length > 0, label);
+    assert.ok(
+      validateAttestation({ ...makeFakeAttestation("chart"), ...override }).length > 0,
+      label,
+    );
   }
 });
 
@@ -273,7 +300,10 @@ test("attestation validation rejects malformed evidence", () => {
     ["failed assertion", { assertions: [{ id: "chart.trend", passed: false }] }],
   ];
   for (const [label, override] of cases) {
-    assert.ok(validateAttestation({ ...makeFakeAttestation("chart"), ...override }).length > 0, label);
+    assert.ok(
+      validateAttestation({ ...makeFakeAttestation("chart"), ...override }).length > 0,
+      label,
+    );
   }
 });
 
@@ -389,7 +419,10 @@ test("each promoted mapping composes its prompt and passes offline semantics", (
     assert.ok(prompt.toLowerCase().includes(hintMarkers[op]));
     const text = mapping.normalizeResult({ content: craftSatisfyingText(caseData) });
     const results = evaluateAssertions(caseData.assertions, text);
-    assert.ok(results.every((result) => result.passed), `${op}: ${JSON.stringify(results)}`);
+    assert.ok(
+      results.every((result) => result.passed),
+      `${op}: ${JSON.stringify(results)}`,
+    );
   }
 });
 

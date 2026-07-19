@@ -42,6 +42,12 @@ export type ProviderId = (typeof PROVIDER_IDS)[number];
  * declares the full union so descriptor metadata stays forward-compatible
  * with Phase 3+ Adapters, but only `search` is wired into the
  * `ProviderAdapter` shape today.
+ *
+ * P6-06 adds `repository-exploration`: a descriptor advertises it iff
+ * the Adapter it creates supplies `adapter.repository`. Z.AI advertises
+ * it (P6-04 supplies the handle); MiniMax does not and remains free of
+ * repository credential, transport, and fallback work until it ships
+ * its own Adapter and conformance fixtures.
  */
 export type ProviderCapability =
   | "search"
@@ -54,7 +60,8 @@ export type ProviderCapability =
   | "vision.diff"
   | "vision.video"
   | "quota"
-  | "diagnostics";
+  | "diagnostics"
+  | "repository-exploration";
 
 // ---------------------------------------------------------------------------
 // Provider context and Adapter
@@ -73,10 +80,11 @@ export interface ProviderContext {
  * Provider Adapter contract (Phase 3 shape). Each Capability that the
  * Provider supports becomes a property on this interface. Phase 4 adds
  * `quota?: QuotaCapability` and `diagnostics?: DiagnosticsCapability`.
- * Phase 6 adds `repository?: RepositoryCapability` (P6-04); descriptor
- * capability metadata is the authoritative advertisement — the slot
- * here is only the implementation handle used by tests and the future
- * Explorer layer.
+ * Phase 6 adds `repository?: RepositoryCapability` (P6-04), and P6-06
+ * advertises `repository-exploration` in descriptor metadata so
+ * Provider selection and Doctor inventory derive from a single source
+ * of truth — the slot here is the implementation handle the future
+ * Explorer layer (P6-05+) reaches through.
  */
 export interface ProviderAdapter {
   readonly id: ProviderId;

@@ -701,6 +701,12 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
       return isZaiConfigured(env);
     },
     capabilities(): ReadonlySet<ProviderCapability> {
+      // P6-06: advertise `repository-exploration`. The Adapter has
+      // supplied `adapter.repository` since P6-04; descriptor
+      // metadata now mirrors that fact so Provider selection and
+      // Doctor inventory derive from a single source of truth.
+      // MiniMax stays free of repository-exploration until it ships
+      // its own Adapter and conformance fixtures.
       return new Set<ProviderCapability>([
         "search",
         "vision.interpret-image",
@@ -713,6 +719,7 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
         "vision.video",
         "quota",
         "diagnostics",
+        "repository-exploration",
       ]);
     },
     create(context: ProviderContext): ProviderAdapter {
@@ -732,13 +739,12 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
       });
       // P6-04: wire the Repository Capability so tests and the future
       // Explorer layer (P6-05+) can reach the implementation through
-      // `adapter.repository`. The descriptor's `capabilities()` set is
-      // intentionally NOT updated in this ticket — Repository support is
-      // NOT yet advertised. The Explorer layer that consumes this slot
-      // will be the first external consumer. P6-04A forwards the
-      // optional `repositoryCloseTimeoutMs` test seam; production
-      // leaves it undefined and the capability uses the documented
-      // 2000 ms default.
+      // `adapter.repository`. P6-06 advertises
+      // `repository-exploration` in `capabilities()` so Provider
+      // selection and Doctor inventory derive from a single source of
+      // truth. P6-04A forwards the optional `repositoryCloseTimeoutMs`
+      // test seam; production leaves it undefined and the capability
+      // uses the documented 2000 ms default.
       const repository = createZaiRepositoryCapability({
         env: context.env,
         clientFactory,

@@ -325,6 +325,194 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Descriptor ↔ Adapter repository-exploration agreement (P6-06).
+//
+// A descriptor advertises `repository-exploration` iff the Adapter it
+// creates supplies `adapter.repository`. Locking both directions keeps
+// descriptor metadata honest: a Provider cannot claim repository
+// support without the implementation handle, and cannot silently ship
+// an Adapter handle without advertising the capability. `create()`
+// stays side-effect-free — verified through injected transport spies,
+// not timing heuristics.
+// ---------------------------------------------------------------------------
+
+describe("Descriptor ↔ Adapter repository-exploration agreement (P6-06)", () => {
+  /**
+   * Build a Z.AI descriptor whose `clientFactory` increments a spy
+   * counter every time it is called. Production passes this factory
+   * to search/vision/diagnostics/repository capabilities; they MUST
+   * only invoke it inside Capability.invoke, never inside `create()`.
+   * Returns `{ descriptor, calls }` so the test can assert zero
+   * transport constructions after the agreement check.
+   */
+  function makeSpiedZaiDescriptor() {
+    const calls = { clientFactory: 0 };
+    const descriptor = createZaiDescriptor({
+      clientFactory: () => {
+        calls.clientFactory += 1;
+        return {
+          async callToolRaw() {
+            throw new Error("clientFactory must not be invoked during create()");
+          },
+          async listTools() {
+            throw new Error("clientFactory must not be invoked during create()");
+          },
+          async close() {},
+        };
+      },
+    });
+    return { descriptor, calls };
+  }
+
+  /**
+   * Build a MiniMax descriptor whose `sdkConstructor` and quota
+   * transport are spy counters. Every capability the MiniMax Adapter
+   * constructs (search, vision, quota, diagnostics) carries these
+   * spies through to the eventual transport; none of them MUST fire
+   * during `create()`.
+   */
+  function makeSpiedMiniMaxDescriptor() {
+    const calls = { sdkConstructor: 0, quotaFetch: 0, quotaSetTimeout: 0, quotaClearTimeout: 0 };
+    const descriptor = createMiniMaxDescriptor({
+      sdkConstructor: function SpySdk() {
+        calls.sdkConstructor += 1;
+        return {
+          search: {
+            async query() {
+              throw new Error("sdk must not run during create()");
+            },
+          },
+          vision: {
+            async describe() {
+              throw new Error("sdk must not run during create()");
+            },
+          },
+        };
+      },
+      quotaFetch: async () => {
+        calls.quotaFetch += 1;
+        throw new Error("quotaFetch must not run during create()");
+      },
+      quotaSetTimeout: () => {
+        calls.quotaSetTimeout += 1;
+        return 0;
+      },
+      quotaClearTimeout: () => {
+        calls.quotaClearTimeout += 1;
+      },
+    });
+    return { descriptor, calls };
+  }
+
+  it("Z.AI advertises repository-exploration and the Adapter supplies `repository`", () => {
+    const { descriptor, calls } = makeSpiedZaiDescriptor();
+    const caps = descriptor.capabilities();
+    assert.strictEqual(
+      caps.has("repository-exploration"),
+      true,
+      "Z.AI descriptor must advertise repository-exploration",
+    );
+    const adapter = descriptor.create({ env: {} });
+    assert.strictEqual(
+      adapter.repository !== undefined,
+      true,
+      "Z.AI Adapter must supply adapter.repository",
+    );
+    // `create()` is side-effect-free: the transport factory is
+    // captured but never invoked.
+    assert.strictEqual(
+      calls.clientFactory,
+      0,
+      "Z.AI clientFactory must not be invoked during descriptor.create()",
+    );
+  });
+
+  it("MiniMax does NOT advertise repository-exploration and the Adapter supplies no `repository`", () => {
+    const { descriptor, calls } = makeSpiedMiniMaxDescriptor();
+    const caps = descriptor.capabilities();
+    assert.strictEqual(
+      caps.has("repository-exploration"),
+      false,
+      "MiniMax descriptor must NOT advertise repository-exploration",
+    );
+    const adapter = descriptor.create({ env: {} });
+    assert.strictEqual(
+      adapter.repository,
+      undefined,
+      "MiniMax Adapter must NOT supply adapter.repository",
+    );
+    // `create()` constructs zero SDK and zero quota transport. MiniMax
+    // must remain free of repository credential/transport/fallback
+    // work; this assertion locks that no transport is built eagerly.
+    assert.strictEqual(
+      calls.sdkConstructor,
+      0,
+      "MiniMax sdkConstructor must not run during create()",
+    );
+    assert.strictEqual(calls.quotaFetch, 0, "MiniMax quotaFetch must not run during create()");
+    assert.strictEqual(
+      calls.quotaSetTimeout,
+      0,
+      "MiniMax quotaSetTimeout must not run during create()",
+    );
+    assert.strictEqual(
+      calls.quotaClearTimeout,
+      0,
+      "MiniMax quotaClearTimeout must not run during create()",
+    );
+  });
+
+  it("repository-exploration is advertised IFF the Adapter supplies repository, for every built-in", () => {
+    const builtIns = [createZaiDescriptor(), createMiniMaxDescriptor()];
+    for (const descriptor of builtIns) {
+      const advertised = descriptor.capabilities().has("repository-exploration");
+      const adapter = descriptor.create({ env: {} });
+      const supplied = adapter.repository !== undefined;
+      assert.strictEqual(
+        advertised,
+        supplied,
+        `${descriptor.id}: repository-exploration advertisement (${advertised}) must match adapter.repository presence (${supplied})`,
+      );
+    }
+  });
+
+  it("descriptor creation remains side-effect-free (injected transport spies stay at zero)", () => {
+    // Spy-based side-effect proof: every transport seam the Adapter
+    // could possibly construct (Z.AI UTCP clientFactory; MiniMax SDK
+    // constructor + quota fetch + quota timers) is replaced with a
+    // counter-injecting double. `create()` MUST capture them but
+    // MUST NOT invoke them. Timing is intentionally not used — it
+    // would not prove absence of transport construction.
+    const zai = makeSpiedZaiDescriptor();
+    const minimax = makeSpiedMiniMaxDescriptor();
+
+    const zaiAdapter = zai.descriptor.create({ env: {} });
+    const minimaxAdapter = minimax.descriptor.create({ env: {} });
+
+    assert.ok(typeof zaiAdapter === "object" && zaiAdapter !== null);
+    assert.ok(typeof minimaxAdapter === "object" && minimaxAdapter !== null);
+
+    assert.strictEqual(zai.calls.clientFactory, 0, "Z.AI clientFactory spy must remain at 0");
+    assert.strictEqual(
+      minimax.calls.sdkConstructor,
+      0,
+      "MiniMax sdkConstructor spy must remain at 0",
+    );
+    assert.strictEqual(minimax.calls.quotaFetch, 0, "MiniMax quotaFetch spy must remain at 0");
+    assert.strictEqual(
+      minimax.calls.quotaSetTimeout,
+      0,
+      "MiniMax quotaSetTimeout spy must remain at 0",
+    );
+    assert.strictEqual(
+      minimax.calls.quotaClearTimeout,
+      0,
+      "MiniMax quotaClearTimeout spy must remain at 0",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Vision conformance (P3-03): both Adapters converge on the same text
 // ---------------------------------------------------------------------------
 

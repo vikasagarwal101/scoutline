@@ -1,38 +1,42 @@
 /**
- * Diagnostics Capability Contract (DESIGN.md §14, P4-04).
+ * Diagnostics Capability Contract (DESIGN.md §14, P4-04, P6-06).
  *
  * Defines the schema-version-1 diagnostics report every `doctor`
  * invocation returns, plus the capability contract each Provider
  * Adapter implements so its connectivity can be probed without a
  * generative request.
  *
- * The report is built by the doctor command from static descriptor
- * metadata plus the success/failure of each configured Provider probe.
- * Each Adapter performs exactly ONE connectivity attempt; shared
- * execution owns the retry policy.
+ * The report is built by the doctor command from descriptor-derived
+ * inventory plus the success/failure of each configured Provider
+ * probe. Each Adapter performs exactly ONE connectivity attempt;
+ * shared execution owns the retry policy.
  *
  * Boundary rules (ARCHITECTURE.md §2):
- *   - Imports Provider identity types, shared errors, the Vision
- *     operation→capability mapping, and the MiniMax specialized Vision
- *     conformance registry metadata (a pure snapshot, no transport).
- *   - Imports no Provider transport, no Provider Adapter, no command
- *     presentation.
+ *   - Imports Provider identity and metadata types (`ProviderCapability`,
+ *     `ProviderDescriptor`, `ProviderId`) and shared errors. P6-06 keeps
+ *     the inventory descriptor-derived; no concrete Adapter, no
+ *     Provider transport, no production registry import lives here.
+ *   - Imports no Provider transport, no Provider Adapter, no Vision
+ *     operation→capability mapping, no MiniMax specialized-vision
+ *     conformance registry, no command presentation. The previous
+ *     hand-maintained inventory required those imports; the
+ *     descriptor-derived inventory does not.
  *
- * Normalization rules (DESIGN.md §14):
- *   - Z.AI connectivity uses tool discovery (list tools from UTCP).
- *   - MiniMax connectivity uses a raw single-attempt quota probe
- *     (Adapter-local quota client), NOT `QuotaCapability.invoke()`,
- *     because it authenticates without a generative request.
- *   - For the base release `sharedCapabilities` is Search, general
- *     single-image interpretation, quota, and diagnostics.
- *   - `zaiOnlyCapabilities` is Reader, repository exploration, raw
- *     provider tools, Code Mode, image diff, and video analysis.
+ * Inventory derivation (P6-06):
+ *   - `sharedCapabilities` is the intersection across every descriptor
+ *     passed to `buildDiagnosticsReport`, preserving deterministic
+ *     canonical order from the FIRST descriptor.
+ *   - `zaiOnlyCapabilities` is the Z.AI descriptor's capabilities
+ *     minus the union of every OTHER built-in descriptor's
+ *     capabilities, preserving Z.AI descriptor order. Values are
+ *     descriptor capability IDs only — no hand-maintained aliases.
+ *   - `repository-exploration` is excluded from shared while any
+ *     built-in lacks it, and included in Z.AI-only the moment Z.AI
+ *     advertises it and another built-in does not.
  */
 
-import type { ProviderCapability, ProviderId } from "../providers/types.js";
+import type { ProviderCapability, ProviderDescriptor, ProviderId } from "../providers/types.js";
 import { ScoutlineError, type ScoutlineErrorCode } from "../lib/errors.js";
-import { visionOperationToCapability } from "./vision.js";
-import { listSupportedMiniMaxVisionOperations } from "../providers/minimax/vision-conformance.js";
 
 // ---------------------------------------------------------------------------
 // Report shapes (DESIGN.md §14 — copied exactly)
@@ -76,41 +80,89 @@ export interface DiagnosticsCapability {
 }
 
 // ---------------------------------------------------------------------------
-// Static base-release metadata
+// Descriptor-derived inventory (P6-06).
+//
+// Pure calculations over the exact descriptor list passed to
+// `buildDiagnosticsReport`. No descriptor.create(), no transport, no
+// production registry import. Empty/single/missing-ZAI lists are
+// handled deterministically; the algorithms never rely on array
+// indexing accidents.
 // ---------------------------------------------------------------------------
 
 /**
- * Capabilities supported by every Provider in the base release (DESIGN.md
- * §14, §15). The four base capabilities are static; specialized Vision
- * operations move into shared metadata only when their compiled
- * conformance registry entry is supported. At P5-02 every specialized
- * entry is pending, so this list reduces to the base four. P5-03's
- * attested mappings automatically extend this list through the single
- * registry query — there is no parallel support list to maintain.
+ * Derive the shared Capabilities inventory: the intersection of every
+ * descriptor's `capabilities()` set, preserving deterministic
+ * canonical order from the FIRST descriptor in the list.
+ *
+ * Edge cases:
+ *   - Empty descriptor list: returns an empty array.
+ *   - Single descriptor: returns that descriptor's capabilities in
+ *     their declared order (the intersection of one set is itself).
+ *   - Two or more: keeps a capability from the first descriptor iff
+ *     every other descriptor also advertises it.
+ *
+ * The returned array is frozen so callers cannot mutate the cached
+ * derivation in place.
  */
-export const SHARED_CAPABILITIES: readonly ProviderCapability[] = buildSharedCapabilities();
-
-function buildSharedCapabilities(): readonly ProviderCapability[] {
-  const caps: ProviderCapability[] = ["search", "vision.interpret-image", "quota", "diagnostics"];
-  for (const op of listSupportedMiniMaxVisionOperations()) {
-    caps.push(visionOperationToCapability(op));
+export function deriveSharedCapabilities(
+  descriptors: readonly ProviderDescriptor[],
+): readonly ProviderCapability[] {
+  if (descriptors.length === 0) return Object.freeze([]);
+  const [first, ...rest] = descriptors;
+  if (rest.length === 0) {
+    return Object.freeze([...first.capabilities()]);
   }
-  return Object.freeze(caps);
+  const otherSets = rest.map((d) => d.capabilities());
+  const out: ProviderCapability[] = [];
+  for (const cap of first.capabilities()) {
+    if (otherSets.every((set) => set.has(cap))) {
+      out.push(cap);
+    }
+  }
+  return Object.freeze(out);
 }
 
 /**
- * Capabilities that remain Z.AI-only in the base release (DESIGN.md §14),
- * in the documented order: Reader, repository exploration, raw provider
- * tools, Code Mode, image diff, and video analysis.
+ * Derive the Z.AI-only Capabilities inventory: capabilities advertised
+ * by the Z.AI descriptor minus the union of capabilities advertised by
+ * every OTHER descriptor in the list. Preserves Z.AI descriptor order.
+ *
+ * Edge cases:
+ *   - Empty descriptor list: returns an empty array.
+ *   - Z.AI absent from the list: returns an empty array.
+ *   - Z.AI present as the only descriptor: returns its capabilities
+ *     verbatim (the "minus nothing" case).
+ *   - Z.AI with other descriptors: each capability in Z.AI descriptor
+ *     order is kept iff no other descriptor advertises it.
+ *
+ * The returned values are descriptor capability IDs only. No
+ * hand-maintained aliases, no parallel base-release list, no
+ * invented names. `repository-exploration` lands here naturally the
+ * moment Z.AI advertises it and another built-in does not.
  */
-export const ZAI_ONLY_CAPABILITIES: readonly string[] = [
-  "reader",
-  "repository-exploration",
-  "raw-provider-tools",
-  "code-mode",
-  "image-diff",
-  "video-analysis",
-];
+export function deriveZaiOnlyCapabilities(
+  descriptors: readonly ProviderDescriptor[],
+): readonly ProviderCapability[] {
+  const zai = descriptors.find((d) => d.id === "zai");
+  if (!zai) return Object.freeze([]);
+  const others = descriptors.filter((d) => d.id !== "zai");
+  if (others.length === 0) {
+    return Object.freeze([...zai.capabilities()]);
+  }
+  const union = new Set<ProviderCapability>();
+  for (const descriptor of others) {
+    for (const cap of descriptor.capabilities()) {
+      union.add(cap);
+    }
+  }
+  const out: ProviderCapability[] = [];
+  for (const cap of zai.capabilities()) {
+    if (!union.has(cap)) {
+      out.push(cap);
+    }
+  }
+  return Object.freeze(out);
+}
 
 // ---------------------------------------------------------------------------
 // Failure normalization

@@ -29,6 +29,28 @@ import { readFixture } from "./helpers/fixtures.js";
 import { formatErrorOutput } from "../dist/lib/output.js";
 import { ApiError } from "../dist/lib/errors.js";
 
+// P6-08A: install a test-local fake credential so the init path's
+// ambient `getApiKey()` lookup (reached through `buildMcpCallTemplate`)
+// resolves cleanly when the offline suite runs with all Provider
+// credentials stripped. Restored in `after` so no value leaks across
+// suites. Individual tests that need a SPECIFIC credential value
+// (e.g. fingerprint proofs) still set their own value on top of this
+// default and restore it within their own scope.
+const FAKE_TEST_API_KEY = "test-fake-mcp-client-key-DO-NOT-USE";
+const savedCreds = { Z_AI_API_KEY: undefined, ZAI_API_KEY: undefined };
+before(() => {
+  savedCreds.Z_AI_API_KEY = process.env.Z_AI_API_KEY;
+  savedCreds.ZAI_API_KEY = process.env.ZAI_API_KEY;
+  process.env.Z_AI_API_KEY = FAKE_TEST_API_KEY;
+  delete process.env.ZAI_API_KEY;
+});
+after(() => {
+  for (const [key, value] of Object.entries(savedCreds)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
+
 // Public dotted identity the production code constructs via getMcpToolName.
 const PUBLIC_SEARCH_NAME = getMcpToolName("search", "web_search_prime");
 
@@ -517,7 +539,10 @@ describe("ZaiMcpClient — init path raw-body scrubbing (Fixup D — B2-remainin
       await assert.rejects(client.callToolRaw(PUBLIC_SEARCH_NAME, { search_query: "q" }), (err) => {
         assert.strictEqual(err.code, "API_ERROR");
         assert.strictEqual(err.statusCode, 503);
-        assert.ok(!err.message.includes("RAW_INIT_BODY"), `typed init ApiError leaked: ${err.message}`);
+        assert.ok(
+          !err.message.includes("RAW_INIT_BODY"),
+          `typed init ApiError leaked: ${err.message}`,
+        );
         return true;
       });
     } finally {
@@ -612,14 +637,8 @@ describe("ZaiMcpClient — legacy ZRead wrappers resolve through discovered iden
     // public dotted name to an explicit unknown-tool error. The wrapper
     // MUST resolve through discovery and never callTool with the dotted
     // form.
-    for (const publicName of [
-      PUBLIC_SEARCH_DOC,
-      PUBLIC_GET_REPO_STRUCTURE,
-      PUBLIC_READ_FILE,
-    ]) {
-      fake.errorsByName[publicName] = new Error(
-        `Tool not found in UTCP manual: ${publicName}`,
-      );
+    for (const publicName of [PUBLIC_SEARCH_DOC, PUBLIC_GET_REPO_STRUCTURE, PUBLIC_READ_FILE]) {
+      fake.errorsByName[publicName] = new Error(`Tool not found in UTCP manual: ${publicName}`);
     }
   }
 
@@ -716,11 +735,7 @@ describe("ZaiMcpClient — legacy ZRead wrappers resolve through discovered iden
         INTERNAL_GET_REPO_STRUCTURE,
         INTERNAL_READ_FILE,
       ]);
-      for (const publicName of [
-        PUBLIC_SEARCH_DOC,
-        PUBLIC_GET_REPO_STRUCTURE,
-        PUBLIC_READ_FILE,
-      ]) {
+      for (const publicName of [PUBLIC_SEARCH_DOC, PUBLIC_GET_REPO_STRUCTURE, PUBLIC_READ_FILE]) {
         assert.ok(
           !invokedNames.includes(publicName),
           `wrapper invoked UTCP with public dotted name ${publicName}`,
@@ -762,11 +777,7 @@ describe("ZaiMcpClient — legacy ZRead wrappers resolve through discovered iden
         INTERNAL_GET_REPO_STRUCTURE,
         INTERNAL_READ_FILE,
       ]);
-      for (const publicName of [
-        PUBLIC_SEARCH_DOC,
-        PUBLIC_GET_REPO_STRUCTURE,
-        PUBLIC_READ_FILE,
-      ]) {
+      for (const publicName of [PUBLIC_SEARCH_DOC, PUBLIC_GET_REPO_STRUCTURE, PUBLIC_READ_FILE]) {
         assert.ok(
           !invokedNames.includes(publicName),
           `legacy wrapper invoked UTCP with public dotted name ${publicName}`,

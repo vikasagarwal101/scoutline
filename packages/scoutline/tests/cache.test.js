@@ -6,7 +6,7 @@
  * the process-level default. Legacy paths retain the `zai-cli/responses`
  * segment.
  */
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
@@ -25,6 +25,25 @@ import {
   buildProviderCacheKey,
   defaultResponseCache,
 } from "../dist/lib/cache.js";
+
+// P6-08A: install a test-local fake credential so `buildCacheKey()`'s
+// ambient `getApiKey()` lookup resolves cleanly when the offline suite
+// runs with all Provider credentials stripped. Restored in `after` so
+// no value leaks across suites.
+const FAKE_TEST_API_KEY = "test-fake-cache-key-DO-NOT-USE";
+const savedCreds = { Z_AI_API_KEY: undefined, ZAI_API_KEY: undefined };
+before(() => {
+  savedCreds.Z_AI_API_KEY = process.env.Z_AI_API_KEY;
+  savedCreds.ZAI_API_KEY = process.env.ZAI_API_KEY;
+  process.env.Z_AI_API_KEY = FAKE_TEST_API_KEY;
+  delete process.env.ZAI_API_KEY;
+});
+after(() => {
+  for (const [key, value] of Object.entries(savedCreds)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
 
 describe("resolveCacheDirPure: legacy zai-cli/responses paths", () => {
   it("ZAI_CACHE_DIR overrides everything with its literal value", () => {
@@ -382,18 +401,18 @@ describe("buildLegacyRepositoryCacheKey — pure v0.2 key builder", () => {
   // The literal values were independently computed once and are verified
   // against the v0.2 algorithm by the separate algorithm-only tests in this
   // block.
-  const GOLDEN_SEARCH_KEY =
-    "search_doc.69425f4812cb.0b24e0d13cbc0e111928b4e4.json";
-  const GOLDEN_FILE_KEY =
-    "read_file.69425f4812cb.45fa21f17c8471947807871a.json";
-  const GOLDEN_DIRECTORY_ROOT_KEY =
-    "get_repo_structure.69425f4812cb.f31c6f95fb6f94156924ffbd.json";
+  const GOLDEN_SEARCH_KEY = "search_doc.69425f4812cb.0b24e0d13cbc0e111928b4e4.json";
+  const GOLDEN_FILE_KEY = "read_file.69425f4812cb.45fa21f17c8471947807871a.json";
+  const GOLDEN_DIRECTORY_ROOT_KEY = "get_repo_structure.69425f4812cb.f31c6f95fb6f94156924ffbd.json";
   const GOLDEN_DIRECTORY_NON_ROOT_KEY =
     "get_repo_structure.69425f4812cb.33983660382d603ef065bbc1.json";
 
   it("uses sha256(apiKey).hex.slice(0,12) as the credential part (algorithm check)", () => {
-    const expectedCredential =
-      crypto.createHash("sha256").update(API_KEY).digest("hex").slice(0, 12);
+    const expectedCredential = crypto
+      .createHash("sha256")
+      .update(API_KEY)
+      .digest("hex")
+      .slice(0, 12);
     const key = buildLegacyRepositoryCacheKey(API_KEY, "search_doc", { repo_name: "x" });
     const parts = key.split(".");
     assert.strictEqual(parts[1], expectedCredential);
@@ -521,8 +540,11 @@ describe("buildLegacyRepositoryCacheKey — pure v0.2 key builder", () => {
     try {
       const args = { repo_name: "r", query: "q", language: "en" };
       const key = buildLegacyRepositoryCacheKey(API_KEY, "search_doc", args);
-      const expectedCredential =
-        crypto.createHash("sha256").update(API_KEY).digest("hex").slice(0, 12);
+      const expectedCredential = crypto
+        .createHash("sha256")
+        .update(API_KEY)
+        .digest("hex")
+        .slice(0, 12);
       const parts = key.split(".");
       assert.strictEqual(
         parts[1],
@@ -597,9 +619,7 @@ const CACHE_SOURCE_PATH = path.join(__dirname, "..", "src", "lib", "cache.ts");
  * between the opening and closing braces.
  */
 function extractFunctionBody(sourceText, functionName) {
-  const sigStart = sourceText.search(
-    new RegExp(`export\\s+function\\s+${functionName}\\s*\\(`),
-  );
+  const sigStart = sourceText.search(new RegExp(`export\\s+function\\s+${functionName}\\s*\\(`));
   if (sigStart === -1) {
     throw new Error(`Function ${functionName} not found in source`);
   }
@@ -737,5 +757,124 @@ describe("buildLegacyRepositoryCacheKey — direct source-body purity", () => {
     for (const forbidden of ["process.env", "getApiKey(", "buildCacheKey("]) {
       assert.ok(!body.includes(forbidden), `forbidden token in body: ${forbidden}`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P6-08 — Legacy-cache continuity for the Repository Capability.
+//
+// The pure helper above reconstructs v0.2 key bytes. This block proves the
+// plumbing that connects the helper to the on-disk store:
+//
+//   - A legacy entry written through `writeCache` (the same path v0.2 used)
+//     is read back unchanged through `readCache`, `defaultResponseCache`,
+//     and a fresh `readCache` call after a process restart (modelled by
+//     re-reading from the same directory).
+//   - A normalized write-back through `defaultResponseCache.set` round-trips
+//     a structured schema-version-1 value so the executor's `decodeCached`
+//     sees byte-identical data on the next hit.
+//   - Raw legacy Provider data is NEVER mutated by a normalized write-back
+//     to a different key (the legacy file is preserved verbatim).
+//
+// These are plumbing proofs; the per-operation Adapter matrix that exercises
+// the Adapter's legacy decoder is in `repository-conformance.test.js`.
+// ---------------------------------------------------------------------------
+
+describe("P6-08 legacy repository cache continuity (plumbing)", () => {
+  const API_KEY = "sk-test-LEGACY-CACHE-KEY-1234567890";
+
+  it("a legacy v0.2 entry written through writeCache round-trips through readCache and defaultResponseCache", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.ZAI_CACHE_DIR = dir;
+      try {
+        const legacyKey = buildLegacyRepositoryCacheKey(API_KEY, "search_doc", {
+          repo_name: "owner/repo",
+          query: "q",
+          language: "en",
+        });
+        const rawLegacy = "<excerpt>legacy search text</excerpt>";
+        await writeCache(legacyKey, rawLegacy);
+
+        // readCache returns the raw value verbatim (the legacy store does
+        // not interpret the cached payload).
+        const viaReadCache = await readCache(legacyKey, 60_000);
+        assert.strictEqual(viaReadCache, rawLegacy);
+
+        // defaultResponseCache returns the same value through the
+        // ResponseCache interface the executor uses.
+        const viaResponseCache = await defaultResponseCache.get(legacyKey);
+        assert.strictEqual(viaResponseCache, rawLegacy);
+      } finally {
+        delete process.env.ZAI_CACHE_DIR;
+      }
+    });
+  });
+
+  it("a normalized write-back to the new key never mutates the legacy file", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.ZAI_CACHE_DIR = dir;
+      try {
+        const legacyKey = buildLegacyRepositoryCacheKey(API_KEY, "read_file", {
+          repo_name: "owner/repo",
+          file_path: "README.md",
+        });
+        const rawLegacy = "<file_content>legacy file body</file_content>";
+        await writeCache(legacyKey, rawLegacy);
+
+        // Compute the normalized key the executor would use and write
+        // a structured value to it.
+        const fp = crypto.createHash("sha256").update(API_KEY).digest("hex");
+        const normalizedKey = buildProviderCacheKey({
+          provider: "zai",
+          capability: "repository-exploration-repository-read-file",
+          credentialFingerprint: fp,
+          request: { repository: "owner/repo", path: "README.md" },
+        });
+        assert.notStrictEqual(legacyKey, normalizedKey);
+        const normalizedValue = {
+          schemaVersion: 1,
+          repository: "owner/repo",
+          path: "README.md",
+          content: "legacy file body",
+          truncated: false,
+          originalContentLength: 17,
+        };
+        await defaultResponseCache.set(normalizedKey, normalizedValue);
+
+        // Both files coexist; the legacy file is preserved verbatim.
+        const legacyAfter = await defaultResponseCache.get(legacyKey);
+        assert.strictEqual(legacyAfter, rawLegacy);
+        const normalizedAfter = await defaultResponseCache.get(normalizedKey);
+        assert.deepStrictEqual(normalizedAfter, normalizedValue);
+      } finally {
+        delete process.env.ZAI_CACHE_DIR;
+      }
+    });
+  });
+
+  it("all three operations' primary public names produce distinct legacy keys for the same repository", () => {
+    // Belt-and-braces: the pure helper has already proven insertion-order
+    // sensitivity for a single operation. Here we lock that the three
+    // OPERATION primary public names also produce distinct keys for the
+    // same repository, so a v0.2 File entry cannot satisfy a Directory
+    // candidate lookup (and vice versa) at the cache-key level.
+    const searchKey = buildLegacyRepositoryCacheKey(API_KEY, "search_doc", {
+      repo_name: "owner/repo",
+      query: "q",
+      language: "en",
+    });
+    const fileKey = buildLegacyRepositoryCacheKey(API_KEY, "read_file", {
+      repo_name: "owner/repo",
+      file_path: "README.md",
+    });
+    const dirRootKey = buildLegacyRepositoryCacheKey(API_KEY, "get_repo_structure", {
+      repo_name: "owner/repo",
+    });
+    const dirNonRootKey = buildLegacyRepositoryCacheKey(API_KEY, "get_repo_structure", {
+      repo_name: "owner/repo",
+      dir_path: "src",
+    });
+    const all = [searchKey, fileKey, dirRootKey, dirNonRootKey];
+    assert.strictEqual(new Set(all).size, all.length, "all four legacy keys must be distinct");
   });
 });

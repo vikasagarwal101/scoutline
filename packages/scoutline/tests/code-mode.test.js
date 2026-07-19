@@ -14,11 +14,31 @@
  * that the surfaced typed error's message does not contain the raw
  * Provider/transport body.
  */
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { ZaiCodeModeClient } from "../dist/lib/code-mode.js";
 import { formatErrorOutput } from "../dist/lib/output.js";
 import { ApiError, AuthError } from "../dist/lib/errors.js";
+
+// P6-08A: install a test-local fake credential so the init path's
+// ambient `getApiKey()` lookup (reached through `buildMcpCallTemplate`)
+// resolves cleanly when the offline suite runs with all Provider
+// credentials stripped. Restored in `after` so no value leaks across
+// suites.
+const FAKE_TEST_API_KEY = "test-fake-code-mode-key-DO-NOT-USE";
+const savedCreds = { Z_AI_API_KEY: undefined, ZAI_API_KEY: undefined };
+before(() => {
+  savedCreds.Z_AI_API_KEY = process.env.Z_AI_API_KEY;
+  savedCreds.ZAI_API_KEY = process.env.ZAI_API_KEY;
+  process.env.Z_AI_API_KEY = FAKE_TEST_API_KEY;
+  delete process.env.ZAI_API_KEY;
+});
+after(() => {
+  for (const [key, value] of Object.entries(savedCreds)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
 
 const RAW_BODY = '{"error":"RAW_CODE_MODE_BODY","detail":"<html>secret</html>"}';
 

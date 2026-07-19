@@ -61,7 +61,7 @@ import {
   ZaiMcpClient,
   type ZaiMcpClientOptions as McpClientOptions,
 } from "../../lib/mcp-client.js";
-import { buildCacheKey } from "../../lib/cache.js";
+import { buildLegacyRepositoryCacheKey } from "../../lib/cache.js";
 import { isZaiConfigured, requireZaiApiKey } from "./credentials.js";
 import { resolveImageSource, resolveVideoSource } from "./media.js";
 import { createZaiQuotaCapability, type ZaiQuotaCapabilityOptions } from "./quota.js";
@@ -122,6 +122,22 @@ const ZAI_VISION_OPERATIONS: ReadonlySet<VisionOperation> = new Set([
  * pre-P2-05 `buildCacheKey` calls the search command made through
  * `ZaiMcpClient.webSearch`. `legacyCount` reconstructs the old `count`
  * argument so an existing on-disk entry can still be served.
+ *
+ * P6-08A: the already-resolved `apiKey` is consumed through the same
+ * pure explicit-key algorithm `buildLegacyRepositoryCacheKey` exposes
+ * for the Repository Capability. The two algorithms are byte-identical
+ * for the same `(apiKey, command, args)`:
+ *
+ *   credentialPart = sha256(apiKey).hex.slice(0, 12)
+ *   argumentPart   = sha256(JSON.stringify({ command, args })).hex.slice(0, 24)
+ *   key            = `${command}.${credentialPart}.${argumentPart}.json`
+ *
+ * Switching to the pure helper removes the ambient `getApiKey()` read
+ * that the legacy `buildCacheKey` performed. An Adapter created with
+ * `{ env: { Z_AI_API_KEY: "injected-only" } }` no longer throws
+ * `CONFIGURATION_ERROR` from `search.cacheIdentity()` when ambient
+ * credentials are absent. The output bytes for a given credential
+ * are unchanged.
  */
 function buildLegacyZaiSearchKey(
   apiKey: string,
@@ -144,7 +160,7 @@ function buildLegacyZaiSearchKey(
   if (request.controls?.location) {
     args.location = request.controls.location;
   }
-  return buildCacheKey(SEARCH_TOOL_PUBLIC_NAME, args);
+  return buildLegacyRepositoryCacheKey(apiKey, SEARCH_TOOL_PUBLIC_NAME, args);
 }
 
 /**

@@ -538,3 +538,324 @@ describe("Vision Adapter conformance — shared normalized output (P3-03)", () =
     assert.ok(!out.includes("{"), "Vision text must not leak a Provider envelope");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Repository Adapter conformance (P6-08): Z.AI and a fake second Adapter
+// converge on the same normalized Search, File, and Directory Listing
+// values. The fake Adapter is a reusable capability double supplied by
+// `tests/helpers/fake-adapter.js`; it produces the SAME normalized contract
+// WITHOUT touching any ZRead grammar.
+//
+// This block is the static-registry parallel to the integrated dispatcher
+// proof in `repository-conformance.test.js`. Where that file proves
+// end-to-end dispatch through `main()`, this file proves the per-Capability
+// shape contract directly: same request → same normalized output.
+// ---------------------------------------------------------------------------
+
+import crypto from "node:crypto";
+import { createFakeRepositoryCapability } from "./helpers/fake-adapter.js";
+import { executeRepositoryOperation } from "../dist/lib/execution.js";
+import { getMcpToolName } from "../dist/lib/mcp-config.js";
+
+const REPO_INTERNAL_SEARCH = "scoutline_zai.zread.search_doc";
+const REPO_INTERNAL_FILE = "scoutline_zai.zread.read_file";
+const REPO_INTERNAL_DIR = "scoutline_zai.zread.get_repo_structure";
+const REPO_PUBLIC_SEARCH = getMcpToolName("zread", "search_doc");
+const REPO_PUBLIC_FILE = getMcpToolName("zread", "read_file");
+const REPO_PUBLIC_DIR = getMcpToolName("zread", "get_repo_structure");
+
+const REPO_DISCOVERED_TOOLS = [
+  { name: REPO_INTERNAL_SEARCH, inputs: { type: "object" }, outputs: { type: "string" } },
+  { name: REPO_INTERNAL_FILE, inputs: { type: "object" }, outputs: { type: "string" } },
+  { name: REPO_INTERNAL_DIR, inputs: { type: "object" }, outputs: { type: "string" } },
+];
+
+/**
+ * Z.AI Repository Adapter factory: build a Repository Capability whose
+ * underlying UTCP client returns the supplied raw ZRead string for the
+ * named tool. Mirrors the discovered-name resolution path used by the
+ * production Adapter.
+ */
+function makeZaiRepositoryCapability({ searchRaw, fileRaw, dirRaw }) {
+  const resultsByName = {};
+  if (searchRaw !== undefined) resultsByName[REPO_INTERNAL_SEARCH] = searchRaw;
+  if (fileRaw !== undefined) resultsByName[REPO_INTERNAL_FILE] = fileRaw;
+  if (dirRaw !== undefined) resultsByName[REPO_INTERNAL_DIR] = dirRaw;
+  const factory = (options) => {
+    const fake = new FakeUtcpClient({
+      discoveredTools: REPO_DISCOVERED_TOOLS,
+      resultsByName,
+    });
+    return {
+      options,
+      async callToolRaw(name, args) {
+        const tools = fake.discoveredTools;
+        let resolved = tools.find((t) => t.name === name);
+        if (!resolved && name.startsWith("scoutline.zai.")) {
+          const suffix = name.slice("scoutline.zai.".length);
+          const matches = tools.filter((t) => t.name.endsWith(`.${suffix}`));
+          if (matches.length === 1) resolved = matches[0];
+        }
+        if (!resolved) throw new Error(`API_ERROR: Unknown tool ${name}`);
+        return fake.callTool(resolved.name, args);
+      },
+      async listTools() {
+        return fake.getTools();
+      },
+      async close() {
+        return fake.close();
+      },
+    };
+  };
+  const descriptor = createZaiDescriptor({ clientFactory: factory });
+  return descriptor.create({ env: { Z_AI_API_KEY: "k" } }).repository;
+}
+
+/**
+ * Trivial in-memory ResponseCache; per-Capability conformance does not
+ * exercise legacy candidates, so a plain Map suffices.
+ */
+function trivialCache() {
+  const store = new Map();
+  return {
+    async get(k) {
+      return store.has(k) ? store.get(k) : null;
+    },
+    async set(k, v) {
+      store.set(k, v);
+    },
+    store,
+  };
+}
+
+function trivialDeps() {
+  return { cache: trivialCache(), sleep: async () => {}, random: () => 0 };
+}
+
+describe("Repository Adapter conformance — shared normalized output (P6-08)", () => {
+  it("Z.AI and the fake Adapter normalize Search to the same structured value", async () => {
+    const excerptText = "shared search excerpt";
+    const raw = `<excerpt>${excerptText}</excerpt>`;
+    const expected = {
+      schemaVersion: 1,
+      repository: "owner/repo",
+      query: "conformance",
+      language: "en",
+      excerpts: [{ text: excerptText }],
+      truncated: false,
+      originalTextLength: excerptText.length,
+    };
+
+    const zaiRepo = makeZaiRepositoryCapability({ searchRaw: raw });
+    const zaiOut = await executeRepositoryOperation(
+      zaiRepo.search,
+      { repository: "owner/repo", query: "conformance", language: "en" },
+      { noCache: true },
+      trivialDeps(),
+    );
+
+    const { capability: fakeRepo } = createFakeRepositoryCapability({
+      apiKey: "k",
+      provider: "zai",
+      search: { result: expected },
+    });
+    const fakeOut = await executeRepositoryOperation(
+      fakeRepo.search,
+      { repository: "owner/repo", query: "conformance", language: "en" },
+      { noCache: true },
+      trivialDeps(),
+    );
+
+    assert.deepStrictEqual(zaiOut, expected);
+    assert.deepStrictEqual(fakeOut, expected);
+    assert.deepStrictEqual(zaiOut, fakeOut);
+  });
+
+  it("Z.AI and the fake Adapter normalize File to the same structured value", async () => {
+    const body = "shared file body";
+    const raw = `<file_content>${body}</file_content>`;
+    const expected = {
+      schemaVersion: 1,
+      repository: "owner/repo",
+      path: "README.md",
+      content: body,
+      truncated: false,
+      originalContentLength: body.length,
+    };
+
+    const zaiRepo = makeZaiRepositoryCapability({ fileRaw: raw });
+    const zaiOut = await executeRepositoryOperation(
+      zaiRepo.readFile,
+      { repository: "owner/repo", path: "README.md" },
+      { noCache: true },
+      trivialDeps(),
+    );
+
+    const { capability: fakeRepo } = createFakeRepositoryCapability({
+      apiKey: "k",
+      provider: "zai",
+      readFile: { result: expected },
+    });
+    const fakeOut = await executeRepositoryOperation(
+      fakeRepo.readFile,
+      { repository: "owner/repo", path: "README.md" },
+      { noCache: true },
+      trivialDeps(),
+    );
+
+    assert.deepStrictEqual(zaiOut, expected);
+    assert.deepStrictEqual(fakeOut, expected);
+    assert.deepStrictEqual(zaiOut, fakeOut);
+  });
+
+  it("Z.AI and the fake Adapter normalize Directory Listing to the same structured value", async () => {
+    const raw = "<structure>\nowner-repo/\n├── src/\n├── README.md\n└── package.json\n</structure>";
+    const expected = {
+      repository: "owner/repo",
+      path: "",
+      entries: [
+        { name: "src", path: "src", kind: "directory" },
+        { name: "README.md", path: "README.md", kind: "file" },
+        { name: "package.json", path: "package.json", kind: "file" },
+      ],
+    };
+
+    const zaiRepo = makeZaiRepositoryCapability({ dirRaw: raw });
+    const zaiOut = await executeRepositoryOperation(
+      zaiRepo.listDirectory,
+      { repository: "owner/repo", path: "" },
+      { noCache: true },
+      trivialDeps(),
+    );
+
+    const { capability: fakeRepo } = createFakeRepositoryCapability({
+      apiKey: "k",
+      provider: "zai",
+      listDirectory: { result: expected },
+    });
+    const fakeOut = await executeRepositoryOperation(
+      fakeRepo.listDirectory,
+      { repository: "owner/repo", path: "" },
+      { noCache: true },
+      trivialDeps(),
+    );
+
+    assert.deepStrictEqual(zaiOut, expected);
+    assert.deepStrictEqual(fakeOut, expected);
+    assert.deepStrictEqual(zaiOut, fakeOut);
+  });
+
+  it("normalized Repository outputs carry no Provider-only envelope fields", async () => {
+    // The total decoders drop unknown fields. Provider-only metadata
+    // like raw wrapper tags, error code text, and MCP envelopes cannot
+    // leak through the cache.
+    const { capability: fakeRepo } = createFakeRepositoryCapability({
+      apiKey: "k",
+      provider: "zai",
+      search: {
+        result: {
+          schemaVersion: 1,
+          repository: "owner/repo",
+          query: "q",
+          language: "en",
+          excerpts: [{ text: "x", rank: 1, url: "should-drop" }],
+          truncated: false,
+          originalTextLength: 1,
+        },
+      },
+    });
+    const out = fakeRepo.search.decodeCached({
+      schemaVersion: 1,
+      repository: "owner/repo",
+      query: "q",
+      language: "en",
+      excerpts: [{ text: "x", rank: 1, url: "should-drop" }],
+      truncated: false,
+      originalTextLength: 1,
+    });
+    assert.deepStrictEqual(out.excerpts, [{ text: "x" }]);
+    assert.strictEqual(out.excerpts[0].rank, undefined);
+    assert.strictEqual(out.excerpts[0].url, undefined);
+  });
+
+  it("the fake Adapter exposes the same Capability interface as Z.AI", () => {
+    // Static shape proof: the fake Adapter exposes the three documented
+    // operation handles, each with kind/validate/cacheIdentity/
+    // decodeCached/invoke. This is the contract the production
+    // dispatcher depends on.
+    const zaiRepo = makeZaiRepositoryCapability({});
+    const { capability: fakeRepo } = createFakeRepositoryCapability({
+      apiKey: "k",
+      provider: "fake",
+      search: { result: null },
+      readFile: { result: null },
+      listDirectory: { result: null },
+    });
+    for (const slot of ["search", "readFile", "listDirectory"]) {
+      assert.ok(zaiRepo[slot], `Z.AI adapter must expose ${slot}`);
+      assert.ok(fakeRepo[slot], `fake adapter must expose ${slot}`);
+      for (const method of ["kind", "validate", "cacheIdentity", "decodeCached", "invoke"]) {
+        assert.ok(method in zaiRepo[slot], `Z.AI ${slot} must implement ${method}`);
+        assert.ok(method in fakeRepo[slot], `fake ${slot} must implement ${method}`);
+      }
+    }
+    // Operation kinds match the documented union literal-for-literal.
+    assert.strictEqual(zaiRepo.search.kind, fakeRepo.search.kind);
+    assert.strictEqual(zaiRepo.search.kind, "repository-search");
+    assert.strictEqual(zaiRepo.readFile.kind, fakeRepo.readFile.kind);
+    assert.strictEqual(zaiRepo.readFile.kind, "repository-read-file");
+    assert.strictEqual(zaiRepo.listDirectory.kind, fakeRepo.listDirectory.kind);
+    assert.strictEqual(zaiRepo.listDirectory.kind, "repository-list-directory");
+  });
+
+  it("both Adapters use the same credential-fingerprint algorithm (full SHA-256 hex)", () => {
+    // The fake Adapter uses crypto.createHash('sha256').update(apiKey).digest('hex')
+    // — identical to the Z.AI Adapter. The two fingerprints for the
+    // same credential MUST be equal so a cross-Provider cache-key
+    // identity proof is apples-to-apples.
+    const credential = "shared-credential-for-fingerprint-test";
+    const expected = crypto.createHash("sha256").update(credential).digest("hex");
+
+    const zaiRepo = makeZaiRepositoryCapability({});
+    const zaiIdentity = zaiRepo.search.cacheIdentity({
+      repository: "owner/repo",
+      query: "q",
+      language: "en",
+    });
+    // Override the env-bound credential by reconstructing the Z.AI
+    // adapter with the test credential.
+    const factory = (options) => ({
+      options,
+      async callToolRaw() {
+        return null;
+      },
+      async listTools() {
+        return [];
+      },
+      async close() {},
+    });
+    const zaiDescriptor = createZaiDescriptor({ clientFactory: factory });
+    const zaiAdapterBound = zaiDescriptor.create({
+      env: { Z_AI_API_KEY: credential },
+    });
+    const zaiBoundIdentity = zaiAdapterBound.repository.search.cacheIdentity({
+      repository: "owner/repo",
+      query: "q",
+      language: "en",
+    });
+
+    const { fingerprint: fakeFingerprint } = createFakeRepositoryCapability({
+      apiKey: credential,
+      provider: "fake",
+    });
+
+    assert.strictEqual(zaiBoundIdentity.credentialFingerprint, expected);
+    assert.strictEqual(fakeFingerprint, expected);
+    // Belt-and-braces: the env-bound Z.AI identity and the default-key
+    // Z.AI identity differ because the credentials differ.
+    assert.notStrictEqual(
+      zaiIdentity.credentialFingerprint,
+      zaiBoundIdentity.credentialFingerprint,
+    );
+  });
+});

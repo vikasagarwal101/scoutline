@@ -19,11 +19,7 @@ import { getMcpToolName } from "../dist/lib/mcp-config.js";
 import { FakeUtcpClient } from "./helpers/fake-utcp-client.js";
 import { readFixture } from "./helpers/fixtures.js";
 import { executeProviderOperation } from "../dist/lib/execution.js";
-import {
-  ConfigurationError,
-  ApiError,
-  TimeoutError,
-} from "../dist/lib/errors.js";
+import { ConfigurationError, ApiError, TimeoutError } from "../dist/lib/errors.js";
 import { formatErrorOutput } from "../dist/lib/output.js";
 
 const SEARCH_TOOL_PUBLIC_NAME = getMcpToolName("search", "web_search_prime");
@@ -461,7 +457,6 @@ describe("Z.AI Search Adapter — cache identity", () => {
     assert.strictEqual(identity.legacyCandidates[0].decode("not-an-array"), null);
     assert.strictEqual(identity.legacyCandidates[0].decode(null), null);
   });
-
 });
 
 // ---------------------------------------------------------------------------
@@ -707,5 +702,152 @@ describe("Z.AI Adapter — missing credentials throw ConfigurationError (Fixup A
       () => whitespaceAdapter.search.cacheIdentity({ query: "q" }),
       (err) => err instanceof ConfigurationError && err.exitCode === 3,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P6-08A — Injected-credential isolation + byte-compat with v0.2 algorithm.
+//
+// `buildLegacyZaiSearchKey` was repaired in P6-08A to consume the
+// already-resolved `apiKey` through the pure explicit-key algorithm
+// (`buildLegacyRepositoryCacheKey`) instead of calling the ambient
+// `buildCacheKey()` path. The two algorithms are byte-identical for the
+// same `(apiKey, command, args)`:
+//
+//   credentialPart = sha256(apiKey).hex.slice(0, 12)
+//   argumentPart   = sha256(JSON.stringify({ command, args })).hex.slice(0, 24)
+//   key            = `${command}.${credentialPart}.${argumentPart}.json`
+//
+// The block below proves:
+//   - the legacy key produced by `adapter.search.cacheIdentity()` is
+//     byte-equal to the v0.2 algorithm built directly from the resolved
+//     credential;
+//   - the legacy key bytes do NOT depend on which env var supplied the
+//     credential (primary vs alias) — only on the resolved value;
+//   - an Adapter created with an injected-only credential (no ambient
+//     Z_AI_API_KEY or ZAI_API_KEY) reconstructs the legacy key without
+//     throwing ConfigurationError.
+// ---------------------------------------------------------------------------
+
+import { buildLegacyRepositoryCacheKey, buildCacheKey } from "../dist/lib/cache.js";
+
+describe("Z.AI Search Adapter — P6-08A injected-credential isolation and legacy-key byte compatibility", () => {
+  // P6-08A credential isolation: install a test-local fake credential
+  // so `buildCacheKey()`'s ambient `getApiKey()` lookup resolves
+  // cleanly when the offline suite runs with all Provider credentials
+  // stripped. Restored in `after` so no value leaks across suites.
+  // These tests use their OWN explicit credentials through descriptor
+  // env, so the ambient value is only a defensive backstop for the
+  // direct `buildCacheKey()` byte-compat call below.
+  const AMBIENT = "p6-08a-ambient-backstop-DO-NOT-USE";
+  const savedAmbient = { Z_AI_API_KEY: undefined, ZAI_API_KEY: undefined };
+  before(() => {
+    savedAmbient.Z_AI_API_KEY = process.env.Z_AI_API_KEY;
+    savedAmbient.ZAI_API_KEY = process.env.ZAI_API_KEY;
+    process.env.Z_AI_API_KEY = AMBIENT;
+    delete process.env.ZAI_API_KEY;
+  });
+  after(() => {
+    for (const [k, v] of Object.entries(savedAmbient)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("adapter-produced legacy key is byte-equal to the v0.2 algorithm built from the resolved credential", () => {
+    const d = createZaiDescriptor();
+    const adapter = d.create({ env: { Z_AI_API_KEY: "byte-compat-key" } });
+    const request = {
+      query: "compatibility proof",
+      controls: { domain: "example.test", recency: "oneWeek", contentSize: "high", location: "us" },
+    };
+    const identity = adapter.search.cacheIdentity(request, { legacyCount: 7 });
+
+    // Reconstruct the v0.2 key directly from the same resolved
+    // credential and documented args.
+    const expectedArgs = {
+      search_query: request.query,
+      count: 7,
+      search_domain_filter: request.controls.domain,
+      search_recency_filter: request.controls.recency,
+      content_size: request.controls.contentSize,
+      location: request.controls.location,
+    };
+    const expected = buildLegacyRepositoryCacheKey(
+      "byte-compat-key",
+      SEARCH_TOOL_PUBLIC_NAME,
+      expectedArgs,
+    );
+    assert.strictEqual(identity.legacyCandidates[0].key, expected);
+  });
+
+  it("adapter-produced legacy key is byte-equal to the ambient v0.2 `buildCacheKey()` output when the credential matches", () => {
+    // When the Adapter's resolved credential EQUALS the ambient
+    // credential `getApiKey()` would return, the two algorithms produce
+    // identical bytes. This is the byte-compat proof that switching to
+    // `buildLegacyRepositoryCacheKey` did not change observable key
+    // bytes for any caller that previously hit the ambient path.
+    const d = createZaiDescriptor();
+    const adapter = d.create({ env: { Z_AI_API_KEY: AMBIENT } });
+    const request = { query: "byte compat", controls: { domain: "d.example" } };
+    const identity = adapter.search.cacheIdentity(request);
+
+    const args = { search_query: request.query, search_domain_filter: request.controls.domain };
+    const ambientKey = buildCacheKey(SEARCH_TOOL_PUBLIC_NAME, args);
+    assert.strictEqual(identity.legacyCandidates[0].key, ambientKey);
+  });
+
+  it("legacy key bytes depend only on the resolved credential value, not on which env var supplied it", () => {
+    // Same resolved value supplied via Z_AI_API_KEY vs ZAI_API_KEY
+    // must produce byte-identical legacy keys.
+    const d = createZaiDescriptor();
+    const viaPrimary = d.create({ env: { Z_AI_API_KEY: "shared-value" } });
+    const viaAlias = d.create({ env: { ZAI_API_KEY: "shared-value" } });
+    const request = { query: "alias byte parity" };
+    const primaryIdentity = viaPrimary.search.cacheIdentity(request);
+    const aliasIdentity = viaAlias.search.cacheIdentity(request);
+    assert.strictEqual(
+      primaryIdentity.legacyCandidates[0].key,
+      aliasIdentity.legacyCandidates[0].key,
+    );
+    // The normalized fingerprint also matches because both resolve to
+    // the same credential value.
+    assert.strictEqual(primaryIdentity.credentialFingerprint, aliasIdentity.credentialFingerprint);
+  });
+
+  it("an Adapter with an injected-only credential reconstructs the legacy key without consulting ambient env", () => {
+    // Force ambient creds to a SENTINEL value that would change the
+    // key if the Adapter ever consulted process.env for legacy-key
+    // reconstruction. The Adapter must derive the legacy key solely
+    // from its resolved descriptor-env credential.
+    const sentinelAmbient = "SENTINEL-AMBIENT-VALUE-MUST-NOT-APPEAR";
+    const savedAmbientKey = process.env.Z_AI_API_KEY;
+    const savedAmbientAlias = process.env.ZAI_API_KEY;
+    process.env.Z_AI_API_KEY = sentinelAmbient;
+    process.env.ZAI_API_KEY = sentinelAmbient;
+    try {
+      const d = createZaiDescriptor();
+      const adapter = d.create({ env: { Z_AI_API_KEY: "injected-only-credential" } });
+      const identity = adapter.search.cacheIdentity({ query: "isolation proof" });
+
+      const expectedFromInjected = buildLegacyRepositoryCacheKey(
+        "injected-only-credential",
+        SEARCH_TOOL_PUBLIC_NAME,
+        { search_query: "isolation proof" },
+      );
+      const wouldBeFromAmbient = buildLegacyRepositoryCacheKey(
+        sentinelAmbient,
+        SEARCH_TOOL_PUBLIC_NAME,
+        { search_query: "isolation proof" },
+      );
+      assert.notStrictEqual(expectedFromInjected, wouldBeFromAmbient);
+      assert.strictEqual(identity.legacyCandidates[0].key, expectedFromInjected);
+      assert.notStrictEqual(identity.legacyCandidates[0].key, wouldBeFromAmbient);
+    } finally {
+      if (savedAmbientKey === undefined) delete process.env.Z_AI_API_KEY;
+      else process.env.Z_AI_API_KEY = savedAmbientKey;
+      if (savedAmbientAlias === undefined) delete process.env.ZAI_API_KEY;
+      else process.env.ZAI_API_KEY = savedAmbientAlias;
+    }
   });
 });

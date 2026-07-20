@@ -972,3 +972,296 @@ describe("ZaiMcpClient — ZRead wrappers preserve public cache identity (P6-01A
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Reader Migration Ticket 02 — `webRead` preserves the legacy v0.2
+// public-name cache identity and resolves the discovered internal UTCP
+// identity only on a cache miss. Mirrors the P6-01A ZRead fix shape:
+// the cache hit path never touches discovery / registration / UTCP, the
+// cache miss path resolves the internal sanitized name before invocation,
+// and the TypeScript return type honestly reflects the
+// `ReaderRawResponse` (`ReaderRawObjectResponse | string`) runtime shape.
+//
+// These tests parallel the P6-01A ZRead cache-identity block above. The
+// `webRead` method is the Reader-equivalent of the same wrapper-name
+// translation defect P6-01A fixed for `zreadSearch` / `zreadTree` /
+// `zreadFile`.
+//
+// Test (3) is the RED→GREEN proof: against the unfixed `webRead` it
+// fails because the public dotted name is passed straight to UTCP
+// (which rejects it). After the fix routes through
+// `callToolWithPublicCacheIdentity`, the internal sanitized name is
+// resolved on the miss and UTCP accepts it.
+// ---------------------------------------------------------------------------
+
+describe("ZaiMcpClient — webRead preserves public cache identity (Reader Ticket 02)", () => {
+  const PUBLIC_WEB_READER = getMcpToolName("reader", "webReader");
+  const INTERNAL_WEB_READER = "scoutline_zai.reader.webReader";
+
+  // `buildCacheKey` reads the API key to namespace the cache key. The
+  // legacy v0.2 contract used `Z_AI_API_KEY` as the namespace, so seed a
+  // fixed value and restore the previous environment around the suite.
+  let tempDir;
+  let originalCacheDir;
+  let originalToolCache;
+  let originalApiKey;
+  const TEST_API_KEY = "reader-ticket-02-cache-identity-fixture";
+
+  before(async () => {
+    originalCacheDir = process.env.ZAI_CACHE_DIR;
+    originalToolCache = process.env.ZAI_MCP_TOOL_CACHE;
+    originalApiKey = process.env.Z_AI_API_KEY;
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), TEMP_PREFIX));
+    process.env.ZAI_CACHE_DIR = tempDir;
+    process.env.ZAI_MCP_TOOL_CACHE = "0";
+    process.env.Z_AI_API_KEY = TEST_API_KEY;
+  });
+
+  after(async () => {
+    if (originalCacheDir === undefined) delete process.env.ZAI_CACHE_DIR;
+    else process.env.ZAI_CACHE_DIR = originalCacheDir;
+    if (originalToolCache === undefined) delete process.env.ZAI_MCP_TOOL_CACHE;
+    else process.env.ZAI_MCP_TOOL_CACHE = originalToolCache;
+    if (originalApiKey === undefined) delete process.env.Z_AI_API_KEY;
+    else process.env.Z_AI_API_KEY = originalApiKey;
+    if (tempDir) {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  // The fake registers every callback. We do NOT want it called at all on
+  // a cache hit — that is the regression we are proving the fix prevents.
+  function unusedFake() {
+    const fake = new FakeUtcpClient({ discoveredTools: [] });
+    // If the fake is touched on a hit, every counter must remain zero.
+    return fake;
+  }
+
+  it("webRead returns a legacy public-key cache hit without discovery", async () => {
+    // (1) Cache hit without discovery / registration / UTCP. Pre-seed the
+    //     cache with a public-named entry; call webRead; assert the cache
+    //     hit returned the value and discovery/registration/UTCP were
+    //     never touched. Mirrors the P6-01A ZRead cache-identity tests.
+    const fake = unusedFake();
+    const args = { url: "https://example.com/" };
+    const key = buildCacheKey(PUBLIC_WEB_READER, args);
+    await writeCache(key, { title: "cached", content: "<cached/>" });
+
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      // noCache is intentionally NOT set — the v0.2 hit must apply.
+    });
+    try {
+      const result = await client.webRead({ url: "https://example.com/" });
+      assert.deepStrictEqual(result, { title: "cached", content: "<cached/>" });
+      assert.strictEqual(fake.registerManualCalls, 0, "registerManual must not run on cache hit");
+      assert.strictEqual(fake.getToolsCalls, 0, "getTools must not run on cache hit");
+      assert.strictEqual(fake.callToolCalls.length, 0, "callTool must not run on cache hit");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("webRead cache key shape is the legacy public-name form", async () => {
+    // (2) Legacy `ZaiMcpClient.webRead` continues to hit the public-named
+    //     cache entry. The cache key shape is
+    //     `scoutline.zai.reader.webReader.<credential-hash>.<request-hash>.json`.
+    //     Assert by reconstructing the key via `buildCacheKey` (the same
+    //     helper production uses) and proving a hit under that key returns
+    //     through `webRead` without transport construction.
+    const fake = unusedFake();
+    const args = { url: "https://example.com/" };
+    const key = buildCacheKey(PUBLIC_WEB_READER, args);
+    // Direct probe of the public-name cache key shape.
+    assert.match(
+      key,
+      /^scoutline\.zai\.reader\.webReader\.[0-9a-f]{12}\.[0-9a-f]{24}\.json$/,
+      `legacy reader cache key shape changed: ${key}`,
+    );
+    await writeCache(key, "legacy-string-hit");
+
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+    });
+    try {
+      const result = await client.webRead({ url: "https://example.com/" });
+      assert.strictEqual(result, "legacy-string-hit");
+      assert.strictEqual(fake.registerManualCalls, 0);
+      assert.strictEqual(fake.getToolsCalls, 0);
+      assert.strictEqual(fake.callToolCalls.length, 0);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("webRead cache miss resolves the discovered internal identity before invocation", async () => {
+    // (3) RED→GREEN proof. Cache miss resolves the discovered internal
+    //     identity before invocation — assert the internal sanitized name
+    //     reached `callTool` (UTCP). Against the unfixed `webRead` this
+    //     test fails because the public dotted name is passed straight
+    //     to UTCP and UTCP rejects it. After the fix routes through
+    //     `callToolWithPublicCacheIdentity`, the internal sanitized name
+    //     is resolved and UTCP accepts it.
+    const fake = new FakeUtcpClient({
+      discoveredTools: [
+        {
+          name: INTERNAL_WEB_READER,
+          inputs: { type: "object", properties: {}, required: ["url"] },
+        },
+      ],
+      resultsByName: { [INTERNAL_WEB_READER]: { title: "live", content: "fetched" } },
+    });
+    // UTCP rejects the public dotted name — mirrors real UTCP behaviour
+    // where only the registered sanitized identity is known.
+    fake.errorsByName[PUBLIC_WEB_READER] = new Error(
+      `Tool not found in UTCP manual: ${PUBLIC_WEB_READER}`,
+    );
+
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      // Force the miss path; we are testing name resolution, not caching.
+      noCache: true,
+    });
+    try {
+      const result = await client.webRead({ url: "https://example.com/" });
+      assert.deepStrictEqual(result, { title: "live", content: "fetched" });
+      assert.strictEqual(fake.callToolCalls.length, 1, "UTCP callTool must run exactly once");
+      assert.strictEqual(
+        fake.callToolCalls[0].name,
+        INTERNAL_WEB_READER,
+        "webRead must resolve the internal sanitized name before invoking UTCP",
+      );
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("callToolRaw semantics for non-reader callers remain unchanged", async () => {
+    // (4) P6-01A guardrail extended to the Reader fix: the cache-identity
+    //     fix is scoped to the Reader wrapper only. A non-Reader public
+    //     caller must still resolve through `resolveToolName` and pass
+    //     the internal identity to `callTool` — `callToolRaw` is not
+    //     modified.
+    const fake = new FakeUtcpClient({
+      discoveredTools: [
+        {
+          name: "scoutline_zai.search.web_search_prime",
+          inputs: { type: "object", properties: {}, required: ["search_query"] },
+        },
+      ],
+      resultsByName: { "scoutline_zai.search.web_search_prime": "ok" },
+    });
+    fake.errorsByName["scoutline.zai.search.web_search_prime"] = new Error(
+      "Tool not found in UTCP manual: scoutline.zai.search.web_search_prime",
+    );
+
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      noCache: true,
+    });
+    try {
+      const result = await client.callToolRaw("scoutline.zai.search.web_search_prime", {
+        search_query: "x",
+      });
+      assert.strictEqual(result, "ok");
+      assert.strictEqual(fake.callToolCalls.length, 1);
+      assert.strictEqual(
+        fake.callToolCalls[0].name,
+        "scoutline_zai.search.web_search_prime",
+        "callToolRaw must continue to invoke UTCP under the internal name",
+      );
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("webRead return shape matches ReaderRawResponse (object | string union)", async () => {
+    // (5) Return-type widening. The TypeScript signature widens from
+    //     `Promise<string>` to `Promise<ReaderRawResponse>` (object |
+    //     string). A simple typeof / shape assertion is sufficient; the
+    //     full decoder is Ticket 01's coverage.
+    //
+    //     Common case (object success): UTCP returns an object shaped
+    //     like `ReaderRawObjectResponse`; the union's object arm covers
+    //     it. The bare-string arm covers MCP-level error envelopes
+    //     (`"MCP error -500: ..."`); we exercise it through the cache
+    //     path because `callToolUncached` would otherwise JSON-parse a
+    //     JSON-shaped string into an object.
+    const objectFake = new FakeUtcpClient({
+      discoveredTools: [
+        {
+          name: INTERNAL_WEB_READER,
+          inputs: { type: "object", properties: {}, required: ["url"] },
+        },
+      ],
+      resultsByName: {
+        [INTERNAL_WEB_READER]: {
+          title: "live",
+          url: "https://example.com/",
+          content: "fetched",
+        },
+      },
+    });
+    objectFake.errorsByName[PUBLIC_WEB_READER] = new Error(
+      `Tool not found in UTCP manual: ${PUBLIC_WEB_READER}`,
+    );
+
+    const objectClient = new ZaiMcpClient({
+      utcpFactory: async () => objectFake,
+      noCache: true,
+    });
+    try {
+      const result = await objectClient.webRead({ url: "https://example.com/" });
+      assert.ok(
+        typeof result === "object" || typeof result === "string",
+        `webRead must return object | string, got ${typeof result}`,
+      );
+      assert.strictEqual(typeof result, "object");
+      assert.ok(result !== null);
+      // Spot-check the object-shape arm without re-asserting the full
+      // decoder (Ticket 01's coverage).
+      assert.ok("content" in result, "object arm should carry ReaderRawObjectResponse fields");
+    } finally {
+      await objectClient.close();
+    }
+
+    // Bare-string arm: a non-JSON string returned by UTCP passes through
+    // `callToolUncached`'s `JSON.parse` fallback verbatim, exercising the
+    // string arm of the union. This mirrors how a `"MCP error -500: ..."`
+    // envelope reaches the caller.
+    const stringFake = new FakeUtcpClient({
+      discoveredTools: [
+        {
+          name: INTERNAL_WEB_READER,
+          inputs: { type: "object", properties: {}, required: ["url"] },
+        },
+      ],
+      resultsByName: { [INTERNAL_WEB_READER]: "MCP error -500: transport failure" },
+    });
+    stringFake.errorsByName[PUBLIC_WEB_READER] = new Error(
+      `Tool not found in UTCP manual: ${PUBLIC_WEB_READER}`,
+    );
+
+    // Seed a cache entry so `webRead` returns the raw string verbatim
+    // without going through the JSON-parse branch in `callToolUncached`.
+    // Using the cache path here isolates the union's string arm from
+    // `callToolUncached`'s string-coercion behaviour.
+    const cacheKey = buildCacheKey(PUBLIC_WEB_READER, { url: "https://example.com/" });
+    await writeCache(cacheKey, "MCP error -500: cached failure");
+
+    const stringClient = new ZaiMcpClient({
+      utcpFactory: async () => stringFake,
+    });
+    try {
+      const result = await stringClient.webRead({ url: "https://example.com/" });
+      assert.ok(
+        typeof result === "object" || typeof result === "string",
+        `webRead must return object | string, got ${typeof result}`,
+      );
+      assert.strictEqual(typeof result, "string");
+      assert.strictEqual(result, "MCP error -500: cached failure");
+    } finally {
+      await stringClient.close();
+    }
+  });
+});

@@ -31,6 +31,7 @@ import {
 import { loadConfig, getMcpEndpoints } from "./config.js";
 import { redactTool } from "./redact.js";
 import { buildCacheKey, readCache, writeCache } from "./cache.js";
+import type { ReaderRawResponse } from "../capabilities/reader.js";
 
 const DEFAULT_TIMEOUT_MS = parseInt(process.env.Z_AI_TIMEOUT || "30000", 10);
 const DEFAULT_RETRY_BASE_MS = parseInt(process.env.ZAI_MCP_RETRY_BASE_MS || "500", 10);
@@ -616,7 +617,7 @@ export class ZaiMcpClient {
     noGfm?: boolean;
     keepImgDataUrl?: boolean;
     withImagesSummary?: boolean;
-  }): Promise<string> {
+  }): Promise<ReaderRawResponse> {
     const args: Record<string, unknown> = {
       url: params.url,
     };
@@ -646,7 +647,25 @@ export class ZaiMcpClient {
       args.with_images_summary = params.withImagesSummary;
     }
 
-    return this.callTool<string>(getMcpToolName("reader", "webReader"), args);
+    // Reader Migration Ticket 02: route through
+    // `callToolWithPublicCacheIdentity` so:
+    //   - the public dotted name is preserved as the cache identity
+    //     (legacy v0.2 reader cache hits still return without any
+    //     transport work, matching the v0.2 contract);
+    //   - on a cache miss the public name is resolved to the discovered
+    //     internal UTCP identity before invocation (fixes the
+    //     public-name translation regression where UTCP rejected the
+    //     dotted name with "Tool not found in UTCP manual").
+    // Mirrors the P6-01A fix applied to `zreadSearch` / `zreadTree` /
+    // `zreadFile`. The TypeScript return type widens from
+    // `Promise<string>` to `Promise<ReaderRawResponse>` to honestly
+    // reflect the runtime shape of the Z.AI WebReader MCP response
+    // (structured object on success; bare string for MCP-level error
+    // envelopes like `"MCP error -500: ..."`).
+    return this.callToolWithPublicCacheIdentity<ReaderRawResponse>(
+      getMcpToolName("reader", "webReader"),
+      args,
+    );
   }
 
   // ============ Vision Methods ============

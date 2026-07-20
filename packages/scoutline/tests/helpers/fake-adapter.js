@@ -17,6 +17,7 @@ import {
   decodeRepositoryFile,
   decodeRepositorySearch,
 } from "../../dist/capabilities/repository.js";
+import { decodeReaderFetchResult } from "../../dist/capabilities/reader.js";
 import { ValidationError } from "../../dist/lib/errors.js";
 
 export function createFakeAdapter(overrides = {}) {
@@ -327,6 +328,245 @@ export function createFakeRepositoryDescriptor({
           ...capabilityOptions,
         });
         adapter.repository = capability;
+        adapter._fakeStats = stats;
+      }
+      return adapter;
+    },
+  };
+  return { descriptor, stats };
+}
+
+// ---------------------------------------------------------------------------
+// Reader Migration 05: fake Reader Capability (DESIGN.md §18).
+//
+// A reusable second Reader Adapter that produces the SAME normalized
+// `ReaderFetchResult` contract as the Z.AI Reader Adapter WITHOUT
+// touching any WebReader raw response. It is the cross-Adapter
+// conformance proof: the same semantic request flows through Z.AI
+// (fed a raw WebReader object fixture) and the fake (fed the
+// structured expected result) and produces identical normalized
+// `ReaderFetchResult` values.
+//
+// Scope:
+//   - Returns a structured normalized result directly; NO raw parsing.
+//   - Records every `validate` / `cacheIdentity` / `decodeCached` /
+//     `invoke` call so conformance tests can assert lifecycle,
+//     ordering, and attempt counts.
+//   - Accepts a resolved credential (used for the cache fingerprint)
+//     and optional Adapter-owned legacy candidates.
+//   - Accepts a scripted `fetchResult` (constant ReaderFetchResult or
+//     function (request, attempt) => ReaderFetchResult) and a scripted
+//     `fetchError` (Error or function (attempt) => Error) per call for
+//     retry and error-taxonomy proofs.
+//   - Accepts a `closeBehavior` ("resolve" | "reject" | "hang") stored
+//     on the stats object so conformance tests can inspect what close
+//     shape the fake Adapter would have requested. The authoritative
+//     close lifecycle evidence (closeEntered / fake.closeCount) lives
+//     in `reader-conformance.test.js`, which drives the REAL Z.AI
+//     Adapter through fake per-port doubles. The fake has no transport
+//     of its own; this field is inspection-only.
+//
+// What this helper is NOT:
+//   - It has NO transport and performs NO real close. The Z.AI per-port
+//     doubles in `reader-conformance.test.js` are the lifecycle source
+//     of truth, exactly mirroring the P6-08 repository precedent. Do
+//     not add close-related call counters here.
+//   - Its `legacyCandidates` are GENERIC executor-ordering fixtures
+//     only. They do NOT model the real Z.AI `ZAI_API_KEY` credential
+//     alias; the real alias matrix lives in `reader-conformance.test.js`
+//     and drives the production Z.AI Adapter end-to-end.
+//
+// This helper is test-only and exports no production code. It never
+// imports a concrete Provider, transport, or command module.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a fake Reader Capability. The single `fetch` operation returns
+ * a scripted structured result. Pass per-operation overrides to script
+ * errors or custom results.
+ *
+ * @param {object} options
+ * @param {string} [options.apiKey="fake-adapter-key"]
+ *   Resolved credential used for the cache fingerprint. The fingerprint
+ *   matches the Z.AI Adapter algorithm (full SHA-256 hex) so cross-
+ *   Adapter cache-key identity proofs can compare apples to apples.
+ * @param {("zai"|"minimax"|"fake")} [options.provider="fake"]
+ *   Provider ID embedded in the cache identity. Defaults to `"fake"`
+ *   so cross-Provider cache isolation can be asserted without
+ *   colliding with the built-in IDs.
+ * @param {object} [options.fetch]
+ *   Per-operation script for Fetch. Shape: `{ result?, error? }`.
+ *   `result` may be a `ReaderFetchResult` value or a function
+ *   `(request, attempt) => ReaderFetchResult`. `error` may be an
+ *   `Error` instance or a function `(attempt) => Error`. When `error`
+ *   is set it takes precedence over `result`. The fake has no transport
+ *   and performs no close; this option scripts only the visible
+ *   `invoke()` outcome.
+ * @param {object[]} [options.legacyCandidates]
+ *   Generic executor-ordering fixtures attached to the fetch
+ *   operation's `cacheIdentity`. Each entry: `{ key, decode }`. The
+ *   decode runs against the raw cached value and returns the
+ *   normalized result or `null`. These fixtures exercise the shared
+ *   executor's candidate-sequence behaviour (primary-before-alias
+ *   `cache.get` order, write-through to the normalized key, fall-
+ *   through to invoke on miss); they do NOT model the real Z.AI
+ *   `ZAI_API_KEY` credential alias, which is covered end-to-end
+ *   through the production Z.AI Adapter in
+ *   `reader-conformance.test.js`.
+ * @param {("resolve"|"reject"|"hang")} [options.closeBehavior="resolve"]
+ *   Inspection-only flag stored on the returned `stats` object. The
+ *   fake has no transport; close lifecycle evidence comes from the
+ *   Z.AI per-port doubles in `reader-conformance.test.js`. This field
+ *   is provided so conformance tests can assert the scripted close
+ *   shape alongside the real Adapter's per-port evidence.
+ * @returns {{capability: object, stats: object, fingerprint: string}}
+ *   `capability` is a `ReaderCapability`. `stats` exposes per-
+ *   operation counters: `{ validate, cacheIdentity, decodeCached,
+ *   invoke, lastRequest, closeBehavior }`. `fingerprint` is the full
+ *   SHA-256 hex digest of the resolved credential (matching the Z.AI
+ *   Adapter algorithm).
+ */
+export function createFakeReaderCapability(options = {}) {
+  const apiKey = options.apiKey || "fake-adapter-key";
+  const provider = options.provider || "fake";
+  const fingerprint = crypto.createHash("sha256").update(apiKey).digest("hex");
+  const legacyCandidates = options.legacyCandidates || [];
+  const scripted = options.fetch || {};
+  const closeBehavior = options.closeBehavior || "resolve";
+
+  const stats = {
+    fetch: {
+      validate: 0,
+      cacheIdentity: 0,
+      decodeCached: 0,
+      invoke: 0,
+      lastRequest: null,
+    },
+    closeBehavior,
+  };
+
+  const operation = {
+    kind: "reader-fetch",
+    validate(request) {
+      stats.fetch.validate += 1;
+      // Mirror the Z.AI Adapter's structural validation: URL must be
+      // a non-empty string starting with http:// or https://.
+      if (typeof request.url !== "string" || request.url.length === 0) {
+        throw new ValidationError("fake reader URL must be a non-empty string");
+      }
+      if (!/^https?:\/\//.test(request.url)) {
+        throw new ValidationError("URL must start with http:// or https://");
+      }
+    },
+    cacheIdentity(request) {
+      stats.fetch.cacheIdentity += 1;
+      stats.fetch.lastRequest = request;
+      return {
+        provider,
+        capability: "reader",
+        operation: "reader-fetch",
+        credentialFingerprint: fingerprint,
+        request,
+        legacyCandidates,
+      };
+    },
+    decodeCached(value) {
+      stats.fetch.decodeCached += 1;
+      return decodeReaderFetchResult(value);
+    },
+    async invoke(request) {
+      stats.fetch.invoke += 1;
+      stats.fetch.lastRequest = request;
+      if (typeof scripted.error === "function") {
+        throw scripted.error(stats.fetch.invoke);
+      }
+      if (scripted.error instanceof Error) {
+        throw scripted.error;
+      }
+      if (typeof scripted.result === "function") {
+        return scripted.result(request, stats.fetch.invoke);
+      }
+      if (scripted.result !== undefined) {
+        return scripted.result;
+      }
+      throw new Error(
+        "fake Reader fetch invoke called without a scripted result/error",
+      );
+    },
+  };
+
+  const capability = { fetch: operation };
+  return { capability, stats, fingerprint };
+}
+
+/**
+ * Build a fake Provider Descriptor whose created Adapter exposes a fake
+ * Reader Capability. The descriptor ALWAYS advertises `reader` (the
+ * capability set starts from `["reader"]` and `extraCapabilities` is
+ * additive on top of it; there is no opt-out). `omitReaderOnAdapter:
+ * true` creates the descriptor/Adapter mismatch case used by fail-
+ * closed dispatch proofs: `capabilities()` still advertises the
+ * capability, but `create()` returns an Adapter WITHOUT the `reader`
+ * handle. This is the descriptor shape `main()` consumes; it never
+ * touches a real transport.
+ *
+ * @param {object} opts
+ * @param {string} [opts.id="fake"]
+ *   Provider ID embedded in the cache identity.
+ * @param {string} [opts.apiKey="fake-adapter-key"]
+ *   Resolved credential forwarded to `createFakeReaderCapability`.
+ * @param {boolean|((env) => boolean)} [opts.configured=true]
+ *   Either a static configured flag or a function evaluated against
+ *   the env passed to `isConfigured()`.
+ * @param {object} [opts.capabilityOptions={}]
+ *   Forwarded verbatim to `createFakeReaderCapability` as the per-
+ *   operation script (`fetch`/`legacyCandidates`/`closeBehavior`).
+ * @param {string[]} [opts.extraCapabilities=[]]
+ *   Additive capability IDs joined onto the always-present `reader`
+ *   base.
+ * @param {boolean} [opts.omitReaderOnAdapter=false]
+ *   When `true`, `create()` returns an Adapter without the `reader`
+ *   handle even though `capabilities()` still advertises `reader`.
+ *   Used to exercise the dispatcher's fail-closed path.
+ * @returns {{descriptor: object, stats: object}}
+ *   `descriptor` is a `ProviderDescriptor`. `stats` exposes
+ *   `{ isConfiguredCalls, capabilitiesCalls, createCalls }`.
+ */
+export function createFakeReaderDescriptor({
+  id = "fake",
+  apiKey = "fake-adapter-key",
+  configured = true,
+  capabilityOptions = {},
+  extraCapabilities = [],
+  omitReaderOnAdapter = false,
+} = {}) {
+  const stats = {
+    isConfiguredCalls: 0,
+    capabilitiesCalls: 0,
+    createCalls: 0,
+  };
+  const baseCapabilities = new Set(["reader", ...extraCapabilities]);
+  const descriptor = {
+    id,
+    isConfigured(env) {
+      stats.isConfiguredCalls += 1;
+      if (typeof configured === "function") return configured(env);
+      return configured;
+    },
+    capabilities() {
+      stats.capabilitiesCalls += 1;
+      return new Set(baseCapabilities);
+    },
+    create() {
+      stats.createCalls += 1;
+      const adapter = { id };
+      if (!omitReaderOnAdapter) {
+        const { capability } = createFakeReaderCapability({
+          apiKey,
+          provider: id,
+          ...capabilityOptions,
+        });
+        adapter.reader = capability;
         adapter._fakeStats = stats;
       }
       return adapter;

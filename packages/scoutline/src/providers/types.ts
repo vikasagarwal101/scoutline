@@ -244,6 +244,28 @@ export type ProviderQuotaFetch = (
   init: Record<string, unknown>,
 ) => Promise<ProviderQuotaFetchResponse>;
 
+/**
+ * Injectable fetch response for image transports (duck-typed). Extends
+ * {@link ProviderQuotaFetchResponse} with the two fields an image
+ * transport reads beyond JSON body parsing: `headers` (for MIME
+ * detection via `Content-Type`) and `arrayBuffer` (for the raw bytes).
+ *
+ * Production `fetch` returns the global `Response`, which exposes both
+ * fields and therefore satisfies this interface; tests inject doubles
+ * that match. Quota and JSON-only transports continue to consume the
+ * narrower {@link ProviderQuotaFetchResponse} — they don't need these
+ * fields and their fakes shouldn't be forced to provide them.
+ */
+export interface ProviderImageFetchResponse extends ProviderQuotaFetchResponse {
+  readonly headers: { get(name: string): string | null };
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+export type ProviderImageFetch = (
+  input: string | URL,
+  init: Record<string, unknown>,
+) => Promise<ProviderImageFetchResponse>;
+
 /** Dependencies the Phase 2 Search wiring would inject into the registry. */
 export interface SearchDependencies {
   clientFactory(options: ZaiMcpClientOptions): LegacySearchClientPort;

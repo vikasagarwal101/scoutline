@@ -40,7 +40,7 @@ import {
   TimeoutError,
   ValidationError,
 } from "../../lib/errors.js";
-import type { ProviderQuotaFetch, ProviderQuotaFetchResponse } from "../types.js";
+import type { ProviderImageFetch } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // MiniMax media limits (DESIGN.md §9)
@@ -187,21 +187,10 @@ function detectMimeFromContentType(contentType: string | null): string {
  * deterministically without real network I/O.
  */
 export interface ConvertToDataUriDeps {
-  readonly fetch?: ProviderQuotaFetch;
+  readonly fetch?: ProviderImageFetch;
   readonly setTimeout?: typeof setTimeout;
   readonly clearTimeout?: typeof clearTimeout;
 }
-
-/**
- * Minimal HTTP-fetch response shape `convertToDataUri` reads beyond
- * the duck-typed `ProviderQuotaFetchResponse`. Production `fetch`
- * returns the full `Response` (which exposes both fields); tests
- * inject doubles that match.
- */
-type ImageFetchResponse = ProviderQuotaFetchResponse & {
-  headers?: { get(name: string): string | null };
-  arrayBuffer(): Promise<ArrayBuffer>;
-};
 
 /**
  * Convert a MiniMax image source into the `data:<mime>;base64,...` form
@@ -244,7 +233,7 @@ async function fetchHttpImageAsDataUri(
   source: string,
   deps: ConvertToDataUriDeps,
 ): Promise<string> {
-  const f = deps.fetch ?? (fetch as unknown as ProviderQuotaFetch);
+  const f = deps.fetch ?? (fetch as unknown as ProviderImageFetch);
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
   const timeoutMs = MINIMAX_IMAGE_FETCH_TIMEOUT_MS;
@@ -252,16 +241,16 @@ async function fetchHttpImageAsDataUri(
   const controller = new AbortController();
   const timeoutId = setT(() => controller.abort(), timeoutMs);
   try {
-    const res = (await f(source, {
+    const res = await f(source, {
       method: "GET",
       signal: controller.signal,
-    })) as unknown as ImageFetchResponse;
+    });
     clearT(timeoutId);
     if (!res.ok) {
       await res.text().catch(() => {});
       throw new ApiError(`Failed to download image: HTTP ${res.status}`, res.status);
     }
-    const contentType = res.headers?.get("content-type") ?? null;
+    const contentType = res.headers.get("content-type");
     const mime = detectMimeFromContentType(contentType);
     const buf = await res.arrayBuffer();
     if (buf.byteLength > MINIMAX_MAX_IMAGE_BYTES) {

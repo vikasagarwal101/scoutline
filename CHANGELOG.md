@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+_No published changes yet. See `docs/plans/` for in-flight work._
+
+## [0.3.0] - 2026-07-20
+
 ### Added
 - Provider-neutral repository exploration. `scoutline repo search`,
   `scoutline repo read`, and `scoutline repo tree` participate in the

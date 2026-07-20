@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+_No published changes yet. See `docs/plans/` for in-flight work._
+
+## [0.5.0] - 2026-07-20
+
 The Cache Module Unification series lands three commits across two
 parallel tickets (02: tool cache extraction from `ZaiMcpClient`; 03:
 CLI surface + Doctor + documentation migration). The release gate

@@ -10,9 +10,6 @@
 
 import { UtcpClient, type Tool } from "@utcp/sdk";
 import "@utcp/mcp";
-import crypto from "node:crypto";
-import * as fs from "node:fs/promises";
-import path from "node:path";
 import {
   buildMcpCallTemplate,
   getMcpToolName,
@@ -28,16 +25,14 @@ import {
   ValidationError,
 } from "./errors.js";
 import { loadConfig, getMcpEndpoints } from "./config.js";
-import { redactTool } from "./redact.js";
-import { buildCacheKey, readCache, writeCache, toolCacheDir } from "./cache.js";
+import { buildCacheKey, readCache, writeCache } from "./cache.js";
+import { readToolCache, writeToolCache, type ToolCacheConfig } from "./tool-cache.js";
 import type { ReaderRawResponse } from "../capabilities/reader.js";
 
 const DEFAULT_TIMEOUT_MS = parseInt(process.env.Z_AI_TIMEOUT || "30000", 10);
 const DEFAULT_RETRY_BASE_MS = parseInt(process.env.ZAI_MCP_RETRY_BASE_MS || "500", 10);
 const DEFAULT_RETRY_MAX_MS = parseInt(process.env.ZAI_MCP_RETRY_MAX_MS || "8000", 10);
 const DEFAULT_RETRY_JITTER_MS = parseInt(process.env.ZAI_MCP_RETRY_JITTER_MS || "250", 10);
-const TOOL_CACHE_VERSION = 1;
-const DEFAULT_TOOL_CACHE_TTL_MS = parseInt(process.env.ZAI_MCP_TOOL_CACHE_TTL_MS || "86400000", 10);
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -303,72 +298,21 @@ export class ZaiMcpClient {
     return this.options.enableVision ?? envVision;
   }
 
-  private getToolCacheKey(): string {
+  /**
+   * Build the tool-cache config (D4 — adapter encapsulates the
+   * config + endpoints + vision-resolution inputs that the extracted
+   * `tool-cache.ts` needs to compute a stable key). Owned here because
+   * the inputs come from this class's options and the shared config
+   * module; the extracted module stays pure of `loadConfig` / `getMcpEndpoints`.
+   */
+  private getToolCacheConfig(): ToolCacheConfig {
     const config = loadConfig();
-    const endpoints = getMcpEndpoints();
-    const keyData = {
+    return {
       mode: config.mode,
       baseUrl: config.baseUrl,
-      endpoints,
+      endpoints: getMcpEndpoints(),
       enableVision: this.resolveEnableVision(),
     };
-    return crypto.createHash("sha256").update(JSON.stringify(keyData)).digest("hex").slice(0, 16);
-  }
-
-  private getToolCachePath(): string {
-    const cacheDir = toolCacheDir();
-    const key = this.getToolCacheKey();
-    return path.join(cacheDir, `tools-${key}.json`);
-  }
-
-  private async readToolsCache(refresh: boolean): Promise<Tool[] | null> {
-    // Re-check the env var at call time so tests can disable the
-    // on-disk tool cache without restarting the process. Production
-    // behaviour is unchanged when the env var is unset.
-    const enabled = !["0", "false"].includes((process.env.ZAI_MCP_TOOL_CACHE || "1").toLowerCase());
-    if (!enabled || refresh) {
-      return null;
-    }
-    if (DEFAULT_TOOL_CACHE_TTL_MS <= 0) {
-      return null;
-    }
-    try {
-      const raw = await fs.readFile(this.getToolCachePath(), "utf8");
-      const data = JSON.parse(raw) as {
-        version?: number;
-        timestamp?: number;
-        tools?: Tool[];
-      };
-      if (!data || data.version !== TOOL_CACHE_VERSION || !Array.isArray(data.tools)) {
-        return null;
-      }
-      const age = Date.now() - (data.timestamp || 0);
-      if (age > DEFAULT_TOOL_CACHE_TTL_MS) {
-        return null;
-      }
-      return data.tools;
-    } catch {
-      return null;
-    }
-  }
-
-  private async writeToolsCache(tools: Tool[]): Promise<void> {
-    const enabled = !["0", "false"].includes((process.env.ZAI_MCP_TOOL_CACHE || "1").toLowerCase());
-    if (!enabled || DEFAULT_TOOL_CACHE_TTL_MS <= 0) {
-      return;
-    }
-    try {
-      const cacheDir = toolCacheDir();
-      await fs.mkdir(cacheDir, { recursive: true });
-      const payload = {
-        version: TOOL_CACHE_VERSION,
-        timestamp: Date.now(),
-        tools: tools.map((tool) => redactTool(tool)),
-      };
-      await fs.writeFile(this.getToolCachePath(), JSON.stringify(payload));
-    } catch {
-      // Best-effort cache only.
-    }
   }
 
   /**
@@ -389,11 +333,16 @@ export class ZaiMcpClient {
    * Private unprojected discovery list. Tools keep their exact UTCP
    * names so {@link getTool} can resolve public aliases back to the
    * internal invocation identity.
+   *
+   * Tool-cache I/O is delegated to the extracted {@link tool-cache.ts}
+   * module (D1 — owns its I/O directly against the `tools/` subdir).
    */
   private async discoverTools(refresh: boolean = false): Promise<Tool[]> {
-    const cached = await this.readToolsCache(refresh);
-    if (cached) {
-      return cached;
+    if (!refresh) {
+      const cached = await readToolCache(this.getToolCacheConfig());
+      if (cached) {
+        return cached;
+      }
     }
 
     await this.init();
@@ -401,7 +350,7 @@ export class ZaiMcpClient {
       throw new ApiError("MCP client not initialized", 500);
     }
     const tools = await this.client.getTools();
-    await this.writeToolsCache(tools);
+    await writeToolCache(this.getToolCacheConfig(), tools);
     return tools;
   }
 

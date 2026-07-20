@@ -49,7 +49,9 @@ shell setting cannot accidentally trigger network calls.
 | `tests/errors.test.js` | Typed error contracts and error serialization. |
 | `tests/output.test.js` | Output mode and response envelope behavior. |
 | `tests/redact.test.js` | Recursive credential redaction. |
-| `tests/cache.test.js` | Provider-partitioned cache keys and on-disk behavior. |
+| `tests/cache.test.js` | Provider-partitioned cache keys, unified root resolver, call-time env aliasing, and on-disk behavior (response cache + tool cache). |
+| `tests/tool-cache.test.js` | Tool-discovery cache (`src/lib/tool-cache.ts`): enable granularity, version mismatch handling, redaction on write, and TTL semantics. |
+| `tests/cache-command.test.js` | `scoutline cache stats` / `cache clear` command handlers and CLI surface (format helpers, exit codes, isolated `SCOUTLINE_CACHE_DIR`). |
 | `tests/provider-selection.test.js` | Provider precedence and validation. |
 | `tests/provider-boundary.test.js` | Adapter boundary rules and capability ownership. |
 | `tests/provider-errors.test.js` | Provider-specific failure normalization. |

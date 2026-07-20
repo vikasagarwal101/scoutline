@@ -292,9 +292,33 @@ only place `--max-chars` ever appears.
 Repository cache hits return before any Adapter invocation and construct no
 transport. To force a fresh call, pass `--no-cache` (the operation still
 validates, computes the identity, invokes, and projects the result, but
-performs no reads or writes). To wipe the local cache for one Provider,
-delete matching entries under `ZAI_CACHE_DIR`; `scoutline` never rewrites,
-migrates, or deletes legacy v0.2 `zai-cli` cache files.
+performs no reads or writes). To wipe the local cache, run
+`scoutline cache clear`; `scoutline` never rewrites, migrates, or deletes
+legacy v0.2 `zai-cli` cache files in the orphaned `~/.cache/zai-cli/`
+directory.
+
+## Cache Stats and Clearing
+
+```bash
+scoutline cache stats   # inventory both cache/ and tools/ subdirectories
+scoutline cache clear   # delete every file in both subdirectories
+```
+
+`cache stats` prints the cache root, status (enabled/disabled, TTL, size
+cap), and per-subdirectory entry count and total size. The output
+matches the `data`-mode JSON shape `{dir, enabled, ttlMs, sizeCapBytes,
+responseCache: {entries, totalBytes}, toolCache: {entries, totalBytes}}`
+in `data` mode and a multi-line inventory in any text-oriented mode
+(`tty`, `compact`, `markdown`, `refs`).
+
+`cache clear` deletes every file under `<root>/cache/` and
+`<root>/tools/`. The directories themselves are preserved so the next
+invocation recreates entries without a directory-creation race. It
+never touches the orphaned legacy `~/.cache/zai-cli/` directory. The
+default cache root is `~/.scoutline/` on every platform; override it
+with `SCOUTLINE_CACHE_DIR`. See
+[Configuration](configuration.md#local-cache) for the full
+environment-variable surface and the legacy-alias table.
 
 ## Close Failure Doesn't Surface
 
@@ -346,9 +370,10 @@ Bypass the response cache for one request:
 scoutline search "latest MCP specification" --no-cache
 ```
 
-To disable caching for the process, set `ZAI_CACHE=0`. See
-[Configuration](configuration.md#response-cache) for TTL and directory
-controls. Note that Vision results are never cached regardless.
+To disable caching for the process, set `SCOUTLINE_CACHE=0` (legacy
+alias: `ZAI_CACHE=0`). See
+[Configuration](configuration.md#local-cache) for TTL, size cap, and
+directory controls. Note that Vision results are never cached regardless.
 
 ## Vision startup is slow or fails for non-vision commands
 

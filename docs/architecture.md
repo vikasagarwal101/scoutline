@@ -361,6 +361,7 @@ as unsupported for `read`.
 | `commands/tools.ts` | MCP tool discovery, schema lookup, and raw calls. |
 | `commands/code.ts` | TypeScript tool chaining through UTCP Code Mode. |
 | `commands/doctor.ts`, `commands/quota.ts` | Provider-aware diagnostics and quota dashboard. |
+| `commands/cache.ts` | Local cache inspection (`cache stats`) and clearing (`cache clear`). Presentation-only; I/O lives in `src/lib/cache.ts`. |
 
 Each command is responsible for input validation, silencing dependency logs,
 producing the final response, and closing its client in a `finally` block.
@@ -382,12 +383,30 @@ check, and Adapter creation live in `src/index.ts` (`handleRepository` and
 - Retriable failures use bounded exponential backoff with jitter. Retrying closes the current client before trying again.
 - Search/read/ZRead calls use the response cache unless `--no-cache` is supplied. Vision calls are never cached.
 - Multi-query search creates one client per concurrent query because UTCP clients are not concurrency-safe for parallel calls.
-- Tool discovery has a separate cache from normal response caching.
+- Tool discovery has a separate cache from normal response caching. Both caches share one on-disk root (`~/.scoutline/`) and one env-var policy; each owns its own subdirectory I/O (`cache/` for responses, `tools/` for tool discovery). Inspect or clear either via `scoutline cache stats` / `scoutline cache clear`.
 
-`src/lib/cache.ts` exposes a provider-partitioned cache key
-(`v2.<capability>.<provider>.<credential-hash>.<request-hash>.json`) used by
-shared execution. Legacy `zai-cli` cache keys remain readable for Z.AI as
-Adapter-owned candidates; old entries are never migrated or deleted.
+`src/lib/cache.ts` exposes the unified on-disk cache root resolver
+(`resolveCacheRootPure`), the call-time env-var aliasing policy, and a
+provider-partitioned cache key
+(`v2.<capability>.<provider>.<credential-hash>.<request-hash>.json`)
+used by shared execution. Two sibling subdirectories live under one
+root (`~/.scoutline/cache/` for responses, `~/.scoutline/tools/` for
+tool discovery); each cache owns its own I/O, but the root resolver and
+the env policy (`SCOUTLINE_CACHE*` with silent `ZAI_CACHE*`,
+`ZAI_MCP_TOOL_CACHE*`, and `ZAI_MCP_CACHE_DIR` aliases) are shared.
+Legacy `zai-cli` cache keys remain readable for Z.AI as Adapter-owned
+candidates; old entries are never migrated or deleted.
+
+`src/lib/tool-cache.ts` owns the tool-discovery cache I/O against the
+`tools/` sibling. It is consumed by `ZaiMcpClient`; the response cache
+never touches it. The LRU eviction loop in `src/lib/cache.ts` scans
+`cache/` only and never deletes files under `tools/`.
+
+`src/commands/cache.ts` is the presentation-only handler for
+`scoutline cache stats` and `scoutline cache clear`. The handlers
+receive already-resolved stats or clear results through injected
+dependencies; the dispatcher (`src/index.ts`) wires them to the real
+`cacheStats()` and `clearAllCaches()` from `src/lib/cache.ts`.
 
 `src/lib/output.ts` owns the output contract. Commands send successful values through `formatSuccessOutput`; failures are serialized by `formatErrorOutput` from `src/lib/output.ts` (with a legacy compat re-export from `src/lib/errors.ts`).
 

@@ -84,6 +84,7 @@ to either Provider.
 | tool | Show tool schema | |
 | call | Raw MCP tool invocation | |
 | doctor | Provider-aware diagnostics | `--help` for `--no-tools` |
+| cache | Inspect or clear the local cache | `--help` for stats/clear |
 | code | TypeScript tool chaining (Z.AI) | |
 
 ## Quick Start
@@ -108,6 +109,10 @@ npx scoutline doctor --provider minimax
 
 # All-Provider quota
 npx scoutline quota --all-providers
+
+# Local cache inspection and clearing
+npx scoutline cache stats                 # inventory both subdirectories
+npx scoutline cache clear                 # delete every file in cache/ and tools/
 ```
 
 ## Repository Exploration
@@ -255,13 +260,38 @@ Default: **data-only** (raw output for token efficiency).
 Use `--output-format json` for `{ success, data, timestamp }` wrapping.
 
 `quota` returns a schema-version-1 `QuotaDashboard` (ADR-0001); `doctor`
-returns a schema-version-1 `DiagnosticsReport`. Both are Provider-neutral.
+returns a schema-version-1 `DiagnosticsReport` (which now includes a
+one-line cache summary under `cache.summary`). Both are Provider-neutral.
 `repo` returns the schema-version-1 objects documented above; the standard
 envelope wraps them in `json`/`pretty` and the exact object is emitted in
 `data`. `read` returns the schema-version-1 content-read or extract-read
 envelope in `data`/`json`/`pretty`; text-oriented modes emit the `content`
 string for content reads (prose) and fall back to JSON for extract reads
 (data, not prose).
+
+`cache stats` and `cache clear` return their raw JSON shape in `data`
+mode (`{dir, enabled, ttlMs, sizeCapBytes, responseCache, toolCache}`
+and `{responsesCleared, toolsCleared, bytesFreed}` respectively) and a
+multi-line / one-line rendering in every text-oriented mode.
+
+## Local Cache
+
+The local cache lives at `~/.scoutline/` on every platform with two
+sibling subdirectories: `cache/` (Provider responses) and `tools/`
+(MCP tool discovery). Inspect or clear it with `scoutline cache stats`
+and `scoutline cache clear`.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SCOUTLINE_CACHE` | `1` | `0` or `false` disables both caches. |
+| `SCOUTLINE_CACHE_TTL_MS` | `86400000` (24h) | TTL for both response and tool entries. |
+| `SCOUTLINE_CACHE_SIZE_MB` | `100` | Size cap (MB) for the response cache (LRU eviction). |
+| `SCOUTLINE_CACHE_DIR` | `~/.scoutline/` | Overrides the root; `cache/` and `tools/` are created underneath. |
+
+Legacy aliases (`ZAI_CACHE*`, `ZAI_MCP_TOOL_CACHE*`, `ZAI_MCP_CACHE_DIR`)
+are accepted silently at lower precedence. `XDG_CACHE_HOME` is no longer
+consulted; the orphaned `~/.cache/zai-cli/` directory is never read,
+migrated, or deleted.
 
 ## Advanced
 

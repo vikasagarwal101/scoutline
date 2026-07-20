@@ -149,6 +149,7 @@ scoutline search --help       # Search options
 scoutline repo --help         # GitHub repo commands
 scoutline doctor --help       # Provider diagnostics
 scoutline quota --help        # Plan usage
+scoutline cache --help        # Local cache inspection and clearing
 ```
 
 ### Examples
@@ -187,6 +188,10 @@ scoutline quota --all-providers       # every configured Provider
 scoutline doctor                      # full diagnostics
 scoutline doctor --no-tools           # metadata only, no transport
 scoutline doctor --provider minimax   # MiniMax connectivity
+
+# Cache - inspect or clear the local cache
+scoutline cache stats                 # show inventory of both subdirectories
+scoutline cache clear                 # delete every file under cache/ and tools/
 ```
 
 ## Output Format
@@ -221,7 +226,8 @@ Quota output is a schema-version-1 `QuotaDashboard`:
 ```
 
 Doctor output is a schema-version-1 `DiagnosticsReport` listing every built-in
-Provider with its configured state, declared capabilities, and probe status.
+Provider with its configured state, declared capabilities, probe status, and a
+one-line cache summary under the `cache` field.
 
 ## Notes
 
@@ -233,9 +239,8 @@ Provider with its configured state, declared capabilities, and probe status.
   configured probe fails; successful entries are still reported.
 - `read` returns a schema-version-1 envelope (content read or extract read) in every output mode. `--with-images-summary`, `--no-gfm`, and `--keep-img-data-url` are passed through to the Provider request. `--max-chars` is ignored on extract reads; `--full-envelope` is silently deprecated.
 - Vision tool calls automatically retry transient 5xx/network errors (default: 2 retries). Configure with `ZAI_MCP_VISION_RETRY_COUNT` (or `ZAI_MCP_RETRY_COUNT` for all tools).
-- Tool discovery can be cached to speed `tools`/`tool`/`doctor` (default: on, 24h TTL). Configure with `ZAI_MCP_TOOL_CACHE`, `ZAI_MCP_TOOL_CACHE_TTL_MS`, `ZAI_MCP_CACHE_DIR`.
-- The response cache uses provider-partitioned keys; legacy `zai-cli` cache
-  entries remain readable for Z.AI but are never migrated.
+- Tool discovery can be cached to speed `tools`/`tool`/`doctor` (default: on, 24h TTL). The cache shares the unified root with the response cache; configure both via `SCOUTLINE_CACHE`, `SCOUTLINE_CACHE_TTL_MS`, `SCOUTLINE_CACHE_SIZE_MB`, and `SCOUTLINE_CACHE_DIR` (legacy aliases `ZAI_MCP_TOOL_CACHE*`, `ZAI_MCP_CACHE_DIR`, and `ZAI_CACHE*` are accepted silently).
+- The local cache lives at `~/.scoutline/` (`cache/` for responses, `tools/` for tool discovery) on every platform. Inspect or clear it with `scoutline cache stats` and `scoutline cache clear`.
 
 ## Repository Exploration (P6)
 

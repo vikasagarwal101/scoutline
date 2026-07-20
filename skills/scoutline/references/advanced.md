@@ -118,14 +118,26 @@ scoutline tools --no-vision
 scoutline doctor --no-vision
 ```
 
-### Tool discovery cache (speeds `tools`/`tool`/`doctor`)
+### Unified cache (response + tool discovery)
 
-Defaults: enabled, 24 hour TTL.
+Defaults: enabled, 24h TTL, 100 MB cap, lives at `~/.scoutline/`.
 
 ```bash
-export ZAI_MCP_TOOL_CACHE=1
-export ZAI_MCP_TOOL_CACHE_TTL_MS=300000
-export ZAI_MCP_CACHE_DIR="$HOME/.cache/scoutline"
+# Inspect both subdirectories
+scoutline cache stats
+
+# Clear both subdirectories (directory shells preserved)
+scoutline cache clear
+
+# Override the root directory (legacy aliases ZAI_MCP_CACHE_DIR,
+# ZAI_CACHE_DIR accepted at lower precedence)
+export SCOUTLINE_CACHE_DIR="$HOME/.scoutline"
+
+# Disable both caches for the process (legacy alias: ZAI_CACHE=0)
+export SCOUTLINE_CACHE=0
+
+# Tighten the TTL (applies to both response and tool entries)
+export SCOUTLINE_CACHE_TTL_MS=300000
 ```
 
 ### Retries for transient MCP failures
@@ -144,10 +156,12 @@ export ZAI_MCP_RETRY_COUNT=1
 export Z_AI_TIMEOUT=300000  # milliseconds
 ```
 
-## Response Cache
+## Local Cache
 
 Search, reader, and ZRead responses are cached locally unless a command
-receives `--no-cache`. New cache keys are provider-partitioned:
+receives `--no-cache`. Tool discovery (the MCP tool list `tools`/`tool`/
+`doctor` consume) is cached separately. Both caches share one on-disk
+root and one env-var policy. New cache keys are provider-partitioned:
 
 ```
 v2.<capability>.<provider>.<credential-hash>.<request-hash>.json
@@ -155,9 +169,61 @@ v2.<capability>.<provider>.<credential-hash>.<request-hash>.json
 
 The credential hash is a SHA-256 fingerprint supplied by the Adapter; cache
 code never re-hashes it. Legacy `zai-cli` cache entries remain readable for
-Z.AI as Adapter-owned candidates; their decoder is Provider-owned because the
-old entries contain Provider response fields. Old entries are never migrated
-or deleted.
+Z.AI as Adapter-owned candidates; their decoder is Provider-owned because
+the old entries contain Provider response fields. Old entries are never
+migrated or deleted.
+
+### Directory layout
+
+```text
+~/.scoutline/
+  ├── cache/    response cache entries (Provider responses)
+  └── tools/    tool discovery cache (MCP tool lists)
+```
+
+The cache root defaults to `~/.scoutline/` on every platform. There is
+no `~/Library/Caches/` branch and no `$XDG_CACHE_HOME` consultation;
+the legacy `~/.cache/zai-cli/` directory is orphaned (never read,
+migrated, or deleted). Override the root with `SCOUTLINE_CACHE_DIR`
+(legacy aliases `ZAI_MCP_CACHE_DIR` and `ZAI_CACHE_DIR` accepted at
+lower precedence).
+
+### CLI surface
+
+```bash
+scoutline cache stats   # inventory both subdirectories
+scoutline cache clear   # delete every file in both subdirectories
+```
+
+`scoutline doctor` embeds a one-line cache summary in its
+`DiagnosticsReport` under `cache.summary` (formatted by the dispatcher;
+the report builder only embeds it).
+
+### Canonical environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SCOUTLINE_CACHE` | `1` (enabled) | `0` or `false` disables both caches. |
+| `SCOUTLINE_CACHE_TTL_MS` | `86400000` (24h) | TTL for both response and tool entries. |
+| `SCOUTLINE_CACHE_SIZE_MB` | `100` | Size cap (MB) for the response cache (LRU eviction). |
+| `SCOUTLINE_CACHE_DIR` | `~/.scoutline/` | Overrides the root; `cache/` and `tools/` are created underneath. |
+
+### Legacy aliases
+
+The previous `ZAI_CACHE*`, `ZAI_MCP_TOOL_CACHE*`, and `ZAI_MCP_CACHE_DIR`
+variables are accepted silently as lower-precedence aliases. New
+`SCOUTLINE_CACHE*` names take precedence when both are set. A future
+release may emit a one-time deprecation notice for the aliases.
+
+| Old variable | Maps to |
+| --- | --- |
+| `ZAI_CACHE` | `SCOUTLINE_CACHE` |
+| `ZAI_CACHE_TTL_MS` | `SCOUTLINE_CACHE_TTL_MS` |
+| `ZAI_CACHE_SIZE_MB` | `SCOUTLINE_CACHE_SIZE_MB` |
+| `ZAI_CACHE_DIR` | `SCOUTLINE_CACHE_DIR` |
+| `ZAI_MCP_TOOL_CACHE` | `SCOUTLINE_CACHE` (was tool-only; now unified) |
+| `ZAI_MCP_TOOL_CACHE_TTL_MS` | `SCOUTLINE_CACHE_TTL_MS` |
+| `ZAI_MCP_CACHE_DIR` | `SCOUTLINE_CACHE_DIR` |
 
 ### Repository Cache
 
@@ -197,20 +263,6 @@ and output mode never enter the cache identity — they are projections
 applied after the cached normalized content-read envelope is produced;
 extract reads share the same cache entries as content reads.
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `ZAI_CACHE` | `1` | Set to `0` or `false` to disable the response cache. |
-| `ZAI_CACHE_DIR` | Platform cache directory | Overrides the response-cache directory. |
-| `ZAI_CACHE_TTL_MS` | 24 hours | Response freshness window. |
-| `ZAI_CACHE_SIZE_MB` | `100` | Maximum cache size before LRU eviction. |
-
-On Linux, the default cache directory is `~/.cache/zai-cli/responses`
-(or `$XDG_CACHE_HOME/zai-cli/responses` when `XDG_CACHE_HOME` is set).
-The same directory holds both provider-partitioned entries written by
-the current release and legacy Z.AI-only entries written by earlier
-versions; legacy entries are read through Adapter-supplied legacy
-candidate keys and never migrated or deleted.
-
 ## Normalized Quota and Diagnostics
 
 `scoutline quota` returns a schema-version-1 `QuotaDashboard` (ADR-0001).
@@ -223,9 +275,10 @@ scoutline quota --all-providers       # every configured Provider; exit 1 if any
 ```
 
 `scoutline doctor` returns a schema-version-1 `DiagnosticsReport` listing
-every built-in Provider with its configured state, declared Capabilities, and
-probe status. It exits 1 when the effective Provider is unconfigured or any
-configured probe fails.
+every built-in Provider with its configured state, declared Capabilities,
+probe status, and a one-line cache summary under `cache.summary`. It exits
+1 when the effective Provider is unconfigured or any configured probe
+fails.
 
 ```bash
 scoutline doctor                # full diagnostics

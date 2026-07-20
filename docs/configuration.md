@@ -214,27 +214,78 @@ The diff (`vision.diff`) and video (`vision.video`) operations are
 intentionally **not** registry entries and remain Z.AI-only in the base
 release.
 
-## Response Cache
+## Local Cache
 
-Search, reader, and ZRead responses are cached locally unless a command receives `--no-cache`. The cache is best-effort, keyed by API-key hash plus request-affecting arguments, and stores no cleartext API key.
+Search, reader, and ZRead responses are cached locally unless a command
+receives `--no-cache`. Tool discovery (the MCP tool list `tools`/`tool`/
+`doctor` consume) is cached separately. Both caches share one on-disk
+root and one environment-variable policy. The cache is best-effort,
+keyed by API-key hash plus request-affecting arguments, and stores no
+cleartext API key.
+
+### Directory layout
+
+The cache root is `~/.scoutline/` on every platform. Two sibling
+subdirectories live underneath:
+
+```text
+~/.scoutline/
+  ├── cache/    response cache entries (Provider responses)
+  └── tools/    tool discovery cache (MCP tool lists)
+```
+
+The same convention is used on Linux, macOS, and Windows — there is no
+`~/Library/Caches/` branch and no `$XDG_CACHE_HOME` consultation. Both
+subdirectories are created automatically on first use.
+
+### Inspecting and clearing
+
+```bash
+scoutline cache stats   # inventory both subdirectories
+scoutline cache clear   # delete every file in both subdirectories
+```
+
+`scoutline doctor` also embeds a one-line cache summary in its
+`DiagnosticsReport` under the `cache.summary` field. The summary is
+formatted by the dispatcher (`src/index.ts`) from `cacheStats()` output;
+the report builder only embeds it (L1 fix).
+
+### Canonical environment variables
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `ZAI_CACHE` | `1` | Set to `0` or `false` to disable the response cache. |
-| `ZAI_CACHE_DIR` | Platform cache directory | Overrides the response-cache directory. |
-| `ZAI_CACHE_TTL_MS` | 24 hours | Response freshness window. |
-| `ZAI_CACHE_SIZE_MB` | `100` | Maximum cache size before LRU eviction. |
-| `ZAI_MCP_TOOL_CACHE` | enabled | Enables the separate MCP tool-discovery cache. |
-| `ZAI_MCP_TOOL_CACHE_TTL_MS` | 24 hours | Tool-discovery cache freshness window. |
-| `ZAI_MCP_CACHE_DIR` | Platform cache directory | Overrides the tool-discovery cache directory. |
+| `SCOUTLINE_CACHE` | `1` (enabled) | `0` or `false` disables both caches. |
+| `SCOUTLINE_CACHE_TTL_MS` | `86400000` (24h) | TTL for both response and tool entries. |
+| `SCOUTLINE_CACHE_SIZE_MB` | `100` | Size cap (MB) for the response cache; LRU eviction. |
+| `SCOUTLINE_CACHE_DIR` | `~/.scoutline/` | Overrides the root directory; `cache/` and `tools/` are created underneath. |
 
-On Linux, the default response cache directory is
-`~/.cache/zai-cli/responses` (or `$XDG_CACHE_HOME/zai-cli/responses`
-when `XDG_CACHE_HOME` is set). The same directory holds both
-provider-partitioned entries written by the current release and legacy
-Z.AI-only entries written by earlier versions; legacy entries are read
-through the Adapter-supplied legacy candidate keys and never migrated
-or deleted. Set `ZAI_CACHE_DIR` to override the location entirely.
+### Legacy aliases
+
+The previous `ZAI_CACHE*`, `ZAI_MCP_TOOL_CACHE*`, and `ZAI_MCP_CACHE_DIR`
+variables are accepted silently as lower-precedence aliases. New
+`SCOUTLINE_CACHE*` names take precedence when both are set. A future
+release may emit a one-time deprecation notice for the aliases.
+
+| Old variable | Maps to | Note |
+| --- | --- | --- |
+| `ZAI_CACHE` | `SCOUTLINE_CACHE` | Response-cache enable flag. |
+| `ZAI_CACHE_TTL_MS` | `SCOUTLINE_CACHE_TTL_MS` | Response-cache TTL. |
+| `ZAI_CACHE_SIZE_MB` | `SCOUTLINE_CACHE_SIZE_MB` | Response-cache size cap. |
+| `ZAI_CACHE_DIR` | `SCOUTLINE_CACHE_DIR` | Response-cache root override. |
+| `ZAI_MCP_TOOL_CACHE` | `SCOUTLINE_CACHE` | Was tool-only; now unified. |
+| `ZAI_MCP_TOOL_CACHE_TTL_MS` | `SCOUTLINE_CACHE_TTL_MS` | Was tool-only; now unified. |
+| `ZAI_MCP_CACHE_DIR` | `SCOUTLINE_CACHE_DIR` | Was the documented tool-cache override in `src/lib/mcp-client.ts`; now unified. |
+
+### `XDG_CACHE_HOME` removal
+
+Earlier releases consulted `XDG_CACHE_HOME` on Linux and fell back to
+`~/.cache/zai-cli/`. The unified cache no longer reads `XDG_CACHE_HOME`
+on any platform. The old `~/.cache/zai-cli/` directory is **orphaned**:
+the new code never reads from or writes to it, never migrates entries
+out of it, and never deletes it. Operators can clean it up manually
+with `rm -rf ~/.cache/zai-cli/`.
+
+### Cache key shape
 
 Cache keys are partitioned by Provider: new keys have the shape
 `v2.<capability>.<provider>.<credential-hash>.<request-hash>.json`. The

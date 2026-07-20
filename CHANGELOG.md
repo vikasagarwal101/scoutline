@@ -4,7 +4,101 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No published changes yet. See `docs/plans/` for in-flight work._
+The Cache Module Unification series lands three commits across two
+parallel tickets (02: tool cache extraction from `ZaiMcpClient`; 03:
+CLI surface + Doctor + documentation migration). The release gate
+will promote this section to a versioned entry once the cohesive cold
+review returns DELIVERED or DELIVERED WITH RESIDUAL RISK.
+
+### Added
+- `scoutline cache` command with `stats` and `clear` subcommands.
+  `scoutline cache stats` prints the unified cache directory, status
+  (enabled/disabled, TTL, size cap), and per-subdirectory entry count
+  and total size for both the response cache and the tool discovery
+  cache. `scoutline cache clear` deletes every file under `<root>/cache/`
+  and `<root>/tools/` while preserving the directory shells (no
+  directory-creation race on the next invocation) and reports the count
+  and bytes freed. The orphaned legacy `~/.cache/zai-cli/` directory is
+  never touched.
+- One-line cache summary embedded in the `DiagnosticsReport` returned
+  by `scoutline doctor` under the `cache.summary` field. The summary
+  is formatted by the dispatcher from `cacheStats()` output and threaded
+  through `DoctorDiagnosticsDependencies.cacheSummary`; the report
+  builder only embeds it (L1 fix from the cold-critique).
+- Unified on-disk cache layout: `~/.scoutline/cache/` (Provider
+  responses) and `~/.scoutline/tools/` (MCP tool discovery) as sibling
+  subdirectories under one root. Same convention on Linux, macOS, and
+  Windows.
+- Unified environment-variable surface: `SCOUTLINE_CACHE`,
+  `SCOUTLINE_CACHE_TTL_MS`, `SCOUTLINE_CACHE_SIZE_MB`, and
+  `SCOUTLINE_CACHE_DIR` control both caches.
+- Extracted `src/lib/tool-cache.ts`. The tool-discovery cache that
+  previously lived inline in `src/lib/mcp-client.ts` (`ZaiMcpClient`)
+  is now its own module with its own enable check, versioned envelope,
+  redaction-on-write, and TTL semantics. Consumed by `ZaiMcpClient`;
+  the response cache never touches it.
+- New `tests/tool-cache.test.js` covering the extracted tool-discovery
+  cache and new `tests/cache-command.test.js` covering the
+  `cache stats` / `cache clear` command surface (format helpers, exit
+  codes, isolated `SCOUTLINE_CACHE_DIR`, doctor embeds the summary).
+
+### Changed
+- Cache directory renamed from `~/.cache/zai-cli/` (XDG-flavoured) to
+  `~/.scoutline/` (dotfile). Both `cache/` and `tools/` live under one
+  root on every platform.
+- Cache environment variables renamed: the previous `ZAI_CACHE*` and
+  the tool-cache-specific `ZAI_MCP_TOOL_CACHE*` / `ZAI_MCP_CACHE_DIR`
+  are replaced by `SCOUTLINE_CACHE*`. Old names remain as silent
+  lower-precedence aliases.
+- All cache env reads are call-time (H1 fix). Module-load capture was
+  removed so per-suite env mutations in tests remain observable.
+  Affects `isCacheEnabled`, `getCacheTtlMs`, `getCacheSizeCapBytes`,
+  and the tool-cache enable check.
+- `cacheStats()` return shape extended with nested `responseCache`
+  and `toolCache` sections. The previous top-level `entries` and
+  `totalBytes` fields are removed; callers must read from the nested
+  sections. `clearAllCaches()` returns `{ responsesCleared,
+  toolsCleared, bytesFreed }`.
+- The LRU eviction loop in `src/lib/cache.ts` scans `cache/` only and
+  never deletes files under `tools/`. Eviction coupling between the
+  two caches is now structurally impossible.
+- Doctor's `DiagnosticsReport` carries an optional `cache` field. The
+  field is present when the dispatcher supplies a `cacheSummary`
+  through `DoctorDiagnosticsDependencies`; older callers that omit
+  the dependency produce a report without the field (backward
+  compatible).
+
+### Removed
+- `XDG_CACHE_HOME` consultation. The unified cache adopts the dotfile
+  convention (`~/.scoutline/`) on every platform; the Linux-only
+  XDG branch is gone.
+- `ZAI_MCP_TOOL_CACHE*` independence. The tool cache no longer has its
+  own enable/TTL env vars; `SCOUTLINE_CACHE*` controls both caches.
+  Old names alias silently to the unified names. (The D3 granularity
+  deviation in `src/lib/cache.ts` is preserved: setting `SCOUTLINE_CACHE=0`
+  disables BOTH caches; the legacy `ZAI_MCP_TOOL_CACHE=0` alone still
+  disables ONLY the tool cache so existing operator configurations
+  keep working.)
+- Top-level `entries` and `totalBytes` fields on `cacheStats()` output.
+  Callers must read `responseCache.entries` / `toolCache.entries`
+  (and the matching `totalBytes`) instead.
+
+### Migration
+- **Hard cut.** The new code never reads from `~/.cache/zai-cli/`.
+  The directory is not migrated and not deleted; clean it up manually
+  with `rm -rf ~/.cache/zai-cli/`.
+- First invocation creates `~/.scoutline/cache/` and
+  `~/.scoutline/tools/` fresh. Response cache entries start fresh
+  (24h TTL); tool cache re-discovers on first call.
+- Old `ZAI_CACHE*` / `ZAI_MCP_TOOL_CACHE*` / `ZAI_MCP_CACHE_DIR` env
+  vars are silently accepted as lower-precedence aliases. An operator
+  with `ZAI_CACHE=0` in their shell profile sees the same behaviour
+  (caching disabled) with no warning. `SCOUTLINE_CACHE*` wins when
+  both are set.
+- Inspection and clearing: prefer `scoutline cache stats` and
+  `scoutline cache clear` over manually deleting files. The CLI
+  commands honour the unified env policy and never race with running
+  invocations.
 
 ## [0.4.0] - 2026-07-20
 

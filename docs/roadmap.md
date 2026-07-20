@@ -131,6 +131,42 @@ Adapter, so all P6-04A/B/C corrections apply for free. The Phase 1
 "keep Reader accepting but ignoring Provider selection" wording above is
 preserved as the historical record; this section captures the P7 reality.
 
+## Current Release (P8): Cache Module Unification
+
+P8 unifies the response cache and the tool-discovery cache under one
+on-disk root and one environment-variable policy. The previously
+separate `~/.cache/zai-cli/responses` (XDG-flavoured) and the
+`ZAI_MCP_TOOL_CACHE*` / `ZAI_MCP_CACHE_DIR` env surface are replaced by
+`~/.scoutline/{cache,tools}/` and `SCOUTLINE_CACHE*`. Old env vars
+remain as silent lower-precedence aliases; old directories are
+orphaned (not migrated, not deleted). Call-time env reads replace
+module-load capture so per-suite mutations remain observable.
+
+Operator surface additions:
+
+- `scoutline cache stats` — inventory both subdirectories.
+- `scoutline cache clear` — delete every file under `<root>/cache/`
+  and `<root>/tools/` (the directory shells are preserved).
+- `scoutline doctor` — embeds a one-line cache summary in its
+  `DiagnosticsReport` under `cache.summary`. The summary is formatted
+  by the dispatcher from `cacheStats()` output; the report builder
+  only embeds it (L1 fix).
+
+Internal boundaries:
+
+- `src/lib/cache.ts` owns the unified root resolver, the env policy,
+  the response cache I/O, the LRU eviction loop (scans `cache/` only),
+  and the inventory / clear helpers (`cacheStats`, `clearAllCaches`).
+- `src/lib/tool-cache.ts` owns the tool-discovery cache I/O against
+  the `tools/` sibling. Consumed by `ZaiMcpClient`; extracted from the
+  client in Ticket 02 of this release.
+- `src/commands/cache.ts` is the presentation-only handler for
+  `cache stats` / `cache clear`.
+
+The "cache inspection commands" entry below has been moved out of the
+deliberately-out-of-scope list to reflect the new reality; cache
+**replay** commands remain out of scope.
+
 ## Phase 4: Streaming Transport
 
 ### Streaming Output
@@ -146,16 +182,22 @@ Acceptance: tests validate event ordering, valid JSONL framing, cancellation cle
 
 ## Deliberately Out of Scope
 
-- Cache inspection and replay commands.
+- Cache replay commands (`cache stats` and `cache clear` shipped in P8;
+  replay remains out of scope).
 - Serving the CLI itself as an MCP server.
 - Additional search source-quality controls beyond the existing filtering and merge behavior.
 - Dynamic Provider loading, user-supplied Adapter files, or external Adapter packages.
-- Cache path migration; legacy `zai-cli` keys remain readable but are never rewritten.
+- Migration of the orphaned legacy `~/.cache/zai-cli/` directory; entries
+  there are never rewritten, migrated, or deleted.
 - Automatic Provider fallback or Provider inference from credentials.
 - MiniMax raw tools, Code Mode, image diff, video analysis, or
   repository exploration.
 - MiniMax Reader Adapter, mmx-cli/sdk replacement, removing the deprecated
   `--full-envelope` flag, and a future `--max-items` truncation policy for
   extract reads.
+- A deprecation notice for the legacy `ZAI_CACHE*` / `ZAI_MCP_TOOL_CACHE*`
+  / `ZAI_MCP_CACHE_DIR` aliases (deferred to a future release).
+- A `cache prune` subcommand (future enhancement; P8 ships `stats` and
+  `clear` only).
 
 These capabilities can be reconsidered only after the selected roadmap proves a concrete need for them.

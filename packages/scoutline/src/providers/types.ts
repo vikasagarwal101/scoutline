@@ -25,6 +25,7 @@ import type { VisionCapability } from "../capabilities/vision.js";
 import type { QuotaCapability } from "../capabilities/quota.js";
 import type { DiagnosticsCapability } from "../capabilities/diagnostics.js";
 import type { RepositoryCapability } from "../capabilities/repository.js";
+import type { ReaderCapability } from "../capabilities/reader.js";
 
 // ---------------------------------------------------------------------------
 // Provider identity
@@ -85,6 +86,11 @@ export interface ProviderContext {
  * Provider selection and Doctor inventory derive from a single source
  * of truth — the slot here is the implementation handle the future
  * Explorer layer (P6-05+) reaches through.
+ *
+ * Reader Migration Ticket 03 adds `reader?: ReaderCapability`. Ticket
+ * 03 wires the Adapter handle WITHOUT advertising `reader` on the
+ * descriptor; Ticket 04 will flip descriptor metadata and cut the
+ * `commands/read.ts` handler over to dispatch through this handle.
  */
 export interface ProviderAdapter {
   readonly id: ProviderId;
@@ -93,6 +99,7 @@ export interface ProviderAdapter {
   readonly quota?: QuotaCapability;
   readonly diagnostics?: DiagnosticsCapability;
   readonly repository?: RepositoryCapability;
+  readonly reader?: ReaderCapability;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +272,15 @@ export interface ZaiAdapterDependencies {
    * below the production default.
    */
   readonly repositoryCloseTimeoutMs?: number;
+  /**
+   * Optional Reader Capability close-bound override in milliseconds
+   * (Reader Migration Ticket 03). When omitted, the production
+   * default of 2000 ms (matching `ZaiMcpClient.close`) applies. Tests
+   * inject a shorter bound to keep the never-resolving-close test
+   * bounded below the production default. Mirrors the repository
+   * seam.
+   */
+  readonly readerCloseTimeoutMs?: number;
 }
 
 /**

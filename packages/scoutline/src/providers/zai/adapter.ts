@@ -66,6 +66,7 @@ import { isZaiConfigured, requireZaiApiKey } from "./credentials.js";
 import { resolveImageSource, resolveVideoSource } from "./media.js";
 import { createZaiQuotaCapability, type ZaiQuotaCapabilityOptions } from "./quota.js";
 import { createZaiRepositoryCapability } from "./repository.js";
+import { createZaiReaderCapability } from "./reader.js";
 import type { ZaiMonitorFetch } from "./monitor-client.js";
 
 const SEARCH_TOOL_PUBLIC_NAME = getMcpToolName("search", "web_search_prime");
@@ -770,7 +771,23 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
           closeTimeoutMs: dependencies.repositoryCloseTimeoutMs,
         }),
       });
-      return { id: "zai", search, vision, quota, diagnostics, repository };
+      // Reader Migration Ticket 03: wire the Reader Capability so tests
+      // and the future Ticket 04 handler cutover can reach the
+      // implementation through `adapter.reader.fetch`. Ticket 04 will
+      // advertise `reader` in `capabilities()` so Provider selection
+      // and Doctor inventory derive from a single source of truth, and
+      // cut `commands/read.ts` over to dispatch through this handle.
+      // The optional `readerCloseTimeoutMs` test seam mirrors the
+      // repository seam; production leaves it undefined and the
+      // capability uses the documented 2000 ms default.
+      const reader = createZaiReaderCapability({
+        env: context.env,
+        clientFactory,
+        ...(dependencies?.readerCloseTimeoutMs !== undefined && {
+          closeTimeoutMs: dependencies.readerCloseTimeoutMs,
+        }),
+      });
+      return { id: "zai", search, vision, quota, diagnostics, repository, reader };
     },
   };
 }

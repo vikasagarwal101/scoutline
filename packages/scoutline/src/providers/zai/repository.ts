@@ -46,16 +46,11 @@
 import crypto from "node:crypto";
 
 import type { ZaiAdapterClientPort, ZaiMcpClientOptions } from "../types.js";
-import {
-  ApiError,
-  AuthError,
-  QuotaError,
-  ScoutlineError,
-  ValidationError,
-} from "../../lib/errors.js";
+import { ApiError, ScoutlineError, ValidationError } from "../../lib/errors.js";
 import { getMcpToolName } from "../../lib/mcp-config.js";
 import { buildLegacyRepositoryCacheKey } from "../../lib/cache.js";
 import { requireZaiApiKey } from "./credentials.js";
+import { classifyEncodedMcpError, looksLikeEncodedMcpError } from "./encoded-error.js";
 import {
   decodeRepositoryDirectoryListing,
   decodeRepositoryFile,
@@ -92,164 +87,27 @@ const FILE_TOOL_PUBLIC_NAME = getMcpToolName("zread", "read_file");
 const DIRECTORY_TOOL_PUBLIC_NAME = getMcpToolName("zread", "get_repo_structure");
 
 // ---------------------------------------------------------------------------
+// Operation label passed to the shared encoded-error classifier. The label
+// is the only operation-specific input — it becomes part of the sanitized
+// outward ApiError / QuotaError message ("Z.AI repository request failed",
+// "Z.AI repository quota has been exhausted"). Auth messages (401, 403) do
+// not carry the label.
+// ---------------------------------------------------------------------------
+
+const ENCODED_ERROR_LABEL = "repository";
+
+// ---------------------------------------------------------------------------
 // Encoded MCP error envelope (DESIGN.md §18, ZRead response
 // characterization). The Adapter recognises the string BEFORE parsing
 // any success grammar. Raw Provider body, message, and help fields are
 // discarded; outward messages are sanitized.
 //
-// Envelope shape:
-//
-//     MCP error -<status>\n
-//     error.code: <numeric>\n
-//     error.message: <text>
-//     <optional additional lines>
-//
-// The Adapter only consumes the documented fields; the rest is ignored.
+// The classification logic (status extraction, code extraction, phrase
+// matching, status mapping) is centralized in
+// `src/providers/zai/encoded-error.ts` so the Reader Adapter (Ticket 03)
+// can reuse it without duplication. Each Adapter supplies an operation
+// label that becomes part of the sanitized outward message.
 // ---------------------------------------------------------------------------
-
-/** Regex that captures the status of an encoded MCP error envelope. */
-const ENCODED_MCP_ERROR_RE = /^MCP error -(\d+)\b/;
-
-/**
- * Test whether `raw` looks like an encoded MCP error envelope. Returning
- * `true` forces the Adapter into the error classification path before any
- * success parser runs. The presence of a numeric status on the first
- * line is the only requirement; the body lines are still parsed lazily.
- */
-function looksLikeEncodedMcpError(raw: unknown): boolean {
-  return typeof raw === "string" && ENCODED_MCP_ERROR_RE.test(raw);
-}
-
-/**
- * Extract the numeric status code from an encoded MCP error envelope.
- * Returns `null` when the prefix is not present.
- */
-function extractEncodedStatus(raw: string): number | null {
-  const m = raw.match(ENCODED_MCP_ERROR_RE);
-  if (!m) return null;
-  const n = Number.parseInt(m[1], 10);
-  return Number.isFinite(n) ? n : null;
-}
-
-/** Extract the documented `error.code:` numeric value, if present. */
-function extractEncodedCode(raw: string): number | null {
-  const m = raw.match(/^error\.code:\s*(\d+)/m);
-  if (!m) return null;
-  const n = Number.parseInt(m[1], 10);
-  return Number.isFinite(n) ? n : null;
-}
-
-/** Extract the documented `error.message:` line text, if present. */
-function extractEncodedMessage(raw: string): string | null {
-  const m = raw.match(/^error\.message:\s*([^\n]+)/m);
-  return m ? m[1] : null;
-}
-
-/**
- * Classify an encoded MCP error into a normalized error. The caller has
- * already established that the response is an encoded envelope. The
- * function NEVER embeds the raw Provider body, message, or help into
- * the outward text; it uses stable sanitized labels instead.
- *
- * Mapping (DESIGN.md §18; corrected by P6-04A):
- *   - code 1310 OR explicit exhausted/limit/quota meaning
- *                                            -> terminal QuotaError
- *                                              (REGARDLESS of the encoded
- *                                              status line; a non-429 line
- *                                              with code 1310 is still an
- *                                              exhausted-quota failure);
- *   - 401                                 -> AuthError, status 401, terminal;
- *   - 403                                 -> repository-local
- *                                              normalized ScoutlineError
- *                                              with code AUTH_ERROR and
- *                                              statusCode 403, terminal
- *                                              (avoids widening the
- *                                              global AuthError
- *                                              constructor);
- *   - 429 (without exhausted quota)       -> ApiError, status 429,
- *                                              retryable through the shared
- *                                              taxonomy;
- *   - 5xx                                 -> ApiError matching status,
- *                                              retryable;
- *   - other 4xx                           -> ApiError matching status,
- *                                              terminal;
- *   - malformed envelope (no parseable status)
- *                                            -> ApiError 502, retryable.
- *
- * Raw Provider body, `error.message`, `reset`, etc. are discarded. The
- * outward `message` and `help` are stable sanitized labels.
- */
-function classifyEncodedMcpError(raw: string): Error {
-  const status = extractEncodedStatus(raw);
-  if (status === null) {
-    // Malformed envelope: no parseable status. Retryable, sanitized.
-    return new ApiError("Z.AI repository request failed", 502);
-  }
-
-  const code = extractEncodedCode(raw);
-  const message = extractEncodedMessage(raw);
-  const lowerMessage = (message ?? "").toLowerCase();
-
-  // Exhausted quota: code 1310 OR explicit exhausted/quota/limit-reaching
-  // meaning. This branches BEFORE the status mapping so a non-429 encoded
-  // status line carrying code 1310 or an explicit exhausted message still
-  // becomes terminal `QuotaError`.
-  //
-  // The bare word "limit" is intentionally NOT matched on its own:
-  // "rate limited" is a transient retryable 429, not exhausted quota.
-  // "exhausted", "quota", and the multi-word phrases "limit reached" /
-  // "limit exceeded" are specific to the exhaustion context (P6-04B):
-  //   - "Weekly/Monthly Limit Exhausted"  -> "exhausted"
-  //   - "Quota has been exhausted"         -> "quota"
-  //   - "Monthly limit reached"            -> "limit reached"
-  //   - "usage limit exceeded"             -> "limit exceeded"
-  // Code 1310 is the authoritative numeric signal.
-  const isExhausted =
-    code === 1310 ||
-    lowerMessage.includes("exhausted") ||
-    lowerMessage.includes("quota") ||
-    lowerMessage.includes("limit reached") ||
-    lowerMessage.includes("limit exceeded");
-  if (isExhausted) {
-    return new QuotaError(
-      "Z.AI repository quota has been exhausted",
-      "Check your Z.AI quota and try again later",
-    );
-  }
-
-  if (status === 401) {
-    return new AuthError("Z.AI authentication failed");
-  }
-  if (status === 403) {
-    // 403 maps to AUTH_ERROR with status 403, terminal. Constructing
-    // a repository-local normalized ScoutlineError (rather than
-    // widening the global AuthError constructor) preserves the
-    // documented exact status code without affecting legacy call
-    // sites elsewhere in the codebase.
-    return new ScoutlineError("Z.AI authentication failed", "AUTH_ERROR", {
-      statusCode: 403,
-      retryable: false,
-      exitCode: 1,
-    });
-  }
-
-  // 5xx and other 429 -> retryable; other 4xx -> terminal. The retry
-  // classifier in `lib/execution.ts` reads `retryable` via the explicit
-  // ApiError flag, but the per-status mapping here matches DESIGN.md §10
-  // so the constructed errors carry the right shape regardless.
-  if (status === 429) {
-    return new ApiError("Z.AI repository request failed", 429);
-  }
-  if (status >= 500 && status <= 599) {
-    return new ApiError("Z.AI repository request failed", status);
-  }
-  if (status >= 400 && status <= 499) {
-    return new ApiError("Z.AI repository request failed", status);
-  }
-
-  // Unrecognized numeric status (e.g. 0, negative) -> retryable 502.
-  return new ApiError("Z.AI repository request failed", 502);
-}
 
 // ---------------------------------------------------------------------------
 // Total parsers for characterized ZRead responses (DESIGN.md §18, ZRead
@@ -284,7 +142,7 @@ function parseZaiSearch(raw: unknown, request: RepositorySearchRequest): Reposit
     throw new ApiError("Z.AI search returned a malformed response", 502);
   }
   if (looksLikeEncodedMcpError(raw)) {
-    throw classifyEncodedMcpError(raw);
+    throw classifyEncodedMcpError(raw, ENCODED_ERROR_LABEL);
   }
 
   const openTag = "<excerpt>";
@@ -368,7 +226,7 @@ function parseZaiFile(raw: unknown, request: RepositoryFileRequest): RepositoryF
     throw new ApiError("Z.AI file returned a malformed response", 502);
   }
   if (looksLikeEncodedMcpError(raw)) {
-    throw classifyEncodedMcpError(raw);
+    throw classifyEncodedMcpError(raw, ENCODED_ERROR_LABEL);
   }
   // Enforce exactly one outer wrapper pair (P6-04B). Duplicate or
   // nested `<file_content>` framing is malformed, not content data.
@@ -431,7 +289,7 @@ function parseZaiDirectory(
     throw new ApiError("Z.AI directory returned a malformed response", 502);
   }
   if (looksLikeEncodedMcpError(raw)) {
-    throw classifyEncodedMcpError(raw);
+    throw classifyEncodedMcpError(raw, ENCODED_ERROR_LABEL);
   }
   // Enforce exactly one outer wrapper pair (P6-04B). Duplicate or
   // nested `<structure>` framing is malformed, not entry data.

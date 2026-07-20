@@ -198,6 +198,12 @@ export class TimeoutError extends ZaiError {
    * a first-class field (Fixup D) so an Adapter rewrapping a typed
    * `TimeoutError` can preserve the original duration instead of re-reading
    * an ambient `process.env` value that may differ from the injected env.
+   *
+   * Phase A MiniMax transport (critique G4): the constructor accepts an
+   * optional `help` override so MiniMax callers can surface the
+   * `MINIMAX_TIMEOUT` env var instead of the default `Z_AI_TIMEOUT`
+   * reference. Strict superset — existing 1-arg callers continue to
+   * receive the default help text unchanged.
    */
   readonly durationMs: number;
   constructor(timeoutMs: number, help?: string) {

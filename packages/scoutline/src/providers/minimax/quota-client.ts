@@ -8,6 +8,11 @@
  * authoritative for quota. There is NO internal retry — shared execution
  * owns retry policy. Fetch and timer are injectable for tests.
  *
+ * Phase A (A2): the previously named `MiniMaxQuotaClientDeps` is now an
+ * alias for the unified `MiniMaxTransportDeps` declared in
+ * `./coding-plan-client.ts`. Same four fields — rename, not superset —
+ * so existing imports and call sites keep working unchanged.
+ *
  * Boundary rules (ARCHITECTURE.md §2):
  *   - May import Adapter-local config and normalized errors.
  *   - Must NOT import `mmx-cli/sdk`, command presentation, or another
@@ -17,6 +22,7 @@
 import type { MiniMaxConfig } from "./config.js";
 import { ApiError, AuthError, NetworkError, TimeoutError } from "../../lib/errors.js";
 import type { ProviderQuotaFetch } from "../types.js";
+import type { MiniMaxTransportDeps } from "./coding-plan-client.js";
 
 const QUOTA_PATH = "/v1/api/openplatform/coding_plan/remains";
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -27,12 +33,13 @@ export type MiniMaxQuotaFetch = ProviderQuotaFetch;
 /** Fetch response shape this transport consumes. */
 export type MiniMaxQuotaFetchResponse = Awaited<ReturnType<MiniMaxQuotaFetch>>;
 
-export interface MiniMaxQuotaClientDeps {
-  readonly fetch?: MiniMaxQuotaFetch;
-  readonly setTimeout?: typeof setTimeout;
-  readonly clearTimeout?: typeof clearTimeout;
-  readonly env?: NodeJS.ProcessEnv;
-}
+/**
+ * Renamed alias for {@link MiniMaxTransportDeps} (Phase A — A2). The
+ * two type names describe the same shape; the unified name wins at
+ * the new `coding-plan-client.ts`, this name is preserved here so
+ * existing imports keep resolving.
+ */
+export type MiniMaxQuotaClientDeps = MiniMaxTransportDeps;
 
 /** Raw MiniMax quota response shape (remains endpoint). */
 export interface MiniMaxRawQuotaResponse {

@@ -52,8 +52,7 @@ const nodeMajor = Number(process.versions.node.split(".")[0] || 0);
 // opt in explicitly per ticket: `ZAI_LIVE_TESTS=1 MINIMAX_API_KEY=…`.
 // ---------------------------------------------------------------------------
 const miniMaxKey = process.env.MINIMAX_API_KEY || "";
-const runMiniMaxLive =
-  process.env.ZAI_LIVE_TESTS === "1" && miniMaxKey.length > 0;
+const runMiniMaxLive = process.env.ZAI_LIVE_TESTS === "1" && miniMaxKey.length > 0;
 const describeMiniMaxLive = runMiniMaxLive ? describe : describe.skip;
 
 const describeLive = runLive ? describe : describe.skip;
@@ -166,16 +165,15 @@ describeLive("MCP Live Tests", () => {
         recencyFilter: "noLimit",
         contentSize: "medium",
       });
-      assert.fail(
-        "webSearch must throw before P2-03 — public name is forwarded verbatim to UTCP",
-      );
+      assert.fail("webSearch must throw before P2-03 — public name is forwarded verbatim to UTCP");
     } catch (err) {
       captured = err instanceof Error ? err.message : String(err);
     }
 
     // Reject generic transport failures (timeouts, auth, network) that
     // would mask the actual translation defect.
-    const generic = /timeout|ETIMEDOUT|\b401\b|\b403\b|auth(entication| orized)?|ECONNREFUSED|fetch failed/i;
+    const generic =
+      /timeout|ETIMEDOUT|\b401\b|\b403\b|auth(entication| orized)?|ECONNREFUSED|fetch failed/i;
     assert.ok(
       !generic.test(captured),
       `webSearch failed for a generic transport reason, not a name mismatch: ${captured}`,
@@ -375,7 +373,26 @@ async function buildLegacySdk(apiKey) {
 describeMiniMaxLive("Direct transport envelope parity (D1/L3)", () => {
   // C1 baseline: 1653 offline tests; the live layer adds 0 when skipped
   // and 2 when opted in (search + vlm parity). Drift is recorded as a
-  // test failure with the deepStrictEqual diff; it never auto-passes.
+  // test failure; it never auto-passes.
+  //
+  // The original C2 design used `assert.deepStrictEqual(direct, legacy)`
+  // to compare SDK-vs-direct response bodies byte-for-byte. That design
+  // is wrong: MiniMax's API is non-deterministic across consecutive
+  // calls (search returns different organic results as the index shifts;
+  // VLM produces different prose for the same prompt). Byte-equality
+  // can never hold against a non-deterministic API, regardless of
+  // transport.
+  //
+  // The actual critique D1/L3 concern is narrower: does MiniMax echo
+  // our request headers (`MM-API-Source: Scoutline`,
+  // `User-Agent: scoutline/<version>`) into the response body? The
+  // legacy SDK sends `MM-API-Source: Minimax-MCP` + `mmx-cli/<version>`;
+  // direct transport sends `Scoutline` + `scoutline/<version>`. If
+  // MiniMax echoes either value into a response field, the two
+  // transports would produce observably different bodies for that
+  // reason alone. The assertions below check exactly that — and the
+  // structural shape contract — without coupling to API
+  // non-determinism.
   let tempImagePath;
   let cleanupImage = false;
 
@@ -403,27 +420,87 @@ describeMiniMaxLive("Direct transport envelope parity (D1/L3)", () => {
     }
   });
 
-  it("search parity: direct transport body equals legacy SDK body", async () => {
+  // Critique D1/L3: MiniMax must NOT echo our request headers into
+  // the response body. The two transports send different header values
+  // (`MM-API-Source`, `User-Agent`); if MiniMax echoed either, the
+  // response body would carry our identifying strings. This walk
+  // catches that case directly, instead of relying on cross-call
+  // byte-equality (which the API's non-determinism makes impossible).
+  function assertNoHeaderEcho(label, value) {
+    const visit = (node, path) => {
+      if (node === null || typeof node !== "object") {
+        if (typeof node === "string") {
+          // Header values the direct transport sends.
+          assert.ok(
+            !/^Scoutline$/i.test(node) && !/^scoutline\//i.test(node),
+            `${label}: response string at ${path} matches a direct-transport header value (${JSON.stringify(node)}), indicating MiniMax echoed the request header`,
+          );
+        }
+        return;
+      }
+      if (Array.isArray(node)) {
+        node.forEach((item, i) => visit(item, `${path}[${i}]`));
+        return;
+      }
+      for (const key of Object.keys(node)) {
+        // Header field names the direct transport sends.
+        assert.ok(
+          !/^mm-api-source$/i.test(key) && !/^user-agent$/i.test(key),
+          `${label}: response object at ${path} has a header-shaped key "${key}", indicating MiniMax echoed the request header`,
+        );
+        visit(node[key], `${path}.${key}`);
+      }
+    };
+    visit(value, "<root>");
+  }
+
+  it("search parity: direct transport body shape matches legacy SDK; no header echo", async () => {
     const config = loadMiniMaxConfig({ ...process.env, MINIMAX_API_KEY: miniMaxKey });
     const query = `scoutline-c2-t4-search-${Date.now()}`;
 
     const direct = await fetchMiniMaxSearch(config, query);
     const legacy = await buildLegacySdk(miniMaxKey).then((sdk) => sdk.search.query(query));
 
-    // `assert.deepStrictEqual` produces a diff on mismatch so drift is
-    // surfaced, never silently accepted. The MiniMax contract documents
-    // `organic`, `related_searches?`, and `base_resp` as the success
-    // envelope; both transports must return that exact shape.
-    assert.deepStrictEqual(
-      direct,
-      legacy,
-      "search response envelope drifted between direct transport and legacy SDK",
-    );
+    // Structural shape: both transports must return the documented
+    // success envelope (`organic` array, optional `related_searches`
+    // array, `base_resp` with `status_code: 0`). Field VALUES are not
+    // compared — MiniMax's search index is non-deterministic across
+    // calls, so the same query produces different organic results.
+    for (const [label, body] of [
+      ["direct", direct],
+      ["legacy", legacy],
+    ]) {
+      assert.ok(Array.isArray(body.organic), `${label}.organic must be an array`);
+      assert.ok(body.organic.length > 0, `${label}.organic must be non-empty`);
+      for (const entry of body.organic) {
+        assert.strictEqual(
+          typeof entry.title,
+          "string",
+          `${label}.organic[].title must be a string`,
+        );
+        assert.strictEqual(typeof entry.link, "string", `${label}.organic[].link must be a string`);
+        assert.strictEqual(
+          typeof entry.snippet,
+          "string",
+          `${label}.organic[].snippet must be a string`,
+        );
+      }
+      assert.ok(body.base_resp, `${label}.base_resp must be present`);
+      assert.strictEqual(body.base_resp.status_code, 0, `${label}.base_resp.status_code must be 0`);
+    }
+
+    // Critique D1/L3: neither response carries our request header
+    // values. This is the actual concern — header echo would mean
+    // changing `MM-API-Source` or `User-Agent` (which the plan did)
+    // observably affects the response body.
+    assertNoHeaderEcho("direct search body", direct);
+    assertNoHeaderEcho("legacy search body", legacy);
   });
 
-  it("vlm parity: direct transport body equals legacy SDK body", async () => {
+  it("vlm parity: direct transport body shape matches legacy SDK; no header echo", async () => {
     const config = loadMiniMaxConfig({ ...process.env, MINIMAX_API_KEY: miniMaxKey });
-    const prompt = "Describe this image. Identify the dominant shape, its color, and the background color.";
+    const prompt =
+      "Describe this image. Identify the dominant shape, its color, and the background color.";
 
     // The VLM endpoint requires a data URI; the legacy SDK's
     // `toDataUri` does the conversion at request time, and the direct
@@ -438,14 +515,25 @@ describeMiniMaxLive("Direct transport envelope parity (D1/L3)", () => {
       sdk.vision.describe({ image: dataUri, prompt }),
     );
 
-    // The MiniMax contract documents `content` + `base_resp` as the
-    // success envelope. Both transports must return that exact shape;
-    // a difference means MiniMax echoed header values into the body
-    // (critique D1) or surfaced the User-Agent (critique L3).
-    assert.deepStrictEqual(
-      direct,
-      legacy,
-      "vlm response envelope drifted between direct transport and legacy SDK",
-    );
+    // Structural shape: both transports must return the documented
+    // success envelope (`content` non-empty string, `base_resp` with
+    // `status_code: 0`). The `content` VALUE is not compared — VLM
+    // output is non-deterministic; the same prompt produces different
+    // prose on different calls.
+    for (const [label, body] of [
+      ["direct", direct],
+      ["legacy", legacy],
+    ]) {
+      assert.strictEqual(typeof body.content, "string", `${label}.content must be a string`);
+      assert.ok(body.content.trim().length > 0, `${label}.content must be non-empty`);
+      assert.ok(body.base_resp, `${label}.base_resp must be present`);
+      assert.strictEqual(body.base_resp.status_code, 0, `${label}.base_resp.status_code must be 0`);
+    }
+
+    // Critique D1/L3: neither response carries our request header
+    // values. Same concern as the search test — header echo would
+    // make changing `MM-API-Source` or `User-Agent` observable.
+    assertNoHeaderEcho("direct vlm body", direct);
+    assertNoHeaderEcho("legacy vlm body", legacy);
   });
 });

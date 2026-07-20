@@ -651,32 +651,147 @@ describe("invokeCommand — search command routed through the seam (P1-04)", () 
 });
 
 describe("invokeCommand — read and repo routed through the seam (P1-05)", () => {
-  it("read rejects URLs that aren't http/https", async () => {
+  // -------------------------------------------------------------------------
+  // Reader Migration Ticket 04: direct read handler tests cross the SAME
+  // required Interface as production. `ReadHandlerDependencies` is required
+  // at the TypeScript level and the compiled declaration; runtime
+  // requiredness is not pinned by a native TypeError test (JavaScript
+  // ignores TS required parameters). The validation-only cases below pass
+  // the real fake-deps shape but short-circuit on validation before the
+  // Adapter is touched. The success cases prove a valid direct call
+  // returns schema-version-1 data through the same Capability/shared-
+  // execution Interface production uses. The compile-checked contract is
+  // enforced by `npm run build`.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Build the fake ReadHandlerDependencies used by every direct read
+   * handler test in this file. The fake fetch operation is permissive
+   * (validate/cacheIdentity are stubs that never throw); each impl is
+   * supplied by the test. The execution layer is in-memory and
+   * deterministic.
+   */
+  async function makeReadDeps({ fetch } = {}) {
+    const op = {
+      kind: "reader-fetch",
+      validate() {},
+      cacheIdentity(request) {
+        return {
+          provider: "zai",
+          capability: "reader",
+          operation: "reader-fetch",
+          credentialFingerprint: "fake-fingerprint-fixed",
+          request,
+          legacyCandidates: [],
+        };
+      },
+      decodeCached(value) {
+        if (value && typeof value === "object" && !Array.isArray(value)) return value;
+        return null;
+      },
+      async invoke(request) {
+        if (typeof fetch !== "function") {
+          throw new Error(`fake reader fetch not configured for ${JSON.stringify(request)}`);
+        }
+        return fetch(request);
+      },
+    };
+    const capability = { fetch: op };
+    const store = new Map();
+    const execution = {
+      cache: {
+        async get(key) {
+          return store.has(key) ? store.get(key) : null;
+        },
+        async set(key, value) {
+          store.set(key, value);
+        },
+      },
+      sleep: async () => {},
+      random: () => 0.5,
+    };
+    return { capability, execution };
+  }
+
+  it("read rejects URLs that aren't http/https through the seam", async () => {
     const { read } = await import("../dist/commands/read.js");
+    const deps = await makeReadDeps();
     const { adapter, stderr } = createRecordingAdapter();
     const status = await invokeCommand(
       adapter,
-      (ctx) => read("ftp://example.com/file", {}, "data", ctx),
+      () => read("ftp://example.com/file", {}, deps),
       "data",
     );
     assert.strictEqual(status, 1);
-    const parsed = JSON.parse(stderr[0]);
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
     assert.strictEqual(parsed.code, "VALIDATION_ERROR");
     assert.match(parsed.error, /URL must start with/);
   });
 
-  it("read rejects unknown --extract modes", async () => {
+  it("read rejects unknown --extract modes through the seam", async () => {
     const { read } = await import("../dist/commands/read.js");
+    const deps = await makeReadDeps();
     const { adapter, stderr } = createRecordingAdapter();
     const status = await invokeCommand(
       adapter,
-      (ctx) => read("https://example.com/x", { extract: "bogus" }, "data", ctx),
+      () => read("https://example.com/x", { extract: "bogus" }, deps),
       "data",
     );
     assert.strictEqual(status, 1);
-    const parsed = JSON.parse(stderr[0]);
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
     assert.strictEqual(parsed.code, "VALIDATION_ERROR");
     assert.match(parsed.error, /Invalid --extract mode/);
+  });
+
+  it("read direct success returns schema-version-1 content envelope (Reader Migration 04)", async () => {
+    const { read } = await import("../dist/commands/read.js");
+    const deps = await makeReadDeps({
+      fetch: () => ({
+        schemaVersion: 1,
+        url: "https://example.com/",
+        finalUrl: "https://example.com/",
+        title: "Example",
+        content: "hello",
+        contentFormat: "markdown",
+      }),
+    });
+    const { adapter, stdout } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      () => read("https://example.com/", {}, deps),
+      "data",
+    );
+    assert.strictEqual(status, 0);
+    const parsed = JSON.parse(stdout[0]);
+    assert.strictEqual(parsed.schemaVersion, 1);
+    assert.strictEqual(parsed.content, "hello");
+    assert.strictEqual(parsed.truncated, false);
+    assert.strictEqual(parsed.originalContentLength, 5);
+  });
+
+  it("read direct success with --extract returns schema-version-1 extract envelope (Reader Migration 04)", async () => {
+    const { read } = await import("../dist/commands/read.js");
+    const deps = await makeReadDeps({
+      fetch: () => ({
+        schemaVersion: 1,
+        url: "https://example.com/",
+        finalUrl: "https://example.com/",
+        title: "Example",
+        content: "```js\nconst x = 1;\n```\n",
+        contentFormat: "markdown",
+      }),
+    });
+    const { adapter, stdout } = createRecordingAdapter();
+    const status = await invokeCommand(
+      adapter,
+      () => read("https://example.com/", { extract: "code" }, deps),
+      "data",
+    );
+    assert.strictEqual(status, 0);
+    const parsed = JSON.parse(stdout[0]);
+    assert.strictEqual(parsed.schemaVersion, 1);
+    assert.strictEqual(parsed.mode, "code");
+    assert.deepStrictEqual(parsed.items, [{ language: "js", code: "const x = 1;" }]);
   });
 
   // -------------------------------------------------------------------------

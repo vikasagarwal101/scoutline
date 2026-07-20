@@ -476,6 +476,43 @@ describe("Descriptor ↔ Adapter repository-exploration agreement (P6-06)", () =
     }
   });
 
+  it("reader is advertised IFF the Adapter supplies reader, for every built-in (Reader Migration 04)", () => {
+    const builtIns = [createZaiDescriptor(), createMiniMaxDescriptor()];
+    for (const descriptor of builtIns) {
+      const advertised = descriptor.capabilities().has("reader");
+      const adapter = descriptor.create({ env: {} });
+      const supplied = adapter.reader !== undefined;
+      assert.strictEqual(
+        advertised,
+        supplied,
+        `${descriptor.id}: reader advertisement (${advertised}) must match adapter.reader presence (${supplied})`,
+      );
+    }
+  });
+
+  it("Z.AI advertises reader and the Adapter supplies `reader` (Reader Migration 04)", () => {
+    const { descriptor, calls } = makeSpiedZaiDescriptor();
+    const caps = descriptor.capabilities();
+    assert.strictEqual(caps.has("reader"), true, "Z.AI descriptor must advertise reader");
+    const adapter = descriptor.create({ env: {} });
+    assert.ok(adapter.reader, "Z.AI Adapter must supply adapter.reader");
+    assert.ok(adapter.reader.fetch, "Z.AI Reader Capability must expose adapter.reader.fetch");
+    // `create()` is side-effect-free.
+    assert.strictEqual(
+      calls.clientFactory,
+      0,
+      "Z.AI clientFactory must not be invoked during descriptor.create()",
+    );
+  });
+
+  it("MiniMax does NOT advertise reader and the Adapter supplies no `reader` (Reader Migration 04)", () => {
+    const { descriptor } = makeSpiedMiniMaxDescriptor();
+    const caps = descriptor.capabilities();
+    assert.strictEqual(caps.has("reader"), false, "MiniMax descriptor must NOT advertise reader");
+    const adapter = descriptor.create({ env: {} });
+    assert.strictEqual(adapter.reader, undefined, "MiniMax Adapter must NOT supply adapter.reader");
+  });
+
   it("descriptor creation remains side-effect-free (injected transport spies stay at zero)", () => {
     // Spy-based side-effect proof: every transport seam the Adapter
     // could possibly construct (Z.AI UTCP clientFactory; MiniMax SDK

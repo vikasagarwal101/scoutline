@@ -24,8 +24,9 @@
  *     best-effort close in `finally`; close failure never replaces
  *     success nor masks the primary operation failure;
  *   - no raw WebReader response types leak outside the Adapter;
- *   - descriptor metadata is unchanged — Reader is NOT advertised
- *     (Ticket 04 will flip that).
+ *   - descriptor metadata advertises `reader` after the Ticket 04
+ *     cutover (Provider selection and Doctor inventory derive from
+ *     the single source of truth).
  *
  * Tests use `createZaiDescriptor` with an injected `clientFactory` so no
  * real UTCP or network is touched. The Adapter capability is reached
@@ -172,24 +173,22 @@ function withEnv(env, fn) {
 
 // ===========================================================================
 // Descriptor metadata: Reader is NOT yet advertised (Ticket 03 → Ticket 04).
-// The Adapter supplies `adapter.reader` but `capabilities()` does not yet
-// include any reader entry.
+// The Adapter supplies `adapter.reader`. Descriptor metadata
+// advertises `reader` after the Ticket 04 cutover.
 // ===========================================================================
 
-describe("Z.AI Reader Adapter — descriptor metadata (Ticket 03)", () => {
-  it("capabilities() does NOT advertise reader (Ticket 04 will flip)", () => {
+describe("Z.AI Reader Adapter — descriptor metadata (Ticket 03 + Ticket 04)", () => {
+  it("capabilities() advertises reader (Ticket 04 flipped the descriptor)", () => {
     const descriptor = createZaiDescriptor();
     const caps = descriptor.capabilities();
-    // Reader Migration Ticket 04 will add a reader capability literal to
-    // the ProviderCapability union and the descriptor capabilities() set.
-    // For Ticket 03 the set is unchanged so descriptor-derived Provider
-    // selection and Doctor inventory do not yet see reader.
-    for (const cap of caps) {
-      assert.ok(
-        !/^reader/.test(cap),
-        `reader capability leaked early: ${cap} (Ticket 03 must not advertise reader)`,
-      );
-    }
+    // Reader Migration Ticket 04 added the `reader` literal to the
+    // ProviderCapability union and to the Z.AI descriptor capabilities()
+    // set. Descriptor-derived Provider selection and Doctor inventory
+    // now see reader as a Z.AI-advertised Capability.
+    assert.ok(
+      caps.has("reader"),
+      "reader must be advertised on the Z.AI descriptor after Ticket 04",
+    );
   });
 
   it("descriptor creation is side-effect-free (no transport, no I/O)", async () => {

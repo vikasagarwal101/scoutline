@@ -632,6 +632,88 @@ describe("Repository Explorer: imports no concrete Provider transport (P6-06)", 
       "src/commands/repo.ts must not call raw ZRead getRepoStructure",
     );
   });
+
+  it("commands/read.ts owns no Provider client, raw MCP name, parser, transport, cache, retry, or close (Reader Migration 04)", async () => {
+    // Reader Migration Ticket 04 cuts the legacy `read` dispatch
+    // over to the Provider Capability + shared execution path. The
+    // handler must NOT import any concrete Provider client, MCP
+    // client, raw-tool namespace library, or Provider response
+    // type. Provider-specific facts (URL rewrite, credentials,
+    // transports, cache policy, retry, close) live in the Adapter
+    // (providers/zai/reader.ts) and shared execution layers
+    // reached through `adapter.reader`.
+    const source = await fs.readFile(path.join(COMMANDS_DIR, "read.ts"), "utf8");
+    const imports = extractImports(source);
+
+    // No concrete Provider client, MCP client, or raw-tool config.
+    const forbiddenImports = [
+      "../lib/mcp-client.js",
+      "../lib/mcp-config.js",
+      "../providers/zai/adapter.js",
+      "../providers/zai/reader.js",
+      "../providers/minimax/adapter.js",
+      "../providers/registry.js",
+      "@utcp/sdk",
+      "@utcp/mcp",
+      "@utcp/code-mode",
+      "mmx-cli",
+    ];
+    const importHits = imports.filter((spec) =>
+      forbiddenImports.some((bad) => spec === bad || spec.startsWith(bad)),
+    );
+    assert.deepStrictEqual(
+      importHits,
+      [],
+      `src/commands/read.ts must not import Provider clients, raw-tool namespaces, or Adapter Modules: ${importHits.join(", ")}`,
+    );
+
+    // No Provider-only symbols. The read handler reaches the
+    // Provider exclusively through the injected `ReaderCapability`.
+    const forbiddenSymbols = [
+      "ZaiMcpClient",
+      "ZaiAdapterClientPort",
+      "ZaiAdapterDependencies",
+      "ZaiMcpClientOptions",
+      "ReaderRawResponse",
+      "ReaderRawObjectResponse",
+      "WebSearchResult",
+      "MiniMaxSdkPort",
+      "MiniMaxSdkConstructor",
+      "MiniMaxAdapterDependencies",
+      "createZaiDescriptor",
+      "createMiniMaxDescriptor",
+      "createZaiReaderCapability",
+    ];
+    const symbolHits = forbiddenSymbols.filter((sym) => new RegExp(`\\b${sym}\\b`).test(source));
+    assert.deepStrictEqual(
+      symbolHits,
+      [],
+      `src/commands/read.ts must not reference Provider-only symbols: ${symbolHits.join(", ")}`,
+    );
+
+    // No `new ZaiMcpClient(` construction, no `.close()` transport
+    // lifecycle owned by the handler, and no `finally` block
+    // (which historically gated transport teardown). URL rewrite
+    // (`maybeRewriteToRaw`) and content extraction are owned by
+    // the Adapter; the handler must not duplicate them.
+    assert.ok(
+      !/new\s+ZaiMcpClient\s*\(/.test(source),
+      "src/commands/read.ts must not construct ZaiMcpClient",
+    );
+    assert.ok(
+      !/\bfinally\s*\{/.test(source),
+      "src/commands/read.ts must not own transport-teardown finally blocks",
+    );
+    assert.ok(
+      !/\bmaybeRewriteToRaw\b/.test(source),
+      "src/commands/read.ts must not own the URL rewrite (lives in the Adapter)",
+    );
+    // The handler must not call the raw `webRead` MCP wrapper.
+    assert.ok(
+      !/\.webRead\s*\(/.test(source),
+      "src/commands/read.ts must not call the raw ZaiMcpClient.webRead wrapper",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -245,14 +245,20 @@ sharedCapabilities and zaiOnlyCapabilities fields above reflect that
 descriptor state (repository-exploration currently appears in
 zaiOnlyCapabilities).
 
-Public 'repo' commands participate in Provider selection. They
-honour --provider / SCOUTLINE_PROVIDER / the default zai, route
-through the Z.AI Adapter's Repository Capability, and return
-UNSUPPORTED_CAPABILITY when the selected Provider does not advertise
-repository-exploration (e.g. 'repo --provider minimax' fails
-without falling back to Z.AI). A supported-but-unconfigured Z.AI
-returns ConfigurationError; supported-and-configured Z.AI dispatches
-through the Repository Explorer.
+Reader is a Provider Capability. Z.AI descriptor metadata advertises
+reader and the Z.AI Adapter supplies it; MiniMax advertises and
+supplies neither. reader currently appears in zaiOnlyCapabilities
+alongside repository-exploration.
+
+Public 'repo' and 'read' commands participate in Provider selection.
+They honour --provider / SCOUTLINE_PROVIDER / the default zai, route
+through the Z.AI Adapter's Repository and Reader Capabilities
+respectively, and return UNSUPPORTED_CAPABILITY when the selected
+Provider does not advertise the requested capability (e.g.
+'repo --provider minimax' or 'read --provider minimax' fail without
+falling back to Z.AI). A supported-but-unconfigured Z.AI returns
+ConfigurationError; supported-and-configured Z.AI dispatches through
+the Repository Explorer / Reader Adapter.
 
 Options:
   --no-tools   Skip every connectivity probe (metadata-only). Under
@@ -263,7 +269,7 @@ Options:
 Exit codes:
   0  All configured probes succeeded (or only tools-disabled skips).
   1  The effective Provider is unconfigured or any configured probe
-      failed; successful entries are still reported.
+       failed; successful entries are still reported.
 
 Examples:
   scoutline doctor                 # full diagnostics

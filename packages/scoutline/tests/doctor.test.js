@@ -161,7 +161,7 @@ describe("doctor diagnostics — report metadata (P4-04)", () => {
     assert.deepStrictEqual([...report.sharedCapabilities], [...expectedShared]);
     assert.deepStrictEqual([...report.zaiOnlyCapabilities], [...expectedZaiOnly]);
     // Static guarantees: shared must NOT include repository-exploration
-    // while MiniMax lacks it; Z.AI-only MUST include it.
+    // or reader while MiniMax lacks them; Z.AI-only MUST include both.
     assert.ok(
       !report.sharedCapabilities.includes("repository-exploration"),
       "repository-exploration excluded from shared while MiniMax lacks it",
@@ -169,6 +169,14 @@ describe("doctor diagnostics — report metadata (P4-04)", () => {
     assert.ok(
       report.zaiOnlyCapabilities.includes("repository-exploration"),
       "repository-exploration present in Z.AI-only",
+    );
+    assert.ok(
+      !report.sharedCapabilities.includes("reader"),
+      "reader excluded from shared while MiniMax lacks it (Reader Migration 04)",
+    );
+    assert.ok(
+      report.zaiOnlyCapabilities.includes("reader"),
+      "reader present in Z.AI-only (Reader Migration 04)",
     );
     assert.strictEqual(report.node.version, process.version);
     assert.strictEqual(report.node.visionMcpCompatible, nodeMajor() >= 22);
@@ -484,7 +492,7 @@ describe("doctor diagnostics — probe mechanism and retry (P4-04)", () => {
 // Help text
 // ---------------------------------------------------------------------------
 
-describe("doctor diagnostics — help text (P4-04, P6-07)", () => {
+describe("doctor diagnostics — help text (P4-04, P6-07, Reader Migration 04)", () => {
   it("states Z.AI advertises and supplies repository-exploration, MiniMax advertises and supplies neither, and the repo command cutover is the current runtime behavior", () => {
     assert.ok(/doctor/i.test(DOCTOR_HELP), "mentions doctor");
     assert.ok(/effective/i.test(DOCTOR_HELP), "mentions effective Provider");
@@ -545,6 +553,28 @@ describe("doctor diagnostics — help text (P4-04, P6-07)", () => {
     assert.ok(
       !/raw-provider-tools/.test(DOCTOR_HELP),
       "help must not carry a hand-maintained capability list",
+    );
+  });
+
+  it("states Reader participates in Provider selection (Reader Migration 04)", () => {
+    // Reader Migration 04 cutover: help MUST state that public 'read'
+    // commands participate in Provider selection today, that Z.AI
+    // supplies the reader capability, and that MiniMax fails with
+    // UNSUPPORTED_CAPABILITY. The Doctor inventory derives Reader's
+    // Z.AI-only status from descriptor metadata.
+    assert.ok(
+      /read\b[\s\S]*participate in Provider selection/.test(DOCTOR_HELP),
+      "help must state that read participates in Provider selection",
+    );
+    assert.ok(
+      /MiniMax[\s\S]*reader[\s\S]*UNSUPPORTED_CAPABILITY/i.test(DOCTOR_HELP) ||
+        /reader[\s\S]*MiniMax[\s\S]*UNSUPPORTED_CAPABILITY/i.test(DOCTOR_HELP) ||
+        /reader[\s\S]*UNSUPPORTED_CAPABILITY[\s\S]*MiniMax/i.test(DOCTOR_HELP),
+      "help must describe MiniMax as unsupported for reader with UNSUPPORTED_CAPABILITY",
+    );
+    assert.ok(
+      !/accepts but ignores/.test(DOCTOR_HELP),
+      "help must not still claim read 'accepts but ignores' Provider selection",
     );
   });
 });
@@ -688,6 +718,13 @@ describe("doctor diagnostics — derived inventory (P6-06)", () => {
     assert.ok(!shared.includes("repository-exploration"));
   });
 
+  it("reader is excluded from shared while MiniMax lacks it (Reader Migration 04)", () => {
+    const zai = capabilityDescriptor("zai", ["search", "vision.interpret-image", "reader"]);
+    const minimax = capabilityDescriptor("minimax", ["search", "vision.interpret-image"]);
+    const shared = deriveSharedCapabilities([zai, minimax]);
+    assert.ok(!shared.includes("reader"));
+  });
+
   it("deriveZaiOnlyCapabilities is Z.AI minus the union of every other descriptor, preserving Z.AI order", () => {
     const zai = capabilityDescriptor("zai", [
       "search",
@@ -706,6 +743,17 @@ describe("doctor diagnostics — derived inventory (P6-06)", () => {
     const minimax = createMiniMaxDescriptor();
     const out = deriveZaiOnlyCapabilities([zai, minimax]);
     assert.ok(out.includes("repository-exploration"));
+  });
+
+  it("deriveZaiOnlyCapabilities includes reader for the production built-ins (Reader Migration 04)", () => {
+    const zai = createZaiDescriptor();
+    const minimax = createMiniMaxDescriptor();
+    const out = deriveZaiOnlyCapabilities([zai, minimax]);
+    assert.ok(out.includes("reader"), "reader is Z.AI-only while MiniMax lacks it");
+    assert.ok(
+      !deriveSharedCapabilities([zai, minimax]).includes("reader"),
+      "reader is NOT shared while MiniMax lacks it",
+    );
   });
 
   it("deriveZaiOnlyCapabilities returns an empty array when Z.AI is absent", () => {

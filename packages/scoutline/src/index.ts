@@ -48,7 +48,8 @@ Usage: scoutline <command> [args] [options]
 Commands:
   vision   Image and video analysis (Z.AI; MiniMax for interpret-image)
   search   Real-time web search (shared: Z.AI + MiniMax)
-  read     Fetch and parse web pages (Z.AI only)
+  read     Fetch and parse web pages (Provider Capability; Z.AI supports it,
+           MiniMax returns UNSUPPORTED_CAPABILITY)
   repo     GitHub repository exploration (Provider Capability; Z.AI supports it,
            MiniMax returns UNSUPPORTED_CAPABILITY)
   quota    Provider-aware plan usage (calls remaining, reset time)
@@ -62,11 +63,12 @@ Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER, then zai):
   --provider <zai|minimax>   Select the active Provider for shared capabilities
   SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
 
-Shared capabilities accept --provider. The 'repo' command participates in
-Provider selection: Z.AI advertises and supplies the repository-exploration
-Capability; MiniMax does not advertise it, so selecting MiniMax (explicitly
-or via SCOUTLINE_PROVIDER) returns UNSUPPORTED_CAPABILITY with no fallback.
-Z.AI-only commands (read, tools, tool, call, code) carry the flag but ignore
+Shared capabilities accept --provider. The 'repo' and 'read' commands
+participate in Provider selection: Z.AI advertises and supplies the
+repository-exploration and reader Capabilities; MiniMax advertises and
+supplies neither, so selecting MiniMax (explicitly or via
+SCOUTLINE_PROVIDER) returns UNSUPPORTED_CAPABILITY with no fallback.
+Z.AI-only commands (tools, tool, call, code) carry the flag but ignore
 it. Quota and doctor report per-Provider; --provider picks the effective
 Provider for metadata.
 
@@ -212,11 +214,13 @@ function resolveOutputMode(
  * still read `process.env` directly today; that migration is Phase 2 and
  * intentionally out of scope for this plumbing fix.
  *
- * `provider` is the parsed global `--provider` flag. Shared Search and
- * the P6-07 Repository commands resolve/validate it; the Z.AI-only
- * command families (read, tools, tool, call, code) carry it but never
- * consult it. `providerDescriptors` is the injectable registry (tests
- * pass doubles; production uses the static built-in list). The shared
+ * `provider` is the parsed global `--provider` flag. Shared Search, the
+ * P6-07 Repository commands, and the Reader Migration 04 `read` command
+ * resolve/validate it; the remaining Z.AI-only command families (tools,
+ * tool, call, code) carry it but never consult it. `providerDescriptors`
+ * is the injectable registry (tests pass doubles; production uses the
+ * static built-in list).
+ *
  * Search execution dependencies (`searchCache`, `searchSleep`,
  * `searchRandom`) default to the on-disk cache and real sleep/random in
  * production; tests inject in-memory doubles.
@@ -227,6 +231,12 @@ function resolveOutputMode(
  * sleep, Math.random) but stay as separate optional MainDependencies
  * so repository tests can inject isolated in-memory doubles without
  * touching Search state. They are not a rename of the Search seams.
+ *
+ * `readerCache`, `readerSleep`, and `readerRandom` are the analogous
+ * seams for the Reader Migration 04 `read` command. Same defaults as
+ * Search and Repository; separate optional MainDependencies so reader
+ * tests can inject isolated in-memory doubles. Not a rename of either
+ * prior seam.
  */
 interface HandlerDependencies {
   readonly invocation: CommandInvocationAdapter;
@@ -241,6 +251,9 @@ interface HandlerDependencies {
   readonly repositoryCache: ResponseCache;
   readonly repositorySleep: (ms: number) => Promise<void>;
   readonly repositoryRandom: () => number;
+  readonly readerCache: ResponseCache;
+  readonly readerSleep: (ms: number) => Promise<void>;
+  readonly readerRandom: () => number;
 }
 
 async function handleVision(
@@ -575,6 +588,70 @@ async function handleRead(
 
   const url = positional[0];
 
+  // Parse-level validation BEFORE Provider resolution. URL scheme and
+  // --extract mode are validated at parse time so an invalid value
+  // surfaces VALIDATION_ERROR regardless of which Provider would have
+  // been selected, because parse-level validation fires before the
+  // support/configuration gates. The handler re-runs an identical
+  // check as defensive backstop. The pre-dispatch
+  // configuredSecrets(env) redaction read in `main` is the only
+  // permitted credential-related read before this point.
+  if (typeof url !== "string" || (!url.startsWith("http://") && !url.startsWith("https://"))) {
+    throw new ValidationError("URL must start with http:// or https://");
+  }
+  const extractFlag = flags.extract as string | undefined;
+  if (extractFlag !== undefined && !isExtractMode(extractFlag)) {
+    throw new ValidationError(
+      `Invalid --extract mode: ${extractFlag}. Use one of: code, links, tables, headings`,
+    );
+  }
+  const extract = extractFlag !== undefined ? (extractFlag as ExtractMode) : undefined;
+
+  // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
+  // explicit --provider > SCOUTLINE_PROVIDER > default zai. Selection
+  // never consults credentials (FR-003) and never branches on Provider
+  // ID; an unknown explicit/env value throws VALIDATION_ERROR here.
+  const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
+  const descriptor = getProviderDescriptor(providerId, deps.providerDescriptors);
+
+  // Capability support check BEFORE `descriptor.isConfigured`,
+  // `descriptor.create`, Adapter access, operation validation/
+  // cacheIdentity, credential use, cache, or transport. Unsupported
+  // MiniMax (explicit or environment) returns UNSUPPORTED_CAPABILITY
+  // with no fallback to Z.AI; zero selected-Provider work occurs.
+  if (!descriptor.capabilities().has("reader")) {
+    throw new UnsupportedCapabilityError(providerId, "reader");
+  }
+
+  // FR-003: selection returns the default zai even when unconfigured.
+  // Supported-but-unconfigured Z.AI surfaces a missing credential as
+  // ConfigurationError (exit 3) AFTER the support metadata check and
+  // BEFORE `descriptor.create`.
+  if (!descriptor.isConfigured(deps.env)) {
+    throw new ConfigurationError(
+      `Provider "${providerId}" is not configured. Set the required API key.`,
+    );
+  }
+
+  const adapter = descriptor.create({ env: deps.env });
+  const capability = adapter.reader;
+  // Defensive fail-closed: the descriptor advertised support but the
+  // Adapter omitted the handle. Treat as unsupported so a registry
+  // mismatch can never reach transport.
+  if (!capability) {
+    throw new UnsupportedCapabilityError(providerId, "reader");
+  }
+
+  // Shared Reader execution dependencies. The cache/sleep/random
+  // default to the same production values as Search and Repository
+  // but are kept as separate optional MainDependencies so reader
+  // tests can inject isolated in-memory doubles.
+  const executionDeps: ExecutionDependencies = {
+    cache: deps.readerCache,
+    sleep: deps.readerSleep,
+    random: deps.readerRandom,
+  };
+
   return invokeCommand(
     deps.invocation,
     (context) =>
@@ -591,11 +668,9 @@ async function handleRead(
           withImagesSummary: flags["with-images-summary"] === true,
           maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
           fullEnvelope: flags["full-envelope"] === true,
-          extract: isExtractMode(flags.extract as string)
-            ? (flags.extract as ExtractMode)
-            : undefined,
+          extract,
         },
-        outputMode,
+        { capability, execution: executionDeps },
         context,
       ),
     outputMode,
@@ -1025,6 +1100,16 @@ export interface MainDependencies {
   readonly repositoryCache?: ResponseCache;
   readonly repositorySleep?: (ms: number) => Promise<void>;
   readonly repositoryRandom?: () => number;
+  /**
+   * Injectable shared-Reader execution dependencies (Reader Migration
+   * Ticket 04). Production defaults to the same on-disk cache and real
+   * sleep/random as Search/Repository; tests inject in-memory doubles
+   * so Reader dispatch tests stay isolated from Search/Repository
+   * state. NOT a rename of either prior seam.
+   */
+  readonly readerCache?: ResponseCache;
+  readonly readerSleep?: (ms: number) => Promise<void>;
+  readonly readerRandom?: () => number;
 }
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1044,6 +1129,13 @@ export async function main(
   const repositoryCache = dependencies.repositoryCache ?? defaultResponseCache;
   const repositorySleep = dependencies.repositorySleep ?? realSleep;
   const repositoryRandom = dependencies.repositoryRandom ?? Math.random;
+  // Reader Migration Ticket 04: Reader execution defaults to the same
+  // production values as Search/Repository but stays as separate
+  // optional MainDependencies so reader tests can inject isolated
+  // in-memory doubles.
+  const readerCache = dependencies.readerCache ?? defaultResponseCache;
+  const readerSleep = dependencies.readerSleep ?? realSleep;
+  const readerRandom = dependencies.readerRandom ?? Math.random;
   // Resolve configured Provider credentials from the INJECTED env (B3) so
   // redaction follows the same environment the handlers see — a secret
   // that exists only in MainDependencies.env is still redacted from output.
@@ -1099,6 +1191,9 @@ export async function main(
     repositoryCache,
     repositorySleep,
     repositoryRandom,
+    readerCache,
+    readerSleep,
+    readerRandom,
   };
 
   try {

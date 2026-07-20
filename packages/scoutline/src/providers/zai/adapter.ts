@@ -726,6 +726,13 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
       // Doctor inventory derive from a single source of truth.
       // MiniMax stays free of repository-exploration until it ships
       // its own Adapter and conformance fixtures.
+      //
+      // Reader Migration Ticket 04: advertise `reader`. The Adapter
+      // has supplied `adapter.reader` since Ticket 03; descriptor
+      // metadata now mirrors that fact so Provider selection and
+      // Doctor inventory derive from a single source of truth.
+      // MiniMax stays free of reader until it ships its own Adapter
+      // and conformance fixtures.
       return new Set<ProviderCapability>([
         "search",
         "vision.interpret-image",
@@ -739,6 +746,7 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
         "quota",
         "diagnostics",
         "repository-exploration",
+        "reader",
       ]);
     },
     create(context: ProviderContext): ProviderAdapter {
@@ -772,11 +780,11 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
         }),
       });
       // Reader Migration Ticket 03: wire the Reader Capability so tests
-      // and the future Ticket 04 handler cutover can reach the
-      // implementation through `adapter.reader.fetch`. Ticket 04 will
-      // advertise `reader` in `capabilities()` so Provider selection
-      // and Doctor inventory derive from a single source of truth, and
-      // cut `commands/read.ts` over to dispatch through this handle.
+      // and the Ticket 04 handler cutover can reach the implementation
+      // through `adapter.reader.fetch`. Ticket 04 advertised `reader`
+      // in `capabilities()` so Provider selection and Doctor inventory
+      // derive from a single source of truth, and cut
+      // `commands/read.ts` over to dispatch through this handle.
       // The optional `readerCloseTimeoutMs` test seam mirrors the
       // repository seam; production leaves it undefined and the
       // capability uses the documented 2000 ms default.

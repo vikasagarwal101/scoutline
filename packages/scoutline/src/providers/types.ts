@@ -49,6 +49,10 @@ export type ProviderId = (typeof PROVIDER_IDS)[number];
  * it (P6-04 supplies the handle); MiniMax does not and remains free of
  * repository credential, transport, and fallback work until it ships
  * its own Adapter and conformance fixtures.
+ *
+ * Reader Migration Ticket 04 adds `reader`: a descriptor advertises it
+ * iff the Adapter it creates supplies `adapter.reader`. Z.AI advertises
+ * it (Ticket 03 supplies the handle); MiniMax does not.
  */
 export type ProviderCapability =
   | "search"
@@ -62,7 +66,8 @@ export type ProviderCapability =
   | "vision.video"
   | "quota"
   | "diagnostics"
-  | "repository-exploration";
+  | "repository-exploration"
+  | "reader";
 
 // ---------------------------------------------------------------------------
 // Provider context and Adapter
@@ -87,9 +92,8 @@ export interface ProviderContext {
  * of truth — the slot here is the implementation handle the future
  * Explorer layer (P6-05+) reaches through.
  *
- * Reader Migration Ticket 03 adds `reader?: ReaderCapability`. Ticket
- * 03 wires the Adapter handle WITHOUT advertising `reader` on the
- * descriptor; Ticket 04 will flip descriptor metadata and cut the
+ * Reader Migration Ticket 03 added `reader?: ReaderCapability`. Ticket
+ * 04 advertised `reader` in descriptor metadata and cut the
  * `commands/read.ts` handler over to dispatch through this handle.
  */
 export interface ProviderAdapter {

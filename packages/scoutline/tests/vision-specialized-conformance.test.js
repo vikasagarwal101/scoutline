@@ -179,7 +179,7 @@ test("Vision help and shared diagnostics capabilities project registry support",
   // contain every capability advertised by both built-ins — including
   // any specialized op that is currently attested by MiniMax — and
   // MUST NOT contain capabilities MiniMax lacks (e.g. vision.diff,
-  // vision.video, repository-exploration).
+  // vision.video, repository-exploration, reader).
   const shared = deriveSharedCapabilities([createZaiDescriptor(), createMiniMaxDescriptor()]);
   // Base capabilities both Providers advertise.
   for (const cap of ["search", "vision.interpret-image", "quota", "diagnostics"]) {
@@ -194,7 +194,7 @@ test("Vision help and shared diagnostics capabilities project registry support",
     );
   }
   // Capabilities MiniMax does not advertise stay out of shared.
-  for (const cap of ["vision.diff", "vision.video", "repository-exploration"]) {
+  for (const cap of ["vision.diff", "vision.video", "repository-exploration", "reader"]) {
     assert.ok(!shared.includes(cap), `shared excludes ${cap}`);
   }
 });

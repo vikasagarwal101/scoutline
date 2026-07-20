@@ -12,10 +12,10 @@ export Z_AI_API_KEY="your-api-key"
 
 ## Provider Selection
 
-Shared commands (`search`, `vision`, `quota`, `doctor`) accept the global
-`--provider <zai|minimax>` flag. When the flag is omitted the value of the
-`SCOUTLINE_PROVIDER` environment variable is consulted; when neither is
-supplied Scoutline falls back to the compatibility default `zai`.
+Shared commands (`search`, `vision`, `quota`, `doctor`) and **`repo`**
+accept the global `--provider <zai|minimax>` flag. When the flag is omitted
+the value of the `SCOUTLINE_PROVIDER` environment variable is consulted; when
+neither is supplied Scoutline falls back to the compatibility default `zai`.
 
 Resolution precedence (highest first):
 
@@ -27,8 +27,13 @@ Provider selection is never inferred from which credentials happen to be
 present. Unknown or empty values fail fast with `VALIDATION_ERROR` before any
 Provider invocation.
 
-Reader, repository exploration, raw tools, and Code Mode accept the flag but
-ignore it; they continue to use Z.AI and do not validate the supplied value.
+`scoutline read`, `scoutline tools`, `scoutline tool`, `scoutline call`, and
+`scoutline code` accept the flag but ignore it; they continue to use Z.AI and
+do not validate the supplied value. MiniMax does not currently advertise the
+`repository-exploration` Capability — selecting MiniMax (explicitly or via
+`SCOUTLINE_PROVIDER`) for any `repo` subcommand returns `UNSUPPORTED_CAPABILITY`
+before descriptor configuration, Adapter creation, credential resolution for
+use, cache identity, or transport construction, with no fallback to Z.AI.
 
 ```bash
 # 1. Flag wins
@@ -40,6 +45,10 @@ scoutline quota
 
 # 3. Default Z.AI when nothing is supplied
 scoutline search "TypeScript best practices"
+
+# repo participates in selection; MiniMax returns UNSUPPORTED_CAPABILITY
+scoutline repo search facebook/react "server components"
+scoutline --provider minimax repo search owner/repo query  # exits 1, UNSUPPORTED_CAPABILITY
 ```
 
 ## Core Settings
@@ -158,10 +167,12 @@ holds:
 In the current release, `ui-artifact` and `diagnose-error` are
 live-attested and supported at runtime. The remaining three operations
 (`extract-text`, `diagram`, `chart`) have offline `pass` and live
-`pending`. The MiniMax Adapter fails closed with
-`UNSUPPORTED_CAPABILITY` for every specialized operation; the shared
-`vision` invocation helper transparently falls back to Z.AI, which
-supports every operation.
+`pending`. An explicit MiniMax selection for any of those three pending
+operations fails closed with `UNSUPPORTED_CAPABILITY` before credentials,
+media, transport, cache, or any other Provider is touched (FR-023,
+FR-024). There is **no automatic Z.AI fallback** for an explicit MiniMax
+selection — drop `--provider minimax` (or `unset SCOUTLINE_PROVIDER`)
+to route through Z.AI, which supports every specialized operation.
 
 **No environment variable, flag, or configuration value can promote a
 mapping to supported.** Support is driven exclusively by the compiled
@@ -211,11 +222,13 @@ Search, reader, and ZRead responses are cached locally unless a command receives
 | `ZAI_MCP_TOOL_CACHE_TTL_MS` | 24 hours | Tool-discovery cache freshness window. |
 | `ZAI_MCP_CACHE_DIR` | Platform cache directory | Overrides the tool-discovery cache directory. |
 
-On Linux, the default response cache location is `~/.cache/scoutline/responses`
-unless `XDG_CACHE_HOME` is defined. The legacy `zai-cli` cache directory
-(`~/.cache/zai-cli/responses`) is preserved as a read-only fallback for Z.AI
-entries that pre-date provider partitioning; old entries are never migrated or
-deleted.
+On Linux, the default response cache directory is
+`~/.cache/zai-cli/responses` (or `$XDG_CACHE_HOME/zai-cli/responses`
+when `XDG_CACHE_HOME` is set). The same directory holds both
+provider-partitioned entries written by the current release and legacy
+Z.AI-only entries written by earlier versions; legacy entries are read
+through the Adapter-supplied legacy candidate keys and never migrated
+or deleted. Set `ZAI_CACHE_DIR` to override the location entirely.
 
 Cache keys are partitioned by Provider: new keys have the shape
 `v2.<capability>.<provider>.<credential-hash>.<request-hash>.json`. The
@@ -223,6 +236,22 @@ credential hash is supplied by the Adapter (a SHA-256 fingerprint); it is
 never re-hashed by cache code. Z.AI entries written before the Provider
 partitioning remain readable as Adapter-owned candidates; their decoder is
 Provider-owned because the old entries contain Provider response fields.
+
+### Repository Cache
+
+Repository results share the partitioned namespace and use a composite
+operation suffix to prevent File and Directory listings from colliding:
+
+```text
+v2.repository-exploration-<operation>.<provider>.<credential-hash>.<request-hash>.json
+```
+
+The Adapter resolves its credential once. That single credential drives both
+the fingerprint and the legacy-key reconstruction; no ambient environment
+is reread. A valid legacy v0.2 hit is written through to the new key; legacy
+files are never migrated, rewritten, or deleted. `--no-cache` performs no
+reads or writes — the operation validates, computes the identity, invokes
+the Adapter, projects the result, and returns.
 
 ## Security
 

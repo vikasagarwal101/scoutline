@@ -6,8 +6,8 @@ gate.
 
 ## Provider Selection
 
-Shared commands (`search`, `vision analyze`, `quota`, `doctor`) accept the
-global `--provider <zai|minimax>` flag. Precedence:
+Shared commands (`search`, `vision analyze`, `quota`, `doctor`) and
+**`repo`** accept the global `--provider <zai|minimax>` flag. Precedence:
 
 1. `--provider <zai|minimax>` on the command line
 2. `SCOUTLINE_PROVIDER` environment variable
@@ -16,9 +16,13 @@ global `--provider <zai|minimax>` flag. Precedence:
 Unknown or empty values fail with `VALIDATION_ERROR` before any Provider
 invocation. Provider selection is never inferred from credentials.
 
-`read`, `repo`, `tools`, `tool`, `call`, and `code` accept the flag but
-ignore it; they remain Z.AI-only in the base release and do not validate the
-supplied value.
+`read`, `tools`, `tool`, `call`, and `code` accept the flag but ignore it;
+they remain Z.AI-only and do not validate the supplied value. `repo`
+participates in selection but only Z.AI currently supplies the
+`repository-exploration` Capability — selecting MiniMax returns
+`UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter creation,
+credential resolution for use, cache identity, or transport construction,
+with no fallback.
 
 ```bash
 # 1. Flag wins over everything
@@ -155,6 +159,24 @@ Z.AI as Adapter-owned candidates; their decoder is Provider-owned because the
 old entries contain Provider response fields. Old entries are never migrated
 or deleted.
 
+### Repository Cache
+
+Repository results share the partitioned namespace and use a composite
+operation suffix so File and Directory listings cannot collide:
+
+```
+v2.repository-exploration-<operation>.<provider>.<credential-hash>.<request-hash>.json
+```
+
+`<operation>` is one of `repository-search`, `repository-read-file`, or
+`repository-list-directory`. The Adapter resolves its credential once; that
+same credential drives both the new fingerprint and the legacy-key
+reconstruction. No ambient environment is reread. A valid legacy v0.2 hit is
+written through to the new key; the legacy file is never rewritten,
+migrated, or deleted. `--no-cache` performs no reads or writes — the
+operation validates, computes the identity, invokes the Adapter, projects
+the result, and returns.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ZAI_CACHE` | `1` | Set to `0` or `false` to disable the response cache. |
@@ -162,10 +184,12 @@ or deleted.
 | `ZAI_CACHE_TTL_MS` | 24 hours | Response freshness window. |
 | `ZAI_CACHE_SIZE_MB` | `100` | Maximum cache size before LRU eviction. |
 
-On Linux, the default cache directory is `~/.cache/scoutline/responses`
-unless `XDG_CACHE_HOME` is defined. The legacy `zai-cli` cache directory
-(`~/.cache/zai-cli/responses`) is preserved as a read-only fallback; old
-entries are never migrated.
+On Linux, the default cache directory is `~/.cache/zai-cli/responses`
+(or `$XDG_CACHE_HOME/zai-cli/responses` when `XDG_CACHE_HOME` is set).
+The same directory holds both provider-partitioned entries written by
+the current release and legacy Z.AI-only entries written by earlier
+versions; legacy entries are read through Adapter-supplied legacy
+candidate keys and never migrated or deleted.
 
 ## Normalized Quota and Diagnostics
 
@@ -188,6 +212,75 @@ scoutline doctor                # full diagnostics
 scoutline doctor --no-tools     # metadata only, no transport
 scoutline doctor --provider minimax
 ```
+
+Inventory derivation is descriptor-driven: `sharedCapabilities` is the
+intersection across built-in Provider descriptors; `zaiOnlyCapabilities` is
+Z.AI support minus the union of every other built-in descriptor.
+`repository-exploration` is therefore reported under Z.AI-only while still
+participating in Provider selection. Doctor help explicitly names MiniMax
+as unsupported for `repo`.
+
+### Repository Pipeline
+
+```text
+repo argv
+  -> parse-level grammar validation
+  -> --provider / SCOUTLINE_PROVIDER / default zai
+  -> descriptor capability check (repository-exploration)
+  -> descriptor.isConfigured (effective Provider)
+  -> descriptor.create -> Adapter
+  -> Provider-neutral Explorer (canonical paths, BFS, projection)
+       -> executeRepositoryOperation
+            -> validate -> Adapter cache identity -> partitioned cache
+            -> legacy candidate decode
+            -> Adapter invoke (Z.AI: resolved public/internal ZRead name),
+               wrapped through one retry (single-retry non-Vision policy)
+            -> normalized cache write
+  -> schema-version-1 CommandResult
+```
+
+The Explorer owns canonical repository paths, deterministic breadth-first
+traversal, deduplication, request-bound directory safety, schema-v1
+projection, and local `--max-chars` projection. The Z.AI Adapter owns
+credential resolution, legacy-key reconstruction, encoded MCP error
+parsing, and best-effort per-attempt close.
+
+### Encoded MCP Error Taxonomy
+
+Encoded `MCP error -<status>` strings and malformed ZRead wrappers are
+recognized before success parsing. Raw Provider body, reset metadata, error
+code text, and message strings are discarded:
+
+| Provider condition | Public code | Status | Retry |
+| --- | --- | --- | --- |
+| Exhausted quota (`1310` or explicit exhausted limit) | `QUOTA_ERROR` | 429 | terminal |
+| Transient 429 / "rate limited" | `API_ERROR` | 429 | one retry |
+| Auth 401 / 403 | `AUTH_ERROR` | matching | terminal |
+| Provider 5xx | `API_ERROR` | matching | one retry |
+| Other 4xx (including 404) | `API_ERROR` | matching | terminal |
+| Malformed envelope or success wrapper | `API_ERROR` | 502 | one retry |
+
+Each repository operation receives the current single-retry non-Vision
+policy. A retry creates a fresh Adapter transport attempt with one
+best-effort close; cache hits construct and close no transport. A successful
+operation does not become a failure when close rejects or times out, and a
+primary failure remains the outward failure when close also fails.
+
+### Repository Path Conventions
+
+- Tree aliases omitted, empty, `/`, or `.` normalize to root `""`.
+- File paths must be non-root; the root is invalid for `repo read`.
+- Leading `./` and leading `/` are accepted on File; leading and trailing
+  `/` are stripped and repeated `/` collapses on both.
+- Actual `.`/`..` segments, backslashes, and ASCII control characters are
+  rejected.
+- Percent escapes (`%XX`) are never decoded — they remain literal.
+
+BFS expands only while `level < depth`, enqueues a canonical directory once,
+preserves Provider sibling order, and snapshots in breadth-first order.
+Canonical-but-outside child paths fail the whole tree rather than redirect
+traversal; a mid-tree failure rejects the whole operation with no partial
+result.
 
 ## Test Commands
 

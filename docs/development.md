@@ -65,6 +65,13 @@ shell setting cannot accidentally trigger network calls.
 | `tests/package.test.js` | Pack contents, root export safety, and tarball install. |
 | `tests/mcp-live.test.js` | Opt-in live MCP behavior when `Z_AI_API_KEY` is available. |
 | `tests/provider-live.test.js` | Opt-in live Provider behavior; required for release. |
+| `tests/repository-capability.test.js` | Provider-neutral repository request/result contracts and total decoders. |
+| `tests/repository-execution.test.js` | Shared `executeRepositoryOperation` cache/retry ordering and event log. |
+| `tests/zai-repository-adapter.test.js` | Z.AI Adapter parsing, encoded MCP error taxonomy, and per-attempt close. |
+| `tests/repository-explorer.test.js` | Provider-neutral Explorer canonical paths, BFS, and max-chars projection. |
+| `tests/repository-command.test.js` | Thin command routing, selection, validation, and v1 outputs. |
+| `tests/repository-conformance.test.js` | Cross-Adapter conformance with a fake second Adapter plus legacy-cache and credential-clean matrix. |
+| `tests/provider-live.test.js` | Opt-in live Provider behavior; required for release. |
 
 ## Change Checklist
 
@@ -73,7 +80,9 @@ shell setting cannot accidentally trigger network calls.
 3. Close every created client in a `finally` block.
 4. Update command help, the root README, and relevant files under `docs/` when public behavior changes. Update `CHANGELOG.md` for release-visible behavior changes.
 5. Keep Provider field names, response shapes, and media rules inside the matching Adapter. Commands consume Capability interfaces only.
-6. Run `npm run build`, `npm run test:offline`, `npm run test:smoke`, and `npm pack --dry-run` before release. Do not run live tests unless you have explicitly opted in.
+6. Repository exploration is a Provider Capability. Participation in selection follows descriptor metadata: the Z.AI descriptor advertises `repository-exploration`; MiniMax does not. Selecting MiniMax for `repo` returns `UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter creation, cache identity, or transport construction. Do not add an implicit fallback.
+7. Repository results are schema-version-1 structured values (`{schemaVersion, repository, ...}`). The breaking migration from v0.2 raw strings and the depth-dependent raw Tree shape is intentional. Any new repo subcommand must use the same contract; raw Provider grammar stays inside the Z.AI Adapter.
+8. Run `npm run build`, `npm run test:offline`, `npm run test:smoke`, and `npm pack --dry-run` before release. For P6 also run `env -u Z_AI_API_KEY -u ZAI_API_KEY -u MINIMAX_API_KEY npm run test:offline` to confirm the credential-clean matrix. Do not run live tests unless you have explicitly opted in.
 
 ## Package and Publication
 

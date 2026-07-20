@@ -5,10 +5,12 @@ description: |
   - Vision: image/video analysis, OCR, UI-to-code, error diagnosis (GLM-4.6V)
   - Search: real-time web search with domain/recency filtering
   - Reader: web page to markdown extraction
-  - Repo: GitHub code search and reading via ZRead
+  - Repo: GitHub code search and reading via ZRead (Provider Capability;
+    Z.AI supplies it; MiniMax returns UNSUPPORTED_CAPABILITY without fallback)
   - Tools: MCP tool discovery, schemas, and raw calls (Z.AI)
   - Code: TypeScript tool chaining (Z.AI)
   - Provider selection: --provider <zai|minimax> for shared capabilities
+    and repo
   Use for visual content analysis, web search, page reading, or GitHub
   exploration. Requires Z_AI_API_KEY (default) or MINIMAX_API_KEY (with
   --provider minimax).
@@ -34,14 +36,18 @@ Get a Z.AI key at: https://z.ai/manage-apikey/apikey-list
 
 ## Provider Selection
 
-Shared commands (`search`, `vision analyze`, `quota`, `doctor`) accept the
-global `--provider <zai|minimax>` flag. Precedence is the flag, then the
-`SCOUTLINE_PROVIDER` environment variable, then the default `zai`. Provider
-selection is never inferred from credentials. Unknown values fail fast with
-`VALIDATION_ERROR`.
+Shared commands (`search`, `vision analyze`, `quota`, `doctor`) and
+**`repo`** accept the global `--provider <zai|minimax>` flag. Precedence is
+the flag, then the `SCOUTLINE_PROVIDER` environment variable, then the
+default `zai`. Provider selection is never inferred from credentials.
+Unknown values fail fast with `VALIDATION_ERROR`.
 
-`read`, `repo`, `tools`, `tool`, `call`, and `code` accept the flag but ignore
-it; they remain Z.AI-only in the base release.
+`read`, `tools`, `tool`, `call`, and `code` accept the flag but ignore it;
+they remain Z.AI-only. MiniMax does not currently advertise the
+`repository-exploration` Capability — selecting MiniMax (explicitly or via
+`SCOUTLINE_PROVIDER`) for any `repo` subcommand returns `UNSUPPORTED_CAPABILITY`
+before descriptor configuration, Adapter creation, credential resolution for
+use, cache identity, or transport construction, with no Z.AI fallback.
 
 ## Capability Matrix
 
@@ -49,12 +55,13 @@ it; they remain Z.AI-only in the base release.
 | --- | --- | --- | --- |
 | Search | Yes | Yes (no domain/recency/content-size/location) | `scoutline search` |
 | General single-image interpretation | Yes | Yes (JPG/JPEG/PNG/WebP ≤50 MiB) | `scoutline vision analyze` |
-| Specialized Vision (UI-to-code, OCR, error diagnosis, diagram, chart) | Yes | No | `scoutline vision ui-to-code` etc. |
+| Specialized Vision (UI-to-code, error diagnosis) | Yes | Available (live-attested; conformance-gated) | `scoutline vision ui-to-code`, `vision diagnose-error` |
+| Specialized Vision (OCR, diagram, chart) | Yes | Pending (implemented, pending live conformance) | `scoutline vision extract-text`, `vision diagram`, `vision chart` |
 | Two-image diff, video | Yes | No | `scoutline vision diff`, `vision video` |
 | Quota (normalized) | Yes | Yes | `scoutline quota [--all-providers]` |
 | Diagnostics | Yes | Yes | `scoutline doctor [--no-tools]` |
 | Reader | Yes | No | `scoutline read` |
-| Repo (GitHub via ZRead) | Yes | No | `scoutline repo` |
+| Repository exploration (search/read/tree) | Yes | **No** (UNSUPPORTED_CAPABILITY) | `scoutline repo ...` |
 | Raw tools | Yes | No | `scoutline tools`, `tool`, `call` |
 | Code Mode | Yes | No | `scoutline code` |
 
@@ -69,7 +76,7 @@ to either Provider.
 | vision | Analyze images, screenshots, videos | `--help` for 8 subcommands |
 | search | Real-time web search | `--help` for filtering options |
 | read | Fetch web pages as markdown | `--help` for format options |
-| repo | GitHub code search and reading | `--help` for tree/search/read |
+| repo | GitHub code search and reading (Provider Capability) | `--help` for tree/search/read |
 | quota | Provider-normalized plan usage dashboard | `--help` for `--all-providers` |
 | tools | List available MCP tools (Z.AI) | |
 | tool | Show tool schema | |
@@ -101,6 +108,71 @@ npx scoutline doctor --provider minimax
 npx scoutline quota --all-providers
 ```
 
+## Repository Exploration
+
+`scoutline repo search`, `scoutline repo read`, and `scoutline repo tree`
+participate in Provider selection. Z.AI advertises and supplies
+`repository-exploration`; MiniMax does not, so selecting MiniMax returns
+`UNSUPPORTED_CAPABILITY` with no fallback.
+
+### v0.2 → v1 schema migration (breaking)
+
+`repo` successes return **schema-version-1 structured values**, not the v0.2
+raw ZRead text or depth-dependent raw Tree shape:
+
+| Command | v1 schema |
+| --- | --- |
+| `repo search` | `{schemaVersion:1, repository, query, language, excerpts:[{text}], truncated, originalTextLength}` |
+| `repo read` | `{schemaVersion:1, repository, path, content, truncated, originalContentLength}` |
+| `repo tree` | `{schemaVersion:1, repository, path, depth, snapshots:[{repository, path, entries:[{name, path, kind}]}]}` (structured at every depth, including depth 1) |
+
+Root Tree path is the empty string `""`. Default Search language is `"en"`
+(pass `--language zh` for Chinese). Output modes for `repo` results:
+`data` emits the raw schema-version-1 value as plain JSON with no
+envelope; `json` and `pretty` emit the standard `{success, data,
+timestamp}` envelope (indent 0 for `json`, indent 2 for `pretty`); and
+the text-oriented modes (`compact`, `markdown`, `refs`, `tty`) receive
+the JSON fallback — the same value as `data` mode — because `repo`
+supplies no per-mode prose presentation override.
+
+### `--max-chars` is deterministic and local
+
+`--max-chars` never invokes a model — it is post-normalization projection:
+
+- absent / zero / negative → no truncation;
+- `repo search` → one total budget across `excerpts[].text`; the final
+  retained excerpt is truncated, later excerpts are omitted;
+- `repo read` → only `content` is truncated; `originalContentLength` and
+  `truncated` describe the pre-truncation state;
+- `repo tree` → never character-limited; metadata and JSON envelopes are not
+  part of any budget.
+
+### Errors and lifecycle
+
+Encoded MCP error strings and malformed ZRead wrappers are mapped
+deterministically before success parsing. Exhausted ZRead quota (code
+`1310` or explicit exhausted-limit meaning) is terminal `QUOTA_ERROR` 429.
+Transient 429/5xx and a malformed envelope retry once; auth 401/403 and other
+4xx are terminal. Raw Provider body, reset metadata, and error-text strings
+never cross the public interface.
+
+Transport close is best-effort and per attempt: success does not become
+failure when close rejects or times out, and a primary failure remains the
+outward failure when close also fails. Cache hits construct and close no
+transport.
+
+### Cache continuity
+
+New cache entries use the namespace
+`v2.repository-exploration-<operation>.<provider>.<credential-hash>.<request-hash>.json`,
+where `<credential-hash>` is the full lowercase SHA-256 hex digest of the
+Adapter-resolved credential. Legacy v0.2 Z.AI cache entries remain readable
+read-only; their key is reconstructed from the same credential using the
+exact v0.2 algorithm, and a valid hit is written through to the new key.
+Legacy files are never rewritten, migrated, or deleted. `--no-cache`
+performs no reads or writes. Injected credentials drive the fingerprint and
+legacy-key construction — ambient `process.env` is never reread.
+
 ## Output
 
 Default: **data-only** (raw output for token efficiency).
@@ -108,9 +180,13 @@ Use `--output-format json` for `{ success, data, timestamp }` wrapping.
 
 `quota` returns a schema-version-1 `QuotaDashboard` (ADR-0001); `doctor`
 returns a schema-version-1 `DiagnosticsReport`. Both are Provider-neutral.
+`repo` returns the schema-version-1 objects documented above; the standard
+envelope wraps them in `json`/`pretty` and the exact object is emitted in
+`data`.
 
 ## Advanced
 
 For raw MCP tool calls (`tools`, `tool`, `call`), Code Mode, package and
-publication gates, MiniMax environment variables, and legacy `zai-cli` cache
-fallback, see `references/advanced.md`.
+publication gates, MiniMax environment variables, repository cache shape
+and legacy continuity, diagnostics inventory derivation, and encoded MCP
+error taxonomy, see `references/advanced.md`.

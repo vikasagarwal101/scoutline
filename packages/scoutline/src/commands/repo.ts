@@ -220,9 +220,12 @@ Output format (intentional schema-version-1 migration):
              snapshots:[{repository, path, entries:[{name, path, kind}]}]}
   Root path is the empty string "". --max-chars applies only to
   search/read content; tree is never character-limited.
-  Text-oriented modes (compact, markdown, refs, tty) fall back to the
-  same JSON value when the command supplies no presentation override;
-  repo results never do.
+  Output modes for repo results:
+    - data: raw schema-version-1 value as plain JSON (no envelope).
+    - json / pretty: standard {success, data, timestamp} envelope
+      (indent 0 for json, indent 2 for pretty).
+    - compact / markdown / refs / tty: JSON fallback (same value as
+      data mode). Repo never supplies a per-mode prose presentation.
 
 Examples:
   scoutline repo search facebook/react "server components"

@@ -30,8 +30,42 @@ Unknown provider "<value>". Accepted provider IDs: zai, minimax.
 
 `--provider` and `SCOUTLINE_PROVIDER` accept only `zai` or `minimax`. Unknown
 or empty values fail with `VALIDATION_ERROR` (`exit 1`) before any Provider
-invocation. Note that `read`, `repo`, `tools`, `tool`, `call`, and `code` accept
-the flag but ignore it — they remain Z.AI-only in the base release.
+invocation. Note that `read`, `tools`, `tool`, `call`, and `code` accept the
+flag but ignore it — they remain Z.AI-only. `repo` participates in selection
+but is currently supplied only by Z.AI.
+
+## Unsupported MiniMax Repository Exploration
+
+```
+Provider "minimax" does not support capability "repository-exploration"
+```
+
+Selecting MiniMax (explicitly or via `SCOUTLINE_PROVIDER`) for any `repo`
+subcommand returns `UNSUPPORTED_CAPABILITY` (`exit 1`) **before** descriptor
+configuration, Adapter creation, credential resolution for use, cache identity,
+or transport construction. There is no implicit fallback to Z.AI, no
+heuristic, and no env rerun. Drop the Provider selection to use the default
+Z.AI:
+
+```bash
+# This fails closed (UNSUPPORTED_CAPABILITY):
+scoutline --provider minimax repo search facebook/react "server components"
+
+# These succeed through Z.AI (the only built-in Provider that supplies the
+# repository-exploration Capability today):
+scoutline repo search facebook/react "server components"
+unset SCOUTLINE_PROVIDER  # if a previous shell set it to minimax
+scoutline --provider zai repo read facebook/react README.md
+```
+
+If `SCOUTLINE_PROVIDER` is set to `minimax` in your shell, simply dropping
+`--provider` is not enough — either `unset SCOUTLINE_PROVIDER` or pass
+`--provider zai` explicitly.
+
+The failure intentionally occurs in the same probe path used for `vision.diff`,
+`vision.video`, and unsupported specialized Vision mappings — descriptor
+metadata is the support truth and the descriptor is the only thing consulted
+before configuration, Adapter construction, or transport activity.
 
 ## Unsupported MiniMax Search Control
 
@@ -109,6 +143,80 @@ image, and the Module's normalizer extracts the `{ content }` envelope.
 If the Module is somehow missing while the registry gate is open, the
 Adapter surfaces `API_ERROR` — this should not happen at runtime and
 indicates a coding bug rather than runtime drift.
+
+## Repository Search/Read/Tree Returns a Malformed Provider Response
+
+```
+{ "success": false, "error": "Z.AI repository request failed", "code": "API_ERROR", "statusCode": 502 }
+```
+
+Encoded MCP errors and malformed ZRead grammar are mapped deterministically
+before success parsing:
+
+| Provider condition | Public code | Status | Retry |
+| --- | --- | --- | --- |
+| Exhausted quota (code `1310` or explicit "exhausted limit") | `QUOTA_ERROR` | 429 | terminal |
+| Transient 429 / "rate limited" | `API_ERROR` | 429 | one retry |
+| Auth 401 / 403 | `AUTH_ERROR` | matching | terminal |
+| Provider 5xx | `API_ERROR` | matching | one retry |
+| Other 4xx (including 404) | `API_ERROR` | matching | terminal |
+| Malformed envelope or success wrapper | `API_ERROR` | 502 | one retry |
+
+Raw Provider body, reset metadata, error code text, and encoded message
+strings are discarded. The retry taxonomy gives each repository operation
+exactly one retry (matching the current single-retry non-Vision policy). A
+retry creates a fresh Adapter transport attempt with one best-effort close;
+cache hits construct and close no transport.
+
+## Repository Search Returns 0 Excerpts or Reports "Empty Result"
+
+The Z.AI Adapter requires at least one well-formed `<excerpt>` block to
+recognize a Search response. An unwrapped response — even one with valid
+plain text — is malformed (see the table above) rather than an empty result.
+
+`repo tree` and `repo read` accept and surface an explicit empty `entries` or
+zero-content result from any future Adapter that exposes a valid empty state.
+ZRead does not currently produce a characterized empty Search or a
+zero-content File, so a zero-excerpt Z.AI response is malformed.
+
+## `--max-chars` Looks Unexpected
+
+`--max-chars` is a deterministic local projection applied **after** caching
+and validation. It never invokes a model:
+
+- absent, zero, or negative → no truncation;
+- `repo search` → one total budget across `excerpts[].text`; the final
+  retained excerpt is truncated with the existing ellipsis rule and later
+  excerpts are omitted;
+- `repo read` → only `content` is truncated; `originalContentLength` and
+  `truncated` always describe the pre-truncation length;
+- `repo tree` → never character-limited; metadata, JSON envelopes, and
+  snapshots are not part of any budget.
+
+If your consumer expected a smaller result, lower `--max-chars`; if you
+expected the full result, drop the flag or pass a larger value. Cached
+results are always the complete normalized result — projection is the only
+place `--max-chars` ever appears.
+
+## Cache Hits Don't Refresh
+
+Repository cache hits return before any Adapter invocation and construct no
+transport. To force a fresh call, pass `--no-cache` (the operation still
+validates, computes the identity, invokes, and projects the result, but
+performs no reads or writes). To wipe the local cache for one Provider,
+delete matching entries under `ZAI_CACHE_DIR`; `scoutline` never rewrites,
+migrates, or deletes legacy v0.2 `zai-cli` cache files.
+
+## Close Failure Doesn't Surface
+
+`close()` after a repository operation is best-effort and bounded by the
+existing `ZaiMcpClient.close` 2000 ms semantic. Close rejection or timeout
+is silently swallowed: it never replaces successful data, never masks a
+primary operation failure, and never emits a final stderr notice. The
+operation's outward result (success or primary failure) is the only thing
+the caller sees. If you need to confirm whether a close actually
+completed, instrument the Adapter side directly — the CLI surface will
+not report it.
 
 ## The executable reports `LOAD_ERROR`
 

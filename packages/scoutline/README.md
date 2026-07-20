@@ -73,7 +73,7 @@ npx scoutline --help
 
 ## Provider Selection
 
-Shared commands (`search`, `vision`, `quota`, `doctor`) accept a global
+Shared commands (`search`, `vision`, `quota`, `doctor`, `repo`) accept a global
 `--provider <zai|minimax>` flag. Resolution precedence:
 
 1. Explicit `--provider <zai|minimax>` on the command line
@@ -99,9 +99,14 @@ empty credentials leave the Provider unconfigured and shared capabilities will
 fail with `AUTH_ERROR` or `CONFIGURATION_ERROR`. Unknown Provider IDs fail
 fast with `VALIDATION_ERROR`.
 
-`scoutline read`, `scoutline repo`, `scoutline tools`, `scoutline tool`,
-`scoutline call`, and `scoutline code` accept the flag but ignore it; they
-remain Z.AI-only in the base release.
+`scoutline search`, `scoutline vision`, `scoutline quota`, `scoutline doctor`,
+and **`scoutline repo`** participate in Provider selection. `scoutline read`,
+`scoutline tools`, `scoutline tool`, `scoutline call`, and `scoutline code`
+accept the flag but ignore it; they remain Z.AI-only. MiniMax does not
+currently advertise the repository-exploration Capability — selecting MiniMax
+(explicitly or via `SCOUTLINE_PROVIDER`) for any `repo` subcommand returns
+`UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter creation,
+cache identity, or transport construction, with no Z.AI fallback.
 
 ## Capability Matrix
 
@@ -114,14 +119,14 @@ remain Z.AI-only in the base release.
 | `vision.diagnose-error` | Yes | Available | Live-attested; conformance-gated |
 | `vision.diagram` | Yes | Pending | Implemented, pending live conformance |
 | `vision.chart` | Yes | Pending | Implemented, pending live conformance |
-| `vision.diff` (image diff) | Yes | No | Base-release Z.AI-only |
-| `vision.video` | Yes | No | Base-release Z.AI-only |
+| `vision.diff` (image diff) | Yes | No | Z.AI-only (never MiniMax-claimable) |
+| `vision.video` | Yes | No | Z.AI-only (never MiniMax-claimable) |
 | `quota` | Yes | Yes | Normalized `QuotaDashboard` (ADR-0001) |
 | `diagnostics` (`doctor`) | Yes | Yes | Lists both Providers; probes configured |
-| `read` (Reader) | Yes | No | Base-release Z.AI-only |
-| `repo` (Repository exploration) | Yes | No | Base-release Z.AI-only |
-| `tools`, `tool`, `call` (Raw tools) | Yes | No | Base-release Z.AI-only |
-| `code` (Code Mode) | Yes | No | Base-release Z.AI-only |
+| `read` (Reader) | Yes | No | Z.AI-only; accepts but ignores `--provider` |
+| `repo search` / `repo read` / `repo tree` | Yes | **No** (UNSUPPORTED_CAPABILITY) | Participates in selection; only Z.AI supplies `repository-exploration` |
+| `tools`, `tool`, `call` (Raw tools) | Yes | No | Z.AI-only; accepts but ignores `--provider` |
+| `code` (Code Mode) | Yes | No | Z.AI-only; accepts but ignores `--provider` |
 
 Media limits for general single-image interpretation:
 
@@ -153,9 +158,12 @@ In the current release, `ui-artifact` and `diagnose-error` have offline
 `pass`, live `pass`, and compiled attestations — they are **supported at
 runtime** through MiniMax. The remaining three operations (`extract-text`,
 `diagram`, `chart`) have offline `pass` and live `pending`; they are
-**unsupported at runtime** and surface `UNSUPPORTED_CAPABILITY`. The CLI
-falls back to Z.AI (the Z.AI Provider supports every operation in the
-base release).
+**unsupported at runtime** through MiniMax. Selecting MiniMax explicitly
+for one of these operations fails closed with `UNSUPPORTED_CAPABILITY`
+before credentials, media, transport, cache, or any other Provider is
+touched (FR-023, FR-024). There is **no automatic Z.AI fallback** for an
+explicit MiniMax selection — call without `--provider minimax` (or unset
+`SCOUTLINE_PROVIDER`) to route through Z.AI instead.
 
 No environment variable, flag, or configuration value can promote a
 mapping to supported. Support is driven exclusively by the compiled
@@ -288,6 +296,112 @@ Provider with its configured state, declared capabilities, and probe status.
 - Tool discovery can be cached to speed `tools`/`tool`/`doctor` (default: on, 24h TTL). Configure with `ZAI_MCP_TOOL_CACHE`, `ZAI_MCP_TOOL_CACHE_TTL_MS`, `ZAI_MCP_CACHE_DIR`.
 - The response cache uses provider-partitioned keys; legacy `zai-cli` cache
   entries remain readable for Z.AI but are never migrated.
+
+## Repository Exploration (P6)
+
+`scoutline repo search`, `scoutline repo read`, and `scoutline repo tree`
+participate in `--provider` selection. Z.AI advertises the
+`repository-exploration` Capability and supplies it through the Z.AI
+Repository Adapter. MiniMax does not advertise it; selecting MiniMax returns
+`UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter creation,
+credential resolution for use, cache identity, or transport construction
+with no fallback to Z.AI.
+
+### Breaking data-mode migration (v0.2 → v1)
+
+The three `repo` successes return **schema-version-1 structured values** in
+every output mode. This is an intentional breaking change from the v0.2 raw
+Search/File strings and the depth-dependent raw Tree shape:
+
+| Command | v0.2 (legacy, now obsolete) | v1 (current) |
+| --- | --- | --- |
+| `repo search` | Raw ZRead text with `<excerpt>` blocks | `{schemaVersion, repository, query, language, excerpts:[{text}], truncated, originalTextLength}` |
+| `repo read` | Raw `<file_content>…</file_content>` body | `{schemaVersion, repository, path, content, truncated, originalContentLength}` |
+| `repo tree` | `<structure>` block (depth 1 returned split/deep routes) | `{schemaVersion, repository, path, depth, snapshots:[{repository, path, entries:[{name, path, kind}]}]}` (structured at every depth, including depth 1) |
+
+`data` mode emits the exact object above. `json` and `pretty` wrap it through
+the standard success envelope. Text-oriented modes (`compact`, `markdown`,
+`refs`, `tty`) fall back to the JSON value because the command supplies no
+prose presentation override.
+
+**Scripting impact:** any consumer parsing v0.2 raw ZRead text or the v0.2
+split/deep `tree` shape must switch to the v1 structured fields. The raw
+`scoutline.zai.*` namespace remains available for callers that need the
+legacy grammar; it is not wrapped in the v1 envelope.
+
+### Canonical repository paths
+
+- Tree aliases omitted, empty, `/`, or `.` normalize to the root path `""`.
+- File paths must be non-root; the root is invalid for `repo read`.
+- Leading `./` and leading `/` are accepted on File; leading and trailing `/`
+  are stripped and repeated `/` collapses on both.
+- Actual `.`/`..` segments, backslashes, and ASCII control characters are
+  rejected. Percent escapes (`%XX`) are never decoded — they remain literal.
+
+### `--max-chars` (deterministic, local)
+
+`--max-chars` is **never** a summarization model call. It is presentation
+projection applied to the normalized result after caching.
+
+- Absent, zero, or negative → no truncation.
+- `repo read` → truncates `content` with the existing ellipsis rule; preserves
+  the original length in `originalContentLength` and sets `truncated: true`.
+- `repo search` → applies **one total budget** across `excerpts[].text` in
+  Provider order; the final retained excerpt is truncated and later excerpts
+  are omitted.
+- `repo tree` → never character-limited.
+- Metadata, JSON envelopes, and Tree snapshots are not part of the budget.
+
+### Empty results
+
+A future Provider Adapter may explicitly return an empty `excerpts`/`entries`
+array when its own contract distinguishes a valid empty state. The Z.AI
+Adapter requires at least one well-formed `<excerpt>` block per Search;
+unwrapped text is malformed and surfaces as a normalized `API_ERROR 502`, not
+as an empty success. An empty ZRead structure without `entries` is malformed
+the same way.
+
+### Cache continuity
+
+Repository results use a new key shape
+`v2.repository-exploration-<op>.<provider>.<credential-hash>.<request-hash>.json`.
+The credential hash is supplied by the Adapter (full lowercase SHA-256 hex
+digest of the active credential) and is never re-hashed by cache code.
+
+Legacy v0.2 Z.AI cache entries remain readable **read-only**: their key is
+reconstructed from the same Adapter-resolved credential using the exact v0.2
+algorithm, and a valid hit is written through to the new key. Old files are
+never rewritten, migrated, or deleted. `--no-cache` performs no reads or
+writes. Injected credentials drive the fingerprint and legacy-key
+construction; ambient `process.env` is never reread.
+
+### Errors and lifecycle
+
+Encoded MCP error envelopes are recognized before success parsing:
+`QUOTA_ERROR` 429 (exhausted ZRead quota, code `1310`) is terminal; transient
+429/5xx and a malformed envelope retry once; auth 401/403 and other 4xx are
+terminal. Raw Provider response bodies, reset metadata, and error texts are
+discarded.
+
+Transport close is best-effort and called once per constructed attempt. A
+successful operation does not become a failure when close rejects or times
+out, and a primary failure remains the outward failure when close also fails.
+Cache hits construct and close no transport.
+
+### Diagnostics inventory
+
+`sharedCapabilities` and `zaiOnlyCapabilities` are derived from descriptor
+metadata (intersection across built-in Providers; Z.AI minus the union of
+the others). `repository-exploration` is therefore `zaiOnlyCapabilities`
+while still participating in Provider selection. Doctor help names MiniMax
+as unsupported for `repo`.
+
+### Non-goals
+
+This release does not add MiniMax repository exploration, a Reader
+migration, automatic summarization, dynamic Provider loading, or an implicit
+Z.AI fallback for unsupported Providers. The P5 specialized Vision mappings
+remain independent and are not claimed complete here.
 
 ## Contributing
 

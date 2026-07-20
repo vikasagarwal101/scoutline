@@ -4,6 +4,114 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Provider-neutral repository exploration. `scoutline repo search`,
+  `scoutline repo read`, and `scoutline repo tree` participate in the
+  existing Provider selection order (explicit `--provider`, then
+  `SCOUTLINE_PROVIDER`, then default `zai`). The Z.AI descriptor
+  advertises the `repository-exploration` Capability and the Z.AI
+  Repository Adapter supplies it through a Provider-neutral Explorer
+  (`src/commands/repository-explorer.ts`) plus shared
+  `executeRepositoryOperation` (`src/lib/execution.ts`). MiniMax does not
+  advertise the Capability; selecting MiniMax (explicitly or via the
+  environment) returns `UNSUPPORTED_CAPABILITY` before descriptor
+  configuration, Adapter creation, credential resolution for use, cache
+  identity, or transport construction, with no implicit Z.AI fallback.
+- Schema-version-1 structured `repo` successes (`RepositorySearchResult`,
+  `RepositoryFileResult`, `RepositoryTreeResult`) with strict request
+  defaults: Search carries `language: "en" | "zh"`, Directory root is
+  `path: ""`, File paths are non-root, repeated and trailing `/`
+  collapse, leading `./` is normalized on File, and actual `.`/`..`
+  segments, backslashes, and ASCII control characters are rejected.
+  Provider sibling order and Search excerpt order are preserved.
+- Deterministic, local `--max-chars` projection. `--max-chars` never
+  invokes a model. Absent, zero, or negative means no truncation.
+  `repo search` applies one total budget across `excerpts[].text` in
+  Provider order, truncates the final retained excerpt with the existing
+  ellipsis rule, and omits later excerpts. `repo read` truncates only
+  `content` and preserves `originalContentLength`. `repo tree` is never
+  character-limited. The flag is post-normalization projection — it
+  never enters the Provider request or cache identity.
+- Repository cache namespace
+  `v2.repository-exploration-<operation>.<provider>.<credential-hash>.<request-hash>.json`,
+  where the credential hash is the full lowercase SHA-256 hex digest of
+  the Adapter-resolved credential and is never re-hashed by cache code.
+  Legacy v0.2 Z.AI cache entries remain readable **read-only** — their
+  key is reconstructed from the same Adapter-resolved credential using
+  the exact v0.2 algorithm, and a valid hit is written through to the
+  new key without rewriting, migrating, or deleting the legacy file.
+  `--no-cache` performs no reads or writes. Injected credentials drive
+  the fingerprint and legacy-key construction; ambient environment is
+  never reread.
+- Encoded MCP error taxonomy for repository operations, recognized
+  before success parsing. Exhausted ZRead quota (code `1310` or explicit
+  exhausted-limit meaning) surfaces as a normalized `QUOTA_ERROR` 429
+  and is terminal. Transient 429 / 5xx and a malformed envelope retry
+  once. Auth 401/403 and other 4xx are terminal. Raw Provider body,
+  reset metadata, and error-text are discarded.
+- Best-effort per-attempt transport close. Each `operation.invoke`
+  creates a fresh ZRead client with internal cache and retry disabled
+  and best-effort closes it once in `finally`, bounded by the existing
+  2000 ms semantic. Close rejection or timeout never replaces a
+  successful result or masks a primary failure. Cache hits construct
+  and close no transport.
+- Descriptor-derived `DiagnosticsReport` inventories. `sharedCapabilities`
+  is the intersection across built-in Provider capabilities; `zaiOnlyCapabilities`
+  is Z.AI support minus the union of every other built-in Provider.
+  `repository-exploration` therefore appears under Z.AI-only while still
+  participating in selection, and Doctor help names MiniMax as
+  unsupported for `repo`.
+- A fake second Repository Adapter conformance suite under
+  `tests/helpers/fake-adapter.js` and `tests/repository-conformance.test.js`
+  that proves the seam without making MiniMax claim support, plus an
+  integrated legacy-cache, retry, transport, close, selection, and
+  credential-clean test matrix.
+
+### Changed
+- **`scoutline repo` data-mode success payloads are intentionally
+  breaking.** This release replaces the v0.2 raw-string Search/File
+  returns and the depth-dependent raw Tree/deep-snapshot shape with the
+  schema-version-1 contract. Any consumer parsing the v0.2 raw text or
+  the v0.2 split-depth Tree shape must switch to the v1 fields. The
+  raw `scoutline.zai.*` namespace remains available for callers that
+  need the legacy grammar; it is not wrapped in the v1 envelope.
+- Output modes for `repo` results:
+  - `data` emits the raw schema-version-1 value as plain JSON (no envelope).
+  - `json` and `pretty` emit the standard `{success, data, timestamp}`
+    envelope (indent 0 for `json`, indent 2 for `pretty`).
+  - Text-oriented modes (`compact`, `markdown`, `refs`, `tty`) receive
+    the JSON fallback — the same value as `data` mode — because `repo`
+    supplies no per-mode prose presentation override.
+  Root Tree path is `""` and Tree is structured at every depth
+  including depth 1.
+- Search default `language` is `"en"`; pass `--language zh` for Chinese.
+  File paths must be non-root; canonical paths normalize leading and
+  trailing separators, collapse repeated `/`, and reject actual `.`/
+  `..`, backslashes, and ASCII controls. Percent escapes are never
+  decoded — they remain literal characters in the canonical path.
+- The static `commands/repo.ts` Module is now a thin command routing
+  layer: parse-level validation, dispatch table, Explorer invocation,
+  and `CommandResult` wrapping. Provider selection (explicit
+  `--provider`, `SCOUTLINE_PROVIDER`, default Z.AI), the capability
+  support gate, the configured-but-unconfigured check, and Adapter
+  creation live in `src/index.ts`. Direct `ZReadMcpClient`
+  construction/close, raw ZRead name resolution, response parsing,
+  cache/retry policy, and close lifecycle have moved to the
+  Provider-neutral Explorer, shared execution, and the Z.AI Repository
+  Adapter.
+- Specialized MiniMax Vision mappings remain independent and conformance-
+  gated; they are not claimed complete by this release. The conformance
+  registry, attestation workflow, fallback behavior, and the `vision.diff`
+  / `vision.video` Z.AI-only scope are unchanged.
+
+### Out of scope (not added)
+- MiniMax repository implementation.
+- Reader migration.
+- Automatic summarization or an implicit `--summarize` mode.
+- Dynamic Provider loading or external Adapter packages.
+- Implicit Z.AI fallback for an unsupported Provider.
+- Reopening P5 specialized Vision attestation state.
+
 ## [0.2.0] - 2026-07-18
 
 ### Added

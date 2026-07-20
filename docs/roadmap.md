@@ -31,8 +31,8 @@ document and ship the base release.
 - Introduce `src/providers/selection.ts` with explicit precedence
   (`--provider` > `SCOUTLINE_PROVIDER` > `zai`) and `VALIDATION_ERROR` for
   unknown values. Credentials never participate.
-- Keep Z.AI-only command families (Reader, repository exploration, raw tools,
-  Code Mode) accepting but ignoring Provider selection.
+- Keep Z.AI-only command families (Reader, raw tools, Code Mode,
+  repository exploration) accepting but ignoring Provider selection.
 - Move Provider field mapping, media rules, credential resolution, and
   transport construction into per-Provider Adapter Modules. Commands consume
   only Capability interfaces.
@@ -90,6 +90,20 @@ No release date is currently planned for the direct-transport replacement.
 Until it ships, Scoutline continues to pin `mmx-cli@1.0.16` exactly and to
 document the SDK as a transitional Implementation.
 
+## Current Release (P6): MiniMax Repository Isolation
+
+P6 introduces the Provider-isolated Repository Capability architecture
+described in `docs/plans/provider-isolation/DESIGN.md`. Repository
+exploration now routes through Provider Adapters behind a shared
+`executeRepositoryOperation` executor: Z.AI supplies a live Repository
+Adapter (`src/providers/zai/repository.ts`), and the `repo` subcommands
+participate in Provider selection. MiniMax does **not** supply a
+Repository Adapter; explicit MiniMax selection of any `repo` subcommand
+fails closed with `UNSUPPORTED_CAPABILITY` before any selected-Provider
+work, with no implicit Z.AI fallback. The Phase 1 base-release wording
+above is preserved as the historical record; this section captures the
+P6 reality rather than rewriting it.
+
 ## Phase 4: Streaming Transport
 
 ### Streaming Output
@@ -111,6 +125,7 @@ Acceptance: tests validate event ordering, valid JSONL framing, cancellation cle
 - Dynamic Provider loading, user-supplied Adapter files, or external Adapter packages.
 - Cache path migration; legacy `zai-cli` keys remain readable but are never rewritten.
 - Automatic Provider fallback or Provider inference from credentials.
-- MiniMax Reader, repository exploration, raw tools, Code Mode, image diff, or video analysis.
+- MiniMax Reader, raw tools, Code Mode, image diff, video analysis, or
+  repository exploration.
 
 These capabilities can be reconsidered only after the selected roadmap proves a concrete need for them.

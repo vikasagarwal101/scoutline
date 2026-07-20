@@ -62,9 +62,9 @@ outside the MiniMax Adapter and its transport tests.
 
 ## Shared Capabilities
 
-Provider selection applies only to Search, Vision, quota, and diagnostics.
-Reader, repository exploration, raw tools, and Code Mode are Z.AI-only and
-ignore both the explicit flag and the environment variable.
+Provider selection applies to Search, Vision, quota, diagnostics, **and
+repository exploration**. Reader, raw tools, and Code Mode are Z.AI-only
+and ignore both the explicit flag and the environment variable.
 
 | Capability | Z.AI | MiniMax | Command |
 | --- | --- | --- | --- |
@@ -75,7 +75,7 @@ ignore both the explicit flag and the environment variable.
 | `quota` | Yes | Yes | `scoutline quota` |
 | `diagnostics` | Yes | Yes | `scoutline doctor` |
 | Reader | Yes | No | `scoutline read` |
-| Repository exploration | Yes | No | `scoutline repo ...` |
+| Repository exploration | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | `scoutline repo ...` |
 | Raw tools | Yes | No | `scoutline tools`, `tool`, `call` |
 | Code Mode | Yes | No | `scoutline code ...` |
 
@@ -144,6 +144,104 @@ with reason `not-configured`. No Adapter or transport is constructed.
 Z.AI connectivity uses MCP tool discovery. MiniMax connectivity uses a raw
 single-attempt quota probe that authenticates without a generative request.
 
+## Repository Exploration (P6)
+
+`scoutline repo search`, `scoutline repo read`, and `scoutline repo tree`
+participate in Provider selection. The runtime shape mirrors the Search
+pipeline with a Provider-neutral Explorer:
+
+```text
+repo argv + global flags
+  -> dispatch-level grammar validation
+  -> --provider / SCOUTLINE_PROVIDER / default zai
+  -> descriptor capability check (repository-exploration)
+  -> descriptor.isConfigured (effective Provider)
+  -> descriptor.create -> Adapter
+  -> Provider-neutral Explorer (canonical paths, BFS, projection)
+       -> executeRepositoryOperation (validate, identity, cache,
+          legacy decode, retry, write, project)
+            -> Z.AI Repository Adapter
+            -> raw ZRead operation through resolved public/internal name
+  -> schema-version-1 CommandResult
+```
+
+Key boundaries:
+
+- **Selection happens before configuration.** Descriptor metadata is the
+  support truth. MiniMax does not advertise `repository-exploration`; an
+  explicit or environment-selected MiniMax returns `UNSUPPORTED_CAPABILITY`
+  before `descriptor.isConfigured`, `descriptor.create`, credential
+  resolution for use, cache identity, or transport construction.
+- **Descriptor/Adapter agreement is mandatory.** The Z.AI descriptor
+  advertises `repository-exploration` and the created Adapter supplies
+  `adapter.repository`; the MiniMax descriptor advertises neither and the
+  Adapter supplies none. A future Provider that disagrees in either
+  direction fails closed.
+- **Repository Explorer is Provider-neutral.** It imports only the
+  normalized Repository Capability, shared execution, and normalized
+  errors. It owns canonical paths, deterministic breadth-first traversal,
+  deduplication, request-bound directory safety, and local `--max-chars`
+  projection over the normalized result.
+- **Adapter owns the transport.** The Z.AI Repository Adapter resolves its
+  credential once, builds legacy keys from that same credential, invokes
+  through resolved raw tool names, recognizes encoded MCP error envelopes
+  before success parsing, and best-effort closes one constructed transport
+  per attempt.
+- **Shared execution owns ordering.** `executeRepositoryOperation` is
+  generic over request and result but its ordering is fixed:
+  `validate -> Adapter cache identity -> provider-partitioned cache read
+  -> legacy candidate decode -> retry-wrapped invoke -> normalized cache
+  write`. Each of the three operation kinds gets one retry (matching the
+  current single-retry non-Vision policy). Cache hits construct and
+  close no transport.
+- **Explorer owns projection.** `executeRepositoryOperation` returns the
+  full normalized result and performs no projection. The Explorer
+  applies max-character projection afterward, in
+  `commands/repository-explorer.ts`, before constructing the final
+  `CommandResult`.
+
+### Cache continuity
+
+The repository namespace reuses `v2.<capability>.<provider>.<credential-hash>.<request-hash>.json`
+with a composite operation suffix composed at runtime as
+`${identity.capability}-${identity.operation}` — namely
+`repository-exploration-repository-search`,
+`repository-exploration-repository-read-file`, and
+`repository-exploration-repository-list-directory` — so identical
+`{repository, path}` File and Directory requests cannot collide. Legacy
+v0.2 Z.AI keys are reconstructed from the same Adapter-resolved
+credential using the exact v0.2 algorithm; a valid hit is written
+through to the new key and the legacy file is never migrated, rewritten,
+or deleted. `--no-cache` performs no reads or writes.
+
+### Encoded error taxonomy
+
+Encoded MCP error strings and malformed ZRead wrappers are mapped
+deterministically before success parsing:
+
+| Provider condition | Public code | Status | Retry |
+| --- | --- | --- | --- |
+| Exhausted quota (`1310` or explicit exhausted limit) | `QUOTA_ERROR` | 429 | terminal |
+| Transient 429 / "rate limited" | `API_ERROR` | 429 | one retry |
+| Auth 401 / 403 | `AUTH_ERROR` | matching | terminal |
+| Provider 5xx | `API_ERROR` | matching | one retry |
+| Other 4xx (including 404) | `API_ERROR` | matching | terminal |
+| Malformed envelope or success wrapper | `API_ERROR` | 502 | one retry |
+
+The Adapter discards raw Provider bodies, reset metadata, error code text,
+and message strings before any normalized result or error crosses the
+public Interface.
+
+### Diagnostics inventory
+
+`sharedCapabilities` is the intersection across built-in descriptor
+metadata (in first-descriptor declared order); `zaiOnlyCapabilities` is
+Z.AI support minus the union of every other descriptor (in Z.AI declared
+order). `repository-exploration` is therefore `zaiOnlyCapabilities` while
+still participating in Provider selection. Doctor help explicitly names
+MiniMax as unsupported for `repo`, reports the effective Provider for
+shared capabilities, and never widens to M3 transport.
+
 ## Command Layer
 
 | Module | Responsibility |
@@ -151,13 +249,23 @@ single-attempt quota probe that authenticates without a generative request.
 | `commands/vision.ts` | Eight vision operations with shared client lifecycle management. |
 | `commands/search.ts` | Search filtering, formatting, and multi-query result merging. |
 | `commands/read.ts` | URL validation, gist raw-URL rewriting, extraction, and truncation. |
-| `commands/repo.ts` | ZRead search, tree, and file operations. |
+| `commands/repo.ts` | Thin command routing: parse, dispatch table, Explorer invocation, output mode. Provider selection lives in `src/index.ts`. |
+| `commands/repository-explorer.ts` | Provider-neutral Explorer: canonical paths, deterministic BFS, schema-v1 projection, local max-chars. |
 | `commands/tools.ts` | MCP tool discovery, schema lookup, and raw calls. |
 | `commands/code.ts` | TypeScript tool chaining through UTCP Code Mode. |
 | `commands/doctor.ts`, `commands/quota.ts` | Provider-aware diagnostics and quota dashboard. |
 
 Each command is responsible for input validation, silencing dependency logs,
 producing the final response, and closing its client in a `finally` block.
+`commands/repo.ts` is intentionally thin — it owns parse-level validation,
+Explorer request construction, and `CommandResult` wrapping. It owns no
+concrete Provider client, raw MCP name, response parser, BFS, cache or retry
+policy, transport construction, or close lifecycle. Provider selection
+(explicit `--provider`, `SCOUTLINE_PROVIDER`, default Z.AI), the capability
+support gate, the configured-but-unconfigured check, and Adapter creation
+live in `src/index.ts` (`handleRepository`, ~659–702). The repository
+concerns themselves live under `commands/repository-explorer.ts`,
+`lib/execution.ts`, and the Provider Adapter Modules.
 
 ## Shared Runtime Behavior
 
@@ -173,11 +281,11 @@ producing the final response, and closing its client in a `finally` block.
 shared execution. Legacy `zai-cli` cache keys remain readable for Z.AI as
 Adapter-owned candidates; old entries are never migrated or deleted.
 
-`src/lib/output.ts` owns the output contract. Commands should send successful values through `outputSuccess`; failures are serialized by `formatErrorOutput` from `src/lib/errors.ts`.
+`src/lib/output.ts` owns the output contract. Commands send successful values through `formatSuccessOutput`; failures are serialized by `formatErrorOutput` from `src/lib/output.ts` (with a legacy compat re-export from `src/lib/errors.ts`).
 
 ## Boundaries
 
 - The CLI does not own the web-search, reader, ZRead, vision, or quota implementations; it adapts their transport contracts.
-- The disk cache stores raw upstream responses before truncation, extraction, or output formatting. Presentation flags therefore do not produce separate response-cache entries.
+- The disk cache stores the normalized result of each operation (Search sources, File content, Directory listing, Quota dashboard, etc.). Repository entries are normalized before the cache write; raw upstream ZRead responses never cross the Adapter boundary. Presentation flags therefore do not produce separate response-cache entries.
 - Code Mode is an explicit advanced execution path. Normal commands should remain predictable wrappers around named operations.
 - Provider field names never appear in public output. Raw quota fields do not cross the normalized Interface; raw Search fields are mapped to `SearchSource` before any command code observes them.

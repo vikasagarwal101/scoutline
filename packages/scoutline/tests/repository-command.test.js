@@ -1698,9 +1698,9 @@ describe("P6-07A help text — repo participates in Provider selection; canonica
     }
     // And it must label the default explicitly.
     assert.match(REPO_HELP, /default: data/);
-    // The text-oriented-modes fallback contract is documented.
-    assert.match(REPO_HELP, /Text-oriented modes/);
-    assert.match(REPO_HELP, /fall back to the/);
+    // The text-oriented-modes JSON fallback contract is documented.
+    assert.match(REPO_HELP, /JSON fallback/);
+    assert.match(REPO_HELP, /compact \/ markdown \/ refs \/ tty/);
   });
 
   it("main --help documents repo participates in Provider selection", async () => {

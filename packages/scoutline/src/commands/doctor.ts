@@ -45,6 +45,15 @@ export interface DoctorDiagnosticsDependencies {
   readonly env: NodeJS.ProcessEnv;
   readonly sleep: (ms: number) => Promise<void>;
   readonly random: () => number;
+  /**
+   * Pre-formatted one-line cache summary (Cache Module Unification
+   * Ticket 03). The dispatcher formats this from `cacheStats()` output
+   * before invoking the report builder; the report builder only embeds
+   * it. Optional for backward compatibility with existing tests that
+   * don't cover the cache surface. When omitted, the returned report
+   * simply leaves out the `cache` field.
+   */
+  readonly cacheSummary?: string;
 }
 
 interface AdapterWithDiagnostics {
@@ -119,6 +128,11 @@ export async function buildDiagnosticsReport(
       }))
     : await probeEntries(baseEntries, deps, secrets);
 
+  // L1 fix: the cache summary is formatted by the CLI handler and
+  // threaded through deps.cacheSummary. The report builder only embeds
+  // it; it never reads `cacheStats()` itself.
+  const cache = deps.cacheSummary === undefined ? undefined : { summary: deps.cacheSummary };
+
   return {
     schemaVersion: 1,
     effectiveProvider: deps.effectiveProvider,
@@ -129,6 +143,7 @@ export async function buildDiagnosticsReport(
       visionMcpCompatible: nodeMajor() >= 22,
     },
     providers,
+    ...(cache !== undefined ? { cache } : {}),
   };
 }
 

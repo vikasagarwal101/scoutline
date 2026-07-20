@@ -10,6 +10,15 @@ import { repoSearch, repoTree, repoRead, REPO_HELP } from "./commands/repo.js";
 import { listTools, showTool, callTool, TOOLS_HELP, CALL_HELP } from "./commands/tools.js";
 import { doctor, buildDiagnosticsReport, DOCTOR_HELP } from "./commands/doctor.js";
 import { quota, buildQuotaDashboard, QUOTA_HELP } from "./commands/quota.js";
+import {
+  cacheStatsCommand,
+  cacheClearCommand,
+  formatDoctorCacheSummary,
+  CACHE_HELP,
+  type CacheStatsReport,
+  type CacheClearReport,
+} from "./commands/cache.js";
+import { cacheStats, clearAllCaches } from "./lib/cache.js";
 import { isExtractMode, type ExtractMode } from "./lib/extract.js";
 import {
   runCodeFile,
@@ -57,6 +66,7 @@ Commands:
   tool     Show a tool schema (Z.AI)
   call     Call a tool directly (Z.AI)
   doctor   Provider-aware environment + connectivity checks
+  cache    Inspect or clear the local cache (stats / clear)
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
 
 Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER, then zai):
@@ -85,6 +95,7 @@ Help:
   scoutline tools --help
   scoutline call --help
   scoutline code --help
+  scoutline cache --help
 `.trim();
 
 function parseArgs(args: string[]): {
@@ -945,6 +956,13 @@ async function handleDoctor(
   // effective Provider is unconfigured.
   const effectiveProvider = resolveProviderId(deps.provider, deps.env);
 
+  // Cache Module Unification Ticket 03 — Doctor's one-line cache summary.
+  // The dispatcher formats the summary here (L1 fix) from `cacheStats()`
+  // output; the report builder only embeds the pre-formatted string.
+  // `cacheStats()` never throws (it catches all I/O internally); on a
+  // missing directory it returns zeros, which still format correctly.
+  const cacheSummary = formatDoctorCacheSummary(await cacheStats());
+
   return invokeCommand(
     deps.invocation,
     () =>
@@ -957,12 +975,64 @@ async function handleDoctor(
             env: deps.env,
             sleep: deps.searchSleep,
             random: deps.searchRandom,
+            cacheSummary,
           }),
       }),
     outputMode,
     deps.now,
     deps.secrets,
   );
+}
+
+/**
+ * `scoutline cache <stats|clear>` — local cache utility. Like Doctor,
+ * it bypasses Provider resolution entirely (no descriptor lookup, no
+ * Adapter, no transport). The command surfaces the inventory and clear
+ * helpers owned by `src/lib/cache.ts` (Ticket 01) through the
+ * presentation-only handlers in `src/commands/cache.ts`.
+ */
+async function handleCache(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+): Promise<number> {
+  const { flags, positional } = parseArgs(args);
+
+  if (flags.help || flags.h || positional.length === 0) {
+    deps.invocation.writeStdout(CACHE_HELP);
+    return 0;
+  }
+
+  const subcommand = positional[0];
+  switch (subcommand) {
+    case "stats":
+      return invokeCommand(
+        deps.invocation,
+        () =>
+          cacheStatsCommand({
+            getStats: () => cacheStats() as Promise<CacheStatsReport>,
+          }),
+        outputMode,
+        deps.now,
+        deps.secrets,
+      );
+    case "clear":
+      return invokeCommand(
+        deps.invocation,
+        () =>
+          cacheClearCommand({
+            clear: () => clearAllCaches() as Promise<CacheClearReport>,
+          }),
+        outputMode,
+        deps.now,
+        deps.secrets,
+      );
+    default:
+      throw new ValidationError(
+        `Unknown cache command: ${subcommand}`,
+        'Run "scoutline cache --help" for available commands',
+      );
+  }
 }
 
 async function handleQuota(
@@ -1214,6 +1284,8 @@ export async function main(
         return await handleCall(commandArgs, outputMode, handlerDeps);
       case "doctor":
         return await handleDoctor(commandArgs, outputMode, handlerDeps);
+      case "cache":
+        return await handleCache(commandArgs, outputMode, handlerDeps);
       case "quota":
         return await handleQuota(commandArgs, outputMode, handlerDeps);
       case "code":

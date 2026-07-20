@@ -65,6 +65,17 @@ export interface DiagnosticsReport {
     readonly visionMcpCompatible: boolean;
   };
   readonly providers: readonly ProviderDiagnostic[];
+  /**
+   * One-line cache summary embedded by the CLI handler
+   * (`Cache: enabled, 47 response entries (12.3 MB), 1 tool entry
+   *  (8.2 KB), ~/.scoutline/`). Optional: present when the dispatcher
+   * passes a pre-formatted `cacheSummary` through
+   * `DoctorDiagnosticsDependencies`. The Doctor report builder NEVER
+   * formats this itself (L1 fix); it only embeds what the caller
+   * supplied. Older callers that omit the dependency produce a report
+   * without this field.
+   */
+  readonly cache?: { readonly summary: string };
 }
 
 /**

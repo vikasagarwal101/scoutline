@@ -815,3 +815,62 @@ describe("doctor diagnostics — derived inventory (P6-06)", () => {
     assert.deepStrictEqual([...report.providers[1].capabilities], ["search", "diagnostics"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cache summary (Cache Module Unification Ticket 03).
+//
+// The cache summary is FORMATTED BY THE CLI HANDLER (L1 fix) and threaded
+// through DoctorDiagnosticsDependencies.cacheSummary. The report builder
+// only embeds it; it never reads cacheStats() itself. The field is
+// optional — older callers that omit the dependency produce a report
+// without `cache`.
+// ---------------------------------------------------------------------------
+
+describe("doctor diagnostics — cache summary (Cache Unification Ticket 03)", () => {
+  it("omits the cache field when cacheSummary is not supplied (backward compatible)", async () => {
+    const env = {};
+    const descriptors = [capabilityDescriptor("zai", ["search"], true)];
+    const report = await buildDiagnosticsReport(
+      baseDeps({ descriptors, env, effectiveProvider: "zai", noTools: true }),
+    );
+    assert.strictEqual("cache" in report, false, "cache field must be absent when no summary");
+  });
+
+  it("embeds the pre-formatted cache summary verbatim and does not reformat it", async () => {
+    const env = {};
+    const descriptors = [capabilityDescriptor("zai", ["search"], true)];
+    const summary =
+      "Cache: enabled, 47 response entries (12.3 MB), 1 tool entry (8.2 KB), ~/.scoutline/";
+    const report = await buildDiagnosticsReport({
+      ...baseDeps({ descriptors, env, effectiveProvider: "zai", noTools: true }),
+      cacheSummary: summary,
+    });
+    assert.ok(report.cache, "cache field is present when cacheSummary is supplied");
+    assert.strictEqual(report.cache.summary, summary);
+    // The report builder must not mutate or reformat the supplied string.
+    assert.strictEqual(typeof report.cache.summary, "string");
+  });
+
+  it("accepts the disabled-state summary verbatim", async () => {
+    const env = {};
+    const descriptors = [capabilityDescriptor("zai", ["search"], true)];
+    const report = await buildDiagnosticsReport({
+      ...baseDeps({ descriptors, env, effectiveProvider: "zai", noTools: true }),
+      cacheSummary: "Cache: disabled",
+    });
+    assert.strictEqual(report.cache.summary, "Cache: disabled");
+  });
+
+  it("treats an empty-string cacheSummary as defined and embeds it (no magic defaulting)", async () => {
+    const env = {};
+    const descriptors = [capabilityDescriptor("zai", ["search"], true)];
+    const report = await buildDiagnosticsReport({
+      ...baseDeps({ descriptors, env, effectiveProvider: "zai", noTools: true }),
+      cacheSummary: "",
+    });
+    // The dispatcher may format a summary that ends up empty in edge
+    // cases. The report builder must not turn it into absence.
+    assert.ok(report.cache, "empty-string summary is still embedded");
+    assert.strictEqual(report.cache.summary, "");
+  });
+});

@@ -26,14 +26,35 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { ToolSchema } from "@utcp/sdk";
 import { ZaiMcpClient } from "../dist/lib/mcp-client.js";
 import { getMcpToolName } from "../dist/lib/mcp-config.js";
+import { loadMiniMaxConfig } from "../dist/providers/minimax/config.js";
+import { convertToDataUri } from "../dist/providers/minimax/media.js";
+import {
+  fetchMiniMaxSearch,
+  fetchMiniMaxVlm,
+} from "../dist/providers/minimax/coding-plan-client.js";
 
 const apiKey = process.env.Z_AI_API_KEY || process.env.ZAI_API_KEY;
 const runLive = process.env.ZAI_LIVE_TESTS === "1" && Boolean(apiKey);
 const enableVision = process.env.ZAI_TEST_ENABLE_VISION === "1";
 const nodeMajor = Number(process.versions.node.split(".")[0] || 0);
+
+// ---------------------------------------------------------------------------
+// C2 — Layer T4 envelope-parity gate (critique D1 + L3)
+//
+// Requires BOTH ZAI_LIVE_TESTS=1 AND a non-empty MINIMAX_API_KEY. The
+// runner's offline mode clears ZAI_LIVE_TESTS, so this block reports as
+// skipped (not failed) when the suite is run via `npm test`. Live users
+// opt in explicitly per ticket: `ZAI_LIVE_TESTS=1 MINIMAX_API_KEY=…`.
+// ---------------------------------------------------------------------------
+const miniMaxKey = process.env.MINIMAX_API_KEY || "";
+const runMiniMaxLive =
+  process.env.ZAI_LIVE_TESTS === "1" && miniMaxKey.length > 0;
+const describeMiniMaxLive = runMiniMaxLive ? describe : describe.skip;
 
 const describeLive = runLive ? describe : describe.skip;
 
@@ -301,5 +322,130 @@ describeLive("MCP Live Tests", () => {
       const result = await handler();
       assert.ok(result !== undefined, `tool returned undefined: ${tool.name}`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C2 — Layer T4 envelope-parity fixture (critique D1 + L3).
+//
+// Goal: prove that the direct transport (which sets
+// `MM-API-Source: Scoutline` and `User-Agent: scoutline/<version>` on every
+// request) yields a response envelope byte-equivalent to the legacy
+// `mmx-cli/sdk` path. If MiniMax echoes any of those headers into the
+// response body, attributes traffic to a different rate-limit bucket, or
+// surfaces them in error payloads, this fixture fails with a clear diff
+// from `assert.deepStrictEqual`. Drift is a contract amendment, not a
+// silent pass.
+//
+// Skips cleanly when ZAI_LIVE_TESTS is unset or MINIMAX_API_KEY is empty
+// (offline mode is the default — see scripts/run-tests.mjs).
+//
+// The `mmx-cli/sdk` import is intentionally lazy: it lives behind
+// describeMiniMaxLive and uses dynamic `import()` so the OFFLINE suite
+// never attempts to load the SDK module.
+// ---------------------------------------------------------------------------
+
+/**
+ * Construct a `MiniMaxSDK` instance for the legacy comparison path with
+ * the same `MMX_CONFIG_DIR` sentinel pattern the deleted `sdk-client.ts`
+ * used. The SDK reads its config directory synchronously during
+ * construction; pointing `MMX_CONFIG_DIR` at a unique nonexistent path
+ * suppresses any read of the user's real `~/.mmx` state. The temporary
+ * directory is never created on disk and the original env is restored in
+ * `finally`.
+ */
+async function buildLegacySdk(apiKey) {
+  const hadPrev = Object.prototype.hasOwnProperty.call(process.env, "MMX_CONFIG_DIR");
+  const prev = process.env.MMX_CONFIG_DIR;
+  const temporaryDir = path.join(os.tmpdir(), `scoutline-c2-${randomUUID()}`);
+  process.env.MMX_CONFIG_DIR = temporaryDir;
+  try {
+    const mod = await import("mmx-cli/sdk");
+    const Ctor = mod.MiniMaxSDK;
+    return new Ctor({ apiKey, region: "global", baseUrl: "https://api.minimax.io" });
+  } finally {
+    if (hadPrev) {
+      process.env.MMX_CONFIG_DIR = prev;
+    } else {
+      delete process.env.MMX_CONFIG_DIR;
+    }
+  }
+}
+
+describeMiniMaxLive("Direct transport envelope parity (D1/L3)", () => {
+  // C1 baseline: 1653 offline tests; the live layer adds 0 when skipped
+  // and 2 when opted in (search + vlm parity). Drift is recorded as a
+  // test failure with the deepStrictEqual diff; it never auto-passes.
+  let tempImagePath;
+  let cleanupImage = false;
+
+  before(async () => {
+    const providedImage = process.env.ZAI_TEST_IMAGE_SOURCE;
+    if (providedImage) {
+      await fs.access(providedImage);
+      tempImagePath = providedImage;
+    } else {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-c2-"));
+      tempImagePath = path.join(tempDir, "general.png");
+      // Reuse the repository-owned general vision fixture (a real 64x64
+      // RGB PNG, ~140 bytes) so the bytes are stable across runs.
+      const __dirname = path.dirname(fileURLToPath(import.meta.url));
+      const fixturePath = path.join(__dirname, "fixtures", "vision", "general.png");
+      const bytes = await fs.readFile(fixturePath);
+      await fs.writeFile(tempImagePath, bytes);
+      cleanupImage = true;
+    }
+  });
+
+  after(async () => {
+    if (cleanupImage && tempImagePath) {
+      await fs.rm(path.dirname(tempImagePath), { recursive: true, force: true });
+    }
+  });
+
+  it("search parity: direct transport body equals legacy SDK body", async () => {
+    const config = loadMiniMaxConfig({ ...process.env, MINIMAX_API_KEY: miniMaxKey });
+    const query = `scoutline-c2-t4-search-${Date.now()}`;
+
+    const direct = await fetchMiniMaxSearch(config, query);
+    const legacy = await buildLegacySdk(miniMaxKey).then((sdk) => sdk.search.query(query));
+
+    // `assert.deepStrictEqual` produces a diff on mismatch so drift is
+    // surfaced, never silently accepted. The MiniMax contract documents
+    // `organic`, `related_searches?`, and `base_resp` as the success
+    // envelope; both transports must return that exact shape.
+    assert.deepStrictEqual(
+      direct,
+      legacy,
+      "search response envelope drifted between direct transport and legacy SDK",
+    );
+  });
+
+  it("vlm parity: direct transport body equals legacy SDK body", async () => {
+    const config = loadMiniMaxConfig({ ...process.env, MINIMAX_API_KEY: miniMaxKey });
+    const prompt = "Describe this image. Identify the dominant shape, its color, and the background color.";
+
+    // The VLM endpoint requires a data URI; the legacy SDK's
+    // `toDataUri` does the conversion at request time, and the direct
+    // transport expects a pre-resolved source. Resolving ONCE here
+    // ensures both transports receive byte-identical input — any
+    // envelope drift after that point is a server-side decision, not
+    // a client-side conversion artifact.
+    const dataUri = await convertToDataUri(tempImagePath);
+
+    const direct = await fetchMiniMaxVlm(config, dataUri, prompt);
+    const legacy = await buildLegacySdk(miniMaxKey).then((sdk) =>
+      sdk.vision.describe({ image: dataUri, prompt }),
+    );
+
+    // The MiniMax contract documents `content` + `base_resp` as the
+    // success envelope. Both transports must return that exact shape;
+    // a difference means MiniMax echoed header values into the body
+    // (critique D1) or surfaced the User-Agent (critique L3).
+    assert.deepStrictEqual(
+      direct,
+      legacy,
+      "vlm response envelope drifted between direct transport and legacy SDK",
+    );
   });
 });

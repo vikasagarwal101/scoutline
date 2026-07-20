@@ -557,6 +557,47 @@ describe("MiniMax Search Adapter — failure normalization", () => {
 // envelope.
 
 // ---------------------------------------------------------------------------
+// Adapter-layer 2038 URL survival (C1 — Phase B reviewer finding #1)
+// ---------------------------------------------------------------------------
+//
+// The two deleted scrubbing tests at the original L531/L543 left a gap:
+// no Adapter-level test verified the NEW contract that `error.message`
+// IS preserved through the `normalizeMiniMaxError` rewrap for the
+// 2038 verification-URL case. The transport layer constructs the URL
+// in its message (covered by `tests/minimax-coding-plan-client.test.js`),
+// and the Adapter rewrap must preserve it. This test locks the C2 fix
+// at the Adapter layer so a future edit can't accidentally remove the
+// `error.message` preservation branch in `normalizeMiniMaxError` without
+// a test catching it.
+
+describe("MiniMax Search Adapter — 2038 verification URL survives rewrap (C1)", () => {
+  const VERIFICATION_URL = "https://platform.minimaxi.com/user-center/basic-information";
+
+  it("Adapter-thrown error.message contains the verification URL when base_resp.status_code is 2038", async () => {
+    // The transport's direct module throws a typed `ApiError` whose
+    // message carries the verification URL. `normalizeMiniMaxError`
+    // (C2 fix) preserves `error.message` through the rewrap so the URL
+    // reaches the Adapter's caller. This assertion fails if the
+    // preservation branch is ever removed.
+    const responses = [
+      { ok: true, status: 200, json: { base_resp: { status_code: 2038 } } },
+    ];
+    const { fn } = makeFetchSequence(responses);
+    const descriptor = createMiniMaxDescriptor({ transport: { fetch: fn } });
+    const adapter = descriptor.create({ env: { MINIMAX_API_KEY: TEST_API_KEY } });
+    await assert.rejects(adapter.search.invoke({ query: "q" }), (err) => {
+      assert.strictEqual(err.code, "API_ERROR");
+      assert.strictEqual(err.statusCode, 403);
+      assert.ok(
+        String(err.message).includes(VERIFICATION_URL),
+        `verification URL must survive the Adapter rewrap, got: ${err.message}`,
+      );
+      return true;
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Cache identity (DESIGN.md §7, §11)
 // ---------------------------------------------------------------------------
 

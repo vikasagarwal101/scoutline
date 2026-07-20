@@ -62,9 +62,9 @@ outside the MiniMax Adapter and its transport tests.
 
 ## Shared Capabilities
 
-Provider selection applies to Search, Vision, quota, diagnostics, **and
-repository exploration**. Reader, raw tools, and Code Mode are Z.AI-only
-and ignore both the explicit flag and the environment variable.
+Provider selection applies to Search, Vision, quota, diagnostics,
+**repository exploration**, and **Reader**. Raw tools and Code Mode are
+Z.AI-only and ignore both the explicit flag and the environment variable.
 
 | Capability | Z.AI | MiniMax | Command |
 | --- | --- | --- | --- |
@@ -74,7 +74,7 @@ and ignore both the explicit flag and the environment variable.
 | Image diff / video | Yes | No | `scoutline vision diff`, `vision video` |
 | `quota` | Yes | Yes | `scoutline quota` |
 | `diagnostics` | Yes | Yes | `scoutline doctor` |
-| Reader | Yes | No | `scoutline read` |
+| Reader | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | `scoutline read` |
 | Repository exploration | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | `scoutline repo ...` |
 | Raw tools | Yes | No | `scoutline tools`, `tool`, `call` |
 | Code Mode | Yes | No | `scoutline code ...` |
@@ -242,13 +242,120 @@ still participating in Provider selection. Doctor help explicitly names
 MiniMax as unsupported for `repo`, reports the effective Provider for
 shared capabilities, and never widens to M3 transport.
 
+## Reader (P7)
+
+`scoutline read` participates in Provider selection. The runtime shape
+mirrors the shared pipeline with one intentional asymmetry from `repo`:
+**there is no Explorer module.** Reader is a single URL fetch; projection
+lives in the thin command handler (`commands/read.ts`) rather than in a
+Provider-neutral Explorer.
+
+```text
+read argv + global flags
+  -> parse-level grammar validation (URL scheme, --extract mode)
+  -> --provider / SCOUTLINE_PROVIDER / default zai
+  -> descriptor capability check (reader)
+  -> descriptor.isConfigured (effective Provider)
+  -> descriptor.create -> Adapter
+  -> thin read handler (commands/read.ts)
+       -> executeReaderOperation (validate, identity, cache,
+          legacy decode, retry, write)
+            -> Z.AI Reader Adapter (URL rewrite, encoded MCP errors,
+               per-attempt transport)
+            -> raw WebReader operation through resolved public name
+       -> projection: --max-chars (content read only) / --extract <mode>
+  -> schema-version-1 CommandResult (content-read or extract-read envelope)
+```
+
+Key boundaries:
+
+- **Selection happens before configuration.** Descriptor metadata is the
+  support truth. MiniMax does not advertise `reader`; an explicit or
+  environment-selected MiniMax returns `UNSUPPORTED_CAPABILITY` before
+  `descriptor.isConfigured`, `descriptor.create`, credential resolution
+  for use, cache identity, or transport construction.
+- **Descriptor/Adapter agreement is mandatory.** The Z.AI descriptor
+  advertises `reader` and the created Adapter supplies `adapter.reader`;
+  the MiniMax descriptor advertises neither and the Adapter supplies none.
+- **No Explorer for Reader.** A single fetch does not need BFS, depth
+  semantics, or canonical paths. The thin handler owns projection; the
+  Adapter owns transport. This is the intentional asymmetry from `repo`.
+- **Adapter owns URL rewrite and transport.** The Z.AI Reader Adapter
+  rewrites `gist.github.com/<id>` to its raw form (idempotent on URLs
+  already ending in `/raw`, fragments preserved), records the rewritten
+  URL as `finalUrl`, resolves its credential once, invokes through
+  resolved raw tool names, recognizes encoded MCP error envelopes before
+  success parsing, and best-effort closes one constructed transport per
+  attempt.
+- **Shared execution owns ordering.** `executeReaderOperation` is the
+  typed wrapper that composes `executeProviderOperation` (which still
+  owns retry) with cache lookup and legacy read-through. The ordering is
+  fixed: `validate -> Adapter cache identity -> provider-partitioned cache
+  read -> legacy candidate decode -> retry-wrapped invoke -> normalized
+  cache write`. A reader operation gets one retry (matching the current
+  single-retry non-Vision policy). Cache hits construct and close no
+  transport.
+- **Handler owns projection.** `executeReaderOperation` returns the full
+  normalized `ReaderFetchResult`. The handler projects it into the v1
+  content-read envelope (with optional `--max-chars` truncation) or the
+  extract-read envelope (with `--extract <mode>` slicing); extract reads
+  are never character-truncated. The `--full-envelope` flag is silently
+  accepted and ignored (D3).
+
+### Cache continuity
+
+The reader namespace reuses `v2.<capability>.<provider>.<credential-hash>.<request-hash>.json`
+with the composite operation suffix `${identity.capability}-${identity.operation}`
+— namely `reader-reader-fetch`:
+
+```text
+v2.reader.reader-fetch.<provider>.<credential-hash>.<request-hash>.json
+```
+
+The canonical request URL is the **rewritten** URL so two requests that
+normalize to the same fetched URL share one cache entry. Legacy v0.2 Z.AI
+keys are reconstructed from the same Adapter-resolved credential using the
+exact v0.2 args-order algorithm (the Adapter never sends `no_cache`, so
+legacy entries written under `--no-cache` in v0.2 — if any — are
+intentionally unreconstructible; the contract requires `--no-cache` to
+perform no reads or writes, so this is correct). A valid hit is written
+through to the new key and the legacy file is never migrated, rewritten, or
+deleted. `--no-cache` performs no reads or writes.
+
+### Encoded error taxonomy
+
+Encoded MCP error strings and malformed WebReader responses are mapped
+deterministically before success parsing. The taxonomy matches `repo` and
+shares the same factored classifier (`src/providers/zai/encoded-error.ts`):
+
+| Provider condition | Public code | Status | Retry |
+| --- | --- | --- | --- |
+| Exhausted quota (`1310` or explicit exhausted limit) | `QUOTA_ERROR` | 429 | terminal |
+| Transient 429 / "rate limited" | `API_ERROR` | 429 | one retry |
+| Auth 401 / 403 | `AUTH_ERROR` | matching | terminal |
+| Provider 5xx | `API_ERROR` | matching | one retry |
+| Other 4xx (including 404) | `API_ERROR` | matching | terminal |
+| Malformed envelope or empty content | `API_ERROR` | 502 | one retry |
+
+The Adapter discards raw Provider bodies, reset metadata, error code text,
+and message strings before any normalized result or error crosses the
+public Interface.
+
+### Diagnostics inventory
+
+`sharedCapabilities` is the intersection across built-in descriptor
+metadata; `zaiOnlyCapabilities` is Z.AI support minus the union of every
+other descriptor. `reader` is therefore `zaiOnlyCapabilities` while still
+participating in Provider selection. Doctor help explicitly names MiniMax
+as unsupported for `read`.
+
 ## Command Layer
 
 | Module | Responsibility |
 | --- | --- |
 | `commands/vision.ts` | Eight vision operations with shared client lifecycle management. |
 | `commands/search.ts` | Search filtering, formatting, and multi-query result merging. |
-| `commands/read.ts` | URL validation, gist raw-URL rewriting, extraction, and truncation. |
+| `commands/read.ts` | Thin read handler: parse-level validation (URL scheme, `--extract`), `executeReaderOperation` invocation, schema-v1 envelope projection (`--max-chars` content truncation, `--extract` slicing), output-mode presentation. Provider selection lives in `src/index.ts`. No Explorer module — Reader is a single fetch. |
 | `commands/repo.ts` | Thin command routing: parse, dispatch table, Explorer invocation, output mode. Provider selection lives in `src/index.ts`. |
 | `commands/repository-explorer.ts` | Provider-neutral Explorer: canonical paths, deterministic BFS, schema-v1 projection, local max-chars. |
 | `commands/tools.ts` | MCP tool discovery, schema lookup, and raw calls. |
@@ -257,15 +364,16 @@ shared capabilities, and never widens to M3 transport.
 
 Each command is responsible for input validation, silencing dependency logs,
 producing the final response, and closing its client in a `finally` block.
-`commands/repo.ts` is intentionally thin — it owns parse-level validation,
-Explorer request construction, and `CommandResult` wrapping. It owns no
-concrete Provider client, raw MCP name, response parser, BFS, cache or retry
-policy, transport construction, or close lifecycle. Provider selection
-(explicit `--provider`, `SCOUTLINE_PROVIDER`, default Z.AI), the capability
-support gate, the configured-but-unconfigured check, and Adapter creation
-live in `src/index.ts` (`handleRepository`, ~659–702). The repository
-concerns themselves live under `commands/repository-explorer.ts`,
-`lib/execution.ts`, and the Provider Adapter Modules.
+`commands/repo.ts` and `commands/read.ts` are both intentionally thin — they
+own parse-level validation, request construction, and `CommandResult`
+wrapping. Neither owns a concrete Provider client, raw MCP name, response
+parser, BFS, cache or retry policy, transport construction, or close
+lifecycle. Provider selection (explicit `--provider`, `SCOUTLINE_PROVIDER`,
+default Z.AI), the capability support gate, the configured-but-unconfigured
+check, and Adapter creation live in `src/index.ts` (`handleRepository` and
+`handleRead`). The concerns themselves live under the Explorer
+(`commands/repository-explorer.ts`), the read handler
+(`commands/read.ts`), `lib/execution.ts`, and the Provider Adapter Modules.
 
 ## Shared Runtime Behavior
 
@@ -286,6 +394,6 @@ Adapter-owned candidates; old entries are never migrated or deleted.
 ## Boundaries
 
 - The CLI does not own the web-search, reader, ZRead, vision, or quota implementations; it adapts their transport contracts.
-- The disk cache stores the normalized result of each operation (Search sources, File content, Directory listing, Quota dashboard, etc.). Repository entries are normalized before the cache write; raw upstream ZRead responses never cross the Adapter boundary. Presentation flags therefore do not produce separate response-cache entries.
+- The disk cache stores the normalized result of each operation (Search sources, File content, Directory listing, Reader content-read envelope, Quota dashboard, etc.). Repository and Reader entries are normalized before the cache write; raw upstream ZRead/WebReader responses never cross the Adapter boundary. Presentation flags therefore do not produce separate response-cache entries.
 - Code Mode is an explicit advanced execution path. Normal commands should remain predictable wrappers around named operations.
 - Provider field names never appear in public output. Raw quota fields do not cross the normalized Interface; raw Search fields are mapped to `SearchSource` before any command code observes them.

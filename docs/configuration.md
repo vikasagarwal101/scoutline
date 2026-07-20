@@ -12,10 +12,11 @@ export Z_AI_API_KEY="your-api-key"
 
 ## Provider Selection
 
-Shared commands (`search`, `vision`, `quota`, `doctor`) and **`repo`**
-accept the global `--provider <zai|minimax>` flag. When the flag is omitted
-the value of the `SCOUTLINE_PROVIDER` environment variable is consulted; when
-neither is supplied Scoutline falls back to the compatibility default `zai`.
+Shared commands (`search`, `vision`, `quota`, `doctor`), **`repo`**, and
+**`read`** accept the global `--provider <zai|minimax>` flag. When the flag
+is omitted the value of the `SCOUTLINE_PROVIDER` environment variable is
+consulted; when neither is supplied Scoutline falls back to the compatibility
+default `zai`.
 
 Resolution precedence (highest first):
 
@@ -27,13 +28,14 @@ Provider selection is never inferred from which credentials happen to be
 present. Unknown or empty values fail fast with `VALIDATION_ERROR` before any
 Provider invocation.
 
-`scoutline read`, `scoutline tools`, `scoutline tool`, `scoutline call`, and
-`scoutline code` accept the flag but ignore it; they continue to use Z.AI and
-do not validate the supplied value. MiniMax does not currently advertise the
-`repository-exploration` Capability — selecting MiniMax (explicitly or via
-`SCOUTLINE_PROVIDER`) for any `repo` subcommand returns `UNSUPPORTED_CAPABILITY`
-before descriptor configuration, Adapter creation, credential resolution for
-use, cache identity, or transport construction, with no fallback to Z.AI.
+`scoutline tools`, `scoutline tool`, `scoutline call`, and `scoutline code`
+accept the flag but ignore it; they continue to use Z.AI and do not validate
+the supplied value. MiniMax does not currently advertise the
+`repository-exploration` or `reader` Capabilities — selecting MiniMax
+(explicitly or via `SCOUTLINE_PROVIDER`) for any `repo` subcommand or for
+`read` returns `UNSUPPORTED_CAPABILITY` before descriptor configuration,
+Adapter creation, credential resolution for use, cache identity, or transport
+construction, with no fallback to Z.AI.
 
 ```bash
 # 1. Flag wins
@@ -49,6 +51,10 @@ scoutline search "TypeScript best practices"
 # repo participates in selection; MiniMax returns UNSUPPORTED_CAPABILITY
 scoutline repo search facebook/react "server components"
 scoutline --provider minimax repo search owner/repo query  # exits 1, UNSUPPORTED_CAPABILITY
+
+# read participates in selection; MiniMax returns UNSUPPORTED_CAPABILITY
+scoutline read https://example.com
+scoutline --provider minimax read https://example.com      # exits 1, UNSUPPORTED_CAPABILITY
 ```
 
 ## Core Settings
@@ -252,6 +258,47 @@ is reread. A valid legacy v0.2 hit is written through to the new key; legacy
 files are never migrated, rewritten, or deleted. `--no-cache` performs no
 reads or writes — the operation validates, computes the identity, invokes
 the Adapter, projects the result, and returns.
+
+### Reader Cache
+
+Reader results share the partitioned namespace and use the single
+`reader-fetch` operation suffix:
+
+```text
+v2.reader.reader-fetch.<provider>.<credential-hash>.<request-hash>.json
+```
+
+The Adapter resolves its credential once. The canonical request URL is the
+**rewritten** URL (e.g. `gist.github.com/<id>` → `gist.github.com/<id>/raw`),
+so two requests that normalize to the same fetched URL share one cache entry.
+That same credential drives both the new fingerprint and the legacy-key
+reconstruction; no ambient environment is reread. A valid legacy v0.2 hit is
+written through to the new key; legacy files are never migrated, rewritten,
+or deleted. `--no-cache` performs no reads or writes — the operation
+validates, computes the identity, invokes the Adapter, projects the result,
+and returns.
+
+`--extract`, `--max-chars`, `--full-envelope`, and output mode never enter
+the cache identity — they are projections applied after the cached normalized
+content-read envelope is produced. A cache hit returns the full content;
+projection applies on every read. Extract reads share the same cache entries
+as content reads (the cache stores the normalized content; `--extract`
+slices it on the way out).
+
+## MiniMax Unsupported Reader
+
+MiniMax does not advertise the `reader` Capability in the current release.
+Selecting MiniMax (explicitly or via `SCOUTLINE_PROVIDER`) for any `read`
+returns `UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter
+creation, credential resolution for use, cache identity, or transport
+construction, with no fallback to Z.AI. Drop the Provider selection to use
+the default Z.AI:
+
+```bash
+scoutline read https://example.com                       # Z.AI (default)
+scoutline --provider zai read https://example.com        # explicit Z.AI
+unset SCOUTLINE_PROVIDER                                  # if a shell set it to minimax
+```
 
 ## Security
 

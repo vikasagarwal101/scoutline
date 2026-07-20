@@ -100,13 +100,14 @@ fail with `AUTH_ERROR` or `CONFIGURATION_ERROR`. Unknown Provider IDs fail
 fast with `VALIDATION_ERROR`.
 
 `scoutline search`, `scoutline vision`, `scoutline quota`, `scoutline doctor`,
-and **`scoutline repo`** participate in Provider selection. `scoutline read`,
-`scoutline tools`, `scoutline tool`, `scoutline call`, and `scoutline code`
-accept the flag but ignore it; they remain Z.AI-only. MiniMax does not
-currently advertise the repository-exploration Capability — selecting MiniMax
-(explicitly or via `SCOUTLINE_PROVIDER`) for any `repo` subcommand returns
-`UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter creation,
-cache identity, or transport construction, with no Z.AI fallback.
+**`scoutline repo`**, and **`scoutline read`** participate in Provider
+selection. `scoutline tools`, `scoutline tool`, `scoutline call`, and
+`scoutline code` accept the flag but ignore it; they remain Z.AI-only.
+MiniMax does not currently advertise the `repository-exploration` or `reader`
+Capabilities — selecting MiniMax (explicitly or via `SCOUTLINE_PROVIDER`) for
+any `repo` subcommand or for `read` returns `UNSUPPORTED_CAPABILITY` before
+descriptor configuration, Adapter creation, cache identity, or transport
+construction, with no Z.AI fallback.
 
 ## Capability Matrix
 
@@ -123,7 +124,7 @@ cache identity, or transport construction, with no Z.AI fallback.
 | `vision.video` | Yes | No | Z.AI-only (never MiniMax-claimable) |
 | `quota` | Yes | Yes | Normalized `QuotaDashboard` (ADR-0001) |
 | `diagnostics` (`doctor`) | Yes | Yes | Lists both Providers; probes configured |
-| `read` (Reader) | Yes | No | Z.AI-only; accepts but ignores `--provider` |
+| `read` (Reader) | Yes | **No** (UNSUPPORTED_CAPABILITY) | Participates in selection; only Z.AI supplies `reader` |
 | `repo search` / `repo read` / `repo tree` | Yes | **No** (UNSUPPORTED_CAPABILITY) | Participates in selection; only Z.AI supplies `repository-exploration` |
 | `tools`, `tool`, `call` (Raw tools) | Yes | No | Z.AI-only; accepts but ignores `--provider` |
 | `code` (Code Mode) | Yes | No | Z.AI-only; accepts but ignores `--provider` |
@@ -230,7 +231,7 @@ Provider with its configured state, declared capabilities, and probe status.
   entries are still reported.
 - `doctor` exits 1 when the effective Provider is unconfigured or any
   configured probe fails; successful entries are still reported.
-- `read` supports `--with-images-summary`, `--no-gfm`, and `--keep-img-data-url` for richer parsing control.
+- `read` returns a schema-version-1 envelope (content read or extract read) in every output mode. `--with-images-summary`, `--no-gfm`, and `--keep-img-data-url` are passed through to the Provider request. `--max-chars` is ignored on extract reads; `--full-envelope` is silently deprecated.
 - Vision tool calls automatically retry transient 5xx/network errors (default: 2 retries). Configure with `ZAI_MCP_VISION_RETRY_COUNT` (or `ZAI_MCP_RETRY_COUNT` for all tools).
 - Tool discovery can be cached to speed `tools`/`tool`/`doctor` (default: on, 24h TTL). Configure with `ZAI_MCP_TOOL_CACHE`, `ZAI_MCP_TOOL_CACHE_TTL_MS`, `ZAI_MCP_CACHE_DIR`.
 - The response cache uses provider-partitioned keys; legacy `zai-cli` cache
@@ -341,6 +342,108 @@ This release does not add MiniMax repository exploration, a Reader
 migration, automatic summarization, dynamic Provider loading, or an implicit
 Z.AI fallback for unsupported Providers. The P5 specialized Vision mappings
 remain independent and are not claimed complete here.
+
+## Reader (P7)
+
+`scoutline read` participates in `--provider` selection. Z.AI advertises the
+`reader` Capability and supplies it through the Z.AI Reader Adapter. MiniMax
+does not advertise it; selecting MiniMax returns `UNSUPPORTED_CAPABILITY`
+before descriptor configuration, Adapter creation, credential resolution for
+use, cache identity, or transport construction, with no fallback to Z.AI.
+
+### Breaking data-mode migration (v0.2 → v1)
+
+`scoutline read` returns **schema-version-1 structured values** in every
+output mode. This is an intentional breaking change from the v0.2 raw content
+string and the bare extract array:
+
+| Read shape | v0.2 (legacy, now obsolete) | v1 (current) |
+| --- | --- | --- |
+| Content read (default) | Raw content string | `{schemaVersion, url, finalUrl, title, content, contentFormat, truncated, originalContentLength}` |
+| Extract read (`--extract <mode>`) | Bare JSON array of items | `{schemaVersion, url, finalUrl, mode, items, truncated, originalItemCount}` |
+
+`url` is exactly what the caller passed; `finalUrl` is the URL the operation
+actually fetched, which differs only when a Provider-side rewrite occurred
+(e.g. `gist.github.com/<id>` → `gist.github.com/<id>/raw`). The v0.2 stderr
+rewrite notice is gone — the signal now lives in `finalUrl`.
+
+The four `--extract` modes (`code`, `links`, `tables`, `headings`) and the
+shape of each item are unchanged from v0.2. Only the outer envelope changed
+(bare array → schema-versioned object with `items`).
+
+#### Output-mode behavior
+
+| Mode | Content read | Extract read |
+| --- | --- | --- |
+| `data` | The content-read envelope object | The extract-read envelope object |
+| `json` | `{success: true, data: <envelope>, timestamp}` (indent 0) | same |
+| `pretty` | `{success: true, data: <envelope>, timestamp}` (indent 2) | same |
+| `compact` | The `content` string directly | JSON fallback (the envelope object) |
+| `markdown` | The `content` string directly | JSON fallback |
+| `refs` | The `content` string directly | JSON fallback |
+| `tty` | The `content` string directly | JSON fallback |
+
+`compact`, `markdown`, `refs`, and `tty` exist to give operators a prose form
+for human reading. A content read supplies one (the page body). An extract
+read does not — extracted items are data, not prose — so those modes fall
+back to JSON. This is the deliberate asymmetry from `repo`, whose results are
+always structured data.
+
+**Scripting impact:** any consumer that did `scoutline read URL > file.md`,
+`scoutline read URL | jq -r .content`, or `scoutline read URL --extract code |
+jq -c .[]` against v0.2 output must switch to the v1 envelope. `--max-chars`
+still truncates the content-read `content`; it is **ignored on extract reads**
+(extract reports `originalItemCount` instead). The deprecated
+`--full-envelope` flag is silently accepted and ignored — the envelope is
+always returned at v1.
+
+### URL rewrite as `finalUrl`
+
+A Provider-side URL rewrite (today: gist URLs to their raw form) is recorded
+as `finalUrl` in the v1 result. The rewrite is idempotent on URLs already
+ending in `/raw` and preserves fragments. The v0.2 stderr notice is removed.
+
+### Cache namespace
+
+Reader results share the partitioned cache namespace and use the
+`reader-fetch` operation suffix:
+
+```text
+v2.reader.reader-fetch.<provider>.<credential-hash>.<request-hash>.json
+```
+
+The Adapter resolves its credential once. The canonical request URL is the
+**rewritten** URL so two requests that normalize to the same fetched URL share
+one cache entry. Legacy v0.2 Z.AI entries are reconstructed from the same
+Adapter-resolved credential using the exact v0.2 args-order algorithm and
+remain read-only; a valid hit is written through to the new key; legacy files
+are never migrated, rewritten, or deleted. `--no-cache` performs no reads or
+writes. Injected credentials drive the fingerprint and legacy-key
+construction; ambient `process.env` is never reread.
+
+### Errors and lifecycle
+
+Encoded MCP error envelopes are recognized before success parsing. The same
+taxonomy that governs `repo` applies: exhausted WebReader quota (code `1310`
+or explicit exhausted-limit meaning) surfaces as a normalized `QUOTA_ERROR`
+429 and is terminal; transient 429/5xx and a malformed envelope retry once;
+auth 401/403 and other 4xx are terminal. Raw Provider body, reset metadata,
+and error-text strings are discarded. Transport close is best-effort and
+called once per constructed attempt; a close failure never masks a primary
+result. Cache hits construct and close no transport.
+
+### Diagnostics inventory
+
+`sharedCapabilities` and `zaiOnlyCapabilities` are derived from descriptor
+metadata. `reader` is therefore `zaiOnlyCapabilities` while still
+participating in Provider selection, and Doctor help names MiniMax as
+unsupported for `read`.
+
+### Non-goals
+
+This release does not add a MiniMax Reader Adapter, automatic summarization,
+removal of the deprecated `--full-envelope` flag, or a future `--max-items`
+truncation policy for extract reads.
 
 ## Repository Layout
 

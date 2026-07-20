@@ -104,6 +104,33 @@ work, with no implicit Z.AI fallback. The Phase 1 base-release wording
 above is preserved as the historical record; this section captures the
 P6 reality rather than rewriting it.
 
+## Current Release (P7): Reader Provider Migration
+
+P7 applies the same Capability-seam pattern P6 delivered for `repo` to the
+Reader. `scoutline read` now participates in Provider selection. Z.AI
+advertises the `reader` Capability and supplies it through a new Z.AI
+Reader Adapter (`src/providers/zai/reader.ts`) routed through a shared
+`executeReaderOperation` typed wrapper over `executeProviderOperation`.
+MiniMax does **not** supply a Reader Adapter; explicit MiniMax selection
+of `read` fails closed with `UNSUPPORTED_CAPABILITY` before any selected-
+Provider work, with no implicit Z.AI fallback.
+
+The migration is **breaking for `data`-mode consumers** (see CHANGELOG
+v0.4.0): the v0.2 raw content string and bare extract array are replaced
+with schema-version-1 envelopes (`{schemaVersion, url, finalUrl, title,
+content, contentFormat, truncated, originalContentLength}` for content
+reads and `{schemaVersion, url, finalUrl, mode, items, truncated,
+originalItemCount}` for extract reads). URL rewrite is surfaced as
+`finalUrl` instead of a stderr notice; `--full-envelope` is silently
+deprecated; `--max-chars` is ignored on extract reads. The four
+`--extract` modes and their item shapes are unchanged. Reader has no
+Explorer module (a single fetch does not need one) — projection lives in
+the thin `commands/read.ts` handler. The shared encoded-MCP error
+classifier factored out of `repository.ts` in P6 is reused by the Reader
+Adapter, so all P6-04A/B/C corrections apply for free. The Phase 1
+"keep Reader accepting but ignoring Provider selection" wording above is
+preserved as the historical record; this section captures the P7 reality.
+
 ## Phase 4: Streaming Transport
 
 ### Streaming Output
@@ -125,7 +152,10 @@ Acceptance: tests validate event ordering, valid JSONL framing, cancellation cle
 - Dynamic Provider loading, user-supplied Adapter files, or external Adapter packages.
 - Cache path migration; legacy `zai-cli` keys remain readable but are never rewritten.
 - Automatic Provider fallback or Provider inference from credentials.
-- MiniMax Reader, raw tools, Code Mode, image diff, video analysis, or
+- MiniMax raw tools, Code Mode, image diff, video analysis, or
   repository exploration.
+- MiniMax Reader Adapter, mmx-cli/sdk replacement, removing the deprecated
+  `--full-envelope` flag, and a future `--max-items` truncation policy for
+  extract reads.
 
 These capabilities can be reconsidered only after the selected roadmap proves a concrete need for them.

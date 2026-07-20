@@ -30,9 +30,42 @@ Unknown provider "<value>". Accepted provider IDs: zai, minimax.
 
 `--provider` and `SCOUTLINE_PROVIDER` accept only `zai` or `minimax`. Unknown
 or empty values fail with `VALIDATION_ERROR` (`exit 1`) before any Provider
-invocation. Note that `read`, `tools`, `tool`, `call`, and `code` accept the
-flag but ignore it — they remain Z.AI-only. `repo` participates in selection
-but is currently supplied only by Z.AI.
+invocation. `read` and `repo` participate in selection but are currently
+supplied only by Z.AI. `tools`, `tool`, `call`, and `code` accept the flag
+but ignore it — they remain Z.AI-only.
+
+## Unsupported MiniMax Reader
+
+```
+Provider "minimax" does not support capability "reader"
+```
+
+Selecting MiniMax (explicitly or via `SCOUTLINE_PROVIDER`) for `read` returns
+`UNSUPPORTED_CAPABILITY` (`exit 1`) **before** descriptor configuration,
+Adapter creation, credential resolution for use, cache identity, or transport
+construction. There is no implicit fallback to Z.AI, no heuristic, and no env
+rerun. Drop the Provider selection to use the default Z.AI:
+
+```bash
+# This fails closed (UNSUPPORTED_CAPABILITY):
+scoutline --provider minimax read https://example.com
+
+# These succeed through Z.AI (the only built-in Provider that supplies the
+# reader Capability today):
+scoutline read https://example.com
+unset SCOUTLINE_PROVIDER  # if a previous shell set it to minimax
+scoutline --provider zai read https://example.com
+```
+
+If `SCOUTLINE_PROVIDER` is set to `minimax` in your shell, simply dropping
+`--provider` is not enough — either `unset SCOUTLINE_PROVIDER` or pass
+`--provider zai` explicitly.
+
+The failure intentionally occurs in the same probe path used for `repo`,
+`vision.diff`, `vision.video`, and unsupported specialized Vision mappings —
+descriptor metadata is the support truth and the descriptor is the only
+thing consulted before configuration, Adapter construction, or transport
+activity.
 
 ## Unsupported MiniMax Repository Exploration
 
@@ -168,6 +201,57 @@ exactly one retry (matching the current single-retry non-Vision policy). A
 retry creates a fresh Adapter transport attempt with one best-effort close;
 cache hits construct and close no transport.
 
+## Reader Returns a Malformed Provider Response
+
+```
+{ "success": false, "error": "Z.AI reader request failed", "code": "API_ERROR", "statusCode": 502 }
+```
+
+Encoded MCP errors and malformed WebReader responses are mapped
+deterministically before success parsing using the same taxonomy that
+governs `repo`:
+
+| Provider condition | Public code | Status | Retry |
+| --- | --- | --- | --- |
+| Exhausted quota (code `1310` or explicit "exhausted limit") | `QUOTA_ERROR` | 429 | terminal |
+| Transient 429 / "rate limited" | `API_ERROR` | 429 | one retry |
+| Auth 401 / 403 | `AUTH_ERROR` | matching | terminal |
+| Provider 5xx | `API_ERROR` | matching | one retry |
+| Other 4xx (including 404) | `API_ERROR` | matching | terminal |
+| Malformed envelope or empty content | `API_ERROR` | 502 | one retry |
+
+Raw Provider body, reset metadata, error code text, and encoded message
+strings are discarded. The retry taxonomy gives each reader operation exactly
+one retry (matching the current single-retry non-Vision policy). A retry
+creates a fresh Adapter transport attempt with one best-effort close; cache
+hits construct and close no transport. Transport close failure never masks a
+primary success or replaces a primary failure.
+
+## `--extract` Looks Unexpected
+
+`scoutline read` ships two result schemas, both `schemaVersion: 1`. The
+content read (default) and the extract read (`--extract <mode>`) intentionally
+diverge in how the text-oriented output modes present them:
+
+| Mode | Content read (`https://...`) | Extract read (`--extract code`) |
+| --- | --- | --- |
+| `data` / `json` / `pretty` | The envelope object | The envelope object |
+| `compact` / `markdown` / `refs` / `tty` | The `content` string directly | **JSON fallback** (the envelope object) |
+
+If you ran `scoutline read URL --extract code -O compact` expecting the
+extract items as prose, the JSON envelope you see is intentional — extracted
+items are data, not prose. Use `-O data` (or `json`/`pretty`) for the
+structured shape every time.
+
+The four `--extract` modes (`code`, `links`, `tables`, `headings`) and the
+shape of each item are unchanged from v0.2; only the outer envelope changed
+(bare array → schema-versioned object with `items`). To get the bare-array
+shape back, slice it: `scoutline read URL --extract code -O data | jq -c .items[]`.
+
+`--max-chars` is **ignored on extract reads** — extract reads are not
+character-truncated. Extract reports `originalItemCount` instead; see the
+next section for the content-read behavior.
+
 ## Repository Search Returns 0 Excerpts or Reports "Empty Result"
 
 The Z.AI Adapter requires at least one well-formed `<excerpt>` block to
@@ -191,12 +275,17 @@ and validation. It never invokes a model:
 - `repo read` → only `content` is truncated; `originalContentLength` and
   `truncated` always describe the pre-truncation length;
 - `repo tree` → never character-limited; metadata, JSON envelopes, and
-  snapshots are not part of any budget.
+  snapshots are not part of any budget;
+- `read` (content read) → truncates the envelope's `content`; sets
+  `truncated: true` and preserves `originalContentLength`;
+- `read --extract <mode>` → **ignored**. Extract reads are not
+  character-truncated; the extract envelope reports `originalItemCount`
+  instead. Truncating a code block or link list mid-item would be harmful.
 
-If your consumer expected a smaller result, lower `--max-chars`; if you
-expected the full result, drop the flag or pass a larger value. Cached
-results are always the complete normalized result — projection is the only
-place `--max-chars` ever appears.
+If your consumer expected a smaller content-read result, lower `--max-chars`;
+if you expected the full result, drop the flag or pass a larger value.
+Cached results are always the complete normalized result — projection is the
+only place `--max-chars` ever appears.
 
 ## Cache Hits Don't Refresh
 
@@ -275,7 +364,9 @@ Set `Z_AI_VISION_MCP=0` when the environment should never start the server.
 ## A URL is rejected by `read`
 
 `read` accepts absolute `http://` or `https://` URLs only. GitHub Gist URLs
-are rewritten to their raw form automatically.
+are rewritten to their raw form automatically and the rewritten URL is
+surfaced as `finalUrl` in the v1 result (the v0.2 stderr rewrite notice is
+removed).
 
 ## `quota --all-providers` exits 1
 

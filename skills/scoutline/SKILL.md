@@ -4,13 +4,14 @@ description: |
   Z.AI and MiniMax CLI providing:
   - Vision: image/video analysis, OCR, UI-to-code, error diagnosis (GLM-4.6V)
   - Search: real-time web search with domain/recency filtering
-  - Reader: web page to markdown extraction
+  - Reader: web page to markdown extraction (Provider Capability;
+    Z.AI supplies it; MiniMax returns UNSUPPORTED_CAPABILITY without fallback)
   - Repo: GitHub code search and reading via ZRead (Provider Capability;
     Z.AI supplies it; MiniMax returns UNSUPPORTED_CAPABILITY without fallback)
   - Tools: MCP tool discovery, schemas, and raw calls (Z.AI)
   - Code: TypeScript tool chaining (Z.AI)
-  - Provider selection: --provider <zai|minimax> for shared capabilities
-    and repo
+  - Provider selection: --provider <zai|minimax> for shared capabilities,
+    repo, and read
   Use for visual content analysis, web search, page reading, or GitHub
   exploration. Requires Z_AI_API_KEY (default) or MINIMAX_API_KEY (with
   --provider minimax).
@@ -36,18 +37,19 @@ Get a Z.AI key at: https://z.ai/manage-apikey/apikey-list
 
 ## Provider Selection
 
-Shared commands (`search`, `vision analyze`, `quota`, `doctor`) and
-**`repo`** accept the global `--provider <zai|minimax>` flag. Precedence is
-the flag, then the `SCOUTLINE_PROVIDER` environment variable, then the
+Shared commands (`search`, `vision analyze`, `quota`, `doctor`), **`repo`**,
+and **`read`** accept the global `--provider <zai|minimax>` flag. Precedence
+is the flag, then the `SCOUTLINE_PROVIDER` environment variable, then the
 default `zai`. Provider selection is never inferred from credentials.
 Unknown values fail fast with `VALIDATION_ERROR`.
 
-`read`, `tools`, `tool`, `call`, and `code` accept the flag but ignore it;
-they remain Z.AI-only. MiniMax does not currently advertise the
-`repository-exploration` Capability — selecting MiniMax (explicitly or via
-`SCOUTLINE_PROVIDER`) for any `repo` subcommand returns `UNSUPPORTED_CAPABILITY`
-before descriptor configuration, Adapter creation, credential resolution for
-use, cache identity, or transport construction, with no Z.AI fallback.
+`tools`, `tool`, `call`, and `code` accept the flag but ignore it; they
+remain Z.AI-only. MiniMax does not currently advertise the
+`repository-exploration` or `reader` Capabilities — selecting MiniMax
+(explicitly or via `SCOUTLINE_PROVIDER`) for any `repo` subcommand or for
+`read` returns `UNSUPPORTED_CAPABILITY` before descriptor configuration,
+Adapter creation, credential resolution for use, cache identity, or
+transport construction, with no Z.AI fallback.
 
 ## Capability Matrix
 
@@ -60,7 +62,7 @@ use, cache identity, or transport construction, with no Z.AI fallback.
 | Two-image diff, video | Yes | No | `scoutline vision diff`, `vision video` |
 | Quota (normalized) | Yes | Yes | `scoutline quota [--all-providers]` |
 | Diagnostics | Yes | Yes | `scoutline doctor [--no-tools]` |
-| Reader | Yes | No | `scoutline read` |
+| Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | `scoutline read` |
 | Repository exploration (search/read/tree) | Yes | **No** (UNSUPPORTED_CAPABILITY) | `scoutline repo ...` |
 | Raw tools | Yes | No | `scoutline tools`, `tool`, `call` |
 | Code Mode | Yes | No | `scoutline code` |
@@ -173,6 +175,80 @@ Legacy files are never rewritten, migrated, or deleted. `--no-cache`
 performs no reads or writes. Injected credentials drive the fingerprint and
 legacy-key construction — ambient `process.env` is never reread.
 
+## Reader
+
+`scoutline read` participates in Provider selection. Z.AI advertises and
+supplies `reader`; MiniMax does not, so selecting MiniMax returns
+`UNSUPPORTED_CAPABILITY` with no fallback.
+
+### v0.2 → v1 schema migration (breaking)
+
+`read` successes return **schema-version-1 structured values**, not the v0.2
+raw content string or bare extract array:
+
+| Read shape | v1 schema |
+| --- | --- |
+| Content read (default) | `{schemaVersion:1, url, finalUrl, title, content, contentFormat, truncated, originalContentLength}` |
+| Extract read (`--extract code\|links\|tables\|headings`) | `{schemaVersion:1, url, finalUrl, mode, items, truncated, originalItemCount}` |
+
+`url` is exactly what the caller passed; `finalUrl` is the URL the operation
+actually fetched (differs only on a Provider-side rewrite, e.g. gist URLs to
+their raw form). The four `--extract` modes and their item shapes are
+unchanged from v0.2 — only the outer envelope changed (bare array →
+schema-versioned object with `items`).
+
+### Output-mode disambiguation
+
+`read` is asymmetric with `repo` on the text-oriented modes. `repo` always
+falls back to JSON; `read` emits prose when the result has prose and falls
+back to JSON when it does not:
+
+| Mode | Content read | Extract read |
+| --- | --- | --- |
+| `data` / `json` / `pretty` | The envelope object | The envelope object |
+| `compact` / `markdown` / `refs` / `tty` | The `content` string directly | **JSON fallback** (the envelope object) |
+
+A content read supplies one prose form (the page body); an extract read
+supplies data, not prose, so the text modes fall back to JSON. Use `-O data`
+for the structured extract shape every time.
+
+### `--max-chars` and `--full-envelope`
+
+`--max-chars` is deterministic local projection (never a model):
+
+- absent / zero / negative → no truncation;
+- content read → truncates the envelope's `content`; sets `truncated: true`
+  and preserves `originalContentLength`;
+- extract read → **ignored**. Extract reports `originalItemCount` instead.
+
+`--full-envelope` is silently accepted and ignored — the v1 envelope is
+always returned. Scripts that branched on its presence will now always
+receive the envelope.
+
+### Errors and lifecycle
+
+Encoded MCP error envelopes are recognized before success parsing. The
+taxonomy matches `repo`: exhausted WebReader quota (code `1310` or explicit
+exhausted-limit meaning) is terminal `QUOTA_ERROR` 429; transient 429/5xx
+and a malformed envelope retry once; auth 401/403 and other 4xx are
+terminal. Raw Provider body, reset metadata, and error-text strings never
+cross the public interface. Transport close is best-effort and per attempt;
+cache hits construct and close no transport.
+
+### Cache continuity
+
+New cache entries use the namespace
+`v2.reader.reader-fetch.<provider>.<credential-hash>.<request-hash>.json`,
+where `<credential-hash>` is the full lowercase SHA-256 hex digest of the
+Adapter-resolved credential. The canonical request URL is the **rewritten**
+URL so two requests that normalize to the same fetched URL share one entry.
+Legacy v0.2 Z.AI cache entries remain readable read-only; their key is
+reconstructed from the same credential using the exact v0.2 args-order
+algorithm, and a valid hit is written through to the new key. Legacy files
+are never rewritten, migrated, or deleted. `--no-cache` performs no reads or
+writes. Injected credentials drive the fingerprint and legacy-key
+construction — ambient `process.env` is never reread.
+
 ## Output
 
 Default: **data-only** (raw output for token efficiency).
@@ -182,7 +258,10 @@ Use `--output-format json` for `{ success, data, timestamp }` wrapping.
 returns a schema-version-1 `DiagnosticsReport`. Both are Provider-neutral.
 `repo` returns the schema-version-1 objects documented above; the standard
 envelope wraps them in `json`/`pretty` and the exact object is emitted in
-`data`.
+`data`. `read` returns the schema-version-1 content-read or extract-read
+envelope in `data`/`json`/`pretty`; text-oriented modes emit the `content`
+string for content reads (prose) and fall back to JSON for extract reads
+(data, not prose).
 
 ## Advanced
 

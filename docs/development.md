@@ -71,6 +71,10 @@ shell setting cannot accidentally trigger network calls.
 | `tests/repository-explorer.test.js` | Provider-neutral Explorer canonical paths, BFS, and max-chars projection. |
 | `tests/repository-command.test.js` | Thin command routing, selection, validation, and v1 outputs. |
 | `tests/repository-conformance.test.js` | Cross-Adapter conformance with a fake second Adapter plus legacy-cache and credential-clean matrix. |
+| `tests/reader-capability.test.js` | Provider-neutral Reader request/result contracts and total decoders. |
+| `tests/zai-reader-adapter.test.js` | Z.AI Reader Adapter URL rewrite, parsing, encoded MCP error taxonomy, and per-attempt close. |
+| `tests/reader-command.test.js` | Thin read handler routing, selection, validation, and v1 envelope projection (content + extract). |
+| `tests/reader-conformance.test.js` | Cross-Adapter byte-parity conformance with a fake second Reader Adapter, plus legacy-cache, retry, transport, close, selection, and credential-clean matrix. |
 | `tests/provider-live.test.js` | Opt-in live Provider behavior; required for release. |
 
 ## Change Checklist
@@ -82,7 +86,9 @@ shell setting cannot accidentally trigger network calls.
 5. Keep Provider field names, response shapes, and media rules inside the matching Adapter. Commands consume Capability interfaces only.
 6. Repository exploration is a Provider Capability. Participation in selection follows descriptor metadata: the Z.AI descriptor advertises `repository-exploration`; MiniMax does not. Selecting MiniMax for `repo` returns `UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter creation, cache identity, or transport construction. Do not add an implicit fallback.
 7. Repository results are schema-version-1 structured values (`{schemaVersion, repository, ...}`). The breaking migration from v0.2 raw strings and the depth-dependent raw Tree shape is intentional. Any new repo subcommand must use the same contract; raw Provider grammar stays inside the Z.AI Adapter.
-8. Run `npm run build`, `npm run test:offline`, `npm run test:smoke`, and `npm pack --dry-run` before release. For P6 also run `env -u Z_AI_API_KEY -u ZAI_API_KEY -u MINIMAX_API_KEY npm run test:offline` to confirm the credential-clean matrix. Do not run live tests unless you have explicitly opted in.
+8. Reader is a Provider Capability. Participation in selection follows descriptor metadata: the Z.AI descriptor advertises `reader`; MiniMax does not. Selecting MiniMax for `read` returns `UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter creation, cache identity, or transport construction. Do not add an implicit fallback. Reader has no Explorer module — projection lives in the thin `commands/read.ts` handler.
+9. Reader results are schema-version-1 structured values (`{schemaVersion, url, finalUrl, ...}`). The breaking migration from v0.2 raw content strings and bare extract arrays is intentional. The four `--extract` modes and their item shapes are unchanged from v0.2. `--full-envelope` is silently deprecated; `--max-chars` is ignored on extract reads (which report `originalItemCount`).
+10. Run `npm run build`, `npm run test:offline`, `npm run test:smoke`, and `npm pack --dry-run` before release. For P6 and P7 also run `env -u Z_AI_API_KEY -u ZAI_API_KEY -u MINIMAX_API_KEY npm run test:offline` to confirm the credential-clean matrix. Do not run live tests unless you have explicitly opted in.
 
 ## Package and Publication
 

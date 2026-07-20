@@ -6,8 +6,8 @@ gate.
 
 ## Provider Selection
 
-Shared commands (`search`, `vision analyze`, `quota`, `doctor`) and
-**`repo`** accept the global `--provider <zai|minimax>` flag. Precedence:
+Shared commands (`search`, `vision analyze`, `quota`, `doctor`), **`repo`**,
+and **`read`** accept the global `--provider <zai|minimax>` flag. Precedence:
 
 1. `--provider <zai|minimax>` on the command line
 2. `SCOUTLINE_PROVIDER` environment variable
@@ -16,13 +16,13 @@ Shared commands (`search`, `vision analyze`, `quota`, `doctor`) and
 Unknown or empty values fail with `VALIDATION_ERROR` before any Provider
 invocation. Provider selection is never inferred from credentials.
 
-`read`, `tools`, `tool`, `call`, and `code` accept the flag but ignore it;
-they remain Z.AI-only and do not validate the supplied value. `repo`
-participates in selection but only Z.AI currently supplies the
-`repository-exploration` Capability — selecting MiniMax returns
-`UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter creation,
-credential resolution for use, cache identity, or transport construction,
-with no fallback.
+`tools`, `tool`, `call`, and `code` accept the flag but ignore it; they
+remain Z.AI-only and do not validate the supplied value. `repo` and `read`
+participate in selection but only Z.AI currently supplies the
+`repository-exploration` and `reader` Capabilities — selecting MiniMax for
+either returns `UNSUPPORTED_CAPABILITY` before descriptor configuration,
+Adapter creation, credential resolution for use, cache identity, or
+transport construction, with no fallback.
 
 ```bash
 # 1. Flag wins over everything
@@ -177,6 +177,26 @@ migrated, or deleted. `--no-cache` performs no reads or writes — the
 operation validates, computes the identity, invokes the Adapter, projects
 the result, and returns.
 
+### Reader Cache
+
+Reader results share the partitioned namespace and use the single
+`reader-fetch` operation suffix:
+
+```
+v2.reader.reader-fetch.<provider>.<credential-hash>.<request-hash>.json
+```
+
+The canonical request URL is the **rewritten** URL (e.g. gist URLs to their
+raw form) so two requests that normalize to the same fetched URL share one
+entry. The Adapter resolves its credential once; that same credential drives
+both the new fingerprint and the legacy-key reconstruction. No ambient
+environment is reread. A valid legacy v0.2 hit is written through to the new
+key; the legacy file is never rewritten, migrated, or deleted. `--no-cache`
+performs no reads or writes. `--extract`, `--max-chars`, `--full-envelope`,
+and output mode never enter the cache identity — they are projections
+applied after the cached normalized content-read envelope is produced;
+extract reads share the same cache entries as content reads.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ZAI_CACHE` | `1` | Set to `0` or `false` to disable the response cache. |
@@ -216,9 +236,9 @@ scoutline doctor --provider minimax
 Inventory derivation is descriptor-driven: `sharedCapabilities` is the
 intersection across built-in Provider descriptors; `zaiOnlyCapabilities` is
 Z.AI support minus the union of every other built-in descriptor.
-`repository-exploration` is therefore reported under Z.AI-only while still
-participating in Provider selection. Doctor help explicitly names MiniMax
-as unsupported for `repo`.
+`repository-exploration` and `reader` are therefore reported under Z.AI-only
+while still participating in Provider selection. Doctor help explicitly
+names MiniMax as unsupported for `repo` and `read`.
 
 ### Repository Pipeline
 
@@ -244,6 +264,36 @@ traversal, deduplication, request-bound directory safety, schema-v1
 projection, and local `--max-chars` projection. The Z.AI Adapter owns
 credential resolution, legacy-key reconstruction, encoded MCP error
 parsing, and best-effort per-attempt close.
+
+### Reader Pipeline
+
+```text
+read argv
+  -> parse-level grammar validation (URL scheme, --extract mode)
+  -> --provider / SCOUTLINE_PROVIDER / default zai
+  -> descriptor capability check (reader)
+  -> descriptor.isConfigured (effective Provider)
+  -> descriptor.create -> Adapter
+  -> thin read handler (commands/read.ts)
+       -> executeReaderOperation
+            -> validate -> Adapter cache identity (canonical URL is the
+               REWRITTEN URL) -> partitioned cache
+            -> legacy candidate decode
+            -> Adapter invoke (Z.AI: resolved public/internal WebReader
+               name; URL rewrite as finalUrl), wrapped through one retry
+               (single-retry non-Vision policy)
+            -> normalized cache write
+       -> projection: --max-chars (content read only) / --extract <mode>
+  -> schema-version-1 CommandResult (content-read or extract-read envelope)
+```
+
+Reader has **no Explorer module.** A single URL fetch does not need BFS,
+depth semantics, or canonical paths — projection lives in the thin
+`commands/read.ts` handler. The Z.AI Reader Adapter owns URL rewrite,
+credential resolution, legacy-key reconstruction, encoded MCP error parsing,
+and best-effort per-attempt close. `--full-envelope` is silently accepted
+and ignored; the v1 envelope is always returned. `--max-chars` is ignored
+on extract reads, which report `originalItemCount` instead.
 
 ### Encoded MCP Error Taxonomy
 

@@ -145,6 +145,76 @@ export function buildLegacyRepositoryCacheKey(
   return `${publicToolName}.${credentialPart}.${argumentPart}.json`;
 }
 
+// ---------------------------------------------------------------------------
+// Reader Migration Ticket 01 — Pure legacy reader cache key builder.
+//
+// The Reader Capability (P-reader-01 onwards) supplies its own cache
+// identity through `buildProviderCacheKey`. The legacy Z.AI v0.2 read
+// cache keys produced by `buildCacheKey` are read-through candidates —
+// they were the production path for `scoutline read` until the Reader
+// migration ships. The Z.AI Reader Adapter (Ticket 03) reconstructs
+// those legacy filenames exactly so a v0.2 cache entry remains valid as
+// a miss-free read-through source.
+//
+// This helper:
+//   - is PURE (no `process.env` reads, no `getApiKey` calls);
+//   - accepts the resolved `apiKey`, `publicToolName`, and
+//     insertion-ordered `args` explicitly;
+//   - reproduces the v0.2 algorithm byte-for-byte;
+//   - is a SEPARATE symbol from `buildCacheKey` and does NOT call or
+//     wrap it.
+//
+// Algorithm (mirrors `buildLegacyRepositoryCacheKey` exactly):
+//   credentialPart = sha256(apiKey).hex.slice(0, 12)
+//   argumentPart   = sha256(JSON.stringify({ command: publicToolName,
+//                                            args })).hex.slice(0, 24)
+//   key            = `${publicToolName}.${credentialPart}.${argumentPart}.json`
+//
+// Legacy argument insertion order is fixed by the v0.2 `webRead`
+// implementation (audited: src/lib/mcp-client.ts lines 619–647):
+//   1. url                        (always)
+//   2. timeout                    (optional, only if params.timeout !== undefined)
+//   3. no_cache                   (optional, only if params.noCache !== undefined)
+//   4. return_format              (optional, only if params.format is truthy)
+//   5. retain_images              (optional)
+//   6. with_links_summary         (optional)
+//   7. no_gfm                     (optional)
+//   8. keep_img_data_url          (optional)
+//   9. with_images_summary        (optional)
+//
+// The Adapter passes `args` in the documented order; this helper does
+// not reorder, normalize, or sort keys. `no_cache` IS part of the legacy
+// cache key — the v0.2 args object reaches `buildCacheKey` before the
+// no-cache directive is consulted. The helper preserves this quirk so
+// legacy entries remain reconstructible.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the exact v0.2 legacy reader cache key. Pure: the caller MUST
+ * supply the already-resolved credential. The function never reads
+ * `process.env` and never calls `getApiKey`. `args` is serialized in
+ * its insertion order via `JSON.stringify`.
+ *
+ * The result never contains the raw credential — only the first 12 hex
+ * chars of `sha256(apiKey)`.
+ */
+export function buildLegacyReaderCacheKey(
+  apiKey: string,
+  publicToolName: string,
+  args: Record<string, unknown>,
+): string {
+  // SHA-256(apiKey) → first 12 hex chars.
+  const credentialPart = crypto.createHash("sha256").update(apiKey).digest("hex").slice(0, 12);
+  // SHA-256(JSON.stringify({command,args})) → first 24 hex chars.
+  const argumentPayload = JSON.stringify({ command: publicToolName, args });
+  const argumentPart = crypto
+    .createHash("sha256")
+    .update(argumentPayload)
+    .digest("hex")
+    .slice(0, 24);
+  return `${publicToolName}.${credentialPart}.${argumentPart}.json`;
+}
+
 export function isCacheEnabled(): boolean {
   return CACHE_ENABLED;
 }

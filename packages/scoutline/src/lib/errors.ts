@@ -200,12 +200,12 @@ export class TimeoutError extends ZaiError {
    * an ambient `process.env` value that may differ from the injected env.
    */
   readonly durationMs: number;
-  constructor(timeoutMs: number) {
+  constructor(timeoutMs: number, help?: string) {
     super(
       `Request timed out after ${timeoutMs}ms`,
       "TIMEOUT_ERROR",
       undefined,
-      "Try again or increase timeout with Z_AI_TIMEOUT env var",
+      help ?? "Try again or increase timeout with Z_AI_TIMEOUT env var",
     );
     this.durationMs = timeoutMs;
   }

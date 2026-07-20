@@ -171,6 +171,14 @@ describe("Legacy subclasses (compat)", () => {
     assert.strictEqual(err.durationMs, 30000);
   });
 
+  it("TimeoutError accepts an optional `help` override (2-arg form)", () => {
+    const err = new TimeoutError(30000, "Try again or increase timeout with MINIMAX_TIMEOUT env var");
+    assert.strictEqual(
+      err.help,
+      "Try again or increase timeout with MINIMAX_TIMEOUT env var",
+    );
+  });
+
   it("FileError accepts an optional help hint", () => {
     const err = new FileError("File not found", "Check the path");
     assert.strictEqual(err.code, "FILE_ERROR");

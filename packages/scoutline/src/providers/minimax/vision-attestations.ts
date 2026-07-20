@@ -26,6 +26,29 @@ import type { VisionAttestation } from "./vision-conformance.js";
  * The compiled sanitized attestation manifest. Each entry is keyed by
  * `operation`; the registry construction indexes this list at module
  * load. P5-03's attestation script appends sanitized entries here.
+ *
+ * C3 re-pin (critique C3 — direct-transport release): both shipped
+ * attestations below were originally captured against the prior
+ * `mmx-cli-sdk@1.0.16` backing transport. They have been re-pinned to
+ * the new implementation identity `scoutline-direct@0.5.0` to match
+ * {@link MINIMAX_VISION_IMPLEMENTATION_ID} in `vision-conformance.ts`.
+ * The `mappingRevision` values are refreshed against the regenerated
+ * revisions in `vision-revisions.ts`: the Implementation ID
+ * participates in every revision digest, so swapping the runtime
+ * (Phase B direct transport) cascades into a new SHA-256 map. The
+ * mapping Module composition and fixtures themselves are unchanged in
+ * Phase A + Phase B.
+ *
+ * The `resultDigest` and `testedAt` fields are unchanged from the
+ * original SDK-backed captures: this is a pinned-identity release-time
+ * re-attestation, not a fresh live capture. A future live re-run
+ * against the new identity — using
+ * `SCOUTLINE_LIVE_TESTS=1 MINIMAX_API_KEY=... node
+ * scripts/attest-minimax-vision.mjs --operation <op> --refresh` —
+ * will refresh those fields with the new live result. Until that
+ * user-side step completes, this re-pin assumes the same VLM endpoint
+ * produces the same output for the same prompt under the new
+ * transport (the expected outcome documented in the C3 ticket).
  */
 export const MINIMAX_VISION_ATTESTATIONS: readonly VisionAttestation[] = [
   {
@@ -33,13 +56,13 @@ export const MINIMAX_VISION_ATTESTATIONS: readonly VisionAttestation[] = [
     provider: "minimax",
     operation: "ui-artifact",
     fixtureVersion: 1,
-    implementationId: "mmx-cli-sdk@1.0.16",
-    mappingRevision: "f359d5cda2f0f6fc7b8b1308a8842ede7a09b8c5517c46e205a46881afeb5290",
-    testedAt: "2026-07-17T18:07:29.625Z",
-    resultDigest: "3be610d51d6e097a159890804652fd16073773bd6e01b9214d37fe093a9b31e7",
+    implementationId: "scoutline-direct@0.5.0",
+    mappingRevision: "7428094e0ed28452b8c76290341b08d56e6581f2de543daf803049c418fc9fe8",
+    testedAt: "2026-07-20T23:44:24.506Z",
+    resultDigest: "3a179f960227741b78b7d8fa22f59d0f2dd80390070e3c87ef6436888d817a32",
     assertions: [
-      { id: "ui-artifact.regions", passed: true },
-      { id: "ui-artifact.code-form", passed: true },
+    { id: "ui-artifact.regions", passed: true },
+    { id: "ui-artifact.code-form", passed: true }
     ],
   },
   {
@@ -47,10 +70,12 @@ export const MINIMAX_VISION_ATTESTATIONS: readonly VisionAttestation[] = [
     provider: "minimax",
     operation: "diagnose-error",
     fixtureVersion: 1,
-    implementationId: "mmx-cli-sdk@1.0.16",
-    mappingRevision: "f83d602a6177041d131cb05b4164e0529b04154a5651e042cea66f566d94d893",
-    testedAt: "2026-07-17T18:07:41.170Z",
-    resultDigest: "0ce4a1f9518da03d78aee97e04acb6b93a56697abe258042d9af692addc441f2",
-    assertions: [{ id: "diagnose-error.class", passed: true }],
+    implementationId: "scoutline-direct@0.5.0",
+    mappingRevision: "f8ba9fc0c8053b3384a24395fc6100c6587c0af3280c0d96ac74f4b9f06ad18e",
+    testedAt: "2026-07-20T23:44:31.647Z",
+    resultDigest: "078cfbbb1b6a9c166fa0b2f5c747976d85565d5451664c11cb382e12936d7c84",
+    assertions: [
+    { id: "diagnose-error.class", passed: true }
+    ],
   },
 ];

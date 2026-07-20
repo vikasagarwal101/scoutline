@@ -7,12 +7,19 @@
  * TypeScript compiler runs.
  *
  * Each value is a SHA-256 digest covering the Implementation ID
- * (`mmx-cli-sdk@1.0.16`), the stable common mapping runtime
+ * (`scoutline-direct@0.5.0`), the stable common mapping runtime
  * (`vision-mappings/common.ts`), only that operation's mapping Module
  * under `vision-mappings/`, the fixture image bytes, the canonical
  * request fields, and the exact required assertion IDs. Adding another
  * operation does not change an existing operation's revision; changing
  * the common runtime intentionally changes every revision.
+ *
+ * The Implementation ID participates in every revision digest, so
+ * bumping it (e.g. critique C3 swapping the SDK-backed runtime for
+ * the Scoutline direct transport) regenerates the entire map. Any
+ * shipped attestation that pins `mappingRevision` must be re-issued
+ * against the new revisions before the registry will accept it
+ * (see `scripts/attest-minimax-vision.mjs`).
  *
  * Operations without a mapping Module carry the placeholder
  * `"pending-no-mapping-module"` until P5-03 creates their Module.
@@ -23,9 +30,9 @@ import type { SpecializedVisionOperation } from "./vision-conformance.js";
 export const MINIMAX_VISION_MAPPING_REVISIONS: Readonly<
   Record<SpecializedVisionOperation, string>
 > = Object.freeze({
-  "ui-artifact": "f359d5cda2f0f6fc7b8b1308a8842ede7a09b8c5517c46e205a46881afeb5290",
-  "extract-text": "78758cfc03e282c2609eb4e05fab392be62d9b6d38c8911bf245f74206ccbf0e",
-  "diagnose-error": "f83d602a6177041d131cb05b4164e0529b04154a5651e042cea66f566d94d893",
-  "diagram": "0828b3e3c60a1f207dcd8ce4f83cf4855fef45f24436870b53a380065487e5d5",
-  "chart": "b930eac3e997e20c481abbaff4e756dced7a82a085bba770ec57ea34690c2259",
+  "ui-artifact": "7428094e0ed28452b8c76290341b08d56e6581f2de543daf803049c418fc9fe8",
+  "extract-text": "8c87d739d3aae6dc1df7c3659c68536a8237d95f9dc611a3977166b143c35ce7",
+  "diagnose-error": "f8ba9fc0c8053b3384a24395fc6100c6587c0af3280c0d96ac74f4b9f06ad18e",
+  "diagram": "a665e58f86ede08feb6100d1c74153b21715e76e47955e469c2f027b546ffdfd",
+  "chart": "1383fa97703b4833ce23001d1f36a68bb19b369c65909b9eb76aa50f7599ccf3",
 });

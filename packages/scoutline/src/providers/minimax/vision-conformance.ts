@@ -107,13 +107,15 @@ export interface VisionConformanceEntry {
 // ---------------------------------------------------------------------------
 
 /**
- * The Implementation identity for the SDK-backed MiniMax Vision
- * transport. Matches the pinned `mmx-cli` dependency in
- * `packages/scoutline/package.json`. Changing this value (e.g. moving
- * to a direct MiniMax transport) invalidates every attestation until
- * each mapping is re-attested (DESIGN.md §17).
+ * The Implementation identity for the direct MiniMax Vision transport
+ * maintained by Scoutline itself (Phase B — critique C3). The previous
+ * SDK-backed identity (`mmx-cli-sdk@1.0.16`) pinned the bundled
+ * `mmx-cli` runtime; this release replaces it with Scoutline's
+ * maintained direct transport. Changing this value (e.g. swapping
+ * transports again) invalidates every attestation until each mapping is
+ * re-attested (DESIGN.md §17).
  */
-export const MINIMAX_VISION_IMPLEMENTATION_ID = "mmx-cli-sdk@1.0.16";
+export const MINIMAX_VISION_IMPLEMENTATION_ID = "scoutline-direct@0.5.0";
 
 /**
  * The five specialized MiniMax Vision operations governed by this

@@ -22,7 +22,12 @@
  *     timestamp, SHA-256 digest of normalized text, and the list of
  *     assertion IDs each marked `passed: true`.
  *   - Refuses to overwrite an existing attestation for the operation
- *     and refuses a fixture-version mismatch.
+ *     and refuses a fixture-version mismatch, unless `--refresh` is
+ *     passed (in which case the existing entry is removed before the
+ *     new one is appended). `--refresh` also allows flipping the live
+ *     state when it is already "pass" (re-verification); a deliberate
+ *     "fail" state is still refused until cleared manually. `--refresh`
+ *     still refuses a fixture-version mismatch.
  *   - On failure: reports which assertions failed, exits non-zero, and
  *     writes nothing.
  *
@@ -33,6 +38,8 @@
  * Usage:
  *   SCOUTLINE_LIVE_TESTS=1 node scripts/attest-minimax-vision.mjs \
  *     --operation ui-artifact
+ *   SCOUTLINE_LIVE_TESTS=1 node scripts/attest-minimax-vision.mjs \
+ *     --operation ui-artifact --refresh
  */
 
 import { createHash } from "node:crypto";
@@ -45,6 +52,11 @@ import {
   evaluateAssertions,
   normalizeForTextRecovery,
 } from "./lib/vision-conformance.mjs";
+import {
+  removeAttestationFromManifest,
+  locateManifestSpan,
+  canFlipLiveState as canFlipLiveStateFromState,
+} from "./lib/attest-manifest.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -66,7 +78,11 @@ const REVISIONS_FILE = join(PACKAGE_ROOT, "src", "providers", "minimax", "vision
 // Constants — must match vision-conformance.ts
 // ---------------------------------------------------------------------------
 
-const IMPLEMENTATION_ID = "mmx-cli-sdk@1.0.16";
+// C3 (critique C3, direct-transport release): the Scoutline direct
+// transport replaces the SDK-backed runtime. The attestation this script
+// writes must tag itself with the new implementation identity so the
+// registry's strict match in vision-conformance.ts accepts it.
+const IMPLEMENTATION_ID = "scoutline-direct@0.5.0";
 
 const SPECIALIZED_OPERATIONS = new Set([
   "ui-artifact",
@@ -82,18 +98,29 @@ const SPECIALIZED_OPERATIONS = new Set([
 
 function parseArgs(argv) {
   let operation = null;
+  let refresh = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--operation") {
       operation = argv[++i];
+    } else if (arg === "--refresh") {
+      // Replace an existing attestation for the operation instead of
+      // refusing. Used to re-issue attestations when the implementation
+      // identity, mapping revisions, or live result change between
+      // releases (e.g. critique C3 direct-transport release).
+      refresh = true;
     } else if (arg === "--help" || arg === "-h") {
       process.stdout.write(
         [
-          "Usage: attest-minimax-vision.mjs --operation <op>",
+          "Usage: attest-minimax-vision.mjs --operation <op> [--refresh]",
           "",
           "Options:",
           "  --operation <op>   Exactly one specialized operation to attest",
           "                     (ui-artifact|extract-text|diagnose-error|diagram|chart).",
+          "  --refresh          Replace an existing attestation for the operation",
+          "                     instead of refusing the overwrite. Required to",
+          "                     re-issue an attestation against a new",
+          "                     implementation identity or mapping revision.",
           "",
           "Environment:",
           "  SCOUTLINE_LIVE_TESTS=1  Required opt-in (live network call).",
@@ -114,7 +141,7 @@ function parseArgs(argv) {
       `unsupported operation ${operation}; expected one of ${[...SPECIALIZED_OPERATIONS].join(", ")}`,
     );
   }
-  return { operation };
+  return { operation, refresh };
 }
 
 function fail(message, code = 1) {
@@ -172,34 +199,6 @@ function readGeneratedRevision(operation) {
 }
 
 /**
- * Locate the manifest array literal span: the `[` that opens the
- * assignment value (after `=`) and the matching `];` that closes it.
- * Returns `{ openIdx, closeIdx }` as indices into `content`, or throws
- * if the manifest shape cannot be found. Locating via `= [` (not the
- * first `[` after the export name) avoids matching the `[` in the
- * `VisionAttestation[]` type annotation.
- */
-function locateManifestSpan(content) {
-  const exportIdx = content.indexOf("MINIMAX_VISION_ATTESTATIONS");
-  if (exportIdx === -1) {
-    fail(`could not locate MINIMAX_VISION_ATTESTATIONS export in ${ATTESTATIONS_FILE}`);
-  }
-  const eqIdx = content.indexOf("=", exportIdx);
-  if (eqIdx === -1) {
-    fail(`could not locate manifest assignment '=' in ${ATTESTATIONS_FILE}`);
-  }
-  const openIdx = content.indexOf("[", eqIdx);
-  if (openIdx === -1) {
-    fail(`could not locate manifest array literal '[' in ${ATTESTATIONS_FILE}`);
-  }
-  const closeIdx = content.lastIndexOf("];");
-  if (closeIdx === -1 || closeIdx < openIdx) {
-    fail(`could not locate manifest array close '];' in ${ATTESTATIONS_FILE}`);
-  }
-  return { openIdx, closeIdx };
-}
-
-/**
  * Parse the existing compiled attestation manifest and return the list
  * of {operation, fixtureVersion} pairs already present. Used to refuse
  * overwrite and version mismatch. Scans only the object literals inside
@@ -211,17 +210,67 @@ function readExistingAttestations() {
   const { openIdx, closeIdx } = locateManifestSpan(content);
   const arrayBody = content.slice(openIdx + 1, closeIdx);
   const out = [];
-  const objectRe = /\{([\s\S]*?)\}/g;
-  let m;
-  while ((m = objectRe.exec(arrayBody)) !== null) {
-    const body = m[1];
+  // Walk the array body with the same brace-counting parser
+  // removeAttestationFromManifest uses, so we match every entry
+  // exactly (including ones whose assertions arrays contain nested
+  // object literals).
+  let i = 0;
+  while (i < arrayBody.length) {
+    while (i < arrayBody.length && /\s/.test(arrayBody[i])) i++;
+    if (i >= arrayBody.length) break;
+    if (arrayBody[i] !== "{") {
+      i++;
+      continue;
+    }
+    const close = findEntryClose(arrayBody, i);
+    if (close === -1) break;
+    const body = arrayBody.slice(i, close);
     const opMatch = body.match(/operation:\s*"([^"]+)"/);
     const verMatch = body.match(/fixtureVersion:\s*(\d+)/);
     if (opMatch && verMatch) {
       out.push({ operation: opMatch[1], fixtureVersion: Number(verMatch[1]) });
     }
+    i = close;
   }
   return out;
+}
+
+// Lightweight brace-counting helper scoped to this module — used by
+// readExistingAttestations to walk entry spans without re-implementing
+// the full string/template/comment skip logic that lives in the lib.
+// Only string literals appear in the per-operation source, and only
+// backslash-escaped quotes need to be skipped.
+function findEntryClose(body, openIdx) {
+  let depth = 0;
+  let i = openIdx;
+  while (i < body.length) {
+    const ch = body[i];
+    if (ch === "{") {
+      depth++;
+      i++;
+    } else if (ch === "}") {
+      depth--;
+      i++;
+      if (depth === 0) return i;
+    } else if (ch === '"' || ch === "'") {
+      const quote = ch;
+      i++;
+      while (i < body.length) {
+        if (body[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (body[i] === quote) {
+          i++;
+          break;
+        }
+        i++;
+      }
+    } else {
+      i++;
+    }
+  }
+  return -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,9 +355,11 @@ function sha256Hex(text) {
 /**
  * Append the sanitized attestation entry to the compiled manifest file.
  * Refuses overwrite of an existing entry for the same operation and
- * refuses a fixture-version mismatch with any existing entry.
+ * refuses a fixture-version mismatch with any existing entry — unless
+ * `refresh` is true, in which case the existing entry is removed first
+ * (its fixtureVersion must still match the new attestation).
  */
-function writeAttestation(operation, attestation) {
+function writeAttestation(operation, attestation, refresh = false) {
   const existing = readExistingAttestations();
   const prior = existing.find((e) => e.operation === operation);
   if (prior) {
@@ -317,9 +368,16 @@ function writeAttestation(operation, attestation) {
         `refusing overwrite: operation ${operation} already attested at fixtureVersion ${prior.fixtureVersion} (requested ${attestation.fixtureVersion}); remove the stale entry manually to re-attest`,
       );
     }
-    fail(
-      `refusing overwrite: operation ${operation} already has an attestation; remove it first to re-attest`,
+    if (!refresh) {
+      fail(
+        `refusing overwrite: operation ${operation} already has an attestation; remove it first to re-attest (or pass --refresh)`,
+      );
+    }
+    const refreshed = removeAttestationFromManifest(
+      readFileSync(ATTESTATIONS_FILE, "utf8"),
+      operation,
     );
+    writeFileSync(ATTESTATIONS_FILE, refreshed, "utf8");
   }
 
   const entry = formatAttestationEntry(attestation);
@@ -386,26 +444,68 @@ function injectEntryIntoManifest(content, entry) {
 }
 
 /**
- * Flip the operation's live conformance state from "pending" to "pass"
- * in vision-conformance.ts. Refuses if the source line is not currently
- * "pending" (avoids clobbering an explicit "fail" state).
+ * Read-only validation: returns `{ ok: true }` when the operation's
+ * live state may be flipped to "pass", or `{ ok: false, reason }`
+ * when it must be refused. Performs no writes. Used as a precheck
+ * before any disk mutation so a refused run leaves the manifest,
+ * conformance file, and intermediate write-attempt artifacts all
+ * untouched.
+ *
+ * Refusal rules (preserved verbatim from the prior
+ * `flipLiveStateToPass` implementation, plus a defensive catch-all
+ * for unrecognized state values):
+ *   - current "fail"   → always refuse (deliberate regression;
+ *                        caller must clear manually).
+ *   - current "pass"   → refuse unless refresh=true (re-verifying a
+ *                        passing operation without --refresh is
+ *                        operator error; the C3 follow-up allows
+ *                        pass → pass with --refresh).
+ *   - current "pending" → always allow (normal flow).
+ *   - anything else    → refuse defensively.
+ *
+ * If the per-operation source line cannot be located, refuses with
+ * the same diagnostic the prior implementation used (so the operator
+ * sees the file path and the missing operation).
+ *
+ * @param {string} operation
+ * @param {boolean} refresh
  */
-function flipLiveStateToPass(operation) {
+function canFlipLiveState(operation, refresh) {
   const content = readFileSync(CONFORMANCE_FILE, "utf8");
-  // Match the per-operation source line, e.g.:
-  //   "ui-artifact": { fixtureVersion: 1, offline: "pass", live: "pending" },
   const lineRe = new RegExp(
     `(${JSON.stringify(operation)}:\\s*\\{[^}]*offline:\\s*"[^"]+"\\s*,\\s*live:\\s*)"([^"]+)"`,
   );
   const match = content.match(lineRe);
   if (!match) {
-    fail(`could not locate conformance source line for ${operation} in ${CONFORMANCE_FILE}`);
+    return {
+      ok: false,
+      reason: `could not locate conformance source line for ${operation} in ${CONFORMANCE_FILE}`,
+    };
   }
-  if (match[2] !== "pending") {
-    fail(
-      `refusing to flip ${operation} live state: current value is "${match[2]}" (expected "pending")`,
-    );
+  return canFlipLiveStateFromState(match[2], refresh);
+}
+
+/**
+ * Flip the operation's live conformance state to "pass" in
+ * vision-conformance.ts. Validates first via {@link canFlipLiveState}
+ * (the same check `main()` runs as a precheck) and only writes when
+ * the check passes. Refuses if the current state is "fail"
+ * (a deliberate regression the caller must clear manually). Also
+ * refuses "pass" unless `refresh` is set — re-verifying a passing
+ * operation without --refresh is almost always operator error.
+ * @param {string} operation
+ * @param {boolean} refresh  When true, allow flipping from "pass"
+ *                           (used by C3-style release re-issue).
+ */
+function flipLiveStateToPass(operation, refresh) {
+  const check = canFlipLiveState(operation, refresh);
+  if (!check.ok) {
+    fail(check.reason);
   }
+  const content = readFileSync(CONFORMANCE_FILE, "utf8");
+  const lineRe = new RegExp(
+    `(${JSON.stringify(operation)}:\\s*\\{[^}]*offline:\\s*"[^"]+"\\s*,\\s*live:\\s*)"([^"]+)"`,
+  );
   const updated = content.replace(lineRe, `$1"pass"`);
   writeFileSync(CONFORMANCE_FILE, updated, "utf8");
 }
@@ -417,7 +517,7 @@ function flipLiveStateToPass(operation) {
 async function main() {
   // Parse args first so --help works without the opt-in; the actual
   // attestation below still requires explicit opt-in + credentials.
-  const { operation } = parseArgs(process.argv.slice(2));
+  const { operation, refresh } = parseArgs(process.argv.slice(2));
   assertOptIn();
 
   const cases = loadFixtureFile(FIXTURE_FILE);
@@ -460,11 +560,21 @@ async function main() {
     text,
     assertionResults: results,
   });
-  writeAttestation(operation, attestation);
-  flipLiveStateToPass(operation);
+  // C3 fixup: read-only precheck BEFORE any disk write. If the
+  // live-state flip would be refused (e.g. current state is "fail",
+  // or "pass" without --refresh), bail out without touching the
+  // attestation manifest. Previously this check ran AFTER
+  // writeAttestation, leaving the manifest in a "written but
+  // unflipped" state on refusal.
+  const flipCheck = canFlipLiveState(operation, refresh);
+  if (!flipCheck.ok) {
+    fail(flipCheck.reason);
+  }
+  writeAttestation(operation, attestation, refresh);
+  flipLiveStateToPass(operation, refresh);
 
   process.stdout.write(
-    `attest-minimax-vision: ${operation} PASSED. Sanitized attestation appended to\n  ${relative(PACKAGE_ROOT, ATTESTATIONS_FILE)}\n` +
+    `attest-minimax-vision: ${operation} PASSED. Sanitized attestation ${refresh ? "refreshed in" : "appended to"}\n  ${relative(PACKAGE_ROOT, ATTESTATIONS_FILE)}\n` +
       `and live state flipped to "pass" in\n  ${relative(PACKAGE_ROOT, CONFORMANCE_FILE)}\n` +
       `resultDigest: ${attestation.resultDigest.slice(0, 16)}...\n` +
       `Run \`npm run build && npm run test:offline\` to confirm runtime support is now true.\n`,

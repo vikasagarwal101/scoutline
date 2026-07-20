@@ -51,7 +51,14 @@ const __dirname = dirname(__filename);
 // Constants — must match vision-conformance.ts
 // ---------------------------------------------------------------------------
 
-const IMPLEMENTATION_ID = "mmx-cli-sdk@1.0.16";
+// C3 (critique C3, direct-transport release): the Scoutline direct
+// transport replaces the SDK-backed runtime. The implementation ID
+// participates in every revision digest, so the entire revisions map
+// regenerates against this new identity. Run `npm run build` to refresh
+// `src/providers/minimax/vision-revisions.ts`; every shipped
+// attestation that pins `mappingRevision` must be refreshed
+// alongside (live re-attestation against the new transport).
+const IMPLEMENTATION_ID = "scoutline-direct@0.5.0";
 
 const SPECIALIZED_OPERATIONS = [
   "ui-artifact",
@@ -299,12 +306,19 @@ function writeGeneratedRevisions(filePath, revisions) {
  * TypeScript compiler runs.
  *
  * Each value is a SHA-256 digest covering the Implementation ID
- * (\`mmx-cli-sdk@1.0.16\`), the stable common mapping runtime
+ * (\`scoutline-direct@0.5.0\`), the stable common mapping runtime
  * (\`vision-mappings/common.ts\`), only that operation's mapping Module
  * under \`vision-mappings/\`, the fixture image bytes, the canonical
  * request fields, and the exact required assertion IDs. Adding another
  * operation does not change an existing operation's revision; changing
  * the common runtime intentionally changes every revision.
+ *
+ * The Implementation ID participates in every revision digest, so
+ * bumping it (e.g. critique C3 swapping the SDK-backed runtime for
+ * the Scoutline direct transport) regenerates the entire map. Any
+ * shipped attestation that pins \`mappingRevision\` must be re-issued
+ * against the new revisions before the registry will accept it
+ * (see \`scripts/attest-minimax-vision.mjs\`).
  *
  * Operations without a mapping Module carry the placeholder
  * \`"pending-no-mapping-module"\` until P5-03 creates their Module.

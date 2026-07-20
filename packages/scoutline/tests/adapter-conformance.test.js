@@ -87,25 +87,21 @@ function makeZaiCapability(rawResult) {
 
 /**
  * MiniMax Adapter factory: accepts a raw MiniMax-shaped envelope, builds a
- * fake SDK constructor that returns the scripted response, and returns
- * the descriptor's Search Capability.
+ * fake fetch that returns the scripted response, and returns the
+ * descriptor's Search Capability.
  */
 function makeMiniMaxCapability(rawResult) {
-  const Constructor = function FakeMiniMaxSdk(_options) {
-    return {
-      search: {
-        async query() {
-          return rawResult;
-        },
-      },
-      vision: {
-        async describe() {
-          throw new Error("unused");
-        },
-      },
-    };
-  };
-  const descriptor = createMiniMaxDescriptor({ sdkConstructor: Constructor });
+  // Wrap the raw envelope in a fetch response carrying `base_resp` so
+  // the direct-transport envelope check passes.
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rawResult),
+    json: async () => ({ ...rawResult, base_resp: { status_code: 0 } }),
+    headers: { get: () => null },
+    arrayBuffer: async () => new ArrayBuffer(0),
+  });
+  const descriptor = createMiniMaxDescriptor({ transport: { fetch: fetchFn } });
   const adapter = descriptor.create({ env: { MINIMAX_API_KEY: "k" } });
   return adapter.search;
 }
@@ -148,24 +144,38 @@ function makeZaiVisionCapability(rawResult) {
 
 /**
  * MiniMax Vision Capability factory: accepts a raw characterized envelope
- * and returns the descriptor's Vision Capability.
+ * and returns the descriptor's Vision Capability. The fake fetch serves
+ * an HTTP image response for the data-URI conversion step and a VLM
+ * response with the script result for the transport call.
  */
 function makeMiniMaxVisionCapability(rawResult) {
-  const Constructor = function FakeMiniMaxSdk() {
+  let i = 0;
+  const fetchFn = async () => {
+    const which = i++;
+    if (which === 0) {
+      // Image fetch (PNG bytes).
+      return {
+        ok: true,
+        status: 200,
+        text: async () => "",
+        json: async () => ({}),
+        headers: { get: (name) =>
+          name.toLowerCase() === "content-type" ? "image/png" : null },
+        arrayBuffer: async () =>
+          new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).buffer,
+      };
+    }
+    // VLM response.
     return {
-      search: {
-        async query() {
-          throw new Error("unused");
-        },
-      },
-      vision: {
-        async describe() {
-          return rawResult;
-        },
-      },
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(rawResult),
+      json: async () => ({ ...rawResult, base_resp: { status_code: 0 } }),
+      headers: { get: () => null },
+      arrayBuffer: async () => new ArrayBuffer(0),
     };
   };
-  const descriptor = createMiniMaxDescriptor({ sdkConstructor: Constructor });
+  const descriptor = createMiniMaxDescriptor({ transport: { fetch: fetchFn } });
   const adapter = descriptor.create({ env: { MINIMAX_API_KEY: "k" } });
   return adapter.vision;
 }
@@ -372,33 +382,23 @@ describe("Descriptor ↔ Adapter repository-exploration agreement (P6-06)", () =
    * during `create()`.
    */
   function makeSpiedMiniMaxDescriptor() {
-    const calls = { sdkConstructor: 0, quotaFetch: 0, quotaSetTimeout: 0, quotaClearTimeout: 0 };
+    // Direct-transport seam: every transport call site (search, vision,
+    // quota, diagnostics, image fetch) consumes the unified `transport`
+    // binding. None of those MUST fire during `create()`.
+    const calls = { fetch: 0, setTimeout: 0, clearTimeout: 0 };
     const descriptor = createMiniMaxDescriptor({
-      sdkConstructor: function SpySdk() {
-        calls.sdkConstructor += 1;
-        return {
-          search: {
-            async query() {
-              throw new Error("sdk must not run during create()");
-            },
-          },
-          vision: {
-            async describe() {
-              throw new Error("sdk must not run during create()");
-            },
-          },
-        };
-      },
-      quotaFetch: async () => {
-        calls.quotaFetch += 1;
-        throw new Error("quotaFetch must not run during create()");
-      },
-      quotaSetTimeout: () => {
-        calls.quotaSetTimeout += 1;
-        return 0;
-      },
-      quotaClearTimeout: () => {
-        calls.quotaClearTimeout += 1;
+      transport: {
+        fetch: async () => {
+          calls.fetch += 1;
+          throw new Error("transport.fetch must not run during create()");
+        },
+        setTimeout: () => {
+          calls.setTimeout += 1;
+          return 0;
+        },
+        clearTimeout: () => {
+          calls.clearTimeout += 1;
+        },
       },
     });
     return { descriptor, calls };
@@ -441,24 +441,19 @@ describe("Descriptor ↔ Adapter repository-exploration agreement (P6-06)", () =
       undefined,
       "MiniMax Adapter must NOT supply adapter.repository",
     );
-    // `create()` constructs zero SDK and zero quota transport. MiniMax
-    // must remain free of repository credential/transport/fallback
-    // work; this assertion locks that no transport is built eagerly.
+    // `create()` constructs zero transport. MiniMax must remain free
+    // of repository credential/transport/fallback work; this
+    // assertion locks that no transport is built eagerly.
+    assert.strictEqual(calls.fetch, 0, "MiniMax transport.fetch must not run during create()");
     assert.strictEqual(
-      calls.sdkConstructor,
+      calls.setTimeout,
       0,
-      "MiniMax sdkConstructor must not run during create()",
-    );
-    assert.strictEqual(calls.quotaFetch, 0, "MiniMax quotaFetch must not run during create()");
-    assert.strictEqual(
-      calls.quotaSetTimeout,
-      0,
-      "MiniMax quotaSetTimeout must not run during create()",
+      "MiniMax transport.setTimeout must not run during create()",
     );
     assert.strictEqual(
-      calls.quotaClearTimeout,
+      calls.clearTimeout,
       0,
-      "MiniMax quotaClearTimeout must not run during create()",
+      "MiniMax transport.clearTimeout must not run during create()",
     );
   });
 
@@ -531,20 +526,19 @@ describe("Descriptor ↔ Adapter repository-exploration agreement (P6-06)", () =
 
     assert.strictEqual(zai.calls.clientFactory, 0, "Z.AI clientFactory spy must remain at 0");
     assert.strictEqual(
-      minimax.calls.sdkConstructor,
+      minimax.calls.fetch,
       0,
-      "MiniMax sdkConstructor spy must remain at 0",
-    );
-    assert.strictEqual(minimax.calls.quotaFetch, 0, "MiniMax quotaFetch spy must remain at 0");
-    assert.strictEqual(
-      minimax.calls.quotaSetTimeout,
-      0,
-      "MiniMax quotaSetTimeout spy must remain at 0",
+      "MiniMax transport.fetch spy must remain at 0",
     );
     assert.strictEqual(
-      minimax.calls.quotaClearTimeout,
+      minimax.calls.setTimeout,
       0,
-      "MiniMax quotaClearTimeout spy must remain at 0",
+      "MiniMax transport.setTimeout spy must remain at 0",
+    );
+    assert.strictEqual(
+      minimax.calls.clearTimeout,
+      0,
+      "MiniMax transport.clearTimeout spy must remain at 0",
     );
   });
 });

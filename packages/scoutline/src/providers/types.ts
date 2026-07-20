@@ -26,6 +26,7 @@ import type { QuotaCapability } from "../capabilities/quota.js";
 import type { DiagnosticsCapability } from "../capabilities/diagnostics.js";
 import type { RepositoryCapability } from "../capabilities/repository.js";
 import type { ReaderCapability } from "../capabilities/reader.js";
+import type { MiniMaxTransportDeps } from "./minimax/coding-plan-client.js";
 
 // ---------------------------------------------------------------------------
 // Provider identity
@@ -310,15 +311,13 @@ export interface ZaiAdapterDependencies {
 }
 
 /**
- * Dependencies the MiniMax Adapter accepts. `sdkConstructor` is the
- * only escape hatch tests need; production never passes it.
+ * Dependencies the MiniMax Adapter accepts. The unified `transport`
+ * seam carries `fetch` and timer injection; tests pass a single fake
+ * that drives every direct-transport call site (search, vision, quota,
+ * diagnostics, image fetch).
  */
 export interface MiniMaxAdapterDependencies {
-  readonly sdkConstructor?: MiniMaxSdkConstructor;
-  /** Optional MiniMax direct quota transport injection (tests). */
-  readonly quotaFetch?: ProviderQuotaFetch;
-  readonly quotaSetTimeout?: typeof setTimeout;
-  readonly quotaClearTimeout?: typeof clearTimeout;
+  readonly transport?: MiniMaxTransportDeps;
   /**
    * Optional injection point for the specialized-vision support check
    * (`MiniMaxAdapterDependencies.isSpecializedVisionOperationSupported`).
@@ -330,25 +329,6 @@ export interface MiniMaxAdapterDependencies {
   readonly isSpecializedVisionOperationSupported?: (
     operation: import("./minimax/vision-conformance.js").SpecializedVisionOperation,
   ) => boolean;
-}
-
-/**
- * MiniMax SDK constructor type. Kept here so Adapter Modules do not
- * import `mmx-cli/sdk` directly; only `providers/minimax/sdk-client.ts`
- * references the implementation.
- */
-export interface MiniMaxSdkConstructor {
-  new (options: { apiKey: string; region: "global" | "cn"; baseUrl: string }): MiniMaxSdkPort;
-}
-
-/** Narrow MiniMax SDK surface used by the Adapter. */
-export interface MiniMaxSdkPort {
-  search: {
-    query(query: string): Promise<unknown>;
-  };
-  vision: {
-    describe(request: { image: string; prompt?: string }): Promise<unknown>;
-  };
 }
 
 // ---------------------------------------------------------------------------

@@ -85,23 +85,22 @@ function makeZaiDescriptor({ listToolsImpl, calls = [] }) {
 
 /**
  * Build a MiniMax descriptor whose diagnostic probe uses an injected
- * raw quota fetch. `fetchCalls` records every raw probe attempt;
+ * unified transport. `fetchCalls` records every raw probe attempt;
  * `sdkCtorCalls` records any SDK construction (must stay empty for
  * diagnostics — the probe must NOT go through the SDK or
  * QuotaCapability.invoke()).
  */
 function makeMiniMaxDescriptor({ fetchImpl, fetchCalls = [], sdkCtorCalls = [] }) {
+  void sdkCtorCalls; // SDK constructor no longer exists; kept for legacy assertions.
   return createMiniMaxDescriptor({
-    sdkConstructor: function MockSdk() {
-      sdkCtorCalls.push("sdkConstructor");
-      return {};
+    transport: {
+      fetch: async (url, init) => {
+        fetchCalls.push({ url: String(url), init });
+        return fetchImpl();
+      },
+      setTimeout: () => 0,
+      clearTimeout: () => {},
     },
-    quotaFetch: async (url, init) => {
-      fetchCalls.push({ url, init });
-      return fetchImpl();
-    },
-    quotaSetTimeout: () => 0,
-    quotaClearTimeout: () => {},
   });
 }
 

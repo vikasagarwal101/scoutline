@@ -52,20 +52,21 @@ import {
   AuthError,
   ConfigurationError,
   NetworkError,
+  QuotaError,
   TimeoutError,
   UnsupportedCapabilityError,
   ValidationError,
   UnsupportedOptionError,
 } from "../../lib/errors.js";
 import { loadMiniMaxConfig } from "./config.js";
-import { createMiniMaxSdk } from "./sdk-client.js";
-import { resolveImageSource } from "./media.js";
+import { resolveImageSource, convertToDataUri, type ConvertToDataUriDeps } from "./media.js";
 import { createMiniMaxQuotaCapability, type MiniMaxQuotaCapabilityOptions } from "./quota.js";
+import { fetchMiniMaxQuota, type MiniMaxQuotaClientDeps } from "./quota-client.js";
 import {
-  fetchMiniMaxQuota,
-  type MiniMaxQuotaClientDeps,
-  type MiniMaxQuotaFetch,
-} from "./quota-client.js";
+  fetchMiniMaxSearch,
+  fetchMiniMaxVlm,
+  type MiniMaxTransportDeps,
+} from "./coding-plan-client.js";
 import {
   isMiniMaxVisionOperationSupported,
   SPECIALIZED_VISION_OPERATION_SET,
@@ -172,6 +173,9 @@ function inferStatusCode(lower: string, known?: number): number {
 }
 
 function normalizeMiniMaxError(error: unknown): Error {
+  // C1: QuotaError pass-through — terminal retry guarantee preserved.
+  if (error instanceof QuotaError) return error;
+
   // Configuration/option/validation errors carry clean, human-authored
   // messages and are safe to surface verbatim.
   if (
@@ -185,7 +189,8 @@ function normalizeMiniMaxError(error: unknown): Error {
   // Provider response body embedded upstream never survives. Code +
   // statusCode (retry signal) are preserved.
   if (error instanceof AuthError) {
-    return new AuthError("MiniMax authentication failed");
+    // C2: 2-arg form keeps MINIMAX_API_KEY in the rendered help text.
+    return new AuthError("MiniMax authentication failed", "MINIMAX_API_KEY");
   }
   if (error instanceof NetworkError) {
     return new NetworkError("MiniMax network error");
@@ -194,11 +199,17 @@ function normalizeMiniMaxError(error: unknown): Error {
     // Fixup D: preserve the original error's duration instead of
     // reconstructing it from an ambient process.env that may differ from
     // the injected env. The rewrapped error carries the same duration.
-    return new TimeoutError(error.durationMs);
+    // G4: MINIMAX_TIMEOUT help text surfaces the right env var name.
+    return new TimeoutError(
+      error.durationMs,
+      "Try again or increase timeout with MINIMAX_TIMEOUT env var",
+    );
   }
   if (error instanceof ApiError) {
+    // C2: preserve the original message so embedded hints (e.g. the 2038
+    // verification URL) survive the rewrap.
     const statusCode = inferStatusCode("", error.statusCode);
-    return new ApiError("MiniMax request failed", statusCode);
+    return new ApiError(error.message, statusCode);
   }
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
@@ -234,11 +245,11 @@ function normalizeMiniMaxError(error: unknown): Error {
 
 interface MiniMaxSearchCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
-  readonly sdkConstructor?: MiniMaxAdapterDependencies["sdkConstructor"];
+  readonly transport?: MiniMaxTransportDeps;
 }
 
 function createMiniMaxSearchCapability(options: MiniMaxSearchCapabilityOptions): SearchCapability {
-  const { env, sdkConstructor } = options;
+  const { env, transport } = options;
 
   const capability: SearchCapability = {
     validate(request: SearchRequest): void {
@@ -268,13 +279,12 @@ function createMiniMaxSearchCapability(options: MiniMaxSearchCapabilityOptions):
     },
 
     async invoke(request: SearchRequest): Promise<readonly SearchSource[]> {
-      // Validate before any credential access or SDK construction.
+      // Validate before any credential access or transport call.
       capability.validate(request);
 
       const config = loadMiniMaxConfig(env);
       try {
-        const sdk = createMiniMaxSdk(config, sdkConstructor);
-        const raw = await sdk.search.query(request.query);
+        const raw = await fetchMiniMaxSearch(config, request.query, transport);
         return normalizeMiniMaxSearchResults(raw);
       } catch (error) {
         throw normalizeMiniMaxError(error);
@@ -336,15 +346,17 @@ function supportsMiniMaxVisionOperation(
 
 interface MiniMaxVisionCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
-  readonly sdkConstructor?: MiniMaxAdapterDependencies["sdkConstructor"];
+  readonly transport?: MiniMaxTransportDeps;
   readonly isSpecializedVisionOperationSupported?: MiniMaxAdapterDependencies["isSpecializedVisionOperationSupported"];
 }
 
 /**
- * Build the MiniMax Vision Capability. Maps `interpret-image` to
- * `sdk.vision.describe`. The validated image source maps to `image`; the
- * instruction maps to the optional `prompt`. Only a nonempty text result
- * (extracted from the characterized `{ content }` envelope) is normalized.
+ * Build the MiniMax Vision Capability. Maps `interpret-image` to the
+ * MiniMax Coding Plan VLM endpoint. The validated image source is
+ * resolved and converted to a data URI before the transport call; the
+ * instruction maps to the optional `prompt`. Only a nonempty text
+ * result (extracted from the characterized `{ content }` envelope) is
+ * normalized.
  *
  * Specialized operations route through their operation-specific mapping
  * Module when the support check returns true. The support decision is
@@ -353,13 +365,13 @@ interface MiniMaxVisionCapabilityOptions {
  * so the routing branch can be exercised without flipping a compiled
  * attestation (DESIGN.md §15).
  *
- * Media is resolved after the configuration check; the SDK performs
- * data-URI conversion, so the media module never reads file content.
- * Vision never uses the response cache (FR-022); shared execution owns
- * the retry policy.
+ * Media is resolved after the configuration check; `convertToDataUri`
+ * performs the data-URI conversion (HTTP fetch + local read). Vision
+ * never uses the response cache (FR-022); shared execution owns the
+ * retry policy.
  */
 function createMiniMaxVisionCapability(options: MiniMaxVisionCapabilityOptions): VisionCapability {
-  const { env, sdkConstructor, isSpecializedVisionOperationSupported } = options;
+  const { env, transport, isSpecializedVisionOperationSupported } = options;
   const isSpecialized = resolveSpecializedSupportCheck(isSpecializedVisionOperationSupported);
 
   const capability: VisionCapability = {
@@ -368,8 +380,8 @@ function createMiniMaxVisionCapability(options: MiniMaxVisionCapabilityOptions):
     },
 
     async invoke(request: VisionRequest): Promise<string> {
-      // Fail closed BEFORE any credential, media, or SDK access. The
-      // support decision is the single registry-driven gate; every
+      // Fail closed BEFORE any credential, media, or transport access.
+      // The support decision is the single registry-driven gate; every
       // specialized operation stays unsupported at P5-02 because every
       // registry entry is pending.
       if (!supportsMiniMaxVisionOperation(request.operation, isSpecialized)) {
@@ -399,27 +411,42 @@ function createMiniMaxVisionCapability(options: MiniMaxVisionCapabilityOptions):
         }
         // Specialized requests always carry a `source`; the support gate
         // above excludes `diff` (no `source`) and `video` (unsupported).
-        const image = resolveImageSource((request as { source: string }).source);
+        const resolved = resolveImageSource((request as { source: string }).source);
         const prompt = mapping.composePrompt(request);
 
         try {
-          const sdk = createMiniMaxSdk(config, sdkConstructor);
-          const raw = await sdk.vision.describe({ image, prompt });
+          // Cast safe: the global `fetch` (production default when
+          // `transport.fetch` is undefined) returns the full `Response`
+          // which satisfies both ProviderQuotaFetch and the wider
+          // ProviderImageFetch that `convertToDataUri` needs. Test
+          // fakes via makeResponse also provide `headers` + `arrayBuffer`
+          // by default. Widening `MiniMaxTransportDeps.fetch` instead
+          // would force quota tests' fakes to carry unused fields.
+          const dataUri = await convertToDataUri(
+            resolved,
+            transport as ConvertToDataUriDeps | undefined,
+          );
+          const raw = await fetchMiniMaxVlm(config, dataUri, prompt, transport);
           return mapping.normalizeResult(raw);
         } catch (error) {
           throw normalizeMiniMaxError(error);
         }
       }
 
-      const image = resolveImageSource(request.source);
+      const resolved = resolveImageSource(request.source);
+      const prompt =
+        request.instruction && request.instruction.length > 0
+          ? request.instruction
+          : "Describe the image.";
 
       try {
-        const sdk = createMiniMaxSdk(config, sdkConstructor);
-        const describeRequest: { image: string; prompt?: string } = { image };
-        if (request.instruction && request.instruction.length > 0) {
-          describeRequest.prompt = request.instruction;
-        }
-        const raw = await sdk.vision.describe(describeRequest);
+        // Cast safe — see the matching call site in the specialized
+        // branch above for the full rationale.
+        const dataUri = await convertToDataUri(
+          resolved,
+          transport as ConvertToDataUriDeps | undefined,
+        );
+        const raw = await fetchMiniMaxVlm(config, dataUri, prompt, transport);
         return normalizeMiniMaxVisionResult(raw);
       } catch (error) {
         throw normalizeMiniMaxError(error);
@@ -491,33 +518,18 @@ function createMiniMaxDiagnosticsCapability(
 /**
  * Build the MiniMax Provider Descriptor. The descriptor advertises the
  * Search Capability and constructs an Adapter whose `search` Capability
- * owns credentials, SDK lifecycle, Provider field mapping, and failure
- * normalization. Construction is side-effect-free; the SDK is built and
- * torn down per invocation. Tests pass `sdkConstructor`; production uses
- * the no-argument factory which binds the pinned `mmx-cli/sdk`.
+ * owns credentials, transport, Provider field mapping, and failure
+ * normalization. Construction is side-effect-free; the transport is
+ * invoked per Capability call. Tests pass `transport` (typically a
+ * fake-fetch wrapper); production uses the no-argument factory which
+ * resolves to the global `fetch` and timers inside each transport
+ * Module.
  */
 export function createMiniMaxDescriptor(
   dependencies?: MiniMaxAdapterDependencies,
 ): ProviderDescriptor {
-  const sdkConstructor = dependencies?.sdkConstructor;
+  const transport = dependencies?.transport;
   const isSpecializedVisionOperationSupported = dependencies?.isSpecializedVisionOperationSupported;
-
-  // Direct quota transport injection (tests). Production uses the
-  // global fetch and timers resolved inside the quota client.
-  const quotaTransport: {
-    fetch?: MiniMaxQuotaFetch;
-    setTimeout?: typeof setTimeout;
-    clearTimeout?: typeof clearTimeout;
-  } = {};
-  if (dependencies?.quotaFetch) {
-    quotaTransport.fetch = dependencies.quotaFetch as MiniMaxQuotaFetch;
-  }
-  if (dependencies?.quotaSetTimeout) {
-    quotaTransport.setTimeout = dependencies.quotaSetTimeout;
-  }
-  if (dependencies?.quotaClearTimeout) {
-    quotaTransport.clearTimeout = dependencies.quotaClearTimeout;
-  }
 
   return {
     id: "minimax",
@@ -551,18 +563,18 @@ export function createMiniMaxDescriptor(
     create(context: ProviderContext): ProviderAdapter {
       const search = createMiniMaxSearchCapability({
         env: context.env,
-        sdkConstructor,
+        transport,
       });
       const vision = createMiniMaxVisionCapability({
         env: context.env,
-        sdkConstructor,
+        transport,
         isSpecializedVisionOperationSupported,
       });
-      const quotaOptions: MiniMaxQuotaCapabilityOptions = { env: context.env, ...quotaTransport };
+      const quotaOptions: MiniMaxQuotaCapabilityOptions = { env: context.env, ...transport };
       const quota = createMiniMaxQuotaCapability(quotaOptions);
       const diagnostics = createMiniMaxDiagnosticsCapability({
         env: context.env,
-        ...quotaTransport,
+        ...transport,
       });
       return { id: "minimax", search, vision, quota, diagnostics };
     },

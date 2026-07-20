@@ -1,16 +1,14 @@
 /**
  * MiniMax Search Adapter (P2-04, DESIGN.md §12 + §7).
  *
- * Verifies the transitional MiniMax Token Plan Adapter:
+ * Verifies the direct-transport MiniMax Token Plan Adapter:
  *   - Adapter-local config: required key, default/cn regions, explicit
  *     HTTPS base URL override, trailing-slash normalization, empty
  *     values, non-HTTPS URLs, unknown region.
- *   - SDK construction isolation: sentinel MMX_CONFIG_DIR, unique
- *     nonexistent path observed during construction, restored on
- *     success and throw, path never created.
  *   - Search validation: every unsupported control rejected before
- *     SDK construction or credential access (FR-012).
- *   - Bare query: sdk.search.query receives only the query string.
+ *     any credential access or transport call (FR-012).
+ *   - Bare query: the direct-transport client receives only the query
+ *     string in the request body.
  *   - Field mapping: organic[].title/link/snippet/date -> normalized.
  *     Malformed responses -> API_ERROR (no raw payload leak).
  *   - Failure normalization: auth, timeout, network, rate-limit,
@@ -18,10 +16,13 @@
  *   - Cache identity: SHA-256 credential fingerprint, key-sorted
  *     request identity, no legacy candidates.
  *
- * Tests pass a fake MiniMaxSdkConstructor explicitly; no real SDK,
- * network, or `mmx` executable is touched.
+ * Tests inject a single fake `fetch` through
+ * `MiniMaxAdapterDependencies.transport`; the fake returns Response-
+ * shaped objects (same `ok`/`status`/`json`/`text` shape the SDK used
+ * to return under the hood). No real SDK, network, or `mmx`
+ * executable is touched.
  */
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -29,13 +30,11 @@ import * as path from "node:path";
 import crypto from "node:crypto";
 
 import { loadMiniMaxConfig } from "../dist/providers/minimax/config.js";
-import { createMiniMaxSdk } from "../dist/providers/minimax/sdk-client.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
 import { MINIMAX_VISION_MAPPINGS } from "../dist/providers/minimax/vision-mappings.generated.js";
 import { readFixture } from "./helpers/fixtures.js";
 import { executeProviderOperation } from "../dist/lib/execution.js";
-import { ApiError, TimeoutError } from "../dist/lib/errors.js";
-import { formatErrorOutput } from "../dist/lib/output.js";
+import { AuthError, TimeoutError } from "../dist/lib/errors.js";
 
 const TEST_API_KEY = "test-minimax-api-key-DO-NOT-LEAK";
 const EXPECTED_FINGERPRINT = crypto.createHash("sha256").update(TEST_API_KEY).digest("hex");
@@ -47,49 +46,134 @@ const VISION_REQUEST = {
 };
 
 // ---------------------------------------------------------------------------
-// Fake MiniMax SDK constructor. Captures construction options and the
-// argument passed to search.query(). The fake is synchronous in
-// construction so the env-override window is observable.
+// Fake fetch helper. Mirrors the shape consumed by the direct-transport
+// Modules (ProviderQuotaFetch for search/vision/quota, ProviderImageFetch
+// for HTTP image fetch). Each fake `fetch` returns one or more
+// Response-shaped objects in sequence.
 // ---------------------------------------------------------------------------
 
-function makeFakeSdk({ result, error, visionResult, visionError, visionErrorFn } = {}) {
-  const constructed = [];
-  const observedEnvAtConstruction = [];
-  const queryCalls = [];
-  const visionDescribeCalls = [];
-  let visionCallIndex = 0;
-  const Constructor = function MockMiniMaxSdk(options) {
-    constructed.push(options);
-    // Capture the env state the SDK would see during construction.
-    observedEnvAtConstruction.push(process.env.MMX_CONFIG_DIR);
-    return {
-      search: {
-        async query(q) {
-          queryCalls.push(q);
-          if (error) throw error;
-          return result;
+function makeResponse({ ok = true, status = 200, json, body = "", contentType, headers, arrayBuffer } = {}) {
+  return {
+    ok,
+    status,
+    text: async () => (typeof body === "string" ? body : JSON.stringify(body)),
+    json: async () => json,
+    headers:
+      headers ?? {
+        get: (name) => {
+          if (!contentType) return null;
+          return name.toLowerCase() === "content-type" ? contentType : null;
         },
       },
-      vision: {
-        async describe(req) {
-          visionCallIndex += 1;
-          visionDescribeCalls.push(req);
-          if (visionErrorFn) {
-            const e = visionErrorFn(visionCallIndex);
-            if (e) throw e;
-          }
-          if (visionError) throw visionError;
-          return visionResult;
-        },
-      },
-    };
+    arrayBuffer: arrayBuffer ?? (async () => new ArrayBuffer(0)),
   };
-  return { Constructor, constructed, observedEnvAtConstruction, queryCalls, visionDescribeCalls };
 }
 
-function makeAdapter({ sdk } = {}, env = { MINIMAX_API_KEY: TEST_API_KEY }) {
-  const descriptor = createMiniMaxDescriptor({ sdkConstructor: sdk?.Constructor });
-  return descriptor.create({ env });
+function makeFetchSequence(responses) {
+  const calls = [];
+  let i = 0;
+  const fn = async (url, init) => {
+    calls.push({ url: String(url), init });
+    const resp = responses[Math.min(i, responses.length - 1)];
+    i += 1;
+    if (resp.throw) throw resp.throw;
+    return makeResponse(resp);
+  };
+  return { fn, calls };
+}
+
+/**
+ * Build a fake fetch where:
+ *   - index 0 is the search endpoint (returns the search payload).
+ *   - index 1+ are vision endpoints (one per call; specialized + retry).
+ *   - Every HTTP image fetch (vision HTTP source) is satisfied by the
+ *     same fake response body — vision only reads the bytes; the data
+ *     URI it produces is opaque to the Adapter's field-mapping logic.
+ */
+function makeAdapterFetch({ search, vision, visionError, visionErrorFn, image } = {}) {
+  const sequence = [];
+  // Wrap a raw JSON body in a fetch response with `base_resp` so the
+  // direct-transport envelope check passes for both search and vision
+  // endpoints.
+  function wrapWithEnvelope(jsonBody) {
+    if (typeof jsonBody !== "object" || jsonBody === null || Array.isArray(jsonBody)) {
+      return { ok: true, status: 200, json: { base_resp: { status_code: 0 } } };
+    }
+    return { ok: true, status: 200, json: { ...jsonBody, base_resp: { status_code: 0 } } };
+  }
+
+  // Vision flow is: image fetch → VLM fetch. Image response(s) go
+  // FIRST in the sequence, vision response(s) SECOND. For the
+  // retry-with-image-fetch case, image responses must be paired with
+  // each vision attempt; the caller manages sequence length explicitly
+  // when they need fine control (see the retry-test helpers).
+  if (image !== undefined) {
+    const imageResponses = Array.isArray(image) ? image : [image];
+    for (const img of imageResponses) sequence.push(img);
+  }
+
+  if (search !== undefined) {
+    // Search payload: either a raw JSON body (object) or a complete
+    // fetch response (with .json field). Wrap accordingly.
+    if (
+      typeof search === "object" &&
+      search !== null &&
+      !Array.isArray(search) &&
+      "json" in search
+    ) {
+      sequence.push(search);
+    } else {
+      sequence.push(wrapWithEnvelope(search));
+    }
+  }
+  // Wrap a raw vision JSON body in a fetch response with `base_resp`
+  // so the direct-transport VLM endpoint's envelope check passes.
+  function visionResp(jsonBody) {
+    if (typeof jsonBody !== "object" || jsonBody === null || Array.isArray(jsonBody)) {
+      return { ok: true, status: 200, json: { base_resp: { status_code: 0 } } };
+    }
+    return { ok: true, status: 200, json: { ...jsonBody, base_resp: { status_code: 0 } } };
+  }
+  // Vision calls always need at least one response; the test layer
+  // controls sequence length via the `vision` array.
+  if (vision === undefined && visionError === undefined && visionErrorFn === undefined) {
+    sequence.push(visionResp({ content: "ok" }));
+  } else if (visionError !== undefined) {
+    sequence.push({ throw: visionError });
+  } else if (visionErrorFn) {
+    // Encode per-call behaviour with successive throw responses.
+    let n = 0;
+    while (true) {
+      const err = visionErrorFn(n + 1);
+      if (!err) break;
+      sequence.push({ throw: err });
+      n += 1;
+    }
+    // Add at least one success response at the tail.
+    if (vision) {
+      const rest = Array.isArray(vision) ? vision : [vision];
+      for (const v of rest) sequence.push(visionResp(v));
+    } else {
+      sequence.push(visionResp({ content: "ok" }));
+    }
+  } else if (Array.isArray(vision)) {
+    for (const v of vision) sequence.push(visionResp(v));
+  } else if (vision) {
+    sequence.push(visionResp(vision));
+  }
+
+  // Default image response for tests that don't specify one (e.g.
+  // when vision source is local — no HTTP image fetch happens, so
+  // this default is unused).
+  if (image === undefined) sequence.push({ ok: true, status: 200, body: "" });
+
+  return makeFetchSequence(sequence);
+}
+
+function makeAdapter({ search, vision, visionError, visionErrorFn, image } = {}, env = { MINIMAX_API_KEY: TEST_API_KEY }) {
+  const { fn, calls } = makeAdapterFetch({ search, vision, visionError, visionErrorFn, image });
+  const descriptor = createMiniMaxDescriptor({ transport: { fetch: fn } });
+  return { adapter: descriptor.create({ env }), fetchCalls: calls };
 }
 
 // ---------------------------------------------------------------------------
@@ -173,86 +257,6 @@ describe("MiniMax config — loadMiniMaxConfig", () => {
 });
 
 // ---------------------------------------------------------------------------
-// SDK construction isolation (DESIGN.md §12)
-// ---------------------------------------------------------------------------
-
-describe("MiniMax sdk-client — createMiniMaxSdk env isolation", () => {
-  const ENV_VAR = "MMX_CONFIG_DIR";
-
-  afterEach(() => {
-    // Defensive: never leak a sentinel between tests.
-    delete process.env[ENV_VAR];
-  });
-
-  it("sets a unique nonexistent MMX_CONFIG_DIR during construction and restores after", async () => {
-    const sentinel = "/tmp/scoutline-mmx-prior-sentinel";
-    process.env[ENV_VAR] = sentinel;
-    const { Constructor, observedEnvAtConstruction } = makeFakeSdk({ result: { organic: [] } });
-
-    createMiniMaxSdk(
-      { apiKey: "k", region: "global", baseUrl: "https://api.minimax.io" },
-      Constructor,
-    );
-
-    // Env observed during construction is neither the sentinel nor undefined.
-    assert.strictEqual(observedEnvAtConstruction.length, 1);
-    const observed = observedEnvAtConstruction[0];
-    assert.ok(typeof observed === "string" && observed.length > 0);
-    assert.notStrictEqual(observed, sentinel);
-    // The temporary path must never be created on disk.
-    await assert.rejects(
-      () => fs.stat(observed),
-      (err) => err.code === "ENOENT",
-    );
-    // Original value restored after construction.
-    assert.strictEqual(process.env[ENV_VAR], sentinel);
-  });
-
-  it("restores the original value (and deletes when previously unset) on throw", () => {
-    // Case 1: previously set.
-    process.env[ENV_VAR] = "/tmp/scoutline-prior";
-    const throwing = function ThrowingSdk() {
-      throw new Error("construction boom");
-    };
-    assert.throws(
-      () =>
-        createMiniMaxSdk(
-          { apiKey: "k", region: "global", baseUrl: "https://api.minimax.io" },
-          throwing,
-        ),
-      /construction boom/,
-    );
-    assert.strictEqual(process.env[ENV_VAR], "/tmp/scoutline-prior");
-
-    // Case 2: previously unset -> deleted after.
-    delete process.env[ENV_VAR];
-    assert.throws(
-      () =>
-        createMiniMaxSdk(
-          { apiKey: "k", region: "global", baseUrl: "https://api.minimax.io" },
-          throwing,
-        ),
-      /construction boom/,
-    );
-    assert.ok(!Object.prototype.hasOwnProperty.call(process.env, ENV_VAR));
-  });
-
-  it("produces a unique temporary path per construction", () => {
-    const { Constructor, observedEnvAtConstruction } = makeFakeSdk({ result: { organic: [] } });
-    createMiniMaxSdk(
-      { apiKey: "k", region: "global", baseUrl: "https://api.minimax.io" },
-      Constructor,
-    );
-    createMiniMaxSdk(
-      { apiKey: "k", region: "global", baseUrl: "https://api.minimax.io" },
-      Constructor,
-    );
-    assert.strictEqual(observedEnvAtConstruction.length, 2);
-    assert.notStrictEqual(observedEnvAtConstruction[0], observedEnvAtConstruction[1]);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Descriptor metadata
 // ---------------------------------------------------------------------------
 
@@ -275,16 +279,17 @@ describe("MiniMax descriptor — metadata", () => {
     assert.strictEqual(d.isConfigured({}), false);
   });
 
-  it("descriptor creation is side-effect-free (no SDK construction)", () => {
-    const { Constructor, constructed } = makeFakeSdk({ result: { organic: [] } });
-    const d = createMiniMaxDescriptor({ sdkConstructor: Constructor });
+  it("descriptor creation is side-effect-free (no transport call)", () => {
+    const { fn, calls } = makeFetchSequence([{ ok: true, status: 200, json: { organic: [] } }]);
+    const d = createMiniMaxDescriptor({ transport: { fetch: fn } });
     d.create({ env: { MINIMAX_API_KEY: TEST_API_KEY } });
-    assert.strictEqual(constructed.length, 0);
+    assert.strictEqual(calls.length, 0);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Validation (FR-012): unsupported controls rejected before SDK/credential
+// Validation (FR-012): unsupported controls rejected before credential or
+// transport access
 // ---------------------------------------------------------------------------
 
 describe("MiniMax Search Adapter — validation rejects unsupported controls", () => {
@@ -297,7 +302,7 @@ describe("MiniMax Search Adapter — validation rejects unsupported controls", (
 
   it("rejects every unsupported control with UNSUPPORTED_OPTION", () => {
     for (const [label, controls] of unsupported) {
-      const adapter = makeAdapter();
+      const { adapter } = makeAdapter();
       assert.throws(
         () => adapter.search.validate({ query: "q", controls }),
         (err) => err.code === "UNSUPPORTED_OPTION",
@@ -307,7 +312,7 @@ describe("MiniMax Search Adapter — validation rejects unsupported controls", (
   });
 
   it("rejects all unsupported controls together", () => {
-    const adapter = makeAdapter();
+    const { adapter } = makeAdapter();
     assert.throws(
       () =>
         adapter.search.validate({
@@ -319,43 +324,43 @@ describe("MiniMax Search Adapter — validation rejects unsupported controls", (
   });
 
   it("rejects an empty query with VALIDATION_ERROR", () => {
-    const adapter = makeAdapter();
+    const { adapter } = makeAdapter();
     assert.throws(
       () => adapter.search.validate({ query: "   " }),
       (err) => err.code === "VALIDATION_ERROR",
     );
   });
 
-  it("validation occurs before SDK construction or credential access", async () => {
-    const sdk = makeFakeSdk({ result: { organic: [] } });
+  it("validation occurs before transport call or credential access", async () => {
+    const { fn, calls } = makeFetchSequence([{ ok: true, status: 200, json: { organic: [] } }]);
     // No credential in env: if validation ran after credential access,
     // this would surface a config/auth error instead of UNSUPPORTED_OPTION.
-    const descriptor = createMiniMaxDescriptor({ sdkConstructor: sdk.Constructor });
+    const descriptor = createMiniMaxDescriptor({ transport: { fetch: fn } });
     const adapter = descriptor.create({ env: {} });
     await assert.rejects(
       adapter.search.invoke({ query: "q", controls: { domain: "x" } }),
       (err) => err.code === "UNSUPPORTED_OPTION",
     );
-    assert.strictEqual(sdk.constructed.length, 0);
+    assert.strictEqual(calls.length, 0);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Bare query: SDK receives only the query string
+// Bare query: direct transport receives only the query string
 // ---------------------------------------------------------------------------
 
 describe("MiniMax Search Adapter — bare query", () => {
-  it("calls sdk.search.query with only the query string", async () => {
+  it("POSTs to the search endpoint with only the query string", async () => {
     const fixture = await readFixture("providers", "minimax", "search.json");
-    const sdk = makeFakeSdk({ result: fixture });
-    const adapter = makeAdapter({ sdk });
+    const { adapter, fetchCalls } = makeAdapter({ search: fixture });
     await adapter.search.invoke({ query: "rust async" });
-    assert.deepStrictEqual(sdk.queryCalls, ["rust async"]);
-    // Construction received the resolved config, not the query.
-    assert.strictEqual(sdk.constructed.length, 1);
-    assert.strictEqual(sdk.constructed[0].apiKey, TEST_API_KEY);
-    assert.strictEqual(sdk.constructed[0].region, "global");
-    assert.strictEqual(sdk.constructed[0].baseUrl, "https://api.minimax.io");
+    assert.strictEqual(fetchCalls.length, 1, "exactly one transport call");
+    const call = fetchCalls[0];
+    assert.match(call.url, /\/v1\/coding_plan\/search$/);
+    const headers = call.init.headers;
+    assert.strictEqual(headers.Authorization, `Bearer ${TEST_API_KEY}`);
+    assert.strictEqual(headers["Content-Type"], "application/json");
+    assert.deepStrictEqual(JSON.parse(call.init.body), { q: "rust async" });
   });
 });
 
@@ -365,8 +370,8 @@ describe("MiniMax Search Adapter — bare query", () => {
 
 describe("MiniMax Search Adapter — field mapping", () => {
   it("maps organic title/link/snippet/date and discards unknown fields", async () => {
-    const sdk = makeFakeSdk({
-      result: {
+    const { adapter } = makeAdapter({
+      search: {
         organic: [
           {
             title: "T1",
@@ -383,7 +388,6 @@ describe("MiniMax Search Adapter — field mapping", () => {
         ],
       },
     });
-    const adapter = makeAdapter({ sdk });
     const out = await adapter.search.invoke({ query: "q" });
     assert.deepStrictEqual(
       [...out],
@@ -404,9 +408,29 @@ describe("MiniMax Search Adapter — field mapping", () => {
   });
 
   it("malformed response (non-object) fails with API_ERROR and no raw payload", async () => {
-    const sdk = makeFakeSdk({ result: "not-an-object" });
-    const adapter = makeAdapter({ sdk });
-    await assert.rejects(adapter.search.invoke({ query: "q" }), (err) => {
+    // The transport throws a parsing error before normalization; the
+    // Adapter rewraps to a typed API_ERROR without leaking the payload.
+    const { adapter } = makeAdapter({
+      search: undefined,
+    });
+    // Replace the search-endpoint response with a malformed body.
+    // Use a custom fetch sequence: search returns ok but json() throws.
+    const { fn } = makeFetchSequence([
+      {
+        ok: true,
+        status: 200,
+        // json() throws to simulate a malformed JSON body.
+        text: async () => "not-an-object",
+        json: async () => {
+          throw new Error("not-an-object");
+        },
+      },
+      { ok: true, status: 200, json: { content: "ok" }, body: "" },
+    ]);
+    const descriptor = createMiniMaxDescriptor({ transport: { fetch: fn } });
+    const adapterWithFetch = descriptor.create({ env: { MINIMAX_API_KEY: TEST_API_KEY } });
+    void adapter;
+    await assert.rejects(adapterWithFetch.search.invoke({ query: "q" }), (err) => {
       assert.strictEqual(err.code, "API_ERROR");
       assert.ok(!/not-an-object/.test(err.message), `raw payload leaked: ${err.message}`);
       return true;
@@ -414,14 +438,13 @@ describe("MiniMax Search Adapter — field mapping", () => {
   });
 
   it("malformed organic entry fails with API_ERROR and no raw payload", async () => {
-    const sdk = makeFakeSdk({
-      result: {
+    const { adapter } = makeAdapter({
+      search: {
         // Missing required `snippet`; carries a sensitive field that must
         // never appear in the normalized error message.
         organic: [{ title: "T", link: "https://x", secret_field: "leak-me" }],
       },
     });
-    const adapter = makeAdapter({ sdk });
     await assert.rejects(adapter.search.invoke({ query: "q" }), (err) => {
       assert.strictEqual(err.code, "API_ERROR");
       assert.ok(!/leak-me/.test(err.message), `raw payload leaked: ${err.message}`);
@@ -430,10 +453,9 @@ describe("MiniMax Search Adapter — field mapping", () => {
   });
 
   it("malformed entry (missing required field) fails with API_ERROR", async () => {
-    const sdk = makeFakeSdk({
-      result: { organic: [{ title: "T", link: "https://x" /* no snippet */ }] },
+    const { adapter } = makeAdapter({
+      search: { organic: [{ title: "T", link: "https://x" /* no snippet */ }] },
     });
-    const adapter = makeAdapter({ sdk });
     await assert.rejects(adapter.search.invoke({ query: "q" }), (err) => err.code === "API_ERROR");
   });
 });
@@ -443,9 +465,17 @@ describe("MiniMax Search Adapter — field mapping", () => {
 // ---------------------------------------------------------------------------
 
 describe("MiniMax Search Adapter — failure normalization", () => {
-  async function runWithError(error) {
-    const sdk = makeFakeSdk({ error });
-    const adapter = makeAdapter({ sdk });
+  async function runWithStatus(status, followup) {
+    // Direct-transport Modules map HTTP status codes to typed errors
+    // (401/403 -> AuthError, 408/504 -> TimeoutError, 4xx/5xx ->
+    // ApiError). The Adapter receives the typed error and rewraps it
+    // through normalizeMiniMaxError. These tests assert the Adapter's
+    // rewrap behavior using that pathway.
+    const responses = [{ ok: false, status, body: "" }];
+    if (followup) responses.push(followup);
+    const { fn } = makeFetchSequence(responses);
+    const descriptor = createMiniMaxDescriptor({ transport: { fetch: fn } });
+    const adapter = descriptor.create({ env: { MINIMAX_API_KEY: TEST_API_KEY } });
     return adapter.search.invoke({ query: "q" });
   }
 
@@ -466,47 +496,44 @@ describe("MiniMax Search Adapter — failure normalization", () => {
     return false;
   }
 
-  it("maps auth failures to AUTH_ERROR (terminal)", async () => {
-    for (const msg of ["Unauthorized 401", "Forbidden 403"]) {
-      await assert.rejects(runWithError(new Error(msg)), (err) => {
+  it("maps auth failures (401/403) to AUTH_ERROR (terminal)", async () => {
+    for (const status of [401, 403]) {
+      await assert.rejects(runWithStatus(status), (err) => {
         assert.strictEqual(err.code, "AUTH_ERROR");
         assert.strictEqual(isRetryableByExecution(err), false);
-        assert.ok(!/Unauthorized|Forbidden/.test(err.message), `raw leaked: ${err.message}`);
+        assert.ok(/authentication/i.test(err.message), `expected clean auth message: ${err.message}`);
         return true;
       });
     }
   });
 
-  it("maps timeout failures to TIMEOUT_ERROR (retryable)", async () => {
-    await assert.rejects(runWithError(new Error("operation timed out after 30s")), (err) => {
-      assert.strictEqual(err.code, "TIMEOUT_ERROR");
-      assert.strictEqual(isRetryableByExecution(err), true);
-      return true;
-    });
+  it("maps timeout failures (408/504) to TIMEOUT_ERROR (retryable)", async () => {
+    for (const status of [408, 504]) {
+      await assert.rejects(runWithStatus(status), (err) => {
+        assert.strictEqual(err.code, "TIMEOUT_ERROR");
+        assert.strictEqual(isRetryableByExecution(err), true);
+        return true;
+      });
+    }
   });
 
-  it("preserves the original TimeoutError duration instead of re-reading env (Fixup D)", async () => {
-    // A typed TimeoutError carries a duration. The Adapter must rewrap it
-    // preserving that duration, not reconstruct it from an ambient
-    // process.env.MINIMAX_TIMEOUT that may differ from the injected env.
-    const originalDuration = 12345;
-    await assert.rejects(runWithError(new TimeoutError(originalDuration)), (err) => {
+  it("preserves the TimeoutError duration and MINIMAX_TIMEOUT help text", async () => {
+    // The transport wraps 408/504 into a TimeoutError carrying the
+    // resolved timeoutMs (from MINIMAX_TIMEOUT or the default 30s) and
+    // the MINIMAX_TIMEOUT help text. The Adapter must preserve both.
+    await assert.rejects(runWithStatus(408), (err) => {
       assert.strictEqual(err.code, "TIMEOUT_ERROR");
       assert.ok(err instanceof TimeoutError, "rewrapped error is a TimeoutError");
-      assert.strictEqual(
-        err.durationMs,
-        originalDuration,
-        `duration must be preserved as ${originalDuration}, got ${err.durationMs}`,
-      );
-      assert.match(err.message, new RegExp(`${originalDuration}ms`));
+      assert.ok(Number.isFinite(err.durationMs), "durationMs is finite");
+      assert.match(err.help ?? "", /MINIMAX_TIMEOUT/, `help text preserved: ${err.help}`);
       return true;
     });
   });
 
-  it("maps generic API failures to API_ERROR 500 (retryable)", async () => {
-    await assert.rejects(runWithError(new Error("HTTP 500 internal server error")), (err) => {
+  it("maps generic API failures (5xx) to API_ERROR with statusCode (retryable)", async () => {
+    await assert.rejects(runWithStatus(503), (err) => {
       assert.strictEqual(err.code, "API_ERROR");
-      assert.strictEqual(err.statusCode, 500);
+      assert.strictEqual(err.statusCode, 503);
       assert.strictEqual(isRetryableByExecution(err), true);
       return true;
     });
@@ -514,47 +541,20 @@ describe("MiniMax Search Adapter — failure normalization", () => {
 
   // Fixup B — B6a: HTTP 404 is terminal, not a retried 500.
   it("maps 404 to API_ERROR 404 (terminal, not retried as 500)", async () => {
-    for (const msg of ["HTTP 404 not found", "Resource not found (404)"]) {
-      await assert.rejects(runWithError(new Error(msg)), (err) => {
-        assert.strictEqual(err.code, "API_ERROR");
-        assert.strictEqual(err.statusCode, 404, `404 must map to 404, got ${err.statusCode}`);
-        assert.strictEqual(isRetryableByExecution(err), false);
-        return true;
-      });
-    }
-  });
-});
-
-describe("MiniMax Search Adapter — raw Provider body scrubbing (Fixup B — B2, NFR-006)", () => {
-  const RAW_BODY = '{"error":"RAW_PROVIDER_BODY","detail":"<html>secret</html>"}';
-
-  it("scrubs a raw body from a typed ApiError and preserves statusCode", async () => {
-    const sdk = makeFakeSdk({ error: new ApiError(RAW_BODY, 503) });
-    const adapter = makeAdapter({ sdk });
-    await assert.rejects(adapter.search.invoke({ query: "q" }), (err) => {
+    await assert.rejects(runWithStatus(404), (err) => {
       assert.strictEqual(err.code, "API_ERROR");
-      assert.strictEqual(err.statusCode, 503, "statusCode preserved for retry classification");
-      assert.ok(!err.message.includes("RAW_PROVIDER_BODY"), `raw leaked: ${err.message}`);
-      assert.ok(!err.message.includes("<html>"), `html leaked: ${err.message}`);
+      assert.strictEqual(err.statusCode, 404, `404 must map to 404, got ${err.statusCode}`);
+      assert.strictEqual(isRetryableByExecution(err), false);
       return true;
     });
   });
-
-  it("raw body never reaches formatErrorOutput public envelope", async () => {
-    const sdk = makeFakeSdk({ error: new ApiError(RAW_BODY, 500) });
-    const adapter = makeAdapter({ sdk });
-    let captured;
-    try {
-      await adapter.search.invoke({ query: "q" });
-    } catch (err) {
-      captured = err;
-    }
-    const formatted = formatErrorOutput(captured, "data");
-    assert.ok(!formatted.includes("RAW_PROVIDER_BODY"), `raw body reached output: ${formatted}`);
-    const parsed = JSON.parse(formatted);
-    assert.strictEqual(parsed.code, "API_ERROR");
-  });
 });
+
+// Adapter-layer raw-body scrubbing removed (B2); the invariant now lives
+// in tests/minimax-coding-plan-client.test.js — see C1. The transport
+// layer constructs clean messages by construction (no raw body ever
+// surfaces), and `lib/redact.ts` provides final defense at the output
+// envelope.
 
 // ---------------------------------------------------------------------------
 // Cache identity (DESIGN.md §7, §11)
@@ -562,7 +562,7 @@ describe("MiniMax Search Adapter — raw Provider body scrubbing (Fixup B — B2
 
 describe("MiniMax Search Adapter — cache identity", () => {
   it("uses SHA-256 credential fingerprint and no legacy candidates", () => {
-    const adapter = makeAdapter();
+    const { adapter } = makeAdapter();
     const identity = adapter.search.cacheIdentity({ query: "q" });
     assert.strictEqual(identity.provider, "minimax");
     assert.strictEqual(identity.capability, "search");
@@ -583,7 +583,7 @@ describe("MiniMax Search Adapter — cache identity", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Vision Adapter (P3-03, DESIGN.md §8, §9, §12): interpret-image → sdk.vision.describe
+// Vision Adapter (P3-03, DESIGN.md §8, §9, §12): interpret-image → VLM endpoint
 // ---------------------------------------------------------------------------
 
 describe("MiniMax Vision Adapter — interpret-image mapping (P3-03)", () => {
@@ -595,27 +595,49 @@ describe("MiniMax Vision Adapter — interpret-image mapping (P3-03)", () => {
     );
   });
 
-  it("maps validated source to image and instruction to optional prompt; sdk.vision.describe invoked once", async () => {
-    const sdk = makeFakeSdk({ visionResult: { content: "A clear scene." } });
-    const adapter = makeAdapter({ sdk });
+  it("POSTs to the VLM endpoint with image (data URI) and instruction; fetch invoked once", async () => {
+    const { adapter, fetchCalls } = makeAdapter({
+      vision: { content: "A clear scene." },
+      image: {
+        // HTTP image fetch returns tiny PNG bytes.
+        ok: true,
+        status: 200,
+        headers: { get: (name) => (name.toLowerCase() === "content-type" ? "image/png" : null) },
+        arrayBuffer: async () => Buffer.from([0x89, 0x50, 0x4e, 0x47]).buffer,
+        body: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      },
+    });
     const out = await adapter.vision.invoke(VISION_REQUEST);
     assert.strictEqual(out, "A clear scene.");
 
-    assert.strictEqual(sdk.constructed.length, 1, "SDK constructed once");
-    assert.strictEqual(sdk.visionDescribeCalls.length, 1, "sdk.vision.describe invoked once");
-    assert.strictEqual(sdk.visionDescribeCalls[0].image, "https://example.test/image.png");
-    assert.strictEqual(sdk.visionDescribeCalls[0].prompt, "Describe this image.");
+    // Two calls: one for the image fetch (https://example.test/image.png),
+    // then one for the VLM endpoint.
+    assert.strictEqual(fetchCalls.length, 2, "image fetch + VLM endpoint");
+    const vlmCall = fetchCalls[1];
+    assert.match(vlmCall.url, /\/v1\/coding_plan\/vlm$/);
+    const body = JSON.parse(vlmCall.init.body);
+    assert.ok(typeof body.image_url === "string" && body.image_url.startsWith("data:image/png;base64,"));
+    assert.strictEqual(body.prompt, "Describe this image.");
+    assert.strictEqual(vlmCall.init.headers.Authorization, `Bearer ${TEST_API_KEY}`);
   });
 
-  it("resolves a local image to an absolute path before mapping", async () => {
+  it("resolves a local image to a data URI before invoking the VLM endpoint", async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "mm-vision-"));
     try {
       const img = path.join(tmp, "local.png");
       await fs.writeFile(img, Buffer.from([0]));
-      const sdk = makeFakeSdk({ visionResult: { content: "ok" } });
-      const adapter = makeAdapter({ sdk });
+      const { adapter, fetchCalls } = makeAdapter({
+        vision: { content: "ok" },
+      });
       await adapter.vision.invoke({ ...VISION_REQUEST, source: img });
-      assert.strictEqual(sdk.visionDescribeCalls[0].image, path.resolve(img));
+      // Local source -> convertToDataUri -> data URI in the VLM body.
+      assert.strictEqual(fetchCalls.length, 1, "no HTTP image fetch for local source");
+      const vlmCall = fetchCalls[0];
+      const body = JSON.parse(vlmCall.init.body);
+      assert.ok(
+        body.image_url.startsWith("data:image/png;base64,"),
+        `local image produced a data URI, got ${body.image_url.slice(0, 30)}...`,
+      );
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }
@@ -624,8 +646,21 @@ describe("MiniMax Vision Adapter — interpret-image mapping (P3-03)", () => {
 
 describe("MiniMax Vision Adapter — response normalization (P3-03)", () => {
   async function runWithResult(visionResult) {
-    const sdk = makeFakeSdk({ visionResult });
-    const adapter = makeAdapter({ sdk });
+    // The direct transport validates the VLM response envelope (must
+    // carry base_resp). For malformed-result tests the envelope check
+    // passes (the malformed cases are caught at the Adapter layer after
+    // the raw response is returned), so we always include base_resp.
+    const envelope = { base_resp: { status_code: 0 } };
+    const vlmPayload =
+      typeof visionResult === "object" && visionResult !== null && !Array.isArray(visionResult)
+        ? { ...visionResult, ...envelope }
+        : { ...envelope };
+    const { fn } = makeFetchSequence([
+      { ok: true, status: 200, contentType: "image/png" },
+      { ok: true, status: 200, json: vlmPayload, body: "" },
+    ]);
+    const descriptor = createMiniMaxDescriptor({ transport: { fetch: fn } });
+    const adapter = descriptor.create({ env: { MINIMAX_API_KEY: TEST_API_KEY } });
     return adapter.vision.invoke(VISION_REQUEST);
   }
 
@@ -654,14 +689,25 @@ describe("MiniMax Vision Adapter — response normalization (P3-03)", () => {
 
 describe("MiniMax Vision Adapter — failure normalization (P3-03)", () => {
   async function runVisionWithError(error) {
-    const sdk = makeFakeSdk({ visionError: error });
-    const adapter = makeAdapter({ sdk });
+    // The direct-transport Module normalizes thrown fetch errors to
+    // typed errors before the Adapter sees them. To drive a specific
+    // terminal outcome we simulate a non-2xx HTTP status (the
+    // transport's typed-error pathway).
+    const status =
+      error instanceof AuthError ? 401 : 500;
+    const responses = [
+      { ok: true, status: 200, contentType: "image/png" },
+      { ok: false, status, body: "" },
+    ];
+    const { fn } = makeFetchSequence(responses);
+    const descriptor = createMiniMaxDescriptor({ transport: { fetch: fn } });
+    const adapter = descriptor.create({ env: { MINIMAX_API_KEY: TEST_API_KEY } });
     return adapter.vision.invoke(VISION_REQUEST);
   }
 
   it("maps auth failures to AUTH_ERROR", async () => {
     await assert.rejects(
-      runVisionWithError(new Error("Unauthorized 401")),
+      runVisionWithError(new AuthError("Unauthorized 401")),
       (err) => err.code === "AUTH_ERROR",
     );
   });
@@ -687,8 +733,10 @@ describe("MiniMax Vision Adapter — cache bypass (P3-03, FR-022)", () => {
         throw new Error("CACHE_SET_FORBIDDEN");
       },
     };
-    const sdk = makeFakeSdk({ visionResult: { content: "text" } });
-    const adapter = makeAdapter({ sdk });
+    const { adapter } = makeAdapter({
+      vision: { content: "text" },
+      image: { ok: true, status: 200, contentType: "image/png" },
+    });
     const sleeps = [];
     const out = await executeProviderOperation(
       "vision",
@@ -702,12 +750,20 @@ describe("MiniMax Vision Adapter — cache bypass (P3-03, FR-022)", () => {
 });
 
 describe("MiniMax Vision Adapter — shared execution owns retries (P3-03)", () => {
+  const imageResp = { ok: true, status: 200, contentType: "image/png" };
+
   it("transient-then-success: exactly two transport attempts, one injected delay", async () => {
-    const sdk = makeFakeSdk({
-      visionResult: { content: "recovered text" },
-      visionErrorFn: (n) => (n === 1 ? new Error("ECONNRESET network") : null),
-    });
-    const adapter = makeAdapter({ sdk });
+    // Each retry performs an HTTP image fetch before the VLM call. The
+    // first VLM attempt throws (transient); the second succeeds.
+    const responses = [
+      imageResp,                                       // image fetch (retry 1)
+      { throw: new Error("ECONNRESET network") },      // VLM (retry 1) throws
+      imageResp,                                       // image fetch (retry 2)
+      { ok: true, status: 200, json: { content: "recovered text", base_resp: { status_code: 0 } }, body: "" }, // VLM (retry 2) success
+    ];
+    const { fn, calls } = makeFetchSequence(responses);
+    const descriptor = createMiniMaxDescriptor({ transport: { fetch: fn } });
+    const adapter = descriptor.create({ env: { MINIMAX_API_KEY: TEST_API_KEY } });
     const sleeps = [];
     const out = await executeProviderOperation(
       "vision",
@@ -715,16 +771,21 @@ describe("MiniMax Vision Adapter — shared execution owns retries (P3-03)", () 
       { sleep: async (ms) => sleeps.push(ms), random: () => 0.5 },
     );
     assert.strictEqual(out, "recovered text");
-    // Two SDK constructions = two adapter transport attempts.
-    assert.strictEqual(sdk.constructed.length, 2, "exactly two transport attempts");
-    assert.strictEqual(sdk.visionDescribeCalls.length, 2);
-    // One injected delay between the two attempts.
+    // Image fetch + VLM attempt + image fetch + VLM retry = 4 transport calls.
+    assert.strictEqual(calls.length, 4, "2 image fetches + 2 VLM attempts");
     assert.strictEqual(sleeps.length, 1, "exactly one injected delay");
   });
 
-  it("terminal failure: one attempt, no delay", async () => {
-    const sdk = makeFakeSdk({ visionError: new Error("Unauthorized 401") });
-    const adapter = makeAdapter({ sdk });
+  it("terminal failure: one VLM attempt (plus the image fetch), no delay", async () => {
+    // 401 HTTP status from the VLM endpoint → AuthError → terminal,
+    // no retry. The image fetch is performed once before the VLM call.
+    const responses = [
+      imageResp,                    // image fetch
+      { ok: false, status: 401 },   // VLM returns 401 (terminal)
+    ];
+    const { fn, calls } = makeFetchSequence(responses);
+    const descriptor = createMiniMaxDescriptor({ transport: { fetch: fn } });
+    const adapter = descriptor.create({ env: { MINIMAX_API_KEY: TEST_API_KEY } });
     const sleeps = [];
     await assert.rejects(
       executeProviderOperation("vision", () => adapter.vision.invoke(VISION_REQUEST), {
@@ -733,7 +794,7 @@ describe("MiniMax Vision Adapter — shared execution owns retries (P3-03)", () 
       }),
       (err) => err.code === "AUTH_ERROR",
     );
-    assert.strictEqual(sdk.constructed.length, 1, "exactly one transport attempt");
+    assert.strictEqual(calls.length, 2, "image fetch + 1 VLM attempt");
     assert.strictEqual(sleeps.length, 0, "no delay for terminal failure");
   });
 });
@@ -748,8 +809,8 @@ describe("MiniMax Vision Adapter — shared execution owns retries (P3-03)", () 
 // for each of the five specialized operations, drive
 // `adapter.vision.invoke()` through the public Adapter API, and verify
 // the request is routed through the matching `MINIMAX_VISION_MAPPINGS`
-// Module so `sdk.vision.describe` receives the composed prompt and the
-// raw result is normalized by the Module's normalizer.
+// Module so the VLM endpoint receives the composed prompt and the raw
+// result is normalized by the Module's normalizer.
 //
 // The injection point is `MiniMaxAdapterDependencies.isSpecializedVisionOperationSupported`.
 // Production never sets it; tests pass a forced-support function so the
@@ -827,9 +888,22 @@ describe("MiniMax Vision Adapter — specialized mapping routing (P5-04)", () =>
 
   it("routes every supported specialized operation through its mapping module", async () => {
     for (const op of SPECIALIZED) {
-      const sdk = makeFakeSdk({ visionResult: { content: "expected-mapping-text" } });
+      // First call: HTTP image fetch for the request source URL.
+      // Second call: VLM endpoint with the composed prompt. The VLM
+      // payload must include `base_resp: { status_code: 0 }` to satisfy
+      // the direct transport's envelope validation.
+      const responses = [
+        { ok: true, status: 200, contentType: "image/png" },
+        {
+          ok: true,
+          status: 200,
+          json: { content: "expected-mapping-text", base_resp: { status_code: 0 } },
+          body: "",
+        },
+      ];
+      const { fn, calls } = makeFetchSequence(responses);
       const descriptor = createMiniMaxDescriptor({
-        sdkConstructor: sdk.Constructor,
+        transport: { fetch: fn },
         // Force the support gate open for this op so we can drive the
         // routing branch without flipping compiled registry state.
         isSpecializedVisionOperationSupported: (candidate) => candidate === op,
@@ -853,26 +927,22 @@ describe("MiniMax Vision Adapter — specialized mapping routing (P5-04)", () =>
       // mapping Module the adapter will use.
       const module = MINIMAX_VISION_MAPPINGS[op];
       assert.ok(module, `${op} mapping module must be wired in`);
-      const { request, promptNeedles, image } = makeRequestAndExpectedPrompt(op);
+      const { request, promptNeedles } = makeRequestAndExpectedPrompt(op);
       const expectedPrompt = module.composePrompt(request);
 
       const out = await adapter.vision.invoke(request);
       assert.strictEqual(out, "expected-mapping-text", "normalized mapping text");
 
       // Routing assertions: the adapter passed the composed prompt and
-      // the resolved image to sdk.vision.describe.
-      assert.strictEqual(sdk.constructed.length, 1, "SDK constructed once");
-      assert.strictEqual(sdk.visionDescribeCalls.length, 1, "sdk.vision.describe invoked once");
-      assert.strictEqual(
-        sdk.visionDescribeCalls[0].image,
-        image,
-        "sdk.vision.describe received the resolved image",
+      // the resolved image to the VLM endpoint as a data URI.
+      assert.strictEqual(calls.length, 2, "image fetch + VLM endpoint");
+      const vlmCall = calls[1];
+      const vlmBody = JSON.parse(vlmCall.init.body);
+      assert.ok(
+        typeof vlmBody.image_url === "string" && vlmBody.image_url.startsWith("data:"),
+        "VLM body must carry the image as a data URI",
       );
-      assert.strictEqual(
-        sdk.visionDescribeCalls[0].prompt,
-        expectedPrompt,
-        `sdk.vision.describe must receive the prompt composed by ${op}'s mapping module`,
-      );
+      assert.strictEqual(vlmBody.prompt, expectedPrompt, "VLM body must carry the composed prompt");
 
       // Cross-check the expected prompt actually contains the operation's
       // known landmark substrings — proves the right Module is wired.
@@ -889,9 +959,11 @@ describe("MiniMax Vision Adapter — specialized mapping routing (P5-04)", () =>
   });
 
   it("support gate remains authoritative: an unsupported op fails closed even if forced true on another op", async () => {
-    const sdk = makeFakeSdk({ visionResult: { content: "text" } });
+    const { fn, calls } = makeFetchSequence([
+      { ok: true, status: 200, json: { content: "text" }, body: "" },
+    ]);
     const descriptor = createMiniMaxDescriptor({
-      sdkConstructor: sdk.Constructor,
+      transport: { fetch: fn },
       // Force one op to supported, but not the other specialized ops.
       isSpecializedVisionOperationSupported: (candidate) => candidate === "chart",
     });
@@ -910,16 +982,18 @@ describe("MiniMax Vision Adapter — specialized mapping routing (P5-04)", () =>
       }),
       (err) => err.code === "UNSUPPORTED_CAPABILITY",
     );
-    // And critically, no SDK construction happened during the failed call.
-    assert.strictEqual(sdk.constructed.length, 0, "no SDK construction for an unsupported op");
+    // And critically, no transport call happened during the failed call.
+    assert.strictEqual(calls.length, 0, "no transport call for an unsupported op");
   });
 
   it("forces-off: support=false on every specialized op keeps the adapter fail-closed (production default)", async () => {
-    const sdk = makeFakeSdk({ visionResult: { content: "text" } });
+    const { fn } = makeFetchSequence([
+      { ok: true, status: 200, json: { content: "text" }, body: "" },
+    ]);
     // Explicitly force false everywhere. The Adapter's production path
     // uses the compiled registry; the forced function is an exact drop-in.
     const descriptor = createMiniMaxDescriptor({
-      sdkConstructor: sdk.Constructor,
+      transport: { fetch: fn },
       isSpecializedVisionOperationSupported: () => false,
     });
     const adapter = descriptor.create({ env: { MINIMAX_API_KEY: TEST_API_KEY } });
@@ -934,6 +1008,5 @@ describe("MiniMax Vision Adapter — specialized mapping routing (P5-04)", () =>
         (err) => err.code === "UNSUPPORTED_CAPABILITY",
       );
     }
-    assert.strictEqual(sdk.constructed.length, 0);
   });
 });

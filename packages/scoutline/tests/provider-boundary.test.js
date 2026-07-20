@@ -14,9 +14,16 @@
  *   - Shared execution (`src/lib/execution.ts`) imports no concrete
  *     Adapter module.
  *
- * P2-04 isolates the MiniMax SDK: exactly one `mmx-cli/sdk` runtime
- * import lives in `providers/minimax/sdk-client.ts`. Production source
- * never invokes the `mmx` executable or reads `.mmx/config.json`.
+ * Phase B (B2) removes the `mmx-cli/sdk` runtime dependency entirely:
+ *   - No source file imports `mmx-cli/sdk` after the direct-transport
+ *     migration. The transition file `providers/minimax/sdk-client.ts`
+ *     has been deleted.
+ *   - Production source never invokes the `mmx` executable or reads
+ *     `.mmx/config.json`.
+ *   - `coding-plan-client.ts` is the only Module allowed to import
+ *     `ProviderQuotaFetch` directly inside the MiniMax Adapter
+ *     directory. `coding-plan-client.ts` and `media.ts` are the only
+ *     Modules allowed to call `fetch` against MiniMax endpoints.
  *
  * P2-06 adds the production-reachability check: every Phase 2 Module
  * listed in the seam MUST be reachable (statically or via dynamic
@@ -45,10 +52,13 @@ const COMMANDS_DIR = path.join(SRC_DIR, "commands");
 const EXECUTION_FILE = path.join(SRC_DIR, "lib", "execution.ts");
 const SEARCH_COMMAND_FILE = path.join(COMMANDS_DIR, "search.ts");
 const PACKAGE_JSON = path.join(PACKAGE_ROOT, "package.json");
-const EXPECTED_SDK_FILE = path.join(SRC_DIR, "providers", "minimax", "sdk-client.ts");
 const REPOSITORY_EXPLORER_FILE = path.join(COMMANDS_DIR, "repository-explorer.ts");
 const DOCTOR_COMMAND_FILE = path.join(COMMANDS_DIR, "doctor.ts");
 const DIAGNOSTICS_CAPABILITY_FILE = path.join(CAPABILITIES_DIR, "diagnostics.ts");
+const MINIMAX_DIR = path.join(SRC_DIR, "providers", "minimax");
+const CODING_PLAN_CLIENT_FILE = path.join(MINIMAX_DIR, "coding-plan-client.ts");
+const MEDIA_FILE = path.join(MINIMAX_DIR, "media.ts");
+const QUOTA_CLIENT_FILE = path.join(MINIMAX_DIR, "quota-client.ts");
 
 async function listTsFiles(dir) {
   let entries;
@@ -199,8 +209,6 @@ describe("Search command: imports no Provider client or response type", () => {
     "ZaiMcpClientOptions",
     "LegacyZaiSearchParams",
     "LegacySearchClientPort",
-    "MiniMaxSdkPort",
-    "MiniMaxSdkConstructor",
     "MiniMaxAdapterDependencies",
     "MiniMaxSDK",
   ];
@@ -359,7 +367,8 @@ describe("Production reachability — every Phase 2 Module is wired into the shi
     { module: "src/providers/zai/adapter.ts" },
     { module: "src/providers/minimax/adapter.ts" },
     { module: "src/providers/minimax/config.ts" },
-    { module: "src/providers/minimax/sdk-client.ts" },
+    { module: "src/providers/minimax/coding-plan-client.ts" },
+    { module: "src/providers/minimax/media.ts" },
     { module: "src/command-invocation.ts" },
     // Only reachable through bin/scoutline.js's dynamic import of
     // `dist/node-command-invocation-adapter.js`. Check both forms.
@@ -425,8 +434,6 @@ describe("Repository Explorer: imports no concrete Provider transport (P6-06)", 
     "WebSearchResult",
     "LegacyZaiSearchParams",
     "LegacySearchClientPort",
-    "MiniMaxSdkPort",
-    "MiniMaxSdkConstructor",
     "MiniMaxAdapterDependencies",
     "createZaiDescriptor",
     "createMiniMaxDescriptor",
@@ -585,8 +592,6 @@ describe("Repository Explorer: imports no concrete Provider transport (P6-06)", 
       "WebSearchResult",
       "LegacyZaiSearchParams",
       "LegacySearchClientPort",
-      "MiniMaxSdkPort",
-      "MiniMaxSdkConstructor",
       "MiniMaxAdapterDependencies",
       "createZaiDescriptor",
       "createMiniMaxDescriptor",
@@ -677,8 +682,6 @@ describe("Repository Explorer: imports no concrete Provider transport (P6-06)", 
       "ReaderRawResponse",
       "ReaderRawObjectResponse",
       "WebSearchResult",
-      "MiniMaxSdkPort",
-      "MiniMaxSdkConstructor",
       "MiniMaxAdapterDependencies",
       "createZaiDescriptor",
       "createMiniMaxDescriptor",
@@ -717,10 +720,12 @@ describe("Repository Explorer: imports no concrete Provider transport (P6-06)", 
 });
 
 // ---------------------------------------------------------------------------
-// MiniMax SDK isolation (P2-04, DESIGN.md §12): exactly one `mmx-cli/sdk`
-// import, located only in providers/minimax/sdk-client.ts. No executable
-// invocation of `mmx`, no reads of `.mmx/config.json`, and no MiniMax
-// credential read through shared lib/config.ts.
+// MiniMax SDK isolation (B2): zero `mmx-cli/sdk` runtime imports. No
+// executable invocation of `mmx`, no reads of `.mmx/config.json`, and no
+// MiniMax credential read through shared lib/config.ts. The direct
+// transport is the only HTTP surface against MiniMax endpoints, and
+// `coding-plan-client.ts` + `media.ts` are the only owners of that
+// surface.
 // ---------------------------------------------------------------------------
 
 describe("MiniMax SDK isolation", () => {
@@ -734,17 +739,7 @@ describe("MiniMax SDK isolation", () => {
     return listTsFiles(SRC_DIR);
   }
 
-  it("mmx-cli is pinned to exactly 1.0.16 with no range prefix", async () => {
-    const raw = await fs.readFile(PACKAGE_JSON, "utf8");
-    const pkg = JSON.parse(raw);
-    assert.strictEqual(
-      pkg.dependencies && pkg.dependencies["mmx-cli"],
-      "1.0.16",
-      "mmx-cli must be an exact dependency (1.0.16), no ^ or ~ prefix",
-    );
-  });
-
-  it("exactly one source file imports mmx-cli/sdk, and it is sdk-client.ts", async () => {
+  it("zero source files import mmx-cli/sdk after the direct-transport migration", async () => {
     const files = await listAllSrcTs();
     const matches = [];
     for (const file of files) {
@@ -755,9 +750,9 @@ describe("MiniMax SDK isolation", () => {
       }
     }
     assert.deepStrictEqual(
-      matches.map((f) => path.relative(SRC_DIR, f)),
-      [path.relative(SRC_DIR, EXPECTED_SDK_FILE)],
-      `mmx-cli/sdk must be imported only by providers/minimax/sdk-client.ts; found: ${matches.join(", ")}`,
+      matches,
+      [],
+      "no source file may import mmx-cli/sdk after direct transport migration",
     );
   });
 
@@ -797,5 +792,85 @@ describe("MiniMax SDK isolation", () => {
         `${path.relative(SRC_DIR, file)} reads shared lib/config.ts: ${external.join(", ")}`,
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Direct-transport isolation (B2, DESIGN.md §12):
+//   - coding-plan-client.ts is the only Module inside the MiniMax Adapter
+//     directory allowed to import ProviderQuotaFetch from providers/types.ts.
+//   - coding-plan-client.ts and media.ts are the only Modules allowed to
+//     call `fetch` against MiniMax endpoints.
+// ---------------------------------------------------------------------------
+
+describe("MiniMax direct-transport isolation", () => {
+  async function listMinimaxFiles() {
+    return listTsFiles(MINIMAX_DIR);
+  }
+
+  it("coding-plan-client.ts and quota-client.ts are the only MiniMax Modules that import ProviderQuotaFetch", async () => {
+    // ProviderQuotaFetch is the narrow fetch port declared in
+    // providers/types.ts. Two MiniMax Adapter Modules import it
+    // directly (the coding-plan direct transport + the quota
+    // direct transport). All other Adapter Modules consume the
+    // unified `transport` seam through the descriptor factory and
+    // never reach for ProviderQuotaFetch by name.
+    const files = await listMinimaxFiles();
+    const matches = [];
+    for (const file of files) {
+      const source = await readSource(file);
+      // Strip line and block comments so doc-comments that merely
+      // reference the symbol by name don't trip the check.
+      const codeOnly = source
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+      // Check the code for `ProviderQuotaFetch` identifier usage
+      // (imports, type aliases, value references). Import specifiers
+      // never carry the symbol name itself.
+      if (/\bProviderQuotaFetch\b/.test(codeOnly)) {
+        matches.push(path.relative(SRC_DIR, file));
+      }
+    }
+    assert.deepStrictEqual(
+      matches.sort(),
+      [
+        path.relative(SRC_DIR, CODING_PLAN_CLIENT_FILE),
+        path.relative(SRC_DIR, QUOTA_CLIENT_FILE),
+      ].sort(),
+      `only providers/minimax/coding-plan-client.ts and providers/minimax/quota-client.ts may reference ProviderQuotaFetch; found: ${matches.join(", ")}`,
+    );
+  });
+
+  it("only coding-plan-client.ts, quota-client.ts, and media.ts call fetch against MiniMax endpoints", async () => {
+    // MiniMax endpoints carry `api.minimax.io`, `api.minimaxi.com`, or
+    // a user-supplied `MINIMAX_BASE_URL` value. The three direct
+    // transport owners are the only places that build a fetch request
+    // with one of those host/path tokens.
+    const files = await listMinimaxFiles();
+    const allowed = new Set([
+      path.relative(SRC_DIR, CODING_PLAN_CLIENT_FILE),
+      path.relative(SRC_DIR, MEDIA_FILE),
+      path.relative(SRC_DIR, QUOTA_CLIENT_FILE),
+    ]);
+    const callers = [];
+    for (const file of files) {
+      const source = await readSource(file);
+      const rel = path.relative(SRC_DIR, file);
+      if (allowed.has(rel)) continue;
+      // Allow non-MiniMax fetches; only flag Modules that reach a
+      // MiniMax endpoint. The heuristic: a literal that combines a
+      // MiniMax host/path token with a call to `fetch(`, `f(`, or
+      // `deps.fetch(`.
+      const hasFetchCall = /\bf(?:etch)?\s*\(/.test(source);
+      if (!hasFetchCall) continue;
+      const referencesMiniMax =
+        /api\.minimax\.io|api\.minimaxi\.com|coding_plan|baseUrl/.test(source);
+      if (referencesMiniMax) callers.push(rel);
+    }
+    assert.deepStrictEqual(
+      callers,
+      [],
+      `only coding-plan-client.ts, quota-client.ts, and media.ts may call fetch against MiniMax endpoints; found: ${callers.join(", ")}`,
+    );
   });
 });

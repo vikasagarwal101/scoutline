@@ -176,18 +176,29 @@ describe("scoutline package — root export and metadata", () => {
     assert.strictEqual(typeof mod.main, "function");
   });
 
-  it("manifest pins mmx-cli to exactly 1.0.16 with no range prefix", async () => {
+  it("manifest pins mmx-cli to exactly 1.0.16 with no range prefix (C4: moved to devDependencies)", async () => {
     const pkg = await loadPackageJson();
-    const value = pkg.dependencies && pkg.dependencies["mmx-cli"];
+    // C4: mmx-cli moved from runtime dependencies to devDependencies.
+    // The direct transport (Phase B) replaced the runtime need; the
+    // package remains a devDependency so the C2 envelope-parity live
+    // test can compare direct-transport responses against the legacy
+    // SDK. The exact-pin constraint is still required for deterministic
+    // SDK behavior in that comparison.
+    const value = pkg.devDependencies && pkg.devDependencies["mmx-cli"];
     assert.ok(
       typeof value === "string" && value.length > 0,
-      "mmx-cli must be a string dependency (got " + JSON.stringify(value) + ")",
+      "mmx-cli must be a string devDependency (got " + JSON.stringify(value) + ")",
     );
     assert.ok(
       !/[\^~>=<*]/.test(value),
-      `mmx-cli dependency must be an exact version (1.0.16), got "${value}"`,
+      `mmx-cli devDependency must be an exact version (1.0.16), got "${value}"`,
     );
     assert.strictEqual(value, "1.0.16");
+    // And it must NOT be in runtime dependencies.
+    assert.ok(
+      !(pkg.dependencies && pkg.dependencies["mmx-cli"]),
+      "mmx-cli must not appear in runtime dependencies after C4 (direct transport owns the runtime path)",
+    );
   });
 
   it("manifest files allowlist is exactly [bin, dist]", async () => {

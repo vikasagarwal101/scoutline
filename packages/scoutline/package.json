@@ -55,11 +55,11 @@
   "dependencies": {
     "@utcp/code-mode": "^1.2.12",
     "@utcp/mcp": "^1.1.3",
-    "@utcp/sdk": "^1.1.2",
-    "mmx-cli": "1.0.16"
+    "@utcp/sdk": "^1.1.2"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
+    "mmx-cli": "1.0.16",
     "typescript": "^7.0.2"
   }
 }

@@ -14,9 +14,9 @@
  * both explicit and environment positions.
  *
  * Only Search, Vision, quota, and diagnostics call this module.
- * Z.AI-only command families (Reader, repository exploration, raw
- * tools, Code Mode) remove the global flag during parsing and never
- * resolve or validate it.
+ * Z.AI-only command families (raw tools, Code Mode) remove the global
+ * flag during parsing and never resolve or validate it. Reader and
+ * repository exploration participate in Provider selection.
  */
 
 import type { ProviderId } from "./types.js";

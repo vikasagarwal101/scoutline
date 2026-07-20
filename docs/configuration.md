@@ -265,7 +265,7 @@ Reader results share the partitioned namespace and use the single
 `reader-fetch` operation suffix:
 
 ```text
-v2.reader.reader-fetch.<provider>.<credential-hash>.<request-hash>.json
+v2.reader-reader-fetch.<provider>.<credential-hash>.<request-hash>.json
 ```
 
 The Adapter resolves its credential once. The canonical request URL is the

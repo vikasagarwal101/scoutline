@@ -35,7 +35,7 @@ _No published changes yet. See `docs/plans/` for in-flight work._
   now lives in the result. The rewrite is idempotent on URLs already
   ending in `/raw` and preserves fragments.
 - Reader cache namespace
-  `v2.reader.reader-fetch.<provider>.<credential-hash>.<request-hash>.json`,
+  `v2.reader-reader-fetch.<provider>.<credential-hash>.<request-hash>.json`,
   where the credential hash is the full lowercase SHA-256 hex digest of
   the Adapter-resolved credential and is never re-hashed by cache code.
   The canonical request URL is the **rewritten** URL so two requests that

@@ -309,7 +309,7 @@ with the composite operation suffix `${identity.capability}-${identity.operation
 — namely `reader-reader-fetch`:
 
 ```text
-v2.reader.reader-fetch.<provider>.<credential-hash>.<request-hash>.json
+v2.reader-reader-fetch.<provider>.<credential-hash>.<request-hash>.json
 ```
 
 The canonical request URL is the **rewritten** URL so two requests that

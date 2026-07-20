@@ -35,8 +35,9 @@ import type { ProviderId } from "../providers/types.js";
 
 /**
  * The single Reader Capability operation. Cache identity partitions by
- * this literal; the v2 partitioned key shape is
- * `v2.reader-fetch.<provider>.<credential-hash>.<request-hash>.json`.
+ * the composite `${capability}-${operation}` literal; the v2 partitioned
+ * key shape is
+ * `v2.reader-reader-fetch.<provider>.<credential-hash>.<request-hash>.json`.
  *
  * `--extract` and `--max-chars` are handler-level projections and do
  * NOT participate in the cache identity (tech-plan D1, D2).

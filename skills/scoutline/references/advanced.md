@@ -183,7 +183,7 @@ Reader results share the partitioned namespace and use the single
 `reader-fetch` operation suffix:
 
 ```
-v2.reader.reader-fetch.<provider>.<credential-hash>.<request-hash>.json
+v2.reader-reader-fetch.<provider>.<credential-hash>.<request-hash>.json
 ```
 
 The canonical request URL is the **rewritten** URL (e.g. gist URLs to their

@@ -238,7 +238,7 @@ cache hits construct and close no transport.
 ### Cache continuity
 
 New cache entries use the namespace
-`v2.reader.reader-fetch.<provider>.<credential-hash>.<request-hash>.json`,
+`v2.reader-reader-fetch.<provider>.<credential-hash>.<request-hash>.json`,
 where `<credential-hash>` is the full lowercase SHA-256 hex digest of the
 Adapter-resolved credential. The canonical request URL is the **rewritten**
 URL so two requests that normalize to the same fetched URL share one entry.

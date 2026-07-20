@@ -1,20 +1,35 @@
 /**
- * Local response cache for Z.AI API responses.
+ * Unified cache storage module.
  *
- * Stores the RAW response from Z.AI (before any post-processing like
- * truncation, format conversion, or extraction) keyed by a hash of the
- * command + request-affecting arguments. Post-processing flags like
- * --max-chars, --output-format, --extract are NOT part of the cache key,
- * so the same cached response can serve multiple presentation variants.
+ * Two sibling on-disk caches live under one root (`~/.scoutline/` by
+ * default; overridable via `SCOUTLINE_CACHE_DIR`):
  *
- * Default TTL: 24h. Default size cap: 100MB. LRU eviction when full.
- * Disable per-call with --no-cache.
+ * ```text
+ * ~/.scoutline/
+ *   ├── cache/    response cache entries (Provider responses)
+ *   └── tools/    tool discovery cache (consumed by mcp-client.ts)
+ * ```
+ *
+ * The response cache stores the RAW response from a Provider (before any
+ * post-processing like truncation, format conversion, or extraction)
+ * keyed by a hash of the command + request-affecting arguments.
+ * Post-processing flags like --max-chars, --output-format, --extract are
+ * NOT part of the cache key, so the same cached response can serve
+ * multiple presentation variants.
+ *
+ * Defaults: 24h TTL, 100MB size cap, LRU eviction when full. Disable
+ * per-call with --no-cache, or globally with `SCOUTLINE_CACHE=0`.
+ *
+ * Env-var policy: `SCOUTLINE_CACHE*` are the canonical names. The legacy
+ * `ZAI_CACHE*`, `ZAI_MCP_TOOL_CACHE*`, and `ZAI_MCP_CACHE_DIR` variables
+ * are accepted as lower-precedence aliases (silent aliasing — no
+ * deprecation notice in this release). All reads are call-time (H1 fix)
+ * so per-suite env mutations remain observable.
  *
  * P2-02 extends this module with provider-partitioned keys
  * (`buildProviderCacheKey`) and a `ResponseCache` adapter that lets
  * shared execution read and write through the same on-disk store without
- * duplicating TTL or eviction logic. Existing exports and directory
- * resolution are unchanged.
+ * duplicating TTL or eviction logic.
  */
 
 import crypto from "node:crypto";
@@ -24,19 +39,26 @@ import path from "node:path";
 import { getApiKey } from "./config.js";
 import type { ProviderId } from "../providers/types.js";
 
-const DEFAULT_TTL_MS = parseInt(process.env.ZAI_CACHE_TTL_MS || "", 10) || 24 * 60 * 60 * 1000;
-const DEFAULT_SIZE_CAP_BYTES =
-  parseInt(process.env.ZAI_CACHE_SIZE_MB || "", 10) * 1024 * 1024 || 100 * 1024 * 1024;
-const CACHE_ENABLED = !["0", "false"].includes((process.env.ZAI_CACHE || "1").toLowerCase());
-
 interface CacheEntry<T> {
   ts: number;
   data: T;
 }
 
+// ---------------------------------------------------------------------------
+// Directory resolution — unified dotfile root with override aliases
+// ---------------------------------------------------------------------------
+
+/**
+ * Environment surface consumed by the pure cache-root resolver. The legacy
+ * aliases (`ZAI_MCP_CACHE_DIR`, `ZAI_CACHE_DIR`) are preserved so existing
+ * operator configurations keep working silently. `XDG_CACHE_HOME` was
+ * removed when the dotfile convention (`~/.scoutline/`) was adopted on
+ * every platform.
+ */
 export interface CacheDirEnvironment {
-  readonly ZAI_CACHE_DIR?: string | undefined;
-  readonly XDG_CACHE_HOME?: string | undefined;
+  readonly SCOUTLINE_CACHE_DIR?: string | undefined;
+  readonly ZAI_MCP_CACHE_DIR?: string | undefined; // legacy alias (precedence over ZAI_CACHE_DIR)
+  readonly ZAI_CACHE_DIR?: string | undefined; // legacy alias
 }
 
 export interface CacheDirPlatform {
@@ -45,31 +67,110 @@ export interface CacheDirPlatform {
 }
 
 /**
- * Pure cache-directory resolver. Accepts environment and platform explicitly
+ * Pure cache-ROOT resolver. Accepts environment and platform explicitly
  * so tests can assert path resolution without touching process globals.
- * The process-backed {@link resolveCacheDir} wraps this with live state.
+ * Returns the root directory (`~/.scoutline/`); each cache appends its
+ * own subdirectory (`cache/` or `tools/`). Precedence:
+ *   1. `SCOUTLINE_CACHE_DIR` (canonical)
+ *   2. `ZAI_MCP_CACHE_DIR`   (legacy tool-cache override; B3 fix)
+ *   3. `ZAI_CACHE_DIR`       (legacy response-cache override)
+ *   4. `path.join(homedir, ".scoutline")` (dotfile default, all platforms)
+ *
+ * The process-backed {@link resolveCacheRoot} wraps this with live state.
  */
-export function resolveCacheDirPure(env: CacheDirEnvironment, plat: CacheDirPlatform): string {
-  if (env.ZAI_CACHE_DIR) return env.ZAI_CACHE_DIR;
-  if (env.XDG_CACHE_HOME) {
-    // Retain the adapter cache location until provider configuration is generalized.
-    return path.join(env.XDG_CACHE_HOME, "zai-cli", "responses");
-  }
-  if (plat.platform === "darwin") {
-    return path.join(plat.homedir, "Library", "Caches", "zai-cli", "responses");
-  }
-  return path.join(plat.homedir, ".cache", "zai-cli", "responses");
+export function resolveCacheRootPure(env: CacheDirEnvironment, plat: CacheDirPlatform): string {
+  const explicit = env.SCOUTLINE_CACHE_DIR ?? env.ZAI_MCP_CACHE_DIR ?? env.ZAI_CACHE_DIR;
+  if (explicit) return explicit;
+  return path.join(plat.homedir, ".scoutline");
 }
 
-function resolveCacheDir(): string {
-  return resolveCacheDirPure(
+function resolveCacheRoot(): string {
+  return resolveCacheRootPure(
     {
+      SCOUTLINE_CACHE_DIR: process.env.SCOUTLINE_CACHE_DIR,
+      ZAI_MCP_CACHE_DIR: process.env.ZAI_MCP_CACHE_DIR,
       ZAI_CACHE_DIR: process.env.ZAI_CACHE_DIR,
-      XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
     },
     { platform: process.platform, homedir: os.homedir() },
   );
 }
+
+/**
+ * Internal directory for response-cache entries. Always a `cache/`
+ * subdirectory under the unified root.
+ */
+function responseCacheDir(): string {
+  return path.join(resolveCacheRoot(), "cache");
+}
+
+/**
+ * Directory for the tool-discovery cache (consumed by mcp-client.ts).
+ * Always a `tools/` subdirectory under the unified root, sibling of
+ * {@link responseCacheDir}. Scanned by `cacheStats()` and cleared by
+ * `clearAllCaches()`, but never touched by the response cache's LRU
+ * eviction loop.
+ */
+export function toolCacheDir(): string {
+  return path.join(resolveCacheRoot(), "tools");
+}
+
+// ---------------------------------------------------------------------------
+// Call-time env reads (H1 fix: preserves the existing test contract)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read a cache env var with aliasing. The canonical `newName` wins; each
+ * `oldName` is consulted in order. Returns the first defined value or
+ * `undefined`.
+ */
+function readCacheEnv(newName: string, ...oldNames: string[]): string | undefined {
+  if (process.env[newName]) return process.env[newName];
+  for (const old of oldNames) {
+    if (process.env[old]) return process.env[old];
+  }
+  return undefined;
+}
+
+/**
+ * Call-time cache-enabled check for the RESPONSE cache (H1 fix). Honours
+ * `SCOUTLINE_CACHE` (canonical) with `ZAI_CACHE` as a legacy alias. Read
+ * on every cache operation so per-suite env mutations in tests remain
+ * observable.
+ *
+ * Note: the legacy `ZAI_MCP_TOOL_CACHE` env var is intentionally NOT
+ * consulted here. In v0.4.0 the tool cache's enable flag was independent
+ * of the response cache's; mcp-client.ts still reads
+ * `ZAI_MCP_TOOL_CACHE` directly for its own tool-cache enable check.
+ * Aliasing it here would silently disable the response cache whenever a
+ * user disabled the tool cache, which would break the four
+ * `mcp-client.test.js` suites that set `ZAI_MCP_TOOL_CACHE=0` while
+ * relying on response-cache hits. Unifying this granularity is deferred
+ * to a future release (see tech-plan "what this plan does not decide").
+ */
+export function isCacheEnabled(): boolean {
+  const v = readCacheEnv("SCOUTLINE_CACHE", "ZAI_CACHE");
+  return !["0", "false"].includes((v ?? "1").toLowerCase());
+}
+
+/** Call-time TTL (ms) for the response cache. Default 24h. */
+export function getCacheTtlMs(): number {
+  // ZAI_MCP_TOOL_CACHE_TTL_MS is intentionally not aliased here — the
+  // tool cache (mcp-client.ts) reads its own TTL directly. Aliasing it
+  // would silently change response-cache TTL when a user set only the
+  // tool-cache TTL, mirroring the granularity decision in isCacheEnabled.
+  const v = readCacheEnv("SCOUTLINE_CACHE_TTL_MS", "ZAI_CACHE_TTL_MS");
+  return parseInt(v ?? "", 10) || 24 * 60 * 60 * 1000;
+}
+
+/** Call-time response-cache size cap (bytes). Default 100MB. */
+export function getCacheSizeCapBytes(): number {
+  const v = readCacheEnv("SCOUTLINE_CACHE_SIZE_MB", "ZAI_CACHE_SIZE_MB");
+  return parseInt(v ?? "", 10) * 1024 * 1024 || 100 * 1024 * 1024;
+}
+
+// ---------------------------------------------------------------------------
+// Cache key builders
+// ---------------------------------------------------------------------------
 
 /**
  * Build a stable cache key from command + request-affecting args.
@@ -215,13 +316,16 @@ export function buildLegacyReaderCacheKey(
   return `${publicToolName}.${credentialPart}.${argumentPart}.json`;
 }
 
-export function isCacheEnabled(): boolean {
-  return CACHE_ENABLED;
-}
+// ---------------------------------------------------------------------------
+// Response cache I/O (writes land under <root>/cache/)
+// ---------------------------------------------------------------------------
 
-export async function readCache<T>(key: string, ttlMs = DEFAULT_TTL_MS): Promise<T | null> {
-  if (!CACHE_ENABLED || ttlMs <= 0) return null;
-  const file = path.join(resolveCacheDir(), key);
+export async function readCache<T>(key: string, ttlMs = getCacheTtlMs()): Promise<T | null> {
+  // H1 fix: call-time enabled check so per-suite env mutations are
+  // observed. Module-load capture would silently freeze this to whatever
+  // the env was at first import.
+  if (!isCacheEnabled() || ttlMs <= 0) return null;
+  const file = path.join(responseCacheDir(), key);
   try {
     const raw = await fs.readFile(file, "utf8");
     const entry = JSON.parse(raw) as CacheEntry<T>;
@@ -236,8 +340,9 @@ export async function readCache<T>(key: string, ttlMs = DEFAULT_TTL_MS): Promise
 }
 
 export async function writeCache<T>(key: string, data: T): Promise<void> {
-  if (!CACHE_ENABLED) return;
-  const dir = resolveCacheDir();
+  // H1 fix: call-time enabled check.
+  if (!isCacheEnabled()) return;
+  const dir = responseCacheDir();
   const file = path.join(dir, key);
   try {
     await fs.mkdir(dir, { recursive: true });
@@ -265,12 +370,13 @@ async function evictIfNeeded(dir: string): Promise<void> {
     );
     const valid = stats.filter((s): s is NonNullable<typeof s> => s !== null);
     const totalBytes = valid.reduce((sum, e) => sum + e.size, 0);
-    if (totalBytes <= DEFAULT_SIZE_CAP_BYTES) return;
+    const sizeCapBytes = getCacheSizeCapBytes();
+    if (totalBytes <= sizeCapBytes) return;
     // Evict oldest until under cap
     const sorted = valid.sort((a, b) => a.mtimeMs - b.mtimeMs);
     let bytes = totalBytes;
     for (const entry of sorted) {
-      if (bytes <= DEFAULT_SIZE_CAP_BYTES * 0.8) break;
+      if (bytes <= sizeCapBytes * 0.8) break;
       await fs.unlink(path.join(dir, entry.name)).catch(() => {});
       bytes -= entry.size;
     }
@@ -279,8 +385,17 @@ async function evictIfNeeded(dir: string): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Clear + stats — extended to cover both subdirectories (H3 fix)
+// ---------------------------------------------------------------------------
+
+/**
+ * Clear the response cache only. Kept for backward compatibility; new
+ * callers should prefer {@link clearAllCaches} which covers both the
+ * `cache/` and `tools/` subdirectories.
+ */
 export async function clearCache(): Promise<{ cleared: number; bytesFreed: number }> {
-  const dir = resolveCacheDir();
+  const dir = responseCacheDir();
   let cleared = 0;
   let bytesFreed = 0;
   try {
@@ -302,15 +417,88 @@ export async function clearCache(): Promise<{ cleared: number; bytesFreed: numbe
   return { cleared, bytesFreed };
 }
 
+/**
+ * Internal: clear a single subdirectory. Returns the count and bytes
+ * freed. Does NOT remove the directory itself (next invocation recreates
+ * entries without a directory-creation race).
+ */
+async function clearSubdir(dir: string): Promise<{ cleared: number; bytesFreed: number }> {
+  let cleared = 0;
+  let bytesFreed = 0;
+  try {
+    const entries = await fs.readdir(dir);
+    for (const name of entries) {
+      const p = path.join(dir, name);
+      try {
+        const s = await fs.stat(p);
+        await fs.unlink(p);
+        cleared += 1;
+        bytesFreed += s.size;
+      } catch {
+        // skip
+      }
+    }
+  } catch {
+    // dir doesn't exist
+  }
+  return { cleared, bytesFreed };
+}
+
+/**
+ * Clear both the `cache/` (responses) and `tools/` (tool discovery)
+ * subdirectories. Directories themselves are preserved. Existing
+ * {@link clearCache} callers continue to clear `cache/` only.
+ */
+export async function clearAllCaches(): Promise<{
+  responsesCleared: number;
+  toolsCleared: number;
+  bytesFreed: number;
+}> {
+  const [responses, tools] = await Promise.all([
+    clearSubdir(responseCacheDir()),
+    clearSubdir(toolCacheDir()),
+  ]);
+  return {
+    responsesCleared: responses.cleared,
+    toolsCleared: tools.cleared,
+    bytesFreed: responses.bytesFreed + tools.bytesFreed,
+  };
+}
+
+/**
+ * Inventory both caches. The shape extends the v0.4.0 flat shape with
+ * nested `responseCache` and `toolCache` sections (H3 fix). The
+ * top-level `entries` and `totalBytes` fields are removed — callers
+ * must read from the nested sections.
+ */
 export async function cacheStats(): Promise<{
-  entries: number;
-  totalBytes: number;
   dir: string;
+  enabled: boolean;
   ttlMs: number;
   sizeCapBytes: number;
-  enabled: boolean;
+  responseCache: { entries: number; totalBytes: number };
+  toolCache: { entries: number; totalBytes: number };
 }> {
-  const dir = resolveCacheDir();
+  const dir = resolveCacheRoot();
+  const responseDir = responseCacheDir();
+  const toolDir = toolCacheDir();
+
+  const [responseStats, toolStats] = await Promise.all([
+    inventorySubdir(responseDir),
+    inventorySubdir(toolDir),
+  ]);
+
+  return {
+    dir,
+    enabled: isCacheEnabled(),
+    ttlMs: getCacheTtlMs(),
+    sizeCapBytes: getCacheSizeCapBytes(),
+    responseCache: responseStats,
+    toolCache: toolStats,
+  };
+}
+
+async function inventorySubdir(dir: string): Promise<{ entries: number; totalBytes: number }> {
   let entries = 0;
   let totalBytes = 0;
   try {
@@ -327,14 +515,7 @@ export async function cacheStats(): Promise<{
   } catch {
     // dir doesn't exist yet
   }
-  return {
-    entries,
-    totalBytes,
-    dir,
-    ttlMs: DEFAULT_TTL_MS,
-    sizeCapBytes: DEFAULT_SIZE_CAP_BYTES,
-    enabled: CACHE_ENABLED,
-  };
+  return { entries, totalBytes };
 }
 
 // ---------------------------------------------------------------------------

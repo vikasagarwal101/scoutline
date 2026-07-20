@@ -1,10 +1,13 @@
 /**
  * Cache characterization tests.
  *
- * P0-02 captures the shipped behaviour of the response cache and exposes a
- * pure resolver to allow tests to assert path resolution without changing
- * the process-level default. Legacy paths retain the `zai-cli/responses`
- * segment.
+ * Covers the unified cache root resolver (`resolveCacheRootPure`), the
+ * call-time env-var aliasing policy, the response/tool split under
+ * `~/.scoutline/`, and the `cacheStats` / `clearAllCaches` shape.
+ *
+ * The P6-02 / P6-08 legacy-key and continuity blocks below MUST remain
+ * unchanged: they prove the pure helpers (`buildLegacyRepositoryCacheKey`)
+ * are byte-identical to v0.2 and unaffected by the directory unification.
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -15,12 +18,17 @@ import { fileURLToPath } from "node:url";
 import { withTempDir } from "./helpers/temp-dir.js";
 import crypto from "node:crypto";
 import {
-  resolveCacheDirPure,
+  resolveCacheRootPure,
+  toolCacheDir,
+  isCacheEnabled,
+  getCacheTtlMs,
+  getCacheSizeCapBytes,
   buildCacheKey,
   buildLegacyRepositoryCacheKey,
   readCache,
   writeCache,
   clearCache,
+  clearAllCaches,
   cacheStats,
   buildProviderCacheKey,
   defaultResponseCache,
@@ -45,43 +53,249 @@ after(() => {
   }
 });
 
-describe("resolveCacheDirPure: legacy zai-cli/responses paths", () => {
-  it("ZAI_CACHE_DIR overrides everything with its literal value", () => {
-    const p = resolveCacheDirPure(
-      { ZAI_CACHE_DIR: "/var/tmp/scoutline-cache", XDG_CACHE_HOME: "/elsewhere" },
+describe("resolveCacheRootPure: unified ~/.scoutline/ dotfile root", () => {
+  it("SCOUTLINE_CACHE_DIR overrides every alias and the default", () => {
+    const p = resolveCacheRootPure(
+      {
+        SCOUTLINE_CACHE_DIR: "/var/tmp/scoutline-root",
+        ZAI_MCP_CACHE_DIR: "/alias-mcp",
+        ZAI_CACHE_DIR: "/alias-zai",
+      },
       { platform: "linux", homedir: "/home/u" },
     );
-    assert.strictEqual(p, "/var/tmp/scoutline-cache");
+    assert.strictEqual(p, "/var/tmp/scoutline-root");
   });
 
-  it("XDG path uses XDG_CACHE_HOME/zai-cli/responses", () => {
-    const p = resolveCacheDirPure(
-      { XDG_CACHE_HOME: "/cache/xdg" },
-      { platform: "linux", homedir: "/home/user" },
+  it("ZAI_MCP_CACHE_DIR takes precedence over ZAI_CACHE_DIR (B3 fix)", () => {
+    // Documented operator surface for the tool cache directory in v0.4.0;
+    // preserved as the middle-precedence alias.
+    const p = resolveCacheRootPure(
+      { ZAI_MCP_CACHE_DIR: "/mcp-alias", ZAI_CACHE_DIR: "/zai-alias" },
+      { platform: "linux", homedir: "/home/u" },
     );
-    assert.strictEqual(p, path.join("/cache/xdg", "zai-cli", "responses"));
+    assert.strictEqual(p, "/mcp-alias");
   });
 
-  it("macOS path uses homedir/Library/Caches/zai-cli/responses", () => {
-    const p = resolveCacheDirPure({}, { platform: "darwin", homedir: "/Users/u" });
-    assert.strictEqual(p, path.join("/Users/u", "Library", "Caches", "zai-cli", "responses"));
+  it("ZAI_CACHE_DIR is accepted as the lowest-precedence directory alias", () => {
+    const p = resolveCacheRootPure(
+      { ZAI_CACHE_DIR: "/var/tmp/legacy" },
+      { platform: "linux", homedir: "/home/u" },
+    );
+    assert.strictEqual(p, "/var/tmp/legacy");
   });
 
-  it("default Linux path uses homedir/.cache/zai-cli/responses", () => {
-    const p = resolveCacheDirPure({}, { platform: "linux", homedir: "/home/u" });
-    assert.strictEqual(p, path.join("/home/u", ".cache", "zai-cli", "responses"));
+  it("default Linux path uses homedir/.scoutline (dotfile convention)", () => {
+    const p = resolveCacheRootPure({}, { platform: "linux", homedir: "/home/u" });
+    assert.strictEqual(p, path.join("/home/u", ".scoutline"));
   });
 
-  it("default win32 path uses homedir/.cache/zai-cli/responses", () => {
-    const p = resolveCacheDirPure({}, { platform: "win32", homedir: "C:\\Users\\u" });
-    assert.strictEqual(p, path.join("C:\\Users\\u", ".cache", "zai-cli", "responses"));
+  it("default macOS path uses homedir/.scoutline (no ~/Library/Caches branch)", () => {
+    const p = resolveCacheRootPure({}, { platform: "darwin", homedir: "/Users/u" });
+    assert.strictEqual(p, path.join("/Users/u", ".scoutline"));
   });
 
-  it("all non-explicit platform paths retain the zai-cli/responses segment", () => {
-    const linux = resolveCacheDirPure({}, { platform: "linux", homedir: "/h" });
-    const darwin = resolveCacheDirPure({}, { platform: "darwin", homedir: "/h" });
-    assert.ok(linux.endsWith(path.join("zai-cli", "responses")));
-    assert.ok(darwin.endsWith(path.join("zai-cli", "responses")));
+  it("default win32 path uses homedir/.scoutline", () => {
+    const p = resolveCacheRootPure({}, { platform: "win32", homedir: "C:\\Users\\u" });
+    assert.strictEqual(p, path.join("C:\\Users\\u", ".scoutline"));
+  });
+
+  it("all default platform paths end in .scoutline (no zai-cli/responses, no XDG branch)", () => {
+    const linux = resolveCacheRootPure({}, { platform: "linux", homedir: "/h" });
+    const darwin = resolveCacheRootPure({}, { platform: "darwin", homedir: "/h" });
+    const win32 = resolveCacheRootPure({}, { platform: "win32", homedir: "C:\\h" });
+    assert.ok(linux.endsWith(path.join(".scoutline")), `linux: ${linux}`);
+    assert.ok(darwin.endsWith(path.join(".scoutline")), `darwin: ${darwin}`);
+    assert.ok(win32.endsWith(".scoutline"), `win32: ${win32}`);
+  });
+
+  it("XDG_CACHE_HOME is no longer consulted (removed from interface and resolver)", () => {
+    // The resolver type no longer carries XDG_CACHE_HOME. An env object
+    // carrying it must not change resolution.
+    const p = resolveCacheRootPure(
+      // Cast through unknown so the test still compiles if a downstream
+      // consumer accidentally re-adds the field to the interface.
+      { XDG_CACHE_HOME: "/some-xdg" },
+      { platform: "linux", homedir: "/home/u" },
+    );
+    assert.strictEqual(p, path.join("/home/u", ".scoutline"));
+  });
+
+  it("returns the ROOT only (no cache/ or tools/ suffix) — callers append their own subdir", () => {
+    const p = resolveCacheRootPure(
+      { SCOUTLINE_CACHE_DIR: "/explicit/root" },
+      { platform: "linux", homedir: "/home/u" },
+    );
+    assert.strictEqual(p, "/explicit/root");
+    assert.ok(!p.endsWith("cache"));
+    assert.ok(!p.endsWith("tools"));
+  });
+});
+
+describe("toolCacheDir: sibling tools/ subdirectory under the unified root", () => {
+  it("returns <root>/tools when SCOUTLINE_CACHE_DIR is set", () => {
+    process.env.SCOUTLINE_CACHE_DIR = "/tmp/scoutline-tool-1";
+    try {
+      assert.strictEqual(toolCacheDir(), path.join("/tmp/scoutline-tool-1", "tools"));
+    } finally {
+      delete process.env.SCOUTLINE_CACHE_DIR;
+    }
+  });
+
+  it("returns <root>/tools when only ZAI_MCP_CACHE_DIR is set (B3 alias)", () => {
+    process.env.ZAI_MCP_CACHE_DIR = "/tmp/scoutline-tool-2";
+    try {
+      assert.strictEqual(toolCacheDir(), path.join("/tmp/scoutline-tool-2", "tools"));
+    } finally {
+      delete process.env.ZAI_MCP_CACHE_DIR;
+    }
+  });
+
+  it("returns <homedir>/.scoutline/tools by default", () => {
+    delete process.env.SCOUTLINE_CACHE_DIR;
+    delete process.env.ZAI_MCP_CACHE_DIR;
+    delete process.env.ZAI_CACHE_DIR;
+    const expected = path.join(os.homedir(), ".scoutline", "tools");
+    assert.strictEqual(toolCacheDir(), expected);
+  });
+});
+
+describe("call-time env reads (H1 fix): isCacheEnabled / getCacheTtlMs / getCacheSizeCapBytes", () => {
+  // Save and restore all touched env vars around each test so call-time
+  // reads observe a deterministic environment. Module-load capture was
+  // removed; the helpers must reflect the live process.env.
+  const vars = [
+    "SCOUTLINE_CACHE",
+    "ZAI_CACHE",
+    "ZAI_MCP_TOOL_CACHE",
+    "SCOUTLINE_CACHE_TTL_MS",
+    "ZAI_CACHE_TTL_MS",
+    "ZAI_MCP_TOOL_CACHE_TTL_MS",
+    "SCOUTLINE_CACHE_SIZE_MB",
+    "ZAI_CACHE_SIZE_MB",
+  ];
+  const saved = {};
+  before(() => {
+    for (const v of vars) saved[v] = process.env[v];
+  });
+  after(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("isCacheEnabled defaults to true when no env var is set", () => {
+    for (const v of vars) delete process.env[v];
+    assert.strictEqual(isCacheEnabled(), true);
+  });
+
+  it("isCacheEnabled respects SCOUTLINE_CACHE=0", () => {
+    for (const v of vars) delete process.env[v];
+    process.env.SCOUTLINE_CACHE = "0";
+    assert.strictEqual(isCacheEnabled(), false);
+  });
+
+  it("isCacheEnabled respects SCOUTLINE_CACHE=false (case-insensitive)", () => {
+    for (const v of vars) delete process.env[v];
+    process.env.SCOUTLINE_CACHE = "FALSE";
+    assert.strictEqual(isCacheEnabled(), false);
+  });
+
+  it("isCacheEnabled aliases ZAI_CACHE=0 (legacy)", () => {
+    for (const v of vars) delete process.env[v];
+    process.env.ZAI_CACHE = "0";
+    assert.strictEqual(isCacheEnabled(), false);
+  });
+
+  it("isCacheEnabled does NOT consult ZAI_MCP_TOOL_CACHE (granularity preserved)", () => {
+    // ZAI_MCP_TOOL_CACHE is the tool cache's own enable flag, read
+    // directly by mcp-client.ts. The response cache MUST stay enabled
+    // when only ZAI_MCP_TOOL_CACHE=0 is set, so the four
+    // mcp-client.test.js suites that disable the tool cache while
+    // relying on response-cache hits remain observationally correct.
+    // Aliasing it here would silently regress those suites.
+    for (const v of vars) delete process.env[v];
+    process.env.ZAI_MCP_TOOL_CACHE = "0";
+    assert.strictEqual(
+      isCacheEnabled(),
+      true,
+      "ZAI_MCP_TOOL_CACHE must not disable response cache",
+    );
+  });
+
+  it("SCOUTLINE_CACHE wins over ZAI_CACHE when both are set (precedence)", () => {
+    for (const v of vars) delete process.env[v];
+    process.env.SCOUTLINE_CACHE = "1";
+    process.env.ZAI_CACHE = "0";
+    assert.strictEqual(isCacheEnabled(), true);
+  });
+
+  it("SCOUTLINE_CACHE wins over ZAI_MCP_TOOL_CACHE when both are set (response-cache perspective)", () => {
+    // SCOUTLINE_CACHE is the unified override. When it is enabled and
+    // ZAI_MCP_TOOL_CACHE is set to 0, the response cache stays enabled
+    // (the unified var wins for the response cache; the tool-cache
+    // alias does not even participate).
+    for (const v of vars) delete process.env[v];
+    process.env.SCOUTLINE_CACHE = "1";
+    process.env.ZAI_MCP_TOOL_CACHE = "0";
+    assert.strictEqual(isCacheEnabled(), true);
+  });
+
+  it("ZAI_CACHE=0 mid-process is observed at call time (test-contract H1 fix)", () => {
+    // Mirrors the per-suite mutation pattern: an env change AFTER module
+    // load MUST be observable. This is the assertion that broke under
+    // module-load capture.
+    for (const v of vars) delete process.env[v];
+    assert.strictEqual(isCacheEnabled(), true);
+    process.env.ZAI_CACHE = "0";
+    assert.strictEqual(isCacheEnabled(), false);
+    delete process.env.ZAI_CACHE;
+    assert.strictEqual(isCacheEnabled(), true);
+  });
+
+  it("getCacheTtlMs defaults to 24h", () => {
+    for (const v of vars) delete process.env[v];
+    assert.strictEqual(getCacheTtlMs(), 24 * 60 * 60 * 1000);
+  });
+
+  it("getCacheTtlMs reads SCOUTLINE_CACHE_TTL_MS", () => {
+    for (const v of vars) delete process.env[v];
+    process.env.SCOUTLINE_CACHE_TTL_MS = "60000";
+    assert.strictEqual(getCacheTtlMs(), 60000);
+  });
+
+  it("getCacheTtlMs aliases ZAI_CACHE_TTL_MS (response-cache legacy)", () => {
+    for (const v of vars) delete process.env[v];
+    process.env.ZAI_CACHE_TTL_MS = "2000";
+    assert.strictEqual(getCacheTtlMs(), 2000);
+    process.env.SCOUTLINE_CACHE_TTL_MS = "3000";
+    assert.strictEqual(getCacheTtlMs(), 3000);
+  });
+
+  it("getCacheTtlMs does NOT consult ZAI_MCP_TOOL_CACHE_TTL_MS (granularity preserved)", () => {
+    // The tool cache's TTL is read directly by mcp-client.ts; aliasing
+    // it here would leak tool-cache TTL configuration into the response
+    // cache.
+    for (const v of vars) delete process.env[v];
+    process.env.ZAI_MCP_TOOL_CACHE_TTL_MS = "9999";
+    assert.strictEqual(getCacheTtlMs(), 24 * 60 * 60 * 1000);
+  });
+
+  it("getCacheSizeCapBytes defaults to 100MB", () => {
+    for (const v of vars) delete process.env[v];
+    assert.strictEqual(getCacheSizeCapBytes(), 100 * 1024 * 1024);
+  });
+
+  it("getCacheSizeCapBytes reads SCOUTLINE_CACHE_SIZE_MB", () => {
+    for (const v of vars) delete process.env[v];
+    process.env.SCOUTLINE_CACHE_SIZE_MB = "5";
+    assert.strictEqual(getCacheSizeCapBytes(), 5 * 1024 * 1024);
+  });
+
+  it("getCacheSizeCapBytes aliases ZAI_CACHE_SIZE_MB", () => {
+    for (const v of vars) delete process.env[v];
+    process.env.ZAI_CACHE_SIZE_MB = "7";
+    assert.strictEqual(getCacheSizeCapBytes(), 7 * 1024 * 1024);
   });
 });
 
@@ -112,7 +326,7 @@ describe("readCache/writeCache behaviour", () => {
 
   it("valid cache hit avoids a second invocation", async () => {
     await withTempDir({}, async (dir) => {
-      process.env.ZAI_CACHE_DIR = dir;
+      process.env.SCOUTLINE_CACHE_DIR = dir;
       try {
         const key = "test-hit." + Math.random().toString(36).slice(2) + ".json";
         const data = [{ title: "cached", link: "https://e/x" }];
@@ -120,14 +334,31 @@ describe("readCache/writeCache behaviour", () => {
         const hit = await readCache(key, 60_000);
         assert.deepStrictEqual(hit, data);
       } finally {
-        delete process.env.ZAI_CACHE_DIR;
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("writes land under <root>/cache/ (unified layout)", async () => {
+    // Direct proof that response cache writes go to the `cache/` sibling,
+    // not the legacy `responses/` or `zai-cli/` location.
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const key = "layout." + Math.random().toString(36).slice(2) + ".json";
+        await writeCache(key, { ok: true });
+        const expectedPath = path.join(dir, "cache", key);
+        const raw = await fs.readFile(expectedPath, "utf8");
+        assert.ok(JSON.parse(raw).ts > 0, "file written under <root>/cache/");
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
       }
     });
   });
 
   it("expired cache entry becomes a miss", async () => {
     await withTempDir({}, async (dir) => {
-      process.env.ZAI_CACHE_DIR = dir;
+      process.env.SCOUTLINE_CACHE_DIR = dir;
       try {
         const key = "test-expired." + Math.random().toString(36).slice(2) + ".json";
         await writeCache(key, { ok: true });
@@ -135,24 +366,60 @@ describe("readCache/writeCache behaviour", () => {
         const out = await readCache(key, 0);
         assert.strictEqual(out, null);
       } finally {
-        delete process.env.ZAI_CACHE_DIR;
+        delete process.env.SCOUTLINE_CACHE_DIR;
       }
     });
   });
 
   it("corrupt cache JSON is treated as a miss", async () => {
     await withTempDir({}, async (dir) => {
-      process.env.ZAI_CACHE_DIR = dir;
+      process.env.SCOUTLINE_CACHE_DIR = dir;
       try {
         const key = "test-corrupt." + Math.random().toString(36).slice(2) + ".json";
         await writeCache(key, { value: 7 });
         // Overwrite the underlying file with broken JSON.
-        const file = path.join(dir, key);
+        const file = path.join(dir, "cache", key);
         await fs.writeFile(file, "this is not json {{{ broken");
         const out = await readCache(key, 60_000);
         assert.strictEqual(out, null);
       } finally {
-        delete process.env.ZAI_CACHE_DIR;
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("SCOUTLINE_CACHE=0 disables readCache and writeCache at call time (H1)", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      process.env.SCOUTLINE_CACHE = "0";
+      try {
+        const key = "disabled." + Math.random().toString(36).slice(2) + ".json";
+        await writeCache(key, { ok: true });
+        // No file written.
+        const dirEntries = await fs.readdir(path.join(dir, "cache")).catch(() => []);
+        assert.deepStrictEqual(dirEntries, [], "no cache file written when disabled");
+        // Read also a miss.
+        const hit = await readCache(key, 60_000);
+        assert.strictEqual(hit, null);
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+        delete process.env.SCOUTLINE_CACHE;
+      }
+    });
+  });
+
+  it("ZAI_CACHE=0 (legacy alias) also disables at call time", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      process.env.ZAI_CACHE = "0";
+      try {
+        const key = "legacy-disabled." + Math.random().toString(36).slice(2) + ".json";
+        await writeCache(key, { ok: true });
+        const dirEntries = await fs.readdir(path.join(dir, "cache")).catch(() => []);
+        assert.deepStrictEqual(dirEntries, [], "ZAI_CACHE=0 alias also disables writes");
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+        delete process.env.ZAI_CACHE;
       }
     });
   });
@@ -160,44 +427,167 @@ describe("readCache/writeCache behaviour", () => {
 
 describe("best-effort cache helpers never fail", () => {
   it("clearCache returns counts even when the dir does not exist", async () => {
-    process.env.ZAI_CACHE_DIR = path.join(os.tmpdir(), "scoutline-no-such-dir-" + Date.now());
+    process.env.SCOUTLINE_CACHE_DIR = path.join(os.tmpdir(), "scoutline-no-such-dir-" + Date.now());
     try {
       const result = await clearCache();
       assert.strictEqual(result.cleared, 0);
       assert.strictEqual(result.bytesFreed, 0);
     } finally {
-      delete process.env.ZAI_CACHE_DIR;
+      delete process.env.SCOUTLINE_CACHE_DIR;
     }
   });
 
-  it("cacheStats returns metadata even when the dir is empty", async () => {
+  it("cacheStats returns the unified shape with responseCache and toolCache sections", async () => {
     await withTempDir({}, async (dir) => {
-      process.env.ZAI_CACHE_DIR = dir;
+      process.env.SCOUTLINE_CACHE_DIR = dir;
       try {
         const stats = await cacheStats();
         assert.strictEqual(stats.enabled, true);
-        assert.strictEqual(stats.entries, 0);
-        assert.strictEqual(stats.totalBytes, 0);
         assert.ok(typeof stats.dir === "string");
+        assert.ok(typeof stats.ttlMs === "number");
+        assert.ok(typeof stats.sizeCapBytes === "number");
+        // H3 fix: the top-level entries/totalBytes fields are gone, replaced
+        // by nested responseCache / toolCache sections.
+        assert.ok(stats.responseCache && typeof stats.responseCache === "object");
+        assert.ok(stats.toolCache && typeof stats.toolCache === "object");
+        assert.strictEqual(stats.responseCache.entries, 0);
+        assert.strictEqual(stats.responseCache.totalBytes, 0);
+        assert.strictEqual(stats.toolCache.entries, 0);
+        assert.strictEqual(stats.toolCache.totalBytes, 0);
+        // The contract: top-level entries/totalBytes no longer exist.
+        assert.strictEqual("entries" in stats, false, "top-level entries must be removed");
+        assert.strictEqual("totalBytes" in stats, false, "top-level totalBytes must be removed");
+        // dir is the ROOT (~/.scoutline/ or override), not a child subdir.
+        assert.strictEqual(stats.dir, dir);
       } finally {
-        delete process.env.ZAI_CACHE_DIR;
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("cacheStats counts files in both cache/ and tools/ subdirectories", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        // Write two response entries directly under cache/ and one tool entry under tools/.
+        await fs.mkdir(path.join(dir, "cache"), { recursive: true });
+        await fs.mkdir(path.join(dir, "tools"), { recursive: true });
+        await fs.writeFile(path.join(dir, "cache", "a.json"), JSON.stringify({ ts: 1, data: {} }));
+        await fs.writeFile(path.join(dir, "cache", "b.json"), JSON.stringify({ ts: 2, data: {} }));
+        await fs.writeFile(path.join(dir, "tools", "tools-deadbeef.json"), "{}");
+
+        const stats = await cacheStats();
+        assert.strictEqual(stats.responseCache.entries, 2);
+        assert.strictEqual(stats.toolCache.entries, 1);
+        assert.ok(stats.responseCache.totalBytes > 0);
+        assert.ok(stats.toolCache.totalBytes > 0);
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("clearCache clears only cache/ (backward compat: response cache only)", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        await fs.mkdir(path.join(dir, "cache"), { recursive: true });
+        await fs.mkdir(path.join(dir, "tools"), { recursive: true });
+        await fs.writeFile(path.join(dir, "cache", "resp.json"), "{}");
+        await fs.writeFile(path.join(dir, "tools", "tools-x.json"), "{}");
+
+        const result = await clearCache();
+        assert.strictEqual(result.cleared, 1);
+        assert.ok(result.bytesFreed > 0);
+
+        // cache/ is empty; tools/ is untouched.
+        const cacheLeft = await fs.readdir(path.join(dir, "cache"));
+        const toolsLeft = await fs.readdir(path.join(dir, "tools"));
+        assert.deepStrictEqual(cacheLeft, []);
+        assert.strictEqual(toolsLeft.length, 1);
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("clearAllCaches clears both cache/ and tools/ subdirectories", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        await fs.mkdir(path.join(dir, "cache"), { recursive: true });
+        await fs.mkdir(path.join(dir, "tools"), { recursive: true });
+        await fs.writeFile(path.join(dir, "cache", "a.json"), "{}");
+        await fs.writeFile(path.join(dir, "cache", "b.json"), "{}");
+        await fs.writeFile(path.join(dir, "tools", "tools-y.json"), "{}");
+
+        const result = await clearAllCaches();
+        assert.strictEqual(result.responsesCleared, 2);
+        assert.strictEqual(result.toolsCleared, 1);
+        assert.ok(result.bytesFreed > 0);
+
+        // Both subdirs are empty but still exist (no directory-creation race).
+        const cacheLeft = await fs.readdir(path.join(dir, "cache"));
+        const toolsLeft = await fs.readdir(path.join(dir, "tools"));
+        assert.deepStrictEqual(cacheLeft, []);
+        assert.deepStrictEqual(toolsLeft, []);
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("clearAllCaches reports zeros when neither subdir exists", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const result = await clearAllCaches();
+        assert.strictEqual(result.responsesCleared, 0);
+        assert.strictEqual(result.toolsCleared, 0);
+        assert.strictEqual(result.bytesFreed, 0);
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
       }
     });
   });
 
   it("eviction on a cache over the size cap does not throw", async () => {
     await withTempDir({}, async (dir) => {
-      process.env.ZAI_CACHE_DIR = dir;
+      process.env.SCOUTLINE_CACHE_DIR = dir;
       // Force a very small size cap to trigger eviction.
-      process.env.ZAI_CACHE_SIZE_MB = "0";
+      process.env.SCOUTLINE_CACHE_SIZE_MB = "0";
       try {
         const key = "evict-test." + Math.random().toString(36).slice(2) + ".json";
         // writeCache catches internal errors silently; it should not throw.
         await writeCache(key, { big: "x".repeat(1000) });
         assert.ok(true, "writeCache with eviction did not throw");
       } finally {
-        delete process.env.ZAI_CACHE_DIR;
-        delete process.env.ZAI_CACHE_SIZE_MB;
+        delete process.env.SCOUTLINE_CACHE_DIR;
+        delete process.env.SCOUTLINE_CACHE_SIZE_MB;
+      }
+    });
+  });
+
+  it("eviction scans cache/ only and never deletes files under tools/", async () => {
+    // The eviction-isolation guarantee: even under heavy size pressure the
+    // LRU loop in evictIfNeeded MUST NOT touch the tools/ sibling.
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      process.env.SCOUTLINE_CACHE_SIZE_MB = "0";
+      try {
+        await fs.mkdir(path.join(dir, "tools"), { recursive: true });
+        const toolFile = path.join(dir, "tools", "tools-precious.json");
+        await fs.writeFile(toolFile, '{"version":1,"timestamp":1,"tools":[]}');
+
+        const key = "evict-isolation." + Math.random().toString(36).slice(2) + ".json";
+        await writeCache(key, { big: "x".repeat(1000) });
+
+        // The tools file MUST still exist after eviction.
+        const stat = await fs.stat(toolFile);
+        assert.ok(stat.size > 0, "tools/ files must survive cache/ eviction");
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+        delete process.env.SCOUTLINE_CACHE_SIZE_MB;
       }
     });
   });
@@ -332,22 +722,22 @@ describe("buildProviderCacheKey: v2 key shape", () => {
   });
 });
 
-describe("defaultResponseCache: ResponseCache wrapper over legacy cache", () => {
+describe("defaultResponseCache: ResponseCache wrapper over the on-disk cache", () => {
   it("get returns null when the key is absent", async () => {
     await withTempDir({}, async (dir) => {
-      process.env.ZAI_CACHE_DIR = dir;
+      process.env.SCOUTLINE_CACHE_DIR = dir;
       try {
         const hit = await defaultResponseCache.get("absent.json");
         assert.strictEqual(hit, null);
       } finally {
-        delete process.env.ZAI_CACHE_DIR;
+        delete process.env.SCOUTLINE_CACHE_DIR;
       }
     });
   });
 
-  it("set then get round-trips a value through the legacy cache", async () => {
+  it("set then get round-trips a value through the on-disk cache", async () => {
     await withTempDir({}, async (dir) => {
-      process.env.ZAI_CACHE_DIR = dir;
+      process.env.SCOUTLINE_CACHE_DIR = dir;
       try {
         const key = "v2-roundtrip.json";
         const value = [{ title: "T", url: "u", summary: "s" }];
@@ -355,15 +745,16 @@ describe("defaultResponseCache: ResponseCache wrapper over legacy cache", () => 
         const out = await defaultResponseCache.get(key);
         assert.deepStrictEqual(out, value);
       } finally {
-        delete process.env.ZAI_CACHE_DIR;
+        delete process.env.SCOUTLINE_CACHE_DIR;
       }
     });
   });
 
-  it("preserves the existing zai-cli/responses default directory", async () => {
-    // Just confirm the default cache directory resolver is unchanged.
-    const p = resolveCacheDirPure({}, { platform: "linux", homedir: "/home/u" });
-    assert.ok(p.endsWith(path.join("zai-cli", "responses")));
+  it("default cache root resolves to homedir/.scoutline (dotfile)", async () => {
+    // After unification the default root is the dotfile ~/.scoutline/ on
+    // every platform. Legacy `~/.cache/zai-cli/responses/` is gone.
+    const p = resolveCacheRootPure({}, { platform: "linux", homedir: "/home/u" });
+    assert.strictEqual(p, path.join("/home/u", ".scoutline"));
   });
 });
 

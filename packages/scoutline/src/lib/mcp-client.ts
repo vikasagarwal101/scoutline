@@ -12,7 +12,6 @@ import { UtcpClient, type Tool } from "@utcp/sdk";
 import "@utcp/mcp";
 import crypto from "node:crypto";
 import * as fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import {
   buildMcpCallTemplate,
@@ -30,7 +29,7 @@ import {
 } from "./errors.js";
 import { loadConfig, getMcpEndpoints } from "./config.js";
 import { redactTool } from "./redact.js";
-import { buildCacheKey, readCache, writeCache } from "./cache.js";
+import { buildCacheKey, readCache, writeCache, toolCacheDir } from "./cache.js";
 import type { ReaderRawResponse } from "../capabilities/reader.js";
 
 const DEFAULT_TIMEOUT_MS = parseInt(process.env.Z_AI_TIMEOUT || "30000", 10);
@@ -42,21 +41,6 @@ const DEFAULT_TOOL_CACHE_TTL_MS = parseInt(process.env.ZAI_MCP_TOOL_CACHE_TTL_MS
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function resolveCacheDir(): string {
-  const explicit = process.env.ZAI_MCP_CACHE_DIR || process.env.ZAI_CACHE_DIR;
-  if (explicit) {
-    return explicit;
-  }
-  const xdg = process.env.XDG_CACHE_HOME;
-  if (xdg) {
-    return path.join(xdg, "zai-cli");
-  }
-  if (process.platform === "darwin") {
-    return path.join(os.homedir(), "Library", "Caches", "zai-cli");
-  }
-  return path.join(os.homedir(), ".cache", "zai-cli");
 }
 
 // ZRead response types
@@ -332,7 +316,7 @@ export class ZaiMcpClient {
   }
 
   private getToolCachePath(): string {
-    const cacheDir = resolveCacheDir();
+    const cacheDir = toolCacheDir();
     const key = this.getToolCacheKey();
     return path.join(cacheDir, `tools-${key}.json`);
   }
@@ -374,7 +358,7 @@ export class ZaiMcpClient {
       return;
     }
     try {
-      const cacheDir = resolveCacheDir();
+      const cacheDir = toolCacheDir();
       await fs.mkdir(cacheDir, { recursive: true });
       const payload = {
         version: TOOL_CACHE_VERSION,
@@ -534,10 +518,11 @@ export class ZaiMcpClient {
     //     internal UTCP identity before invocation (fixes the public-name
     //     translation regression);
     // The legacy `ZReadMcpClient.searchDoc` wrapper delegates here.
-    return this.callToolWithPublicCacheIdentity<string>(
-      getMcpToolName("zread", "search_doc"),
-      { repo_name: repo, query, ...(language && { language }) },
-    );
+    return this.callToolWithPublicCacheIdentity<string>(getMcpToolName("zread", "search_doc"), {
+      repo_name: repo,
+      query,
+      ...(language && { language }),
+    });
   }
 
   /**
@@ -560,10 +545,10 @@ export class ZaiMcpClient {
     // P6-01 / P6-01A: see `zreadSearch` for the cache identity and
     // translation rationale. The legacy `ZReadMcpClient.readFile` wrapper
     // delegates here.
-    return this.callToolWithPublicCacheIdentity<string>(
-      getMcpToolName("zread", "read_file"),
-      { repo_name: repo, file_path: path },
-    );
+    return this.callToolWithPublicCacheIdentity<string>(getMcpToolName("zread", "read_file"), {
+      repo_name: repo,
+      file_path: path,
+    });
   }
 
   // ============ Web Search Methods ============

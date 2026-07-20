@@ -39,6 +39,13 @@ if (!process.env.Z_AI_API_KEY && !process.env.ZAI_API_KEY) {
   throw new Error("Z_AI_API_KEY is required to run benchmarks.");
 }
 
+// M3: ZAI_MCP_TOOL_CACHE is the legacy alias kept load-bearing for this
+// benchmark by cache.ts's isCacheEnabled() alias chain
+// (SCOUTLINE_CACHE > ZAI_CACHE > ZAI_MCP_TOOL_CACHE). Each runSeries
+// spawns a fresh Node process, so the call-time env read picks the
+// value up correctly. Switching to SCOUTLINE_CACHE here would change
+// semantics (it would also toggle the response cache) and is out of
+// scope for this benchmark.
 const disabled = runSeries("cache-disabled", { ZAI_MCP_TOOL_CACHE: "0" }, false);
 const enabled = runSeries("cache-enabled", { ZAI_MCP_TOOL_CACHE: "1" }, true);
 

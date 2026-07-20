@@ -870,8 +870,8 @@ describe("Z.AI Reader Adapter — cache identity", () => {
   it("candidate construction does not read ambient process.env (no leakage)", () => {
     const env = withEnv(
       {
+        SCOUTLINE_CACHE_DIR: "/tmp/some-leaky-scoutline",
         ZAI_CACHE_DIR: "/tmp/some-leaky-cache",
-        XDG_CACHE_HOME: "/tmp/some-leaky-xdg",
         Z_AI_API_KEY: "ambient-zai-leak",
         ZAI_API_KEY: "ambient-zai-alias-leak",
       },

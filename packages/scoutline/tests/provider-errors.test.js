@@ -1,13 +1,14 @@
 /**
  * Provider Errors — retry classification and code/exit mapping (P2-02).
  *
- * Asserts the normalized error contract from DESIGN.md §4 + §10:
+ * Asserts the normalized error contract from DESIGN.md §4 + §10 + §18:
  * validation, authentication, unsupported Capability, and unsupported
  * option errors are terminal (zero retries); normalized timeout,
- * network, HTTP 429, 500, 502, 503, and 504 equivalents are retryable;
- * all other API status codes are terminal. Drives the behaviour through
- * `executeProviderOperation` so the classification remains an internal
- * contract of the shared execution layer.
+ * network, HTTP 429, and any 5xx (statusCode 500..599 inclusive)
+ * equivalents are retryable; all other 4xx API status codes are
+ * terminal. Drives the behaviour through `executeProviderOperation`
+ * so the classification remains an internal contract of the shared
+ * execution layer.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -113,8 +114,13 @@ describe("provider errors — retryable classification", () => {
     "NetworkError is retryable",
     expectRetryable(() => new NetworkError("down")),
   );
-  it("API 429 and retryable 5xx statuses are retryable", async () => {
-    for (const code of [429, 500, 502, 503, 504]) {
+  it("API 429 and any 5xx (500..599 inclusive) are retryable", async () => {
+    // The execution-layer contract (Design §18 / FR-090) treats the
+    // full 5xx range as retryable. Probe the boundary literals (500,
+    // 599), the previously-listed intermediate statuses, and a sample
+    // of newly-covered statuses (501, 505) that previously had no
+    // retry. 4xx other than 429 is covered by the terminal block below.
+    for (const code of [429, 500, 501, 502, 503, 504, 505, 599]) {
       await expectRetryable(() => new ApiError(`http ${code}`, code))();
     }
   });

@@ -152,10 +152,11 @@ function normalizeMiniMaxSearchResults(raw: unknown): readonly SearchSource[] {
 /**
  * Resolve a stable HTTP-style status code for retry classification.
  * Explicit terminal client errors (404, 400, 410, 422) map to their
- * real codes; retryable server errors (500, 502, 503, 504) map to
- * themselves. Unknown failures default to 500 (transient). When the
- * caller already carries a numeric status (a typed ApiError), that
- * status is honoured directly (DESIGN.md §10).
+ * real codes; transient failures map to a representative status in
+ * the retryable set (429 or any 5xx 500..599 inclusive, per DESIGN.md
+ * §18 / FR-090). Unknown failures default to 500 (transient). When
+ * the caller already carries a numeric status (a typed ApiError), that
+ * status is honoured directly.
  */
 function inferStatusCode(lower: string, known?: number): number {
   if (typeof known === "number" && Number.isFinite(known)) return known;
@@ -398,9 +399,7 @@ function createMiniMaxVisionCapability(options: MiniMaxVisionCapabilityOptions):
         }
         // Specialized requests always carry a `source`; the support gate
         // above excludes `diff` (no `source`) and `video` (unsupported).
-        const image = resolveImageSource(
-          (request as { source: string }).source,
-        );
+        const image = resolveImageSource((request as { source: string }).source);
         const prompt = mapping.composePrompt(request);
 
         try {
@@ -501,8 +500,7 @@ export function createMiniMaxDescriptor(
   dependencies?: MiniMaxAdapterDependencies,
 ): ProviderDescriptor {
   const sdkConstructor = dependencies?.sdkConstructor;
-  const isSpecializedVisionOperationSupported =
-    dependencies?.isSpecializedVisionOperationSupported;
+  const isSpecializedVisionOperationSupported = dependencies?.isSpecializedVisionOperationSupported;
 
   // Direct quota transport injection (tests). Production uses the
   // global fetch and timers resolved inside the quota client.
@@ -542,9 +540,7 @@ export function createMiniMaxDescriptor(
         "quota",
         "diagnostics",
       ]);
-      const isSpecialized = resolveSpecializedSupportCheck(
-        isSpecializedVisionOperationSupported,
-      );
+      const isSpecialized = resolveSpecializedSupportCheck(isSpecializedVisionOperationSupported);
       for (const op of SPECIALIZED_VISION_OPERATIONS) {
         if (isSpecialized(op)) {
           caps.add(visionOperationToCapability(op) as ProviderCapability);

@@ -343,8 +343,11 @@ describe("ZaiMcpClient — error normalization (Fixup B — B2 + B6b)", () => {
       await assert.rejects(client.callToolRaw(PUBLIC_SEARCH_NAME, { search_query: "x" }), (err) => {
         assert.strictEqual(err.code, "API_ERROR", `code: ${err.message}`);
         assert.strictEqual(err.statusCode, 500, `expected 500, got ${err.statusCode}`);
-        // The execution-layer retry set is exactly 429,500,502,503,504.
-        assert.ok([429, 500, 502, 503, 504].includes(err.statusCode));
+        // The execution-layer retry set is 429 plus any 5xx (500..599).
+        assert.ok(
+          err.statusCode === 429 || (err.statusCode >= 500 && err.statusCode <= 599),
+          `${err.statusCode} must fall in the retryable set`,
+        );
         return true;
       });
     } finally {

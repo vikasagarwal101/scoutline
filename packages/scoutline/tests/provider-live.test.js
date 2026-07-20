@@ -80,7 +80,7 @@ function liveQuery(label) {
  * Invoke an adapter capability with a small retry for transient API errors.
  * Adapters perform one attempt by design; shared execution owns retry policy.
  * Direct adapter tests bypass executeSearch, so we add a minimal retry here
- * to handle live API transient 500/502/503/504 responses.
+ * to handle live API transient 5xx (500..599) responses.
  */
 async function retryAdapterInvoke(invoke, request, maxRetries = 2) {
   let lastError;
@@ -89,7 +89,9 @@ async function retryAdapterInvoke(invoke, request, maxRetries = 2) {
       return await invoke(request);
     } catch (err) {
       lastError = err;
-      const retryable = err?.code === "API_ERROR" && [500, 502, 503, 504].includes(err?.statusCode);
+      const retryable =
+        err?.code === "API_ERROR" &&
+        (err?.statusCode === 429 || (err?.statusCode >= 500 && err?.statusCode <= 599));
       if (!retryable || attempt === maxRetries) throw err;
       await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
     }

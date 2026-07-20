@@ -1124,8 +1124,11 @@ describe("Z.AI Repository Adapter — encoded MCP error classification", () => {
         assert.ok(err instanceof ApiError, `expected ApiError, got ${err.constructor.name}`);
         assert.strictEqual(err.statusCode, 429);
         assert.strictEqual(err.code, "API_ERROR");
-        // 429 is in the shared retry taxonomy.
-        assert.ok([429, 500, 502, 503, 504].includes(err.statusCode));
+        // 429 is in the shared retry taxonomy (429 plus any 5xx).
+        assert.ok(
+          err.statusCode === 429 || (err.statusCode >= 500 && err.statusCode <= 599),
+          `${err.statusCode} must fall in the retryable set`,
+        );
         return true;
       },
     );

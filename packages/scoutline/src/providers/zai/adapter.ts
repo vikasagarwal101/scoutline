@@ -388,8 +388,10 @@ function normalizeZaiError(error: unknown): Error {
  * Resolve a stable HTTP-style status code for retry classification.
  * Explicit client errors (404, 400, 410, 422) map to their real codes
  * so the execution layer treats them as terminal (DESIGN.md §10).
- * Retryable server errors (429, 500, 502, 503, 504) map to themselves.
- * An unknown failure defaults to 500 (transient), preserving shipped
+ * Transient failures (429 and any 5xx 500..599 inclusive) map to a
+ * representative status in that range so the shared execution retry
+ * classifier (DESIGN.md §18 / FR-090) treats them as retryable. An
+ * unknown failure defaults to 500 (transient), preserving shipped
  * behaviour for genuine "unexpected system" conditions.
  *
  * When the caller already carries a numeric status (a typed ApiError),

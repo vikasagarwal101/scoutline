@@ -1845,10 +1845,11 @@ describe("P6-08 integrated retry/lifecycle — Z.AI Adapter", () => {
 //
 // Note on `error.retryable`:
 //   The shared retry classifier (`isOperationRetryableError`) treats
-//   `API_ERROR` with status 429/500/502/503/504 as retryable regardless
-//   of the per-error `retryable` flag, which is `false` by default on
-//   ApiError. The proof here is therefore the OBSERVABLE retry behaviour
-//   (attempt count and sleep count), not the `retryable` field.
+//   `API_ERROR` with status 429 or any 5xx (500..599 inclusive) as
+//   retryable regardless of the per-error `retryable` flag, which is
+//   `false` by default on ApiError. The proof here is therefore the
+//   OBSERVABLE retry behaviour (attempt count and sleep count), not
+//   the `retryable` field.
 // ===========================================================================
 
 describe("P6-08 encoded MCP error taxonomy through the Z.AI Adapter", () => {
@@ -1902,15 +1903,50 @@ describe("P6-08 encoded MCP error taxonomy through the Z.AI Adapter", () => {
     assert.ok(!err.help.includes("reset"));
   });
 
-  it("transient 5xx is retryable — exactly two attempts, one sleep", async () => {
-    const { err, sleepCalls, factory } = await captureErrorWithEvidence(
-      fixtures.errorMcpGeneric.raw,
-    );
-    assert.ok(err instanceof ApiError);
-    assert.strictEqual(err.code, "API_ERROR");
-    assert.strictEqual(err.statusCode, 500);
-    assert.strictEqual(sleepCalls.length, 1, "transient 5xx must retry exactly once");
-    assert.strictEqual(factory.created.length, 2, "retryable 5xx must construct two transports");
+  it("encoded 5xx (500..599 inclusive) retries once: 2 transports, 2 closes, sleeps [500]", async () => {
+    // P6-09A / GATE-6 HIGH 1: the shared retry classifier must retry
+    // any encoded 5xx, not just the previously-listed {500, 502, 503,
+    // 504}. Probe the boundary literals (500, 599) and a previously-
+    // terminal interior point (501) to prove the closed interval
+    // contract from Design §18 / FR-090. Each encoded status must
+    // produce the SAME observable evidence: one retry → two
+    // transports, two closes (one per attempt's `finally`), and one
+    // injected sleep of exactly 500 ms (base delay × 2^0 + zero
+    // jitter from the injected random=0).
+    const cases = [
+      ["500", "MCP error -500\nerror.code: 9999\nerror.message: internal failure"],
+      ["501", "MCP error -501\nerror.code: 9999\nerror.message: not implemented"],
+      ["599", "MCP error -599\nerror.code: 9999\nerror.message: upstream timeout"],
+    ];
+    for (const [label, raw] of cases) {
+      const { err, sleepCalls, factory } = await captureErrorWithEvidence(raw);
+      assert.ok(err instanceof ApiError, `[${label}] expected ApiError`);
+      assert.strictEqual(err.code, "API_ERROR", `[${label}] code`);
+      assert.strictEqual(err.statusCode, Number(label), `[${label}] statusCode`);
+      // Transports: one per attempt → 2.
+      assert.strictEqual(
+        factory.created.length,
+        2,
+        `[${label}] retryable 5xx must construct two transports`,
+      );
+      // Closes: each transport's `finally` closes once → 2.
+      const closes = factory.created.reduce((sum, t) => sum + t.fake.closeCount, 0);
+      assert.strictEqual(closes, 2, `[${label}] every transport must close exactly once`);
+      for (let i = 0; i < factory.created.length; i += 1) {
+        assert.strictEqual(
+          factory.created[i].fake.closeCount,
+          1,
+          `[${label}] transport #${i + 1} must close exactly once`,
+        );
+        assert.strictEqual(
+          factory.created[i].port.closeEntered,
+          1,
+          `[${label}] transport #${i + 1} must enter close exactly once`,
+        );
+      }
+      // Sleeps: one injected backoff, value 500 ms exactly.
+      assert.deepStrictEqual(sleepCalls, [500], `[${label}] sleeps must be [500]`);
+    }
   });
 
   it("malformed envelope (no parseable status) maps to retryable ApiError 502", async () => {
@@ -1946,14 +1982,27 @@ describe("P6-08 encoded MCP error taxonomy through the Z.AI Adapter", () => {
     assert.strictEqual(factory.created.length, 1);
   });
 
-  it("other 4xx (404) is terminal API_ERROR with matching status", async () => {
+  it("other 4xx (404) is terminal API_ERROR: 1 transport, 1 close, 0 sleeps", async () => {
+    // P6-09A / GATE-6 HIGH 1 negative probe: 4xx other than 429 must
+    // remain terminal under the widened classifier. Asserts the full
+    // observable terminal contract, not just the absence of a retry.
     const raw404 = "MCP error -404\nerror.code: 100\nerror.message: not found";
     const { err, sleepCalls, factory } = await captureErrorWithEvidence(raw404);
     assert.ok(err instanceof ApiError);
     assert.strictEqual(err.code, "API_ERROR");
     assert.strictEqual(err.statusCode, 404);
-    assert.strictEqual(sleepCalls.length, 0);
-    assert.strictEqual(factory.created.length, 1);
+    // Transports: one (no retry).
+    assert.strictEqual(
+      factory.created.length,
+      1,
+      "terminal 404 must construct exactly one transport",
+    );
+    // Closes: the single transport's `finally` closes once.
+    const closes = factory.created.reduce((sum, t) => sum + t.fake.closeCount, 0);
+    assert.strictEqual(closes, 1, "terminal 404 transport must close exactly once");
+    assert.strictEqual(factory.created[0].port.closeEntered, 1);
+    // Sleeps: none.
+    assert.deepStrictEqual(sleepCalls, [], "terminal 404 must not sleep");
   });
 
   it("transient 429 (no exhausted meaning) is retryable — exactly two attempts", async () => {

@@ -333,9 +333,10 @@ describe("Z.AI Search Adapter — error normalization", () => {
       await assert.rejects(runWithError(msg), (err) => {
         assert.strictEqual(err.code, "API_ERROR");
         assert.strictEqual(err.statusCode, 404, `404 must map to 404, got ${err.statusCode}`);
-        // Execution-layer retry set is exactly 429,500,502,503,504.
+        // Execution-layer retry set: 429 plus any 5xx (500..599). 404
+        // must remain terminal (4xx other than 429).
         assert.ok(
-          ![429, 500, 502, 503, 504].includes(err.statusCode),
+          !(err.statusCode === 429 || (err.statusCode >= 500 && err.statusCode <= 599)),
           "404 must not be in the retryable set",
         );
         return true;

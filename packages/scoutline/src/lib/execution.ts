@@ -24,10 +24,7 @@
  */
 
 import type { SearchCapability, SearchRequest, SearchSource } from "../capabilities/search.js";
-import type {
-  RepositoryOperation,
-  RepositoryOperationKind,
-} from "../capabilities/repository.js";
+import type { RepositoryOperation, RepositoryOperationKind } from "../capabilities/repository.js";
 import { ScoutlineError } from "./errors.js";
 import { buildProviderCacheKey, type ResponseCache } from "./cache.js";
 
@@ -112,7 +109,13 @@ export function defaultRetryPolicy(operation: ProviderOperation): RetryPolicy {
  * Classify whether a normalized error is retryable for a Provider
  * operation. Authentication, validation, unsupported, content-policy,
  * and exhausted-quota failures are terminal. Normalized timeout,
- * network, HTTP 429, 500, 502, 503, and 504 equivalents are retryable.
+ * network, HTTP 429, and any 5xx (statusCode 500..599, inclusive)
+ * equivalents are retryable.
+ *
+ * The 5xx range is matched as a closed interval so Provider-encoded
+ * statuses that the upstream gateway passes through verbatim (501,
+ * 505, 599, etc.) retry exactly once, matching Design §18 and
+ * FR-090. Other 4xx codes remain terminal.
  *
  * An explicit `retryable: true` on a `ScoutlineError` wins; an explicit
  * `retryable: false` overrides a code-based default. Non-Scoutline
@@ -127,14 +130,13 @@ function isOperationRetryableError(error: unknown): boolean {
     case "TIMEOUT_ERROR":
     case "NETWORK_ERROR":
       return true;
-    case "API_ERROR":
-      return (
-        error.statusCode === 429 ||
-        error.statusCode === 500 ||
-        error.statusCode === 502 ||
-        error.statusCode === 503 ||
-        error.statusCode === 504
-      );
+    case "API_ERROR": {
+      // Design §18 / FR-090: 429 and any 5xx (500..599 inclusive) retry
+      // once. The interval is closed so encoded Provider statuses that
+      // pass through verbatim (501, 505, 599, ...) match the contract.
+      const status = error.statusCode;
+      return status !== undefined && (status === 429 || (status >= 500 && status <= 599));
+    }
     default:
       return false;
   }

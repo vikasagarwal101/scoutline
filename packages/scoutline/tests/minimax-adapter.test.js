@@ -452,11 +452,15 @@ describe("MiniMax Search Adapter — failure normalization", () => {
   // Replicates the shared-execution retry classification
   // (lib/execution.ts `isOperationRetryableError`): AUTH/VALIDATION are
   // terminal; TIMEOUT/NETWORK always retry; API_ERROR retries on 429 and
-  // 5xx. The Adapter maps Provider failures into these stable codes, so
-  // retryability is determined by the code the execution layer sees.
+  // any 5xx (500..599 inclusive). The Adapter maps Provider failures
+  // into these stable codes, so retryability is determined by the code
+  // the execution layer sees.
   function isRetryableByExecution(err) {
     if (err.code === "TIMEOUT_ERROR" || err.code === "NETWORK_ERROR") return true;
-    if (err.code === "API_ERROR" && [429, 500, 502, 503, 504].includes(err.statusCode)) {
+    if (
+      err.code === "API_ERROR" &&
+      (err.statusCode === 429 || (err.statusCode >= 500 && err.statusCode <= 599))
+    ) {
       return true;
     }
     return false;
@@ -753,13 +757,7 @@ describe("MiniMax Vision Adapter — shared execution owns retries (P3-03)", () 
 // compiled attestation.
 
 describe("MiniMax Vision Adapter — specialized mapping routing (P5-04)", () => {
-  const SPECIALIZED = [
-    "ui-artifact",
-    "extract-text",
-    "diagnose-error",
-    "diagram",
-    "chart",
-  ];
+  const SPECIALIZED = ["ui-artifact", "extract-text", "diagnose-error", "diagram", "chart"];
 
   /**
    * Build a request and its expected composed prompt for one operation.

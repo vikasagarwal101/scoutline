@@ -86,9 +86,10 @@ endpoint calls.
 - Re-attest every enabled specialized Vision mapping under the
   direct-transport implementation identity.
 
-No release date is currently planned for the direct-transport replacement.
-Until it ships, Scoutline continues to pin `mmx-cli@1.0.16` exactly and to
-document the SDK as a transitional Implementation.
+Shipped in v0.6.0: the direct transport replaces the SDK on the runtime
+path (`fetchMiniMaxSearch` / `fetchMiniMaxVlm`); `mmx-cli` moved to
+`devDependencies` (retained for the live envelope-parity fixture). See
+CHANGELOG [0.6.0].
 
 ## Current Release (P6): MiniMax Repository Isolation
 
@@ -192,9 +193,8 @@ Acceptance: tests validate event ordering, valid JSONL framing, cancellation cle
 - Automatic Provider fallback or Provider inference from credentials.
 - MiniMax raw tools, Code Mode, image diff, video analysis, or
   repository exploration.
-- MiniMax Reader Adapter, mmx-cli/sdk replacement, removing the deprecated
-  `--full-envelope` flag, and a future `--max-items` truncation policy for
-  extract reads.
+- MiniMax Reader Adapter, removing the deprecated `--full-envelope` flag,
+  and a future `--max-items` truncation policy for extract reads.
 - A deprecation notice for the legacy `ZAI_CACHE*` / `ZAI_MCP_TOOL_CACHE*`
   / `ZAI_MCP_CACHE_DIR` aliases (deferred to a future release).
 - A `cache prune` subcommand (future enhancement; P8 ships `stats` and

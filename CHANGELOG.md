@@ -6,6 +6,58 @@ All notable changes to this project will be documented in this file.
 
 _No published changes yet. See `docs/plans/` for in-flight work._
 
+## [0.6.3] - 2026-07-21
+
+Patch release closing a redaction-contract gap surfaced by the
+post-v0.6.2 baseline code review (`code-review-baseline` artifact).
+Success-path output and response-cache writes were the two outward
+boundaries that did NOT apply the recursive credential redaction the
+error path and tool-discovery cache already applied. A credential
+embedded in a provider response could reach stdout (via `scoutline call`
+raw passthrough or `scoutline read` page content) and persist to
+`~/.scoutline/cache/<hash>.json` in cleartext across runs.
+
+### Fixed (security — redaction contract)
+- **F1 — success-path output is now redacted.** `invokeCommand`
+  (`command-invocation.ts`) threaded `secrets` only through the error
+  branch; the success branch emitted `result.data` / presentation
+  overrides verbatim. Secrets are now resolved once and applied at both
+  boundaries. Most exposed surface: `scoutline call <raw-tool>` (raw
+  provider response) and `scoutline read` (page content).
+- **F2 — response-cache writes are now redacted.** `ZaiMcpClient.callTool`
+  / `callToolWithPublicCacheIdentity` (`mcp-client.ts`) wrote raw
+  responses via `writeCache`; a credential embedded in a response
+  persisted in cleartext. Responses are now scrubbed (mirroring
+  `writeToolCache`'s `redactTool`) before both the cache write and the
+  return, so the on-disk cache and the in-memory return value are
+  consistent and clean.
+
+Both fixes use the existing `redactSecrets` / `configuredSecrets`
+helpers. Redaction is a no-op for normalised Capability data (it carries
+no credential-shaped fields), so legitimate output is unchanged.
+
+### Added (tests)
+- New `invokeCommand` success-redaction cases (credential-keyed field,
+  presentation-override embedded value, TextCommandResult).
+- New `ZaiMcpClient` response-cache-redaction case proving both the
+  returned value and the on-disk cache file carry `[REDACTED]`. The prior
+  suite exercised only `noCache: true`, so the cache-write path was
+  previously untested.
+
+### Verification
+Build ✓; offline suite **1673/1673** passing (+4 redaction tests). No
+public CLI behaviour change for normalised data. The two CRITICAL-fan-in
+symbols touched (`invokeCommand`, and `writeCache`'s call sites) have
+unchanged signatures; the change is additive redaction. Scoped to the
+legacy response cache; the partitioned (normalised) cache stores no
+credential-shaped fields and is unaffected.
+
+### Out of scope (follow-up patches)
+- F3 (MiniMax ApiError message constant-table), F4 (encoded-error bare
+  `"quota"` substring), F5 (`redact.ts` separator consistency) —
+  boundary-tightening passes with no current confirmed leak; tracked in
+  the `code-review-baseline` artifact.
+
 ## [0.6.2] - 2026-07-21
 
 Patch release extending MiniMax specialized-Vision runtime support from

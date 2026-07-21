@@ -27,6 +27,7 @@ import {
 import { loadConfig, getMcpEndpoints } from "./config.js";
 import { buildCacheKey, readCache, writeCache } from "./cache.js";
 import { readToolCache, writeToolCache, type ToolCacheConfig } from "./tool-cache.js";
+import { redactSecrets, configuredSecrets } from "./redact.js";
 import type { ReaderRawResponse } from "../capabilities/reader.js";
 
 const DEFAULT_TIMEOUT_MS = parseInt(process.env.Z_AI_TIMEOUT || "30000", 10);
@@ -175,8 +176,15 @@ export class ZaiMcpClient {
       if (hit !== null) return hit;
       try {
         const result = await this.callToolUncached<T>(toolName, args);
-        await writeCache(key, result);
-        return result;
+        // F2 (code-review-baseline): scrub the response before it is
+        // persisted to the response cache AND before it is returned, so
+        // credential-shaped fields never reach the on-disk cache
+        // (cleartext-at-rest leak) and never propagate past the client
+        // boundary. Mirrors `writeToolCache`'s `redactTool` scrub. A
+        // no-op for normalised Capability data (no credential fields).
+        const safe = redactSecrets(result, configuredSecrets()) as T;
+        await writeCache(key, safe);
+        return safe;
       } catch (err) {
         throw err;
       }
@@ -447,8 +455,10 @@ export class ZaiMcpClient {
     const internal = await this.resolveToolName(publicToolName);
     try {
       const result = await this.callToolUncached<T>(internal, args);
-      await writeCache(key, result);
-      return result;
+      // F2: scrub before persist + return (see callTool above).
+      const safe = redactSecrets(result, configuredSecrets()) as T;
+      await writeCache(key, safe);
+      return safe;
     } catch (err) {
       throw err;
     }
@@ -533,7 +543,10 @@ export class ZaiMcpClient {
       args.location = params.location;
     }
 
-    return this.callToolWithPublicCacheIdentity<WebSearchResult[]>(getMcpToolName("search", "web_search_prime"), args);
+    return this.callToolWithPublicCacheIdentity<WebSearchResult[]>(
+      getMcpToolName("search", "web_search_prime"),
+      args,
+    );
   }
 
   // ============ Web Reader Methods ============
@@ -616,11 +629,14 @@ export class ZaiMcpClient {
     outputType: "code" | "prompt" | "spec" | "description";
     prompt: string;
   }): Promise<string> {
-    return this.callToolWithPublicCacheIdentity<string>(getMcpToolName("vision", "ui_to_artifact"), {
-      image_source: params.imageSource,
-      output_type: params.outputType,
-      prompt: params.prompt,
-    });
+    return this.callToolWithPublicCacheIdentity<string>(
+      getMcpToolName("vision", "ui_to_artifact"),
+      {
+        image_source: params.imageSource,
+        output_type: params.outputType,
+        prompt: params.prompt,
+      },
+    );
   }
 
   async visionExtractText(params: {
@@ -628,11 +644,14 @@ export class ZaiMcpClient {
     prompt: string;
     programmingLanguage?: string;
   }): Promise<string> {
-    return this.callToolWithPublicCacheIdentity<string>(getMcpToolName("vision", "extract_text_from_screenshot"), {
-      image_source: params.imageSource,
-      prompt: params.prompt,
-      ...(params.programmingLanguage && { programming_language: params.programmingLanguage }),
-    });
+    return this.callToolWithPublicCacheIdentity<string>(
+      getMcpToolName("vision", "extract_text_from_screenshot"),
+      {
+        image_source: params.imageSource,
+        prompt: params.prompt,
+        ...(params.programmingLanguage && { programming_language: params.programmingLanguage }),
+      },
+    );
   }
 
   async visionDiagnoseError(params: {
@@ -640,11 +659,14 @@ export class ZaiMcpClient {
     prompt: string;
     context?: string;
   }): Promise<string> {
-    return this.callToolWithPublicCacheIdentity<string>(getMcpToolName("vision", "diagnose_error_screenshot"), {
-      image_source: params.imageSource,
-      prompt: params.prompt,
-      ...(params.context && { context: params.context }),
-    });
+    return this.callToolWithPublicCacheIdentity<string>(
+      getMcpToolName("vision", "diagnose_error_screenshot"),
+      {
+        image_source: params.imageSource,
+        prompt: params.prompt,
+        ...(params.context && { context: params.context }),
+      },
+    );
   }
 
   async visionDiagram(params: {
@@ -652,11 +674,14 @@ export class ZaiMcpClient {
     prompt: string;
     diagramType?: string;
   }): Promise<string> {
-    return this.callToolWithPublicCacheIdentity<string>(getMcpToolName("vision", "understand_technical_diagram"), {
-      image_source: params.imageSource,
-      prompt: params.prompt,
-      ...(params.diagramType && { diagram_type: params.diagramType }),
-    });
+    return this.callToolWithPublicCacheIdentity<string>(
+      getMcpToolName("vision", "understand_technical_diagram"),
+      {
+        image_source: params.imageSource,
+        prompt: params.prompt,
+        ...(params.diagramType && { diagram_type: params.diagramType }),
+      },
+    );
   }
 
   async visionChart(params: {
@@ -664,11 +689,14 @@ export class ZaiMcpClient {
     prompt: string;
     focus?: string;
   }): Promise<string> {
-    return this.callToolWithPublicCacheIdentity<string>(getMcpToolName("vision", "analyze_data_visualization"), {
-      image_source: params.imageSource,
-      prompt: params.prompt,
-      ...(params.focus && { analysis_focus: params.focus }),
-    });
+    return this.callToolWithPublicCacheIdentity<string>(
+      getMcpToolName("vision", "analyze_data_visualization"),
+      {
+        image_source: params.imageSource,
+        prompt: params.prompt,
+        ...(params.focus && { analysis_focus: params.focus }),
+      },
+    );
   }
 
   async visionDiff(params: {

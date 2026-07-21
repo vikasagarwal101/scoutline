@@ -60,27 +60,41 @@ function isTextOutputMode(mode: OutputMode): mode is TextOutputMode {
 /**
  * Select the final output string for a successful CommandResult.
  *
- * - `TextCommandResult`: the text is used verbatim regardless of mode.
+ * - `TextCommandResult`: the text is redacted and used regardless of mode.
  * - `DataCommandResult` in a text-oriented mode: a command-supplied
- *   presentation override is preferred; otherwise the base data is
- *   formatted through `formatSuccessOutput`.
- * - `DataCommandResult` in a data-oriented mode: base data formatted
- *   through `formatSuccessOutput` (data → raw JSON, json/pretty →
- *   success envelope).
+ *   presentation override is preferred (redacted); otherwise the base
+ *   data is redacted and formatted through `formatSuccessOutput`.
+ * - `DataCommandResult` in a data-oriented mode: redacted base data
+ *   formatted through `formatSuccessOutput` (data → raw JSON, json/pretty
+ *   → success envelope).
+ *
+ * F1 (code-review-baseline): success-path output is redacted at this
+ * boundary so a credential-shaped field embedded in provider output
+ * (most exposed via `scoutline call <raw-tool>` and `scoutline read`)
+ * never reaches stdout. The error path already redacted; the success
+ * path now matches the documented "every outward boundary" contract.
+ * Redaction is a no-op for normalised Capability data (it carries no
+ * credential-shaped fields), so legitimate output is unchanged.
  */
-function selectOutput(result: CommandResult, outputMode: OutputMode, now: () => number): string {
+function selectOutput(
+  result: CommandResult,
+  outputMode: OutputMode,
+  now: () => number,
+  secrets: string[],
+): string {
   if (result.kind === "text") {
-    return result.text;
+    return redactSecrets(result.text, secrets) as string;
   }
 
   if (isTextOutputMode(outputMode)) {
     const override = result.presentations?.[outputMode];
     if (typeof override === "string") {
-      return override;
+      return redactSecrets(override, secrets) as string;
     }
   }
 
-  return formatSuccessOutput(result.data, outputMode, now);
+  const redactedData = redactSecrets(result.data, secrets);
+  return formatSuccessOutput(redactedData, outputMode, now);
 }
 
 /**
@@ -107,6 +121,13 @@ export async function invokeCommand(
 ): Promise<number> {
   const notices: string[] = [];
 
+  // F1: resolve secrets once and redact at BOTH the success-output and
+  // error boundaries. Previously only the error path consumed `secrets`;
+  // the success path emitted `result.data`/presentations verbatim. This
+  // honours injected env credentials (`MainDependencies.env`) even when
+  // they are absent from ambient process.env.
+  const resolvedSecrets = secrets ?? configuredSecrets();
+
   const context: CommandContext = {
     stdinIsTTY: adapter.stdinIsTTY,
     readStdin: () => adapter.readStdin(),
@@ -128,11 +149,6 @@ export async function invokeCommand(
     // redaction marker before formatting. `formatErrorOutput` then
     // performs an additional string-level pass on the message/help
     // fields it actually serialises.
-    //
-    // B3: secrets resolved from an injected env (MainDependencies.env)
-    // are honoured here so a credential that exists only in the injected
-    // env is redacted even when absent from ambient process.env.
-    const resolvedSecrets = secrets ?? configuredSecrets();
     const redactedError = redactSecrets(error, resolvedSecrets) as unknown;
     adapter.writeStderr(formatErrorOutput(redactedError, outputMode, resolvedSecrets));
     return getErrorExitCode(error);
@@ -142,7 +158,7 @@ export async function invokeCommand(
     adapter.writeStderr(notice);
   }
 
-  adapter.writeStdout(selectOutput(result, outputMode, now));
+  adapter.writeStdout(selectOutput(result, outputMode, now, resolvedSecrets));
 
   return result.exitCode ?? 0;
 }

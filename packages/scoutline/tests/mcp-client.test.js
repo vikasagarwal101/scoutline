@@ -1265,3 +1265,105 @@ describe("ZaiMcpClient — webRead preserves public cache identity (Reader Ticke
     }
   });
 });
+
+describe("ZaiMcpClient — response-cache redaction (F2, code-review-baseline)", () => {
+  // Previously `writeCache(key, result)` stored raw provider responses; a
+  // credential embedded in a response persisted to ~/.scoutline/cache/ in
+  // cleartext. The F2 fix scrubs before persist AND before return. Proves
+  // both the returned value and the on-disk cache carry [REDACTED].
+  let tempDir;
+  let originalCacheDir;
+  let originalToolCache;
+  let originalZaiKey;
+
+  before(async () => {
+    originalCacheDir = process.env.ZAI_CACHE_DIR;
+    originalToolCache = process.env.ZAI_MCP_TOOL_CACHE;
+    // The F2 scrub uses configuredSecrets() (the configured provider key),
+    // so the realistic leak — a provider echoing the user's own key back in
+    // a response — is what we prove closed. Set a known key value that the
+    // redactor's literal-substitution will catch.
+    originalZaiKey = process.env.Z_AI_API_KEY;
+    process.env.Z_AI_API_KEY = "sk-zai-fixture-key-1234567890ab";
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), TEMP_PREFIX));
+    process.env.ZAI_CACHE_DIR = tempDir;
+    // Disable the tool-discovery cache so the only on-disk write is the
+    // response cache entry this test exercises.
+    process.env.ZAI_MCP_TOOL_CACHE = "0";
+  });
+
+  after(async () => {
+    if (originalCacheDir === undefined) delete process.env.ZAI_CACHE_DIR;
+    else process.env.ZAI_CACHE_DIR = originalCacheDir;
+    if (originalToolCache === undefined) delete process.env.ZAI_MCP_TOOL_CACHE;
+    else process.env.ZAI_MCP_TOOL_CACHE = originalToolCache;
+    if (originalZaiKey === undefined) delete process.env.Z_AI_API_KEY;
+    else process.env.Z_AI_API_KEY = originalZaiKey;
+    if (tempDir) await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  async function readAllFiles(dir) {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    const out = [];
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) out.push(...(await readAllFiles(full)));
+      else out.push(await fs.readFile(full, "utf8"));
+    }
+    return out;
+  }
+
+  it("scrubs credential-bearing responses before persisting to cache and returning", async () => {
+    const key = process.env.Z_AI_API_KEY;
+    const fixture = await readFixture("providers", "zai", "tools.json");
+    // Two leak shapes: (1) the configured key echoed in a content string
+    // (literal-substitution), (2) a literal `api_key` field (key-name
+    // redaction, independent of env).
+    const credentialedResult = [
+      {
+        refer: "r",
+        title: "t",
+        link: "l",
+        media: "m",
+        content: `echoed key=${key} tail`,
+        icon: "i",
+        api_key: key,
+      },
+    ];
+    const fake = new FakeUtcpClient({ discoveredTools: fixture.tools });
+    fake.errorsByName[PUBLIC_SEARCH_NAME] = new Error(
+      `Tool not found in UTCP manual: ${PUBLIC_SEARCH_NAME}`,
+    );
+    fake.resultsByName[INTERNAL_SEARCH_NAME] = credentialedResult;
+
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      // noCache deliberately unset → caching ENABLED so the F2 scrub path runs.
+    });
+    try {
+      const results = await client.webSearch({ query: "redaction-probe" });
+
+      // (a) The returned value is redacted at the client boundary.
+      const serialized = JSON.stringify(results);
+      assert.ok(
+        !serialized.includes(key),
+        "configured credential must not leak through the returned result",
+      );
+      assert.ok(
+        serialized.includes("[REDACTED]"),
+        "returned result must carry the redaction marker",
+      );
+
+      // (b) The on-disk response cache is redacted (at-rest leak closure).
+      const files = await readAllFiles(tempDir);
+      const combined = files.join("\n");
+      assert.ok(
+        !combined.includes(key),
+        "configured credential must not be persisted to the cache in cleartext",
+      );
+      assert.ok(combined.includes("[REDACTED]"), "cache file must carry the redaction marker");
+    } finally {
+      await client.close();
+    }
+  });
+});

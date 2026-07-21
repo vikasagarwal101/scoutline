@@ -542,6 +542,60 @@ describe("invokeCommand — invocation isolation", () => {
   });
 });
 
+describe("invokeCommand — success-path redaction (F1, code-review-baseline)", () => {
+  // Previously only the error branch consumed `secrets`; success output
+  // was emitted verbatim. These prove the success boundary now redacts.
+  const SECRET = "sk-test-secret-1234567890abcdef";
+
+  it("redacts credential-keyed fields in data output", async () => {
+    const rec = createRecordingAdapter();
+    await invokeCommand(
+      rec.adapter,
+      async () => ({ kind: "data", data: { token: SECRET, visible: "keep" } }),
+      "data",
+      undefined,
+      [SECRET],
+    );
+    const out = rec.stdout[0];
+    assert.ok(!out.includes(SECRET), "credential value must not leak to stdout");
+    assert.ok(out.includes("[REDACTED]"), "credential key must be redacted");
+    assert.ok(out.includes("keep"), "non-credential data must pass through");
+  });
+
+  it("redacts credential values embedded in presentation overrides", async () => {
+    const rec = createRecordingAdapter();
+    await invokeCommand(
+      rec.adapter,
+      async () => ({
+        kind: "data",
+        data: { n: 1 },
+        presentations: { markdown: `# Title\nkey=${SECRET} tail` },
+      }),
+      "markdown",
+      undefined,
+      [SECRET],
+    );
+    const out = rec.stdout[0];
+    assert.ok(!out.includes(SECRET), "embedded credential must not leak via presentation override");
+    assert.ok(out.includes("[REDACTED]"), "embedded credential must be redacted");
+    assert.ok(out.includes("Title") && out.includes("tail"), "non-credential text preserved");
+  });
+
+  it("redacts a TextCommandResult", async () => {
+    const rec = createRecordingAdapter();
+    await invokeCommand(
+      rec.adapter,
+      async () => ({ kind: "text", text: `blob ${SECRET} end` }),
+      "data",
+      undefined,
+      [SECRET],
+    );
+    const out = rec.stdout[0];
+    assert.ok(!out.includes(SECRET), "text-result credential must not leak");
+    assert.ok(out.includes("[REDACTED]"), "text-result credential must be redacted");
+  });
+});
+
 describe("invokeCommand — command context", () => {
   it("context exposes adapter stdin TTY state and delegates readStdin", async () => {
     const stdinContent = "piped input data";

@@ -6,6 +6,134 @@ All notable changes to this project will be documented in this file.
 
 _No published changes yet. See `docs/plans/` for in-flight work._
 
+## [0.6.0] - 2026-07-21
+
+The MiniMax direct-transport series lands ten commits across three
+phases (A: foundation; B: adapter rewire; C: release verification).
+The transitional `mmx-cli/sdk` runtime dependency is removed from
+the Adapter's call path and replaced with two pure functions that
+POST directly to the MiniMax Coding Plan endpoints. The SDK remains
+installed as a devDependency so the live envelope-parity test can
+compare the new transport against the legacy SDK for ongoing
+regression coverage.
+
+### Added
+- `packages/scoutline/src/providers/minimax/coding-plan-client.ts`
+  direct-transport module. Two pure functions (`fetchMiniMaxSearch`,
+  `fetchMiniMaxVlm`) plus a shared `MiniMaxTransportDeps` shape
+  mirror the existing `quota-client.ts` pattern. Owns HTTP-status
+  error mapping (Layer 1) and `base_resp.status_code` error mapping
+  (Layer 2). Sends `MM-API-Source: Scoutline` and
+  `User-Agent: scoutline/<version>` headers.
+- `convertToDataUri` in `packages/scoutline/src/providers/minimax/media.ts`.
+  Performs the data-URI conversion the SDK used to do. Three branches:
+  `data:` passthrough, HTTP fetch (30 s timeout via injected
+  `setTimeout`, 50 MiB cap), local file read. MIME table mirrors the
+  SDK's `IMAGE_MIME_TYPES` 1:1.
+- Unified `MiniMaxTransportDeps` injection seam (replaces
+  `sdkConstructor` + `quotaFetch`/`quotaSetTimeout`/`quotaClearTimeout`).
+  Flows through `MiniMaxAdapterDependencies.transport` to all
+  capabilities (search, vision, quota, diagnostics).
+- `ProviderImageFetchResponse` type in `providers/types.ts`. Extends
+  `ProviderQuotaFetchResponse` with `headers` and `arrayBuffer` for
+  image-fetching transports.
+- Optional `help` parameter on `TimeoutError` (strict superset of the
+  previous signature; existing Z.AI callers unchanged).
+- Layer T1 transport contract tests:
+  `tests/minimax-coding-plan-client.test.js` (119 tests covering every
+  HTTP status + every `base_resp` code, MIME matrix, sentinel
+  message-integrity across all error paths).
+- Adapter-level regression test in `tests/minimax-adapter.test.js` for
+  the 2038 verification URL survival through `normalizeMiniMaxError`.
+- Offline helper tests for the attestation script:
+  `tests/attest-minimax-vision-helpers.test.js` (15 tests including a
+  regression test for the manifest-manipulation bug discovered during
+  live verification).
+- Live envelope-parity fixture in `tests/mcp-live.test.js`. Compares
+  direct-transport responses against the legacy SDK; verifies MiniMax
+  does not echo `MM-API-Source` / `User-Agent` into response bodies.
+  Gated behind `ZAI_LIVE_TESTS=1` + `MINIMAX_API_KEY`.
+- `--refresh` flag on `scripts/attest-minimax-vision.mjs`. Re-issues
+  attestations against a new implementation identity; refuses by
+  default to prevent accidental overwrite; refuses `"fail"` state
+  unconditionally.
+- `scripts/lib/attest-manifest.mjs`. Pure manifest-manipulation
+  helpers extracted from the attestation script for testability.
+
+### Changed
+- MiniMax Adapter rewired. `adapter.ts` calls `fetchMiniMaxSearch` /
+  `fetchMiniMaxVlm` (direct transport) instead of constructing
+  `MiniMaxSDK` instances. Three call sites updated; specialized-vision
+  path inserts `convertToDataUri` between `resolveImageSource` and
+  `fetchMiniMaxVlm`. `createMiniMaxDescriptor` consumes the unified
+  `transport` seam.
+- `normalizeMiniMaxError` preserves typed errors through the rewrap:
+  `QuotaError` passes through (terminal retry preserved); `ApiError`
+  message preserved (2038 verification URL survives); `AuthError` uses
+  the 2-arg form (keeps `MINIMAX_API_KEY` in help text); `TimeoutError`
+  uses `MINIMAX_TIMEOUT` help text (was `Z_AI_TIMEOUT`).
+- MiniMax error code mapping tightened. `base_resp.status_code` 1028/1030
+  (quota exhausted) now throws `QuotaError` (was `ApiError`); 1004
+  (invalid key) → `AuthError` with `MINIMAX_API_KEY` keyName; 2038
+  (real-name verification) → `ApiError(403)` with verification URL;
+  1002/1039 (content filter) → `ApiError(400)`; 2061 (wrong plan) →
+  `ApiError(403)`.
+- MiniMax request headers changed: `MM-API-Source: Scoutline` (was
+  `Minimax-MCP`); `User-Agent: scoutline/<version>` (was
+  `mmx-cli/<version>`). Live envelope-parity fixture confirms MiniMax
+  does not echo these into response bodies.
+- `MINIMAX_VISION_IMPLEMENTATION_ID` bumped from `mmx-cli-sdk@1.0.16`
+  to `scoutline-direct@0.5.0`. Both shipped attestations (`ui-artifact`,
+  `diagnose-error`) re-pinned; `mappingRevision` values refreshed
+  (Implementation ID participates in the SHA-256 digest, so all five
+  revisions regenerated). Live re-attestation against the direct
+  transport confirmed both operations still pass.
+- `mmx-cli` moved from runtime `dependencies` to `devDependencies`.
+  The direct transport owns the runtime path; the SDK remains for the
+  live envelope-parity test. Exact-pin `1.0.16` preserved.
+- Boundary test (`tests/provider-boundary.test.js`) enforces ZERO
+  `mmx-cli/sdk` imports across the source tree (was: exactly one
+  allowed in `sdk-client.ts`).
+- Attestation script's `removeAttestationFromManifest` replaced with a
+  brace-counting parser (handles nested objects inside `assertions`
+  arrays; the previous regex corrupted the manifest on entries with
+  nested `{...}`).
+- Attestation script's `main()` calls a read-only `canFlipLiveState`
+  precheck BEFORE writing (was: write first, check after — could leave
+  a partial manifest on refusal).
+
+### Removed
+- `packages/scoutline/src/providers/minimax/sdk-client.ts` deleted.
+  The `MMX_CONFIG_DIR` sentinel workaround disappears with it.
+- `MiniMaxSdkPort` and `MiniMaxSdkConstructor` types removed from
+  `providers/types.ts`.
+- Two obsolete Adapter-layer scrubbing tests removed from
+  `tests/minimax-adapter.test.js`. The raw-body-scrubbing invariant
+  moved to the transport layer via T1 sentinel message-integrity
+  tests at `tests/minimax-coding-plan-client.test.js`.
+
+### Fixed
+- `QuotaError` no longer downgraded to a retryable `ApiError(500)` by
+  the Adapter's `normalizeMiniMaxError` rewrap. Exhausted-quota
+  requests now terminate after one attempt instead of being retried.
+- 2038 real-name-verification URL no longer stripped from the error
+  message by the Adapter rewrap. Users hitting the China-platform
+  verification requirement now see the actionable URL.
+- `MINIMAX_API_KEY` name now appears in `AuthError` help text for
+  MiniMax auth failures.
+- `MINIMAX_TIMEOUT` now appears in `TimeoutError` help text for
+  MiniMax timeouts (was hardcoded to `Z_AI_TIMEOUT`).
+
+### Known Issues
+- Three live-only Z.AI translation-defect baseline tests fail in
+  `tests/mcp-live.test.js` (`includes expected core tools`,
+  `Normal Search via webSearch reports translation defect`,
+  `calls every discovered tool via mapped raw names`). These are
+  pre-existing — unrelated to the MiniMax direct-transport work —
+  and tracked in a separate follow-up ticket. Does not affect
+  MiniMax-direct-transport behavior; targeting a `0.6.1` patch
+  release once root-caused.
+
 ## [0.5.0] - 2026-07-20
 
 The Cache Module Unification series lands three commits across two

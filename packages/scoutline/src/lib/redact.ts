@@ -64,9 +64,16 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   // value; the entire `key + separator + value` span is replaced with
   // the redaction marker.
   result = result.replace(/x-api-key[\s=:]+[^\s,;"'`]+/gi, REDACTED);
-  result = result.replace(/Z_AI_API_KEY\s*=\s*\S+/gi, REDACTED);
-  result = result.replace(/ZAI_API_KEY\s*=\s*\S+/gi, REDACTED);
-  result = result.replace(/MINIMAX_API_KEY\s*=\s*\S+/gi, REDACTED);
+  // F5 (code-review-baseline): add `:` as a separator so the JSON/YAML/
+  // HTTP-header form `Z_AI_API_KEY: sk-foo` is redacted, not just the
+  // `=` shell form. Bare whitespace is intentionally NOT a separator
+  // here (unlike x-api-key): these env-var names appear frequently in
+  // prose error messages ("MINIMAX_API_KEY environment variable is
+  // required") and a whitespace separator would over-redact that prose.
+  // The `\s*[=:]\s*` class is a strict superset of the prior `\s*=\s*`.
+  result = result.replace(/Z_AI_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
+  result = result.replace(/ZAI_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
+  result = result.replace(/MINIMAX_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
   // Embedded credential substrings inside URLs, e.g.
   // `https://user:secret@host/path`. Catches both `https://` and
   // `http://` schemes and replaces the entire URL with the marker so
@@ -180,9 +187,7 @@ function isPlainObject(value: unknown): boolean {
  * caller's value is used instead.
  */
 export function redactTool(tool: Tool, secrets?: string | string[]): Tool {
-  const resolved = secrets === undefined
-    ? configuredSecrets()
-    : normalizeSecrets(secrets);
+  const resolved = secrets === undefined ? configuredSecrets() : normalizeSecrets(secrets);
   const clone = JSON.parse(JSON.stringify(tool)) as Tool;
   return redactSecrets(clone, resolved) as Tool;
 }

@@ -120,24 +120,26 @@ export function classifyEncodedMcpError(raw: string, label: string): Error {
   const message = extractEncodedMessage(raw);
   const lowerMessage = (message ?? "").toLowerCase();
 
-  // Exhausted quota: code 1310 OR explicit exhausted/quota/limit-reaching
+  // Exhausted quota: code 1310 OR explicit exhausted/limit-reaching
   // meaning. This branches BEFORE the status mapping so a non-429 encoded
   // status line carrying code 1310 or an explicit exhausted message still
   // becomes terminal `QuotaError`.
   //
   // The bare word "limit" is intentionally NOT matched on its own:
   // "rate limited" is a transient retryable 429, not exhausted quota.
-  // "exhausted", "quota", and the multi-word phrases "limit reached" /
-  // "limit exceeded" are specific to the exhaustion context (P6-04B):
+  // The bare word "quota" is ALSO intentionally NOT matched on its own
+  // (F4, code-review-baseline): a non-exhaustion message like "quota
+  // window reset succeeded" or "quota header missing" would otherwise be
+  // mis-classified as terminal QuotaError, blocking the legitimate
+  // single retry. Exhaustion is signalled by code 1310 (authoritative)
+  // or by the explicit phrases below:
   //   - "Weekly/Monthly Limit Exhausted"  -> "exhausted"
-  //   - "Quota has been exhausted"         -> "quota"
+  //   - "Quota has been exhausted"         -> "exhausted"
   //   - "Monthly limit reached"            -> "limit reached"
   //   - "usage limit exceeded"             -> "limit exceeded"
-  // Code 1310 is the authoritative numeric signal.
   const isExhausted =
     code === 1310 ||
     lowerMessage.includes("exhausted") ||
-    lowerMessage.includes("quota") ||
     lowerMessage.includes("limit reached") ||
     lowerMessage.includes("limit exceeded");
   if (isExhausted) {

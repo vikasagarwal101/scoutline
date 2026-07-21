@@ -34,7 +34,7 @@ import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
 import { MINIMAX_VISION_MAPPINGS } from "../dist/providers/minimax/vision-mappings.generated.js";
 import { readFixture } from "./helpers/fixtures.js";
 import { executeProviderOperation } from "../dist/lib/execution.js";
-import { AuthError, TimeoutError } from "../dist/lib/errors.js";
+import { AuthError, TimeoutError, ApiError } from "../dist/lib/errors.js";
 
 const TEST_API_KEY = "test-minimax-api-key-DO-NOT-LEAK";
 const EXPECTED_FINGERPRINT = crypto.createHash("sha256").update(TEST_API_KEY).digest("hex");
@@ -52,19 +52,26 @@ const VISION_REQUEST = {
 // Response-shaped objects in sequence.
 // ---------------------------------------------------------------------------
 
-function makeResponse({ ok = true, status = 200, json, body = "", contentType, headers, arrayBuffer } = {}) {
+function makeResponse({
+  ok = true,
+  status = 200,
+  json,
+  body = "",
+  contentType,
+  headers,
+  arrayBuffer,
+} = {}) {
   return {
     ok,
     status,
     text: async () => (typeof body === "string" ? body : JSON.stringify(body)),
     json: async () => json,
-    headers:
-      headers ?? {
-        get: (name) => {
-          if (!contentType) return null;
-          return name.toLowerCase() === "content-type" ? contentType : null;
-        },
+    headers: headers ?? {
+      get: (name) => {
+        if (!contentType) return null;
+        return name.toLowerCase() === "content-type" ? contentType : null;
       },
+    },
     arrayBuffer: arrayBuffer ?? (async () => new ArrayBuffer(0)),
   };
 }
@@ -170,7 +177,10 @@ function makeAdapterFetch({ search, vision, visionError, visionErrorFn, image } 
   return makeFetchSequence(sequence);
 }
 
-function makeAdapter({ search, vision, visionError, visionErrorFn, image } = {}, env = { MINIMAX_API_KEY: TEST_API_KEY }) {
+function makeAdapter(
+  { search, vision, visionError, visionErrorFn, image } = {},
+  env = { MINIMAX_API_KEY: TEST_API_KEY },
+) {
   const { fn, calls } = makeAdapterFetch({ search, vision, visionError, visionErrorFn, image });
   const descriptor = createMiniMaxDescriptor({ transport: { fetch: fn } });
   return { adapter: descriptor.create({ env }), fetchCalls: calls };
@@ -501,7 +511,10 @@ describe("MiniMax Search Adapter — failure normalization", () => {
       await assert.rejects(runWithStatus(status), (err) => {
         assert.strictEqual(err.code, "AUTH_ERROR");
         assert.strictEqual(isRetryableByExecution(err), false);
-        assert.ok(/authentication/i.test(err.message), `expected clean auth message: ${err.message}`);
+        assert.ok(
+          /authentication/i.test(err.message),
+          `expected clean auth message: ${err.message}`,
+        );
         return true;
       });
     }
@@ -548,6 +561,30 @@ describe("MiniMax Search Adapter — failure normalization", () => {
       return true;
     });
   });
+
+  // F3 (code-review-baseline): the ApiError rewrap must NOT echo an
+  // upstream message blindly. Today every upstream ApiError message is a
+  // hardcoded constant, but the boundary trusted it unconditionally — a
+  // future change embedding a raw Provider body would leak through
+  // normalization, the cache, and stdout. A thrown ApiError carrying a
+  // "raw body" is rebuilt from the status-keyed constant. (The curated
+  // 2038 verification URL is the one preserved exception — covered by
+  // the C1 test below.)
+  it("F3: a non-2038 ApiError message is rebuilt from the status-keyed constant (no raw-body leak)", async () => {
+    const RAW_BODY = "raw provider body echo: sk-leak-1234567890abcdef";
+    const throwingFetch = async () => {
+      throw new ApiError(RAW_BODY, 503);
+    };
+    const descriptor = createMiniMaxDescriptor({ transport: { fetch: throwingFetch } });
+    const adapter = descriptor.create({ env: { MINIMAX_API_KEY: TEST_API_KEY } });
+    await assert.rejects(adapter.search.invoke({ query: "q" }), (err) => {
+      assert.strictEqual(err.code, "API_ERROR");
+      assert.strictEqual(err.statusCode, 503);
+      assert.ok(!err.message.includes("sk-leak"), `raw body must not leak: ${err.message}`);
+      assert.strictEqual(err.message, "MiniMax request failed");
+      return true;
+    });
+  });
 });
 
 // Adapter-layer raw-body scrubbing removed (B2); the invariant now lives
@@ -579,9 +616,7 @@ describe("MiniMax Search Adapter — 2038 verification URL survives rewrap (C1)"
     // (C2 fix) preserves `error.message` through the rewrap so the URL
     // reaches the Adapter's caller. This assertion fails if the
     // preservation branch is ever removed.
-    const responses = [
-      { ok: true, status: 200, json: { base_resp: { status_code: 2038 } } },
-    ];
+    const responses = [{ ok: true, status: 200, json: { base_resp: { status_code: 2038 } } }];
     const { fn } = makeFetchSequence(responses);
     const descriptor = createMiniMaxDescriptor({ transport: { fetch: fn } });
     const adapter = descriptor.create({ env: { MINIMAX_API_KEY: TEST_API_KEY } });
@@ -657,7 +692,9 @@ describe("MiniMax Vision Adapter — interpret-image mapping (P3-03)", () => {
     const vlmCall = fetchCalls[1];
     assert.match(vlmCall.url, /\/v1\/coding_plan\/vlm$/);
     const body = JSON.parse(vlmCall.init.body);
-    assert.ok(typeof body.image_url === "string" && body.image_url.startsWith("data:image/png;base64,"));
+    assert.ok(
+      typeof body.image_url === "string" && body.image_url.startsWith("data:image/png;base64,"),
+    );
     assert.strictEqual(body.prompt, "Describe this image.");
     assert.strictEqual(vlmCall.init.headers.Authorization, `Bearer ${TEST_API_KEY}`);
   });
@@ -734,8 +771,7 @@ describe("MiniMax Vision Adapter — failure normalization (P3-03)", () => {
     // typed errors before the Adapter sees them. To drive a specific
     // terminal outcome we simulate a non-2xx HTTP status (the
     // transport's typed-error pathway).
-    const status =
-      error instanceof AuthError ? 401 : 500;
+    const status = error instanceof AuthError ? 401 : 500;
     const responses = [
       { ok: true, status: 200, contentType: "image/png" },
       { ok: false, status, body: "" },
@@ -797,10 +833,15 @@ describe("MiniMax Vision Adapter — shared execution owns retries (P3-03)", () 
     // Each retry performs an HTTP image fetch before the VLM call. The
     // first VLM attempt throws (transient); the second succeeds.
     const responses = [
-      imageResp,                                       // image fetch (retry 1)
-      { throw: new Error("ECONNRESET network") },      // VLM (retry 1) throws
-      imageResp,                                       // image fetch (retry 2)
-      { ok: true, status: 200, json: { content: "recovered text", base_resp: { status_code: 0 } }, body: "" }, // VLM (retry 2) success
+      imageResp, // image fetch (retry 1)
+      { throw: new Error("ECONNRESET network") }, // VLM (retry 1) throws
+      imageResp, // image fetch (retry 2)
+      {
+        ok: true,
+        status: 200,
+        json: { content: "recovered text", base_resp: { status_code: 0 } },
+        body: "",
+      }, // VLM (retry 2) success
     ];
     const { fn, calls } = makeFetchSequence(responses);
     const descriptor = createMiniMaxDescriptor({ transport: { fetch: fn } });
@@ -821,8 +862,8 @@ describe("MiniMax Vision Adapter — shared execution owns retries (P3-03)", () 
     // 401 HTTP status from the VLM endpoint → AuthError → terminal,
     // no retry. The image fetch is performed once before the VLM call.
     const responses = [
-      imageResp,                    // image fetch
-      { ok: false, status: 401 },   // VLM returns 401 (terminal)
+      imageResp, // image fetch
+      { ok: false, status: 401 }, // VLM returns 401 (terminal)
     ];
     const { fn, calls } = makeFetchSequence(responses);
     const descriptor = createMiniMaxDescriptor({ transport: { fetch: fn } });

@@ -172,6 +172,31 @@ function inferStatusCode(lower: string, known?: number): number {
   return 500;
 }
 
+/**
+ * The 2038 real-name-verification URL. This is a curated constant set in
+ * the upstream transport (`coding-plan-client.ts`), not raw Provider
+ * text. `normalizeMiniMaxError` preserves any ApiError message that
+ * carries it so the user sees the actionable URL. The literal MUST agree
+ * with `coding-plan-client.ts` and the adapter-layer test
+ * (`minimax-adapter.test.js` C1); the test fails if they drift.
+ */
+const MINIMAX_VERIFICATION_URL = "https://platform.minimaxi.com/user-center/basic-information";
+
+/**
+ * Status-keyed outward message for rewrapped MiniMax ApiErrors (F3,
+ * code-review-baseline). The rewrap no longer echoes upstream
+ * `error.message` blindly — today every upstream ApiError message is a
+ * hardcoded constant, but a future change embedding a raw Provider body
+ * in an ApiError message would leak through normalization, the cache,
+ * and stdout. The single intentional exception is the 2038 verification
+ * URL, preserved by the caller.
+ */
+function miniMaxApiErrorMessage(statusCode: number): string {
+  if (statusCode === 429) return "MiniMax rate limit exceeded";
+  if (statusCode === 403) return "MiniMax request rejected";
+  return "MiniMax request failed";
+}
+
 function normalizeMiniMaxError(error: unknown): Error {
   // C1: QuotaError pass-through — terminal retry guarantee preserved.
   if (error instanceof QuotaError) return error;
@@ -206,10 +231,17 @@ function normalizeMiniMaxError(error: unknown): Error {
     );
   }
   if (error instanceof ApiError) {
-    // C2: preserve the original message so embedded hints (e.g. the 2038
-    // verification URL) survive the rewrap.
+    // F3 (code-review-baseline): rebuild the outward message from a
+    // status-keyed constant so a future upstream change that embeds a raw
+    // Provider body in an ApiError message cannot leak through. The single
+    // exception is the 2038 verification URL — a curated upstream constant
+    // (not raw text) that a test asserts survives. statusCode (retry
+    // signal) is preserved either way.
     const statusCode = inferStatusCode("", error.statusCode);
-    return new ApiError(error.message, statusCode);
+    if (error.message.includes(MINIMAX_VERIFICATION_URL)) {
+      return new ApiError(error.message, statusCode);
+    }
+    return new ApiError(miniMaxApiErrorMessage(statusCode), statusCode);
   }
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();

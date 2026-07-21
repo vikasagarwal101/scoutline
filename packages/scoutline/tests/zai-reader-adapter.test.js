@@ -467,6 +467,25 @@ describe("Z.AI Reader Adapter — encoded MCP error taxonomy", () => {
     );
   });
 
+  it("F4: a bare 'quota' non-exhaustion message stays retryable (not QuotaError)", async () => {
+    // A message containing the bare word "quota" but no exhaustion
+    // indicator (e.g. "quota window reset succeeded") must NOT be
+    // mis-classified as terminal QuotaError — that would block the
+    // legitimate single retry. Previously the bare-substring "quota"
+    // branch fired here.
+    const raw = "MCP error -429\nerror.code: 9999\nerror.message: quota window reset succeeded\n";
+    const { capability } = makeAdapter(raw);
+    await assert.rejects(capability.invoke({ url: "https://example.com/" }), (err) => {
+      assert.ok(
+        !(err instanceof QuotaError),
+        `bare 'quota' must not be terminal QuotaError, got ${err.constructor.name}`,
+      );
+      assert.strictEqual(err.code, "API_ERROR");
+      assert.strictEqual(err.statusCode, 429);
+      return true;
+    });
+  });
+
   it("code 1310 under a non-429 status still becomes terminal QuotaError", async () => {
     const raw = "MCP error -500\nerror.code: 1310\nerror.message: weekly limit exhausted\n";
     const { capability } = makeAdapter(raw);

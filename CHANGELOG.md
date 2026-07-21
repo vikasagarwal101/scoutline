@@ -6,6 +6,60 @@ All notable changes to this project will be documented in this file.
 
 _No published changes yet. See `docs/plans/` for in-flight work._
 
+## [0.6.4] - 2026-07-21
+
+Boundary-tightening patch — the F3/F4/F5 follow-ups from the
+`code-review-baseline` review. No current confirmed leak; these remove
+the codebase's dependence on upstream message-author discipline and close
+two classifier/regex precision gaps.
+
+### Changed (boundary tightening)
+- **F3 — MiniMax `ApiError` rewrap no longer echoes upstream messages.**
+  `normalizeMiniMaxError` (`adapter.ts`) rebuilt the outward `ApiError`
+  from `error.message` verbatim. Today every upstream ApiError message is
+  a hardcoded constant, but the boundary trusted it unconditionally — a
+  future change embedding a raw Provider body would leak through
+  normalization, the cache, and stdout. The rewrap now builds the message
+  from a status-keyed constant table. The single intentional exception is
+  the 2038 real-name-verification URL (a curated upstream constant), which
+  is preserved so the user sees the actionable URL.
+- **F4 — encoded-error quota classifier no longer matches bare "quota".**
+  `classifyEncodedMcpError` (`encoded-error.ts`) classified any encoded
+  message containing the substring "quota" as terminal `QuotaError`,
+  which mis-fired on non-exhaustion messages ("quota window reset
+  succeeded") and blocked the legitimate single retry. Exhaustion is now
+  signalled only by code 1310 (authoritative) or the explicit phrases
+  "exhausted" / "limit reached" / "limit exceeded".
+- **F5 — named-key redaction accepts colon separators.**
+  `redactCredentialString` (`redact.ts`) accepted only `=` for
+  `Z_AI_API_KEY` / `ZAI_API_KEY` / `MINIMAX_API_KEY`, so the JSON/YAML/
+  HTTP-header form `Z_AI_API_KEY: sk-foo` slipped the named-key backstop.
+  The separator class is now `\s*[=:]\s*`. Bare whitespace is
+  intentionally NOT a separator for these names: they appear in prose
+  error messages ("MINIMAX_API_KEY environment variable is required") and
+  a whitespace separator would over-redact that prose (the first
+  iteration of this fix did exactly that and was corrected before ship).
+
+### Added (tests)
+- F3: a thrown `ApiError` carrying a "raw body" is rebuilt from the
+  status-keyed constant (raw body does not leak).
+- F4: a bare-"quota" non-exhaustion message stays retryable ApiError 429
+  (not terminal QuotaError).
+- F5: colon-separator forms redacted; a prose mention with no separator
+  token is left intact.
+
+### Verification
+Build ✓; offline suite **1676/1676** passing (+3 boundary tests). No
+public CLI behaviour change for documented paths: the 2038 verification
+URL still survives (existing C1 test), and the documented quota phrases
+("limit reached/exceeded", "exhausted", code 1310) still classify as
+terminal QuotaError (existing P6-04B tests).
+
+### Out of scope (follow-up)
+- Evaluator refinements F6/F7/F8 (chart comma-separated swap,
+  extract-text semantic-key elision, loose "up" trend synonym) — defer
+  until `chart` is live-attested or a semantic-keyed fixture lands.
+
 ## [0.6.3] - 2026-07-21
 
 Patch release closing a redaction-contract gap surfaced by the

@@ -15,11 +15,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import {
-  redactSecrets,
-  redactTool,
-  redactCredentialString,
-} from "../dist/lib/redact.js";
+import { redactSecrets, redactTool, redactCredentialString } from "../dist/lib/redact.js";
 import { formatErrorOutput as formatCompatErrorOutput } from "../dist/lib/errors.js";
 import { formatErrorOutput } from "../dist/lib/output.js";
 
@@ -228,10 +224,7 @@ describe("redactSecrets — recursive case-insensitive key redaction", () => {
 
 describe("redactCredentialString — single-string redaction", () => {
   it("redacts Bearer values regardless of case", () => {
-    assert.strictEqual(
-      redactCredentialString(`prefix ${BEARER}`),
-      "prefix [REDACTED]",
-    );
+    assert.strictEqual(redactCredentialString(`prefix ${BEARER}`), "prefix [REDACTED]");
     assert.strictEqual(
       redactCredentialString(`Authorization: ${BEARER.toLowerCase()}`),
       "Authorization: [REDACTED]",
@@ -247,6 +240,24 @@ describe("redactCredentialString — single-string redaction", () => {
     assert.strictEqual(redactCredentialString(`Z_AI_API_KEY=${Z_KEY}`), "[REDACTED]");
     assert.strictEqual(redactCredentialString(`ZAI_API_KEY=${Z_ALIAS_KEY}`), "[REDACTED]");
     assert.strictEqual(redactCredentialString(`MINIMAX_API_KEY=${M_KEY}`), "[REDACTED]");
+  });
+
+  it("F5: redacts colon separator forms (JSON/header/YAML)", () => {
+    // The named-key patterns must accept `:` as a separator, not just
+    // `=` — `Z_AI_API_KEY: sk-foo` (JSON/HTTP-header/YAML) previously
+    // slipped the named-key backstop (only `=` was accepted). Bare
+    // whitespace is intentionally NOT a separator for these names: they
+    // appear in prose error messages ("MINIMAX_API_KEY environment
+    // variable is required") and a whitespace separator would
+    // over-redact that prose.
+    assert.strictEqual(redactCredentialString(`Z_AI_API_KEY: ${Z_KEY}`), "[REDACTED]");
+    assert.strictEqual(redactCredentialString(`ZAI_API_KEY:${Z_ALIAS_KEY}`), "[REDACTED]");
+    assert.strictEqual(redactCredentialString(`MINIMAX_API_KEY : ${M_KEY}`), "[REDACTED]");
+    // Prose mention with no separator token must NOT be redacted.
+    assert.strictEqual(
+      redactCredentialString("the Z_AI_API_KEY environment variable is required"),
+      "the Z_AI_API_KEY environment variable is required",
+    );
   });
 
   // Fixup C — W3: the regex now also covers whitespace-separated forms
@@ -281,14 +292,8 @@ describe("redactCredentialString — single-string redaction", () => {
   });
 
   it("replaces extra secrets passed via the second argument", () => {
-    assert.strictEqual(
-      redactCredentialString(`token=${M_KEY}`, [M_KEY]),
-      "token=[REDACTED]",
-    );
-    assert.strictEqual(
-      redactCredentialString(`nothing to do here`, [M_KEY]),
-      "nothing to do here",
-    );
+    assert.strictEqual(redactCredentialString(`token=${M_KEY}`, [M_KEY]), "token=[REDACTED]");
+    assert.strictEqual(redactCredentialString(`nothing to do here`, [M_KEY]), "nothing to do here");
   });
 
   it("leaves ordinary text untouched", () => {
@@ -364,11 +369,10 @@ describe("redaction across outward-boundary formatters", () => {
     process.env.MINIMAX_API_KEY = M_KEY;
     try {
       const { ScoutlineError } = await import("../dist/lib/errors.js");
-      const err = new ScoutlineError(
-        `Bearer ${Z_KEY} and MINIMAX_API_KEY=${M_KEY}`,
-        "AUTH_ERROR",
-        { help: `Set Z_AI_API_KEY=${Z_KEY}`, statusCode: 401 },
-      );
+      const err = new ScoutlineError(`Bearer ${Z_KEY} and MINIMAX_API_KEY=${M_KEY}`, "AUTH_ERROR", {
+        help: `Set Z_AI_API_KEY=${Z_KEY}`,
+        statusCode: 401,
+      });
       const out = formatCompatErrorOutput(err);
       assert.ok(!out.includes(Z_KEY), `compat output contains Z_KEY: ${out}`);
       assert.ok(!out.includes(M_KEY), `compat output contains M_KEY: ${out}`);

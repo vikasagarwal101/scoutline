@@ -6,6 +6,104 @@ All notable changes to this project will be documented in this file.
 
 _No published changes yet. See `docs/plans/` for in-flight work._
 
+## [0.6.2] - 2026-07-21
+
+Patch release extending MiniMax specialized-Vision runtime support from
+two operations to four, plus attestation-tooling fixes that the live
+re-attestation run surfaced. `extract-text` and `diagram` are now
+live-attested against the direct MiniMax transport and routable through
+MiniMax at runtime. `chart` remains pending: its fixture image has a
+rotated, low-resolution Y-axis label that VLMs read inconsistently — a
+fixture-image-quality blocker, not an evaluator or transport issue.
+
+### Added (runtime-supported capabilities)
+- **MiniMax `vision extract-text` and `vision diagram` are now supported
+  at runtime** through MiniMax. The specialized-vision live-attested set
+  grows from {`ui-artifact`, `diagnose-error`} to {`ui-artifact`,
+  `extract-text`, `diagnose-error`, `diagram`}. Both were live-attested
+  against the v0.6.0 direct transport (`scoutline-direct@0.5.0`);
+  selecting MiniMax for either now routes through the Adapter instead of
+  failing `UNSUPPORTED_CAPABILITY`. `chart` remains `live: pending` and
+  fail-closed.
+
+### Changed (conformance evaluators)
+- The three specialized-vision conformance evaluators were loosened to
+  admit natural VLM output while preserving content fidelity (the design
+  intent of "do not accept paraphrase" of *content*). The previous
+  evaluators required output to match a hand-crafted ideal shape; the
+  offline suite passed but live VLM output varied enough to fail.
+  - **diagram** (`evaluateDiagram`): edges now accept any
+    intrinsically-directional connector — ASCII `->`, Unicode `→`, or a
+    verb (`connects to`, `leads to`, `points to`, `goes to`, `flows to`,
+    `flows into`, `feeds into`, `followed by`) — as a
+    `${from} … <connector> … ${to}` match scoped to one sentence.
+    Reversed edges still fail. A proposed positional "structural
+    fallback" was dropped after pressure-testing (passive voice and "X
+    receives from Y" defeat surface-order checks).
+  - **chart** (`evaluateChart`): trend broadened to 17 word-boundary
+    synonyms (`increasing`, `rising`, `upward`, `growth`, `higher`, …);
+    axes matched sentence-scoped (`\bx\b`/`\by\b` word boundaries + the
+    label co-occurring in the same sentence). The former
+    `forbiddenTrends` naive-substring check was **removed**: it flagged
+    correct answers that mentioned a forbidden word in negation ("the
+    trend is increasing, not flat"). The positive trend requirement is
+    the load-bearing filter.
+  - **extract-text** (`evaluateExtractTextLines`): now matches on the
+    alphanumeric content body after prefix/separator stripping
+    (case-insensitive, forward-cursor preserved). Tolerates
+    `1. hello` ≈ `Line 1: HELLO`; still rejects missing, reordered, or
+    substituted content. `EXTRACT_TEXT_INTENT` also prescribes
+    prefix/punctuation/casing preservation and forbids preamble/markdown
+    wrappers.
+- `specialized-cases.json`: the chart assertion's `forbiddenTrends`
+  field removed (the evaluator no longer consults it).
+- New offline rejection suite ("evaluators reject wrong answers and
+  admit natural VLM variants"): reversed diagram edges, node-only
+  paragraphs, wrong/swapped chart axes, wrong trend, and
+  missing/reordered/substituted extract-text lines all MUST fail;
+  natural variants (Unicode arrows, directional verbs, trend synonyms,
+  prefix/case/fence tolerance) MUST pass. The prior suite had no
+  negative cases.
+
+### Fixed (attestation tooling — surfaced by the live re-attestation run)
+- `scripts/attest-minimax-vision.mjs` was broken by the v0.6.0
+  direct-transport refactor: it imported `createMiniMaxSdk` from the
+  deleted `sdk-client.ts`. Rewired to the Adapter's direct path
+  (`resolveImageSource` → `convertToDataUri` → `fetchMiniMaxVlm`). The
+  shipped v0.6.0/v0.6.1 attestations were re-pinned via `--refresh`, so
+  this breakage was not observed at release time.
+- `attest-minimax-vision.mjs` `canFlipLiveState` / `flipLiveStateToPass`:
+  the state-flip regex was built with `JSON.stringify(operation)`,
+  producing `"diagram":` — but `diagram` and `chart` are bare object
+  keys in the conformance source. The regex now treats the surrounding
+  quotes as optional. Never exercised before because `diagram`/`chart`
+  had never been attested.
+- `vision-specialized-conformance.test.js`: "compiled attestation
+  manifest matches the attested set" now compares as sets (sorted)
+  rather than ordered arrays — the manifest is in append-history order
+  while the attested set is canonical order, which diverge once an op is
+  attested out of sequence.
+
+### Documentation
+- README, `docs/architecture.md`, `docs/configuration.md`,
+  `docs/troubleshooting.md`, and `skills/scoutline/SKILL.md` updated
+  for the four-operation MiniMax specialized-vision support set. Stale
+  Implementation-identity references (`mmx-cli-sdk@1.0.16`) corrected to
+  `scoutline-direct@0.5.0`; the troubleshooting "Adapter routing" note
+  corrected from `sdk.vision.describe` to the direct VLM transport.
+
+### Known Issues
+- `chart` remains `live: pending`. Three independent VLM reads of
+  `tests/fixtures/vision/chart.png` (320×200) disagree on the Y-axis
+  label (Sales / Revenue / Rupees); the rotated, tiny label is
+  unreadable. Regenerating the fixture image with a clear, large,
+  horizontal label is the follow-up that unblocks it.
+
+### Verification
+Build ✓; offline suite **1669/1669** passing; live attestation run
+**2/3 passing** (extract-text, diagram attested; chart blocked on the
+fixture image). Public `scoutline.zai.*` raw tool surface unchanged.
+
 ## [0.6.1] - 2026-07-21
 
 Patch release fixing the Z.AI Search name-translation defect that

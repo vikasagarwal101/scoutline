@@ -57,8 +57,8 @@ transport construction, with no Z.AI fallback.
 | --- | --- | --- | --- |
 | Search | Yes | Yes (no domain/recency/content-size/location) | `scoutline search` |
 | General single-image interpretation | Yes | Yes (JPG/JPEG/PNG/WebP ≤50 MiB) | `scoutline vision analyze` |
-| Specialized Vision (UI-to-code, error diagnosis) | Yes | Available (live-attested; conformance-gated) | `scoutline vision ui-to-code`, `vision diagnose-error` |
-| Specialized Vision (OCR, diagram, chart) | Yes | Pending (implemented, pending live conformance) | `scoutline vision extract-text`, `vision diagram`, `vision chart` |
+| Specialized Vision (UI-to-code, OCR, error diagnosis, diagram) | Yes | Available (live-attested; conformance-gated) | `scoutline vision ui-to-code`, `vision extract-text`, `vision diagnose-error`, `vision diagram` |
+| Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | `scoutline vision chart` |
 | Two-image diff, video | Yes | No | `scoutline vision diff`, `vision video` |
 | Quota (normalized) | Yes | Yes | `scoutline quota [--all-providers]` |
 | Diagnostics | Yes | Yes | `scoutline doctor [--no-tools]` |

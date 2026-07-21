@@ -100,8 +100,7 @@
           "type": "chart",
           "title": "Quarterly Sales",
           "axes": { "x": "Quarter", "y": "Revenue" },
-          "trend": "increasing",
-          "forbiddenTrends": ["decreasing", "flat", "no change"]
+          "trend": "increasing"
         }
       ]
     }

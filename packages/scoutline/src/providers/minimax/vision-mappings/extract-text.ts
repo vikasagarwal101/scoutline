@@ -44,9 +44,17 @@ interface ExtractTextRequest {
  * Exact-text recovery intent. Rendered once per prompt as the opening
  * intent segment. Deliberately does NOT reuse the user instruction's
  * phrasing so the instruction remains intact and distinct.
+ *
+ * The format prescription (preserve prefixes/punctuation/casing;
+ * output each line on its own line with no preamble or markdown
+ * wrapper) is the prompt-side companion to the evaluator's
+ * content-body normalization (option (b), vision-evaluator-fix-review
+ * C3): the evaluator tolerates prefix/separator/case variance, but
+ * asking the model to preserve the rendered format reduces the chance
+ * it reformats OCR output.
  */
 const EXTRACT_TEXT_INTENT =
-  "Recover every rendered line of text verbatim. Output each line in order; do not paraphrase, summarize, or reorder.";
+  "Recover every rendered line of text verbatim. Output each line in order; do not paraphrase, summarize, or reorder. Preserve any line numbers, prefixes, punctuation, and casing exactly as rendered. Output each transcribed line on its own line, with no preamble, commentary, or markdown wrapper.";
 
 /**
  * The extract-text mapping Module. Satisfies the

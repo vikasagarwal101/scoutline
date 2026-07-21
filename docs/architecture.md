@@ -70,7 +70,7 @@ Z.AI-only and ignore both the explicit flag and the environment variable.
 | --- | --- | --- | --- |
 | `search` | Yes | Yes | `scoutline search` |
 | `vision.interpret-image` | Yes | Yes | `scoutline vision analyze` |
-| Specialized Vision operations | Yes | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
+| Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
 | Image diff / video | Yes | No | `scoutline vision diff`, `vision video` |
 | `quota` | Yes | Yes | `scoutline quota` |
 | `diagnostics` | Yes | Yes | `scoutline doctor` |

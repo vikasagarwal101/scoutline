@@ -78,4 +78,30 @@ export const MINIMAX_VISION_ATTESTATIONS: readonly VisionAttestation[] = [
     { id: "diagnose-error.class", passed: true }
     ],
   },
+  {
+    schemaVersion: 1,
+    provider: "minimax",
+    operation: "extract-text",
+    fixtureVersion: 1,
+    implementationId: "scoutline-direct@0.5.0",
+    mappingRevision: "6387a8d3492f819a921105a14a791db9a78e7b14409bcbd4fce48a6e7dcc61c3",
+    testedAt: "2026-07-21T13:59:25.475Z",
+    resultDigest: "9937463c0d6804242dee1a79f78cbdb67b2acb8e53a65429d9bd1f35eeb9f02b",
+    assertions: [
+    { id: "extract-text.lines", passed: true }
+    ],
+  },
+  {
+    schemaVersion: 1,
+    provider: "minimax",
+    operation: "diagram",
+    fixtureVersion: 1,
+    implementationId: "scoutline-direct@0.5.0",
+    mappingRevision: "a665e58f86ede08feb6100d1c74153b21715e76e47955e469c2f027b546ffdfd",
+    testedAt: "2026-07-21T14:02:03.211Z",
+    resultDigest: "b68219705e2bf0cf7f58e9c0a6424a4302dda919687304f4e4bef0190153a6be",
+    assertions: [
+    { id: "diagram.nodes", passed: true }
+    ],
+  },
 ];

@@ -123,11 +123,12 @@ never registry entries.
 
 The five specialized mappings (`ui-artifact`, `extract-text`,
 `diagnose-error`, `diagram`, `chart`) are **implemented** but their
-runtime support is gated by the compiled conformance registry. They are
-unsupported until a live attestation records a passing `live` state
-plus a sanitized compiled attestation that matches the operation,
-fixture version, Implementation identity, and generated mapping
-revision.
+runtime support is gated by the compiled conformance registry. Four are
+currently live-attested and supported (`ui-artifact`, `extract-text`,
+`diagnose-error`, `diagram`); `chart` is not. A mapping is unsupported
+until a live attestation records a passing `live` state plus a sanitized
+compiled attestation that matches the operation, fixture version,
+Implementation identity, and generated mapping revision.
 
 The most common reason a specialized mapping is reported as
 `UNSUPPORTED_CAPABILITY`:
@@ -136,7 +137,7 @@ The most common reason a specialized mapping is reported as
 | --- | --- |
 | Live attestation has not been recorded | `MINIMAX_VISION_CONFORMANCE_REGISTRY[op].live === "pending"` |
 | Live semantics failed | `MINIMAX_VISION_CONFORMANCE_REGISTRY[op].live === "fail"` — the previous attestation was rejected |
-| SDK Implementation identity changed | The compiled attestation's `implementationId` no longer matches `mmx-cli-sdk@1.0.16` |
+| SDK Implementation identity changed | The compiled attestation's `implementationId` no longer matches `scoutline-direct@0.5.0` |
 | Mapping revision changed | The compiled attestation's `mappingRevision` no longer matches `MINIMAX_VISION_MAPPING_REVISIONS[op]` |
 | Fixture version bumped | The compiled attestation's `fixtureVersion` no longer matches the entry's `fixtureVersion` |
 
@@ -171,8 +172,9 @@ registry validates.
 When a specialized mapping's live state is `pass` and the compiled
 attestation matches, the MiniMax Adapter routes the request through the
 matching `vision-mappings/<op>.ts` Module. The Module composes the
-prompt, the Adapter invokes `sdk.vision.describe` with the resolved
-image, and the Module's normalizer extracts the `{ content }` envelope.
+prompt, the Adapter resolves the image to a data URI and invokes the
+direct VLM transport (`fetchMiniMaxVlm`), and the Module's normalizer
+extracts the `{ content }` envelope.
 If the Module is somehow missing while the registry gate is open, the
 Adapter surfaces `API_ERROR` — this should not happen at runtime and
 indicates a coding bug rather than runtime drift.

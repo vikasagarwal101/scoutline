@@ -96,24 +96,18 @@ export function loadFixtureFile(filePath, options = {}) {
   try {
     raw = readFileSync(filePath, "utf8");
   } catch (err) {
-    throw new Error(
-      `unable to read fixture file at ${filePath}: ${err.message}`,
-    );
+    throw new Error(`unable to read fixture file at ${filePath}: ${err.message}`);
   }
 
   let parsed;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    throw new Error(
-      `specialized-cases.json is not valid JSON: ${err.message}`,
-    );
+    throw new Error(`specialized-cases.json is not valid JSON: ${err.message}`);
   }
 
   if (parsed.schemaVersion !== 1) {
-    throw new Error(
-      `specialized-cases.json schemaVersion must be 1, got ${parsed.schemaVersion}`,
-    );
+    throw new Error(`specialized-cases.json schemaVersion must be 1, got ${parsed.schemaVersion}`);
   }
   if (!Array.isArray(parsed.cases)) {
     throw new Error("specialized-cases.json must have a `cases` array");
@@ -154,9 +148,7 @@ export function validateCases(cases, fixturesDir) {
     seenOps.add(c.operation);
 
     if (!Number.isInteger(c.fixtureVersion)) {
-      throw new Error(
-        `fixtureVersion must be an integer for ${c.operation}`,
-      );
+      throw new Error(`fixtureVersion must be an integer for ${c.operation}`);
     }
     if (c.fixtureVersion <= 0) {
       throw new Error(
@@ -174,48 +166,32 @@ export function validateCases(cases, fixturesDir) {
     }
     const abs = resolve(fixturesDir, c.image);
     if (!existsSync(abs)) {
-      throw new Error(
-        `fixture image missing for ${c.operation}: ${abs}`,
-      );
+      throw new Error(`fixture image missing for ${c.operation}: ${abs}`);
     }
 
     if (!c.request || typeof c.request !== "object") {
-      throw new Error(
-        `fixture case request must be an object for ${c.operation}`,
-      );
+      throw new Error(`fixture case request must be an object for ${c.operation}`);
     }
     if (typeof c.request.source !== "string") {
-      throw new Error(
-        `fixture case request.source must be a string for ${c.operation}`,
-      );
+      throw new Error(`fixture case request.source must be a string for ${c.operation}`);
     }
     if (typeof c.request.instruction !== "string") {
-      throw new Error(
-        `fixture case request.instruction must be a string for ${c.operation}`,
-      );
+      throw new Error(`fixture case request.instruction must be a string for ${c.operation}`);
     }
 
     if (!Array.isArray(c.assertions) || c.assertions.length === 0) {
-      throw new Error(
-        `fixture case ${c.operation} must have at least one assertion`,
-      );
+      throw new Error(`fixture case ${c.operation} must have at least one assertion`);
     }
     const seenAssertionIds = new Set();
     for (const a of c.assertions) {
       if (!a || typeof a !== "object") {
-        throw new Error(
-          `assertion for ${c.operation} must be an object`,
-        );
+        throw new Error(`assertion for ${c.operation} must be an object`);
       }
       if (typeof a.id !== "string" || a.id.length === 0) {
-        throw new Error(
-          `assertion id must be a non-empty string for ${c.operation}`,
-        );
+        throw new Error(`assertion id must be a non-empty string for ${c.operation}`);
       }
       if (seenAssertionIds.has(a.id)) {
-        throw new Error(
-          `duplicate assertion id ${a.id} for ${c.operation}`,
-        );
+        throw new Error(`duplicate assertion id ${a.id} for ${c.operation}`);
       }
       seenAssertionIds.add(a.id);
     }
@@ -234,10 +210,10 @@ export function validateCases(cases, fixturesDir) {
 export function normalizeForTextRecovery(text) {
   if (typeof text !== "string") return "";
   return text
-    .replace(/\r\n/g, "\n")          // CRLF -> LF
-    .replace(/\r/g, "\n")            // bare CR -> LF
-    .replace(/[ \t]+$/gm, "")        // strip trailing spaces/tabs
-    .replace(/\n{2,}/g, "\n")        // collapse internal blank lines
+    .replace(/\r\n/g, "\n") // CRLF -> LF
+    .replace(/\r/g, "\n") // bare CR -> LF
+    .replace(/[ \t]+$/gm, "") // strip trailing spaces/tabs
+    .replace(/\n{2,}/g, "\n") // collapse internal blank lines
     .trim();
 }
 
@@ -259,6 +235,27 @@ function containsTermFolded(foldedText, term) {
   if (!term) return true;
   const foldedTerm = fold(term);
   return foldedText.includes(foldedTerm);
+}
+
+/**
+ * Escape the regex metacharacters in a literal string so it can be
+ * embedded in a RegExp. Used by the diagram/chart evaluators where
+ * node labels and axis labels are interpolated into structural
+ * patterns.
+ */
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Word-boundary presence test for a (possibly multi-word) term in
+ * folded text. Used for chart trend synonyms so short tokens like
+ * "up" do not match inside "output"/"group".
+ */
+function foldedHasWord(foldedText, term) {
+  const parts = term.trim().split(/\s+/).map(escapeRegex);
+  if (parts.length === 0) return true;
+  return new RegExp(`\\b${parts.join("\\s+")}\\b`).test(foldedText);
 }
 
 // ---------------------------------------------------------------------------
@@ -312,9 +309,7 @@ function evaluateOne(assertion, text) {
  */
 export function evaluateUiArtifactRegions(assertion, text) {
   const folded = fold(text);
-  const missing = (assertion.regions ?? []).filter(
-    (label) => !containsTermFolded(folded, label),
-  );
+  const missing = (assertion.regions ?? []).filter((label) => !containsTermFolded(folded, label));
   if (missing.length === 0) {
     return { passed: true };
   }
@@ -360,8 +355,39 @@ export function evaluateUiArtifactCodeForm(assertion, text) {
 // ---------------------------------------------------------------------------
 
 /**
- * Strict line-recovery evaluator. Every required line must appear
- * (in order) in the normalized candidate text. Paraphrase fails.
+ * Strip a leading numbering prefix from a line by returning the
+ * substring after the first separator glyph (`:` `-` `.` `)` `—` `–`).
+ * If no separator is present the whole line is returned. Applied
+ * symmetrically to both required and candidate lines so the prefix
+ * convention does not participate in the content comparison.
+ */
+function extractLineBody(line) {
+  const idx = line.search(/[:.)\u2014\u2013-]/);
+  if (idx === -1) return line;
+  return line.slice(idx + 1).trimStart();
+}
+
+/**
+ * Reduce a line to its ordered lowercase alphanumeric tokens, taken
+ * from the content body (after prefix stripping). Two lines with
+ * equal token arrays have identical content regardless of prefix
+ * shape, separator glyph, or casing.
+ */
+function lineTokensFromBody(line) {
+  const body = extractLineBody(line).toLowerCase();
+  return body.match(/[a-z0-9]+/g) ?? [];
+}
+
+/**
+ * Line-recovery evaluator with content-fidelity matching (option (b)
+ * from vision-evaluator-fix-review C3). Every required line's
+ * alphanumeric content body must appear, in order, among the
+ * candidate's lines. The forward cursor preserves ordering and
+ * completeness (missing/reordered lines fail). Tolerated:
+ * numbering-prefix shape (`Line 1:`, `1.`, `1)`, `1 -`, no prefix),
+ * separator glyph (`:` `-` `.` `)` `—` `–`), and casing. The design
+ * intent of "verbatim recovery" (phase doc P5) is content fidelity,
+ * not prefix fidelity, so only the content body participates.
  */
 export function evaluateExtractTextLines(assertion, text) {
   const normalized = normalizeForTextRecovery(text);
@@ -369,13 +395,14 @@ export function evaluateExtractTextLines(assertion, text) {
   if (required.length === 0) {
     return { passed: true };
   }
-  const lines = normalized.split("\n");
+  const candidateTokens = normalized.split("\n").map(lineTokensFromBody);
   let cursor = 0;
   for (const requiredLine of required) {
-    const target = normalizeForTextRecovery(requiredLine);
+    const target = lineTokensFromBody(normalizeForTextRecovery(requiredLine));
     let found = false;
-    for (; cursor < lines.length; cursor++) {
-      if (lines[cursor] === target) {
+    for (; cursor < candidateTokens.length; cursor++) {
+      const cand = candidateTokens[cursor];
+      if (cand.length === target.length && cand.every((tok, i) => tok === target[i])) {
         cursor++;
         found = true;
         break;
@@ -384,7 +411,7 @@ export function evaluateExtractTextLines(assertion, text) {
     if (!found) {
       return {
         passed: false,
-        failureReason: `required line not recovered verbatim: ${requiredLine}`,
+        failureReason: `required line content not recovered: ${requiredLine}`,
       };
     }
   }
@@ -417,7 +444,8 @@ export function evaluateDiagnoseError(assertion, text) {
   if (remedies.length === 0) {
     return {
       passed: false,
-      failureReason: "remediation list is empty; fixture must declare at least one approved remediation",
+      failureReason:
+        "remediation list is empty; fixture must declare at least one approved remediation",
     };
   }
   const foundRemedy = remedies.some((r) => containsTermFolded(folded, r));
@@ -435,17 +463,52 @@ export function evaluateDiagnoseError(assertion, text) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Directional connectors for diagram edges. Each entry builds a
+ * `${from} … <connector> … ${to}` RegExp with a bounded gap on each
+ * side, scoped to a single sentence (no crossing `.` or newline).
+ *
+ * ARROWS (`->`, `→`) and VERBS are intrinsically directional: each
+ * encodes source → target in English, so `${from} <connector> ${to}`
+ * is correct only when the model actually means from → to. No
+ * positional/structural heuristic is layered on top — passive voice
+ * and "X receives from Y" defeat surface-order checks (see
+ * vision-evaluator-fix-review C1). If a natural verb slips through,
+ * add it here; do not reintroduce a structural fallback.
+ */
+const DIAGRAM_EDGE_CONNECTORS = [
+  {
+    kind: "arrow",
+    build: (from, to) =>
+      new RegExp(`${escapeRegex(from)}[^.\\n]{0,10}?(?:->|→)[^.\\n]{0,10}?${escapeRegex(to)}`),
+  },
+  ...[
+    "connects to",
+    "leads to",
+    "points to",
+    "goes to",
+    "flows to",
+    "flows into",
+    "feeds into",
+    "followed by",
+  ].map((verb) => ({
+    kind: "verb",
+    build: (from, to) =>
+      new RegExp(
+        `${escapeRegex(from)}[^.\\n]{0,30}?${escapeRegex(verb)}[^.\\n]{0,30}?${escapeRegex(to)}`,
+      ),
+  })),
+];
+
+/**
  * Confirms every labeled node appears AND every required edge is
- * expressed with the correct direction. Edge direction is matched by
- * the literal "from -> to" sequence (case-folded, whitespace
- * flexible). Either the arrow form `A -> B` or the prose form
- * "A flows to B" satisfies an edge.
+ * expressed with the correct direction via one of the directional
+ * {@link DIAGRAM_EDGE_CONNECTORS}. Node labels are matched
+ * case-insensitively as substrings; edges require a directional
+ * connector. Reversed edges and node-only paragraphs fail.
  */
 export function evaluateDiagram(assertion, text) {
   const folded = fold(text);
-  const missingNodes = (assertion.nodes ?? []).filter(
-    (n) => !containsTermFolded(folded, n),
-  );
+  const missingNodes = (assertion.nodes ?? []).filter((n) => !containsTermFolded(folded, n));
   if (missingNodes.length > 0) {
     return {
       passed: false,
@@ -454,16 +517,10 @@ export function evaluateDiagram(assertion, text) {
   }
   const edges = assertion.edges ?? [];
   for (const edge of edges) {
-    const arrow = `${edge.from.toLowerCase()} -> ${edge.to.toLowerCase()}`;
-    const flowTo = `${edge.from.toLowerCase()} flows to ${edge.to.toLowerCase()}`;
-    const flowInto = `${edge.from.toLowerCase()} flows into ${edge.to.toLowerCase()}`;
-    const into = `${edge.from.toLowerCase()} into ${edge.to.toLowerCase()}`;
-    if (
-      !folded.includes(arrow) &&
-      !folded.includes(flowTo) &&
-      !folded.includes(flowInto) &&
-      !folded.includes(into)
-    ) {
+    const from = edge.from.toLowerCase();
+    const to = edge.to.toLowerCase();
+    const matched = DIAGRAM_EDGE_CONNECTORS.some((c) => c.build(from, to).test(folded));
+    if (!matched) {
       return {
         passed: false,
         failureReason: `missing edge ${edge.from} -> ${edge.to}`,
@@ -478,9 +535,72 @@ export function evaluateDiagram(assertion, text) {
 // ---------------------------------------------------------------------------
 
 /**
- * Confirms the chart's title or subject is identified, both axis
- * meanings are present, and the dominant trend is asserted WITHOUT
- * also asserting a contradictory forbidden trend.
+ * Accepted positive-trend synonyms. The fixture's `trend` field
+ * (`"increasing"`) is the canonical form; these admit the natural
+ * variants a VLM produces ("rising", "going up", "higher", etc.).
+ * Matched with word boundaries via {@link foldedHasWord} so short
+ * tokens like "up" do not match inside "output"/"group".
+ */
+const CHART_TREND_SYNONYMS = [
+  "increasing",
+  "increase",
+  "rising",
+  "rises",
+  "rose",
+  "upward",
+  "going up",
+  "growth",
+  "growing",
+  "grows",
+  "climb",
+  "climbs",
+  "climbing",
+  "ascend",
+  "ascending",
+  "higher",
+  "up",
+];
+
+/**
+ * Confirm a chart axis label is associated with its axis. The label and
+ * an axis marker for the SAME axis must co-occur in a single sentence
+ * (text split on `.`, `!`, `?`, or newline). Markers: the axis letter
+ * as a standalone word (`\bx\b`/`\by\b` — substring matching would let
+ * "year"/"next" trip it, per vision-evaluator-fix-review G6), optionally
+ * followed by "axis"/"-axis"; or the axis word ("horizontal"/"vertical").
+ *
+ * Sentence scoping (not a fixed char-window) admits real VLM output,
+ * which puts each axis on its own bullet and may place the label a few
+ * words from the marker ("Y-axis (vertical): Labeled 'Sales' — measures
+ * revenue/sales values" — "revenue" is ~40 chars from "Y-axis" but in
+ * the SAME sentence). It still rejects the swapped case when the axes
+ * are in separate sentences. The single-sentence comma-separated swap
+ * ("X axis: Revenue, Y axis: Quarter") is an acknowledged limitation:
+ * rejecting it would require a tight window that also rejects correct
+ * real output, and no observed VLM formats axes that way.
+ */
+function axisLabelAssociated(folded, label, letter, axisWord) {
+  const l = label.toLowerCase();
+  if (l.length === 0) return true;
+  const markerRe = new RegExp(
+    `(?:\\b${letter}\\b[\\s-]*axis|\\b${letter}\\b[\\s-]*-axis|${axisWord})`,
+  );
+  const sentences = folded.split(/[.!?\n]+/);
+  return sentences.some((s) => markerRe.test(s) && s.includes(l));
+}
+
+/**
+ * Confirms the chart's title or subject is identified, both axes are
+ * correctly associated with their labels (direction-correct: the
+ * x-label sits with the x-axis marker, the y-label with the y-axis),
+ * and a positive trend concept is asserted.
+ *
+ * REMOVED: the former `forbiddenTrends` naive-substring negation
+ * check, which flagged correct answers that mentioned a forbidden
+ * word in negation ("the trend is increasing, not flat" failed
+ * because "flat" matched — see vision-evaluator-fix-review C2). The
+ * broadened positive-trend requirement is the load-bearing filter: a
+ * model that omits every synonym already fails.
  */
 export function evaluateChart(assertion, text) {
   const folded = fold(text);
@@ -499,38 +619,24 @@ export function evaluateChart(assertion, text) {
       failureReason: "chart assertion must declare axes.x and axes.y",
     };
   }
-  // Accept either "X axis: Foo" or "Foo on the X axis" patterns.
-  const xAxisHit =
-    folded.includes(`${xLabel.toLowerCase()} on the x axis`) ||
-    folded.includes(`x axis: ${xLabel.toLowerCase()}`) ||
-    folded.includes(`x-axis: ${xLabel.toLowerCase()}`) ||
-    folded.includes(`${xLabel.toLowerCase()} (x)`) ||
-    folded.includes(`(x) ${xLabel.toLowerCase()}`);
-  const yAxisHit =
-    folded.includes(`${yLabel.toLowerCase()} on the y axis`) ||
-    folded.includes(`y axis: ${yLabel.toLowerCase()}`) ||
-    folded.includes(`y-axis: ${yLabel.toLowerCase()}`) ||
-    folded.includes(`${yLabel.toLowerCase()} (y)`) ||
-    folded.includes(`(y) ${yLabel.toLowerCase()}`);
-  if (!xAxisHit || !yAxisHit) {
+  if (!axisLabelAssociated(folded, xLabel, "x", "horizontal")) {
     return {
       passed: false,
-      failureReason: `chart axes not identified (x=${xLabel}, y=${yLabel})`,
+      failureReason: `chart x axis not associated with label: ${xLabel}`,
     };
   }
-  if (!containsTermFolded(folded, assertion.trend)) {
+  if (!axisLabelAssociated(folded, yLabel, "y", "vertical")) {
     return {
       passed: false,
-      failureReason: `dominant trend not asserted: ${assertion.trend}`,
+      failureReason: `chart y axis not associated with label: ${yLabel}`,
     };
   }
-  for (const forbidden of assertion.forbiddenTrends ?? []) {
-    if (containsTermFolded(folded, forbidden)) {
-      return {
-        passed: false,
-        failureReason: `contradictory trend asserted: ${forbidden}`,
-      };
-    }
+  const trendHit = CHART_TREND_SYNONYMS.some((syn) => foldedHasWord(folded, syn));
+  if (!trendHit) {
+    return {
+      passed: false,
+      failureReason: `dominant trend not asserted (expected one of: ${CHART_TREND_SYNONYMS.join(", ")})`,
+    };
   }
   return { passed: true };
 }

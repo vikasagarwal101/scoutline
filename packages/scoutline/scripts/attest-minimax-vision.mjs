@@ -278,25 +278,30 @@ function findEntryClose(body, openIdx) {
 // ---------------------------------------------------------------------------
 
 /**
- * Build the real MiniMax SDK through the same factory the Adapter uses.
+ * Call the real MiniMax VLM endpoint through the same direct transport
+ * the Adapter uses (Phase B — `fetchMiniMaxVlm` against
+ * `/v1/coding_plan/vlm`). The deleted `sdk-client.ts` / SDK-backed
+ * `sdk.vision.describe` path was removed in the v0.6.0 direct-transport
+ * refactor; this function mirrors the adapter's specialized-vision
+ * path: `resolveImageSource` → `convertToDataUri` → `fetchMiniMaxVlm`.
  * Imported lazily from the compiled dist so this script never runs
  * before `npm run build`.
  */
-async function describeWithRealSdk(operation, fixtureCase, prompt) {
+async function describeViaDirectTransport(operation, fixtureCase, prompt) {
   const { loadMiniMaxConfig } = await import(
     join(PACKAGE_ROOT, "dist", "providers", "minimax", "config.js")
   );
-  const { createMiniMaxSdk } = await import(
-    join(PACKAGE_ROOT, "dist", "providers", "minimax", "sdk-client.js")
-  );
-  const { resolveImageSource } = await import(
+  const { resolveImageSource, convertToDataUri } = await import(
     join(PACKAGE_ROOT, "dist", "providers", "minimax", "media.js")
   );
+  const { fetchMiniMaxVlm } = await import(
+    join(PACKAGE_ROOT, "dist", "providers", "minimax", "coding-plan-client.js")
+  );
   const config = loadMiniMaxConfig(process.env);
-  const sdk = createMiniMaxSdk(config);
-  const image = resolveImageSource(join(FIXTURES_DIR, fixtureCase.image));
-  const raw = await sdk.vision.describe({ image, prompt });
-  // Characterized envelope is `{ content: string }`.
+  const resolved = resolveImageSource(join(FIXTURES_DIR, fixtureCase.image));
+  const dataUri = await convertToDataUri(resolved);
+  const raw = await fetchMiniMaxVlm(config, dataUri, prompt);
+  // Direct-transport envelope is `{ content?: string, base_resp?: ... }`.
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     const record = raw;
     if (typeof record.content === "string" && record.content.trim().length > 0) {
@@ -473,7 +478,7 @@ function injectEntryIntoManifest(content, entry) {
 function canFlipLiveState(operation, refresh) {
   const content = readFileSync(CONFORMANCE_FILE, "utf8");
   const lineRe = new RegExp(
-    `(${JSON.stringify(operation)}:\\s*\\{[^}]*offline:\\s*"[^"]+"\\s*,\\s*live:\\s*)"([^"]+)"`,
+    `("?${operation}"?:\\s*\\{[^}]*offline:\\s*"[^"]+"\\s*,\\s*live:\\s*)"([^"]+)"`,
   );
   const match = content.match(lineRe);
   if (!match) {
@@ -504,7 +509,7 @@ function flipLiveStateToPass(operation, refresh) {
   }
   const content = readFileSync(CONFORMANCE_FILE, "utf8");
   const lineRe = new RegExp(
-    `(${JSON.stringify(operation)}:\\s*\\{[^}]*offline:\\s*"[^"]+"\\s*,\\s*live:\\s*)"([^"]+)"`,
+    `("?${operation}"?:\\s*\\{[^}]*offline:\\s*"[^"]+"\\s*,\\s*live:\\s*)"([^"]+)"`,
   );
   const updated = content.replace(lineRe, `$1"pass"`);
   writeFileSync(CONFORMANCE_FILE, updated, "utf8");
@@ -531,7 +536,7 @@ async function main() {
   const prompt = await composePromptViaMapping(operation, fixtureCase);
   let text;
   try {
-    text = await describeWithRealSdk(operation, fixtureCase, prompt);
+    text = await describeViaDirectTransport(operation, fixtureCase, prompt);
   } catch (err) {
     fail(`live MiniMax call failed for ${operation}: ${err.message ?? err}`);
   }

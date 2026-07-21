@@ -152,8 +152,9 @@ operation-specific prompt-composition Modules under
 | `diagram` | `scoutline vision diagram` | `diagram.ts` |
 | `chart` | `scoutline vision chart` | `chart.ts` |
 
-Each Module routes through `sdk.vision.describe` with one image — there
-is no dedicated MiniMax operation. The shared prompt composition helpers
+Each Module composes a prompt that the Adapter sends through the direct
+VLM transport (`fetchMiniMaxVlm`) with one image — there is no dedicated
+MiniMax operation and no SDK. The shared prompt composition helpers
 live in `vision-mappings/common.ts`; changing that file intentionally
 invalidates every mapping's revision.
 
@@ -167,18 +168,20 @@ holds:
 - offline conformance state is `pass`,
 - live conformance state is `pass`,
 - a sanitized compiled attestation matches the operation, fixture
-  version, Implementation identity (`mmx-cli-sdk@1.0.16`), and
+  version, Implementation identity (`scoutline-direct@0.5.0`), and
   generated mapping revision.
 
-In the current release, `ui-artifact` and `diagnose-error` are
-live-attested and supported at runtime. The remaining three operations
-(`extract-text`, `diagram`, `chart`) have offline `pass` and live
-`pending`. An explicit MiniMax selection for any of those three pending
-operations fails closed with `UNSUPPORTED_CAPABILITY` before credentials,
-media, transport, cache, or any other Provider is touched (FR-023,
-FR-024). There is **no automatic Z.AI fallback** for an explicit MiniMax
-selection — drop `--provider minimax` (or `unset SCOUTLINE_PROVIDER`)
-to route through Z.AI, which supports every specialized operation.
+In the current release, `ui-artifact`, `extract-text`, `diagnose-error`,
+and `diagram` are live-attested and supported at runtime. The remaining
+operation (`chart`) has offline `pass` and live `pending` — its fixture
+image has a rotated, low-resolution Y-axis label that VLMs read
+inconsistently, which is a fixture-image-quality blocker rather than an
+evaluator issue. An explicit MiniMax selection for `chart` fails closed
+with `UNSUPPORTED_CAPABILITY` before credentials, media, transport,
+cache, or any other Provider is touched (FR-023, FR-024). There is
+**no automatic Z.AI fallback** for an explicit MiniMax selection — drop
+`--provider minimax` (or `unset SCOUTLINE_PROVIDER`) to route through
+Z.AI, which supports every specialized operation.
 
 **No environment variable, flag, or configuration value can promote a
 mapping to supported.** Support is driven exclusively by the compiled

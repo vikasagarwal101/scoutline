@@ -31,7 +31,7 @@ export const MINIMAX_VISION_MAPPING_REVISIONS: Readonly<
   Record<SpecializedVisionOperation, string>
 > = Object.freeze({
   "ui-artifact": "7428094e0ed28452b8c76290341b08d56e6581f2de543daf803049c418fc9fe8",
-  "extract-text": "8c87d739d3aae6dc1df7c3659c68536a8237d95f9dc611a3977166b143c35ce7",
+  "extract-text": "6387a8d3492f819a921105a14a791db9a78e7b14409bcbd4fce48a6e7dcc61c3",
   "diagnose-error": "f8ba9fc0c8053b3384a24395fc6100c6587c0af3280c0d96ac74f4b9f06ad18e",
   "diagram": "a665e58f86ede08feb6100d1c74153b21715e76e47955e469c2f027b546ffdfd",
   "chart": "1383fa97703b4833ce23001d1f36a68bb19b369c65909b9eb76aa50f7599ccf3",

@@ -155,16 +155,18 @@ operation is only routable through MiniMax when **every** condition holds:
 - a sanitized compiled attestation matches the operation, fixture version,
   Implementation identity, and generated mapping revision.
 
-In the current release, `ui-artifact` and `diagnose-error` have offline
-`pass`, live `pass`, and compiled attestations — they are **supported at
-runtime** through MiniMax. The remaining three operations (`extract-text`,
-`diagram`, `chart`) have offline `pass` and live `pending`; they are
-**unsupported at runtime** through MiniMax. Selecting MiniMax explicitly
-for one of these operations fails closed with `UNSUPPORTED_CAPABILITY`
-before credentials, media, transport, cache, or any other Provider is
-touched (FR-023, FR-024). There is **no automatic Z.AI fallback** for an
-explicit MiniMax selection — call without `--provider minimax` (or unset
-`SCOUTLINE_PROVIDER`) to route through Z.AI instead.
+In the current release, `ui-artifact`, `extract-text`, `diagnose-error`, and
+`diagram` have offline `pass`, live `pass`, and compiled attestations —
+they are **supported at runtime** through MiniMax. The remaining operation
+(`chart`) has offline `pass` and live `pending`; it is **unsupported at
+runtime** through MiniMax (its fixture image has a rotated, low-resolution
+Y-axis label that VLMs read inconsistently — a fixture-image-quality
+blocker, not an evaluator issue). Selecting MiniMax explicitly for `chart`
+fails closed with `UNSUPPORTED_CAPABILITY` before credentials, media,
+transport, cache, or any other Provider is touched (FR-023, FR-024). There
+is **no automatic Z.AI fallback** for an explicit MiniMax selection —
+call without `--provider minimax` (or unset `SCOUTLINE_PROVIDER`) to
+route through Z.AI instead.
 
 No environment variable, flag, or configuration value can promote a
 mapping to supported. Support is driven exclusively by the compiled

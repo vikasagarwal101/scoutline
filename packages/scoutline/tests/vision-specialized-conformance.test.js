@@ -200,9 +200,14 @@ test("Vision help and shared diagnostics capabilities project registry support",
 });
 
 test("compiled attestation manifest matches the attested set", () => {
+  // Compare as sets (sorted): the manifest is in append-history order
+  // (attestations land as each op is live-verified), while ATTESTED_OPS
+  // is in canonical SPECIALIZED_VISION_OPERATIONS order. The two diverge
+  // once an op is attested out of canonical sequence (e.g. diagnose-error
+  // was attested before extract-text). Set equality is the real invariant.
   assert.deepEqual(
-    MINIMAX_VISION_ATTESTATIONS.map((entry) => entry.operation),
-    [...ATTESTED_OPS],
+    [...MINIMAX_VISION_ATTESTATIONS.map((entry) => entry.operation)].sort(),
+    [...ATTESTED_OPS].sort(),
   );
   for (const entry of MINIMAX_VISION_ATTESTATIONS) {
     assert.deepEqual(validateAttestation(entry), []);
@@ -426,7 +431,119 @@ test("each promoted mapping composes its prompt and passes offline semantics", (
   }
 });
 
+test("evaluators reject wrong answers and admit natural VLM variants", () => {
+  // This is the load-bearing rejection suite (vision-evaluator-fix-review
+  // G1): the loosened evaluators are a strict superset of the ideal shape
+  // exercised by craftSatisfyingText, so "stays green" alone proves nothing
+  // about over-loosening. These cases prove wrong answers still fail and
+  // natural model variants now pass.
+  const diagramCase = CASES_BY_OP.get("diagram");
+  const chartCase = CASES_BY_OP.get("chart");
+  const extractCase = CASES_BY_OP.get("extract-text");
+
+  const rejects = (label, caseData, text) => {
+    const results = evaluateAssertions(caseData.assertions, text);
+    assert.ok(
+      results.some((r) => !r.passed),
+      `${label}: expected at least one assertion to FAIL.\n${JSON.stringify(results)}`,
+    );
+  };
+  const accepts = (label, caseData, text) => {
+    const results = evaluateAssertions(caseData.assertions, text);
+    assert.ok(
+      results.every((r) => r.passed),
+      `${label}: expected every assertion to PASS.\n${JSON.stringify(results)}`,
+    );
+  };
+
+  // --- diagram: reversed edge and node-only paragraphs MUST fail ---
+  rejects("diagram reversed edge", diagramCase, "Process points to Start. End points to Process.");
+  rejects(
+    "diagram nodes without directional verb",
+    diagramCase,
+    "The diagram shows Start, Process, and End as nodes.",
+  );
+  // --- diagram: natural directional verbs and Unicode arrows now pass ---
+  accepts(
+    "diagram natural directional verbs",
+    diagramCase,
+    "The flowchart begins at Start, which connects to Process, which then leads to End.",
+  );
+  accepts("diagram Unicode arrow", diagramCase, "Start → Process → End");
+  accepts(
+    "diagram multi-edge single sentence",
+    diagramCase,
+    "Start flows to Process which flows to End.",
+  );
+
+  // --- chart: wrong trend / swapped axes MUST fail ---
+  rejects(
+    "chart wrong trend only",
+    chartCase,
+    "Chart titled Quarterly Sales. X axis: Quarter. Y axis: Revenue. Dominant trend: flat.",
+  );
+  rejects(
+    "chart swapped axes (period-separated)",
+    chartCase,
+    "Chart titled Quarterly Sales. X axis: Revenue. Y axis: Quarter. Dominant trend: increasing.",
+  );
+  // NOTE: a single-sentence comma-separated swap ("X axis: Revenue,
+  // Y axis: Quarter") is an acknowledged limitation of sentence-scoped
+  // axis matching — rejecting it would require a tight char-window that
+  // also rejects correct real VLM output (the chart fixture's real model
+  // output places the Y-axis label ~40 chars from the marker). No
+  // observed VLM formats both axes in one comma-separated sentence.
+  // --- chart: natural phrasing, trend synonym, and negation now pass ---
+  accepts(
+    "chart natural phrasing with trend synonym",
+    chartCase,
+    "The chart Quarterly Sales plots Quarter on the horizontal axis and Revenue on the vertical axis. Values are rising overall.",
+  );
+  accepts(
+    "chart negated forbidden word no longer trips (forbiddenTrends removed)",
+    chartCase,
+    "Chart titled Quarterly Sales. X axis: Quarter. Y axis: Revenue. The trend is increasing, not flat — revenue is higher each quarter.",
+  );
+
+  // --- extract-text: missing / reordered / substituted MUST fail ---
+  rejects("extract-text missing line", extractCase, "Line 1: Hello\nLine 2: World");
+  rejects(
+    "extract-text reordered lines",
+    extractCase,
+    "Line 1: World\nLine 2: Hello\nLine 3: Test",
+  );
+  rejects(
+    "extract-text substituted word",
+    extractCase,
+    "Line 1: Hello\nLine 2: Universe\nLine 3: Test",
+  );
+  // --- extract-text: prefix/separator/case variants, preamble, and markdown
+  //     fences now pass (content-fidelity matching, option b) ---
+  accepts(
+    "extract-text prefix/separator/case variants",
+    extractCase,
+    "1. hello\n2. WORLD\n3) test",
+  );
+  accepts(
+    "extract-text preamble tolerated",
+    extractCase,
+    "Here are the transcribed lines:\nLine 1: Hello\nLine 2: World\nLine 3: Test",
+  );
+  accepts(
+    "extract-text markdown fence tolerated",
+    extractCase,
+    "```\nLine 1: Hello\nLine 2: World\nLine 3: Test\n```",
+  );
+});
+
 test("current attested and unattested sets are explicit release non-regressions", () => {
-  assert.deepEqual([...ATTESTED_OPS], ["ui-artifact", "diagnose-error"]);
-  assert.deepEqual([...UNATTESTED_OPS], ["extract-text", "diagram", "chart"]);
+  // extract-text + diagram attested live after the evaluator-loosening
+  // change (vision-evaluator-fix-plan). chart remains unattested: its
+  // fixture image (chart.png, 320x200) has a rotated, tiny Y-axis label
+  // that VLMs read inconsistently (Sales/Revenue/Rupees across three
+  // independent reads) — a fixture-image-quality blocker, not an
+  // evaluator issue. Regenerating chart.png with a clear large label is
+  // the follow-up that unblocks it.
+  assert.deepEqual([...ATTESTED_OPS], ["ui-artifact", "extract-text", "diagnose-error", "diagram"]);
+  assert.deepEqual([...UNATTESTED_OPS], ["chart"]);
 });

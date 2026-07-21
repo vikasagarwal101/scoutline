@@ -533,7 +533,7 @@ export class ZaiMcpClient {
       args.location = params.location;
     }
 
-    return this.callTool<WebSearchResult[]>(getMcpToolName("search", "web_search_prime"), args);
+    return this.callToolWithPublicCacheIdentity<WebSearchResult[]>(getMcpToolName("search", "web_search_prime"), args);
   }
 
   // ============ Web Reader Methods ============
@@ -605,7 +605,7 @@ export class ZaiMcpClient {
   // ============ Vision Methods ============
 
   async visionAnalyze(params: { imageSource: string; prompt: string }): Promise<string> {
-    return this.callTool<string>(getMcpToolName("vision", "analyze_image"), {
+    return this.callToolWithPublicCacheIdentity<string>(getMcpToolName("vision", "analyze_image"), {
       image_source: params.imageSource,
       prompt: params.prompt,
     });
@@ -616,7 +616,7 @@ export class ZaiMcpClient {
     outputType: "code" | "prompt" | "spec" | "description";
     prompt: string;
   }): Promise<string> {
-    return this.callTool<string>(getMcpToolName("vision", "ui_to_artifact"), {
+    return this.callToolWithPublicCacheIdentity<string>(getMcpToolName("vision", "ui_to_artifact"), {
       image_source: params.imageSource,
       output_type: params.outputType,
       prompt: params.prompt,
@@ -628,7 +628,7 @@ export class ZaiMcpClient {
     prompt: string;
     programmingLanguage?: string;
   }): Promise<string> {
-    return this.callTool<string>(getMcpToolName("vision", "extract_text_from_screenshot"), {
+    return this.callToolWithPublicCacheIdentity<string>(getMcpToolName("vision", "extract_text_from_screenshot"), {
       image_source: params.imageSource,
       prompt: params.prompt,
       ...(params.programmingLanguage && { programming_language: params.programmingLanguage }),
@@ -640,7 +640,7 @@ export class ZaiMcpClient {
     prompt: string;
     context?: string;
   }): Promise<string> {
-    return this.callTool<string>(getMcpToolName("vision", "diagnose_error_screenshot"), {
+    return this.callToolWithPublicCacheIdentity<string>(getMcpToolName("vision", "diagnose_error_screenshot"), {
       image_source: params.imageSource,
       prompt: params.prompt,
       ...(params.context && { context: params.context }),
@@ -652,7 +652,7 @@ export class ZaiMcpClient {
     prompt: string;
     diagramType?: string;
   }): Promise<string> {
-    return this.callTool<string>(getMcpToolName("vision", "understand_technical_diagram"), {
+    return this.callToolWithPublicCacheIdentity<string>(getMcpToolName("vision", "understand_technical_diagram"), {
       image_source: params.imageSource,
       prompt: params.prompt,
       ...(params.diagramType && { diagram_type: params.diagramType }),
@@ -664,7 +664,7 @@ export class ZaiMcpClient {
     prompt: string;
     focus?: string;
   }): Promise<string> {
-    return this.callTool<string>(getMcpToolName("vision", "analyze_data_visualization"), {
+    return this.callToolWithPublicCacheIdentity<string>(getMcpToolName("vision", "analyze_data_visualization"), {
       image_source: params.imageSource,
       prompt: params.prompt,
       ...(params.focus && { analysis_focus: params.focus }),
@@ -676,7 +676,7 @@ export class ZaiMcpClient {
     actualImageSource: string;
     prompt: string;
   }): Promise<string> {
-    return this.callTool<string>(getMcpToolName("vision", "ui_diff_check"), {
+    return this.callToolWithPublicCacheIdentity<string>(getMcpToolName("vision", "ui_diff_check"), {
       expected_image_source: params.expectedImageSource,
       actual_image_source: params.actualImageSource,
       prompt: params.prompt,
@@ -684,7 +684,7 @@ export class ZaiMcpClient {
   }
 
   async visionVideo(params: { videoSource: string; prompt: string }): Promise<string> {
-    return this.callTool<string>(getMcpToolName("vision", "analyze_video"), {
+    return this.callToolWithPublicCacheIdentity<string>(getMcpToolName("vision", "analyze_video"), {
       video_source: params.videoSource,
       prompt: params.prompt,
     });

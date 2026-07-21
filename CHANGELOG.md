@@ -6,6 +6,61 @@ All notable changes to this project will be documented in this file.
 
 _No published changes yet. See `docs/plans/` for in-flight work._
 
+## [0.6.1] - 2026-07-21
+
+Patch release fixing the Z.AI Search name-translation defect that
+surfaced during the 0.6.0 release's live verification run. The P2-03
+public→internal name-translation fix had landed for `zread` and
+reader methods but missed `webSearch` and all 8 vision methods.
+
+### Fixed
+- **Z.AI `webSearch` capability no longer fails with a generic
+  "MCP tool call failed" error.** `webSearch` was routing through
+  the unresolving `callTool` path, which forwarded the public dotted
+  name (`scoutline.zai.search.web_search_prime`) verbatim to UTCP —
+  but UTCP registered the tool under the sanitized internal name
+  (`scoutline_zai.search.web_search_prime`, with the manual-segment
+  dots replaced by underscores). UTCP couldn't find the public name
+  and the call failed. The fix routes `webSearch` through
+  `callToolWithPublicCacheIdentity`, which resolves the public name
+  to the internal UTCP identity on a cache miss — the same pattern
+  already in use for `zread` and reader methods.
+- **All 8 vision methods (`analyze_image`, `ui_to_artifact`,
+  `extract_text_from_screenshot`, `diagnose_error_screenshot`,
+  `understand_technical_diagram`, `analyze_data_visualization`,
+  `ui_diff_check`, `analyze_video`) received the same fix.** They
+  had the identical routing bug; they were equally broken but
+  unexercised by the live suite unless `ZAI_TEST_ENABLE_VISION=1`
+  was set. Fixing all 9 methods (webSearch + 8 vision) in one pass
+  prevents the same bug class from surfacing later.
+
+### Changed
+- Three P0-03 baseline tests in `tests/mcp-live.test.js` updated to
+  reflect the fixed state:
+  - **"Normal Search via webSearch reports translation defect
+    (P0-03 baseline)"** — was a negative test asserting the defect
+    existed (expecting `webSearch` to throw with a name-mismatch
+    error). Rewritten as **"Normal Search via webSearch returns a
+    Z.AI result array (P2-03 regression)"** — a positive regression
+    test asserting `webSearch` succeeds and returns an array. The
+    stale negative structure should have been flipped when P2-03
+    landed but wasn't.
+  - **"includes expected core tools"** — search tool name corrected
+    from `webSearchPrime` (camelCase) to `web_search_prime`
+    (snake_case) to match what the Z.AI server actually exposes.
+    Reader keeps `webReader` (camelCase — the server exposes reader
+    under that exact name).
+  - **"calls every discovered tool via mapped raw names"** — same
+    snake_case correction for the search handler key + invocation.
+
+### Verification
+
+Build ✓; offline suite **1668/1668** passing (unchanged from 0.6.0
+— the fix is live-gated); live run **6/6 passing** (3 Z.AI tests
+that previously failed now pass; 2 MiniMax parity tests still pass;
+1 discovery smoke test still passes). Public `scoutline.zai.*` raw
+tool surface unchanged.
+
 ## [0.6.0] - 2026-07-21
 
 The MiniMax direct-transport series lands ten commits across three

@@ -35,10 +35,7 @@ import { fileURLToPath } from "node:url";
 
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
-import {
-  deriveSharedCapabilities,
-  deriveZaiOnlyCapabilities,
-} from "../dist/capabilities/diagnostics.js";
+import { deriveCapabilityMatrix } from "../dist/capabilities/diagnostics.js";
 import { main } from "../dist/index.js";
 import { createNodeCommandInvocationAdapter } from "../dist/node-command-invocation-adapter.js";
 
@@ -598,42 +595,40 @@ describeIfLive("Provider live Doctor — full probes", () => {
       assert.strictEqual(entry.configured, true, `${entry.provider} is configured`);
       assert.strictEqual(entry.status, "ok", `${entry.provider} probe succeeded`);
     }
-    // Shared capabilities include the base four (attested specialized ops
-    // extend this list, so a subset check tracks attestation state).
-    const shared = [...report.sharedCapabilities];
+    // Capability matrix: every advertised capability is visible with its
+    // supplying providers. search lists both built-ins; capabilities
+    // MiniMax lacks list only Z.AI.
+    const matrix = report.capabilityMatrix;
+    const matrixFor = (cap) => [
+      ...(matrix.find((entry) => entry.capability === cap)?.providers ?? []),
+    ];
     for (const cap of ["search", "vision.interpret-image", "quota", "diagnostics"]) {
-      assert.ok(shared.includes(cap), `sharedCapabilities includes ${cap}`);
+      assert.ok(matrixFor(cap).length > 0, `capabilityMatrix has an entry for ${cap}`);
     }
-    // P6-06: Doctor derives sharedCapabilities and zaiOnlyCapabilities
-    // from the built-in descriptors (intersection across both for
-    // shared, Z.AI-minus-union-of-others for Z.AI-only). The live
-    // report MUST match the exact descriptor-derived expectations —
-    // no hand-maintained alias list, no parallel base-release set.
-    const expectedShared = [
-      ...deriveSharedCapabilities([createZaiDescriptor(), createMiniMaxDescriptor()]),
-    ];
-    const expectedZaiOnly = [
-      ...deriveZaiOnlyCapabilities([createZaiDescriptor(), createMiniMaxDescriptor()]),
-    ];
+    // Doctor Schema v2: Doctor derives capabilityMatrix from the
+    // built-in descriptors (per-capability provider list across all
+    // descriptors). The live report MUST match the exact
+    // descriptor-derived matrix — no hand-maintained alias list.
+    const expectedMatrix = deriveCapabilityMatrix([
+      createZaiDescriptor(),
+      createMiniMaxDescriptor(),
+    ]);
     assert.deepStrictEqual(
-      shared,
-      expectedShared,
-      "live sharedCapabilities matches descriptor-derived intersection",
+      matrix.map(({ capability, providers }) => [capability, [...providers]]),
+      expectedMatrix.map(({ capability, providers }) => [capability, [...providers]]),
+      "live capabilityMatrix matches descriptor-derived per-capability provider list",
+    );
+    // Invariant: repository-exploration lists only Z.AI (Z.AI advertises
+    // it, MiniMax does not).
+    assert.deepStrictEqual(
+      matrixFor("repository-exploration"),
+      ["zai"],
+      "repository-exploration lists only Z.AI while MiniMax lacks it",
     );
     assert.deepStrictEqual(
-      [...report.zaiOnlyCapabilities],
-      expectedZaiOnly,
-      "live zaiOnlyCapabilities matches descriptor-derived Z.AI-minus-others set",
-    );
-    // P6-06 invariant: repository-exploration lands in Z.AI-only
-    // (Z.AI advertises it, MiniMax does not).
-    assert.ok(
-      report.zaiOnlyCapabilities.includes("repository-exploration"),
-      "repository-exploration is Z.AI-only while MiniMax lacks it",
-    );
-    assert.ok(
-      !report.sharedCapabilities.includes("repository-exploration"),
-      "repository-exploration is NOT shared while MiniMax lacks it",
+      [...matrixFor("search")].sort(),
+      ["minimax", "zai"],
+      "search lists both built-ins",
     );
   });
 });

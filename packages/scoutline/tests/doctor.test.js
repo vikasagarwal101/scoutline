@@ -1,11 +1,11 @@
 /**
- * Doctor — Provider-Aware Diagnostics (P4-04, DESIGN.md §14).
+ * Doctor — Provider-Aware Diagnostics (P4-04, DESIGN.md §14, Doctor Schema v2).
  *
- * Verifies the schema-version-1 diagnostics report and doctor exit
+ * Verifies the schema-version-2 diagnostics report and doctor exit
  * semantics across every Provider configuration combination:
- *   - Report metadata: effective Provider, shared Capabilities,
- *     Z.AI-only Capabilities, Node compatibility, one entry per
- *     built-in Provider in registry order.
+ *   - Report metadata: effective Provider, capability matrix
+ *     (per-capability provider list), Node compatibility, one entry
+ *     per built-in Provider in registry order.
  *   - Each entry: provider, configured, declared Capabilities, status
  *     ok/error/skipped, redacted error only for `error`.
  *   - Neither key -> both skipped (not-configured), exit 1 (effective
@@ -40,8 +40,7 @@ import {
   DOCTOR_HELP,
 } from "../dist/commands/doctor.js";
 import {
-  deriveSharedCapabilities,
-  deriveZaiOnlyCapabilities,
+  deriveCapabilityMatrix,
   diagnosticErrorFromError,
 } from "../dist/capabilities/diagnostics.js";
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
@@ -133,7 +132,7 @@ function baseDeps({ descriptors, env, effectiveProvider, noTools = false, sleep 
 // ---------------------------------------------------------------------------
 
 describe("doctor diagnostics — report metadata (P4-04)", () => {
-  it("exposes a schema-version-1 report with effective Provider, shared + Z.AI-only lists, Node info, and one entry per built-in Provider", async () => {
+  it("exposes a schema-version-2 report with effective Provider, capability matrix, Node info, and one entry per built-in Provider", async () => {
     const env = { Z_AI_API_KEY: ZAI_KEY, MINIMAX_API_KEY: MINIMAX_KEY };
     const descriptors = [
       makeZaiDescriptor({ listToolsImpl: () => [] }),
@@ -146,36 +145,37 @@ describe("doctor diagnostics — report metadata (P4-04)", () => {
       baseDeps({ descriptors, env, effectiveProvider: "zai" }),
     );
 
-    assert.strictEqual(report.schemaVersion, 1);
+    assert.strictEqual(report.schemaVersion, 2);
     assert.strictEqual(report.effectiveProvider, "zai");
-    // Doctor's sharedCapabilities and zaiOnlyCapabilities are derived
-    // from the descriptors passed to buildDiagnosticsReport (P6-06).
-    // The expected values mirror the same pure derivation against the
-    // two built-in descriptors: intersection across both for shared,
-    // Z.AI-minus-union-of-others for Z.AI-only.
+    // Doctor's capabilityMatrix is derived from the descriptors passed
+    // to buildDiagnosticsReport (Doctor Schema v2). The expected value
+    // mirrors the same pure derivation against the two built-in
+    // descriptors: per-capability provider list across all descriptors.
     const zai = createZaiDescriptor();
     const minimax = createMiniMaxDescriptor();
-    const expectedShared = deriveSharedCapabilities([zai, minimax]);
-    const expectedZaiOnly = deriveZaiOnlyCapabilities([zai, minimax]);
-    assert.deepStrictEqual([...report.sharedCapabilities], [...expectedShared]);
-    assert.deepStrictEqual([...report.zaiOnlyCapabilities], [...expectedZaiOnly]);
-    // Static guarantees: shared must NOT include repository-exploration
-    // or reader while MiniMax lacks them; Z.AI-only MUST include both.
-    assert.ok(
-      !report.sharedCapabilities.includes("repository-exploration"),
-      "repository-exploration excluded from shared while MiniMax lacks it",
+    const expectedMatrix = deriveCapabilityMatrix([zai, minimax]);
+    assert.deepStrictEqual(
+      report.capabilityMatrix.map(({ capability, providers }) => [capability, [...providers]]),
+      expectedMatrix.map(({ capability, providers }) => [capability, [...providers]]),
     );
-    assert.ok(
-      report.zaiOnlyCapabilities.includes("repository-exploration"),
-      "repository-exploration present in Z.AI-only",
+    // Static guarantees under two built-ins: repository-exploration and
+    // reader list only Z.AI (MiniMax lacks them); search lists both.
+    const matrixFor = (cap) =>
+      report.capabilityMatrix.find((entry) => entry.capability === cap)?.providers ?? [];
+    assert.deepStrictEqual(
+      [...matrixFor("repository-exploration")],
+      ["zai"],
+      "repository-exploration lists only Z.AI while MiniMax lacks it",
     );
-    assert.ok(
-      !report.sharedCapabilities.includes("reader"),
-      "reader excluded from shared while MiniMax lacks it (Reader Migration 04)",
+    assert.deepStrictEqual(
+      [...matrixFor("reader")],
+      ["zai"],
+      "reader lists only Z.AI while MiniMax lacks it (Reader Migration 04)",
     );
-    assert.ok(
-      report.zaiOnlyCapabilities.includes("reader"),
-      "reader present in Z.AI-only (Reader Migration 04)",
+    assert.deepStrictEqual(
+      [...matrixFor("search")].sort(),
+      ["minimax", "zai"],
+      "search lists both built-ins",
     );
     assert.strictEqual(report.node.version, process.version);
     assert.strictEqual(report.node.visionMcpCompatible, nodeMajor() >= 22);
@@ -323,7 +323,7 @@ describe("doctor diagnostics --no-tools constructs no transport (FR-034)", () =>
     const report = await buildDiagnosticsReport(
       baseDeps({ descriptors, env, effectiveProvider: "zai", noTools: true }),
     );
-    assert.strictEqual(report.schemaVersion, 1);
+    assert.strictEqual(report.schemaVersion, 2);
     assert.strictEqual(report.node.version, process.version);
     for (const entry of report.providers) {
       assert.strictEqual(entry.configured, true);
@@ -644,7 +644,7 @@ describe("doctor command wrapper (P4-04)", () => {
         buildDiagnosticsReport(baseDeps({ descriptors, env, effectiveProvider: "zai" })),
     });
     assert.strictEqual(result.kind, "data");
-    assert.strictEqual(result.data.schemaVersion, 1);
+    assert.strictEqual(result.data.schemaVersion, 2);
     assert.strictEqual(result.exitCode, 0);
   });
 
@@ -667,14 +667,14 @@ describe("doctor command wrapper (P4-04)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Descriptor-derived inventory (P6-06).
+// Descriptor-derived inventory (Doctor Schema v2).
 //
-// buildDiagnosticsReport MUST derive `sharedCapabilities` and
-// `zaiOnlyCapabilities` from `deps.descriptors` without calling
-// `descriptor.create()`. Under `--no-tools` no Adapter or transport
-// is constructed. The derived values are descriptor capability IDs
-// only (no hand-maintained aliases); repository-exploration lands in
-// Z.AI-only while MiniMax lacks it.
+// buildDiagnosticsReport MUST derive `capabilityMatrix` from
+// `deps.descriptors` without calling `descriptor.create()`. Under
+// `--no-tools` no Adapter or transport is constructed. The derived
+// values are descriptor capability IDs only (no hand-maintained
+// aliases); repository-exploration and reader list only Z.AI while
+// MiniMax lacks them.
 // ---------------------------------------------------------------------------
 
 /** Build a minimal pure descriptor double with explicit capability order. */
@@ -689,90 +689,87 @@ function capabilityDescriptor(id, capabilities, configured = true) {
   };
 }
 
-describe("doctor diagnostics — derived inventory (P6-06)", () => {
-  it("deriveSharedCapabilities intersects across descriptors, preserving first-descriptor order", () => {
+describe("doctor diagnostics — derived inventory (Doctor Schema v2)", () => {
+  it("deriveCapabilityMatrix lists providers per capability, first-descriptor order then subsequent unique", () => {
     const a = capabilityDescriptor("a", ["search", "vision.x", "quota", "diagnostics"]);
-    const b = capabilityDescriptor("b", ["search", "diagnostics"]);
-    const out = deriveSharedCapabilities([a, b]);
-    assert.deepStrictEqual([...out], ["search", "diagnostics"]);
+    const b = capabilityDescriptor("b", ["search", "diagnostics", "crawl"]);
+    const out = deriveCapabilityMatrix([a, b]);
+    assert.deepStrictEqual(
+      out.map(({ capability, providers }) => [capability, [...providers]]),
+      [
+        ["search", ["a", "b"]],
+        ["vision.x", ["a"]],
+        ["quota", ["a"]],
+        ["diagnostics", ["a", "b"]],
+        ["crawl", ["b"]],
+      ],
+    );
   });
 
-  it("deriveSharedCapabilities with a single descriptor returns that descriptor's capabilities verbatim", () => {
+  it("deriveCapabilityMatrix with a single descriptor lists only that descriptor for every capability", () => {
     const only = capabilityDescriptor("zai", ["search", "quota"]);
-    assert.deepStrictEqual([...deriveSharedCapabilities([only])], ["search", "quota"]);
+    assert.deepStrictEqual(
+      deriveCapabilityMatrix([only]).map(({ capability, providers }) => [
+        capability,
+        [...providers],
+      ]),
+      [
+        ["search", ["zai"]],
+        ["quota", ["zai"]],
+      ],
+    );
   });
 
-  it("deriveSharedCapabilities with an empty descriptor list yields an empty array", () => {
-    assert.deepStrictEqual([...deriveSharedCapabilities([])], []);
+  it("deriveCapabilityMatrix with an empty descriptor list yields an empty array", () => {
+    assert.deepStrictEqual([...deriveCapabilityMatrix([])], []);
   });
 
-  it("repository-exploration is excluded from shared while MiniMax lacks it", () => {
+  it("deriveCapabilityMatrix makes a 2-of-3 capability visible (the schema-v1 bug)", () => {
+    // The exact regression the schema-v2 change fixes: a capability
+    // supplied by 2-of-3 providers was invisible under the old
+    // intersection/minus pair. The matrix MUST list both suppliers.
+    const zai = capabilityDescriptor("zai", ["search", "reader"]);
+    const minimax = capabilityDescriptor("minimax", ["search"]);
+    const tavily = capabilityDescriptor("tavily", ["search", "reader", "crawl"]);
+    const out = deriveCapabilityMatrix([zai, minimax, tavily]);
+    const matrixFor = (cap) => [
+      ...(out.find((entry) => entry.capability === cap)?.providers ?? []),
+    ];
+    assert.deepStrictEqual(matrixFor("reader"), ["zai", "tavily"]);
+    assert.deepStrictEqual(matrixFor("crawl"), ["tavily"]);
+    assert.deepStrictEqual(matrixFor("search"), ["zai", "minimax", "tavily"]);
+  });
+
+  it("repository-exploration lists only Z.AI while MiniMax lacks it", () => {
     const zai = capabilityDescriptor("zai", [
       "search",
       "vision.interpret-image",
       "repository-exploration",
     ]);
     const minimax = capabilityDescriptor("minimax", ["search", "vision.interpret-image"]);
-    const shared = deriveSharedCapabilities([zai, minimax]);
-    assert.ok(!shared.includes("repository-exploration"));
+    const out = deriveCapabilityMatrix([zai, minimax]);
+    const repo = out.find((entry) => entry.capability === "repository-exploration");
+    assert.deepStrictEqual([...repo.providers], ["zai"]);
   });
 
-  it("reader is excluded from shared while MiniMax lacks it (Reader Migration 04)", () => {
+  it("reader lists only Z.AI while MiniMax lacks it (Reader Migration 04)", () => {
     const zai = capabilityDescriptor("zai", ["search", "vision.interpret-image", "reader"]);
     const minimax = capabilityDescriptor("minimax", ["search", "vision.interpret-image"]);
-    const shared = deriveSharedCapabilities([zai, minimax]);
-    assert.ok(!shared.includes("reader"));
+    const out = deriveCapabilityMatrix([zai, minimax]);
+    const reader = out.find((entry) => entry.capability === "reader");
+    assert.deepStrictEqual([...reader.providers], ["zai"]);
   });
 
-  it("deriveZaiOnlyCapabilities is Z.AI minus the union of every other descriptor, preserving Z.AI order", () => {
-    const zai = capabilityDescriptor("zai", [
-      "search",
-      "vision.interpret-image",
-      "repository-exploration",
-      "vision.diff",
-      "vision.video",
-    ]);
-    const minimax = capabilityDescriptor("minimax", ["search", "vision.interpret-image"]);
-    const out = deriveZaiOnlyCapabilities([zai, minimax]);
-    assert.deepStrictEqual([...out], ["repository-exploration", "vision.diff", "vision.video"]);
-  });
-
-  it("deriveZaiOnlyCapabilities includes repository-exploration for the production built-ins", () => {
+  it("capabilityMatrix includes reader for the production built-ins (Reader Migration 04)", () => {
     const zai = createZaiDescriptor();
     const minimax = createMiniMaxDescriptor();
-    const out = deriveZaiOnlyCapabilities([zai, minimax]);
-    assert.ok(out.includes("repository-exploration"));
+    const out = deriveCapabilityMatrix([zai, minimax]);
+    const reader = out.find((entry) => entry.capability === "reader");
+    assert.ok(reader, "reader is present in the matrix while Z.AI advertises it");
+    assert.deepStrictEqual([...reader.providers], ["zai"]);
   });
 
-  it("deriveZaiOnlyCapabilities includes reader for the production built-ins (Reader Migration 04)", () => {
-    const zai = createZaiDescriptor();
-    const minimax = createMiniMaxDescriptor();
-    const out = deriveZaiOnlyCapabilities([zai, minimax]);
-    assert.ok(out.includes("reader"), "reader is Z.AI-only while MiniMax lacks it");
-    assert.ok(
-      !deriveSharedCapabilities([zai, minimax]).includes("reader"),
-      "reader is NOT shared while MiniMax lacks it",
-    );
-  });
-
-  it("deriveZaiOnlyCapabilities returns an empty array when Z.AI is absent", () => {
-    const minimax = capabilityDescriptor("minimax", ["search"]);
-    assert.deepStrictEqual([...deriveZaiOnlyCapabilities([minimax])], []);
-  });
-
-  it("deriveZaiOnlyCapabilities returns an empty array for an empty descriptor list", () => {
-    assert.deepStrictEqual([...deriveZaiOnlyCapabilities([])], []);
-  });
-
-  it("deriveZaiOnlyCapabilities with Z.AI as the only descriptor returns Z.AI capabilities verbatim", () => {
-    const zai = capabilityDescriptor("zai", ["search", "repository-exploration"]);
-    assert.deepStrictEqual(
-      [...deriveZaiOnlyCapabilities([zai])],
-      ["search", "repository-exploration"],
-    );
-  });
-
-  it("buildDiagnosticsReport derives inventories from deps.descriptors without calling descriptor.create()", async () => {
+  it("buildDiagnosticsReport derives the matrix from deps.descriptors without calling descriptor.create()", async () => {
     // Throwing `create()` proves no descriptor construction runs during
     // the inventory derivation path. This works under both --no-tools
     // (always) and the probe path (the derivation step runs before any
@@ -788,8 +785,13 @@ describe("doctor diagnostics — derived inventory (P6-06)", () => {
         noTools: true,
       }),
     );
-    assert.deepStrictEqual([...report.sharedCapabilities], ["search"]);
-    assert.deepStrictEqual([...report.zaiOnlyCapabilities], ["repository-exploration"]);
+    assert.deepStrictEqual(
+      report.capabilityMatrix.map(({ capability, providers }) => [capability, [...providers]]),
+      [
+        ["search", ["zai", "minimax"]],
+        ["repository-exploration", ["zai"]],
+      ],
+    );
   });
 
   it("provider entries preserve descriptor order and declared capability order", async () => {

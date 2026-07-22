@@ -1216,7 +1216,7 @@ describe("invokeCommand — vision routed through the seam (P1-08)", () => {
 });
 
 describe("invokeCommand — doctor routed through the seam (P4-04)", () => {
-  it("doctor returns a schema-version-1 diagnostics report rendered through the seam", async () => {
+  it("doctor returns a schema-version-2 diagnostics report rendered through the seam", async () => {
     const { doctor } = await import("../dist/commands/doctor.js");
     const { adapter, stdout, stderr } = createRecordingAdapter();
     const status = await invokeCommand(
@@ -1224,10 +1224,12 @@ describe("invokeCommand — doctor routed through the seam (P4-04)", () => {
       () =>
         doctor({
           buildReport: async () => ({
-            schemaVersion: 1,
+            schemaVersion: 2,
             effectiveProvider: "zai",
-            sharedCapabilities: ["search", "vision.interpret-image", "quota", "diagnostics"],
-            zaiOnlyCapabilities: ["reader"],
+            capabilityMatrix: [
+              { capability: "search", providers: ["zai", "minimax"] },
+              { capability: "reader", providers: ["zai"] },
+            ],
             node: { version: process.version, visionMcpCompatible: true },
             providers: [
               { provider: "zai", configured: true, capabilities: ["search"], status: "ok" },
@@ -1239,7 +1241,7 @@ describe("invokeCommand — doctor routed through the seam (P4-04)", () => {
     assert.strictEqual(status, 0);
     assert.strictEqual(stdout.length, 1);
     const report = JSON.parse(stdout[0]);
-    assert.strictEqual(report.schemaVersion, 1);
+    assert.strictEqual(report.schemaVersion, 2);
     assert.strictEqual(report.effectiveProvider, "zai");
     assert.strictEqual(report.providers[0].status, "ok");
     assert.deepStrictEqual(stderr, []);
@@ -1253,10 +1255,9 @@ describe("invokeCommand — doctor routed through the seam (P4-04)", () => {
       () =>
         doctor({
           buildReport: async () => ({
-            schemaVersion: 1,
+            schemaVersion: 2,
             effectiveProvider: "zai",
-            sharedCapabilities: [],
-            zaiOnlyCapabilities: [],
+            capabilityMatrix: [{ capability: "search", providers: ["zai"] }],
             node: { version: process.version, visionMcpCompatible: true },
             providers: [
               {

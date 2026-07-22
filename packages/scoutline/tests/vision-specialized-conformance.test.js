@@ -29,7 +29,7 @@ import { MINIMAX_VISION_MAPPINGS } from "../dist/providers/minimax/vision-mappin
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { VISION_HELP } from "../dist/commands/vision.js";
-import { deriveSharedCapabilities } from "../dist/capabilities/diagnostics.js";
+import { deriveCapabilityMatrix } from "../dist/capabilities/diagnostics.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_FILE = resolve(__dirname, "fixtures", "vision", "specialized-cases.json");
@@ -173,29 +173,37 @@ test("Vision help and shared diagnostics capabilities project registry support",
     assert.ok(VISION_HELP.includes(helpNeedleFor(op)));
   }
   assert.ok(VISION_HELP.includes("(Z.AI only)"));
-  // P6-06: Doctor's sharedCapabilities is now derived from descriptor
-  // intersection (Z.AI ∩ MiniMax, in Z.AI's declared capability order)
-  // rather than a hand-maintained base list. The derived list MUST
-  // contain every capability advertised by both built-ins — including
-  // any specialized op that is currently attested by MiniMax — and
-  // MUST NOT contain capabilities MiniMax lacks (e.g. vision.diff,
-  // vision.video, repository-exploration, reader).
-  const shared = deriveSharedCapabilities([createZaiDescriptor(), createMiniMaxDescriptor()]);
+  // Doctor Schema v2: the capability matrix lists, per capability, the
+  // providers that supply it (descriptor-derived). search,
+  // vision.interpret-image, quota, and diagnostics must list both
+  // built-ins; specialized ops list both iff attested by MiniMax;
+  // capabilities MiniMax lacks (vision.diff, vision.video,
+  // repository-exploration, reader) must list only Z.AI.
+  const matrix = deriveCapabilityMatrix([createZaiDescriptor(), createMiniMaxDescriptor()]);
+  const providersFor = (cap) => [
+    ...(matrix.find((entry) => entry.capability === cap)?.providers ?? []),
+  ];
   // Base capabilities both Providers advertise.
   for (const cap of ["search", "vision.interpret-image", "quota", "diagnostics"]) {
-    assert.ok(shared.includes(cap), `shared includes ${cap}`);
-  }
-  // Specialized ops appear iff attested by MiniMax (Z.AI always has them).
-  for (const op of SPECIALIZED_VISION_OPERATIONS) {
-    assert.equal(
-      shared.includes(`vision.${op}`),
-      ATTESTED_OPS.has(op),
-      `vision.${op} in shared iff attested`,
+    assert.deepStrictEqual(
+      [...providersFor(cap)].sort(),
+      ["minimax", "zai"],
+      `matrix lists both built-ins for ${cap}`,
     );
   }
-  // Capabilities MiniMax does not advertise stay out of shared.
+  // Specialized ops list both iff attested by MiniMax (Z.AI always has them).
+  for (const op of SPECIALIZED_VISION_OPERATIONS) {
+    const providers = providersFor(`vision.${op}`);
+    assert.equal(
+      providers.includes("minimax"),
+      ATTESTED_OPS.has(op),
+      `vision.${op} lists minimax iff attested`,
+    );
+    assert.ok(providers.includes("zai"), `vision.${op} always lists zai`);
+  }
+  // Capabilities MiniMax does not advertise list only Z.AI.
   for (const cap of ["vision.diff", "vision.video", "repository-exploration", "reader"]) {
-    assert.ok(!shared.includes(cap), `shared excludes ${cap}`);
+    assert.deepStrictEqual(providersFor(cap), ["zai"], `matrix lists only Z.AI for ${cap}`);
   }
 });
 

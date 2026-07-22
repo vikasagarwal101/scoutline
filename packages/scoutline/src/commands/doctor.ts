@@ -24,11 +24,7 @@ import type {
   DiagnosticsReport,
   ProviderDiagnostic,
 } from "../capabilities/diagnostics.js";
-import {
-  deriveSharedCapabilities,
-  deriveZaiOnlyCapabilities,
-  diagnosticErrorFromError,
-} from "../capabilities/diagnostics.js";
+import { deriveCapabilityMatrix, diagnosticErrorFromError } from "../capabilities/diagnostics.js";
 import { executeProviderOperation } from "../lib/execution.js";
 import { UnsupportedCapabilityError } from "../lib/errors.js";
 import { redactSecrets, configuredSecrets } from "../lib/redact.js";
@@ -100,14 +96,13 @@ async function probeProvider(
 }
 
 /**
- * Build a schema-version-1 {@link DiagnosticsReport}. Inventory
- * (`sharedCapabilities`, `zaiOnlyCapabilities`) is derived purely from
- * `deps.descriptors` — no descriptor.create(), no transport, no
- * production registry import. Under `--no-tools` the command returns
- * after metadata + configured-state evaluation. Otherwise each
- * configured Provider is probed through shared execution with settled
- * collection, preserving registry order and normalized redacted
- * failures.
+ * Build a schema-version-2 {@link DiagnosticsReport}. Inventory
+ * (`capabilityMatrix`) is derived purely from `deps.descriptors` — no
+ * descriptor.create(), no transport, no production registry import.
+ * Under `--no-tools` the command returns after metadata +
+ * configured-state evaluation. Otherwise each configured Provider is
+ * probed through shared execution with settled collection, preserving
+ * registry order and normalized redacted failures.
  */
 export async function buildDiagnosticsReport(
   deps: DoctorDiagnosticsDependencies,
@@ -134,10 +129,9 @@ export async function buildDiagnosticsReport(
   const cache = deps.cacheSummary === undefined ? undefined : { summary: deps.cacheSummary };
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     effectiveProvider: deps.effectiveProvider,
-    sharedCapabilities: deriveSharedCapabilities(deps.descriptors),
-    zaiOnlyCapabilities: deriveZaiOnlyCapabilities(deps.descriptors),
+    capabilityMatrix: deriveCapabilityMatrix(deps.descriptors),
     node: {
       version: process.version,
       visionMcpCompatible: nodeMajor() >= 22,
@@ -240,40 +234,45 @@ Doctor - Provider-aware environment and connectivity diagnostics
 
 Usage: scoutline doctor [options]
 
-Reports a schema-version-1 diagnostics report listing every built-in
-Provider (zai, minimax) with its configured state, declared
+Reports a schema-version-2 diagnostics report listing every built-in
+Provider (zai, minimax, tavily) with its configured state, declared
 Capabilities, and connectivity status. The effective Provider (resolved
 from --provider, SCOUTLINE_PROVIDER, or the default zai) is the
-Provider that serves the shared Capabilities shared across every
-built-in descriptor. The sharedCapabilities and zaiOnlyCapabilities
-fields are derived from descriptor metadata, so they always reflect
-the descriptors passed to this command.
+Provider that serves a requested capability. The capabilityMatrix field
+lists, for each advertised capability, which providers supply it —
+derived from descriptor metadata, so it always reflects the descriptors
+passed to this command.
 
 Z.AI connectivity is probed through MCP tool discovery; MiniMax
 connectivity through a single raw quota probe that authenticates
-without a generative request.
+without a generative request; Tavily connectivity through a single
+raw quota probe against the Tavily account endpoint.
 
 Repository exploration is a Provider Capability. Z.AI descriptor
 metadata advertises repository-exploration and the Z.AI Adapter
-supplies it; MiniMax advertises and supplies neither. The
-sharedCapabilities and zaiOnlyCapabilities fields above reflect that
-descriptor state (repository-exploration currently appears in
-zaiOnlyCapabilities).
+supplies it; MiniMax and Tavily advertise and supply neither. The
+capabilityMatrix field reflects that descriptor state
+(repository-exploration currently lists only Z.AI while MiniMax and
+Tavily lack it).
 
-Reader is a Provider Capability. Z.AI descriptor metadata advertises
-reader and the Z.AI Adapter supplies it; MiniMax advertises and
-supplies neither. reader currently appears in zaiOnlyCapabilities
-alongside repository-exploration.
+Reader is a Provider Capability. Z.AI and Tavily descriptor metadata
+both advertise reader; MiniMax advertises and supplies neither. The
+capabilityMatrix field lists both Z.AI and Tavily for reader.
+
+Crawl, Map, and Research are Provider Capabilities owned by Tavily.
+Z.AI and MiniMax do not advertise any of them; the capabilityMatrix
+lists Tavily alone for each. Selecting Z.AI or MiniMax for any of
+these commands returns UNSUPPORTED_CAPABILITY with no fallback.
 
 Public 'repo' and 'read' commands participate in Provider selection.
 They honour --provider / SCOUTLINE_PROVIDER / the default zai, route
-through the Z.AI Adapter's Repository and Reader Capabilities
-respectively, and return UNSUPPORTED_CAPABILITY when the selected
-Provider does not advertise the requested capability (e.g.
-'repo --provider minimax' or 'read --provider minimax' fail without
-falling back to Z.AI). A supported-but-unconfigured Z.AI returns
-ConfigurationError; supported-and-configured Z.AI dispatches through
-the Repository Explorer / Reader Adapter.
+through the matching Adapter's Repository / Reader Capability, and
+return UNSUPPORTED_CAPABILITY when the selected Provider does not
+advertise the requested capability (e.g. 'repo --provider minimax' or
+'read --provider minimax' fail without falling back to Z.AI). A
+supported-but-unconfigured Provider returns ConfigurationError; a
+supported-and-configured Provider dispatches through the corresponding
+Adapter.
 
 Options:
   --no-tools   Skip every connectivity probe (metadata-only). Under

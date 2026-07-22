@@ -1,7 +1,7 @@
 /**
- * Diagnostics Capability Contract (DESIGN.md §14, P4-04, P6-06).
+ * Diagnostics Capability Contract (DESIGN.md §14, P4-04, P6-06, Doctor Schema v2).
  *
- * Defines the schema-version-1 diagnostics report every `doctor`
+ * Defines the schema-version-2 diagnostics report every `doctor`
  * invocation returns, plus the capability contract each Provider
  * Adapter implements so its connectivity can be probed without a
  * generative request.
@@ -22,17 +22,19 @@
  *     hand-maintained inventory required those imports; the
  *     descriptor-derived inventory does not.
  *
- * Inventory derivation (P6-06):
- *   - `sharedCapabilities` is the intersection across every descriptor
- *     passed to `buildDiagnosticsReport`, preserving deterministic
- *     canonical order from the FIRST descriptor.
- *   - `zaiOnlyCapabilities` is the Z.AI descriptor's capabilities
- *     minus the union of every OTHER built-in descriptor's
- *     capabilities, preserving Z.AI descriptor order. Values are
- *     descriptor capability IDs only — no hand-maintained aliases.
- *   - `repository-exploration` is excluded from shared while any
- *     built-in lacks it, and included in Z.AI-only the moment Z.AI
- *     advertises it and another built-in does not.
+ * Inventory derivation (Doctor Schema v2):
+ *   - `capabilityMatrix` is the per-capability provider list across
+ *     every descriptor passed to `buildDiagnosticsReport`. It replaced
+ *     the schema-version-1 `sharedCapabilities` (intersection) and
+ *     `zaiOnlyCapabilities` (Z.AI-minus-others) pair, which silently
+ *     hid any capability shared by 2-of-3 providers under three
+ *     built-ins. The matrix is strictly more informative: every
+ *     capability is visible with exactly the providers that supply it.
+ *   - Capability order: first descriptor's declared order, then
+ *     capabilities unique to subsequent descriptors in descriptor
+ *     order. Provider order within an entry: descriptor order.
+ *   - Values are descriptor capability IDs only — no hand-maintained
+ *     aliases.
  */
 
 import type { ProviderCapability, ProviderDescriptor, ProviderId } from "../providers/types.js";
@@ -55,11 +57,21 @@ export interface ProviderDiagnostic {
   readonly error?: { code: ScoutlineErrorCode; message: string; help?: string };
 }
 
+/**
+ * One row of the schema-version-2 capability matrix: a capability and
+ * the providers (in descriptor order) that advertise it. Replaces the
+ * schema-version-1 `sharedCapabilities`/`zaiOnlyCapabilities` pair,
+ * which could not represent a capability supplied by 2-of-3 providers.
+ */
+export interface CapabilityProviderEntry {
+  readonly capability: ProviderCapability;
+  readonly providers: readonly ProviderId[];
+}
+
 export interface DiagnosticsReport {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly effectiveProvider: ProviderId;
-  readonly sharedCapabilities: readonly ProviderCapability[];
-  readonly zaiOnlyCapabilities: readonly string[];
+  readonly capabilityMatrix: readonly CapabilityProviderEntry[];
   readonly node: {
     readonly version: string;
     readonly visionMcpCompatible: boolean;
@@ -101,77 +113,64 @@ export interface DiagnosticsCapability {
 // ---------------------------------------------------------------------------
 
 /**
- * Derive the shared Capabilities inventory: the intersection of every
- * descriptor's `capabilities()` set, preserving deterministic
- * canonical order from the FIRST descriptor in the list.
+ * Derive the schema-version-2 capability matrix: for each capability
+ * advertised by any descriptor, the list of providers (in descriptor
+ * order) that supply it.
+ *
+ * Capability order:
+ *   - First, the FIRST descriptor's capabilities in their declared
+ *     order.
+ *   - Then, capabilities unique to each subsequent descriptor, in
+ *     descriptor order.
+ *
+ * Provider order within an entry: descriptor order (the order
+ * descriptors appear in the passed-in list).
  *
  * Edge cases:
  *   - Empty descriptor list: returns an empty array.
- *   - Single descriptor: returns that descriptor's capabilities in
- *     their declared order (the intersection of one set is itself).
- *   - Two or more: keeps a capability from the first descriptor iff
- *     every other descriptor also advertises it.
+ *   - Single descriptor: one entry per capability, each listing only
+ *     that descriptor's id.
+ *   - Two or more: a capability supplied by multiple descriptors lists
+ *     every supplying descriptor's id — unlike the schema-version-1
+ *     intersection/minus pair, nothing is hidden.
  *
- * The returned array is frozen so callers cannot mutate the cached
- * derivation in place.
+ * The returned array (and each entry's `providers`) is frozen so
+ * callers cannot mutate the cached derivation in place.
  */
-export function deriveSharedCapabilities(
+export function deriveCapabilityMatrix(
   descriptors: readonly ProviderDescriptor[],
-): readonly ProviderCapability[] {
+): readonly CapabilityProviderEntry[] {
   if (descriptors.length === 0) return Object.freeze([]);
-  const [first, ...rest] = descriptors;
-  if (rest.length === 0) {
-    return Object.freeze([...first.capabilities()]);
-  }
-  const otherSets = rest.map((d) => d.capabilities());
-  const out: ProviderCapability[] = [];
-  for (const cap of first.capabilities()) {
-    if (otherSets.every((set) => set.has(cap))) {
-      out.push(cap);
-    }
-  }
-  return Object.freeze(out);
-}
 
-/**
- * Derive the Z.AI-only Capabilities inventory: capabilities advertised
- * by the Z.AI descriptor minus the union of capabilities advertised by
- * every OTHER descriptor in the list. Preserves Z.AI descriptor order.
- *
- * Edge cases:
- *   - Empty descriptor list: returns an empty array.
- *   - Z.AI absent from the list: returns an empty array.
- *   - Z.AI present as the only descriptor: returns its capabilities
- *     verbatim (the "minus nothing" case).
- *   - Z.AI with other descriptors: each capability in Z.AI descriptor
- *     order is kept iff no other descriptor advertises it.
- *
- * The returned values are descriptor capability IDs only. No
- * hand-maintained aliases, no parallel base-release list, no
- * invented names. `repository-exploration` lands here naturally the
- * moment Z.AI advertises it and another built-in does not.
- */
-export function deriveZaiOnlyCapabilities(
-  descriptors: readonly ProviderDescriptor[],
-): readonly ProviderCapability[] {
-  const zai = descriptors.find((d) => d.id === "zai");
-  if (!zai) return Object.freeze([]);
-  const others = descriptors.filter((d) => d.id !== "zai");
-  if (others.length === 0) {
-    return Object.freeze([...zai.capabilities()]);
-  }
-  const union = new Set<ProviderCapability>();
-  for (const descriptor of others) {
-    for (const cap of descriptor.capabilities()) {
-      union.add(cap);
+  // Materialize each descriptor's capability set once (pure metadata).
+  const capabilitySets = descriptors.map((d) => d.capabilities());
+
+  // Establish deterministic capability order: first descriptor's
+  // declared order, then capabilities unique to subsequent descriptors
+  // in descriptor order.
+  const seen = new Set<ProviderCapability>();
+  const ordered: ProviderCapability[] = [];
+  for (const set of capabilitySets) {
+    for (const cap of set) {
+      if (!seen.has(cap)) {
+        seen.add(cap);
+        ordered.push(cap);
+      }
     }
   }
-  const out: ProviderCapability[] = [];
-  for (const cap of zai.capabilities()) {
-    if (!union.has(cap)) {
-      out.push(cap);
-    }
-  }
+
+  // For each capability, list the providers that advertise it, in
+  // descriptor order.
+  const out: CapabilityProviderEntry[] = ordered.map((cap) => {
+    const providers: ProviderId[] = [];
+    capabilitySets.forEach((set, index) => {
+      if (set.has(cap)) {
+        providers.push(descriptors[index].id);
+      }
+    });
+    return { capability: cap, providers: Object.freeze(providers) as readonly ProviderId[] };
+  });
+
   return Object.freeze(out);
 }
 

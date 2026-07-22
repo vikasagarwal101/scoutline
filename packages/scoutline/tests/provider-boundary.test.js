@@ -483,12 +483,11 @@ describe("Repository Explorer: imports no concrete Provider transport (P6-06)", 
     );
   });
 
-  it("Doctor command stays free of Provider transport imports (P6-06 derivation path)", async () => {
-    // The Doctor command now derives sharedCapabilities and
-    // zaiOnlyCapabilities from descriptors passed through deps.
-    // It MUST NOT reach into a concrete Adapter Module, the
-    // production registry (which transitively loads Adapters), or
-    // any transport layer.
+  it("Doctor command stays free of Provider transport imports (Doctor Schema v2 derivation path)", async () => {
+    // The Doctor command now derives capabilityMatrix from descriptors
+    // passed through deps. It MUST NOT reach into a concrete Adapter
+    // Module, the production registry (which transitively loads
+    // Adapters), or any transport layer.
     const source = await fs.readFile(DOCTOR_COMMAND_FILE, "utf8");
     const imports = extractImports(source);
     const forbidden = [
@@ -821,9 +820,7 @@ describe("MiniMax direct-transport isolation", () => {
       const source = await readSource(file);
       // Strip line and block comments so doc-comments that merely
       // reference the symbol by name don't trip the check.
-      const codeOnly = source
-        .replace(/\/\*[\s\S]*?\*\//g, "")
-        .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+      const codeOnly = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
       // Check the code for `ProviderQuotaFetch` identifier usage
       // (imports, type aliases, value references). Import specifiers
       // never carry the symbol name itself.
@@ -863,8 +860,9 @@ describe("MiniMax direct-transport isolation", () => {
       // `deps.fetch(`.
       const hasFetchCall = /\bf(?:etch)?\s*\(/.test(source);
       if (!hasFetchCall) continue;
-      const referencesMiniMax =
-        /api\.minimax\.io|api\.minimaxi\.com|coding_plan|baseUrl/.test(source);
+      const referencesMiniMax = /api\.minimax\.io|api\.minimaxi\.com|coding_plan|baseUrl/.test(
+        source,
+      );
       if (referencesMiniMax) callers.push(rel);
     }
     assert.deepStrictEqual(

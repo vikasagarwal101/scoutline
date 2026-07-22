@@ -311,6 +311,11 @@ then zai):
   - The 'read' command participates in Provider selection.
   - Z.AI advertises the reader Capability and supplies the Adapter;
     selecting zai routes Read through it.
+  - Tavily also advertises the reader Capability (powered by the
+    Tavily extract endpoint). Selecting tavily routes Read through
+    the Tavily Adapter. Some Z.AI-only options
+    (--with-links, --no-gfm, --keep-img-data-url, --with-images-summary)
+    are rejected with UNSUPPORTED_OPTION when tavily is selected.
   - MiniMax does NOT advertise reader. Selecting minimax (explicitly
     or via SCOUTLINE_PROVIDER) returns UNSUPPORTED_CAPABILITY with
     no fallback to Z.AI.
@@ -332,7 +337,7 @@ Options:
                   code | links | tables | headings
 
 Common Options:
-  --provider <id>            Override the active Provider (zai | minimax)
+  --provider <id>            Override the active Provider (zai | minimax | tavily)
   --output-format <mode>     One of: ${OUTPUT_MODE_LIST} (default: data)
   -O <mode>                  Alias for --output-format
 
@@ -383,4 +388,5 @@ Examples:
   scoutline read https://example.com/page --extract links            # links
   scoutline read https://en.wikipedia.org/wiki/X --extract headings  # section outline
   scoutline --provider minimax read https://example.com/   # UNSUPPORTED_CAPABILITY
+  scoutline --provider tavily read https://example.com/    # Tavily-backed extract
 `.trim();

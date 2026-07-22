@@ -1,8 +1,8 @@
 # Architecture
 
 Scoutline is a Node.js command-line client that presents several shared
-Capabilities through one consistent interface. It supports Z.AI and a
-MiniMax Token Plan Provider through a common Adapter boundary.
+Capabilities through one consistent interface. It supports Z.AI, the
+MiniMax Token Plan Provider, and Tavily through a common Adapter boundary.
 
 ## Runtime Flow
 
@@ -11,10 +11,10 @@ scoutline executable
   -> dist/index.js command dispatcher
   -> command handler
   -> Provider selection (--provider / SCOUTLINE_PROVIDER / default "zai")
-  -> Provider Adapter (zai or minimax)
+  -> Provider Adapter (zai, minimax, or tavily)
   -> shared execution (cache + retry)
-  -> Provider transport (Z.AI MCP / mmx-cli transitional SDK / MiniMax direct quota)
-  -> Provider service (Z.AI, ZRead, or MiniMax)
+  -> Provider transport (Z.AI MCP / mmx-cli transitional SDK / MiniMax direct quota / Tavily direct HTTP)
+  -> Provider service (Z.AI, ZRead, MiniMax, or Tavily)
 ```
 
 `packages/scoutline/bin/scoutline.js` is the published executable. It dynamically loads the compiled `dist/index.js` entry point and emits a structured load error if the package was not built.
@@ -33,17 +33,19 @@ credentials, transport lifecycle, Provider field mapping, and failure
 normalization. It never imports command presentation, output mode, or another
 Provider's Adapter.
 
-The production registry at `src/providers/registry.ts` is a static, two-entry
-list `[zai, minimax]`. There is no dynamic loading, no package-name lookup,
-no Adapter file paths, and no externally supplied factories. Tests inject
-descriptor lists explicitly through optional parameters.
+The production registry at `src/providers/registry.ts` is a static,
+three-entry list `[zai, minimax, tavily]`. There is no dynamic loading,
+no package-name lookup, no Adapter file paths, and no externally
+supplied factories. Tests inject descriptor lists explicitly through
+optional parameters.
 
 ### Built-in Providers
 
 | ID | Required credential | Region / endpoint | Notes |
 | --- | --- | --- | --- |
-| `zai` | `Z_AI_API_KEY` | `Z_AI_BASE_URL` / `Z_AI_MODE` | Default Provider |
-| `minimax` | `MINIMAX_API_KEY` | `MINIMAX_REGION` (`global` / `cn`) or `MINIMAX_BASE_URL` | Transitional `mmx-cli/sdk@1.0.16` for Search and Vision; direct quota transport |
+| `zai` | `Z_AI_API_KEY` | `Z_AI_BASE_URL` / `Z_AI_MODE` | Default Provider; MCP-backed transport |
+| `minimax` | `MINIMAX_API_KEY` | `MINIMAX_REGION` (`global` / `cn`) or `MINIMAX_BASE_URL` | Direct transport for Search, Vision, Quota; SDK removed in 0.6.0 |
+| `tavily` | `TAVILY_API_KEY` | `https://api.tavily.com` | Direct-HTTP transport; Search, Reader, Crawl, Map, Research, Quota, Diagnostics |
 
 Each Adapter exposes only the Capabilities the base release actually supports.
 The Descriptor advertises the same Capability set so support can be checked
@@ -63,21 +65,28 @@ outside the MiniMax Adapter and its transport tests.
 ## Shared Capabilities
 
 Provider selection applies to Search, Vision, quota, diagnostics,
-**repository exploration**, and **Reader**. Raw tools and Code Mode are
-Z.AI-only and ignore both the explicit flag and the environment variable.
+**repository exploration**, **Reader**, **Crawl**, **Map**, and
+**Research**. Raw tools and Code Mode are Z.AI-only and ignore both
+the explicit flag and the environment variable. Crawl, Map, and
+Research are Tavily-only at launch: only Tavily advertises the
+Capability, so any other Provider returns `UNSUPPORTED_CAPABILITY`
+with no fallback.
 
-| Capability | Z.AI | MiniMax | Command |
-| --- | --- | --- | --- |
-| `search` | Yes | Yes | `scoutline search` |
-| `vision.interpret-image` | Yes | Yes | `scoutline vision analyze` |
-| Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
-| Image diff / video | Yes | No | `scoutline vision diff`, `vision video` |
-| `quota` | Yes | Yes | `scoutline quota` |
-| `diagnostics` | Yes | Yes | `scoutline doctor` |
-| Reader | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | `scoutline read` |
-| Repository exploration | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | `scoutline repo ...` |
-| Raw tools | Yes | No | `scoutline tools`, `tool`, `call` |
-| Code Mode | Yes | No | `scoutline code ...` |
+| Capability | Z.AI | MiniMax | Tavily | Command |
+| --- | --- | --- | --- | --- |
+| `search` | Yes | Yes | Yes | `scoutline search` |
+| `vision.interpret-image` | Yes | Yes | No | `scoutline vision analyze` |
+| Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
+| Image diff / video | Yes | No | No | `scoutline vision diff`, `vision video` |
+| `quota` | Yes | Yes | Yes | `scoutline quota` |
+| `diagnostics` | Yes | Yes | Yes | `scoutline doctor` |
+| Reader | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | Yes (Z.AI-only options are rejected) | `scoutline read` |
+| Repository exploration | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | No (UNSUPPORTED_CAPABILITY, no fallback) | `scoutline repo ...` |
+| Crawl | No | No | Yes (Tavily-only at launch) | `scoutline crawl` |
+| Map | No | No | Yes (Tavily-only at launch) | `scoutline map` |
+| Research | No | No | Yes (Tavily-only at launch; 4-250 credits per request) | `scoutline research` |
+| Raw tools | Yes | No | No | `scoutline tools`, `tool`, `call` |
+| Code Mode | Yes | No | No | `scoutline code ...` |
 
 Specialized MiniMax Vision mappings remain conformance-gated and only move
 into the shared matrix once their offline and live attestation passes.
@@ -98,9 +107,17 @@ scheduling, dedupe, ranking, summary truncation, field projection, and
 presentation — is identical for both Providers. Result count is applied
 locally after normalization and never enters an Adapter request or cache key.
 
-Z.AI accepts domain, recency, content-size, and location controls. MiniMax
-rejects every one of those controls with `UNSUPPORTED_OPTION` before SDK
-access.
+Z.AI accepts domain, recency, content-size, location, and topic controls.
+MiniMax accepts topic only and rejects every other control with
+`UNSUPPORTED_OPTION` before any SDK access. Tavily accepts domain,
+recency, content-size, and topic natively (passes `topic` through
+unchanged) and rejects `location` as `UNSUPPORTED_OPTION`.
+
+`--topic` is therefore the only cross-Provider search control: every
+Provider advertises it. For Providers that lack a native topic
+parameter, the Adapter appends a small keyword to the query string
+inside `invoke()` (see `lib/search-topic.ts`); Tavily passes `topic`
+through to its API unchanged.
 
 ### Vision
 
@@ -143,6 +160,8 @@ with reason `not-configured`. No Adapter or transport is constructed.
 
 Z.AI connectivity uses MCP tool discovery. MiniMax connectivity uses a raw
 single-attempt quota probe that authenticates without a generative request.
+Tavily connectivity uses a raw single-attempt quota probe against the
+Tavily account endpoint that authenticates without a generative request.
 
 ## Repository Exploration (P6)
 
@@ -234,13 +253,23 @@ public Interface.
 
 ### Diagnostics inventory
 
-`sharedCapabilities` is the intersection across built-in descriptor
-metadata (in first-descriptor declared order); `zaiOnlyCapabilities` is
-Z.AI support minus the union of every other descriptor (in Z.AI declared
-order). `repository-exploration` is therefore `zaiOnlyCapabilities` while
-still participating in Provider selection. Doctor help explicitly names
-MiniMax as unsupported for `repo`, reports the effective Provider for
-shared capabilities, and never widens to M3 transport.
+The `DiagnosticsReport` (`schemaVersion: 2`) carries a
+`capabilityMatrix` derived purely from descriptor metadata. For each
+advertised capability, the matrix lists exactly which built-in
+Providers supply it. Capabilities supplied by 2-of-3 providers (Search,
+quota, diagnostics, reader with Z.AI + Tavily) are visible per
+Provider, not collapsed. Capabilities supplied by exactly one
+Provider (`repository-exploration`, `crawl`, `map`, `research`) are
+listed for that Provider alone.
+
+`sharedCapabilities` and `zaiOnlyCapabilities` are gone: their
+two-array derivation silently hid any capability supplied by 2-of-3
+providers. `deriveCapabilityMatrix` is the single inventory function;
+its output is always strictly more informative than the previous
+two-array view. Doctor help names MiniMax as unsupported for `repo`
+and Z.AI/MiniMax as unsupported for `crawl`, `map`, and `research`,
+reports the effective Provider for shared capabilities, and never
+widens to M3 transport.
 
 ## Reader (P7)
 
@@ -273,10 +302,17 @@ Key boundaries:
   support truth. MiniMax does not advertise `reader`; an explicit or
   environment-selected MiniMax returns `UNSUPPORTED_CAPABILITY` before
   `descriptor.isConfigured`, `descriptor.create`, credential resolution
-  for use, cache identity, or transport construction.
-- **Descriptor/Adapter agreement is mandatory.** The Z.AI descriptor
-  advertises `reader` and the created Adapter supplies `adapter.reader`;
-  the MiniMax descriptor advertises neither and the Adapter supplies none.
+  for use, cache identity, or transport construction. Tavily advertises
+  `reader`; selecting Tavily routes through the Tavily Adapter, which
+  rejects the Z.AI-only options (`--with-links`, `--no-gfm`,
+  `--keep-img-data-url`, `--with-images-summary`) with
+  `UNSUPPORTED_OPTION` when the user has explicitly set them to
+  `true`.
+- **Descriptor/Adapter agreement is mandatory.** The Z.AI and Tavily
+  descriptors advertise `reader`; both Adapters supply `adapter.reader`.
+  The MiniMax descriptor advertises neither and the Adapter supplies
+  none. A future Provider that disagrees in either direction fails
+  closed.
 - **No Explorer for Reader.** A single fetch does not need BFS, depth
   semantics, or canonical paths. The thin handler owns projection; the
   Adapter owns transport. This is the intentional asymmetry from `repo`.
@@ -343,21 +379,93 @@ public Interface.
 
 ### Diagnostics inventory
 
-`sharedCapabilities` is the intersection across built-in descriptor
-metadata; `zaiOnlyCapabilities` is Z.AI support minus the union of every
-other descriptor. `reader` is therefore `zaiOnlyCapabilities` while still
-participating in Provider selection. Doctor help explicitly names MiniMax
-as unsupported for `read`.
+`capabilityMatrix` is derived purely from descriptor metadata. The
+matrix lists Z.AI and Tavily as the suppliers of `reader`; MiniMax is
+absent because its descriptor does not advertise it. Doctor help names
+MiniMax as unsupported for `read`.
+
+## Tavily Capabilities (Crawl, Map, Research)
+
+`scoutline crawl`, `scoutline map`, and `scoutline research` participate
+in Provider selection. Only the Tavily descriptor advertises these
+Capabilities at launch; selecting Z.AI or MiniMax (explicitly or via
+`SCOUTLINE_PROVIDER`) returns `UNSUPPORTED_CAPABILITY` before
+`descriptor.isConfigured`, `descriptor.create`, credential resolution
+for use, cache identity, or transport construction, with no fallback.
+
+```text
+crawl argv + global flags
+  -> parse-level validation (URL scheme)
+  -> --provider / SCOUTLINE_PROVIDER / default zai
+  -> descriptor capability check (crawl)
+  -> descriptor.isConfigured (effective Provider)
+  -> descriptor.create -> Tavily Adapter
+       -> executeCrawlOperation (validate, identity, cache, retry, write)
+            -> Tavily Crawl Adapter (depth/breadth/select-paths mapping)
+            -> POST /crawl, normalized CrawlResult
+       -> projection: per-page --max-chars truncation
+  -> schema-version-1 CommandResult
+```
+
+Key boundaries:
+
+- **Capability ownership.** Crawl, Map, and Research are advertised
+  solely by the Tavily descriptor. The Tavily Adapter supplies the
+  Capability implementation. Z.AI and MiniMax descriptors do not
+  advertise them; their Adapters supply nothing.
+- **Map is the simplest of the three.** The Tavily `/map` endpoint
+  returns a URL set with no per-page content, so the handler has no
+  `--max-chars` projection. Crawl and Research are richer; the
+  handler projects with `--max-chars` (Research: report text; Crawl:
+  per-page content).
+- **Research runs an async create→poll lifecycle server-side.** The
+  Adapter's `invoke()` owns the full lifecycle, including
+  resume-on-restart (see [Research state file](#research-state-file))
+  and zero-retry on the cache-wrapped operation. The handler adds a
+  polling timeout (default 300 s) and registers a SIGINT handler that
+  prints the persisted `request_id` so the user can re-run the same
+  command to resume.
+
+### Research state file
+
+Research costs 4-250 credits per request. A research task runs
+asynchronously server-side: `POST /research` creates the task and
+returns a `request_id`; `GET /research/{id}` polls until completion.
+If the CLI exits (Ctrl-C, crash) mid-poll, the task keeps running
+and consuming credits. Without persistence, the next identical request
+would POST a SECOND task — a double charge.
+
+The Adapter persists `{ requestId, identityHash, createdAt, status }`
+to `~/.scoutline/research/<state-hash>.json` so the next invocation
+of the same request detects the in-flight task and polls it instead
+of creating a new one. The state-hash is deterministic for a given
+`{provider, capability, credentialFingerprint, request}` tuple (see
+`lib/research-state.ts → computeResearchStateHash`).
+
+Resilience contract:
+
+- `write()` uses `{ flag: "wx" }` for atomic creation. A concurrent
+  invocation that finds the file already present gets EEXIST and
+  polls the existing task instead of creating a new one.
+- `read()` catches JSON parse errors, deletes the corrupt file, and
+  returns `null` (treated as absent → new task created).
+- `remove()` deletes the file and ignores ENOENT (already gone).
+- Rotating the API key orphans old state files (correct — the old
+  task belongs to the old key's billing). The hash never contains a
+  raw credential.
 
 ## Command Layer
 
 | Module | Responsibility |
 | --- | --- |
 | `commands/vision.ts` | Eight vision operations with shared client lifecycle management. |
-| `commands/search.ts` | Search filtering, formatting, and multi-query result merging. |
+| `commands/search.ts` | Search filtering, formatting, and multi-query result merging. Topic control is part of the shared search controls (`--topic <general\|news\|finance>`). |
 | `commands/read.ts` | Thin read handler: parse-level validation (URL scheme, `--extract`), `executeReaderOperation` invocation, schema-v1 envelope projection (`--max-chars` content truncation, `--extract` slicing), output-mode presentation. Provider selection lives in `src/index.ts`. No Explorer module — Reader is a single fetch. |
 | `commands/repo.ts` | Thin command routing: parse, dispatch table, Explorer invocation, output mode. Provider selection lives in `src/index.ts`. |
 | `commands/repository-explorer.ts` | Provider-neutral Explorer: canonical paths, deterministic BFS, schema-v1 projection, local max-chars. |
+| `commands/crawl.ts` | Thin crawl handler: parse-level URL validation, `executeCrawlOperation`, per-page `--max-chars` projection, schema-v1 envelope. |
+| `commands/map.ts` | Thin map handler: parse-level URL validation, `executeMapOperation`, schema-v1 envelope (URLs only). |
+| `commands/research.ts` | Research handler: SIGINT-registered polling loop, `--max-chars` projection on the report, resume-on-restart via `lib/research-state.ts`, schema-v1 envelope. |
 | `commands/tools.ts` | MCP tool discovery, schema lookup, and raw calls. |
 | `commands/code.ts` | TypeScript tool chaining through UTCP Code Mode. |
 | `commands/doctor.ts`, `commands/quota.ts` | Provider-aware diagnostics and quota dashboard. |
@@ -365,16 +473,20 @@ as unsupported for `read`.
 
 Each command is responsible for input validation, silencing dependency logs,
 producing the final response, and closing its client in a `finally` block.
-`commands/repo.ts` and `commands/read.ts` are both intentionally thin — they
-own parse-level validation, request construction, and `CommandResult`
-wrapping. Neither owns a concrete Provider client, raw MCP name, response
-parser, BFS, cache or retry policy, transport construction, or close
-lifecycle. Provider selection (explicit `--provider`, `SCOUTLINE_PROVIDER`,
-default Z.AI), the capability support gate, the configured-but-unconfigured
-check, and Adapter creation live in `src/index.ts` (`handleRepository` and
-`handleRead`). The concerns themselves live under the Explorer
-(`commands/repository-explorer.ts`), the read handler
-(`commands/read.ts`), `lib/execution.ts`, and the Provider Adapter Modules.
+`commands/repo.ts`, `commands/read.ts`, `commands/crawl.ts`,
+`commands/map.ts`, and `commands/research.ts` are all intentionally thin
+— they own parse-level validation, request construction, and
+`CommandResult` wrapping. None owns a concrete Provider client, raw MCP
+name, response parser, BFS, cache or retry policy, transport
+construction, or close lifecycle. Provider selection (explicit
+`--provider`, `SCOUTLINE_PROVIDER`, default Z.AI), the capability
+support gate, the configured-but-unconfigured check, and Adapter
+creation live in `src/index.ts` (`handleRepository`, `handleRead`,
+`handleCrawl`, `handleMap`, `handleResearch`). The concerns themselves
+live under the Explorer (`commands/repository-explorer.ts`), the read
+handler (`commands/read.ts`), the crawl/map/research handlers
+(`commands/crawl.ts`, `commands/map.ts`, `commands/research.ts`),
+`lib/execution.ts`, and the Provider Adapter Modules.
 
 ## Shared Runtime Behavior
 
@@ -412,7 +524,7 @@ dependencies; the dispatcher (`src/index.ts`) wires them to the real
 
 ## Boundaries
 
-- The CLI does not own the web-search, reader, ZRead, vision, or quota implementations; it adapts their transport contracts.
-- The disk cache stores the normalized result of each operation (Search sources, File content, Directory listing, Reader content-read envelope, Quota dashboard, etc.). Repository and Reader entries are normalized before the cache write; raw upstream ZRead/WebReader responses never cross the Adapter boundary. Presentation flags therefore do not produce separate response-cache entries.
+- The CLI does not own the web-search, reader, ZRead, vision, quota, crawl, map, or research implementations; it adapts their transport contracts.
+- The disk cache stores the normalized result of each operation (Search sources, File content, Directory listing, Reader content-read envelope, Crawl pages, Map URLs, Research report, Quota dashboard, etc.). Repository, Reader, Crawl, Map, and Research entries are normalized before the cache write; raw upstream responses never cross the Adapter boundary. Presentation flags therefore do not produce separate response-cache entries.
 - Code Mode is an explicit advanced execution path. Normal commands should remain predictable wrappers around named operations.
 - Provider field names never appear in public output. Raw quota fields do not cross the normalized Interface; raw Search fields are mapped to `SearchSource` before any command code observes them.

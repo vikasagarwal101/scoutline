@@ -398,11 +398,10 @@ Cache hits construct and close no transport.
 
 ### Diagnostics inventory
 
-`sharedCapabilities` and `zaiOnlyCapabilities` are derived from descriptor
-metadata (intersection across built-in Providers; Z.AI minus the union of
-the others). `repository-exploration` is therefore `zaiOnlyCapabilities`
-while still participating in Provider selection. Doctor help names MiniMax
-as unsupported for `repo`.
+`capabilityMatrix` is derived from descriptor metadata: for each advertised
+capability, the providers that supply it (in descriptor order).
+`repository-exploration` therefore lists only `zai` while still participating
+in Provider selection. Doctor help names MiniMax as unsupported for `repo`.
 
 ### Non-goals
 
@@ -502,10 +501,10 @@ result. Cache hits construct and close no transport.
 
 ### Diagnostics inventory
 
-`sharedCapabilities` and `zaiOnlyCapabilities` are derived from descriptor
-metadata. `reader` is therefore `zaiOnlyCapabilities` while still
-participating in Provider selection, and Doctor help names MiniMax as
-unsupported for `read`.
+`capabilityMatrix` is derived from descriptor metadata: for each advertised
+capability, the providers that supply it. `reader` therefore lists only
+`zai` while still participating in Provider selection, and Doctor help names
+MiniMax as unsupported for `read`.
 
 ### Non-goals
 

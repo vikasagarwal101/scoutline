@@ -1,26 +1,29 @@
 ---
 name: scoutline
 description: |
-  Z.AI and MiniMax CLI providing:
+  Z.AI, MiniMax, and Tavily CLI providing:
   - Vision: image/video analysis, OCR, UI-to-code, error diagnosis (GLM-4.6V)
-  - Search: real-time web search with domain/recency filtering
-  - Reader: web page to markdown extraction (Provider Capability;
-    Z.AI supplies it; MiniMax returns UNSUPPORTED_CAPABILITY without fallback)
-  - Repo: GitHub code search and reading via ZRead (Provider Capability;
-    Z.AI supplies it; MiniMax returns UNSUPPORTED_CAPABILITY without fallback)
+  - Search: real-time web search with domain/recency/topic filtering
+  - Reader: web page to markdown extraction (Z.AI or Tavily)
+  - Crawl: multi-page website traversal (Tavily)
+  - Map: URL-set discovery without fetching pages (Tavily)
+  - Research: asynchronous deep research with citations (Tavily)
+  - Repo: GitHub code search and reading via ZRead (Z.AI)
   - Tools: MCP tool discovery, schemas, and raw calls (Z.AI)
   - Code: TypeScript tool chaining (Z.AI)
-  - Provider selection: --provider <zai|minimax> for shared capabilities,
-    repo, and read
-  Use for visual content analysis, web search, page reading, or GitHub
-  exploration. Requires Z_AI_API_KEY (default) or MINIMAX_API_KEY (with
-  --provider minimax).
+  - Provider selection: --provider <zai|minimax|tavily> for shared
+    capabilities, repo, read, crawl, map, and research
+  Use for visual content analysis, web search, page reading, multi-page
+  site traversal, deep research, or GitHub exploration. Requires
+  Z_AI_API_KEY (default), MINIMAX_API_KEY (with --provider minimax),
+  or TAVILY_API_KEY (with --provider tavily for Search/Reader/Crawl/
+  Map/Research).
 ---
 
 # Scoutline
 
-Access Z.AI and MiniMax capabilities via `npx scoutline`. The CLI is
-self-documenting — use `--help` at any level.
+Access Z.AI, MiniMax, and Tavily capabilities via `npx scoutline`. The
+CLI is self-documenting — use `--help` at any level.
 
 ## Setup
 
@@ -31,41 +34,65 @@ export Z_AI_API_KEY="your-api-key"
 # OR MiniMax Token Plan
 export MINIMAX_API_KEY="your-minimax-key"
 export MINIMAX_REGION=global  # optional: defaults to "global"; alternative is "cn"
+
+# OR Tavily (Search, Reader, Crawl, Map, Research)
+export TAVILY_API_KEY="your-tavily-key"
 ```
 
 Get a Z.AI key at: https://z.ai/manage-apikey/apikey-list
+Get a Tavily key at: https://app.tavily.com/home/api-keys
 
 ## Provider Selection
 
-Shared commands (`search`, `vision analyze`, `quota`, `doctor`), **`repo`**,
-and **`read`** accept the global `--provider <zai|minimax>` flag. Precedence
-is the flag, then the `SCOUTLINE_PROVIDER` environment variable, then the
-default `zai`. Provider selection is never inferred from credentials.
-Unknown values fail fast with `VALIDATION_ERROR`.
+Shared commands (`search`, `vision analyze`, `quota`, `doctor`),
+**`repo`**, **`read`**, **`crawl`**, **`map`**, and **`research`**
+accept the global `--provider <zai|minimax|tavily>` flag. Precedence
+is the flag, then the `SCOUTLINE_PROVIDER` environment variable, then
+the default `zai`. Provider selection is never inferred from
+credentials. Unknown values fail fast with `VALIDATION_ERROR`.
 
 `tools`, `tool`, `call`, and `code` accept the flag but ignore it; they
-remain Z.AI-only. MiniMax does not currently advertise the
-`repository-exploration` or `reader` Capabilities — selecting MiniMax
-(explicitly or via `SCOUTLINE_PROVIDER`) for any `repo` subcommand or for
-`read` returns `UNSUPPORTED_CAPABILITY` before descriptor configuration,
-Adapter creation, credential resolution for use, cache identity, or
-transport construction, with no Z.AI fallback.
+remain Z.AI-only.
+
+Capability coverage at launch:
+
+- `search` — Z.AI, MiniMax, Tavily (the only search control honored by
+  every Provider is `--topic <general|news|finance>`)
+- `vision.interpret-image` — Z.AI, MiniMax
+- `quota`, `diagnostics` — Z.AI, MiniMax, Tavily
+- `read` — Z.AI, Tavily (Tavily rejects Z.AI-only options:
+  `--with-links`, `--no-gfm`, `--keep-img-data-url`,
+  `--with-images-summary`)
+- `repo` — Z.AI only
+- `crawl`, `map`, `research` — Tavily only
+
+MiniMax does not currently advertise the `repository-exploration` or
+`reader` Capabilities — selecting MiniMax (explicitly or via
+`SCOUTLINE_PROVIDER`) for any `repo` subcommand or for `read` returns
+`UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter
+creation, credential resolution for use, cache identity, or transport
+construction, with no Z.AI fallback. Z.AI and MiniMax do not advertise
+`crawl`, `map`, or `research` — selecting either for those commands
+returns `UNSUPPORTED_CAPABILITY` with no Tavily fallback.
 
 ## Capability Matrix
 
-| Capability | Z.AI | MiniMax | Command |
-| --- | --- | --- | --- |
-| Search | Yes | Yes (no domain/recency/content-size/location) | `scoutline search` |
-| General single-image interpretation | Yes | Yes (JPG/JPEG/PNG/WebP ≤50 MiB) | `scoutline vision analyze` |
-| Specialized Vision (UI-to-code, OCR, error diagnosis, diagram) | Yes | Available (live-attested; conformance-gated) | `scoutline vision ui-to-code`, `vision extract-text`, `vision diagnose-error`, `vision diagram` |
-| Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | `scoutline vision chart` |
-| Two-image diff, video | Yes | No | `scoutline vision diff`, `vision video` |
-| Quota (normalized) | Yes | Yes | `scoutline quota [--all-providers]` |
-| Diagnostics | Yes | Yes | `scoutline doctor [--no-tools]` |
-| Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | `scoutline read` |
-| Repository exploration (search/read/tree) | Yes | **No** (UNSUPPORTED_CAPABILITY) | `scoutline repo ...` |
-| Raw tools | Yes | No | `scoutline tools`, `tool`, `call` |
-| Code Mode | Yes | No | `scoutline code` |
+| Capability | Z.AI | MiniMax | Tavily | Command |
+| --- | --- | --- | --- | --- |
+| Search | Yes | Yes (no domain/recency/content-size/location) | Yes (no location) | `scoutline search` |
+| General single-image interpretation | Yes | Yes (JPG/JPEG/PNG/WebP ≤50 MiB) | No | `scoutline vision analyze` |
+| Specialized Vision (UI-to-code, OCR, error diagnosis, diagram) | Yes | Available (live-attested; conformance-gated) | No | `scoutline vision ui-to-code`, `vision extract-text`, `vision diagnose-error`, `vision diagram` |
+| Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | No | `scoutline vision chart` |
+| Two-image diff, video | Yes | No | No | `scoutline vision diff`, `vision video` |
+| Quota (normalized) | Yes | Yes | Yes | `scoutline quota [--all-providers]` |
+| Diagnostics | Yes | Yes | Yes | `scoutline doctor [--no-tools]` |
+| Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes (rejects Z.AI-only options) | `scoutline read` |
+| Repository exploration (search/read/tree) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | `scoutline repo ...` |
+| Crawl | **No** | **No** | Yes | `scoutline crawl` |
+| Map | **No** | **No** | Yes | `scoutline map` |
+| Research (4-250 credits) | **No** | **No** | Yes | `scoutline research` |
+| Raw tools | Yes | No | No | `scoutline tools`, `tool`, `call` |
+| Code Mode | Yes | No | No | `scoutline code` |
 
 Vision results are never cached. Z.AI image limits are JPG/JPEG/PNG ≤5 MiB.
 Search result count is applied locally after normalization and is never sent
@@ -76,14 +103,17 @@ to either Provider.
 | Command | Purpose | Help |
 |---------|---------|------|
 | vision | Analyze images, screenshots, videos | `--help` for 8 subcommands |
-| search | Real-time web search | `--help` for filtering options |
-| read | Fetch web pages as markdown | `--help` for format options |
-| repo | GitHub code search and reading (Provider Capability) | `--help` for tree/search/read |
+| search | Real-time web search | `--help` for filtering options (incl. `--topic`) |
+| read | Fetch web pages as markdown (Z.AI or Tavily) | `--help` for format options |
+| crawl | Multi-page website traversal (Tavily) | `--help` for depth/breadth/filters |
+| map | URL-set discovery without fetching pages (Tavily) | `--help` for depth/breadth/filters |
+| research | Deep research with citations (Tavily; 4-250 credits) | `--help` for model/citation/timeout |
+| repo | GitHub code search and reading (Z.AI) | `--help` for tree/search/read |
 | quota | Provider-normalized plan usage dashboard | `--help` for `--all-providers` |
 | tools | List available MCP tools (Z.AI) | |
 | tool | Show tool schema | |
 | call | Raw MCP tool invocation | |
-| doctor | Provider-aware diagnostics | `--help` for `--no-tools` |
+| doctor | Provider-aware diagnostics (schema v2) | `--help` for `--no-tools` |
 | cache | Inspect or clear the local cache | `--help` for stats/clear |
 | code | TypeScript tool chaining (Z.AI) | |
 
@@ -107,6 +137,14 @@ npx scoutline --provider minimax vision analyze ./diagram.png "Explain this"
 npx scoutline --provider minimax quota
 npx scoutline doctor --provider minimax
 
+# Tavily (Search, Reader, Crawl, Map, Research)
+npx scoutline --provider tavily search "AI funding rounds" --topic news
+npx scoutline --provider tavily read https://example.com/
+npx scoutline --provider tavily crawl https://docs.example.com --depth 2
+npx scoutline --provider tavily map https://docs.example.com
+npx scoutline --provider tavily research "Rust async runtime comparison"
+npx scoutline doctor --provider tavily
+
 # All-Provider quota
 npx scoutline quota --all-providers
 
@@ -119,8 +157,8 @@ npx scoutline cache clear                 # delete every file in cache/ and tool
 
 `scoutline repo search`, `scoutline repo read`, and `scoutline repo tree`
 participate in Provider selection. Z.AI advertises and supplies
-`repository-exploration`; MiniMax does not, so selecting MiniMax returns
-`UNSUPPORTED_CAPABILITY` with no fallback.
+`repository-exploration`; MiniMax and Tavily do not, so selecting either
+returns `UNSUPPORTED_CAPABILITY` with no fallback.
 
 ### v0.2 → v1 schema migration (breaking)
 
@@ -182,9 +220,13 @@ legacy-key construction — ambient `process.env` is never reread.
 
 ## Reader
 
-`scoutline read` participates in Provider selection. Z.AI advertises and
-supplies `reader`; MiniMax does not, so selecting MiniMax returns
-`UNSUPPORTED_CAPABILITY` with no fallback.
+`scoutline read` participates in Provider selection. Z.AI and Tavily
+both advertise `reader`; Z.AI supplies it through the Z.AI Reader
+Adapter, and Tavily supplies it through the Tavily `/extract` endpoint.
+MiniMax does not, so selecting MiniMax returns `UNSUPPORTED_CAPABILITY`
+with no fallback. Tavily rejects the Z.AI-only options
+(`--with-links`, `--no-gfm`, `--keep-img-data-url`,
+`--with-images-summary`) with `UNSUPPORTED_OPTION` when set to `true`.
 
 ### v0.2 → v1 schema migration (breaking)
 
@@ -260,14 +302,18 @@ Default: **data-only** (raw output for token efficiency).
 Use `--output-format json` for `{ success, data, timestamp }` wrapping.
 
 `quota` returns a schema-version-1 `QuotaDashboard` (ADR-0001); `doctor`
-returns a schema-version-1 `DiagnosticsReport` (which now includes a
-one-line cache summary under `cache.summary`). Both are Provider-neutral.
-`repo` returns the schema-version-1 objects documented above; the standard
-envelope wraps them in `json`/`pretty` and the exact object is emitted in
-`data`. `read` returns the schema-version-1 content-read or extract-read
-envelope in `data`/`json`/`pretty`; text-oriented modes emit the `content`
-string for content reads (prose) and fall back to JSON for extract reads
-(data, not prose).
+returns a **schema-version-2** `DiagnosticsReport` carrying a
+`capabilityMatrix` field (per-capability list of supplying Providers)
+plus a one-line cache summary under `cache.summary`. Both are
+Provider-neutral. `repo` returns the schema-version-1 objects documented
+above; the standard envelope wraps them in `json`/`pretty` and the
+exact object is emitted in `data`. `read` returns the schema-version-1
+content-read or extract-read envelope in `data`/`json`/`pretty`;
+text-oriented modes emit the `content` string for content reads
+(prose) and fall back to JSON for extract reads (data, not prose).
+`crawl` and `research` return schema-version-1 structured values
+(`{schemaVersion, baseUrl|query, pages|report, ...}`) in `data` mode;
+`map` returns `{schemaVersion, baseUrl, urls, totalUrls}`.
 
 `cache stats` and `cache clear` return their raw JSON shape in `data`
 mode (`{dir, enabled, ttlMs, sizeCapBytes, responseCache, toolCache}`

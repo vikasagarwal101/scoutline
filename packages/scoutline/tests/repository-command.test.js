@@ -1718,10 +1718,10 @@ describe("P6-07A help text — repo participates in Provider selection; canonica
     await main(["--help"], { invocation: adapter, env: {} });
     const help = captured.join("\n");
     assert.match(help, /repo\s+GitHub repository exploration.*Provider Capability/s);
-    assert.match(help, /MiniMax returns UNSUPPORTED_CAPABILITY/);
+    assert.match(help, /MiniMax and Tavily return UNSUPPORTED_CAPABILITY/);
     assert.match(
       help,
-      /'repo' command participates in|'repo' and 'read' commands\s+participate in/,
+      /'repo',\s+'read',\s+'crawl',\s+'map',\s*\n?\s*and\s+'research'\s+commands\s+participate\s+in/,
     );
     assert.match(help, /Provider selection/);
   });

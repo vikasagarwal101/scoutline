@@ -6,10 +6,11 @@ gate.
 
 ## Provider Selection
 
-Shared commands (`search`, `vision analyze`, `quota`, `doctor`), **`repo`**,
-and **`read`** accept the global `--provider <zai|minimax>` flag. Precedence:
+Shared commands (`search`, `vision analyze`, `quota`, `doctor`),
+**`repo`**, **`read`**, **`crawl`**, **`map`**, and **`research`** accept
+the global `--provider <zai|minimax|tavily>` flag. Precedence:
 
-1. `--provider <zai|minimax>` on the command line
+1. `--provider <zai|minimax|tavily>` on the command line
 2. `SCOUTLINE_PROVIDER` environment variable
 3. Default `zai`
 
@@ -18,11 +19,13 @@ invocation. Provider selection is never inferred from credentials.
 
 `tools`, `tool`, `call`, and `code` accept the flag but ignore it; they
 remain Z.AI-only and do not validate the supplied value. `repo` and `read`
-participate in selection but only Z.AI currently supplies the
-`repository-exploration` and `reader` Capabilities — selecting MiniMax for
-either returns `UNSUPPORTED_CAPABILITY` before descriptor configuration,
-Adapter creation, credential resolution for use, cache identity, or
-transport construction, with no fallback.
+participate in selection: Z.AI and Tavily both supply `reader`; only
+Z.AI supplies `repository-exploration`. `crawl`, `map`, and `research`
+participate in selection but only Tavily currently supplies those
+Capabilities — selecting Z.AI or MiniMax for any of them returns
+`UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter
+creation, credential resolution for use, cache identity, or transport
+construction, with no fallback.
 
 ```bash
 # 1. Flag wins over everything
@@ -75,6 +78,37 @@ scoutline --provider minimax quota
 scoutline doctor --provider minimax
 ```
 
+## Tavily Configuration
+
+The Tavily Adapter is configured through one environment variable
+plus an optional per-request timeout. Scoutline does not read
+`~/.tavily/`, reuse Tavily OAuth state, or persist Tavily credentials
+anywhere on disk.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TAVILY_API_KEY` | Required for Tavily | Tavily API key. |
+| `TAVILY_TIMEOUT` | `30000` (ms) | Per-request timeout. |
+
+Rules:
+
+- `TAVILY_API_KEY` is required and non-empty.
+- The Tavily endpoint is `https://api.tavily.com` (no region selector).
+- `TAVILY_TIMEOUT` is read at call time; empty or non-numeric values
+  fall back to the default.
+- Scoutline does not invoke the `tavily` executable or require a global
+  installation.
+
+```bash
+export TAVILY_API_KEY="your-tavily-key"
+export TAVILY_TIMEOUT=60000
+
+scoutline --provider tavily search "AI policy"
+scoutline --provider tavily crawl https://example.com --depth 2
+scoutline --provider tavily research "Rust async runtime comparison"
+scoutline doctor --provider tavily
+```
+
 ## Provider-Specific Image Limits
 
 `scoutline vision analyze` enforces Provider-specific media rules before any
@@ -84,6 +118,7 @@ credential or transport access:
 | --- | --- | --- |
 | Z.AI | JPG, JPEG, PNG | 5 MiB |
 | MiniMax | JPG, JPEG, PNG, WebP | 50 MiB |
+| Tavily | n/a | Tavily does not advertise `vision.interpret-image` |
 
 Vision results are never written to the local response cache.
 
@@ -274,24 +309,28 @@ scoutline quota                       # effective Provider
 scoutline quota --all-providers       # every configured Provider; exit 1 if any fails
 ```
 
-`scoutline doctor` returns a schema-version-1 `DiagnosticsReport` listing
-every built-in Provider with its configured state, declared Capabilities,
-probe status, and a one-line cache summary under `cache.summary`. It exits
-1 when the effective Provider is unconfigured or any configured probe
-fails.
+`scoutline doctor` returns a **schema-version-2** `DiagnosticsReport`
+listing every built-in Provider with its configured state, declared
+Capabilities, probe status, and a one-line cache summary under
+`cache.summary`. It exits 1 when the effective Provider is unconfigured
+or any configured probe fails.
 
 ```bash
 scoutline doctor                # full diagnostics
 scoutline doctor --no-tools     # metadata only, no transport
 scoutline doctor --provider minimax
+scoutline doctor --provider tavily
 ```
 
-Inventory derivation is descriptor-driven: `sharedCapabilities` is the
-intersection across built-in Provider descriptors; `zaiOnlyCapabilities` is
-Z.AI support minus the union of every other built-in descriptor.
-`repository-exploration` and `reader` are therefore reported under Z.AI-only
-while still participating in Provider selection. Doctor help explicitly
-names MiniMax as unsupported for `repo` and `read`.
+Inventory derivation is descriptor-driven: `capabilityMatrix` lists, for
+each advertised capability, exactly which built-in Providers supply it.
+`sharedCapabilities` and `zaiOnlyCapabilities` are gone; their two-array
+derivation silently hid any capability supplied by 2-of-3 providers.
+The matrix replaces them. `repository-exploration` is reported under Z.AI
+alone; `reader` is reported under Z.AI and Tavily; `crawl`, `map`, and
+`research` are reported under Tavily alone. Doctor help explicitly names
+MiniMax as unsupported for `repo` and `read`; Z.AI and MiniMax as
+unsupported for `crawl`, `map`, and `research`.
 
 ### Repository Pipeline
 

@@ -4,7 +4,98 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-_No published changes yet. See `docs/plans/` for in-flight work._
+### Added
+- **Tavily Provider** as the third built-in Provider. New module
+  `src/providers/tavily/` with the direct-HTTP Adapter, credentials
+  module, and a shared `TavilyTransportDeps` injection seam (fetch +
+  timers). Default endpoint `https://api.tavily.com`; credential
+  `TAVILY_API_KEY`. The production registry at
+  `src/providers/registry.ts` grows from `[zai, minimax]` to
+  `[zai, minimax, tavily]`.
+- **Tavily capabilities** (5):
+  - `search` — same normalized `SearchSource[]` shape; accepts
+    `domain`, `recency`, `content-size`, and `topic` natively; rejects
+    `location` with `UNSUPPORTED_OPTION`.
+  - `reader` — backed by the Tavily `/extract` endpoint; same
+    normalized `ReaderFetchResult` shape; Z.AI-only options
+    (`--with-links`, `--no-gfm`, `--keep-img-data-url`,
+    `--with-images-summary`) are rejected with `UNSUPPORTED_OPTION`
+    when set to `true`.
+  - `crawl` — multi-page website traversal (depth 1-5, breadth 1-500,
+    limit, path regex filters, natural-language `instructions`,
+    per-page `--max-chars` projection). New `CrawlCapability` and
+    `CrawlRequest` / `CrawlResult` contracts under
+    `src/capabilities/crawl.ts`; new `scoutline crawl` command.
+  - `map` — URL-set discovery without fetching pages. New
+    `MapCapability` and `MapRequest` / `MapResult` contracts under
+    `src/capabilities/map.ts`; new `scoutline map` command.
+  - `research` — asynchronous deep research with citations (model
+    `mini` / `pro` / `auto`, output length, citation format, optional
+    domain restriction). Costs 4-250 credits per request. New
+    `ResearchCapability` and `ResearchRequest` / `ResearchResult`
+    contracts under `src/capabilities/research.ts`; new
+    `scoutline research` command.
+- **Tavily operational capabilities** (2):
+  - `quota` — normalized `QuotaDashboard` against the Tavily account
+    endpoint.
+  - `diagnostics` — raw quota probe without a generative request,
+    fed into the existing doctor pipeline.
+- **Shared search control `--topic <general|news|finance>`** —
+  accepted by every Provider. Tavily passes the topic natively to its
+  API; Z.AI and MiniMax lack a native topic parameter, so the Adapter
+  appends a small keyword to the query string inside `invoke()` (see
+  `lib/search-topic.ts`). The appendage is skipped when the query
+  already ends with the topic word (case-insensitive).
+- **Research state file** at `~/.scoutline/research/<state-hash>.json`
+  for resume-on-Ctrl-C. A research task runs asynchronously server-side
+  (POST then poll). If the CLI exits mid-poll, the task keeps running
+  and consuming credits; without persistence the next identical
+  request would POST a SECOND task (a double charge). The state file
+  records `{ requestId, identityHash, createdAt, status }` so the
+  next invocation polls the existing task instead. Atomic creation
+  via `{ flag: "wx" }`; corrupt files are deleted on read; ENOENT is
+  swallowed on remove.
+
+### Added (commands)
+- `scoutline crawl <url> [options]` — multi-page website traversal.
+  Options: `--depth`, `--breadth`, `--limit`, `--select-paths`,
+  `--exclude-paths`, `--instructions`, `--format`, `--content-size`,
+  `--timeout`, `--max-chars`, `--no-cache`. Tavily-only at launch.
+- `scoutline map <url> [options]` — URL-set discovery without
+  fetching pages. Options: `--depth`, `--breadth`, `--limit`,
+  `--select-paths`, `--exclude-paths`, `--instructions`, `--no-cache`.
+  Tavily-only at launch.
+- `scoutline research <query> [options]` — deep research with
+  citations. Options: `--model`, `--output-length`,
+  `--citation-format`, `--domain`, `--max-chars`, `--timeout`,
+  `--no-cache`. **CREDIT-INTENSIVE** (4-250 credits) — help text
+  carries an explicit disclaimer. Ctrl-C preserves the in-flight task
+  via the research state file; re-running the same command resumes
+  polling instead of creating a new task. Tavily-only at launch.
+
+### Changed
+- `scoutline --help` now lists `crawl`, `map`, and `research` as
+  top-level commands and advertises `--provider <zai|minimax|tavily>`
+  for shared capabilities.
+- `scoutline search --help` documents `--topic` and the per-Provider
+  control map; `--domain`/`--recency`/`--content-size`/`--location`
+  are explicitly Z.AI-only.
+- `scoutline read --help` documents Tavily as the second Reader
+  Provider and lists the Z.AI-only options it rejects.
+- `scoutline doctor --help` documents the schema-v2 `capabilityMatrix`
+  field and names Z.AI/MiniMax as unsupported for `crawl`/`map`/
+  `research`.
+
+### Breaking (data-mode)
+- **Doctor schema v2 — `capabilityMatrix` replaces `sharedCapabilities` /
+  `zaiOnlyCapabilities`.** `DiagnosticsReport.schemaVersion` bumped from `1`
+  to `2` (a TypeScript literal type, so any missed consumer fails at compile
+  time). The old two-array derivation silently hid any capability supplied by
+  2-of-3 providers; the matrix lists, for each advertised capability, exactly
+  which providers supply it. `deriveSharedCapabilities` and
+  `deriveZaiOnlyCapabilities` are removed and replaced by
+  `deriveCapabilityMatrix`. No capability information is lost — the matrix is
+  strictly more informative.
 
 ## [0.6.4] - 2026-07-21
 

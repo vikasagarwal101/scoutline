@@ -101,7 +101,7 @@ function isFinitePositive(value: unknown): value is number {
 function clampPercent(value: number): number {
   if (value < 0) return 0;
   if (value > 100) return 100;
-  return value;
+  return Math.round(value * 10) / 10;
 }
 
 /**

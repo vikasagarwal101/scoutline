@@ -34,6 +34,7 @@ import type {
 } from "../capabilities/reader.js";
 import { ScoutlineError } from "./errors.js";
 import { buildProviderCacheKey, type ResponseCache } from "./cache.js";
+import type { ProviderId } from "../providers/types.js";
 
 // ---------------------------------------------------------------------------
 // Retry policy
@@ -78,7 +79,10 @@ export type ProviderOperation =
   | "quota"
   | "diagnostics"
   | RepositoryOperationKind
-  | ReaderOperationKind;
+  | ReaderOperationKind
+  | "crawl"
+  | "map"
+  | "research";
 
 const DEFAULT_BASE_DELAY_MS = 500;
 const DEFAULT_MAX_DELAY_MS = 8000;
@@ -111,8 +115,14 @@ export function defaultRetryPolicy(operation: ProviderOperation): RetryPolicy {
     case "repository-read-file":
     case "repository-list-directory":
     case "reader-fetch":
-    default:
+    case "crawl":
+    case "map":
       return { ...base, maxRetries: 1 };
+    case "research":
+      // No retry — double-charge risk. The adapter's invoke() handles
+      // the full create→poll→state-file lifecycle internally (tech-plan
+      // §3); a transient failure on POST is terminal.
+      return { ...base, maxRetries: 0 };
   }
 }
 
@@ -520,6 +530,170 @@ export async function executeReaderOperation(
   );
 
   // 6. Cache the full normalized result before returning.
+  if (!options.noCache) {
+    await dependencies.cache.set(newKey, result);
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Generic cached operation execution (tech-plan §4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Identity used to read and write a provider-partitioned cache entry for
+ * a generic {@link CachedOperation}. `credentialFingerprint` is the full
+ * lowercase SHA-256 hex digest of the resolved credential; `request` is
+ * the normalized Capability request.
+ *
+ * Unlike {@link ReaderCacheIdentity} and the repository identity, this
+ * shape carries NO `operation` field and NO `legacyCandidates` — the new
+ * capabilities (crawl, map, research) have no v0.2 legacy cache entries
+ * to read through (tech-plan §4 / D2).
+ */
+export interface CacheIdentity<Request, Result> {
+  readonly provider: ProviderId;
+  readonly capability: string;
+  readonly credentialFingerprint: string;
+  readonly request: Readonly<Request>;
+}
+
+/**
+ * Generic cached operation descriptor for capabilities built on the
+ * simplified execution wrapper (crawl, map, research). Same surface as
+ * {@link RepositoryOperation} and {@link ReaderOperation} — `validate`,
+ * `cacheIdentity`, `decodeCached`, `invoke` — minus the legacy-candidate
+ * machinery.
+ */
+export interface CachedOperation<Request, Result> {
+  readonly kind: string;
+  /**
+   * Validate the request before any Provider access. Throws
+   * `ValidationError` for missing required fields and
+   * `UnsupportedOptionError` for Provider-specific options the Adapter
+   * does not accept.
+   */
+  validate(request: Request): void;
+  /**
+   * Build the cache identity for a request. Called only after `validate`
+   * succeeds.
+   */
+  cacheIdentity(request: Request): CacheIdentity<Request, Result>;
+  /**
+   * Total decoder for cached normalized entries. Accepts `unknown`,
+   * validates shape, returns the typed result or `null`. NEVER throws.
+   */
+  decodeCached(value: unknown): Result | null;
+  /**
+   * Invoke the Provider and return the normalized result. The Adapter
+   * closes its transport and never retries inside this method; shared
+   * execution owns retry policy.
+   *
+   * `signal` is an OPTIONAL cooperative-cancellation channel. When a
+   * caller threads an `AbortSignal` through `executeCachedOperation`, the
+   * Adapter MAY observe it (e.g. in a long-running poll loop) to stop
+   * early and release pending timers so the process can exit. Operations
+   * that have nothing to abort (crawl, map) simply ignore it.
+   */
+  invoke(request: Request, signal?: AbortSignal): Promise<Result>;
+}
+
+/**
+ * Options for {@link executeCachedOperation}. `noCache` bypasses the
+ * provider-partitioned cache for both reads and writes; it never bypasses
+ * validation, identity, invoke, or retry semantics. `retryPolicy`
+ * overrides the default policy from {@link defaultRetryPolicy}.
+ */
+export interface ExecuteCachedOptions {
+  noCache?: boolean;
+  retryPolicy?: RetryPolicy;
+  /**
+   * Cooperative-cancellation signal forwarded to `operation.invoke`. When
+   * aborted, a supporting Adapter (currently research's poll loop) stops
+   * early and releases pending timers so a CLI that has already timed out
+   * can exit cleanly instead of staying alive on a lingering `setTimeout`.
+   * Unsupported operations ignore it.
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * Simplified generic cache + retry executor for capabilities without
+ * legacy cache entries (crawl, map, research). Mirrors the observable
+ * ordering of {@link executeReaderOperation} but omits the
+ * legacy-candidate loop (tech-plan §4 / D2).
+ *
+ * The observable order is fixed:
+ *
+ *   1. `operation.validate(request)` — throws `ValidationError`
+ *      synchronously before any cache or Adapter work.
+ *   2. `operation.cacheIdentity(request)` — Adapter computes the
+ *      provider-partitioned cache key from the validated request and
+ *      a single resolved credential.
+ *   3. Read the provider-partitioned cache key and pass the raw value
+ *      through `operation.decodeCached`. A valid decode returns
+ *      immediately; `null` is a miss; malformed values never propagate.
+ *   4. `operation.invoke(request)` is wrapped through
+ *      `executeProviderOperation` with the default retry policy derived
+ *      from `identity.capability` (which is a valid `ProviderOperation`
+ *      member for every capability using this wrapper). Each retry
+ *      creates a fresh Adapter transport attempt; cache hits create no
+ *      transport.
+ *   5. The normalized result is written to the provider-partitioned
+ *      cache key.
+ *
+ * `--no-cache` skips steps 3 and 5. It never skips validation (1),
+ * identity (2), invoke (4), or retry semantics.
+ */
+export async function executeCachedOperation<Request, Result>(
+  operation: CachedOperation<Request, Result>,
+  request: Request,
+  options: ExecuteCachedOptions,
+  dependencies: ExecutionDependencies,
+): Promise<Result> {
+  // 1. Validate Capability request.
+  operation.validate(request);
+
+  // 2. Adapter-owned cache identity (after validation).
+  const identity = operation.cacheIdentity(request);
+
+  // 3. Provider-partitioned cache key. The key namespace is
+  //    `${capability}-${operation.kind}` (mirrors the reader/repository
+  //    convention) so future operations under the same capability cannot
+  //    collide: `crawl-crawl-fetch`, `map-map-fetch`, etc.
+  const newKey = buildProviderCacheKey({
+    provider: identity.provider,
+    capability: `${identity.capability}-${operation.kind}`,
+    credentialFingerprint: identity.credentialFingerprint,
+    request: identity.request,
+  });
+
+  if (!options.noCache) {
+    const raw = await dependencies.cache.get<unknown>(newKey);
+    if (raw !== null) {
+      const decoded = operation.decodeCached(raw);
+      if (decoded !== null) {
+        return decoded;
+      }
+      // Malformed normalized value: treat as a miss and fall through.
+    }
+  }
+
+  // 4. Retry-wrapped invoke. The capability name in the cache identity
+  //    ("crawl", "map", "research") IS a valid ProviderOperation member
+  //    and drives the default retry policy. Auth, Validation,
+  //    Unsupported, and exhausted Quota failures are terminal; transient
+  //    timeout, network, and 5xx/429-equivalent failures get the
+  //    operation-specific retry count.
+  const result = await executeProviderOperation(
+    identity.capability as ProviderOperation,
+    () => operation.invoke(request, options.signal),
+    dependencies,
+    options.retryPolicy,
+  );
+
+  // 5. Cache the full normalized result before returning.
   if (!options.noCache) {
     await dependencies.cache.set(newKey, result);
   }

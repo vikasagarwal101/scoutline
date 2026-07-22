@@ -114,6 +114,22 @@ export function toolCacheDir(): string {
   return path.join(resolveCacheRoot(), "tools");
 }
 
+/**
+ * Directory for the Research state files (tech-plan §3, T07). Always a
+ * `research/` subdirectory under the unified root, sibling of
+ * {@link responseCacheDir} and {@link toolCacheDir}.
+ *
+ * Each file holds a single in-flight research task's `request_id` so the
+ * CLI can resume polling after Ctrl-C instead of creating a second task
+ * (double-charge prevention). The state files have their own lifecycle
+ * (deleted on task completion or failure); they are NOT cleared by
+ * `clearAllCaches()` and are NOT scanned by `cacheStats()` — they are
+ * billing state, not cache entries.
+ */
+export function researchStateDir(): string {
+  return path.join(resolveCacheRoot(), "research");
+}
+
 // ---------------------------------------------------------------------------
 // Call-time env reads (H1 fix: preserves the existing test contract)
 // ---------------------------------------------------------------------------

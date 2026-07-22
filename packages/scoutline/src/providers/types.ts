@@ -26,6 +26,9 @@ import type { QuotaCapability } from "../capabilities/quota.js";
 import type { DiagnosticsCapability } from "../capabilities/diagnostics.js";
 import type { RepositoryCapability } from "../capabilities/repository.js";
 import type { ReaderCapability } from "../capabilities/reader.js";
+import type { CrawlCapability } from "../capabilities/crawl.js";
+import type { MapCapability } from "../capabilities/map.js";
+import type { ResearchCapability } from "../capabilities/research.js";
 import type { MiniMaxTransportDeps } from "./minimax/coding-plan-client.js";
 
 // ---------------------------------------------------------------------------
@@ -36,7 +39,7 @@ import type { MiniMaxTransportDeps } from "./minimax/coding-plan-client.js";
  * Built-in Provider IDs. Adding a new Provider is a Phase 2+ decision;
  * new entries must come with a real Adapter and conformance coverage.
  */
-export const PROVIDER_IDS = ["zai", "minimax"] as const;
+export const PROVIDER_IDS = ["zai", "minimax", "tavily"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 /**
@@ -54,6 +57,12 @@ export type ProviderId = (typeof PROVIDER_IDS)[number];
  * Reader Migration Ticket 04 adds `reader`: a descriptor advertises it
  * iff the Adapter it creates supplies `adapter.reader`. Z.AI advertises
  * it (Ticket 03 supplies the handle); MiniMax does not.
+ *
+ * Tavily integration adds `crawl`, `map`, and `research`: a descriptor
+ * advertises each iff the Adapter it creates supplies the matching
+ * slot. The Tavily descriptor advertises all three; the `crawl?` /
+ * `map?` / `research?` slots arrive on `ProviderAdapter` alongside
+ * their capability contracts.
  */
 export type ProviderCapability =
   | "search"
@@ -68,7 +77,10 @@ export type ProviderCapability =
   | "quota"
   | "diagnostics"
   | "repository-exploration"
-  | "reader";
+  | "reader"
+  | "crawl"
+  | "map"
+  | "research";
 
 // ---------------------------------------------------------------------------
 // Provider context and Adapter
@@ -105,6 +117,9 @@ export interface ProviderAdapter {
   readonly diagnostics?: DiagnosticsCapability;
   readonly repository?: RepositoryCapability;
   readonly reader?: ReaderCapability;
+  readonly crawl?: CrawlCapability;
+  readonly map?: MapCapability;
+  readonly research?: ResearchCapability;
 }
 
 // ---------------------------------------------------------------------------

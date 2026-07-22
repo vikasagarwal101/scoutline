@@ -6,6 +6,9 @@ import * as vision from "./commands/vision.js";
 import type { VisionExecutionDependencies } from "./commands/vision.js";
 import { search, SEARCH_HELP } from "./commands/search.js";
 import { read, READ_HELP } from "./commands/read.js";
+import { crawl, CRAWL_HELP } from "./commands/crawl.js";
+import { map, MAP_HELP } from "./commands/map.js";
+import { research, RESEARCH_HELP } from "./commands/research.js";
 import { repoSearch, repoTree, repoRead, REPO_HELP } from "./commands/repo.js";
 import { listTools, showTool, callTool, TOOLS_HELP, CALL_HELP } from "./commands/tools.js";
 import { doctor, buildDiagnosticsReport, DOCTOR_HELP } from "./commands/doctor.js";
@@ -56,11 +59,18 @@ Usage: scoutline <command> [args] [options]
 
 Commands:
   vision   Image and video analysis (Z.AI; MiniMax for interpret-image)
-  search   Real-time web search (shared: Z.AI + MiniMax)
-  read     Fetch and parse web pages (Provider Capability; Z.AI supports it,
-           MiniMax returns UNSUPPORTED_CAPABILITY)
+  search   Real-time web search (shared: Z.AI + MiniMax + Tavily; --topic
+           honored by every Provider)
+  read     Fetch and parse web pages (Provider Capability; Z.AI and Tavily
+           supply it, MiniMax returns UNSUPPORTED_CAPABILITY)
+  crawl    Crawl a website from a starting URL (Provider Capability; Tavily
+           supports it, Z.AI/MiniMax return UNSUPPORTED_CAPABILITY)
+  map      Discover the URL structure of a website (Provider Capability;
+           Tavily supports it, Z.AI/MiniMax return UNSUPPORTED_CAPABILITY)
+  research Deep research with citations (Provider Capability; Tavily
+           supports it, Z.AI/MiniMax return UNSUPPORTED_CAPABILITY)
   repo     GitHub repository exploration (Provider Capability; Z.AI supports it,
-           MiniMax returns UNSUPPORTED_CAPABILITY)
+           MiniMax and Tavily return UNSUPPORTED_CAPABILITY)
   quota    Provider-aware plan usage (calls remaining, reset time)
   tools    List available MCP tools (Z.AI)
   tool     Show a tool schema (Z.AI)
@@ -70,16 +80,17 @@ Commands:
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
 
 Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER, then zai):
-  --provider <zai|minimax>   Select the active Provider for shared capabilities
+  --provider <zai|minimax|tavily>   Select the active Provider for shared capabilities
   SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
 
-Shared capabilities accept --provider. The 'repo' and 'read' commands
-participate in Provider selection: Z.AI advertises and supplies the
-repository-exploration and reader Capabilities; MiniMax advertises and
-supplies neither, so selecting MiniMax (explicitly or via
-SCOUTLINE_PROVIDER) returns UNSUPPORTED_CAPABILITY with no fallback.
-Z.AI-only commands (tools, tool, call, code) carry the flag but ignore
-it. Quota and doctor report per-Provider; --provider picks the effective
+Shared capabilities accept --provider. The 'repo', 'read', 'crawl', 'map',
+and 'research' commands participate in Provider selection: Z.AI
+advertises and supplies repository-exploration and reader; Tavily
+advertises and supplies reader plus crawl, map, and research; MiniMax
+advertises and supplies none of those Provider-only Capabilities. A
+non-supplier returns UNSUPPORTED_CAPABILITY with no fallback. Z.AI-only
+commands (tools, tool, call, code) carry the flag but ignore it.
+Quota and doctor report per-Provider; --provider picks the effective
 Provider for metadata.
 
 Global Options:
@@ -91,6 +102,9 @@ Help:
   scoutline vision --help
   scoutline search --help
   scoutline read --help
+  scoutline crawl --help
+  scoutline map --help
+  scoutline research --help
   scoutline repo --help
   scoutline tools --help
   scoutline call --help
@@ -265,6 +279,15 @@ interface HandlerDependencies {
   readonly readerCache: ResponseCache;
   readonly readerSleep: (ms: number) => Promise<void>;
   readonly readerRandom: () => number;
+  readonly crawlCache: ResponseCache;
+  readonly crawlSleep: (ms: number) => Promise<void>;
+  readonly crawlRandom: () => number;
+  readonly mapCache: ResponseCache;
+  readonly mapSleep: (ms: number) => Promise<void>;
+  readonly mapRandom: () => number;
+  readonly researchCache: ResponseCache;
+  readonly researchSleep: (ms: number) => Promise<void>;
+  readonly researchRandom: () => number;
 }
 
 async function handleVision(
@@ -497,6 +520,33 @@ export function parseAndValidateCount(raw: unknown): number | undefined {
   return parsed;
 }
 
+const SEARCH_TOPICS = ["general", "news", "finance"] as const;
+
+/**
+ * Validate the `--topic` flag value BEFORE Provider resolution, mirroring
+ * the `--count` parse-level gate (Fixup D — B11). An invalid value
+ * surfaces VALIDATION_ERROR regardless of which Provider would have been
+ * selected, because parse-level validation fires before the support /
+ * configuration gates. Exported for testing.
+ */
+export function parseAndValidateTopic(raw: unknown): "general" | "news" | "finance" | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  if (raw === true) {
+    throw new ValidationError(
+      "Topic requires a value.",
+      `Use one of: ${SEARCH_TOPICS.join(", ")}.`,
+    );
+  }
+  const str = typeof raw === "string" ? raw : String(raw);
+  if (!(SEARCH_TOPICS as readonly string[]).includes(str)) {
+    throw new ValidationError(
+      `Invalid --topic value "${str}": must be one of ${SEARCH_TOPICS.join(", ")}`,
+      `Use one of: ${SEARCH_TOPICS.join(", ")}.`,
+    );
+  }
+  return str as "general" | "news" | "finance";
+}
+
 async function handleSearch(
   args: string[],
   outputMode: OutputMode,
@@ -514,8 +564,9 @@ async function handleSearch(
   // not depend on whether credentials are present: `search q --count nope`
   // with NO credentials must surface VALIDATION_ERROR (exit 1), not
   // CONFIGURATION_ERROR (exit 3). Order: parse global options -> validate
-  // count -> resolve provider -> check configured -> dispatch.
+  // count -> validate topic -> resolve provider -> check configured -> dispatch.
   const count = parseAndValidateCount(flags.count);
+  const topic = parseAndValidateTopic(flags.topic);
 
   // Resolve the Provider ONLY inside shared Search (DESIGN.md §6). Other
   // command families carry the parsed flag but never resolve or validate
@@ -564,6 +615,7 @@ async function handleSearch(
           recency: flags.recency as "oneDay" | "oneWeek" | "oneMonth" | "oneYear" | "noLimit",
           contentSize: flags["content-size"] as "medium" | "high",
           location: flags.location as "cn" | "us",
+          topic,
           maxSummary: flags["max-summary"]
             ? parseInt(flags["max-summary"] as string, 10)
             : undefined,
@@ -688,6 +740,287 @@ async function handleRead(
     deps.now,
     deps.secrets,
   );
+}
+
+async function handleCrawl(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+): Promise<number> {
+  const { flags, positional } = parseArgs(args);
+
+  if (flags.help || flags.h || positional.length === 0) {
+    deps.invocation.writeStdout(CRAWL_HELP);
+    return 0;
+  }
+
+  const url = positional[0];
+
+  // Parse-level validation BEFORE Provider resolution. URL scheme is
+  // validated at parse time so an invalid value surfaces
+  // VALIDATION_ERROR regardless of which Provider would have been
+  // selected.
+  if (typeof url !== "string" || (!url.startsWith("http://") && !url.startsWith("https://"))) {
+    throw new ValidationError("URL must start with http:// or https://");
+  }
+
+  // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
+  // explicit --provider > SCOUTLINE_PROVIDER > default zai.
+  const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
+  const descriptor = getProviderDescriptor(providerId, deps.providerDescriptors);
+
+  // Capability support check BEFORE descriptor.isConfigured, descriptor.create,
+  // or any Adapter work. Unsupported Z.AI/MiniMax returns
+  // UNSUPPORTED_CAPABILITY with no fallback to Tavily.
+  if (!descriptor.capabilities().has("crawl")) {
+    throw new UnsupportedCapabilityError(providerId, "crawl");
+  }
+
+  if (!descriptor.isConfigured(deps.env)) {
+    throw new ConfigurationError(
+      `Provider "${providerId}" is not configured. Set the required API key.`,
+    );
+  }
+
+  const adapter = descriptor.create({ env: deps.env });
+  const capability = adapter.crawl;
+  if (!capability) {
+    throw new UnsupportedCapabilityError(providerId, "crawl");
+  }
+
+  // Shared Crawl execution dependencies. The cache/sleep/random default
+  // to the same production values as Search/Repository/Reader but are
+  // kept as separate optional MainDependencies so crawl tests can inject
+  // isolated in-memory doubles.
+  const executionDeps: ExecutionDependencies = {
+    cache: deps.crawlCache,
+    sleep: deps.crawlSleep,
+    random: deps.crawlRandom,
+  };
+
+  return invokeCommand(
+    deps.invocation,
+    (context) =>
+      crawl(
+        url,
+        {
+          depth: flags.depth ? parseInt(flags.depth as string, 10) : undefined,
+          breadth: flags.breadth ? parseInt(flags.breadth as string, 10) : undefined,
+          limit: flags.limit ? parseInt(flags.limit as string, 10) : undefined,
+          selectPaths: flags["select-paths"] as string | undefined,
+          excludePaths: flags["exclude-paths"] as string | undefined,
+          instructions: flags.instructions as string | undefined,
+          format: flags.format as "markdown" | "text" | undefined,
+          contentSize: flags["content-size"] as "medium" | "high" | undefined,
+          timeout: flags.timeout ? parseInt(flags.timeout as string, 10) : undefined,
+          noCache: flags["no-cache"] === true,
+          maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
+        },
+        { capability, execution: executionDeps },
+        context,
+      ),
+    outputMode,
+    deps.now,
+    deps.secrets,
+  );
+}
+
+async function handleMap(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+): Promise<number> {
+  const { flags, positional } = parseArgs(args);
+
+  if (flags.help || flags.h || positional.length === 0) {
+    deps.invocation.writeStdout(MAP_HELP);
+    return 0;
+  }
+
+  const url = positional[0];
+
+  // Parse-level validation BEFORE Provider resolution. URL scheme is
+  // validated at parse time so an invalid value surfaces
+  // VALIDATION_ERROR regardless of which Provider would have been
+  // selected.
+  if (typeof url !== "string" || (!url.startsWith("http://") && !url.startsWith("https://"))) {
+    throw new ValidationError("URL must start with http:// or https://");
+  }
+
+  // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
+  // explicit --provider > SCOUTLINE_PROVIDER > default zai.
+  const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
+  const descriptor = getProviderDescriptor(providerId, deps.providerDescriptors);
+
+  // Capability support check BEFORE descriptor.isConfigured, descriptor.create,
+  // or any Adapter work. Unsupported Z.AI/MiniMax returns
+  // UNSUPPORTED_CAPABILITY with no fallback to Tavily.
+  if (!descriptor.capabilities().has("map")) {
+    throw new UnsupportedCapabilityError(providerId, "map");
+  }
+
+  if (!descriptor.isConfigured(deps.env)) {
+    throw new ConfigurationError(
+      `Provider "${providerId}" is not configured. Set the required API key.`,
+    );
+  }
+
+  const adapter = descriptor.create({ env: deps.env });
+  const capability = adapter.map;
+  if (!capability) {
+    throw new UnsupportedCapabilityError(providerId, "map");
+  }
+
+  // Shared Map execution dependencies. The cache/sleep/random default
+  // to the same production values as Search/Repository/Reader/Crawl but
+  // are kept as separate optional MainDependencies so map tests can
+  // inject isolated in-memory doubles.
+  const executionDeps: ExecutionDependencies = {
+    cache: deps.mapCache,
+    sleep: deps.mapSleep,
+    random: deps.mapRandom,
+  };
+
+  return invokeCommand(
+    deps.invocation,
+    (context) =>
+      map(
+        url,
+        {
+          depth: flags.depth ? parseInt(flags.depth as string, 10) : undefined,
+          breadth: flags.breadth ? parseInt(flags.breadth as string, 10) : undefined,
+          limit: flags.limit ? parseInt(flags.limit as string, 10) : undefined,
+          selectPaths: flags["select-paths"] as string | undefined,
+          excludePaths: flags["exclude-paths"] as string | undefined,
+          instructions: flags.instructions as string | undefined,
+          noCache: flags["no-cache"] === true,
+        },
+        { capability, execution: executionDeps },
+        context,
+      ),
+    outputMode,
+    deps.now,
+    deps.secrets,
+  );
+}
+
+async function handleResearch(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+): Promise<number> {
+  const { flags, positional } = parseArgs(args);
+
+  if (flags.help || flags.h || positional.length === 0) {
+    deps.invocation.writeStdout(RESEARCH_HELP);
+    return 0;
+  }
+
+  const query = positional.join(" ");
+
+  // Parse-level enum validation BEFORE Provider resolution so an invalid
+  // value surfaces VALIDATION_ERROR regardless of which Provider would
+  // have been selected (mirrors --count and --topic in handleSearch).
+  const model = validateResearchEnum(flags.model, ["mini", "pro", "auto"], "--model") as
+    | "mini"
+    | "pro"
+    | "auto"
+    | undefined;
+  const outputLength = validateResearchEnum(
+    flags["output-length"],
+    ["short", "standard", "long"],
+    "--output-length",
+  ) as "short" | "standard" | "long" | undefined;
+  const citationFormat = validateResearchEnum(
+    flags["citation-format"],
+    ["numbered", "mla", "apa", "chicago"],
+    "--citation-format",
+  ) as "numbered" | "mla" | "apa" | "chicago" | undefined;
+
+  // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
+  // explicit --provider > SCOUTLINE_PROVIDER > default zai.
+  const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
+  const descriptor = getProviderDescriptor(providerId, deps.providerDescriptors);
+
+  // Capability support check BEFORE descriptor.isConfigured,
+  // descriptor.create, or any Adapter work. Unsupported Z.AI/MiniMax
+  // returns UNSUPPORTED_CAPABILITY with no fallback to Tavily.
+  if (!descriptor.capabilities().has("research")) {
+    throw new UnsupportedCapabilityError(providerId, "research");
+  }
+
+  if (!descriptor.isConfigured(deps.env)) {
+    throw new ConfigurationError(
+      `Provider "${providerId}" is not configured. Set the required API key.`,
+    );
+  }
+
+  const adapter = descriptor.create({ env: deps.env });
+  const capability = adapter.research;
+  if (!capability) {
+    throw new UnsupportedCapabilityError(providerId, "research");
+  }
+
+  // Shared Research execution dependencies.
+  const executionDeps: ExecutionDependencies = {
+    cache: deps.researchCache,
+    sleep: deps.researchSleep,
+    random: deps.researchRandom,
+  };
+
+  // Wait disclaimer — shown BEFORE invoke because research is
+  // credit-intensive and may take several minutes. Written to stderr so
+  // it never corrupts data-mode stdout.
+  deps.invocation.writeStderr(
+    "Research in progress — this is a credit-intensive operation that may take several minutes.\n",
+  );
+
+  return invokeCommand(
+    deps.invocation,
+    (context) =>
+      research(
+        query,
+        {
+          model,
+          outputLength,
+          citationFormat,
+          domain: flags.domain as string | undefined,
+          maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
+          timeout: flags.timeout ? parseInt(flags.timeout as string, 10) : undefined,
+          noCache: flags["no-cache"] === true,
+        },
+        { capability, execution: executionDeps },
+        context,
+      ),
+    outputMode,
+    deps.now,
+    deps.secrets,
+  );
+}
+
+/**
+ * Validate a research enum flag (--model, --output-length,
+ * --citation-format) at parse level. Returns the typed value or throws
+ * ValidationError for an invalid/missing-value input. Mirrors the
+ * --count / --topic parse-level gates.
+ */
+function validateResearchEnum(
+  raw: unknown,
+  valid: readonly string[],
+  flagName: string,
+): string | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  if (raw === true) {
+    throw new ValidationError(`${flagName} requires a value.`, `Use one of: ${valid.join(", ")}.`);
+  }
+  const str = String(raw);
+  if (!valid.includes(str)) {
+    throw new ValidationError(
+      `Invalid ${flagName} value "${str}": must be one of ${valid.join(", ")}`,
+      `Use one of: ${valid.join(", ")}.`,
+    );
+  }
+  return str;
 }
 
 async function handleRepo(
@@ -1180,6 +1513,36 @@ export interface MainDependencies {
   readonly readerCache?: ResponseCache;
   readonly readerSleep?: (ms: number) => Promise<void>;
   readonly readerRandom?: () => number;
+  /**
+   * Injectable shared-Crawl execution dependencies (Tavily integration
+   * Ticket 05). Production defaults to the same on-disk cache and real
+   * sleep/random as Search/Repository/Reader; tests inject in-memory
+   * doubles so Crawl dispatch tests stay isolated. NOT a rename of any
+   * prior seam.
+   */
+  readonly crawlCache?: ResponseCache;
+  readonly crawlSleep?: (ms: number) => Promise<void>;
+  readonly crawlRandom?: () => number;
+  /**
+   * Injectable shared-Map execution dependencies (Tavily integration
+   * Ticket 06). Production defaults to the same on-disk cache and real
+   * sleep/random as Search/Repository/Reader/Crawl; tests inject
+   * in-memory doubles so Map dispatch tests stay isolated. NOT a rename
+   * of any prior seam.
+   */
+  readonly mapCache?: ResponseCache;
+  readonly mapSleep?: (ms: number) => Promise<void>;
+  readonly mapRandom?: () => number;
+  /**
+   * Injectable shared-Research execution dependencies (Tavily integration
+   * Ticket 07). Production defaults to the same on-disk cache and real
+   * sleep/random as Search/Repository/Reader/Crawl/Map; tests inject
+   * in-memory doubles so Research dispatch tests stay isolated. NOT a
+   * rename of any prior seam.
+   */
+  readonly researchCache?: ResponseCache;
+  readonly researchSleep?: (ms: number) => Promise<void>;
+  readonly researchRandom?: () => number;
 }
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1206,6 +1569,27 @@ export async function main(
   const readerCache = dependencies.readerCache ?? defaultResponseCache;
   const readerSleep = dependencies.readerSleep ?? realSleep;
   const readerRandom = dependencies.readerRandom ?? Math.random;
+  // Tavily integration Ticket 05: Crawl execution defaults to the same
+  // production values as Search/Repository/Reader but stays as separate
+  // optional MainDependencies so crawl tests can inject isolated
+  // in-memory doubles.
+  const crawlCache = dependencies.crawlCache ?? defaultResponseCache;
+  const crawlSleep = dependencies.crawlSleep ?? realSleep;
+  const crawlRandom = dependencies.crawlRandom ?? Math.random;
+  // Tavily integration Ticket 06: Map execution defaults to the same
+  // production values as Search/Repository/Reader/Crawl but stays as
+  // separate optional MainDependencies so map tests can inject isolated
+  // in-memory doubles.
+  const mapCache = dependencies.mapCache ?? defaultResponseCache;
+  const mapSleep = dependencies.mapSleep ?? realSleep;
+  const mapRandom = dependencies.mapRandom ?? Math.random;
+  // Tavily integration Ticket 07: Research execution defaults to the same
+  // production values as Search/Repository/Reader/Crawl/Map but stays as
+  // separate optional MainDependencies so research tests can inject
+  // isolated in-memory doubles.
+  const researchCache = dependencies.researchCache ?? defaultResponseCache;
+  const researchSleep = dependencies.researchSleep ?? realSleep;
+  const researchRandom = dependencies.researchRandom ?? Math.random;
   // Resolve configured Provider credentials from the INJECTED env (B3) so
   // redaction follows the same environment the handlers see — a secret
   // that exists only in MainDependencies.env is still redacted from output.
@@ -1264,6 +1648,15 @@ export async function main(
     readerCache,
     readerSleep,
     readerRandom,
+    crawlCache,
+    crawlSleep,
+    crawlRandom,
+    mapCache,
+    mapSleep,
+    mapRandom,
+    researchCache,
+    researchSleep,
+    researchRandom,
   };
 
   try {
@@ -1274,6 +1667,12 @@ export async function main(
         return await handleSearch(commandArgs, outputMode, handlerDeps);
       case "read":
         return await handleRead(commandArgs, outputMode, handlerDeps);
+      case "crawl":
+        return await handleCrawl(commandArgs, outputMode, handlerDeps);
+      case "map":
+        return await handleMap(commandArgs, outputMode, handlerDeps);
+      case "research":
+        return await handleResearch(commandArgs, outputMode, handlerDeps);
       case "repo":
         return await handleRepo(commandArgs, outputMode, handlerDeps);
       case "tools":

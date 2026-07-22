@@ -159,8 +159,7 @@ function makeMiniMaxVisionCapability(rawResult) {
         status: 200,
         text: async () => "",
         json: async () => ({}),
-        headers: { get: (name) =>
-          name.toLowerCase() === "content-type" ? "image/png" : null },
+        headers: { get: (name) => (name.toLowerCase() === "content-type" ? "image/png" : null) },
         arrayBuffer: async () =>
           new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).buffer,
       };
@@ -254,10 +253,10 @@ describe("Search Adapter conformance — shared normalized output", () => {
 // ---------------------------------------------------------------------------
 
 describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
-  it("contains exactly [zai, minimax] in that order", () => {
+  it("contains exactly [zai, minimax, tavily] in that order", () => {
     assert.deepStrictEqual(
       BUILT_IN_PROVIDER_DESCRIPTORS.map((d) => d.id),
-      ["zai", "minimax"],
+      ["zai", "minimax", "tavily"],
     );
   });
 
@@ -280,15 +279,27 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     const mm = getProviderDescriptor("minimax");
     assert.strictEqual(mm.isConfigured({ MINIMAX_API_KEY: "k" }), true);
     assert.strictEqual(mm.isConfigured({}), false);
+    const tv = getProviderDescriptor("tavily");
+    assert.strictEqual(tv.isConfigured({ TAVILY_API_KEY: "k" }), true);
+    assert.strictEqual(tv.isConfigured({}), false);
   });
 
   it("descriptor creation is side-effect-free (no transport construction)", () => {
+    // Every built-in descriptor now has a real Adapter whose create()
+    // is side-effect-free.
     for (const d of BUILT_IN_PROVIDER_DESCRIPTORS) {
-      // create() captures env but builds no transport; the capability is
-      // returned without invoking any Provider call.
       const adapter = d.create({ env: {} });
       assert.strictEqual(typeof adapter.search, "object");
     }
+  });
+
+  it("tavily create() returns an adapter with search, reader, and crawl", () => {
+    const tv = getProviderDescriptor("tavily");
+    const adapter = tv.create({ env: {} });
+    assert.strictEqual(adapter.id, "tavily");
+    assert.strictEqual(typeof adapter.search, "object");
+    assert.strictEqual(typeof adapter.reader, "object");
+    assert.strictEqual(typeof adapter.crawl, "object");
   });
 
   it("getConfiguredProviderDescriptors filters by configured credentials", () => {
@@ -304,6 +315,12 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
       ["minimax"],
     );
 
+    const onlyTv = getConfiguredProviderDescriptors({ TAVILY_API_KEY: "k" });
+    assert.deepStrictEqual(
+      onlyTv.map((d) => d.id),
+      ["tavily"],
+    );
+
     const both = getConfiguredProviderDescriptors({
       Z_AI_API_KEY: "k",
       MINIMAX_API_KEY: "k",
@@ -311,6 +328,16 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     assert.deepStrictEqual(
       both.map((d) => d.id),
       ["zai", "minimax"],
+    );
+
+    const all = getConfiguredProviderDescriptors({
+      Z_AI_API_KEY: "k",
+      MINIMAX_API_KEY: "k",
+      TAVILY_API_KEY: "k",
+    });
+    assert.deepStrictEqual(
+      all.map((d) => d.id),
+      ["zai", "minimax", "tavily"],
     );
 
     const neither = getConfiguredProviderDescriptors({});
@@ -525,11 +552,7 @@ describe("Descriptor ↔ Adapter repository-exploration agreement (P6-06)", () =
     assert.ok(typeof minimaxAdapter === "object" && minimaxAdapter !== null);
 
     assert.strictEqual(zai.calls.clientFactory, 0, "Z.AI clientFactory spy must remain at 0");
-    assert.strictEqual(
-      minimax.calls.fetch,
-      0,
-      "MiniMax transport.fetch spy must remain at 0",
-    );
+    assert.strictEqual(minimax.calls.fetch, 0, "MiniMax transport.fetch spy must remain at 0");
     assert.strictEqual(
       minimax.calls.setTimeout,
       0,

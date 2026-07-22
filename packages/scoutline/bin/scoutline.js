@@ -10,12 +10,11 @@ import("../dist/index.js")
       env: process.env,
     });
     adapter.setExitCode(status);
+    process.exit(status);
   })
   .catch(async (err) => {
     try {
-      const { formatLoadFailure } = await import(
-        "../dist/node-command-invocation-adapter.js"
-      );
+      const { formatLoadFailure } = await import("../dist/node-command-invocation-adapter.js");
       console.error(formatLoadFailure(err));
     } catch {
       // If the dist module is unavailable for any reason, fall back to a

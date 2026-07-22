@@ -192,6 +192,52 @@ describe("Z.AI Search Adapter — argument mapping (no count)", () => {
   });
 });
 
+describe("Z.AI Search Adapter — topic keyword appendage (T03)", () => {
+  async function invokeWithTopic(query, topic) {
+    const fixture = await readFixture("providers", "zai", "tools.json");
+    const searchResult = (await readFixture("providers", "zai", "search.json")).result;
+    const factory = makeClientFactory({
+      discoveredTools: fixture.tools,
+      resultsByName: { "scoutline_zai.search.web_search_prime": searchResult },
+    });
+    const descriptor = createZaiDescriptor({ clientFactory: factory });
+    const adapter = descriptor.create({ env: { Z_AI_API_KEY: TEST_API_KEY } });
+    const request = topic ? { query, controls: { topic } } : { query };
+    await adapter.search.invoke(request);
+    return factory.created[0].port.callToolCalls[0].args;
+  }
+
+  it("appends ' latest news' for topic news", async () => {
+    const args = await invokeWithTopic("AI", "news");
+    assert.strictEqual(args.search_query, "AI latest news");
+  });
+
+  it("appends ' financial' for topic finance", async () => {
+    const args = await invokeWithTopic("stocks", "finance");
+    assert.strictEqual(args.search_query, "stocks financial");
+  });
+
+  it("does not append for topic general", async () => {
+    const args = await invokeWithTopic("AI", "general");
+    assert.strictEqual(args.search_query, "AI");
+  });
+
+  it("does not append when topic is absent", async () => {
+    const args = await invokeWithTopic("AI", undefined);
+    assert.strictEqual(args.search_query, "AI");
+  });
+
+  it("guards against double-append (query already ends with topic word)", async () => {
+    const args = await invokeWithTopic("rust news", "news");
+    assert.strictEqual(args.search_query, "rust news");
+  });
+
+  it("guard is case-insensitive", async () => {
+    const args = await invokeWithTopic("rust News", "news");
+    assert.strictEqual(args.search_query, "rust News");
+  });
+});
+
 describe("Z.AI Search Adapter — field mapping", () => {
   it("maps title/link/content/media/publish_date and discards unknown fields", async () => {
     const fixture = await readFixture("providers", "zai", "tools.json");

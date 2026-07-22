@@ -16,6 +16,7 @@ import type {
   SearchControls,
   SearchRequest,
   SearchSource,
+  SearchTopic,
 } from "../capabilities/search.js";
 import type { ResponseCache } from "../lib/cache.js";
 import type { RetryPolicy } from "../lib/execution.js";
@@ -30,6 +31,7 @@ export interface SearchOptions {
   recency?: RecencyFilter;
   contentSize?: "medium" | "high";
   location?: "cn" | "us";
+  topic?: SearchTopic;
   maxSummary?: number;
   fields?: string[];
   noCache?: boolean;
@@ -90,6 +92,7 @@ function buildControls(options: SearchOptions): SearchControls | undefined {
   if (options.recency) controls.recency = options.recency;
   if (options.contentSize) controls.contentSize = options.contentSize;
   if (options.location) controls.location = options.location;
+  if (options.topic) controls.topic = options.topic;
   return Object.keys(controls).length > 0 ? controls : undefined;
 }
 
@@ -241,19 +244,23 @@ export async function search(
 
 // Help text
 export const SEARCH_HELP = `
-Search Command - Real-time web search (Z.AI or MiniMax)
+Search Command - Real-time web search (Z.AI, MiniMax, or Tavily)
 
 Usage: scoutline search <query> [options]
 
 Provider selection (precedence: explicit flag, then SCOUTLINE_PROVIDER, then zai):
-  --provider <zai|minimax>   Select the search provider (default: zai)
-  SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
+  --provider <zai|minimax|tavily>   Select the search provider (default: zai)
+  SCOUTLINE_PROVIDER=<id>           Fallback when --provider is not passed
 
 Note: --domain, --recency, --content-size, and --location are Z.AI-only
 controls. They are rejected (UNSUPPORTED_OPTION) before invocation when
---provider minimax is selected.
+--provider minimax or tavily is selected. --topic is accepted by all
+providers.
 
 Options:
+  --topic <t>         Search topic hint (all providers): general, news, finance
+                      (default: general). Z.AI/MiniMax append a keyword to the
+                      query; Tavily passes it natively.
   --domain <d>        Limit to specific domain (Z.AI only; e.g., github.com)
   --recency <r>       Filter by time (Z.AI only): oneDay, oneWeek, oneMonth, oneYear, noLimit
   --content-size <s>  Content size (Z.AI only): medium, high
@@ -278,6 +285,7 @@ Examples:
   scoutline search "Node.js security" --domain nodejs.org
   scoutline --provider minimax search "AI news"
   SCOUTLINE_PROVIDER=minimax scoutline search "AI news"
+  scoutline --provider tavily search "AI funding rounds" --topic news
   scoutline search "x" -O compact                    # ultra-compact
   scoutline search "x" -O markdown --max-summary 80  # chat-ready
   scoutline search "x" --fields title,url            # field-filtered JSON

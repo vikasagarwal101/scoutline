@@ -539,7 +539,7 @@ describe("search command — empty merge input throws", () => {
 // upgrade that allows `--count=-5`.
 // ---------------------------------------------------------------------------
 
-import { parseAndValidateCount } from "../dist/index.js";
+import { parseAndValidateCount, parseAndValidateTopic } from "../dist/index.js";
 
 describe("--count flag validation (Fixup C — B11)", () => {
   // Run main() with a fake descriptor whose search.invoke returns an
@@ -569,7 +569,6 @@ describe("--count flag validation (Fixup C — B11)", () => {
     assert.strictEqual(status, 0);
     assert.strictEqual(invokes.length, 1);
   });
-
 });
 
 // ---------------------------------------------------------------------------
@@ -603,7 +602,6 @@ describe("--count validation ordering vs credential check (Fixup D — B11-remai
     );
     assert.match(parsed.error, /count/i);
   });
-
 });
 
 describe("parseAndValidateCount — direct validation contract (Fixup C — B11, Fixup D)", () => {
@@ -683,6 +681,114 @@ describe("parseAndValidateCount — direct validation contract (Fixup C — B11,
       parseAndValidateCount(String(Number.MAX_SAFE_INTEGER)),
       Number.MAX_SAFE_INTEGER,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// --topic flag validation (T03).
+//
+// `--topic <general|news|finance>` is validated at parse level BEFORE
+// Provider resolution, mirroring the --count gate (Fixup D — B11). An
+// invalid value surfaces VALIDATION_ERROR (exit 1) regardless of which
+// Provider would have been selected or whether credentials are present.
+// A valid topic flows through SearchControls to the capability request.
+// ---------------------------------------------------------------------------
+
+describe("--topic flag validation (T03)", () => {
+  async function runTopic(args) {
+    const { adapter, stderr } = createTestAdapter();
+    const m = makeMainDeps();
+    const status = await main(["search", "foo", ...args], {
+      ...m.deps,
+      invocation: adapter,
+    });
+    return { status, stderr, invokes: [...m.zaiInvokes, ...m.minimaxInvokes] };
+  }
+
+  it("rejects an invalid --topic with VALIDATION_ERROR (exit 1)", async () => {
+    const { status, stderr, invokes } = await runTopic(["--topic", "sports"]);
+    assert.strictEqual(status, 1, "invalid topic must exit 1");
+    assert.strictEqual(invokes.length, 0, "no Adapter invocation on invalid topic");
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.match(parsed.error, /topic/i);
+  });
+
+  it("invalid --topic with NO credentials yields VALIDATION_ERROR, not CONFIGURATION_ERROR", async () => {
+    const { adapter, stderr } = createTestAdapter();
+    const status = await main(["search", "q", "--topic", "sports"], {
+      invocation: adapter,
+      env: {},
+    });
+    assert.strictEqual(status, 1);
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+  });
+
+  it("accepts --topic news and forwards it through SearchControls", async () => {
+    const { status, invokes } = await runTopic(["--topic", "news"]);
+    assert.strictEqual(status, 0);
+    assert.strictEqual(invokes.length, 1);
+    assert.strictEqual(invokes[0].controls.topic, "news");
+  });
+
+  it("accepts --topic general and forwards it through SearchControls", async () => {
+    const { status, invokes } = await runTopic(["--topic", "general"]);
+    assert.strictEqual(status, 0);
+    assert.strictEqual(invokes[0].controls.topic, "general");
+  });
+
+  it("omits topic from controls when --topic is absent", async () => {
+    const { status, invokes } = await runTopic([]);
+    assert.strictEqual(status, 0);
+    assert.strictEqual(invokes[0].controls, undefined);
+  });
+});
+
+describe("parseAndValidateTopic — direct validation contract (T03)", () => {
+  it("returns undefined when the raw value is undefined / empty", () => {
+    assert.strictEqual(parseAndValidateTopic(undefined), undefined);
+    assert.strictEqual(parseAndValidateTopic(""), undefined);
+  });
+
+  it("throws VALIDATION_ERROR for --topic without a value (parser delivers true)", () => {
+    assert.throws(
+      () => parseAndValidateTopic(true),
+      (err) => err.code === "VALIDATION_ERROR",
+    );
+  });
+
+  it("returns the value for valid topics", () => {
+    assert.strictEqual(parseAndValidateTopic("general"), "general");
+    assert.strictEqual(parseAndValidateTopic("news"), "news");
+    assert.strictEqual(parseAndValidateTopic("finance"), "finance");
+  });
+
+  it("rejects an invalid topic with VALIDATION_ERROR", () => {
+    assert.throws(
+      () => parseAndValidateTopic("sports"),
+      (err) => err.code === "VALIDATION_ERROR",
+    );
+    assert.throws(
+      () => parseAndValidateTopic("NEWS"),
+      (err) => err.code === "VALIDATION_ERROR",
+    );
+  });
+});
+
+describe("search command — topic in cache identity (T03)", () => {
+  it("two requests differing only in topic produce different cache keys", async () => {
+    const fake = makeFakeCapability({ "AI latest news": [], AI: [] });
+    const { context } = makeContext();
+    // The fake capability records cacheIdentity calls; the topic flows
+    // through controls into the identity request, so different topics
+    // yield different serialized identity requests.
+    await search("AI", { topic: "news" }, makeExecDeps(fake.capability), context);
+    await search("AI", { topic: "general" }, makeExecDeps(fake.capability), context);
+    assert.strictEqual(fake.identities.length, 2);
+    const newsControls = JSON.stringify(fake.identities[0].identity.request.controls);
+    const generalControls = JSON.stringify(fake.identities[1].identity.request.controls);
+    assert.notStrictEqual(newsControls, generalControls);
   });
 });
 

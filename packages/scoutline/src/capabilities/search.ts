@@ -25,23 +25,27 @@ import type { ProviderId } from "../providers/types.js";
 // ---------------------------------------------------------------------------
 
 /** Recency filter accepted by Z.AI; MiniMax rejects it. */
-export type SearchRecency =
-  | "oneDay"
-  | "oneWeek"
-  | "oneMonth"
-  | "oneYear"
-  | "noLimit";
+export type SearchRecency = "oneDay" | "oneWeek" | "oneMonth" | "oneYear" | "noLimit";
+
+/**
+ * Topic hint accepted by all Search Providers. Each Adapter maps it
+ * differently: Tavily passes it natively; Z.AI and MiniMax append a
+ * keyword to the query inside `invoke()`.
+ */
+export type SearchTopic = "general" | "news" | "finance";
 
 /**
  * Provider controls accepted by the Search Capability. Every field is
  * optional. MiniMax rejects `domain`, `recency`, `contentSize`, and
- * `location` with `UNSUPPORTED_OPTION` before any SDK access.
+ * `location` with `UNSUPPORTED_OPTION` before any SDK access. `topic`
+ * is accepted by all adapters.
  */
 export interface SearchControls {
   domain?: string;
   recency?: SearchRecency;
   contentSize?: "medium" | "high";
   location?: "cn" | "us";
+  topic?: SearchTopic;
 }
 
 /**

@@ -59,6 +59,7 @@ import {
   UnsupportedOptionError,
 } from "../../lib/errors.js";
 import { loadMiniMaxConfig } from "./config.js";
+import { applySearchTopic } from "../../lib/search-topic.js";
 import { resolveImageSource, convertToDataUri, type ConvertToDataUriDeps } from "./media.js";
 import { createMiniMaxQuotaCapability, type MiniMaxQuotaCapabilityOptions } from "./quota.js";
 import { fetchMiniMaxQuota, type MiniMaxQuotaClientDeps } from "./quota-client.js";
@@ -316,7 +317,11 @@ function createMiniMaxSearchCapability(options: MiniMaxSearchCapabilityOptions):
 
       const config = loadMiniMaxConfig(env);
       try {
-        const raw = await fetchMiniMaxSearch(config, request.query, transport);
+        // T03: map a non-general topic to a query keyword appendage.
+        // The topic never reaches the MiniMax API as a separate parameter;
+        // it is purely a query enhancement owned by this Adapter.
+        const effectiveQuery = applySearchTopic(request.query, request.controls?.topic);
+        const raw = await fetchMiniMaxSearch(config, effectiveQuery, transport);
         return normalizeMiniMaxSearchResults(raw);
       } catch (error) {
         throw normalizeMiniMaxError(error);

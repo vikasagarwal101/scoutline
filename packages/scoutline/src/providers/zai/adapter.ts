@@ -62,6 +62,7 @@ import {
   type ZaiMcpClientOptions as McpClientOptions,
 } from "../../lib/mcp-client.js";
 import { buildLegacyRepositoryCacheKey } from "../../lib/cache.js";
+import { applySearchTopic } from "../../lib/search-topic.js";
 import { isZaiConfigured, requireZaiApiKey } from "./credentials.js";
 import { resolveImageSource, resolveVideoSource } from "./media.js";
 import { createZaiQuotaCapability, type ZaiQuotaCapabilityOptions } from "./quota.js";
@@ -271,7 +272,11 @@ function createZaiSearchCapability(options: ZaiSearchCapabilityOptions): SearchC
       };
       const client = clientFactory(clientOptions);
       try {
-        const args = buildZaiSearchArgs(request);
+        // T03: map a non-general topic to a query keyword appendage.
+        // The topic never reaches the Z.AI API as a separate parameter;
+        // it is purely a query enhancement owned by this Adapter.
+        const effectiveQuery = applySearchTopic(request.query, request.controls?.topic);
+        const args = buildZaiSearchArgs({ ...request, query: effectiveQuery });
         const raw = await invokeZaiSearch(client, args);
         return normalizeZaiSearchResults(raw);
       } finally {

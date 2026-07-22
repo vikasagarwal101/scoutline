@@ -375,6 +375,42 @@ describe("MiniMax Search Adapter — bare query", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Topic keyword appendage (T03): non-general topic appends a keyword to
+// the query before the transport call. The topic never reaches the
+// MiniMax API as a separate parameter.
+// ---------------------------------------------------------------------------
+
+describe("MiniMax Search Adapter — topic keyword appendage (T03)", () => {
+  async function invokeWithTopic(query, topic) {
+    const fixture = await readFixture("providers", "minimax", "search.json");
+    const { adapter, fetchCalls } = makeAdapter({ search: fixture });
+    const request = topic ? { query, controls: { topic } } : { query };
+    await adapter.search.invoke(request);
+    return JSON.parse(fetchCalls[0].init.body).q;
+  }
+
+  it("appends ' latest news' for topic news", async () => {
+    assert.strictEqual(await invokeWithTopic("AI", "news"), "AI latest news");
+  });
+
+  it("appends ' financial' for topic finance", async () => {
+    assert.strictEqual(await invokeWithTopic("stocks", "finance"), "stocks financial");
+  });
+
+  it("does not append for topic general", async () => {
+    assert.strictEqual(await invokeWithTopic("AI", "general"), "AI");
+  });
+
+  it("does not append when topic is absent", async () => {
+    assert.strictEqual(await invokeWithTopic("AI", undefined), "AI");
+  });
+
+  it("guards against double-append (query already ends with topic word)", async () => {
+    assert.strictEqual(await invokeWithTopic("rust news", "news"), "rust news");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Field mapping (DESIGN.md §7 MiniMax mapping)
 // ---------------------------------------------------------------------------
 

@@ -4,7 +4,7 @@
  *
  * This module is the single source of truth for which specialized
  * MiniMax Vision operations are supported at runtime. Help text, doctor
- * `sharedCapabilities`, MiniMax descriptor capability metadata, and the
+ * `capabilityMatrix`, MiniMax descriptor capability metadata, and the
  * Adapter support check all derive from this registry through the two
  * pure queries below. There is no environment override and no runtime
  * filesystem lookup.
@@ -489,7 +489,7 @@ export function getMiniMaxVisionConformanceMetadata(): Readonly<
 /**
  * Return the subset of specialized operations currently supported by
  * the MiniMax Vision conformance registry, in canonical order. Used by
- * the Adapter descriptor, Vision help, and doctor `sharedCapabilities`
+ * the Adapter descriptor, Vision help, and doctor `capabilityMatrix`
  * so they all derive from a single query.
  */
 export function listSupportedMiniMaxVisionOperations(): readonly SpecializedVisionOperation[] {

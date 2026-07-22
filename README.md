@@ -15,16 +15,16 @@
 
 ## Features
 
-- **Vision** - Analyze images, screenshots, diagrams, charts, videos using GLM-4.6V
-- **Search** - Real-time web search with domain, recency, and topic filtering
-- **Reader** - Fetch and parse web pages to markdown (Z.AI or Tavily)
-- **Crawl** - Multi-page website traversal with depth, breadth, and path filters (Tavily)
-- **Map** - URL-set discovery without fetching pages (Tavily)
-- **Research** - Asynchronous deep research with citations (Tavily)
-- **Repo** - Search and read GitHub repository code via ZRead
-- **Tools** - MCP tool discovery, schemas, and raw calls
-- **Code Mode** - TypeScript tool chaining for agent automation
-- **Provider selection** - Run shared capabilities through Z.AI, MiniMax Token Plan, or Tavily
+- **Search** — Real-time web search with domain, recency, and topic filtering
+- **Reader** — Fetch and parse web pages to clean markdown
+- **Crawl** — Multi-page website traversal with depth, breadth, and path filters
+- **Map** — Discover URL structure without fetching page content
+- **Research** — Asynchronous deep research with cited sources
+- **Vision** — Analyze images, screenshots, diagrams, charts, and videos
+- **Repo** — Search and read GitHub repository code
+- **Tools** — MCP tool discovery, schemas, and raw calls
+- **Code Mode** — TypeScript tool chaining for agent automation
+- **Provider selection** — Run shared capabilities through Z.AI, MiniMax, or Tavily
 
 ## Quick Start
 
@@ -32,35 +32,36 @@
 export Z_AI_API_KEY="your-api-key"
 
 npx scoutline --help
-npx scoutline vision analyze ./screenshot.png "What errors do you see?"
 npx scoutline search "React 19 new features" --count 5
+npx scoutline vision analyze ./screenshot.png "What errors do you see?"
 ```
 
 Get your Z.AI API key at: https://z.ai/manage-apikey/apikey-list
 
-To use MiniMax instead:
+### Using MiniMax
 
 ```bash
 export MINIMAX_API_KEY="your-minimax-key"
 npx scoutline --provider minimax search "latest LLM benchmarks"
 ```
 
-To use Tavily (Search, Reader, Crawl, Map, Research):
+### Using Tavily (Search, Reader, Crawl, Map, Research)
 
 ```bash
 export TAVILY_API_KEY="your-tavily-key"
-npx scoutline --provider tavily search "React 19 new features" --topic news
+npx scoutline --provider tavily search "AI funding rounds" --topic news
 npx scoutline --provider tavily read https://example.com/
 npx scoutline --provider tavily crawl https://docs.example.com --depth 2
+npx scoutline --provider tavily research "Compare React vs Svelte for production"
 ```
 
-Get your Tavily API key at: https://app.tavily.com/home/api-keys
+Get your Tavily API key at: https://app.tavily.com
 
 ## Installation
 
 ### As an Agent Skill
 
-**OpenSkills** (universal - works with any AI coding agent):
+**OpenSkills** (universal — works with any AI coding agent):
 
 ```bash
 npx openskills install vikasagarwal101/scoutline
@@ -87,105 +88,41 @@ npx scoutline --help
 
 ## Provider Selection
 
-Shared commands (`search`, `vision`, `quota`, `doctor`, `repo`, `read`,
-`crawl`, `map`, `research`) accept a global
-`--provider <zai|minimax|tavily>` flag. Resolution precedence:
+Shared commands accept `--provider <zai|minimax|tavily>`. Resolution precedence:
 
-1. Explicit `--provider <zai|minimax|tavily>` on the command line
+1. Explicit `--provider` flag
 2. `SCOUTLINE_PROVIDER` environment variable
-3. Compatibility default `zai`
-
-Examples:
+3. Default `zai`
 
 ```bash
-# 1. Flag wins over everything
 scoutline --provider minimax search "React 19 features"
 scoutline --provider tavily research "Rust async runtime comparison"
-
-# 2. Environment variable when no flag is supplied
-export SCOUTLINE_PROVIDER=minimax
-scoutline quota
-
-# 3. Default Z.AI when nothing is supplied
-scoutline search "TypeScript best practices"
+SCOUTLINE_PROVIDER=minimax scoutline quota
 ```
 
-Provider selection is **never** inferred from which credentials are present;
-empty credentials leave the Provider unconfigured and shared capabilities will
-fail with `AUTH_ERROR` or `CONFIGURATION_ERROR`. Unknown Provider IDs fail
-fast with `VALIDATION_ERROR`.
+Selecting a provider that doesn't support a capability returns `UNSUPPORTED_CAPABILITY` with no fallback.
 
-`scoutline search`, `scoutline vision`, `scoutline quota`, `scoutline doctor`,
-`scoutline repo`, `scoutline read`, `scoutline crawl`, `scoutline map`, and
-`scoutline research` participate in Provider selection. `scoutline tools`,
-`scoutline tool`, `scoutline call`, and `scoutline code` accept the flag but
-ignore it; they remain Z.AI-only.
+### Capability Matrix
 
-Capability coverage at launch:
+| Capability | Z.AI | MiniMax | Tavily | Command |
+|---|---|---|---|---|
+| Search | Yes | Yes | Yes | `scoutline search` |
+| Reader | Yes | No | Yes | `scoutline read` |
+| Crawl | No | No | Yes | `scoutline crawl` |
+| Map | No | No | Yes | `scoutline map` |
+| Research | No | No | Yes | `scoutline research` |
+| Vision (interpret-image) | Yes | Yes | No | `scoutline vision analyze` |
+| Quota | Yes | Yes | Yes | `scoutline quota` |
+| Diagnostics | Yes | Yes | Yes | `scoutline doctor` |
+| Repo exploration | Yes | No | No | `scoutline repo` |
+| Raw tools | Yes | No | No | `scoutline tools` |
+| Code Mode | Yes | No | No | `scoutline code` |
 
-- `search` — Z.AI, MiniMax, Tavily
-- `vision.interpret-image` — Z.AI, MiniMax
-- `quota`, `diagnostics` — Z.AI, MiniMax, Tavily
-- `read` (Reader) — Z.AI, Tavily (Tavily rejects Z.AI-only options:
-  `--with-links`, `--no-gfm`, `--keep-img-data-url`,
-  `--with-images-summary`)
-- `repo` (Repository exploration) — Z.AI only
-- `crawl`, `map`, `research` — Tavily only
+### Search Controls
 
-MiniMax does not currently advertise the `repository-exploration` or
-`reader` Capabilities — selecting MiniMax (explicitly or via
-`SCOUTLINE_PROVIDER`) for any `repo` subcommand or for `read` returns
-`UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter
-creation, cache identity, or transport construction, with no Z.AI
-fallback. Z.AI and MiniMax do not advertise `crawl`, `map`, or
-`research` — selecting either for any of those commands returns
-`UNSUPPORTED_CAPABILITY` with no Tavily fallback.
+`--topic <general|news|finance>` is accepted by all providers. Tavily passes it natively; Z.AI and MiniMax append a keyword to the query.
 
-### Search controls
-
-Search accepts the shared `--topic <general|news|finance>` flag, which
-is honored by every Provider. Tavily passes the topic to its API
-natively; Z.AI and MiniMax lack a native topic parameter, so the
-Adapter appends a small keyword (`" latest news"` for news, `" financial"`
-for finance) to the query string inside `invoke()` (see
-`lib/search-topic.ts`). The appendage is skipped when the query
-already ends with the topic word (case-insensitive).
-
-`--domain`, `--recency`, `--content-size`, and `--location` are
-Z.AI-only. They are rejected (`UNSUPPORTED_OPTION`) before invocation
-when `--provider minimax` or `--provider tavily` is selected.
-
-## Capability Matrix
-
-| Capability | Z.AI | MiniMax | Tavily | Notes |
-| --- | --- | --- | --- | --- |
-| `search` | Yes | Yes | Yes | `--topic` honored by every Provider. `--domain`/`--recency`/`--content-size`/`--location` are Z.AI-only |
-| `vision.interpret-image` (analyze) | Yes | Yes | No | Provider-specific media limits; uncached |
-| `vision.ui-artifact` (ui-to-code) | Yes | Available | No | Live-attested; conformance-gated |
-| `vision.extract-text` | Yes | Pending | No | Implemented, pending live conformance |
-| `vision.diagnose-error` | Yes | Available | No | Live-attested; conformance-gated |
-| `vision.diagram` | Yes | Pending | No | Implemented, pending live conformance |
-| `vision.chart` | Yes | Pending | No | Implemented, pending live conformance |
-| `vision.diff` (image diff) | Yes | No | No | Z.AI-only (never Provider-claimable) |
-| `vision.video` | Yes | No | No | Z.AI-only (never Provider-claimable) |
-| `quota` | Yes | Yes | Yes | Normalized `QuotaDashboard` (ADR-0001) |
-| `diagnostics` (`doctor`) | Yes | Yes | Yes | Lists every built-in Provider; probes configured |
-| `read` (Reader) | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes | Tavily rejects Z.AI-only options: `--with-links`, `--no-gfm`, `--keep-img-data-url`, `--with-images-summary` |
-| `repo search` / `repo read` / `repo tree` | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | Only Z.AI supplies `repository-exploration` |
-| `crawl` | **No** | **No** | Yes | Tavily-only at launch |
-| `map` | **No** | **No** | Yes | Tavily-only at launch; URL discovery without fetching pages |
-| `research` | **No** | **No** | Yes | Tavily-only at launch; 4-250 credits per request; resume-on-Ctrl-C via `~/.scoutline/research/` |
-| `tools`, `tool`, `call` (Raw tools) | Yes | No | No | Z.AI-only; accepts but ignores `--provider` |
-| `code` (Code Mode) | Yes | No | No | Z.AI-only; accepts but ignores `--provider` |
-
-Media limits for general single-image interpretation:
-
-| Provider | Formats | Maximum |
-| --- | --- | --- |
-| Z.AI | JPG, JPEG, PNG | 5 MiB |
-| MiniMax | JPG, JPEG, PNG, WebP | 50 MiB |
-
-Vision results are never written to the local response cache.
+`--domain`, `--recency`, `--content-size`, and `--location` are Z.AI-only.
 
 ## Usage
 
@@ -193,12 +130,12 @@ The CLI is self-documenting. Use `--help` at any level:
 
 ```bash
 scoutline --help              # All commands
-scoutline vision --help       # Vision commands
 scoutline search --help       # Search options
 scoutline read --help         # Reader options
 scoutline crawl --help        # Crawl options
 scoutline map --help          # Map options
 scoutline research --help     # Research options
+scoutline vision --help       # Vision commands
 scoutline repo --help         # GitHub repo commands
 scoutline doctor --help       # Provider diagnostics
 scoutline quota --help        # Plan usage
@@ -208,369 +145,76 @@ scoutline cache --help        # Local cache inspection and clearing
 ### Examples
 
 ```bash
-# Provider selection
-scoutline --provider minimax search "AI policy news"
-scoutline --provider zai search "internal docs"
-scoutline --provider tavily search "AI funding rounds" --topic news
-
-# Vision - analyze images
-scoutline vision analyze ./image.png "Describe this"
-scoutline vision ui-to-code ./design.png --output code
-scoutline vision extract-text ./screenshot.png --language python
-scoutline vision diagnose-error ./error.png
-
-# Search - web search
+# Search
 scoutline search "TypeScript best practices" --count 10
-scoutline search "security news" --recency oneDay
 scoutline --provider tavily search "earnings call" --topic finance
 
-# Reader - fetch web content
+# Reader
 scoutline read https://docs.example.com/api
-scoutline read https://blog.example.com --format text
 scoutline --provider tavily read https://example.com/
 
-# Crawl - multi-page website traversal
-scoutline crawl https://docs.example.com --depth 2
-scoutline crawl https://example.com --depth 2 --breadth 10 --limit 20
-scoutline crawl https://docs.example.com --select-paths "/api/.*,/guide/.*"
+# Crawl
+scoutline crawl https://docs.example.com --depth 2 --limit 20
+scoutline crawl https://example.com --select-paths "/api/.*,/guide/.*"
 
-# Map - URL-set discovery without fetching pages
-scoutline map https://docs.example.com
-scoutline map https://example.com --depth 2 --limit 50
+# Map
+scoutline map https://docs.example.com --depth 2
 
-# Research - asynchronous deep research with citations
+# Research (credit-intensive — 4-250 credits per request)
 scoutline research "Compare React vs Svelte for enterprise apps"
 scoutline research "State of carbon capture 2025" --model pro
-scoutline research "Quantum computing benchmarks" --citation-format apa
 
-# Repo - GitHub exploration
+# Vision
+scoutline vision analyze ./image.png "Describe this"
+scoutline vision diagnose-error ./error.png
+
+# Repo
 scoutline repo tree facebook/react
 scoutline repo search vercel/next.js "app router"
-scoutline repo read anthropics/anthropic-sdk-python README.md
-scoutline repo search openai/codex "config" --language en
-scoutline repo tree openai/codex --path codex-rs --depth 2
 
-# Quota - effective or all providers
-scoutline quota                       # effective Provider
-scoutline quota --all-providers       # every configured Provider
-
-# Doctor - check setup
+# Diagnostics
 scoutline doctor                      # full diagnostics
-scoutline doctor --no-tools           # metadata only, no transport
-scoutline doctor --provider tavily    # Tavily connectivity
-
-# Cache - inspect or clear the local cache
-scoutline cache stats                 # show inventory of both subdirectories
-scoutline cache clear                 # delete every file under cache/ and tools/
+scoutline quota --all-providers       # every configured provider
+scoutline cache stats                 # cache inventory
 ```
 
 ## Output Format
 
-Default output is **data-only** for token efficiency. Use `--output-format json` for structured responses:
+Default output is **data-only JSON** for token efficiency. Use `--output-format` (`-O`) to switch:
 
-```json
-{
-  "success": true,
-  "data": "...",
-  "timestamp": 1234567890
-}
-```
-
-Quota output is a schema-version-1 `QuotaDashboard`:
-
-```json
-{
-  "schemaVersion": 1,
-  "effectiveProvider": "zai",
-  "providers": [
-    {
-      "provider": "zai",
-      "status": "ok",
-      "categories": [
-        { "name": "requests", "unit": "requests", "current": { "remainingPercent": 87.5 } },
-        { "name": "tokens",   "unit": "tokens",   "current": { "remainingPercent": 64.2 } }
-      ]
-    }
-  ]
-}
-```
-
-Doctor output is a **schema-version-2** `DiagnosticsReport` listing every
-built-in Provider with its configured state, declared capabilities, probe
-status, and a one-line cache summary under the `cache` field. The
-`capabilityMatrix` field lists, for each advertised capability, which
-Providers supply it.
-
-```json
-{
-  "schemaVersion": 2,
-  "effectiveProvider": "zai",
-  "capabilityMatrix": [
-    { "capability": "search",                "providers": ["zai", "minimax", "tavily"] },
-    { "capability": "quota",                 "providers": ["zai", "minimax", "tavily"] },
-    { "capability": "diagnostics",           "providers": ["zai", "minimax", "tavily"] },
-    { "capability": "reader",                "providers": ["zai", "tavily"] },
-    { "capability": "repository-exploration","providers": ["zai"] },
-    { "capability": "crawl",                 "providers": ["tavily"] },
-    { "capability": "map",                   "providers": ["tavily"] },
-    { "capability": "research",              "providers": ["tavily"] }
-  ]
-}
-```
+| Mode | Behavior |
+|---|---|
+| `data` (default) | Raw JSON — no envelope |
+| `json` | Envelope-wrapped: `{success, data, timestamp}` |
+| `pretty` | Same as `json` with 2-space indent |
+| `compact` | Condensed text (varies per command) |
+| `markdown` | Formatted text for human reading |
+| `refs` | Citation-style URLs only |
 
 ## Notes
 
-- `repo search` defaults to English results. Use `--language zh` for Chinese.
-- `repo tree` supports `--path` (directory scope) and `--depth` (expand subtrees).
-- `quota --all-providers` exits 1 if any configured Provider fails; successful
-  entries are still reported.
-- `doctor` exits 1 when the effective Provider is unconfigured or any
-  configured probe fails; successful entries are still reported. The
-  report is at `schemaVersion: 2` — `capabilityMatrix` replaces the
-  prior `sharedCapabilities` / `zaiOnlyCapabilities` fields. Any
-  consumer parsing the doctor report in `data` mode MUST switch to
-  `capabilityMatrix`.
-- `read` returns a schema-version-1 envelope (content read or extract read) in every output mode. `--with-images-summary`, `--no-gfm`, and `--keep-img-data-url` are passed through to the Provider request. `--max-chars` is ignored on extract reads; `--full-envelope` is silently deprecated.
-- Vision tool calls automatically retry transient 5xx/network errors (default: 2 retries). Configure with `ZAI_MCP_VISION_RETRY_COUNT` (or `ZAI_MCP_RETRY_COUNT` for all tools).
-- Tool discovery can be cached to speed `tools`/`tool`/`doctor` (default: on, 24h TTL). The cache shares the unified root with the response cache; configure both via `SCOUTLINE_CACHE`, `SCOUTLINE_CACHE_TTL_MS`, `SCOUTLINE_CACHE_SIZE_MB`, and `SCOUTLINE_CACHE_DIR` (legacy aliases `ZAI_MCP_TOOL_CACHE*`, `ZAI_MCP_CACHE_DIR`, and `ZAI_CACHE*` are accepted silently).
-- The local cache lives at `~/.scoutline/` (`cache/` for responses, `tools/` for tool discovery) on every platform. Inspect or clear it with `scoutline cache stats` and `scoutline cache clear`.
-
-## Repository Exploration (P6)
-
-`scoutline repo search`, `scoutline repo read`, and `scoutline repo tree`
-participate in `--provider` selection. Z.AI advertises the
-`repository-exploration` Capability and supplies it through the Z.AI Repository
-Adapter. MiniMax and Tavily do not advertise it; selecting either returns
-`UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter creation,
-credential resolution for use, cache identity, or transport construction
-with no fallback to Z.AI.
-
-### Breaking data-mode migration (v0.2 → v1)
-
-The three `repo` successes return **schema-version-1 structured values** in
-every output mode. This is an intentional breaking change from the v0.2 raw
-Search/File strings and the depth-dependent raw Tree shape:
-
-| Command | v0.2 (legacy, now obsolete) | v1 (current) |
-| --- | --- | --- |
-| `repo search` | Raw ZRead text with `<excerpt>` blocks | `{schemaVersion, repository, query, language, excerpts:[{text}], truncated, originalTextLength}` |
-| `repo read` | Raw `<file_content>…</file_content>` body | `{schemaVersion, repository, path, content, truncated, originalContentLength}` |
-| `repo tree` | `<structure>` block (depth 1 returned split/deep routes) | `{schemaVersion, repository, path, depth, snapshots:[{repository, path, entries:[{name, path, kind}]}]}` (structured at every depth, including depth 1) |
-
-`data` mode emits the exact object above. `json` and `pretty` wrap it through
-the standard success envelope. Text-oriented modes (`compact`, `markdown`,
-`refs`, `tty`) fall back to the JSON value because the command supplies no
-prose presentation override.
-
-**Scripting impact:** any consumer parsing v0.2 raw ZRead text or the v0.2
-split/deep `tree` shape must switch to the v1 structured fields. The base
-`scoutline.zai.*` raw namespace remains available for callers that need the
-legacy grammar; it is not wrapped in the v1 envelope.
-
-### Canonical repository paths
-
-- Tree aliases omitted, empty, `/`, or `.` normalize to the root path `""`.
-- File paths must be non-root; the root is invalid for `repo read`.
-- Leading `./` and leading `/` are accepted on File; leading and trailing `/`
-  are stripped and repeated `/` collapses on both.
-- Actual `.`/`..` segments, backslashes, and ASCII control characters are
-  rejected. Percent escapes (`%XX`) are never decoded — they remain literal.
-
-### `--max-chars` (deterministic, local)
-
-`--max-chars` is **never** a summarization model call. It is presentation
-projection applied to the normalized result after caching.
-
-- Absent, zero, or negative → no truncation.
-- `repo read` → truncates `content` with the existing ellipsis rule; preserves
-  the original length in `originalContentLength` and sets `truncated: true`.
-- `repo search` → applies **one total budget** across `excerpts[].text` in
-  Provider order; the final retained excerpt is truncated and later excerpts
-  are omitted.
-- `repo tree` → never character-limited.
-- Metadata, JSON envelopes, and Tree snapshots are not part of the budget.
-
-### Empty results
-
-A future Provider Adapter may explicitly return an empty `excerpts`/`entries`
-array when its own contract distinguishes a valid empty state. The Z.AI
-Adapter requires at least one well-formed `<excerpt>` block per Search;
-unwrapped text is malformed and surfaces as a normalized `API_ERROR 502`, not
-as an empty success. An empty ZRead structure without `entries` is malformed
-the same way.
-
-### Cache continuity
-
-Repository results use a new key shape
-`v2.repository-exploration-<op>.<provider>.<credential-hash>.<request-hash>.json`.
-The credential hash is supplied by the Adapter (full lowercase SHA-256 hex
-digest of the active credential) and is never re-hashed by cache code.
-
-Legacy v0.2 Z.AI cache entries remain readable **read-only**: their key is
-reconstructed from the same Adapter-resolved credential using the exact v0.2
-algorithm, and a valid hit is written through to the new key. Old files are
-never rewritten, migrated, or deleted. `--no-cache` performs no reads or
-writes. Injected credentials drive the fingerprint and legacy-key
-construction; ambient `process.env` is never reread.
-
-### Errors and lifecycle
-
-Encoded MCP error envelopes are recognized before success parsing:
-`QUOTA_ERROR` 429 (exhausted ZRead quota, code `1310`) is terminal; transient
-429/5xx and a malformed envelope retry once; auth 401/403 and other 4xx are
-terminal. Raw Provider response bodies, reset metadata, and error texts are
-discarded.
-
-Transport close is best-effort and called once per constructed attempt. A
-successful operation does not become a failure when close rejects or times
-out, and a primary failure remains the outward failure when close also fails.
-Cache hits construct and close no transport.
-
-### Diagnostics inventory
-
-`capabilityMatrix` is derived purely from descriptor metadata
-(`deriveCapabilityMatrix`). For each advertised capability the matrix
-lists exactly which built-in Providers supply it. `repository-exploration`
-appears once with only Z.AI. Doctor help names MiniMax as unsupported
-for `repo` and Z.AI/MiniMax as unsupported for `crawl`, `map`, and
-`research`.
-
-### Non-goals
-
-This release does not add MiniMax repository exploration, a Reader
-migration, automatic summarization, dynamic Provider loading, or an implicit
-Z.AI fallback for unsupported Providers. Tavily's crawler / map / research
-endpoints are not exposed through `repo` — they live under their own
-Tavily-only commands (`scoutline crawl`, `scoutline map`,
-`scoutline research`). The P5 specialized Vision mappings remain
-independent and are not claimed complete here.
-
-## Reader (P7)
-
-`scoutline read` participates in `--provider` selection. Z.AI and Tavily
-both advertise the `reader` Capability; Z.AI supplies it through the Z.AI
-Reader Adapter and Tavily supplies it through the Tavily extract endpoint.
-MiniMax does not advertise it; selecting MiniMax returns
-`UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter creation,
-credential resolution for use, cache identity, or transport construction,
-with no fallback to Z.AI. Tavily rejects the Z.AI-only options
-(`--with-links`, `--no-gfm`, `--keep-img-data-url`,
-`--with-images-summary`) with `UNSUPPORTED_OPTION` when the user has set
-them to `true`.
-
-### Breaking data-mode migration (v0.2 → v1)
-
-`scoutline read` returns **schema-version-1 structured values** in every
-output mode. This is an intentional breaking change from the v0.2 raw content
-string and the bare extract array:
-
-| Read shape | v0.2 (legacy, now obsolete) | v1 (current) |
-| --- | --- | --- |
-| Content read (default) | Raw content string | `{schemaVersion, url, finalUrl, title, content, contentFormat, truncated, originalContentLength}` |
-| Extract read (`--extract <mode>`) | Bare JSON array of items | `{schemaVersion, url, finalUrl, mode, items, truncated, originalItemCount}` |
-
-`url` is exactly what the caller passed; `finalUrl` is the URL the operation
-actually fetched, which differs only when a Provider-side rewrite occurred
-(e.g. `gist.github.com/<id>` → `gist.github.com/<id>/raw`). The v0.2 stderr
-rewrite notice is gone — the signal now lives in `finalUrl`.
-
-The four `--extract` modes (`code`, `links`, `tables`, `headings`) and the
-shape of each item are unchanged from v0.2. Only the outer envelope changed
-(bare array → schema-versioned object with `items`).
-
-#### Output-mode behavior
-
-| Mode | Content read | Extract read |
-| --- | --- | --- |
-| `data` | The content-read envelope object | The extract-read envelope object |
-| `json` | `{success: true, data: <envelope>, timestamp}` (indent 0) | same |
-| `pretty` | `{success: true, data: <envelope>, timestamp}` (indent 2) | same |
-| `compact` | The `content` string directly | JSON fallback (the envelope object) |
-| `markdown` | The `content` string directly | JSON fallback |
-| `refs` | The `content` string directly | JSON fallback |
-| `tty` | The `content` string directly | JSON fallback |
-
-`compact`, `markdown`, `refs`, and `tty` exist to give operators a prose form
-for human reading. A content read supplies one (the page body). An extract
-read does not — extracted items are data, not prose — so those modes fall
-back to JSON. This is the deliberate asymmetry from `repo`, whose results are
-always structured data.
-
-**Scripting impact:** any consumer that did `scoutline read URL > file.md`,
-`scoutline read URL | jq -r .content`, or `scoutline read URL --extract code |
-jq -c .[]` against v0.2 output must switch to the v1 envelope. `--max-chars`
-still truncates the content-read `content`; it is **ignored on extract reads**
-(extract reports `originalItemCount` instead). The deprecated
-`--full-envelope` flag is silently accepted and ignored — the envelope is
-always returned at v1.
-
-### URL rewrite as `finalUrl`
-
-A Provider-side URL rewrite (today: gist URLs to their raw form) is recorded
-as `finalUrl` in the v1 result. The rewrite is idempotent on URLs already
-ending in `/raw` and preserves fragments. The v0.2 stderr notice is removed.
-
-### Cache namespace
-
-Reader results share the partitioned cache namespace and use the
-`reader-fetch` operation suffix:
-
-```text
-v2.reader-reader-fetch.<provider>.<credential-hash>.<request-hash>.json
-```
-
-The Adapter resolves its credential once. The canonical request URL is the
-**rewritten** URL so two requests that normalize to the same fetched URL share
-one cache entry. Legacy v0.2 Z.AI entries are reconstructed from the same
-Adapter-resolved credential using the exact v0.2 args-order algorithm and
-remain read-only; a valid hit is written through to the new key; legacy files
-are never migrated, rewritten, or deleted. `--no-cache` performs no reads or
-writes. Injected credentials drive the fingerprint and legacy-key
-construction; ambient `process.env` is never reread.
-
-### Errors and lifecycle
-
-Encoded MCP error envelopes are recognized before success parsing. The same
-taxonomy that governs `repo` applies: exhausted WebReader quota (code `1310`
-or explicit exhausted-limit meaning) surfaces as a normalized `QUOTA_ERROR`
-429 and is terminal; transient 429/5xx and a malformed envelope retry once;
-auth 401/403 and other 4xx are terminal. Raw Provider body, reset metadata,
-and error-text strings are discarded. Transport close is best-effort and
-called once per constructed attempt; a close failure never masks a primary
-result. Cache hits construct and close no transport.
-
-### Diagnostics inventory
-
-`capabilityMatrix` is derived purely from descriptor metadata. The
-matrix lists Z.AI and Tavily as the suppliers of `reader`; MiniMax is
-absent because its descriptor does not advertise it. Doctor help names
-MiniMax as unsupported for `read`.
-
-### Non-goals
-
-This release does not add a MiniMax Reader Adapter, automatic summarization,
-removal of the deprecated `--full-envelope` flag, or a future `--max-items`
-truncation policy for extract reads.
+- **Research** is credit-intensive (4-250 credits). Ctrl-C preserves the in-flight task — re-running the same command resumes polling instead of creating a new one. No double charge.
+- **Doctor** output is at `schemaVersion: 2` with a `capabilityMatrix` field listing which providers support each capability.
+- **Cache** lives at `~/.scoutline/` (`cache/` for responses, `tools/` for tool discovery). Research state files live at `~/.scoutline/research/`. Inspect or clear with `scoutline cache stats` / `scoutline cache clear`.
+- `repo search` defaults to English. Use `--language zh` for Chinese.
 
 ## Repository Layout
 
 ```
-├── docs/                # User, contributor, and maintainer guides
-├── packages/scoutline/    # npm package source
-├── skills/scoutline/      # Agent skill (SKILL.md)
-└── .claude-plugin/      # Claude Code marketplace config
+├── docs/                   # User, contributor, and maintainer guides
+├── packages/scoutline/     # npm package source
+├── skills/scoutline/       # Agent skill (SKILL.md)
+└── .claude-plugin/         # Claude Code marketplace config
 ```
 
 ## Documentation
 
-Detailed guides are available in [docs/](docs/README.md):
+Detailed guides in [docs/](docs/README.md):
 
-- [Architecture](docs/architecture.md)
-- [Configuration](docs/configuration.md)
-- [Development](docs/development.md)
+- [Architecture](docs/architecture.md) — Provider boundaries, capability contracts, execution model
+- [Configuration](docs/configuration.md) — Environment variables, cache settings
+- [Development](docs/development.md) — Build, test, contribute
 - [Troubleshooting](docs/troubleshooting.md)
-- [Product roadmap](docs/roadmap.md)
-- [Standalone transition](docs/standalone-transition.md)
 
 ## Development
 
@@ -579,18 +223,12 @@ cd packages/scoutline
 npm install
 npm run build
 npm test
-node scripts/bench-tools.mjs
 ```
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT - see [LICENSE](LICENSE).
-
-## Links
-
-- [npm package](https://www.npmjs.com/package/scoutline)
-- [Repository credits](CREDITS.md)
+MIT — see [LICENSE](LICENSE).

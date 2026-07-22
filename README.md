@@ -305,16 +305,16 @@ Providers supply it.
 {
   "schemaVersion": 2,
   "effectiveProvider": "zai",
-  "capabilityMatrix": {
-    "search":             ["zai", "minimax", "tavily"],
-    "quota":              ["zai", "minimax", "tavily"],
-    "diagnostics":        ["zai", "minimax", "tavily"],
-    "reader":             ["zai", "tavily"],
-    "repository-exploration": ["zai"],
-    "crawl":              ["tavily"],
-    "map":                ["tavily"],
-    "research":           ["tavily"]
-  }
+  "capabilityMatrix": [
+    { "capability": "search",                "providers": ["zai", "minimax", "tavily"] },
+    { "capability": "quota",                 "providers": ["zai", "minimax", "tavily"] },
+    { "capability": "diagnostics",           "providers": ["zai", "minimax", "tavily"] },
+    { "capability": "reader",                "providers": ["zai", "tavily"] },
+    { "capability": "repository-exploration","providers": ["zai"] },
+    { "capability": "crawl",                 "providers": ["tavily"] },
+    { "capability": "map",                   "providers": ["tavily"] },
+    { "capability": "research",              "providers": ["tavily"] }
+  ]
 }
 ```
 

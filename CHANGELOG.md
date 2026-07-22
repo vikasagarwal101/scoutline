@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-23
+
 ### Added
 - **Tavily Provider** as the third built-in Provider. New module
   `src/providers/tavily/` with the direct-HTTP Adapter, credentials

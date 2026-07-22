@@ -75,6 +75,13 @@ function buildMapRequest(url: string, options: MapOptions): MapRequest {
   return request as MapRequest;
 }
 
+function buildMapPresentations(urls: readonly string[]): Readonly<Partial<Record<string, string>>> {
+  const compact = urls.join("\n");
+  const markdown = urls.map((u, i) => `${i + 1}. ${u}`).join("\n");
+  const refs = urls.map((u, i) => `[${i + 1}] ${u}`).join("\n");
+  return { compact, markdown, refs, tty: markdown };
+}
+
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
@@ -105,7 +112,7 @@ export async function map(
     totalUrls: result.totalUrls,
   };
 
-  return { kind: "data", data: envelope };
+  return { kind: "data", data: envelope, presentations: buildMapPresentations(result.urls) };
 }
 
 // ---------------------------------------------------------------------------

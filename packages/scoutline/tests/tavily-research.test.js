@@ -754,11 +754,11 @@ describe("Tavily Research Adapter — control mapping", () => {
     const post = fetchCalls.find((c) => c.method === "POST");
     assert.ok(post, "POST must have happened");
     const body = JSON.parse(post.body);
-    assert.equal(body.query, "deep query");
+    assert.equal(body.input, "deep query");
     assert.equal(body.model, "pro");
     assert.equal(body.output_length, "long");
     assert.equal(body.citation_format, "apa");
-    assert.equal(body.domain, "example.com");
+    assert.deepEqual(body.include_domains, ["example.com"]);
   });
 
   it("omits unset controls from the POST body", async () => {
@@ -770,11 +770,11 @@ describe("Tavily Research Adapter — control mapping", () => {
 
     const post = fetchCalls.find((c) => c.method === "POST");
     const body = JSON.parse(post.body);
-    assert.equal(body.query, "bare");
+    assert.equal(body.input, "bare");
     assert.equal(body.model, undefined);
     assert.equal(body.output_length, undefined);
     assert.equal(body.citation_format, undefined);
-    assert.equal(body.domain, undefined);
+    assert.equal(body.include_domains, undefined);
   });
 });
 

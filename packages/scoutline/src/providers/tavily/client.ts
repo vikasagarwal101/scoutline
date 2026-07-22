@@ -519,12 +519,12 @@ export async function createTavilyResearch(
   params?: Omit<TavilyResearchParams, "query">,
   deps: TavilyTransportDeps = {},
 ): Promise<TavilyResearchCreateResult> {
-  const body: Record<string, unknown> = { query };
+  const body: Record<string, unknown> = { input: query };
   if (params) {
     if (params.model !== undefined) body.model = params.model;
     if (params.output_length !== undefined) body.output_length = params.output_length;
     if (params.citation_format !== undefined) body.citation_format = params.citation_format;
-    if (params.domain !== undefined) body.domain = params.domain;
+    if (params.domain !== undefined) body.include_domains = [params.domain];
   }
   const raw = (await postTavilyJson(apiKey, RESEARCH_PATH, body, deps, "research")) as unknown;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {

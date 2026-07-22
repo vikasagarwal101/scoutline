@@ -132,6 +132,15 @@ function projectPage(page: CrawlPage, maxChars?: number): ProjectedPage {
   };
 }
 
+function buildCrawlPresentations(
+  pages: ProjectedPage[],
+): Readonly<Partial<Record<string, string>>> {
+  const urls = pages.map((p) => p.url);
+  const compact = urls.join("\n");
+  const refs = urls.map((u, i) => `[${i + 1}] ${u}`).join("\n");
+  const markdown = pages.map((p) => `## ${p.url}\n\n${p.content}`).join("\n\n---\n\n");
+  return { compact, markdown, refs, tty: markdown };
+}
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
@@ -164,7 +173,7 @@ export async function crawl(
     totalPages: result.totalPages,
   };
 
-  return { kind: "data", data: envelope };
+  return { kind: "data", data: envelope, presentations: buildCrawlPresentations(projectedPages) };
 }
 
 // ---------------------------------------------------------------------------

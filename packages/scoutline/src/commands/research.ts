@@ -189,16 +189,6 @@ function createProductionInterruptRegistrar(stateFilePath: string, resumeCommand
   };
 }
 
-// ---------------------------------------------------------------------------
-// Request builder
-// ---------------------------------------------------------------------------
-
-/**
- * Build the Provider-neutral ResearchRequest from ResearchOptions. Only
- * fields that affect the Provider request or the cache identity appear
- * here; `--max-chars`, `--no-cache`, `--timeout`, and output mode never
- * enter the request.
- */
 function buildResearchRequest(query: string, options: ResearchOptions): ResearchRequest {
   const request: { query: string } & Record<string, unknown> = { query };
   if (options.model !== undefined) request.model = options.model;
@@ -206,6 +196,54 @@ function buildResearchRequest(query: string, options: ResearchOptions): Research
   if (options.citationFormat !== undefined) request.citationFormat = options.citationFormat;
   if (options.domain !== undefined) request.domain = options.domain;
   return request as ResearchRequest;
+}
+
+function parseReportSections(report: string): readonly { heading: string; body: string }[] {
+  const lines = report.split("\n");
+  const sections: { heading: string; body: string }[] = [];
+  let currentHeading = "";
+  let currentBody: string[] = [];
+
+  for (const line of lines) {
+    const match = line.match(/^(#{1,6})\s+(.+)$/);
+    if (match) {
+      if (currentBody.some((l) => l.trim()) || currentHeading) {
+        sections.push({ heading: currentHeading, body: currentBody.join("\n").trim() });
+      }
+      currentHeading = match[2]!.trim();
+      currentBody = [];
+    } else {
+      currentBody.push(line);
+    }
+  }
+  if (currentBody.some((l) => l.trim()) || currentHeading) {
+    sections.push({ heading: currentHeading, body: currentBody.join("\n").trim() });
+  }
+
+  return sections.filter((s) => !/^(sources?|references?|citations?)$/i.test(s.heading));
+}
+
+function buildResearchPresentations(
+  sections: readonly { heading: string; body: string }[],
+  sources: readonly { title?: string; url?: string }[],
+): Readonly<Partial<Record<string, string>>> {
+  const compact = sections.map((s) => s.body).join("\n\n");
+
+  const markdown =
+    sections.map((s) => `## ${s.heading}\n\n${s.body}`).join("\n\n") +
+    (sources.length > 0
+      ? "\n\n---\n\n## Sources\n\n" +
+        sources
+          .map((s, i) => `${i + 1}. [${s.title ?? s.url ?? "Source"}](${s.url ?? ""})`)
+          .join("\n")
+      : "");
+
+  const refs = sources
+    .map((s) => s.url ?? "")
+    .filter((u) => u.length > 0)
+    .join("\n");
+
+  return { compact, markdown, refs, tty: markdown };
 }
 
 // ---------------------------------------------------------------------------
@@ -289,22 +327,30 @@ export async function research(
       if (timeoutId !== undefined) clearTimeout(timeoutId);
     }
 
-    // Projection: apply --max-chars to the report text. The cache stores
-    // the full report; truncation is recomputed on every read.
+    const reportText =
+      options.maxChars && options.maxChars > 0 && result.report.length > options.maxChars
+        ? result.report.slice(0, options.maxChars - 1).trimEnd() + "…"
+        : result.report;
+
+    const sections = parseReportSections(reportText);
+
     const envelope: Record<string, unknown> = {
       schemaVersion: result.schemaVersion,
       query: result.query,
       model: result.model,
-      report: result.report,
+      sections,
       sources: result.sources,
     };
     if (options.maxChars && options.maxChars > 0 && result.report.length > options.maxChars) {
-      envelope.report = result.report.slice(0, options.maxChars - 1).trimEnd() + "…";
       envelope.reportTruncated = true;
       envelope.originalReportLength = result.report.length;
     }
 
-    return { kind: "data", data: envelope };
+    return {
+      kind: "data",
+      data: envelope,
+      presentations: buildResearchPresentations(sections, result.sources),
+    };
   } finally {
     cleanup();
   }
@@ -354,10 +400,10 @@ Common Options:
 Output format (schema-version-1):
   {
     "schemaVersion": 1,
-    "query":   "<your query>",
-    "model":   "<model used>",
-    "report":  "<full report text with citations>",
-    "sources": [{ "title": "...", "url": "..." }]
+    "query":    "<your query>",
+    "model":    "<model used>",
+    "sections": [{ "heading": "...", "body": "..." }],
+    "sources":  [{ "title": "...", "url": "..." }]
   }
 
 Examples:

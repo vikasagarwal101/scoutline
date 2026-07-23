@@ -476,21 +476,170 @@ describe("Brave Search Capability", () => {
     assert.ok(calls[0].url.includes("/res/v1/web/search"), calls[0].url);
   });
 
-  it("rejects contentSize before any fetch (UnsupportedOptionError)", async () => {
-    let fetchCalls = 0;
-    const { adapter } = makeSearchAdapter(async () => {
-      fetchCalls += 1;
-      return emptyWebResponse();
+  // -------------------------------------------------------------------------
+  // T4: --content-size high → LLM Context (grounding.generic[])
+  // -------------------------------------------------------------------------
+
+  function llmContextResponse(entries) {
+    return async () => makeResponse({ json: { grounding: { generic: entries } } });
+  }
+
+  it("contentSize:high routes to /res/v1/llm/context and joins snippets with blank line", async () => {
+    const raw = {
+      grounding: {
+        generic: [
+          {
+            title: "Passage One",
+            url: "https://ctx.test/one",
+            snippets: ["First passage.", "Second passage for the same source."],
+          },
+          {
+            title: "Passage Two",
+            url: "https://ctx.test/two",
+            snippets: ["Solo passage."],
+          },
+        ],
+      },
+    };
+    const { adapter, calls } = makeSearchAdapter(async () => makeResponse({ json: raw }));
+    const out = await adapter.search.invoke({
+      query: "deep learning",
+      controls: { contentSize: "high" },
     });
+    assert.strictEqual(calls.length, 1);
+    assert.ok(
+      calls[0].url.startsWith("https://api.search.brave.com/res/v1/llm/context?"),
+      `llm context endpoint: ${calls[0].url}`,
+    );
+    assert.deepStrictEqual(
+      [...out],
+      [
+        {
+          title: "Passage One",
+          url: "https://ctx.test/one",
+          summary: "First passage.\n\nSecond passage for the same source.",
+        },
+        { title: "Passage Two", url: "https://ctx.test/two", summary: "Solo passage." },
+      ],
+    );
+    // LLM Context entries carry no source/date — none synthesized.
+    assert.strictEqual(out[0].source, undefined);
+    assert.strictEqual(out[0].date, undefined);
+  });
+
+  it("high --topic news routes to LLM Context with NO 'latest news' keyword (topic overridden)", async () => {
+    const { adapter, calls } = makeSearchAdapter(llmContextResponse([]));
+    await adapter.search.invoke({
+      query: "tesla",
+      controls: { contentSize: "high", topic: "news" },
+    });
+    assert.ok(
+      calls[0].url.startsWith("https://api.search.brave.com/res/v1/llm/context?"),
+      `must route to LLM Context, not news: ${calls[0].url}`,
+    );
+    // The q= must be the plain query — no ` latest news` appended.
+    assert.ok(calls[0].url.includes(encodeURIComponent("tesla")), `clean q: ${calls[0].url}`);
+    assert.ok(!calls[0].url.includes("news"), `no news keyword on high path: ${calls[0].url}`);
+  });
+
+  it("high --topic finance routes to LLM Context with NO 'financial' keyword (topic suppressed)", async () => {
+    const { adapter, calls } = makeSearchAdapter(llmContextResponse([]));
+    await adapter.search.invoke({
+      query: "tesla",
+      controls: { contentSize: "high", topic: "finance" },
+    });
+    assert.ok(
+      calls[0].url.startsWith("https://api.search.brave.com/res/v1/llm/context?"),
+      `must route to LLM Context, not web: ${calls[0].url}`,
+    );
+    // The critical M4 correctness rule: no ` financial` appended on high path.
+    assert.ok(calls[0].url.includes(encodeURIComponent("tesla")), `clean q: ${calls[0].url}`);
+    assert.ok(
+      !calls[0].url.includes("financial"),
+      `no finance keyword on high path: ${calls[0].url}`,
+    );
+  });
+
+  it("high --domain example.com applies site: filter but still suppresses the topic keyword", async () => {
+    const { adapter, calls } = makeSearchAdapter(llmContextResponse([]));
+    await adapter.search.invoke({
+      query: "rust async",
+      controls: { contentSize: "high", domain: "example.com", topic: "finance" },
+    });
+    assert.ok(
+      calls[0].url.startsWith("https://api.search.brave.com/res/v1/llm/context?"),
+      calls[0].url,
+    );
+    assert.ok(
+      calls[0].url.includes(encodeURIComponent("site:example.com")),
+      `domain still applied on high path: ${calls[0].url}`,
+    );
+    assert.ok(
+      !calls[0].url.includes("financial"),
+      `no finance keyword on high path even with --domain: ${calls[0].url}`,
+    );
+  });
+
+  it("high sends ONLY q= to LLM Context (no country/freshness/count)", async () => {
+    const { adapter, calls } = makeSearchAdapter(llmContextResponse([]));
+    await adapter.search.invoke({
+      query: "q",
+      controls: { contentSize: "high", recency: "oneWeek", location: "us" },
+    });
+    assert.ok(calls[0].url.includes("/res/v1/llm/context?"), calls[0].url);
+    // Only q= should be present — recency/location mapped to country/freshness
+    // are NOT forwarded to LLM Context, and count never reaches the adapter.
+    assert.ok(/ Freshness=/.test(" " + calls[0].url) === false, calls[0].url);
+    assert.ok(!/country=/.test(calls[0].url), `no country on high path: ${calls[0].url}`);
+    assert.ok(!/freshness=/.test(calls[0].url), `no freshness on high path: ${calls[0].url}`);
+    assert.ok(!/count=/.test(calls[0].url), `no count on high path: ${calls[0].url}`);
+  });
+
+  it("contentSize:medium is a no-op depth and stays on the web endpoint", async () => {
+    const { adapter, calls } = makeSearchAdapter(emptyWebResponse);
+    await adapter.search.invoke({ query: "q", controls: { contentSize: "medium" } });
+    assert.ok(
+      calls[0].url.startsWith("https://api.search.brave.com/res/v1/web/search?"),
+      `medium must NOT route to LLM Context: ${calls[0].url}`,
+    );
+  });
+
+  it("contentSize high vs medium vs absent produce different cache identities", () => {
+    const { adapter } = makeSearchAdapter(emptyWebResponse);
+    const high = adapter.search.cacheIdentity({ query: "q", controls: { contentSize: "high" } });
+    const medium = adapter.search.cacheIdentity({
+      query: "q",
+      controls: { contentSize: "medium" },
+    });
+    const absent = adapter.search.cacheIdentity({ query: "q" });
+    assert.notDeepStrictEqual(high.request, medium.request, "high ≠ medium");
+    assert.notDeepStrictEqual(high.request, absent.request, "high ≠ absent");
+    assert.notDeepStrictEqual(medium.request, absent.request, "medium ≠ absent");
+  });
+
+  it("throws ApiError 500 on a malformed LLM Context response (generic not array)", async () => {
+    const { adapter } = makeSearchAdapter(async () =>
+      makeResponse({ json: { grounding: { generic: "not-an-array" } } }),
+    );
     let thrown;
     try {
       await adapter.search.invoke({ query: "q", controls: { contentSize: "high" } });
     } catch (err) {
       thrown = err;
     }
-    assert.ok(thrown instanceof UnsupportedOptionError, "must be UnsupportedOptionError");
-    assert.ok(/brave/i.test(thrown.message) && /contentSize/.test(thrown.message), thrown.message);
-    assert.strictEqual(fetchCalls, 0, "fetch must not be called for an unsupported control");
+    assert.ok(thrown instanceof ApiError && thrown.statusCode === 500);
+  });
+
+  it("throws ApiError 500 when an LLM Context entry is missing snippets", async () => {
+    const raw = { grounding: { generic: [{ title: "t", url: "https://x.test" }] } };
+    const { adapter } = makeSearchAdapter(async () => makeResponse({ json: raw }));
+    let thrown;
+    try {
+      await adapter.search.invoke({ query: "q", controls: { contentSize: "high" } });
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof ApiError && thrown.statusCode === 500);
   });
 
   it("video invoke routes to /res/v1/videos/search and normalizes top-level results[] (extras dropped)", async () => {
@@ -560,7 +709,7 @@ describe("Brave Search Capability", () => {
     assert.ok(thrown instanceof ApiError && thrown.statusCode === 500);
   });
 
-  it("rejects type:video + contentSize before any fetch (contentSize reject-list)", async () => {
+  it("rejects type:video + contentSize before any fetch (type×contentSize combination guard)", async () => {
     let fetchCalls = 0;
     const { adapter } = makeSearchAdapter(async () => {
       fetchCalls += 1;

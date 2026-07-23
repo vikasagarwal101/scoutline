@@ -47,6 +47,7 @@ import {
   fetchBraveSearch,
   fetchBraveNewsSearch,
   fetchBraveVideoSearch,
+  fetchBraveLlmContext,
   type BraveSearchParams,
   type BraveTransportDeps,
 } from "./client.js";
@@ -86,19 +87,20 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 // ---------------------------------------------------------------------------
 
 /**
- * Controls the Brave Search Adapter does NOT accept. `contentSize`
- * (LLM Context / `--content-size`) is deferred to T4; every other
- * control (`domain`/`recency`/`location`/`topic`/`type`) is honored
- * here. `type:"video"` is dispatched to `/res/v1/videos/search`
- * (T3b); `type`×`contentSize` therefore does not need a dedicated
- * guard today — `contentSize` is rejected here BEFORE dispatch
- * regardless of `type`.
+ * Controls the Brave Search Adapter does NOT accept as individuals.
+ * Every control (`domain`/`recency`/`location`/`topic`/`type`/
+ * `contentSize`) is now honored here — `contentSize:"high"` routes to
+ * the LLM Context endpoint (T4), and `medium`/default is a no-op depth
+ * on the web path. Brave therefore has NO per-control reject-list.
  *
- * T4 NOTE: when T4 removes `contentSize` from this list to wire LLM
- * Context, T4 MUST add the explicit `type:"video"` + `contentSize`
- * guard at that point (video results have no depth mode).
+ * The one Brave-specific constraint is a COMBINATION — `type:"video"`
+ * has no depth mode, so `type:"video"` + `contentSize` is incompatible.
+ * That is enforced separately as a combination guard in {@link validate}
+ * (it fires BEFORE dispatch, naming `contentSize` as the offending
+ * option, since `contentSize` is meaningful in general but not on the
+ * video path).
  */
-const UNSUPPORTED_CONTROLS = ["contentSize"] as const;
+const UNSUPPORTED_CONTROLS = [] as const;
 
 function assertNoUnsupportedControls(request: SearchRequest): void {
   const controls = request.controls;
@@ -107,6 +109,20 @@ function assertNoUnsupportedControls(request: SearchRequest): void {
     if (controls[key] !== undefined) {
       throw new UnsupportedOptionError("brave", "search", key);
     }
+  }
+}
+
+/**
+ * Brave-specific combination guard: `type:"video"` + `contentSize` is
+ * rejected BEFORE dispatch (video results have no depth mode, so
+ * `contentSize:"high"` cannot route to LLM Context from the video
+ * endpoint). The error names `contentSize` — it is the incompatible
+ * option in this combination (individually accepted elsewhere).
+ */
+function assertNoVideoWithContentSize(request: SearchRequest): void {
+  const controls = request.controls;
+  if (controls?.type === "video" && controls.contentSize !== undefined) {
+    throw new UnsupportedOptionError("brave", "search", "contentSize");
   }
 }
 
@@ -157,13 +173,24 @@ function mapSearchControls(controls?: SearchControls): BraveSearchParams | undef
  * dedicated domain param); `topic:"finance"` appends the finance keyword
  * via the shared helper. `topic:"news"` is NOT a query mutation — it is
  * an endpoint switch handled by the dispatcher.
+ *
+ * `suppressTopic` drops the `topic:"finance"` keyword appendage while
+ * keeping the `domain` operator. The LLM Context (`high`) path sets it:
+ * `high` overrides `topic` (it routes to LLM Context regardless of
+ * `--topic`), so the editorial topic keyword must NOT pollute the
+ * passage-extraction query. Domain is a filter and still applies on the
+ * high path, so it is preserved.
  */
-function applyQueryMutators(query: string, controls?: SearchControls): string {
+function applyQueryMutators(
+  query: string,
+  controls?: SearchControls,
+  suppressTopic = false,
+): string {
   let effective = query;
   if (controls?.domain) {
     effective = `${effective} site:${controls.domain}`;
   }
-  if (controls?.topic === "finance") {
+  if (!suppressTopic && controls?.topic === "finance") {
     effective = applySearchTopic(effective, "finance");
   }
   return effective;
@@ -275,6 +302,48 @@ function normalizeBraveVideoResults(raw: unknown): readonly SearchSource[] {
   const out: SearchSource[] = [];
   for (const entry of results) {
     out.push(normalizeBraveResultEntry(entry));
+  }
+  return out;
+}
+
+/**
+ * Normalize a raw Brave LLM Context response into `SearchSource[]`.
+ * Reads `raw.grounding.generic[]`; each entry carries `title`/`url` and
+ * a `snippets` array of extracted passages. Passages are joined with a
+ * blank line into `summary`. LLM Context entries do NOT carry
+ * `meta_url.netloc` or `page_age`/`age` (the web/news/video shape), so
+ * `source`/`date` are not synthesized here. Any malformed shape is a
+ * retryable `ApiError` 500.
+ */
+function normalizeBraveLlmContextResults(raw: unknown): readonly SearchSource[] {
+  if (!isPlainObject(raw)) {
+    throw new ApiError("Brave search returned a malformed response", 500);
+  }
+  const grounding = raw.grounding;
+  if (!isPlainObject(grounding)) {
+    throw new ApiError("Brave search returned a malformed response", 500);
+  }
+  const generic = grounding.generic;
+  if (!Array.isArray(generic)) {
+    throw new ApiError("Brave search returned a malformed response", 500);
+  }
+  const out: SearchSource[] = [];
+  for (const entry of generic) {
+    if (!isPlainObject(entry)) {
+      throw new ApiError("Brave search returned a malformed response", 500);
+    }
+    const title = entry.title;
+    const url = entry.url;
+    const snippets = entry.snippets;
+    if (
+      typeof title !== "string" ||
+      typeof url !== "string" ||
+      !Array.isArray(snippets) ||
+      snippets.some((s) => typeof s !== "string")
+    ) {
+      throw new ApiError("Brave search returned a malformed response", 500);
+    }
+    out.push({ title, url, summary: snippets.join("\n\n") });
   }
   return out;
 }
@@ -405,9 +474,12 @@ function createBraveSearchCapability(options: BraveSearchCapabilityOptions): Sea
           "Search query must contain at least one non-whitespace character",
         );
       }
-      // Brave supports domain, recency, location, and topic. contentSize
-      // is rejected before any transport call (deferred to T4).
+      // Brave supports domain, recency, location, topic, and contentSize
+      // (contentSize:"high" → LLM Context in T4; medium/default is a
+      // no-op depth on the web path). type:"video" + contentSize is
+      // rejected as an incompatible combination before any transport call.
       assertNoUnsupportedControls(request);
+      assertNoVideoWithContentSize(request);
     },
 
     cacheIdentity(request: SearchRequest): SearchCacheIdentity {
@@ -433,30 +505,48 @@ function createBraveSearchCapability(options: BraveSearchCapabilityOptions): Sea
 
       const apiKey = resolveApiKey(env);
       try {
-        // Query-mutating controls (domain site:, topic:finance keyword)
-        // are applied to the query BEFORE dispatch; param-bearing
-        // controls (recency/location) are mapped separately.
-        const effectiveQuery = applyQueryMutators(request.query, request.controls);
-        const params = mapSearchControls(request.controls);
-        // Dispatch precedence: video > news > web. (T4 later inserts
-        // `high` between `video` and `news` for the full
-        // `video > high > news > web` chain; `video` stays the top
-        // branch.) `--type video --topic news` is rejected at
-        // parse-time (T3a), so `isVideo` and `isNews` are mutually
-        // exclusive in practice — `isVideo` takes precedence
-        // regardless.
+        // Dispatch precedence: video > high > news > web.
+        //   - `video` (type:"video") stays the top branch (the
+        //     type×contentSize combination is already rejected in
+        //     validate, so `isVideo` and `isHigh` never co-occur).
+        //   - `high` (contentSize:"high") routes to LLM Context and
+        //     OVERRIDES `topic`: a `high + topic:news|finance` request
+        //     goes to LLM Context, NOT news/keyword-append.
+        //   - `news` (topic:"news") is the news endpoint switch.
+        //   - everything else falls through to web search.
         const isVideo = request.controls?.type === "video";
-        const isNews = !isVideo && request.controls?.topic === "news";
+        const isHigh = !isVideo && request.controls?.contentSize === "high";
+        const isNews = !isVideo && !isHigh && request.controls?.topic === "news";
+
+        // Query-mutating controls are applied to the query BEFORE
+        // dispatch; param-bearing controls (recency/location) are mapped
+        // separately. The high path MUST suppress the `topic:finance`
+        // keyword appendage (`high` overrides topic, so the editorial
+        // keyword must not pollute the passage-extraction query); the
+        // `domain` operator is a filter and still applies on every path.
+        const effectiveQuery = isHigh
+          ? applyQueryMutators(request.query, request.controls, true)
+          : applyQueryMutators(request.query, request.controls);
+        const params = mapSearchControls(request.controls);
+
+        // The high path sends ONLY `q` to LLM Context — `params`
+        // (country/freshness) are NOT forwarded (whether LLM Context
+        // accepts them is unconfirmed; see fetchBraveLlmContext). All
+        // other paths pass `params` as today.
         const raw = isVideo
           ? await fetchBraveVideoSearch(apiKey, effectiveQuery, params, transport)
-          : isNews
-            ? await fetchBraveNewsSearch(apiKey, effectiveQuery, params, transport)
-            : await fetchBraveSearch(apiKey, effectiveQuery, params, transport);
+          : isHigh
+            ? await fetchBraveLlmContext(apiKey, effectiveQuery, transport)
+            : isNews
+              ? await fetchBraveNewsSearch(apiKey, effectiveQuery, params, transport)
+              : await fetchBraveSearch(apiKey, effectiveQuery, params, transport);
         return isVideo
           ? normalizeBraveVideoResults(raw)
-          : isNews
-            ? normalizeBraveNewsResults(raw)
-            : normalizeBraveWebResults(raw);
+          : isHigh
+            ? normalizeBraveLlmContextResults(raw)
+            : isNews
+              ? normalizeBraveNewsResults(raw)
+              : normalizeBraveWebResults(raw);
       } catch (error) {
         throw normalizeBraveError(error);
       }

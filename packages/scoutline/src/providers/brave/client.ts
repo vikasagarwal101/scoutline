@@ -268,3 +268,38 @@ export async function fetchBraveVideoSearch(
 ): Promise<unknown> {
   return getBraveJson(apiKey, "/res/v1/videos/search", { q: query, ...(params ?? {}) }, deps);
 }
+
+/**
+ * Perform ONE GET against the Brave LLM Context endpoint
+ * (`/res/v1/llm/context`). No retry; no response body in public errors.
+ * Returns the parsed JSON body (raw; the Adapter post-processes into
+ * normalized search sources).
+ *
+ * Unlike the web/news/video endpoints, LLM Context is **query-keyed** —
+ * it is a richer search that returns extracted passages
+ * (`grounding.generic[]`), NOT a URL-keyed summarizer. It is dispatched
+ * when `controls.contentSize === "high"` (the accepted 4th-meaning
+ * overload of `--content-size`); precedence is `video > high > news >
+ * web`. `high` overrides `topic`, so this path must receive a CLEAN
+ * query (no `topic` keyword appendage); the Adapter is responsible for
+ * that suppression.
+ *
+ * This helper sends ONLY `q`. Two live gates shape that:
+ *   - **count:** `--count` never reaches the Adapter (it is applied
+ *     client-side after normalization by shared execution). LLM
+ *     Context's own source-count/token-budget param name is currently
+ *     UNCONFIRMED, so a fixed default is intentionally NOT forwarded
+ *     here — we send only `q` rather than guess the field name.
+ *   - **country/freshness:** whether LLM Context accepts `country`/
+ *     `freshness` is UNCONFIRMED. To avoid sending params the endpoint
+ *     may reject, the Adapter does NOT pass `mapSearchControls(...)` to
+ *     this helper (only `{ q }` flows through).
+ * (GATES-1/4 in brave-tech-plan §9 — confirm live, then widen.)
+ */
+export async function fetchBraveLlmContext(
+  apiKey: string,
+  query: string,
+  deps: BraveTransportDeps = {},
+): Promise<unknown> {
+  return getBraveJson(apiKey, "/res/v1/llm/context", { q: query }, deps);
+}

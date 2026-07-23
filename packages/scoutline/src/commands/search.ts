@@ -270,7 +270,10 @@ Options:
                       Mutually exclusive with --topic.
   --domain <d>        Limit to specific domain (provider support varies; e.g., github.com)
   --recency <r>       Filter by time (provider support varies): oneDay, oneWeek, oneMonth, oneYear, noLimit
-  --content-size <s>  Content size (provider support varies): medium, high
+  --content-size <s>  Depth/size. medium = default. high maps per provider:
+                      Z.AI content_size; Tavily search_depth=advanced; Brave →
+                      LLM Context (extracted passages); MiniMax rejected
+                      (UNSUPPORTED_OPTION).
   --location <l>      Location hint (provider support varies): cn, us
   --count <n>         Limit number of results (applied after normalization)
   --max-summary <n>   Truncate each result summary to <n> chars (JSON modes only)

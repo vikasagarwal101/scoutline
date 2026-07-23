@@ -253,10 +253,10 @@ describe("Search Adapter conformance — shared normalized output", () => {
 // ---------------------------------------------------------------------------
 
 describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
-  it("contains exactly [zai, minimax, tavily] in that order", () => {
+  it("contains exactly [zai, minimax, tavily, brave] in that order", () => {
     assert.deepStrictEqual(
       BUILT_IN_PROVIDER_DESCRIPTORS.map((d) => d.id),
-      ["zai", "minimax", "tavily"],
+      ["zai", "minimax", "tavily", "brave"],
     );
   });
 
@@ -266,13 +266,25 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
   });
 
   it("descriptors expose pure metadata (capabilities + isConfigured, no transport)", () => {
-    for (const d of BUILT_IN_PROVIDER_DESCRIPTORS) {
+    // Fully-built Providers (zai/minimax/tavily) advertise search, quota,
+    // and diagnostics. Brave is in the foundation state (T1): credentials
+    // + transport skeleton with an empty capability set; later tickets
+    // wire its capabilities.
+    for (const id of ["zai", "minimax", "tavily"]) {
+      const d = getProviderDescriptor(id);
       const caps = d.capabilities();
-      assert.ok(caps.has("search"), `${d.id} should advertise search`);
+      assert.ok(caps.has("search"), `${id} should advertise search`);
       // P4-02 wires quota metadata; P4-04 wires diagnostics.
       assert.ok(caps.has("quota"));
       assert.ok(caps.has("diagnostics"));
     }
+    // Brave foundation: capabilities() is empty by design.
+    const brave = getProviderDescriptor("brave");
+    assert.strictEqual(
+      brave.capabilities().size,
+      0,
+      "Brave foundation descriptor must advertise no capabilities",
+    );
     const zai = getProviderDescriptor("zai");
     assert.strictEqual(zai.isConfigured({ Z_AI_API_KEY: "k" }), true);
     assert.strictEqual(zai.isConfigured({}), false);
@@ -282,15 +294,30 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     const tv = getProviderDescriptor("tavily");
     assert.strictEqual(tv.isConfigured({ TAVILY_API_KEY: "k" }), true);
     assert.strictEqual(tv.isConfigured({}), false);
+    // Brave isConfigured locks the foundation state.
+    assert.strictEqual(brave.isConfigured({}), false);
+    assert.strictEqual(brave.isConfigured({ BRAVE_SEARCH_API_KEY: "  " }), false);
+    assert.strictEqual(brave.isConfigured({ BRAVE_SEARCH_API_KEY: "k" }), true);
   });
 
   it("descriptor creation is side-effect-free (no transport construction)", () => {
-    // Every built-in descriptor now has a real Adapter whose create()
-    // is side-effect-free.
-    for (const d of BUILT_IN_PROVIDER_DESCRIPTORS) {
+    // Every Provider that advertises `search` exposes a Search
+    // Capability object. Brave is the foundation state (T1): the
+    // create() is still side-effect-free, but `adapter.search` is
+    // undefined because no Capability is wired yet.
+    for (const id of ["zai", "minimax", "tavily"]) {
+      const d = getProviderDescriptor(id);
       const adapter = d.create({ env: {} });
-      assert.strictEqual(typeof adapter.search, "object");
+      assert.strictEqual(typeof adapter.search, "object", `${id} should expose adapter.search`);
     }
+    const brave = getProviderDescriptor("brave");
+    const braveAdapter = brave.create({ env: {} });
+    assert.strictEqual(braveAdapter.id, "brave");
+    assert.strictEqual(
+      braveAdapter.search,
+      undefined,
+      "Brave foundation adapter must not expose adapter.search",
+    );
   });
 
   it("tavily create() returns an adapter with search, reader, and crawl", () => {
@@ -321,6 +348,12 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
       ["tavily"],
     );
 
+    const onlyBrave = getConfiguredProviderDescriptors({ BRAVE_SEARCH_API_KEY: "k" });
+    assert.deepStrictEqual(
+      onlyBrave.map((d) => d.id),
+      ["brave"],
+    );
+
     const both = getConfiguredProviderDescriptors({
       Z_AI_API_KEY: "k",
       MINIMAX_API_KEY: "k",
@@ -334,10 +367,11 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
       Z_AI_API_KEY: "k",
       MINIMAX_API_KEY: "k",
       TAVILY_API_KEY: "k",
+      BRAVE_SEARCH_API_KEY: "k",
     });
     assert.deepStrictEqual(
       all.map((d) => d.id),
-      ["zai", "minimax", "tavily"],
+      ["zai", "minimax", "tavily", "brave"],
     );
 
     const neither = getConfiguredProviderDescriptors({});

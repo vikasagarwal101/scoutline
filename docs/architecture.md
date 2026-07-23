@@ -440,7 +440,7 @@ to `~/.scoutline/research/<state-hash>.json` so the next invocation
 of the same request detects the in-flight task and polls it instead
 of creating a new one. The state-hash is deterministic for a given
 `{provider, capability, credentialFingerprint, request}` tuple (see
-`lib/research-state.ts → computeResearchStateHash`).
+`lib/async-job-state.ts → computeAsyncJobStateHash`).
 
 Resilience contract:
 
@@ -465,7 +465,7 @@ Resilience contract:
 | `commands/repository-explorer.ts` | Provider-neutral Explorer: canonical paths, deterministic BFS, schema-v1 projection, local max-chars. |
 | `commands/crawl.ts` | Thin crawl handler: parse-level URL validation, `executeCrawlOperation`, per-page `--max-chars` projection, schema-v1 envelope. |
 | `commands/map.ts` | Thin map handler: parse-level URL validation, `executeMapOperation`, schema-v1 envelope (URLs only). |
-| `commands/research.ts` | Research handler: SIGINT-registered polling loop, `--max-chars` projection on the report, resume-on-restart via `lib/research-state.ts`, schema-v1 envelope. |
+| `commands/research.ts` | Research handler: SIGINT-registered polling loop, `--max-chars` projection on the report, resume-on-restart via `lib/async-job-state.ts`, schema-v1 envelope. |
 | `commands/tools.ts` | MCP tool discovery, schema lookup, and raw calls. |
 | `commands/code.ts` | TypeScript tool chaining through UTCP Code Mode. |
 | `commands/doctor.ts`, `commands/quota.ts` | Provider-aware diagnostics and quota dashboard. |

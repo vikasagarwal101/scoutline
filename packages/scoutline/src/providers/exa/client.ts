@@ -39,6 +39,7 @@ const { version: VERSION } = require("../../../package.json") as { version: stri
 
 const BASE_URL = "https://api.exa.ai";
 const SEARCH_PATH = "/search";
+const CONTENTS_PATH = "/contents";
 const DEFAULT_TIMEOUT_MS = 30000;
 
 const USER_AGENT = `scoutline/${VERSION}`;
@@ -64,6 +65,19 @@ export interface ExaSearchParams {
   readonly startPublishedDate?: string;
   readonly type?: string;
   readonly category?: string;
+}
+
+/**
+ * Provider-native contents request options (Exa API field names,
+ * camelCase). The Adapter maps `ReaderFetchRequest` fields into these
+ * before calling {@link fetchExaContents}; the transport never imports
+ * a capability contract.
+ *
+ * `livecrawlTimeout` is in milliseconds (the CLI `--timeout` is in
+ * seconds; the Adapter converts before calling).
+ */
+export interface ExaContentsParams {
+  readonly livecrawlTimeout?: number;
 }
 
 function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
@@ -222,4 +236,30 @@ export async function fetchExaSearch(
   // Always request highlights — token-efficient summary source.
   body.contents = { highlights: true };
   return postExaJson(apiKey, SEARCH_PATH, body, deps, "search");
+}
+
+/**
+ * Perform ONE POST against the Exa /contents endpoint. No retry; no
+ * response body in public errors. Returns the parsed JSON body (raw;
+ * the Adapter post-processes into a normalized `ReaderFetchResult`).
+ *
+ * The caller wraps a single URL as `urls: [url]`. `text: true` is
+ * always set (Exa returns text content). The `Exa-Beta` header is NOT
+ * sent on contents calls (endpoint-scoped to Agent only).
+ *
+ * `params.livecrawlTimeout` is in milliseconds. The Adapter converts
+ * from the CLI's seconds-based `--timeout` before calling; the transport
+ * does NOT re-convert.
+ */
+export async function fetchExaContents(
+  apiKey: string,
+  url: string,
+  params?: ExaContentsParams,
+  deps: ExaTransportDeps = {},
+): Promise<unknown> {
+  const body: Record<string, unknown> = { urls: [url], text: true };
+  if (params?.livecrawlTimeout !== undefined) {
+    body.livecrawlTimeout = params.livecrawlTimeout;
+  }
+  return postExaJson(apiKey, CONTENTS_PATH, body, deps, "contents");
 }

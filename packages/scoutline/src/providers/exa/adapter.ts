@@ -2,11 +2,11 @@
  * Exa Provider Adapter (tech-plan §7, Control Mapping, Field Normalization,
  * Failure Normalization).
  *
- * Implements the Exa Provider Descriptor with the Search and Diagnostics
- * capabilities on top of the direct-HTTP transport (`./client.ts`). The
- * Adapter owns credentials, transport lifecycle, Provider field mapping,
- * and failure normalization; shared execution owns cache and retry
- * policy.
+ * Implements the Exa Provider Descriptor with Search, Reader, and
+ * Diagnostics capabilities on top of the direct-HTTP transport
+ * (`./client.ts`). The Adapter owns credentials, transport lifecycle,
+ * Provider field mapping, and failure normalization; shared execution
+ * owns cache and retry policy.
  *
  * EXA-T01 develops and tests this descriptor OFFLINE: `exa` is NOT yet in
  * `PROVIDER_IDS` or the production registry (`createExaDescriptor()` is
@@ -54,6 +54,14 @@ import type {
   SearchRequest,
   SearchSource,
 } from "../../capabilities/search.js";
+import type {
+  ReaderCacheIdentity,
+  ReaderCapability,
+  ReaderFetchRequest,
+  ReaderFetchResult,
+  ReaderOperation,
+} from "../../capabilities/reader.js";
+import { decodeReaderFetchResult } from "../../capabilities/reader.js";
 import type { DiagnosticsCapability } from "../../capabilities/diagnostics.js";
 import {
   ApiError,
@@ -66,7 +74,13 @@ import {
   ValidationError,
 } from "../../lib/errors.js";
 import { requireExaApiKey, isExaConfigured } from "./credentials.js";
-import { fetchExaSearch, type ExaSearchParams, type ExaTransportDeps } from "./client.js";
+import {
+  fetchExaSearch,
+  fetchExaContents,
+  type ExaSearchParams,
+  type ExaContentsParams,
+  type ExaTransportDeps,
+} from "./client.js";
 import { createExaDiagnosticsCapability } from "./diagnostics.js";
 
 /**
@@ -400,6 +414,272 @@ function createExaSearchCapability(options: ExaSearchCapabilityOptions): SearchC
 }
 
 // ---------------------------------------------------------------------------
+// Reader validation helpers
+// ---------------------------------------------------------------------------
+
+/** Options the Exa Reader does NOT accept (Z.AI-only). */
+const UNSUPPORTED_READER_OPTIONS = [
+  "retainImages",
+  "withLinksSummary",
+  "noGfm",
+  "keepImgDataUrl",
+  "withImagesSummary",
+] as const;
+
+function assertHttpUrl(url: unknown): asserts url is string {
+  if (typeof url !== "string" || url.length === 0) {
+    throw new ValidationError("Exa reader URL must be a non-empty string");
+  }
+  if (!/^https?:\/\//.test(url)) {
+    throw new ValidationError("URL must start with http:// or https://");
+  }
+}
+
+function assertNoUnsupportedReaderOptions(request: ReaderFetchRequest): void {
+  for (const key of UNSUPPORTED_READER_OPTIONS) {
+    if (request[key] === true) {
+      throw new UnsupportedOptionError("exa", "reader", key);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Markdown stripping (format: text — best-effort)
+// ---------------------------------------------------------------------------
+
+/**
+ * Best-effort markdown-to-text conversion. Exa always returns text
+ * content; when the caller requests `format: "text"`, this strips
+ * common markdown markers so the output is closer to plain text.
+ * Code blocks and tables degrade (their content is kept but
+ * formatting is lost); that is an acceptable edge case for a "rough
+ * text" mode. This is adapter-local — no shared stripper exists.
+ */
+function stripMarkdown(input: string): string {
+  let result = input;
+  // Remove fenced code blocks (keep the inner text).
+  result = result.replace(/```[\s\S]*?```/g, (block) =>
+    block.replace(/```\w*\n?/g, "").replace(/```$/g, ""),
+  );
+  // Remove inline code backticks.
+  result = result.replace(/`([^`]+)`/g, "$1");
+  // Images: ![alt](url) → alt.
+  result = result.replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1");
+  // Links: [text](url) → text.
+  result = result.replace(/\[([^\]]*)\]\([^)]+\)/g, "$1");
+  // Headers: leading # markers.
+  result = result.replace(/^#{1,6}\s+/gm, "");
+  // Emphasis: **bold**, __bold__, *italic*, _italic_, ~~strike~~.
+  result = result.replace(/\*\*(.+?)\*\*/g, "$1");
+  result = result.replace(/__(.+?)__/g, "$1");
+  result = result.replace(/\*(.+?)\*/g, "$1");
+  result = result.replace(/_(.+?)_/g, "$1");
+  result = result.replace(/~~(.+?)~~/g, "$1");
+  // Blockquotes: leading > markers.
+  result = result.replace(/^>\s+/gm, "");
+  // Horizontal rules: ---, ***, ___.
+  result = result.replace(/^[-*_]{3,}\s*$/gm, "");
+  // List markers: -, *, +, 1.
+  result = result.replace(/^[\s]*[-*+]\s+/gm, "");
+  result = result.replace(/^[\s]*\d+\.\s+/gm, "");
+  return result.trim();
+}
+
+// ---------------------------------------------------------------------------
+// Per-URL status total function (the load-bearing mechanism)
+// ---------------------------------------------------------------------------
+
+/**
+ * Known error-tag → HTTP status mapping. When `error.httpStatusCode` is
+ * present on the response, it is preferred over this table for retry
+ * classification. Unknown tags default to 500 (retryable).
+ */
+const CONTENTS_ERROR_STATUS: Record<string, number> = {
+  CRAWL_NOT_FOUND: 404,
+  UNSUPPORTED_URL: 400,
+  SOURCE_NOT_AVAILABLE: 403,
+  CRAWL_TIMEOUT: 504,
+  CRAWL_LIVECRAWL_TIMEOUT: 504,
+  CRAWL_UNKNOWN_ERROR: 500,
+};
+
+/**
+ * Normalize a raw Exa `/contents` response into a `ReaderFetchResult`.
+ *
+ * **Critical mechanism — per-URL status inspection (total function).**
+ * `/contents` returns HTTP 200 even when an individual URL fails. The
+ * adapter MUST resolve the status entry whose `statuses[].id` matches
+ * the requested URL, then apply a total mapping. Match by `id`, never
+ * assume `results[0]` is the requested URL.
+ *
+ * Field mapping:
+ *   results[].text   -> content   (the entry whose id/status matches)
+ *   results[].url    -> finalUrl
+ *   results[].title  -> title     (coerce blank → null)
+ *   request.url      -> url
+ *   request.format   -> contentFormat (after any text stripping)
+ *
+ * On `format: "text"`, the content is run through {@link stripMarkdown}
+ * (best-effort) and `contentFormat` is set to `"text"`.
+ */
+function normalizeExaContentsResult(raw: unknown, request: ReaderFetchRequest): ReaderFetchResult {
+  if (!isPlainObject(raw)) {
+    throw new ApiError("Exa contents returned a malformed response", 500);
+  }
+
+  // Step 1: find the status entry matching the requested URL. Never
+  // assume results[0] is the match — the API returns HTTP 200 even on
+  // per-URL failure.
+  const statuses = raw.statuses;
+  if (!Array.isArray(statuses)) {
+    throw new ApiError("Exa contents returned a malformed response", 500);
+  }
+  const statusEntry = statuses.find(
+    (s): s is Record<string, unknown> =>
+      isPlainObject(s) && typeof s.id === "string" && s.id === request.url,
+  );
+  if (!statusEntry) {
+    // No matching id — malformed/absent status. Retryable, never silent success.
+    throw new ApiError("Exa contents returned a malformed response", 500);
+  }
+
+  const statusValue = statusEntry.status;
+
+  // Step 2: error path — map the tag + httpStatusCode to a sanitized ApiError.
+  if (statusValue !== "success") {
+    const errorObj = isPlainObject(statusEntry.error) ? statusEntry.error : {};
+    const tag = typeof errorObj.tag === "string" ? errorObj.tag : undefined;
+    const httpStatusCode =
+      typeof errorObj.httpStatusCode === "number" ? errorObj.httpStatusCode : undefined;
+    const statusCode = httpStatusCode ?? CONTENTS_ERROR_STATUS[tag ?? ""] ?? 500;
+    throw new ApiError("Exa contents request failed", statusCode);
+  }
+
+  // Step 3: success path — find the matching result in results[].
+  const results = raw.results;
+  if (!Array.isArray(results)) {
+    throw new ApiError("Exa contents returned a malformed response", 500);
+  }
+  // For a single-URL fetch, the result entry's id or url should match.
+  const result = results.find(
+    (r): r is Record<string, unknown> =>
+      isPlainObject(r) &&
+      ((typeof r.id === "string" && r.id === request.url) ||
+        (typeof r.url === "string" && r.url === request.url)),
+  );
+  // Fall back to the first result if no URL match (single-URL fetch).
+  const entry = result ?? (results.length > 0 && isPlainObject(results[0]) ? results[0] : null);
+  if (!entry) {
+    throw new ApiError("Exa contents returned a malformed response", 500);
+  }
+
+  // Step 4: field mapping.
+  const content = entry.text;
+  if (typeof content !== "string" || content.length === 0) {
+    throw new ApiError("Exa contents returned a malformed response", 500);
+  }
+  const finalUrl = typeof entry.url === "string" && entry.url.length > 0 ? entry.url : request.url;
+  const rawTitle = typeof entry.title === "string" ? entry.title.trim() : "";
+  const title: string | null = rawTitle.length > 0 ? rawTitle : null;
+
+  const requestedFormat = request.format ?? "markdown";
+  if (requestedFormat === "text") {
+    return {
+      schemaVersion: 1,
+      url: request.url,
+      finalUrl,
+      title,
+      content: stripMarkdown(content),
+      contentFormat: "text",
+    };
+  }
+  return {
+    schemaVersion: 1,
+    url: request.url,
+    finalUrl,
+    title,
+    content,
+    contentFormat: "markdown",
+  };
+}
+
+/**
+ * Map a `ReaderFetchRequest` to Exa-native contents params. The CLI
+ * `--timeout` is in seconds; Exa's `livecrawlTimeout` is in
+ * milliseconds. The conversion (`* 1000`) is validated here so a direct
+ * pass-through doesn't send 20ms instead of 20s.
+ */
+function mapReaderControls(request: ReaderFetchRequest): ExaContentsParams | undefined {
+  if (
+    typeof request.timeout !== "number" ||
+    !Number.isFinite(request.timeout) ||
+    request.timeout <= 0
+  ) {
+    return undefined;
+  }
+  const livecrawlTimeout = Math.round(request.timeout * 1000);
+  if (!Number.isFinite(livecrawlTimeout) || livecrawlTimeout <= 0) {
+    return undefined;
+  }
+  return { livecrawlTimeout };
+}
+
+// ---------------------------------------------------------------------------
+// Reader Capability
+// ---------------------------------------------------------------------------
+
+interface ExaReaderCapabilityOptions {
+  readonly env: NodeJS.ProcessEnv;
+  readonly transport?: ExaTransportDeps;
+}
+
+function createExaReaderCapability(options: ExaReaderCapabilityOptions): ReaderCapability {
+  const { env, transport } = options;
+
+  const fetchOp: ReaderOperation<ReaderFetchRequest, ReaderFetchResult> = {
+    kind: "reader-fetch",
+
+    validate(request: ReaderFetchRequest): void {
+      assertHttpUrl(request.url);
+      assertNoUnsupportedReaderOptions(request);
+    },
+
+    cacheIdentity(
+      request: ReaderFetchRequest,
+    ): ReaderCacheIdentity<ReaderFetchRequest, ReaderFetchResult> {
+      const apiKey = resolveApiKey(env);
+      return {
+        provider: "exa",
+        capability: "reader",
+        operation: "reader-fetch",
+        credentialFingerprint: credentialFingerprint(apiKey),
+        request,
+        legacyCandidates: [],
+      };
+    },
+
+    decodeCached(value: unknown): ReaderFetchResult | null {
+      return decodeReaderFetchResult(value);
+    },
+
+    async invoke(request: ReaderFetchRequest): Promise<ReaderFetchResult> {
+      fetchOp.validate(request);
+
+      const apiKey = resolveApiKey(env);
+      try {
+        const params = mapReaderControls(request);
+        const raw = await fetchExaContents(apiKey, request.url, params, transport);
+        return normalizeExaContentsResult(raw, request);
+      } catch (error) {
+        throw normalizeExaError(error);
+      }
+    },
+  };
+
+  return { fetch: fetchOp };
+}
+
+// ---------------------------------------------------------------------------
 // Descriptor factory
 // ---------------------------------------------------------------------------
 
@@ -427,21 +707,22 @@ export function createExaDescriptor(dependencies?: ExaAdapterDependencies): Prov
       return isExaConfigured(env);
     },
     capabilities(): ReadonlySet<ProviderCapability> {
-      return new Set<ProviderCapability>(["search", "diagnostics"]);
+      return new Set<ProviderCapability>(["search", "reader", "diagnostics"]);
     },
     create(context: ProviderContext): ProviderAdapter {
       const search = createExaSearchCapability({
         env: context.env,
         transport,
       });
-      // Diagnostics is wired in EXA-T01 via ./diagnostics.js. Declared
-      // here to avoid a circular import (diagnostics imports this
-      // module's transport types indirectly through credentials).
+      const reader = createExaReaderCapability({
+        env: context.env,
+        transport,
+      });
       const diagnostics: DiagnosticsCapability = createExaDiagnosticsCapability({
         env: context.env,
         transport,
       });
-      return { id: "exa", search, diagnostics };
+      return { id: "exa", search, reader, diagnostics };
     },
   };
 }

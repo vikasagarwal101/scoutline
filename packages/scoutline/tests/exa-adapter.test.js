@@ -78,8 +78,9 @@ describe("Exa Descriptor — metadata", () => {
     const descriptor = createExaDescriptor();
     const caps = descriptor.capabilities();
     assert.ok(caps.has("search"));
+    assert.ok(caps.has("reader"));
     assert.ok(caps.has("diagnostics"));
-    assert.equal(caps.size, 2);
+    assert.equal(caps.size, 3);
   });
 
   it("isConfigured reflects EXA_API_KEY presence", () => {
@@ -92,6 +93,7 @@ describe("Exa Descriptor — metadata", () => {
   it("create() builds an adapter with search and diagnostics handles", () => {
     const { adapter } = makeAdapter(async () => makeResponse());
     assert.equal(typeof adapter.search.validate, "function");
+    assert.equal(typeof adapter.reader.fetch.validate, "function");
     assert.equal(typeof adapter.diagnostics.invoke, "function");
   });
 });
@@ -490,5 +492,387 @@ describe("Exa Diagnostics — probe", () => {
       () => adapter.diagnostics.invoke({ probe: true }),
       (e) => e instanceof ConfigurationError,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reader: validation
+// ---------------------------------------------------------------------------
+
+describe("Exa Reader Adapter — validation", () => {
+  it("rejects a non-http(s) URL with ValidationError", () => {
+    const { adapter } = makeAdapter(async () => makeResponse());
+    assert.throws(
+      () => adapter.reader.fetch.validate({ url: "ftp://example.com" }),
+      (e) => e instanceof ValidationError,
+    );
+  });
+
+  it("rejects retainImages with UnsupportedOptionError", () => {
+    const { adapter } = makeAdapter(async () => makeResponse());
+    assert.throws(
+      () => adapter.reader.fetch.validate({ url: "https://example.com", retainImages: true }),
+      (e) => e instanceof UnsupportedOptionError && e.message.includes("retainImages"),
+    );
+  });
+
+  it("rejects withLinksSummary, noGfm, keepImgDataUrl, withImagesSummary", () => {
+    const { adapter } = makeAdapter(async () => makeResponse());
+    for (const key of ["withLinksSummary", "noGfm", "keepImgDataUrl", "withImagesSummary"]) {
+      assert.throws(
+        () => adapter.reader.fetch.validate({ url: "https://example.com", [key]: true }),
+        (e) => e instanceof UnsupportedOptionError && e.message.includes(key),
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reader: field normalization
+// ---------------------------------------------------------------------------
+
+describe("Exa Reader Adapter — normalization", () => {
+  it("maps text→content, url→finalUrl, title→title", async () => {
+    const contentsJson = {
+      results: [
+        {
+          id: "https://example.com",
+          url: "https://example.com",
+          title: "Example Page",
+          text: "Page content here",
+        },
+      ],
+      statuses: [{ id: "https://example.com", status: "success" }],
+    };
+    const { adapter } = makeAdapter(async () => makeResponse({ json: contentsJson }));
+    const result = await adapter.reader.fetch.invoke({ url: "https://example.com" });
+    assert.deepEqual(result, {
+      schemaVersion: 1,
+      url: "https://example.com",
+      finalUrl: "https://example.com",
+      title: "Example Page",
+      content: "Page content here",
+      contentFormat: "markdown",
+    });
+  });
+
+  it("coerces blank title to null", async () => {
+    const contentsJson = {
+      results: [{ id: "https://x.com", url: "https://x.com", title: "  ", text: "c" }],
+      statuses: [{ id: "https://x.com", status: "success" }],
+    };
+    const { adapter } = makeAdapter(async () => makeResponse({ json: contentsJson }));
+    const result = await adapter.reader.fetch.invoke({ url: "https://x.com" });
+    assert.strictEqual(result.title, null);
+  });
+
+  it("uses finalUrl when it differs from request url (redirect)", async () => {
+    const contentsJson = {
+      results: [{ id: "https://old.com", url: "https://new.com", title: "T", text: "c" }],
+      statuses: [{ id: "https://old.com", status: "success" }],
+    };
+    const { adapter } = makeAdapter(async () => makeResponse({ json: contentsJson }));
+    const result = await adapter.reader.fetch.invoke({ url: "https://old.com" });
+    assert.strictEqual(result.url, "https://old.com");
+    assert.strictEqual(result.finalUrl, "https://new.com");
+  });
+
+  it("defaults contentFormat to markdown when format omitted", async () => {
+    const contentsJson = {
+      results: [{ id: "https://x.com", url: "https://x.com", title: "T", text: "c" }],
+      statuses: [{ id: "https://x.com", status: "success" }],
+    };
+    const { adapter } = makeAdapter(async () => makeResponse({ json: contentsJson }));
+    const result = await adapter.reader.fetch.invoke({ url: "https://x.com" });
+    assert.strictEqual(result.contentFormat, "markdown");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reader: per-URL status total function
+// ---------------------------------------------------------------------------
+
+describe("Exa Reader Adapter — per-URL status inspection", () => {
+  const URL = "https://example.com";
+
+  function makeContentsResponse(statusEntry) {
+    return {
+      results:
+        statusEntry.status === "success"
+          ? [{ id: URL, url: URL, title: "T", text: "content" }]
+          : [],
+      statuses: [statusEntry],
+    };
+  }
+
+  it("succeeds when the matching status entry is success", async () => {
+    const json = makeContentsResponse({ id: URL, status: "success" });
+    const { adapter } = makeAdapter(async () => makeResponse({ json }));
+    const result = await adapter.reader.fetch.invoke({ url: URL });
+    assert.strictEqual(result.content, "content");
+  });
+
+  it("maps CRAWL_NOT_FOUND (404) to terminal ApiError 404", async () => {
+    const json = makeContentsResponse({
+      id: URL,
+      status: "error",
+      error: { tag: "CRAWL_NOT_FOUND", httpStatusCode: 404 },
+    });
+    const { adapter } = makeAdapter(async () => makeResponse({ json }));
+    await assert.rejects(
+      () => adapter.reader.fetch.invoke({ url: URL }),
+      (e) => e instanceof ApiError && e.statusCode === 404 && e.retryable === false,
+    );
+  });
+
+  it("maps UNSUPPORTED_URL to terminal ApiError 400", async () => {
+    const json = makeContentsResponse({
+      id: URL,
+      status: "error",
+      error: { tag: "UNSUPPORTED_URL" },
+    });
+    const { adapter } = makeAdapter(async () => makeResponse({ json }));
+    await assert.rejects(
+      () => adapter.reader.fetch.invoke({ url: URL }),
+      (e) => e instanceof ApiError && e.statusCode === 400 && e.retryable === false,
+    );
+  });
+
+  it("maps SOURCE_NOT_AVAILABLE (403) to terminal ApiError 403", async () => {
+    const json = makeContentsResponse({
+      id: URL,
+      status: "error",
+      error: { tag: "SOURCE_NOT_AVAILABLE", httpStatusCode: 403 },
+    });
+    const { adapter } = makeAdapter(async () => makeResponse({ json }));
+    await assert.rejects(
+      () => adapter.reader.fetch.invoke({ url: URL }),
+      (e) => e instanceof ApiError && e.statusCode === 403 && e.retryable === false,
+    );
+  });
+
+  it("maps CRAWL_TIMEOUT (504) to retryable ApiError 504", async () => {
+    const json = makeContentsResponse({
+      id: URL,
+      status: "error",
+      error: { tag: "CRAWL_TIMEOUT", httpStatusCode: 504 },
+    });
+    const { adapter } = makeAdapter(async () => makeResponse({ json }));
+    await assert.rejects(
+      () => adapter.reader.fetch.invoke({ url: URL }),
+      (e) => e instanceof ApiError && e.statusCode === 504,
+    );
+  });
+
+  it("maps CRAWL_LIVECRAWL_TIMEOUT to retryable ApiError 504 (table lookup, no httpStatusCode)", async () => {
+    const json = makeContentsResponse({
+      id: URL,
+      status: "error",
+      error: { tag: "CRAWL_LIVECRAWL_TIMEOUT" },
+    });
+    const { adapter } = makeAdapter(async () => makeResponse({ json }));
+    await assert.rejects(
+      () => adapter.reader.fetch.invoke({ url: URL }),
+      (e) => e instanceof ApiError && e.statusCode === 504,
+    );
+  });
+
+  it("maps CRAWL_UNKNOWN_ERROR (500) to retryable ApiError 500", async () => {
+    const json = makeContentsResponse({
+      id: URL,
+      status: "error",
+      error: { tag: "CRAWL_UNKNOWN_ERROR", httpStatusCode: 500 },
+    });
+    const { adapter } = makeAdapter(async () => makeResponse({ json }));
+    await assert.rejects(
+      () => adapter.reader.fetch.invoke({ url: URL }),
+      (e) => e instanceof ApiError && e.statusCode === 500,
+    );
+  });
+
+  it("maps unknown error tag to retryable ApiError 500 (never silent success)", async () => {
+    const json = makeContentsResponse({
+      id: URL,
+      status: "error",
+      error: { tag: "SOME_NEW_TAG" },
+    });
+    const { adapter } = makeAdapter(async () => makeResponse({ json }));
+    await assert.rejects(
+      () => adapter.reader.fetch.invoke({ url: URL }),
+      (e) => e instanceof ApiError && e.statusCode === 500,
+    );
+  });
+
+  it("prefers error.httpStatusCode over the tag table for retry classification", async () => {
+    // CRAWL_NOT_FOUND normally maps to 404, but httpStatusCode=503 overrides it.
+    const json = makeContentsResponse({
+      id: URL,
+      status: "error",
+      error: { tag: "CRAWL_NOT_FOUND", httpStatusCode: 503 },
+    });
+    const { adapter } = makeAdapter(async () => makeResponse({ json }));
+    await assert.rejects(
+      () => adapter.reader.fetch.invoke({ url: URL }),
+      (e) => e instanceof ApiError && e.statusCode === 503,
+    );
+  });
+
+  it("throws ApiError 500 when no status entry matches the requested URL (id mismatch)", async () => {
+    // Status exists for a DIFFERENT url — must not be treated as success.
+    const json = {
+      results: [],
+      statuses: [{ id: "https://different.com", status: "success" }],
+    };
+    const { adapter } = makeAdapter(async () => makeResponse({ json }));
+    await assert.rejects(
+      () => adapter.reader.fetch.invoke({ url: URL }),
+      (e) => e instanceof ApiError && e.statusCode === 500,
+    );
+  });
+
+  it("throws ApiError 500 when statuses[] is absent (never silent success)", async () => {
+    const json = { results: [{ id: URL, url: URL, title: "T", text: "c" }] };
+    const { adapter } = makeAdapter(async () => makeResponse({ json }));
+    await assert.rejects(
+      () => adapter.reader.fetch.invoke({ url: URL }),
+      (e) => e instanceof ApiError && e.statusCode === 500,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reader: timeout-unit conversion (seconds → milliseconds)
+// ---------------------------------------------------------------------------
+
+describe("Exa Reader Adapter — timeout-unit conversion", () => {
+  it("converts --timeout 20 (seconds) to livecrawlTimeout: 20000 (ms)", async () => {
+    const { adapter, calls } = makeAdapter(async () =>
+      makeResponse({
+        json: {
+          results: [{ id: "https://x.com", url: "https://x.com", title: "T", text: "c" }],
+          statuses: [{ id: "https://x.com", status: "success" }],
+        },
+      }),
+    );
+    await adapter.reader.fetch.invoke({ url: "https://x.com", timeout: 20 });
+    const body = JSON.parse(calls[0].init.body);
+    assert.strictEqual(body.livecrawlTimeout, 20000);
+  });
+
+  it("converts --timeout 1 to livecrawlTimeout: 1000", async () => {
+    const { adapter, calls } = makeAdapter(async () =>
+      makeResponse({
+        json: {
+          results: [{ id: "https://x.com", url: "https://x.com", title: "T", text: "c" }],
+          statuses: [{ id: "https://x.com", status: "success" }],
+        },
+      }),
+    );
+    await adapter.reader.fetch.invoke({ url: "https://x.com", timeout: 1 });
+    const body = JSON.parse(calls[0].init.body);
+    assert.strictEqual(body.livecrawlTimeout, 1000);
+  });
+
+  it("omits livecrawlTimeout when timeout is absent", async () => {
+    const { adapter, calls } = makeAdapter(async () =>
+      makeResponse({
+        json: {
+          results: [{ id: "https://x.com", url: "https://x.com", title: "T", text: "c" }],
+          statuses: [{ id: "https://x.com", status: "success" }],
+        },
+      }),
+    );
+    await adapter.reader.fetch.invoke({ url: "https://x.com" });
+    const body = JSON.parse(calls[0].init.body);
+    assert.strictEqual(body.livecrawlTimeout, undefined);
+  });
+
+  it("always sends text:true and urls:[url]", async () => {
+    const { adapter, calls } = makeAdapter(async () =>
+      makeResponse({
+        json: {
+          results: [{ id: "https://x.com", url: "https://x.com", title: "T", text: "c" }],
+          statuses: [{ id: "https://x.com", status: "success" }],
+        },
+      }),
+    );
+    await adapter.reader.fetch.invoke({ url: "https://x.com" });
+    const body = JSON.parse(calls[0].init.body);
+    assert.strictEqual(body.text, true);
+    assert.deepEqual(body.urls, ["https://x.com"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reader: format:text markdown stripping
+// ---------------------------------------------------------------------------
+
+describe("Exa Reader Adapter — format:text stripping", () => {
+  it("strips markdown markers and sets contentFormat to text", async () => {
+    const markdownContent =
+      "# Header\n\nSome **bold** and *italic* text with [a link](https://x.com).\n\n- item one\n- item two";
+    const json = {
+      results: [{ id: "https://x.com", url: "https://x.com", title: "T", text: markdownContent }],
+      statuses: [{ id: "https://x.com", status: "success" }],
+    };
+    const { adapter } = makeAdapter(async () => makeResponse({ json }));
+    const result = await adapter.reader.fetch.invoke({ url: "https://x.com", format: "text" });
+    assert.strictEqual(result.contentFormat, "text");
+    assert.ok(!result.content.includes("#"), "no header markers");
+    assert.ok(!result.content.includes("**"), "no bold markers");
+    assert.ok(!result.content.includes("*"), "no italic markers");
+    assert.ok(!result.content.includes("["), "no link markers");
+    assert.ok(result.content.includes("bold"), "bold text preserved");
+    assert.ok(result.content.includes("a link"), "link text preserved");
+  });
+
+  it("preserves markdown when format is markdown (default)", async () => {
+    const markdownContent = "# Header\n\n**bold**";
+    const json = {
+      results: [{ id: "https://x.com", url: "https://x.com", title: "T", text: markdownContent }],
+      statuses: [{ id: "https://x.com", status: "success" }],
+    };
+    const { adapter } = makeAdapter(async () => makeResponse({ json }));
+    const result = await adapter.reader.fetch.invoke({ url: "https://x.com" });
+    assert.strictEqual(result.contentFormat, "markdown");
+    assert.strictEqual(result.content, markdownContent);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reader: cache identity
+// ---------------------------------------------------------------------------
+
+describe("Exa Reader Adapter — cache identity", () => {
+  it("produces a reader-fetch identity with the right partition fields", () => {
+    const { adapter } = makeAdapter(async () => makeResponse());
+    const identity = adapter.reader.fetch.cacheIdentity({ url: "https://example.com" });
+    assert.strictEqual(identity.provider, "exa");
+    assert.strictEqual(identity.capability, "reader");
+    assert.strictEqual(identity.operation, "reader-fetch");
+    assert.strictEqual(identity.credentialFingerprint, EXPECTED_FINGERPRINT);
+    assert.strictEqual(identity.request.url, "https://example.com");
+    assert.deepEqual(identity.legacyCandidates, []);
+  });
+
+  it("decodeCached round-trips a normalized result", () => {
+    const { adapter } = makeAdapter(async () => makeResponse());
+    const result = {
+      schemaVersion: 1,
+      url: "https://example.com",
+      finalUrl: "https://example.com",
+      title: "Title",
+      content: "content",
+      contentFormat: "markdown",
+    };
+    const decoded = adapter.reader.fetch.decodeCached(result);
+    assert.deepEqual(decoded, result);
+  });
+
+  it("decodeCached returns null for malformed entries", () => {
+    const { adapter } = makeAdapter(async () => makeResponse());
+    assert.strictEqual(adapter.reader.fetch.decodeCached({ foo: "bar" }), null);
+    assert.strictEqual(adapter.reader.fetch.decodeCached(null), null);
+    assert.strictEqual(adapter.reader.fetch.decodeCached(42), null);
   });
 });

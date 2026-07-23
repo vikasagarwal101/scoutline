@@ -586,7 +586,6 @@ describe("Brave Search Capability", () => {
     assert.ok(calls[0].url.includes("/res/v1/llm/context?"), calls[0].url);
     // Only q= should be present — recency/location mapped to country/freshness
     // are NOT forwarded to LLM Context, and count never reaches the adapter.
-    assert.ok(/ Freshness=/.test(" " + calls[0].url) === false, calls[0].url);
     assert.ok(!/country=/.test(calls[0].url), `no country on high path: ${calls[0].url}`);
     assert.ok(!/freshness=/.test(calls[0].url), `no freshness on high path: ${calls[0].url}`);
     assert.ok(!/count=/.test(calls[0].url), `no count on high path: ${calls[0].url}`);

@@ -76,7 +76,7 @@ async function buildDefaultDashboard(deps: QuotaDashboardDependencies): Promise<
   const descriptor = getProviderDescriptor(deps.effectiveProvider, deps.descriptors);
   if (!descriptor.isConfigured(deps.env)) {
     throw new ConfigurationError(
-      `Provider "${deps.effectiveProvider}" is not configured. Set Z_AI_API_KEY or MINIMAX_API_KEY.`,
+      `Provider "${deps.effectiveProvider}" is not configured. Set its API key (Z_AI_API_KEY, MINIMAX_API_KEY, TAVILY_API_KEY, or BRAVE_SEARCH_API_KEY).`,
     );
   }
   const success = await invokeProviderQuota(descriptor, deps.env, deps.sleep, deps.random);
@@ -101,7 +101,7 @@ async function buildAllProvidersDashboard(
   const configured = deps.descriptors.filter((d) => d.isConfigured(deps.env));
   if (configured.length === 0) {
     throw new ConfigurationError(
-      "No provider is configured. Set Z_AI_API_KEY and/or MINIMAX_API_KEY.",
+      "No provider is configured. Set at least one API key (Z_AI_API_KEY, MINIMAX_API_KEY, TAVILY_API_KEY, or BRAVE_SEARCH_API_KEY).",
     );
   }
   const secrets = configuredSecrets(deps.env);

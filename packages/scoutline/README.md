@@ -21,7 +21,7 @@
 - **Repo** - Search and read GitHub repository code via ZRead
 - **Tools** - MCP tool discovery, schemas, and raw calls
 - **Code Mode** - TypeScript tool chaining for agent automation
-- **Provider selection** - Run shared capabilities through Z.AI, MiniMax Token Plan, or Brave
+- **Provider selection** - Run shared capabilities through Z.AI, MiniMax Token Plan, Tavily, or Brave
 
 ## Quick Start
 

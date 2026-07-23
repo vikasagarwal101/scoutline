@@ -437,9 +437,10 @@ function createExaSearchCapability(options: ExaSearchCapabilityOptions): SearchC
 // Reader validation helpers
 // ---------------------------------------------------------------------------
 
-/** Options the Exa Reader does NOT accept (Z.AI-only). */
+/** Options the Exa Reader does NOT accept (Z.AI-only). `retainImages`
+ * is accepted but silently ignored (Exa has no equivalent param); the
+ * read command handler sends it as `true` by default. */
 const UNSUPPORTED_READER_OPTIONS = [
-  "retainImages",
   "withLinksSummary",
   "noGfm",
   "keepImgDataUrl",

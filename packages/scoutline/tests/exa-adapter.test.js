@@ -511,14 +511,6 @@ describe("Exa Reader Adapter — validation", () => {
     );
   });
 
-  it("rejects retainImages with UnsupportedOptionError", () => {
-    const { adapter } = makeAdapter(async () => makeResponse());
-    assert.throws(
-      () => adapter.reader.fetch.validate({ url: "https://example.com", retainImages: true }),
-      (e) => e instanceof UnsupportedOptionError && e.message.includes("retainImages"),
-    );
-  });
-
   it("rejects withLinksSummary, noGfm, keepImgDataUrl, withImagesSummary", () => {
     const { adapter } = makeAdapter(async () => makeResponse());
     for (const key of ["withLinksSummary", "noGfm", "keepImgDataUrl", "withImagesSummary"]) {

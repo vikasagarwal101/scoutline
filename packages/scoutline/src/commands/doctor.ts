@@ -235,7 +235,7 @@ Doctor - Provider-aware environment and connectivity diagnostics
 Usage: scoutline doctor [options]
 
 Reports a schema-version-2 diagnostics report listing every built-in
-Provider (zai, minimax, tavily) with its configured state, declared
+Provider (zai, minimax, tavily, exa) with its configured state, declared
 Capabilities, and connectivity status. The effective Provider (resolved
 from --provider, SCOUTLINE_PROVIDER, or the default zai) is the
 Provider that serves a requested capability. The capabilityMatrix field
@@ -246,22 +246,23 @@ passed to this command.
 Z.AI connectivity is probed through MCP tool discovery; MiniMax
 connectivity through a single raw quota probe that authenticates
 without a generative request; Tavily connectivity through a single
-raw quota probe against the Tavily account endpoint.
+raw quota probe against the Tavily account endpoint; Exa connectivity
+through a single lightweight search request.
 
 Repository exploration is a Provider Capability. Z.AI descriptor
 metadata advertises repository-exploration and the Z.AI Adapter
-supplies it; MiniMax and Tavily advertise and supply neither. The
+supplies it; MiniMax, Tavily, and Exa advertise and supply neither. The
 capabilityMatrix field reflects that descriptor state
 (repository-exploration currently lists only Z.AI while MiniMax and
 Tavily lack it).
 
 Reader is a Provider Capability. Z.AI and Tavily descriptor metadata
-both advertise reader; MiniMax advertises and supplies neither. The
-capabilityMatrix field lists both Z.AI and Tavily for reader.
+both advertise reader; MiniMax and Exa advertise and supply neither.
+The capabilityMatrix field lists both Z.AI and Tavily for reader.
 
 Crawl, Map, and Research are Provider Capabilities owned by Tavily.
-Z.AI and MiniMax do not advertise any of them; the capabilityMatrix
-lists Tavily alone for each. Selecting Z.AI or MiniMax for any of
+Z.AI, MiniMax, and Exa do not advertise any of them; the capabilityMatrix
+lists Tavily alone for each. Selecting Z.AI, MiniMax, or Exa for any of
 these commands returns UNSUPPORTED_CAPABILITY with no fallback.
 
 Public 'repo' and 'read' commands participate in Provider selection.

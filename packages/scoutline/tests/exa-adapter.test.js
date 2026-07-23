@@ -16,9 +16,6 @@
  * Tests inject a single fake `fetch` through
  * `ExaAdapterDependencies.transport`; the fake returns Response-shaped
  * objects (ok/status/json/text). No real network is touched.
- *
- * OFFLINE: `exa` is NOT in PROVIDER_IDS; `createExaDescriptor()` is
- * tested via direct construction, never through the production registry.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";

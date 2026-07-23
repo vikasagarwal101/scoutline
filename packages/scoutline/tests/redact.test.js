@@ -15,13 +15,19 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { redactSecrets, redactTool, redactCredentialString } from "../dist/lib/redact.js";
+import {
+  redactSecrets,
+  redactTool,
+  redactCredentialString,
+  configuredSecrets,
+} from "../dist/lib/redact.js";
 import { formatErrorOutput as formatCompatErrorOutput } from "../dist/lib/errors.js";
 import { formatErrorOutput } from "../dist/lib/output.js";
 
 const Z_KEY = "zai-secret-key-value-AAA";
 const Z_ALIAS_KEY = "zai-secret-alias-key-value-BBB";
 const M_KEY = "minimax-secret-key-value-CCC";
+const E_KEY = "exa-secret-key-value-GGG";
 const BEARER = "Bearer zai-secret-bearer-token-DDD";
 const X_API = "x-api-key secret-x-api-key-value-EEE";
 const EMBEDDED = "https://user:minimax-secret-embedded-FFF@host/path";
@@ -144,8 +150,9 @@ describe("redactSecrets — recursive case-insensitive key redaction", () => {
       Z_AI_API_KEY: Z_KEY,
       ZAI_API_KEY: Z_ALIAS_KEY,
       MINIMAX_API_KEY: M_KEY,
+      EXA_API_KEY: E_KEY,
     };
-    const result = redactSecrets(input, [Z_KEY, Z_ALIAS_KEY, M_KEY]);
+    const result = redactSecrets(input, [Z_KEY, Z_ALIAS_KEY, M_KEY, E_KEY]);
     for (const k of Object.keys(input)) {
       assert.strictEqual(result[k], "[REDACTED]", `expected redacted value for ${k}`);
     }
@@ -235,11 +242,12 @@ describe("redactCredentialString — single-string redaction", () => {
     );
   });
 
-  it("redacts x-api-key, Z_AI_API_KEY, ZAI_API_KEY and MINIMAX_API_KEY assignments", () => {
+  it("redacts x-api-key, Z_AI_API_KEY, ZAI_API_KEY, MINIMAX_API_KEY and EXA_API_KEY assignments", () => {
     assert.strictEqual(redactCredentialString(`x-api-key=${Z_KEY}`), "[REDACTED]");
     assert.strictEqual(redactCredentialString(`Z_AI_API_KEY=${Z_KEY}`), "[REDACTED]");
     assert.strictEqual(redactCredentialString(`ZAI_API_KEY=${Z_ALIAS_KEY}`), "[REDACTED]");
     assert.strictEqual(redactCredentialString(`MINIMAX_API_KEY=${M_KEY}`), "[REDACTED]");
+    assert.strictEqual(redactCredentialString(`EXA_API_KEY=${E_KEY}`), "[REDACTED]");
   });
 
   it("F5: redacts colon separator forms (JSON/header/YAML)", () => {
@@ -299,6 +307,31 @@ describe("redactCredentialString — single-string redaction", () => {
   it("leaves ordinary text untouched", () => {
     const input = "the quick brown fox jumps over the lazy dog";
     assert.strictEqual(redactCredentialString(input), input);
+  });
+});
+
+describe("configuredSecrets — credential discovery from environment", () => {
+  it("includes EXA_API_KEY alongside the other provider credentials", () => {
+    const secrets = configuredSecrets({
+      Z_AI_API_KEY: Z_KEY,
+      MINIMAX_API_KEY: M_KEY,
+      EXA_API_KEY: E_KEY,
+    });
+    assert.ok(secrets.includes(E_KEY), "EXA_API_KEY value should be in configuredSecrets");
+    assert.ok(secrets.includes(Z_KEY), "Z_AI_API_KEY value should be in configuredSecrets");
+    assert.ok(secrets.includes(M_KEY), "MINIMAX_API_KEY value should be in configuredSecrets");
+  });
+
+  it("omits EXA_API_KEY when not set", () => {
+    const secrets = configuredSecrets({ Z_AI_API_KEY: Z_KEY });
+    assert.ok(!secrets.includes(E_KEY));
+  });
+
+  it("redacts an EXA_API_KEY leaked into an error message via redactCredentialString", () => {
+    const leaked = `Exa request failed: EXA_API_KEY=${E_KEY}`;
+    const redacted = redactCredentialString(leaked);
+    assert.ok(!redacted.includes(E_KEY), `EXA key must be redacted: ${redacted}`);
+    assert.ok(redacted.includes("[REDACTED]"));
   });
 });
 

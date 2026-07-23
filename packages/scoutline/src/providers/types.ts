@@ -39,7 +39,7 @@ import type { MiniMaxTransportDeps } from "./minimax/coding-plan-client.js";
  * Built-in Provider IDs. Adding a new Provider is a Phase 2+ decision;
  * new entries must come with a real Adapter and conformance coverage.
  */
-export const PROVIDER_IDS = ["zai", "minimax", "tavily"] as const;
+export const PROVIDER_IDS = ["zai", "minimax", "tavily", "exa"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 /**

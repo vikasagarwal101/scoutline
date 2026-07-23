@@ -244,26 +244,26 @@ export async function search(
 
 // Help text
 export const SEARCH_HELP = `
-Search Command - Real-time web search (Z.AI, MiniMax, or Tavily)
+Search Command - Real-time web search (Z.AI, MiniMax, Tavily, or Exa)
 
 Usage: scoutline search <query> [options]
 
 Provider selection (precedence: explicit flag, then SCOUTLINE_PROVIDER, then zai):
-  --provider <zai|minimax|tavily>   Select the search provider (default: zai)
+  --provider <zai|minimax|tavily|exa>   Select the search provider (default: zai)
   SCOUTLINE_PROVIDER=<id>           Fallback when --provider is not passed
 
-Note: --domain, --recency, --content-size, and --location are Z.AI-only
-controls. They are rejected (UNSUPPORTED_OPTION) before invocation when
---provider minimax or tavily is selected. --topic is accepted by all
-providers.
+Note: --domain, --recency, and --content-size are accepted by Z.AI,
+Tavily, and Exa; --location is Z.AI-only. Unsupported controls are
+rejected (UNSUPPORTED_OPTION) before invocation when --provider minimax
+is selected. --topic is accepted by all providers.
 
 Options:
   --topic <t>         Search topic hint (all providers): general, news, finance
                       (default: general). Z.AI/MiniMax append a keyword to the
-                      query; Tavily passes it natively.
-  --domain <d>        Limit to specific domain (Z.AI only; e.g., github.com)
-  --recency <r>       Filter by time (Z.AI only): oneDay, oneWeek, oneMonth, oneYear, noLimit
-  --content-size <s>  Content size (Z.AI only): medium, high
+                      query; Tavily passes it natively; Exa maps it to a category.
+  --domain <d>        Limit to specific domain (Z.AI, Tavily, Exa; e.g., github.com)
+  --recency <r>       Filter by time (Z.AI, Tavily, Exa): oneDay, oneWeek, oneMonth, oneYear, noLimit
+  --content-size <s>  Content size (Z.AI, Tavily, Exa): medium, high
   --location <l>      Location hint (Z.AI only): cn, us
   --count <n>         Limit number of results (applied after normalization)
   --max-summary <n>   Truncate each result summary to <n> chars (JSON modes only)

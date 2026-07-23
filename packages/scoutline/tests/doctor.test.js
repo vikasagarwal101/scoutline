@@ -507,7 +507,7 @@ describe("doctor diagnostics — help text (P4-04, P6-07, Reader Migration 04)",
       "help must state Z.AI advertises repository-exploration at the descriptor level",
     );
     assert.ok(
-      /MiniMax advertises and supplies neither/.test(DOCTOR_HELP),
+      /MiniMax.*advertise and supply neither/.test(DOCTOR_HELP),
       "help must state MiniMax advertises and supplies neither repository-exploration",
     );
 

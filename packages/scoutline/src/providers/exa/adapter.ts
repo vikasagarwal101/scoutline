@@ -374,7 +374,7 @@ function createExaSearchCapability(options: ExaSearchCapabilityOptions): SearchC
         identityRequest.controls = request.controls;
       }
       return {
-        provider: "exa" as ProviderId,
+        provider: "exa",
         capability: "search",
         credentialFingerprint: credentialFingerprint(apiKey),
         request: identityRequest,
@@ -422,7 +422,7 @@ export function createExaDescriptor(dependencies?: ExaAdapterDependencies): Prov
   const transport = dependencies?.transport;
 
   return {
-    id: "exa" as ProviderId,
+    id: "exa",
     isConfigured(env: NodeJS.ProcessEnv): boolean {
       return isExaConfigured(env);
     },
@@ -441,7 +441,7 @@ export function createExaDescriptor(dependencies?: ExaAdapterDependencies): Prov
         env: context.env,
         transport,
       });
-      return { id: "exa" as ProviderId, search, diagnostics };
+      return { id: "exa", search, diagnostics };
     },
   };
 }

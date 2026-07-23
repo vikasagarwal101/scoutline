@@ -496,6 +496,14 @@ describe("Exa Diagnostics — probe", () => {
       (e) => e instanceof ConfigurationError,
     );
   });
+
+  it("maps 402 to QuotaError on probe (terminal)", async () => {
+    const { adapter } = makeAdapter(makeErrorFetch(402));
+    await assert.rejects(
+      () => adapter.diagnostics.invoke({ probe: true }),
+      (e) => e instanceof QuotaError && e.retryable === false,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -713,10 +721,13 @@ describe("Exa Reader Adapter — per-URL status inspection", () => {
   });
 
   it("throws ApiError 500 when no status entry matches the requested URL (id mismatch)", async () => {
-    // Status exists for a DIFFERENT url — must not be treated as success.
+    // Two entries for DIFFERENT urls — single-URL fallback does not apply.
     const json = {
       results: [],
-      statuses: [{ id: "https://different.com", status: "success" }],
+      statuses: [
+        { id: "https://different.com", status: "success" },
+        { id: "https://other.com", status: "success" },
+      ],
     };
     const { adapter } = makeAdapter(async () => makeResponse({ json }));
     await assert.rejects(
@@ -732,6 +743,18 @@ describe("Exa Reader Adapter — per-URL status inspection", () => {
       () => adapter.reader.fetch.invoke({ url: URL }),
       (e) => e instanceof ApiError && e.statusCode === 500,
     );
+  });
+
+  it("accepts a single status entry even when id doesn't exactly match (single-URL fallback)", async () => {
+    // Exa may normalize URLs (trailing slash, scheme casing). For a
+    // single-URL fetch, accept the sole status entry.
+    const json = {
+      results: [{ id: URL, url: URL, title: "T", text: "content" }],
+      statuses: [{ id: "https://example.com/", status: "success" }],
+    };
+    const { adapter } = makeAdapter(async () => makeResponse({ json }));
+    const result = await adapter.reader.fetch.invoke({ url: URL });
+    assert.strictEqual(result.content, "content");
   });
 });
 

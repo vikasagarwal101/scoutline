@@ -80,7 +80,7 @@ Vision Commands - Analyze images and video (Z.AI + MiniMax)
 Usage: scoutline vision <command> <source> [prompt] [options]
 
 Provider selection (precedence: explicit flag, then SCOUTLINE_PROVIDER, then zai):
-  --provider <zai|minimax|exa>   Select the vision provider (default: zai)
+  --provider <zai|minimax>   Select the vision provider (default: zai)
   SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
 
 Commands:

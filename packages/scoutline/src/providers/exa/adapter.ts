@@ -2,17 +2,11 @@
  * Exa Provider Adapter (tech-plan §7, Control Mapping, Field Normalization,
  * Failure Normalization).
  *
- * Implements the Exa Provider Descriptor with Search, Reader, and
- * Diagnostics capabilities on top of the direct-HTTP transport
+ * Implements the Exa Provider Descriptor with Search, Reader, Research,
+ * and Diagnostics capabilities on top of the direct-HTTP transport
  * (`./client.ts`). The Adapter owns credentials, transport lifecycle,
  * Provider field mapping, and failure normalization; shared execution
  * owns cache and retry policy.
- *
- * EXA-T01 develops and tests this descriptor OFFLINE: `exa` is NOT yet in
- * `PROVIDER_IDS` or the production registry (`createExaDescriptor()` is
- * tested against injected descriptor lists only). EXA-T02 adds `"exa"` to
- * `PROVIDER_IDS` and wires the registry atomically with redaction, help
- * text, and conformance fixtures.
  *
  * Boundary rules (ARCHITECTURE.md §2):
  *   - May import capability types, normalized errors, Provider identity
@@ -550,17 +544,23 @@ function normalizeExaContentsResult(raw: unknown, request: ReaderFetchRequest): 
 
   // Step 1: find the status entry matching the requested URL. Never
   // assume results[0] is the match — the API returns HTTP 200 even on
-  // per-URL failure.
+  // per-URL failure. For a single-URL fetch, accept the sole entry
+  // even if its id doesn't exactly match (Exa may normalize URLs).
   const statuses = raw.statuses;
   if (!Array.isArray(statuses)) {
     throw new ApiError("Exa contents returned a malformed response", 500);
   }
-  const statusEntry = statuses.find(
+  let statusEntry = statuses.find(
     (s): s is Record<string, unknown> =>
       isPlainObject(s) && typeof s.id === "string" && s.id === request.url,
   );
+  // Single-URL fallback: if no exact id match but exactly one status
+  // entry exists, accept it. This mirrors the results[] leniency and
+  // guards against URL normalization differences.
+  if (!statusEntry && statuses.length === 1 && isPlainObject(statuses[0])) {
+    statusEntry = statuses[0] as Record<string, unknown>;
+  }
   if (!statusEntry) {
-    // No matching id — malformed/absent status. Retryable, never silent success.
     throw new ApiError("Exa contents returned a malformed response", 500);
   }
 
@@ -762,8 +762,9 @@ function isEexistError(err: unknown): boolean {
 /**
  * Map `model` → Exa Agent `effort`. The result echoes the REQUESTED
  * model (not the effort string) so the contract is identical across
- * Tavily and Exa. Minimal/medium/xhigh are unreachable from the Normal
- * command.
+ * Tavily and Exa. Exa accepts effort values `low|medium|high|xhigh|
+ * auto`; only `low` (mini), `high` (pro), and `auto` are reachable
+ * from the Normal command.
  */
 function mapModelToEffort(model: string | undefined): string {
   switch (model) {
@@ -1018,18 +1019,13 @@ function createExaResearchCapability(options: ExaResearchCapabilityOptions): Res
 
 /**
  * Build the Exa Provider Descriptor. The descriptor advertises the Exa
- * capability set (search + diagnostics for EXA-T01) and constructs an
- * Adapter whose Capabilities own credentials, transport, Provider field
- * mapping, and failure normalization. Construction is side-effect-free;
- * the transport is invoked per Capability call. Tests pass `transport`
- * (typically a fake-fetch wrapper); production uses the no-argument
- * factory which resolves to the global `fetch` and timers inside the
- * transport Module.
- *
- * EXA-T01 (offline): `exa` is NOT yet in `PROVIDER_IDS`. The `id` is
- * cast to `ProviderId` so the descriptor satisfies the interface for
- * injected-list testing. EXA-T02 adds `"exa"` to the tuple and removes
- * this cast atomically with the registry landing.
+ * capability set (search, reader, research, diagnostics) and constructs
+ * an Adapter whose Capabilities own credentials, transport, Provider
+ * field mapping, and failure normalization. Construction is
+ * side-effect-free; the transport is invoked per Capability call. Tests
+ * pass `transport` (typically a fake-fetch wrapper); production uses
+ * the no-argument factory which resolves to the global `fetch` and
+ * timers inside the transport Module.
  */
 export function createExaDescriptor(dependencies?: ExaAdapterDependencies): ProviderDescriptor {
   const transport = dependencies?.transport;

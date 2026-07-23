@@ -256,14 +256,16 @@ capabilityMatrix field reflects that descriptor state
 (repository-exploration currently lists only Z.AI while MiniMax and
 Tavily lack it).
 
-Reader is a Provider Capability. Z.AI and Tavily descriptor metadata
-both advertise reader; MiniMax and Exa advertise and supply neither.
-The capabilityMatrix field lists both Z.AI and Tavily for reader.
+Reader is a Provider Capability. Z.AI, Tavily, and Exa descriptor
+metadata all advertise reader; MiniMax advertises and supplies
+neither. The capabilityMatrix field lists Z.AI, Tavily, and Exa for
+reader.
 
-Crawl, Map, and Research are Provider Capabilities owned by Tavily.
-Z.AI, MiniMax, and Exa do not advertise any of them; the capabilityMatrix
-lists Tavily alone for each. Selecting Z.AI, MiniMax, or Exa for any of
-these commands returns UNSUPPORTED_CAPABILITY with no fallback.
+Crawl and Map are Provider Capabilities owned by Tavily.
+Z.AI, MiniMax, and Exa do not advertise either; the capabilityMatrix
+lists Tavily alone for each. Research is supplied by Tavily and Exa.
+Selecting Z.AI or MiniMax for crawl, map, or research returns
+UNSUPPORTED_CAPABILITY with no fallback.
 
 Public 'repo' and 'read' commands participate in Provider selection.
 They honour --provider / SCOUTLINE_PROVIDER / the default zai, route

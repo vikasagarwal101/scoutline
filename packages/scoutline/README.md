@@ -21,7 +21,7 @@
 - **Repo** - Search and read GitHub repository code via ZRead
 - **Tools** - MCP tool discovery, schemas, and raw calls
 - **Code Mode** - TypeScript tool chaining for agent automation
-- **Provider selection** - Run shared capabilities through Z.AI or MiniMax Token Plan
+- **Provider selection** - Run shared capabilities through Z.AI, MiniMax Token Plan, or Brave
 
 ## Quick Start
 
@@ -40,6 +40,14 @@ To use MiniMax instead:
 ```bash
 export MINIMAX_API_KEY="your-minimax-key"
 npx scoutline --provider minimax search "latest LLM benchmarks"
+```
+
+To use Brave (Search: web, news, video):
+
+```bash
+export BRAVE_SEARCH_API_KEY="your-brave-key"
+npx scoutline --provider brave search "AI policy news" --topic news
+npx scoutline --provider brave search "rust async" --type video
 ```
 
 ## Installation
@@ -74,9 +82,9 @@ npx scoutline --help
 ## Provider Selection
 
 Shared commands (`search`, `vision`, `quota`, `doctor`, `repo`) accept a global
-`--provider <zai|minimax>` flag. Resolution precedence:
+`--provider <zai|minimax|tavily|brave>` flag. Resolution precedence:
 
-1. Explicit `--provider <zai|minimax>` on the command line
+1. Explicit `--provider <zai|minimax|tavily|brave>` on the command line
 2. `SCOUTLINE_PROVIDER` environment variable
 3. Compatibility default `zai`
 

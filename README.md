@@ -24,7 +24,7 @@
 - **Repo** — Search and read GitHub repository code
 - **Tools** — MCP tool discovery, schemas, and raw calls
 - **Code Mode** — TypeScript tool chaining for agent automation
-- **Provider selection** — Run shared capabilities through Z.AI, MiniMax, or Tavily
+- **Provider selection** — Run shared capabilities through Z.AI, MiniMax, Tavily, or Brave
 
 ## Quick Start
 
@@ -57,6 +57,20 @@ npx scoutline --provider tavily research "Compare React vs Svelte for production
 
 Get your Tavily API key at: https://app.tavily.com
 
+### Using Brave (Search — web, news, video)
+
+```bash
+export BRAVE_SEARCH_API_KEY="your-brave-key"
+npx scoutline --provider brave search "AI policy news" --topic news
+npx scoutline --provider brave search "rust async" --type video
+npx scoutline --provider brave search "large context topic" --content-size high
+```
+
+Brave is the only Provider that supports `--type video`. `--content-size high`
+maps to Brave's LLM Context endpoint (extracted passages joined into summaries).
+`--type` is mutually exclusive with `--topic`. Note: Brave recently shifted from
+a pure free tier to $5 monthly metered credits.
+
 ## Installation
 
 ### As an Agent Skill
@@ -88,7 +102,7 @@ npx scoutline --help
 
 ## Provider Selection
 
-Shared commands accept `--provider <zai|minimax|tavily>`. Resolution precedence:
+Shared commands accept `--provider <zai|minimax|tavily|brave>`. Resolution precedence:
 
 1. Explicit `--provider` flag
 2. `SCOUTLINE_PROVIDER` environment variable
@@ -104,25 +118,29 @@ Selecting a provider that doesn't support a capability returns `UNSUPPORTED_CAPA
 
 ### Capability Matrix
 
-| Capability | Z.AI | MiniMax | Tavily | Command |
-|---|---|---|---|---|
-| Search | Yes | Yes | Yes | `scoutline search` |
-| Reader | Yes | No | Yes | `scoutline read` |
-| Crawl | No | No | Yes | `scoutline crawl` |
-| Map | No | No | Yes | `scoutline map` |
-| Research | No | No | Yes | `scoutline research` |
-| Vision (interpret-image) | Yes | Yes | No | `scoutline vision analyze` |
-| Quota | Yes | Yes | Yes | `scoutline quota` |
-| Diagnostics | Yes | Yes | Yes | `scoutline doctor` |
-| Repo exploration | Yes | No | No | `scoutline repo` |
-| Raw tools | Yes | No | No | `scoutline tools` |
-| Code Mode | Yes | No | No | `scoutline code` |
+| Capability | Z.AI | MiniMax | Tavily | Brave | Command |
+|---|---|---|---|---|---|
+| Search | Yes | Yes | Yes | Yes (web/news/video) | `scoutline search` |
+| Reader | Yes | No | Yes | No | `scoutline read` |
+| Crawl | No | No | Yes | No | `scoutline crawl` |
+| Map | No | No | Yes | No | `scoutline map` |
+| Research | No | No | Yes | No | `scoutline research` |
+| Vision (interpret-image) | Yes | Yes | No | No | `scoutline vision analyze` |
+| Quota | Yes | Yes | Yes | Yes (rate-limit window) | `scoutline quota` |
+| Diagnostics | Yes | Yes | Yes | Yes | `scoutline doctor` |
+| Repo exploration | Yes | No | No | No | `scoutline repo` |
+| Raw tools | Yes | No | No | No | `scoutline tools` |
+| Code Mode | Yes | No | No | No | `scoutline code` |
 
 ### Search Controls
 
-`--topic <general|news|finance>` is accepted by all providers. Tavily passes it natively; Z.AI and MiniMax append a keyword to the query.
+`--topic <general|news|finance>` is accepted by all providers. Tavily passes it natively; Z.AI and MiniMax append a keyword to the query; Brave routes `news` to a dedicated news endpoint.
 
-`--domain`, `--recency`, `--content-size`, and `--location` are Z.AI-only.
+`--type <video>` is Brave-only (mutually exclusive with `--topic`).
+
+`--domain`, `--recency`, and `--location` are honored by Z.AI and Brave (Brave maps `--domain` → `site:`, `--recency` → `freshness`, `--location` → `country`); Tavily honors `--domain` and `--recency`; MiniMax rejects them.
+
+`--content-size` is a deliberate per-provider overload: `high` maps to Z.AI `content_size`, Tavily `search_depth=advanced`, and Brave's LLM Context endpoint (extracted passages joined into summaries); MiniMax rejects it (`UNSUPPORTED_OPTION`).
 
 ## Usage
 
@@ -197,6 +215,7 @@ Default output is **data-only JSON** for token efficiency. Use `--output-format`
 - **Doctor** output is at `schemaVersion: 2` with a `capabilityMatrix` field listing which providers support each capability.
 - **Cache** lives at `~/.scoutline/` (`cache/` for responses, `tools/` for tool discovery). Research state files live at `~/.scoutline/research/`. Inspect or clear with `scoutline cache stats` / `scoutline cache clear`.
 - `repo search` defaults to English. Use `--language zh` for Chinese.
+- **Brave quota** reports a monthly rate-limit window (used/limit/remaining/%/reset) read from response headers, not spend or credits consumed. Brave uses metered billing, so it is **not** a budget signal — a prominent caveat prints to stderr.
 
 ## Repository Layout
 

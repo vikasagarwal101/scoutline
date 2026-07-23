@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
+import { createBraveDescriptor } from "../dist/providers/brave/adapter.js";
 import {
   BUILT_IN_PROVIDER_DESCRIPTORS,
   getProviderDescriptor,
@@ -106,6 +107,26 @@ function makeMiniMaxCapability(rawResult) {
   return adapter.search;
 }
 
+/**
+ * Brave Adapter factory: accepts a raw Brave-shaped web response
+ * (`web.results[]`), builds a fake fetch that returns the scripted
+ * response, and returns the descriptor's Search Capability. Mirrors
+ * `makeMiniMaxCapability`.
+ */
+function makeBraveCapability(rawResult) {
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rawResult),
+    json: async () => rawResult,
+    headers: { get: () => null },
+    arrayBuffer: async () => new ArrayBuffer(0),
+  });
+  const descriptor = createBraveDescriptor({ transport: { fetch: fetchFn } });
+  const adapter = descriptor.create({ env: { BRAVE_SEARCH_API_KEY: "k" } });
+  return adapter.search;
+}
+
 // ---------------------------------------------------------------------------
 // Vision conformance: same interpret-image request, same normalized text (P3-03)
 // ---------------------------------------------------------------------------
@@ -184,7 +205,7 @@ function makeMiniMaxVisionCapability(rawResult) {
 // ---------------------------------------------------------------------------
 
 describe("Search Adapter conformance — shared normalized output", () => {
-  it("both built-in Adapters normalize to fixtures/normalized/search.json", async () => {
+  it("all configured Adapters normalize to fixtures/normalized/search.json", async () => {
     const expected = await readFixture("normalized", "search.json");
 
     // Z.AI raw response (title/link/content; no media/publish_date so the
@@ -221,6 +242,28 @@ describe("Search Adapter conformance — shared normalized output", () => {
     };
     const minimaxNormalized = await runSearchConformance(makeMiniMaxCapability, minimaxRaw);
     assert.deepStrictEqual(minimaxNormalized, expected);
+
+    // Brave raw web response (web.results[] with title/url/description;
+    // no meta_url/page_age so source/date are absent — matching the
+    // shared normalized form).
+    const braveRaw = {
+      web: {
+        results: [
+          {
+            title: "Conformance result one",
+            url: "https://example.test/one",
+            description: "Shared normalized summary one.",
+          },
+          {
+            title: "Conformance result two",
+            url: "https://example.test/two",
+            description: "Shared normalized summary two.",
+          },
+        ],
+      },
+    };
+    const braveNormalized = await runSearchConformance(makeBraveCapability, braveRaw);
+    assert.deepStrictEqual(braveNormalized, expected);
   });
 
   it("normalized output drops Provider-only fields (refer, icon, media, publish_date)", async () => {
@@ -267,9 +310,8 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
 
   it("descriptors expose pure metadata (capabilities + isConfigured, no transport)", () => {
     // Fully-built Providers (zai/minimax/tavily) advertise search, quota,
-    // and diagnostics. Brave is in the foundation state (T1): credentials
-    // + transport skeleton with an empty capability set; later tickets
-    // wire its capabilities.
+    // and diagnostics. Brave advertises only search in T2 (quota and
+    // diagnostics arrive in later tickets).
     for (const id of ["zai", "minimax", "tavily"]) {
       const d = getProviderDescriptor(id);
       const caps = d.capabilities();
@@ -278,13 +320,14 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
       assert.ok(caps.has("quota"));
       assert.ok(caps.has("diagnostics"));
     }
-    // Brave foundation: capabilities() is empty by design.
+    // Brave T2: advertises exactly "search" (size 1); quota/diagnostics
+    // are later tickets.
     const brave = getProviderDescriptor("brave");
-    assert.strictEqual(
-      brave.capabilities().size,
-      0,
-      "Brave foundation descriptor must advertise no capabilities",
-    );
+    const braveCaps = brave.capabilities();
+    assert.strictEqual(braveCaps.size, 1, "Brave advertises exactly search in T2");
+    assert.ok(braveCaps.has("search"), "Brave must advertise search");
+    assert.ok(!braveCaps.has("quota"), "Brave quota is a later ticket");
+    assert.ok(!braveCaps.has("diagnostics"), "Brave diagnostics is a later ticket");
     const zai = getProviderDescriptor("zai");
     assert.strictEqual(zai.isConfigured({ Z_AI_API_KEY: "k" }), true);
     assert.strictEqual(zai.isConfigured({}), false);
@@ -302,10 +345,9 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
 
   it("descriptor creation is side-effect-free (no transport construction)", () => {
     // Every Provider that advertises `search` exposes a Search
-    // Capability object. Brave is the foundation state (T1): the
-    // create() is still side-effect-free, but `adapter.search` is
-    // undefined because no Capability is wired yet.
-    for (const id of ["zai", "minimax", "tavily"]) {
+    // Capability object. Brave (T2) now wires search too; create() is
+    // still side-effect-free.
+    for (const id of ["zai", "minimax", "tavily", "brave"]) {
       const d = getProviderDescriptor(id);
       const adapter = d.create({ env: {} });
       assert.strictEqual(typeof adapter.search, "object", `${id} should expose adapter.search`);
@@ -313,11 +355,7 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     const brave = getProviderDescriptor("brave");
     const braveAdapter = brave.create({ env: {} });
     assert.strictEqual(braveAdapter.id, "brave");
-    assert.strictEqual(
-      braveAdapter.search,
-      undefined,
-      "Brave foundation adapter must not expose adapter.search",
-    );
+    assert.strictEqual(typeof braveAdapter.search, "object", "Brave must expose adapter.search");
   });
 
   it("tavily create() returns an adapter with search, reader, and crawl", () => {

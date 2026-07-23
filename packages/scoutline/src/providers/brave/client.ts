@@ -45,10 +45,32 @@ const TIMEOUT_HELP_TEXT = "Try again or increase timeout with BRAVE_TIMEOUT env 
 
 /** Injectable transport dependencies (fetch, timers, env). */
 export interface BraveTransportDeps {
-  readonly fetch?: (input: string, init: Record<string, unknown>) => Promise<ProviderImageFetchResponse>;
+  readonly fetch?: (
+    input: string,
+    init: Record<string, unknown>,
+  ) => Promise<ProviderImageFetchResponse>;
   readonly setTimeout?: typeof setTimeout;
   readonly clearTimeout?: typeof clearTimeout;
   readonly env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Provider-native search request query params (Brave API field names).
+ * The Adapter maps the Provider-neutral `SearchControls` into these
+ * before calling {@link fetchBraveSearch}; the transport never imports
+ * a capability contract.
+ *
+ * NOTE: `count` is intentionally ABSENT here. Result-count projection
+ * is a client-side concern owned by shared execution (`applyCount`)
+ * AFTER `invoke`+cache; `SearchRequest`/`SearchControls` carry NO
+ * `count` field, so the transport sends only `q` plus the mapped
+ * controls below (`country`/`freshness`). Brave therefore returns its
+ * default page size; `--count` above that is silently capped (no
+ * pagination in T2).
+ */
+export interface BraveSearchParams {
+  readonly country?: string;
+  readonly freshness?: string;
 }
 
 function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
@@ -138,7 +160,10 @@ export async function getBraveJson(
 ): Promise<unknown> {
   const f =
     deps.fetch ??
-    (fetch as unknown as (input: string, init: Record<string, unknown>) => Promise<ProviderImageFetchResponse>);
+    (fetch as unknown as (
+      input: string,
+      init: Record<string, unknown>,
+    ) => Promise<ProviderImageFetchResponse>);
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
   const env = deps.env ?? process.env;
@@ -177,4 +202,42 @@ export async function getBraveJson(
   } finally {
     controller.abort();
   }
+}
+
+/**
+ * Perform ONE GET against the Brave `/res/v1/web/search` endpoint. No
+ * retry; no response body in public errors. Returns the parsed JSON
+ * body (raw; the Adapter post-processes into normalized search
+ * sources).
+ *
+ * `params` carries Brave-native API fields already mapped from
+ * `SearchControls` by the Adapter (`country`/`freshness`). The query
+ * is sent as the `q` query-string parameter.
+ */
+export async function fetchBraveSearch(
+  apiKey: string,
+  query: string,
+  params?: BraveSearchParams,
+  deps: BraveTransportDeps = {},
+): Promise<unknown> {
+  return getBraveJson(apiKey, "/res/v1/web/search", { q: query, ...(params ?? {}) }, deps);
+}
+
+/**
+ * Perform ONE GET against the Brave `/res/v1/news/search` endpoint. No
+ * retry; no response body in public errors. Returns the parsed JSON
+ * body (raw; the Adapter post-processes into normalized search
+ * sources).
+ *
+ * Dispatched when `controls.topic === "news"`; the web endpoint is the
+ * default. `params` carries the same Brave-native fields as
+ * {@link fetchBraveSearch}.
+ */
+export async function fetchBraveNewsSearch(
+  apiKey: string,
+  query: string,
+  params?: BraveSearchParams,
+  deps: BraveTransportDeps = {},
+): Promise<unknown> {
+  return getBraveJson(apiKey, "/res/v1/news/search", { q: query, ...(params ?? {}) }, deps);
 }

@@ -9,9 +9,15 @@
  *     X-Subscription-Token + User-Agent + query string; timeout → TimeoutError;
  *     401/403 → AuthError; 429 → ApiError(429); 5xx → ApiError;
  *     NO raw Brave body leaks into thrown error messages.
- *   - Descriptor: id === "brave"; capabilities() is empty; create({env:{}})
- *     returns { id: "brave" } with all capability slots undefined; create()
- *     constructs no transport (injected spy fetch is never called).
+ *   - Descriptor: id === "brave"; capabilities() advertises exactly
+ *     "search" (T2); create({env:{}}) returns an adapter with a wired
+ *     `search` object (other slots undefined); create() constructs no
+ *     transport (injected spy fetch is never called).
+ *   - Search Capability (T2): web invoke normalizes web.results[];
+ *     --topic news routes to /res/v1/news/search; controls mapped per
+ *     the Brave mapping; contentSize rejected before fetch; missing key
+ *     → ConfigurationError (exit 3); malformed → ApiError 500; no raw
+ *     Brave body leaks into error messages.
  *
  * Tests inject a single fake `fetch` through
  * `BraveAdapterDependencies.transport`; the fake returns Response-shaped
@@ -28,7 +34,13 @@ import {
   isBraveConfigured,
 } from "../dist/providers/brave/credentials.js";
 import { getBraveJson } from "../dist/providers/brave/client.js";
-import { ApiError, AuthError, ConfigurationError, TimeoutError } from "../dist/lib/errors.js";
+import {
+  ApiError,
+  AuthError,
+  ConfigurationError,
+  TimeoutError,
+  UnsupportedOptionError,
+} from "../dist/lib/errors.js";
 
 const TEST_API_KEY = "brave-test-key-DO-NOT-LEAK";
 
@@ -109,10 +121,7 @@ describe("Brave credentials", () => {
   });
 
   it("requireBraveApiKey returns the resolved key when present", () => {
-    assert.strictEqual(
-      requireBraveApiKey({ BRAVE_SEARCH_API_KEY: TEST_API_KEY }),
-      TEST_API_KEY,
-    );
+    assert.strictEqual(requireBraveApiKey({ BRAVE_SEARCH_API_KEY: TEST_API_KEY }), TEST_API_KEY);
   });
 
   it("isBraveConfigured reflects non-blank presence", () => {
@@ -289,11 +298,14 @@ describe("Brave descriptor", () => {
     assert.strictEqual(descriptor.id, "brave");
   });
 
-  it("capabilities() returns an empty set (T1 foundation)", () => {
+  it("capabilities() advertises exactly search (T2)", () => {
     const descriptor = createBraveDescriptor();
     const caps = descriptor.capabilities();
     assert.ok(caps instanceof Set, "must be a Set");
-    assert.strictEqual(caps.size, 0, "T1 advertises no capabilities");
+    assert.strictEqual(caps.size, 1, "T2 advertises only search");
+    assert.ok(caps.has("search"), "must advertise search");
+    assert.ok(!caps.has("quota"), "quota is a later ticket");
+    assert.ok(!caps.has("diagnostics"), "diagnostics is a later ticket");
   });
 
   it("isConfigured reflects BRAVE_SEARCH_API_KEY presence", () => {
@@ -303,12 +315,14 @@ describe("Brave descriptor", () => {
     assert.strictEqual(descriptor.isConfigured({ BRAVE_SEARCH_API_KEY: TEST_API_KEY }), true);
   });
 
-  it("create() returns { id: 'brave' } with all capability slots undefined", () => {
+  it("create() returns { id: 'brave' } with a wired search capability", () => {
     const descriptor = createBraveDescriptor();
     const adapter = descriptor.create({ env: {} });
     assert.strictEqual(adapter.id, "brave");
+    assert.strictEqual(typeof adapter.search, "object", "search must be wired in T2");
+    assert.ok(adapter.search !== null, "search must not be null");
+    // Other capability slots remain undefined (later tickets).
     for (const slot of [
-      "search",
       "reader",
       "quota",
       "diagnostics",
@@ -318,11 +332,7 @@ describe("Brave descriptor", () => {
       "vision",
       "repository",
     ]) {
-      assert.strictEqual(
-        adapter[slot],
-        undefined,
-        `${slot} slot must be undefined in T1`,
-      );
+      assert.strictEqual(adapter[slot], undefined, `${slot} slot must be undefined in T2`);
     }
   });
 
@@ -338,5 +348,237 @@ describe("Brave descriptor", () => {
     });
     descriptor.create({ env: {} });
     assert.strictEqual(calls, 0, "transport.fetch must not be invoked during descriptor.create()");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Search Capability (T2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build an adapter whose transport records every fetch URL/init and
+ * serves `fetchImpl`. The adapter is bound to an env carrying the test
+ * API key so `invoke`/`cacheIdentity` can resolve credentials.
+ */
+function makeSearchAdapter(fetchImpl) {
+  const { fn, calls } = makeRecordingFetch(fetchImpl);
+  const descriptor = createBraveDescriptor({ transport: { fetch: fn } });
+  const adapter = descriptor.create({ env: { BRAVE_SEARCH_API_KEY: TEST_API_KEY } });
+  return { adapter, calls };
+}
+
+function emptyWebResponse() {
+  return makeResponse({ json: { web: { results: [] } } });
+}
+
+describe("Brave Search Capability", () => {
+  it("web invoke normalizes web.results[] into SearchSource[] (source + date)", async () => {
+    const raw = {
+      web: {
+        results: [
+          {
+            title: "Example One",
+            url: "https://example.test/one",
+            description: "Summary one.",
+            meta_url: { netloc: "example.test" },
+            page_age: "2025-01-02T00:00:00Z",
+          },
+          {
+            title: "Example Two",
+            url: "https://example.test/two",
+            description: "Summary two.",
+          },
+        ],
+      },
+    };
+    const { adapter, calls } = makeSearchAdapter(async () => makeResponse({ json: raw }));
+    const out = await adapter.search.invoke({ query: "hello" });
+    assert.strictEqual(calls.length, 1);
+    assert.ok(
+      calls[0].url.startsWith("https://api.search.brave.com/res/v1/web/search?"),
+      `web endpoint: ${calls[0].url}`,
+    );
+    assert.deepStrictEqual(
+      [...out],
+      [
+        {
+          title: "Example One",
+          url: "https://example.test/one",
+          summary: "Summary one.",
+          source: "example.test",
+          date: "2025-01-02T00:00:00Z",
+        },
+        { title: "Example Two", url: "https://example.test/two", summary: "Summary two." },
+      ],
+    );
+  });
+
+  it("news result date falls back to `age` when `page_age` is absent", async () => {
+    const raw = {
+      results: [
+        {
+          title: "News One",
+          url: "https://news.test/one",
+          description: "News summary.",
+          meta_url: { netloc: "news.test" },
+          age: "3 hours ago",
+        },
+      ],
+    };
+    const { adapter, calls } = makeSearchAdapter(async () => makeResponse({ json: raw }));
+    const out = await adapter.search.invoke({ query: "hello", controls: { topic: "news" } });
+    assert.ok(
+      calls[0].url.startsWith("https://api.search.brave.com/res/v1/news/search?"),
+      `news endpoint: ${calls[0].url}`,
+    );
+    assert.deepStrictEqual(
+      [...out],
+      [
+        {
+          title: "News One",
+          url: "https://news.test/one",
+          summary: "News summary.",
+          source: "news.test",
+          date: "3 hours ago",
+        },
+      ],
+    );
+  });
+
+  it("maps recency oneWeek to freshness=pw", async () => {
+    const { adapter, calls } = makeSearchAdapter(emptyWebResponse);
+    await adapter.search.invoke({ query: "q", controls: { recency: "oneWeek" } });
+    assert.ok(/freshness=pw/.test(calls[0].url), calls[0].url);
+  });
+
+  it("maps location us to country=US", async () => {
+    const { adapter, calls } = makeSearchAdapter(emptyWebResponse);
+    await adapter.search.invoke({ query: "q", controls: { location: "us" } });
+    assert.ok(/country=US/.test(calls[0].url), calls[0].url);
+  });
+
+  it("maps location cn to country=CN", async () => {
+    const { adapter, calls } = makeSearchAdapter(emptyWebResponse);
+    await adapter.search.invoke({ query: "q", controls: { location: "cn" } });
+    assert.ok(/country=CN/.test(calls[0].url), calls[0].url);
+  });
+
+  it("appends site:<domain> to the query for --domain", async () => {
+    const { adapter, calls } = makeSearchAdapter(emptyWebResponse);
+    await adapter.search.invoke({ query: "rust async", controls: { domain: "example.com" } });
+    assert.ok(calls[0].url.includes(encodeURIComponent("site:example.com")), calls[0].url);
+  });
+
+  it("appends the finance keyword for --topic finance and stays on the web endpoint", async () => {
+    const { adapter, calls } = makeSearchAdapter(emptyWebResponse);
+    await adapter.search.invoke({ query: "tesla", controls: { topic: "finance" } });
+    assert.ok(calls[0].url.includes(encodeURIComponent("tesla financial")), calls[0].url);
+    assert.ok(calls[0].url.includes("/res/v1/web/search"), calls[0].url);
+  });
+
+  it("rejects contentSize before any fetch (UnsupportedOptionError)", async () => {
+    let fetchCalls = 0;
+    const { adapter } = makeSearchAdapter(async () => {
+      fetchCalls += 1;
+      return emptyWebResponse();
+    });
+    let thrown;
+    try {
+      await adapter.search.invoke({ query: "q", controls: { contentSize: "high" } });
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof UnsupportedOptionError, "must be UnsupportedOptionError");
+    assert.ok(/brave/i.test(thrown.message) && /contentSize/.test(thrown.message), thrown.message);
+    assert.strictEqual(fetchCalls, 0, "fetch must not be called for an unsupported control");
+  });
+
+  it("rejects an empty/whitespace query with ValidationError before any fetch", async () => {
+    let fetchCalls = 0;
+    const { adapter } = makeSearchAdapter(async () => {
+      fetchCalls += 1;
+      return emptyWebResponse();
+    });
+    for (const query of ["", "   ", "\t\n"]) {
+      let thrown;
+      try {
+        await adapter.search.invoke({ query });
+      } catch (err) {
+        thrown = err;
+      }
+      assert.ok(thrown, "must throw for an empty query");
+      assert.strictEqual(thrown.constructor.name, "ValidationError");
+    }
+    assert.strictEqual(fetchCalls, 0, "no fetch for an invalid query");
+  });
+
+  it("invoke throws ConfigurationError (exit 3) when the key is missing", async () => {
+    const { fn } = makeRecordingFetch(emptyWebResponse);
+    const descriptor = createBraveDescriptor({ transport: { fetch: fn } });
+    const adapter = descriptor.create({ env: {} });
+    let thrown;
+    try {
+      await adapter.search.invoke({ query: "q" });
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof ConfigurationError, "must be ConfigurationError");
+    assert.strictEqual(thrown.exitCode, 3);
+  });
+
+  it("throws ApiError 500 on a malformed web response (missing results)", async () => {
+    const { adapter } = makeSearchAdapter(async () => makeResponse({ json: { web: {} } }));
+    let thrown;
+    try {
+      await adapter.search.invoke({ query: "q" });
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof ApiError && thrown.statusCode === 500);
+  });
+
+  it("throws ApiError 500 when a result entry is missing description", async () => {
+    const raw = { web: { results: [{ title: "t", url: "https://x.test" }] } };
+    const { adapter } = makeSearchAdapter(async () => makeResponse({ json: raw }));
+    let thrown;
+    try {
+      await adapter.search.invoke({ query: "q" });
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof ApiError && thrown.statusCode === 500);
+  });
+
+  it("does NOT leak the raw Brave body into the adapter error message", async () => {
+    const bodyText = "leak-marker-DO-NOT-EMBED-into-adapter-errors";
+    const { adapter } = makeSearchAdapter(makeErrorFetch(500, bodyText));
+    let thrown;
+    try {
+      await adapter.search.invoke({ query: "q" });
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof Error, "must throw");
+    assert.ok(
+      !thrown.message.includes(bodyText),
+      `error message must not contain raw Brave body: ${thrown.message}`,
+    );
+    if (thrown.help) {
+      assert.ok(!thrown.help.includes(bodyText), "error help must not contain raw Brave body");
+    }
+  });
+
+  it("cacheIdentity echoes the full controls and partitions by credential", () => {
+    const { adapter } = makeSearchAdapter(emptyWebResponse);
+    const a = adapter.search.cacheIdentity({ query: "q", controls: { recency: "oneWeek" } });
+    assert.strictEqual(a.provider, "brave");
+    assert.strictEqual(a.capability, "search");
+    assert.strictEqual(a.request.query, "q");
+    assert.deepStrictEqual(a.request.controls, { recency: "oneWeek" });
+    assert.ok(!("legacyCandidates" in a), "no legacyCandidates");
+
+    // Different controls → different request payload.
+    const b = adapter.search.cacheIdentity({ query: "q", controls: { recency: "oneDay" } });
+    assert.notDeepStrictEqual(a.request.controls, b.request.controls);
   });
 });

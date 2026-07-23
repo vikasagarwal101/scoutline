@@ -97,6 +97,8 @@ import {
   type FirecrawlTransportDeps,
 } from "./client.js";
 import { isFirecrawlConfigured, requireFirecrawlApiKey } from "./credentials.js";
+import { createFirecrawlQuotaCapability } from "./quota.js";
+import { createFirecrawlDiagnosticsCapability } from "./diagnostics.js";
 
 // ---------------------------------------------------------------------------
 // Credential + shape helpers
@@ -1019,12 +1021,10 @@ export interface FirecrawlAdapterDependencies {
 
 /**
  * Build the Firecrawl Provider Descriptor. Advertises the full Firecrawl
- * capability set. `create()` wires Search, Reader, Map, and the async
- * Crawl capability (create→poll→resume + reclaim-on-miss); Quota and
- * Diagnostics (FC-05) slots remain absent so the command dispatch's
- * UnsupportedCapabilityError guard handles them until they land.
- * Construction is side-effect-free; the transport is invoked per
- * Capability call.
+ * capability set. `create()` wires all six capabilities — Search, Reader,
+ * Map, async Crawl (create→poll→resume + reclaim-on-miss), Quota
+ * (`unit:"credits"`), and Diagnostics (single-scrape probe). Construction
+ * is side-effect-free; the transport is invoked per Capability call.
  */
 export function createFirecrawlDescriptor(
   dependencies?: FirecrawlAdapterDependencies,
@@ -1057,7 +1057,9 @@ export function createFirecrawlDescriptor(
         stateFile: crawlStateFile,
       });
       const map = createFirecrawlMapCapability({ env: context.env, transport });
-      return { id: "firecrawl", search, reader, crawl, map };
+      const quota = createFirecrawlQuotaCapability({ env: context.env, transport });
+      const diagnostics = createFirecrawlDiagnosticsCapability({ env: context.env, transport });
+      return { id: "firecrawl", search, reader, crawl, map, quota, diagnostics };
     },
   };
 }

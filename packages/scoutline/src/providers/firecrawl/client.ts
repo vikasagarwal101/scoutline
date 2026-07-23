@@ -280,12 +280,25 @@ export async function fetchFirecrawlMap(
   return postFirecrawlJson(apiKey, MAP_PATH, body, deps, "map");
 }
 
+/**
+ * Perform ONE GET against Firecrawl /v2/team/credit-usage. No retry; no
+ * response body in public errors. Returns the parsed JSON body (raw; the
+ * quota Adapter normalizes into a `QuotaCategory`). The dual-check applies.
+ */
+export async function fetchFirecrawlCreditUsage(
+  apiKey: string,
+  deps: FirecrawlTransportDeps = {},
+): Promise<unknown> {
+  return getFirecrawlJson(apiKey, CREDIT_USAGE_PATH, deps, "credit-usage");
+}
+
 // ---------------------------------------------------------------------------
 // Async crawl — create / poll / list-active (tech-plan D2)
 // ---------------------------------------------------------------------------
 
 const CRAWL_PATH = "/v2/crawl";
 const CRAWL_ACTIVE_PATH = "/v2/crawl/active";
+const CREDIT_USAGE_PATH = "/v2/team/credit-usage";
 
 /**
  * Provider-native crawl request body fields (Firecrawl API field names).

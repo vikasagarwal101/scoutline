@@ -295,7 +295,7 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     }
   });
 
-  it("firecrawl create() returns an adapter with search, reader, crawl, and map", () => {
+  it("firecrawl create() returns an adapter with all six capabilities", () => {
     const fc = getProviderDescriptor("firecrawl");
     const adapter = fc.create({ env: {} });
     assert.strictEqual(adapter.id, "firecrawl");
@@ -303,10 +303,8 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     assert.strictEqual(typeof adapter.reader, "object");
     assert.strictEqual(typeof adapter.crawl, "object");
     assert.strictEqual(typeof adapter.map, "object");
-    // Quota/diagnostics arrive in FC-05; the slots are absent so the
-    // command dispatch's UnsupportedCapabilityError guard handles them
-    // until then.
-    assert.strictEqual(adapter.quota, undefined);
+    assert.strictEqual(typeof adapter.quota, "object");
+    assert.strictEqual(typeof adapter.diagnostics, "object");
   });
 
   it("tavily create() returns an adapter with search, reader, and crawl", () => {

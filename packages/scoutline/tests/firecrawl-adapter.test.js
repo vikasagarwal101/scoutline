@@ -455,3 +455,73 @@ describe("Firecrawl Crawl Adapter", () => {
     await assert.rejects(() => adapter.crawl.fetch.invoke({ url: "https://a.example" }), AuthError);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Quota (FC-05 / D8 — unit:"credits")
+// ---------------------------------------------------------------------------
+
+describe("Firecrawl Quota Adapter", () => {
+  it("maps remaining + used credits into a Credits category (unit:credits)", async () => {
+    const fn = async () =>
+      makeResponse({
+        json: { success: true, data: [{ remaining_credits: 75, total_credits_used: 25 }] },
+      });
+    const descriptor = createFirecrawlDescriptor({ transport: { fetch: fn, env: {} } });
+    const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
+    const out = await adapter.quota.invoke();
+    assert.equal(out.provider, "firecrawl");
+    assert.equal(out.status, "ok");
+    assert.equal(out.categories.length, 1);
+    const cat = out.categories[0];
+    assert.equal(cat.name, "Credits");
+    assert.equal(cat.unit, "credits");
+    // limit = used(25) + remaining(75) = 100.
+    assert.equal(cat.current.used, 25);
+    assert.equal(cat.current.limit, 100);
+    assert.equal(cat.current.remaining, 75);
+  });
+
+  it("accepts a direct used/limit pair", async () => {
+    const fn = async () => makeResponse({ json: { success: true, used_credits: 40, limit: 200 } });
+    const descriptor = createFirecrawlDescriptor({ transport: { fetch: fn, env: {} } });
+    const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
+    const out = await adapter.quota.invoke();
+    assert.equal(out.categories[0].current.used, 40);
+    assert.equal(out.categories[0].current.limit, 200);
+  });
+
+  it("throws ApiError when no credit figures can be extracted", async () => {
+    const fn = async () => makeResponse({ json: { success: true, data: [{}] } });
+    const descriptor = createFirecrawlDescriptor({ transport: { fetch: fn, env: {} } });
+    const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
+    await assert.rejects(() => adapter.quota.invoke(), ApiError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Diagnostics probe (FC-05 — single-scrape, probe-gated)
+// ---------------------------------------------------------------------------
+
+describe("Firecrawl Diagnostics Adapter", () => {
+  it("is a no-op when probe is false", async () => {
+    const fn = async () => {
+      throw new Error("should not fetch when probe is false");
+    };
+    const descriptor = createFirecrawlDescriptor({ transport: { fetch: fn, env: {} } });
+    const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
+    // Resolves without touching the network.
+    await adapter.diagnostics.invoke({ probe: false });
+  });
+
+  it("performs one scrape when probe is true", async () => {
+    let scraped = false;
+    const fn = async (url, init) => {
+      if (String(url).endsWith("/v2/scrape")) scraped = true;
+      return makeResponse({ json: { success: true, data: { markdown: "ok" } } });
+    };
+    const descriptor = createFirecrawlDescriptor({ transport: { fetch: fn, env: {} } });
+    const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
+    await adapter.diagnostics.invoke({ probe: true });
+    assert.equal(scraped, true);
+  });
+});

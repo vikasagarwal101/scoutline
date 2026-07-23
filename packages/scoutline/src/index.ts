@@ -1436,6 +1436,7 @@ async function handleQuota(
             sleep: deps.searchSleep,
             random: deps.searchRandom,
           }),
+        writeStderr: (value) => deps.invocation.writeStderr(value),
       }),
     outputMode,
     deps.now,

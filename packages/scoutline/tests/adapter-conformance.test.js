@@ -309,9 +309,10 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
   });
 
   it("descriptors expose pure metadata (capabilities + isConfigured, no transport)", () => {
-    // Fully-built Providers (zai/minimax/tavily) advertise search, quota,
-    // and diagnostics. Brave advertises only search in T2 (quota and
-    // diagnostics arrive in later tickets).
+    // Fully-built Providers (zai/minimax/tavily/brave) advertise search,
+    // quota, and diagnostics. Brave (T6) now joins that set; the loop
+    // below is scoped to zai/minimax/tavily but the brave-specific
+    // assertion follows.
     for (const id of ["zai", "minimax", "tavily"]) {
       const d = getProviderDescriptor(id);
       const caps = d.capabilities();
@@ -320,14 +321,13 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
       assert.ok(caps.has("quota"));
       assert.ok(caps.has("diagnostics"));
     }
-    // Brave T5: advertises search + diagnostics (size 2); quota is a
-    // later ticket.
+    // Brave T6: advertises search + diagnostics + quota (size 3).
     const brave = getProviderDescriptor("brave");
     const braveCaps = brave.capabilities();
-    assert.strictEqual(braveCaps.size, 2, "Brave advertises search + diagnostics");
+    assert.strictEqual(braveCaps.size, 3, "Brave advertises search + diagnostics + quota");
     assert.ok(braveCaps.has("search"), "Brave must advertise search");
     assert.ok(braveCaps.has("diagnostics"), "Brave must advertise diagnostics (T5)");
-    assert.ok(!braveCaps.has("quota"), "Brave quota is a later ticket");
+    assert.ok(braveCaps.has("quota"), "Brave must advertise quota (T6)");
     const zai = getProviderDescriptor("zai");
     assert.strictEqual(zai.isConfigured({ Z_AI_API_KEY: "k" }), true);
     assert.strictEqual(zai.isConfigured({}), false);

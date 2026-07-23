@@ -148,20 +148,46 @@ export interface QuotaOptions {
  * Injectable dependencies for the quota command. `buildDashboard`
  * resolves the effective/all-provider dashboard; the command only wraps
  * it for presentation and exit-code selection.
+ *
+ * `writeStderr` is an OPTIONAL generic stderr sink. When provided, the
+ * command collects every `warnings` entry from successful dashboard
+ * entries and writes each as a prominent notice — provider-neutral
+ * (iterates warnings, never branches on provider name). A Provider that
+ * needs to flag a caveat about its quota numbers (e.g. Brave reports a
+ * rate-limit window, not spend) populates `warnings`; the command
+ * renders it here so the caveat text stays out of the neutral command.
  */
 export interface QuotaCommandDependencies {
   readonly buildDashboard: () => Promise<QuotaDashboard>;
+  readonly writeStderr?: (value: string) => void;
 }
 
 /**
  * Run the quota command. Returns the dashboard as base data with a TTY
  * presentation override. Exit code is 1 when any dashboard entry failed
  * (all-provider mode); otherwise 0.
+ *
+ * Before returning, any `warnings` attached to successful entries are
+ * rendered to `writeStderr` (when provided) as prominent notices. This
+ * is the provider-neutral caveat channel: it does not branch on
+ * provider identity.
  */
 export async function quota(
   deps: QuotaCommandDependencies,
 ): Promise<CommandResult<QuotaDashboard>> {
   const dashboard = await deps.buildDashboard();
+
+  const writeStderr = deps.writeStderr;
+  if (writeStderr) {
+    for (const entry of dashboard.providers) {
+      if (entry.status === "ok" && entry.warnings && entry.warnings.length > 0) {
+        for (const warning of entry.warnings) {
+          writeStderr(`⚠️  ${entry.provider}: ${warning}\n`);
+        }
+      }
+    }
+  }
+
   const hasFailure = dashboard.providers.some((p) => p.status === "error");
   return {
     kind: "data",

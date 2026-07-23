@@ -34,10 +34,12 @@ import {
   isBraveConfigured,
 } from "../dist/providers/brave/credentials.js";
 import { getBraveJson } from "../dist/providers/brave/client.js";
+import { normalizeBraveQuota, BRAVE_QUOTA_CAVEAT } from "../dist/providers/brave/quota.js";
 import {
   ApiError,
   AuthError,
   ConfigurationError,
+  ScoutlineError,
   TimeoutError,
   UnsupportedOptionError,
 } from "../dist/lib/errors.js";
@@ -298,14 +300,14 @@ describe("Brave descriptor", () => {
     assert.strictEqual(descriptor.id, "brave");
   });
 
-  it("capabilities() advertises search and diagnostics (T5)", () => {
+  it("capabilities() advertises search, diagnostics, and quota (T6)", () => {
     const descriptor = createBraveDescriptor();
     const caps = descriptor.capabilities();
     assert.ok(caps instanceof Set, "must be a Set");
-    assert.strictEqual(caps.size, 2, "T5 advertises search + diagnostics");
+    assert.strictEqual(caps.size, 3, "T6 advertises search + diagnostics + quota");
     assert.ok(caps.has("search"), "must advertise search");
     assert.ok(caps.has("diagnostics"), "must advertise diagnostics (T5)");
-    assert.ok(!caps.has("quota"), "quota is a later ticket");
+    assert.ok(caps.has("quota"), "must advertise quota (T6)");
   });
 
   it("isConfigured reflects BRAVE_SEARCH_API_KEY presence", () => {
@@ -315,7 +317,7 @@ describe("Brave descriptor", () => {
     assert.strictEqual(descriptor.isConfigured({ BRAVE_SEARCH_API_KEY: TEST_API_KEY }), true);
   });
 
-  it("create() returns { id: 'brave' } with wired search + diagnostics capabilities", () => {
+  it("create() returns { id: 'brave' } with wired search + diagnostics + quota capabilities", () => {
     const descriptor = createBraveDescriptor();
     const adapter = descriptor.create({ env: {} });
     assert.strictEqual(adapter.id, "brave");
@@ -323,8 +325,10 @@ describe("Brave descriptor", () => {
     assert.ok(adapter.search !== null, "search must not be null");
     assert.strictEqual(typeof adapter.diagnostics, "object", "diagnostics must be wired in T5");
     assert.ok(adapter.diagnostics !== null, "diagnostics must not be null");
+    assert.strictEqual(typeof adapter.quota, "object", "quota must be wired in T6");
+    assert.ok(adapter.quota !== null, "quota must not be null");
     // Other capability slots remain undefined (later tickets).
-    for (const slot of ["reader", "quota", "crawl", "map", "research", "vision", "repository"]) {
+    for (const slot of ["reader", "crawl", "map", "research", "vision", "repository"]) {
       assert.strictEqual(adapter[slot], undefined, `${slot} slot must be undefined`);
     }
   });
@@ -922,5 +926,252 @@ describe("Brave Diagnostics Capability", () => {
     assert.ok(thrown instanceof ConfigurationError, "must be ConfigurationError");
     assert.strictEqual(thrown.exitCode, 3);
     assert.strictEqual(fetchCalls, 0, "fetch must not be called when the key is missing");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Quota Capability (T6)
+// ---------------------------------------------------------------------------
+
+/**
+ * A factory returning a 2xx response carrying the four Brave
+ * `X-RateLimit-*` headers. The probe only reads headers (the body is
+ * drained), so the JSON is a throwaway web-shaped stub. Returns an
+ * async function (not a response object) so it can be passed straight
+ * to `makeSearchAdapter`, matching `makeErrorFetch`/`emptyWebResponse`.
+ */
+function makeRateLimitResponse(headers) {
+  return async () => makeResponse({ json: { web: { results: [] } }, headers });
+}
+
+describe("Brave Quota Capability", () => {
+  it("invoke() returns one monthly category (per-second dropped) with the spend caveat", async () => {
+    const { adapter, calls } = makeSearchAdapter(
+      makeRateLimitResponse({
+        "X-RateLimit-Policy": "1;w=1, 15000;w=2592000",
+        "X-RateLimit-Limit": "1, 15000",
+        "X-RateLimit-Remaining": "0, 14523",
+        "X-RateLimit-Reset": "1, 1419704",
+      }),
+    );
+    const result = await adapter.quota.invoke();
+
+    // Exactly one probe request to /res/v1/web/search with q=scoutline-quota-probe.
+    assert.strictEqual(calls.length, 1, "probe must issue exactly one fetch");
+    assert.ok(
+      calls[0].url.startsWith("https://api.search.brave.com/res/v1/web/search?"),
+      `web endpoint: ${calls[0].url}`,
+    );
+    assert.ok(
+      calls[0].url.includes(encodeURIComponent("scoutline-quota-probe")),
+      `stub probe query: ${calls[0].url}`,
+    );
+
+    // Shape: provider, status, a single "monthly" category, warnings.
+    assert.strictEqual(result.provider, "brave");
+    assert.strictEqual(result.status, "ok");
+    assert.strictEqual(result.categories.length, 1, "per-second window is dropped");
+    const category = result.categories[0];
+    assert.strictEqual(category.name, "monthly");
+    assert.strictEqual(category.unit, "requests");
+    const current = category.current;
+    assert.strictEqual(current.used, 477, "used = limit - remaining");
+    assert.strictEqual(current.limit, 15000);
+    assert.strictEqual(current.remaining, 14523);
+    assert.strictEqual(current.remainingPercent, 96.8, "remainingPercent clamped + rounded");
+    assert.strictEqual(current.durationSeconds, 2592000, "largest window duration");
+    assert.ok(typeof current.resetsAt === "string" && current.resetsAt.length > 0, "resetsAt ISO");
+
+    // The spend caveat is attached via the generic warnings channel.
+    assert.ok(Array.isArray(result.warnings), "warnings must be an array");
+    assert.ok(result.warnings.includes(BRAVE_QUOTA_CAVEAT), "caveat must be present");
+  });
+
+  it("selects the LARGEST window even when it is not the last policy entry", async () => {
+    const { adapter } = makeSearchAdapter(
+      makeRateLimitResponse({
+        // Monthly window declared FIRST; per-second second.
+        "X-RateLimit-Policy": "15000;w=2592000, 1;w=1",
+        "X-RateLimit-Limit": "15000, 1",
+        "X-RateLimit-Remaining": "14523, 0",
+        "X-RateLimit-Reset": "1419704, 1",
+      }),
+    );
+    const result = await adapter.quota.invoke();
+    assert.strictEqual(result.categories.length, 1);
+    const current = result.categories[0].current;
+    assert.strictEqual(current.limit, 15000, "selected the monthly window");
+    assert.strictEqual(current.used, 477);
+    assert.strictEqual(current.durationSeconds, 2592000);
+  });
+
+  it("throws QUOTA_ERROR when X-RateLimit-Policy is missing", async () => {
+    const { adapter } = makeSearchAdapter(
+      makeRateLimitResponse({
+        "X-RateLimit-Policy": null,
+        "X-RateLimit-Limit": "1, 15000",
+        "X-RateLimit-Remaining": "0, 14523",
+        "X-RateLimit-Reset": "1, 1419704",
+      }),
+    );
+    let thrown;
+    try {
+      await adapter.quota.invoke();
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof ScoutlineError, "must be a ScoutlineError");
+    assert.strictEqual(thrown.code, "QUOTA_ERROR");
+  });
+
+  it("throws QUOTA_ERROR when X-RateLimit-Policy is malformed", async () => {
+    const { adapter } = makeSearchAdapter(
+      makeRateLimitResponse({
+        "X-RateLimit-Policy": "not-a-valid-policy",
+        "X-RateLimit-Limit": "1, 15000",
+        "X-RateLimit-Remaining": "0, 14523",
+        "X-RateLimit-Reset": "1, 1419704",
+      }),
+    );
+    let thrown;
+    try {
+      await adapter.quota.invoke();
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof ScoutlineError);
+    assert.strictEqual(thrown.code, "QUOTA_ERROR");
+  });
+
+  it("throws QUOTA_ERROR (never crashes) when arrays do not align for the largest window", async () => {
+    const { adapter } = makeSearchAdapter(
+      makeRateLimitResponse({
+        // Two policy windows, but Limit has only the per-second entry —
+        // the monthly (index 1) limit is indeterminate.
+        "X-RateLimit-Policy": "1;w=1, 15000;w=2592000",
+        "X-RateLimit-Limit": "1",
+        "X-RateLimit-Remaining": "0, 14523",
+        "X-RateLimit-Reset": "1, 1419704",
+      }),
+    );
+    let thrown;
+    try {
+      await adapter.quota.invoke();
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof ScoutlineError, "must not crash");
+    assert.strictEqual(thrown.code, "QUOTA_ERROR");
+  });
+
+  it("maps a 401 probe to AuthError with no raw body leak", async () => {
+    const bodyText = "leak-marker-DO-NOT-EMBED-in-quota-auth";
+    const { adapter } = makeSearchAdapter(makeErrorFetch(401, bodyText));
+    let thrown;
+    try {
+      await adapter.quota.invoke();
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof AuthError, "must be AuthError");
+    assert.ok(
+      !thrown.message.includes(bodyText),
+      `error message must not contain raw Brave body: ${thrown.message}`,
+    );
+    if (thrown.help) {
+      assert.ok(!thrown.help.includes(bodyText), "help must not contain raw Brave body");
+    }
+  });
+
+  it("missing key throws ConfigurationError (exit 3) BEFORE any fetch", async () => {
+    let fetchCalls = 0;
+    const makeResp = makeRateLimitResponse({
+      "X-RateLimit-Policy": "1;w=1, 15000;w=2592000",
+      "X-RateLimit-Limit": "1, 15000",
+      "X-RateLimit-Remaining": "0, 14523",
+      "X-RateLimit-Reset": "1, 1419704",
+    });
+    const { fn } = makeRecordingFetch(async () => {
+      fetchCalls += 1;
+      return makeResp();
+    });
+    const descriptor = createBraveDescriptor({ transport: { fetch: fn } });
+    const adapter = descriptor.create({ env: {} });
+    let thrown;
+    try {
+      await adapter.quota.invoke();
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof ConfigurationError, "must be ConfigurationError");
+    assert.strictEqual(thrown.exitCode, 3);
+    assert.strictEqual(fetchCalls, 0, "fetch must not be called when the key is missing");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Quota normalizer (pure)
+// ---------------------------------------------------------------------------
+
+describe("Brave quota normalizer (normalizeBraveQuota)", () => {
+  it("parses the largest window into a monthly category with the caveat", () => {
+    const out = normalizeBraveQuota({
+      policy: "1;w=1, 15000;w=2592000",
+      limit: "1, 15000",
+      remaining: "0, 14523",
+      reset: "1, 1419704",
+    });
+    assert.strictEqual(out.provider, "brave");
+    assert.strictEqual(out.status, "ok");
+    assert.strictEqual(out.categories.length, 1);
+    assert.strictEqual(out.categories[0].name, "monthly");
+    assert.deepStrictEqual(
+      {
+        used: out.categories[0].current.used,
+        limit: out.categories[0].current.limit,
+        remaining: out.categories[0].current.remaining,
+        remainingPercent: out.categories[0].current.remainingPercent,
+        durationSeconds: out.categories[0].current.durationSeconds,
+      },
+      {
+        used: 477,
+        limit: 15000,
+        remaining: 14523,
+        remainingPercent: 96.8,
+        durationSeconds: 2592000,
+      },
+    );
+    assert.ok(out.warnings.includes(BRAVE_QUOTA_CAVEAT));
+  });
+
+  it("clamps used to [0, limit] when remaining exceeds limit", () => {
+    const out = normalizeBraveQuota({
+      policy: "15000;w=2592000",
+      limit: "15000",
+      remaining: "20000",
+      reset: "100",
+    });
+    assert.strictEqual(out.categories[0].current.used, 0, "clamped up to 0");
+    assert.strictEqual(out.categories[0].current.remaining, 15000);
+  });
+
+  it("throws QUOTA_ERROR for a missing policy", () => {
+    assert.throws(
+      () => normalizeBraveQuota({ policy: null, limit: "1", remaining: "0", reset: "1" }),
+      (err) => err instanceof ScoutlineError && err.code === "QUOTA_ERROR",
+    );
+  });
+
+  it("throws QUOTA_ERROR for a malformed policy entry", () => {
+    assert.throws(
+      () =>
+        normalizeBraveQuota({
+          policy: "15000;w=2592000, garbage",
+          limit: "15000, 1",
+          remaining: "14523, 0",
+          reset: "1419704, 1",
+        }),
+      (err) => err instanceof ScoutlineError && err.code === "QUOTA_ERROR",
+    );
   });
 });

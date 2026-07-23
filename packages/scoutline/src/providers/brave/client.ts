@@ -303,3 +303,90 @@ export async function fetchBraveLlmContext(
 ): Promise<unknown> {
   return getBraveJson(apiKey, "/res/v1/llm/context", { q: query }, deps);
 }
+
+// ---------------------------------------------------------------------------
+// Rate-limit header probe (T6)
+// ---------------------------------------------------------------------------
+
+/**
+ * The four Brave `X-RateLimit-*` response headers, read as raw strings.
+ * Each is `null` when the header is absent. The quota normalizer parses
+ * these into windows; this transport layer only collects them.
+ */
+export interface BraveRateLimitHeaders {
+  readonly limit: string | null;
+  readonly policy: string | null;
+  readonly remaining: string | null;
+  readonly reset: string | null;
+}
+
+/** Cheapest-credible probe query (same stub as diagnostics). */
+const RATE_LIMIT_PROBE_QUERY = "scoutline-quota-probe";
+
+/**
+ * Perform ONE GET against `/res/v1/web/search` with a stub query and
+ * return the four `X-RateLimit-*` response headers. Brave has NO
+ * `/usage` endpoint, so quota is read from these headers on a 1-query
+ * probe. The probe costs exactly ONE request and sends ONLY `q` — no
+ * `count` (shared execution applies count client-side) and no other
+ * controls.
+ *
+ * Mirrors {@link getBraveJson}'s transport setup (X-Subscription-Token/
+ * Accept/User-Agent headers, AbortController timeout via `BRAVE_TIMEOUT`,
+ * the same HTTP-status → error {@link mapStatusError}, and
+ * {@link normalizeTransportError}). On 2xx the body is DRAINED
+ * (`res.text()`) and discarded — only the headers are needed. On non-2xx
+ * the body is drained and dropped before throwing the mapped error; no
+ * raw Brave body ever reaches an error message.
+ */
+export async function fetchBraveRateLimit(
+  apiKey: string,
+  deps: BraveTransportDeps = {},
+): Promise<BraveRateLimitHeaders> {
+  const f =
+    deps.fetch ??
+    (fetch as unknown as (
+      input: string,
+      init: Record<string, unknown>,
+    ) => Promise<ProviderImageFetchResponse>);
+  const setT = deps.setTimeout ?? setTimeout;
+  const clearT = deps.clearTimeout ?? clearTimeout;
+  const env = deps.env ?? process.env;
+  const timeoutMs = resolveTimeoutMs(env);
+
+  const url = `${BASE_URL}/res/v1/web/search${buildQueryString({ q: RATE_LIMIT_PROBE_QUERY })}`;
+  const controller = new AbortController();
+  const timeoutId = setT(() => controller.abort(), timeoutMs);
+  try {
+    const res = await f(url, {
+      method: "GET",
+      headers: {
+        "X-Subscription-Token": apiKey,
+        Accept: "application/json",
+        "User-Agent": USER_AGENT,
+      },
+      signal: controller.signal,
+    });
+    clearT(timeoutId);
+    if (!res.ok) {
+      // Drain the body to free the socket, then drop it. The body must
+      // NEVER reach the error message (NFR-006).
+      await res.text().catch(() => {});
+      throw mapStatusError(res.status, timeoutMs);
+    }
+    // Only the headers are needed; drain the body to free the socket.
+    await res.text().catch(() => {});
+    const headers = res.headers;
+    return {
+      limit: headers.get("X-RateLimit-Limit"),
+      policy: headers.get("X-RateLimit-Policy"),
+      remaining: headers.get("X-RateLimit-Remaining"),
+      reset: headers.get("X-RateLimit-Reset"),
+    };
+  } catch (err) {
+    clearT(timeoutId);
+    throw normalizeTransportError(err, timeoutMs);
+  } finally {
+    controller.abort();
+  }
+}

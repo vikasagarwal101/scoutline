@@ -6,8 +6,9 @@
  * `search` Capability owns credentials, transport, Provider field
  * mapping, and failure normalization. Credentials, the direct-HTTP GET
  * transport, and the header-bearing fetch seam come from T1; later
- * tickets widen the capability set (quota T6, reader, etc.). T5 wires
- * the Diagnostics Capability (one-query doctor probe).
+ * tickets widen the capability set (reader, etc.). T5 wires the
+ * Diagnostics Capability (one-query doctor probe); T6 wires the Quota
+ * Capability (1-query rate-limit-header probe with a spend caveat).
  *
  * Boundary rules (ARCHITECTURE.md §2):
  *   - May import capability types, normalized errors, Provider identity
@@ -53,6 +54,7 @@ import {
   type BraveTransportDeps,
 } from "./client.js";
 import { createBraveDiagnosticsCapability } from "./diagnostics.js";
+import { createBraveQuotaCapability } from "./quota.js";
 
 /**
  * Dependencies the Brave Adapter accepts. The unified `transport`
@@ -564,13 +566,14 @@ function createBraveSearchCapability(options: BraveSearchCapabilityOptions): Sea
 
 /**
  * Build the Brave Provider Descriptor. The descriptor advertises the
- * Search (T2) and Diagnostics (T5) capabilities and constructs an
- * Adapter whose `search`/`diagnostics` Capabilities own credentials,
- * transport, Provider field mapping, and failure normalization.
- * Construction is side-effect-free; the transport is invoked per
- * Capability call. Tests pass `transport` (typically a fake-fetch
- * wrapper); production uses the no-argument factory which resolves to
- * the global `fetch` and timers inside the transport Module.
+ * Search (T2), Diagnostics (T5), and Quota (T6) capabilities and
+ * constructs an Adapter whose `search`/`diagnostics`/`quota`
+ * Capabilities own credentials, transport, Provider field mapping, and
+ * failure normalization. Construction is side-effect-free; the
+ * transport is invoked per Capability call. Tests pass `transport`
+ * (typically a fake-fetch wrapper); production uses the no-argument
+ * factory which resolves to the global `fetch` and timers inside the
+ * transport Module.
  */
 export function createBraveDescriptor(dependencies?: BraveAdapterDependencies): ProviderDescriptor {
   const transport = dependencies?.transport;
@@ -581,14 +584,16 @@ export function createBraveDescriptor(dependencies?: BraveAdapterDependencies): 
       return isBraveConfigured(env);
     },
     capabilities(): ReadonlySet<ProviderCapability> {
-      // T2 wires search; T5 wires diagnostics. Later tickets (quota T6,
-      // reader) widen this set in lockstep with the matching Adapter slots.
-      return new Set<ProviderCapability>(["search", "diagnostics"]);
+      // T2 wires search; T5 wires diagnostics; T6 wires quota. Later
+      // tickets (reader) widen this set in lockstep with the matching
+      // Adapter slots.
+      return new Set<ProviderCapability>(["search", "diagnostics", "quota"]);
     },
     create(context: ProviderContext): ProviderAdapter {
       const search = createBraveSearchCapability({ env: context.env, transport });
       const diagnostics = createBraveDiagnosticsCapability({ env: context.env, transport });
-      return { id: "brave", search, diagnostics };
+      const quota = createBraveQuotaCapability({ env: context.env, transport });
+      return { id: "brave", search, diagnostics, quota };
     },
   };
 }

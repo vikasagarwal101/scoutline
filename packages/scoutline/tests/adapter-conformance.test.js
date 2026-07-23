@@ -288,20 +288,25 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
   });
 
   it("descriptor creation is side-effect-free (no transport construction)", () => {
-    // Every built-in descriptor with a shipped Adapter has a
-    // side-effect-free create(). Firecrawl's Adapter arrives in FC-03;
-    // its create() throws "not yet implemented" (asserted in the next
-    // test) and is skipped here.
+    // Every built-in descriptor's create() is side-effect-free.
     for (const d of BUILT_IN_PROVIDER_DESCRIPTORS) {
-      if (d.id === "firecrawl") continue;
       const adapter = d.create({ env: {} });
       assert.strictEqual(typeof adapter.search, "object");
     }
   });
 
-  it("firecrawl create() throws a clear not-yet-implemented error (FC-02 foundation)", () => {
+  it("firecrawl create() returns an adapter with search, reader, and map", () => {
     const fc = getProviderDescriptor("firecrawl");
-    assert.throws(() => fc.create({ env: {} }), /not yet implemented/i);
+    const adapter = fc.create({ env: {} });
+    assert.strictEqual(adapter.id, "firecrawl");
+    assert.strictEqual(typeof adapter.search, "object");
+    assert.strictEqual(typeof adapter.reader, "object");
+    assert.strictEqual(typeof adapter.map, "object");
+    // Crawl/quota/diagnostics arrive in FC-04/FC-05; the slots are absent
+    // so the command dispatch's UnsupportedCapabilityError guard handles
+    // them until then.
+    assert.strictEqual(adapter.crawl, undefined);
+    assert.strictEqual(adapter.quota, undefined);
   });
 
   it("tavily create() returns an adapter with search, reader, and crawl", () => {

@@ -18,6 +18,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 
 import { createFirecrawlDescriptor } from "../dist/providers/firecrawl/adapter.js";
 import {
@@ -26,6 +27,10 @@ import {
   UnsupportedOptionError,
   ValidationError,
 } from "../dist/lib/errors.js";
+import {
+  computeAsyncJobStateHash,
+  createInMemoryAsyncJobStateFile,
+} from "../dist/lib/async-job-state.js";
 
 const TEST_API_KEY = "fc-test-key-DO-NOT-LEAK";
 
@@ -269,5 +274,184 @@ describe("Firecrawl error-envelope dual-check", () => {
       () => adapter.search.invoke({ query: "q" }),
       (err) => err instanceof ApiError && err.statusCode === 422,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Crawl — async create→poll→resume + reclaim-on-miss (FC-04 / D2)
+// ---------------------------------------------------------------------------
+
+const CRED_HASH = crypto.createHash("sha256").update(TEST_API_KEY).digest("hex");
+
+/**
+ * Build a crawl adapter with a routing fake fetch. `handlers`:
+ *   onActive()  -> active-job array for GET /v2/crawl/active (default [])
+ *   onCreate()  -> create body for POST /v2/crawl (default {success,id:"job-create"})
+ *   onPoll(n)   -> poll body for the n-th GET /v2/crawl/{id} (default completed)
+ * The poll-interval is zeroed so the loop never waits.
+ */
+function makeCrawlAdapter(handlers, stateFile) {
+  const calls = [];
+  let pollN = 0;
+  const fn = async (url, init) => {
+    const u = String(url);
+    const method = init?.method ?? "GET";
+    calls.push({ url: u, method, init });
+    if (method === "POST" && u.endsWith("/v2/crawl")) {
+      return makeResponse({ json: handlers.onCreate?.() ?? { success: true, id: "job-create" } });
+    }
+    if (method === "GET" && u.endsWith("/v2/crawl/active")) {
+      return makeResponse({ json: { success: true, data: handlers.onActive?.() ?? [] } });
+    }
+    if (method === "GET" && u.includes("/v2/crawl/")) {
+      pollN += 1;
+      return makeResponse({
+        json: handlers.onPoll?.(pollN) ?? { success: true, status: "completed", data: [] },
+      });
+    }
+    return makeResponse({ json: { success: true } });
+  };
+  const descriptor = createFirecrawlDescriptor({
+    transport: {
+      fetch: fn,
+      env: { FIRECRAWL_TIMEOUT: "5000", FIRECRAWL_CRAWL_POLL_INTERVAL_MS: "0" },
+    },
+    crawlStateFile: stateFile ?? createInMemoryAsyncJobStateFile(),
+  });
+  const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
+  return { adapter, calls };
+}
+
+describe("Firecrawl Crawl Adapter", () => {
+  it("rejects --breadth with UnsupportedOptionError", () => {
+    const { adapter } = makeCrawlAdapter({}, createInMemoryAsyncJobStateFile());
+    assert.throws(
+      () => adapter.crawl.fetch.validate({ url: "https://x.example", breadth: 5 }),
+      UnsupportedOptionError,
+    );
+  });
+
+  it("creates, polls scraping→completed, and maps pages", async () => {
+    const { adapter, calls } = makeCrawlAdapter({
+      onPoll: (n) =>
+        n === 1
+          ? { success: true, status: "scraping" }
+          : {
+              success: true,
+              status: "completed",
+              data: [
+                { markdown: "# A", metadata: { sourceURL: "https://a.example" } },
+                { markdown: "# B", metadata: { sourceURL: "https://b.example" } },
+              ],
+            },
+    });
+    const out = await adapter.crawl.fetch.invoke({ url: "https://start.example" });
+    assert.equal(out.schemaVersion, 1);
+    assert.equal(out.baseUrl, "https://start.example");
+    assert.equal(out.totalPages, 2);
+    assert.deepEqual(
+      out.pages.map((p) => ({ url: p.url, content: p.content })),
+      [
+        { url: "https://a.example", content: "# A" },
+        { url: "https://b.example", content: "# B" },
+      ],
+    );
+    // A create POST happened, and the request pinned proxy:basic.
+    const createCall = calls.find((c) => c.method === "POST" && c.url.endsWith("/v2/crawl"));
+    assert.ok(createCall);
+  });
+
+  it("pins proxy:basic on the create body (D9 cost-safety)", async () => {
+    const { adapter, calls } = makeCrawlAdapter({});
+    await adapter.crawl.fetch.invoke({ url: "https://p.example" });
+    const createBody = JSON.parse(
+      calls.find((c) => c.method === "POST" && c.url.endsWith("/v2/crawl")).init.body,
+    );
+    assert.equal(createBody.proxy, "basic");
+    assert.deepEqual(createBody.scrapeOptions, { formats: ["markdown"] });
+  });
+
+  it("resumes an in-flight job from the state file (NO create POST)", async () => {
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const identityHash = computeAsyncJobStateHash({
+      provider: "firecrawl",
+      capability: "crawl",
+      credentialFingerprint: CRED_HASH,
+      request: { url: "https://r.example" },
+    });
+    await stateFile.write(identityHash, {
+      requestId: "job-resume",
+      identityHash,
+      createdAt: new Date().toISOString(),
+      status: "pending",
+    });
+    const { adapter, calls } = makeCrawlAdapter(
+      {
+        onPoll: () => ({
+          success: true,
+          status: "completed",
+          data: [{ markdown: "# r", metadata: { sourceURL: "https://r.example" } }],
+        }),
+      },
+      stateFile,
+    );
+    const out = await adapter.crawl.fetch.invoke({ url: "https://r.example" });
+    assert.equal(out.totalPages, 1);
+    // No create POST and no /active lookup — went straight to polling the id.
+    assert.ok(!calls.some((c) => c.method === "POST"));
+    assert.ok(!calls.some((c) => c.url.endsWith("/v2/crawl/active")));
+    assert.ok(calls.some((c) => c.url.includes("/v2/crawl/job-resume")));
+  });
+
+  it("reclaims an in-flight job from /active on a state miss (NO create POST)", async () => {
+    const { adapter, calls } = makeCrawlAdapter({
+      onActive: () => [
+        {
+          id: "job-active",
+          url: "https://rec.example",
+          created_at: new Date().toISOString(),
+          options: { maxDepth: 2, scrapeOptions: { formats: ["markdown"] }, proxy: "basic" },
+        },
+      ],
+      onPoll: () => ({
+        success: true,
+        status: "completed",
+        data: [{ markdown: "# x", metadata: { sourceURL: "https://rec.example" } }],
+      }),
+    });
+    const out = await adapter.crawl.fetch.invoke({ url: "https://rec.example", depth: 2 });
+    assert.equal(out.totalPages, 1);
+    // Reclaimed — no create POST, polled the adopted id.
+    assert.ok(!calls.some((c) => c.method === "POST" && c.url.endsWith("/v2/crawl")));
+    assert.ok(calls.some((c) => c.url.includes("/v2/crawl/job-active")));
+  });
+
+  it("creates fresh when /active has no matching job", async () => {
+    const { adapter, calls } = makeCrawlAdapter({
+      onActive: () => [],
+      onPoll: () => ({ success: true, status: "completed", data: [] }),
+    });
+    const out = await adapter.crawl.fetch.invoke({ url: "https://n.example" });
+    assert.equal(out.totalPages, 0);
+    assert.ok(calls.some((c) => c.method === "POST" && c.url.endsWith("/v2/crawl")));
+  });
+
+  it("removes state and throws ApiError on a failed job", async () => {
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const { adapter } = makeCrawlAdapter(
+      { onPoll: () => ({ success: true, status: "failed" }) },
+      stateFile,
+    );
+    await assert.rejects(() => adapter.crawl.fetch.invoke({ url: "https://f.example" }), ApiError);
+  });
+
+  it("normalizes a 401 into AuthError", async () => {
+    const fn = async () => makeResponse({ ok: false, status: 401, body: '{"error":"bad"}' });
+    const descriptor = createFirecrawlDescriptor({
+      transport: { fetch: fn, env: { FIRECRAWL_TIMEOUT: "5000" } },
+      crawlStateFile: createInMemoryAsyncJobStateFile(),
+    });
+    const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
+    await assert.rejects(() => adapter.crawl.fetch.invoke({ url: "https://a.example" }), AuthError);
   });
 });

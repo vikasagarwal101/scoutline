@@ -279,3 +279,277 @@ export async function fetchFirecrawlMap(
   }
   return postFirecrawlJson(apiKey, MAP_PATH, body, deps, "map");
 }
+
+// ---------------------------------------------------------------------------
+// Async crawl — create / poll / list-active (tech-plan D2)
+// ---------------------------------------------------------------------------
+
+const CRAWL_PATH = "/v2/crawl";
+const CRAWL_ACTIVE_PATH = "/v2/crawl/active";
+
+/**
+ * Provider-native crawl request body fields (Firecrawl API field names).
+ * The Adapter maps `CrawlRequest` into these. `breadth` has no Firecrawl
+ * equivalent and is rejected by the Adapter; `proxy` is pinned to
+ * `"basic"` per tech-plan D9 (cost-safety — avoids the 5-credit enhanced
+ * proxy). `scrapeOptions` nests the same fields as `/scrape`.
+ */
+export interface FirecrawlCrawlParams {
+  readonly maxDepth?: number;
+  readonly limit?: number;
+  readonly includePaths?: readonly string[];
+  readonly excludePaths?: readonly string[];
+  readonly scrapeOptions?: { readonly formats: readonly string[] };
+  readonly proxy: "basic";
+}
+
+/** Result of POST /v2/crawl — `{ success, id, url }`. */
+export interface FirecrawlCrawlCreateResult {
+  readonly id: string;
+}
+
+/** Poll status values Firecrawl returns for GET /v2/crawl/{id}. */
+export type FirecrawlCrawlStatus = "scraping" | "completed" | "failed" | "not_found";
+
+/**
+ * Structured poll result. `status:"not_found"` is returned (not thrown)
+ * for HTTP 404 so the Adapter can drop a stale state file and create a
+ * fresh job. A `success:false` envelope is treated as a job failure
+ * (`status:"failed"`).
+ */
+export interface FirecrawlCrawlPollResult {
+  readonly status: FirecrawlCrawlStatus;
+  /** Pages collected so far — present once the job is `completed`. */
+  readonly data?: readonly unknown[];
+  /** Pagination cursor for large completed sets; absent when exhausted. */
+  readonly next?: string;
+}
+
+/** One entry from GET /v2/crawl/active — used for reclaim-on-miss. */
+export interface FirecrawlActiveCrawl {
+  readonly id: string;
+  readonly url?: string;
+  readonly created_at?: string;
+  readonly options?: unknown;
+}
+
+/**
+ * Perform ONE POST against Firecrawl /v2/crawl (zero-retry is enforced by
+ * shared execution, not here). Returns the structured create result
+ * `{ id }`. The dual-check applies: a 200 with `{success:false}` is a
+ * business error.
+ */
+export async function createFirecrawlCrawl(
+  apiKey: string,
+  url: string,
+  params: FirecrawlCrawlParams,
+  deps: FirecrawlTransportDeps = {},
+): Promise<FirecrawlCrawlCreateResult> {
+  const body: Record<string, unknown> = { url, proxy: params.proxy };
+  if (params.maxDepth !== undefined) body.maxDepth = params.maxDepth;
+  if (params.limit !== undefined) body.limit = params.limit;
+  if (params.includePaths !== undefined) body.includePaths = [...params.includePaths];
+  if (params.excludePaths !== undefined) body.excludePaths = [...params.excludePaths];
+  if (params.scrapeOptions !== undefined) {
+    body.scrapeOptions = { formats: [...params.scrapeOptions.formats] };
+  }
+  const raw = (await postFirecrawlJson(apiKey, CRAWL_PATH, body, deps, "crawl")) as unknown;
+  if (!isPlainObject(raw)) {
+    throw new ApiError("Firecrawl crawl returned a malformed response", 500);
+  }
+  const id = raw.id;
+  if (typeof id !== "string" || id.length === 0) {
+    throw new ApiError("Firecrawl crawl returned a malformed response", 500);
+  }
+  return { id };
+}
+
+/**
+ * Perform ONE GET against Firecrawl /v2/crawl/{id}. No retry. A 404 is NOT
+ * a terminal transport error: it means the server-side job disappeared, so
+ * the Adapter can drop the stale state file and create a fresh job. Returns
+ * a structured poll result. A `success:false` envelope or `status:"failed"`
+ * maps to `status:"failed"` so the Adapter handles job failure uniformly.
+ */
+export async function pollFirecrawlCrawl(
+  apiKey: string,
+  id: string,
+  deps: FirecrawlTransportDeps = {},
+): Promise<FirecrawlCrawlPollResult> {
+  const f = deps.fetch ?? (fetch as unknown as ProviderQuotaFetch);
+  const setT = deps.setTimeout ?? setTimeout;
+  const clearT = deps.clearTimeout ?? clearTimeout;
+  const env = deps.env ?? process.env;
+  const timeoutMs = resolveTimeoutMs(env);
+
+  const url = `${BASE_URL}${CRAWL_PATH}/${encodeURIComponent(id)}`;
+  const controller = new AbortController();
+  const timeoutId = setT(() => controller.abort(), timeoutMs);
+  try {
+    let res;
+    try {
+      res = await f(url, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${apiKey}`, "User-Agent": USER_AGENT },
+        signal: controller.signal,
+      });
+      clearT(timeoutId);
+    } catch (err) {
+      clearT(timeoutId);
+      throw normalizeTransportError(err, timeoutMs);
+    }
+    if (res.status === 404) {
+      await res.text().catch(() => {});
+      return { status: "not_found" };
+    }
+    if (!res.ok) {
+      await res.text().catch(() => {});
+      throw mapStatusError(res.status, timeoutMs);
+    }
+    let parsed: unknown;
+    try {
+      parsed = await res.json();
+    } catch {
+      throw new ApiError("Firecrawl crawl returned a malformed response", 500);
+    }
+    if (!isPlainObject(parsed)) {
+      throw new ApiError("Firecrawl crawl returned a malformed response", 500);
+    }
+    // A success:false envelope or an explicit failed status is a job
+    // failure (handled by the Adapter: drop state, throw ApiError 500).
+    const status = parsed.status;
+    if (parsed.success === false || status === "failed") {
+      return { status: "failed" };
+    }
+    if (status !== "scraping" && status !== "completed") {
+      throw new ApiError("Firecrawl crawl returned a malformed response", 500);
+    }
+    if (status !== "completed") {
+      return { status };
+    }
+    const data = parsed.data;
+    if (data !== undefined && !Array.isArray(data)) {
+      throw new ApiError("Firecrawl crawl returned a malformed response", 500);
+    }
+    const next =
+      typeof parsed.next === "string" && parsed.next.length > 0 ? parsed.next : undefined;
+    return {
+      status,
+      ...(Array.isArray(data) ? { data } : {}),
+      ...(next !== undefined ? { next } : {}),
+    };
+  } finally {
+    controller.abort();
+  }
+}
+
+/**
+ * Perform ONE GET against Firecrawl /v2/crawl/active (reclaim-on-miss).
+ * Returns the active-job entries. The dual-check applies.
+ */
+export async function listActiveFirecrawlCrawls(
+  apiKey: string,
+  deps: FirecrawlTransportDeps = {},
+): Promise<FirecrawlActiveCrawl[]> {
+  const raw = await getFirecrawlJson(apiKey, CRAWL_ACTIVE_PATH, deps, "crawl/active");
+  if (!isPlainObject(raw)) {
+    throw new ApiError("Firecrawl crawl/active returned a malformed response", 500);
+  }
+  const data = raw.data;
+  if (!Array.isArray(data)) {
+    throw new ApiError("Firecrawl crawl/active returned a malformed response", 500);
+  }
+  const out: FirecrawlActiveCrawl[] = [];
+  for (const entry of data) {
+    if (!isPlainObject(entry)) {
+      throw new ApiError("Firecrawl crawl/active returned a malformed response", 500);
+    }
+    const id = entry.id;
+    if (typeof id !== "string" || id.length === 0) {
+      throw new ApiError("Firecrawl crawl/active returned a malformed response", 500);
+    }
+    out.push({
+      id,
+      ...(typeof entry.url === "string" ? { url: entry.url } : {}),
+      ...(typeof entry.created_at === "string" ? { created_at: entry.created_at } : {}),
+      ...(entry.options !== undefined ? { options: entry.options } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * Perform ONE GET against a Firecrawl crawl pagination `next` URL (large
+ * completed sets). `next` may be absolute or relative; relative URLs are
+ * resolved against {@link BASE_URL}. Returns `{ data?, next? }`. The
+ * dual-check applies.
+ */
+export async function fetchFirecrawlCrawlNext(
+  apiKey: string,
+  next: string,
+  deps: FirecrawlTransportDeps = {},
+): Promise<{ readonly data?: readonly unknown[]; readonly next?: string }> {
+  const raw = await getFirecrawlJson(
+    apiKey,
+    next.startsWith("http") ? next.replace(BASE_URL, "") : next,
+    deps,
+    "crawl/next",
+  );
+  if (!isPlainObject(raw)) {
+    throw new ApiError("Firecrawl crawl/next returned a malformed response", 500);
+  }
+  const data = raw.data;
+  const result: { data?: readonly unknown[]; next?: string } = {};
+  if (Array.isArray(data)) result.data = data;
+  if (typeof raw.next === "string" && raw.next.length > 0) result.next = raw.next;
+  return result;
+}
+
+/**
+ * Core GET (mirrors postFirecrawlJson for GET verbs). Applies the same
+ * error-envelope dual-check: a 200 with `{success:false}` is a business
+ * error.
+ */
+async function getFirecrawlJson(
+  apiKey: string,
+  path: string,
+  deps: FirecrawlTransportDeps,
+  endpointLabel: string,
+): Promise<unknown> {
+  const f = deps.fetch ?? (fetch as unknown as ProviderQuotaFetch);
+  const setT = deps.setTimeout ?? setTimeout;
+  const clearT = deps.clearTimeout ?? clearTimeout;
+  const env = deps.env ?? process.env;
+  const timeoutMs = resolveTimeoutMs(env);
+
+  const url = `${BASE_URL}${path}`;
+  const controller = new AbortController();
+  const timeoutId = setT(() => controller.abort(), timeoutMs);
+  try {
+    const res = await f(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${apiKey}`, "User-Agent": USER_AGENT },
+      signal: controller.signal,
+    });
+    clearT(timeoutId);
+    if (!res.ok) {
+      await res.text().catch(() => {});
+      throw mapStatusError(res.status, timeoutMs);
+    }
+    let parsed: unknown;
+    try {
+      parsed = await res.json();
+    } catch {
+      throw new ApiError(`Firecrawl ${endpointLabel} returned a malformed response`, 500);
+    }
+    if (isPlainObject(parsed) && parsed.success === false) {
+      throw new ApiError(`Firecrawl ${endpointLabel} request failed`, 422);
+    }
+    return parsed;
+  } catch (err) {
+    clearT(timeoutId);
+    throw normalizeTransportError(err, timeoutMs);
+  } finally {
+    controller.abort();
+  }
+}

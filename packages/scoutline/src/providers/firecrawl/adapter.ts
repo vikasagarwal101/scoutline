@@ -57,6 +57,21 @@ import type {
 import { decodeReaderFetchResult } from "../../capabilities/reader.js";
 import type { MapCapability, MapOperation, MapRequest, MapResult } from "../../capabilities/map.js";
 import { decodeMapResult } from "../../capabilities/map.js";
+import type {
+  CrawlCapability,
+  CrawlOperation,
+  CrawlPage,
+  CrawlRequest,
+  CrawlResult,
+} from "../../capabilities/crawl.js";
+import { decodeCrawlResult } from "../../capabilities/crawl.js";
+import {
+  computeAsyncJobStateHash,
+  createProductionAsyncJobStateFile,
+  type AsyncJobState,
+  type AsyncJobStateFile,
+} from "../../lib/async-job-state.js";
+import { asyncJobStateDir } from "../../lib/cache.js";
 import {
   ApiError,
   AuthError,
@@ -68,9 +83,14 @@ import {
   ValidationError,
 } from "../../lib/errors.js";
 import {
+  createFirecrawlCrawl,
+  fetchFirecrawlCrawlNext,
   fetchFirecrawlMap,
   fetchFirecrawlScrape,
   fetchFirecrawlSearch,
+  listActiveFirecrawlCrawls,
+  pollFirecrawlCrawl,
+  type FirecrawlCrawlParams,
   type FirecrawlMapParams,
   type FirecrawlScrapeParams,
   type FirecrawlSearchParams,
@@ -598,32 +618,420 @@ function createFirecrawlMapCapability(options: FirecrawlMapCapabilityOptions): M
 }
 
 // ---------------------------------------------------------------------------
+// Crawl Capability — async create→poll→resume (tech-plan D2)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_CRAWL_POLL_INTERVAL_MS = 2000;
+/** Safety bound on `next`-cursor traversal for very large crawls. */
+const MAX_CRAWL_NEXT_ITERATIONS = 500;
+/** Reclaim-on-miss staleness guard — don't adopt jobs older than this. */
+const CRAWL_RECLAIM_STALE_MS = 24 * 60 * 60 * 1000;
+
+/** Split a comma-separated path-pattern string into a trimmed array. */
+function splitPathPatterns(value: string | undefined): readonly string[] | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  return value
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+function isEexistError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as NodeJS.ErrnoException).code === "EEXIST"
+  );
+}
+
+function resolveCrawlPollIntervalMs(env: NodeJS.ProcessEnv | undefined): number {
+  const raw = env?.FIRECRAWL_CRAWL_POLL_INTERVAL_MS;
+  const parsed = parseInt(raw ?? "", 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_CRAWL_POLL_INTERVAL_MS;
+}
+
+/**
+ * Abortable sleep built from the injected timers. When `signal` aborts
+ * (the command handler's `--timeout`), the pending timer is cleared and
+ * the promise rejects with a `TimeoutError` so the poll loop unwinds
+ * promptly. Mirrors the research poll loop's `makeSleep`.
+ */
+function makeCrawlSleep(
+  deps: FirecrawlTransportDeps | undefined,
+  signal?: AbortSignal,
+): (ms: number) => Promise<void> {
+  const setT = deps?.setTimeout ?? setTimeout;
+  const clearT = deps?.clearTimeout ?? clearTimeout;
+  return (ms: number) =>
+    new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new TimeoutError(0, "Crawl polling aborted"));
+        return;
+      }
+      if (ms <= 0) {
+        setImmediate(() => {
+          if (signal?.aborted) {
+            reject(new TimeoutError(0, "Crawl polling aborted"));
+            return;
+          }
+          resolve();
+        });
+        return;
+      }
+      const onAbort = (): void => {
+        clearT(id);
+        reject(new TimeoutError(0, "Crawl polling aborted"));
+      };
+      const id = setT(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      signal?.addEventListener("abort", onAbort);
+    });
+}
+
+/**
+ * Map a Provider-neutral `CrawlRequest` into Firecrawl-native /v2/crawl
+ * body fields. `breadth` has no Firecrawl equivalent (rejected in
+ * `validate`); `proxy` is pinned to `"basic"` (D9 cost-safety). `format`
+ * nests under `scrapeOptions.formats` (crawl/search nest it; scrape takes
+ * it top-level).
+ */
+function mapCrawlControls(request: CrawlRequest): FirecrawlCrawlParams {
+  const contentFormat = request.format ?? "markdown";
+  const params: {
+    maxDepth?: number;
+    limit?: number;
+    includePaths?: readonly string[];
+    excludePaths?: readonly string[];
+    scrapeOptions: { formats: readonly string[] };
+    proxy: "basic";
+  } = { scrapeOptions: { formats: [contentFormat] }, proxy: "basic" };
+  if (request.depth !== undefined) params.maxDepth = request.depth;
+  if (request.limit !== undefined) params.limit = request.limit;
+  const includePaths = splitPathPatterns(request.selectPaths);
+  if (includePaths !== undefined) params.includePaths = includePaths;
+  const excludePaths = splitPathPatterns(request.excludePaths);
+  if (excludePaths !== undefined) params.excludePaths = excludePaths;
+  return params;
+}
+
+/**
+ * Normalize a batch of Firecrawl crawl page objects into `CrawlPage[]`.
+ *
+ *   data[].metadata.sourceURL -> url
+ *   data[].markdown|text      -> content
+ *
+ * Any malformed entry is a retryable `ApiError` 500.
+ */
+function normalizeCrawlPages(data: readonly unknown[], request: CrawlRequest): CrawlPage[] {
+  const contentFormat: "markdown" | "text" = request.format ?? "markdown";
+  const contentField = contentFormat === "text" ? "text" : "markdown";
+  const pages: CrawlPage[] = [];
+  for (const entry of data) {
+    if (!isPlainObject(entry)) {
+      throw new ApiError("Firecrawl crawl returned a malformed response", 500);
+    }
+    const metadata = isPlainObject(entry.metadata) ? entry.metadata : {};
+    const url = metadata.sourceURL;
+    const content = entry[contentField];
+    if (
+      typeof url !== "string" ||
+      url.length === 0 ||
+      typeof content !== "string" ||
+      content.length === 0
+    ) {
+      throw new ApiError("Firecrawl crawl returned a malformed response", 500);
+    }
+    pages.push({ url, content, contentFormat });
+  }
+  return pages;
+}
+
+/**
+ * Collect the full crawl result from a completed poll, following the
+ * pagination cursor `next` to exhaustion for large sets (each batch
+ * distinct — no dedup needed; tech-plan D2 / G0 #1). Bounded by a
+ * max-iteration guard against a runaway cursor.
+ */
+async function collectCrawlResult(
+  poll: { readonly data?: readonly unknown[]; readonly next?: string },
+  apiKey: string,
+  request: CrawlRequest,
+  transport: FirecrawlTransportDeps | undefined,
+): Promise<CrawlResult> {
+  const pages: CrawlPage[] = [];
+  if (poll.data) pages.push(...normalizeCrawlPages(poll.data, request));
+  let next = poll.next;
+  let guard = 0;
+  while (next !== undefined) {
+    guard += 1;
+    if (guard > MAX_CRAWL_NEXT_ITERATIONS) {
+      throw new ApiError("Firecrawl crawl pagination exceeded the safety limit", 500);
+    }
+    const page = await fetchFirecrawlCrawlNext(apiKey, next, transport);
+    if (page.data) pages.push(...normalizeCrawlPages(page.data, request));
+    next = page.next;
+  }
+  return { schemaVersion: 1, baseUrl: request.url, pages, totalPages: pages.length };
+}
+
+/**
+ * Best-effort compatibility check between an active-job `options` blob and
+ * the params this request would send. The server echoes the request
+ * options; verifying the cost-bearing fields (limit, maxDepth,
+ * scrapeOptions.formats) is a strong signal it is the same job. Missing or
+ * differently-shaped options → not compatible (safer to create fresh than
+ * to mis-adopt a different crawl).
+ */
+function crawlOptionsCompatible(options: unknown, params: FirecrawlCrawlParams): boolean {
+  if (!isPlainObject(options)) return false;
+  if (params.maxDepth !== undefined && options.maxDepth !== params.maxDepth) return false;
+  if (params.limit !== undefined && options.limit !== params.limit) return false;
+  const expectedFormats = params.scrapeOptions?.formats;
+  const so = options.scrapeOptions;
+  if (expectedFormats !== undefined && isPlainObject(so) && Array.isArray(so.formats)) {
+    const got = JSON.stringify([...(so.formats as unknown[])].sort());
+    const want = JSON.stringify([...expectedFormats].sort());
+    if (got !== want) return false;
+  }
+  return true;
+}
+
+/**
+ * Reclaim-on-miss: find an in-flight job matching this request by `url`
+ * (with a `created_at` recency guard against adopting stale jobs, and a
+ * best-effort options check when the server echoes them). Returns the job
+ * id, or `undefined` when no match exists.
+ */
+function matchActiveCrawl(
+  active: readonly {
+    id: string;
+    url?: string;
+    created_at?: string;
+    options?: unknown;
+  }[],
+  request: CrawlRequest,
+  params: FirecrawlCrawlParams,
+): string | undefined {
+  const now = Date.now();
+  for (const entry of active) {
+    if (entry.url !== request.url) continue;
+    if (entry.created_at !== undefined) {
+      const ts = Date.parse(entry.created_at);
+      if (Number.isFinite(ts) && now - ts > CRAWL_RECLAIM_STALE_MS) continue;
+    }
+    if (entry.options !== undefined && !crawlOptionsCompatible(entry.options, params)) continue;
+    return entry.id;
+  }
+  return undefined;
+}
+
+/**
+ * Persist a crawl job id in the state file (atomic `wx` create). On EEXIST
+ * (a concurrent invocation already persisted a job for this request), read
+ * and return its id instead — the concurrent job is the one to poll.
+ */
+async function persistCrawlId(
+  stateFile: AsyncJobStateFile,
+  identityHash: string,
+  id: string,
+): Promise<string> {
+  const state: AsyncJobState = {
+    requestId: id,
+    identityHash,
+    createdAt: new Date().toISOString(),
+    status: "pending",
+  };
+  try {
+    await stateFile.write(identityHash, state);
+    return id;
+  } catch (err) {
+    if (isEexistError(err)) {
+      const existing = await stateFile.read(identityHash);
+      return existing !== null ? existing.requestId : id;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Reclaim an in-flight job whose create-POST response was lost, or create a
+ * fresh one. On a state-file miss, GET /v2/crawl/active and adopt a
+ * matching job; else POST /v2/crawl and persist the id. The create POST is
+ * zero-retry at the shared-execution layer (defaultRetryPolicy), so a lost
+ * response is terminal here and reclaimed on the next user invocation.
+ */
+async function reclaimOrCreateCrawlJob(
+  apiKey: string,
+  request: CrawlRequest,
+  identityHash: string,
+  params: FirecrawlCrawlParams,
+  stateFile: AsyncJobStateFile,
+  transport: FirecrawlTransportDeps | undefined,
+): Promise<string> {
+  const active = await listActiveFirecrawlCrawls(apiKey, transport);
+  const matched = matchActiveCrawl(active, request, params);
+  if (matched !== undefined) {
+    return persistCrawlId(stateFile, identityHash, matched);
+  }
+  const created = await createFirecrawlCrawl(apiKey, request.url, params, transport);
+  return persistCrawlId(stateFile, identityHash, created.id);
+}
+
+interface FirecrawlCrawlCapabilityOptions {
+  readonly env: NodeJS.ProcessEnv;
+  readonly transport?: FirecrawlTransportDeps;
+  readonly stateFile: AsyncJobStateFile;
+}
+
+function createFirecrawlCrawlCapability(options: FirecrawlCrawlCapabilityOptions): CrawlCapability {
+  const { env, transport, stateFile } = options;
+
+  const fetch: CrawlOperation = {
+    kind: "crawl-fetch",
+
+    validate(request: CrawlRequest): void {
+      assertHttpUrl(request.url);
+      // breadth has no Firecrawl equivalent (D9) — reject, don't ignore.
+      if (request.breadth !== undefined) {
+        throw new UnsupportedOptionError("firecrawl", "crawl", "breadth");
+      }
+      if (request.depth !== undefined) {
+        if (!Number.isInteger(request.depth) || request.depth < 1 || request.depth > 5) {
+          throw new ValidationError("Crawl depth must be an integer between 1 and 5");
+        }
+      }
+      if (request.limit !== undefined && request.limit <= 0) {
+        throw new ValidationError("Crawl limit must be greater than 0");
+      }
+    },
+
+    cacheIdentity(request: CrawlRequest): CacheIdentity<CrawlRequest, CrawlResult> {
+      const apiKey = resolveApiKey(env);
+      return {
+        provider: "firecrawl",
+        capability: "crawl",
+        credentialFingerprint: credentialFingerprint(apiKey),
+        request,
+      };
+    },
+
+    decodeCached(value: unknown): CrawlResult | null {
+      return decodeCrawlResult(value);
+    },
+
+    async invoke(request: CrawlRequest, signal?: AbortSignal): Promise<CrawlResult> {
+      fetch.validate(request);
+
+      const apiKey = resolveApiKey(env);
+      const credFingerprint = credentialFingerprint(apiKey);
+      const identityHash = computeAsyncJobStateHash({
+        provider: "firecrawl",
+        capability: "crawl",
+        credentialFingerprint: credFingerprint,
+        request,
+      });
+      const params = mapCrawlControls(request);
+      const pollIntervalMs = resolveCrawlPollIntervalMs(transport?.env);
+      const sleep = makeCrawlSleep(transport, signal);
+
+      try {
+        // 1. Resume: an in-flight job for this request was already persisted
+        //    (Ctrl-C / crash mid-poll). Poll it instead of creating a second
+        //    one (double-charge prevention).
+        const existing = await stateFile.read(identityHash);
+        let id: string;
+        if (existing !== null) {
+          id = existing.requestId;
+        } else {
+          // 2. Reclaim-on-miss or create (zero-retry create; wx-flag write).
+          id = await reclaimOrCreateCrawlJob(
+            apiKey,
+            request,
+            identityHash,
+            params,
+            stateFile,
+            transport,
+          );
+        }
+
+        // 3. Poll status to terminal, then collect the result once. We do
+        //    NOT accumulate data[] across pre-completion polls — the
+        //    completed response carries the full set (G0 #1).
+        for (;;) {
+          if (signal?.aborted) {
+            throw new TimeoutError(0, "Crawl polling aborted");
+          }
+          const poll = await pollFirecrawlCrawl(apiKey, id, transport);
+
+          if (poll.status === "completed") {
+            await stateFile.remove(identityHash);
+            return collectCrawlResult(poll, apiKey, request, transport);
+          }
+          if (poll.status === "failed") {
+            await stateFile.remove(identityHash);
+            throw new ApiError("Firecrawl crawl job failed", 500);
+          }
+          if (poll.status === "not_found") {
+            // Server-side job disappeared — drop state and create fresh.
+            await stateFile.remove(identityHash);
+            id = await reclaimOrCreateCrawlJob(
+              apiKey,
+              request,
+              identityHash,
+              params,
+              stateFile,
+              transport,
+            );
+            continue;
+          }
+          // scraping: sleep and poll again. The state file already holds
+          // the id (the load-bearing field for resume).
+          await sleep(pollIntervalMs);
+        }
+      } catch (error) {
+        throw normalizeFirecrawlError(error);
+      }
+    },
+  };
+
+  return { fetch };
+}
+
+// ---------------------------------------------------------------------------
 // Descriptor factory
 // ---------------------------------------------------------------------------
 
 /**
  * Dependencies the Firecrawl Adapter accepts. The unified `transport`
- * seam carries `fetch` and timer injection; tests pass a fake-fetch
- * wrapper, production uses the no-argument factory.
+ * seam carries `fetch` and timer injection; `crawlStateFile` is the
+ * async-job-state port the async Crawl Capability uses for
+ * resume-on-restart (tech-plan D2). Production defaults to the on-disk
+ * implementation under `~/.scoutline/crawl/`; tests inject in-memory
+ * doubles to exercise the lifecycle deterministically.
  */
 export interface FirecrawlAdapterDependencies {
   readonly transport?: FirecrawlTransportDeps;
+  readonly crawlStateFile?: AsyncJobStateFile;
 }
 
 /**
  * Build the Firecrawl Provider Descriptor. Advertises the full Firecrawl
- * capability set so Provider selection, `doctor`, and quota inventory
- * derive from a single source of truth. `create()` wires the synchronous
- * Search, Reader, and Map capabilities; Crawl (FC-04), Quota, and
- * Diagnostics (FC-05) slots are intentionally omitted, so the command
- * dispatch's `if (!adapter.<slot>) throw UnsupportedCapabilityError`
- * guard surfaces a clean error for those until they land. Construction is
- * side-effect-free; the transport is invoked per Capability call.
+ * capability set. `create()` wires Search, Reader, Map, and the async
+ * Crawl capability (create→poll→resume + reclaim-on-miss); Quota and
+ * Diagnostics (FC-05) slots remain absent so the command dispatch's
+ * UnsupportedCapabilityError guard handles them until they land.
+ * Construction is side-effect-free; the transport is invoked per
+ * Capability call.
  */
 export function createFirecrawlDescriptor(
   dependencies?: FirecrawlAdapterDependencies,
 ): ProviderDescriptor {
   const transport = dependencies?.transport;
+  const crawlStateFile =
+    dependencies?.crawlStateFile ?? createProductionAsyncJobStateFile(asyncJobStateDir("crawl"));
 
   return {
     id: "firecrawl",
@@ -643,8 +1051,13 @@ export function createFirecrawlDescriptor(
     create(context: ProviderContext): ProviderAdapter {
       const search = createFirecrawlSearchCapability({ env: context.env, transport });
       const reader = createFirecrawlReaderCapability({ env: context.env, transport });
+      const crawl = createFirecrawlCrawlCapability({
+        env: context.env,
+        transport,
+        stateFile: crawlStateFile,
+      });
       const map = createFirecrawlMapCapability({ env: context.env, transport });
-      return { id: "firecrawl", search, reader, map };
+      return { id: "firecrawl", search, reader, crawl, map };
     },
   };
 }

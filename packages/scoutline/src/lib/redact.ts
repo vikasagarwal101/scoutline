@@ -38,6 +38,7 @@ const CREDENTIAL_KEYS: ReadonlySet<string> = new Set([
   "zai_api_key",
   "minimax_api_key",
   "tavily_api_key",
+  "brave_search_api_key",
 ]);
 
 const REDACTED = "[REDACTED]";
@@ -52,8 +53,8 @@ const REDACTED = "[REDACTED]";
  *   - x-api-key assignments (any case; `=`, `:`, or whitespace as the
  *     key/value separator — covers both `x-api-key=value` and
  *     `x-api-key value`).
- *   - Z_AI_API_KEY, ZAI_API_KEY, MINIMAX_API_KEY, TAVILY_API_KEY
- *     assignments.
+ *   - Z_AI_API_KEY, ZAI_API_KEY, MINIMAX_API_KEY, TAVILY_API_KEY,
+ *     BRAVE_SEARCH_API_KEY assignments.
  *   - The literal credentials passed in `extraSecrets` (each value is
  *     replaced wherever it appears; empty strings are skipped).
  */
@@ -80,6 +81,7 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   result = result.replace(/ZAI_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
   result = result.replace(/MINIMAX_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
   result = result.replace(/TAVILY_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
+  result = result.replace(/BRAVE_SEARCH_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
   // Embedded credential substrings inside URLs, e.g.
   // `https://user:secret@host/path`. Catches both `https://` and
   // `http://` schemes and replaces the entire URL with the marker so
@@ -129,6 +131,7 @@ export function configuredSecrets(env: NodeJS.ProcessEnv = process.env): string[
     env.ZAI_API_KEY,
     env.MINIMAX_API_KEY,
     env.TAVILY_API_KEY,
+    env.BRAVE_SEARCH_API_KEY,
   ];
   return normalizeSecrets(candidates.filter((c): c is string => typeof c === "string"));
 }

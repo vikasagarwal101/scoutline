@@ -46,6 +46,7 @@ optional parameters.
 | `zai` | `Z_AI_API_KEY` | `Z_AI_BASE_URL` / `Z_AI_MODE` | Default Provider; MCP-backed transport |
 | `minimax` | `MINIMAX_API_KEY` | `MINIMAX_REGION` (`global` / `cn`) or `MINIMAX_BASE_URL` | Direct transport for Search, Vision, Quota; SDK removed in 0.6.0 |
 | `tavily` | `TAVILY_API_KEY` | `https://api.tavily.com` | Direct-HTTP transport; Search, Reader, Crawl, Map, Research, Quota, Diagnostics |
+| `firecrawl` | `FIRECRAWL_API_KEY` | `https://api.firecrawl.dev` (v2) | Direct-HTTP transport; Search, Reader, Crawl (async), Map, Quota (credits), Diagnostics. Credit-based; no Research (`/deep-research` deprecated) |
 
 Each Adapter exposes only the Capabilities the base release actually supports.
 The Descriptor advertises the same Capability set so support can be checked
@@ -67,26 +68,27 @@ outside the MiniMax Adapter and its transport tests.
 Provider selection applies to Search, Vision, quota, diagnostics,
 **repository exploration**, **Reader**, **Crawl**, **Map**, and
 **Research**. Raw tools and Code Mode are Z.AI-only and ignore both
-the explicit flag and the environment variable. Crawl, Map, and
-Research are Tavily-only at launch: only Tavily advertises the
-Capability, so any other Provider returns `UNSUPPORTED_CAPABILITY`
-with no fallback.
+the explicit flag and the environment variable. Crawl and Map are
+supplied by Tavily and Firecrawl; Research is Tavily-only (Firecrawl's
+`/deep-research` is deprecated). Z.AI and MiniMax advertise none of the
+three, so selecting them for those commands returns
+`UNSUPPORTED_CAPABILITY` with no fallback.
 
-| Capability | Z.AI | MiniMax | Tavily | Command |
-| --- | --- | --- | --- | --- |
-| `search` | Yes | Yes | Yes | `scoutline search` |
-| `vision.interpret-image` | Yes | Yes | No | `scoutline vision analyze` |
-| Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
-| Image diff / video | Yes | No | No | `scoutline vision diff`, `vision video` |
-| `quota` | Yes | Yes | Yes | `scoutline quota` |
-| `diagnostics` | Yes | Yes | Yes | `scoutline doctor` |
-| Reader | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | Yes (Z.AI-only options are rejected) | `scoutline read` |
-| Repository exploration | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | No (UNSUPPORTED_CAPABILITY, no fallback) | `scoutline repo ...` |
-| Crawl | No | No | Yes (Tavily-only at launch) | `scoutline crawl` |
-| Map | No | No | Yes (Tavily-only at launch) | `scoutline map` |
-| Research | No | No | Yes (Tavily-only at launch; 4-250 credits per request) | `scoutline research` |
-| Raw tools | Yes | No | No | `scoutline tools`, `tool`, `call` |
-| Code Mode | Yes | No | No | `scoutline code ...` |
+| Capability | Z.AI | MiniMax | Tavily | Firecrawl | Command |
+| --- | --- | --- | --- | --- | --- |
+| `search` | Yes | Yes | Yes | Yes | `scoutline search` |
+| `vision.interpret-image` | Yes | Yes | No | No | `scoutline vision analyze` |
+| Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
+| Image diff / video | Yes | No | No | No | `scoutline vision diff`, `vision video` |
+| `quota` | Yes | Yes | Yes | Yes (credits) | `scoutline quota` |
+| `diagnostics` | Yes | Yes | Yes | Yes | `scoutline doctor` |
+| Reader | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | Yes (Z.AI-only options are rejected) | Yes (returns page titles) | `scoutline read` |
+| Repository exploration | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | No (UNSUPPORTED_CAPABILITY, no fallback) | No (UNSUPPORTED_CAPABILITY, no fallback) | `scoutline repo ...` |
+| Crawl | No | No | Yes | Yes (async; resumable after Ctrl-C) | `scoutline crawl` |
+| Map | No | No | Yes | Yes | `scoutline map` |
+| Research | No | No | Yes (4-250 credits per request) | No (`/deep-research` deprecated) | `scoutline research` |
+| Raw tools | Yes | No | No | No | `scoutline tools`, `tool`, `call` |
+| Code Mode | Yes | No | No | No | `scoutline code ...` |
 
 Specialized MiniMax Vision mappings remain conformance-gated and only move
 into the shared matrix once their offline and live attestation passes.
@@ -384,14 +386,19 @@ matrix lists Z.AI and Tavily as the suppliers of `reader`; MiniMax is
 absent because its descriptor does not advertise it. Doctor help names
 MiniMax as unsupported for `read`.
 
-## Tavily Capabilities (Crawl, Map, Research)
+## Crawl, Map, Research Capabilities
 
 `scoutline crawl`, `scoutline map`, and `scoutline research` participate
-in Provider selection. Only the Tavily descriptor advertises these
-Capabilities at launch; selecting Z.AI or MiniMax (explicitly or via
+in Provider selection. Crawl and Map are supplied by Tavily and Firecrawl;
+Research is Tavily-only (Firecrawl's `/deep-research` is deprecated).
+Selecting Z.AI or MiniMax for any of the three (explicitly or via
 `SCOUTLINE_PROVIDER`) returns `UNSUPPORTED_CAPABILITY` before
 `descriptor.isConfigured`, `descriptor.create`, credential resolution
 for use, cache identity, or transport construction, with no fallback.
+Firecrawl's crawl is asynchronous (`/v2/crawl` create→poll→resume, with
+reclaim-on-miss for cost-safety and a state file under
+`~/.scoutline/crawl/`); Tavily's is synchronous. The flow below shows the
+Tavily (synchronous) path.
 
 ```text
 crawl argv + global flags
@@ -409,10 +416,11 @@ crawl argv + global flags
 
 Key boundaries:
 
-- **Capability ownership.** Crawl, Map, and Research are advertised
-  solely by the Tavily descriptor. The Tavily Adapter supplies the
-  Capability implementation. Z.AI and MiniMax descriptors do not
-  advertise them; their Adapters supply nothing.
+- **Capability ownership.** Crawl and Map are advertised by the Tavily
+  and Firecrawl descriptors; Research is Tavily-only. The matching
+  Adapter supplies the Capability implementation. Z.AI and MiniMax
+  descriptors do not advertise any of the three; their Adapters supply
+  nothing.
 - **Map is the simplest of the three.** The Tavily `/map` endpoint
   returns a URL set with no per-page content, so the handler has no
   `--max-chars` projection. Crawl and Research are richer; the

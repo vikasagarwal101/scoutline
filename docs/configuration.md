@@ -13,14 +13,14 @@ export Z_AI_API_KEY="your-api-key"
 ## Provider Selection
 
 Shared commands (`search`, `vision`, `quota`, `doctor`), **`repo`**, and
-**`read`** accept the global `--provider <zai|minimax>` flag. When the flag
+**`read`** accept the global `--provider <zai|minimax|tavily|firecrawl>` flag. When the flag
 is omitted the value of the `SCOUTLINE_PROVIDER` environment variable is
 consulted; when neither is supplied Scoutline falls back to the compatibility
 default `zai`.
 
 Resolution precedence (highest first):
 
-1. `--provider <zai|minimax>` on the command line
+1. `--provider <zai|minimax|tavily|firecrawl>` on the command line
 2. `SCOUTLINE_PROVIDER`
 3. `zai` (default)
 

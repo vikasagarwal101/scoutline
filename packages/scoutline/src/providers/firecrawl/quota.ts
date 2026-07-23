@@ -58,40 +58,45 @@ function resolveUsageRecord(raw: unknown): Record<string, unknown> | undefined {
 
 /**
  * Normalize a raw credit-usage payload into the shared Interface. Builds
- * one "Credits" category (`unit:"credits"`). Derives `limit = used +
- * remaining` from a remaining/used pair so the window shows real counts; a
- * direct `used`/`limit` pair is also accepted. Throws `ApiError` 500 when
- * no valid credit figures can be extracted (best-effort until the live
- * shape is confirmed — FC-06).
+ * one "Credits" category (`unit:"credits"`).
+ *
+ * Live-confirmed shape (FC-06): `data.{ remainingCredits, planCredits,
+ * billingPeriodStart, billingPeriodEnd }`. Firecrawl reports a remaining
+ * balance against a per-period plan allotment — `remainingCredits` may
+ * exceed `planCredits` (banked credits), so the window is built against
+ * the plan allotment and `used` is clamped ≥ 0. Throws `ApiError` 500 when
+ * `remainingCredits`/`planCredits` are absent or invalid.
  */
 export function normalizeFirecrawlQuota(raw: unknown): ProviderQuotaSuccess {
   const record = resolveUsageRecord(raw);
   if (record === undefined) {
     throw new ApiError("Firecrawl quota returned a malformed response", 500);
   }
-  // Common field-name variants for remaining and used credits.
-  const remaining = readNumber(
-    record.remaining_credits ?? record.remaining ?? record.credits_remaining,
-  );
-  const used = readNumber(
-    record.total_credits_used ?? record.used_credits ?? record.used ?? record.credits_used,
-  );
-  const directLimit = readNumber(record.limit ?? record.total_credits ?? record.credits_limit);
-
-  let window;
-  if (used !== undefined && directLimit !== undefined) {
-    window = buildQuotaWindow({ used: Math.min(used, directLimit), limit: directLimit });
-  } else if (used !== undefined && remaining !== undefined) {
-    // Derive the ceiling from the used + remaining pair.
-    window = buildQuotaWindow({ used, limit: used + remaining });
-  } else if (remaining !== undefined && directLimit !== undefined) {
-    window = buildQuotaWindow({
-      used: Math.max(directLimit - remaining, 0),
-      limit: directLimit,
-    });
-  } else {
+  const remaining = readNumber(record.remainingCredits ?? record.remaining_credits);
+  const planCredits = readNumber(record.planCredits ?? record.plan_credits);
+  if (remaining === undefined || planCredits === undefined || planCredits <= 0) {
     throw new ApiError("Firecrawl quota returned a malformed response", 500);
   }
+  // Window against the per-period allotment. `used` = the plan portion
+  // consumed this period (clamped ≥ 0 when banked credits push remaining
+  // past the plan, so remainingPercent caps at 100).
+  const used = Math.max(planCredits - remaining, 0);
+
+  const periodEnd =
+    typeof record.billingPeriodEnd === "string" ? record.billingPeriodEnd : undefined;
+  const periodStart =
+    typeof record.billingPeriodStart === "string" ? record.billingPeriodStart : undefined;
+  const endMs = periodEnd !== undefined ? Date.parse(periodEnd) : NaN;
+  const startMs = periodStart !== undefined ? Date.parse(periodStart) : NaN;
+
+  const window = buildQuotaWindow({
+    used,
+    limit: planCredits,
+    ...(Number.isFinite(endMs) && endMs > 0 ? { resetsAtEpochMs: endMs } : {}),
+    ...(Number.isFinite(startMs) && Number.isFinite(endMs)
+      ? { durationSeconds: Math.max(Math.round((endMs - startMs) / 1000), 0) }
+      : {}),
+  });
 
   const category: QuotaCategory = { name: "Credits", unit: "credits", current: window };
   return { provider: "firecrawl", status: "ok", categories: [category] };

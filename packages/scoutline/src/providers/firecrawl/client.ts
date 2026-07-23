@@ -305,15 +305,16 @@ const CREDIT_USAGE_PATH = "/v2/team/credit-usage";
  * The Adapter maps `CrawlRequest` into these. `breadth` has no Firecrawl
  * equivalent and is rejected by the Adapter; `proxy` is pinned to
  * `"basic"` per tech-plan D9 (cost-safety — avoids the 5-credit enhanced
- * proxy). `scrapeOptions` nests the same fields as `/scrape`.
+ * proxy) and nests under `scrapeOptions` (crawl/search nest scrape fields;
+ * `/scrape` takes `proxy` top-level). `scrapeOptions` carries the same
+ * fields as `/scrape`.
  */
 export interface FirecrawlCrawlParams {
   readonly maxDepth?: number;
   readonly limit?: number;
   readonly includePaths?: readonly string[];
   readonly excludePaths?: readonly string[];
-  readonly scrapeOptions?: { readonly formats: readonly string[] };
-  readonly proxy: "basic";
+  readonly scrapeOptions: { readonly formats: readonly string[]; readonly proxy: "basic" };
 }
 
 /** Result of POST /v2/crawl — `{ success, id, url }`. */
@@ -358,14 +359,15 @@ export async function createFirecrawlCrawl(
   params: FirecrawlCrawlParams,
   deps: FirecrawlTransportDeps = {},
 ): Promise<FirecrawlCrawlCreateResult> {
-  const body: Record<string, unknown> = { url, proxy: params.proxy };
+  const body: Record<string, unknown> = { url };
   if (params.maxDepth !== undefined) body.maxDepth = params.maxDepth;
   if (params.limit !== undefined) body.limit = params.limit;
   if (params.includePaths !== undefined) body.includePaths = [...params.includePaths];
   if (params.excludePaths !== undefined) body.excludePaths = [...params.excludePaths];
-  if (params.scrapeOptions !== undefined) {
-    body.scrapeOptions = { formats: [...params.scrapeOptions.formats] };
-  }
+  body.scrapeOptions = {
+    formats: [...params.scrapeOptions.formats],
+    proxy: params.scrapeOptions.proxy,
+  };
   const raw = (await postFirecrawlJson(apiKey, CRAWL_PATH, body, deps, "crawl")) as unknown;
   if (!isPlainObject(raw)) {
     throw new ApiError("Firecrawl crawl returned a malformed response", 500);
@@ -468,7 +470,8 @@ export async function listActiveFirecrawlCrawls(
   if (!isPlainObject(raw)) {
     throw new ApiError("Firecrawl crawl/active returned a malformed response", 500);
   }
-  const data = raw.data;
+  // Live-confirmed shape (FC-06): { success, crawls: [...] } (not `data`).
+  const data = raw.crawls ?? raw.data;
   if (!Array.isArray(data)) {
     throw new ApiError("Firecrawl crawl/active returned a malformed response", 500);
   }

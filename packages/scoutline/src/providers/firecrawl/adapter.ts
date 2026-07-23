@@ -191,11 +191,16 @@ function mapSearchControls(controls?: SearchControls): FirecrawlSearchParams {
 /**
  * Normalize a raw Firecrawl search response into `SearchSource[]`.
  *
- *   data[].title        -> title
- *   data[].url          -> url
- *   data[].markdown     -> summary  (high content-size — richer)
- *   data[].description  -> summary  (medium fallback)
- *   data[].source|category -> source
+ * Firecrawl nests the result list under a source-type key inside `data`
+ * (`data.web` for a web search, `data.news` for a news-topic search) rather
+ * than as a flat `data` array. A flat `data` array is also accepted for
+ * forward-compat.
+ *
+ *   data.web[].title        -> title
+ *   data.web[].url          -> url
+ *   data.web[].markdown     -> summary  (high content-size — richer)
+ *   data.web[].description  -> summary  (medium fallback)
+ *   data.web[].source|category -> source
  *
  * Any malformed shape is a retryable `ApiError` 500.
  */
@@ -204,11 +209,19 @@ function normalizeFirecrawlSearchResults(raw: unknown): readonly SearchSource[] 
     throw new ApiError("Firecrawl search returned a malformed response", 500);
   }
   const data = raw.data;
-  if (!Array.isArray(data)) {
+  let results: unknown;
+  if (Array.isArray(data)) {
+    results = data;
+  } else if (isPlainObject(data)) {
+    // Results are keyed by source type (web for the default, news for a
+    // news-topic search). Collect from web, falling back to news.
+    results = Array.isArray(data.web) ? data.web : data.news;
+  }
+  if (!Array.isArray(results)) {
     throw new ApiError("Firecrawl search returned a malformed response", 500);
   }
   const out: SearchSource[] = [];
-  for (const entry of data) {
+  for (const entry of results) {
     if (!isPlainObject(entry)) {
       throw new ApiError("Firecrawl search returned a malformed response", 500);
     }
@@ -284,11 +297,12 @@ function normalizeFirecrawlScrapeResult(
 /**
  * Normalize a raw Firecrawl map response into a `MapResult`.
  *
- *   links (string[]) -> urls
- *   baseUrl          -> the request URL
- *   totalUrls        -> links array length
+ *   links[].url -> urls   (links are objects {url, title}, not strings)
+ *   baseUrl     -> the request URL
+ *   totalUrls   -> links array length
  *
- * Any malformed shape is a retryable `ApiError` 500.
+ * A bare-string `links[]` entry is also accepted for forward-compat. Any
+ * malformed shape is a retryable `ApiError` 500.
  */
 function normalizeFirecrawlMapResult(raw: unknown, request: MapRequest): MapResult {
   if (!isPlainObject(raw)) {
@@ -300,10 +314,16 @@ function normalizeFirecrawlMapResult(raw: unknown, request: MapRequest): MapResu
   }
   const urls: string[] = [];
   for (const entry of links) {
-    if (typeof entry !== "string" || entry.length === 0) {
+    let url: unknown;
+    if (typeof entry === "string") {
+      url = entry;
+    } else if (isPlainObject(entry)) {
+      url = entry.url;
+    }
+    if (typeof url !== "string" || url.length === 0) {
       throw new ApiError("Firecrawl map returned a malformed response", 500);
     }
-    urls.push(entry);
+    urls.push(url);
   }
   return {
     schemaVersion: 1,
@@ -696,9 +716,9 @@ function makeCrawlSleep(
 /**
  * Map a Provider-neutral `CrawlRequest` into Firecrawl-native /v2/crawl
  * body fields. `breadth` has no Firecrawl equivalent (rejected in
- * `validate`); `proxy` is pinned to `"basic"` (D9 cost-safety). `format`
- * nests under `scrapeOptions.formats` (crawl/search nest it; scrape takes
- * it top-level).
+ * `validate`); `proxy` is pinned to `"basic"` (D9 cost-safety) and nests
+ * under `scrapeOptions` (crawl nests scrape fields; `/scrape` takes
+ * `proxy` top-level). `format` nests under `scrapeOptions.formats`.
  */
 function mapCrawlControls(request: CrawlRequest): FirecrawlCrawlParams {
   const contentFormat = request.format ?? "markdown";
@@ -707,9 +727,8 @@ function mapCrawlControls(request: CrawlRequest): FirecrawlCrawlParams {
     limit?: number;
     includePaths?: readonly string[];
     excludePaths?: readonly string[];
-    scrapeOptions: { formats: readonly string[] };
-    proxy: "basic";
-  } = { scrapeOptions: { formats: [contentFormat] }, proxy: "basic" };
+    scrapeOptions: { formats: readonly string[]; proxy: "basic" };
+  } = { scrapeOptions: { formats: [contentFormat], proxy: "basic" } };
   if (request.depth !== undefined) params.maxDepth = request.depth;
   if (request.limit !== undefined) params.limit = request.limit;
   const includePaths = splitPathPatterns(request.selectPaths);

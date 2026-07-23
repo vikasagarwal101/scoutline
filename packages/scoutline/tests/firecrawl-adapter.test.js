@@ -240,7 +240,10 @@ describe("Firecrawl Map Adapter", () => {
   it("maps links[] -> urls and records baseUrl", async () => {
     const { adapter } = makeAdapter(async () =>
       makeResponse({
-        json: { success: true, links: ["https://a.example/1", "https://a.example/2"] },
+        json: {
+          success: true,
+          links: [{ url: "https://a.example/1", title: "A" }, { url: "https://a.example/2" }],
+        },
       }),
     );
     const out = await adapter.map.fetch.invoke({ url: "https://a.example" });
@@ -367,8 +370,10 @@ describe("Firecrawl Crawl Adapter", () => {
     const createBody = JSON.parse(
       calls.find((c) => c.method === "POST" && c.url.endsWith("/v2/crawl")).init.body,
     );
-    assert.equal(createBody.proxy, "basic");
-    assert.deepEqual(createBody.scrapeOptions, { formats: ["markdown"] });
+    // proxy nests under scrapeOptions on crawl (top-level proxy is rejected).
+    assert.equal(createBody.scrapeOptions.proxy, "basic");
+    assert.deepEqual(createBody.scrapeOptions.formats, ["markdown"]);
+    assert.equal(createBody.proxy, undefined);
   });
 
   it("resumes an in-flight job from the state file (NO create POST)", async () => {
@@ -544,10 +549,20 @@ describe("Firecrawl Crawl Adapter", () => {
 // ---------------------------------------------------------------------------
 
 describe("Firecrawl Quota Adapter", () => {
-  it("maps remaining + used credits into a Credits category (unit:credits)", async () => {
+  it("maps remainingCredits/planCredits into a Credits category (unit:credits)", async () => {
     const fn = async () =>
       makeResponse({
-        json: { success: true, data: [{ remaining_credits: 75, total_credits_used: 25 }] },
+        json: {
+          success: true,
+          data: [
+            {
+              remainingCredits: 75,
+              planCredits: 100,
+              billingPeriodStart: "2026-07-11T22:57:29.086Z",
+              billingPeriodEnd: "2026-08-11T22:57:29.086Z",
+            },
+          ],
+        },
       });
     const descriptor = createFirecrawlDescriptor({ transport: { fetch: fn, env: {} } });
     const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
@@ -558,19 +573,26 @@ describe("Firecrawl Quota Adapter", () => {
     const cat = out.categories[0];
     assert.equal(cat.name, "Credits");
     assert.equal(cat.unit, "credits");
-    // limit = used(25) + remaining(75) = 100.
+    // used = planCredits(100) - remainingCredits(75) = 25.
     assert.equal(cat.current.used, 25);
     assert.equal(cat.current.limit, 100);
     assert.equal(cat.current.remaining, 75);
+    assert.equal(cat.current.remainingPercent, 75);
+    assert.equal(cat.current.resetsAt, "2026-08-11T22:57:29.086Z");
   });
 
-  it("accepts a direct used/limit pair", async () => {
-    const fn = async () => makeResponse({ json: { success: true, used_credits: 40, limit: 200 } });
+  it("clamps used to 0 and caps at 100% when banked credits exceed the plan", async () => {
+    // Matches the live shape: remainingCredits (11003) > planCredits (1000).
+    const fn = async () =>
+      makeResponse({
+        json: { success: true, data: [{ remainingCredits: 11003, planCredits: 1000 }] },
+      });
     const descriptor = createFirecrawlDescriptor({ transport: { fetch: fn, env: {} } });
     const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
-    const out = await adapter.quota.invoke();
-    assert.equal(out.categories[0].current.used, 40);
-    assert.equal(out.categories[0].current.limit, 200);
+    const cat = (await adapter.quota.invoke()).categories[0];
+    assert.equal(cat.current.used, 0);
+    assert.equal(cat.current.limit, 1000);
+    assert.equal(cat.current.remainingPercent, 100);
   });
 
   it("throws ApiError when no credit figures can be extracted", async () => {

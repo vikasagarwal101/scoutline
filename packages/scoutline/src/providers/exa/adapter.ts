@@ -62,6 +62,20 @@ import type {
   ReaderOperation,
 } from "../../capabilities/reader.js";
 import { decodeReaderFetchResult } from "../../capabilities/reader.js";
+import type {
+  ResearchCapability,
+  ResearchOperation,
+  ResearchRequest,
+  ResearchResult,
+  ResearchSource,
+} from "../../capabilities/research.js";
+import { decodeResearchResult } from "../../capabilities/research.js";
+import type { ResearchState, ResearchStateFile } from "../../lib/research-state.js";
+import {
+  computeResearchStateHash,
+  createProductionResearchStateFile,
+} from "../../lib/research-state.js";
+import type { CacheIdentity } from "../../lib/execution.js";
 import type { DiagnosticsCapability } from "../../capabilities/diagnostics.js";
 import {
   ApiError,
@@ -77,8 +91,12 @@ import { requireExaApiKey, isExaConfigured } from "./credentials.js";
 import {
   fetchExaSearch,
   fetchExaContents,
+  createExaAgentRun,
+  pollExaAgentRun,
   type ExaSearchParams,
   type ExaContentsParams,
+  type ExaAgentRunParams,
+  type ExaAgentRunPollResult,
   type ExaTransportDeps,
 } from "./client.js";
 import { createExaDiagnosticsCapability } from "./diagnostics.js";
@@ -91,6 +109,8 @@ import { createExaDiagnosticsCapability } from "./diagnostics.js";
 export interface ExaAdapterDependencies {
   /** Optional transport injection (fetch, timers, env). */
   readonly transport?: ExaTransportDeps;
+  /** Optional Research state-file port (tech-plan §3). */
+  readonly researchStateFile?: ResearchStateFile;
 }
 
 // ---------------------------------------------------------------------------
@@ -680,6 +700,318 @@ function createExaReaderCapability(options: ExaReaderCapabilityOptions): ReaderC
 }
 
 // ---------------------------------------------------------------------------
+// Research Capability (the hardest mechanism — tech-plan §3, §7)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_RESEARCH_POLL_INTERVAL_MS = 5000;
+
+function resolvePollIntervalMs(env: NodeJS.ProcessEnv | undefined): number {
+  const raw = env?.EXA_RESEARCH_POLL_INTERVAL_MS;
+  const parsed = parseInt(raw ?? "", 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_RESEARCH_POLL_INTERVAL_MS;
+}
+
+/**
+ * Build an abortable `sleep(ms)` from the injected timers. Copied from
+ * the Tavily adapter — same mechanism, different transport type.
+ */
+function makeSleep(
+  deps: ExaTransportDeps | undefined,
+  signal?: AbortSignal,
+): (ms: number) => Promise<void> {
+  const setT = deps?.setTimeout ?? setTimeout;
+  const clearT = deps?.clearTimeout ?? clearTimeout;
+  return (ms: number) =>
+    new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new TimeoutError(0, "Research polling aborted"));
+        return;
+      }
+      if (ms <= 0) {
+        setImmediate(() => {
+          if (signal?.aborted) {
+            reject(new TimeoutError(0, "Research polling aborted"));
+            return;
+          }
+          resolve();
+        });
+        return;
+      }
+      const onAbort = (): void => {
+        clearT(id);
+        reject(new TimeoutError(0, "Research polling aborted"));
+      };
+      const id = setT(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      signal?.addEventListener("abort", onAbort);
+    });
+}
+
+function isEexistError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as NodeJS.ErrnoException).code === "EEXIST"
+  );
+}
+
+/**
+ * Map `model` → Exa Agent `effort`. The result echoes the REQUESTED
+ * model (not the effort string) so the contract is identical across
+ * Tavily and Exa. Minimal/medium/xhigh are unreachable from the Normal
+ * command.
+ */
+function mapModelToEffort(model: string | undefined): string {
+  switch (model) {
+    case "mini":
+      return "low";
+    case "pro":
+      return "high";
+    case "auto":
+    default:
+      return "auto";
+  }
+}
+
+/**
+ * Validate a `ResearchRequest` for Exa. Exa supports `query` and
+ * `model` natively; `outputLength`, `citationFormat`, and `domain` are
+ * concepts the Agent lacks and are rejected before transport.
+ *
+ * **OD1 note:** `domain` is rejected for now. It MAY be revalidatable
+ * against the pinned Agent's internal search-tool config — track as a
+ * follow-up if the config accepts `includeDomains`.
+ */
+function assertNoUnsupportedResearchOptions(request: ResearchRequest): void {
+  if (request.outputLength !== undefined) {
+    throw new UnsupportedOptionError("exa", "research", "outputLength");
+  }
+  if (request.citationFormat !== undefined) {
+    throw new UnsupportedOptionError("exa", "research", "citationFormat");
+  }
+  if (request.domain !== undefined) {
+    throw new UnsupportedOptionError("exa", "research", "domain");
+  }
+}
+
+/**
+ * Normalize a completed Exa Agent run's `output` into a
+ * `ResearchResult`.
+ *
+ *   output.text                       -> report
+ *   output.grounding[].citations[]    -> sources[] (flatten {title, url};
+ *                                        drop incomplete)
+ *   output.structured                 -> ignored (distinct capability)
+ *   request.model                     -> model (echoed, NOT effort string)
+ */
+function normalizeExaResearchResult(
+  poll: ExaAgentRunPollResult,
+  request: ResearchRequest,
+): ResearchResult {
+  const output = poll.output;
+  if (!isPlainObject(output)) {
+    throw new ApiError("Exa research returned a malformed response", 500);
+  }
+  const text = output.text;
+  if (typeof text !== "string") {
+    throw new ApiError("Exa research returned a malformed response", 500);
+  }
+
+  const sources: ResearchSource[] = [];
+  const grounding = output.grounding;
+  if (Array.isArray(grounding)) {
+    for (const entry of grounding) {
+      if (!isPlainObject(entry)) continue;
+      const citations = entry.citations;
+      if (!Array.isArray(citations)) continue;
+      for (const citation of citations) {
+        if (!isPlainObject(citation)) continue;
+        if (typeof citation.title === "string" && typeof citation.url === "string") {
+          sources.push({ title: citation.title, url: citation.url });
+        }
+      }
+    }
+  }
+
+  return {
+    schemaVersion: 1,
+    query: request.query,
+    model: request.model ?? "auto",
+    report: text,
+    sources,
+  };
+}
+
+interface ExaResearchCapabilityOptions {
+  readonly env: NodeJS.ProcessEnv;
+  readonly transport?: ExaTransportDeps;
+  readonly researchStateFile: ResearchStateFile;
+}
+
+/**
+ * POST /agent/runs to create a task, then persist its run ID in the
+ * state file atomically. On EEXIST (a concurrent invocation already
+ * created a task for this request), read the existing state file and
+ * return its run ID instead — the concurrent task is polled, not
+ * duplicated.
+ *
+ * **OD1 limitation:** the POST happens before the `wx` write, so two
+ * callers that both read "absent" can both POST before either writes.
+ * This reduces (Ctrl-C+retry) but does NOT eliminate duplicate runs.
+ * Same pre-existing Tavily issue Exa inherits.
+ */
+async function createResearchTask(
+  apiKey: string,
+  request: ResearchRequest,
+  identityHash: string,
+  stateFile: ResearchStateFile,
+  transport: ExaTransportDeps | undefined,
+): Promise<string> {
+  const agentParams: ExaAgentRunParams = {
+    query: request.query,
+    effort: mapModelToEffort(request.model),
+  };
+  const created = await createExaAgentRun(apiKey, agentParams, transport);
+  const runId = created.id;
+
+  const state: ResearchState = {
+    requestId: runId,
+    identityHash,
+    createdAt: new Date().toISOString(),
+    status: "pending",
+  };
+  try {
+    await stateFile.write(identityHash, state);
+  } catch (err) {
+    if (isEexistError(err)) {
+      const existing = await stateFile.read(identityHash);
+      if (existing !== null) {
+        return existing.requestId;
+      }
+    } else {
+      throw err;
+    }
+  }
+  return runId;
+}
+
+function createExaResearchCapability(options: ExaResearchCapabilityOptions): ResearchCapability {
+  const { env, transport, researchStateFile } = options;
+
+  const run: ResearchOperation = {
+    kind: "research-fetch",
+
+    validate(request: ResearchRequest): void {
+      if (!request || typeof request.query !== "string" || request.query.trim() === "") {
+        throw new ValidationError(
+          "Research query must contain at least one non-whitespace character",
+        );
+      }
+      assertNoUnsupportedResearchOptions(request);
+    },
+
+    cacheIdentity(request: ResearchRequest): CacheIdentity<ResearchRequest, ResearchResult> {
+      const apiKey = resolveApiKey(env);
+      return {
+        provider: "exa",
+        capability: "research",
+        credentialFingerprint: credentialFingerprint(apiKey),
+        request,
+      };
+    },
+
+    decodeCached(value: unknown): ResearchResult | null {
+      return decodeResearchResult(value);
+    },
+
+    async invoke(request: ResearchRequest, signal?: AbortSignal): Promise<ResearchResult> {
+      run.validate(request);
+
+      const apiKey = resolveApiKey(env);
+      const credFingerprint = credentialFingerprint(apiKey);
+      const identityHash = computeResearchStateHash({
+        provider: "exa",
+        capability: "research",
+        credentialFingerprint: credFingerprint,
+        request,
+      });
+
+      const pollIntervalMs = resolvePollIntervalMs(transport?.env);
+      const sleep = makeSleep(transport, signal);
+
+      try {
+        // 1. Check for an in-flight task (resume after Ctrl-C / crash).
+        const existingState = await researchStateFile.read(identityHash);
+        let runId: string;
+
+        if (existingState !== null) {
+          runId = existingState.requestId;
+        } else {
+          // 2. No in-flight task: POST to create one. NO retry — a
+          //    transient POST failure is terminal (double-charge
+          //    prevention on a usage-based endpoint).
+          runId = await createResearchTask(
+            apiKey,
+            request,
+            identityHash,
+            researchStateFile,
+            transport,
+          );
+        }
+
+        // 3. Poll loop until terminal status.
+        for (;;) {
+          if (signal?.aborted) {
+            throw new TimeoutError(0, "Research polling aborted");
+          }
+          const poll = await pollExaAgentRun(apiKey, runId, transport);
+
+          if (poll.status === "completed") {
+            await researchStateFile.remove(identityHash);
+            return normalizeExaResearchResult(poll, request);
+          }
+
+          if (poll.status === "failed") {
+            await researchStateFile.remove(identityHash);
+            throw new ApiError("Exa research task failed", 500);
+          }
+
+          if (poll.status === "cancelled") {
+            // Exa-specific: cancelled is terminal (treated as failure).
+            await researchStateFile.remove(identityHash);
+            throw new ApiError("Exa research task was cancelled", 500);
+          }
+
+          if (poll.status === "not_found") {
+            // 404 — server-side run expired. Delete stale state and
+            // create a fresh run.
+            await researchStateFile.remove(identityHash);
+            runId = await createResearchTask(
+              apiKey,
+              request,
+              identityHash,
+              researchStateFile,
+              transport,
+            );
+            continue;
+          }
+
+          // queued or running: sleep and poll again.
+          await sleep(pollIntervalMs);
+        }
+      } catch (error) {
+        throw normalizeExaError(error);
+      }
+    },
+  };
+
+  return { run };
+}
+
+// ---------------------------------------------------------------------------
 // Descriptor factory
 // ---------------------------------------------------------------------------
 
@@ -700,6 +1032,7 @@ function createExaReaderCapability(options: ExaReaderCapabilityOptions): ReaderC
  */
 export function createExaDescriptor(dependencies?: ExaAdapterDependencies): ProviderDescriptor {
   const transport = dependencies?.transport;
+  const researchStateFile = dependencies?.researchStateFile ?? createProductionResearchStateFile();
 
   return {
     id: "exa",
@@ -707,7 +1040,7 @@ export function createExaDescriptor(dependencies?: ExaAdapterDependencies): Prov
       return isExaConfigured(env);
     },
     capabilities(): ReadonlySet<ProviderCapability> {
-      return new Set<ProviderCapability>(["search", "reader", "diagnostics"]);
+      return new Set<ProviderCapability>(["search", "reader", "research", "diagnostics"]);
     },
     create(context: ProviderContext): ProviderAdapter {
       const search = createExaSearchCapability({
@@ -718,11 +1051,16 @@ export function createExaDescriptor(dependencies?: ExaAdapterDependencies): Prov
         env: context.env,
         transport,
       });
+      const research = createExaResearchCapability({
+        env: context.env,
+        transport,
+        researchStateFile,
+      });
       const diagnostics: DiagnosticsCapability = createExaDiagnosticsCapability({
         env: context.env,
         transport,
       });
-      return { id: "exa", search, reader, diagnostics };
+      return { id: "exa", search, reader, research, diagnostics };
     },
   };
 }

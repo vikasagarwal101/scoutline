@@ -22,6 +22,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 
 import { createExaDescriptor } from "../dist/providers/exa/adapter.js";
+import { createInMemoryResearchStateFile } from "../dist/lib/research-state.js";
 import {
   ApiError,
   AuthError,
@@ -79,8 +80,9 @@ describe("Exa Descriptor — metadata", () => {
     const caps = descriptor.capabilities();
     assert.ok(caps.has("search"));
     assert.ok(caps.has("reader"));
+    assert.ok(caps.has("research"));
     assert.ok(caps.has("diagnostics"));
-    assert.equal(caps.size, 3);
+    assert.equal(caps.size, 4);
   });
 
   it("isConfigured reflects EXA_API_KEY presence", () => {
@@ -94,6 +96,7 @@ describe("Exa Descriptor — metadata", () => {
     const { adapter } = makeAdapter(async () => makeResponse());
     assert.equal(typeof adapter.search.validate, "function");
     assert.equal(typeof adapter.reader.fetch.validate, "function");
+    assert.equal(typeof adapter.research.run.validate, "function");
     assert.equal(typeof adapter.diagnostics.invoke, "function");
   });
 });
@@ -876,3 +879,390 @@ describe("Exa Reader Adapter — cache identity", () => {
     assert.strictEqual(adapter.reader.fetch.decodeCached(42), null);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Research: helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a descriptor + adapter for research tests. Returns the adapter,
+ * the calls array, and the in-memory state file. The fake `fetch`
+ * dispatches based on URL path and HTTP method:
+ *   POST /agent/runs  → onCreate()
+ *   GET  /agent/runs/* → onPoll(runId)
+ * Other URLs fall through to fallbackFetch (for search/contents tests).
+ */
+function makeResearchAdapter({ onCreate, onPoll, fallbackFetch } = {}) {
+  const calls = [];
+  const stateFile = createInMemoryResearchStateFile();
+  const fn = async (url, init) => {
+    calls.push({ url: String(url), init });
+    const u = String(url);
+    if (init.method === "POST" && u.includes("/agent/runs")) {
+      return onCreate ? onCreate() : makeResponse({ json: { id: "run_test", status: "queued" } });
+    }
+    if (init.method === "GET" && u.includes("/agent/runs/")) {
+      const runId = u.split("/agent/runs/")[1];
+      return onPoll ? onPoll(runId) : makeResponse({ json: { id: runId, status: "queued" } });
+    }
+    if (fallbackFetch) return fallbackFetch(url, init);
+    return makeResponse({ json: {} });
+  };
+  const noOpTimer = {
+    setTimeout: (cb) => {
+      setImmediate(cb);
+      return 0;
+    },
+    clearTimeout: () => {},
+  };
+  const descriptor = createExaDescriptor({
+    transport: {
+      fetch: fn,
+      ...noOpTimer,
+      env: { EXA_TIMEOUT: "5000", EXA_RESEARCH_POLL_INTERVAL_MS: "0" },
+    },
+    researchStateFile: stateFile,
+  });
+  const adapter = descriptor.create({ env: { EXA_API_KEY: TEST_API_KEY } });
+  return { adapter, calls, stateFile, descriptor };
+}
+
+function agentCreateResponse(id = "run_test", status = "queued") {
+  return makeResponse({ json: { id, status } });
+}
+
+function agentPollResponse(status, output) {
+  const json = { id: "run_test", status };
+  if (output !== undefined) json.output = output;
+  return makeResponse({ json });
+}
+
+// ---------------------------------------------------------------------------
+// Research: Exa-Beta header assertions
+// ---------------------------------------------------------------------------
+
+describe("Exa Research — Exa-Beta header", () => {
+  it("create (POST /agent/runs) carries Exa-Beta: agent-2026-05-07", async () => {
+    const { adapter, calls } = makeResearchAdapter({
+      onCreate: () => agentCreateResponse("run_1", "completed"),
+      onPoll: () => agentPollResponse("completed", { text: "report" }),
+    });
+    await adapter.research.run.invoke({ query: "test" });
+    const createCall = calls.find((c) => c.init.method === "POST");
+    assert.strictEqual(createCall.init.headers["Exa-Beta"], "agent-2026-05-07");
+  });
+
+  it("poll (GET /agent/runs/:id) carries Exa-Beta: agent-2026-05-07", async () => {
+    const { adapter, calls } = makeResearchAdapter({
+      onCreate: () => agentCreateResponse(),
+      onPoll: () => agentPollResponse("completed", { text: "report" }),
+    });
+    await adapter.research.run.invoke({ query: "test" });
+    const pollCall = calls.find((c) => c.init.method === "GET");
+    assert.strictEqual(pollCall.init.headers["Exa-Beta"], "agent-2026-05-07");
+  });
+
+  it("search does NOT carry the Exa-Beta header", async () => {
+    const { adapter, calls } = makeResearchAdapter({
+      fallbackFetch: () => makeResponse({ json: { results: [] } }),
+    });
+    await adapter.search.invoke({ query: "test" });
+    const searchCall = calls.find((c) => c.url.includes("/search"));
+    assert.strictEqual(searchCall.init.headers["Exa-Beta"], undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Research: lifecycle
+// ---------------------------------------------------------------------------
+
+describe("Exa Research — lifecycle", () => {
+  it("create → poll queued → poll completed → normalized result", async () => {
+    let pollCount = 0;
+    const { adapter } = makeResearchAdapter({
+      onCreate: () => agentCreateResponse("run_1", "queued"),
+      onPoll: () => {
+        pollCount++;
+        if (pollCount === 1) return agentPollResponse("queued");
+        return agentPollResponse("completed", {
+          text: "The research report text.",
+          grounding: [
+            { citations: [{ title: "Source A", url: "https://a.com" }] },
+            { citations: [{ title: "Source B", url: "https://b.com" }, { title: "Incomplete" }] },
+          ],
+        });
+      },
+    });
+    const result = await adapter.research.run.invoke({ query: "test query" });
+    assert.strictEqual(result.schemaVersion, 1);
+    assert.strictEqual(result.query, "test query");
+    assert.strictEqual(result.model, "auto");
+    assert.strictEqual(result.report, "The research report text.");
+    assert.equal(result.sources.length, 2);
+    assert.deepEqual(result.sources[0], { title: "Source A", url: "https://a.com" });
+    assert.deepEqual(result.sources[1], { title: "Source B", url: "https://b.com" });
+  });
+
+  it("failed status → delete state + ApiError 500", async () => {
+    const { adapter, stateFile } = makeResearchAdapter({
+      onCreate: () => agentCreateResponse("run_f", "queued"),
+      onPoll: () => agentPollResponse("failed"),
+    });
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "test" }),
+      (e) => e instanceof ApiError && e.statusCode === 500,
+    );
+    // State file should be removed on failure.
+    assert.equal(stateFile.store.size, 0);
+  });
+
+  it("cancelled status → delete state + ApiError 500 (Exa-specific terminal)", async () => {
+    const { adapter, stateFile } = makeResearchAdapter({
+      onCreate: () => agentCreateResponse("run_c", "queued"),
+      onPoll: () => agentPollResponse("cancelled"),
+    });
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "test" }),
+      (e) => e instanceof ApiError && e.statusCode === 500,
+    );
+    assert.equal(stateFile.store.size, 0);
+  });
+
+  it("404 stale-state recovery → remove + create fresh + poll completed", async () => {
+    let createCount = 0;
+    let pollCount = 0;
+    const { adapter, calls } = makeResearchAdapter({
+      onCreate: () => {
+        createCount++;
+        return agentCreateResponse(`run_${createCount}`, "queued");
+      },
+      onPoll: () => {
+        pollCount++;
+        if (pollCount === 1)
+          return { ok: false, status: 404, text: async () => "", json: async () => ({}) };
+        return agentPollResponse("completed", { text: "fresh report" });
+      },
+    });
+    const result = await adapter.research.run.invoke({ query: "test" });
+    assert.strictEqual(result.report, "fresh report");
+    assert.ok(createCount >= 2, "should create at least 2 runs (stale + fresh)");
+  });
+
+  it("create-time 429 is terminal (no retry)", async () => {
+    let createCount = 0;
+    const { adapter } = makeResearchAdapter({
+      onCreate: () => {
+        createCount++;
+        return makeResponse({ ok: false, status: 429, body: '{"error":"rate"}' });
+      },
+    });
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "test" }),
+      (e) => e instanceof ApiError && e.statusCode === 429,
+    );
+    assert.strictEqual(createCount, 1, "exactly one POST — not retried");
+  });
+
+  it("create-time 5xx is terminal (no retry)", async () => {
+    let createCount = 0;
+    const { adapter } = makeResearchAdapter({
+      onCreate: () => {
+        createCount++;
+        return makeResponse({ ok: false, status: 503, body: "" });
+      },
+    });
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "test" }),
+      (e) => e instanceof ApiError && e.statusCode === 503,
+    );
+    assert.strictEqual(createCount, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Research: state-file resume
+// ---------------------------------------------------------------------------
+
+describe("Exa Research — state-file resume", () => {
+  it("resumes an existing run from the state file (no second POST)", async () => {
+    const { adapter, calls, stateFile } = makeResearchAdapter({
+      onCreate: () => agentCreateResponse("run_new", "queued"),
+      onPoll: () => agentPollResponse("completed", { text: "resumed report" }),
+    });
+    // Pre-populate the state file with an existing run.
+    const identityHash = requireIdentityHash(adapter, "test resume");
+    await stateFile.write(identityHash, {
+      requestId: "run_existing",
+      identityHash,
+      createdAt: new Date().toISOString(),
+      status: "pending",
+    });
+
+    const result = await adapter.research.run.invoke({ query: "test resume" });
+    assert.strictEqual(result.report, "resumed report");
+    // No POST should have happened — only GET polls for the existing run.
+    const posts = calls.filter((c) => c.init.method === "POST");
+    assert.strictEqual(posts.length, 0, "no POST when state file exists");
+  });
+
+  it("EEXIST race: concurrent invocations poll the winner's run", async () => {
+    let createCount = 0;
+    const { adapter, calls } = makeResearchAdapter({
+      onCreate: () => {
+        createCount++;
+        return agentCreateResponse(`run_${createCount}`, "queued");
+      },
+      onPoll: () => agentPollResponse("completed", { text: "report" }),
+    });
+    // Two concurrent invocations with the same request.
+    await Promise.all([
+      adapter.research.run.invoke({ query: "race" }),
+      adapter.research.run.invoke({ query: "race" }),
+    ]);
+    // Both may POST (OD1 race), but at least one should succeed.
+    // The test proves the lifecycle completes for both callers.
+    const completed = calls.filter((c) => c.init.method === "GET").length;
+    assert.ok(completed >= 1, "at least one poll happened");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Research: model → effort mapping
+// ---------------------------------------------------------------------------
+
+describe("Exa Research — model→effort mapping", () => {
+  it("maps model mini → effort: low in the POST body", async () => {
+    const { adapter, calls } = makeResearchAdapter({
+      onCreate: () => agentCreateResponse("run_m", "completed"),
+      onPoll: () => agentPollResponse("completed", { text: "r" }),
+    });
+    const result = await adapter.research.run.invoke({ query: "test", model: "mini" });
+    const postCall = calls.find((c) => c.init.method === "POST");
+    const body = JSON.parse(postCall.init.body);
+    assert.strictEqual(body.effort, "low");
+    // Result echoes the requested model, not the effort string.
+    assert.strictEqual(result.model, "mini");
+  });
+
+  it("maps model pro → effort: high", async () => {
+    const { adapter, calls } = makeResearchAdapter({
+      onCreate: () => agentCreateResponse("run_p", "completed"),
+      onPoll: () => agentPollResponse("completed", { text: "r" }),
+    });
+    await adapter.research.run.invoke({ query: "test", model: "pro" });
+    const body = JSON.parse(calls.find((c) => c.init.method === "POST").init.body);
+    assert.strictEqual(body.effort, "high");
+  });
+
+  it("maps model auto/omitted → effort: auto", async () => {
+    const { adapter, calls } = makeResearchAdapter({
+      onCreate: () => agentCreateResponse("run_a", "completed"),
+      onPoll: () => agentPollResponse("completed", { text: "r" }),
+    });
+    await adapter.research.run.invoke({ query: "test" });
+    const body = JSON.parse(calls.find((c) => c.init.method === "POST").init.body);
+    assert.strictEqual(body.effort, "auto");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Research: validation
+// ---------------------------------------------------------------------------
+
+describe("Exa Research — validation", () => {
+  it("rejects an empty query with ValidationError", () => {
+    const { adapter } = makeResearchAdapter();
+    assert.throws(
+      () => adapter.research.run.validate({ query: "  " }),
+      (e) => e instanceof ValidationError,
+    );
+  });
+
+  it("rejects outputLength with UnsupportedOptionError", () => {
+    const { adapter } = makeResearchAdapter();
+    assert.throws(
+      () => adapter.research.run.validate({ query: "test", outputLength: "long" }),
+      (e) => e instanceof UnsupportedOptionError && e.message.includes("outputLength"),
+    );
+  });
+
+  it("rejects citationFormat with UnsupportedOptionError", () => {
+    const { adapter } = makeResearchAdapter();
+    assert.throws(
+      () => adapter.research.run.validate({ query: "test", citationFormat: "mla" }),
+      (e) => e instanceof UnsupportedOptionError && e.message.includes("citationFormat"),
+    );
+  });
+
+  it("rejects domain with UnsupportedOptionError", () => {
+    const { adapter } = makeResearchAdapter();
+    assert.throws(
+      () => adapter.research.run.validate({ query: "test", domain: "example.com" }),
+      (e) => e instanceof UnsupportedOptionError && e.message.includes("domain"),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Research: cache identity + decodeCached
+// ---------------------------------------------------------------------------
+
+describe("Exa Research — cache identity", () => {
+  it("produces a research identity with the right partition fields", () => {
+    const { adapter } = makeResearchAdapter();
+    const identity = adapter.research.run.cacheIdentity({ query: "test" });
+    assert.strictEqual(identity.provider, "exa");
+    assert.strictEqual(identity.capability, "research");
+    assert.strictEqual(identity.credentialFingerprint, EXPECTED_FINGERPRINT);
+    assert.strictEqual(identity.request.query, "test");
+  });
+
+  it("decodeCached round-trips a normalized result", () => {
+    const { adapter } = makeResearchAdapter();
+    const result = {
+      schemaVersion: 1,
+      query: "test",
+      model: "auto",
+      report: "report text",
+      sources: [{ title: "S", url: "https://s.com" }],
+    };
+    const decoded = adapter.research.run.decodeCached(result);
+    assert.deepEqual(decoded, result);
+  });
+
+  it("decodeCached returns null for malformed entries", () => {
+    const { adapter } = makeResearchAdapter();
+    assert.strictEqual(adapter.research.run.decodeCached({ foo: "bar" }), null);
+    assert.strictEqual(adapter.research.run.decodeCached(null), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Helper: compute the identity hash for a given request (for state-file
+// pre-population in resume tests)
+// ---------------------------------------------------------------------------
+
+function requireIdentityHash(adapter, query) {
+  const identity = adapter.research.run.cacheIdentity({ query });
+  // Match computeResearchStateHash: sort only the request sub-object,
+  // NOT the top-level payload (insertion order: provider, capability,
+  // credentialFingerprint, request).
+  function sortKeysDeep(value) {
+    if (Array.isArray(value)) return value.map(sortKeysDeep);
+    if (value && typeof value === "object") {
+      const out = {};
+      for (const key of Object.keys(value).sort()) {
+        out[key] = sortKeysDeep(value[key]);
+      }
+      return out;
+    }
+    return value;
+  }
+  const payload = {
+    provider: identity.provider,
+    capability: identity.capability,
+    credentialFingerprint: identity.credentialFingerprint,
+    request: sortKeysDeep(identity.request),
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}

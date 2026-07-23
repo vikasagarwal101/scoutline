@@ -40,7 +40,17 @@ const { version: VERSION } = require("../../../package.json") as { version: stri
 const BASE_URL = "https://api.exa.ai";
 const SEARCH_PATH = "/search";
 const CONTENTS_PATH = "/contents";
+const AGENT_RUNS_PATH = "/agent/runs";
 const DEFAULT_TIMEOUT_MS = 30000;
+
+/**
+ * Pinned Exa Agent API beta version. Every `/agent/runs*` request
+ * (create, poll) MUST carry `Exa-Beta: <this value>` or the endpoint
+ * returns 400 before any lifecycle logic runs. The header is
+ * endpoint-scoped — search and contents calls do NOT send it. Pin as a
+ * transport constant so a future version bump is a one-line change.
+ */
+const EXA_BETA_HEADER = "agent-2026-05-07";
 
 const USER_AGENT = `scoutline/${VERSION}`;
 const TIMEOUT_HELP_TEXT = "Try again or increase timeout with EXA_TIMEOUT env var";
@@ -158,6 +168,7 @@ async function postExaJson(
   body: Record<string, unknown>,
   deps: ExaTransportDeps,
   endpointLabel: string,
+  extraHeaders?: Record<string, string>,
 ): Promise<unknown> {
   const f = deps.fetch ?? (fetch as unknown as ProviderQuotaFetch);
   const setT = deps.setTimeout ?? setTimeout;
@@ -169,13 +180,19 @@ async function postExaJson(
   const controller = new AbortController();
   const timeoutId = setT(() => controller.abort(), timeoutMs);
   try {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "User-Agent": USER_AGENT,
+    };
+    if (extraHeaders) {
+      for (const [key, value] of Object.entries(extraHeaders)) {
+        headers[key] = value;
+      }
+    }
     const res = await f(url, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "User-Agent": USER_AGENT,
-      },
+      headers,
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -262,4 +279,168 @@ export async function fetchExaContents(
     body.livecrawlTimeout = params.livecrawlTimeout;
   }
   return postExaJson(apiKey, CONTENTS_PATH, body, deps, "contents");
+}
+
+// ---------------------------------------------------------------------------
+// Agent — async create/poll transport (tech-plan §7, Research Lifecycle)
+// ---------------------------------------------------------------------------
+
+/**
+ * Provider-native Agent run request body fields (Exa API field names,
+ * camelCase). The Adapter maps the Provider-neutral `ResearchRequest`
+ * into these before calling {@link createExaAgentRun}; the transport
+ * never imports a capability contract.
+ */
+export interface ExaAgentRunParams {
+  readonly query: string;
+  readonly effort?: string;
+}
+
+/**
+ * Structured result of POST /agent/runs. The endpoint returns
+ * `{ id, status }` on success.
+ */
+export interface ExaAgentRunCreateResult {
+  readonly id: string;
+  readonly status: string;
+}
+
+/**
+ * Structured result of GET /agent/runs/{id}. `output` is passed as raw
+ * `unknown` — the Adapter normalizes it into a `ResearchResult`.
+ *
+ * `status: "not_found"` is returned (not thrown) for HTTP 404 so the
+ * Adapter can treat a stale state file as "delete it and create a new
+ * run" rather than a terminal transport error.
+ */
+export interface ExaAgentRunPollResult {
+  readonly status: "queued" | "running" | "completed" | "failed" | "cancelled" | "not_found";
+  readonly output?: unknown;
+}
+
+/**
+ * Perform ONE POST against the Exa /agent/runs endpoint. No retry; no
+ * response body in public errors. Returns the structured create result
+ * `{ id, status }`.
+ *
+ * **MUST send** the `Exa-Beta: agent-2026-05-07` header — the endpoint
+ * returns 400 without it. Shared execution wraps this with
+ * `maxRetries: 0` (double-charge prevention on a usage-based endpoint),
+ * so a transient create-time failure is terminal.
+ */
+export async function createExaAgentRun(
+  apiKey: string,
+  params: ExaAgentRunParams,
+  deps: ExaTransportDeps = {},
+): Promise<ExaAgentRunCreateResult> {
+  const body: Record<string, unknown> = { query: params.query };
+  if (params.effort !== undefined) {
+    body.effort = params.effort;
+  }
+  const raw = await postExaJson(apiKey, AGENT_RUNS_PATH, body, deps, "agent-run", {
+    "Exa-Beta": EXA_BETA_HEADER,
+  });
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ApiError("Exa agent run returned a malformed response", 500);
+  }
+  const obj = raw as Record<string, unknown>;
+  const id = obj.id;
+  const status = obj.status;
+  if (typeof id !== "string" || id.length === 0) {
+    throw new ApiError("Exa agent run returned a malformed response", 500);
+  }
+  return { id, status: typeof status === "string" ? status : "queued" };
+}
+
+/**
+ * Perform ONE GET against the Exa /agent/runs/{id} endpoint. No retry.
+ * Returns a structured poll result.
+ *
+ * **MUST send** the `Exa-Beta: agent-2026-05-07` header.
+ *
+ * Unlike other GETs, a 404 is NOT a terminal transport error here: it
+ * means the server-side run expired/disappeared, so the Adapter can
+ * delete the stale state file and create a fresh run. The poll result
+ * carries `status: "not_found"` for that case. All other non-2xx statuses
+ * throw the standard mapped error.
+ */
+export async function pollExaAgentRun(
+  apiKey: string,
+  runId: string,
+  deps: ExaTransportDeps = {},
+): Promise<ExaAgentRunPollResult> {
+  const f = deps.fetch ?? (fetch as unknown as ProviderQuotaFetch);
+  const setT = deps.setTimeout ?? setTimeout;
+  const clearT = deps.clearTimeout ?? clearTimeout;
+  const env = deps.env ?? process.env;
+  const timeoutMs = resolveTimeoutMs(env);
+
+  const url = `${BASE_URL}${AGENT_RUNS_PATH}/${encodeURIComponent(runId)}`;
+  const controller = new AbortController();
+  const timeoutId = setT(() => controller.abort(), timeoutMs);
+  try {
+    let res;
+    try {
+      res = await f(url, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "User-Agent": USER_AGENT,
+          "Exa-Beta": EXA_BETA_HEADER,
+        },
+        signal: controller.signal,
+      });
+      clearT(timeoutId);
+    } catch (err) {
+      clearT(timeoutId);
+      throw normalizeTransportError(err, timeoutMs);
+    }
+
+    if (res.status === 404) {
+      await res.text().catch(() => {});
+      return { status: "not_found" };
+    }
+    if (!res.ok) {
+      await res.text().catch(() => {});
+      throw mapStatusError(res.status, timeoutMs);
+    }
+    let parsed: unknown;
+    try {
+      parsed = await res.json();
+    } catch {
+      throw new ApiError("Exa agent run returned a malformed response", 500);
+    }
+    return normalizeAgentRunPollResult(parsed);
+  } finally {
+    controller.abort();
+  }
+}
+
+/**
+ * Normalize a parsed poll body into an {@link ExaAgentRunPollResult}.
+ * Accepts `{ status, output? }`. Unknown/missing status maps to a
+ * malformed-response error so the Adapter never silently advances on
+ * garbage. The raw `output` is passed through for the Adapter to
+ * normalize.
+ */
+function normalizeAgentRunPollResult(value: unknown): ExaAgentRunPollResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ApiError("Exa agent run returned a malformed response", 500);
+  }
+  const obj = value as Record<string, unknown>;
+  const status = obj.status;
+  if (
+    status !== "queued" &&
+    status !== "running" &&
+    status !== "completed" &&
+    status !== "failed" &&
+    status !== "cancelled"
+  ) {
+    throw new ApiError("Exa agent run returned a malformed response", 500);
+  }
+  const result: ExaAgentRunPollResult = { status };
+  if (status === "completed" && obj.output !== undefined) {
+    return { status, output: obj.output };
+  }
+  return result;
 }

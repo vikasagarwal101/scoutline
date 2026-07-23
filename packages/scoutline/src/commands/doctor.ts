@@ -235,7 +235,7 @@ Doctor - Provider-aware environment and connectivity diagnostics
 Usage: scoutline doctor [options]
 
 Reports a schema-version-2 diagnostics report listing every built-in
-Provider (zai, minimax, tavily) with its configured state, declared
+Provider (zai, minimax, tavily, firecrawl) with its configured state, declared
 Capabilities, and connectivity status. The effective Provider (resolved
 from --provider, SCOUTLINE_PROVIDER, or the default zai) is the
 Provider that serves a requested capability. The capabilityMatrix field

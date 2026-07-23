@@ -253,10 +253,10 @@ describe("Search Adapter conformance — shared normalized output", () => {
 // ---------------------------------------------------------------------------
 
 describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
-  it("contains exactly [zai, minimax, tavily] in that order", () => {
+  it("contains exactly [zai, minimax, tavily, firecrawl] in that order", () => {
     assert.deepStrictEqual(
       BUILT_IN_PROVIDER_DESCRIPTORS.map((d) => d.id),
-      ["zai", "minimax", "tavily"],
+      ["zai", "minimax", "tavily", "firecrawl"],
     );
   });
 
@@ -282,15 +282,26 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     const tv = getProviderDescriptor("tavily");
     assert.strictEqual(tv.isConfigured({ TAVILY_API_KEY: "k" }), true);
     assert.strictEqual(tv.isConfigured({}), false);
+    const fc = getProviderDescriptor("firecrawl");
+    assert.strictEqual(fc.isConfigured({ FIRECRAWL_API_KEY: "fc-test" }), true);
+    assert.strictEqual(fc.isConfigured({}), false);
   });
 
   it("descriptor creation is side-effect-free (no transport construction)", () => {
-    // Every built-in descriptor now has a real Adapter whose create()
-    // is side-effect-free.
+    // Every built-in descriptor with a shipped Adapter has a
+    // side-effect-free create(). Firecrawl's Adapter arrives in FC-03;
+    // its create() throws "not yet implemented" (asserted in the next
+    // test) and is skipped here.
     for (const d of BUILT_IN_PROVIDER_DESCRIPTORS) {
+      if (d.id === "firecrawl") continue;
       const adapter = d.create({ env: {} });
       assert.strictEqual(typeof adapter.search, "object");
     }
+  });
+
+  it("firecrawl create() throws a clear not-yet-implemented error (FC-02 foundation)", () => {
+    const fc = getProviderDescriptor("firecrawl");
+    assert.throws(() => fc.create({ env: {} }), /not yet implemented/i);
   });
 
   it("tavily create() returns an adapter with search, reader, and crawl", () => {

@@ -146,7 +146,7 @@ Options:
   --no-cache           Bypass the response cache for this invocation
 
 Common Options:
-  --provider <id>            Override the active Provider (zai | minimax | tavily)
+  --provider <id>            Override the active Provider (zai | minimax | tavily | firecrawl)
   --output-format <mode>     One of: ${OUTPUT_MODE_LIST} (default: data)
   -O <mode>                  Alias for --output-format
 

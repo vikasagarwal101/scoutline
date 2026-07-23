@@ -22,6 +22,7 @@ import { formatErrorOutput } from "../dist/lib/output.js";
 const Z_KEY = "zai-secret-key-value-AAA";
 const Z_ALIAS_KEY = "zai-secret-alias-key-value-BBB";
 const M_KEY = "minimax-secret-key-value-CCC";
+const FC_KEY = "fc-test-secret-key-GGG";
 const BEARER = "Bearer zai-secret-bearer-token-DDD";
 const X_API = "x-api-key secret-x-api-key-value-EEE";
 const EMBEDDED = "https://user:minimax-secret-embedded-FFF@host/path";
@@ -240,6 +241,21 @@ describe("redactCredentialString — single-string redaction", () => {
     assert.strictEqual(redactCredentialString(`Z_AI_API_KEY=${Z_KEY}`), "[REDACTED]");
     assert.strictEqual(redactCredentialString(`ZAI_API_KEY=${Z_ALIAS_KEY}`), "[REDACTED]");
     assert.strictEqual(redactCredentialString(`MINIMAX_API_KEY=${M_KEY}`), "[REDACTED]");
+  });
+
+  it("redacts FIRECRAWL_API_KEY assignments (FC-02)", () => {
+    // Env-var assignment forms (= and : separators).
+    assert.strictEqual(redactCredentialString(`FIRECRAWL_API_KEY=${FC_KEY}`), "[REDACTED]");
+    assert.strictEqual(redactCredentialString(`FIRECRAWL_API_KEY: ${FC_KEY}`), "[REDACTED]");
+    // A bare fc- token is NOT prefix-matched (unlike tvly-): the `fc-`
+    // prefix is too short to avoid false positives (e.g. the "FC-03"
+    // ticket id), so bare-key redaction relies on the configured-secret
+    // value loop in production (configuredSecrets). Supplied as a secret,
+    // the value is redacted wherever it appears.
+    assert.strictEqual(
+      redactCredentialString(`key was ${FC_KEY} here`, [FC_KEY]),
+      "key was [REDACTED] here",
+    );
   });
 
   it("F5: redacts colon separator forms (JSON/header/YAML)", () => {

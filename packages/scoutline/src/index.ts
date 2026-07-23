@@ -80,7 +80,7 @@ Commands:
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
 
 Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER, then zai):
-  --provider <zai|minimax|tavily>   Select the active Provider for shared capabilities
+  --provider <zai|minimax|tavily|firecrawl>   Select the active Provider for shared capabilities
   SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
 
 Shared capabilities accept --provider. The 'repo', 'read', 'crawl', 'map',

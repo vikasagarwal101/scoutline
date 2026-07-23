@@ -41,6 +41,16 @@ operational Capabilities. Tavily alone advertises `crawl`, `map`, and
 `research` at launch.
 _Avoid_: Tavily API, Tavily MCP
 
+**Exa**:
+The fourth Provider. Its confirmed Capabilities are Search, Reader
+(via the Exa `/contents` endpoint with per-URL status inspection),
+and Research (via the Exa Agent API with `Exa-Beta` header and
+state-file resume). The base release also normalizes its diagnostic
+probe as an operational Capability. Quota is deferred pending
+investigation of the team-management API (separate service key and
+dollar-unit modeling). Exa advertises neither Crawl nor Map.
+_Avoid_: Exa API, Exa AI
+
 ## Flagged Ambiguities
 
 **Vision**:
@@ -49,13 +59,17 @@ comparison, and video analysis. The shared Capability currently proven across
 Z.AI and MiniMax Token Plan is only single-image interpretation; broader Vision
 parity remains unresolved.
 
-**Crawl, Map, Research**:
-These three Capabilities are Tavily-only at launch. They are not
-shared with Z.AI or MiniMax Token Plan, and there is no Provider
-fallback. Selecting a non-Tavily Provider for any of these commands
-returns `UNSUPPORTED_CAPABILITY` with no fallback. The cross-Provider
-search control `--topic <general|news|finance>` is NOT a Crawl/Map/
-Research control; those Capabilities do not currently accept a topic.
+**Crawl, Map**:
+These two Capabilities are Tavily-only at launch. They are not
+shared with Z.AI, MiniMax Token Plan, or Exa, and there is no Provider
+fallback. Selecting a non-Tavily Provider for either command returns
+`UNSUPPORTED_CAPABILITY` with no fallback.
+
+**Research**:
+This Capability is shared between Tavily and Exa. Z.AI and MiniMax
+do not advertise it. The cross-Provider search control
+`--topic <general|news|finance>` is NOT a Research control; the
+Capability does not currently accept a topic.
 
 ## Example Dialogue
 
@@ -67,10 +81,11 @@ provider tools remain distinct from Scoutline's Normal commands."
 
 Developer: "Can I run a deep-research task with the Z.AI Provider?"
 
-Domain expert: "No. Tavily is the only Provider that currently advertises the
-`research` Capability. Selecting Z.AI or MiniMax for `scoutline research`
-returns `UNSUPPORTED_CAPABILITY` with no fallback. The same is true for
-`scoutline crawl` and `scoutline map`."
+Domain expert: "No. Tavily and Exa are the Providers that currently
+advertise the `research` Capability. Selecting Z.AI or MiniMax for
+`scoutline research` returns `UNSUPPORTED_CAPABILITY` with no fallback.
+The same is true for `scoutline crawl` and `scoutline map` — those two
+are Tavily-only (Exa does not advertise them either)."
 
 Developer: "Is `--topic` available on every Provider?"
 
@@ -78,4 +93,4 @@ Domain expert: "Yes. `--topic <general|news|finance>` is accepted by every
 Provider, but its implementation differs: Tavily passes the topic natively to
 its API; Z.AI and MiniMax lack a native topic parameter, so the Adapter
 appends a small keyword to the query string inside `invoke()` (see
-`lib/search-topic.ts`)."
+`lib/search-topic.ts`); Exa maps it to a `category` parameter."

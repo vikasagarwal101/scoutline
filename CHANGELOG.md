@@ -4,6 +4,50 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Exa Provider** as the fourth built-in Provider. New module
+  `src/providers/exa/` with the direct-HTTP Adapter, credentials
+  module, and a shared `ExaTransportDeps` injection seam (fetch +
+  timers). Default endpoint `https://api.exa.ai`; credential
+  `EXA_API_KEY`. The production registry at
+  `src/providers/registry.ts` grows from `[zai, minimax, tavily]` to
+  `[zai, minimax, tavily, exa]`.
+- **Exa capabilities** (3):
+  - `search` — same normalized `SearchSource[]` shape; accepts
+    `domain`, `recency`, `content-size`, and `topic` natively (Exa
+    maps topic to a `category` parameter); rejects `location` with
+    `UNSUPPORTED_OPTION`. Exa uses camelCase JSON bodies and always
+    sends `contents: { highlights: true }`; `highlights[]` are
+    space-joined into the `summary` field.
+  - `reader` — backed by the Exa `/contents` endpoint. Implements a
+    per-URL status total function: `/contents` returns HTTP 200 even
+    on per-URL failure, so the adapter inspects `statuses[]` (matched
+    by `id == request.url`) before reading results. Timeout conversion:
+    `livecrawlTimeout = request.timeout * 1000` (CLI seconds → Exa
+    milliseconds). `--format text` triggers a best-effort markdown
+    strip. Z.AI-only reader options are rejected.
+  - `research` — backed by the Exa Agent API (`POST /agent/runs` +
+    `GET /agent/runs/{id}` poll). Requires the pinned
+    `Exa-Beta: agent-2026-05-07` header on Agent endpoints only.
+    State-file resume reuses the shared `lib/research-state.ts`
+    (Ctrl-C + re-run polls the existing run, no second POST). Model
+    mapping: `auto`→auto, `mini`→low, `pro`→high (result echoes the
+    requested model). `--output-length`, `--citation-format`, and
+    `--domain` are rejected (concepts the Agent lacks). `cancelled`
+    status is terminal (Exa-specific).
+- **Exa operational capability** (1):
+  - `diagnostics` — lightweight `/search` probe with a stub query,
+    fed into the existing doctor pipeline.
+- **`--all-providers` quota filter** — `buildAllProvidersDashboard`
+  now filters configured descriptors by advertised `quota`
+  capability, so a provider without quota (Exa) is cleanly omitted
+  from `scoutline quota --all-providers` (no failure entry, no exit 1).
+- **`EXA_API_KEY` redaction** — added to `CREDENTIAL_KEYS`, the
+  assignment regex, and `configuredSecrets` in `lib/redact.ts`.
+- **CONTEXT.md** — Exa glossary entry as the fourth Provider;
+  Research Flagged Ambiguity updated to reflect the Tavily+Exa
+  sharing; example dialogue updated.
+
 ## [0.7.0] - 2026-07-23
 
 ### Added

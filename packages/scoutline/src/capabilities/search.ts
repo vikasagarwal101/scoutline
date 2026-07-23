@@ -35,10 +35,20 @@ export type SearchRecency = "oneDay" | "oneWeek" | "oneMonth" | "oneYear" | "noL
 export type SearchTopic = "general" | "news" | "finance";
 
 /**
+ * Content-type axis. `video` selects video result content. It is a
+ * content axis, not an editorial topic axis, so `type` and `topic` are
+ * mutually exclusive (enforced at parse time). No Provider supports
+ * `type` yet — every adapter rejects it with `UNSUPPORTED_OPTION` until
+ * a later ticket wires Provider video dispatch.
+ */
+export type SearchType = "video";
+
+/**
  * Provider controls accepted by the Search Capability. Every field is
  * optional. MiniMax rejects `domain`, `recency`, `contentSize`, and
  * `location` with `UNSUPPORTED_OPTION` before any SDK access. `topic`
- * is accepted by all adapters.
+ * is accepted by all adapters. `type` is rejected by every adapter
+ * (provider support for `video` arrives in a later ticket).
  */
 export interface SearchControls {
   domain?: string;
@@ -46,6 +56,7 @@ export interface SearchControls {
   contentSize?: "medium" | "high";
   location?: "cn" | "us";
   topic?: SearchTopic;
+  type?: SearchType;
 }
 
 /**

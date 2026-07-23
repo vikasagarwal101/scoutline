@@ -17,6 +17,7 @@ import type {
   SearchRequest,
   SearchSource,
   SearchTopic,
+  SearchType,
 } from "../capabilities/search.js";
 import type { ResponseCache } from "../lib/cache.js";
 import type { RetryPolicy } from "../lib/execution.js";
@@ -32,6 +33,7 @@ export interface SearchOptions {
   contentSize?: "medium" | "high";
   location?: "cn" | "us";
   topic?: SearchTopic;
+  type?: SearchType;
   maxSummary?: number;
   fields?: string[];
   noCache?: boolean;
@@ -93,6 +95,7 @@ function buildControls(options: SearchOptions): SearchControls | undefined {
   if (options.contentSize) controls.contentSize = options.contentSize;
   if (options.location) controls.location = options.location;
   if (options.topic) controls.topic = options.topic;
+  if (options.type) controls.type = options.type;
   return Object.keys(controls).length > 0 ? controls : undefined;
 }
 
@@ -244,27 +247,31 @@ export async function search(
 
 // Help text
 export const SEARCH_HELP = `
-Search Command - Real-time web search (Z.AI, MiniMax, or Tavily)
+Search Command - Real-time web search (Z.AI, MiniMax, Tavily, or Brave)
 
 Usage: scoutline search <query> [options]
 
 Provider selection (precedence: explicit flag, then SCOUTLINE_PROVIDER, then zai):
-  --provider <zai|minimax|tavily>   Select the search provider (default: zai)
-  SCOUTLINE_PROVIDER=<id>           Fallback when --provider is not passed
+  --provider <zai|minimax|tavily|brave>   Select the search provider (default: zai)
+  SCOUTLINE_PROVIDER=<id>                 Fallback when --provider is not passed
 
-Note: --domain, --recency, --content-size, and --location are Z.AI-only
-controls. They are rejected (UNSUPPORTED_OPTION) before invocation when
---provider minimax or tavily is selected. --topic is accepted by all
-providers.
+Note: support for the optional controls below varies by provider AND by
+control — a control accepted by one provider may be rejected
+(UNSUPPORTED_OPTION) by another before invocation. Run
+\`scoutline doctor\` for the live per-provider support matrix rather than
+relying on a fixed list here.
 
 Options:
   --topic <t>         Search topic hint (all providers): general, news, finance
                       (default: general). Z.AI/MiniMax append a keyword to the
-                      query; Tavily passes it natively.
-  --domain <d>        Limit to specific domain (Z.AI only; e.g., github.com)
-  --recency <r>       Filter by time (Z.AI only): oneDay, oneWeek, oneMonth, oneYear, noLimit
-  --content-size <s>  Content size (Z.AI only): medium, high
-  --location <l>      Location hint (Z.AI only): cn, us
+                      query; Tavily passes it natively; Brave uses a news endpoint
+                      for \`news\`.
+  --type <video>      Content-type axis; provider support varies (currently
+                      unsupported by every provider). Mutually exclusive with --topic.
+  --domain <d>        Limit to specific domain (provider support varies; e.g., github.com)
+  --recency <r>       Filter by time (provider support varies): oneDay, oneWeek, oneMonth, oneYear, noLimit
+  --content-size <s>  Content size (provider support varies): medium, high
+  --location <l>      Location hint (provider support varies): cn, us
   --count <n>         Limit number of results (applied after normalization)
   --max-summary <n>   Truncate each result summary to <n> chars (JSON modes only)
   --fields <a,b,c>    Field allowlist for JSON output (e.g. title,url)

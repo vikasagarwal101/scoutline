@@ -54,6 +54,7 @@ import {
   AuthError,
   NetworkError,
   TimeoutError,
+  UnsupportedOptionError,
   ValidationError,
 } from "../../lib/errors.js";
 import { getMcpToolName } from "../../lib/mcp-config.js";
@@ -228,6 +229,12 @@ function createZaiSearchCapability(options: ZaiSearchCapabilityOptions): SearchC
         throw new ValidationError(
           "Search query must contain at least one non-whitespace character",
         );
+      }
+      // Z.AI accepts every other control natively, but `type` (video
+      // content axis) is not yet supported by any provider; it is
+      // rejected here until a later ticket wires video dispatch.
+      if (request.controls?.type !== undefined) {
+        throw new UnsupportedOptionError("zai", "search", "type");
       }
     },
 

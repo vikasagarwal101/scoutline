@@ -547,6 +547,29 @@ export function parseAndValidateTopic(raw: unknown): "general" | "news" | "finan
   return str as "general" | "news" | "finance";
 }
 
+const SEARCH_TYPES = ["video"] as const;
+
+/**
+ * Validate the `--type` flag value BEFORE Provider resolution, mirroring
+ * `parseAndValidateTopic`. `type` is a content axis (not an editorial
+ * topic axis) and is mutually exclusive with `--topic` (checked in
+ * `handleSearch`). Exported for testing.
+ */
+export function parseAndValidateType(raw: unknown): "video" | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  if (raw === true) {
+    throw new ValidationError("Type requires a value.", `Use one of: ${SEARCH_TYPES.join(", ")}.`);
+  }
+  const str = typeof raw === "string" ? raw : String(raw);
+  if (!(SEARCH_TYPES as readonly string[]).includes(str)) {
+    throw new ValidationError(
+      `Invalid --type value "${str}": must be one of ${SEARCH_TYPES.join(", ")}`,
+      `Use one of: ${SEARCH_TYPES.join(", ")}.`,
+    );
+  }
+  return str as "video";
+}
+
 async function handleSearch(
   args: string[],
   outputMode: OutputMode,
@@ -564,9 +587,20 @@ async function handleSearch(
   // not depend on whether credentials are present: `search q --count nope`
   // with NO credentials must surface VALIDATION_ERROR (exit 1), not
   // CONFIGURATION_ERROR (exit 3). Order: parse global options -> validate
-  // count -> validate topic -> resolve provider -> check configured -> dispatch.
+  // count -> validate topic -> validate type -> reject type+topic combo
+  // -> resolve provider -> check configured -> dispatch.
   const count = parseAndValidateCount(flags.count);
   const topic = parseAndValidateTopic(flags.topic);
+  const type = parseAndValidateType(flags.type);
+  // `type` is a content axis; `topic` is an editorial axis. They are
+  // mutually exclusive. Enforced at parse time (before Provider
+  // resolution) so the error is VALIDATION_ERROR regardless of provider.
+  if (type !== undefined && topic !== undefined) {
+    throw new ValidationError(
+      "--type and --topic are mutually exclusive (--type has no editorial topic axis).",
+      "Pass either --type or --topic, not both.",
+    );
+  }
 
   // Resolve the Provider ONLY inside shared Search (DESIGN.md §6). Other
   // command families carry the parsed flag but never resolve or validate
@@ -616,6 +650,7 @@ async function handleSearch(
           contentSize: flags["content-size"] as "medium" | "high",
           location: flags.location as "cn" | "us",
           topic,
+          type,
           maxSummary: flags["max-summary"]
             ? parseInt(flags["max-summary"] as string, 10)
             : undefined,

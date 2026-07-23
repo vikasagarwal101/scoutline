@@ -493,6 +493,23 @@ describe("Brave Search Capability", () => {
     assert.strictEqual(fetchCalls, 0, "fetch must not be called for an unsupported control");
   });
 
+  it("rejects type (video) before any fetch — TEMPORARY scaffolding until T3b", async () => {
+    let fetchCalls = 0;
+    const { adapter } = makeSearchAdapter(async () => {
+      fetchCalls += 1;
+      return emptyWebResponse();
+    });
+    let thrown;
+    try {
+      await adapter.search.invoke({ query: "q", controls: { type: "video" } });
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof UnsupportedOptionError, "must be UnsupportedOptionError");
+    assert.ok(/brave/i.test(thrown.message) && /type/.test(thrown.message), thrown.message);
+    assert.strictEqual(fetchCalls, 0, "fetch must not be called for an unsupported control");
+  });
+
   it("rejects an empty/whitespace query with ValidationError before any fetch", async () => {
     let fetchCalls = 0;
     const { adapter } = makeSearchAdapter(async () => {

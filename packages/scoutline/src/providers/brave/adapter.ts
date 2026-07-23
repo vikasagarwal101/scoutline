@@ -88,8 +88,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * Controls the Brave Search Adapter does NOT accept in T2. `contentSize`
  * (LLM Context / `--content-size`) is deferred to T4; every other
  * control (`domain`/`recency`/`location`/`topic`) is honored here.
+ *
+ * `type` ("video") is TEMPORARY scaffolding: it is rejected here so the
+ * intermediate state is coherent (no silent fall-through to web search
+ * when a caller passes `--type video --provider brave`). T3b removes
+ * `"type"` from this list and dispatches `type:"video"` to the Brave
+ * video endpoint instead.
  */
-const UNSUPPORTED_CONTROLS = ["contentSize"] as const;
+const UNSUPPORTED_CONTROLS = ["contentSize", "type"] as const;
 
 function assertNoUnsupportedControls(request: SearchRequest): void {
   const controls = request.controls;

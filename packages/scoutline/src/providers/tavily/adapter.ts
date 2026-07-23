@@ -450,8 +450,13 @@ function createTavilySearchCapability(options: TavilySearchCapabilityOptions): S
       }
       // Tavily supports domain, recency, contentSize, and topic natively.
       // location is Z.AI-specific and rejected before any transport call.
+      // type (video content axis) is not yet supported by any provider;
+      // it is rejected here until a later ticket wires video dispatch.
       if (request.controls?.location !== undefined) {
         throw new UnsupportedOptionError("tavily", "search", "location");
+      }
+      if (request.controls?.type !== undefined) {
+        throw new UnsupportedOptionError("tavily", "search", "type");
       }
     },
 

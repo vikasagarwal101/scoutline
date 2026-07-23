@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-24
+
 ### Added
 - **Exa Provider** as the fourth built-in Provider. New module
   `src/providers/exa/` with the direct-HTTP Adapter, credentials

@@ -1043,6 +1043,39 @@ describe("Exa Research — lifecycle", () => {
     assert.equal(stateFile.store.size, 0);
   });
 
+  it("transient poll error (503) is retried — does not terminate research", async () => {
+    let pollCount = 0;
+    const { adapter } = makeResearchAdapter({
+      onCreate: () => agentCreateResponse("run_t", "queued"),
+      onPoll: () => {
+        pollCount++;
+        if (pollCount === 1) {
+          return { ok: false, status: 503, text: async () => "", json: async () => ({}) };
+        }
+        return agentPollResponse("completed", { text: "recovered report" });
+      },
+    });
+    const result = await adapter.research.run.invoke({ query: "test" });
+    assert.strictEqual(result.report, "recovered report");
+    assert.ok(pollCount >= 2, "poll retried after transient 503");
+  });
+
+  it("terminal poll error (401) is NOT retried — propagates immediately", async () => {
+    let pollCount = 0;
+    const { adapter } = makeResearchAdapter({
+      onCreate: () => agentCreateResponse("run_a", "queued"),
+      onPoll: () => {
+        pollCount++;
+        return { ok: false, status: 401, text: async () => "", json: async () => ({}) };
+      },
+    });
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "test" }),
+      (e) => e.constructor.name === "AuthError",
+    );
+    assert.strictEqual(pollCount, 1, "terminal auth error not retried");
+  });
+
   it("404 stale-state recovery → remove + create fresh + poll completed", async () => {
     let createCount = 0;
     let pollCount = 0;

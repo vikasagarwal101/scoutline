@@ -847,6 +847,20 @@ function normalizeExaResearchResult(
   };
 }
 
+/**
+ * True when an error from the poll GET is safe to retry. The poll is
+ * idempotent — retrying it never creates a new run or charges the
+ * account. Only transient failures (429, 5xx, network, timeout) qualify;
+ * auth/quota/validation errors are terminal and propagate immediately.
+ */
+function isTransientPollError(err: unknown): boolean {
+  if (err instanceof ApiError && typeof err.statusCode === "number") {
+    return err.statusCode === 429 || (err.statusCode >= 500 && err.statusCode <= 599);
+  }
+  if (err instanceof NetworkError || err instanceof TimeoutError) return true;
+  return false;
+}
+
 interface ExaResearchCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly transport?: ExaTransportDeps;
@@ -965,11 +979,30 @@ function createExaResearchCapability(options: ExaResearchCapabilityOptions): Res
         }
 
         // 3. Poll loop until terminal status.
+        //    The zero-retry policy wraps the whole invoke() and protects
+        //    the POST (create). The GET (poll) is idempotent and safe to
+        //    retry — a transient 429/5xx/network error on poll MUST NOT
+        //    terminate a paid research run that is still active
+        //    server-side. So we catch transient poll errors and retry
+        //    the GET (bounded by MAX_POLL_RETRIES) before propagating.
+        const MAX_POLL_RETRIES = 3;
+        let consecutivePollFailures = 0;
         for (;;) {
           if (signal?.aborted) {
             throw new TimeoutError(0, "Research polling aborted");
           }
-          const poll = await pollExaAgentRun(apiKey, runId, transport);
+          let poll: ExaAgentRunPollResult;
+          try {
+            poll = await pollExaAgentRun(apiKey, runId, transport);
+            consecutivePollFailures = 0;
+          } catch (pollErr) {
+            if (isTransientPollError(pollErr) && consecutivePollFailures < MAX_POLL_RETRIES) {
+              consecutivePollFailures++;
+              await sleep(pollIntervalMs);
+              continue;
+            }
+            throw pollErr;
+          }
 
           if (poll.status === "completed") {
             await researchStateFile.remove(identityHash);

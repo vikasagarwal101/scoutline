@@ -114,12 +114,20 @@ function parseFiniteNumber(value: string | undefined): number {
  * values are indeterminate (e.g. the arrays do not align by index).
  * Never guesses; never crashes.
  */
-export function normalizeBraveQuota(headers: {
-  readonly limit: string | null;
-  readonly policy: string | null;
-  readonly remaining: string | null;
-  readonly reset: string | null;
-}): ProviderQuotaSuccess {
+export function normalizeBraveQuota(
+  headers: {
+    readonly limit: string | null;
+    readonly policy: string | null;
+    readonly remaining: string | null;
+    readonly reset: string | null;
+  },
+  /**
+   * Injectable clock for the `resetsAt` derivation (`now + reset·s`).
+   * Defaults to `Date.now`; tests pass a fixed value to assert the exact
+   * ISO timestamp rather than a non-deterministic "now"-relative value.
+   */
+  now: () => number = Date.now,
+): ProviderQuotaSuccess {
   // Parse Policy into windows: "1;w=1, 15000;w=2592000" → [{1,1},{15000,2592000}]
   const policyParts = readHeaderCsv(headers.policy);
   if (policyParts === null) {
@@ -188,7 +196,7 @@ export function normalizeBraveQuota(headers: {
   if (used < 0) used = 0;
   if (used > selectedLimit) used = selectedLimit;
 
-  const resetsAtEpochMs = Date.now() + selectedReset * 1000;
+  const resetsAtEpochMs = now() + selectedReset * 1000;
   const current = buildQuotaWindow({
     used,
     limit: selectedLimit,
@@ -245,6 +253,8 @@ function normalizeBraveQuotaError(error: unknown): Error {
 export interface BraveQuotaCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly transport?: BraveTransportDeps;
+  /** Optional injectable clock for deterministic `resetsAt` in tests. */
+  readonly now?: () => number;
 }
 
 /**
@@ -255,13 +265,13 @@ export interface BraveQuotaCapabilityOptions {
  * policy; quota never uses the response cache.
  */
 export function createBraveQuotaCapability(options: BraveQuotaCapabilityOptions): QuotaCapability {
-  const { env, transport } = options;
+  const { env, transport, now } = options;
   return {
     async invoke(): Promise<ProviderQuotaSuccess> {
       const apiKey = requireBraveApiKey(env);
       try {
         const headers = await fetchBraveRateLimit(apiKey, transport);
-        return normalizeBraveQuota(headers);
+        return normalizeBraveQuota(headers, now);
       } catch (error) {
         throw normalizeBraveQuotaError(error);
       }

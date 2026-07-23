@@ -1437,6 +1437,7 @@ async function handleQuota(
             random: deps.searchRandom,
           }),
         writeStderr: (value) => deps.invocation.writeStderr(value),
+        secrets: deps.secrets,
       }),
     outputMode,
     deps.now,

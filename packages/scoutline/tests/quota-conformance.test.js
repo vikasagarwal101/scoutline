@@ -874,6 +874,35 @@ describe("quota command — warnings rendered to stderr", () => {
     assert.ok(/brave/i.test(combined), "provider name rendered generically");
   });
 
+  it("redacts configured secret values embedded in warnings before writing to stderr", async () => {
+    // `warnings` is provider-authored; a future Provider could put
+    // value-derived text there. The command must run each warning through
+    // redaction so a credential value never reaches stderr.
+    const SECRET = "leak-marker-secret-value-XYZ";
+    const stderr = [];
+    await quota({
+      buildDashboard: async () => ({
+        schemaVersion: 1,
+        effectiveProvider: "zai",
+        providers: [
+          {
+            provider: "zai",
+            status: "ok",
+            categories: [{ name: "requests", unit: "requests", current: { remainingPercent: 50 } }],
+            warnings: [`plan note references ${SECRET} inline`],
+          },
+        ],
+      }),
+      writeStderr: (s) => {
+        stderr.push(s);
+      },
+      secrets: [SECRET],
+    });
+    const combined = stderr.join("");
+    assert.ok(!combined.includes(SECRET), `stderr must not contain the secret: ${combined}`);
+    assert.ok(combined.includes("[REDACTED]"), `secret must be redacted: ${combined}`);
+  });
+
   it("does NOT call writeStderr when no successful entry carries warnings", async () => {
     let calls = 0;
     await quota({

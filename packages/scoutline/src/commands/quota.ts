@@ -26,7 +26,7 @@ import { executeProviderOperation } from "../lib/execution.js";
 import { ConfigurationError, UnsupportedCapabilityError } from "../lib/errors.js";
 import type { ProviderDescriptor, ProviderId } from "../providers/types.js";
 import { getProviderDescriptor } from "../providers/selection.js";
-import { redactSecrets, configuredSecrets } from "../lib/redact.js";
+import { redactSecrets, configuredSecrets, redactCredentialString } from "../lib/redact.js";
 import { formatQuotaDashboard } from "../lib/tty.js";
 
 // ---------------------------------------------------------------------------
@@ -160,6 +160,15 @@ export interface QuotaOptions {
 export interface QuotaCommandDependencies {
   readonly buildDashboard: () => Promise<QuotaDashboard>;
   readonly writeStderr?: (value: string) => void;
+  /**
+   * Configured credential values used to redact `warnings` text before
+   * it reaches stderr. The `warnings` channel is provider-authored, so a
+   * future Provider could put value-derived text there; running each
+   * warning through `redactCredentialString` keeps the stderr seam under
+   * the same redaction as the dashboard data. Optional — when omitted,
+   * only the key/regex-based redaction applies.
+   */
+  readonly secrets?: string[];
 }
 
 /**
@@ -182,7 +191,9 @@ export async function quota(
     for (const entry of dashboard.providers) {
       if (entry.status === "ok" && entry.warnings && entry.warnings.length > 0) {
         for (const warning of entry.warnings) {
-          writeStderr(`⚠️  ${entry.provider}: ${warning}\n`);
+          // Redact before stderr: warnings are provider-authored and a
+          // future Provider could embed value-derived text here.
+          writeStderr(redactCredentialString(`⚠️  ${entry.provider}: ${warning}\n`, deps.secrets));
         }
       }
     }

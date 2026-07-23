@@ -722,6 +722,23 @@ describe("Brave Search Capability", () => {
     assert.strictEqual(fetchCalls, 0, "fetch must not be called for an unsupported control");
   });
 
+  it("rejects type:video + topic before any fetch (type×topic combination guard, mirrors the CLI parse gate)", async () => {
+    let fetchCalls = 0;
+    const { adapter } = makeSearchAdapter(async () => {
+      fetchCalls += 1;
+      return emptyWebResponse();
+    });
+    let thrown;
+    try {
+      await adapter.search.invoke({ query: "q", controls: { type: "video", topic: "news" } });
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof UnsupportedOptionError, "must be UnsupportedOptionError");
+    assert.ok(/brave/i.test(thrown.message) && /topic/.test(thrown.message), thrown.message);
+    assert.strictEqual(fetchCalls, 0, "fetch must not be called for an unsupported control");
+  });
+
   it("type:video takes precedence over web (no topic) and does not append the finance keyword", async () => {
     const { adapter, calls } = makeSearchAdapter(async () =>
       makeResponse({ json: { results: [] } }),
@@ -1141,6 +1158,25 @@ describe("Brave quota normalizer (normalizeBraveQuota)", () => {
       },
     );
     assert.ok(out.warnings.includes(BRAVE_QUOTA_CAVEAT));
+  });
+
+  it("derives resetsAt from the injected clock (now + reset seconds)", () => {
+    const FIXED_NOW = Date.UTC(2026, 0, 1, 0, 0, 0); // 2026-01-01T00:00:00.000Z
+    const out = normalizeBraveQuota(
+      {
+        policy: "15000;w=2592000",
+        limit: "15000",
+        remaining: "14523",
+        reset: "100",
+      },
+      () => FIXED_NOW,
+    );
+    // resetsAtEpochMs = FIXED_NOW + 100*1000ms; deterministic via the
+    // injected clock rather than the global Date.now().
+    assert.strictEqual(
+      out.categories[0].current.resetsAt,
+      new Date(FIXED_NOW + 100 * 1000).toISOString(),
+    );
   });
 
   it("clamps used to [0, limit] when remaining exceeds limit", () => {

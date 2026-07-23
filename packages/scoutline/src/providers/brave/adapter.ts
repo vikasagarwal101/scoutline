@@ -117,16 +117,22 @@ function assertNoUnsupportedControls(request: SearchRequest): void {
 }
 
 /**
- * Brave-specific combination guard: `type:"video"` + `contentSize` is
- * rejected BEFORE dispatch (video results have no depth mode, so
- * `contentSize:"high"` cannot route to LLM Context from the video
- * endpoint). The error names `contentSize` — it is the incompatible
- * option in this combination (individually accepted elsewhere).
+ * Brave-specific combination guards for the `type:"video"` path. Video
+ * results have no depth mode and no editorial topic axis, so
+ * `type:"video"` combined with `contentSize` OR `topic` is rejected
+ * BEFORE dispatch. Each error names the incompatible option
+ * (`contentSize` / `topic`) — both are individually accepted elsewhere.
+ * The `type`×`topic` rule mirrors the CLI parse-time gate so the
+ * adapter contract holds for programmatic callers too, not just the CLI.
  */
-function assertNoVideoWithContentSize(request: SearchRequest): void {
+function assertNoVideoCombinations(request: SearchRequest): void {
   const controls = request.controls;
-  if (controls?.type === "video" && controls.contentSize !== undefined) {
+  if (controls?.type !== "video") return;
+  if (controls.contentSize !== undefined) {
     throw new UnsupportedOptionError("brave", "search", "contentSize");
+  }
+  if (controls.topic !== undefined) {
+    throw new UnsupportedOptionError("brave", "search", "topic");
   }
 }
 
@@ -480,10 +486,11 @@ function createBraveSearchCapability(options: BraveSearchCapabilityOptions): Sea
       }
       // Brave supports domain, recency, location, topic, and contentSize
       // (contentSize:"high" → LLM Context in T4; medium/default is a
-      // no-op depth on the web path). type:"video" + contentSize is
-      // rejected as an incompatible combination before any transport call.
+      // no-op depth on the web path). type:"video" combined with
+      // contentSize or topic is rejected as incompatible before any
+      // transport call.
       assertNoUnsupportedControls(request);
-      assertNoVideoWithContentSize(request);
+      assertNoVideoCombinations(request);
     },
 
     cacheIdentity(request: SearchRequest): SearchCacheIdentity {

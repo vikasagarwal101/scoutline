@@ -9,10 +9,10 @@
  *     X-Subscription-Token + User-Agent + query string; timeout → TimeoutError;
  *     401/403 → AuthError; 429 → ApiError(429); 5xx → ApiError;
  *     NO raw Brave body leaks into thrown error messages.
- *   - Descriptor: id === "brave"; capabilities() advertises exactly
- *     "search" (T2); create({env:{}}) returns an adapter with a wired
- *     `search` object (other slots undefined); create() constructs no
- *     transport (injected spy fetch is never called).
+ *   - Descriptor: id === "brave"; capabilities() advertises "search" +
+ *     "diagnostics" (T5); create({env:{}}) returns an adapter with wired
+ *     `search` and `diagnostics` objects (other slots undefined); create()
+ *     constructs no transport (injected spy fetch is never called).
  *   - Search Capability (T2): web invoke normalizes web.results[];
  *     --topic news routes to /res/v1/news/search; controls mapped per
  *     the Brave mapping; contentSize rejected before fetch; missing key
@@ -298,14 +298,14 @@ describe("Brave descriptor", () => {
     assert.strictEqual(descriptor.id, "brave");
   });
 
-  it("capabilities() advertises exactly search (T2)", () => {
+  it("capabilities() advertises search and diagnostics (T5)", () => {
     const descriptor = createBraveDescriptor();
     const caps = descriptor.capabilities();
     assert.ok(caps instanceof Set, "must be a Set");
-    assert.strictEqual(caps.size, 1, "T2 advertises only search");
+    assert.strictEqual(caps.size, 2, "T5 advertises search + diagnostics");
     assert.ok(caps.has("search"), "must advertise search");
+    assert.ok(caps.has("diagnostics"), "must advertise diagnostics (T5)");
     assert.ok(!caps.has("quota"), "quota is a later ticket");
-    assert.ok(!caps.has("diagnostics"), "diagnostics is a later ticket");
   });
 
   it("isConfigured reflects BRAVE_SEARCH_API_KEY presence", () => {
@@ -315,24 +315,17 @@ describe("Brave descriptor", () => {
     assert.strictEqual(descriptor.isConfigured({ BRAVE_SEARCH_API_KEY: TEST_API_KEY }), true);
   });
 
-  it("create() returns { id: 'brave' } with a wired search capability", () => {
+  it("create() returns { id: 'brave' } with wired search + diagnostics capabilities", () => {
     const descriptor = createBraveDescriptor();
     const adapter = descriptor.create({ env: {} });
     assert.strictEqual(adapter.id, "brave");
     assert.strictEqual(typeof adapter.search, "object", "search must be wired in T2");
     assert.ok(adapter.search !== null, "search must not be null");
+    assert.strictEqual(typeof adapter.diagnostics, "object", "diagnostics must be wired in T5");
+    assert.ok(adapter.diagnostics !== null, "diagnostics must not be null");
     // Other capability slots remain undefined (later tickets).
-    for (const slot of [
-      "reader",
-      "quota",
-      "diagnostics",
-      "crawl",
-      "map",
-      "research",
-      "vision",
-      "repository",
-    ]) {
-      assert.strictEqual(adapter[slot], undefined, `${slot} slot must be undefined in T2`);
+    for (const slot of ["reader", "quota", "crawl", "map", "research", "vision", "repository"]) {
+      assert.strictEqual(adapter[slot], undefined, `${slot} slot must be undefined`);
     }
   });
 
@@ -842,5 +835,92 @@ describe("Brave Search Capability", () => {
     // Different controls → different request payload.
     const b = adapter.search.cacheIdentity({ query: "q", controls: { recency: "oneDay" } });
     assert.notDeepStrictEqual(a.request.controls, b.request.controls);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Diagnostics Capability (T5)
+// ---------------------------------------------------------------------------
+
+describe("Brave Diagnostics Capability", () => {
+  it("invoke({probe:true}) resolves and issues exactly one /res/v1/web/search with q=scoutline-doctor-probe", async () => {
+    const { adapter, calls } = makeSearchAdapter(emptyWebResponse);
+    await adapter.diagnostics.invoke({ probe: true });
+    assert.strictEqual(calls.length, 1, "probe must issue exactly one fetch");
+    assert.ok(
+      calls[0].url.startsWith("https://api.search.brave.com/res/v1/web/search?"),
+      `web endpoint: ${calls[0].url}`,
+    );
+    assert.ok(
+      calls[0].url.includes(encodeURIComponent("scoutline-doctor-probe")),
+      `stub query: ${calls[0].url}`,
+    );
+  });
+
+  it("invoke({probe:false}) resolves without any fetch call", async () => {
+    let fetchCalls = 0;
+    const { adapter } = makeSearchAdapter(async () => {
+      fetchCalls += 1;
+      return emptyWebResponse();
+    });
+    await adapter.diagnostics.invoke({ probe: false });
+    assert.strictEqual(fetchCalls, 0, "probe:false must not touch the network");
+  });
+
+  it("invoke({probe:true}) with a 401 throws sanitized AuthError (no raw body leak)", async () => {
+    const bodyText = "leak-marker-DO-NOT-EMBED-in-diagnostics-auth";
+    const { adapter } = makeSearchAdapter(makeErrorFetch(401, bodyText));
+    let thrown;
+    try {
+      await adapter.diagnostics.invoke({ probe: true });
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof AuthError, "must be AuthError");
+    assert.ok(
+      !thrown.message.includes(bodyText),
+      `error message must not contain raw Brave body: ${thrown.message}`,
+    );
+    if (thrown.help) {
+      assert.ok(!thrown.help.includes(bodyText), "help must not contain raw Brave body");
+    }
+  });
+
+  it("invoke({probe:true}) with a 500 throws ApiError with no raw body in the message", async () => {
+    const bodyText = "leak-marker-DO-NOT-EMBED-in-diagnostics-500";
+    const { adapter } = makeSearchAdapter(makeErrorFetch(500, bodyText));
+    let thrown;
+    try {
+      await adapter.diagnostics.invoke({ probe: true });
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof ApiError, "must be ApiError");
+    assert.ok(
+      !thrown.message.includes(bodyText),
+      `error message must not contain raw Brave body: ${thrown.message}`,
+    );
+    if (thrown.help) {
+      assert.ok(!thrown.help.includes(bodyText), "help must not contain raw Brave body");
+    }
+  });
+
+  it("missing key throws ConfigurationError (exit 3) BEFORE any fetch", async () => {
+    let fetchCalls = 0;
+    const { fn } = makeRecordingFetch(async () => {
+      fetchCalls += 1;
+      return emptyWebResponse();
+    });
+    const descriptor = createBraveDescriptor({ transport: { fetch: fn } });
+    const adapter = descriptor.create({ env: {} });
+    let thrown;
+    try {
+      await adapter.diagnostics.invoke({ probe: true });
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof ConfigurationError, "must be ConfigurationError");
+    assert.strictEqual(thrown.exitCode, 3);
+    assert.strictEqual(fetchCalls, 0, "fetch must not be called when the key is missing");
   });
 });

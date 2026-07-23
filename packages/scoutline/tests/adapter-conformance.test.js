@@ -320,14 +320,14 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
       assert.ok(caps.has("quota"));
       assert.ok(caps.has("diagnostics"));
     }
-    // Brave T2: advertises exactly "search" (size 1); quota/diagnostics
-    // are later tickets.
+    // Brave T5: advertises search + diagnostics (size 2); quota is a
+    // later ticket.
     const brave = getProviderDescriptor("brave");
     const braveCaps = brave.capabilities();
-    assert.strictEqual(braveCaps.size, 1, "Brave advertises exactly search in T2");
+    assert.strictEqual(braveCaps.size, 2, "Brave advertises search + diagnostics");
     assert.ok(braveCaps.has("search"), "Brave must advertise search");
+    assert.ok(braveCaps.has("diagnostics"), "Brave must advertise diagnostics (T5)");
     assert.ok(!braveCaps.has("quota"), "Brave quota is a later ticket");
-    assert.ok(!braveCaps.has("diagnostics"), "Brave diagnostics is a later ticket");
     const zai = getProviderDescriptor("zai");
     assert.strictEqual(zai.isConfigured({ Z_AI_API_KEY: "k" }), true);
     assert.strictEqual(zai.isConfigured({}), false);

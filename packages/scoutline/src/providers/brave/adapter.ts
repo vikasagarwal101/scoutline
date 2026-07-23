@@ -6,7 +6,8 @@
  * `search` Capability owns credentials, transport, Provider field
  * mapping, and failure normalization. Credentials, the direct-HTTP GET
  * transport, and the header-bearing fetch seam come from T1; later
- * tickets widen the capability set (quota T6, diagnostics, reader, etc.).
+ * tickets widen the capability set (quota T6, reader, etc.). T5 wires
+ * the Diagnostics Capability (one-query doctor probe).
  *
  * Boundary rules (ARCHITECTURE.md §2):
  *   - May import capability types, normalized errors, Provider identity
@@ -51,6 +52,7 @@ import {
   type BraveSearchParams,
   type BraveTransportDeps,
 } from "./client.js";
+import { createBraveDiagnosticsCapability } from "./diagnostics.js";
 
 /**
  * Dependencies the Brave Adapter accepts. The unified `transport`
@@ -562,13 +564,13 @@ function createBraveSearchCapability(options: BraveSearchCapabilityOptions): Sea
 
 /**
  * Build the Brave Provider Descriptor. The descriptor advertises the
- * Search capability (T2) and constructs an Adapter whose `search`
- * Capability owns credentials, transport, Provider field mapping, and
- * failure normalization. Construction is side-effect-free; the
- * transport is invoked per Capability call. Tests pass `transport`
- * (typically a fake-fetch wrapper); production uses the no-argument
- * factory which resolves to the global `fetch` and timers inside the
- * transport Module.
+ * Search (T2) and Diagnostics (T5) capabilities and constructs an
+ * Adapter whose `search`/`diagnostics` Capabilities own credentials,
+ * transport, Provider field mapping, and failure normalization.
+ * Construction is side-effect-free; the transport is invoked per
+ * Capability call. Tests pass `transport` (typically a fake-fetch
+ * wrapper); production uses the no-argument factory which resolves to
+ * the global `fetch` and timers inside the transport Module.
  */
 export function createBraveDescriptor(dependencies?: BraveAdapterDependencies): ProviderDescriptor {
   const transport = dependencies?.transport;
@@ -579,13 +581,14 @@ export function createBraveDescriptor(dependencies?: BraveAdapterDependencies): 
       return isBraveConfigured(env);
     },
     capabilities(): ReadonlySet<ProviderCapability> {
-      // T2 wires search. Later tickets (quota T6, diagnostics, reader)
-      // widen this set in lockstep with the matching Adapter slots.
-      return new Set<ProviderCapability>(["search"]);
+      // T2 wires search; T5 wires diagnostics. Later tickets (quota T6,
+      // reader) widen this set in lockstep with the matching Adapter slots.
+      return new Set<ProviderCapability>(["search", "diagnostics"]);
     },
     create(context: ProviderContext): ProviderAdapter {
       const search = createBraveSearchCapability({ env: context.env, transport });
-      return { id: "brave", search };
+      const diagnostics = createBraveDiagnosticsCapability({ env: context.env, transport });
+      return { id: "brave", search, diagnostics };
     },
   };
 }

@@ -1,15 +1,11 @@
 /**
  * Firecrawl Provider Adapter (firecrawl tech-plan §1, D3–D6).
  *
- * Implements the Firecrawl Provider Descriptor with Search, Reader, and Map
- * capabilities on top of the direct-HTTP transport (`./client.ts`). The
- * Adapter owns credentials, transport lifecycle, Provider field mapping,
- * and failure normalization; shared execution owns cache and retry policy.
- *
- * Async Crawl (FC-04), Quota, and Diagnostics (FC-05) are advertised by the
- * descriptor but NOT yet wired here — their `adapter` slots are omitted, so
- * the command dispatch's `if (!adapter.crawl) throw UnsupportedCapabilityError`
- * guard surfaces a clean error until they land.
+ * Implements the Firecrawl Provider Descriptor with Search, Reader, Map,
+ * async Crawl, Quota, and Diagnostics capabilities on top of the
+ * direct-HTTP transport (`./client.ts`). The Adapter owns credentials,
+ * transport lifecycle, Provider field mapping, and failure normalization;
+ * shared execution owns cache and retry policy.
  *
  * Boundary rules (ARCHITECTURE.md §2):
  *   - May import capability types, normalized errors, Provider identity
@@ -215,7 +211,9 @@ function normalizeFirecrawlSearchResults(raw: unknown): readonly SearchSource[] 
   } else if (isPlainObject(data)) {
     // Results are keyed by source type (web for the default, news for a
     // news-topic search). Collect from web, falling back to news.
-    results = Array.isArray(data.web) ? data.web : data.news;
+    const web = data.web;
+    results =
+      Array.isArray(web) && web.length > 0 ? web : Array.isArray(data.news) ? data.news : undefined;
   }
   if (!Array.isArray(results)) {
     throw new ApiError("Firecrawl search returned a malformed response", 500);
@@ -799,12 +797,22 @@ async function collectCrawlResult(
 }
 
 /**
+ * Unordered array equality for path-filter matching. `undefined` expected
+ * means "no constraint requested" (always compatible).
+ */
+function stringArrayEqualUnordered(a: unknown, expected: readonly string[] | undefined): boolean {
+  if (expected === undefined) return true;
+  if (!Array.isArray(a)) return false;
+  return JSON.stringify([...(a as unknown[])].sort()) === JSON.stringify([...expected].sort());
+}
+
+/**
  * Best-effort compatibility check between an active-job `options` blob and
  * the params this request would send. The server echoes the request
- * options; verifying the cost-bearing fields (limit, maxDepth,
- * scrapeOptions.formats) is a strong signal it is the same job. Missing or
- * differently-shaped options → not compatible (safer to create fresh than
- * to mis-adopt a different crawl).
+ * options; verifying the cost-bearing fields (limit, maxDepth, path
+ * filters, scrapeOptions.formats) is a strong signal it is the same job.
+ * Missing or differently-shaped options → not compatible (safer to create
+ * fresh than to mis-adopt a different crawl and return the wrong pages).
  */
 function crawlOptionsCompatible(options: unknown, params: FirecrawlCrawlParams): boolean {
   if (!isPlainObject(options)) return false;
@@ -817,14 +825,19 @@ function crawlOptionsCompatible(options: unknown, params: FirecrawlCrawlParams):
     const want = JSON.stringify([...expectedFormats].sort());
     if (got !== want) return false;
   }
+  // Path filters determine which pages are crawled (cost AND result
+  // content) — a mismatched filter would adopt a differently-scoped crawl.
+  if (!stringArrayEqualUnordered(options.includePaths, params.includePaths)) return false;
+  if (!stringArrayEqualUnordered(options.excludePaths, params.excludePaths)) return false;
   return true;
 }
 
 /**
  * Reclaim-on-miss: find an in-flight job matching this request by `url`
  * (with a `created_at` recency guard against adopting stale jobs, and a
- * best-effort options check when the server echoes them). Returns the job
- * id, or `undefined` when no match exists.
+ * best-effort options check when the server echoes them). A missing or
+ * unparseable `created_at` is treated as stale (skipped) so a zombie entry
+ * is never adopted. Returns the job id, or `undefined` when no match exists.
  */
 function matchActiveCrawl(
   active: readonly {
@@ -839,10 +852,8 @@ function matchActiveCrawl(
   const now = Date.now();
   for (const entry of active) {
     if (entry.url !== request.url) continue;
-    if (entry.created_at !== undefined) {
-      const ts = Date.parse(entry.created_at);
-      if (Number.isFinite(ts) && now - ts > CRAWL_RECLAIM_STALE_MS) continue;
-    }
+    const ts = entry.created_at !== undefined ? Date.parse(entry.created_at) : NaN;
+    if (!Number.isFinite(ts) || now - ts > CRAWL_RECLAIM_STALE_MS) continue;
     if (entry.options !== undefined && !crawlOptionsCompatible(entry.options, params)) continue;
     return entry.id;
   }
@@ -883,6 +894,13 @@ async function persistCrawlId(
  * matching job; else POST /v2/crawl and persist the id. The create POST is
  * zero-retry at the shared-execution layer (defaultRetryPolicy), so a lost
  * response is terminal here and reclaimed on the next user invocation.
+ *
+ * Concurrency caveat: two SIMULTANEOUS identical invocations are not
+ * serialized — both can pass the state miss + active-list check and each
+ * POST, creating (and charging) two jobs (one orphaned). The `wx`-flag
+ * state write converges which job gets polled, but cannot prevent the
+ * duplicate create without a server-side idempotency key. Avoid running
+ * identical crawls concurrently.
  */
 async function reclaimOrCreateCrawlJob(
   apiKey: string,
@@ -955,7 +973,7 @@ function createFirecrawlCrawlCapability(options: FirecrawlCrawlCapabilityOptions
         request,
       });
       const params = mapCrawlControls(request);
-      const pollIntervalMs = resolveCrawlPollIntervalMs(transport?.env);
+      const pollIntervalMs = resolveCrawlPollIntervalMs(env);
       const sleep = makeCrawlSleep(transport, signal);
 
       try {
@@ -981,6 +999,7 @@ function createFirecrawlCrawlCapability(options: FirecrawlCrawlCapabilityOptions
         // 3. Poll status to terminal, then collect the result once. We do
         //    NOT accumulate data[] across pre-completion polls — the
         //    completed response carries the full set (G0 #1).
+        let recreated = false;
         for (;;) {
           if (signal?.aborted) {
             throw new TimeoutError(0, "Crawl polling aborted");
@@ -988,15 +1007,27 @@ function createFirecrawlCrawlCapability(options: FirecrawlCrawlCapabilityOptions
           const poll = await pollFirecrawlCrawl(apiKey, id, transport);
 
           if (poll.status === "completed") {
+            // Collect FIRST, remove only on success. If collection throws
+            // (a malformed page, a pagination/network blip), the state file
+            // stays so a re-run re-polls this already-completed (and paid-
+            // for) job instead of POSTing a second, doubly-charging one.
+            const result = await collectCrawlResult(poll, apiKey, request, transport);
             await stateFile.remove(identityHash);
-            return collectCrawlResult(poll, apiKey, request, transport);
+            return result;
           }
           if (poll.status === "failed") {
             await stateFile.remove(identityHash);
             throw new ApiError("Firecrawl crawl job failed", 500);
           }
           if (poll.status === "not_found") {
-            // Server-side job disappeared — drop state and create fresh.
+            // Server-side job disappeared — drop state and create fresh,
+            // but at most once. A pathological server that 404s every
+            // freshly-created job would otherwise loop and re-POST
+            // indefinitely (each POST charges credits).
+            if (recreated) {
+              throw new ApiError("Firecrawl crawl job could not be found after recreate", 500);
+            }
+            recreated = true;
             await stateFile.remove(identityHash);
             id = await reclaimOrCreateCrawlJob(
               apiKey,

@@ -104,6 +104,34 @@ describe("Firecrawl Search Adapter", () => {
     );
   });
 
+  it("reads results nested under data.web (live shape)", async () => {
+    const { adapter } = makeAdapter(async () =>
+      makeResponse({
+        json: {
+          success: true,
+          data: { web: [{ title: "T", url: "https://w.example", description: "d" }] },
+        },
+      }),
+    );
+    const out = await adapter.search.invoke({ query: "q" });
+    assert.equal(out.length, 1);
+    assert.equal(out[0].url, "https://w.example");
+  });
+
+  it("falls back to data.news when data.web is empty", async () => {
+    const { adapter } = makeAdapter(async () =>
+      makeResponse({
+        json: {
+          success: true,
+          data: { web: [], news: [{ title: "N", url: "https://n.example", description: "d" }] },
+        },
+      }),
+    );
+    const out = await adapter.search.invoke({ query: "q", controls: { topic: "news" } });
+    assert.equal(out.length, 1);
+    assert.equal(out[0].url, "https://n.example");
+  });
+
   it("prefers scraped markdown over description when content-size is high", async () => {
     const { adapter, calls } = makeAdapter(async () =>
       makeResponse({
@@ -321,7 +349,9 @@ function makeCrawlAdapter(handlers, stateFile) {
     },
     crawlStateFile: stateFile ?? createInMemoryAsyncJobStateFile(),
   });
-  const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
+  const adapter = descriptor.create({
+    env: { FIRECRAWL_API_KEY: TEST_API_KEY, FIRECRAWL_CRAWL_POLL_INTERVAL_MS: "0" },
+  });
   return { adapter, calls };
 }
 
@@ -541,6 +571,100 @@ describe("Firecrawl Crawl Adapter", () => {
       out.pages.map((p) => p.url),
       ["https://p1.example", "https://p2.example"],
     );
+  });
+
+  it("keeps the state file when result collection throws (no double-charge on re-run)", async () => {
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const fn = async (url, init) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (method === "POST" && u.endsWith("/v2/crawl")) {
+        return makeResponse({ json: { success: true, id: "job-collect" } });
+      }
+      if (method === "GET" && u.endsWith("/v2/crawl/active")) {
+        return makeResponse({ json: { success: true, crawls: [] } });
+      }
+      // Completed but with a malformed page (no metadata.sourceURL) → collect throws.
+      return makeResponse({
+        json: { success: true, status: "completed", data: [{ markdown: "x" }] },
+      });
+    };
+    const descriptor = createFirecrawlDescriptor({
+      transport: { fetch: fn, env: { FIRECRAWL_TIMEOUT: "5000" } },
+      crawlStateFile: stateFile,
+    });
+    const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
+    await assert.rejects(() => adapter.crawl.fetch.invoke({ url: "https://c.example" }), ApiError);
+    // State file MUST persist so a re-run resumes instead of re-POSTing.
+    assert.equal(stateFile.store.size, 1, "state file preserved after collect failure");
+  });
+
+  it("throws when a recreated job also vanishes (bounds the recreate loop)", async () => {
+    const fn = async (url, init) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (method === "POST" && u.endsWith("/v2/crawl")) {
+        return makeResponse({ json: { success: true, id: "job-r" } });
+      }
+      if (method === "GET" && u.endsWith("/v2/crawl/active")) {
+        return makeResponse({ json: { success: true, crawls: [] } });
+      }
+      return makeResponse({ ok: false, status: 404, body: "{}" }); // always 404
+    };
+    const descriptor = createFirecrawlDescriptor({
+      transport: {
+        fetch: fn,
+        env: { FIRECRAWL_TIMEOUT: "5000", FIRECRAWL_CRAWL_POLL_INTERVAL_MS: "0" },
+      },
+      crawlStateFile: createInMemoryAsyncJobStateFile(),
+    });
+    const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
+    await assert.rejects(() => adapter.crawl.fetch.invoke({ url: "https://v.example" }), ApiError);
+  });
+
+  it("does not adopt an active job with mismatched path filters", async () => {
+    const { adapter, calls } = makeCrawlAdapter({
+      onActive: () => [
+        {
+          id: "job-other",
+          url: "https://m.example",
+          created_at: new Date().toISOString(),
+          options: { includePaths: ["/other/*"] },
+        },
+      ],
+      onPoll: () => ({ success: true, status: "completed", data: [] }),
+    });
+    await adapter.crawl.fetch.invoke({ url: "https://m.example", selectPaths: "/api/*" });
+    // Mismatched filter → not adopted → a fresh create POST happened.
+    assert.ok(calls.some((c) => c.method === "POST" && c.url.endsWith("/v2/crawl")));
+  });
+
+  it("reads active jobs from the live `crawls` key", async () => {
+    const fn = async (url, init) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (method === "GET" && u.endsWith("/v2/crawl/active")) {
+        return makeResponse({
+          json: {
+            success: true,
+            crawls: [
+              { id: "job-c", url: "https://ac.example", created_at: new Date().toISOString() },
+            ],
+          },
+        });
+      }
+      if (method === "GET" && u.includes("/v2/crawl/")) {
+        return makeResponse({ json: { success: true, status: "completed", data: [] } });
+      }
+      return makeResponse({ json: { success: true } });
+    };
+    const descriptor = createFirecrawlDescriptor({
+      transport: { fetch: fn, env: { FIRECRAWL_TIMEOUT: "5000" } },
+      crawlStateFile: createInMemoryAsyncJobStateFile(),
+    });
+    const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
+    const out = await adapter.crawl.fetch.invoke({ url: "https://ac.example" });
+    assert.equal(out.totalPages, 0); // reclaimed job-c, polled completed
   });
 });
 

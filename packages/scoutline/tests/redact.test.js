@@ -15,7 +15,12 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { redactSecrets, redactTool, redactCredentialString } from "../dist/lib/redact.js";
+import {
+  configuredSecrets,
+  redactSecrets,
+  redactTool,
+  redactCredentialString,
+} from "../dist/lib/redact.js";
 import { formatErrorOutput as formatCompatErrorOutput } from "../dist/lib/errors.js";
 import { formatErrorOutput } from "../dist/lib/output.js";
 
@@ -255,6 +260,14 @@ describe("redactCredentialString — single-string redaction", () => {
     assert.strictEqual(
       redactCredentialString(`key was ${FC_KEY} here`, [FC_KEY]),
       "key was [REDACTED] here",
+    );
+  });
+
+  it("configuredSecrets surfaces FIRECRAWL_API_KEY (the load-bearing value loop)", () => {
+    const secrets = configuredSecrets({ FIRECRAWL_API_KEY: FC_KEY });
+    assert.ok(
+      secrets.includes(FC_KEY),
+      "configuredSecrets must include the FIRECRAWL_API_KEY value so it is redacted at every outward boundary",
     );
   });
 

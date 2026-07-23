@@ -505,12 +505,17 @@ export async function fetchFirecrawlCrawlNext(
   next: string,
   deps: FirecrawlTransportDeps = {},
 ): Promise<{ readonly data?: readonly unknown[]; readonly next?: string }> {
-  const raw = await getFirecrawlJson(
-    apiKey,
-    next.startsWith("http") ? next.replace(BASE_URL, "") : next,
-    deps,
-    "crawl/next",
-  );
+  // Resolve the cursor to a path: parse absolute URLs to pathname+search
+  // (a cross-host cursor would otherwise be mangled by the BASE_URL
+  // prepend); relative cursors pass through unchanged.
+  let nextPath = next;
+  try {
+    const parsed = new URL(next, BASE_URL);
+    nextPath = parsed.pathname + parsed.search;
+  } catch {
+    // not an absolute URL — use as-is
+  }
+  const raw = await getFirecrawlJson(apiKey, nextPath, deps, "crawl/next");
   if (!isPlainObject(raw)) {
     throw new ApiError("Firecrawl crawl/next returned a malformed response", 500);
   }

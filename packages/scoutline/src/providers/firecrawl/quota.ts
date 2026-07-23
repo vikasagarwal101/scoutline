@@ -78,9 +78,9 @@ export function normalizeFirecrawlQuota(raw: unknown): ProviderQuotaSuccess {
     throw new ApiError("Firecrawl quota returned a malformed response", 500);
   }
   // Window against the per-period allotment. `used` = the plan portion
-  // consumed this period (clamped ≥ 0 when banked credits push remaining
-  // past the plan, so remainingPercent caps at 100).
-  const used = Math.max(planCredits - remaining, 0);
+  // consumed this period, clamped to [0, planCredits] so a negative
+  // remaining degrades to a depleted (0%) window rather than throwing.
+  const used = Math.min(Math.max(planCredits - remaining, 0), planCredits);
 
   const periodEnd =
     typeof record.billingPeriodEnd === "string" ? record.billingPeriodEnd : undefined;

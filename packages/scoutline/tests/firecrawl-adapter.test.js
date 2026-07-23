@@ -454,6 +454,89 @@ describe("Firecrawl Crawl Adapter", () => {
     const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
     await assert.rejects(() => adapter.crawl.fetch.invoke({ url: "https://a.example" }), AuthError);
   });
+
+  it("drops state and creates a fresh job on a 404 (not_found)", async () => {
+    let pollN = 0;
+    const calls = [];
+    const fn = async (url, init) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      calls.push({ url: u, method });
+      if (method === "POST" && u.endsWith("/v2/crawl")) {
+        return makeResponse({
+          json: { success: true, id: `job-${calls.filter((c) => c.method === "POST").length}` },
+        });
+      }
+      if (method === "GET" && u.endsWith("/v2/crawl/active")) {
+        return makeResponse({ json: { success: true, data: [] } });
+      }
+      pollN += 1;
+      // First poll: the job vanished (404 → not_found). Second: fresh job completed.
+      if (pollN === 1) return makeResponse({ ok: false, status: 404, body: "{}" });
+      return makeResponse({
+        json: {
+          success: true,
+          status: "completed",
+          data: [{ markdown: "# ok", metadata: { sourceURL: "https://ok.example" } }],
+        },
+      });
+    };
+    const descriptor = createFirecrawlDescriptor({
+      transport: {
+        fetch: fn,
+        env: { FIRECRAWL_TIMEOUT: "5000", FIRECRAWL_CRAWL_POLL_INTERVAL_MS: "0" },
+      },
+      crawlStateFile: createInMemoryAsyncJobStateFile(),
+    });
+    const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
+    const out = await adapter.crawl.fetch.invoke({ url: "https://n404.example" });
+    assert.equal(out.totalPages, 1);
+    // Two create POSTs: one before the 404, one after (fresh job created).
+    const posts = calls.filter((c) => c.method === "POST" && c.url.endsWith("/v2/crawl"));
+    assert.equal(posts.length, 2);
+  });
+
+  it("collects all pages following the next cursor (pagination)", async () => {
+    const fn = async (url, init) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (method === "POST" && u.endsWith("/v2/crawl")) {
+        return makeResponse({ json: { success: true, id: "job-page" } });
+      }
+      if (method === "GET" && u.endsWith("/v2/crawl/active")) {
+        return makeResponse({ json: { success: true, data: [] } });
+      }
+      // Completed poll (no query): batch 1 + a next cursor.
+      if (method === "GET" && u.includes("/v2/crawl/") && !u.includes("?")) {
+        return makeResponse({
+          json: {
+            success: true,
+            status: "completed",
+            data: [{ markdown: "# p1", metadata: { sourceURL: "https://p1.example" } }],
+            next: "https://api.firecrawl.dev/v2/crawl/job-page?after=1",
+          },
+        });
+      }
+      // next-cursor GET (has a query): batch 2, no further next.
+      return makeResponse({
+        json: {
+          success: true,
+          data: [{ markdown: "# p2", metadata: { sourceURL: "https://p2.example" } }],
+        },
+      });
+    };
+    const descriptor = createFirecrawlDescriptor({
+      transport: { fetch: fn, env: { FIRECRAWL_TIMEOUT: "5000" } },
+      crawlStateFile: createInMemoryAsyncJobStateFile(),
+    });
+    const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
+    const out = await adapter.crawl.fetch.invoke({ url: "https://pg.example" });
+    assert.equal(out.totalPages, 2);
+    assert.deepEqual(
+      out.pages.map((p) => p.url),
+      ["https://p1.example", "https://p2.example"],
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

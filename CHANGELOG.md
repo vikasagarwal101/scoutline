@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Firecrawl Provider** as the fourth built-in Provider. New module
+  `src/providers/firecrawl/` with a direct-HTTP v2 transport Adapter
+  (`Authorization: Bearer`, injectable fetch/timers) and an error-envelope
+  dual-check (Firecrawl returns HTTP 200 with `{success:false}` for some
+  business errors → terminal `API_ERROR` 422). Default endpoint
+  `https://api.firecrawl.dev`; credential `FIRECRAWL_API_KEY`. The
+  production registry grows from `[zai, minimax, tavily]` to
+  `[zai, minimax, tavily, firecrawl]`.
+- **Firecrawl capabilities** (4 data + 2 operational):
+  - `search` — `/v2/search`; `--content-size high` requests scraped
+    markdown summaries (+1 credit/result); `--topic`→`sources`,
+    `--recency`→`tbs`, `--domain`→`includeDomains`; rejects `--location`.
+  - `reader` — `/v2/scrape` with native markdown/text; returns genuine
+    page titles (richer than Tavily's null); `--no-images`→
+    `removeBase64Images`; `proxy:"basic"` pinned.
+  - `crawl` — asynchronous `/v2/crawl` (create→poll→resume). Resumes
+    after Ctrl-C via a state file (reuses the generalized
+    `lib/async-job-state.ts`) and reclaims an in-flight job on a lost
+    create-POST via `GET /v2/crawl/active` (cost-safety). Rejects
+    `--breadth`. Zero-retry create (shared execution).
+  - `map` — `/v2/map`; `links[]`→urls.
+  - `quota` — `/v2/team/credit-usage` → one "Credits" category via the
+    widened `unit:"credits"` enum (additive; existing providers
+    unaffected).
+  - `diagnostics` — a single basic `/v2/scrape` probe (1 credit), not
+    the quota endpoint (rate-limit safety).
+- Firecrawl does NOT advertise `research` (`/deep-research` is
+  deprecated); `--provider firecrawl research` returns
+  `UNSUPPORTED_CAPABILITY`.
+
+### Changed
+- `defaultRetryPolicy("crawl")` is now `maxRetries:0` (grouped with
+  `research`) — crawl is per-page cost-bearing; an auto-retried create
+  could double-charge. Recovery is via state-file resume / reclaim-on-
+  miss on the next user invocation. Affects Tavily crawl too (was 1).
+- `lib/research-state.ts` generalized to `lib/async-job-state.ts`
+  (reusable async-job resume); the persisted `requestId` field is
+  unchanged for wire compatibility.
+
 ## [0.7.0] - 2026-07-23
 
 ### Added

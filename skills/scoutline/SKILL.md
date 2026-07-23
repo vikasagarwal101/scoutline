@@ -1,17 +1,17 @@
 ---
 name: scoutline
 description: |
-  Z.AI, MiniMax, and Tavily CLI providing:
+  Z.AI, MiniMax, Tavily, and Firecrawl CLI providing:
   - Vision: image/video analysis, OCR, UI-to-code, error diagnosis (GLM-4.6V)
   - Search: real-time web search with domain/recency/topic filtering
-  - Reader: web page to markdown extraction (Z.AI or Tavily)
-  - Crawl: multi-page website traversal (Tavily)
-  - Map: URL-set discovery without fetching pages (Tavily)
-  - Research: asynchronous deep research with citations (Tavily)
+  - Reader: web page to markdown extraction (Z.AI, Tavily, or Firecrawl)
+  - Crawl: multi-page website traversal (Tavily or Firecrawl)
+  - Map: URL-set discovery without fetching pages (Tavily or Firecrawl)
+  - Research: asynchronous deep research with citations (Tavily only)
   - Repo: GitHub code search and reading via ZRead (Z.AI)
   - Tools: MCP tool discovery, schemas, and raw calls (Z.AI)
   - Code: TypeScript tool chaining (Z.AI)
-  - Provider selection: --provider <zai|minimax|tavily> for shared
+  - Provider selection: --provider <zai|minimax|tavily|firecrawl> for shared
     capabilities, repo, read, crawl, map, and research
   Use for visual content analysis, web search, page reading, multi-page
   site traversal, deep research, or GitHub exploration. Requires
@@ -46,7 +46,7 @@ Get a Tavily key at: https://app.tavily.com/home/api-keys
 
 Shared commands (`search`, `vision analyze`, `quota`, `doctor`),
 **`repo`**, **`read`**, **`crawl`**, **`map`**, and **`research`**
-accept the global `--provider <zai|minimax|tavily>` flag. Precedence
+accept the global `--provider <zai|minimax|tavily|firecrawl>` flag. Precedence
 is the flag, then the `SCOUTLINE_PROVIDER` environment variable, then
 the default `zai`. Provider selection is never inferred from
 credentials. Unknown values fail fast with `VALIDATION_ERROR`.
@@ -77,20 +77,20 @@ returns `UNSUPPORTED_CAPABILITY` with no Tavily fallback.
 
 ## Capability Matrix
 
-| Capability | Z.AI | MiniMax | Tavily | Command |
-| --- | --- | --- | --- | --- |
-| Search | Yes | Yes (no domain/recency/content-size/location) | Yes (no location) | `scoutline search` |
-| General single-image interpretation | Yes | Yes (JPG/JPEG/PNG/WebP ≤50 MiB) | No | `scoutline vision analyze` |
-| Specialized Vision (UI-to-code, OCR, error diagnosis, diagram) | Yes | Available (live-attested; conformance-gated) | No | `scoutline vision ui-to-code`, `vision extract-text`, `vision diagnose-error`, `vision diagram` |
-| Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | No | `scoutline vision chart` |
-| Two-image diff, video | Yes | No | No | `scoutline vision diff`, `vision video` |
-| Quota (normalized) | Yes | Yes | Yes | `scoutline quota [--all-providers]` |
-| Diagnostics | Yes | Yes | Yes | `scoutline doctor [--no-tools]` |
-| Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes (rejects Z.AI-only options) | `scoutline read` |
-| Repository exploration (search/read/tree) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | `scoutline repo ...` |
-| Crawl | **No** | **No** | Yes | `scoutline crawl` |
-| Map | **No** | **No** | Yes | `scoutline map` |
-| Research (4-250 credits) | **No** | **No** | Yes | `scoutline research` |
+| Capability | Z.AI | MiniMax | Tavily | Firecrawl | Command |
+| --- | --- | --- | --- | --- | --- |
+| Search | Yes | Yes (no domain/recency/content-size/location) | Yes (no location) | Yes (no location; `--content-size high` = markdown, +1 credit/result) | `scoutline search` |
+| General single-image interpretation | Yes | Yes (JPG/JPEG/PNG/WebP ≤50 MiB) | No | No | `scoutline vision analyze` |
+| Specialized Vision (UI-to-code, OCR, error diagnosis, diagram) | Yes | Available (live-attested; conformance-gated) | No | No | `scoutline vision ui-to-code`, `vision extract-text`, `vision diagnose-error`, `vision diagram` |
+| Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | No | No | `scoutline vision chart` |
+| Two-image diff, video | Yes | No | No | No | `scoutline vision diff`, `vision video` |
+| Quota (normalized) | Yes | Yes | Yes | Yes (credits) | `scoutline quota [--all-providers]` |
+| Diagnostics | Yes | Yes | Yes | Yes (single-scrape probe) | `scoutline doctor [--no-tools]` |
+| Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes (rejects Z.AI-only options) | Yes (returns page titles) | `scoutline read` |
+| Repository exploration (search/read/tree) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | `scoutline repo ...` |
+| Crawl | **No** | **No** | Yes | Yes (async; resumable after Ctrl-C) | `scoutline crawl` |
+| Map | **No** | **No** | Yes | Yes | `scoutline map` |
+| Research (4-250 credits) | **No** | **No** | Yes | **No** (`/deep-research` deprecated) | `scoutline research` |
 | Raw tools | Yes | No | No | `scoutline tools`, `tool`, `call` |
 | Code Mode | Yes | No | No | `scoutline code` |
 

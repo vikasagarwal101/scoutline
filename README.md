@@ -24,7 +24,7 @@
 - **Repo** — Search and read GitHub repository code
 - **Tools** — MCP tool discovery, schemas, and raw calls
 - **Code Mode** — TypeScript tool chaining for agent automation
-- **Provider selection** — Run shared capabilities through Z.AI, MiniMax, or Tavily
+- **Provider selection** — Run shared capabilities through Z.AI, MiniMax, Tavily, or Firecrawl
 
 ## Quick Start
 
@@ -57,6 +57,23 @@ npx scoutline --provider tavily research "Compare React vs Svelte for production
 
 Get your Tavily API key at: https://app.tavily.com
 
+### Using Firecrawl (Search, Reader, Crawl, Map)
+
+```bash
+export FIRECRAWL_API_KEY="your-firecrawl-key"
+npx scoutline --provider firecrawl search "AI funding rounds" --content-size high
+npx scoutline --provider firecrawl read https://example.com/
+npx scoutline --provider firecrawl crawl https://docs.example.com --limit 10
+npx scoutline --provider firecrawl map https://example.com/
+```
+
+Get your Firecrawl API key at: https://www.firecrawl.dev/signin
+
+Firecrawl is credit-based. `--content-size high` on search returns richer
+(markdown) summaries at +1 credit/result. Crawl is asynchronous and resumes
+after Ctrl-C with no double-charge (state-file resume + reclaim-on-miss).
+`--provider firecrawl research` is not supported (`UNSUPPORTED_CAPABILITY`).
+
 ## Installation
 
 ### As an Agent Skill
@@ -88,7 +105,7 @@ npx scoutline --help
 
 ## Provider Selection
 
-Shared commands accept `--provider <zai|minimax|tavily>`. Resolution precedence:
+Shared commands accept `--provider <zai|minimax|tavily|firecrawl>`. Resolution precedence:
 
 1. Explicit `--provider` flag
 2. `SCOUTLINE_PROVIDER` environment variable
@@ -104,25 +121,25 @@ Selecting a provider that doesn't support a capability returns `UNSUPPORTED_CAPA
 
 ### Capability Matrix
 
-| Capability | Z.AI | MiniMax | Tavily | Command |
-|---|---|---|---|---|
-| Search | Yes | Yes | Yes | `scoutline search` |
-| Reader | Yes | No | Yes | `scoutline read` |
-| Crawl | No | No | Yes | `scoutline crawl` |
-| Map | No | No | Yes | `scoutline map` |
-| Research | No | No | Yes | `scoutline research` |
-| Vision (interpret-image) | Yes | Yes | No | `scoutline vision analyze` |
-| Quota | Yes | Yes | Yes | `scoutline quota` |
-| Diagnostics | Yes | Yes | Yes | `scoutline doctor` |
-| Repo exploration | Yes | No | No | `scoutline repo` |
-| Raw tools | Yes | No | No | `scoutline tools` |
-| Code Mode | Yes | No | No | `scoutline code` |
+| Capability | Z.AI | MiniMax | Tavily | Firecrawl | Command |
+|---|---|---|---|---|---|
+| Search | Yes | Yes | Yes | Yes | `scoutline search` |
+| Reader | Yes | No | Yes | Yes | `scoutline read` |
+| Crawl | No | No | Yes | Yes (async) | `scoutline crawl` |
+| Map | No | No | Yes | Yes | `scoutline map` |
+| Research | No | No | Yes | No | `scoutline research` |
+| Vision (interpret-image) | Yes | Yes | No | No | `scoutline vision analyze` |
+| Quota | Yes | Yes | Yes | Yes (credits) | `scoutline quota` |
+| Diagnostics | Yes | Yes | Yes | Yes | `scoutline doctor` |
+| Repo exploration | Yes | No | No | No | `scoutline repo` |
+| Raw tools | Yes | No | No | No | `scoutline tools` |
+| Code Mode | Yes | No | No | No | `scoutline code` |
 
 ### Search Controls
 
 `--topic <general|news|finance>` is accepted by all providers. Tavily passes it natively; Z.AI and MiniMax append a keyword to the query.
 
-`--domain`, `--recency`, `--content-size`, and `--location` are Z.AI-only.
+`--domain`, `--recency`, and `--content-size` are accepted by Tavily and Firecrawl; `--location` is Z.AI-only.
 
 ## Usage
 

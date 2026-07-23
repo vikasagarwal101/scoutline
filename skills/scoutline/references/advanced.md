@@ -8,9 +8,9 @@ gate.
 
 Shared commands (`search`, `vision analyze`, `quota`, `doctor`),
 **`repo`**, **`read`**, **`crawl`**, **`map`**, and **`research`** accept
-the global `--provider <zai|minimax|tavily>` flag. Precedence:
+the global `--provider <zai|minimax|tavily|firecrawl>` flag. Precedence:
 
-1. `--provider <zai|minimax|tavily>` on the command line
+1. `--provider <zai|minimax|tavily|firecrawl>` on the command line
 2. `SCOUTLINE_PROVIDER` environment variable
 3. Default `zai`
 

@@ -34,7 +34,7 @@ import crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 
-import { researchStateDir } from "./cache.js";
+import { asyncJobStateDir } from "./cache.js";
 
 // ---------------------------------------------------------------------------
 // State shape
@@ -144,7 +144,7 @@ export function computeResearchStateHash(input: ResearchStateHashInput): string 
  */
 export function createProductionResearchStateFile(): ResearchStateFile {
   function filePath(identityHash: string): string {
-    return path.join(researchStateDir(), `${identityHash}.json`);
+    return path.join(asyncJobStateDir("research"), `${identityHash}.json`);
   }
 
   return {
@@ -188,7 +188,7 @@ export function createProductionResearchStateFile(): ResearchStateFile {
     },
 
     async write(identityHash: string, state: ResearchState): Promise<void> {
-      const dir = researchStateDir();
+      const dir = asyncJobStateDir("research");
       await fs.mkdir(dir, { recursive: true });
       const file = filePath(identityHash);
       const payload = JSON.stringify(state);

@@ -29,7 +29,7 @@ import type {
 } from "../capabilities/research.js";
 import type { ExecutionDependencies } from "../lib/execution.js";
 import { executeCachedOperation } from "../lib/execution.js";
-import { researchStateDir } from "../lib/cache.js";
+import { asyncJobStateDir } from "../lib/cache.js";
 import { computeResearchStateHash } from "../lib/research-state.js";
 import { OUTPUT_MODES } from "../lib/output.js";
 import { TimeoutError, ValidationError } from "../lib/errors.js";
@@ -274,7 +274,7 @@ export async function research(
     credentialFingerprint: identity.credentialFingerprint,
     request: identity.request,
   });
-  const stateFilePath = path.join(researchStateDir(), `${identityHash}.json`);
+  const stateFilePath = path.join(asyncJobStateDir("research"), `${identityHash}.json`);
   const resumeCommand = `scoutline research "${query}"`;
 
   // Register the Ctrl-C handler. Production reads the state file sync

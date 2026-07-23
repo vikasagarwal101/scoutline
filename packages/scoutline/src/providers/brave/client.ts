@@ -241,3 +241,30 @@ export async function fetchBraveNewsSearch(
 ): Promise<unknown> {
   return getBraveJson(apiKey, "/res/v1/news/search", { q: query, ...(params ?? {}) }, deps);
 }
+
+/**
+ * Perform ONE GET against the Brave `/res/v1/videos/search` endpoint. No
+ * retry; no response body in public errors. Returns the parsed JSON
+ * body (raw; the Adapter post-processes into normalized search
+ * sources).
+ *
+ * Dispatched when `controls.type === "video"`; precedence is
+ * `video > news > web`. `params` carries the same Brave-native fields
+ * as {@link fetchBraveSearch}.
+ *
+ * NOTE: Brave documents the videos endpoint as a POST body, but GET
+ * with query params covers every field we send (`q`/`country`/
+ * `freshness`) — confirm live, fall back to POST only if GET is
+ * rejected. `count` is intentionally absent (see
+ * {@link BraveSearchParams}); video results are client-side-truncated
+ * via `applyCount` like every provider, and the video endpoint's
+ * default page-size cap is unconfirmed (live gate).
+ */
+export async function fetchBraveVideoSearch(
+  apiKey: string,
+  query: string,
+  params?: BraveSearchParams,
+  deps: BraveTransportDeps = {},
+): Promise<unknown> {
+  return getBraveJson(apiKey, "/res/v1/videos/search", { q: query, ...(params ?? {}) }, deps);
+}

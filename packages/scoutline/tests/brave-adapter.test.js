@@ -493,7 +493,74 @@ describe("Brave Search Capability", () => {
     assert.strictEqual(fetchCalls, 0, "fetch must not be called for an unsupported control");
   });
 
-  it("rejects type (video) before any fetch — TEMPORARY scaffolding until T3b", async () => {
+  it("video invoke routes to /res/v1/videos/search and normalizes top-level results[] (extras dropped)", async () => {
+    // Video-shaped fixture carries Brave-only fields (duration/views/
+    // creator/thumbnail) which the shared entry parser must DROP.
+    const raw = {
+      results: [
+        {
+          title: "Cat Video",
+          url: "https://video.test/cat",
+          description: "A cat plays piano.",
+          meta_url: { netloc: "video.test" },
+          page_age: "2025-03-04T05:06:07Z",
+          duration: "PT4M13S",
+          views: 12345,
+          creator: "pianocat",
+          thumbnail: "https://img.test/cat.jpg",
+        },
+        {
+          title: "Dog Clip",
+          url: "https://video.test/dog",
+          description: "A dog runs.",
+          age: "2 days ago",
+          thumbnail: "https://img.test/dog.jpg",
+        },
+      ],
+    };
+    const { adapter, calls } = makeSearchAdapter(async () => makeResponse({ json: raw }));
+    const out = await adapter.search.invoke({ query: "cats", controls: { type: "video" } });
+    assert.strictEqual(calls.length, 1);
+    assert.ok(
+      calls[0].url.startsWith("https://api.search.brave.com/res/v1/videos/search?"),
+      `video endpoint: ${calls[0].url}`,
+    );
+    assert.deepStrictEqual(
+      [...out],
+      [
+        {
+          title: "Cat Video",
+          url: "https://video.test/cat",
+          summary: "A cat plays piano.",
+          source: "video.test",
+          date: "2025-03-04T05:06:07Z",
+        },
+        {
+          title: "Dog Clip",
+          url: "https://video.test/dog",
+          summary: "A dog runs.",
+          date: "2 days ago",
+        },
+      ],
+    );
+  });
+
+  it("video normalizer reads top-level results[] (NOT web.results[]) and throws 500 on malformed", async () => {
+    // A web-shaped body ({ web: { results: [] } }) must NOT be valid
+    // for the video normalizer — it expects top-level results[].
+    const { adapter } = makeSearchAdapter(async () =>
+      makeResponse({ json: { web: { results: [] } } }),
+    );
+    let thrown;
+    try {
+      await adapter.search.invoke({ query: "q", controls: { type: "video" } });
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof ApiError && thrown.statusCode === 500);
+  });
+
+  it("rejects type:video + contentSize before any fetch (contentSize reject-list)", async () => {
     let fetchCalls = 0;
     const { adapter } = makeSearchAdapter(async () => {
       fetchCalls += 1;
@@ -501,13 +568,42 @@ describe("Brave Search Capability", () => {
     });
     let thrown;
     try {
-      await adapter.search.invoke({ query: "q", controls: { type: "video" } });
+      await adapter.search.invoke({ query: "q", controls: { type: "video", contentSize: "high" } });
     } catch (err) {
       thrown = err;
     }
     assert.ok(thrown instanceof UnsupportedOptionError, "must be UnsupportedOptionError");
-    assert.ok(/brave/i.test(thrown.message) && /type/.test(thrown.message), thrown.message);
+    assert.ok(/brave/i.test(thrown.message) && /contentSize/.test(thrown.message), thrown.message);
     assert.strictEqual(fetchCalls, 0, "fetch must not be called for an unsupported control");
+  });
+
+  it("type:video takes precedence over web (no topic) and does not append the finance keyword", async () => {
+    const { adapter, calls } = makeSearchAdapter(async () =>
+      makeResponse({ json: { results: [] } }),
+    );
+    await adapter.search.invoke({ query: "cats", controls: { type: "video" } });
+    // Routed to the video endpoint, not web.
+    assert.ok(
+      calls[0].url.startsWith("https://api.search.brave.com/res/v1/videos/search?"),
+      calls[0].url,
+    );
+    // Video has no topic axis; the plain query is sent as q= (no
+    // "financial" keyword appended by applyQueryMutators).
+    assert.ok(
+      calls[0].url.includes(encodeURIComponent("cats")),
+      `q must be the plain query: ${calls[0].url}`,
+    );
+    assert.ok(!calls[0].url.includes("financial"), `no finance keyword: ${calls[0].url}`);
+  });
+
+  it("cache identity partitions by type (video vs web for the same query)", () => {
+    const { adapter } = makeSearchAdapter(emptyWebResponse);
+    const video = adapter.search.cacheIdentity({ query: "cats", controls: { type: "video" } });
+    const web = adapter.search.cacheIdentity({ query: "cats" });
+    assert.strictEqual(video.provider, "brave");
+    assert.deepStrictEqual(video.request.controls, { type: "video" });
+    assert.strictEqual(web.request.controls, undefined);
+    assert.notDeepStrictEqual(video.request, web.request);
   });
 
   it("rejects an empty/whitespace query with ValidationError before any fetch", async () => {

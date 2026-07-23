@@ -46,6 +46,7 @@ import { requireBraveApiKey, isBraveConfigured } from "./credentials.js";
 import {
   fetchBraveSearch,
   fetchBraveNewsSearch,
+  fetchBraveVideoSearch,
   type BraveSearchParams,
   type BraveTransportDeps,
 } from "./client.js";
@@ -85,17 +86,19 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 // ---------------------------------------------------------------------------
 
 /**
- * Controls the Brave Search Adapter does NOT accept in T2. `contentSize`
+ * Controls the Brave Search Adapter does NOT accept. `contentSize`
  * (LLM Context / `--content-size`) is deferred to T4; every other
- * control (`domain`/`recency`/`location`/`topic`) is honored here.
+ * control (`domain`/`recency`/`location`/`topic`/`type`) is honored
+ * here. `type:"video"` is dispatched to `/res/v1/videos/search`
+ * (T3b); `type`×`contentSize` therefore does not need a dedicated
+ * guard today — `contentSize` is rejected here BEFORE dispatch
+ * regardless of `type`.
  *
- * `type` ("video") is TEMPORARY scaffolding: it is rejected here so the
- * intermediate state is coherent (no silent fall-through to web search
- * when a caller passes `--type video --provider brave`). T3b removes
- * `"type"` from this list and dispatches `type:"video"` to the Brave
- * video endpoint instead.
+ * T4 NOTE: when T4 removes `contentSize` from this list to wire LLM
+ * Context, T4 MUST add the explicit `type:"video"` + `contentSize`
+ * guard at that point (video results have no depth mode).
  */
-const UNSUPPORTED_CONTROLS = ["contentSize", "type"] as const;
+const UNSUPPORTED_CONTROLS = ["contentSize"] as const;
 
 function assertNoUnsupportedControls(request: SearchRequest): void {
   const controls = request.controls;
@@ -238,6 +241,30 @@ function normalizeBraveWebResults(raw: unknown): readonly SearchSource[] {
  * under `web`). Any malformed shape is a retryable `ApiError` 500.
  */
 function normalizeBraveNewsResults(raw: unknown): readonly SearchSource[] {
+  if (!isPlainObject(raw)) {
+    throw new ApiError("Brave search returned a malformed response", 500);
+  }
+  const results = raw.results;
+  if (!Array.isArray(results)) {
+    throw new ApiError("Brave search returned a malformed response", 500);
+  }
+  const out: SearchSource[] = [];
+  for (const entry of results) {
+    out.push(normalizeBraveResultEntry(entry));
+  }
+  return out;
+}
+
+/**
+ * Normalize a raw Brave VIDEO search response into `SearchSource[]`.
+ * Reads the top-level `raw.results[]` (video responses use the same
+ * top-level wrapper as news, NOT `web.results[]`). Brave-only video
+ * fields (`duration`/`views`/`creator`/`thumbnail`) are naturally
+ * DROPPED — the shared {@link normalizeBraveResultEntry} reads only
+ * `title`/`url`/`description`/`meta_url.netloc`/`page_age`/`age`
+ * (ADR-0001). Any malformed shape is a retryable `ApiError` 500.
+ */
+function normalizeBraveVideoResults(raw: unknown): readonly SearchSource[] {
   if (!isPlainObject(raw)) {
     throw new ApiError("Brave search returned a malformed response", 500);
   }
@@ -411,11 +438,25 @@ function createBraveSearchCapability(options: BraveSearchCapabilityOptions): Sea
         // controls (recency/location) are mapped separately.
         const effectiveQuery = applyQueryMutators(request.query, request.controls);
         const params = mapSearchControls(request.controls);
-        const isNews = request.controls?.topic === "news";
-        const raw = isNews
-          ? await fetchBraveNewsSearch(apiKey, effectiveQuery, params, transport)
-          : await fetchBraveSearch(apiKey, effectiveQuery, params, transport);
-        return isNews ? normalizeBraveNewsResults(raw) : normalizeBraveWebResults(raw);
+        // Dispatch precedence: video > news > web. (T4 later inserts
+        // `high` between `video` and `news` for the full
+        // `video > high > news > web` chain; `video` stays the top
+        // branch.) `--type video --topic news` is rejected at
+        // parse-time (T3a), so `isVideo` and `isNews` are mutually
+        // exclusive in practice — `isVideo` takes precedence
+        // regardless.
+        const isVideo = request.controls?.type === "video";
+        const isNews = !isVideo && request.controls?.topic === "news";
+        const raw = isVideo
+          ? await fetchBraveVideoSearch(apiKey, effectiveQuery, params, transport)
+          : isNews
+            ? await fetchBraveNewsSearch(apiKey, effectiveQuery, params, transport)
+            : await fetchBraveSearch(apiKey, effectiveQuery, params, transport);
+        return isVideo
+          ? normalizeBraveVideoResults(raw)
+          : isNews
+            ? normalizeBraveNewsResults(raw)
+            : normalizeBraveWebResults(raw);
       } catch (error) {
         throw normalizeBraveError(error);
       }

@@ -266,8 +266,8 @@ Options:
                       (default: general). Z.AI/MiniMax append a keyword to the
                       query; Tavily passes it natively; Brave uses a news endpoint
                       for \`news\`.
-  --type <video>      Content-type axis; provider support varies (currently
-                      unsupported by every provider). Mutually exclusive with --topic.
+  --type <video>      Content-type axis; supported by Brave (\`video\`).
+                      Mutually exclusive with --topic.
   --domain <d>        Limit to specific domain (provider support varies; e.g., github.com)
   --recency <r>       Filter by time (provider support varies): oneDay, oneWeek, oneMonth, oneYear, noLimit
   --content-size <s>  Content size (provider support varies): medium, high

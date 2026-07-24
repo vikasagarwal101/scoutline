@@ -29,11 +29,11 @@ default quota command and a diagnostic failure (`exit 1`) for `doctor`.
 ## Unknown Provider ID
 
 ```
-Unknown provider "<value>". Accepted provider IDs: zai, minimax, tavily, brave.
+Unknown provider "<value>". Accepted provider IDs: zai, minimax, tavily, exa, brave.
 ```
 
-`--provider` and `SCOUTLINE_PROVIDER` accept `zai`, `minimax`, `tavily`, or
-`brave`. Unknown or empty values fail with `VALIDATION_ERROR` (`exit 1`) before
+`--provider` and `SCOUTLINE_PROVIDER` accept `zai`, `minimax`, `tavily`,
+`exa`, or `brave`. Unknown or empty values fail with `VALIDATION_ERROR` (`exit 1`) before
 any Provider invocation. `read`, `repo`, `crawl`, `map`, and `research`
 participate in selection but are supplied by different subsets of Providers
 (see the Capability Matrix). `tools`, `tool`, `call`, and `code` accept the

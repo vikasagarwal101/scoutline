@@ -182,7 +182,6 @@ export async function getBraveJson(
       },
       signal: controller.signal,
     });
-    clearT(timeoutId);
     if (!res.ok) {
       // Drain the body to free the socket, then drop it. The body must
       // NEVER reach the error message (NFR-006).
@@ -197,9 +196,11 @@ export async function getBraveJson(
     }
     return parsed;
   } catch (err) {
-    clearT(timeoutId);
     throw normalizeTransportError(err, timeoutMs);
   } finally {
+    // Clear the timeout only after body consumption so the AbortController
+    // timeout still covers a stalled/slow response body read.
+    clearT(timeoutId);
     controller.abort();
   }
 }
@@ -284,24 +285,22 @@ export async function fetchBraveVideoSearch(
  * query (no `topic` keyword appendage); the Adapter is responsible for
  * that suppression.
  *
- * This helper sends ONLY `q`. Two live gates shape that:
- *   - **count:** `--count` never reaches the Adapter (it is applied
- *     client-side after normalization by shared execution). LLM
- *     Context's own source-count/token-budget param name is currently
- *     UNCONFIRMED, so a fixed default is intentionally NOT forwarded
- *     here — we send only `q` rather than guess the field name.
- *   - **country/freshness:** whether LLM Context accepts `country`/
- *     `freshness` is UNCONFIRMED. To avoid sending params the endpoint
- *     may reject, the Adapter does NOT pass `mapSearchControls(...)` to
- *     this helper (only `{ q }` flows through).
- * (GATES-1/4 in brave-tech-plan §9 — confirm live, then widen.)
+ * The mapped `country`/`freshness` controls are forwarded alongside
+ * `q` (consistent with the web/news/video paths) so a `high` search
+ * honors `--recency`/`--location` rather than silently dropping them.
+ * Whether LLM Context honors `country`/`freshness` is a live gate; if
+ * it rejects them the failure surfaces as a mapped error rather than a
+ * silent filter drop. `count` is intentionally never forwarded
+ * (`--count` is applied client-side by shared execution); LLM
+ * Context's source-count/token-budget param name is UNCONFIRMED.
  */
 export async function fetchBraveLlmContext(
   apiKey: string,
   query: string,
+  params?: BraveSearchParams,
   deps: BraveTransportDeps = {},
 ): Promise<unknown> {
-  return getBraveJson(apiKey, "/res/v1/llm/context", { q: query }, deps);
+  return getBraveJson(apiKey, "/res/v1/llm/context", { q: query, ...(params ?? {}) }, deps);
 }
 
 // ---------------------------------------------------------------------------
@@ -367,7 +366,6 @@ export async function fetchBraveRateLimit(
       },
       signal: controller.signal,
     });
-    clearT(timeoutId);
     if (!res.ok) {
       // Drain the body to free the socket, then drop it. The body must
       // NEVER reach the error message (NFR-006).
@@ -384,9 +382,11 @@ export async function fetchBraveRateLimit(
       reset: headers.get("X-RateLimit-Reset"),
     };
   } catch (err) {
-    clearT(timeoutId);
     throw normalizeTransportError(err, timeoutMs);
   } finally {
+    // Clear the timeout only after body consumption so the AbortController
+    // timeout still covers a stalled/slow response body read.
+    clearT(timeoutId);
     controller.abort();
   }
 }

@@ -577,17 +577,20 @@ describe("Brave Search Capability", () => {
     );
   });
 
-  it("high sends ONLY q= to LLM Context (no country/freshness/count)", async () => {
+  it("high forwards country/freshness to LLM Context (no silent filter drop)", async () => {
     const { adapter, calls } = makeSearchAdapter(llmContextResponse([]));
     await adapter.search.invoke({
       query: "q",
       controls: { contentSize: "high", recency: "oneWeek", location: "us" },
     });
     assert.ok(calls[0].url.includes("/res/v1/llm/context?"), calls[0].url);
-    // Only q= should be present — recency/location mapped to country/freshness
-    // are NOT forwarded to LLM Context, and count never reaches the adapter.
-    assert.ok(!/country=/.test(calls[0].url), `no country on high path: ${calls[0].url}`);
-    assert.ok(!/freshness=/.test(calls[0].url), `no freshness on high path: ${calls[0].url}`);
+    // recency/location map to freshness/country and ARE forwarded (the
+    // high path no longer silently drops them); count never reaches the adapter.
+    assert.ok(/country=US/.test(calls[0].url), `country forwarded on high path: ${calls[0].url}`);
+    assert.ok(
+      /freshness=pw/.test(calls[0].url),
+      `freshness forwarded on high path: ${calls[0].url}`,
+    );
     assert.ok(!/count=/.test(calls[0].url), `no count on high path: ${calls[0].url}`);
   });
 

@@ -100,12 +100,28 @@ function parseFiniteNumber(value: string | undefined): number {
 // Normalizer
 // ---------------------------------------------------------------------------
 
+const ONE_DAY_SECONDS = 86400;
+
+/**
+ * Derive a category name from the selected window's duration so the
+ * label cannot drift from the window it represents (the largest window
+ * is usually ~30 days, but Brave's tiers are not guaranteed monthly).
+ * Falls back to a neutral `rate_limit` for unrecognized window sizes.
+ */
+function rateLimitWindowName(windowSeconds: number): string {
+  if (windowSeconds >= 28 * ONE_DAY_SECONDS) return "monthly";
+  if (windowSeconds >= 6 * ONE_DAY_SECONDS) return "weekly";
+  if (windowSeconds >= ONE_DAY_SECONDS) return "daily";
+  return "rate_limit";
+}
+
 /**
  * Normalize Brave `X-RateLimit-*` headers into the shared Interface.
  *
  * Selects the LARGEST `windowSeconds` window declared by `Policy` (≈
- * monthly) and surfaces it as a single "monthly" category; the per-
- * second window is dropped. For the selected window: `used = limit −
+ * monthly) and surfaces it as a single category named for that window
+ * (monthly/weekly/daily, else `rate_limit`); the per-second window is
+ * dropped. For the selected window: `used = limit −
  * remaining` (clamped to `[0, limit]` when remaining is out of range),
  * `resetsAt = now + reset*1000ms`, `durationSeconds = windowSeconds`.
  *
@@ -205,7 +221,7 @@ export function normalizeBraveQuota(
   });
 
   const category: QuotaCategory = {
-    name: "monthly",
+    name: rateLimitWindowName(windows[selectedIndex].windowSeconds),
     unit: "requests",
     current,
   };

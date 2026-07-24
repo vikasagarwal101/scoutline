@@ -273,35 +273,15 @@ function normalizeBraveWebResults(raw: unknown): readonly SearchSource[] {
 }
 
 /**
- * Normalize a raw Brave NEWS search response into `SearchSource[]`.
- * Reads the top-level `raw.results[]` (news responses are not nested
- * under `web`). Any malformed shape is a retryable `ApiError` 500.
- */
-function normalizeBraveNewsResults(raw: unknown): readonly SearchSource[] {
-  if (!isPlainObject(raw)) {
-    throw new ApiError("Brave search returned a malformed response", 500);
-  }
-  const results = raw.results;
-  if (!Array.isArray(results)) {
-    throw new ApiError("Brave search returned a malformed response", 500);
-  }
-  const out: SearchSource[] = [];
-  for (const entry of results) {
-    out.push(normalizeBraveResultEntry(entry));
-  }
-  return out;
-}
-
-/**
- * Normalize a raw Brave VIDEO search response into `SearchSource[]`.
- * Reads the top-level `raw.results[]` (video responses use the same
- * top-level wrapper as news, NOT `web.results[]`). Brave-only video
- * fields (`duration`/`views`/`creator`/`thumbnail`) are naturally
- * DROPPED — the shared {@link normalizeBraveResultEntry} reads only
- * `title`/`url`/`description`/`meta_url.netloc`/`page_age`/`age`
+ * Normalize a raw Brave NEWS or VIDEO search response into
+ * `SearchSource[]`. Both responses use the same top-level `raw.results[]`
+ * wrapper (NOT nested under `web`), so they share one normalizer.
+ * Brave-only video fields (`duration`/`views`/`creator`/`thumbnail`) are
+ * naturally DROPPED — the shared {@link normalizeBraveResultEntry} reads
+ * only `title`/`url`/`description`/`meta_url.netloc`/`page_age`/`age`
  * (ADR-0001). Any malformed shape is a retryable `ApiError` 500.
  */
-function normalizeBraveVideoResults(raw: unknown): readonly SearchSource[] {
+function normalizeBraveTopLevelResults(raw: unknown): readonly SearchSource[] {
   if (!isPlainObject(raw)) {
     throw new ApiError("Brave search returned a malformed response", 500);
   }
@@ -540,23 +520,24 @@ function createBraveSearchCapability(options: BraveSearchCapabilityOptions): Sea
           : applyQueryMutators(request.query, request.controls);
         const params = mapSearchControls(request.controls);
 
-        // The high path sends ONLY `q` to LLM Context — `params`
-        // (country/freshness) are NOT forwarded (whether LLM Context
-        // accepts them is unconfirmed; see fetchBraveLlmContext). All
-        // other paths pass `params` as today.
+        // The high path forwards `params` (country/freshness) to LLM
+        // Context too, so a `high` search honors `--recency`/`--location`
+        // rather than silently dropping them (consistent with the other
+        // paths). See fetchBraveLlmContext for the live gate on whether
+        // LLM Context honors these.
         const raw = isVideo
           ? await fetchBraveVideoSearch(apiKey, effectiveQuery, params, transport)
           : isHigh
-            ? await fetchBraveLlmContext(apiKey, effectiveQuery, transport)
+            ? await fetchBraveLlmContext(apiKey, effectiveQuery, params, transport)
             : isNews
               ? await fetchBraveNewsSearch(apiKey, effectiveQuery, params, transport)
               : await fetchBraveSearch(apiKey, effectiveQuery, params, transport);
         return isVideo
-          ? normalizeBraveVideoResults(raw)
+          ? normalizeBraveTopLevelResults(raw)
           : isHigh
             ? normalizeBraveLlmContextResults(raw)
             : isNews
-              ? normalizeBraveNewsResults(raw)
+              ? normalizeBraveTopLevelResults(raw)
               : normalizeBraveWebResults(raw);
       } catch (error) {
         throw normalizeBraveError(error);

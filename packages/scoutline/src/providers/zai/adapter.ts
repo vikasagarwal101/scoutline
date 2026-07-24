@@ -231,8 +231,8 @@ function createZaiSearchCapability(options: ZaiSearchCapabilityOptions): SearchC
         );
       }
       // Z.AI accepts every other control natively, but `type` (video
-      // content axis) is not yet supported by any provider; it is
-      // rejected here until a later ticket wires video dispatch.
+      // content axis) is not supported by this adapter (Brave supplies
+      // video), so it is rejected here.
       if (request.controls?.type !== undefined) {
         throw new UnsupportedOptionError("zai", "search", "type");
       }

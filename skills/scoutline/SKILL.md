@@ -91,7 +91,7 @@ not supply Reader, Crawl, Map, Research, or Vision.
 
 | Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Command |
 | --- | --- | --- | --- | --- | --- | --- |
-| Search | Yes (no domain/recency/content-size/location) | Yes (no domain/recency/content-size/location) | Yes (no location) | Yes (no location) | Yes (web/news/video; `--content-size high` → LLM Context) | `scoutline search` |
+| Search | Yes | Yes (no domain/recency/content-size/location) | Yes (no location) | Yes (no location) | Yes (web/news/video; `--content-size high` → LLM Context) | `scoutline search` |
 | General single-image interpretation | Yes | Yes (JPG/JPEG/PNG/WebP ≤50 MiB) | No | No | No | `scoutline vision analyze` |
 | Specialized Vision (UI-to-code, OCR, error diagnosis, diagram) | Yes | Available (live-attested; conformance-gated) | No | No | No | `scoutline vision ui-to-code`, `vision extract-text`, `vision diagnose-error`, `vision diagram` |
 | Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | No | No | No | `scoutline vision chart` |

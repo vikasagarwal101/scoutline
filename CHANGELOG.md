@@ -5,15 +5,15 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- **Brave Provider** as the fourth built-in Provider. New module
+- **Brave Provider** as the fifth built-in Provider. New module
   `src/providers/brave/` with the direct-HTTP Adapter, credentials
   module, and a shared `BraveTransportDeps` injection seam (fetch +
   timers). Default endpoint `https://api.search.brave.com`; auth via
   the `X-Subscription-Token` header; credential
   `BRAVE_SEARCH_API_KEY` (whitespace-only = absent; missing →
   `CONFIGURATION_ERROR`, exit 3). The production registry at
-  `src/providers/registry.ts` grows from `[zai, minimax, tavily]` to
-  `[zai, minimax, tavily, brave]`.
+  `src/providers/registry.ts` now includes brave:
+  `[zai, minimax, tavily, exa, brave]`.
 - **Brave capabilities**:
   - `search` — default → web search (`/res/v1/web/search`);
     `--topic news` → dedicated news endpoint (`/res/v1/news/search`);
@@ -46,9 +46,11 @@ All notable changes to this project will be documented in this file.
   Brave), `BRAVE_TIMEOUT` (default `30000` ms).
 - Operational note: Brave recently shifted from a pure free tier to
   $5 monthly metered credits (a saved card is now billable).
+- **`BRAVE_SEARCH_API_KEY` redaction** — added to `CREDENTIAL_KEYS`,
+  the assignment regex, and `configuredSecrets` in `lib/redact.ts`.
 
 ### Changed
-- `scoutline --help` advertises `--provider <zai|minimax|tavily|brave>`
+- `scoutline --help` advertises `--provider <zai|minimax|tavily|exa|brave>`
   and lists Brave alongside the shared search Providers.
 - `scoutline search --help` documents `--type video` (Brave-only) and
   the per-Provider `--content-size` overload including Brave's LLM
@@ -56,6 +58,52 @@ All notable changes to this project will be documented in this file.
 - Provider documentation across `README.md`, `docs/architecture.md`,
   `docs/configuration.md`, `docs/troubleshooting.md`, `docs/roadmap.md`,
   and `skills/scoutline/` updated to include Brave.
+
+## [0.8.0] - 2026-07-24
+
+### Added
+- **Exa Provider** as the fourth built-in Provider. New module
+  `src/providers/exa/` with the direct-HTTP Adapter, credentials
+  module, and a shared `ExaTransportDeps` injection seam (fetch +
+  timers). Default endpoint `https://api.exa.ai`; credential
+  `EXA_API_KEY`. The production registry at
+  `src/providers/registry.ts` grows from `[zai, minimax, tavily]` to
+  `[zai, minimax, tavily, exa]`.
+- **Exa capabilities** (3):
+  - `search` — same normalized `SearchSource[]` shape; accepts
+    `domain`, `recency`, `content-size`, and `topic` natively (Exa
+    maps topic to a `category` parameter); rejects `location` with
+    `UNSUPPORTED_OPTION`. Exa uses camelCase JSON bodies and always
+    sends `contents: { highlights: true }`; `highlights[]` are
+    space-joined into the `summary` field.
+  - `reader` — backed by the Exa `/contents` endpoint. Implements a
+    per-URL status total function: `/contents` returns HTTP 200 even
+    on per-URL failure, so the adapter inspects `statuses[]` (matched
+    by `id == request.url`) before reading results. Timeout conversion:
+    `livecrawlTimeout = request.timeout * 1000` (CLI seconds → Exa
+    milliseconds). `--format text` triggers a best-effort markdown
+    strip. Z.AI-only reader options are rejected.
+  - `research` — backed by the Exa Agent API (`POST /agent/runs` +
+    `GET /agent/runs/{id}` poll). Requires the pinned
+    `Exa-Beta: agent-2026-05-07` header on Agent endpoints only.
+    State-file resume reuses the shared `lib/research-state.ts`
+    (Ctrl-C + re-run polls the existing run, no second POST). Model
+    mapping: `auto`→auto, `mini`→low, `pro`→high (result echoes the
+    requested model). `--output-length`, `--citation-format`, and
+    `--domain` are rejected (concepts the Agent lacks). `cancelled`
+    status is terminal (Exa-specific).
+- **Exa operational capability** (1):
+  - `diagnostics` — lightweight `/search` probe with a stub query,
+    fed into the existing doctor pipeline.
+- **`--all-providers` quota filter** — `buildAllProvidersDashboard`
+  now filters configured descriptors by advertised `quota`
+  capability, so a provider without quota (Exa) is cleanly omitted
+  from `scoutline quota --all-providers` (no failure entry, no exit 1).
+- **`EXA_API_KEY` redaction** — added to `CREDENTIAL_KEYS`, the
+  assignment regex, and `configuredSecrets` in `lib/redact.ts`.
+- **CONTEXT.md** — Exa glossary entry as the fourth Provider;
+  Research Flagged Ambiguity updated to reflect the Tavily+Exa
+  sharing; example dialogue updated.
 
 ## [0.7.0] - 2026-07-23
 

@@ -59,7 +59,7 @@ Usage: scoutline <command> [args] [options]
 
 Commands:
   vision   Image and video analysis (Z.AI; MiniMax for interpret-image)
-  search   Real-time web search (shared: Z.AI + MiniMax + Tavily + Brave; --topic
+  search   Real-time web search (shared: Z.AI + MiniMax + Tavily + Exa + Brave; --topic
            honored by every Provider)
   read     Fetch and parse web pages (Provider Capability; Z.AI and Tavily
            supply it, MiniMax returns UNSUPPORTED_CAPABILITY)
@@ -80,13 +80,14 @@ Commands:
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
 
 Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER, then zai):
-  --provider <zai|minimax|tavily|brave>   Select the active Provider for shared capabilities
+  --provider <zai|minimax|tavily|exa|brave>   Select the active Provider for shared capabilities
   SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
 
 Shared capabilities accept --provider. The 'repo', 'read', 'crawl', 'map',
 and 'research' commands participate in Provider selection: Z.AI
 advertises and supplies repository-exploration and reader; Tavily
-advertises and supplies reader plus crawl, map, and research; MiniMax
+advertises and supplies reader plus crawl, map, and research; Exa
+advertises and supplies search, reader, and research; MiniMax
 advertises and supplies none of those Provider-only Capabilities. A
 non-supplier returns UNSUPPORTED_CAPABILITY with no fallback. Z.AI-only
 commands (tools, tool, call, code) carry the flag but ignore it.

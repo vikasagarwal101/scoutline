@@ -24,7 +24,7 @@
 - **Repo** — Search and read GitHub repository code
 - **Tools** — MCP tool discovery, schemas, and raw calls
 - **Code Mode** — TypeScript tool chaining for agent automation
-- **Provider selection** — Run shared capabilities through Z.AI, MiniMax, Tavily, or Brave
+- **Provider selection** — Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, or Brave
 
 ## Quick Start
 
@@ -56,6 +56,17 @@ npx scoutline --provider tavily research "Compare React vs Svelte for production
 ```
 
 Get your Tavily API key at: https://app.tavily.com
+
+### Using Exa (Search, Reader, Research)
+
+```bash
+export EXA_API_KEY="your-exa-key"
+npx scoutline --provider exa search "latest AI research" --topic news
+npx scoutline --provider exa read https://example.com/
+npx scoutline --provider exa research "Compare Rust async runtimes"
+```
+
+Get your Exa API key at: https://dashboard.exa.ai
 
 ### Using Brave (Search — web, news, video)
 
@@ -102,7 +113,7 @@ npx scoutline --help
 
 ## Provider Selection
 
-Shared commands accept `--provider <zai|minimax|tavily|brave>`. Resolution precedence:
+Shared commands accept `--provider <zai|minimax|tavily|exa|brave>`. Resolution precedence:
 
 1. Explicit `--provider` flag
 2. `SCOUTLINE_PROVIDER` environment variable
@@ -118,29 +129,29 @@ Selecting a provider that doesn't support a capability returns `UNSUPPORTED_CAPA
 
 ### Capability Matrix
 
-| Capability | Z.AI | MiniMax | Tavily | Brave | Command |
-|---|---|---|---|---|---|
-| Search | Yes | Yes | Yes | Yes (web/news/video) | `scoutline search` |
-| Reader | Yes | No | Yes | No | `scoutline read` |
-| Crawl | No | No | Yes | No | `scoutline crawl` |
-| Map | No | No | Yes | No | `scoutline map` |
-| Research | No | No | Yes | No | `scoutline research` |
-| Vision (interpret-image) | Yes | Yes | No | No | `scoutline vision analyze` |
-| Quota | Yes | Yes | Yes | Yes (rate-limit window) | `scoutline quota` |
-| Diagnostics | Yes | Yes | Yes | Yes | `scoutline doctor` |
-| Repo exploration | Yes | No | No | No | `scoutline repo` |
-| Raw tools | Yes | No | No | No | `scoutline tools` |
-| Code Mode | Yes | No | No | No | `scoutline code` |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Command |
+|---|---|---|---|---|---|---|
+| Search | Yes | Yes | Yes | Yes | Yes (web/news/video) | `scoutline search` |
+| Reader | Yes | No | Yes | Yes | No | `scoutline read` |
+| Crawl | No | No | Yes | No | No | `scoutline crawl` |
+| Map | No | No | Yes | No | No | `scoutline map` |
+| Research | No | No | Yes | Yes | No | `scoutline research` |
+| Vision (interpret-image) | Yes | Yes | No | No | No | `scoutline vision analyze` |
+| Quota | Yes | Yes | Yes | No | Yes (rate-limit window) | `scoutline quota` |
+| Diagnostics | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
+| Repo exploration | Yes | No | No | No | No | `scoutline repo` |
+| Raw tools | Yes | No | No | No | No | `scoutline tools` |
+| Code Mode | Yes | No | No | No | No | `scoutline code` |
 
 ### Search Controls
 
-`--topic <general|news|finance>` is accepted by all providers. Tavily passes it natively; Z.AI and MiniMax append a keyword to the query; Brave routes `news` to a dedicated news endpoint.
+`--topic <general|news|finance>` is accepted by all providers. Tavily passes it natively; Z.AI and MiniMax append a keyword to the query; Exa maps it to a category; Brave routes `news` to a dedicated news endpoint.
 
 `--type <video>` is Brave-only (mutually exclusive with `--topic`).
 
-`--domain`, `--recency`, and `--location` are honored by Z.AI and Brave (Brave maps `--domain` → `site:`, `--recency` → `freshness`, `--location` → `country`); Tavily honors `--domain` and `--recency`; MiniMax rejects them.
+`--domain` and `--recency` are honored by Z.AI, Tavily, Exa, and Brave (Brave maps `--domain` → `site:`, `--recency` → `freshness`). `--location` is Z.AI- and Brave-only (Brave → `country`); MiniMax rejects these controls.
 
-`--content-size` is a deliberate per-provider overload: `high` maps to Z.AI `content_size`, Tavily `search_depth=advanced`, and Brave's LLM Context endpoint (extracted passages joined into summaries); MiniMax rejects it (`UNSUPPORTED_OPTION`).
+`--content-size` is a deliberate per-provider overload: `high` maps to Z.AI `content_size`, Tavily `search_depth=advanced`, and Brave's LLM Context endpoint (extracted passages joined into summaries); Exa accepts it; MiniMax rejects it (`UNSUPPORTED_OPTION`).
 
 ## Usage
 

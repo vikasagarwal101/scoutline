@@ -98,7 +98,9 @@ async function buildDefaultDashboard(deps: QuotaDashboardDependencies): Promise<
 async function buildAllProvidersDashboard(
   deps: QuotaDashboardDependencies,
 ): Promise<QuotaDashboard> {
-  const configured = deps.descriptors.filter((d) => d.isConfigured(deps.env));
+  const configured = deps.descriptors.filter(
+    (d) => d.isConfigured(deps.env) && d.capabilities().has("quota"),
+  );
   if (configured.length === 0) {
     throw new ConfigurationError(
       "No provider is configured. Set at least one API key (Z_AI_API_KEY, MINIMAX_API_KEY, TAVILY_API_KEY, or BRAVE_SEARCH_API_KEY).",

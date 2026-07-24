@@ -1,30 +1,30 @@
 ---
 name: scoutline
 description: |
-  Z.AI, MiniMax, Tavily, and Brave CLI providing:
+  Z.AI, MiniMax, Tavily, Exa, and Brave CLI providing:
   - Vision: image/video analysis, OCR, UI-to-code, error diagnosis (GLM-4.6V)
   - Search: real-time web search with domain/recency/topic filtering (and
     Brave-only `--type video`)
-  - Reader: web page to markdown extraction (Z.AI or Tavily)
+  - Reader: web page to markdown extraction (Z.AI, Tavily, or Exa)
   - Crawl: multi-page website traversal (Tavily)
   - Map: URL-set discovery without fetching pages (Tavily)
-  - Research: asynchronous deep research with citations (Tavily)
+  - Research: asynchronous deep research with citations (Tavily or Exa)
   - Repo: GitHub code search and reading via ZRead (Z.AI)
   - Tools: MCP tool discovery, schemas, and raw calls (Z.AI)
   - Code: TypeScript tool chaining (Z.AI)
-  - Provider selection: --provider <zai|minimax|tavily|brave> for shared
+  - Provider selection: --provider <zai|minimax|tavily|exa|brave> for shared
     capabilities, repo, read, crawl, map, and research
   Use for visual content analysis, web search, page reading, multi-page
   site traversal, deep research, or GitHub exploration. Requires
   Z_AI_API_KEY (default), MINIMAX_API_KEY (with --provider minimax),
   TAVILY_API_KEY (with --provider tavily for Search/Reader/Crawl/
-  Map/Research), or BRAVE_SEARCH_API_KEY (with --provider brave for
-  Search).
+  Map/Research), EXA_API_KEY (with --provider exa for Search/Reader/
+  Research), or BRAVE_SEARCH_API_KEY (with --provider brave for Search).
 ---
 
 # Scoutline
 
-Access Z.AI, MiniMax, Tavily, and Brave capabilities via `npx scoutline`. The
+Access Z.AI, MiniMax, Tavily, Exa, and Brave capabilities via `npx scoutline`. The
 CLI is self-documenting — use `--help` at any level.
 
 ## Setup
@@ -40,18 +40,22 @@ export MINIMAX_REGION=global  # optional: defaults to "global"; alternative is "
 # OR Tavily (Search, Reader, Crawl, Map, Research)
 export TAVILY_API_KEY="your-tavily-key"
 
+# OR Exa (Search, Reader, Research)
+export EXA_API_KEY="your-exa-key"
+
 # OR Brave (Search: web, news, video)
 export BRAVE_SEARCH_API_KEY="your-brave-key"
 ```
 
 Get a Z.AI key at: https://z.ai/manage-apikey/apikey-list
 Get a Tavily key at: https://app.tavily.com/home/api-keys
+Get an Exa key at: https://dashboard.exa.ai
 
 ## Provider Selection
 
 Shared commands (`search`, `vision analyze`, `quota`, `doctor`),
 **`repo`**, **`read`**, **`crawl`**, **`map`**, and **`research`**
-accept the global `--provider <zai|minimax|tavily|brave>` flag. Precedence
+accept the global `--provider <zai|minimax|tavily|exa|brave>` flag. Precedence
 is the flag, then the `SCOUTLINE_PROVIDER` environment variable, then
 the default `zai`. Provider selection is never inferred from
 credentials. Unknown values fail fast with `VALIDATION_ERROR`.
@@ -61,16 +65,17 @@ remain Z.AI-only.
 
 Capability coverage at launch:
 
-- `search` — Z.AI, MiniMax, Tavily, Brave (the only search control honored by
+- `search` — Z.AI, MiniMax, Tavily, Exa, Brave (the only search control honored by
   every Provider is `--topic <general|news|finance>`; Brave is the only
   Provider that advertises `--type video`)
 - `vision.interpret-image` — Z.AI, MiniMax
-- `quota`, `diagnostics` — Z.AI, MiniMax, Tavily, Brave
-- `read` — Z.AI, Tavily (Tavily rejects Z.AI-only options:
+- `quota`, `diagnostics` — Z.AI, MiniMax, Tavily, Brave (Exa has diagnostics but not quota)
+- `read` — Z.AI, Tavily, Exa (Tavily and Exa reject Z.AI-only options:
   `--with-links`, `--no-gfm`, `--keep-img-data-url`,
   `--with-images-summary`)
 - `repo` — Z.AI only
-- `crawl`, `map`, `research` — Tavily only
+- `crawl`, `map` — Tavily only
+- `research` — Tavily, Exa
 
 MiniMax does not currently advertise the `repository-exploration` or
 `reader` Capabilities — selecting MiniMax (explicitly or via
@@ -84,22 +89,22 @@ not supply Reader, Crawl, Map, Research, or Vision.
 
 ## Capability Matrix
 
-| Capability | Z.AI | MiniMax | Tavily | Brave | Command |
-| --- | --- | --- | --- | --- | --- |
-| Search | Yes (no domain/recency/content-size/location) | Yes (no domain/recency/content-size/location) | Yes (no location) | Yes (web/news/video; `--content-size high` → LLM Context) | `scoutline search` |
-| General single-image interpretation | Yes | Yes (JPG/JPEG/PNG/WebP ≤50 MiB) | No | No | `scoutline vision analyze` |
-| Specialized Vision (UI-to-code, OCR, error diagnosis, diagram) | Yes | Available (live-attested; conformance-gated) | No | No | `scoutline vision ui-to-code`, `vision extract-text`, `vision diagnose-error`, `vision diagram` |
-| Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | No | No | `scoutline vision chart` |
-| Two-image diff, video | Yes | No | No | No | `scoutline vision diff`, `vision video` |
-| Quota (normalized) | Yes | Yes | Yes | Yes (rate-limit window, not spend) | `scoutline quota [--all-providers]` |
-| Diagnostics | Yes | Yes | Yes | Yes | `scoutline doctor [--no-tools]` |
-| Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes (rejects Z.AI-only options) | **No** (UNSUPPORTED_CAPABILITY) | `scoutline read` |
-| Repository exploration (search/read/tree) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | `scoutline repo ...` |
-| Crawl | **No** | **No** | Yes | **No** | `scoutline crawl` |
-| Map | **No** | **No** | Yes | **No** | `scoutline map` |
-| Research (4-250 credits) | **No** | **No** | Yes | **No** | `scoutline research` |
-| Raw tools | Yes | No | No | No | `scoutline tools`, `tool`, `call` |
-| Code Mode | Yes | No | No | No | `scoutline code` |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Command |
+| --- | --- | --- | --- | --- | --- | --- |
+| Search | Yes (no domain/recency/content-size/location) | Yes (no domain/recency/content-size/location) | Yes (no location) | Yes (no location) | Yes (web/news/video; `--content-size high` → LLM Context) | `scoutline search` |
+| General single-image interpretation | Yes | Yes (JPG/JPEG/PNG/WebP ≤50 MiB) | No | No | No | `scoutline vision analyze` |
+| Specialized Vision (UI-to-code, OCR, error diagnosis, diagram) | Yes | Available (live-attested; conformance-gated) | No | No | No | `scoutline vision ui-to-code`, `vision extract-text`, `vision diagnose-error`, `vision diagram` |
+| Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | No | No | No | `scoutline vision chart` |
+| Two-image diff, video | Yes | No | No | No | No | `scoutline vision diff`, `vision video` |
+| Quota (normalized) | Yes | Yes | Yes | **No** (deferred) | Yes (rate-limit window, not spend) | `scoutline quota [--all-providers]` |
+| Diagnostics | Yes | Yes | Yes | Yes | Yes | `scoutline doctor [--no-tools]` |
+| Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes (rejects Z.AI-only options) | Yes (rejects Z.AI-only options) | **No** (UNSUPPORTED_CAPABILITY) | `scoutline read` |
+| Repository exploration (search/read/tree) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | `scoutline repo ...` |
+| Crawl | **No** | **No** | Yes | **No** | **No** | `scoutline crawl` |
+| Map | **No** | **No** | Yes | **No** | **No** | `scoutline map` |
+| Research (4-250 credits) | **No** | **No** | Yes | Yes | **No** | `scoutline research` |
+| Raw tools | Yes | No | No | No | No | `scoutline tools`, `tool`, `call` |
+| Code Mode | Yes | No | No | No | No | `scoutline code` |
 
 Vision results are never cached. Z.AI image limits are JPG/JPEG/PNG ≤5 MiB.
 Search result count is applied locally after normalization and is never sent
@@ -151,6 +156,12 @@ npx scoutline --provider tavily crawl https://docs.example.com --depth 2
 npx scoutline --provider tavily map https://docs.example.com
 npx scoutline --provider tavily research "Rust async runtime comparison"
 npx scoutline doctor --provider tavily
+
+# Exa (Search, Reader, Research)
+npx scoutline --provider exa search "latest AI research" --topic news
+npx scoutline --provider exa read https://example.com/
+npx scoutline --provider exa research "Compare Rust async runtimes"
+npx scoutline doctor --provider exa
 
 # Brave (Search: web, news, video)
 npx scoutline --provider brave search "AI policy news" --topic news

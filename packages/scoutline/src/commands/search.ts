@@ -247,12 +247,12 @@ export async function search(
 
 // Help text
 export const SEARCH_HELP = `
-Search Command - Real-time web search (Z.AI, MiniMax, Tavily, or Brave)
+Search Command - Real-time web search (Z.AI, MiniMax, Tavily, Exa, or Brave)
 
 Usage: scoutline search <query> [options]
 
 Provider selection (precedence: explicit flag, then SCOUTLINE_PROVIDER, then zai):
-  --provider <zai|minimax|tavily|brave>   Select the search provider (default: zai)
+  --provider <zai|minimax|tavily|exa|brave>   Select the search provider (default: zai)
   SCOUTLINE_PROVIDER=<id>                 Fallback when --provider is not passed
 
 Note: support for the optional controls below varies by provider AND by
@@ -264,15 +264,15 @@ relying on a fixed list here.
 Options:
   --topic <t>         Search topic hint (all providers): general, news, finance
                       (default: general). Z.AI/MiniMax append a keyword to the
-                      query; Tavily passes it natively; Brave uses a news endpoint
-                      for \`news\`.
+                      query; Tavily passes it natively; Exa maps it to a
+                      category; Brave uses a news endpoint for \`news\`.
   --type <video>      Content-type axis; supported by Brave (\`video\`).
                       Mutually exclusive with --topic.
   --domain <d>        Limit to specific domain (provider support varies; e.g., github.com)
   --recency <r>       Filter by time (provider support varies): oneDay, oneWeek, oneMonth, oneYear, noLimit
   --content-size <s>  Depth/size. medium = default. high maps per provider:
-                      Z.AI content_size; Tavily search_depth=advanced; Brave →
-                      LLM Context (extracted passages); MiniMax rejected
+                      Z.AI content_size; Tavily search_depth=advanced; Exa accepted;
+                      Brave → LLM Context (extracted passages); MiniMax rejected
                       (UNSUPPORTED_OPTION).
   --location <l>      Location hint (provider support varies): cn, us
   --count <n>         Limit number of results (applied after normalization)

@@ -8,9 +8,9 @@ gate.
 
 Shared commands (`search`, `vision analyze`, `quota`, `doctor`),
 **`repo`**, **`read`**, **`crawl`**, **`map`**, and **`research`** accept
-the global `--provider <zai|minimax|tavily>` flag. Precedence:
+the global `--provider <zai|minimax|tavily|exa>` flag. Precedence:
 
-1. `--provider <zai|minimax|tavily>` on the command line
+1. `--provider <zai|minimax|tavily|exa>` on the command line
 2. `SCOUTLINE_PROVIDER` environment variable
 3. Default `zai`
 
@@ -19,10 +19,11 @@ invocation. Provider selection is never inferred from credentials.
 
 `tools`, `tool`, `call`, and `code` accept the flag but ignore it; they
 remain Z.AI-only and do not validate the supplied value. `repo` and `read`
-participate in selection: Z.AI and Tavily both supply `reader`; only
-Z.AI supplies `repository-exploration`. `crawl`, `map`, and `research`
+participate in selection: Z.AI, Tavily, and Exa supply `reader`; only
+Z.AI supplies `repository-exploration`. `crawl` and `map`
 participate in selection but only Tavily currently supplies those
-Capabilities — selecting Z.AI or MiniMax for any of them returns
+Capabilities. `research` is supplied by Tavily and Exa. Selecting a
+non-supplier for any of them returns
 `UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter
 creation, credential resolution for use, cache identity, or transport
 construction, with no fallback.

@@ -19,6 +19,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import * as fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import { createFirecrawlDescriptor } from "../dist/providers/firecrawl/adapter.js";
 import {
@@ -79,6 +82,14 @@ describe("Firecrawl Search Adapter", () => {
     assert.throws(
       () => adapter.search.validate({ query: "x", controls: { location: "us" } }),
       UnsupportedOptionError,
+    );
+  });
+
+  it("rejects --topic finance (no native Firecrawl source)", () => {
+    const { adapter } = makeAdapter(async () => makeResponse());
+    assert.throws(
+      () => adapter.search.validate({ query: "x", controls: { topic: "finance" } }),
+      ValidationError,
     );
   });
 
@@ -289,6 +300,26 @@ describe("Firecrawl Map Adapter", () => {
     const body = lastBody(calls);
     assert.equal(body.limit, 10);
     assert.equal(body.search, "docs");
+  });
+
+  it("rejects unsupported map controls (depth/breadth/selectPaths/excludePaths)", () => {
+    const { adapter } = makeAdapter(async () => makeResponse());
+    assert.throws(
+      () => adapter.map.fetch.validate({ url: "https://x.example", depth: 2 }),
+      UnsupportedOptionError,
+    );
+    assert.throws(
+      () => adapter.map.fetch.validate({ url: "https://x.example", breadth: 5 }),
+      UnsupportedOptionError,
+    );
+    assert.throws(
+      () => adapter.map.fetch.validate({ url: "https://x.example", selectPaths: "/a/*" }),
+      UnsupportedOptionError,
+    );
+    assert.throws(
+      () => adapter.map.fetch.validate({ url: "https://x.example", excludePaths: "/b/*" }),
+      UnsupportedOptionError,
+    );
   });
 });
 
@@ -665,6 +696,46 @@ describe("Firecrawl Crawl Adapter", () => {
     const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
     const out = await adapter.crawl.fetch.invoke({ url: "https://ac.example" });
     assert.equal(out.totalPages, 0); // reclaimed job-c, polled completed
+  });
+
+  it("serializes concurrent identical crawls via the create-lock (no double-POST)", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "fc-lock-"));
+    const activeJobs = [];
+    let postCount = 0;
+    const fn = async (url, init) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (method === "POST" && u.endsWith("/v2/crawl")) {
+        postCount += 1;
+        const id = `job-${postCount}`;
+        activeJobs.push({ id, url: "https://lock.example", created_at: new Date().toISOString() });
+        // Hold the create critical section briefly so the second invoke contends.
+        await new Promise((r) => setTimeout(r, 50));
+        return makeResponse({ json: { success: true, id } });
+      }
+      if (method === "GET" && u.endsWith("/v2/crawl/active")) {
+        return makeResponse({ json: { success: true, crawls: activeJobs } });
+      }
+      return makeResponse({ json: { success: true, status: "completed", data: [] } });
+    };
+    const descriptor = createFirecrawlDescriptor({
+      transport: {
+        fetch: fn,
+        env: { FIRECRAWL_TIMEOUT: "5000", FIRECRAWL_CRAWL_POLL_INTERVAL_MS: "0" },
+      },
+      crawlStateFile: createInMemoryAsyncJobStateFile(),
+      crawlStateDir: tmpDir,
+    });
+    const adapter = descriptor.create({
+      env: { FIRECRAWL_API_KEY: TEST_API_KEY, FIRECRAWL_CRAWL_POLL_INTERVAL_MS: "0" },
+    });
+    await Promise.all([
+      adapter.crawl.fetch.invoke({ url: "https://lock.example" }),
+      adapter.crawl.fetch.invoke({ url: "https://lock.example" }),
+    ]);
+    // The lock serialized the create: only ONE POST (the second reclaimed the first's job).
+    assert.equal(postCount, 1, "concurrent identical crawls must not both POST");
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   });
 });
 

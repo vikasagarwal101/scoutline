@@ -27,6 +27,8 @@
  */
 
 import crypto from "node:crypto";
+import * as fs from "node:fs/promises";
+import path from "node:path";
 
 import type {
   ProviderAdapter,
@@ -467,6 +469,14 @@ function createFirecrawlSearchCapability(
       if (request.controls?.location !== undefined) {
         throw new UnsupportedOptionError("firecrawl", "search", "location");
       }
+      // Firecrawl sources are web/news only; --topic finance has no native
+      // source mapping — reject explicitly rather than silently returning
+      // generic web results (supported topics: general, news).
+      if (request.controls?.topic === "finance") {
+        throw new ValidationError(
+          "Firecrawl search does not support --topic finance (supported: general, news)",
+        );
+      }
     },
 
     cacheIdentity(request: SearchRequest): SearchCacheIdentity {
@@ -603,6 +613,21 @@ function createFirecrawlMapCapability(options: FirecrawlMapCapabilityOptions): M
       assertHttpUrl(request.url);
       if (request.limit !== undefined && request.limit <= 0) {
         throw new ValidationError("Map limit must be greater than 0");
+      }
+      // Firecrawl /v2/map supports only url, limit, and search(instructions).
+      // depth/breadth/selectPaths/excludePaths have no native map equivalent
+      // (Tavily map supports them) — reject rather than silently discard.
+      if (request.depth !== undefined) {
+        throw new UnsupportedOptionError("firecrawl", "map", "depth");
+      }
+      if (request.breadth !== undefined) {
+        throw new UnsupportedOptionError("firecrawl", "map", "breadth");
+      }
+      if (request.selectPaths !== undefined) {
+        throw new UnsupportedOptionError("firecrawl", "map", "selectPaths");
+      }
+      if (request.excludePaths !== undefined) {
+        throw new UnsupportedOptionError("firecrawl", "map", "excludePaths");
       }
     },
 
@@ -888,19 +913,69 @@ async function persistCrawlId(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Concurrent-create lock (cost-safety — review C3)
+// ---------------------------------------------------------------------------
+
+/** How long to wait for a contended crawl create-lock before giving up. */
+const CRAWL_LOCK_TIMEOUT_MS = 30000;
+/** A lock older than this is treated as stale (holder died) and broken. */
+const CRAWL_LOCK_STALE_MS = 10 * 60 * 1000;
+
+/**
+ * Serialize the listActive→create→persist critical section per request so two
+ * concurrent identical crawls can't both POST (and charge) a job — the second
+ * waits, then reclaims the first's job from `/active` instead of re-POSTing.
+ * Uses an exclusive `wx`-create lockfile sibling to the state file; a stale
+ * lock (holder crashed) is broken after {@link CRAWL_LOCK_STALE_MS}.
+ *
+ * When `stateDir` is undefined (in-memory test mode), the lock is a no-op —
+ * tests are single-process and need no cross-process serialization.
+ */
+async function withCrawlLock<T>(
+  stateDir: string | undefined,
+  identityHash: string,
+  fn: () => Promise<T>,
+  deps: FirecrawlTransportDeps | undefined,
+): Promise<T> {
+  if (stateDir === undefined) return fn();
+  const setT = deps?.setTimeout ?? setTimeout;
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setT(() => r(), ms));
+  await fs.mkdir(stateDir, { recursive: true }).catch(() => {});
+  const lockPath = path.join(stateDir, `${identityHash}.lock`);
+  const deadline = Date.now() + CRAWL_LOCK_TIMEOUT_MS;
+  for (;;) {
+    try {
+      const handle = await fs.open(lockPath, "wx");
+      try {
+        return await fn();
+      } finally {
+        await handle.close().catch(() => {});
+        await fs.unlink(lockPath).catch(() => {});
+      }
+    } catch (err) {
+      if (!isEexistError(err)) throw err;
+      if (Date.now() > deadline) {
+        throw new ApiError("Firecrawl crawl create-lock timed out", 500);
+      }
+      // Break a stale lock (the holder died without releasing).
+      const stat = await fs.stat(lockPath).catch(() => null);
+      if (stat && Date.now() - stat.mtimeMs > CRAWL_LOCK_STALE_MS) {
+        await fs.unlink(lockPath).catch(() => {});
+        continue;
+      }
+      await sleep(500);
+    }
+  }
+}
+
 /**
  * Reclaim an in-flight job whose create-POST response was lost, or create a
- * fresh one. On a state-file miss, GET /v2/crawl/active and adopt a
- * matching job; else POST /v2/crawl and persist the id. The create POST is
- * zero-retry at the shared-execution layer (defaultRetryPolicy), so a lost
- * response is terminal here and reclaimed on the next user invocation.
- *
- * Concurrency caveat: two SIMULTANEOUS identical invocations are not
- * serialized — both can pass the state miss + active-list check and each
- * POST, creating (and charging) two jobs (one orphaned). The `wx`-flag
- * state write converges which job gets polled, but cannot prevent the
- * duplicate create without a server-side idempotency key. Avoid running
- * identical crawls concurrently.
+ * fresh one. On a state-file miss, GET /v2/crawl/active and adopt a matching
+ * job; else POST /v2/crawl and persist the id. The whole listActive→create→
+ * persist sequence runs under {@link withCrawlLock} so concurrent identical
+ * invocations serialize (the second reclaims the first's job instead of
+ * re-POSTing). The create POST is zero-retry at the shared-execution layer.
  */
 async function reclaimOrCreateCrawlJob(
   apiKey: string,
@@ -909,24 +984,34 @@ async function reclaimOrCreateCrawlJob(
   params: FirecrawlCrawlParams,
   stateFile: AsyncJobStateFile,
   transport: FirecrawlTransportDeps | undefined,
+  stateDir: string | undefined,
 ): Promise<string> {
-  const active = await listActiveFirecrawlCrawls(apiKey, transport);
-  const matched = matchActiveCrawl(active, request, params);
-  if (matched !== undefined) {
-    return persistCrawlId(stateFile, identityHash, matched);
-  }
-  const created = await createFirecrawlCrawl(apiKey, request.url, params, transport);
-  return persistCrawlId(stateFile, identityHash, created.id);
+  return withCrawlLock(
+    stateDir,
+    identityHash,
+    async () => {
+      const active = await listActiveFirecrawlCrawls(apiKey, transport);
+      const matched = matchActiveCrawl(active, request, params);
+      if (matched !== undefined) {
+        return persistCrawlId(stateFile, identityHash, matched);
+      }
+      const created = await createFirecrawlCrawl(apiKey, request.url, params, transport);
+      return persistCrawlId(stateFile, identityHash, created.id);
+    },
+    transport,
+  );
 }
 
 interface FirecrawlCrawlCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly transport?: FirecrawlTransportDeps;
   readonly stateFile: AsyncJobStateFile;
+  /** Disk dir for the create-lock; undefined in tests (no-op lock). */
+  readonly stateDir?: string;
 }
 
 function createFirecrawlCrawlCapability(options: FirecrawlCrawlCapabilityOptions): CrawlCapability {
-  const { env, transport, stateFile } = options;
+  const { env, transport, stateFile, stateDir } = options;
 
   const fetch: CrawlOperation = {
     kind: "crawl-fetch",
@@ -993,6 +1078,7 @@ function createFirecrawlCrawlCapability(options: FirecrawlCrawlCapabilityOptions
             params,
             stateFile,
             transport,
+            stateDir,
           );
         }
 
@@ -1036,6 +1122,7 @@ function createFirecrawlCrawlCapability(options: FirecrawlCrawlCapabilityOptions
               params,
               stateFile,
               transport,
+              stateDir,
             );
             continue;
           }
@@ -1067,6 +1154,8 @@ function createFirecrawlCrawlCapability(options: FirecrawlCrawlCapabilityOptions
 export interface FirecrawlAdapterDependencies {
   readonly transport?: FirecrawlTransportDeps;
   readonly crawlStateFile?: AsyncJobStateFile;
+  /** Disk dir for the crawl create-lock; defaults to asyncJobStateDir("crawl"). */
+  readonly crawlStateDir?: string;
 }
 
 /**
@@ -1080,8 +1169,9 @@ export function createFirecrawlDescriptor(
   dependencies?: FirecrawlAdapterDependencies,
 ): ProviderDescriptor {
   const transport = dependencies?.transport;
+  const crawlStateDir = dependencies?.crawlStateDir ?? asyncJobStateDir("crawl");
   const crawlStateFile =
-    dependencies?.crawlStateFile ?? createProductionAsyncJobStateFile(asyncJobStateDir("crawl"));
+    dependencies?.crawlStateFile ?? createProductionAsyncJobStateFile(crawlStateDir);
 
   return {
     id: "firecrawl",
@@ -1105,6 +1195,7 @@ export function createFirecrawlDescriptor(
         env: context.env,
         transport,
         stateFile: crawlStateFile,
+        stateDir: crawlStateDir,
       });
       const map = createFirecrawlMapCapability({ env: context.env, transport });
       const quota = createFirecrawlQuotaCapability({ env: context.env, transport });

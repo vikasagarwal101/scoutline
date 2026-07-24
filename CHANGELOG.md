@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-24
+
 ### Added
 - **Firecrawl Provider** as the sixth built-in Provider. New module
   `src/providers/firecrawl/` with a direct-HTTP v2 transport Adapter
@@ -43,6 +45,8 @@ All notable changes to this project will be documented in this file.
 - `lib/research-state.ts` generalized to `lib/async-job-state.ts`
   (reusable async-job resume); the persisted `requestId` field is
   unchanged for wire compatibility.
+- Migrated Exa's research test to the renamed `async-job-state` module
+  (missed during the FC-01 rename; caught during release verification).
 
 ## [0.9.0] - 2026-07-24
 

@@ -22,7 +22,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 
 import { createExaDescriptor } from "../dist/providers/exa/adapter.js";
-import { createInMemoryResearchStateFile } from "../dist/lib/research-state.js";
+import { createInMemoryAsyncJobStateFile } from "../dist/lib/async-job-state.js";
 import {
   ApiError,
   AuthError,
@@ -909,7 +909,7 @@ describe("Exa Reader Adapter — cache identity", () => {
  */
 function makeResearchAdapter({ onCreate, onPoll, fallbackFetch } = {}) {
   const calls = [];
-  const stateFile = createInMemoryResearchStateFile();
+  const stateFile = createInMemoryAsyncJobStateFile();
   const fn = async (url, init) => {
     calls.push({ url: String(url), init });
     const u = String(url);
@@ -1292,7 +1292,7 @@ describe("Exa Research — cache identity", () => {
 
 function requireIdentityHash(adapter, query) {
   const identity = adapter.research.run.cacheIdentity({ query });
-  // Match computeResearchStateHash: sort only the request sub-object,
+  // Match computeAsyncJobStateHash: sort only the request sub-object,
   // NOT the top-level payload (insertion order: provider, capability,
   // credentialFingerprint, request).
   function sortKeysDeep(value) {

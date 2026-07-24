@@ -14,7 +14,7 @@
  * validation, control mapping.
  *
  * Tests inject a single fake `fetch` through `TavilyAdapterDependencies.transport`
- * and an in-memory `ResearchStateFile` to exercise the lifecycle
+ * and an in-memory `AsyncJobStateFile` to exercise the lifecycle
  * deterministically without touching the filesystem.
  */
 import { describe, it } from "node:test";
@@ -25,9 +25,9 @@ import { createTavilyDescriptor } from "../dist/providers/tavily/adapter.js";
 import { ApiError, AuthError, TimeoutError, ValidationError } from "../dist/lib/errors.js";
 import { executeCachedOperation } from "../dist/lib/execution.js";
 import {
-  createInMemoryResearchStateFile,
-  computeResearchStateHash,
-} from "../dist/lib/research-state.js";
+  createInMemoryAsyncJobStateFile,
+  computeAsyncJobStateHash,
+} from "../dist/lib/async-job-state.js";
 import { formatInterruptMessage } from "../dist/commands/research.js";
 import { buildProviderCacheKey } from "../dist/lib/cache.js";
 
@@ -108,7 +108,7 @@ function makeResearchAdapter({ fakeFetch, stateFile, env, fetchCalls }) {
         TAVILY_RESEARCH_POLL_INTERVAL_MS: "0",
       },
     },
-    researchStateFile: stateFile ?? createInMemoryResearchStateFile(),
+    researchStateFile: stateFile ?? createInMemoryAsyncJobStateFile(),
   });
   const adapter = descriptor.create({ env: { TAVILY_API_KEY: TEST_API_KEY } });
   return { adapter, calls };
@@ -172,7 +172,7 @@ function notFoundResponse() {
 
 describe("T07 Scenario 1 — Normal completion", () => {
   it("creates state file, polls, deletes on completion, and caches result", async () => {
-    const stateFile = createInMemoryResearchStateFile();
+    const stateFile = createInMemoryAsyncJobStateFile();
     const { fetch: rfetch } = makeResearchFetch({
       pollResponses: [PENDING_POLL, COMPLETED_POLL],
     });
@@ -195,7 +195,7 @@ describe("T07 Scenario 1 — Normal completion", () => {
     assert.equal(result.sources[0].favicon, undefined);
 
     // State file deleted after completion
-    const identityHash = computeResearchStateHash({
+    const identityHash = computeAsyncJobStateHash({
       provider: "tavily",
       capability: "research",
       credentialFingerprint: EXPECTED_FINGERPRINT,
@@ -225,9 +225,9 @@ describe("T07 Scenario 2 — Ctrl-C during poll", () => {
     // By the time the first GET poll arrives, the state file MUST be
     // written. We assert from inside the fake fetch's GET handler so
     // the check is deterministic (no race with microtask drainage).
-    const stateFile = createInMemoryResearchStateFile();
+    const stateFile = createInMemoryAsyncJobStateFile();
     const request = { query: "interrupted query" };
-    const identityHash = computeResearchStateHash({
+    const identityHash = computeAsyncJobStateHash({
       provider: "tavily",
       capability: "research",
       credentialFingerprint: EXPECTED_FINGERPRINT,
@@ -294,9 +294,9 @@ describe("T07 Scenario 2 — Ctrl-C during poll", () => {
 
 describe("T07 Scenario 3 — Corrupt state file recovery", () => {
   it("read() catches parse error, deletes corrupt file, returns null", async () => {
-    const stateFile = createInMemoryResearchStateFile();
+    const stateFile = createInMemoryAsyncJobStateFile();
     const request = { query: "corrupt test" };
-    const identityHash = computeResearchStateHash({
+    const identityHash = computeAsyncJobStateHash({
       provider: "tavily",
       capability: "research",
       credentialFingerprint: EXPECTED_FINGERPRINT,
@@ -313,9 +313,9 @@ describe("T07 Scenario 3 — Corrupt state file recovery", () => {
   });
 
   it("invoke creates a new task when state file is corrupt", async () => {
-    const stateFile = createInMemoryResearchStateFile();
+    const stateFile = createInMemoryAsyncJobStateFile();
     const request = { query: "corrupt invoke" };
-    const identityHash = computeResearchStateHash({
+    const identityHash = computeAsyncJobStateHash({
       provider: "tavily",
       capability: "research",
       credentialFingerprint: EXPECTED_FINGERPRINT,
@@ -339,7 +339,7 @@ describe("T07 Scenario 3 — Corrupt state file recovery", () => {
   });
 
   it("read() catches a structurally-valid but wrong-shape JSON", async () => {
-    const stateFile = createInMemoryResearchStateFile();
+    const stateFile = createInMemoryAsyncJobStateFile();
     const hash = "some-hash";
     // Valid JSON but missing required fields
     stateFile.store.set(hash, JSON.stringify({ foo: "bar" }));
@@ -355,7 +355,7 @@ describe("T07 Scenario 3 — Corrupt state file recovery", () => {
 
 describe("T07 Scenario 4 — Concurrent invocations (wx flag)", () => {
   it("write() throws EEXIST when file already exists", async () => {
-    const stateFile = createInMemoryResearchStateFile();
+    const stateFile = createInMemoryAsyncJobStateFile();
     const hash = "concurrent-hash";
     const state = {
       requestId: "req-existing",
@@ -375,9 +375,9 @@ describe("T07 Scenario 4 — Concurrent invocations (wx flag)", () => {
     // Simulate: another process already wrote a state file. This process
     // POSTs (getting req-new), tries to write, gets EEXIST, reads the
     // existing state (req-existing), and polls that instead.
-    const stateFile = createInMemoryResearchStateFile();
+    const stateFile = createInMemoryAsyncJobStateFile();
     const request = { query: "concurrent test" };
-    const identityHash = computeResearchStateHash({
+    const identityHash = computeAsyncJobStateHash({
       provider: "tavily",
       capability: "research",
       credentialFingerprint: EXPECTED_FINGERPRINT,
@@ -420,7 +420,7 @@ describe("T07 Scenario 4 — Concurrent invocations (wx flag)", () => {
 
 describe("T07 Scenario 5 — POST transient failure", () => {
   it("throws ApiError on POST 503, writes no state file", async () => {
-    const stateFile = createInMemoryResearchStateFile();
+    const stateFile = createInMemoryAsyncJobStateFile();
     const { fetch: rfetch } = makeResearchFetch({
       postStatus: 503,
       pollResponses: [],
@@ -435,7 +435,7 @@ describe("T07 Scenario 5 — POST transient failure", () => {
     );
 
     // State file NOT written (POST failed before write)
-    const identityHash = computeResearchStateHash({
+    const identityHash = computeAsyncJobStateHash({
       provider: "tavily",
       capability: "research",
       credentialFingerprint: EXPECTED_FINGERPRINT,
@@ -445,7 +445,7 @@ describe("T07 Scenario 5 — POST transient failure", () => {
   });
 
   it("executeCachedOperation does not retry on POST failure (maxRetries: 0)", async () => {
-    const stateFile = createInMemoryResearchStateFile();
+    const stateFile = createInMemoryAsyncJobStateFile();
     let postCount = 0;
     const { fetch: rfetch } = makeResearchFetch({
       postStatus: 503,
@@ -473,9 +473,9 @@ describe("T07 Scenario 5 — POST transient failure", () => {
 
 describe("T07 Scenario 6 — Poll 404 recovery", () => {
   it("deletes stale state file on 404, creates new task, completes", async () => {
-    const stateFile = createInMemoryResearchStateFile();
+    const stateFile = createInMemoryAsyncJobStateFile();
     const request = { query: "stale test" };
-    const identityHash = computeResearchStateHash({
+    const identityHash = computeAsyncJobStateHash({
       provider: "tavily",
       capability: "research",
       credentialFingerprint: EXPECTED_FINGERPRINT,
@@ -811,9 +811,9 @@ describe("Tavily Research Adapter — validation", () => {
 
 describe("Tavily Research Adapter — resume from state file", () => {
   it("detects in-flight task and polls instead of creating new POST", async () => {
-    const stateFile = createInMemoryResearchStateFile();
+    const stateFile = createInMemoryAsyncJobStateFile();
     const request = { query: "resume test" };
-    const identityHash = computeResearchStateHash({
+    const identityHash = computeAsyncJobStateHash({
       provider: "tavily",
       capability: "research",
       credentialFingerprint: EXPECTED_FINGERPRINT,
@@ -848,9 +848,9 @@ describe("Tavily Research Adapter — resume from state file", () => {
   });
 
   it("throws ApiError on poll status failed, deletes state file", async () => {
-    const stateFile = createInMemoryResearchStateFile();
+    const stateFile = createInMemoryAsyncJobStateFile();
     const request = { query: "fail poll" };
-    const identityHash = computeResearchStateHash({
+    const identityHash = computeAsyncJobStateHash({
       provider: "tavily",
       capability: "research",
       credentialFingerprint: EXPECTED_FINGERPRINT,
@@ -904,7 +904,7 @@ describe("T07 — AbortSignal cancels the poll loop (I-1)", () => {
       return makeResponse(PENDING_POLL);
     };
 
-    const stateFile = createInMemoryResearchStateFile();
+    const stateFile = createInMemoryAsyncJobStateFile();
     const { adapter } = makeResearchAdapter({
       fakeFetch,
       stateFile,

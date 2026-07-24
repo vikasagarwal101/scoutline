@@ -252,7 +252,7 @@ Search Command - Real-time web search (Z.AI, MiniMax, Tavily, Exa, or Brave)
 Usage: scoutline search <query> [options]
 
 Provider selection (precedence: explicit flag, then SCOUTLINE_PROVIDER, then zai):
-  --provider <zai|minimax|tavily|exa|brave>   Select the search provider (default: zai)
+  --provider <zai|minimax|tavily|exa|brave|firecrawl>   Select the search provider (default: zai)
   SCOUTLINE_PROVIDER=<id>                 Fallback when --provider is not passed
 
 Note: support for the optional controls below varies by provider AND by

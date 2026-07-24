@@ -115,19 +115,46 @@ export function toolCacheDir(): string {
 }
 
 /**
- * Directory for the Research state files (tech-plan §3, T07). Always a
- * `research/` subdirectory under the unified root, sibling of
- * {@link responseCacheDir} and {@link toolCacheDir}.
+ * Directory for async-job state files (tech-plan §3, T07 / FC-01). One
+ * subdirectory per capability under the unified cache root — `research/`
+ * for in-flight research tasks, `crawl/` for async crawl jobs — sibling
+ * of {@link responseCacheDir} and {@link toolCacheDir}.
  *
- * Each file holds a single in-flight research task's `request_id` so the
- * CLI can resume polling after Ctrl-C instead of creating a second task
- * (double-charge prevention). The state files have their own lifecycle
+ * Each file holds a single in-flight task's `requestId` so the CLI can
+ * resume polling after Ctrl-C instead of creating a second task
+ * (double-charge prevention). State files have their own lifecycle
  * (deleted on task completion or failure); they are NOT cleared by
  * `clearAllCaches()` and are NOT scanned by `cacheStats()` — they are
  * billing state, not cache entries.
+ *
+ * `capability` is the single path segment naming the subdirectory. It is
+ * guarded: a non-empty segment with no path separators, no `..`/`.`
+ * self-references, and no NUL bytes, whose resolved path stays inside the
+ * cache root. A bad segment throws rather than silently writing billing
+ * state outside the root. Callers pass an internal constant
+ * (`"research"`, `"crawl"`); it is never user input.
  */
-export function researchStateDir(): string {
-  return path.join(resolveCacheRoot(), "research");
+export function asyncJobStateDir(capability: string): string {
+  if (
+    typeof capability !== "string" ||
+    capability.length === 0 ||
+    capability === "." ||
+    capability === ".." ||
+    capability.includes("/") ||
+    capability.includes("\\") ||
+    capability.includes("\0")
+  ) {
+    throw new Error(`Invalid async-job-state capability segment: ${JSON.stringify(capability)}`);
+  }
+  const root = resolveCacheRoot();
+  const dir = path.join(root, capability);
+  // Defense in depth: confirm the resolved segment never escapes the
+  // cache root (catches any traversal the lexical check above missed).
+  const rel = path.relative(root, path.resolve(dir));
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+    throw new Error(`Async-job-state capability escapes cache root: ${JSON.stringify(capability)}`);
+  }
+  return dir;
 }
 
 // ---------------------------------------------------------------------------

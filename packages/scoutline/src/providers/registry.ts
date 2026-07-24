@@ -20,6 +20,7 @@ import { createMiniMaxDescriptor } from "./minimax/adapter.js";
 import { createTavilyDescriptor } from "./tavily/adapter.js";
 import { createExaDescriptor } from "./exa/adapter.js";
 import { createBraveDescriptor } from "./brave/adapter.js";
+import { createFirecrawlDescriptor } from "./firecrawl/adapter.js";
 import type { ProviderDescriptor, ProviderId } from "./types.js";
 import {
   getProviderDescriptor as lookupProviderDescriptor,
@@ -38,6 +39,7 @@ export const BUILT_IN_PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [
   createTavilyDescriptor(),
   createExaDescriptor(),
   createBraveDescriptor(),
+  createFirecrawlDescriptor(),
 ];
 
 /**

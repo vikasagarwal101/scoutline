@@ -16,10 +16,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  configuredSecrets,
   redactSecrets,
   redactTool,
   redactCredentialString,
-  configuredSecrets,
 } from "../dist/lib/redact.js";
 import { formatErrorOutput as formatCompatErrorOutput } from "../dist/lib/errors.js";
 import { formatErrorOutput } from "../dist/lib/output.js";
@@ -27,6 +27,7 @@ import { formatErrorOutput } from "../dist/lib/output.js";
 const Z_KEY = "zai-secret-key-value-AAA";
 const Z_ALIAS_KEY = "zai-secret-alias-key-value-BBB";
 const M_KEY = "minimax-secret-key-value-CCC";
+const FC_KEY = "fc-test-secret-key-GGG";
 const B_KEY = "brave-secret-key-value-GGG";
 const E_KEY = "exa-secret-key-value-GGG";
 const BEARER = "Bearer zai-secret-bearer-token-DDD";
@@ -251,14 +252,26 @@ describe("redactCredentialString — single-string redaction", () => {
     assert.strictEqual(redactCredentialString(`EXA_API_KEY=${E_KEY}`), "[REDACTED]");
   });
 
+  it("redacts FIRECRAWL_API_KEY assignments (FC-02)", () => {
+    assert.strictEqual(redactCredentialString(`FIRECRAWL_API_KEY=${FC_KEY}`), "[REDACTED]");
+    assert.strictEqual(redactCredentialString(`FIRECRAWL_API_KEY: ${FC_KEY}`), "[REDACTED]");
+    assert.strictEqual(
+      redactCredentialString(`key was ${FC_KEY} here`, [FC_KEY]),
+      "key was [REDACTED] here",
+    );
+  });
+
+  it("configuredSecrets surfaces FIRECRAWL_API_KEY (the load-bearing value loop)", () => {
+    const secrets = configuredSecrets({ FIRECRAWL_API_KEY: FC_KEY });
+    assert.ok(
+      secrets.includes(FC_KEY),
+      "configuredSecrets must include the FIRECRAWL_API_KEY value so it is redacted at every outward boundary",
+    );
+  });
+
   it("redacts BRAVE_SEARCH_API_KEY assignments (= and : separators)", () => {
-    // Brave was missing from the redaction key list (T1 omission); this
-    // locks key-based redaction so a Brave key value cannot leak through
-    // an error message or formatted string.
     assert.strictEqual(redactCredentialString(`BRAVE_SEARCH_API_KEY=${B_KEY}`), "[REDACTED]");
     assert.strictEqual(redactCredentialString(`brave_search_api_key: ${B_KEY}`), "[REDACTED]");
-    // Prose mention with no separator token must NOT be redacted (matches
-    // the Z_AI_API_KEY/MINIMAX_API_KEY prose rule).
     assert.strictEqual(
       redactCredentialString("the BRAVE_SEARCH_API_KEY environment variable is required"),
       "the BRAVE_SEARCH_API_KEY environment variable is required",

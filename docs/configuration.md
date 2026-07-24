@@ -14,14 +14,14 @@ export Z_AI_API_KEY="your-api-key"
 
 Shared commands (`search`, `vision`, `quota`, `doctor`), **`repo`**,
 **`read`**, **`crawl`**, **`map`**, and **`research`** accept the global
-`--provider <zai|minimax|tavily|exa|brave>` flag. When the flag
+`--provider <zai|minimax|tavily|exa|brave|firecrawl>` flag. When the flag
 is omitted the value of the `SCOUTLINE_PROVIDER` environment variable is
 consulted; when neither is supplied Scoutline falls back to the compatibility
 default `zai`.
 
 Resolution precedence (highest first):
 
-1. `--provider <zai|minimax|tavily|exa|brave>` on the command line
+1. `--provider <zai|minimax|tavily|exa|brave|firecrawl>` on the command line
 2. `SCOUTLINE_PROVIDER`
 3. `zai` (default)
 
@@ -149,6 +149,48 @@ scoutline --provider brave search "AI policy"
 scoutline --provider brave search "rust talks" --type video
 scoutline --provider brave quota
 scoutline doctor --provider brave
+```
+
+## Firecrawl Settings
+
+The Firecrawl Adapter is configured through environment variables. Firecrawl
+is credit-based (quota unit `"credits"`), so costs differ from the
+request-based providers.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `FIRECRAWL_API_KEY` | Required for Firecrawl | Firecrawl API key (`fc-`-prefixed). |
+| `FIRECRAWL_TIMEOUT` | `30000` (ms) | Per-request client timeout. |
+| `FIRECRAWL_CRAWL_POLL_INTERVAL_MS` | `2000` (ms) | Async-crawl poll interval. |
+
+Rules:
+
+- `FIRECRAWL_API_KEY` is required and non-empty. Whitespace-only is invalid.
+- The endpoint is fixed to `https://api.firecrawl.dev` (v2 exclusively; no
+  `/v1/` shim).
+- `proxy:"basic"` is pinned on every scrape and crawl (avoids Firecrawl's
+  default `auto` silently retrying with the 5-credit enhanced proxy). It
+  cannot be overridden.
+- Firecrawl bills per credit: ~1 per scrape, per-page crawl, and +1 per
+  search result at `--content-size high`. The local response cache fully
+  avoids charges on cache hits (distinct from Firecrawl's server-side cache,
+  which still bills).
+- Async crawl resumes after Ctrl-C via a state file under
+  `~/.scoutline/crawl/`; a lost create-POST is reclaimed via
+  `GET /v2/crawl/active` so a re-run polls the in-flight job instead of
+  creating (and charging) a second one.
+- `FIRECRAWL_API_KEY` is redacted in all output. The bare `fc-` prefix is
+  intentionally NOT regex-matched (too short — it false-positives on prose
+  like "FC-04"); the key value is redacted wherever it appears.
+
+```bash
+export FIRECRAWL_API_KEY="your-firecrawl-key"
+export FIRECRAWL_TIMEOUT=45000               # optional: per-request timeout
+
+scoutline --provider firecrawl search "AI news" --content-size high
+scoutline --provider firecrawl crawl https://docs.example.com --limit 10
+scoutline quota --provider firecrawl
+scoutline doctor --provider firecrawl
 ```
 
 ## Output Modes

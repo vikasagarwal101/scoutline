@@ -1193,6 +1193,24 @@ describe("Brave quota normalizer (normalizeBraveQuota)", () => {
     assert.strictEqual(out.categories[0].current.remaining, 15000);
   });
 
+  it("falls back to a non-zero-limit window when the largest is limit=0 (metered plan)", () => {
+    // Brave's metered plan reports the monthly window as limit=0/remaining=0
+    // (no fixed cap). The normalizer must skip it and surface the largest
+    // window that carries a real cap (here the per-second rate window),
+    // rather than throwing QUOTA_ERROR.
+    const out = normalizeBraveQuota({
+      policy: "50;w=1, 0;w=2678400",
+      limit: "50, 0",
+      remaining: "49, 0",
+      reset: "1, 653730",
+    });
+    assert.strictEqual(out.categories[0].current.limit, 50);
+    assert.strictEqual(out.categories[0].current.used, 1);
+    assert.strictEqual(out.categories[0].current.remaining, 49);
+    assert.strictEqual(out.categories[0].name, "rate_limit");
+    assert.ok(out.warnings.includes(BRAVE_QUOTA_CAVEAT));
+  });
+
   it("throws QUOTA_ERROR for a missing policy", () => {
     assert.throws(
       () => normalizeBraveQuota({ policy: null, limit: "1", remaining: "0", reset: "1" }),

@@ -181,12 +181,20 @@ export function normalizeBraveQuota(
   const remainingParts = readHeaderCsv(headers.remaining);
   const resetParts = readHeaderCsv(headers.reset);
 
-  // Select the LARGEST windowSeconds window (do NOT hardcode 2592000).
-  let selectedIndex = 0;
-  for (let i = 1; i < windows.length; i++) {
-    if (windows[i].windowSeconds > windows[selectedIndex].windowSeconds) {
+  // Select the LARGEST window with a NON-ZERO limit. A limit of 0 means
+  // "no fixed cap on that period" (e.g. a metered plan's monthly window
+  // reports limit=0/remaining=0), which yields no usable used/remaining
+  // and would otherwise throw — skip such windows and fall back to the
+  // next-largest window that carries a real cap (do NOT hardcode 2592000).
+  let selectedIndex = -1;
+  for (let i = 0; i < windows.length; i++) {
+    if (windows[i].limit <= 0) continue;
+    if (selectedIndex === -1 || windows[i].windowSeconds > windows[selectedIndex].windowSeconds) {
       selectedIndex = i;
     }
+  }
+  if (selectedIndex === -1) {
+    throw braveQuotaParseError();
   }
 
   const selectedLimit = parseFiniteNumber(limitParts?.[selectedIndex]);

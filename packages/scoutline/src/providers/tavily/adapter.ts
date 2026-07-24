@@ -74,11 +74,11 @@ import type {
   ResearchSource,
 } from "../../capabilities/research.js";
 import { decodeResearchResult } from "../../capabilities/research.js";
-import type { ResearchState, ResearchStateFile } from "../../lib/research-state.js";
+import type { AsyncJobState, AsyncJobStateFile } from "../../lib/async-job-state.js";
 import {
-  computeResearchStateHash,
-  createProductionResearchStateFile,
-} from "../../lib/research-state.js";
+  computeAsyncJobStateHash,
+  createProductionAsyncJobStateFile,
+} from "../../lib/async-job-state.js";
 import type { DiagnosticsCapability } from "../../capabilities/diagnostics.js";
 import {
   ApiError,
@@ -91,6 +91,7 @@ import {
   ValidationError,
 } from "../../lib/errors.js";
 import type { CacheIdentity } from "../../lib/execution.js";
+import { asyncJobStateDir } from "../../lib/cache.js";
 import { requireTavilyApiKey, isTavilyConfigured } from "./credentials.js";
 import {
   fetchTavilySearch,
@@ -122,7 +123,7 @@ export interface TavilyAdapterDependencies {
   /** Optional transport injection (fetch, timers, env). */
   readonly transport?: TavilyTransportDeps;
   /** Optional Research state-file port (tech-plan §3). */
-  readonly researchStateFile?: ResearchStateFile;
+  readonly researchStateFile?: AsyncJobStateFile;
 }
 
 // ---------------------------------------------------------------------------
@@ -968,7 +969,7 @@ function normalizeTavilyResearchResult(
 interface TavilyResearchCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly transport?: TavilyTransportDeps;
-  readonly researchStateFile: ResearchStateFile;
+  readonly researchStateFile: AsyncJobStateFile;
 }
 
 function createTavilyResearchCapability(
@@ -1006,7 +1007,7 @@ function createTavilyResearchCapability(
 
       const apiKey = resolveApiKey(env);
       const credFingerprint = credentialFingerprint(apiKey);
-      const identityHash = computeResearchStateHash({
+      const identityHash = computeAsyncJobStateHash({
         provider: "tavily",
         capability: "research",
         credentialFingerprint: credFingerprint,
@@ -1110,14 +1111,14 @@ async function createResearchTask(
   apiKey: string,
   request: ResearchRequest,
   identityHash: string,
-  stateFile: ResearchStateFile,
+  stateFile: AsyncJobStateFile,
   transport: TavilyTransportDeps | undefined,
 ): Promise<string> {
   const params = mapResearchControls(request);
   const created = await createTavilyResearch(apiKey, request.query, params, transport);
   const requestId = created.requestId;
 
-  const state: ResearchState = {
+  const state: AsyncJobState = {
     requestId,
     identityHash,
     createdAt: new Date().toISOString(),
@@ -1160,7 +1161,9 @@ export function createTavilyDescriptor(
   dependencies?: TavilyAdapterDependencies,
 ): ProviderDescriptor {
   const transport = dependencies?.transport;
-  const researchStateFile = dependencies?.researchStateFile ?? createProductionResearchStateFile();
+  const researchStateFile =
+    dependencies?.researchStateFile ??
+    createProductionAsyncJobStateFile(asyncJobStateDir("research"));
 
   return {
     id: "tavily",

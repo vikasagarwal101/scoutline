@@ -24,7 +24,7 @@
 - **Repo** — Search and read GitHub repository code
 - **Tools** — MCP tool discovery, schemas, and raw calls
 - **Code Mode** — TypeScript tool chaining for agent automation
-- **Provider selection** — Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, or Brave
+- **Provider selection** — Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, or Firecrawl
 
 ## Quick Start
 
@@ -82,6 +82,23 @@ maps to Brave's LLM Context endpoint (extracted passages joined into summaries).
 `--type` is mutually exclusive with `--topic`. Note: Brave recently shifted from
 a pure free tier to $5 monthly metered credits.
 
+### Using Firecrawl (Search, Reader, Crawl, Map)
+
+```bash
+export FIRECRAWL_API_KEY="your-firecrawl-key"
+npx scoutline --provider firecrawl search "AI funding rounds" --content-size high
+npx scoutline --provider firecrawl read https://example.com/
+npx scoutline --provider firecrawl crawl https://docs.example.com --limit 10
+npx scoutline --provider firecrawl map https://example.com/
+```
+
+Get your Firecrawl API key at: https://www.firecrawl.dev/signin
+
+Firecrawl is credit-based. `--content-size high` on search returns richer
+(markdown) summaries at +1 credit/result. Crawl is asynchronous and resumes
+after Ctrl-C with no double-charge (state-file resume + reclaim-on-miss).
+`--provider firecrawl research` is not supported (`UNSUPPORTED_CAPABILITY`).
+
 ## Installation
 
 ### As an Agent Skill
@@ -113,7 +130,7 @@ npx scoutline --help
 
 ## Provider Selection
 
-Shared commands accept `--provider <zai|minimax|tavily|exa|brave>`. Resolution precedence:
+Shared commands accept `--provider <zai|minimax|tavily|exa|brave|firecrawl>`. Resolution precedence:
 
 1. Explicit `--provider` flag
 2. `SCOUTLINE_PROVIDER` environment variable
@@ -129,15 +146,15 @@ Selecting a provider that doesn't support a capability returns `UNSUPPORTED_CAPA
 
 ### Capability Matrix
 
-| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Command |
-|---|---|---|---|---|---|---|
-| Search | Yes | Yes | Yes | Yes | Yes (web/news/video) | `scoutline search` |
-| Reader | Yes | No | Yes | Yes | No | `scoutline read` |
-| Crawl | No | No | Yes | No | No | `scoutline crawl` |
-| Map | No | No | Yes | No | No | `scoutline map` |
-| Research | No | No | Yes | Yes | No | `scoutline research` |
-| Vision (interpret-image) | Yes | Yes | No | No | No | `scoutline vision analyze` |
-| Quota | Yes | Yes | Yes | No | Yes (rate-limit window) | `scoutline quota` |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Command |
+|---|---|---|---|---|---|---|---|
+| Search | Yes | Yes | Yes | Yes | Yes (web/news/video) | Yes | `scoutline search` |
+| Reader | Yes | No | Yes | Yes | No | Yes | `scoutline read` |
+| Crawl | No | No | Yes | No | No | Yes (async) | `scoutline crawl` |
+| Map | No | No | Yes | No | No | Yes | `scoutline map` |
+| Research | No | No | Yes | Yes | No | No | `scoutline research` |
+| Vision (interpret-image) | Yes | Yes | No | No | No | No | `scoutline vision analyze` |
+| Quota | Yes | Yes | Yes | No | Yes (rate-limit window) | Yes (credits) | `scoutline quota` |
 | Diagnostics | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
 | Repo exploration | Yes | No | No | No | No | `scoutline repo` |
 | Raw tools | Yes | No | No | No | No | `scoutline tools` |
@@ -149,9 +166,9 @@ Selecting a provider that doesn't support a capability returns `UNSUPPORTED_CAPA
 
 `--type <video>` is Brave-only (mutually exclusive with `--topic`).
 
-`--domain` and `--recency` are honored by Z.AI, Tavily, Exa, and Brave (Brave maps `--domain` → `site:`, `--recency` → `freshness`). `--location` is Z.AI- and Brave-only (Brave → `country`); MiniMax rejects these controls.
+`--domain` and `--recency` are honored by Z.AI, Tavily, Exa, Brave, and Firecrawl (Brave maps `--domain` → `site:`, `--recency` → `freshness`). `--location` is Z.AI- and Brave-only (Brave → `country`); MiniMax rejects these controls.
 
-`--content-size` is a deliberate per-provider overload: `high` maps to Z.AI `content_size`, Tavily `search_depth=advanced`, and Brave's LLM Context endpoint (extracted passages joined into summaries); Exa accepts it; MiniMax rejects it (`UNSUPPORTED_OPTION`).
+`--content-size` is a deliberate per-provider overload: `high` maps to Z.AI `content_size`, Tavily `search_depth=advanced`, and Brave's LLM Context endpoint (extracted passages joined into summaries); Exa accepts it; Firecrawl returns scraped markdown summaries (+1 credit/result); MiniMax rejects it (`UNSUPPORTED_OPTION`).
 
 ## Usage
 

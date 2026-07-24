@@ -298,10 +298,10 @@ describe("Search Adapter conformance — shared normalized output", () => {
 // ---------------------------------------------------------------------------
 
 describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
-  it("contains exactly [zai, minimax, tavily, exa, brave] in that order", () => {
+  it("contains exactly [zai, minimax, tavily, exa, brave, firecrawl] in that order", () => {
     assert.deepStrictEqual(
       BUILT_IN_PROVIDER_DESCRIPTORS.map((d) => d.id),
-      ["zai", "minimax", "tavily", "exa", "brave"],
+      ["zai", "minimax", "tavily", "exa", "brave", "firecrawl"],
     );
   });
 
@@ -346,13 +346,15 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     const exa = getProviderDescriptor("exa");
     assert.strictEqual(exa.isConfigured({ EXA_API_KEY: "k" }), true);
     assert.strictEqual(exa.isConfigured({}), false);
+    const fc = getProviderDescriptor("firecrawl");
+    assert.strictEqual(fc.isConfigured({ FIRECRAWL_API_KEY: "fc-test" }), true);
+    assert.strictEqual(fc.isConfigured({}), false);
   });
 
   it("descriptor creation is side-effect-free (no transport construction)", () => {
-    // Every Provider that advertises `search` exposes a Search
-    // Capability object. Brave (T2) now wires search too; create() is
-    // still side-effect-free.
-    for (const id of ["zai", "minimax", "tavily", "brave"]) {
+    // Every built-in Provider advertises `search`; create() is
+    // side-effect-free.
+    for (const id of ["zai", "minimax", "tavily", "exa", "brave", "firecrawl"]) {
       const d = getProviderDescriptor(id);
       const adapter = d.create({ env: {} });
       assert.strictEqual(typeof adapter.search, "object", `${id} should expose adapter.search`);
@@ -361,6 +363,18 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     const braveAdapter = brave.create({ env: {} });
     assert.strictEqual(braveAdapter.id, "brave");
     assert.strictEqual(typeof braveAdapter.search, "object", "Brave must expose adapter.search");
+  });
+
+  it("firecrawl create() returns an adapter with all six capabilities", () => {
+    const fc = getProviderDescriptor("firecrawl");
+    const adapter = fc.create({ env: {} });
+    assert.strictEqual(adapter.id, "firecrawl");
+    assert.strictEqual(typeof adapter.search, "object");
+    assert.strictEqual(typeof adapter.reader, "object");
+    assert.strictEqual(typeof adapter.crawl, "object");
+    assert.strictEqual(typeof adapter.map, "object");
+    assert.strictEqual(typeof adapter.quota, "object");
+    assert.strictEqual(typeof adapter.diagnostics, "object");
   });
 
   it("tavily create() returns an adapter with search, reader, and crawl", () => {

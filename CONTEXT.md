@@ -37,8 +37,8 @@ The third Provider. Its confirmed Capabilities are Search, Reader
 traversal), Map (URL-set discovery without fetching pages), and
 Research (asynchronous deep research with citations). The base release
 also normalizes its quota reporting and diagnostic probe as
-operational Capabilities. Tavily alone advertises `crawl`, `map`, and
-`research` at launch.
+operational Capabilities. Tavily is the only Provider that advertises
+`research`.
 _Avoid_: Tavily API, Tavily MCP
 
 **Exa**:
@@ -64,6 +64,19 @@ spend endpoint, so it reports a rate-limit window, not credits
 consumed (Brave uses metered billing).
 _Avoid_: Brave Search API, Brave MCP
 
+**Firecrawl**:
+The sixth Provider. Its confirmed Capabilities are Search, Reader
+(via the /v2/scrape endpoint — returns genuine page titles, unlike
+Tavily's null), Crawl (asynchronous multi-page traversal via /v2/crawl
+with a create→poll→resume lifecycle), and Map (URL-set discovery via
+/v2/map). Firecrawl is credit-based (quota unit `"credits"`, not
+`"requests"`); its async crawl resumes after Ctrl-C via a state file and
+reclaims an in-flight job on a lost create-POST (cost-safety). The
+release also normalizes its quota reporting and diagnostic probe (a
+single basic scrape) as operational Capabilities. Firecrawl does NOT
+advertise `research` (/deep-research is deprecated).
+_Avoid_: Firecrawl API, Firecrawl MCP
+
 ## Flagged Ambiguities
 
 **Vision**:
@@ -73,16 +86,22 @@ Z.AI and MiniMax Token Plan is only single-image interpretation; broader Vision
 parity remains unresolved.
 
 **Crawl, Map**:
-These two Capabilities are Tavily-only at launch. They are not
-shared with Z.AI, MiniMax Token Plan, Exa, or Brave, and there is no Provider
-fallback. Selecting a non-Tavily Provider for either command returns
-`UNSUPPORTED_CAPABILITY` with no fallback.
+These two Capabilities are multi-provider (Tavily + Firecrawl). They
+are not supplied by Z.AI, MiniMax Token Plan, Exa, or Brave, and there
+is no Provider fallback. Selecting any of those for `scoutline crawl` or
+`scoutline map` returns `UNSUPPORTED_CAPABILITY` with no fallback.
+Firecrawl's crawl is asynchronous (credit-based, resumable after
+Ctrl-C); Tavily's is synchronous.
 
 **Research**:
-This Capability is shared between Tavily and Exa. Z.AI, MiniMax, and Brave
-do not advertise it. The cross-Provider search control
-`--topic <general|news|finance>` is NOT a Research control; the
-Capability does not currently accept a topic.
+The `research` Capability is shared between Tavily and Exa. Firecrawl's
+`/deep-research` endpoint is deprecated, so `--provider firecrawl
+research` returns `UNSUPPORTED_CAPABILITY`. Z.AI, MiniMax, and Brave
+likewise do not advertise it. There is no Provider fallback.
+
+The cross-Provider search control `--topic <general|news|finance>` is NOT
+a Crawl/Map/Research control; those Capabilities do not currently accept
+a topic.
 
 ## Example Dialogue
 

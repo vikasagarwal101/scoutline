@@ -115,13 +115,17 @@ export function defaultRetryPolicy(operation: ProviderOperation): RetryPolicy {
     case "repository-read-file":
     case "repository-list-directory":
     case "reader-fetch":
-    case "crawl":
     case "map":
       return { ...base, maxRetries: 1 };
+    case "crawl":
     case "research":
-      // No retry — double-charge risk. The adapter's invoke() handles
-      // the full create→poll→state-file lifecycle internally (tech-plan
-      // §3); a transient failure on POST is terminal.
+      // No retry — double-charge risk. Both are cost-bearing operations
+      // whose create-POST must not be retried by shared execution (crawl
+      // is per-page; research is per-request). The Adapter's invoke()
+      // owns the full create→poll→state-file lifecycle; reclaim-on-miss
+      // (crawl) / state-file resume recover a lost create-POST on the
+      // next user invocation rather than an automatic retry (tech-plan
+      // D2 / §3).
       return { ...base, maxRetries: 0 };
   }
 }

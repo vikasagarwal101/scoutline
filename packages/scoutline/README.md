@@ -21,7 +21,7 @@
 - **Repo** - Search and read GitHub repository code via ZRead
 - **Tools** - MCP tool discovery, schemas, and raw calls
 - **Code Mode** - TypeScript tool chaining for agent automation
-- **Provider selection** - Run shared capabilities through Z.AI, MiniMax Token Plan, Tavily, or Brave
+- **Provider selection** - Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, or Firecrawl
 
 ## Quick Start
 
@@ -82,9 +82,9 @@ npx scoutline --help
 ## Provider Selection
 
 Shared commands (`search`, `vision`, `quota`, `doctor`, `repo`) accept a global
-`--provider <zai|minimax|tavily|brave>` flag. Resolution precedence:
+`--provider <zai|minimax|tavily|exa|brave|firecrawl>` flag. Resolution precedence:
 
-1. Explicit `--provider <zai|minimax|tavily|brave>` on the command line
+1. Explicit `--provider <zai|minimax|tavily|exa|brave|firecrawl>` on the command line
 2. `SCOUTLINE_PROVIDER` environment variable
 3. Compatibility default `zai`
 
@@ -119,23 +119,26 @@ construction, with no Z.AI fallback.
 
 ## Capability Matrix
 
-| Capability | Z.AI | MiniMax | Notes |
-| --- | --- | --- | --- |
-| `search` | Yes | Yes | MiniMax rejects domain/recency/content-size/location controls |
-| `vision.interpret-image` (analyze) | Yes | Yes | Provider-specific media limits; uncached |
-| `vision.ui-artifact` (ui-to-code) | Yes | Available | Live-attested; conformance-gated |
-| `vision.extract-text` | Yes | Pending | Implemented, pending live conformance |
-| `vision.diagnose-error` | Yes | Available | Live-attested; conformance-gated |
-| `vision.diagram` | Yes | Pending | Implemented, pending live conformance |
-| `vision.chart` | Yes | Pending | Implemented, pending live conformance |
-| `vision.diff` (image diff) | Yes | No | Z.AI-only (never MiniMax-claimable) |
-| `vision.video` | Yes | No | Z.AI-only (never MiniMax-claimable) |
-| `quota` | Yes | Yes | Normalized `QuotaDashboard` (ADR-0001) |
-| `diagnostics` (`doctor`) | Yes | Yes | Lists both Providers; probes configured |
-| `read` (Reader) | Yes | **No** (UNSUPPORTED_CAPABILITY) | Participates in selection; only Z.AI supplies `reader` |
-| `repo search` / `repo read` / `repo tree` | Yes | **No** (UNSUPPORTED_CAPABILITY) | Participates in selection; only Z.AI supplies `repository-exploration` |
-| `tools`, `tool`, `call` (Raw tools) | Yes | No | Z.AI-only; accepts but ignores `--provider` |
-| `code` (Code Mode) | Yes | No | Z.AI-only; accepts but ignores `--provider` |
+| Capability | Z.AI | MiniMax | Tavily | Firecrawl | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `search` | Yes | Yes | Yes | Yes | MiniMax rejects domain/recency/content-size/location |
+| `vision.interpret-image` (analyze) | Yes | Yes | No | No | Provider-specific media limits; uncached |
+| `vision.ui-artifact` (ui-to-code) | Yes | Available | No | No | Live-attested; conformance-gated |
+| `vision.extract-text` | Yes | Pending | No | No | Implemented, pending live conformance |
+| `vision.diagnose-error` | Yes | Available | No | No | Live-attested; conformance-gated |
+| `vision.diagram` | Yes | Pending | No | No | Implemented, pending live conformance |
+| `vision.chart` | Yes | Pending | No | No | Implemented, pending live conformance |
+| `vision.diff` (image diff) | Yes | No | No | No | Z.AI-only (never MiniMax-claimable) |
+| `vision.video` | Yes | No | No | No | Z.AI-only (never MiniMax-claimable) |
+| `quota` | Yes | Yes | Yes | Yes (credits) | Normalized `QuotaDashboard` (ADR-0001) |
+| `diagnostics` (`doctor`) | Yes | Yes | Yes | Yes | Lists every Provider; probes configured |
+| `read` (Reader) | Yes | **No** | Yes | Yes | Participates in selection; Z.AI-only options rejected by Tavily/Firecrawl |
+| `crawl` | **No** | **No** | Yes | Yes (async) | Tavily sync; Firecrawl async (resumable after Ctrl-C) |
+| `map` | **No** | **No** | Yes | Yes | URL-set discovery; no per-page content |
+| `research` | **No** | **No** | Yes | **No** | Tavily-only (Firecrawl `/deep-research` deprecated); 4-250 credits |
+| `repo search` / `repo read` / `repo tree` | Yes | **No** | **No** | **No** | Participates in selection; only Z.AI supplies `repository-exploration` |
+| `tools`, `tool`, `call` (Raw tools) | Yes | No | No | No | Z.AI-only; accepts but ignores `--provider` |
+| `code` (Code Mode) | Yes | No | No | No | Z.AI-only; accepts but ignores `--provider` |
 
 Media limits for general single-image interpretation:
 

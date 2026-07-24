@@ -64,11 +64,12 @@ import type {
   ResearchSource,
 } from "../../capabilities/research.js";
 import { decodeResearchResult } from "../../capabilities/research.js";
-import type { ResearchState, ResearchStateFile } from "../../lib/research-state.js";
+import type { AsyncJobState, AsyncJobStateFile } from "../../lib/async-job-state.js";
 import {
-  computeResearchStateHash,
-  createProductionResearchStateFile,
-} from "../../lib/research-state.js";
+  computeAsyncJobStateHash,
+  createProductionAsyncJobStateFile,
+} from "../../lib/async-job-state.js";
+import { asyncJobStateDir } from "../../lib/cache.js";
 import type { CacheIdentity } from "../../lib/execution.js";
 import type { DiagnosticsCapability } from "../../capabilities/diagnostics.js";
 import {
@@ -104,7 +105,7 @@ export interface ExaAdapterDependencies {
   /** Optional transport injection (fetch, timers, env). */
   readonly transport?: ExaTransportDeps;
   /** Optional Research state-file port (tech-plan §3). */
-  readonly researchStateFile?: ResearchStateFile;
+  readonly researchStateFile?: AsyncJobStateFile;
 }
 
 // ---------------------------------------------------------------------------
@@ -864,7 +865,7 @@ function isTransientPollError(err: unknown): boolean {
 interface ExaResearchCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly transport?: ExaTransportDeps;
-  readonly researchStateFile: ResearchStateFile;
+  readonly researchStateFile: AsyncJobStateFile;
 }
 
 /**
@@ -883,7 +884,7 @@ async function createResearchTask(
   apiKey: string,
   request: ResearchRequest,
   identityHash: string,
-  stateFile: ResearchStateFile,
+  stateFile: AsyncJobStateFile,
   transport: ExaTransportDeps | undefined,
 ): Promise<string> {
   const agentParams: ExaAgentRunParams = {
@@ -893,7 +894,7 @@ async function createResearchTask(
   const created = await createExaAgentRun(apiKey, agentParams, transport);
   const runId = created.id;
 
-  const state: ResearchState = {
+  const state: AsyncJobState = {
     requestId: runId,
     identityHash,
     createdAt: new Date().toISOString(),
@@ -948,7 +949,7 @@ function createExaResearchCapability(options: ExaResearchCapabilityOptions): Res
 
       const apiKey = resolveApiKey(env);
       const credFingerprint = credentialFingerprint(apiKey);
-      const identityHash = computeResearchStateHash({
+      const identityHash = computeAsyncJobStateHash({
         provider: "exa",
         capability: "research",
         credentialFingerprint: credFingerprint,
@@ -1062,7 +1063,9 @@ function createExaResearchCapability(options: ExaResearchCapabilityOptions): Res
  */
 export function createExaDescriptor(dependencies?: ExaAdapterDependencies): ProviderDescriptor {
   const transport = dependencies?.transport;
-  const researchStateFile = dependencies?.researchStateFile ?? createProductionResearchStateFile();
+  const researchStateFile =
+    dependencies?.researchStateFile ??
+    createProductionAsyncJobStateFile(asyncJobStateDir("research"));
 
   return {
     id: "exa",

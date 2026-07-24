@@ -48,6 +48,7 @@ optional parameters.
 | `minimax` | `MINIMAX_API_KEY` | `MINIMAX_REGION` (`global` / `cn`) or `MINIMAX_BASE_URL` | Direct transport for Search, Vision, Quota; SDK removed in 0.6.0 |
 | `tavily` | `TAVILY_API_KEY` | `https://api.tavily.com` | Direct-HTTP transport; Search, Reader, Crawl, Map, Research, Quota, Diagnostics |
 | `brave` | `BRAVE_SEARCH_API_KEY` | `https://api.search.brave.com` | Direct-HTTP transport (`X-Subscription-Token`); Search (web/news/video + `--content-size high` → LLM Context), Quota, Diagnostics. No Reader/Crawl/Map/Research/Vision |
+| `firecrawl` | `FIRECRAWL_API_KEY` | `https://api.firecrawl.dev` (v2) | Direct-HTTP transport; Search, Reader, Crawl (async), Map, Quota (credits), Diagnostics. Credit-based; no Research (`/deep-research` deprecated) |
 
 Each Adapter exposes only the Capabilities the base release actually supports.
 The Descriptor advertises the same Capability set so support can be checked
@@ -69,24 +70,25 @@ outside the MiniMax Adapter and its transport tests.
 Provider selection applies to Search, Vision, quota, diagnostics,
 **repository exploration**, **Reader**, **Crawl**, **Map**, and
 **Research**. Raw tools and Code Mode are Z.AI-only and ignore both
-the explicit flag and the environment variable. Crawl, Map, and
-Research are Tavily-only at launch: only Tavily advertises the
-Capability, so any other Provider returns `UNSUPPORTED_CAPABILITY`
-with no fallback.
+the explicit flag and the environment variable. Crawl and Map are
+supplied by Tavily and Firecrawl; Research is Tavily-only (Firecrawl's
+`/deep-research` is deprecated). Z.AI and MiniMax advertise none of the
+three, so selecting them for those commands returns
+`UNSUPPORTED_CAPABILITY` with no fallback.
 
-| Capability | Z.AI | MiniMax | Tavily | Brave | Command |
-| --- | --- | --- | --- | --- | --- |
-| `search` | Yes | Yes | Yes | Yes (web/news/video; `--content-size high` → LLM Context) | `scoutline search` |
-| `vision.interpret-image` | Yes | Yes | No | No | `scoutline vision analyze` |
-| Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
-| Image diff / video | Yes | No | No | No | `scoutline vision diff`, `vision video` |
-| `quota` | Yes | Yes | Yes | Yes (rate-limit window, not spend) | `scoutline quota` |
-| `diagnostics` | Yes | Yes | Yes | Yes | `scoutline doctor` |
-| Reader | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | Yes (Z.AI-only options are rejected) | No (UNSUPPORTED_CAPABILITY, no fallback) | `scoutline read` |
-| Repository exploration | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | No (UNSUPPORTED_CAPABILITY, no fallback) | No (UNSUPPORTED_CAPABILITY, no fallback) | `scoutline repo ...` |
-| Crawl | No | No | Yes (Tavily-only at launch) | No | `scoutline crawl` |
-| Map | No | No | Yes (Tavily-only at launch) | No | `scoutline map` |
-| Research | No | No | Yes (Tavily-only at launch; 4-250 credits per request) | No | `scoutline research` |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Command |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `search` | Yes | Yes | Yes | Yes | Yes (web/news/video; `--content-size high` → LLM Context) | Yes | `scoutline search` |
+| `vision.interpret-image` | Yes | Yes | No | No | No | No | `scoutline vision analyze` |
+| Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | No | No | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
+| Image diff / video | Yes | No | No | No | No | No | `scoutline vision diff`, `vision video` |
+| `quota` | Yes | Yes | Yes | No (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | `scoutline quota` |
+| `diagnostics` | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
+| Reader | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | Yes (Z.AI-only options are rejected) | Yes (rejects Z.AI-only options) | No (UNSUPPORTED_CAPABILITY, no fallback) | Yes (returns page titles) | `scoutline read` |
+| Repository exploration | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | No (UNSUPPORTED_CAPABILITY, no fallback) | No (UNSUPPORTED_CAPABILITY, no fallback) | No (UNSUPPORTED_CAPABILITY, no fallback) | No (UNSUPPORTED_CAPABILITY, no fallback) | `scoutline repo ...` |
+| Crawl | No | No | Yes | No | No | Yes (async; resumable after Ctrl-C) | `scoutline crawl` |
+| Map | No | No | Yes | No | No | Yes | `scoutline map` |
+| Research | No | No | Yes (4-250 credits per request) | Yes | No | No (`/deep-research` deprecated) | `scoutline research` |
 | Raw tools | Yes | No | No | No | `scoutline tools`, `tool`, `call` |
 | Code Mode | Yes | No | No | No | `scoutline code ...` |
 
@@ -399,14 +401,19 @@ matrix lists Z.AI and Tavily as the suppliers of `reader`; MiniMax is
 absent because its descriptor does not advertise it. Doctor help names
 MiniMax as unsupported for `read`.
 
-## Tavily Capabilities (Crawl, Map, Research)
+## Crawl, Map, Research Capabilities
 
 `scoutline crawl`, `scoutline map`, and `scoutline research` participate
-in Provider selection. Only the Tavily descriptor advertises these
-Capabilities at launch; selecting Z.AI, MiniMax, or Brave (explicitly or via
+in Provider selection. Crawl and Map are supplied by Tavily and Firecrawl;
+Research is shared between Tavily and Exa (Firecrawl's `/deep-research` is
+deprecated). Selecting Z.AI, MiniMax, or Brave for any of the three (explicitly or via
 `SCOUTLINE_PROVIDER`) returns `UNSUPPORTED_CAPABILITY` before
 `descriptor.isConfigured`, `descriptor.create`, credential resolution
 for use, cache identity, or transport construction, with no fallback.
+Firecrawl's crawl is asynchronous (`/v2/crawl` create→poll→resume, with
+reclaim-on-miss for cost-safety and a state file under
+`~/.scoutline/crawl/`); Tavily's is synchronous. The flow below shows the
+Tavily (synchronous) path.
 
 ```text
 crawl argv + global flags
@@ -424,10 +431,11 @@ crawl argv + global flags
 
 Key boundaries:
 
-- **Capability ownership.** Crawl, Map, and Research are advertised
-  solely by the Tavily descriptor. The Tavily Adapter supplies the
-  Capability implementation. Z.AI and MiniMax descriptors do not
-  advertise them; their Adapters supply nothing.
+- **Capability ownership.** Crawl and Map are advertised by the Tavily
+  and Firecrawl descriptors; Research is Tavily-only. The matching
+  Adapter supplies the Capability implementation. Z.AI and MiniMax
+  descriptors do not advertise any of the three; their Adapters supply
+  nothing.
 - **Map is the simplest of the three.** The Tavily `/map` endpoint
   returns a URL set with no per-page content, so the handler has no
   `--max-chars` projection. Crawl and Research are richer; the
@@ -455,7 +463,7 @@ to `~/.scoutline/research/<state-hash>.json` so the next invocation
 of the same request detects the in-flight task and polls it instead
 of creating a new one. The state-hash is deterministic for a given
 `{provider, capability, credentialFingerprint, request}` tuple (see
-`lib/research-state.ts → computeResearchStateHash`).
+`lib/async-job-state.ts → computeAsyncJobStateHash`).
 
 Resilience contract:
 
@@ -480,7 +488,7 @@ Resilience contract:
 | `commands/repository-explorer.ts` | Provider-neutral Explorer: canonical paths, deterministic BFS, schema-v1 projection, local max-chars. |
 | `commands/crawl.ts` | Thin crawl handler: parse-level URL validation, `executeCrawlOperation`, per-page `--max-chars` projection, schema-v1 envelope. |
 | `commands/map.ts` | Thin map handler: parse-level URL validation, `executeMapOperation`, schema-v1 envelope (URLs only). |
-| `commands/research.ts` | Research handler: SIGINT-registered polling loop, `--max-chars` projection on the report, resume-on-restart via `lib/research-state.ts`, schema-v1 envelope. |
+| `commands/research.ts` | Research handler: SIGINT-registered polling loop, `--max-chars` projection on the report, resume-on-restart via `lib/async-job-state.ts`, schema-v1 envelope. |
 | `commands/tools.ts` | MCP tool discovery, schema lookup, and raw calls. |
 | `commands/code.ts` | TypeScript tool chaining through UTCP Code Mode. |
 | `commands/doctor.ts`, `commands/quota.ts` | Provider-aware diagnostics and quota dashboard. |

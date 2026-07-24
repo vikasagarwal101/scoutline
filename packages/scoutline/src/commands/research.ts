@@ -29,8 +29,8 @@ import type {
 } from "../capabilities/research.js";
 import type { ExecutionDependencies } from "../lib/execution.js";
 import { executeCachedOperation } from "../lib/execution.js";
-import { researchStateDir } from "../lib/cache.js";
-import { computeResearchStateHash } from "../lib/research-state.js";
+import { asyncJobStateDir } from "../lib/cache.js";
+import { computeAsyncJobStateHash } from "../lib/async-job-state.js";
 import { OUTPUT_MODES } from "../lib/output.js";
 import { TimeoutError, ValidationError } from "../lib/errors.js";
 
@@ -268,13 +268,13 @@ export async function research(
   // hash uses the same formula as the adapter (CR3), so the file the
   // handler reads is the one the adapter wrote.
   const identity = deps.capability.run.cacheIdentity(request);
-  const identityHash = computeResearchStateHash({
+  const identityHash = computeAsyncJobStateHash({
     provider: identity.provider,
     capability: identity.capability,
     credentialFingerprint: identity.credentialFingerprint,
     request: identity.request,
   });
-  const stateFilePath = path.join(researchStateDir(), `${identityHash}.json`);
+  const stateFilePath = path.join(asyncJobStateDir("research"), `${identityHash}.json`);
   const resumeCommand = `scoutline research "${query}"`;
 
   // Register the Ctrl-C handler. Production reads the state file sync
@@ -393,7 +393,7 @@ Options:
   --no-cache             Bypass the response cache for this invocation
 
 Common Options:
-  --provider <id>            Override the active Provider (zai | minimax | tavily | exa)
+  --provider <id>            Override the active Provider (zai | minimax | tavily | exa | firecrawl)
   --output-format <mode>     One of: ${OUTPUT_MODE_LIST} (default: data)
   -O <mode>                  Alias for --output-format
 

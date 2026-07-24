@@ -40,6 +40,7 @@ const CREDENTIAL_KEYS: ReadonlySet<string> = new Set([
   "tavily_api_key",
   "exa_api_key",
   "brave_search_api_key",
+  "firecrawl_api_key",
 ]);
 
 const REDACTED = "[REDACTED]";
@@ -55,7 +56,7 @@ const REDACTED = "[REDACTED]";
  *     key/value separator — covers both `x-api-key=value` and
  *     `x-api-key value`).
  *   - Z_AI_API_KEY, ZAI_API_KEY, MINIMAX_API_KEY, TAVILY_API_KEY,
- *     EXA_API_KEY, BRAVE_SEARCH_API_KEY assignments.
+ *     EXA_API_KEY, BRAVE_SEARCH_API_KEY, FIRECRAWL_API_KEY assignments.
  *   - The literal credentials passed in `extraSecrets` (each value is
  *     replaced wherever it appears; empty strings are skipped).
  */
@@ -66,6 +67,11 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   // Tavily API keys carry the `tvly-` prefix; redact the full token
   // wherever it appears (logs, URLs, error bodies).
   result = result.replace(/tvly-[A-Za-z0-9_-]+/gi, REDACTED);
+  // NOTE: Firecrawl keys are `fc-`-prefixed, but that prefix is too short
+  // to match safely (it false-positives on prose like the "FC-03" ticket
+  // id). Bare Firecrawl key tokens are instead redacted via the
+  // configured-secret value loop (configuredSecrets) in production, and
+  // the FIRECRAWL_API_KEY assignment regex below covers the named form.
   // Fixup C — W3: the class accepts either `=`, `:`, or any whitespace
   // as the key/value separator. The trailing `\S+` consumes the secret
   // value; the entire `key + separator + value` span is replaced with
@@ -84,6 +90,7 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   result = result.replace(/TAVILY_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
   result = result.replace(/EXA_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
   result = result.replace(/BRAVE_SEARCH_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
+  result = result.replace(/FIRECRAWL_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
   // Embedded credential substrings inside URLs, e.g.
   // `https://user:secret@host/path`. Catches both `https://` and
   // `http://` schemes and replaces the entire URL with the marker so
@@ -135,6 +142,7 @@ export function configuredSecrets(env: NodeJS.ProcessEnv = process.env): string[
     env.TAVILY_API_KEY,
     env.EXA_API_KEY,
     env.BRAVE_SEARCH_API_KEY,
+    env.FIRECRAWL_API_KEY,
   ];
   return normalizeSecrets(candidates.filter((c): c is string => typeof c === "string"));
 }

@@ -21,6 +21,7 @@ import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
 import { createTavilyDescriptor } from "../dist/providers/tavily/adapter.js";
 import { createExaDescriptor } from "../dist/providers/exa/adapter.js";
+import { createBraveDescriptor } from "../dist/providers/brave/adapter.js";
 import {
   BUILT_IN_PROVIDER_DESCRIPTORS,
   getProviderDescriptor,
@@ -108,6 +109,26 @@ function makeMiniMaxCapability(rawResult) {
   return adapter.search;
 }
 
+/**
+ * Brave Adapter factory: accepts a raw Brave-shaped web response
+ * (`web.results[]`), builds a fake fetch that returns the scripted
+ * response, and returns the descriptor's Search Capability. Mirrors
+ * `makeMiniMaxCapability`.
+ */
+function makeBraveCapability(rawResult) {
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rawResult),
+    json: async () => rawResult,
+    headers: { get: () => null },
+    arrayBuffer: async () => new ArrayBuffer(0),
+  });
+  const descriptor = createBraveDescriptor({ transport: { fetch: fetchFn } });
+  const adapter = descriptor.create({ env: { BRAVE_SEARCH_API_KEY: "k" } });
+  return adapter.search;
+}
+
 // ---------------------------------------------------------------------------
 // Vision conformance: same interpret-image request, same normalized text (P3-03)
 // ---------------------------------------------------------------------------
@@ -186,7 +207,7 @@ function makeMiniMaxVisionCapability(rawResult) {
 // ---------------------------------------------------------------------------
 
 describe("Search Adapter conformance — shared normalized output", () => {
-  it("both built-in Adapters normalize to fixtures/normalized/search.json", async () => {
+  it("all configured Adapters normalize to fixtures/normalized/search.json", async () => {
     const expected = await readFixture("normalized", "search.json");
 
     // Z.AI raw response (title/link/content; no media/publish_date so the
@@ -223,6 +244,28 @@ describe("Search Adapter conformance — shared normalized output", () => {
     };
     const minimaxNormalized = await runSearchConformance(makeMiniMaxCapability, minimaxRaw);
     assert.deepStrictEqual(minimaxNormalized, expected);
+
+    // Brave raw web response (web.results[] with title/url/description;
+    // no meta_url/page_age so source/date are absent — matching the
+    // shared normalized form).
+    const braveRaw = {
+      web: {
+        results: [
+          {
+            title: "Conformance result one",
+            url: "https://example.test/one",
+            description: "Shared normalized summary one.",
+          },
+          {
+            title: "Conformance result two",
+            url: "https://example.test/two",
+            description: "Shared normalized summary two.",
+          },
+        ],
+      },
+    };
+    const braveNormalized = await runSearchConformance(makeBraveCapability, braveRaw);
+    assert.deepStrictEqual(braveNormalized, expected);
   });
 
   it("normalized output drops Provider-only fields (refer, icon, media, publish_date)", async () => {
@@ -255,10 +298,10 @@ describe("Search Adapter conformance — shared normalized output", () => {
 // ---------------------------------------------------------------------------
 
 describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
-  it("contains exactly [zai, minimax, tavily, exa] in that order", () => {
+  it("contains exactly [zai, minimax, tavily, exa, brave] in that order", () => {
     assert.deepStrictEqual(
       BUILT_IN_PROVIDER_DESCRIPTORS.map((d) => d.id),
-      ["zai", "minimax", "tavily", "exa"],
+      ["zai", "minimax", "tavily", "exa", "brave"],
     );
   });
 
@@ -268,13 +311,25 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
   });
 
   it("descriptors expose pure metadata (capabilities + isConfigured, no transport)", () => {
-    for (const d of BUILT_IN_PROVIDER_DESCRIPTORS) {
+    // Fully-built Providers (zai/minimax/tavily/brave) advertise search,
+    // quota, and diagnostics. Brave (T6) now joins that set; the loop
+    // below is scoped to zai/minimax/tavily but the brave-specific
+    // assertion follows.
+    for (const id of ["zai", "minimax", "tavily"]) {
+      const d = getProviderDescriptor(id);
       const caps = d.capabilities();
-      assert.ok(caps.has("search"), `${d.id} should advertise search`);
-      assert.ok(caps.has("diagnostics"), `${d.id} should advertise diagnostics`);
-      // Quota is provider-specific: zai, minimax, tavily advertise it;
-      // exa does not (EXA-T06 deferred).
+      assert.ok(caps.has("search"), `${id} should advertise search`);
+      // P4-02 wires quota metadata; P4-04 wires diagnostics.
+      assert.ok(caps.has("quota"));
+      assert.ok(caps.has("diagnostics"));
     }
+    // Brave T6: advertises search + diagnostics + quota (size 3).
+    const brave = getProviderDescriptor("brave");
+    const braveCaps = brave.capabilities();
+    assert.strictEqual(braveCaps.size, 3, "Brave advertises search + diagnostics + quota");
+    assert.ok(braveCaps.has("search"), "Brave must advertise search");
+    assert.ok(braveCaps.has("diagnostics"), "Brave must advertise diagnostics (T5)");
+    assert.ok(braveCaps.has("quota"), "Brave must advertise quota (T6)");
     const zai = getProviderDescriptor("zai");
     assert.strictEqual(zai.isConfigured({ Z_AI_API_KEY: "k" }), true);
     assert.strictEqual(zai.isConfigured({}), false);
@@ -284,18 +339,28 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     const tv = getProviderDescriptor("tavily");
     assert.strictEqual(tv.isConfigured({ TAVILY_API_KEY: "k" }), true);
     assert.strictEqual(tv.isConfigured({}), false);
+    // Brave isConfigured locks the foundation state.
+    assert.strictEqual(brave.isConfigured({}), false);
+    assert.strictEqual(brave.isConfigured({ BRAVE_SEARCH_API_KEY: "  " }), false);
+    assert.strictEqual(brave.isConfigured({ BRAVE_SEARCH_API_KEY: "k" }), true);
     const exa = getProviderDescriptor("exa");
     assert.strictEqual(exa.isConfigured({ EXA_API_KEY: "k" }), true);
     assert.strictEqual(exa.isConfigured({}), false);
   });
 
   it("descriptor creation is side-effect-free (no transport construction)", () => {
-    // Every built-in descriptor now has a real Adapter whose create()
-    // is side-effect-free.
-    for (const d of BUILT_IN_PROVIDER_DESCRIPTORS) {
+    // Every Provider that advertises `search` exposes a Search
+    // Capability object. Brave (T2) now wires search too; create() is
+    // still side-effect-free.
+    for (const id of ["zai", "minimax", "tavily", "brave"]) {
+      const d = getProviderDescriptor(id);
       const adapter = d.create({ env: {} });
-      assert.strictEqual(typeof adapter.search, "object");
+      assert.strictEqual(typeof adapter.search, "object", `${id} should expose adapter.search`);
     }
+    const brave = getProviderDescriptor("brave");
+    const braveAdapter = brave.create({ env: {} });
+    assert.strictEqual(braveAdapter.id, "brave");
+    assert.strictEqual(typeof braveAdapter.search, "object", "Brave must expose adapter.search");
   });
 
   it("tavily create() returns an adapter with search, reader, and crawl", () => {
@@ -334,6 +399,12 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
       ["tavily"],
     );
 
+    const onlyBrave = getConfiguredProviderDescriptors({ BRAVE_SEARCH_API_KEY: "k" });
+    assert.deepStrictEqual(
+      onlyBrave.map((d) => d.id),
+      ["brave"],
+    );
+
     const onlyExa = getConfiguredProviderDescriptors({ EXA_API_KEY: "k" });
     assert.deepStrictEqual(
       onlyExa.map((d) => d.id),
@@ -354,10 +425,11 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
       MINIMAX_API_KEY: "k",
       TAVILY_API_KEY: "k",
       EXA_API_KEY: "k",
+      BRAVE_SEARCH_API_KEY: "k",
     });
     assert.deepStrictEqual(
       all.map((d) => d.id),
-      ["zai", "minimax", "tavily", "exa"],
+      ["zai", "minimax", "tavily", "exa", "brave"],
     );
 
     const neither = getConfiguredProviderDescriptors({});

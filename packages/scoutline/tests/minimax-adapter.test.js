@@ -308,6 +308,7 @@ describe("MiniMax Search Adapter — validation rejects unsupported controls", (
     ["recency", { recency: "oneWeek" }],
     ["contentSize", { contentSize: "high" }],
     ["location", { location: "cn" }],
+    ["type", { type: "video" }],
   ];
 
   it("rejects every unsupported control with UNSUPPORTED_OPTION", () => {

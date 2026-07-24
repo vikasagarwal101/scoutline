@@ -105,6 +105,18 @@ describe("Tavily Search Adapter — validation", () => {
     );
   });
 
+  it("rejects --type with UnsupportedOptionError", () => {
+    const { adapter } = makeAdapter(async () => makeResponse());
+    assert.throws(
+      () =>
+        adapter.search.validate({
+          query: "test",
+          controls: { type: "video" },
+        }),
+      (e) => e instanceof UnsupportedOptionError && e.message.includes("type"),
+    );
+  });
+
   it("accepts domain, recency, contentSize, and topic controls", () => {
     const { adapter } = makeAdapter(async () => makeResponse());
     // Should not throw — Tavily supports these natively.

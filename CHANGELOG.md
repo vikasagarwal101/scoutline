@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-24
+
 ### Added
 - **Brave Provider** as the fifth built-in Provider. New module
   `src/providers/brave/` with the direct-HTTP Adapter, credentials

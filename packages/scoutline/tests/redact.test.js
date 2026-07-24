@@ -27,6 +27,7 @@ import { formatErrorOutput } from "../dist/lib/output.js";
 const Z_KEY = "zai-secret-key-value-AAA";
 const Z_ALIAS_KEY = "zai-secret-alias-key-value-BBB";
 const M_KEY = "minimax-secret-key-value-CCC";
+const B_KEY = "brave-secret-key-value-GGG";
 const E_KEY = "exa-secret-key-value-GGG";
 const BEARER = "Bearer zai-secret-bearer-token-DDD";
 const X_API = "x-api-key secret-x-api-key-value-EEE";
@@ -250,6 +251,20 @@ describe("redactCredentialString — single-string redaction", () => {
     assert.strictEqual(redactCredentialString(`EXA_API_KEY=${E_KEY}`), "[REDACTED]");
   });
 
+  it("redacts BRAVE_SEARCH_API_KEY assignments (= and : separators)", () => {
+    // Brave was missing from the redaction key list (T1 omission); this
+    // locks key-based redaction so a Brave key value cannot leak through
+    // an error message or formatted string.
+    assert.strictEqual(redactCredentialString(`BRAVE_SEARCH_API_KEY=${B_KEY}`), "[REDACTED]");
+    assert.strictEqual(redactCredentialString(`brave_search_api_key: ${B_KEY}`), "[REDACTED]");
+    // Prose mention with no separator token must NOT be redacted (matches
+    // the Z_AI_API_KEY/MINIMAX_API_KEY prose rule).
+    assert.strictEqual(
+      redactCredentialString("the BRAVE_SEARCH_API_KEY environment variable is required"),
+      "the BRAVE_SEARCH_API_KEY environment variable is required",
+    );
+  });
+
   it("F5: redacts colon separator forms (JSON/header/YAML)", () => {
     // The named-key patterns must accept `:` as a separator, not just
     // `=` — `Z_AI_API_KEY: sk-foo` (JSON/HTTP-header/YAML) previously
@@ -378,6 +393,26 @@ describe("redactTool — Tool metadata redaction", () => {
       else process.env.Z_AI_API_KEY = savedZ;
       if (savedM === undefined) delete process.env.MINIMAX_API_KEY;
       else process.env.MINIMAX_API_KEY = savedM;
+    }
+  });
+
+  it("redacts BRAVE_SEARCH_API_KEY drawn from the environment", () => {
+    // Locks the configuredSecrets() fix: a Brave key read from env must
+    // be redacted by the env-derived secret path (no explicit secrets
+    // passed), so it cannot leak through tool metadata or errors.
+    const savedB = process.env.BRAVE_SEARCH_API_KEY;
+    process.env.BRAVE_SEARCH_API_KEY = B_KEY;
+    try {
+      const tool = {
+        description: `key ${B_KEY}`,
+        inputs: { Authorization: B_KEY },
+      };
+      const out = redactTool(tool);
+      assert.strictEqual(out.description, "key [REDACTED]");
+      assert.strictEqual(out.inputs.Authorization, "[REDACTED]");
+    } finally {
+      if (savedB === undefined) delete process.env.BRAVE_SEARCH_API_KEY;
+      else process.env.BRAVE_SEARCH_API_KEY = savedB;
     }
   });
 });

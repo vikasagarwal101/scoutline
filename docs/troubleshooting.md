@@ -16,6 +16,10 @@ scoutline doctor
 # MiniMax Token Plan
 export MINIMAX_API_KEY="your-minimax-key"
 scoutline doctor --provider minimax
+
+# Brave
+export BRAVE_SEARCH_API_KEY="your-brave-key"
+scoutline doctor --provider brave
 ```
 
 Provider selection is never inferred from which credentials are present. An
@@ -25,14 +29,15 @@ default quota command and a diagnostic failure (`exit 1`) for `doctor`.
 ## Unknown Provider ID
 
 ```
-Unknown provider "<value>". Accepted provider IDs: zai, minimax.
+Unknown provider "<value>". Accepted provider IDs: zai, minimax, tavily, exa, brave.
 ```
 
-`--provider` and `SCOUTLINE_PROVIDER` accept only `zai` or `minimax`. Unknown
-or empty values fail with `VALIDATION_ERROR` (`exit 1`) before any Provider
-invocation. `read` and `repo` participate in selection but are currently
-supplied only by Z.AI. `tools`, `tool`, `call`, and `code` accept the flag
-but ignore it — they remain Z.AI-only.
+`--provider` and `SCOUTLINE_PROVIDER` accept `zai`, `minimax`, `tavily`,
+`exa`, or `brave`. Unknown or empty values fail with `VALIDATION_ERROR` (`exit 1`) before
+any Provider invocation. `read`, `repo`, `crawl`, `map`, and `research`
+participate in selection but are supplied by different subsets of Providers
+(see the Capability Matrix). `tools`, `tool`, `call`, and `code` accept the
+flag but ignore it — they remain Z.AI-only.
 
 ## Unsupported MiniMax Reader
 

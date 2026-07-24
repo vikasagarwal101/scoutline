@@ -168,6 +168,36 @@ The "cache inspection commands" entry below has been moved out of the
 deliberately-out-of-scope list to reflect the new reality; cache
 **replay** commands remain out of scope.
 
+## Current Release: Brave Provider
+
+Brave ships as the fourth built-in Provider. New module
+`src/providers/brave/` with the direct-HTTP Adapter (auth via the
+`X-Subscription-Token` header); credential `BRAVE_SEARCH_API_KEY`
+(whitespace-only = absent; missing → `CONFIGURATION_ERROR`, exit 3).
+The production registry at `src/providers/registry.ts` grows from
+`[zai, minimax, tavily]` to `[zai, minimax, tavily, brave]`.
+
+Brave's confirmed Capabilities:
+
+- **Search** — default → web search; `--topic news` → dedicated news
+  endpoint; `--type video` → videos endpoint (**Brave is the only
+  Provider that advertises `--type video`**, mutually exclusive with
+  `--topic`); `--content-size high` → LLM Context endpoint (extracted
+  passages joined into summaries). `--domain` → `site:`, `--recency` →
+  `freshness`, `--location` → `country`. `--count` is client-side.
+- **Quota** — Brave has no `/usage` endpoint. Quota is read from
+  `X-RateLimit-*` response headers on a 1-query probe and surfaces the
+  monthly rate-limit window (the per-second window is dropped). A
+  prominent caveat warns this is a rate-limit window, **not** spend or
+  credits consumed (Brave uses metered billing).
+- **Diagnostics** — 1-query web-search probe; unconfigured Brave is
+  listed but skipped.
+
+Brave does **not** supply Reader, Crawl, Map, Research, or Vision;
+selecting Brave for any of those returns `UNSUPPORTED_CAPABILITY` with
+no fallback. Operational note: Brave recently shifted from a pure free
+tier to $5 monthly metered credits (a saved card is now billable).
+
 ## Phase 4: Streaming Transport
 
 ### Streaming Output

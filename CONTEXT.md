@@ -51,6 +51,19 @@ investigation of the team-management API (separate service key and
 dollar-unit modeling). Exa advertises neither Crawl nor Map.
 _Avoid_: Exa API, Exa AI
 
+**Brave**:
+The fifth Provider. Its confirmed Capabilities are Search (web,
+news via a dedicated endpoint, and video — Brave is the only Provider
+that advertises `--type video`) and the `--content-size high` overload,
+which maps to the Brave LLM Context endpoint (extracted passages
+joined into summaries). The base release also normalizes its quota
+reporting and diagnostic probe as operational Capabilities. Brave does
+not supply Reader, Crawl, Map, Research, or Vision. Brave quota is
+read from `X-RateLimit-*` response headers on a probe rather than a
+spend endpoint, so it reports a rate-limit window, not credits
+consumed (Brave uses metered billing).
+_Avoid_: Brave Search API, Brave MCP
+
 ## Flagged Ambiguities
 
 **Vision**:
@@ -61,12 +74,12 @@ parity remains unresolved.
 
 **Crawl, Map**:
 These two Capabilities are Tavily-only at launch. They are not
-shared with Z.AI, MiniMax Token Plan, or Exa, and there is no Provider
+shared with Z.AI, MiniMax Token Plan, Exa, or Brave, and there is no Provider
 fallback. Selecting a non-Tavily Provider for either command returns
 `UNSUPPORTED_CAPABILITY` with no fallback.
 
 **Research**:
-This Capability is shared between Tavily and Exa. Z.AI and MiniMax
+This Capability is shared between Tavily and Exa. Z.AI, MiniMax, and Brave
 do not advertise it. The cross-Provider search control
 `--topic <general|news|finance>` is NOT a Research control; the
 Capability does not currently accept a topic.
@@ -94,3 +107,10 @@ Provider, but its implementation differs: Tavily passes the topic natively to
 its API; Z.AI and MiniMax lack a native topic parameter, so the Adapter
 appends a small keyword to the query string inside `invoke()` (see
 `lib/search-topic.ts`); Exa maps it to a `category` parameter."
+
+Developer: "Can I search for videos with the Brave Provider?"
+
+Domain expert: "Yes. Brave is the only Provider that advertises `--type video`,
+which routes to a dedicated videos endpoint. `--type` is mutually exclusive
+with `--topic`. Brave also maps `--content-size high` to its LLM Context
+endpoint (extracted passages joined into summaries)."

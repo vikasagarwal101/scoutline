@@ -458,6 +458,17 @@ describe("Z.AI Search Adapter — validation", () => {
     );
     assert.strictEqual(factory.created.length, 0);
   });
+
+  it("rejects --type (video) with UNSUPPORTED_OPTION before any client construction", () => {
+    const factory = makeClientFactory();
+    const descriptor = createZaiDescriptor({ clientFactory: factory });
+    const adapter = descriptor.create({ env: { Z_AI_API_KEY: TEST_API_KEY } });
+    assert.throws(
+      () => adapter.search.validate({ query: "q", controls: { type: "video" } }),
+      (err) => err.code === "UNSUPPORTED_OPTION" && /type/.test(err.message),
+    );
+    assert.strictEqual(factory.created.length, 0);
+  });
 });
 
 describe("Z.AI Search Adapter — cache identity", () => {

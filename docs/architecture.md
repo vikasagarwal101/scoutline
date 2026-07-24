@@ -2,7 +2,8 @@
 
 Scoutline is a Node.js command-line client that presents several shared
 Capabilities through one consistent interface. It supports Z.AI, the
-MiniMax Token Plan Provider, and Tavily through a common Adapter boundary.
+MiniMax Token Plan Provider, Tavily, and Brave through a common Adapter
+boundary.
 
 ## Runtime Flow
 
@@ -11,10 +12,10 @@ scoutline executable
   -> dist/index.js command dispatcher
   -> command handler
   -> Provider selection (--provider / SCOUTLINE_PROVIDER / default "zai")
-  -> Provider Adapter (zai, minimax, or tavily)
+  -> Provider Adapter (zai, minimax, tavily, or brave)
   -> shared execution (cache + retry)
-  -> Provider transport (Z.AI MCP / mmx-cli transitional SDK / MiniMax direct quota / Tavily direct HTTP)
-  -> Provider service (Z.AI, ZRead, MiniMax, or Tavily)
+  -> Provider transport (Z.AI MCP / mmx-cli transitional SDK / MiniMax direct quota / Tavily direct HTTP / Brave direct HTTP)
+  -> Provider service (Z.AI, ZRead, MiniMax, Tavily, or Brave)
 ```
 
 `packages/scoutline/bin/scoutline.js` is the published executable. It dynamically loads the compiled `dist/index.js` entry point and emits a structured load error if the package was not built.
@@ -34,7 +35,7 @@ normalization. It never imports command presentation, output mode, or another
 Provider's Adapter.
 
 The production registry at `src/providers/registry.ts` is a static,
-three-entry list `[zai, minimax, tavily]`. There is no dynamic loading,
+four-entry list `[zai, minimax, tavily, brave]`. There is no dynamic loading,
 no package-name lookup, no Adapter file paths, and no externally
 supplied factories. Tests inject descriptor lists explicitly through
 optional parameters.
@@ -46,6 +47,7 @@ optional parameters.
 | `zai` | `Z_AI_API_KEY` | `Z_AI_BASE_URL` / `Z_AI_MODE` | Default Provider; MCP-backed transport |
 | `minimax` | `MINIMAX_API_KEY` | `MINIMAX_REGION` (`global` / `cn`) or `MINIMAX_BASE_URL` | Direct transport for Search, Vision, Quota; SDK removed in 0.6.0 |
 | `tavily` | `TAVILY_API_KEY` | `https://api.tavily.com` | Direct-HTTP transport; Search, Reader, Crawl, Map, Research, Quota, Diagnostics |
+| `brave` | `BRAVE_SEARCH_API_KEY` | `https://api.search.brave.com` | Direct-HTTP transport (`X-Subscription-Token`); Search (web/news/video + `--content-size high` → LLM Context), Quota, Diagnostics. No Reader/Crawl/Map/Research/Vision |
 
 Each Adapter exposes only the Capabilities the base release actually supports.
 The Descriptor advertises the same Capability set so support can be checked
@@ -72,21 +74,21 @@ Research are Tavily-only at launch: only Tavily advertises the
 Capability, so any other Provider returns `UNSUPPORTED_CAPABILITY`
 with no fallback.
 
-| Capability | Z.AI | MiniMax | Tavily | Command |
-| --- | --- | --- | --- | --- |
-| `search` | Yes | Yes | Yes | `scoutline search` |
-| `vision.interpret-image` | Yes | Yes | No | `scoutline vision analyze` |
-| Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
-| Image diff / video | Yes | No | No | `scoutline vision diff`, `vision video` |
-| `quota` | Yes | Yes | Yes | `scoutline quota` |
-| `diagnostics` | Yes | Yes | Yes | `scoutline doctor` |
-| Reader | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | Yes (Z.AI-only options are rejected) | `scoutline read` |
-| Repository exploration | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | No (UNSUPPORTED_CAPABILITY, no fallback) | `scoutline repo ...` |
-| Crawl | No | No | Yes (Tavily-only at launch) | `scoutline crawl` |
-| Map | No | No | Yes (Tavily-only at launch) | `scoutline map` |
-| Research | No | No | Yes (Tavily-only at launch; 4-250 credits per request) | `scoutline research` |
-| Raw tools | Yes | No | No | `scoutline tools`, `tool`, `call` |
-| Code Mode | Yes | No | No | `scoutline code ...` |
+| Capability | Z.AI | MiniMax | Tavily | Brave | Command |
+| --- | --- | --- | --- | --- | --- |
+| `search` | Yes | Yes | Yes | Yes (web/news/video; `--content-size high` → LLM Context) | `scoutline search` |
+| `vision.interpret-image` | Yes | Yes | No | No | `scoutline vision analyze` |
+| Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
+| Image diff / video | Yes | No | No | No | `scoutline vision diff`, `vision video` |
+| `quota` | Yes | Yes | Yes | Yes (rate-limit window, not spend) | `scoutline quota` |
+| `diagnostics` | Yes | Yes | Yes | Yes | `scoutline doctor` |
+| Reader | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | Yes (Z.AI-only options are rejected) | No (UNSUPPORTED_CAPABILITY, no fallback) | `scoutline read` |
+| Repository exploration | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | No (UNSUPPORTED_CAPABILITY, no fallback) | No (UNSUPPORTED_CAPABILITY, no fallback) | `scoutline repo ...` |
+| Crawl | No | No | Yes (Tavily-only at launch) | No | `scoutline crawl` |
+| Map | No | No | Yes (Tavily-only at launch) | No | `scoutline map` |
+| Research | No | No | Yes (Tavily-only at launch; 4-250 credits per request) | No | `scoutline research` |
+| Raw tools | Yes | No | No | No | `scoutline tools`, `tool`, `call` |
+| Code Mode | Yes | No | No | No | `scoutline code ...` |
 
 Specialized MiniMax Vision mappings remain conformance-gated and only move
 into the shared matrix once their offline and live attestation passes.
@@ -111,7 +113,14 @@ Z.AI accepts domain, recency, content-size, location, and topic controls.
 MiniMax accepts topic only and rejects every other control with
 `UNSUPPORTED_OPTION` before any SDK access. Tavily accepts domain,
 recency, content-size, and topic natively (passes `topic` through
-unchanged) and rejects `location` as `UNSUPPORTED_OPTION`.
+unchanged) and rejects `location` as `UNSUPPORTED_OPTION`. Brave accepts
+domain (→ `site:`), recency (→ `freshness`), location (→ `country`),
+content-size (where `high` maps to its LLM Context endpoint), and topic
+(`news` routes to a dedicated endpoint); Brave is also the only Provider
+that advertises `--type video` (mutually exclusive with `--topic`).
+`--content-size` is a deliberate per-provider overload: `high` maps to
+Z.AI `content_size`, Tavily `search_depth=advanced`, and Brave LLM
+Context, while MiniMax rejects it with `UNSUPPORTED_OPTION`.
 
 `--topic` is therefore the only cross-Provider search control: every
 Provider advertises it. For Providers that lack a native topic
@@ -135,12 +144,16 @@ policy; each Vision attempt is uncached and uncacheable.
 
 ### Quota
 
-Both Providers expose a normalized `QuotaDashboard` (ADR-0001). Provider-only
+Each Provider exposes a normalized `QuotaDashboard` (ADR-0001). Provider-only
 fields do not cross the Interface. Percentages are remaining percentages
 clamped to `0..100`. Each Adapter maps its Provider response into named
 quota categories (`requests`, `tokens`, or per-model names) with current and
 optional weekly windows, optional counts, remaining percentage, and reset
-time.
+time. Brave has no spend endpoint: its quota is read from
+`X-RateLimit-*` response headers on a 1-query probe and surfaces the
+monthly rate-limit window. A prominent caveat warns that this is a
+rate-limit window, **not** spend or credits consumed — Brave uses metered
+billing, so it is not a budget signal.
 
 `quota` reports the effective Provider by default. `quota --all-providers`
 queries every configured Provider in registry order using settled
@@ -162,6 +175,8 @@ Z.AI connectivity uses MCP tool discovery. MiniMax connectivity uses a raw
 single-attempt quota probe that authenticates without a generative request.
 Tavily connectivity uses a raw single-attempt quota probe against the
 Tavily account endpoint that authenticates without a generative request.
+Brave connectivity uses a single-query web-search probe. Unconfigured
+Providers (including Brave) are listed but skipped.
 
 ## Repository Exploration (P6)
 
@@ -256,20 +271,20 @@ public Interface.
 The `DiagnosticsReport` (`schemaVersion: 2`) carries a
 `capabilityMatrix` derived purely from descriptor metadata. For each
 advertised capability, the matrix lists exactly which built-in
-Providers supply it. Capabilities supplied by 2-of-3 providers (Search,
-quota, diagnostics, reader with Z.AI + Tavily) are visible per
-Provider, not collapsed. Capabilities supplied by exactly one
-Provider (`repository-exploration`, `crawl`, `map`, `research`) are
-listed for that Provider alone.
+Providers supply it. Capabilities supplied by multiple Providers (Search,
+quota, diagnostics, reader) are visible per-Provider, not collapsed.
+Capabilities supplied by exactly one Provider (`repository-exploration`,
+`crawl`, `map`, `research`) are listed for that Provider alone.
 
 `sharedCapabilities` and `zaiOnlyCapabilities` are gone: their
-two-array derivation silently hid any capability supplied by 2-of-3
-providers. `deriveCapabilityMatrix` is the single inventory function;
+two-array derivation silently hid any capability supplied by more than
+one Provider. `deriveCapabilityMatrix` is the single inventory function;
 its output is always strictly more informative than the previous
-two-array view. Doctor help names MiniMax as unsupported for `repo`
-and Z.AI/MiniMax as unsupported for `crawl`, `map`, and `research`,
-reports the effective Provider for shared capabilities, and never
-widens to M3 transport.
+two-array view. Doctor help names MiniMax and Brave as unsupported for
+`repo`; Z.AI, MiniMax, and Brave as unsupported for `crawl`, `map`, and
+`research`; and MiniMax and Brave as unsupported for `read` — it reports
+the effective Provider for shared capabilities and never widens to M3
+transport.
 
 ## Reader (P7)
 
@@ -388,7 +403,7 @@ MiniMax as unsupported for `read`.
 
 `scoutline crawl`, `scoutline map`, and `scoutline research` participate
 in Provider selection. Only the Tavily descriptor advertises these
-Capabilities at launch; selecting Z.AI or MiniMax (explicitly or via
+Capabilities at launch; selecting Z.AI, MiniMax, or Brave (explicitly or via
 `SCOUTLINE_PROVIDER`) returns `UNSUPPORTED_CAPABILITY` before
 `descriptor.isConfigured`, `descriptor.create`, credential resolution
 for use, cache identity, or transport construction, with no fallback.

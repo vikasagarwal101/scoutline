@@ -54,6 +54,7 @@ import {
   AuthError,
   NetworkError,
   TimeoutError,
+  UnsupportedOptionError,
   ValidationError,
 } from "../../lib/errors.js";
 import { getMcpToolName } from "../../lib/mcp-config.js";
@@ -228,6 +229,12 @@ function createZaiSearchCapability(options: ZaiSearchCapabilityOptions): SearchC
         throw new ValidationError(
           "Search query must contain at least one non-whitespace character",
         );
+      }
+      // Z.AI accepts every other control natively, but `type` (video
+      // content axis) is not supported by this adapter (Brave supplies
+      // video), so it is rejected here.
+      if (request.controls?.type !== undefined) {
+        throw new UnsupportedOptionError("zai", "search", "type");
       }
     },
 

@@ -35,10 +35,20 @@ export type SearchRecency = "oneDay" | "oneWeek" | "oneMonth" | "oneYear" | "noL
 export type SearchTopic = "general" | "news" | "finance";
 
 /**
+ * Content-type axis. `video` selects video result content. It is a
+ * content axis, not an editorial topic axis, so `type` and `topic` are
+ * mutually exclusive (enforced at parse time). Brave supports
+ * `type:"video"` (routes to its video endpoint); every other adapter
+ * rejects `type` with `UNSUPPORTED_OPTION`.
+ */
+export type SearchType = "video";
+
+/**
  * Provider controls accepted by the Search Capability. Every field is
  * optional. MiniMax rejects `domain`, `recency`, `contentSize`, and
  * `location` with `UNSUPPORTED_OPTION` before any SDK access. `topic`
- * is accepted by all adapters.
+ * is accepted by all adapters. `type` is accepted by Brave (`video`)
+ * and rejected by Z.AI, MiniMax, and Tavily.
  */
 export interface SearchControls {
   domain?: string;
@@ -46,6 +56,7 @@ export interface SearchControls {
   contentSize?: "medium" | "high";
   location?: "cn" | "us";
   topic?: SearchTopic;
+  type?: SearchType;
 }
 
 /**

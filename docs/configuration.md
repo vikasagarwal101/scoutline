@@ -12,15 +12,16 @@ export Z_AI_API_KEY="your-api-key"
 
 ## Provider Selection
 
-Shared commands (`search`, `vision`, `quota`, `doctor`), **`repo`**, and
-**`read`** accept the global `--provider <zai|minimax|tavily|firecrawl>` flag. When the flag
+Shared commands (`search`, `vision`, `quota`, `doctor`), **`repo`**,
+**`read`**, **`crawl`**, **`map`**, and **`research`** accept the global
+`--provider <zai|minimax|tavily|exa|brave|firecrawl>` flag. When the flag
 is omitted the value of the `SCOUTLINE_PROVIDER` environment variable is
 consulted; when neither is supplied Scoutline falls back to the compatibility
 default `zai`.
 
 Resolution precedence (highest first):
 
-1. `--provider <zai|minimax|tavily|firecrawl>` on the command line
+1. `--provider <zai|minimax|tavily|exa|brave|firecrawl>` on the command line
 2. `SCOUTLINE_PROVIDER`
 3. `zai` (default)
 
@@ -70,7 +71,7 @@ scoutline --provider minimax read https://example.com      # exits 1, UNSUPPORTE
 | `Z_AI_TEMPERATURE` | `0.8` | Vision generation temperature. |
 | `Z_AI_TOP_P` | `0.6` | Vision generation top-p value. |
 | `Z_AI_MAX_TOKENS` | `32768` | Vision response token limit. |
-| `SCOUTLINE_PROVIDER` | (none) | Selects the effective Provider (`zai` or `minimax`) for shared capabilities. |
+| `SCOUTLINE_PROVIDER` | (none) | Selects the effective Provider (`zai`, `minimax`, `tavily`, or `brave`) for shared capabilities. |
 
 ## MiniMax Token Plan Settings
 
@@ -113,6 +114,41 @@ export MINIMAX_BASE_URL=https://api.example.test   # optional: HTTPS override
 scoutline --provider minimax search "AI policy"
 scoutline --provider minimax quota
 scoutline doctor --provider minimax
+```
+
+## Brave Search Settings
+
+The Brave Adapter is configured through Brave-specific environment variables.
+Scoutline does not persist Brave credentials anywhere on disk.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `BRAVE_SEARCH_API_KEY` | Required for Brave | Brave Search API key (sent as the `X-Subscription-Token` header). |
+| `BRAVE_TIMEOUT` | `30000` | Request timeout in milliseconds. |
+
+Rules:
+
+- `BRAVE_SEARCH_API_KEY` is required and non-empty. Whitespace-only is
+  treated as absent; a missing credential for the effective Provider fails
+  with `CONFIGURATION_ERROR` (`exit 3`).
+- Brave has no `/usage` endpoint. Quota is read from `X-RateLimit-*`
+  response headers on a 1-query probe and surfaces the monthly rate-limit
+  window (used/limit/remaining/%/reset). This is a rate-limit window, **not**
+  spend or credits consumed — Brave uses metered billing, so it is not a
+  budget signal. A prominent caveat prints to stderr (and appears in the
+  JSON output's `warnings` field).
+
+> **Operational note:** Brave recently shifted from a pure free tier to $5
+> monthly metered credits (a saved card is now billable).
+
+```bash
+export BRAVE_SEARCH_API_KEY="your-brave-key"
+export BRAVE_TIMEOUT=30000            # optional: 30s default
+
+scoutline --provider brave search "AI policy"
+scoutline --provider brave search "rust talks" --type video
+scoutline --provider brave quota
+scoutline doctor --provider brave
 ```
 
 ## Firecrawl Settings

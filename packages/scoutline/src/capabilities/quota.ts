@@ -49,6 +49,17 @@ export interface ProviderQuotaSuccess {
   status: "ok";
   plan?: string;
   categories: QuotaCategory[];
+  /**
+   * Optional provider-authored caveat(s) the quota command surfaces to
+   * the user alongside the dashboard. A generic, provider-neutral
+   * channel: a Provider that needs to flag a caveat about its quota
+   * numbers (e.g. Brave reports a rate-limit window, NOT spend or
+   * credits consumed under metered billing) populates this field; the
+   * command renders each entry to stderr without branching on provider
+   * identity. Additive and backward-compatible — Providers with no
+   * caveat simply omit the field.
+   */
+  warnings?: readonly string[];
 }
 
 export interface ProviderQuotaFailure {

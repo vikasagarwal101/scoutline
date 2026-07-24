@@ -102,7 +102,7 @@ function resolveApiKey(env: NodeJS.ProcessEnv): string {
 // Validation (FR-012): reject unsupported controls before any SDK access
 // ---------------------------------------------------------------------------
 
-const UNSUPPORTED_CONTROLS = ["domain", "recency", "contentSize", "location"] as const;
+const UNSUPPORTED_CONTROLS = ["domain", "recency", "contentSize", "location", "type"] as const;
 
 function assertNoUnsupportedControls(request: SearchRequest): void {
   const controls = request.controls;

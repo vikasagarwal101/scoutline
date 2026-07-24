@@ -28,6 +28,7 @@ const Z_KEY = "zai-secret-key-value-AAA";
 const Z_ALIAS_KEY = "zai-secret-alias-key-value-BBB";
 const M_KEY = "minimax-secret-key-value-CCC";
 const FC_KEY = "fc-test-secret-key-GGG";
+const B_KEY = "brave-secret-key-value-GGG";
 const E_KEY = "exa-secret-key-value-GGG";
 const BEARER = "Bearer zai-secret-bearer-token-DDD";
 const X_API = "x-api-key secret-x-api-key-value-EEE";
@@ -252,14 +253,8 @@ describe("redactCredentialString — single-string redaction", () => {
   });
 
   it("redacts FIRECRAWL_API_KEY assignments (FC-02)", () => {
-    // Env-var assignment forms (= and : separators).
     assert.strictEqual(redactCredentialString(`FIRECRAWL_API_KEY=${FC_KEY}`), "[REDACTED]");
     assert.strictEqual(redactCredentialString(`FIRECRAWL_API_KEY: ${FC_KEY}`), "[REDACTED]");
-    // A bare fc- token is NOT prefix-matched (unlike tvly-): the `fc-`
-    // prefix is too short to avoid false positives (e.g. the "FC-03"
-    // ticket id), so bare-key redaction relies on the configured-secret
-    // value loop in production (configuredSecrets). Supplied as a secret,
-    // the value is redacted wherever it appears.
     assert.strictEqual(
       redactCredentialString(`key was ${FC_KEY} here`, [FC_KEY]),
       "key was [REDACTED] here",
@@ -271,6 +266,15 @@ describe("redactCredentialString — single-string redaction", () => {
     assert.ok(
       secrets.includes(FC_KEY),
       "configuredSecrets must include the FIRECRAWL_API_KEY value so it is redacted at every outward boundary",
+    );
+  });
+
+  it("redacts BRAVE_SEARCH_API_KEY assignments (= and : separators)", () => {
+    assert.strictEqual(redactCredentialString(`BRAVE_SEARCH_API_KEY=${B_KEY}`), "[REDACTED]");
+    assert.strictEqual(redactCredentialString(`brave_search_api_key: ${B_KEY}`), "[REDACTED]");
+    assert.strictEqual(
+      redactCredentialString("the BRAVE_SEARCH_API_KEY environment variable is required"),
+      "the BRAVE_SEARCH_API_KEY environment variable is required",
     );
   });
 
@@ -402,6 +406,26 @@ describe("redactTool — Tool metadata redaction", () => {
       else process.env.Z_AI_API_KEY = savedZ;
       if (savedM === undefined) delete process.env.MINIMAX_API_KEY;
       else process.env.MINIMAX_API_KEY = savedM;
+    }
+  });
+
+  it("redacts BRAVE_SEARCH_API_KEY drawn from the environment", () => {
+    // Locks the configuredSecrets() fix: a Brave key read from env must
+    // be redacted by the env-derived secret path (no explicit secrets
+    // passed), so it cannot leak through tool metadata or errors.
+    const savedB = process.env.BRAVE_SEARCH_API_KEY;
+    process.env.BRAVE_SEARCH_API_KEY = B_KEY;
+    try {
+      const tool = {
+        description: `key ${B_KEY}`,
+        inputs: { Authorization: B_KEY },
+      };
+      const out = redactTool(tool);
+      assert.strictEqual(out.description, "key [REDACTED]");
+      assert.strictEqual(out.inputs.Authorization, "[REDACTED]");
+    } finally {
+      if (savedB === undefined) delete process.env.BRAVE_SEARCH_API_KEY;
+      else process.env.BRAVE_SEARCH_API_KEY = savedB;
     }
   });
 });

@@ -5,14 +5,14 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- **Firecrawl Provider** as the fifth built-in Provider. New module
+- **Firecrawl Provider** as the sixth built-in Provider. New module
   `src/providers/firecrawl/` with a direct-HTTP v2 transport Adapter
   (`Authorization: Bearer`, injectable fetch/timers) and an error-envelope
   dual-check (Firecrawl returns HTTP 200 with `{success:false}` for some
   business errors → terminal `API_ERROR` 422). Default endpoint
   `https://api.firecrawl.dev`; credential `FIRECRAWL_API_KEY`. The
-  production registry grows from `[zai, minimax, tavily, exa]` to
-  `[zai, minimax, tavily, exa, firecrawl]`.
+  production registry grows from `[zai, minimax, tavily, exa, brave]` to
+  `[zai, minimax, tavily, exa, brave, firecrawl]`.
 - **Firecrawl capabilities** (4 data + 2 operational):
   - `search` — `/v2/search`; `--content-size high` requests scraped
     markdown summaries (+1 credit/result); `--topic`→`sources`,
@@ -43,6 +43,63 @@ All notable changes to this project will be documented in this file.
 - `lib/research-state.ts` generalized to `lib/async-job-state.ts`
   (reusable async-job resume); the persisted `requestId` field is
   unchanged for wire compatibility.
+
+## [0.9.0] - 2026-07-24
+
+### Added
+- **Brave Provider** as the fifth built-in Provider. New module
+  `src/providers/brave/` with the direct-HTTP Adapter, credentials
+  module, and a shared `BraveTransportDeps` injection seam (fetch +
+  timers). Default endpoint `https://api.search.brave.com`; auth via
+  the `X-Subscription-Token` header; credential
+  `BRAVE_SEARCH_API_KEY` (whitespace-only = absent; missing →
+  `CONFIGURATION_ERROR`, exit 3). The production registry at
+  `src/providers/registry.ts` now includes brave:
+  `[zai, minimax, tavily, exa, brave]`.
+- **Brave capabilities**:
+  - `search` — default → web search (`/res/v1/web/search`);
+    `--topic news` → dedicated news endpoint (`/res/v1/news/search`);
+    `--topic finance` → keyword append (no Brave finance vertical);
+    `--topic general` → web. `--domain` → `site:`, `--recency` →
+    `freshness` (pd/pw/pm/py), `--location` → `country` (US/CN).
+    `--count` is client-side (never sent to Brave). Brave is the
+    **only** Provider that advertises `--type video`
+    (`/res/v1/videos/search`); `--type` is mutually exclusive with
+    `--topic`. `--content-size high` maps to the Brave LLM Context
+    endpoint (`/res/v1/llm/context`, extracted passages joined into
+    summaries); `medium`/default → web (no-op depth). Dispatch
+    precedence: `video > high > news > web`. `--content-size` is a
+    deliberate per-provider overload (Z.AI `content_size`; Tavily
+    `search_depth=advanced`; Brave → LLM Context; MiniMax rejected as
+    `UNSUPPORTED_OPTION`).
+  - `quota` — Brave has no `/usage` endpoint. Quota is read from
+    `X-RateLimit-*` response headers on a 1-query probe and surfaces
+    the monthly rate-limit window (used/limit/remaining/%/reset); the
+    per-second window is dropped. A prominent caveat warns this is a
+    **rate-limit window, not spend or credits consumed** — Brave uses
+    metered billing, so it is not a budget signal. The caveat prints
+    to stderr and appears in the JSON output's `warnings` field.
+  - `diagnostics` — 1-query web-search probe; unconfigured Brave is
+    listed but skipped.
+- Brave does **not** supply Reader, Crawl, Map, Research, or Vision.
+  Selecting Brave for any of those returns `UNSUPPORTED_CAPABILITY`
+  with no fallback.
+- New environment variables: `BRAVE_SEARCH_API_KEY` (required for
+  Brave), `BRAVE_TIMEOUT` (default `30000` ms).
+- Operational note: Brave recently shifted from a pure free tier to
+  $5 monthly metered credits (a saved card is now billable).
+- **`BRAVE_SEARCH_API_KEY` redaction** — added to `CREDENTIAL_KEYS`,
+  the assignment regex, and `configuredSecrets` in `lib/redact.ts`.
+
+### Changed
+- `scoutline --help` advertises `--provider <zai|minimax|tavily|exa|brave>`
+  and lists Brave alongside the shared search Providers.
+- `scoutline search --help` documents `--type video` (Brave-only) and
+  the per-Provider `--content-size` overload including Brave's LLM
+  Context mapping.
+- Provider documentation across `README.md`, `docs/architecture.md`,
+  `docs/configuration.md`, `docs/troubleshooting.md`, `docs/roadmap.md`,
+  and `skills/scoutline/` updated to include Brave.
 
 ## [0.8.0] - 2026-07-24
 

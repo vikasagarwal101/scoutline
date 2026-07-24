@@ -26,7 +26,7 @@ import { executeProviderOperation } from "../lib/execution.js";
 import { ConfigurationError, UnsupportedCapabilityError } from "../lib/errors.js";
 import type { ProviderDescriptor, ProviderId } from "../providers/types.js";
 import { getProviderDescriptor } from "../providers/selection.js";
-import { redactSecrets, configuredSecrets } from "../lib/redact.js";
+import { redactSecrets, configuredSecrets, redactCredentialString } from "../lib/redact.js";
 import { formatQuotaDashboard } from "../lib/tty.js";
 
 // ---------------------------------------------------------------------------
@@ -76,7 +76,7 @@ async function buildDefaultDashboard(deps: QuotaDashboardDependencies): Promise<
   const descriptor = getProviderDescriptor(deps.effectiveProvider, deps.descriptors);
   if (!descriptor.isConfigured(deps.env)) {
     throw new ConfigurationError(
-      `Provider "${deps.effectiveProvider}" is not configured. Set Z_AI_API_KEY or MINIMAX_API_KEY.`,
+      `Provider "${deps.effectiveProvider}" is not configured. Set its API key (Z_AI_API_KEY, MINIMAX_API_KEY, TAVILY_API_KEY, or BRAVE_SEARCH_API_KEY).`,
     );
   }
   const success = await invokeProviderQuota(descriptor, deps.env, deps.sleep, deps.random);
@@ -103,7 +103,7 @@ async function buildAllProvidersDashboard(
   );
   if (configured.length === 0) {
     throw new ConfigurationError(
-      "No provider is configured. Set Z_AI_API_KEY and/or MINIMAX_API_KEY.",
+      "No provider is configured. Set at least one API key (Z_AI_API_KEY, MINIMAX_API_KEY, TAVILY_API_KEY, or BRAVE_SEARCH_API_KEY).",
     );
   }
   const secrets = configuredSecrets(deps.env);
@@ -150,20 +150,57 @@ export interface QuotaOptions {
  * Injectable dependencies for the quota command. `buildDashboard`
  * resolves the effective/all-provider dashboard; the command only wraps
  * it for presentation and exit-code selection.
+ *
+ * `writeStderr` is an OPTIONAL generic stderr sink. When provided, the
+ * command collects every `warnings` entry from successful dashboard
+ * entries and writes each as a prominent notice — provider-neutral
+ * (iterates warnings, never branches on provider name). A Provider that
+ * needs to flag a caveat about its quota numbers (e.g. Brave reports a
+ * rate-limit window, not spend) populates `warnings`; the command
+ * renders it here so the caveat text stays out of the neutral command.
  */
 export interface QuotaCommandDependencies {
   readonly buildDashboard: () => Promise<QuotaDashboard>;
+  readonly writeStderr?: (value: string) => void;
+  /**
+   * Configured credential values used to redact `warnings` text before
+   * it reaches stderr. The `warnings` channel is provider-authored, so a
+   * future Provider could put value-derived text there; running each
+   * warning through `redactCredentialString` keeps the stderr seam under
+   * the same redaction as the dashboard data. Optional — when omitted,
+   * only the key/regex-based redaction applies.
+   */
+  readonly secrets?: string[];
 }
 
 /**
  * Run the quota command. Returns the dashboard as base data with a TTY
  * presentation override. Exit code is 1 when any dashboard entry failed
  * (all-provider mode); otherwise 0.
+ *
+ * Before returning, any `warnings` attached to successful entries are
+ * rendered to `writeStderr` (when provided) as prominent notices. This
+ * is the provider-neutral caveat channel: it does not branch on
+ * provider identity.
  */
 export async function quota(
   deps: QuotaCommandDependencies,
 ): Promise<CommandResult<QuotaDashboard>> {
   const dashboard = await deps.buildDashboard();
+
+  const writeStderr = deps.writeStderr;
+  if (writeStderr) {
+    for (const entry of dashboard.providers) {
+      if (entry.status === "ok" && entry.warnings && entry.warnings.length > 0) {
+        for (const warning of entry.warnings) {
+          // Redact before stderr: warnings are provider-authored and a
+          // future Provider could embed value-derived text here.
+          writeStderr(redactCredentialString(`⚠️  ${entry.provider}: ${warning}\n`, deps.secrets));
+        }
+      }
+    }
+  }
+
   const hasFailure = dashboard.providers.some((p) => p.status === "error");
   return {
     kind: "data",

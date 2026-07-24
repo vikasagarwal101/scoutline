@@ -1,9 +1,10 @@
 ---
 name: scoutline
 description: |
-  Z.AI, MiniMax, Tavily, Exa, and Firecrawl CLI providing:
+  Z.AI, MiniMax, Tavily, Exa, Brave, and Firecrawl CLI providing:
   - Vision: image/video analysis, OCR, UI-to-code, error diagnosis (GLM-4.6V)
-  - Search: real-time web search with domain/recency/topic filtering
+  - Search: real-time web search with domain/recency/topic filtering (and
+    Brave-only `--type video`)
   - Reader: web page to markdown extraction (Z.AI, Tavily, Exa, or Firecrawl)
   - Crawl: multi-page website traversal (Tavily or Firecrawl)
   - Map: URL-set discovery without fetching pages (Tavily or Firecrawl)
@@ -11,20 +12,20 @@ description: |
   - Repo: GitHub code search and reading via ZRead (Z.AI)
   - Tools: MCP tool discovery, schemas, and raw calls (Z.AI)
   - Code: TypeScript tool chaining (Z.AI)
-  - Provider selection: --provider <zai|minimax|tavily|exa|firecrawl> for shared
+  - Provider selection: --provider <zai|minimax|tavily|exa|brave|firecrawl> for shared
     capabilities, repo, read, crawl, map, and research
   Use for visual content analysis, web search, page reading, multi-page
   site traversal, deep research, or GitHub exploration. Requires
   Z_AI_API_KEY (default), MINIMAX_API_KEY (with --provider minimax),
   TAVILY_API_KEY (with --provider tavily for Search/Reader/Crawl/
   Map/Research), EXA_API_KEY (with --provider exa for Search/Reader/
-  Research), or FIRECRAWL_API_KEY (with --provider firecrawl for
-  Search/Reader/Crawl/Map).
+  Research), BRAVE_SEARCH_API_KEY (with --provider brave for Search), or
+  FIRECRAWL_API_KEY (with --provider firecrawl for Search/Reader/Crawl/Map).
 ---
 
 # Scoutline
 
-Access Z.AI, MiniMax, Tavily, and Exa capabilities via `npx scoutline`. The
+Access Z.AI, MiniMax, Tavily, Exa, and Brave capabilities via `npx scoutline`. The
 CLI is self-documenting — use `--help` at any level.
 
 ## Setup
@@ -42,6 +43,9 @@ export TAVILY_API_KEY="your-tavily-key"
 
 # OR Exa (Search, Reader, Research)
 export EXA_API_KEY="your-exa-key"
+
+# OR Brave (Search: web, news, video)
+export BRAVE_SEARCH_API_KEY="your-brave-key"
 ```
 
 Get a Z.AI key at: https://z.ai/manage-apikey/apikey-list
@@ -52,7 +56,7 @@ Get an Exa key at: https://dashboard.exa.ai
 
 Shared commands (`search`, `vision analyze`, `quota`, `doctor`),
 **`repo`**, **`read`**, **`crawl`**, **`map`**, and **`research`**
-accept the global `--provider <zai|minimax|tavily|exa|firecrawl>` flag. Precedence
+accept the global `--provider <zai|minimax|tavily|exa|brave|firecrawl>` flag. Precedence
 is the flag, then the `SCOUTLINE_PROVIDER` environment variable, then
 the default `zai`. Provider selection is never inferred from
 credentials. Unknown values fail fast with `VALIDATION_ERROR`.
@@ -62,10 +66,11 @@ remain Z.AI-only.
 
 Capability coverage at launch:
 
-- `search` — Z.AI, MiniMax, Tavily, Exa (the only search control honored by
-  every Provider is `--topic <general|news|finance>`)
+- `search` — Z.AI, MiniMax, Tavily, Exa, Brave (the only search control honored by
+  every Provider is `--topic <general|news|finance>`; Brave is the only
+  Provider that advertises `--type video`)
 - `vision.interpret-image` — Z.AI, MiniMax
-- `quota`, `diagnostics` — Z.AI, MiniMax, Tavily (Exa has diagnostics but not quota)
+- `quota`, `diagnostics` — Z.AI, MiniMax, Tavily, Brave (Exa has diagnostics but not quota)
 - `read` — Z.AI, Tavily, Exa (Tavily and Exa reject Z.AI-only options:
   `--with-links`, `--no-gfm`, `--keep-img-data-url`,
   `--with-images-summary`)
@@ -80,30 +85,31 @@ MiniMax does not currently advertise the `repository-exploration` or
 creation, credential resolution for use, cache identity, or transport
 construction, with no Z.AI fallback. Z.AI and MiniMax do not advertise
 `crawl`, `map`, or `research` — selecting either for those commands
-returns `UNSUPPORTED_CAPABILITY` with no Tavily fallback.
+returns `UNSUPPORTED_CAPABILITY` with no Tavily fallback. Brave does
+not supply Reader, Crawl, Map, Research, or Vision.
 
 ## Capability Matrix
 
-| Capability | Z.AI | MiniMax | Tavily | Exa | Firecrawl | Command |
-| --- | --- | --- | --- | --- | --- | --- |
-| Search | Yes | Yes (no domain/recency/content-size/location) | Yes (no location) | Yes (no location) | Yes (no location; `--content-size high` = markdown, +1 credit/result) | `scoutline search` |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Command |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Search | Yes | Yes (no domain/recency/content-size/location) | Yes (no location) | Yes (no location) | Yes (web/news/video; `--content-size high` → LLM Context) | Yes (no location; `--content-size high` = markdown, +1 credit/result) | `scoutline search` |
 | General single-image interpretation | Yes | Yes (JPG/JPEG/PNG/WebP ≤50 MiB) | No | No | No | `scoutline vision analyze` |
 | Specialized Vision (UI-to-code, OCR, error diagnosis, diagram) | Yes | Available (live-attested; conformance-gated) | No | No | No | `scoutline vision ui-to-code`, `vision extract-text`, `vision diagnose-error`, `vision diagram` |
 | Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | No | No | No | `scoutline vision chart` |
 | Two-image diff, video | Yes | No | No | No | No | `scoutline vision diff`, `vision video` |
-| Quota (normalized) | Yes | Yes | Yes | **No** (deferred) | Yes (credits) | `scoutline quota [--all-providers]` |
-| Diagnostics | Yes | Yes | Yes | Yes | Yes (single-scrape probe) | `scoutline doctor [--no-tools]` |
-| Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes (rejects Z.AI-only options) | Yes (rejects Z.AI-only options) | Yes (returns page titles) | `scoutline read` |
-| Repository exploration (search/read/tree) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | `scoutline repo ...` |
-| Crawl | **No** | **No** | Yes | **No** | Yes (async; resumable after Ctrl-C) | `scoutline crawl` |
-| Map | **No** | **No** | Yes | **No** | Yes | `scoutline map` |
-| Research | **No** | **No** | Yes | Yes | **No** (`/deep-research` deprecated) | `scoutline research` |
-| Raw tools | Yes | No | No | No | No | `scoutline tools`, `tool`, `call` |
-| Code Mode | Yes | No | No | No | No | `scoutline code ...` |
+| Quota (normalized) | Yes | Yes | Yes | **No** (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | `scoutline quota [--all-providers]` |
+| Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes (single-scrape probe) | `scoutline doctor [--no-tools]` |
+| Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes (rejects Z.AI-only options) | Yes (rejects Z.AI-only options) | **No** (UNSUPPORTED_CAPABILITY) | Yes (returns page titles) | `scoutline read` |
+| Repository exploration (search/read/tree) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | `scoutline repo ...` |
+| Crawl | **No** | **No** | Yes | **No** | **No** | Yes (async; resumable after Ctrl-C) | `scoutline crawl` |
+| Map | **No** | **No** | Yes | **No** | **No** | Yes | `scoutline map` |
+| Research (4-250 credits) | **No** | **No** | Yes | Yes | **No** | **No** (`/deep-research` deprecated) | `scoutline research` |
+| Raw tools | Yes | No | No | No | No | No | `scoutline tools`, `tool`, `call` |
+| Code Mode | Yes | No | No | No | No | No | `scoutline code ...` |
 
 Vision results are never cached. Z.AI image limits are JPG/JPEG/PNG ≤5 MiB.
 Search result count is applied locally after normalization and is never sent
-to either Provider.
+to the active Provider.
 
 ## Commands
 
@@ -157,6 +163,13 @@ npx scoutline --provider exa search "latest AI research" --topic news
 npx scoutline --provider exa read https://example.com/
 npx scoutline --provider exa research "Compare Rust async runtimes"
 npx scoutline doctor --provider exa
+
+# Brave (Search: web, news, video)
+npx scoutline --provider brave search "AI policy news" --topic news
+npx scoutline --provider brave search "rust async" --type video
+npx scoutline --provider brave search "large context topic" --content-size high
+npx scoutline --provider brave quota
+npx scoutline doctor --provider brave
 
 # All-Provider quota
 npx scoutline quota --all-providers

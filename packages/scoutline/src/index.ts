@@ -80,13 +80,14 @@ Commands:
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
 
 Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER, then zai):
-  --provider <zai|minimax|tavily|firecrawl>   Select the active Provider for shared capabilities
+  --provider <zai|minimax|tavily|exa|firecrawl>   Select the active Provider for shared capabilities
   SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
 
 Shared capabilities accept --provider. The 'repo', 'read', 'crawl', 'map',
 and 'research' commands participate in Provider selection: Z.AI
 advertises and supplies repository-exploration and reader; Tavily
-advertises and supplies reader plus crawl, map, and research; MiniMax
+advertises and supplies reader plus crawl, map, and research; Exa
+advertises and supplies search, reader, and research; MiniMax
 advertises and supplies none of those Provider-only Capabilities. A
 non-supplier returns UNSUPPORTED_CAPABILITY with no fallback. Z.AI-only
 commands (tools, tool, call, code) carry the flag but ignore it.

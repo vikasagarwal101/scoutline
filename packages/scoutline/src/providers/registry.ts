@@ -18,6 +18,7 @@
 import { createZaiDescriptor } from "./zai/adapter.js";
 import { createMiniMaxDescriptor } from "./minimax/adapter.js";
 import { createTavilyDescriptor } from "./tavily/adapter.js";
+import { createExaDescriptor } from "./exa/adapter.js";
 import { createFirecrawlDescriptor } from "./firecrawl/adapter.js";
 import type { ProviderDescriptor, ProviderId } from "./types.js";
 import {
@@ -35,6 +36,7 @@ export const BUILT_IN_PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [
   createZaiDescriptor(),
   createMiniMaxDescriptor(),
   createTavilyDescriptor(),
+  createExaDescriptor(),
   createFirecrawlDescriptor(),
 ];
 

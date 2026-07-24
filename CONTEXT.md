@@ -41,8 +41,18 @@ operational Capabilities. Tavily is the only Provider that advertises
 `research`.
 _Avoid_: Tavily API, Tavily MCP
 
-**Firecrawl**:
+**Exa**:
 The fourth Provider. Its confirmed Capabilities are Search, Reader
+(via the Exa `/contents` endpoint with per-URL status inspection),
+and Research (via the Exa Agent API with `Exa-Beta` header and
+state-file resume). The base release also normalizes its diagnostic
+probe as an operational Capability. Quota is deferred pending
+investigation of the team-management API (separate service key and
+dollar-unit modeling). Exa advertises neither Crawl nor Map.
+_Avoid_: Exa API, Exa AI
+
+**Firecrawl**:
+The fifth Provider. Its confirmed Capabilities are Search, Reader
 (via the /v2/scrape endpoint — returns genuine page titles, unlike
 Tavily's null), Crawl (asynchronous multi-page traversal via /v2/crawl
 with a create→poll→resume lifecycle), and Map (URL-set discovery via
@@ -64,17 +74,17 @@ parity remains unresolved.
 
 **Crawl, Map**:
 These two Capabilities are multi-provider (Tavily + Firecrawl). They
-are not supplied by Z.AI or MiniMax Token Plan, and there is no
-Provider fallback. Selecting Z.AI or MiniMax for `scoutline crawl` or
+are not supplied by Z.AI, MiniMax Token Plan, or Exa, and there is no
+Provider fallback. Selecting any of those for `scoutline crawl` or
 `scoutline map` returns `UNSUPPORTED_CAPABILITY` with no fallback.
 Firecrawl's crawl is asynchronous (credit-based, resumable after
 Ctrl-C); Tavily's is synchronous.
 
 **Research**:
-The `research` Capability is Tavily-only. Firecrawl's `/deep-research`
-endpoint is deprecated, so `--provider firecrawl research` returns
-`UNSUPPORTED_CAPABILITY`. Selecting Z.AI or MiniMax for research
-likewise fails. There is no Provider fallback.
+The `research` Capability is shared between Tavily and Exa. Firecrawl's
+`/deep-research` endpoint is deprecated, so `--provider firecrawl
+research` returns `UNSUPPORTED_CAPABILITY`. Z.AI and MiniMax likewise do
+not advertise it. There is no Provider fallback.
 
 The cross-Provider search control `--topic <general|news|finance>` is NOT
 a Crawl/Map/Research control; those Capabilities do not currently accept
@@ -90,10 +100,11 @@ provider tools remain distinct from Scoutline's Normal commands."
 
 Developer: "Can I run a deep-research task with the Z.AI Provider?"
 
-Domain expert: "No. Tavily is the only Provider that currently advertises the
-`research` Capability. Selecting Z.AI or MiniMax for `scoutline research`
-returns `UNSUPPORTED_CAPABILITY` with no fallback. The same is true for
-`scoutline crawl` and `scoutline map`."
+Domain expert: "No. Tavily and Exa are the Providers that currently
+advertise the `research` Capability. Selecting Z.AI or MiniMax for
+`scoutline research` returns `UNSUPPORTED_CAPABILITY` with no fallback.
+The same is true for `scoutline crawl` and `scoutline map` — those two
+are Tavily-only (Exa does not advertise them either)."
 
 Developer: "Is `--topic` available on every Provider?"
 
@@ -101,4 +112,4 @@ Domain expert: "Yes. `--topic <general|news|finance>` is accepted by every
 Provider, but its implementation differs: Tavily passes the topic natively to
 its API; Z.AI and MiniMax lack a native topic parameter, so the Adapter
 appends a small keyword to the query string inside `invoke()` (see
-`lib/search-topic.ts`)."
+`lib/search-topic.ts`); Exa maps it to a `category` parameter."

@@ -45,6 +45,8 @@ import {
 } from "../dist/capabilities/diagnostics.js";
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
+import { createTavilyDescriptor } from "../dist/providers/tavily/adapter.js";
+import { createExaDescriptor } from "../dist/providers/exa/adapter.js";
 import { redactSecrets, configuredSecrets } from "../dist/lib/redact.js";
 import { NetworkError, AuthError, ScoutlineError } from "../dist/lib/errors.js";
 
@@ -507,7 +509,7 @@ describe("doctor diagnostics — help text (P4-04, P6-07, Reader Migration 04)",
       "help must state Z.AI advertises repository-exploration at the descriptor level",
     );
     assert.ok(
-      /MiniMax advertises and supplies neither/.test(DOCTOR_HELP),
+      /MiniMax.*advertise and supply neither/.test(DOCTOR_HELP),
       "help must state MiniMax advertises and supplies neither repository-exploration",
     );
 
@@ -750,6 +752,28 @@ describe("doctor diagnostics — derived inventory (Doctor Schema v2)", () => {
     const out = deriveCapabilityMatrix([zai, minimax]);
     const repo = out.find((entry) => entry.capability === "repository-exploration");
     assert.deepStrictEqual([...repo.providers], ["zai"]);
+  });
+
+  it("real Exa descriptor appears in the correct matrix rows (search/reader/research/diagnostics)", () => {
+    const allBuiltIns = [
+      createZaiDescriptor(),
+      createMiniMaxDescriptor(),
+      createTavilyDescriptor(),
+      createExaDescriptor(),
+    ];
+    const matrix = deriveCapabilityMatrix(allBuiltIns);
+    const providersFor = (cap) => [...(matrix.find((e) => e.capability === cap)?.providers ?? [])];
+    // Exa supplies these.
+    assert.ok(providersFor("search").includes("exa"), "exa in search");
+    assert.ok(providersFor("reader").includes("exa"), "exa in reader");
+    assert.ok(providersFor("research").includes("exa"), "exa in research");
+    assert.ok(providersFor("diagnostics").includes("exa"), "exa in diagnostics");
+    // Exa does NOT supply these.
+    assert.ok(!providersFor("quota").includes("exa"), "exa NOT in quota");
+    assert.ok(!providersFor("crawl").includes("exa"), "exa NOT in crawl");
+    assert.ok(!providersFor("map").includes("exa"), "exa NOT in map");
+    // Research is shared (Tavily + Exa), not Tavily-only.
+    assert.deepStrictEqual(providersFor("research"), ["tavily", "exa"]);
   });
 
   it("reader lists only Z.AI while MiniMax lacks it (Reader Migration 04)", () => {

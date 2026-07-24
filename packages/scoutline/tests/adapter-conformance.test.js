@@ -19,6 +19,8 @@ import { fileURLToPath } from "node:url";
 
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
+import { createTavilyDescriptor } from "../dist/providers/tavily/adapter.js";
+import { createExaDescriptor } from "../dist/providers/exa/adapter.js";
 import {
   BUILT_IN_PROVIDER_DESCRIPTORS,
   getProviderDescriptor,
@@ -253,10 +255,10 @@ describe("Search Adapter conformance — shared normalized output", () => {
 // ---------------------------------------------------------------------------
 
 describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
-  it("contains exactly [zai, minimax, tavily, firecrawl] in that order", () => {
+  it("contains exactly [zai, minimax, tavily, exa, firecrawl] in that order", () => {
     assert.deepStrictEqual(
       BUILT_IN_PROVIDER_DESCRIPTORS.map((d) => d.id),
-      ["zai", "minimax", "tavily", "firecrawl"],
+      ["zai", "minimax", "tavily", "exa", "firecrawl"],
     );
   });
 
@@ -269,9 +271,9 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     for (const d of BUILT_IN_PROVIDER_DESCRIPTORS) {
       const caps = d.capabilities();
       assert.ok(caps.has("search"), `${d.id} should advertise search`);
-      // P4-02 wires quota metadata; P4-04 wires diagnostics.
-      assert.ok(caps.has("quota"));
-      assert.ok(caps.has("diagnostics"));
+      assert.ok(caps.has("diagnostics"), `${d.id} should advertise diagnostics`);
+      // Quota is provider-specific: zai, minimax, tavily advertise it;
+      // exa does not (EXA-T06 deferred).
     }
     const zai = getProviderDescriptor("zai");
     assert.strictEqual(zai.isConfigured({ Z_AI_API_KEY: "k" }), true);
@@ -282,6 +284,9 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     const tv = getProviderDescriptor("tavily");
     assert.strictEqual(tv.isConfigured({ TAVILY_API_KEY: "k" }), true);
     assert.strictEqual(tv.isConfigured({}), false);
+    const exa = getProviderDescriptor("exa");
+    assert.strictEqual(exa.isConfigured({ EXA_API_KEY: "k" }), true);
+    assert.strictEqual(exa.isConfigured({}), false);
     const fc = getProviderDescriptor("firecrawl");
     assert.strictEqual(fc.isConfigured({ FIRECRAWL_API_KEY: "fc-test" }), true);
     assert.strictEqual(fc.isConfigured({}), false);
@@ -316,6 +321,14 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     assert.strictEqual(typeof adapter.crawl, "object");
   });
 
+  it("exa create() returns an adapter with search and diagnostics", () => {
+    const exa = getProviderDescriptor("exa");
+    const adapter = exa.create({ env: {} });
+    assert.strictEqual(adapter.id, "exa");
+    assert.strictEqual(typeof adapter.search, "object");
+    assert.strictEqual(typeof adapter.diagnostics, "object");
+  });
+
   it("getConfiguredProviderDescriptors filters by configured credentials", () => {
     const onlyZai = getConfiguredProviderDescriptors({ Z_AI_API_KEY: "k" });
     assert.deepStrictEqual(
@@ -335,6 +348,12 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
       ["tavily"],
     );
 
+    const onlyExa = getConfiguredProviderDescriptors({ EXA_API_KEY: "k" });
+    assert.deepStrictEqual(
+      onlyExa.map((d) => d.id),
+      ["exa"],
+    );
+
     const both = getConfiguredProviderDescriptors({
       Z_AI_API_KEY: "k",
       MINIMAX_API_KEY: "k",
@@ -348,10 +367,11 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
       Z_AI_API_KEY: "k",
       MINIMAX_API_KEY: "k",
       TAVILY_API_KEY: "k",
+      EXA_API_KEY: "k",
     });
     assert.deepStrictEqual(
       all.map((d) => d.id),
-      ["zai", "minimax", "tavily"],
+      ["zai", "minimax", "tavily", "exa"],
     );
 
     const neither = getConfiguredProviderDescriptors({});
@@ -499,7 +519,12 @@ describe("Descriptor ↔ Adapter repository-exploration agreement (P6-06)", () =
   });
 
   it("repository-exploration is advertised IFF the Adapter supplies repository, for every built-in", () => {
-    const builtIns = [createZaiDescriptor(), createMiniMaxDescriptor()];
+    const builtIns = [
+      createZaiDescriptor(),
+      createMiniMaxDescriptor(),
+      createTavilyDescriptor(),
+      createExaDescriptor(),
+    ];
     for (const descriptor of builtIns) {
       const advertised = descriptor.capabilities().has("repository-exploration");
       const adapter = descriptor.create({ env: {} });
@@ -513,7 +538,12 @@ describe("Descriptor ↔ Adapter repository-exploration agreement (P6-06)", () =
   });
 
   it("reader is advertised IFF the Adapter supplies reader, for every built-in (Reader Migration 04)", () => {
-    const builtIns = [createZaiDescriptor(), createMiniMaxDescriptor()];
+    const builtIns = [
+      createZaiDescriptor(),
+      createMiniMaxDescriptor(),
+      createTavilyDescriptor(),
+      createExaDescriptor(),
+    ];
     for (const descriptor of builtIns) {
       const advertised = descriptor.capabilities().has("reader");
       const adapter = descriptor.create({ env: {} });

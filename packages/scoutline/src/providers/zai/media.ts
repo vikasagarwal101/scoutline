@@ -168,6 +168,14 @@ export function resolveVideoSource(source: string): string {
 const ZAI_FETCH_TIMEOUT_MS = 30_000;
 
 /**
+ * User-Agent sent on fallback URL fetches. Many CDNs and image hosts
+ * (Cloudflare-fronted services, GitHub raw, etc.) reject requests that
+ * carry no User-Agent with a 400/403. The string is identifiable but
+ * browser-compatible so hosts that gate on a Mozilla prefix still serve.
+ */
+const ZAI_FETCH_USER_AGENT = `scoutline (https://github.com/vikasagarwal101/scoutline; +node ${process.version})`;
+
+/**
  * Map a fetch `Content-Type` header value to a Z.AI media extension.
  * Returns `null` for an unknown/missing type so the caller can fall back
  * to a URL-derived extension or reject.
@@ -210,7 +218,11 @@ async function fetchUrlToTempPath(
   const timer = setTimeout(() => controller.abort(), ZAI_FETCH_TIMEOUT_MS);
   let response: Response;
   try {
-    response = await fetch(url, { signal: controller.signal, redirect: "follow" });
+    response = await fetch(url, {
+      signal: controller.signal,
+      redirect: "follow",
+      headers: { "User-Agent": ZAI_FETCH_USER_AGENT },
+    });
   } catch (error) {
     clearTimeout(timer);
     if (error instanceof Error && error.name === "AbortError") {

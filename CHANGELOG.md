@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-07-25
+
 ### Fixed
 - **`scoutline repo tree` / `scoutline repo read` returned `API_ERROR` 502
   against the current Z.AI ZRead output.** ZRead now wraps the

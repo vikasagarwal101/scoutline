@@ -12,13 +12,14 @@
  *      construction). If the descriptor does not advertise the
  *      Capability, throws `UnsupportedCapabilityError(provider, ...)`
  *      BEFORE `descriptor.create()` is called. No credentials, no media,
- *      no transport, no cache, no fallback Adapter are observed.
+ *      no transport, no cache are observed.
  *   3. Calls `descriptor.create(context)` and defensively double-checks
  *      the Adapter's `supports(operation)`. If the Adapter says no,
  *      throws the same error before `invoke` runs.
  *   4. Calls `adapter.vision.invoke(request)` and returns the normalized
- *      text. Vision never uses the response cache and never falls back
- *      to another Provider.
+ *      text. Vision never uses the response cache. Cross-Provider
+ *      fallback is owned by the executor (executeWithFallback), not by
+ *      this module.
  *
  * This module imports no Provider transport and no Provider Adapter.
  * The error class import below is from `lib/errors.ts` (a shared error
@@ -244,7 +245,8 @@ export async function invokeVision(
     throw new UnsupportedCapabilityError(descriptor.id, capabilityId);
   }
 
-  // Step 4: invoke. No cache lookup, no fallback Adapter. Retries live
-  // above this call in `executeProviderOperation("vision", ...)`.
+  // Step 4: invoke. No cache lookup. Retries live above this call in
+  // `executeProviderOperation("vision", ...)`. Cross-Provider fallback
+  // is owned by the executor (executeWithFallback), not by this module.
   return vision.invoke(request);
 }

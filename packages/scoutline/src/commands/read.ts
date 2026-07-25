@@ -316,9 +316,15 @@ then zai):
     the Tavily Adapter. Some Z.AI-only options
     (--with-links, --no-gfm, --keep-img-data-url, --with-images-summary)
     are rejected with UNSUPPORTED_OPTION when tavily is selected.
-  - MiniMax does NOT advertise reader. Selecting minimax (explicitly
-    or via SCOUTLINE_PROVIDER) returns UNSUPPORTED_CAPABILITY with
-    no fallback to Z.AI.
+  - Exa and Firecrawl also advertise the reader Capability. Selecting
+    exa or firecrawl routes Read through their Adapters; some Z.AI-only
+    options are rejected with UNSUPPORTED_OPTION.
+  - MiniMax and Brave do NOT advertise reader. By default (0.11.0+)
+    Provider fallback emits a stderr notice and silently reroutes to
+    the next eligible configured supplier (zai, tavily, exa, or
+    firecrawl). Under --no-fallback (or SCOUTLINE_NO_FALLBACK=1) the
+    preflight surfaces UNSUPPORTED_CAPABILITY for the selected
+    non-supplier.
 
 Options:
   --format <f>    Output format: markdown (default), text

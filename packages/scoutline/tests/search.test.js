@@ -1079,10 +1079,15 @@ describe("global --provider parsing and routing", () => {
     assert.ok(!stderr[0].includes("\n"), `json envelope should be single-line: ${stderr[0]}`);
   });
 
-  it("an unconfigured effective provider fails with CONFIGURATION_ERROR exit 3 (Fixup A — B5)", async () => {
-    // Selection MUST return the default zai even when zai is unconfigured
-    // (FR-003). The dispatch layer then reports the missing credential as
-    // a configuration failure (exit 3), not a validation/registry error.
+  it("an unconfigured effective provider auto-reroutes to the next configured candidate (Provider-fallback Ticket 02)", async () => {
+    // Provider-fallback Ticket 02: when the effective provider (zai,
+    // the default) is unconfigured, the executor emits a
+    // skip-notice on stderr and reroutes to the next eligible
+    // candidate (minimax, configured here). The command exits 0.
+    // FR-003 still holds (selection returns the default zai
+    // regardless of credentials), but FR-024's "missing credential
+    // surfaces as ConfigurationError exit 3" only holds under the
+    // kill-switch (see the counter-test below).
     function makeConfiguredDescriptor(id) {
       const invokes = [];
       return {
@@ -1136,10 +1141,77 @@ describe("global --provider parsing and routing", () => {
       searchSleep: async () => {},
       searchRandom: () => 0.5,
     });
-    assert.strictEqual(status, 3, "missing credentials must exit 3");
+    assert.strictEqual(status, 0, "fallback reroute succeeds via minimax");
+    assert.ok(
+      stderr.some((l) => l.includes("zai is not configured")),
+      `expected zai unconfigured skip notice, got: ${JSON.stringify(stderr)}`,
+    );
+    assert.strictEqual(zai.invokes.length, 0, "zai must not be invoked when unconfigured");
+    assert.strictEqual(minimax.invokes.length, 1, "minimax serves the request via fallback");
+  });
+
+  it("an unconfigured effective provider with --no-fallback restores strict exit 3 (Fixup A — B5 counter-test)", async () => {
+    // Provider-fallback Ticket 02 — kill-switch counter-test. Under
+    // --no-fallback the plan is `[effective]` only and the SAME
+    // preflight runs on it, so an unconfigured effective surfaces
+    // ConfigurationError (exit 3) with zero adapter work — the
+    // exact 0.10.x behaviour.
+    function makeConfiguredDescriptor(id) {
+      const invokes = [];
+      return {
+        descriptor: {
+          id,
+          isConfigured: (env) =>
+            id === "zai" ? Boolean(env.Z_AI_API_KEY) : Boolean(env.MINIMAX_API_KEY),
+          capabilities: () => new Set(["search"]),
+          create: () => ({
+            id,
+            search: {
+              validate() {},
+              cacheIdentity(r) {
+                return {
+                  provider: id,
+                  capability: "search",
+                  credentialFingerprint: "fp-" + id,
+                  request: r,
+                  legacyCandidates: [],
+                };
+              },
+              async invoke(r) {
+                invokes.push(r);
+                return [];
+              },
+            },
+          }),
+        },
+        invokes,
+      };
+    }
+    const zai = makeConfiguredDescriptor("zai");
+    const minimax = makeConfiguredDescriptor("minimax");
+    const store = new Map();
+    const searchCache = {
+      async get(key) {
+        return store.has(key) ? store.get(key) : null;
+      },
+      async set(key, value) {
+        store.set(key, value);
+      },
+    };
+    const { adapter, stderr } = createTestAdapter();
+    const status = await main(["--no-fallback", "search", "foo"], {
+      invocation: adapter,
+      env: { MINIMAX_API_KEY: "k" },
+      providerDescriptors: [zai.descriptor, minimax.descriptor],
+      searchCache,
+      searchSleep: async () => {},
+      searchRandom: () => 0.5,
+    });
+    assert.strictEqual(status, 3, "missing credentials must exit 3 under --no-fallback");
     const err = JSON.parse(stderr[0]);
     assert.strictEqual(err.code, "CONFIGURATION_ERROR");
     assert.strictEqual(zai.invokes.length, 0, "no invoke when unconfigured");
+    assert.strictEqual(minimax.invokes.length, 0, "no fallback adapter work under --no-fallback");
   });
 });
 

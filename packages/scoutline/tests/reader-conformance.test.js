@@ -1946,7 +1946,72 @@ describe("05 real dispatcher selection-order (main → read)", () => {
     assert.strictEqual(JSON.parse(stdout[0]).title, "Example Domain");
   });
 
-  it("unsupported explicit MiniMax returns UNSUPPORTED_CAPABILITY with zero selected-Provider work", async () => {
+  it("unsupported explicit MiniMax --no-fallback returns UNSUPPORTED_CAPABILITY with zero selected-Provider work", async () => {
+    // Provider-fallback Ticket 02: under the kill-switch
+    // (--no-fallback) the executor narrows the plan to `[effective]`
+    // and the SAME preflight runs on it, so an incapable effective
+    // surfaces `UNSUPPORTED_CAPABILITY` with zero adapter work. The
+    // strict-mode invariant tested here is preserved end-to-end.
+    const { descriptor: zai, factory: zaiFactory } = makeZaiDescriptorWithFake({
+      raw: validRawResponse(),
+    });
+    const minimax = createMiniMaxDescriptor();
+    const cache = makeRecordingCacheMain();
+    const { adapter, stderr } = makeRecordingAdapter();
+    const status = await main(
+      ["--no-fallback", "--provider", "minimax", "read", "https://example.com/"],
+      {
+        env: { Z_AI_API_KEY: TEST_API_KEY, MINIMAX_API_KEY: "mm-key" },
+        providerDescriptors: [zai, minimax],
+        readerCache: cache,
+        searchCache: cache,
+        repositoryCache: cache,
+        invocation: adapter,
+      },
+    );
+    assert.strictEqual(status, 1);
+    assert.strictEqual(stderr.length, 1, "no executor notices under --no-fallback");
+    assert.strictEqual(JSON.parse(stderr[0]).code, "UNSUPPORTED_CAPABILITY");
+    // Zero cache reads/writes.
+    assert.strictEqual(cache.gets.length, 0);
+    assert.strictEqual(cache.sets.length, 0);
+    // Zero Z.AI fallback transports.
+    assert.strictEqual(zaiFactory.created.length, 0);
+  });
+
+  it("unsupported environment MiniMax --no-fallback returns UNSUPPORTED_CAPABILITY with zero selected-Provider work", async () => {
+    const { descriptor: zai, factory: zaiFactory } = makeZaiDescriptorWithFake({
+      raw: validRawResponse(),
+    });
+    const minimax = createMiniMaxDescriptor();
+    const cache = makeRecordingCacheMain();
+    const { adapter, stderr } = makeRecordingAdapter();
+    const status = await main(["--no-fallback", "read", "https://example.com/"], {
+      env: {
+        Z_AI_API_KEY: TEST_API_KEY,
+        MINIMAX_API_KEY: "mm-key",
+        SCOUTLINE_PROVIDER: "minimax",
+      },
+      providerDescriptors: [zai, minimax],
+      readerCache: cache,
+      searchCache: cache,
+      repositoryCache: cache,
+      invocation: adapter,
+    });
+    assert.strictEqual(status, 1);
+    assert.strictEqual(stderr.length, 1, "no executor notices under --no-fallback");
+    assert.strictEqual(JSON.parse(stderr[0]).code, "UNSUPPORTED_CAPABILITY");
+    assert.strictEqual(cache.gets.length, 0);
+    assert.strictEqual(cache.sets.length, 0);
+    assert.strictEqual(zaiFactory.created.length, 0);
+  });
+
+  it("unsupported explicit MiniMax auto-reroutes to ZAI under fallback (Ticket 02 flip)", async () => {
+    // Provider-fallback Ticket 02: the headline contract change.
+    // `--provider minimax read` is now served by Z.AI (the capable
+    // configured Provider) with a skip-notice on stderr; the
+    // command exits 0. The `--no-fallback` variant above locks the
+    // strict behaviour for cost-controlled workflows.
     const { descriptor: zai, factory: zaiFactory } = makeZaiDescriptorWithFake({
       raw: validRawResponse(),
     });
@@ -1961,46 +2026,24 @@ describe("05 real dispatcher selection-order (main → read)", () => {
       repositoryCache: cache,
       invocation: adapter,
     });
-    assert.strictEqual(status, 1);
-    assert.strictEqual(JSON.parse(stderr[0]).code, "UNSUPPORTED_CAPABILITY");
-    // Zero cache reads/writes.
-    assert.strictEqual(cache.gets.length, 0);
-    assert.strictEqual(cache.sets.length, 0);
-    // Zero Z.AI fallback transports.
-    assert.strictEqual(zaiFactory.created.length, 0);
+    assert.strictEqual(status, 0);
+    assert.ok(
+      stderr.some((l) => l.includes("minimax does not support 'reader'")),
+      `expected minimax skip notice, got: ${JSON.stringify(stderr)}`,
+    );
+    // Z.A.I's real client factory was actually invoked (it is
+    // a no-op preflight on this descriptor and a real attempt in
+    // the executor's success branch).
+    assert.ok(zaiFactory.created.length >= 1, "zai client created at least once for the attempt");
   });
 
-  it("unsupported environment MiniMax returns UNSUPPORTED_CAPABILITY with zero selected-Provider work", async () => {
-    const { descriptor: zai, factory: zaiFactory } = makeZaiDescriptorWithFake({
-      raw: validRawResponse(),
-    });
-    const minimax = createMiniMaxDescriptor();
-    const cache = makeRecordingCacheMain();
-    const { adapter, stderr } = makeRecordingAdapter();
-    const status = await main(["read", "https://example.com/"], {
-      env: {
-        Z_AI_API_KEY: TEST_API_KEY,
-        MINIMAX_API_KEY: "mm-key",
-        SCOUTLINE_PROVIDER: "minimax",
-      },
-      providerDescriptors: [zai, minimax],
-      readerCache: cache,
-      searchCache: cache,
-      repositoryCache: cache,
-      invocation: adapter,
-    });
-    assert.strictEqual(status, 1);
-    assert.strictEqual(JSON.parse(stderr[0]).code, "UNSUPPORTED_CAPABILITY");
-    assert.strictEqual(cache.gets.length, 0);
-    assert.strictEqual(cache.sets.length, 0);
-    assert.strictEqual(zaiFactory.created.length, 0);
-  });
-
-  it("descriptor advertises reader but Adapter omits reader → fail closed", async () => {
+  it("descriptor advertises reader but Adapter omits reader --no-fallback → fail closed", async () => {
     // Production path: createZaiDescriptor supplies the reader handle.
     // For this test we build a Z.AI-shaped descriptor that advertises
     // the capability but omits the handle, then assert main() returns
-    // UNSUPPORTED_CAPABILITY.
+    // UNSUPPORTED_CAPABILITY under the kill-switch (Ticket 02
+    // counter-test for the executor's adapter-handle agreement
+    // check).
     const descriptor = {
       id: "zai",
       isConfigured: () => true,
@@ -2010,7 +2053,7 @@ describe("05 real dispatcher selection-order (main → read)", () => {
     const minimax = createMiniMaxDescriptor();
     const cache = makeRecordingCacheMain();
     const { adapter, stderr } = makeRecordingAdapter();
-    const status = await main(["read", "https://example.com/"], {
+    const status = await main(["--no-fallback", "read", "https://example.com/"], {
       env: { Z_AI_API_KEY: TEST_API_KEY },
       providerDescriptors: [descriptor, minimax],
       readerCache: cache,
@@ -2019,6 +2062,7 @@ describe("05 real dispatcher selection-order (main → read)", () => {
       invocation: adapter,
     });
     assert.strictEqual(status, 1);
+    assert.strictEqual(stderr.length, 1, "no executor notices under --no-fallback");
     assert.strictEqual(JSON.parse(stderr[0]).code, "UNSUPPORTED_CAPABILITY");
   });
 
@@ -2130,7 +2174,18 @@ describe("05 Z.AI malformed WebReader response remains malformed through main()"
       mode: "data",
     });
     assert.strictEqual(result.status, 1);
-    assert.strictEqual(JSON.parse(result.stderr[0]).code, "API_ERROR");
+    // Review Fix 5: stderr carries the terminal exhaustion notice
+    // BEFORE the JSON envelope. Find the JSON line by shape rather
+    // than position so the test stays robust to notice ordering.
+    const errLine = result.stderr.find((l) => l.startsWith("{"));
+    assert.ok(errLine, `expected a JSON error envelope in stderr, got: ${JSON.stringify(result.stderr)}`);
+    assert.strictEqual(JSON.parse(errLine).code, "API_ERROR");
+    // Review Fix 5: a terminal exhaustion notice is also emitted
+    // before the JSON envelope.
+    assert.ok(
+      result.stderr.some((l) => l.includes("no further candidates")),
+      `expected terminal exhaustion notice, got: ${JSON.stringify(result.stderr)}`,
+    );
     // Retryable 502 → exactly one retry, exactly one injected sleep
     // call. No production wall-clock backoff or jitter is consulted
     // because the harness injects deterministic sleep/random.
@@ -2154,7 +2209,13 @@ describe("05 Z.AI malformed WebReader response remains malformed through main()"
       mode: "data",
     });
     assert.strictEqual(result.status, 1);
-    assert.strictEqual(JSON.parse(result.stderr[0]).code, "API_ERROR");
+    const errLine = result.stderr.find((l) => l.startsWith("{"));
+    assert.ok(errLine, `expected a JSON error envelope in stderr, got: ${JSON.stringify(result.stderr)}`);
+    assert.strictEqual(JSON.parse(errLine).code, "API_ERROR");
+    assert.ok(
+      result.stderr.some((l) => l.includes("no further candidates")),
+      `expected terminal exhaustion notice, got: ${JSON.stringify(result.stderr)}`,
+    );
     assert.strictEqual(result.sleepCalls.length, 1);
     assert.strictEqual(result.sleepCalls[0], 500);
   });

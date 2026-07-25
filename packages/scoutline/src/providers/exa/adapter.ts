@@ -388,9 +388,16 @@ function createExaSearchCapability(options: ExaSearchCapabilityOptions): SearchC
         );
       }
       // Exa supports domain, recency, contentSize, and topic natively.
-      // location is Z.AI-specific and rejected before any transport call.
+      // location is Z.AI-specific and rejected before any transport
+      // call. type is Brave-only (routes to its video endpoint); every
+      // other Provider rejects it before any transport call so the
+      // option-level fallback contract can continue past Exa to the
+      // capable provider (Review Fix 2).
       if (request.controls?.location !== undefined) {
         throw new UnsupportedOptionError("exa", "search", "location");
+      }
+      if (request.controls?.type !== undefined) {
+        throw new UnsupportedOptionError("exa", "search", "type");
       }
     },
 
@@ -1095,5 +1102,7 @@ export function createExaDescriptor(dependencies?: ExaAdapterDependencies): Prov
       });
       return { id: "exa", search, reader, research, diagnostics };
     },
+    // Provider-fallback Ticket 02 — see ProviderDescriptor.credentialEnvVars.
+    credentialEnvVars: ["EXA_API_KEY"],
   };
 }

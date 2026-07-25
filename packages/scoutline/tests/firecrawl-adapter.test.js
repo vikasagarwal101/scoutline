@@ -87,9 +87,15 @@ describe("Firecrawl Search Adapter", () => {
 
   it("rejects --topic finance (no native Firecrawl source)", () => {
     const { adapter } = makeAdapter(async () => makeResponse());
+    // Review Fix 2: --topic finance is a Provider limitation and is
+    // reclassified as `UnsupportedOptionError` so the option-level
+    // fallback contract can continue past Firecrawl to a Provider
+    // that supports it (Z.AI accepts `topic: "finance"` and appends
+    // a finance keyword to the query). Previously a `ValidationError`
+    // short-circuited the executor and made the option silently fatal.
     assert.throws(
       () => adapter.search.validate({ query: "x", controls: { topic: "finance" } }),
-      ValidationError,
+      UnsupportedOptionError,
     );
   });
 

@@ -42,8 +42,9 @@ import { invokeCommand, type CommandInvocationAdapter } from "./command-invocati
 import { defaultResponseCache, type ResponseCache } from "./lib/cache.js";
 import { configuredSecrets } from "./lib/redact.js";
 import { resolveProviderId } from "./providers/selection.js";
-import { BUILT_IN_PROVIDER_DESCRIPTORS, getProviderDescriptor } from "./providers/registry.js";
+import { BUILT_IN_PROVIDER_DESCRIPTORS } from "./providers/registry.js";
 import type { ProviderDescriptor, ProviderId } from "./providers/types.js";
+import { executeWithFallback, type FallbackOutcome } from "./lib/provider-fallback.js";
 import type { SearchCapability } from "./capabilities/search.js";
 import type { ExecutionDependencies } from "./lib/execution.js";
 import { visionOperationToCapability, type VisionOperation } from "./capabilities/vision.js";
@@ -89,11 +90,14 @@ and 'research' commands participate in Provider selection: Z.AI
 advertises and supplies repository-exploration and reader; Tavily
 advertises and supplies reader plus crawl, map, and research; Exa
 advertises and supplies search, reader, and research; MiniMax
-advertises and supplies none of those Provider-only Capabilities. A
-non-supplier returns UNSUPPORTED_CAPABILITY with no fallback. Z.AI-only
-commands (tools, tool, call, code) carry the flag but ignore it.
-Quota and doctor report per-Provider; --provider picks the effective
-Provider for metadata.
+advertises and supplies none of those Provider-only Capabilities.
+Provider fallback is always-on by default (0.11.0+): selecting a
+non-supplier emits a stderr notice and silently reroutes to the next
+eligible configured Provider in registry order. Use --no-fallback (or
+SCOUTLINE_NO_FALLBACK=1) to restore the previous strict
+UNSUPPORTED_CAPABILITY behavior. Z.AI-only commands (tools, tool,
+call, code) carry the flag but ignore it. Quota and doctor report
+per-Provider; --provider picks the effective Provider for metadata.
 
 Global Options:
   --output-format <data|json|pretty|compact|markdown|refs|tty>  Output mode (default: data)
@@ -167,6 +171,7 @@ function extractGlobalOptions(args: string[]): {
   forcePretty?: boolean;
   forceRaw?: boolean;
   provider?: string;
+  noFallback?: boolean;
   rest: string[];
 } {
   const rest: string[] = [];
@@ -174,6 +179,7 @@ function extractGlobalOptions(args: string[]): {
   let forcePretty = false;
   let forceRaw = false;
   let provider: string | undefined;
+  let noFallback = false;
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
@@ -199,10 +205,20 @@ function extractGlobalOptions(args: string[]): {
       i += 1;
       continue;
     }
+    if (arg === "--no-fallback") {
+      // Provider-fallback kill-switch. Accepted before OR after the
+      // command token and removed from the rest stream so command-local
+      // parsing never observes it. Resolution against
+      // `SCOUTLINE_NO_FALLBACK` lives in `main` so a test that drives
+      // `extractGlobalOptions` directly can assert the flag shape in
+      // isolation.
+      noFallback = true;
+      continue;
+    }
     rest.push(arg);
   }
 
-  return { outputFormat, forcePretty, forceRaw, provider, rest };
+  return { outputFormat, forcePretty, forceRaw, provider, noFallback, rest };
 }
 
 function resolveOutputMode(
@@ -248,6 +264,13 @@ function resolveOutputMode(
  * is the injectable registry (tests pass doubles; production uses the
  * static built-in list).
  *
+ * `fallbackEnabled` is the resolved provider-fallback kill-switch
+ * (Provider Fallback Tech Plan §"Kill-switch plumbing"). It is the
+ * boolean AND of "flag absent" and "`SCOUTLINE_NO_FALLBACK` absent" —
+ * either disables the cross-Provider candidate loop. The dispatch
+ * layer plumbs the value through but no handler in this ticket
+ * consumes it; the per-handler wiring lands in later tickets.
+ *
  * Search execution dependencies (`searchCache`, `searchSleep`,
  * `searchRandom`) default to the on-disk cache and real sleep/random in
  * production; tests inject in-memory doubles.
@@ -272,6 +295,7 @@ interface HandlerDependencies {
   readonly now?: () => number;
   readonly provider?: string;
   readonly providerDescriptors: readonly ProviderDescriptor[];
+  readonly fallbackEnabled: boolean;
   readonly searchCache: ResponseCache;
   readonly searchSleep: (ms: number) => Promise<void>;
   readonly searchRandom: () => number;
@@ -290,6 +314,17 @@ interface HandlerDependencies {
   readonly researchCache: ResponseCache;
   readonly researchSleep: (ms: number) => Promise<void>;
   readonly researchRandom: () => number;
+  /**
+   * Optional SIGINT registrar for the research command (Review Fix 3).
+   * Production wires `process.on('SIGINT', ...)`. When provided, the
+   * research handler uses this to register / tear down the listener on
+   * every per-attempt entry / exit; when absent, the production
+   * registrar is used.
+   */
+  readonly researchRegisterInterrupt?: (
+    stateFilePath: string,
+    resumeCommand: string,
+  ) => (print: () => void) => () => void;
 }
 
 async function handleVision(
@@ -316,136 +351,118 @@ async function handleVision(
   // Resolve the effective Provider for Vision (DESIGN.md §6). Invalid
   // explicit/env input fails here with VALIDATION_ERROR before any Vision
   // support check or media access. Selection never consults credentials
-  // (FR-003); the configured check below is the caller's responsibility.
+  // (FR-003); the configured check below is the executor's responsibility
+  // (Provider Fallback Tech Plan §"Per-handler refactor pattern").
   const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
-  const descriptor = getProviderDescriptor(providerId, deps.providerDescriptors);
 
-  // Gate the operation on descriptor metadata BEFORE Adapter construction.
-  // An unsupported operation (e.g. MiniMax for any specialized op, diff, or
-  // video) fails with UNSUPPORTED_CAPABILITY before credentials, media,
-  // transport, cache, or any Z.AI fallback (FR-023, FR-024). No command
-  // branches on a Provider ID: the support check alone decides availability.
+  // Per-operation capability id (e.g. `vision.interpret-image`,
+  // `vision.chart`). The executor's preflight uses this to filter
+  // descriptors, and notice wording carries it verbatim. Vision
+  // sub-operations share the same `adapter.vision` slot — the
+  // per-operation capability is in the descriptor metadata.
   const capabilityId = visionOperationToCapability(operation);
-  if (!descriptor.capabilities().has(capabilityId)) {
-    throw new UnsupportedCapabilityError(providerId, capabilityId);
-  }
-  // FR-003: selection returns the default zai even when unconfigured. The
-  // dispatch layer surfaces a missing credential as ConfigurationError
-  // (exit 3), AFTER the capability support check (FR-023) but before any
-  // Adapter construction or media access (Fixup A — B5).
-  if (!descriptor.isConfigured(deps.env)) {
-    throw new ConfigurationError(
-      `Provider "${providerId}" is not configured. Set the required API key.`,
-    );
-  }
-  const adapter = descriptor.create({ env: deps.env });
-  const visionCapability = adapter.vision;
-  if (!visionCapability || !visionCapability.supports(operation)) {
-    throw new UnsupportedCapabilityError(providerId, capabilityId);
-  }
 
   // Vision bypasses the response cache (FR-022). The shared execution
   // primitives (sleep/random) are the same ones Search consumes; they
   // drive retry backoff deterministically under test.
-  const visionDeps: VisionExecutionDependencies = {
-    capability: visionCapability,
+  const visionDepsShape = {
     sleep: deps.searchSleep,
     random: deps.searchRandom,
   };
 
-  switch (command) {
-    case "analyze":
-      return invokeCommand(
-        deps.invocation,
-        (context) => vision.analyze(source, prompt, visionDeps, context),
-        outputMode,
-        deps.now,
-        deps.secrets,
+  // Provider-fallback Ticket 02: route every vision operation through
+  // the shared executor. The existing vision URL→temp-file fallback
+  // stays inside the Z.AI adapter's invoke, layered beneath provider
+  // fallback.
+  return invokeCommand(
+    deps.invocation,
+    async (context) => {
+      const outcome = await executeWithFallback(
+        {
+          capabilityId,
+          commandLabel: "vision",
+          effectiveProvider: providerId,
+          descriptors: deps.providerDescriptors,
+          env: deps.env,
+          fallbackEnabled: deps.fallbackEnabled,
+          writeStderr: (s) => deps.invocation.writeStderr(s),
+        },
+        async (descriptor) => {
+          const adapter = descriptor.create({ env: deps.env });
+          // The executor's preflight guarantees the descriptor advertises
+          // the capability and supplies a non-null adapter slot, so the
+          // cast is safe. Operation-level support is checked immediately
+          // against `visionCapability.supports(operation)` — descriptor
+          // metadata and adapter capability are independent sources of
+          // truth, and the live dispatch must fail closed on disagreement
+          // (Review Fix 4). A mismatch throws `UnsupportedCapabilityError`
+          // before any media work / transport use, and the Executor treats
+          // it as a `continue` so the next candidate (if any) gets a
+          // chance.
+          const visionCapability = adapter.vision as Parameters<
+            typeof vision.analyze
+          >[2]["capability"];
+          if (!visionCapability || !visionCapability.supports(operation)) {
+            throw new UnsupportedCapabilityError(descriptor.id, capabilityId);
+          }
+          const visionDeps: VisionExecutionDependencies = {
+            capability: visionCapability,
+            ...visionDepsShape,
+          };
+          switch (command) {
+            case "analyze":
+              return vision.analyze(source, prompt, visionDeps, context);
+            case "ui-to-code": {
+              const outputType = (flags.output as string) || "code";
+              return vision.uiToCode(
+                source,
+                prompt,
+                outputType as "code" | "prompt" | "spec" | "description",
+                visionDeps,
+                context,
+              );
+            }
+            case "extract-text":
+              return vision.extractText(
+                source,
+                prompt,
+                flags.language as string,
+                visionDeps,
+                context,
+              );
+            case "diagnose-error":
+              return vision.diagnoseError(
+                source,
+                prompt,
+                flags.context as string,
+                visionDeps,
+                context,
+              );
+            case "diagram":
+              return vision.diagram(source, prompt, flags.type as string, visionDeps, context);
+            case "chart":
+              return vision.chart(source, prompt, flags.focus as string, visionDeps, context);
+            case "diff": {
+              const actual = positional[2];
+              const diffPrompt = positional[3];
+              return vision.diff(source, actual, diffPrompt, visionDeps, context);
+            }
+            case "video":
+              return vision.video(source, prompt, visionDeps, context);
+            default:
+              throw new ValidationError(
+                `Unknown vision command: ${command}`,
+                'Run "scoutline vision --help" for available commands',
+              );
+          }
+        },
       );
-
-    case "ui-to-code": {
-      const outputType = (flags.output as string) || "code";
-      return invokeCommand(
-        deps.invocation,
-        (context) =>
-          vision.uiToCode(
-            source,
-            prompt,
-            outputType as "code" | "prompt" | "spec" | "description",
-            visionDeps,
-            context,
-          ),
-        outputMode,
-        deps.now,
-        deps.secrets,
-      );
-    }
-
-    case "extract-text":
-      return invokeCommand(
-        deps.invocation,
-        (context) =>
-          vision.extractText(source, prompt, flags.language as string, visionDeps, context),
-        outputMode,
-        deps.now,
-        deps.secrets,
-      );
-
-    case "diagnose-error":
-      return invokeCommand(
-        deps.invocation,
-        (context) =>
-          vision.diagnoseError(source, prompt, flags.context as string, visionDeps, context),
-        outputMode,
-        deps.now,
-        deps.secrets,
-      );
-
-    case "diagram":
-      return invokeCommand(
-        deps.invocation,
-        (context) => vision.diagram(source, prompt, flags.type as string, visionDeps, context),
-        outputMode,
-        deps.now,
-        deps.secrets,
-      );
-
-    case "chart":
-      return invokeCommand(
-        deps.invocation,
-        (context) => vision.chart(source, prompt, flags.focus as string, visionDeps, context),
-        outputMode,
-        deps.now,
-        deps.secrets,
-      );
-
-    case "diff": {
-      const actual = positional[2];
-      const diffPrompt = positional[3];
-      return invokeCommand(
-        deps.invocation,
-        (context) => vision.diff(source, actual, diffPrompt, visionDeps, context),
-        outputMode,
-        deps.now,
-        deps.secrets,
-      );
-    }
-
-    case "video":
-      return invokeCommand(
-        deps.invocation,
-        (context) => vision.video(source, prompt, visionDeps, context),
-        outputMode,
-        deps.now,
-        deps.secrets,
-      );
-
-    default:
-      throw new ValidationError(
-        `Unknown vision command: ${command}`,
-        'Run "scoutline vision --help" for available commands',
-      );
-  }
+      return outcome.result;
+    },
+    outputMode,
+    deps.now,
+    deps.secrets,
+  );
 }
 
 /**
@@ -604,31 +621,14 @@ async function handleSearch(
     );
   }
 
-  // Resolve the Provider ONLY inside shared Search (DESIGN.md §6). Other
-  // command families carry the parsed flag but never resolve or validate
-  // it. An invalid explicit/env value throws VALIDATION_ERROR here, before
-  // any Adapter construction or invocation. Selection never consults
-  // credentials (FR-003); the configured check below is the caller's
-  // responsibility (Fixup A — B5).
+  // Resolve the effective Provider ONLY inside shared Search (DESIGN.md §6).
+  // Other command families carry the parsed flag but never resolve or
+  // validate it. An invalid explicit/env value throws VALIDATION_ERROR
+  // here, before any Adapter construction or invocation. Selection never
+  // consults credentials (FR-003); the configured check is the
+  // executor's responsibility (Provider Fallback Tech Plan §"Per-handler
+  // refactor pattern").
   const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
-  const descriptor = getProviderDescriptor(providerId, deps.providerDescriptors);
-  if (!descriptor.capabilities().has("search")) {
-    throw new UnsupportedCapabilityError(providerId, "search");
-  }
-  // FR-003: selection returns the default zai even when unconfigured. The
-  // dispatch layer surfaces a missing credential as ConfigurationError
-  // (exit 3), AFTER the capability support check (FR-023) but before any
-  // Adapter construction (Fixup A — B5).
-  if (!descriptor.isConfigured(deps.env)) {
-    throw new ConfigurationError(
-      `Provider "${providerId}" is not configured. Set the required API key.`,
-    );
-  }
-  const adapter = descriptor.create({ env: deps.env });
-  const capability: SearchCapability | undefined = adapter.search;
-  if (!capability) {
-    throw new UnsupportedCapabilityError(providerId, "search");
-  }
 
   const query = positional.join(" ");
 
@@ -640,34 +640,61 @@ async function handleSearch(
         .filter(Boolean)
     : undefined;
 
+  const searchOptions = {
+    count,
+    domain: flags.domain as string,
+    recency: flags.recency as "oneDay" | "oneWeek" | "oneMonth" | "oneYear" | "noLimit",
+    contentSize: flags["content-size"] as "medium" | "high",
+    location: flags.location as "cn" | "us",
+    topic,
+    type,
+    maxSummary: flags["max-summary"]
+      ? parseInt(flags["max-summary"] as string, 10)
+      : undefined,
+    fields: fields && fields.length > 0 ? fields : undefined,
+    noCache: flags["no-cache"] === true,
+    merge: flags.merge === true,
+  };
+
+  // Provider-fallback Ticket 02: route the call through the shared
+  // fallback executor. The executor owns capability+configured+adapter
+  // preflight (FR-023/024), candidate plan ordering, error
+  // classification, exhaustion semantics, and notices. The handler
+  // keeps command-specific work (request building, flag parsing, which
+  // executeX). `--merge` runs the whole parallel sub-query batch inside
+  // a single attempt so a fallback switch replaces the entire batch,
+  // never individual sub-queries (Tech Plan §"Handler non-uniformity").
   return invokeCommand(
     deps.invocation,
-    (context) =>
-      search(
-        query,
+    async (context) => {
+      const outcome = await executeWithFallback(
         {
-          count,
-          domain: flags.domain as string,
-          recency: flags.recency as "oneDay" | "oneWeek" | "oneMonth" | "oneYear" | "noLimit",
-          contentSize: flags["content-size"] as "medium" | "high",
-          location: flags.location as "cn" | "us",
-          topic,
-          type,
-          maxSummary: flags["max-summary"]
-            ? parseInt(flags["max-summary"] as string, 10)
-            : undefined,
-          fields: fields && fields.length > 0 ? fields : undefined,
-          noCache: flags["no-cache"] === true,
-          merge: flags.merge === true,
+          capabilityId: "search",
+          commandLabel: "search",
+          effectiveProvider: providerId,
+          descriptors: deps.providerDescriptors,
+          env: deps.env,
+          fallbackEnabled: deps.fallbackEnabled,
+          writeStderr: (s) => deps.invocation.writeStderr(s),
         },
-        {
-          capability,
-          cache: deps.searchCache,
-          sleep: deps.searchSleep,
-          random: deps.searchRandom,
+        async (descriptor) => {
+          const adapter = descriptor.create({ env: deps.env });
+          const capability: SearchCapability = adapter.search as SearchCapability;
+          return search(
+            query,
+            searchOptions,
+            {
+              capability,
+              cache: deps.searchCache,
+              sleep: deps.searchSleep,
+              random: deps.searchRandom,
+            },
+            context,
+          );
         },
-        context,
-      ),
+      );
+      return outcome.result;
+    },
     outputMode,
     deps.now,
     deps.secrets,
@@ -712,35 +739,20 @@ async function handleRead(
   // never consults credentials (FR-003) and never branches on Provider
   // ID; an unknown explicit/env value throws VALIDATION_ERROR here.
   const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
-  const descriptor = getProviderDescriptor(providerId, deps.providerDescriptors);
 
-  // Capability support check BEFORE `descriptor.isConfigured`,
-  // `descriptor.create`, Adapter access, operation validation/
-  // cacheIdentity, credential use, cache, or transport. Unsupported
-  // MiniMax (explicit or environment) returns UNSUPPORTED_CAPABILITY
-  // with no fallback to Z.AI; zero selected-Provider work occurs.
-  if (!descriptor.capabilities().has("reader")) {
-    throw new UnsupportedCapabilityError(providerId, "reader");
-  }
-
-  // FR-003: selection returns the default zai even when unconfigured.
-  // Supported-but-unconfigured Z.AI surfaces a missing credential as
-  // ConfigurationError (exit 3) AFTER the support metadata check and
-  // BEFORE `descriptor.create`.
-  if (!descriptor.isConfigured(deps.env)) {
-    throw new ConfigurationError(
-      `Provider "${providerId}" is not configured. Set the required API key.`,
-    );
-  }
-
-  const adapter = descriptor.create({ env: deps.env });
-  const capability = adapter.reader;
-  // Defensive fail-closed: the descriptor advertised support but the
-  // Adapter omitted the handle. Treat as unsupported so a registry
-  // mismatch can never reach transport.
-  if (!capability) {
-    throw new UnsupportedCapabilityError(providerId, "reader");
-  }
+  const readOptions = {
+    format: flags.format as "markdown" | "text",
+    noImages: flags["no-images"] === true,
+    noCache: flags["no-cache"] === true,
+    withLinks: flags["with-links"] === true,
+    timeout: flags.timeout ? parseInt(flags.timeout as string, 10) : undefined,
+    noGfm: flags["no-gfm"] === true,
+    keepImgDataUrl: flags["keep-img-data-url"] === true,
+    withImagesSummary: flags["with-images-summary"] === true,
+    maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
+    fullEnvelope: flags["full-envelope"] === true,
+    extract,
+  };
 
   // Shared Reader execution dependencies. The cache/sleep/random
   // default to the same production values as Search and Repository
@@ -752,27 +764,39 @@ async function handleRead(
     random: deps.readerRandom,
   };
 
+  // Provider-fallback Ticket 02: route the call through the shared
+  // fallback executor. Capability + configured + adapter-handle
+  // agreement preflight now lives in the executor (FR-023/024
+  // preserved). Under --no-fallback the same preflight runs on the
+  // effective Provider only.
   return invokeCommand(
     deps.invocation,
-    (context) =>
-      read(
-        url,
+    async (context) => {
+      const outcome = await executeWithFallback(
         {
-          format: flags.format as "markdown" | "text",
-          noImages: flags["no-images"] === true,
-          noCache: flags["no-cache"] === true,
-          withLinks: flags["with-links"] === true,
-          timeout: flags.timeout ? parseInt(flags.timeout as string, 10) : undefined,
-          noGfm: flags["no-gfm"] === true,
-          keepImgDataUrl: flags["keep-img-data-url"] === true,
-          withImagesSummary: flags["with-images-summary"] === true,
-          maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
-          fullEnvelope: flags["full-envelope"] === true,
-          extract,
+          capabilityId: "reader",
+          commandLabel: "read",
+          effectiveProvider: providerId,
+          descriptors: deps.providerDescriptors,
+          env: deps.env,
+          fallbackEnabled: deps.fallbackEnabled,
+          writeStderr: (s) => deps.invocation.writeStderr(s),
         },
-        { capability, execution: executionDeps },
-        context,
-      ),
+        async (descriptor) => {
+          const adapter = descriptor.create({ env: deps.env });
+          return read(
+            url,
+            readOptions,
+            {
+              capability: adapter.reader as Parameters<typeof read>[2]["capability"],
+              execution: executionDeps,
+            },
+            context,
+          );
+        },
+      );
+      return outcome.result;
+    },
     outputMode,
     deps.now,
     deps.secrets,
@@ -804,26 +828,6 @@ async function handleCrawl(
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
   // explicit --provider > SCOUTLINE_PROVIDER > default zai.
   const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
-  const descriptor = getProviderDescriptor(providerId, deps.providerDescriptors);
-
-  // Capability support check BEFORE descriptor.isConfigured, descriptor.create,
-  // or any Adapter work. Unsupported Z.AI/MiniMax returns
-  // UNSUPPORTED_CAPABILITY with no fallback to Tavily.
-  if (!descriptor.capabilities().has("crawl")) {
-    throw new UnsupportedCapabilityError(providerId, "crawl");
-  }
-
-  if (!descriptor.isConfigured(deps.env)) {
-    throw new ConfigurationError(
-      `Provider "${providerId}" is not configured. Set the required API key.`,
-    );
-  }
-
-  const adapter = descriptor.create({ env: deps.env });
-  const capability = adapter.crawl;
-  if (!capability) {
-    throw new UnsupportedCapabilityError(providerId, "crawl");
-  }
 
   // Shared Crawl execution dependencies. The cache/sleep/random default
   // to the same production values as Search/Repository/Reader but are
@@ -835,27 +839,50 @@ async function handleCrawl(
     random: deps.crawlRandom,
   };
 
+  // Provider-fallback Ticket 03: route the call through the shared
+  // fallback executor. Capability + configured + adapter-handle
+  // preflight lives in the executor (FR-023/024 preserved). The
+  // async cost-bearing accepted-risk path (Tech Plan §"Accepted
+  // risk"): a runtime failure on crawl may fall back to another
+  // Provider even if the failed Provider had already accepted
+  // the job. `--no-fallback` eliminates this risk.
   return invokeCommand(
     deps.invocation,
-    (context) =>
-      crawl(
-        url,
+    async (context) => {
+      const outcome = await executeWithFallback(
         {
-          depth: flags.depth ? parseInt(flags.depth as string, 10) : undefined,
-          breadth: flags.breadth ? parseInt(flags.breadth as string, 10) : undefined,
-          limit: flags.limit ? parseInt(flags.limit as string, 10) : undefined,
-          selectPaths: flags["select-paths"] as string | undefined,
-          excludePaths: flags["exclude-paths"] as string | undefined,
-          instructions: flags.instructions as string | undefined,
-          format: flags.format as "markdown" | "text" | undefined,
-          contentSize: flags["content-size"] as "medium" | "high" | undefined,
-          timeout: flags.timeout ? parseInt(flags.timeout as string, 10) : undefined,
-          noCache: flags["no-cache"] === true,
-          maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
+          capabilityId: "crawl",
+          commandLabel: "crawl",
+          effectiveProvider: providerId,
+          descriptors: deps.providerDescriptors,
+          env: deps.env,
+          fallbackEnabled: deps.fallbackEnabled,
+          writeStderr: (s) => deps.invocation.writeStderr(s),
         },
-        { capability, execution: executionDeps },
-        context,
-      ),
+        async (descriptor) => {
+          const adapter = descriptor.create({ env: deps.env });
+          return crawl(
+            url,
+            {
+              depth: flags.depth ? parseInt(flags.depth as string, 10) : undefined,
+              breadth: flags.breadth ? parseInt(flags.breadth as string, 10) : undefined,
+              limit: flags.limit ? parseInt(flags.limit as string, 10) : undefined,
+              selectPaths: flags["select-paths"] as string | undefined,
+              excludePaths: flags["exclude-paths"] as string | undefined,
+              instructions: flags.instructions as string | undefined,
+              format: flags.format as "markdown" | "text" | undefined,
+              contentSize: flags["content-size"] as "medium" | "high" | undefined,
+              timeout: flags.timeout ? parseInt(flags.timeout as string, 10) : undefined,
+              noCache: flags["no-cache"] === true,
+              maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
+            },
+            { capability: adapter.crawl as Parameters<typeof crawl>[2]["capability"], execution: executionDeps },
+            context,
+          );
+        },
+      );
+      return outcome.result;
+    },
     outputMode,
     deps.now,
     deps.secrets,
@@ -887,26 +914,6 @@ async function handleMap(
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
   // explicit --provider > SCOUTLINE_PROVIDER > default zai.
   const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
-  const descriptor = getProviderDescriptor(providerId, deps.providerDescriptors);
-
-  // Capability support check BEFORE descriptor.isConfigured, descriptor.create,
-  // or any Adapter work. Unsupported Z.AI/MiniMax returns
-  // UNSUPPORTED_CAPABILITY with no fallback to Tavily.
-  if (!descriptor.capabilities().has("map")) {
-    throw new UnsupportedCapabilityError(providerId, "map");
-  }
-
-  if (!descriptor.isConfigured(deps.env)) {
-    throw new ConfigurationError(
-      `Provider "${providerId}" is not configured. Set the required API key.`,
-    );
-  }
-
-  const adapter = descriptor.create({ env: deps.env });
-  const capability = adapter.map;
-  if (!capability) {
-    throw new UnsupportedCapabilityError(providerId, "map");
-  }
 
   // Shared Map execution dependencies. The cache/sleep/random default
   // to the same production values as Search/Repository/Reader/Crawl but
@@ -918,23 +925,44 @@ async function handleMap(
     random: deps.mapRandom,
   };
 
+  // Provider-fallback Ticket 03: route the call through the shared
+  // fallback executor. Map retries once per Provider today, so the
+  // documented worst-case charged request count under retry+fallback
+  // is `2 × N candidates` — see the troubleshooting entry added in
+  // Ticket 04. `--no-fallback` is the strict-mode opt-out.
   return invokeCommand(
     deps.invocation,
-    (context) =>
-      map(
-        url,
+    async (context) => {
+      const outcome = await executeWithFallback(
         {
-          depth: flags.depth ? parseInt(flags.depth as string, 10) : undefined,
-          breadth: flags.breadth ? parseInt(flags.breadth as string, 10) : undefined,
-          limit: flags.limit ? parseInt(flags.limit as string, 10) : undefined,
-          selectPaths: flags["select-paths"] as string | undefined,
-          excludePaths: flags["exclude-paths"] as string | undefined,
-          instructions: flags.instructions as string | undefined,
-          noCache: flags["no-cache"] === true,
+          capabilityId: "map",
+          commandLabel: "map",
+          effectiveProvider: providerId,
+          descriptors: deps.providerDescriptors,
+          env: deps.env,
+          fallbackEnabled: deps.fallbackEnabled,
+          writeStderr: (s) => deps.invocation.writeStderr(s),
         },
-        { capability, execution: executionDeps },
-        context,
-      ),
+        async (descriptor) => {
+          const adapter = descriptor.create({ env: deps.env });
+          return map(
+            url,
+            {
+              depth: flags.depth ? parseInt(flags.depth as string, 10) : undefined,
+              breadth: flags.breadth ? parseInt(flags.breadth as string, 10) : undefined,
+              limit: flags.limit ? parseInt(flags.limit as string, 10) : undefined,
+              selectPaths: flags["select-paths"] as string | undefined,
+              excludePaths: flags["exclude-paths"] as string | undefined,
+              instructions: flags.instructions as string | undefined,
+              noCache: flags["no-cache"] === true,
+            },
+            { capability: adapter.map as Parameters<typeof map>[2]["capability"], execution: executionDeps },
+            context,
+          );
+        },
+      );
+      return outcome.result;
+    },
     outputMode,
     deps.now,
     deps.secrets,
@@ -977,26 +1005,6 @@ async function handleResearch(
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
   // explicit --provider > SCOUTLINE_PROVIDER > default zai.
   const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
-  const descriptor = getProviderDescriptor(providerId, deps.providerDescriptors);
-
-  // Capability support check BEFORE descriptor.isConfigured,
-  // descriptor.create, or any Adapter work. Unsupported Z.AI/MiniMax
-  // returns UNSUPPORTED_CAPABILITY with no fallback to Tavily.
-  if (!descriptor.capabilities().has("research")) {
-    throw new UnsupportedCapabilityError(providerId, "research");
-  }
-
-  if (!descriptor.isConfigured(deps.env)) {
-    throw new ConfigurationError(
-      `Provider "${providerId}" is not configured. Set the required API key.`,
-    );
-  }
-
-  const adapter = descriptor.create({ env: deps.env });
-  const capability = adapter.research;
-  if (!capability) {
-    throw new UnsupportedCapabilityError(providerId, "research");
-  }
 
   // Shared Research execution dependencies.
   const executionDeps: ExecutionDependencies = {
@@ -1005,30 +1013,78 @@ async function handleResearch(
     random: deps.researchRandom,
   };
 
-  // Wait disclaimer — shown BEFORE invoke because research is
-  // credit-intensive and may take several minutes. Written to stderr so
-  // it never corrupts data-mode stdout.
-  deps.invocation.writeStderr(
-    "Research in progress — this is a credit-intensive operation that may take several minutes.\n",
-  );
-
+  // Provider-fallback Ticket 03: route the call through the shared
+  // fallback executor. The research command is the riskiest piece
+  // of the async set: the SIGINT handler, the polling-timeout
+  // controller, and the on-disk state-file identity/timeout must
+  // RE-BIND to the Provider that actually wins the candidate loop
+  // (Tech Plan §"Handler non-uniformity" — research bullet). The
+  // `research` command accepts a `registerInterrupt` injection on
+  // its handler dependencies; the executor's per-attempt callback
+  // builds the descriptor's `capability.run` and re-registers the
+  // SIGINT handler under THAT provider's identity before invoke,
+  // tearing it down on throw so the next candidate installs its
+  // own. The one-time credit warning is emitted ONCE, before the
+  // first attempt, so it is not duplicated across candidate
+  // switches.
   return invokeCommand(
     deps.invocation,
-    (context) =>
-      research(
-        query,
+    async (context) => {
+      const options = {
+        model,
+        outputLength,
+        citationFormat,
+        domain: flags.domain as string | undefined,
+        maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
+        timeout: flags.timeout ? parseInt(flags.timeout as string, 10) : undefined,
+        noCache: flags["no-cache"] === true,
+      };
+
+      // Closure-guarded one-time credit warning (Review Fix 7). The
+      // flag is captured INSIDE the attempt closure, so the line is
+      // written exactly once — the first time the executor actually
+      // visits a candidate. When the executor's preflight rejects
+      // every plan entry before invoking `attempt` (capability-
+      // mismatch, no candidates configured), the closure is never
+      // entered and the warning stays silent. Strict mode
+      // (`--no-fallback`) already runs the same preflight on the
+      // single remaining candidate so an ineligible effective also
+      // stays silent.
+      let warned = false;
+      const creditWarning = `Research in progress — this is a credit-intensive operation that may take several minutes.\n`;
+      const emitCreditWarning = (): void => {
+        if (warned) return;
+        warned = true;
+        deps.invocation.writeStderr(creditWarning);
+      };
+
+      const outcome = await executeWithFallback(
         {
-          model,
-          outputLength,
-          citationFormat,
-          domain: flags.domain as string | undefined,
-          maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
-          timeout: flags.timeout ? parseInt(flags.timeout as string, 10) : undefined,
-          noCache: flags["no-cache"] === true,
+          capabilityId: "research",
+          commandLabel: "research",
+          effectiveProvider: providerId,
+          descriptors: deps.providerDescriptors,
+          env: deps.env,
+          fallbackEnabled: deps.fallbackEnabled,
+          writeStderr: (s) => deps.invocation.writeStderr(s),
         },
-        { capability, execution: executionDeps },
-        context,
-      ),
+        async (descriptor) => {
+          emitCreditWarning();
+          const adapter = descriptor.create({ env: deps.env });
+          return research(
+            query,
+            options,
+            {
+              capability: adapter.research as Parameters<typeof research>[2]["capability"],
+              execution: executionDeps,
+              registerInterrupt: deps.researchRegisterInterrupt,
+            },
+            context,
+          );
+        },
+      );
+      return outcome.result;
+    },
     outputMode,
     deps.now,
     deps.secrets,
@@ -1117,35 +1173,6 @@ async function handleRepo(
   // never consults credentials (FR-003) and never branches on Provider
   // ID; an unknown explicit/env value throws VALIDATION_ERROR here.
   const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
-  const descriptor = getProviderDescriptor(providerId, deps.providerDescriptors);
-
-  // Capability support check BEFORE `descriptor.isConfigured`,
-  // `descriptor.create`, Adapter access, operation validation/
-  // cacheIdentity, credential use, cache, or transport. Unsupported
-  // MiniMax (explicit or environment) returns UNSUPPORTED_CAPABILITY
-  // with no fallback to Z.AI; zero selected-Provider work occurs.
-  if (!descriptor.capabilities().has("repository-exploration")) {
-    throw new UnsupportedCapabilityError(providerId, "repository-exploration");
-  }
-
-  // FR-003: selection returns the default zai even when unconfigured.
-  // Supported-but-unconfigured Z.AI surfaces a missing credential as
-  // ConfigurationError (exit 3) AFTER the support metadata check and
-  // BEFORE `descriptor.create`.
-  if (!descriptor.isConfigured(deps.env)) {
-    throw new ConfigurationError(
-      `Provider "${providerId}" is not configured. Set the required API key.`,
-    );
-  }
-
-  const adapter = descriptor.create({ env: deps.env });
-  const capability = adapter.repository;
-  // Defensive fail-closed: the descriptor advertised support but the
-  // Adapter omitted the handle. Treat as unsupported so a registry
-  // mismatch can never reach transport.
-  if (!capability) {
-    throw new UnsupportedCapabilityError(providerId, "repository-exploration");
-  }
 
   // Shared Repository execution dependencies. The cache/sleep/random
   // default to the same production values as Search but are kept as
@@ -1157,71 +1184,73 @@ async function handleRepo(
     random: deps.repositoryRandom,
   };
 
-  switch (command) {
-    case "search": {
-      const language = flags.language as "en" | "zh" | undefined;
-      const maxChars = flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined;
-      const noCache = flags["no-cache"] === true;
-      return invokeCommand(
-        deps.invocation,
-        () =>
-          repoSearch(
-            repo,
-            searchQuery as string,
-            { language, maxChars, noCache },
-            { capability, execution: executionDeps },
-          ),
-        outputMode,
-        deps.now,
-        deps.secrets,
-      );
-    }
+  const language = flags.language as "en" | "zh" | undefined;
+  const maxChars = flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined;
+  const noCache = flags["no-cache"] === true;
+  const treePath = flags.path as string | undefined;
+  const depth = flags.depth ? parseInt(flags.depth as string, 10) : undefined;
 
-    case "tree": {
-      const treePath = flags.path as string | undefined;
-      const depth = flags.depth ? parseInt(flags.depth as string, 10) : undefined;
-      const noCache = flags["no-cache"] === true;
-      return invokeCommand(
-        deps.invocation,
-        () =>
-          repoTree(
-            repo,
-            { path: treePath, depth, noCache },
-            { capability, execution: executionDeps },
-          ),
-        outputMode,
-        deps.now,
-        deps.secrets,
+  // Provider-fallback Ticket 02: route every subcommand through the
+  // shared executor. All three projections (search/tree/read) share
+  // the `repository-exploration` Capability, so a single executor
+  // invocation wraps the chosen subcommand.
+  return invokeCommand(
+    deps.invocation,
+    async (context) => {
+      const outcome = await executeWithFallback(
+        {
+          capabilityId: "repository-exploration",
+          commandLabel: "repo",
+          effectiveProvider: providerId,
+          descriptors: deps.providerDescriptors,
+          env: deps.env,
+          fallbackEnabled: deps.fallbackEnabled,
+          writeStderr: (s) => deps.invocation.writeStderr(s),
+        },
+        async (descriptor) => {
+          const adapter = descriptor.create({ env: deps.env });
+          const capability = adapter.repository as Parameters<typeof repoSearch>[3]["capability"];
+          switch (command) {
+            case "search":
+              return repoSearch(
+                repo,
+                searchQuery as string,
+                { language, maxChars, noCache },
+                { capability, execution: executionDeps },
+                context,
+              );
+            case "tree":
+              return repoTree(
+                repo,
+                { path: treePath, depth, noCache },
+                { capability, execution: executionDeps },
+                context,
+              );
+            case "read":
+              return repoRead(
+                repo,
+                readPath as string,
+                { maxChars, noCache },
+                { capability, execution: executionDeps },
+                context,
+              );
+            default:
+              // Unreachable: the parse-level validation above already
+              // rejected unknown subcommands. Keep a defensive throw so
+              // the dispatch table stays total.
+              throw new ValidationError(
+                `Unknown repo command: ${command}`,
+                'Run "scoutline repo --help" for available commands',
+              );
+          }
+        },
       );
-    }
-
-    case "read": {
-      const maxChars = flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined;
-      const noCache = flags["no-cache"] === true;
-      return invokeCommand(
-        deps.invocation,
-        () =>
-          repoRead(
-            repo,
-            readPath as string,
-            { maxChars, noCache },
-            { capability, execution: executionDeps },
-          ),
-        outputMode,
-        deps.now,
-        deps.secrets,
-      );
-    }
-
-    default:
-      // Unreachable: the parse-level validation above already rejected
-      // unknown subcommands. Keep a defensive throw so the dispatch
-      // table stays total.
-      throw new ValidationError(
-        `Unknown repo command: ${command}`,
-        'Run "scoutline repo --help" for available commands',
-      );
-  }
+      return outcome.result;
+    },
+    outputMode,
+    deps.now,
+    deps.secrets,
+  );
 }
 
 async function handleTools(
@@ -1591,6 +1620,20 @@ export interface MainDependencies {
   readonly researchCache?: ResponseCache;
   readonly researchSleep?: (ms: number) => Promise<void>;
   readonly researchRandom?: () => number;
+  /**
+   * Optional injectable SIGINT registrar factory for the research
+   * command. Production wraps `process.on('SIGINT', ...)` inside the
+   * command module; tests inject a recorder so they can capture the
+   * registered callback, trigger it manually, and assert the printed
+   * resume command / state-file path / loser listener cleanup. The
+   * factory receives the per-attempt state-file path + canonical
+   * resume command (binding is computed inside the research handler
+   * from the per-attempt Provider capability). Review Fix 3.
+   */
+  readonly researchRegisterInterrupt?: (
+    stateFilePath: string,
+    resumeCommand: string,
+  ) => (print: () => void) => () => void;
 }
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1643,7 +1686,20 @@ export async function main(
   // that exists only in MainDependencies.env is still redacted from output.
   const secrets = configuredSecrets(env);
 
-  const { outputFormat, forcePretty, forceRaw, provider, rest } = extractGlobalOptions([...args]);
+  const { outputFormat, forcePretty, forceRaw, provider, noFallback, rest } = extractGlobalOptions([...args]);
+
+  // Provider-fallback kill-switch. The flag and the env are both
+  // opt-outs; either is sufficient to disable the cross-Provider
+  // candidate loop. The flag wins when both are present (the user
+  // is being explicit). `SCOUTLINE_NO_FALLBACK` is read from the
+  // injected `env` (B3) so redaction and executor preflight see
+  // the same environment the user actually configured. Truthy
+  // values include any non-empty string, so `SCOUTLINE_NO_FALLBACK=1`
+  // and `SCOUTLINE_NO_FALLBACK=true` both opt out; an empty string
+  // is the conventional "unset" form.
+  const envDisablesFallback =
+    typeof env.SCOUTLINE_NO_FALLBACK === "string" && env.SCOUTLINE_NO_FALLBACK.length > 0;
+  const fallbackEnabled = !(noFallback || envDisablesFallback);
 
   // Fixup C — B10: resolve the output mode BEFORE the dispatch try/catch.
   // An invalid explicit mode still surfaces as a typed ValidationError,
@@ -1687,6 +1743,7 @@ export async function main(
     now,
     provider,
     providerDescriptors,
+    fallbackEnabled,
     searchCache,
     searchSleep,
     searchRandom,
@@ -1705,6 +1762,7 @@ export async function main(
     researchCache,
     researchSleep,
     researchRandom,
+    researchRegisterInterrupt: dependencies.researchRegisterInterrupt,
   };
 
   try {

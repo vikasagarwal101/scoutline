@@ -27,6 +27,7 @@ import type {
   ResearchRequest,
   ResearchResult,
 } from "../capabilities/research.js";
+import type { ProviderId } from "../providers/types.js";
 import type { ExecutionDependencies } from "../lib/execution.js";
 import { executeCachedOperation } from "../lib/execution.js";
 import { asyncJobStateDir } from "../lib/cache.js";
@@ -58,14 +59,23 @@ export interface ResearchHandlerDependencies {
   readonly capability: ResearchCapability;
   readonly execution: ExecutionDependencies;
   /**
-   * Registers a Ctrl-C (SIGINT) handler before invoke. Receives a
-   * `print` callback (already bound to the request identity) that
-   * reads the state file and prints the request_id + resume command.
-   * Returns a cleanup function that removes the handler after the
-   * operation completes. Production wires `process.on('SIGINT', ...)`;
-   * tests inject a recorder or no-op.
+   * SIGINT registrar factory. Production wires
+   * `process.on("SIGINT", ...)` inside the handler so each per-attempt
+   * entry installs a listener and each `finally` removes it (Review
+   * Fix 3). Tests inject a recorder factory so they can capture the
+   * state-file path + canonical resume command for the active
+   * attempt, trigger the listener, and prove loser cleanup ran.
+   *
+   * The factory receives the per-attempt state-file path and the
+   * provider-specific resume command (both bound to the candidate
+   * capability inside `research()`) and returns a registrar that
+   * accepts a `print` closure (already bound to the same values) and
+   * returns a teardown.
    */
-  readonly registerInterrupt?: (print: () => void) => () => void;
+  readonly registerInterrupt?: (
+    stateFilePath: string,
+    resumeCommand: string,
+  ) => (print: () => void) => () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -172,14 +182,72 @@ function readRequestIdSync(stateFilePath: string): string {
 }
 
 /**
- * Production SIGINT registrar. Reads the state file synchronously,
- * formats the interrupt message, writes it to stderr, and exits 130
- * (128 + SIGINT). Returns a cleanup that detaches the listener.
+ * Wrap a string in POSIX-shell-safe double quotes so a resume command
+ * can be copy/pasted into a shell. Backslash-escapes the four POSIX
+ * special characters inside double quotes (`\`, `$`, backtick, and `"`)
+ * plus newline so a multi-line query does not break the shell parser.
+ *
+ * The command itself is rendered as a single string literal here — the
+ * tests assert `resumeCommand === 'scoutline --provider exa research
+ * \"Q with backslash \\\" \" --model pro ...'` style, so callers do
+ * not need to round-trip through a real shell.
+ */
+function shellQuote(value: string): string {
+  return `"${value.replace(/[\\$"`\n]/g, (c) => `\\${c}`)}"`;
+}
+
+/**
+ * Build a canonical shell-safe resume command that names the Provider
+ * the user actually wants to resume AND every identity-bearing request
+ * option they actually set. The Provider id is threaded from
+ * `capability.run.cacheIdentity(request).provider` so the command
+ * matches the on-disk state file (the identity hash is keyed on the
+ * Provider, the credential fingerprint, and the full request — see
+ * `lib/async-job-state.ts`).
+ *
+ * Without `--provider`, a successful Tavily fallback to Exa would
+ * (today) print `scoutline research "<Q>"`, which resumes polling on
+ * the *default* Provider — creating a second paid job when only one
+ * already exists (Review Fix 3). Without the identity-bearing
+ * options, a re-run that omits `--model pro` would compute a
+ * different state-file hash and create a fresh job as well.
+ *
+ * Only options that were ACTUALLY set appear in the command —
+ * `undefined` values are omitted so the resume uses the user's own
+ * defaults rather than picking values that were never requested.
+ */
+export function buildResearchResumeCommand(
+  query: string,
+  options: ResearchOptions,
+  providerId: ProviderId,
+): string {
+  const parts: string[] = ["scoutline", `--provider ${providerId}`, "research"];
+  parts.push(shellQuote(query));
+  if (options.model !== undefined) parts.push(`--model ${options.model}`);
+  if (options.outputLength !== undefined) parts.push(`--output-length ${options.outputLength}`);
+  if (options.citationFormat !== undefined) parts.push(`--citation-format ${options.citationFormat}`);
+  if (options.domain !== undefined) parts.push(`--domain ${shellQuote(options.domain)}`);
+  return parts.join(" ");
+}
+
+/**
+ * Production SIGINT registrar FACTORY. The factory takes the
+ * per-attempt state-file path + canonical resume command and returns a
+ * registrar that installs the production handler. The factory form
+ * matches the test-injection shape (Review Fix 3): tests can pass a
+ * factory that captures the same arguments for assertion.
  */
 function createProductionInterruptRegistrar(stateFilePath: string, resumeCommand: string) {
-  return (print: () => void): (() => void) => {
+  return (_print: () => void): (() => void) => {
     const handler = (): void => {
-      print();
+      // Read the state file synchronously, format the message, and
+      // exit 130 (128 + SIGINT). The `print` callback passed by the
+      // research handler already closes over `stateFilePath` and
+      // `resumeCommand` for the inner read+write work; here we just
+      // need it for the production exit path. Recompute a one-shot
+      // print to keep the production and test wires identical.
+      const requestId = readRequestIdSync(stateFilePath);
+      process.stderr.write(formatInterruptMessage(requestId, resumeCommand));
       process.exit(130);
     };
     process.on("SIGINT", handler);
@@ -264,9 +332,14 @@ export async function research(
 
   const request = buildResearchRequest(query, options);
 
-  // Compute the state-file path for the SIGINT handler. The identity
-  // hash uses the same formula as the adapter (CR3), so the file the
-  // handler reads is the one the adapter wrote.
+  // Compute the state-file path AND the canonical resume command for
+  // the SIGINT handler. Both are derived from this attempt's
+  // capability (re-bound on every candidate the executor walks — the
+  // loser's capability was already torn down by the `finally` in a
+  // prior call to `research()`, so the `providerId` below names the
+  // Provider the user would resume). Identity hash uses the same
+  // formula as the adapter (CR3), so the file the handler reads is
+  // the one the adapter wrote (Review Fix 3).
   const identity = deps.capability.run.cacheIdentity(request);
   const identityHash = computeAsyncJobStateHash({
     provider: identity.provider,
@@ -275,12 +348,16 @@ export async function research(
     request: identity.request,
   });
   const stateFilePath = path.join(asyncJobStateDir("research"), `${identityHash}.json`);
-  const resumeCommand = `scoutline research "${query}"`;
+  const resumeCommand = buildResearchResumeCommand(query, options, identity.provider);
 
-  // Register the Ctrl-C handler. Production reads the state file sync
-  // and exits 130; tests inject a recorder.
-  const register =
-    deps.registerInterrupt ?? createProductionInterruptRegistrar(stateFilePath, resumeCommand);
+  // Register the Ctrl-C handler. Production wires `process.on` inside
+  // `createProductionInterruptRegistrar`; tests inject a recorder
+  // factory that captures the (stateFilePath, resumeCommand) pair so
+  // they can assert the format and simulate the SIGINT (Review Fix 3).
+  const registerFactory =
+    deps.registerInterrupt ??
+    ((sf, cmd) => createProductionInterruptRegistrar(sf, cmd));
+  const register = registerFactory(stateFilePath, resumeCommand);
   const print = (): void => {
     const requestId = readRequestIdSync(stateFilePath);
     process.stderr.write(formatInterruptMessage(requestId, resumeCommand));
@@ -378,9 +455,21 @@ second task (no double charge).
 
 Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER,
 then the configured default):
-  - Tavily advertises the research Capability and supplies the Adapter.
-  - Z.AI and MiniMax do NOT advertise research. Selecting them returns
-    UNSUPPORTED_CAPABILITY with no fallback.
+  - Tavily and Exa advertise the research Capability and supply the Adapter.
+  - Z.AI, MiniMax, and Firecrawl do NOT advertise research (Firecrawl
+    /deep-research is deprecated). By default (0.11.0+) Provider
+    fallback emits a stderr notice and silently reroutes to the next
+    eligible configured supplier (Tavily or Exa). Under --no-fallback
+    (or SCOUTLINE_NO_FALLBACK=1) the preflight surfaces
+    UNSUPPORTED_CAPABILITY for the selected non-supplier.
+
+> Accepted async risk: for \`research\`, a runtime failure on the
+> effective Provider may fall back to another Provider even if the
+> failed Provider had already accepted or charged a job (Tavily/Exa do
+> not offer idempotency or refunds). Pass --no-fallback for
+> cost-sensitive workflows. See
+> https://github.com/vikasagarwal101/scoutline/blob/main/docs/adr/0002-provider-fallback.md
+> (the ADR is not packaged with the npm tarball; follow the link).
 
 Options:
   --model <m>            Research model: mini | pro | auto (default: auto)

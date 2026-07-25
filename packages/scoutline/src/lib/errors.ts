@@ -99,7 +99,18 @@ export class UnsupportedCapabilityError extends ScoutlineError {
   }
 }
 
+/**
+ * Provider-specific option unsupported by a Capability. The constructor
+ * signature is unchanged so all current throw sites keep compiling without
+ * modification; the structured fields expose the same information notices
+ * used to extract from the message string. Provider-fallback notices read
+ * these fields directly (the message format MUST stay stable — it is
+ * checked verbatim by existing adapter tests).
+ */
 export class UnsupportedOptionError extends ScoutlineError {
+  readonly provider: string;
+  readonly capability: string;
+  readonly option: string;
   constructor(provider: string, capability: string, option: string) {
     super(
       `Provider "${provider}" does not support option "${option}" for capability "${capability}"`,
@@ -107,6 +118,9 @@ export class UnsupportedOptionError extends ScoutlineError {
       { exitCode: 1 },
     );
     this.name = "UnsupportedOptionError";
+    this.provider = provider;
+    this.capability = capability;
+    this.option = option;
   }
 }
 

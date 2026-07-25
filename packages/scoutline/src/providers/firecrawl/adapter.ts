@@ -466,16 +466,22 @@ function createFirecrawlSearchCapability(
       }
       // Firecrawl supports domain, recency, contentSize, and topic.
       // location is Z.AI-specific and rejected before any transport call.
+      // type is Brave-only — reject before any transport call so the
+      // option-level fallback contract can continue past Firecrawl to the
+      // capable provider (Review Fix 2).
       if (request.controls?.location !== undefined) {
         throw new UnsupportedOptionError("firecrawl", "search", "location");
       }
+      if (request.controls?.type !== undefined) {
+        throw new UnsupportedOptionError("firecrawl", "search", "type");
+      }
       // Firecrawl sources are web/news only; --topic finance has no native
-      // source mapping — reject explicitly rather than silently returning
-      // generic web results (supported topics: general, news).
+      // source mapping — reject as UnsupportedOptionError so the option-
+      // level fallback contract can continue past Firecrawl to a Provider
+      // that supports it (review Fix 2: previously a ValidationError that
+      // short-circuited the executor and made the option silently fatal).
       if (request.controls?.topic === "finance") {
-        throw new ValidationError(
-          "Firecrawl search does not support --topic finance (supported: general, news)",
-        );
+        throw new UnsupportedOptionError("firecrawl", "search", "topic");
       }
     },
 
@@ -1202,5 +1208,7 @@ export function createFirecrawlDescriptor(
       const diagnostics = createFirecrawlDiagnosticsCapability({ env: context.env, transport });
       return { id: "firecrawl", search, reader, crawl, map, quota, diagnostics };
     },
+    // Provider-fallback Ticket 02 — see ProviderDescriptor.credentialEnvVars.
+    credentialEnvVars: ["FIRECRAWL_API_KEY"],
   };
 }

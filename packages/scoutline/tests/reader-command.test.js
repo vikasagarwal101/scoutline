@@ -356,6 +356,15 @@ function cannedContentResult({
 
 const DEFAULT_READ_ARGS = ["read", "https://example.com/"];
 
+// Provider-fallback Ticket 02 — the selection matrix is updated to
+// reflect the new fallback semantics. The Executor owns the capability
+// + configured + adapter-handle preflight (FR-023/024) and a successful
+// attempt reaches the winning Adapter exactly once; the preflight
+// itself constructs each eligible Adapter once for the slot-check, so
+// the `expectZaiCreate` count is now 2 (preflight + attempt) on the
+// winning path. An "unsupported" provider is now a capability-mismatch
+// that auto-reroutes to the next eligible candidate rather than
+// failing closed; the rows below assert that reroute.
 const SELECTION_MATRIX = [
   {
     name: "default ZAI",
@@ -364,7 +373,7 @@ const SELECTION_MATRIX = [
     expectStatus: 0,
     expectCode: null,
     expectInvokeCount: 1,
-    expectZaiCreate: 1,
+    expectZaiCreate: 2,
     expectMiniMaxCreate: 0,
     expectMiniMaxIsConfigured: 0,
   },
@@ -375,7 +384,7 @@ const SELECTION_MATRIX = [
     expectStatus: 0,
     expectCode: null,
     expectInvokeCount: 1,
-    expectZaiCreate: 1,
+    expectZaiCreate: 2,
     expectMiniMaxCreate: 0,
     expectMiniMaxIsConfigured: 0,
   },
@@ -386,7 +395,7 @@ const SELECTION_MATRIX = [
     expectStatus: 0,
     expectCode: null,
     expectInvokeCount: 1,
-    expectZaiCreate: 1,
+    expectZaiCreate: 2,
     expectMiniMaxCreate: 0,
     expectMiniMaxIsConfigured: 0,
   },
@@ -397,7 +406,7 @@ const SELECTION_MATRIX = [
     expectStatus: 0,
     expectCode: null,
     expectInvokeCount: 1,
-    expectZaiCreate: 1,
+    expectZaiCreate: 2,
     expectMiniMaxCreate: 0,
     expectMiniMaxIsConfigured: 0,
   },
@@ -424,8 +433,53 @@ const SELECTION_MATRIX = [
     expectMiniMaxIsConfigured: 0,
   },
   {
-    name: "unsupported explicit MINIMAX",
+    // Provider-fallback Ticket 02 flip: `--provider minimax` (which
+    // does NOT advertise reader) auto-reroutes to the Z.AI Adapter.
+    // The capability-mismatch skip notice is emitted on stderr; the
+    // winning Provider's call succeeds silently on stdout. Under
+    // `--no-fallback` the matrix below ("unsupported explicit
+    // MINIMAX, --no-fallback") restores the strict exit-1 behaviour.
+    name: "unsupported explicit MINIMAX (fallback to ZAI)",
     args: () => ["--provider", "minimax", ...DEFAULT_READ_ARGS],
+    env: () => ({}),
+    expectStatus: 0,
+    expectCode: null,
+    expectInvokeCount: 1,
+    expectZaiCreate: 2,
+    expectMiniMaxCreate: 0,
+    expectMiniMaxIsConfigured: 0,
+    expectMiniMaxCapabilities: 1,
+    expectStderrSubstrings: [
+      "⚠ minimax does not support 'reader' — skipping",
+      "✓ read completed via zai (fallback)",
+    ],
+    expectStderrCount: 2,
+  },
+  {
+    name: "unsupported environment MINIMAX (fallback to ZAI)",
+    args: () => DEFAULT_READ_ARGS,
+    env: () => ({ SCOUTLINE_PROVIDER: "minimax" }),
+    expectStatus: 0,
+    expectCode: null,
+    expectInvokeCount: 1,
+    expectZaiCreate: 2,
+    expectMiniMaxCreate: 0,
+    expectMiniMaxIsConfigured: 0,
+    expectMiniMaxCapabilities: 1,
+    expectStderrSubstrings: [
+      "⚠ minimax does not support 'reader' — skipping",
+      "✓ read completed via zai (fallback)",
+    ],
+    expectStderrCount: 2,
+  },
+  {
+    // Provider-fallback Ticket 02 — strict-mode counter-test. Under
+    // `--no-fallback` the executor narrows the plan to `[effective]`
+    // only and the SAME preflight runs on it, so an incapable
+    // effective surfaces `UNSUPPORTED_CAPABILITY` (exit 1) — the
+    // exact 0.10.x code, with zero adapter work.
+    name: "unsupported explicit MINIMAX, --no-fallback (strict)",
+    args: () => ["--no-fallback", "--provider", "minimax", ...DEFAULT_READ_ARGS],
     env: () => ({}),
     expectStatus: 1,
     expectCode: "UNSUPPORTED_CAPABILITY",
@@ -434,18 +488,7 @@ const SELECTION_MATRIX = [
     expectMiniMaxCreate: 0,
     expectMiniMaxIsConfigured: 0,
     expectMiniMaxCapabilities: 1,
-  },
-  {
-    name: "unsupported environment MINIMAX",
-    args: () => DEFAULT_READ_ARGS,
-    env: () => ({ SCOUTLINE_PROVIDER: "minimax" }),
-    expectStatus: 1,
-    expectCode: "UNSUPPORTED_CAPABILITY",
-    expectInvokeCount: 0,
-    expectZaiCreate: 0,
-    expectMiniMaxCreate: 0,
-    expectMiniMaxIsConfigured: 0,
-    expectMiniMaxCapabilities: 1,
+    expectStderrCount: 1,
   },
 ];
 
@@ -462,7 +505,32 @@ describe("Reader Migration 04 selection matrix — read", () => {
       });
 
       assert.strictEqual(status, row.expectStatus, `status mismatch for ${row.name}`);
+      // Provider-fallback Ticket 02 — error envelopes land on stderr
+      // AFTER any executor notices, so the parser looks for the
+      // first JSON entry. Notices are stderr-only and never reach
+      // stdout. Default the expected stderr count to 1 when an error
+      // envelope is expected (no skip-notices for that path), 0
+      // otherwise.
+      const expectedStderrCount = row.expectStderrCount ?? (row.expectCode ? 1 : 0);
+      assert.strictEqual(
+        stderr.length,
+        expectedStderrCount,
+        `stderr length mismatch for ${row.name}: got ${JSON.stringify(stderr)}`,
+      );
+      if (row.expectStderrSubstrings) {
+        for (const sub of row.expectStderrSubstrings) {
+          assert.ok(
+            stderr.some((line) => line.includes(sub)),
+            `expected stderr substring "${sub}" for ${row.name}, got ${JSON.stringify(stderr)}`,
+          );
+        }
+      }
       if (row.expectCode) {
+        // The error envelope is the first stderr entry once notices
+        // are accounted for. When notices are present (--no-fallback
+        // path emits nothing), stderr[0] is the envelope; when there
+        // are no notices (e.g. unknown explicit provider) the same
+        // rule holds.
         const parsed = JSON.parse(stderr[0]);
         assert.strictEqual(
           parsed.code,
@@ -470,7 +538,11 @@ describe("Reader Migration 04 selection matrix — read", () => {
           `code mismatch for ${row.name}: ${stderr[0]}`,
         );
       } else {
-        assert.deepStrictEqual(stderr, [], `unexpected stderr for ${row.name}`);
+        // When no error is expected and no notices are expected,
+        // stderr must be empty.
+        if (expectedStderrCount === 0) {
+          assert.deepStrictEqual(stderr, [], `unexpected stderr for ${row.name}`);
+        }
       }
 
       assert.strictEqual(
@@ -511,10 +583,15 @@ describe("Reader Migration 04 selection matrix — read", () => {
 // ---------------------------------------------------------------------------
 
 describe("Reader Migration 04 unsupported path — zero selected-Provider work", () => {
-  it("read under explicit minimax: zero cache get/set, zero validate/identity/invoke", async () => {
+  it("read under explicit minimax --no-fallback: zero cache get/set, zero validate/identity/invoke", async () => {
+    // Provider-fallback Ticket 02: under the kill-switch
+    // (--no-fallback) the executor narrows the plan to `[effective]`
+    // and the SAME preflight runs on it, so an incapable effective
+    // surfaces `UNSUPPORTED_CAPABILITY` with zero adapter work. The
+    // strict-mode invariant tested here is preserved end-to-end.
     const m = makeMainDeps({ fetch: () => cannedContentResult() });
     const { adapter, stderr } = createRecordingAdapter();
-    const status = await main(["--provider", "minimax", ...DEFAULT_READ_ARGS], {
+    const status = await main(["--no-fallback", "--provider", "minimax", ...DEFAULT_READ_ARGS], {
       ...m.mainDeps,
       invocation: adapter,
     });
@@ -627,6 +704,12 @@ describe("Reader Migration 04 configuredSecrets — injected env only, never amb
 
 describe("Reader Migration 04 supported-but-unconfigured Z.AI surfaces ConfigurationError exit 3", () => {
   it("read: missing Z_AI_API_KEY exits 3 after support, before create", async () => {
+    // Provider-fallback Ticket 02: when no eligible candidate can
+    // serve `reader` (Z.A.I unconfigured, MiniMax incapable), the
+    // executor exhausts the plan and re-throws the EFFECTIVE
+    // provider's own ConfigurationError (exit 3) — never a
+    // synthesized substitute. The skip-notices for the two
+    // ineligible entries precede the error envelope on stderr.
     const m = makeMainDeps({
       fetch: () => cannedContentResult(),
       zaiConfigured: (env) => Boolean(env.Z_AI_API_KEY),
@@ -639,6 +722,46 @@ describe("Reader Migration 04 supported-but-unconfigured Z.AI surfaces Configura
     });
 
     assert.strictEqual(status, 3);
+    // The error envelope is the LAST stderr entry; skip-notices come
+    // first when fallback is enabled. Find the JSON entry to assert
+    // the code, regardless of how many notices precede it.
+    const jsonLine = stderr.find((line) => line.startsWith("{"));
+    assert.ok(jsonLine, `expected a JSON error envelope on stderr, got: ${JSON.stringify(stderr)}`);
+    const parsed = JSON.parse(jsonLine);
+    assert.strictEqual(parsed.code, "CONFIGURATION_ERROR");
+
+    // Support check ran; isConfigured ran; create NEVER ran on any
+    // eligible candidate path.
+    assert.strictEqual(m.zai.stats.capabilitiesCalls, 1);
+    assert.ok(m.zai.stats.isConfiguredCalls >= 1);
+    assert.strictEqual(m.zai.stats.createCalls, 0);
+
+    // Capability work never runs on the all-fail path.
+    const counts = capabilityCallCount(m.capability);
+    for (const [key, value] of Object.entries(counts)) {
+      assert.strictEqual(value, 0, `capability.${key} must be 0 on unconfigured path`);
+    }
+  });
+
+  it("read: missing Z_AI_API_KEY with --no-fallback restores strict exit 3 with no notices", async () => {
+    // Provider-fallback Ticket 02 — kill-switch counter-test. Under
+    // --no-fallback the plan is `[effective]` only and the SAME
+    // preflight runs on it, so an unconfigured effective surfaces
+    // ConfigurationError (exit 3) with zero adapter work and no
+    // notices — the exact 0.10.x behaviour.
+    const m = makeMainDeps({
+      fetch: () => cannedContentResult(),
+      zaiConfigured: (env) => Boolean(env.Z_AI_API_KEY),
+    });
+    const { adapter, stderr } = createRecordingAdapter();
+    const status = await main(["--no-fallback", ...DEFAULT_READ_ARGS], {
+      ...m.mainDeps,
+      env: { MINIMAX_API_KEY: "minimax-key" },
+      invocation: adapter,
+    });
+
+    assert.strictEqual(status, 3);
+    assert.strictEqual(stderr.length, 1, "no executor notices under --no-fallback");
     const parsed = JSON.parse(stderr[0]);
     assert.strictEqual(parsed.code, "CONFIGURATION_ERROR");
 
@@ -657,6 +780,14 @@ describe("Reader Migration 04 supported-but-unconfigured Z.AI surfaces Configura
 
 describe("Reader Migration 04 descriptor advertises reader but Adapter omits reader", () => {
   it("read: fails closed as UNSUPPORTED_CAPABILITY after create", async () => {
+    // Provider-fallback Ticket 02: the executor's preflight runs
+    // the adapter-handle agreement check on the descriptor; when the
+    // Adapter omits the handle, the candidate is classified
+    // incapable (just like a metadata-level capability mismatch) and
+    // skip-noticed. On all-fail the effective's typed error surfaces
+    // — UNSUPPORTED_CAPABILITY (exit 1) here because the
+    // adapter-omits case shares the `incapable` branch with
+    // capability mismatches. The capability spy shows zero work.
     const capability = makeRecordingCapability({ fetch: () => cannedContentResult() });
     const zai = makeRecordingDescriptor({
       id: "zai",
@@ -684,10 +815,16 @@ describe("Reader Migration 04 descriptor advertises reader but Adapter omits rea
     });
 
     assert.strictEqual(status, 1);
-    const parsed = JSON.parse(stderr[0]);
+    // Provider-fallback Ticket 02: the executor emits skip-notices
+    // for both ineligible entries (zai's adapter omits reader;
+    // minimax doesn't advertise reader) before the typed error
+    // envelope. Find the JSON entry to assert the code.
+    const jsonLine = stderr.find((line) => line.startsWith("{"));
+    assert.ok(jsonLine, `expected a JSON error envelope on stderr, got: ${JSON.stringify(stderr)}`);
+    const parsed = JSON.parse(jsonLine);
     assert.strictEqual(parsed.code, "UNSUPPORTED_CAPABILITY");
 
-    // create ran once (so the fail-closed check could observe the
+    // create ran once (so the executor's preflight could observe the
     // missing adapter.reader), but no capability work ran.
     assert.strictEqual(zai.stats.createCalls, 1);
     const counts = capabilityCallCount(capability);

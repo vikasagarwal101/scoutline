@@ -8,10 +8,15 @@
  * failure redaction live in {@link buildQuotaDashboard} so the command
  * never imports a Provider monitor client or maps a Provider response.
  *
- * Default mode (effective Provider) propagates quota failures through
- * the ordinary error path (thrown → invokeCommand). All-provider mode
- * (`--all-providers`) uses settled collection, emits successful and
- * failed entries, and yields exit 1 when any configured Provider fails.
+ * The DEFAULT is multi-Provider (every configured Provider with a quota
+ * Capability). Single-Provider mode is selected only when a Provider is
+ * explicitly pinned (--provider or SCOUTLINE_PROVIDER); --all-providers
+ * forces the multi-Provider default even under a pin.
+ *
+ * Single-Provider mode propagates quota failures through the ordinary
+ * error path (thrown → invokeCommand). Multi-Provider mode uses settled
+ * collection, emits successful and failed entries, and yields exit 1
+ * when any configured Provider fails.
  */
 
 import type { CommandResult } from "../command-invocation.js";
@@ -215,26 +220,33 @@ Quota Command - Provider-normalized plan usage dashboard
 
 Usage: scoutline quota [options]
 
-Reports plan usage for the effective Provider (or every configured
-Provider with --all-providers) as a normalized, schema-version-1
-dashboard (ADR-0001). Each entry carries named quota categories with
-current and optional weekly windows, counts, remaining percentage, and
-ISO reset time. No Provider-specific field crosses the Interface.
+Reports plan usage as a normalized, schema-version-1 dashboard
+(ADR-0001). Each entry carries named quota categories with current and
+optional weekly windows, counts, remaining percentage, and ISO reset
+time. No Provider-specific field crosses the Interface.
+
+Default mode reports EVERY configured Provider with a quota Capability,
+in registry order. Pin a single Provider with --provider <id> (or the
+SCOUTLINE_PROVIDER env var); --all-providers explicitly forces the
+multi-Provider default even under a pin.
 
 Options:
-  --all-providers   Query every configured Provider in registry order.
-                    Successful and failed entries both appear; the
-                    command exits 1 when any Provider fails.
+  --all-providers   Force multi-Provider mode (the default). Successful
+                    and failed entries both appear; the command exits 1
+                    when any Provider fails.
+  --provider <id>   Pin a single Provider (zai | minimax | tavily | exa |
+                    brave | firecrawl) instead of the multi-Provider default.
 
 Examples:
-  scoutline quota                  # effective Provider usage
-  scoutline quota --all-providers  # every configured Provider
+  scoutline quota                  # every configured Provider
+  scoutline quota --provider zai   # only zai
+  scoutline quota --all-providers  # explicit multi-Provider (same as default)
   scoutline quota -O pretty        # human-readable with progress bars
   scoutline quota -O json          # envelope-wrapped for scripts
 
 Notes:
   - Quota is never cached by the local response cache.
-  - Default-mode failures propagate as ordinary errors (exit 3 for an
-    unconfigured effective Provider).
-  - All-provider mode never invokes an unconfigured Provider.
+  - Multi-Provider mode never invokes an unconfigured Provider.
+  - Single-Provider mode (under a pin) propagates failures as ordinary
+    errors (exit 3 for an unconfigured pinned Provider).
 `.trim();

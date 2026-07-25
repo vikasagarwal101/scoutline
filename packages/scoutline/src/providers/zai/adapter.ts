@@ -25,6 +25,7 @@
  */
 
 import crypto from "node:crypto";
+import { promises as fsPromises } from "node:fs";
 
 import type {
   ProviderAdapter,
@@ -65,7 +66,12 @@ import {
 import { buildLegacyRepositoryCacheKey } from "../../lib/cache.js";
 import { applySearchTopic } from "../../lib/search-topic.js";
 import { isZaiConfigured, requireZaiApiKey } from "./credentials.js";
-import { resolveImageSource, resolveVideoSource } from "./media.js";
+import {
+  resolveImageSource,
+  resolveVideoSource,
+  fetchImageSource,
+  fetchVideoSource,
+} from "./media.js";
 import { createZaiQuotaCapability, type ZaiQuotaCapabilityOptions } from "./quota.js";
 import { createZaiRepositoryCapability } from "./repository.js";
 import { createZaiReaderCapability } from "./reader.js";
@@ -486,21 +492,38 @@ function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionC
       // Unsupported operations never reach here: the descriptor-level
       // gate and `supports()` reject first (defence in depth).
       resolveApiKey();
-      const { toolName, args } = buildZaiVisionInvocation(request);
-
-      // Disable client-owned cache and retry so shared execution is the
-      // single policy owner. Vision enables the Z.AI vision MCP server.
-      const clientOptions: ZaiMcpClientOptions = {
-        enableVision: true,
-        noCache: true,
-        disableRetry: true,
-      };
-      const client = clientFactory(clientOptions);
+      const tempPaths: string[] = [];
       try {
-        const raw = await invokeZaiVision(client, toolName, args);
-        return normalizeZaiVisionResult(raw);
+        // First attempt: HTTP(S) URLs pass straight through to the
+        // Provider's server-side fetcher.
+        const first = buildZaiVisionInvocation(request, resolveImageSource, resolveVideoSource);
+        try {
+          return normalizeZaiVisionResult(
+            await invokeZaiVisionOnce(clientFactory, first.toolName, first.args),
+          );
+        } catch (error) {
+          // Automatic URL -> local fallback (Issue E): Z.AI's server-side
+          // URL fetcher rejects some image URLs with a fast client error
+          // (e.g. code 1210, HTTP 400) and its vision MCP refuses base64
+          // data URIs. Retry by fetching each URL source here to a temp
+          // file (validated against the same Z.AI media limits) and
+          // passing that path. Only fast client errors (400/422) qualify
+          // — timeouts/5xx are owned by the shared retry policy and would
+          // double latency if re-attempted here.
+          if (isUrlVisionSource(request) && isClientSourceError(error)) {
+            const fetched = await prefetchVisionUrlSources(request);
+            for (const local of fetched.values()) tempPaths.push(local);
+            const resolveImage = makePrefetchResolver(fetched, resolveImageSource);
+            const resolveVideo = makePrefetchResolver(fetched, resolveVideoSource);
+            const fallback = buildZaiVisionInvocation(request, resolveImage, resolveVideo);
+            return normalizeZaiVisionResult(
+              await invokeZaiVisionOnce(clientFactory, fallback.toolName, fallback.args),
+            );
+          }
+          throw error;
+        }
       } finally {
-        await client.close().catch(() => {});
+        await cleanupTempPaths(tempPaths);
       }
     },
   };
@@ -509,13 +532,136 @@ function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionC
 }
 
 /**
+ * Perform one vision transport attempt. A fresh client is constructed per
+ * attempt (the Adapter never retries internally; shared execution owns the
+ * retry policy) and closed exactly once in `finally`. Close failure never
+ * replaces a successful result nor masks the primary failure.
+ */
+async function invokeZaiVisionOnce(
+  clientFactory: ZaiAdapterDependencies["clientFactory"],
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  const clientOptions: ZaiMcpClientOptions = {
+    enableVision: true,
+    noCache: true,
+    disableRetry: true,
+  };
+  const client = clientFactory(clientOptions);
+  try {
+    return await invokeZaiVision(client, toolName, args);
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
+/**
+ * Whether a `VisionRequest` carries at least one HTTP(S) source. The
+ * URL->local fallback only applies when a Provider-attempted URL is the
+ * likely cause of a client error; local-file sources already resolved
+ * before transport and are not re-attempted with a fetch.
+ */
+function isUrlVisionSource(request: VisionRequest): boolean {
+  return visionSourceUrls(request).length > 0;
+}
+
+/**
+ * Collect the HTTP(S) source strings carried by a `VisionRequest`.
+ * `diff` carries two image sources; `video` carries one video source;
+ * every other operation carries one image source.
+ */
+function visionSourceUrls(request: VisionRequest): string[] {
+  const out: string[] = [];
+  const pushIfUrl = (s: string | undefined): void => {
+    if (typeof s === "string" && (s.startsWith("http://") || s.startsWith("https://"))) {
+      out.push(s);
+    }
+  };
+  switch (request.operation) {
+    case "diff":
+      pushIfUrl(request.expectedSource);
+      pushIfUrl(request.actualSource);
+      break;
+    case "video":
+      pushIfUrl(request.source);
+      break;
+    default:
+      pushIfUrl(request.source);
+  }
+  return out;
+}
+
+/**
+ * Whether a normalized vision error is a fast client error that signals
+ * the Provider rejected the image source (400/422). Such errors are NOT
+ * retried by the shared policy (4xx is terminal), so the URL->local
+ * fallback adds value without conflicting with it.
+ */
+function isClientSourceError(error: unknown): boolean {
+  return error instanceof ApiError && (error.statusCode === 400 || error.statusCode === 422);
+}
+
+/**
+ * Prefetch each HTTP(S) source URL on the request to a validated temp
+ * file path, returning a Map from the original URL to its local path.
+ * Video sources use the video media limits; every other source uses the
+ * image limits. A fetch failure throws the normalized media error and
+ * aborts the fallback (the original client error is then surfaced).
+ */
+async function prefetchVisionUrlSources(request: VisionRequest): Promise<Map<string, string>> {
+  const isVideo = request.operation === "video";
+  const fetched = new Map<string, string>();
+  for (const url of visionSourceUrls(request)) {
+    const local = isVideo ? await fetchVideoSource(url) : await fetchImageSource(url);
+    fetched.set(url, local);
+  }
+  return fetched;
+}
+
+/**
+ * Build a sync media resolver for the fallback attempt. A source present
+ * in the prefetched `urlToPath` map is substituted with its local temp
+ * path; every other source falls through to the normal passthrough
+ * resolver (`resolveImageSource`/`resolveVideoSource`).
+ */
+function makePrefetchResolver(
+  urlToPath: Map<string, string>,
+  passthrough: (source: string) => string,
+): (source: string) => string {
+  return (source: string) => urlToPath.get(source) ?? passthrough(source);
+}
+
+/**
+ * Unlink every prefetched temp file. Each unlink is best-effort: a
+ * missing file or permission failure never replaces a successful result
+ * nor masks a primary failure.
+ */
+async function cleanupTempPaths(tempPaths: string[]): Promise<void> {
+  for (const p of tempPaths) {
+    try {
+      await fsPromises.unlink(p);
+    } catch {
+      // Best-effort cleanup; ignore.
+    }
+  }
+}
+
+/**
  * Map a discriminated `VisionRequest` to its dedicated Z.AI MCP tool name
- * and arguments, resolving media through the Z.AI media Module. Field
+ * and arguments, resolving media through the supplied resolvers. Field
  * names mirror the characterized transport schema (see `mcp-client.ts`
  * and the live discovery fixtures). Optional fields are omitted when
  * absent so the Provider receives the same request shape Phase 1 sent.
+ *
+ * The image/video resolvers are injected so the first attempt can pass
+ * HTTP(S) URLs straight through (`resolveImageSource`) while a fallback
+ * attempt can substitute a fetched temp-file path (`fetchImageSource`).
  */
-function buildZaiVisionInvocation(request: VisionRequest): {
+function buildZaiVisionInvocation(
+  request: VisionRequest,
+  resolveImage: (source: string) => string,
+  resolveVideo: (source: string) => string,
+): {
   toolName: string;
   args: Record<string, unknown>;
 } {
@@ -524,7 +670,7 @@ function buildZaiVisionInvocation(request: VisionRequest): {
       return {
         toolName: VISION_ANALYZE_TOOL_PUBLIC_NAME,
         args: {
-          image_source: resolveImageSource(request.source),
+          image_source: resolveImage(request.source),
           prompt: request.instruction,
         },
       };
@@ -532,14 +678,14 @@ function buildZaiVisionInvocation(request: VisionRequest): {
       return {
         toolName: VISION_UI_TO_ARTIFACT_TOOL_PUBLIC_NAME,
         args: {
-          image_source: resolveImageSource(request.source),
+          image_source: resolveImage(request.source),
           output_type: request.outputType,
           prompt: request.instruction,
         },
       };
     case "extract-text": {
       const args: Record<string, unknown> = {
-        image_source: resolveImageSource(request.source),
+        image_source: resolveImage(request.source),
         prompt: request.instruction,
       };
       if (request.programmingLanguage) {
@@ -549,7 +695,7 @@ function buildZaiVisionInvocation(request: VisionRequest): {
     }
     case "diagnose-error": {
       const args: Record<string, unknown> = {
-        image_source: resolveImageSource(request.source),
+        image_source: resolveImage(request.source),
         prompt: request.instruction,
       };
       if (request.context) {
@@ -559,7 +705,7 @@ function buildZaiVisionInvocation(request: VisionRequest): {
     }
     case "diagram": {
       const args: Record<string, unknown> = {
-        image_source: resolveImageSource(request.source),
+        image_source: resolveImage(request.source),
         prompt: request.instruction,
       };
       if (request.diagramType) {
@@ -569,7 +715,7 @@ function buildZaiVisionInvocation(request: VisionRequest): {
     }
     case "chart": {
       const args: Record<string, unknown> = {
-        image_source: resolveImageSource(request.source),
+        image_source: resolveImage(request.source),
         prompt: request.instruction,
       };
       if (request.focus) {
@@ -581,8 +727,8 @@ function buildZaiVisionInvocation(request: VisionRequest): {
       return {
         toolName: VISION_DIFF_TOOL_PUBLIC_NAME,
         args: {
-          expected_image_source: resolveImageSource(request.expectedSource),
-          actual_image_source: resolveImageSource(request.actualSource),
+          expected_image_source: resolveImage(request.expectedSource),
+          actual_image_source: resolveImage(request.actualSource),
           prompt: request.instruction,
         },
       };
@@ -590,7 +736,7 @@ function buildZaiVisionInvocation(request: VisionRequest): {
       return {
         toolName: VISION_VIDEO_TOOL_PUBLIC_NAME,
         args: {
-          video_source: resolveVideoSource(request.source),
+          video_source: resolveVideo(request.source),
           prompt: request.instruction,
         },
       };

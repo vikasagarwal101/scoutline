@@ -967,3 +967,121 @@ describe("quota command — warnings rendered to stderr", () => {
     assert.ok(stderr.join("").includes(BRAVE_QUOTA_CAVEAT), "caveat still emitted");
   });
 });
+
+// ===========================================================================
+// 10. Quota default mode through main() — multi-Provider is the default;
+// an explicit --provider pin (or SCOUTLINE_PROVIDER) selects single mode.
+// ===========================================================================
+
+import { main } from "../dist/index.js";
+
+function makeMainAdapter() {
+  const stdout = [];
+  const stderr = [];
+  const adapter = {
+    stdoutIsTTY: false,
+    stdinIsTTY: false,
+    environmentOutputMode: "data",
+    readStdin: async () => "",
+    writeStdout: (v) => stdout.push(v),
+    writeStderr: (v) => stderr.push(v),
+    runQuietly: async (op) => op(),
+    setExitCode: () => {},
+  };
+  return { adapter, stdout, stderr };
+}
+
+function makeQuotaProviderDescriptor(id, { result, configured = true }) {
+  let invokes = 0;
+  return {
+    id,
+    isConfigured: () => configured,
+    capabilities: () => new Set(["quota"]),
+    create: () => ({
+      id,
+      quota: {
+        async invoke() {
+          invokes += 1;
+          return result;
+        },
+      },
+    }),
+    invokeCount: () => invokes,
+  };
+}
+
+describe("quota dispatch through main() — multi-Provider default", () => {
+  it("plain `quota` queries every configured Provider (the default)", async () => {
+    const zai = makeQuotaProviderDescriptor("zai", { result: ZAI_SUCCESS });
+    const minimax = makeQuotaProviderDescriptor("minimax", { result: MINIMAX_SUCCESS });
+    const { adapter, stdout } = makeMainAdapter();
+    const code = await main(["quota"], {
+      invocation: adapter,
+      env: { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k" },
+      providerDescriptors: [zai, minimax],
+    });
+    assert.strictEqual(code, 0);
+    const dashboard = JSON.parse(stdout.join(""));
+    assert.deepStrictEqual(
+      dashboard.providers.map((p) => p.provider),
+      ["zai", "minimax"],
+      "default shows every configured Provider",
+    );
+    assert.strictEqual(zai.invokeCount(), 1);
+    assert.strictEqual(minimax.invokeCount(), 1);
+  });
+
+  it("--provider <id> pins single-Provider mode", async () => {
+    const zai = makeQuotaProviderDescriptor("zai", { result: ZAI_SUCCESS });
+    const minimax = makeQuotaProviderDescriptor("minimax", { result: MINIMAX_SUCCESS });
+    const { adapter, stdout } = makeMainAdapter();
+    const code = await main(["--provider", "zai", "quota"], {
+      invocation: adapter,
+      env: { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k" },
+      providerDescriptors: [zai, minimax],
+    });
+    assert.strictEqual(code, 0);
+    const dashboard = JSON.parse(stdout.join(""));
+    assert.deepStrictEqual(
+      dashboard.providers.map((p) => p.provider),
+      ["zai"],
+    );
+    assert.strictEqual(minimax.invokeCount(), 0, "pinned-out Provider never invoked");
+  });
+
+  it("SCOUTLINE_PROVIDER env pins single-Provider mode", async () => {
+    const zai = makeQuotaProviderDescriptor("zai", { result: ZAI_SUCCESS });
+    const minimax = makeQuotaProviderDescriptor("minimax", { result: MINIMAX_SUCCESS });
+    const { adapter, stdout } = makeMainAdapter();
+    const code = await main(["quota"], {
+      invocation: adapter,
+      env: { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k", SCOUTLINE_PROVIDER: "minimax" },
+      providerDescriptors: [zai, minimax],
+    });
+    assert.strictEqual(code, 0);
+    const dashboard = JSON.parse(stdout.join(""));
+    assert.deepStrictEqual(
+      dashboard.providers.map((p) => p.provider),
+      ["minimax"],
+    );
+    assert.strictEqual(zai.invokeCount(), 0);
+  });
+
+  it("--all-providers forces multi-Provider even under a --provider pin", async () => {
+    const zai = makeQuotaProviderDescriptor("zai", { result: ZAI_SUCCESS });
+    const minimax = makeQuotaProviderDescriptor("minimax", { result: MINIMAX_SUCCESS });
+    const { adapter, stdout } = makeMainAdapter();
+    const code = await main(["--provider", "zai", "quota", "--all-providers"], {
+      invocation: adapter,
+      env: { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k" },
+      providerDescriptors: [zai, minimax],
+    });
+    assert.strictEqual(code, 0);
+    const dashboard = JSON.parse(stdout.join(""));
+    assert.deepStrictEqual(
+      dashboard.providers.map((p) => p.provider),
+      ["zai", "minimax"],
+      "--all-providers overrides the pin",
+    );
+  });
+});

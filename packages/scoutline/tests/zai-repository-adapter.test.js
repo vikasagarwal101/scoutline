@@ -217,12 +217,6 @@ before(async () => {
       "repository",
       "file-malformed-unclosed.json",
     ),
-    fileMixedMalformed: await readFixture(
-      "providers",
-      "zai",
-      "repository",
-      "file-mixed-malformed.json",
-    ),
     treeRootValid: await readFixture("providers", "zai", "repository", "tree-root-valid.json"),
     treeRootMalformed: await readFixture(
       "providers",
@@ -486,12 +480,27 @@ describe("Z.AI Repository Adapter — File parser", () => {
     );
   });
 
-  it("rejects a mixed response (surrounding/trailing prose)", async () => {
-    const { capability } = makeAdapter(fixtures.fileMixedMalformed.raw);
-    await assert.rejects(
-      capability.invoke({ repository: "facebook/react", path: "README.md" }),
-      (err) => err instanceof ApiError && err.statusCode === 502,
-    );
+  it("strips surrounding preamble/postamble prose and returns the body", async () => {
+    // ZRead wraps `<file_content>` in a preamble ("File content for ...
+    // in <repo>." / "Source: <url>") and a postamble ("Tip: ..."). The
+    // parser locates the single wrapper pair and discards both.
+    const raw =
+      "File content for README.md in facebook/react.\n" +
+      "Source: https://github.com/facebook/react/blob/main/README.md\n\n" +
+      "<file_content>\n# Project README\n\nThis repository demonstrates the fixture format.\n</file_content>\n\n" +
+      "Tip: To understand the repository, view at: https://zread.ai/facebook/react";
+    const { capability } = makeAdapter(raw);
+    const out = await capability.invoke({
+      repository: "facebook/react",
+      path: "README.md",
+    });
+    assert.strictEqual(out.schemaVersion, 1);
+    assert.ok(!out.content.includes("<file_content>"));
+    assert.match(out.content, /Project README/);
+    // Preamble and postamble are discarded.
+    assert.ok(!out.content.includes("File content for"));
+    assert.ok(!out.content.includes("Source:"));
+    assert.ok(!out.content.includes("Tip:"));
   });
 
   it("rejects a non-string Provider response", async () => {
@@ -747,14 +756,37 @@ describe("Z.AI Repository Adapter — Directory parser", () => {
   // and empty descendant names are rejected. The first non-blank
   // line must be a glyph-less root label.
 
-  it("rejects a glyph-bearing first line (missing root label) (P6-04C)", async () => {
-    // No root label — the first non-blank line is a glyph-bearing
-    // entry, which is not a valid root label.
+  it("accepts a glyph-bearing first line (no root label) (current ZRead format)", async () => {
+    // Current ZRead responses omit the glyph-less root label and jump
+    // straight into immediate entries. The first non-blank line is a
+    // glyph-bearing entry, which must be parsed (not rejected).
     const raw = "<structure>\n├── src/\n├── tests/\n</structure>";
     const { capability } = makeAdapter(raw);
-    await assert.rejects(
-      capability.invoke({ repository: "facebook/react", path: "" }),
-      (err) => err instanceof ApiError && err.statusCode === 502,
+    const out = await capability.invoke({ repository: "facebook/react", path: "" });
+    assert.deepStrictEqual(
+      out.entries.map((e) => e.name),
+      ["src", "tests"],
+    );
+    assert.ok(out.entries.every((e) => e.kind === "directory"));
+  });
+
+  it("strips a 'Directory Structure' preamble and 'Tip' postamble", async () => {
+    // Current ZRead responses wrap `<structure>` in a preamble
+    // ("Directory Structure of <repo>:") and a postamble ("Tip: ...").
+    // Both are discarded; immediate entries parse normally.
+    const raw =
+      "Directory Structure of facebook/react:\n\n" +
+      "<structure>\n├── README.md\n├── packages/\n└── yarn.lock\n</structure>\n\n" +
+      "Tip: Only showing 3 levels of depth. Use get_repo_structure on a subdirectory to see deeper.";
+    const { capability } = makeAdapter(raw);
+    const out = await capability.invoke({ repository: "facebook/react", path: "" });
+    assert.deepStrictEqual(
+      out.entries.map((e) => e.name),
+      ["README.md", "packages", "yarn.lock"],
+    );
+    assert.deepStrictEqual(
+      out.entries.map((e) => e.kind),
+      ["file", "directory", "file"],
     );
   });
 

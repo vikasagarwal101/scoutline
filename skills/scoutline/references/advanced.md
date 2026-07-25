@@ -8,9 +8,9 @@ gate.
 
 Shared commands (`search`, `vision analyze`, `quota`, `doctor`),
 **`repo`**, **`read`**, **`crawl`**, **`map`**, and **`research`** accept
-the global `--provider <zai|minimax|tavily|exa|firecrawl>` flag. Precedence:
+the global `--provider <zai|minimax|tavily|exa|brave|firecrawl>` flag. Precedence:
 
-1. `--provider <zai|minimax|tavily|exa|firecrawl>` on the command line
+1. `--provider <zai|minimax|tavily|exa|brave|firecrawl>` on the command line
 2. `SCOUTLINE_PROVIDER` environment variable
 3. Default `zai`
 
@@ -19,14 +19,17 @@ invocation. Provider selection is never inferred from credentials.
 
 `tools`, `tool`, `call`, and `code` accept the flag but ignore it; they
 remain Z.AI-only and do not validate the supplied value. `repo` and `read`
-participate in selection: Z.AI, Tavily, and Exa supply `reader`; only
-Z.AI supplies `repository-exploration`. `crawl` and `map`
-participate in selection but only Tavily currently supplies those
-Capabilities. `research` is supplied by Tavily and Exa. Selecting a
-non-supplier for any of them returns
-`UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter
-creation, credential resolution for use, cache identity, or transport
-construction, with no fallback.
+participate in selection: Z.AI, Tavily, Exa, and Firecrawl supply
+`reader`; only Z.AI supplies `repository-exploration`. `crawl` and `map`
+participate in selection and are supplied by Tavily and Firecrawl.
+`research` is supplied by Tavily and Exa. By default (0.11.0+) Provider
+fallback is always-on: selecting a non-supplier emits a stderr notice
+and silently reroutes to the next eligible configured supplier in
+registry order. Under `--no-fallback` (or `SCOUTLINE_NO_FALLBACK=1`)
+the preflight surfaces `UNSUPPORTED_CAPABILITY` for the selected
+non-supplier before descriptor configuration, Adapter creation,
+credential resolution for use, cache identity, or transport
+construction.
 
 ```bash
 # 1. Flag wins over everything

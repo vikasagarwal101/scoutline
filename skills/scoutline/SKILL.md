@@ -64,29 +64,42 @@ credentials. Unknown values fail fast with `VALIDATION_ERROR`.
 `tools`, `tool`, `call`, and `code` accept the flag but ignore it; they
 remain Z.AI-only.
 
-Capability coverage at launch:
+Capability coverage at launch (generated from the production registry
+in registry order `[zai, minimax, tavily, exa, brave, firecrawl]`):
 
-- `search` — Z.AI, MiniMax, Tavily, Exa, Brave (the only search control honored by
-  every Provider is `--topic <general|news|finance>`; Brave is the only
-  Provider that advertises `--type video`)
-- `vision.interpret-image` — Z.AI, MiniMax
-- `quota`, `diagnostics` — Z.AI, MiniMax, Tavily, Brave (Exa has diagnostics but not quota)
-- `read` — Z.AI, Tavily, Exa (Tavily and Exa reject Z.AI-only options:
+- `search` — Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl. The only
+  search control honored by every Provider is `--topic <general|news|finance>`.
+  Brave is the only Provider that accepts `--type video`; every other
+  Provider rejects `controls.type` as `UnsupportedOptionError` so
+  option-level fallback continues to Brave.
+- `vision.interpret-image` — Z.AI, MiniMax. Specialized Vision ops
+  (`ui-artifact`, `extract-text`, `diagnose-error`, `diagram`, `chart`)
+  follow the same registry and are mediated by MiniMax's compiled
+  conformance registry.
+- `quota` — Z.AI, MiniMax, Tavily, Firecrawl (credits), Brave.
+  Exa does not advertise quota.
+- `diagnostics` — every built-in Provider (Z.AI, MiniMax, Tavily, Exa,
+  Brave, Firecrawl).
+- `read` — Z.AI, Tavily, Exa, Firecrawl (MiniMax and Brave do not
+  advertise it; Tavily/Exa/Firecrawl reject Z.AI-only reader options:
   `--with-links`, `--no-gfm`, `--keep-img-data-url`,
-  `--with-images-summary`)
-- `repo` — Z.AI only
-- `crawl`, `map` — Tavily only
-- `research` — Tavily, Exa
+  `--with-images-summary`).
+- `repo` — Z.AI only (provider-exploration is Z.AI-supplied).
+- `crawl` — Tavily (sync), Firecrawl (async, resumable after Ctrl-C).
+- `map` — Tavily, Firecrawl.
+- `research` — Tavily, Exa. Credit-intensive (4-250 credits).
 
-MiniMax does not currently advertise the `repository-exploration` or
-`reader` Capabilities — selecting MiniMax (explicitly or via
-`SCOUTLINE_PROVIDER`) for any `repo` subcommand or for `read` returns
-`UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter
-creation, credential resolution for use, cache identity, or transport
-construction, with no Z.AI fallback. Z.AI and MiniMax do not advertise
-`crawl`, `map`, or `research` — selecting either for those commands
-returns `UNSUPPORTED_CAPABILITY` with no Tavily fallback. Brave does
-not supply Reader, Crawl, Map, Research, or Vision.
+Z.AI is the only Provider that supplies `repo search/read/tree` and the
+Raw tools (`tools`, `tool`, `call`). Brave does not supply Reader,
+Crawl, Map, Research, or Vision. **Provider fallback is always-on by
+default**
+(0.11.0+): selecting a non-supplier emits a stderr notice and silently
+reroutes to the next eligible configured Provider in registry order
+`[zai, minimax, tavily, exa, brave, firecrawl]`. Pass
+`--no-fallback` (or set `SCOUTLINE_NO_FALLBACK=1`) to restore the
+previous strict `UNSUPPORTED_CAPABILITY` behavior — the preflight
+still runs capability metadata → configuration → adapter handle in
+order on the effective Provider only.
 
 ## Capability Matrix
 
@@ -183,8 +196,11 @@ npx scoutline cache clear                 # delete every file in cache/ and tool
 
 `scoutline repo search`, `scoutline repo read`, and `scoutline repo tree`
 participate in Provider selection. Z.AI advertises and supplies
-`repository-exploration`; MiniMax and Tavily do not, so selecting either
-returns `UNSUPPORTED_CAPABILITY` with no fallback.
+`repository-exploration`; the other built-in Providers do not. By
+default (0.11.0+) Provider fallback auto-reroutes to Z.AI with a
+stderr notice; under `--no-fallback` (or `SCOUTLINE_NO_FALLBACK=1`)
+the preflight surfaces `UNSUPPORTED_CAPABILITY` for the selected
+non-supplier.
 
 ### v0.2 → v1 schema migration (breaking)
 
@@ -246,11 +262,15 @@ legacy-key construction — ambient `process.env` is never reread.
 
 ## Reader
 
-`scoutline read` participates in Provider selection. Z.AI and Tavily
-both advertise `reader`; Z.AI supplies it through the Z.AI Reader
-Adapter, and Tavily supplies it through the Tavily `/extract` endpoint.
-MiniMax does not, so selecting MiniMax returns `UNSUPPORTED_CAPABILITY`
-with no fallback. Tavily rejects the Z.AI-only options
+`scoutline read` participates in Provider selection. Z.AI, Tavily, Exa,
+and Firecrawl advertise `reader`; Z.AI supplies it through the Z.AI
+Reader Adapter, Tavily through the Tavily `/extract` endpoint, Exa
+through `/contents`, and Firecrawl through `/v2/scrape`. MiniMax and
+Brave do not, so by default (0.11.0+) selecting either emits a stderr
+notice and Provider fallback auto-reroutes to the next eligible
+configured supplier; under `--no-fallback` (or
+`SCOUTLINE_NO_FALLBACK=1`) the preflight surfaces
+`UNSUPPORTED_CAPABILITY`. Tavily rejects the Z.AI-only options
 (`--with-links`, `--no-gfm`, `--keep-img-data-url`,
 `--with-images-summary`) with `UNSUPPORTED_OPTION` when set to `true`.
 

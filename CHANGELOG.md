@@ -4,6 +4,60 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-26
+
+### Changed (contract reversal — please read)
+- **Provider fallback is always-on by default.** The long-standing
+  "no fallback" contract is reversed: when the selected provider
+  does not advertise a capability (for example, MiniMax does not
+  advertise `repository-exploration` or `reader`) or fails at
+  runtime, Scoutline now emits a stderr notice and silently tries
+  the next eligible configured Provider in registry order
+  `[zai, minimax, tavily, exa, brave, firecrawl]`. The selected
+  provider remains the *first* one tried, so the user-visible
+  behavior is identical when the pin works; the change only affects
+  what happens when it does not. This reverses the most heavily
+  documented invariant in the project, so every public surface that
+  promised "no fallback" has been updated; the previous behavior is
+  preserved verbatim by the new kill-switch.
+- **New kill-switch: `--no-fallback` (or `SCOUTLINE_NO_FALLBACK=1`).**
+  Restores the previous strict single-Provider, fail-loud behavior
+  for scripting and cost-sensitive workflows. Under the kill-switch
+  the candidate plan is reduced to the effective provider only and
+  the same preflight (capability metadata → configuration → adapter
+  handle agreement) runs on it, so an incapable effective throws
+  `UNSUPPORTED_CAPABILITY` (exit 1) and an unconfigured effective
+  throws `CONFIGURATION_ERROR` (exit 3) with zero adapter work for
+  the unsupported case. The capability-before-configuration
+  ordering (FR-023, FR-024) is **preserved** under `--no-fallback`,
+  not retired. `--no-fallback` is tested to restore exact 0.10.x
+  exit codes for every shared-capability command.
+
+### Added
+- New ADR [`docs/adr/0002-provider-fallback.md`](docs/adr/0002-provider-fallback.md)
+  records the decision, the kill-switch, the critique's evidence
+  that the pre-charge boundary is unprovable, the explicit
+  acceptance of the async double-charge risk, and which old
+  selection requirements are preserved vs retired.
+- A "Why did I get charged twice?" entry in
+  [`docs/troubleshooting.md`](docs/troubleshooting.md#why-did-i-get-charged-twice-on-a-single-crawl--map--research)
+  documenting the accepted async risk with worst-case charged-request
+  bounds: `crawl` ≤ 2, `map` ≤ 2, `research` ≤ 2 under retry+fallback
+  with both candidates configured; default (winner only) = 1 each;
+  `--no-fallback` = 1/1/1.
+
+### Accepted risk (cost-bearing async ops)
+- For `crawl`, `map`, and `research`, a runtime failure on the
+  effective provider may fall back to another provider **even if the
+  failed provider had already accepted or charged a job**. Providers
+  (Firecrawl, Tavily, Exa) do not offer idempotency keys,
+  pre-charge acknowledgements, or refunds for accepted-then-failed
+  work, so the residual double-charge risk is **accepted** in
+  exchange for resilience. `--no-fallback` is the documented opt-out
+  for cost-sensitive workflows. The accepted risk is stated in the
+  ADR, the `crawl` / `map` / `research` command help, and
+  `docs/troubleshooting.md`.
+
 ## [0.10.2] - 2026-07-25
 
 ### Fixed
@@ -102,6 +156,10 @@ All notable changes to this project will be documented in this file.
   `research`) — crawl is per-page cost-bearing; an auto-retried create
   could double-charge. Recovery is via state-file resume / reclaim-on-
   miss on the next user invocation. Affects Tavily crawl too (was 1).
+- `defaultRetryPolicy("map")` is now `maxRetries:0` (grouped with
+  `crawl` / `research`) — map is cost-bearing per batch; the documented
+  `--no-fallback` cost guarantee of `1/1/1` per command depends on this
+  default (0.11.0 review Fix 1). Affects Tavily map too (was 1).
 - `lib/research-state.ts` generalized to `lib/async-job-state.ts`
   (reusable async-job resume); the persisted `requestId` field is
   unchanged for wire compatibility.

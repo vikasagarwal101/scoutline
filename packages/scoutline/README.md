@@ -111,34 +111,50 @@ fast with `VALIDATION_ERROR`.
 **`scoutline repo`**, and **`scoutline read`** participate in Provider
 selection. `scoutline tools`, `scoutline tool`, `scoutline call`, and
 `scoutline code` accept the flag but ignore it; they remain Z.AI-only.
-MiniMax does not currently advertise the `repository-exploration` or `reader`
-Capabilities — selecting MiniMax (explicitly or via `SCOUTLINE_PROVIDER`) for
-any `repo` subcommand or for `read` returns `UNSUPPORTED_CAPABILITY` before
-descriptor configuration, Adapter creation, cache identity, or transport
-construction, with no Z.AI fallback.
+
+**Provider fallback is always-on by default** (0.11.0+). When the
+selected provider does not advertise the capability (for example,
+MiniMax does not advertise `repository-exploration` or `reader`) or
+fails at runtime, Scoutline emits a stderr notice and silently
+reroutes to the next eligible configured provider in registry order
+`[zai, minimax, tavily, exa, brave, firecrawl]`. Pass `--no-fallback`
+(or set `SCOUTLINE_NO_FALLBACK=1`) to restore the previous strict
+single-provider, fail-loud behavior for scripting or cost-sensitive
+workflows. See
+[`docs/adr/0002-provider-fallback.md`](https://github.com/vikasagarwal101/scoutline/blob/main/docs/adr/0002-provider-fallback.md)
+for the rationale
+and the accepted async double-charge risk on `crawl` / `map` /
+`research`.
 
 ## Capability Matrix
 
-| Capability | Z.AI | MiniMax | Tavily | Firecrawl | Notes |
-| --- | --- | --- | --- | --- | --- |
-| `search` | Yes | Yes | Yes | Yes | MiniMax rejects domain/recency/content-size/location |
-| `vision.interpret-image` (analyze) | Yes | Yes | No | No | Provider-specific media limits; uncached |
-| `vision.ui-artifact` (ui-to-code) | Yes | Available | No | No | Live-attested; conformance-gated |
-| `vision.extract-text` | Yes | Pending | No | No | Implemented, pending live conformance |
-| `vision.diagnose-error` | Yes | Available | No | No | Live-attested; conformance-gated |
-| `vision.diagram` | Yes | Pending | No | No | Implemented, pending live conformance |
-| `vision.chart` | Yes | Pending | No | No | Implemented, pending live conformance |
-| `vision.diff` (image diff) | Yes | No | No | No | Z.AI-only (never MiniMax-claimable) |
-| `vision.video` | Yes | No | No | No | Z.AI-only (never MiniMax-claimable) |
-| `quota` | Yes | Yes | Yes | Yes (credits) | Normalized `QuotaDashboard` (ADR-0001) |
-| `diagnostics` (`doctor`) | Yes | Yes | Yes | Yes | Lists every Provider; probes configured |
-| `read` (Reader) | Yes | **No** | Yes | Yes | Participates in selection; Z.AI-only options rejected by Tavily/Firecrawl |
-| `crawl` | **No** | **No** | Yes | Yes (async) | Tavily sync; Firecrawl async (resumable after Ctrl-C) |
-| `map` | **No** | **No** | Yes | Yes | URL-set discovery; no per-page content |
-| `research` | **No** | **No** | Yes | **No** | Tavily-only (Firecrawl `/deep-research` deprecated); 4-250 credits |
-| `repo search` / `repo read` / `repo tree` | Yes | **No** | **No** | **No** | Participates in selection; only Z.AI supplies `repository-exploration` |
-| `tools`, `tool`, `call` (Raw tools) | Yes | No | No | No | Z.AI-only; accepts but ignores `--provider` |
-| `code` (Code Mode) | Yes | No | No | No | Z.AI-only; accepts but ignores `--provider` |
+The matrix below is generated from the production provider registry
+(`packages/scoutline/src/providers/registry.ts`) and reflects the
+release-shipped capability advertisements for every built-in provider
+in registry order `[zai, minimax, tavily, exa, brave, firecrawl]`. The
+exact same `descriptor.capabilities()` set drives executor preflight,
+Provider selection, and `doctor`.
+
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `search` | Yes | Yes | Yes | Yes | Yes (incl. `type: "video"`) | Yes | MiniMax rejects domain/recency/content-size/location; only Brave accepts `controls.type` |
+| `vision.interpret-image` (analyze) | Yes | Yes | No | No | No | No | Provider-specific media limits; uncached |
+| `vision.ui-artifact` (ui-to-code) | Yes | Available | No | No | No | No | Live-attested; conformance-gated |
+| `vision.extract-text` | Yes | Pending | No | No | No | No | Implemented, pending live conformance |
+| `vision.diagnose-error` | Yes | Available | No | No | No | No | Live-attested; conformance-gated |
+| `vision.diagram` | Yes | Pending | No | No | No | No | Implemented, pending live conformance |
+| `vision.chart` | Yes | Pending | No | No | No | No | Implemented, pending live conformance |
+| `vision.diff` (image diff) | Yes | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
+| `vision.video` | Yes | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
+| `quota` | Yes | Yes | Yes | No | Yes | Yes (credits) | Normalized `QuotaDashboard` (ADR-0001) |
+| `diagnostics` (`doctor`) | Yes | Yes | Yes | Yes | Yes | Yes | Lists every Provider; probes configured |
+| `read` (Reader) | Yes | **No** | Yes | Yes | No | Yes | Exa/Brave add Reader; Z.AI-only options rejected per provider |
+| `crawl` | **No** | **No** | Yes | No | No | Yes (async) | Tavily sync; Firecrawl async (resumable after Ctrl-C) |
+| `map` | **No** | **No** | Yes | No | No | Yes | URL-set discovery; no per-page content |
+| `research` | **No** | **No** | Yes | Yes | **No** | **No** | Tavily + Exa only (Firecrawl `/deep-research` deprecated); 4-250 credits |
+| `repo search` / `repo read` / `repo tree` | Yes | **No** | **No** | **No** | **No** | **No** | Participates in selection; only Z.AI supplies `repository-exploration` |
+| `tools`, `tool`, `call` (Raw tools) | Yes | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
+| `code` (Code Mode) | Yes | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
 
 Media limits for general single-image interpretation:
 
@@ -172,12 +188,13 @@ they are **supported at runtime** through MiniMax. The remaining operation
 (`chart`) has offline `pass` and live `pending`; it is **unsupported at
 runtime** through MiniMax (its fixture image has a rotated, low-resolution
 Y-axis label that VLMs read inconsistently — a fixture-image-quality
-blocker, not an evaluator issue). Selecting MiniMax explicitly for `chart`
-fails closed with `UNSUPPORTED_CAPABILITY` before credentials, media,
-transport, cache, or any other Provider is touched (FR-023, FR-024). There
-is **no automatic Z.AI fallback** for an explicit MiniMax selection —
-call without `--provider minimax` (or unset `SCOUTLINE_PROVIDER`) to
-route through Z.AI instead.
+blocker, not an evaluator issue). By default (0.11.0+), an explicit
+MiniMax selection for `chart` emits a stderr notice and auto-reroutes
+to Z.AI, which supports every specialized operation. Under
+`--no-fallback` the preflight surfaces `UNSUPPORTED_CAPABILITY` for
+MiniMax before credentials, media, transport, cache, or any other
+Provider is touched (FR-023, FR-024). Pass `--no-fallback` to restore
+the previous strict single-provider behavior.
 
 No environment variable, flag, or configuration value can promote a
 mapping to supported. Support is driven exclusively by the compiled
@@ -321,10 +338,13 @@ one-line cache summary under the `cache` field.
 `scoutline repo search`, `scoutline repo read`, and `scoutline repo tree`
 participate in `--provider` selection. Z.AI advertises the
 `repository-exploration` Capability and supplies it through the Z.AI
-Repository Adapter. MiniMax does not advertise it; selecting MiniMax returns
-`UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter creation,
-credential resolution for use, cache identity, or transport construction
-with no fallback to Z.AI.
+Repository Adapter. MiniMax and the other built-in Providers do not
+advertise it; by default (0.11.0+) Scoutline emits a stderr notice and
+auto-reroutes to Z.AI. Under `--no-fallback` the preflight surfaces
+`UNSUPPORTED_CAPABILITY` for the selected non-supplier before descriptor
+configuration, Adapter creation, credential resolution for use, cache
+identity, or transport construction. Pass `--no-fallback` to restore
+the previous strict single-provider behavior.
 
 ### Breaking data-mode migration (v0.2 → v1)
 
@@ -416,18 +436,26 @@ in Provider selection. Doctor help names MiniMax as unsupported for `repo`.
 
 ### Non-goals
 
-This release does not add MiniMax repository exploration, a Reader
-migration, automatic summarization, dynamic Provider loading, or an implicit
-Z.AI fallback for unsupported Providers. The P5 specialized Vision mappings
-remain independent and are not claimed complete here.
+This release does not add MiniMax repository exploration, automatic
+summarization, or dynamic Provider loading. The P5 specialized
+Vision mappings remain independent and are not claimed complete
+here. Provider fallback is always-on by default in this release
+(see `Capability Matrix` above) — passing `--no-fallback` restores
+the previous strict single-provider behavior for scripting or
+cost-sensitive workflows.
 
 ## Reader (P7)
 
-`scoutline read` participates in `--provider` selection. Z.AI advertises the
-`reader` Capability and supplies it through the Z.AI Reader Adapter. MiniMax
-does not advertise it; selecting MiniMax returns `UNSUPPORTED_CAPABILITY`
-before descriptor configuration, Adapter creation, credential resolution for
-use, cache identity, or transport construction, with no fallback to Z.AI.
+`scoutline read` participates in `--provider` selection. Z.AI, Tavily,
+Exa, and Firecrawl advertise the `reader` Capability and supply it
+through their respective Reader Adapters. MiniMax and Brave do not
+advertise it; by default (0.11.0+) Scoutline emits a stderr notice and
+auto-reroutes to the next eligible configured supplier. Under
+`--no-fallback` the preflight surfaces `UNSUPPORTED_CAPABILITY` for the
+selected non-supplier before descriptor configuration, Adapter
+creation, credential resolution for use, cache identity, or transport
+construction. Pass `--no-fallback` to restore the previous strict
+single-provider behavior.
 
 ### Breaking data-mode migration (v0.2 → v1)
 

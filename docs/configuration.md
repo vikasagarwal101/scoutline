@@ -31,12 +31,29 @@ Provider invocation.
 
 `scoutline tools`, `scoutline tool`, `scoutline call`, and `scoutline code`
 accept the flag but ignore it; they continue to use Z.AI and do not validate
-the supplied value. MiniMax does not currently advertise the
-`repository-exploration` or `reader` Capabilities — selecting MiniMax
-(explicitly or via `SCOUTLINE_PROVIDER`) for any `repo` subcommand or for
-`read` returns `UNSUPPORTED_CAPABILITY` before descriptor configuration,
-Adapter creation, credential resolution for use, cache identity, or transport
-construction, with no fallback to Z.AI.
+the supplied value.
+
+Provider fallback is **always-on** (0.11.0+). When the selected provider
+does not supply the capability (for example, MiniMax does not advertise
+`repository-exploration` or `reader`) or fails at runtime, scoutline
+emits a stderr notice and silently tries the next eligible provider in
+registry order `[zai, minimax, tavily, exa, brave, firecrawl]`. The
+selected provider is still the *first* one tried, so the user-visible
+behavior is the same when the pin works; the fallback only changes
+what happens when it does not. See
+[`docs/adr/0002-provider-fallback.md`](adr/0002-provider-fallback.md)
+for the rationale and the accepted async double-charge risk on
+`crawl` / `map` / `research`.
+
+To restore the previous strict single-provider behavior, opt out with
+the global `--no-fallback` flag or the `SCOUTLINE_NO_FALLBACK=1`
+environment variable. Under the kill-switch the candidate plan is
+reduced to the effective provider only and the **same** preflight
+(capability → configuration → adapter handle) runs on it, so an
+incapable effective throws `UNSUPPORTED_CAPABILITY` (exit 1) and an
+unconfigured effective throws `CONFIGURATION_ERROR` (exit 3) before
+any adapter work. This preserves the documented
+capability-before-configuration ordering for strict workflows.
 
 ```bash
 # 1. Flag wins
@@ -49,13 +66,17 @@ scoutline quota
 # 3. Default Z.AI when nothing is supplied
 scoutline search "TypeScript best practices"
 
-# repo participates in selection; MiniMax returns UNSUPPORTED_CAPABILITY
+# Default (0.11.0+): repo auto-reroutes to Z.AI when MiniMax is selected
 scoutline repo search facebook/react "server components"
-scoutline --provider minimax repo search owner/repo query  # exits 1, UNSUPPORTED_CAPABILITY
+scoutline --provider minimax repo search owner/repo query  # auto-reroutes to zai; stderr notice
 
-# read participates in selection; MiniMax returns UNSUPPORTED_CAPABILITY
+# Default (0.11.0+): read auto-reroutes to Z.AI/Tavily/Exa/Firecrawl
 scoutline read https://example.com
-scoutline --provider minimax read https://example.com      # exits 1, UNSUPPORTED_CAPABILITY
+scoutline --provider minimax read https://example.com      # auto-reroutes; stderr notice
+
+# Strict: opt out of fallback (matches 0.10.x error codes)
+scoutline --no-fallback --provider minimax repo search owner/repo query
+scoutline --no-fallback --provider minimax read https://example.com
 ```
 
 ## Core Settings
@@ -72,6 +93,7 @@ scoutline --provider minimax read https://example.com      # exits 1, UNSUPPORTE
 | `Z_AI_TOP_P` | `0.6` | Vision generation top-p value. |
 | `Z_AI_MAX_TOKENS` | `32768` | Vision response token limit. |
 | `SCOUTLINE_PROVIDER` | (none) | Selects the effective Provider (`zai`, `minimax`, `tavily`, or `brave`) for shared capabilities. |
+| `SCOUTLINE_NO_FALLBACK` | (unset) | When set to a non-empty value, restores the strict single-provider, fail-loud behavior for shared capabilities — `--no-fallback` on the CLI is the per-invocation equivalent. |
 
 ## MiniMax Token Plan Settings
 
@@ -254,12 +276,14 @@ and `diagram` are live-attested and supported at runtime. The remaining
 operation (`chart`) has offline `pass` and live `pending` — its fixture
 image has a rotated, low-resolution Y-axis label that VLMs read
 inconsistently, which is a fixture-image-quality blocker rather than an
-evaluator issue. An explicit MiniMax selection for `chart` fails closed
-with `UNSUPPORTED_CAPABILITY` before credentials, media, transport,
-cache, or any other Provider is touched (FR-023, FR-024). There is
-**no automatic Z.AI fallback** for an explicit MiniMax selection — drop
-`--provider minimax` (or `unset SCOUTLINE_PROVIDER`) to route through
-Z.AI, which supports every specialized operation.
+evaluator issue. By default (0.11.0+), an explicit MiniMax selection
+for `chart` emits a stderr notice and auto-reroutes to Z.AI, which
+supports every specialized operation. Under `--no-fallback` the
+candidate plan is reduced to the effective provider only and the
+preflight surfaces `UNSUPPORTED_CAPABILITY` for `chart` before
+credentials, media, transport, cache, or any other Provider is touched
+(FR-023, FR-024). Pass `--no-fallback` to restore the strict
+single-provider behavior.
 
 **No environment variable, flag, or configuration value can promote a
 mapping to supported.** Support is driven exclusively by the compiled
@@ -420,16 +444,24 @@ slices it on the way out).
 ## MiniMax Unsupported Reader
 
 MiniMax does not advertise the `reader` Capability in the current release.
-Selecting MiniMax (explicitly or via `SCOUTLINE_PROVIDER`) for any `read`
-returns `UNSUPPORTED_CAPABILITY` before descriptor configuration, Adapter
-creation, credential resolution for use, cache identity, or transport
-construction, with no fallback to Z.AI. Drop the Provider selection to use
-the default Z.AI:
+By default (0.11.0+) provider fallback handles this automatically:
+selecting MiniMax (explicitly or via `SCOUTLINE_PROVIDER`) for `read`
+emits a stderr notice and reroutes to the next eligible provider
+(Z.AI, Tavily, Exa, or Firecrawl) that supplies the `reader` Capability.
+To restore the previous strict single-provider behavior, opt out with
+`--no-fallback` (or `SCOUTLINE_NO_FALLBACK=1`) — under the kill-switch
+the preflight surfaces `UNSUPPORTED_CAPABILITY` for MiniMax before
+descriptor configuration, Adapter creation, credential resolution for
+use, cache identity, or transport construction.
 
 ```bash
+# Default (0.11.0+): auto-reroutes to the next eligible reader Provider
 scoutline read https://example.com                       # Z.AI (default)
 scoutline --provider zai read https://example.com        # explicit Z.AI
-unset SCOUTLINE_PROVIDER                                  # if a shell set it to minimax
+scoutline --provider minimax read https://example.com    # auto-reroutes; stderr notice
+
+# Strict (killswitch): fails closed (UNSUPPORTED_CAPABILITY) for MiniMax
+scoutline --no-fallback --provider minimax read https://example.com
 ```
 
 ## Security

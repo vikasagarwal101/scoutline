@@ -193,10 +193,14 @@ Brave's confirmed Capabilities:
 - **Diagnostics** — 1-query web-search probe; unconfigured Brave is
   listed but skipped.
 
-Brave does **not** supply Reader, Crawl, Map, Research, or Vision;
-selecting Brave for any of those returns `UNSUPPORTED_CAPABILITY` with
-no fallback. Operational note: Brave recently shifted from a pure free
-tier to $5 monthly metered credits (a saved card is now billable).
+Brave does **not** supply Reader, Crawl, Map, Research, or Vision.
+By default (0.11.0+) selecting Brave for any of those emits a stderr
+notice and Provider fallback silently reroutes to the next eligible
+configured supplier; under `--no-fallback` (or
+`SCOUTLINE_NO_FALLBACK=1`) the preflight surfaces
+`UNSUPPORTED_CAPABILITY` for the selected non-supplier. Operational
+note: Brave recently shifted from a pure free tier to $5 monthly
+metered credits (a saved card is now billable).
 
 ## Phase 4: Streaming Transport
 

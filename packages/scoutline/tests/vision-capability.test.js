@@ -859,10 +859,13 @@ describe("Vision command routing — MiniMax unsupported operations fail early (
   ];
 
   for (const { args, op } of specializedViaMinimax) {
-    it(`MiniMax ${op} → UNSUPPORTED_CAPABILITY before create() or Z.AI fallback`, async () => {
-      // A sentinel MiniMax whose create() betrays any construction, plus a
-      // Z.AI fallback sentinel whose invoke() betrays any fallback. The
-      // support gate must reject before either is observed.
+    it(`MiniMax ${op} --no-fallback → UNSUPPORTED_CAPABILITY before create() or Z.AI fallback`, async () => {
+      // Provider-fallback Ticket 02: under the kill-switch
+      // (--no-fallback) the executor narrows the plan to
+      // `[effective]` and the SAME preflight runs on it, so an
+      // incapable effective surfaces `UNSUPPORTED_CAPABILITY` with
+      // zero adapter work. The strict-mode invariant tested here is
+      // preserved end-to-end.
       const mm = sentinelDescriptor("minimax", MINIMAX_CAPS);
       let zaiFallbackObserved = false;
       const zaiFallback = {
@@ -882,10 +885,15 @@ describe("Vision command routing — MiniMax unsupported operations fail early (
           };
         },
       };
-      const { code, stderr } = await runVisionMain(args, {
-        env: { MINIMAX_API_KEY: "k" },
-        providerDescriptors: [mm, zaiFallback],
-      });
+      // Inject `--no-fallback` as a global option (the runVisionMain
+      // helper passes args straight to main()).
+      const { code, stderr } = await runVisionMain(
+        ["--no-fallback", ...args],
+        {
+          env: { MINIMAX_API_KEY: "k" },
+          providerDescriptors: [mm, zaiFallback],
+        },
+      );
       assert.strictEqual(code, 1);
       let parsed;
       try {
@@ -909,7 +917,19 @@ describe("Vision command routing — MiniMax unsupported operations fail early (
     assert.strictEqual(code, 0);
     assert.strictEqual(minimax.invokeCalls.length, 1);
     assert.strictEqual(minimax.invokeCalls[0].operation, "interpret-image");
-    assert.strictEqual(minimax.createCalls.length, 1, "create() is reached for a supported op");
+    // Provider-fallback Ticket 02: the executor's preflight calls
+    // create() once for the adapter-handle agreement check, then
+    // the attempt callback calls create() again to build the
+    // capability. So `createCalls` is now 2 (preflight + attempt)
+    // on the winning path. The Capability itself is still reached
+    // exactly once (the create count proves the preflight and
+    // attempt both ran, but the invoke count proves the work
+    // happened once).
+    assert.strictEqual(
+      minimax.createCalls.length,
+      2,
+      "create() is reached twice (preflight + attempt) for a supported op",
+    );
   });
 });
 

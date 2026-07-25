@@ -574,6 +574,10 @@ export function createMiniMaxDescriptor(
       const key = env.MINIMAX_API_KEY;
       return typeof key === "string" && /\S/.test(key);
     },
+    // Provider-fallback Ticket 02 — see ProviderDescriptor.credentialEnvVars.
+    // The real production descriptor publishes its env-var name so the
+    // executor's `ConfigurationError` message targets the right key.
+    credentialEnvVars: ["MINIMAX_API_KEY"],
     capabilities(): ReadonlySet<ProviderCapability> {
       // Base capabilities always advertised by MiniMax. Specialized
       // Vision operations (`vision.ui-artifact`, etc.) are advertised

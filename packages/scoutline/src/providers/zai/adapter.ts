@@ -909,6 +909,10 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
       // Shared resolver honours the ZAI_API_KEY alias (Fixup A — B4).
       return isZaiConfigured(env);
     },
+    // Provider-fallback Ticket 02 — see ProviderDescriptor.credentialEnvVars.
+    // The real production descriptor publishes its env-var name so the
+    // executor's `ConfigurationError` message targets the right key.
+    credentialEnvVars: ["Z_AI_API_KEY", "ZAI_API_KEY"],
     capabilities(): ReadonlySet<ProviderCapability> {
       // P6-06: advertise `repository-exploration`. The Adapter has
       // supplied `adapter.repository` since P6-04; descriptor

@@ -133,13 +133,42 @@ export interface ProviderAdapter {
  * media, construct a transport, or perform I/O. Credential resolution
  * and transport construction are allowed only inside Capability
  * invocation after validation.
+ *
+ * `credentialEnvVars` is the optional provider-fallback surface
+ * (Provider Fallback Tech Plan §"Per-handler refactor pattern" /
+ * execution-log "Flag carried to ticket 02"). It lists the
+ * environment-variable names this Provider reads to decide it is
+ * configured. The provider-fallback executor consumes it to construct
+ * a Provider-specific `ConfigurationError` message (e.g. "Set
+ * Z_AI_API_KEY.") on exhaustion and under the kill-switch, instead of
+ * the generic "Set the required API key." fallback. The field is
+ * OPTIONAL for backward compatibility with test doubles that pre-date
+ * the field; the executor falls back to the generic message when it is
+ * absent. Each built-in Provider supplies the matching list; the
+ * `PROVIDER_FALLBACK_CREDENTIAL_MESSAGE` constant documents the
+ * fallback wording.
  */
 export interface ProviderDescriptor {
   readonly id: ProviderId;
   isConfigured(env: NodeJS.ProcessEnv): boolean;
   capabilities(): ReadonlySet<ProviderCapability>;
   create(context: ProviderContext): ProviderAdapter;
+  /**
+   * The environment-variable names this Provider reads to determine it
+   * is configured. Empty / undefined means the executor should use the
+   * generic fallback message.
+   */
+  readonly credentialEnvVars?: readonly string[];
 }
+
+/**
+ * Provider-neutral fallback message the executor uses when the
+ * effective descriptor does not expose `credentialEnvVars` (or the
+ * list is empty). Kept as a module-level constant so it stays a
+ * single source of truth for the executor and the dispatch-level
+ * error redaction passes it through unchanged.
+ */
+export const PROVIDER_FALLBACK_CREDENTIAL_MESSAGE = "Set the required API key.";
 
 /**
  * Built-in Provider registry. Phase 2 leaves this empty; P2-05 wires

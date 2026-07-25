@@ -1102,6 +1102,10 @@ describe("defaultRetryPolicy — repository operation kinds", () => {
     assert.strictEqual(defaultRetryPolicy("vision").maxRetries, 2);
     assert.strictEqual(defaultRetryPolicy("quota").maxRetries, 1);
     assert.strictEqual(defaultRetryPolicy("diagnostics").maxRetries, 1);
+    // Map is cost-bearing per batch (Review Fix 1): zero-retry, grouped
+    // with `crawl` and `research`. The `--no-fallback` cost guarantee of
+    // `1/1/1` per command depends on this default.
+    assert.strictEqual(defaultRetryPolicy("map").maxRetries, 0);
   });
 });
 

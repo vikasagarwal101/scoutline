@@ -207,9 +207,11 @@ then zai):
   - The 'repo' command participates in Provider selection.
   - Z.AI advertises the repository-exploration Capability and supplies
     the Adapter; selecting zai routes Search/File/Tree through it.
-  - MiniMax does NOT advertise repository-exploration. Selecting
-    minimax (explicitly or via SCOUTLINE_PROVIDER) returns
-    UNSUPPORTED_CAPABILITY with no fallback to Z.AI.
+  - MiniMax, Tavily, Exa, Brave, and Firecrawl do NOT advertise
+    repository-exploration. By default (0.11.0+) Provider fallback
+    emits a stderr notice and silently reroutes to Z.AI. Under
+    --no-fallback (or SCOUTLINE_NO_FALLBACK=1) the preflight surfaces
+    UNSUPPORTED_CAPABILITY for the selected non-supplier.
 
 Output format (intentional schema-version-1 migration):
   - search: {schemaVersion, repository, query, language, excerpts:[{text}],

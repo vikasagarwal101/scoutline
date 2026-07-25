@@ -394,6 +394,14 @@ function cannedSrcListing() {
 // selected-Provider work, supported paths prove the capability is
 // reached exactly once, and selection precedence (explicit > env >
 // default) is locked down.
+//
+// Provider-fallback Ticket 02 — the matrix now distinguishes the
+// fallback-enabled (default) path from the strict --no-fallback
+// (kill-switch) path. A successful read now reaches the Z.AI Adapter
+// once via the executor's preflight + once via the attempt (so
+// `expectZaiCreate` is 2 on the winning path). The "unsupported
+// MINIMAX" rows auto-reroute to ZAI on the fallback-enabled path
+// and surface the typed error under --no-fallback.
 // ---------------------------------------------------------------------------
 
 /**
@@ -410,7 +418,7 @@ const SELECTION_MATRIX = [
     expectStatus: 0,
     expectCode: null,
     expectInvokeCount: 1,
-    expectZaiCreate: 1,
+    expectZaiCreate: 2,
     expectMiniMaxCreate: 0,
     expectMiniMaxIsConfigured: 0,
   },
@@ -422,7 +430,7 @@ const SELECTION_MATRIX = [
     expectStatus: 0,
     expectCode: null,
     expectInvokeCount: 1,
-    expectZaiCreate: 1,
+    expectZaiCreate: 2,
     expectMiniMaxCreate: 0,
     expectMiniMaxIsConfigured: 0,
   },
@@ -434,7 +442,7 @@ const SELECTION_MATRIX = [
     expectStatus: 0,
     expectCode: null,
     expectInvokeCount: 1,
-    expectZaiCreate: 1,
+    expectZaiCreate: 2,
     expectMiniMaxCreate: 0,
     expectMiniMaxIsConfigured: 0,
   },
@@ -446,7 +454,7 @@ const SELECTION_MATRIX = [
     expectStatus: 0,
     expectCode: null,
     expectInvokeCount: 1,
-    expectZaiCreate: 1,
+    expectZaiCreate: 2,
     expectMiniMaxCreate: 0,
     expectMiniMaxIsConfigured: 0,
   },
@@ -475,8 +483,54 @@ const SELECTION_MATRIX = [
     expectMiniMaxIsConfigured: 0,
   },
   {
-    name: "unsupported explicit MINIMAX",
+    // Provider-fallback Ticket 02 flip: `--provider minimax repo …`
+    // auto-reroutes to Z.AI (the sole capable Provider); the
+    // capability-mismatch skip notice is emitted on stderr and the
+    // command exits 0. Under --no-fallback the row below preserves
+    // the strict exit-1 behaviour.
+    name: "unsupported explicit MINIMAX (fallback to ZAI)",
     args: (sub) => ["--provider", "minimax", ...sub.defaultArgs],
+    env: () => ({}),
+    expectProvider: "minimax",
+    expectStatus: 0,
+    expectCode: null,
+    expectInvokeCount: 1,
+    expectZaiCreate: 2,
+    expectMiniMaxCreate: 0,
+    expectMiniMaxIsConfigured: 0,
+    expectMiniMaxCapabilities: 1,
+    expectStderrSubstrings: [
+      "⚠ minimax does not support 'repository-exploration' — skipping",
+      "✓ repo completed via zai (fallback)",
+    ],
+    expectStderrCount: 2,
+  },
+  {
+    name: "unsupported environment MINIMAX (fallback to ZAI)",
+    args: (sub) => sub.defaultArgs,
+    env: () => ({ SCOUTLINE_PROVIDER: "minimax" }),
+    expectProvider: "minimax",
+    expectStatus: 0,
+    expectCode: null,
+    expectInvokeCount: 1,
+    expectZaiCreate: 2,
+    expectMiniMaxCreate: 0,
+    expectMiniMaxIsConfigured: 0,
+    expectMiniMaxCapabilities: 1,
+    expectStderrSubstrings: [
+      "⚠ minimax does not support 'repository-exploration' — skipping",
+      "✓ repo completed via zai (fallback)",
+    ],
+    expectStderrCount: 2,
+  },
+  {
+    // Provider-fallback Ticket 02 — strict-mode counter-test. Under
+    // --no-fallback the executor narrows the plan to `[effective]`
+    // only and the SAME preflight runs on it, so an incapable
+    // effective surfaces UNSUPPORTED_CAPABILITY (exit 1) — the
+    // exact 0.10.x code, with zero adapter work.
+    name: "unsupported explicit MINIMAX, --no-fallback (strict)",
+    args: (sub) => ["--no-fallback", "--provider", "minimax", ...sub.defaultArgs],
     env: () => ({}),
     expectProvider: "minimax",
     expectStatus: 1,
@@ -486,19 +540,7 @@ const SELECTION_MATRIX = [
     expectMiniMaxCreate: 0,
     expectMiniMaxIsConfigured: 0,
     expectMiniMaxCapabilities: 1,
-  },
-  {
-    name: "unsupported environment MINIMAX",
-    args: (sub) => sub.defaultArgs,
-    env: () => ({ SCOUTLINE_PROVIDER: "minimax" }),
-    expectProvider: "minimax",
-    expectStatus: 1,
-    expectCode: "UNSUPPORTED_CAPABILITY",
-    expectInvokeCount: 0,
-    expectZaiCreate: 0,
-    expectMiniMaxCreate: 0,
-    expectMiniMaxIsConfigured: 0,
-    expectMiniMaxCapabilities: 1,
+    expectStderrCount: 1,
   },
 ];
 
@@ -551,6 +593,26 @@ for (const sub of SUBCOMMANDS) {
         });
 
         assert.strictEqual(status, row.expectStatus, `status mismatch for ${row.name}`);
+        // Provider-fallback Ticket 02 — error envelopes land on stderr
+        // AFTER any executor notices, so the parser looks for the
+        // first JSON entry. Notices are stderr-only and never reach
+        // stdout. Default the expected stderr count to 1 when an
+        // error envelope is expected (no skip-notices for that path),
+        // 0 otherwise.
+        const expectedStderrCount = row.expectStderrCount ?? (row.expectCode ? 1 : 0);
+        assert.strictEqual(
+          stderr.length,
+          expectedStderrCount,
+          `stderr length mismatch for ${row.name}: got ${JSON.stringify(stderr)}`,
+        );
+        if (row.expectStderrSubstrings) {
+          for (const sub of row.expectStderrSubstrings) {
+            assert.ok(
+              stderr.some((line) => line.includes(sub)),
+              `expected stderr substring "${sub}" for ${row.name}, got ${JSON.stringify(stderr)}`,
+            );
+          }
+        }
         if (row.expectCode) {
           const parsed = JSON.parse(stderr[0]);
           assert.strictEqual(
@@ -559,7 +621,9 @@ for (const sub of SUBCOMMANDS) {
             `code mismatch for ${row.name}: ${stderr[0]}`,
           );
         } else {
-          assert.deepStrictEqual(stderr, [], `unexpected stderr for ${row.name}`);
+          if (expectedStderrCount === 0) {
+            assert.deepStrictEqual(stderr, [], `unexpected stderr for ${row.name}`);
+          }
         }
 
         assert.strictEqual(
@@ -602,19 +666,29 @@ for (const sub of SUBCOMMANDS) {
 
 describe("P6-07A unsupported path — zero selected-Provider work (all subcommands)", () => {
   for (const sub of SUBCOMMANDS) {
-    it(`repo ${sub.name}: minimax unsupported -> zero cache get/set, zero validate/identity/invoke`, async () => {
+    it(`repo ${sub.name}: minimax unsupported --no-fallback -> zero cache get/set, zero validate/identity/invoke`, async () => {
+      // Provider-fallback Ticket 02: under the kill-switch
+      // (--no-fallback) the executor narrows the plan to
+      // `[effective]` and the SAME preflight runs on it, so an
+      // incapable effective surfaces `UNSUPPORTED_CAPABILITY` with
+      // zero adapter work. The strict-mode invariant tested here is
+      // preserved end-to-end.
       const m = makeMainDeps({
         search: sub.name === "search" ? sub.capabilityImpl : undefined,
         readFile: sub.name === "read" ? sub.capabilityImpl : undefined,
         listDirectory: sub.name === "tree" ? sub.capabilityImpl : undefined,
       });
       const { adapter, stderr } = createRecordingAdapter();
-      const status = await main(["--provider", "minimax", ...sub.defaultArgs], {
-        ...m.mainDeps,
-        invocation: adapter,
-      });
+      const status = await main(
+        ["--no-fallback", "--provider", "minimax", ...sub.defaultArgs],
+        {
+          ...m.mainDeps,
+          invocation: adapter,
+        },
+      );
 
       assert.strictEqual(status, 1);
+      assert.strictEqual(stderr.length, 1, "no executor notices under --no-fallback");
       assert.strictEqual(JSON.parse(stderr[0]).code, "UNSUPPORTED_CAPABILITY");
 
       // Cache spy: zero reads AND zero writes on the unsupported path.
@@ -780,17 +854,34 @@ describe("P6-07B configuredSecrets — injected env only, never ambient fallback
 // ---------------------------------------------------------------------------
 
 describe("P6-07B unsupported path — zero selected-Provider work, observable spies (no redaction claim)", () => {
-  it("repo search under explicit minimax: zero cache get/set, zero validate/identity/invoke, zero descriptor create/isConfigured, no Z.AI fallback", async () => {
+  it("repo search under explicit minimax --no-fallback: zero cache get/set, zero validate/identity/invoke, zero descriptor create/isConfigured, no Z.AI fallback", async () => {
+    // Provider-fallback Ticket 02: under the kill-switch
+    // (--no-fallback) the executor narrows the plan to `[effective]`
+    // and the SAME preflight runs on it, so an incapable effective
+    // surfaces `UNSUPPORTED_CAPABILITY` with zero adapter work. The
+    // strict-mode invariant tested here is preserved end-to-end.
     const SENTINEL = "configured-secrets-prelude-sentinel-not-a-real-credential";
     const m = makeMainDeps({ search: () => cannedSearchResult() });
     const { adapter, stderr } = createRecordingAdapter();
-    const status = await main(["--provider", "minimax", "repo", "search", "owner/repo", "query"], {
-      ...m.mainDeps,
-      env: { ...m.mainDeps.env, Z_AI_API_KEY: SENTINEL },
-      invocation: adapter,
-    });
+    const status = await main(
+      [
+        "--no-fallback",
+        "--provider",
+        "minimax",
+        "repo",
+        "search",
+        "owner/repo",
+        "query",
+      ],
+      {
+        ...m.mainDeps,
+        env: { ...m.mainDeps.env, Z_AI_API_KEY: SENTINEL },
+        invocation: adapter,
+      },
+    );
 
     assert.strictEqual(status, 1);
+    assert.strictEqual(stderr.length, 1, "no executor notices under --no-fallback");
     assert.strictEqual(JSON.parse(stderr[0]).code, "UNSUPPORTED_CAPABILITY");
 
     // Cache spy: zero reads AND zero writes on the unsupported path.
@@ -822,6 +913,12 @@ describe("P6-07B unsupported path — zero selected-Provider work, observable sp
 describe("P6-07A supported-but-unconfigured Z.AI surfaces ConfigurationError exit 3", () => {
   for (const sub of SUBCOMMANDS) {
     it(`repo ${sub.name}: missing Z_AI_API_KEY exits 3 after support, before create`, async () => {
+      // Provider-fallback Ticket 02: when no eligible candidate can
+      // serve the capability (Z.A.I unconfigured, MiniMax incapable),
+      // the executor exhausts the plan and re-throws the EFFECTIVE
+      // provider's own ConfigurationError (exit 3) — never a
+      // synthesized substitute. Skip-notices precede the error
+      // envelope on stderr.
       const m = makeMainDeps({
         search: sub.name === "search" ? sub.capabilityImpl : undefined,
         readFile: sub.name === "read" ? sub.capabilityImpl : undefined,
@@ -836,6 +933,46 @@ describe("P6-07A supported-but-unconfigured Z.AI surfaces ConfigurationError exi
       });
 
       assert.strictEqual(status, 3);
+      // The error envelope is the LAST stderr entry; skip-notices
+      // come first when fallback is enabled. Find the JSON entry to
+      // assert the code, regardless of how many notices precede it.
+      const jsonLine = stderr.find((line) => line.startsWith("{"));
+      assert.ok(
+        jsonLine,
+        `expected a JSON error envelope on stderr, got: ${JSON.stringify(stderr)}`,
+      );
+      const parsed = JSON.parse(jsonLine);
+      assert.strictEqual(parsed.code, "CONFIGURATION_ERROR");
+
+      // Support check ran; isConfigured ran; create NEVER ran.
+      assert.strictEqual(m.zai.stats.capabilitiesCalls, 1);
+      assert.ok(m.zai.stats.isConfiguredCalls >= 1);
+      assert.strictEqual(m.zai.stats.createCalls, 0);
+
+      // Capability work never runs on the unconfigured path.
+      const counts = capabilityCallCount(m.capability);
+      for (const [key, value] of Object.entries(counts)) {
+        assert.strictEqual(value, 0, `capability.${key} must be 0 on unconfigured path`);
+      }
+    });
+
+    it(`repo ${sub.name}: missing Z_AI_API_KEY with --no-fallback restores strict exit 3 with no notices`, async () => {
+      // Provider-fallback Ticket 02 — kill-switch counter-test.
+      const m = makeMainDeps({
+        search: sub.name === "search" ? sub.capabilityImpl : undefined,
+        readFile: sub.name === "read" ? sub.capabilityImpl : undefined,
+        listDirectory: sub.name === "tree" ? sub.capabilityImpl : undefined,
+        zaiConfigured: (env) => Boolean(env.Z_AI_API_KEY),
+      });
+      const { adapter, stderr } = createRecordingAdapter();
+      const status = await main(["--no-fallback", ...sub.defaultArgs], {
+        ...m.mainDeps,
+        env: { MINIMAX_API_KEY: "minimax-key" },
+        invocation: adapter,
+      });
+
+      assert.strictEqual(status, 3);
+      assert.strictEqual(stderr.length, 1, "no executor notices under --no-fallback");
       const parsed = JSON.parse(stderr[0]);
       assert.strictEqual(parsed.code, "CONFIGURATION_ERROR");
 
@@ -856,6 +993,12 @@ describe("P6-07A supported-but-unconfigured Z.AI surfaces ConfigurationError exi
 describe("P6-07A descriptor advertises repository-exploration but Adapter omits repository", () => {
   for (const sub of SUBCOMMANDS) {
     it(`repo ${sub.name}: fails closed as UNSUPPORTED_CAPABILITY after create`, async () => {
+      // Provider-fallback Ticket 02: the executor's preflight runs
+      // the adapter-handle agreement check on the descriptor; when
+      // the Adapter omits the handle, the candidate is classified
+      // incapable (just like a metadata-level capability mismatch)
+      // and skip-noticed. On all-fail the effective's typed error
+      // surfaces — UNSUPPORTED_CAPABILITY (exit 1) here.
       const capability = makeRecordingCapability({
         search: sub.name === "search" ? sub.capabilityImpl : undefined,
         readFile: sub.name === "read" ? sub.capabilityImpl : undefined,
@@ -884,11 +1027,18 @@ describe("P6-07A descriptor advertises repository-exploration but Adapter omits 
       });
 
       assert.strictEqual(status, 1);
-      const parsed = JSON.parse(stderr[0]);
+      // The error envelope is the LAST stderr entry; skip-notices
+      // come first when fallback is enabled.
+      const jsonLine = stderr.find((line) => line.startsWith("{"));
+      assert.ok(
+        jsonLine,
+        `expected a JSON error envelope on stderr, got: ${JSON.stringify(stderr)}`,
+      );
+      const parsed = JSON.parse(jsonLine);
       assert.strictEqual(parsed.code, "UNSUPPORTED_CAPABILITY");
 
-      // create ran once (so the fail-closed check could observe the
-      // missing adapter.repository), but no capability work ran.
+      // create ran once (so the executor's preflight could observe
+      // the missing adapter.repository), but no capability work ran.
       assert.strictEqual(zai.stats.createCalls, 1);
       const counts = capabilityCallCount(capability);
       for (const [key, value] of Object.entries(counts)) {
@@ -1057,10 +1207,14 @@ const PROVIDER_SHAPES = [
     env: () => ({}),
     expectCode: "VALIDATION_ERROR",
     expectStatus: 1,
-    // Provider gating passes; descriptor.create runs so the adapter
-    // can be reached. Handler/Explorer validation then throws before
-    // any capability invoke.
-    expectZaiCreate: 1,
+    // Provider-fallback Ticket 02: the executor's preflight calls
+    // create() once for the eligible candidate's adapter-handle
+    // check, then the attempt callback calls create() again to
+    // build the capability. So `expectZaiCreate` is now 2
+    // (preflight + attempt) on the winning path. The handler
+    // validation in repoSearch/repoTree/repoRead throws
+    // ValidationError before any capability invoke.
+    expectZaiCreate: 2,
   },
   {
     name: "supported-unconfigured ZAI",
@@ -1071,8 +1225,32 @@ const PROVIDER_SHAPES = [
     expectZaiCreate: 0,
   },
   {
-    name: "unsupported MINIMAX",
+    // Provider-fallback Ticket 02: under the always-on fallback the
+    // executor preflights minimax (incapable — skip notice) and
+    // moves to zai (eligible). zai's attempt calls the handler,
+    // whose malformed-input validation throws ValidationError. The
+    // executor re-throws ValidationError without looping. The
+    // previous 0.10.x ordering (UNSUPPORTED_CAPABILITY on the
+    // incapable effective BEFORE Explorer validation) does not
+    // survive under fallback because the effective is bypassed;
+    // the user sees the validation error from the capable
+    // candidate. Under --no-fallback the matrix below preserves
+    // the strict ordering.
+    name: "unsupported MINIMAX (fallback to ZAI)",
     env: () => ({ SCOUTLINE_PROVIDER: "minimax" }),
+    expectCode: "VALIDATION_ERROR",
+    expectStatus: 1,
+    expectZaiCreate: 2,
+  },
+  {
+    // Provider-fallback Ticket 02 — strict-mode counter-test. Under
+    // --no-fallback the executor narrows the plan to `[effective]`
+    // and the SAME preflight runs on it, so the incapable
+    // effective surfaces UNSUPPORTED_CAPABILITY (exit 1) BEFORE
+    // any Explorer validation — the 0.10.x ordering.
+    name: "unsupported MINIMAX, --no-fallback (strict)",
+    env: () => ({ SCOUTLINE_PROVIDER: "minimax" }),
+    noFallback: true,
     expectCode: "UNSUPPORTED_CAPABILITY",
     expectStatus: 1,
     expectZaiCreate: 0,
@@ -1092,18 +1270,32 @@ describe("P6-07A post-gating malformed — support/config-before-Explorer orderi
         const { adapter, stderr } = createRecordingAdapter();
         const env = { ...m.mainDeps.env, ...shape.env() };
         if (shape.clearZaiKey) delete env.Z_AI_API_KEY;
-        const status = await main(malformed.argv, {
+        // Provider-fallback Ticket 02 — strict-mode counter-test
+        // for the support/config-before-Explorer ordering. The
+        // `--no-fallback` shape preserves the 0.10.x ordering
+        // because the executor narrows the plan to `[effective]`
+        // and runs the same preflight on it.
+        const argv = shape.noFallback ? ["--no-fallback", ...malformed.argv] : malformed.argv;
+        const status = await main(argv, {
           ...m.mainDeps,
           env,
           invocation: adapter,
         });
 
         assert.strictEqual(status, shape.expectStatus);
-        const parsed = JSON.parse(stderr[0]);
+        // Provider-fallback Ticket 02: error envelopes land on stderr
+        // AFTER any executor notices. Find the JSON entry to assert
+        // the code, regardless of how many notices precede it.
+        const jsonLine = stderr.find((line) => line.startsWith("{"));
+        assert.ok(
+          jsonLine,
+          `${malformed.label} under ${shape.name}: expected an error envelope, got ${JSON.stringify(stderr)}`,
+        );
+        const parsed = JSON.parse(jsonLine);
         assert.strictEqual(
           parsed.code,
           shape.expectCode,
-          `${malformed.label} under ${shape.name}: expected ${shape.expectCode}, got ${stderr[0]}`,
+          `${malformed.label} under ${shape.name}: expected ${shape.expectCode}, got ${jsonLine}`,
         );
 
         // The Explorer and capability are never reached on any

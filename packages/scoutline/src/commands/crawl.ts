@@ -192,9 +192,20 @@ depth and breadth. Returns a structured result with an array of pages.
 
 Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER,
 then the configured default):
-  - Tavily advertises the crawl Capability and supplies the Adapter.
-  - Z.AI and MiniMax do NOT advertise crawl. Selecting them returns
-    UNSUPPORTED_CAPABILITY with no fallback.
+  - Tavily and Firecrawl advertise the crawl Capability and supply the Adapter.
+  - Z.AI and MiniMax do NOT advertise crawl. By default (0.11.0+) Provider
+    fallback emits a stderr notice and silently reroutes to the next
+    eligible configured supplier (Tavily or Firecrawl). Under
+    --no-fallback (or SCOUTLINE_NO_FALLBACK=1) the preflight surfaces
+    UNSUPPORTED_CAPABILITY for the selected non-supplier.
+
+> Accepted async risk: for \`crawl\`, a runtime failure on the effective
+> Provider may fall back to another Provider even if the failed Provider
+> had already accepted or charged a job (Firecrawl/Tavily do not offer
+> idempotency or refunds). Pass --no-fallback for cost-sensitive
+> workflows. See
+> https://github.com/vikasagarwal101/scoutline/blob/main/docs/adr/0002-provider-fallback.md
+> (the ADR is not packaged with the npm tarball; follow the link).
 
 Options:
   --depth <n>          Crawl depth, 1-5 (default: 1)

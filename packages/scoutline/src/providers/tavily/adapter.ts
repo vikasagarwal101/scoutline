@@ -1213,5 +1213,7 @@ export function createTavilyDescriptor(
       });
       return { id: "tavily", search, reader, crawl, map, research, quota, diagnostics };
     },
+    // Provider-fallback Ticket 02 — see ProviderDescriptor.credentialEnvVars.
+    credentialEnvVars: ["TAVILY_API_KEY"],
   };
 }

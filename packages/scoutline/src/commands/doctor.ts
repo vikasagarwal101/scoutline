@@ -261,21 +261,26 @@ metadata all advertise reader; MiniMax advertises and supplies
 neither. The capabilityMatrix field lists Z.AI, Tavily, and Exa for
 reader.
 
-Crawl and Map are Provider Capabilities owned by Tavily.
-Z.AI, MiniMax, and Exa do not advertise either; the capabilityMatrix
-lists Tavily alone for each. Research is supplied by Tavily and Exa.
-Selecting Z.AI or MiniMax for crawl, map, or research returns
-UNSUPPORTED_CAPABILITY with no fallback.
+Crawl and Map are Provider Capabilities owned by Tavily and Firecrawl.
+Z.AI, MiniMax, Exa, and Brave do not advertise either; the
+capabilityMatrix lists Tavily and Firecrawl for each. Research is
+supplied by Tavily and Exa. By default (0.11.0+) Provider fallback
+emits a stderr notice and silently reroutes to the next eligible
+configured supplier when a non-supplier is selected; under
+--no-fallback (or SCOUTLINE_NO_FALLBACK=1) the preflight surfaces
+UNSUPPORTED_CAPABILITY for the selected non-supplier.
 
 Public 'repo' and 'read' commands participate in Provider selection.
 They honour --provider / SCOUTLINE_PROVIDER / the default zai, route
 through the matching Adapter's Repository / Reader Capability, and
 return UNSUPPORTED_CAPABILITY when the selected Provider does not
-advertise the requested capability (e.g. 'repo --provider minimax' or
-'read --provider minimax' fail without falling back to Z.AI). A
-supported-but-unconfigured Provider returns ConfigurationError; a
-supported-and-configured Provider dispatches through the corresponding
-Adapter.
+advertise the requested capability (e.g. 'repo --provider minimax'
+or 'read --provider minimax' trigger Provider fallback by default in
+0.11.0+; under --no-fallback (or SCOUTLINE_NO_FALLBACK=1) the
+preflight surfaces UNSUPPORTED_CAPABILITY before any Adapter work).
+A supported-but-unconfigured Provider returns ConfigurationError; a
+supported-and-configured Provider dispatches through the
+corresponding Adapter.
 
 Options:
   --no-tools   Skip every connectivity probe (metadata-only). Under

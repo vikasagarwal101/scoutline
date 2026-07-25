@@ -583,5 +583,7 @@ export function createBraveDescriptor(dependencies?: BraveAdapterDependencies): 
       const quota = createBraveQuotaCapability({ env: context.env, transport });
       return { id: "brave", search, diagnostics, quota };
     },
+    // Provider-fallback Ticket 02 — see ProviderDescriptor.credentialEnvVars.
+    credentialEnvVars: ["BRAVE_SEARCH_API_KEY"],
   };
 }

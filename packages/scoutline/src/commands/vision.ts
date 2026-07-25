@@ -133,7 +133,8 @@ export interface VisionExecutionDependencies {
 /**
  * Invoke a Vision request through shared execution. Vision allows two
  * retries (DESIGN.md §10); the default policy is applied by
- * `executeProviderOperation`. No cache lookup, no fallback Provider.
+ * `executeProviderOperation`. No cache lookup. Provider fallback is
+ * owned by the executor (executeWithFallback), not by this function.
  */
 function runVision(request: VisionRequest, deps: VisionExecutionDependencies): Promise<string> {
   return executeProviderOperation("vision", () => deps.capability.invoke(request), {

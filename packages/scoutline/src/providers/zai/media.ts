@@ -23,9 +23,16 @@
  */
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
-import { FileError, ValidationError } from "../../lib/errors.js";
+import {
+  ApiError,
+  FileError,
+  NetworkError,
+  TimeoutError,
+  ValidationError,
+} from "../../lib/errors.js";
 
 // ---------------------------------------------------------------------------
 // Z.AI media limits (DESIGN.md §9)
@@ -142,4 +149,132 @@ export function resolveVideoSource(source: string): string {
     ZAI_MAX_VIDEO_BYTES,
     ZAI_VIDEO_FORMAT_HELP,
   );
+}
+
+// ---------------------------------------------------------------------------
+// URL -> local temp file fallback (Issue E).
+//
+// Z.AI's vision MCP only accepts a local path or an HTTP(S) URL as
+// `image_source`; it rejects base64/data URIs ("Image file not found").
+// Its server-side URL fetcher is also unreliable for some URLs (returns
+// code 1210 image-format errors, empty results, or hangs). When a URL
+// source fails with a fast client error, the Adapter retries by fetching
+// the URL here, validating it against the same Z.AI media limits, writing
+// it to a process-private temp file, and passing that path to the next
+// attempt. The caller owns unlinking the returned path.
+// ---------------------------------------------------------------------------
+
+/** Bound on a single URL fetch used for the fallback. */
+const ZAI_FETCH_TIMEOUT_MS = 30_000;
+
+/**
+ * Map a fetch `Content-Type` header value to a Z.AI media extension.
+ * Returns `null` for an unknown/missing type so the caller can fall back
+ * to a URL-derived extension or reject.
+ */
+function contentTypeToExtension(contentType: string | null): string | null {
+  if (!contentType) return null;
+  const base = contentType.split(";")[0].trim().toLowerCase();
+  const map: Record<string, string> = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "video/x-m4v": ".m4v",
+    "video/x-msvideo": ".avi",
+    "video/webm": ".webm",
+    "video/x-ms-wmv": ".wmv",
+  };
+  return map[base] ?? null;
+}
+
+/**
+ * Fetch an HTTP(S) `url` to a process-private temp file, enforcing the
+ * Z.AI media size limit and the allowed `extensions`. The extension is
+ * derived from the response Content-Type when available, falling back to
+ * the URL path's extension. Returns the absolute temp path. The caller
+ * MUST unlink the file once the Provider attempt has finished.
+ *
+ * Failures throw normalized errors: `NetworkError` for transport failure,
+ * `TimeoutError` for a fetch that exceeds the bound, `ValidationError`
+ * for an oversize or unsupported-format response.
+ */
+async function fetchUrlToTempPath(
+  url: string,
+  maxBytes: number,
+  extensions: readonly string[],
+  formatHelp: string,
+): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ZAI_FETCH_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(url, { signal: controller.signal, redirect: "follow" });
+  } catch (error) {
+    clearTimeout(timer);
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new TimeoutError(ZAI_FETCH_TIMEOUT_MS);
+    }
+    throw new NetworkError("Z.AI vision URL fetch failed");
+  }
+  clearTimeout(timer);
+  if (!response.ok) {
+    throw new ApiError("Z.AI vision URL fetch failed", response.status);
+  }
+
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength) {
+    const n = Number.parseInt(declaredLength, 10);
+    if (Number.isFinite(n) && n > maxBytes) {
+      throw new ValidationError(
+        `URL exceeds the ${(maxBytes / 1024 / 1024).toFixed(0)} MiB limit`,
+        formatHelp,
+      );
+    }
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.length > maxBytes) {
+    throw new ValidationError(
+      `URL exceeds the ${(maxBytes / 1024 / 1024).toFixed(0)} MiB limit`,
+      formatHelp,
+    );
+  }
+
+  const ext =
+    contentTypeToExtension(response.headers.get("content-type")) ??
+    path.extname(new URL(url).pathname).toLowerCase();
+  if (!ext || !extensions.includes(ext)) {
+    throw new ValidationError(
+      `Unsupported media format from URL: ${ext || "(no extension)"}`,
+      formatHelp,
+    );
+  }
+
+  const tempPath = path.join(
+    os.tmpdir(),
+    `scoutline-vision-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`,
+  );
+  await fs.promises.writeFile(tempPath, buffer);
+  return tempPath;
+}
+
+/**
+ * Fetch an HTTP(S) image URL to a validated temp file path (≤ 5 MiB,
+ * JPG/JPEG/PNG). Used by the vision Adapter fallback when the Provider's
+ * server-side fetcher rejects a URL. The caller owns unlinking the path.
+ */
+export async function fetchImageSource(url: string): Promise<string> {
+  return fetchUrlToTempPath(url, ZAI_MAX_IMAGE_BYTES, ZAI_IMAGE_EXTENSIONS, ZAI_IMAGE_FORMAT_HELP);
+}
+
+/**
+ * Fetch an HTTP(S) video URL to a validated temp file path (≤ 8 MiB,
+ * the Phase 0 extension set). Used by the vision Adapter fallback when
+ * the Provider's server-side fetcher rejects a URL. The caller owns
+ * unlinking the path.
+ */
+export async function fetchVideoSource(url: string): Promise<string> {
+  return fetchUrlToTempPath(url, ZAI_MAX_VIDEO_BYTES, ZAI_VIDEO_EXTENSIONS, ZAI_VIDEO_FORMAT_HELP);
 }

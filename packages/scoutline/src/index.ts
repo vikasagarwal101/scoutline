@@ -71,7 +71,8 @@ Commands:
            supports it, Z.AI/MiniMax return UNSUPPORTED_CAPABILITY)
   repo     GitHub repository exploration (Provider Capability; Z.AI supports it,
            MiniMax and Tavily return UNSUPPORTED_CAPABILITY)
-  quota    Provider-aware plan usage (calls remaining, reset time)
+  quota    Provider-aware plan usage (calls remaining, reset time; default
+           reports every configured Provider)
   tools    List available MCP tools (Z.AI)
   tool     Show a tool schema (Z.AI)
   call     Call a tool directly (Z.AI)
@@ -1416,7 +1417,16 @@ async function handleQuota(
     return 0;
   }
 
-  const allProviders = flags["all-providers"] === true;
+  const forceAllProviders = flags["all-providers"] === true;
+  // Default mode is all-providers: plain `scoutline quota` reports every
+  // configured Provider. A Provider is "explicitly pinned" when the user
+  // passed --provider <id> or set SCOUTLINE_PROVIDER; a pin selects
+  // single-Provider mode so `--provider tavily quota` (or
+  // SCOUTLINE_PROVIDER=tavily) shows just that Provider. An explicit
+  // --all-providers always wins, even under a pin.
+  const providerExplicitlyPinned =
+    deps.provider !== undefined || deps.env.SCOUTLINE_PROVIDER !== undefined;
+  const allProviders = forceAllProviders || !providerExplicitlyPinned;
   // Resolve the effective Provider ID for dashboard metadata. Config
   // validation is owned by the dashboard builder (ConfigurationError,
   // exit 3) so an unconfigured default is reported as configuration, not

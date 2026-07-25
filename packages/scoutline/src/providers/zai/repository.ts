@@ -215,11 +215,30 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 /**
+ * Extract the inner content of a single Provider wrapper pair from a
+ * raw ZRead response. ZRead responses carry an arbitrary preamble
+ * (e.g. `File content for <path> in <repo>.`, `Source: <url>`, or
+ * `Directory Structure of <repo>:`) and postamble (e.g. a trailing
+ * `Tip:` line) AROUND the wrapper; only the text between the FIRST
+ * opening tag and the LAST closing tag is returned. Callers enforce
+ * exactly one opening and one closing tag via `countOccurrences`;
+ * misordered tags are malformed and rejected.
+ */
+function extractWrapperContent(raw: string, openTag: string, closeTag: string): string | null {
+  const openIdx = raw.indexOf(openTag);
+  const closeIdx = raw.lastIndexOf(closeTag);
+  if (openIdx === -1 || closeIdx === -1 || openIdx >= closeIdx) return null;
+  return raw.slice(openIdx + openTag.length, closeIdx);
+}
+
+/**
  * Parse a ZRead File response into a normalized `RepositoryFileResult`.
  * The grammar is a single whole-response `<file_content>...</file_content>`
- * wrapper; only characterized whitespace may appear outside the wrapper.
- * Exactly one outer opening and one outer closing wrapper tag are
- * required (P6-04B): duplicate or nested framing is malformed.
+ * wrapper; ZRead may also wrap that pair in an arbitrary preamble
+ * (`File content for <path> in <repo>.`, `Source: <url>`) and postamble
+ * (a trailing `Tip:` line), which are discarded. Exactly one outer
+ * opening and one outer closing wrapper tag are required (P6-04B):
+ * duplicate or nested framing is malformed.
  */
 function parseZaiFile(raw: unknown, request: RepositoryFileRequest): RepositoryFileResult {
   if (typeof raw !== "string") {
@@ -236,11 +255,10 @@ function parseZaiFile(raw: unknown, request: RepositoryFileRequest): RepositoryF
   ) {
     throw new ApiError("Z.AI file returned a malformed response", 502);
   }
-  const m = raw.match(/^\s*<file_content>([\s\S]*)<\/file_content>\s*$/);
-  if (!m) {
+  const content = extractWrapperContent(raw, "<file_content>", "</file_content>");
+  if (content === null) {
     throw new ApiError("Z.AI file returned a malformed response", 502);
   }
-  const content = m[1];
   return {
     schemaVersion: 1,
     repository: request.repository,
@@ -253,10 +271,17 @@ function parseZaiFile(raw: unknown, request: RepositoryFileRequest): RepositoryF
 
 /**
  * Parse a ZRead Directory Listing response into a normalized
- * `RepositoryDirectoryListing`. The grammar is a single whole-response
- * `<structure>...</structure>` wrapper. The FIRST non-blank line inside
- * the wrapper MUST be a non-empty glyph-less root label (typically
- * `owner-repo/`). Every SUBSEQUENT non-blank line is either:
+ * `RepositoryDirectoryListing`. The grammar is a single
+ * `<structure>...</structure>` wrapper that ZRead may surround with an
+ * arbitrary preamble (`Directory Structure of <repo>:`) and postamble
+ * (a trailing `Tip:` line), both discarded. The FIRST non-blank line
+ * inside the wrapper is either:
+ *
+ *   - a non-empty glyph-less root label (typically `owner-repo/`),
+ *     which is skipped; or
+ *   - absent, in which case the first line is an immediate entry.
+ *
+ * Every SUBSEQUENT non-blank line is either:
  *
  *   - a level-zero immediate entry: `├── name` or `└── name` (branch
  *     glyph at column 0, no leading whitespace); or
@@ -267,8 +292,8 @@ function parseZaiFile(raw: unknown, request: RepositoryFileRequest): RepositoryF
  * Only immediate entries are emitted. Valid descendants are silently
  * skipped (P6-04B). Glyph-bearing lines with arbitrary or misaligned
  * prefixes (e.g. `garbage├──`, `│  ├──` with only 2 spaces),
- * glyph-less lines, and descendants with empty names are rejected
- * (P6-04C).
+ * glyph-less sibling lines, and descendants with empty names are
+ * rejected (P6-04C).
  *
  * A trailing `/` on an entry marks a directory. Sibling order is
  * preserved verbatim.
@@ -296,11 +321,10 @@ function parseZaiDirectory(
   if (countOccurrences(raw, "<structure>") !== 1 || countOccurrences(raw, "</structure>") !== 1) {
     throw new ApiError("Z.AI directory returned a malformed response", 502);
   }
-  const wrapper = raw.match(/^\s*<structure>([\s\S]*)<\/structure>\s*$/);
-  if (!wrapper) {
+  const body = extractWrapperContent(raw, "<structure>", "</structure>");
+  if (body === null) {
     throw new ApiError("Z.AI directory returned a malformed response", 502);
   }
-  const body = wrapper[1];
   // Level-0 immediate entries: branch glyph at column 0 (no leading
   // whitespace).
   const immediateEntryRe = /^[├└]──\s(.+)$/;
@@ -315,14 +339,15 @@ function parseZaiDirectory(
   for (const line of body.split("\n")) {
     if (!line.trim()) continue;
     if (isFirstNonBlank) {
-      // The first non-blank line MUST be a glyph-less root label
-      // (P6-04C). A glyph-bearing first line means the root label
-      // is missing and the response is malformed.
+      // The root label is OPTIONAL. ZRead responses either open with
+      // a glyph-less root label (owner-repo/) OR jump straight into
+      // immediate entries. A glyph-less first line is the root label
+      // and is skipped; a glyph-bearing first line is an immediate
+      // entry and falls through to entry processing below.
       isFirstNonBlank = false;
-      if (/[├└]──/.test(line)) {
-        throw new ApiError("Z.AI directory returned a malformed response", 502);
+      if (!/[├└]──/.test(line)) {
+        continue;
       }
-      continue;
     }
     const m = line.match(immediateEntryRe);
     if (m) {

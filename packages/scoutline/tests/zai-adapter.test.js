@@ -689,6 +689,122 @@ describe("Z.AI Vision Adapter — shared execution owns retries (P3-03)", () => 
 });
 
 // ---------------------------------------------------------------------------
+// URL -> local temp-file fallback (Issue E). Z.AI's vision MCP refuses
+// base64 and its server-side URL fetcher rejects some image URLs with a
+// fast client error (e.g. code 1210, HTTP 400). The Adapter retries by
+// fetching the URL itself to a temp file and passing that path.
+// ---------------------------------------------------------------------------
+
+describe("Z.AI Vision Adapter — URL -> local fallback (Issue E)", () => {
+  /** Run `fn` with `globalThis.fetch` replaced by `handler`; restore after. */
+  async function withMockFetch(handler, fn) {
+    const real = globalThis.fetch;
+    globalThis.fetch = handler;
+    try {
+      return await fn();
+    } finally {
+      globalThis.fetch = real;
+    }
+  }
+
+  /** A fetch handler serving `buf` as image/png (200). */
+  const pngFetch = (buf) => async () =>
+    new Response(buf, { status: 200, headers: { "content-type": "image/png" } });
+
+  it("a 400 on a URL source triggers a local fetch and retries with a temp file path", async () => {
+    let calls = 0;
+    const factory = makeClientFactory({
+      discoveredTools: [{ name: VISION_TOOL_INTERNAL_NAME }],
+      resultsByName: { [VISION_TOOL_INTERNAL_NAME]: "recovered via local" },
+      errorsByName: () => {
+        calls += 1;
+        return calls === 1 ? new ApiError("image format error", 400) : undefined;
+      },
+    });
+    const adapter = createZaiDescriptor({ clientFactory: factory }).create({
+      env: { Z_AI_API_KEY: TEST_API_KEY },
+    });
+
+    let tempPath = "";
+    await withMockFetch(pngFetch(Buffer.from([0x89, 0x50, 0x4e, 0x47])), async () => {
+      const out = await adapter.vision.invoke(VISION_REQUEST);
+      assert.strictEqual(out, "recovered via local");
+      // Two transport attempts: first (URL) failed, second (temp file) succeeded.
+      assert.strictEqual(factory.created.length, 2, "exactly two transport attempts");
+      // The second attempt's image_source is NOT the URL — it's a temp path.
+      const secondArgs = factory.created[1].port.callToolCalls[0].args;
+      assert.notStrictEqual(secondArgs.image_source, VISION_REQUEST.source);
+      assert.match(
+        secondArgs.image_source,
+        /scoutline-vision-/,
+        `image_source should be a temp path, got: ${secondArgs.image_source}`,
+      );
+      tempPath = secondArgs.image_source;
+    });
+    // The temp file is cleaned up after the attempt.
+    await assert.rejects(
+      () => fs.access(tempPath),
+      (err) => err.code === "ENOENT",
+    );
+  });
+
+  it("a 400 on a LOCAL file source does not trigger the URL fallback (no fetch)", async () => {
+    let fetchCalled = false;
+    const factory = makeClientFactory({
+      discoveredTools: [{ name: VISION_TOOL_INTERNAL_NAME }],
+      errorsByName: () => new ApiError("bad image", 400),
+    });
+    const adapter = createZaiDescriptor({ clientFactory: factory }).create({
+      env: { Z_AI_API_KEY: TEST_API_KEY },
+    });
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "zai-vision-"));
+    try {
+      const img = path.join(tmp, "local.png");
+      await fs.writeFile(img, Buffer.from([0]));
+      await withMockFetch(
+        async () => {
+          fetchCalled = true;
+          return new Response(Buffer.alloc(0), { status: 200 });
+        },
+        async () =>
+          assert.rejects(
+            adapter.vision.invoke({ ...VISION_REQUEST, source: img }),
+            (err) => err instanceof ApiError && err.statusCode === 400,
+          ),
+      );
+      assert.strictEqual(fetchCalled, false, "no fetch for a local-file source");
+      assert.strictEqual(factory.created.length, 1, "no fallback attempt for a local source");
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("a 5xx on a URL source does not trigger the URL fallback (shared retry owns 5xx)", async () => {
+    let fetchCalled = false;
+    const factory = makeClientFactory({
+      discoveredTools: [{ name: VISION_TOOL_INTERNAL_NAME }],
+      errorsByName: () => new ApiError("server error", 502),
+    });
+    const adapter = createZaiDescriptor({ clientFactory: factory }).create({
+      env: { Z_AI_API_KEY: TEST_API_KEY },
+    });
+    await withMockFetch(
+      async () => {
+        fetchCalled = true;
+        return new Response(Buffer.alloc(0), { status: 200 });
+      },
+      async () =>
+        assert.rejects(
+          adapter.vision.invoke(VISION_REQUEST),
+          (err) => err instanceof ApiError && err.statusCode === 502,
+        ),
+    );
+    assert.strictEqual(fetchCalled, false, "no fetch for a 5xx URL source");
+    assert.strictEqual(factory.created.length, 1, "no fallback attempt for 5xx");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Credential alias + missing-credential exit code (Fixup A — B4, B7)
 // ---------------------------------------------------------------------------
 

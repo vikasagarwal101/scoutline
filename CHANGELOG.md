@@ -4,6 +4,43 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **`scoutline repo tree` / `scoutline repo read` returned `API_ERROR` 502
+  against the current Z.AI ZRead output.** ZRead now wraps the
+  `<structure>` / `<file_content>` block in a preamble (`Directory
+  Structure of <repo>:`, `File content for <path> in <repo>.`,
+  `Source: <url>`) and a trailing `Tip:` line, and omits the glyph-less
+  root label (entries start directly with `├──`). The parsers now locate
+  the single wrapper pair anywhere in the response and treat the root
+  label as optional, so both the current and the legacy grammar parse.
+  Duplicate/nested wrappers, unclosed tags, and glyph-less siblings are
+  still rejected.
+- **Vision image URLs the Provider cannot fetch now fall back to a local
+  fetch.** Z.AI's vision MCP rejects base64 and its server-side URL
+  fetcher fails on some image URLs with a fast `code 1210` (HTTP 400) or
+  returns empty. On a 400/422 for an HTTP(S) image/video source, the
+  Z.AI Adapter now fetches the URL itself (validated against the same
+  media limits), writes it to a temp file, retries with that path, and
+  cleans up. Timeouts/5xx are untouched (the shared retry policy owns
+  them; a fallback there would double latency).
+
+### Changed
+- **`scoutline quota` now defaults to multi-Provider.** Plain `scoutline
+  quota` reports every configured Provider with a quota Capability, in
+  registry order (previously: only the effective Provider). Pin a single
+  Provider with `--provider <id>` or `SCOUTLINE_PROVIDER=<id>`;
+  `--all-providers` forces the multi-Provider default even under a pin.
+  This is the behavior the report flagged — the flag already existed, it
+  is now the default.
+
+### Known Limitations
+- **`scoutline vision diagnose-error` remains image-only.** A `--text`
+  mode is not available: the Z.AI MCP exposes no text-chat tool (the
+  operation maps to `vision.diagnose_error_screenshot`, which requires
+  an `image_source`), and the raw Z.AI chat-completions API requires a
+  separate paid resource package (`code 1113` on the MCP-plan key). The
+  workaround is to screenshot the error and pass the image path.
+
 ## [0.10.0] - 2026-07-24
 
 ### Added

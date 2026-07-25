@@ -106,10 +106,14 @@ function extractExcerptCount(raw) {
 }
 
 /**
- * File grammar: a single `<file_content>...</file_content>` wrapper that
- * wraps the entire response (only whitespace is allowed outside the wrapper).
- * Surrounding or trailing non-wrapper data, duplicate outer wrappers, and
- * unclosed tags are malformed.
+ * File grammar: a single `<file_content>...</file_content>` wrapper
+ * anywhere in the response. ZRead wraps the pair in an arbitrary
+ * preamble (e.g. "File content for ... in ...", "Source: <url>") and
+ * postamble (a trailing "Tip:" line); only characterized whitespace
+ * outside the wrapper was historically permitted, but current ZRead
+ * output surrounds every wrapper with prose, so the grammar locates
+ * the single wrapper pair and accepts any non-wrapper text around it.
+ * Duplicate outer wrappers and unclosed tags remain malformed.
  */
 function isValidFileGrammar(raw) {
   if (typeof raw !== "string") return false;
@@ -117,19 +121,24 @@ function isValidFileGrammar(raw) {
   const opens = countTag(raw, "<file_content>");
   const closes = countTag(raw, "</file_content>");
   if (opens !== 1 || closes !== 1) return false;
-  // Whole-response framing: the wrapper must wrap the entire string with
-  // only characterized whitespace allowed outside.
-  return /^\s*<file_content>[\s\S]*<\/file_content>\s*$/.test(raw);
+  // The wrapper must be well-formed and ordered (open before close).
+  const openIdx = raw.indexOf("<file_content>");
+  const closeIdx = raw.lastIndexOf("</file_content>");
+  return openIdx < closeIdx;
 }
 
 /**
- * Tree grammar: a single `<structure>...</structure>` wrapper that wraps the
- * entire response, the FIRST non-blank line inside the wrapper is the root
- * entry (allowed to be glyph-less — typical of `facebook-react/` style
- * Provider output), and EVERY subsequent non-blank line must use the
- * documented Unicode branch glyph (immediate or nested). Trailing `/` marks
- * directories. Provider sibling order is preserved. A glyph-less sibling
- * line is malformed even when the wrapper and earlier entries are valid.
+ * Tree grammar: a single `<structure>...</structure>` wrapper anywhere
+ * in the response (current ZRead output surrounds it with a "Directory
+ * Structure of <repo>:" preamble and a "Tip:" postamble). The FIRST
+ * non-blank line inside the wrapper is EITHER a glyph-less root label
+ * (typical of older `facebook-react/`-style output) OR an immediate
+ * entry (current ZRead output omits the label and jumps straight into
+ * glyph-bearing entries). EVERY subsequent non-blank line must use the
+ * documented Unicode branch glyph (immediate or nested). Trailing `/`
+ * marks directories. Provider sibling order is preserved. A glyph-less
+ * sibling line is malformed even when the wrapper and earlier entries
+ * are valid.
  */
 function isValidTreeGrammar(raw) {
   if (typeof raw !== "string") return false;
@@ -137,9 +146,10 @@ function isValidTreeGrammar(raw) {
   const opens = countTag(raw, "<structure>");
   const closes = countTag(raw, "</structure>");
   if (opens !== 1 || closes !== 1) return false;
-  const wrapper = raw.match(/^\s*<structure>([\s\S]*)<\/structure>\s*$/);
-  if (!wrapper) return false;
-  const body = wrapper[1] || "";
+  const openIdx = raw.indexOf("<structure>");
+  const closeIdx = raw.lastIndexOf("</structure>");
+  if (openIdx >= closeIdx) return false;
+  const body = raw.slice(openIdx + "<structure>".length, closeIdx) || "";
   const immediateEntryRe = /^[ \t]*[├└]──\s.+$/;
   const nestedEntryRe = /^[ \t│]*[├└]──\s.+$/;
   let sawImmediate = false;
@@ -147,12 +157,13 @@ function isValidTreeGrammar(raw) {
   for (const line of body.split("\n")) {
     if (!line.trim()) continue;
     if (isFirstNonBlank) {
-      // The root entry line is the FIRST non-blank line in the wrapper.
-      // Per the characterized ZRead grammar, it names the repository root
-      // (typically ending with `/`) and is allowed to lack the branch
-      // glyph. Subsequent lines MUST use the documented glyph.
+      // The root label is optional. A glyph-less first line is the
+      // root label and is skipped; a glyph-bearing first line is an
+      // immediate entry and is processed below.
       isFirstNonBlank = false;
-      continue;
+      if (!/[├└]──/.test(line)) {
+        continue;
+      }
     }
     if (immediateEntryRe.test(line)) {
       sawImmediate = true;
@@ -265,7 +276,6 @@ before(async () => {
     fileValid: await loadFixture("file-valid.json"),
     fileMalformedWrapper: await loadFixture("file-malformed-wrapper.json"),
     fileMalformedUnclosed: await loadFixture("file-malformed-unclosed.json"),
-    fileMixedMalformed: await loadFixture("file-mixed-malformed.json"),
     treeRootValid: await loadFixture("tree-root-valid.json"),
     treeRootMalformed: await loadFixture("tree-root-malformed.json"),
     treeNestedValid: await loadFixture("tree-nested-valid.json"),
@@ -281,7 +291,7 @@ before(async () => {
 // ---------------------------------------------------------------------------
 
 describe("P6-01 / P6-01A — ZRead repository fixture contract", () => {
-  it("all 15 characterized fixtures exist on disk", async () => {
+  it("all 14 characterized fixtures exist on disk", async () => {
     const entries = await fs.readdir(FIXTURE_DIR);
     const names = entries.filter((n) => n.endsWith(".json")).sort();
     assert.deepStrictEqual(
@@ -291,7 +301,6 @@ describe("P6-01 / P6-01A — ZRead repository fixture contract", () => {
         "error-mcp-quota.json",
         "file-malformed-unclosed.json",
         "file-malformed-wrapper.json",
-        "file-mixed-malformed.json",
         "file-valid.json",
         "search-malformed-unclosed.json",
         "search-malformed-wrapper.json",
@@ -397,9 +406,10 @@ describe("P6-01 / P6-01A — ZRead Search grammar (search_doc)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// File grammar: whole-response framing. Only characterized whitespace is
-// allowed outside the wrapper; mixed-malformed (leading/trailing data or
-// duplicate wrappers) is rejected.
+// File grammar: locate a single wrapper pair anywhere in the response.
+// Current ZRead output surrounds the wrapper with a preamble and postamble,
+// so surrounding prose is accepted. Duplicate/nested wrappers and unclosed
+// tags remain malformed.
 // ---------------------------------------------------------------------------
 
 describe("P6-01 / P6-01A — ZRead File grammar (read_file)", () => {
@@ -415,20 +425,23 @@ describe("P6-01 / P6-01A — ZRead File grammar (read_file)", () => {
     assert.ok(!isValidFileGrammar(fixtures.fileMalformedUnclosed.raw));
   });
 
-  it("mixed-malformed fixture (surrounding/trailing non-wrapper data) is rejected", () => {
-    // P6-01A: whole-response framing — leading or trailing prose outside
-    // the wrapper is malformed even when the wrapper itself is well-formed.
-    assert.ok(!isValidFileGrammar(fixtures.fileMixedMalformed.raw));
+  it("surrounding preamble/postamble prose is accepted (current ZRead output)", () => {
+    // ZRead wraps `<file_content>` in a preamble ("File content for ...
+    // in <repo>." / "Source: <url>") and a postamble ("Tip: ..."). The
+    // single-wrapper grammar locates the pair and accepts the prose.
+    const withProse =
+      "File content for README.md in facebook/react.\n" +
+      "Source: https://github.com/facebook/react/blob/main/README.md\n\n" +
+      "<file_content>\n# Project README\n</file_content>\n\n" +
+      "Tip: view at https://zread.ai/facebook/react";
+    assert.ok(isValidFileGrammar(withProse), "surrounding prose must be accepted");
   });
 
-  it("the File framing is whole-response (only whitespace outside the wrapper)", () => {
-    // Defensive: a synthetic valid wrapper wrapped with a single leading
-    // character must be rejected by the whole-response rule.
-    const leading = "X<file_content>\nbody\n</file_content>";
-    const trailing = "<file_content>\nbody\n</file_content>X";
-    const duplicated = "<file_content>\nbody\n</file_content><file_content>\nbody2\n</file_content>";
-    assert.ok(!isValidFileGrammar(leading), "leading non-whitespace must be rejected");
-    assert.ok(!isValidFileGrammar(trailing), "trailing non-whitespace must be rejected");
+  it("duplicate outer wrappers are still rejected", () => {
+    // The single-wrapper invariant still holds: two complete wrapper
+    // pairs are malformed even though each is internally well-formed.
+    const duplicated =
+      "<file_content>\nbody\n</file_content><file_content>\nbody2\n</file_content>";
     assert.ok(!isValidFileGrammar(duplicated), "duplicate outer wrapper must be rejected");
   });
 
@@ -439,10 +452,11 @@ describe("P6-01 / P6-01A — ZRead File grammar (read_file)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tree grammar: whole-response framing plus per-line glyph validation. Every
-// non-blank line inside the wrapper must use the documented Unicode branch
-// glyph; a glyph-less sibling makes the response malformed even when other
-// entries are valid.
+// Tree grammar: a single wrapper pair anywhere in the response plus
+// per-line glyph validation. The root label is optional (current ZRead
+// output omits it). Every non-blank line inside the wrapper must use the
+// documented Unicode branch glyph; a glyph-less sibling makes the response
+// malformed even when other entries are valid.
 // ---------------------------------------------------------------------------
 
 describe("P6-01 / P6-01A — ZRead Tree grammar (get_repo_structure)", () => {
@@ -469,6 +483,22 @@ describe("P6-01 / P6-01A — ZRead Tree grammar (get_repo_structure)", () => {
     );
   });
 
+  it("accepts a response with no root label and surrounding prose (current ZRead output)", () => {
+    // Current ZRead output omits the glyph-less root label and wraps
+    // `<structure>` in a "Directory Structure of <repo>:" preamble and
+    // a "Tip:" postamble. Both the missing label and the prose are valid.
+    const current =
+      "Directory Structure of facebook/react:\n\n" +
+      "<structure>\n├── README.md\n├── packages/\n└── yarn.lock\n</structure>\n\n" +
+      "Tip: Only showing 3 levels of depth.";
+    assert.ok(isValidTreeGrammar(current), "current ZRead shape must be accepted");
+    const entries = extractImmediateEntries(current);
+    assert.deepStrictEqual(
+      entries.map((e) => e.name),
+      ["README.md", "packages", "yarn.lock"],
+    );
+  });
+
   it("root malformed fixture (wrapper present, no glyph lines) is rejected", () => {
     assert.ok(!isValidTreeGrammar(fixtures.treeRootMalformed.raw));
   });
@@ -483,13 +513,11 @@ describe("P6-01 / P6-01A — ZRead Tree grammar (get_repo_structure)", () => {
     assert.ok(!isValidTreeGrammar(fixtures.treeMixedMalformed.raw));
   });
 
-  it("the Tree framing is whole-response (only whitespace outside the wrapper)", () => {
-    // Defensive: leading/trailing prose outside the structure wrapper
-    // must be rejected by the whole-response rule.
-    const leading = "X<structure>\n├── a\n</structure>";
-    const trailing = "<structure>\n├── a\n</structure>X";
-    assert.ok(!isValidTreeGrammar(leading), "leading non-whitespace must be rejected");
-    assert.ok(!isValidTreeGrammar(trailing), "trailing non-whitespace must be rejected");
+  it("duplicate outer wrappers are still rejected", () => {
+    // The single-wrapper invariant still holds even with surrounding
+    // prose now permitted.
+    const duplicated = "<structure>\n├── a\n</structure>\n<structure>\n├── b\n</structure>";
+    assert.ok(!isValidTreeGrammar(duplicated), "duplicate outer wrapper must be rejected");
   });
 
   it("encoded MCP error cannot satisfy the Tree valid grammar", () => {

@@ -47,6 +47,7 @@ optional parameters.
 | `zai` | `Z_AI_API_KEY` | `Z_AI_BASE_URL` / `Z_AI_MODE` | Default Provider; MCP-backed transport |
 | `minimax` | `MINIMAX_API_KEY` | `MINIMAX_REGION` (`global` / `cn`) or `MINIMAX_BASE_URL` | Direct transport for Search, Vision, Quota; SDK removed in 0.6.0 |
 | `tavily` | `TAVILY_API_KEY` | `https://api.tavily.com` | Direct-HTTP transport; Search, Reader, Crawl, Map, Research, Quota, Diagnostics |
+| `exa` | `EXA_API_KEY` | `https://api.exa.ai` | Direct-HTTP transport; Search (web only), Reader (per-URL), Research (Exa Agent), Diagnostics. No Crawl/Map/Quota/Vision |
 | `brave` | `BRAVE_SEARCH_API_KEY` | `https://api.search.brave.com` | Direct-HTTP transport (`X-Subscription-Token`); Search (web/news/video + `--content-size high` → LLM Context), Quota, Diagnostics. No Reader/Crawl/Map/Research/Vision |
 | `firecrawl` | `FIRECRAWL_API_KEY` | `https://api.firecrawl.dev` (v2) | Direct-HTTP transport; Search, Reader, Crawl (async), Map, Quota (credits), Diagnostics. Credit-based; no Research (`/deep-research` deprecated) |
 
@@ -70,11 +71,15 @@ outside the MiniMax Adapter and its transport tests.
 Provider selection applies to Search, Vision, quota, diagnostics,
 **repository exploration**, **Reader**, **Crawl**, **Map**, and
 **Research**. Raw tools and Code Mode are Z.AI-only and ignore both
-the explicit flag and the environment variable. Crawl and Map are
-supplied by Tavily and Firecrawl; Research is Tavily-only (Firecrawl's
-`/deep-research` is deprecated). Z.AI and MiniMax advertise none of the
-three, so selecting them for those commands returns
-`UNSUPPORTED_CAPABILITY` with no fallback.
+the explicit flag and the environment variable. Provider fallback
+is **always-on** (0.11.0+): when the selected provider does not
+supply the capability or fails at runtime, scoutline silently tries
+the next eligible provider in registry order and emits a stderr
+notice on every switch. `--no-fallback` (or
+`SCOUTLINE_NO_FALLBACK=1`) restores the previous strict
+single-provider behavior; see
+[`docs/adr/0002-provider-fallback.md`](adr/0002-provider-fallback.md)
+for the rationale and the accepted async double-charge risk.
 
 | Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Command |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -84,11 +89,11 @@ three, so selecting them for those commands returns
 | Image diff / video | Yes | No | No | No | No | No | `scoutline vision diff`, `vision video` |
 | `quota` | Yes | Yes | Yes | No (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | `scoutline quota` |
 | `diagnostics` | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
-| Reader | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | Yes (Z.AI-only options are rejected) | Yes (rejects Z.AI-only options) | No (UNSUPPORTED_CAPABILITY, no fallback) | Yes (returns page titles) | `scoutline read` |
-| Repository exploration | Yes | No (UNSUPPORTED_CAPABILITY, no fallback) | No (UNSUPPORTED_CAPABILITY, no fallback) | No (UNSUPPORTED_CAPABILITY, no fallback) | No (UNSUPPORTED_CAPABILITY, no fallback) | No (UNSUPPORTED_CAPABILITY, no fallback) | `scoutline repo ...` |
-| Crawl | No | No | Yes | No | No | Yes (async; resumable after Ctrl-C) | `scoutline crawl` |
-| Map | No | No | Yes | No | No | Yes | `scoutline map` |
-| Research | No | No | Yes (4-250 credits per request) | Yes | No | No (`/deep-research` deprecated) | `scoutline research` |
+| Reader | Yes | Falls back (zai/tavily/exa/firecrawl) | Yes (Z.AI-only options are rejected) | Yes (rejects Z.AI-only options) | Falls back | Yes (returns page titles) | `scoutline read` |
+| Repository exploration | Yes | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | `scoutline repo ...` |
+| Crawl | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes (async; resumable after Ctrl-C) | `scoutline crawl` |
+| Map | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes | `scoutline map` |
+| Research | Falls back (tavily/exa) | Falls back (tavily/exa) | Yes (4-250 credits per request) | Yes | Falls back (tavily/exa) | Falls back (tavily/exa) (`/deep-research` deprecated) | `scoutline research` |
 | Raw tools | Yes | No | No | No | `scoutline tools`, `tool`, `call` |
 | Code Mode | Yes | No | No | No | `scoutline code ...` |
 
@@ -406,14 +411,28 @@ MiniMax as unsupported for `read`.
 `scoutline crawl`, `scoutline map`, and `scoutline research` participate
 in Provider selection. Crawl and Map are supplied by Tavily and Firecrawl;
 Research is shared between Tavily and Exa (Firecrawl's `/deep-research` is
-deprecated). Selecting Z.AI, MiniMax, or Brave for any of the three (explicitly or via
-`SCOUTLINE_PROVIDER`) returns `UNSUPPORTED_CAPABILITY` before
-`descriptor.isConfigured`, `descriptor.create`, credential resolution
-for use, cache identity, or transport construction, with no fallback.
-Firecrawl's crawl is asynchronous (`/v2/crawl` create→poll→resume, with
-reclaim-on-miss for cost-safety and a state file under
-`~/.scoutline/crawl/`); Tavily's is synchronous. The flow below shows the
-Tavily (synchronous) path.
+deprecated). Provider fallback is **always-on** (0.11.0+): selecting
+Z.AI, MiniMax, or Brave (explicitly or via `SCOUTLINE_PROVIDER`) for
+any of the three emits a stderr notice and reroutes to the next
+eligible provider in registry order. The descriptor's
+`UNSUPPORTED_CAPABILITY` signal still surfaces under `--no-fallback`
+before `descriptor.isConfigured`, `descriptor.create`, credential
+resolution for use, cache identity, or transport construction —
+matching the previous strict behavior. Firecrawl's crawl is
+asynchronous (`/v2/crawl` create→poll→resume, with reclaim-on-miss for
+cost-safety and a state file under `~/.scoutline/crawl/`); Tavily's is
+synchronous. The flow below shows the Tavily (synchronous) path.
+
+> **Accepted async risk:** for `crawl` / `map` / `research`, a runtime
+> failure on the effective provider may fall back to another provider
+> **even if the failed provider had already accepted or charged a job**.
+> Providers (Firecrawl, Tavily, Exa) do not offer idempotency keys,
+> pre-charge acknowledgements, or refunds for accepted-then-failed
+> work. The double-charge risk is documented in
+> [`docs/adr/0002-provider-fallback.md`](adr/0002-provider-fallback.md)
+> and `docs/troubleshooting.md`. Pass `--no-fallback` (or set
+> `SCOUTLINE_NO_FALLBACK=1`) to opt out and restore strict
+> single-provider behavior.
 
 ```text
 crawl argv + global flags
@@ -432,10 +451,11 @@ crawl argv + global flags
 Key boundaries:
 
 - **Capability ownership.** Crawl and Map are advertised by the Tavily
-  and Firecrawl descriptors; Research is Tavily-only. The matching
-  Adapter supplies the Capability implementation. Z.AI and MiniMax
-  descriptors do not advertise any of the three; their Adapters supply
-  nothing.
+  and Firecrawl descriptors; Research is advertised by Tavily and Exa
+  (Firecrawl `/deep-research` is deprecated and Firecrawl does not
+  advertise Research). The matching Adapter supplies the Capability
+  implementation. Z.AI, MiniMax, and Brave descriptors do not advertise
+  any of the three; their Adapters supply nothing.
 - **Map is the simplest of the three.** The Tavily `/map` endpoint
   returns a URL set with no per-page content, so the handler has no
   `--max-chars` projection. Crawl and Research are richer; the

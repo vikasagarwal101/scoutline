@@ -142,7 +142,7 @@ scoutline --provider tavily research "Rust async runtime comparison"
 SCOUTLINE_PROVIDER=minimax scoutline quota
 ```
 
-Selecting a provider that doesn't support a capability returns `UNSUPPORTED_CAPABILITY` with no fallback.
+Selecting a provider that doesn't support a capability auto-reroutes to the next eligible configured provider in registry order and emits a stderr notice (the default since 0.11.0). Pass `--no-fallback` (or set `SCOUTLINE_NO_FALLBACK=1`) to restore the previous strict `UNSUPPORTED_CAPABILITY` behavior for scripting or cost-sensitive workflows.
 
 ### Capability Matrix
 

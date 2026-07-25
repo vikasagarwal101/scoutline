@@ -45,32 +45,26 @@ flag but ignore it — they remain Z.AI-only.
 Provider "minimax" does not support capability "reader"
 ```
 
-Selecting MiniMax (explicitly or via `SCOUTLINE_PROVIDER`) for `read` returns
-`UNSUPPORTED_CAPABILITY` (`exit 1`) **before** descriptor configuration,
-Adapter creation, credential resolution for use, cache identity, or transport
-construction. There is no implicit fallback to Z.AI, no heuristic, and no env
-rerun. Drop the Provider selection to use the default Z.AI:
+By default (0.11.0+) provider fallback handles this automatically:
+selecting MiniMax (explicitly or via `SCOUTLINE_PROVIDER`) for `read`
+emits a stderr notice and reroutes to the next eligible Provider
+(Z.AI, Tavily, Exa, or Firecrawl) that supplies the `reader`
+Capability. To restore the previous strict single-provider behavior,
+opt out with `--no-fallback` (or `SCOUTLINE_NO_FALLBACK=1`):
 
 ```bash
-# This fails closed (UNSUPPORTED_CAPABILITY):
+# Default (0.11.0+): falls back to the next capable, configured Provider
 scoutline --provider minimax read https://example.com
 
-# These succeed through Z.AI (the only built-in Provider that supplies the
-# reader Capability today):
-scoutline read https://example.com
-unset SCOUTLINE_PROVIDER  # if a previous shell set it to minimax
-scoutline --provider zai read https://example.com
+# Strict (killswitch): fails closed (UNSUPPORTED_CAPABILITY), no adapter work
+scoutline --no-fallback --provider minimax read https://example.com
 ```
 
-If `SCOUTLINE_PROVIDER` is set to `minimax` in your shell, simply dropping
-`--provider` is not enough — either `unset SCOUTLINE_PROVIDER` or pass
-`--provider zai` explicitly.
-
-The failure intentionally occurs in the same probe path used for `repo`,
-`vision.diff`, `vision.video`, and unsupported specialized Vision mappings —
-descriptor metadata is the support truth and the descriptor is the only
-thing consulted before configuration, Adapter construction, or transport
-activity.
+The failure under `--no-fallback` intentionally occurs **before**
+descriptor configuration, Adapter creation, credential resolution for
+use, cache identity, or transport construction — descriptor metadata
+is the support truth and the descriptor is the only thing consulted
+before any other Provider is touched.
 
 ## Unsupported MiniMax Repository Exploration
 
@@ -78,32 +72,54 @@ activity.
 Provider "minimax" does not support capability "repository-exploration"
 ```
 
-Selecting MiniMax (explicitly or via `SCOUTLINE_PROVIDER`) for any `repo`
-subcommand returns `UNSUPPORTED_CAPABILITY` (`exit 1`) **before** descriptor
-configuration, Adapter creation, credential resolution for use, cache identity,
-or transport construction. There is no implicit fallback to Z.AI, no
-heuristic, and no env rerun. Drop the Provider selection to use the default
-Z.AI:
+By default (0.11.0+) provider fallback handles this automatically:
+selecting MiniMax (explicitly or via `SCOUTLINE_PROVIDER`) for any
+`repo` subcommand emits a stderr notice and reroutes to the next
+eligible Provider (Z.AI is the only built-in Provider that supplies
+`repository-exploration`). To restore the previous strict
+single-provider behavior, opt out with `--no-fallback` (or
+`SCOUTLINE_NO_FALLBACK=1`):
 
 ```bash
-# This fails closed (UNSUPPORTED_CAPABILITY):
+# Default (0.11.0+): falls back to Z.AI (the only supplier of
+# repository-exploration)
 scoutline --provider minimax repo search facebook/react "server components"
 
-# These succeed through Z.AI (the only built-in Provider that supplies the
-# repository-exploration Capability today):
-scoutline repo search facebook/react "server components"
-unset SCOUTLINE_PROVIDER  # if a previous shell set it to minimax
-scoutline --provider zai repo read facebook/react README.md
+# Strict (killswitch): fails closed (UNSUPPORTED_CAPABILITY)
+scoutline --no-fallback --provider minimax repo search facebook/react "server components"
 ```
 
-If `SCOUTLINE_PROVIDER` is set to `minimax` in your shell, simply dropping
-`--provider` is not enough — either `unset SCOUTLINE_PROVIDER` or pass
-`--provider zai` explicitly.
+The failure under `--no-fallback` intentionally occurs **before**
+descriptor configuration, Adapter creation, credential resolution for
+use, cache identity, or transport construction — descriptor metadata
+is the support truth and the descriptor is the only thing consulted
+before any other Provider is touched.
 
-The failure intentionally occurs in the same probe path used for `vision.diff`,
-`vision.video`, and unsupported specialized Vision mappings — descriptor
-metadata is the support truth and the descriptor is the only thing consulted
-before configuration, Adapter construction, or transport activity.
+## Why did I get charged twice on a single `crawl` / `map` / `research`?
+
+Provider fallback is always-on by default. For the cost-bearing
+asynchronous capabilities, a runtime failure on the selected provider
+may fall back to another provider **even if the failed provider had
+already accepted or charged a job** — because the providers (Firecrawl,
+Tavily, Exa) do not offer an idempotency key, an explicit pre-charge
+acknowledgement, or a refund for accepted-then-failed work. This is a
+documented, accepted tradeoff (see
+[`docs/adr/0002-provider-fallback.md`](https://github.com/vikasagarwal101/scoutline/blob/main/docs/adr/0002-provider-fallback.md)
+and the help text for `crawl` / `map` / `research`).
+
+Worst-case charged-request counts under retry+fallback with both
+candidates configured:
+
+| Command   | Per-provider `maxRetries` | Worst-case charged POSTs (retry + fallback) | Default (winner only) | Under `--no-fallback` |
+| --------- | ------------------------- | -------------------------------------------- | --------------------- | --------------------- |
+| `crawl`   | 0                         | ≤ 2                                          | 1                     | 1                     |
+| `map`     | 0                         | ≤ 2                                          | 1                     | 1                     |
+| `research`| 0                         | ≤ 2                                          | 1                     | 1                     |
+
+If you need a strict cost ceiling for these commands, set
+`SCOUTLINE_NO_FALLBACK=1` (or pass `--no-fallback` per invocation).
+Under the kill-switch the candidate plan is reduced to the effective
+provider only, so the double-charge path is unreachable.
 
 ## Unsupported MiniMax Search Control
 

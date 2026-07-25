@@ -24,6 +24,20 @@ A provider-qualified operation exposed without provider-neutral normalization,
 such as an operation under `scoutline.zai.*`.
 _Avoid_: normal command
 
+**Provider fallback**:
+The always-on default (0.11.0+) in which Scoutline silently reroutes a
+shared-capability command to the next eligible configured Provider
+(registry order `[zai, minimax, tavily, exa, brave, firecrawl]`) when
+the selected Provider does not advertise the Capability or fails at
+runtime. Every Provider switch is announced on stderr; the data
+envelope on stdout is unchanged. `--no-fallback` (or
+`SCOUTLINE_NO_FALLBACK=1`) restores the previous strict
+single-Provider, fail-loud behavior. For `crawl` / `map` / `research`,
+fallback after a runtime failure can result in two charges across
+Providers because the Providers do not offer idempotency or refunds
+— the kill-switch is the documented opt-out for cost-sensitive
+workflows.
+
 **MiniMax Token Plan**:
 The second Provider. Its confirmed source-investigation Capabilities
 are Search and single-image interpretation through subscription-backed access.
@@ -86,18 +100,23 @@ Z.AI and MiniMax Token Plan is only single-image interpretation; broader Vision
 parity remains unresolved.
 
 **Crawl, Map**:
-These two Capabilities are multi-provider (Tavily + Firecrawl). They
-are not supplied by Z.AI, MiniMax Token Plan, Exa, or Brave, and there
-is no Provider fallback. Selecting any of those for `scoutline crawl` or
-`scoutline map` returns `UNSUPPORTED_CAPABILITY` with no fallback.
-Firecrawl's crawl is asynchronous (credit-based, resumable after
-Ctrl-C); Tavily's is synchronous.
+These two Capabilities are multi-provider (Tavily + Firecrawl). The
+other Providers (Z.AI, MiniMax Token Plan, Exa, Brave) do not supply
+them. By default (0.11.0+), selecting a non-supplier emits a stderr
+notice and Provider fallback silently reroutes to the next eligible
+configured supplier; the data envelope on stdout is unchanged. Under
+`--no-fallback` the previous strict behavior applies and the command
+returns `UNSUPPORTED_CAPABILITY`. Firecrawl's crawl is asynchronous
+(credit-based, resumable after Ctrl-C); Tavily's is synchronous.
 
 **Research**:
 The `research` Capability is shared between Tavily and Exa. Firecrawl's
-`/deep-research` endpoint is deprecated, so `--provider firecrawl
-research` returns `UNSUPPORTED_CAPABILITY`. Z.AI, MiniMax, and Brave
-likewise do not advertise it. There is no Provider fallback.
+`/deep-research` endpoint is deprecated. By default (0.11.0+),
+selecting Z.AI, MiniMax, Brave, or Firecrawl for `scoutline research`
+emits a stderr notice and Provider fallback silently reroutes to the
+next eligible configured supplier (Tavily or Exa). Under
+`--no-fallback` the previous strict behavior applies and the command
+returns `UNSUPPORTED_CAPABILITY`.
 
 The cross-Provider search control `--topic <general|news|finance>` is NOT
 a Crawl/Map/Research control; those Capabilities do not currently accept
@@ -113,11 +132,14 @@ provider tools remain distinct from Scoutline's Normal commands."
 
 Developer: "Can I run a deep-research task with the Z.AI Provider?"
 
-Domain expert: "No. Tavily and Exa are the Providers that currently
-advertise the `research` Capability. Selecting Z.AI or MiniMax for
-`scoutline research` returns `UNSUPPORTED_CAPABILITY` with no fallback.
-The same is true for `scoutline crawl` and `scoutline map` — those two
-are Tavily-only (Exa does not advertise them either)."
+Domain expert: "By default (0.11.0+), yes. Scoutline emits a stderr notice
+that Z.AI does not advertise `research` and silently reroutes to the
+next eligible configured supplier (Tavily or Exa). If you want strict
+behavior, pass `--no-fallback` (or set `SCOUTLINE_NO_FALLBACK=1`); the
+command then returns `UNSUPPORTED_CAPABILITY` for Z.AI. The same
+applies to `scoutline crawl` and `scoutline map` — those two are
+Tavily + Firecrawl under the default, and Exa does not advertise them
+either."
 
 Developer: "Is `--topic` available on every Provider?"
 

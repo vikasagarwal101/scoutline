@@ -651,6 +651,19 @@ describe("Z.AI Vision Adapter — cache bypass (P3-03, FR-022)", () => {
 });
 
 describe("Z.AI Vision Adapter — shared execution owns retries (P3-03)", () => {
+  // These tests use a LOCAL file source so the URL -> local fallback is
+  // NOT involved (the fallback only fires for HTTP(S) sources). This
+  // isolates the shared retry policy's transient-recovery behaviour.
+  let localImg;
+  before(async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "zai-vision-retry-"));
+    localImg = path.join(tmp, "local.png");
+    await fs.writeFile(localImg, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  });
+  after(async () => {
+    if (localImg) await fs.rm(path.dirname(localImg), { recursive: true, force: true });
+  });
+
   it("transient-then-success: exactly two transport attempts, one injected delay", async () => {
     let transportAttempts = 0;
     const { factory, adapter } = makeVisionFactory({
@@ -663,7 +676,7 @@ describe("Z.AI Vision Adapter — shared execution owns retries (P3-03)", () => 
     const sleeps = [];
     const out = await executeProviderOperation(
       "vision",
-      () => adapter.vision.invoke(VISION_REQUEST),
+      () => adapter.vision.invoke({ ...VISION_REQUEST, source: localImg }),
       { sleep: async (ms) => sleeps.push(ms), random: () => 0.5 },
     );
     assert.strictEqual(out, "recovered text");
@@ -677,10 +690,11 @@ describe("Z.AI Vision Adapter — shared execution owns retries (P3-03)", () => 
     const { factory, adapter } = makeVisionFactory({ error: new Error("Unauthorized 401") });
     const sleeps = [];
     await assert.rejects(
-      executeProviderOperation("vision", () => adapter.vision.invoke(VISION_REQUEST), {
-        sleep: async (ms) => sleeps.push(ms),
-        random: () => 0.5,
-      }),
+      executeProviderOperation(
+        "vision",
+        () => adapter.vision.invoke({ ...VISION_REQUEST, source: localImg }),
+        { sleep: async (ms) => sleeps.push(ms), random: () => 0.5 },
+      ),
       (err) => err.code === "AUTH_ERROR",
     );
     assert.strictEqual(factory.created.length, 1, "exactly one transport attempt");
@@ -779,11 +793,62 @@ describe("Z.AI Vision Adapter — URL -> local fallback (Issue E)", () => {
     }
   });
 
-  it("a 5xx on a URL source does not trigger the URL fallback (shared retry owns 5xx)", async () => {
+  it("a 5xx on a URL source triggers the fallback (a 1210 surfaces as ApiError 500)", async () => {
+    // The vision MCP surfaces a code 1210 image-format rejection as a
+    // sanitized ApiError 500 (the original detail is discarded), so the
+    // fallback must fire on 5xx too, not only on 400/422.
+    let calls = 0;
+    const factory = makeClientFactory({
+      discoveredTools: [{ name: VISION_TOOL_INTERNAL_NAME }],
+      resultsByName: { [VISION_TOOL_INTERNAL_NAME]: "recovered via local" },
+      errorsByName: () => {
+        calls += 1;
+        return calls === 1 ? new ApiError("Z.AI request failed", 500) : undefined;
+      },
+    });
+    const adapter = createZaiDescriptor({ clientFactory: factory }).create({
+      env: { Z_AI_API_KEY: TEST_API_KEY },
+    });
+    await withMockFetch(pngFetch(Buffer.from([0x89, 0x50, 0x4e, 0x47])), async () => {
+      const out = await adapter.vision.invoke(VISION_REQUEST);
+      assert.strictEqual(out, "recovered via local");
+      assert.strictEqual(factory.created.length, 2, "fallback retried with a local file");
+      const secondArgs = factory.created[1].port.callToolCalls[0].args;
+      assert.match(secondArgs.image_source, /scoutline-vision-/, "second attempt used a temp path");
+    });
+  });
+
+  it("a timeout on a URL source triggers the fallback", async () => {
+    let calls = 0;
+    const factory = makeClientFactory({
+      discoveredTools: [{ name: VISION_TOOL_INTERNAL_NAME }],
+      resultsByName: { [VISION_TOOL_INTERNAL_NAME]: "recovered via local" },
+      errorsByName: () => {
+        calls += 1;
+        return calls === 1 ? new TimeoutError(30000) : undefined;
+      },
+    });
+    const adapter = createZaiDescriptor({ clientFactory: factory }).create({
+      env: { Z_AI_API_KEY: TEST_API_KEY },
+    });
+    await withMockFetch(pngFetch(Buffer.from([0x89, 0x50, 0x4e, 0x47])), async () => {
+      const out = await adapter.vision.invoke(VISION_REQUEST);
+      assert.strictEqual(out, "recovered via local");
+      assert.strictEqual(factory.created.length, 2, "fallback retried with a local file");
+    });
+  });
+
+  it("an auth failure (401) on a URL source does NOT trigger the fallback", async () => {
+    // Auth failures are not source-related; a local fetch cannot remedy
+    // them, so they propagate unchanged for the shared retry classifier
+    // to mark terminal.
     let fetchCalled = false;
     const factory = makeClientFactory({
       discoveredTools: [{ name: VISION_TOOL_INTERNAL_NAME }],
-      errorsByName: () => new ApiError("server error", 502),
+      errorsByName: () => {
+        const err = new Error("Unauthorized 401");
+        return err;
+      },
     });
     const adapter = createZaiDescriptor({ clientFactory: factory }).create({
       env: { Z_AI_API_KEY: TEST_API_KEY },
@@ -794,13 +859,39 @@ describe("Z.AI Vision Adapter — URL -> local fallback (Issue E)", () => {
         return new Response(Buffer.alloc(0), { status: 200 });
       },
       async () =>
-        assert.rejects(
-          adapter.vision.invoke(VISION_REQUEST),
-          (err) => err instanceof ApiError && err.statusCode === 502,
-        ),
+        assert.rejects(adapter.vision.invoke(VISION_REQUEST), (err) => err.code === "AUTH_ERROR"),
     );
-    assert.strictEqual(fetchCalled, false, "no fetch for a 5xx URL source");
-    assert.strictEqual(factory.created.length, 1, "no fallback attempt for 5xx");
+    assert.strictEqual(fetchCalled, false, "no fetch for an auth failure");
+    assert.strictEqual(factory.created.length, 1, "no fallback attempt for auth");
+  });
+
+  it("if the local fetch fails, a terminal error surfaces (no shared-retry latency multiplication)", async () => {
+    // The URL is unfetchable (e.g. a CDN that 400s every caller). The
+    // fallback fetch fails; the error is terminal (422) so the shared
+    // retry policy does not re-run the whole URL attempt.
+    let calls = 0;
+    const factory = makeClientFactory({
+      discoveredTools: [{ name: VISION_TOOL_INTERNAL_NAME }],
+      errorsByName: () => {
+        calls += 1;
+        return new ApiError("Z.AI request failed", 500);
+      },
+    });
+    const adapter = createZaiDescriptor({ clientFactory: factory }).create({
+      env: { Z_AI_API_KEY: TEST_API_KEY },
+    });
+    const unfetchable = async () => new Response("hotlink blocked", { status: 400 });
+    await withMockFetch(unfetchable, async () => {
+      await assert.rejects(
+        adapter.vision.invoke(VISION_REQUEST),
+        (err) =>
+          err instanceof ApiError &&
+          err.statusCode === 422 &&
+          /fallback also failed/.test(err.message),
+      );
+    });
+    // Only the first URL attempt ran; the failed local fetch did not loop.
+    assert.strictEqual(factory.created.length, 1, "no re-attempt after a failed fallback");
   });
 });
 

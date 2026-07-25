@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-07-25
+
+### Fixed
+- **Vision URL fallback now actually triggers and succeeds.** The 0.10.1
+  fallback only fired on HTTP 400/422, but the Z.AI vision MCP surfaces a
+  `code 1210` image-format rejection (and URL fetch timeouts) as a
+  sanitized `ApiError` 500 with the original detail discarded — so the
+  fallback never ran and every retry re-sent the same URL. The trigger
+  now fires on any transport/processing failure for an HTTP(S) source
+  except auth (401/403) and exhausted quota, catching the 1210-as-500 and
+  timeout paths. If the local fetch or retried attempt then fails, a
+  terminal 422 error is surfaced (naming both the Provider failure and
+  the fallback failure) so the shared retry policy does not multiply
+  latency. Verified end-to-end: a URL Z.AI cannot fetch but scoutline can
+  (e.g. the Google logo) now succeeds via the temp-file retry.
+- **The fallback URL fetch now sends a `User-Agent`.** Many CDNs and
+  image hosts reject requests with no User-Agent. (Note: some hosts —
+  e.g. Wikimedia hotlink-protected thumbnails — return 400 to every
+  caller; for those, the fallback now surfaces a clear "fallback also
+  failed" error instead of an opaque 1210.)
+
 ## [0.10.1] - 2026-07-25
 
 ### Fixed

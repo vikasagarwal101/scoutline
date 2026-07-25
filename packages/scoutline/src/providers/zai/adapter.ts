@@ -502,23 +502,45 @@ function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionC
             await invokeZaiVisionOnce(clientFactory, first.toolName, first.args),
           );
         } catch (error) {
-          // Automatic URL -> local fallback (Issue E): Z.AI's server-side
-          // URL fetcher rejects some image URLs with a fast client error
-          // (e.g. code 1210, HTTP 400) and its vision MCP refuses base64
-          // data URIs. Retry by fetching each URL source here to a temp
-          // file (validated against the same Z.AI media limits) and
-          // passing that path. Only fast client errors (400/422) qualify
-          // — timeouts/5xx are owned by the shared retry policy and would
-          // double latency if re-attempted here.
-          if (isUrlVisionSource(request) && isClientSourceError(error)) {
-            const fetched = await prefetchVisionUrlSources(request);
-            for (const local of fetched.values()) tempPaths.push(local);
-            const resolveImage = makePrefetchResolver(fetched, resolveImageSource);
-            const resolveVideo = makePrefetchResolver(fetched, resolveVideoSource);
-            const fallback = buildZaiVisionInvocation(request, resolveImage, resolveVideo);
-            return normalizeZaiVisionResult(
-              await invokeZaiVisionOnce(clientFactory, fallback.toolName, fallback.args),
-            );
+          // Automatic URL -> local fallback (Issue E): Z.AI's vision MCP
+          // refuses base64 data URIs and its server-side URL fetcher is
+          // unreliable — it rejects some image URLs with code 1210,
+          // returns empty, or hangs. The MCP surfaces these inconsistently
+          // (a 1210 reaches the Adapter as a sanitized ApiError 500 with
+          // the original detail discarded, so it cannot be detected by
+          // status code or message). Retry by fetching each URL source
+          // here to a temp file (validated against the same Z.AI media
+          // limits) and passing that path.
+          //
+          // The fallback fires for ANY transport/processing failure on a
+          // URL source except auth/quota (those are not source-related and
+          // a local fetch cannot remedy them). Auth (401/403) and
+          // exhausted-quota failures therefore propagate untouched.
+          if (isUrlVisionSource(request) && isFallbackEligibleError(error)) {
+            try {
+              const fetched = await prefetchVisionUrlSources(request);
+              for (const local of fetched.values()) tempPaths.push(local);
+              const resolveImage = makePrefetchResolver(fetched, resolveImageSource);
+              const resolveVideo = makePrefetchResolver(fetched, resolveVideoSource);
+              const fallback = buildZaiVisionInvocation(request, resolveImage, resolveVideo);
+              return normalizeZaiVisionResult(
+                await invokeZaiVisionOnce(clientFactory, fallback.toolName, fallback.args),
+              );
+            } catch (fallbackError) {
+              // The local fetch or the retried attempt failed. Surface a
+              // TERMINAL error (422, not in the shared retry policy's
+              // retryable set) so the policy does not re-run the whole
+              // URL attempt and multiply latency without benefit. The
+              // message names both the original Provider failure and the
+              // fallback failure so the user knows the fallback was
+              // attempted and why it could not recover.
+              throw new ApiError(
+                `Z.AI vision request failed for the URL source and the local-fetch fallback also failed: ${
+                  fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+                }`,
+                422,
+              );
+            }
           }
           throw error;
         }
@@ -592,13 +614,23 @@ function visionSourceUrls(request: VisionRequest): string[] {
 }
 
 /**
- * Whether a normalized vision error is a fast client error that signals
- * the Provider rejected the image source (400/422). Such errors are NOT
- * retried by the shared policy (4xx is terminal), so the URL->local
- * fallback adds value without conflicting with it.
+ * Whether a normalized vision error is eligible for the URL -> local
+ * fallback. The fallback fires for any transport or processing failure
+ * that a local fetch could plausibly remedy: client errors (400/422, e.g.
+ * a 1210 image-format rejection), server errors (5xx), timeouts, and
+ * network errors. Auth failures (401/403) and exhausted-quota failures are
+ * NOT eligible — a local fetch cannot fix a missing credential or a spent
+ * quota, so those propagate to the user unchanged.
+ *
+ * Note: the vision MCP surfaces a code 1210 image-format rejection as a
+ * sanitized `ApiError` 500 with the original detail discarded, so this
+ * check is deliberately type-and-status-based rather than message-based.
  */
-function isClientSourceError(error: unknown): boolean {
-  return error instanceof ApiError && (error.statusCode === 400 || error.statusCode === 422);
+function isFallbackEligibleError(error: unknown): boolean {
+  if (error instanceof ApiError) {
+    return error.statusCode !== 401 && error.statusCode !== 403;
+  }
+  return error instanceof TimeoutError || error instanceof NetworkError;
 }
 
 /**

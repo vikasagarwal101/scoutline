@@ -316,3 +316,80 @@ export async function writeConfig(
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Credential-view resolution (T2a — Plan A)
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal structural view of a Provider Descriptor that
+ * {@link resolveEnvFromConfig} consumes. Keeping this a structural subset
+ * (not the full `ProviderDescriptor`) lets the helper stay pure and
+ * testable without importing transport-level types.
+ */
+export interface CredentialDescriptor {
+  readonly id: string;
+  isConfigured(env: NodeJS.ProcessEnv): boolean;
+  /**
+   * Environment-variable names this Provider reads to decide it is
+   * configured. The FIRST entry is the canonical (primary) variable that
+   * file-configured keys are written into; subsequent entries are
+   * aliases that are checked but never populated from the file.
+   */
+  readonly credentialEnvVars?: readonly string[];
+}
+
+/**
+ * Build the resolved environment view that shared commands see: the
+ * injected `env` with file-configured API keys layered in for any
+ * Provider that is NOT already configured via `env`.
+ *
+ * Precedence rules (Plan A — T2a):
+ *   - **Env overrides file.** A non-blank key already present in `env`
+ *     (including aliases like `ZAI_API_KEY`) wins; the file key for that
+ *     Provider is not written. This preserves the documented alias
+ *     precedence (`Z_AI_API_KEY` > `ZAI_API_KEY` > file key).
+ *   - **`process.env` is never mutated.** The returned object is a fresh
+ *     shallow copy; the caller owns its lifetime.
+ *   - File keys are written into the Provider's CANONICAL variable
+ *     (the first `credentialEnvVars` entry, e.g. `Z_AI_API_KEY` for zai)
+ *     so the existing `resolveXApiKey` resolvers discover them without a
+ *     new code path.
+ *
+ * A Provider with no matching descriptor, a blank file key, or no
+ * `credentialEnvVars` is silently skipped.
+ */
+export function resolveEnvFromConfig(
+  env: NodeJS.ProcessEnv,
+  config: ScoutlineConfig,
+  descriptors: readonly CredentialDescriptor[],
+): NodeJS.ProcessEnv {
+  const resolved: NodeJS.ProcessEnv = { ...env };
+  const byId = new Map(descriptors.map((d) => [d.id, d] as const));
+
+  for (const [providerId, providerConfig] of Object.entries(config.providers)) {
+    const fileKey = providerConfig.apiKey;
+    if (typeof fileKey !== "string" || fileKey.trim().length === 0) continue;
+
+    const descriptor = byId.get(providerId);
+    if (!descriptor) continue;
+
+    // Env wins: if the Provider is already configured through the
+    // injected env (primary OR alias), the file key must not clobber it.
+    if (descriptor.isConfigured(env)) continue;
+
+    const canonical = descriptor.credentialEnvVars?.[0];
+    if (typeof canonical !== "string" || canonical.length === 0) continue;
+
+    // Only populate when the canonical slot is absent or blank in the
+    // resolved view. This guards against an earlier iteration writing a
+    // different Provider's alias into the same variable name (none exist
+    // today, but the guard keeps the function total).
+    const existing = resolved[canonical];
+    if (typeof existing === "string" && existing.trim().length > 0) continue;
+
+    resolved[canonical] = fileKey;
+  }
+
+  return resolved;
+}

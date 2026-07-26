@@ -55,9 +55,14 @@ export interface ModelUsageTotal {
 /**
  * Back-compat delegate. Resolves the API key through the shared config
  * accessor and delegates the fetch to the Provider-local monitor client.
+ *
+ * T2a: an optional `env` parameter (defaulting to `process.env`) threads
+ * the resolved credential view into `getApiKey` so file-configured keys
+ * are visible. Source-compatible: existing no-argument callers keep
+ * working against ambient `process.env`.
  */
-export async function getQuotaLimit(): Promise<QuotaLimit> {
-  const apiKey = getApiKey();
+export async function getQuotaLimit(env: NodeJS.ProcessEnv = process.env): Promise<QuotaLimit> {
+  const apiKey = getApiKey(env);
   const data = (await fetchZaiMonitorPath(
     apiKey,
     "/api/monitor/usage/quota/limit",
@@ -72,10 +77,15 @@ export async function getQuotaLimit(): Promise<QuotaLimit> {
 
 /**
  * Back-compat delegate for the model-usage endpoint. Unused by commands
- * today; preserved so the public export surface is unchanged.
+ * today; preserved so the public export surface is unchanged. The
+ * optional `env` parameter (T2a) mirrors {@link getQuotaLimit}.
  */
-export async function getModelUsage(startTime: string, endTime: string): Promise<ModelUsageTotal> {
-  const apiKey = getApiKey();
+export async function getModelUsage(
+  startTime: string,
+  endTime: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ModelUsageTotal> {
+  const apiKey = getApiKey(env);
   const data = (await fetchZaiMonitorPath(apiKey, "/api/monitor/usage/model-usage", {
     startTime,
     endTime,

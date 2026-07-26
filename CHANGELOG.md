@@ -11,6 +11,28 @@ All notable changes to this project will be documented in this file.
   warnings, blank-key normalization, and private atomic replacement. This is
   additive infrastructure only; existing commands continue to use their
   current environment-variable paths.
+- **File-configured API keys now flow to shared commands.** A key stored
+  under `providers.<id>.apiKey` in `~/.scoutline/config.json` reaches every
+  shared command (`search`, `read`, `crawl`, `map`, `research`, `repo`,
+  `vision`, `doctor`, `quota`) through the real provider descriptor/handler
+  boundary. Environment variables always take precedence over file keys, and
+  the documented alias precedence (`Z_AI_API_KEY` > `ZAI_API_KEY` > file key)
+  is preserved. File keys are redacted at every outward boundary exactly like
+  environment-variable keys. `process.env` is never mutated. Users without a
+  config file see byte-for-byte identical behavior to the previous release.
+- **`config.fallbackEnabled` preference is now wired into runtime fallback.**
+  Provider fallback is resolved as: invocation flag (`--no-fallback`) or
+  environment opt-out (`SCOUTLINE_NO_FALLBACK`) > `config.fallbackEnabled` >
+  default `true`. This makes the wizard's onboarding answer effective at
+  runtime instead of write-only.
+- **Credential-free commands now short-circuit before config load.**
+  `--help`, `--version`, and `cache` (stats/clear) never read
+  `config.json`, so a corrupt or unreadable file cannot block them.
+
+### Changed
+- `loadConfig` and `getApiKey` in `lib/config.ts` now accept an explicit
+  `env` parameter (defaulting to `process.env`). The signature is additive;
+  existing no-argument callers keep working unchanged.
 
 ## [0.11.0] - 2026-07-26
 

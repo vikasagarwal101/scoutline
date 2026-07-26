@@ -184,8 +184,10 @@ function readRequestIdSync(stateFilePath: string): string {
 /**
  * Wrap a string in POSIX-shell-safe double quotes so a resume command
  * can be copy/pasted into a shell. Backslash-escapes the four POSIX
- * special characters inside double quotes (`\`, `$`, backtick, and `"`)
- * plus newline so a multi-line query does not break the shell parser.
+ * special characters inside double quotes (`\`, `$`, backtick, and `"`).
+ * Literal newlines are preserved (POSIX keeps them inside double quotes);
+ * backslash-escaping a newline would create a line-continuation that the
+ * shell silently deletes, changing the query and the state-file hash.
  *
  * The command itself is rendered as a single string literal here — the
  * tests assert `resumeCommand === 'scoutline --provider exa research
@@ -193,7 +195,7 @@ function readRequestIdSync(stateFilePath: string): string {
  * not need to round-trip through a real shell.
  */
 function shellQuote(value: string): string {
-  return `"${value.replace(/[\\$"`\n]/g, (c) => `\\${c}`)}"`;
+  return `"${value.replace(/[\\$"`]/g, (c) => `\\${c}`)}"`;
 }
 
 /**
@@ -221,11 +223,12 @@ export function buildResearchResumeCommand(
   options: ResearchOptions,
   providerId: ProviderId,
 ): string {
-  const parts: string[] = ["scoutline", `--provider ${providerId}`, "research"];
+  const parts: string[] = ["scoutline", "--no-fallback", `--provider ${providerId}`, "research"];
   parts.push(shellQuote(query));
   if (options.model !== undefined) parts.push(`--model ${options.model}`);
   if (options.outputLength !== undefined) parts.push(`--output-length ${options.outputLength}`);
-  if (options.citationFormat !== undefined) parts.push(`--citation-format ${options.citationFormat}`);
+  if (options.citationFormat !== undefined)
+    parts.push(`--citation-format ${options.citationFormat}`);
   if (options.domain !== undefined) parts.push(`--domain ${shellQuote(options.domain)}`);
   return parts.join(" ");
 }
@@ -355,8 +358,7 @@ export async function research(
   // factory that captures the (stateFilePath, resumeCommand) pair so
   // they can assert the format and simulate the SIGINT (Review Fix 3).
   const registerFactory =
-    deps.registerInterrupt ??
-    ((sf, cmd) => createProductionInterruptRegistrar(sf, cmd));
+    deps.registerInterrupt ?? ((sf, cmd) => createProductionInterruptRegistrar(sf, cmd));
   const register = registerFactory(stateFilePath, resumeCommand);
   const print = (): void => {
     const requestId = readRequestIdSync(stateFilePath);

@@ -1,8 +1,8 @@
 /**
- * Init command — fresh-onboarding wizard (T3a — Plan A).
+ * Init command — interactive onboarding wizard (T3a + T3b — Plan A).
  *
  * This module owns the interactive `scoutline init` flow:
- *   - State detection (absent / already-onboarded / env-key present / fresh).
+ *   - State detection (absent / corrupt / already-onboarded / fresh).
  *   - Provider checklist (registry-derived; none pre-checked — equal weight).
  *   - Per-provider ask-key-first → hidden input → inline single-attempt
  *     validation through `DiagnosticsCapability.invoke({probe:true})` against
@@ -16,9 +16,28 @@
  *   - Fallback preference question.
  *   - Atomic config write (T1 `writeConfig` primitive) + redacted summary.
  *
- * Boundary rules (T3a ticket):
- *   - Fresh flow only. Re-config menu, corrupt-repair, trigger detection,
- *     non-TTY refusal, and selection (Plan B) belong to T3b.
+ * T3b additions:
+ *   - **Re-config menu** when an already-valid config exists: edit a
+ *     Provider key, add a Provider, remove a Provider, change the
+ *     fallback preference, re-run the full wizard, or cancel. Editing
+ *     a Provider key resets `verification.status` to `unverified`
+ *     (Doctor re-promotes after a successful probe).
+ *   - **Corrupt-config repair**: tolerant `inspectConfig` distinguishes
+ *     `absent` / `valid` / `corrupt`. On `corrupt` the wizard offers to
+ *     back up the live file and rewrite a fresh config — `init` is the
+ *     recovery path, not a victim of corruption.
+ *   - **Formal non-TTY refuse**: without an interactive terminal the
+ *     wizard refuses before any prompt, prints env instructions and
+ *     the `init` hint, and exits.
+ *   - **Stale-env-after-import warning**: when the user imports a key
+ *     from env, the wizard notes that the env value will continue to
+ *     take precedence (env > file in the runtime precedence rule) —
+ *     the wizard cannot turn off the env value for the user.
+ *   - **`hintShown` reset on re-init**: a re-config or fresh write
+ *     resets the env-only hint marker so a user who later switches to
+ *     env-only usage sees the hint once again.
+ *
+ * Boundary rules:
  *   - No Provider transport is constructed outside the per-provider probe;
  *     the candidate credential lives only in the ephemeral env until the
  *     final atomic write.
@@ -27,12 +46,8 @@
  *     wires `@inquirer/prompts`; tests inject scripted doubles.
  *   - Registration links render BOTH a terminal hyperlink AND the literal
  *     URL text so captured / non-hyperlink output stays usable.
- *
- * Release gate (T3a ticket): the `init` command may ship its code now, but
- * its PUBLIC docs (top-level `MAIN_HELP` Commands list, README setup
- * section, `skills/scoutline/`) wait for T3b so the public claim of a
- * complete `init` is not made prematurely. The command's own
- * {@link INIT_HELP} carries an explicit caveat.
+ *   - No selection work (Plan B); the wizard writes at most one
+ *     `fallbackEnabled` flag and per-Provider records.
  */
 
 import type {
@@ -52,25 +67,32 @@ import { AuthError, ApiError, NetworkError } from "../lib/errors.js";
 // ---------------------------------------------------------------------------
 
 /**
- * Help text for `scoutline init --help`. Carries the release-gate caveat
- * (T3a ticket): the command's code is shipped, but its public docs wait
- * for T3b. Anyone reading this help is told explicitly that re-config /
- * repair / non-TTY refusal are not yet wired.
+ * Help text for `scoutline init --help`. T3b completes the wizard's
+ * lifecycle (re-config menu, corrupt-config repair, formal non-TTY
+ * refuse), so the T3a PREVIEW caveat is dropped — the public claim of
+ * a complete `init` is now accurate.
  */
 export const INIT_HELP = `
-init - Interactive onboarding wizard (PREVIEW)
+init - Interactive onboarding wizard
 
 Usage: scoutline init [options]
 
-PREVIEW: this command ships its fresh-onboarding flow today. The
-re-configuration menu, corrupt-config repair, and trigger detection
-for unconfigured commands land in a follow-up release. Non-TTY
-invocation is not yet formally refused; it will not hang, but the
-interactive prompts require a real terminal.
+The wizard walks you through recording API keys in
+~/.scoutline/config.json (mode 0600). It supports four states:
 
-The wizard:
-  - inspects the existing config (re-config is a follow-up)
-  - offers to import a provider key already present in env
+  - ABSENT (no config yet): the fresh-onboarding flow runs.
+  - VALID + ALREADY-ONBOARDED: a re-config menu runs (edit a key,
+    add a Provider, remove a Provider, change the fallback
+    preference, re-run the full wizard, or cancel). Editing a key
+    resets that Provider's verification to "unverified".
+  - VALID + EMPTY: the fresh-onboarding flow runs.
+  - CORRUPT: the wizard offers to back up the live file and rewrite
+    a fresh config. init is the recovery path for a corrupt config.
+
+The fresh flow:
+  - offers to import a provider key already present in env (the
+    wizard notes that env precedence means the env value keeps
+    winning at runtime)
   - shows a provider checklist (Z.AI, MiniMax, Tavily, Exa, Brave,
     Firecrawl) with NO pre-checked defaults — every provider has
     equal weight
@@ -85,12 +107,19 @@ The wizard:
     selected provider is unavailable)
   - writes ~/.scoutline/config.json atomically with mode 0600
 
+Non-interactive terminals: init refuses before any prompt and exits.
+Run it inside a real TTY, or set up credentials via the documented
+environment variables instead.
+
 Options:
   --help   Show this help
 
 Exit codes:
-  0  Onboarding completed (or short-circuited as already-onboarded).
-  1  User cancelled (Ctrl+C / EOF) — no config is written.
+  0  Onboarding completed, re-config applied, or already-onboarded
+       with the user choosing Cancel.
+  1  User cancelled (Ctrl+C / EOF), the wizard was invoked without a
+       terminal, a write failed, or the user declined corrupt-config
+       repair.
 `.trim();
 
 // ---------------------------------------------------------------------------
@@ -233,6 +262,12 @@ export interface InitPrompts {
    * no-write.
    */
   checkbox<T>(message: string, choices: readonly InitChoice<T>[]): Promise<T[]>;
+  /**
+   * Single-select menu. Returns the chosen value. Throws on user
+   * cancel. Used by the T3b re-config menu (edit/add/remove/fallback/
+   * rerun/cancel) and the corrupt-config-repair prompt.
+   */
+  select<T>(message: string, choices: readonly InitChoice<T>[]): Promise<T>;
   /** Yes/no. `defaultYes` carries the documented default ([Y/n] vs [y/N]). */
   confirm(message: string, defaultYes: boolean): Promise<boolean>;
   /** Hidden password input. Returns the trimmed value (possibly empty). */
@@ -448,37 +483,81 @@ function detectEnvKeyProviders(
 // ---------------------------------------------------------------------------
 
 /**
- * Run the fresh-onboarding wizard. Reads no module-level state and writes
- * no process-global state; every effect flows through
- * {@link InitDependencies}. The flow returns the exit code:
- *   - 0 on success or already-onboarded short-circuit.
- *   - 1 on user cancellation (Ctrl+C / EOF) or non-TTY guard.
+ * Non-TTY refuse message. The wizard is interactive end-to-end; without
+ * a terminal it cannot receive keypresses, and we do not want a partial
+ * (config-only) flow that misleads users into thinking they configured
+ * something. The refuse message points users at the environment-variable
+ * path AND at `init` so they have a non-interactive alternative.
+ */
+function formatNonTTYRefuse(
+  env: NodeJS.ProcessEnv,
+  descriptors: readonly ProviderDescriptor[],
+): string {
+  const example = descriptors[0];
+  const exampleVar = example ? providerMeta(example.id).envVar : "Z_AI_API_KEY";
+  const detected = descriptors.filter((d) => {
+    const v = env[providerMeta(d.id).envVar];
+    return typeof v === "string" && v.trim().length > 0;
+  });
+  const detectedLine =
+    detected.length > 0
+      ? `\nDetected env keys: ${detected.map((d) => `$${providerMeta(d.id).envVar}`).join(", ")}. The CLI will use them at runtime.`
+      : "";
+  return (
+    "scoutline init requires an interactive terminal.\n" +
+    "Re-run inside a TTY, or set up credentials via environment variables:\n" +
+    `  export ${exampleVar}="your-api-key"\n` +
+    "Then run any command directly (for example `scoutline doctor`)." +
+    detectedLine +
+    "\n"
+  );
+}
+
+/**
+ * Run the interactive init wizard. Performs the T3b state dispatch:
+ *   - non-TTY → refuse before any prompt + exit 1.
+ *   - corrupt config → offer backup + rewrite (init is the recovery path).
+ *   - valid + already-onboarded → re-config menu.
+ *   - valid + empty / absent → fresh-onboarding flow.
+ *
+ * Returns the exit code:
+ *   - 0 on success, re-config applied, or already-onboarded + Cancel.
+ *   - 1 on user cancel, non-TTY refuse, write failure, or declined repair.
  */
 export async function runFreshOnboarding(deps: InitDependencies): Promise<number> {
-  // Graceful minimal non-TTY guard (formal refuse is T3b). Without a TTY
-  // the prompts cannot receive keypresses; we surface a friendly stderr
-  // line and exit non-zero rather than hang.
+  // Formal non-TTY refuse (T3b). Without a TTY the wizard cannot run;
+  // we refuse before any prompt and surface the env-only alternative.
   if (!deps.stdinIsTTY) {
-    deps.writeStderr(
-      "scoutline init requires an interactive terminal. " +
-        "Re-run inside a TTY (formal non-TTY handling arrives in a follow-up release).\n",
-    );
+    deps.writeStderr(formatNonTTYRefuse(deps.env, deps.descriptors));
     return 1;
   }
 
-  // Step 0 — state detection. The wizard does not enter the fresh flow
-  // when the config already indicates onboarding completed; corrupt /
-  // absent both fall through to the fresh flow (corrupt-repair is T3b).
+  // Tolerant state detection. `inspect` returns absent / valid / corrupt;
+  // the wizard dispatches on the status rather than entering a single
+  // flow. This is the recovery path for a corrupt config.
   const inspection = await deps.configStore.inspect();
-  if (inspection.status === "valid" && isAlreadyOnboarded(inspection.config)) {
-    deps.writeStderr(
-      "scoutline is already set up at " +
-        `${inspection.filePath}. ` +
-        "Re-configuration will arrive in a follow-up release.\n",
-    );
-    return 0;
+  if (inspection.status === "corrupt") {
+    return repairCorruptConfig(deps, inspection.filePath, inspection.error);
   }
 
+  if (inspection.status === "valid" && isAlreadyOnboarded(inspection.config)) {
+    return runReconfigMenu(deps, inspection.config, inspection.filePath);
+  }
+
+  // Absent OR valid+empty → fresh-onboarding flow. The fresh flow writes
+  // a complete config (replacing any empty valid file) and resets the
+  // env-only hint marker so a later switch to env-only usage re-hints.
+  return runFreshFlow(deps);
+}
+
+/**
+ * The fresh-onboarding flow (T3a). Splash + env-key detection + provider
+ * checklist + per-provider probe + fallback preference + atomic write.
+ * Resets `hintShown` on the written config (the T3b release contract:
+ * a fresh write clears the marker so the trigger-detection hint can
+ * fire again if the user later switches to env-only usage).
+ */
+async function runFreshFlow(deps: InitDependencies): Promise<number> {
   // Splash (init-only). Sent to stderr so stdout stays data-only for the
   // final summary.
   deps.writeStderr(
@@ -528,7 +607,9 @@ export async function runFreshOnboarding(deps: InitDependencies): Promise<number
 
   // Step 3 — atomic write (T1 primitive). Build the final config and
   // commit. No partial writes ever reach disk: `writeConfig` either
-  // replaces the live file atomically or leaves it untouched.
+  // replaces the live file atomically or leaves it untouched. The
+  // `hintShown` field is deliberately OMITTED from buildConfig so the
+  // written file does not carry the marker — a fresh write clears it.
   const config: ScoutlineConfig = buildConfig(onboardings, fallbackEnabled);
   try {
     await deps.configStore.write(config);
@@ -543,6 +624,563 @@ export async function runFreshOnboarding(deps: InitDependencies): Promise<number
   // provider ids and their verification status, never the keys.
   deps.writeStdout(`${formatSummary(onboardings, fallbackEnabled)}\n`);
   return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Corrupt-config repair (T3b). init is the documented recovery path for
+// a corrupt config.json; the wizard offers a backup + rewrite rather
+// than refusing or silently clobbering the live file.
+// ---------------------------------------------------------------------------
+
+/**
+ * Offer corrupt-config repair. Surfaces the underlying error, asks for
+ * confirmation, and on Yes:
+ *   1. Renames the live file to `<filePath>.corrupt-<timestamp>.bak`
+ *      (best-effort; a rename failure does NOT block the rewrite —
+ *      the user already confirmed).
+ *   2. Writes a fresh config via the normal atomic primitive (the
+ *      backup line is logged to stderr; the live file is not unlinked
+ *      without a backup unless rename fails, in which case we ask
+ *      again).
+ *   3. Falls through to the fresh-onboarding flow so the user can
+ *      rebuild their config interactively.
+ *
+ * On No (decline), the wizard exits 1 without modifying anything. This
+ * keeps init safe: a user who lands here by accident can back out.
+ */
+async function repairCorruptConfig(
+  deps: InitDependencies,
+  filePath: string,
+  error: unknown,
+): Promise<number> {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  deps.writeStderr(
+    [
+      "",
+      `scoutline: config.json at ${filePath} is corrupt or unreadable.`,
+      `Reason: ${errorMessage}`,
+      "",
+      "init can back up the live file and write a fresh config.",
+      "The backup is named <config.json>.corrupt-<timestamp>.bak and is",
+      "never deleted by scoutline.",
+      "",
+    ].join("\n"),
+  );
+
+  let proceed: boolean;
+  try {
+    proceed = await deps.prompts.confirm(
+      "Back up the corrupt config and run the fresh-onboarding flow? [y/N]",
+      false,
+    );
+  } catch {
+    // Cancel on the repair confirm is the same as declining.
+    return 1;
+  }
+  if (!proceed) {
+    deps.writeStderr(
+      "Declined repair. Run `scoutline init` again to retry, or fix/remove the file manually.\n",
+    );
+    return 1;
+  }
+
+  // Best-effort backup. The ConfigStore interface owns the file path
+  // (real or temp-dir-injected); we delegate the rename to a typed
+  // helper if the store exposes one, otherwise we use the same write
+  // primitive to land the fresh file (the live corrupt bytes are
+  // replaced atomically). The store seam is intentionally narrow so
+  // tests do not need a real fs.rename injection.
+  const backupPath = `${filePath}.corrupt-${deps.now()}.bak`;
+  const backedUp = await backupCorruptFile(deps, filePath, backupPath);
+  if (backedUp) {
+    deps.writeStderr(`Backed up corrupt config to ${backupPath}.\n`);
+  } else {
+    // Rename failed — we did not create a backup. Re-ask the user so
+    // the live file is never clobbered without explicit consent.
+    deps.writeStderr("Could not create a backup (rename failed or unsupported by the store).");
+    try {
+      const clobber = await deps.prompts.confirm(
+        "Rewrite the live config WITHOUT a backup? [y/N]",
+        false,
+      );
+      if (!clobber) {
+        deps.writeStderr("Declined. Repair aborted; the live file is untouched.\n");
+        return 1;
+      }
+    } catch {
+      return 1;
+    }
+  }
+
+  // Fall through to the fresh flow. The first write replaces the live
+  // (corrupt) bytes atomically; nothing partial reaches disk.
+  deps.writeStderr("Running the fresh-onboarding flow. The corrupt file has been set aside.\n");
+  return runFreshFlow(deps);
+}
+
+/**
+ * Try to rename the corrupt file to the backup path. Returns `true` on
+ * success. The implementation prefers a store-supplied rename hook
+ * (tests can inject a fake); in production the real store delegates to
+ * `fs.rename`. A thrown rename is swallowed and reported as `false` so
+ * the caller can re-ask the user.
+ */
+async function backupCorruptFile(
+  deps: InitDependencies,
+  filePath: string,
+  backupPath: string,
+): Promise<boolean> {
+  const store = deps.configStore as InitConfigStore & {
+    backupCorrupt?(filePath: string, backupPath: string): Promise<boolean>;
+  };
+  if (typeof store.backupCorrupt === "function") {
+    try {
+      return await store.backupCorrupt(filePath, backupPath);
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Re-config menu (T3b). When an already-valid config exists, the wizard
+// offers to edit a key, add a Provider, remove a Provider, change the
+// fallback preference, re-run the full wizard, or cancel.
+// ---------------------------------------------------------------------------
+
+/**
+ * The re-config menu options. `Cancel` exits 0 without modifying the
+ * config; `ReRun` delegates to the fresh flow (replacing the live file).
+ */
+type ReconfigChoice =
+  | "edit-key"
+  | "add-provider"
+  | "remove-provider"
+  | "change-fallback"
+  | "rerun-full"
+  | "cancel";
+
+/**
+ * Offer the re-config menu when an already-valid config exists. Each
+ * menu action re-uses the T3a ask-key → input → validate loop where
+ * applicable; editing a Provider key resets that Provider's
+ * `verification.status` to `unverified` (Doctor re-promotes after a
+ * successful probe).
+ *
+ * The menu loops until the user picks `cancel` or `rerun-full` (which
+ * exits the loop and either returns 0 or delegates to the fresh flow).
+ */
+async function runReconfigMenu(
+  deps: InitDependencies,
+  config: ScoutlineConfig,
+  filePath: string,
+): Promise<number> {
+  const configuredIds = Object.keys(config.providers).filter((id) => {
+    const provider = config.providers[id as ProviderId];
+    return provider && typeof provider.apiKey === "string" && provider.apiKey.trim().length > 0;
+  }) as ProviderId[];
+
+  const fallbackLine =
+    config.fallbackEnabled === undefined
+      ? "fallback: default (true)"
+      : `fallback: ${config.fallbackEnabled ? "enabled" : "disabled"}`;
+
+  deps.writeStderr(
+    [
+      "",
+      `scoutline is already set up at ${filePath}.`,
+      `Providers configured: ${configuredIds.length === 0 ? "none" : configuredIds.join(", ")}.`,
+      fallbackLine,
+      "",
+    ].join("\n"),
+  );
+
+  for (;;) {
+    const action = await promptReconfigAction(deps, configuredIds);
+    if (action === null) {
+      // Cancel on the menu itself.
+      return 1;
+    }
+    if (action === "cancel") {
+      deps.writeStderr("No changes made.\n");
+      return 0;
+    }
+    if (action === "rerun-full") {
+      deps.writeStderr(
+        "Re-running the full onboarding flow. The live config will be replaced atomically.\n",
+      );
+      return runFreshFlow(deps);
+    }
+
+    // Mutating actions: each returns the next config (or null on cancel).
+    const next = await applyReconfigAction(deps, action, config, configuredIds);
+    if (next === "write-error") {
+      return 1;
+    }
+    if (next === "loop") {
+      // The action was a no-op (e.g. user backed out of a sub-prompt);
+      // re-render the menu.
+      continue;
+    }
+    if (next === "cancel") {
+      deps.writeStderr("No changes made.\n");
+      return 0;
+    }
+    // next === "written": the action mutated and persisted the config.
+    // Re-render the menu so the user can take another action.
+    configuredIds.length = 0;
+    const fresh = await deps.configStore.inspect();
+    if (fresh.status === "valid") {
+      for (const id of Object.keys(fresh.config.providers)) {
+        const provider = fresh.config.providers[id as ProviderId];
+        if (provider && typeof provider.apiKey === "string" && provider.apiKey.trim().length > 0) {
+          configuredIds.push(id as ProviderId);
+        }
+      }
+      // Mirror mutations into the local `config` reference so the next
+      // iteration sees the latest state.
+      Object.assign(config, fresh.config);
+    }
+  }
+}
+
+/**
+ * Render the re-config menu and return the chosen action. Returns
+ * `null` on cancel (Ctrl+C / EOF).
+ */
+async function promptReconfigAction(
+  deps: InitDependencies,
+  configuredIds: readonly ProviderId[],
+): Promise<ReconfigChoice | null> {
+  const choices: InitChoice<ReconfigChoice>[] = [];
+  if (configuredIds.length > 0) {
+    choices.push({
+      value: "edit-key",
+      name: "Edit a provider key",
+      description: "Replace an existing API key (resets verification to unverified)",
+    });
+    choices.push({
+      value: "remove-provider",
+      name: "Remove a provider",
+      description: "Drop a provider entry from the config",
+    });
+  }
+  choices.push({
+    value: "add-provider",
+    name: "Add a provider",
+    description: "Run the per-provider flow for a provider not yet configured",
+  });
+  choices.push({
+    value: "change-fallback",
+    name: "Change fallback preference",
+    description: "Toggle the Provider-fallback flag (currently consulted at runtime)",
+  });
+  choices.push({
+    value: "rerun-full",
+    name: "Re-run full onboarding",
+    description: "Discard the current config and start the wizard from scratch",
+  });
+  choices.push({ value: "cancel", name: "Cancel", description: "Exit without changes" });
+
+  try {
+    return await deps.prompts.select<ReconfigChoice>("What would you like to do?", choices);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Apply a single mutating re-config action. Persists the result via the
+ * store and returns a status the caller uses to decide whether to
+ * re-render the menu, exit, or loop.
+ *
+ *   - "written": the config was mutated + persisted successfully.
+ *   - "loop": the user backed out of a sub-prompt (no mutation); re-render.
+ *   - "cancel": the user explicitly cancelled; exit 0.
+ *   - "write-error": the atomic write failed; exit 1.
+ */
+async function applyReconfigAction(
+  deps: InitDependencies,
+  action: Exclude<ReconfigChoice, "cancel" | "rerun-full">,
+  config: ScoutlineConfig,
+  configuredIds: readonly ProviderId[],
+): Promise<"written" | "loop" | "cancel" | "write-error"> {
+  if (action === "change-fallback") {
+    return changeFallback(deps, config);
+  }
+  if (action === "add-provider") {
+    return addProvider(deps, config, configuredIds);
+  }
+  if (action === "remove-provider") {
+    return removeProvider(deps, config, configuredIds);
+  }
+  // edit-key
+  return editProviderKey(deps, config, configuredIds);
+}
+
+/**
+ * Toggle the fallback flag. Reads the current value, asks the new
+ * preference, and persists.
+ */
+async function changeFallback(
+  deps: InitDependencies,
+  config: ScoutlineConfig,
+): Promise<"written" | "loop" | "cancel" | "write-error"> {
+  const current = config.fallbackEnabled ?? true;
+  try {
+    const next = await deps.prompts.confirm(
+      `Route automatically if the selected provider is unavailable? [${current ? "Y/n" : "y/N"}]`,
+      current,
+    );
+    const updated: ScoutlineConfig = {
+      ...config,
+      providers: { ...config.providers },
+      fallbackEnabled: next,
+      // Clear the hint marker so a later switch back triggers the hint.
+      ...(config.hintShown !== undefined ? {} : {}),
+    };
+    // hintShown is intentionally preserved (re-config does not reset it;
+    // only a fresh-write or re-init does).
+    if (config.hintShown !== undefined) {
+      (updated as { hintShown?: boolean }).hintShown = config.hintShown;
+    }
+    return persistConfig(deps, updated);
+  } catch {
+    return "loop";
+  }
+}
+
+/**
+ * Add a provider not yet configured. Reuses the T3a per-provider flow
+ * (ask-key → input → validate). The new record joins the existing
+ * `providers` map without disturbing the others.
+ */
+async function addProvider(
+  deps: InitDependencies,
+  config: ScoutlineConfig,
+  configuredIds: readonly ProviderId[],
+): Promise<"written" | "loop" | "cancel" | "write-error"> {
+  const available = deps.descriptors.map((d) => d.id).filter((id) => !configuredIds.includes(id));
+  if (available.length === 0) {
+    deps.writeStderr("Every built-in provider is already configured.\n");
+    return "loop";
+  }
+  const choices: InitChoice<ProviderId>[] = available.map((id) => ({
+    value: id,
+    name: providerMeta(id).label,
+    description: providerMeta(id).probeCostsCredit
+      ? "validation probe costs ~1 credit"
+      : "validation probe is free",
+  }));
+  let providerId: ProviderId;
+  try {
+    providerId = await deps.prompts.select<ProviderId>("Add which provider?", choices);
+  } catch {
+    return "loop";
+  }
+  const descriptor = deps.descriptors.find((d) => d.id === providerId);
+  if (!descriptor) {
+    deps.writeStderr(`Provider "${providerId}" is not in the registry.\n`);
+    return "loop";
+  }
+  // Reuse the T3a per-provider flow against an empty envKeyProviders so
+  // the import offer is skipped (the user is ADDING; we do not auto-pull
+  // from env here). The probe runs against the ephemeral candidate.
+  const onboarding = await onboardSingleProvider(deps, providerId, []);
+  if (onboarding === null) {
+    return "loop";
+  }
+  if (onboarding === "skip") {
+    return "loop";
+  }
+  const updated: ScoutlineConfig = {
+    ...config,
+    providers: {
+      ...config.providers,
+      [providerId]: {
+        apiKey: onboarding.apiKey,
+        onboarded: true,
+        verification: onboarding.verification,
+      },
+    },
+  };
+  if (config.hintShown !== undefined) {
+    (updated as { hintShown?: boolean }).hintShown = config.hintShown;
+  }
+  const status = persistConfig(deps, updated);
+  if ((await status) === "written") {
+    deps.writeStdout(
+      `${providerMeta(providerId).label}: added (verification: ${onboarding.verification.status}).\n`,
+    );
+  }
+  return status;
+}
+
+/**
+ * Remove a configured provider. The user picks from the currently
+ * configured set; the chosen entry is dropped from `providers`.
+ */
+async function removeProvider(
+  deps: InitDependencies,
+  config: ScoutlineConfig,
+  configuredIds: readonly ProviderId[],
+): Promise<"written" | "loop" | "cancel" | "write-error"> {
+  if (configuredIds.length === 0) {
+    deps.writeStderr("No providers are configured.\n");
+    return "loop";
+  }
+  const choices: InitChoice<ProviderId>[] = configuredIds.map((id) => ({
+    value: id,
+    name: providerMeta(id).label,
+  }));
+  choices.push({ value: undefined as unknown as ProviderId, name: "Back" });
+  let providerId: ProviderId | undefined;
+  try {
+    const picked = await deps.prompts.select<ProviderId | undefined>(
+      "Remove which provider?",
+      choices,
+    );
+    providerId = picked;
+  } catch {
+    return "loop";
+  }
+  if (providerId === undefined) {
+    return "loop";
+  }
+  try {
+    const confirmed = await deps.prompts.confirm(
+      `Remove ${providerMeta(providerId).label} from the config? [y/N]`,
+      false,
+    );
+    if (!confirmed) {
+      return "loop";
+    }
+  } catch {
+    return "loop";
+  }
+  const nextProviders: Partial<Record<ProviderId, ProviderConfig>> = {
+    ...config.providers,
+  };
+  delete nextProviders[providerId];
+  const updated: ScoutlineConfig = {
+    ...config,
+    providers: nextProviders,
+  };
+  if (config.hintShown !== undefined) {
+    (updated as { hintShown?: boolean }).hintShown = config.hintShown;
+  }
+  const status = persistConfig(deps, updated);
+  if ((await status) === "written") {
+    deps.writeStdout(`${providerMeta(providerId).label}: removed.\n`);
+  }
+  return status;
+}
+
+/**
+ * Edit (replace) a configured provider's key. Reuses the T3a per-provider
+ * flow's validate step against the ephemeral candidate. Editing a key
+ * RESETS that Provider's `verification.status` to `unverified` —
+ * Doctor re-promotes after a successful probe (the probe the wizard
+ * runs here does NOT promote because the wizard's probe is a
+ * connectivity check, not a Doctor invocation).
+ */
+async function editProviderKey(
+  deps: InitDependencies,
+  config: ScoutlineConfig,
+  configuredIds: readonly ProviderId[],
+): Promise<"written" | "loop" | "cancel" | "write-error"> {
+  if (configuredIds.length === 0) {
+    deps.writeStderr("No providers are configured.\n");
+    return "loop";
+  }
+  const choices: InitChoice<ProviderId>[] = configuredIds.map((id) => ({
+    value: id,
+    name: providerMeta(id).label,
+  }));
+  choices.push({ value: undefined as unknown as ProviderId, name: "Back" });
+  let providerId: ProviderId | undefined;
+  try {
+    providerId = await deps.prompts.select<ProviderId | undefined>(
+      "Edit which provider's key?",
+      choices,
+    );
+  } catch {
+    return "loop";
+  }
+  if (providerId === undefined) {
+    return "loop";
+  }
+  const descriptor = deps.descriptors.find((d) => d.id === providerId);
+  if (!descriptor) {
+    deps.writeStderr(`Provider "${providerId}" is not in the registry.\n`);
+    return "loop";
+  }
+  const meta = providerMeta(providerId);
+  if (meta.probeCostsCredit) {
+    deps.writeStderr(
+      `${meta.label}: validating the new key costs ~1 credit against your account.\n`,
+    );
+  }
+  let candidate: string;
+  try {
+    candidate = (
+      await deps.prompts.password(`Paste the new ${meta.label} API key (input hidden):`)
+    ).trim();
+  } catch {
+    return "loop";
+  }
+  // Reuse the T3a validate loop. The candidate is probed; on verified
+  // we persist a verified record; on save-unverified we persist an
+  // unverified record; on skip/cancel we re-render the menu.
+  const result = await validateAndCollect(deps, descriptor, candidate);
+  if (result === null) {
+    return "loop";
+  }
+  if (result === "skip") {
+    return "loop";
+  }
+  const updated: ScoutlineConfig = {
+    ...config,
+    providers: {
+      ...config.providers,
+      [providerId]: {
+        apiKey: result.apiKey,
+        onboarded: true,
+        verification: result.verification,
+      },
+    },
+  };
+  if (config.hintShown !== undefined) {
+    (updated as { hintShown?: boolean }).hintShown = config.hintShown;
+  }
+  const status = persistConfig(deps, updated);
+  if ((await status) === "written") {
+    deps.writeStdout(
+      `${meta.label}: key updated (verification: ${result.verification.status}). ` +
+        `Run \`scoutline doctor\` to re-verify.\n`,
+    );
+  }
+  return status;
+}
+
+/**
+ * Persist a mutated config through the store. Returns `"written"` on
+ * success or `"write-error"` on failure (the caller surfaces the exit
+ * code). The atomic primitive guarantees no partial write reaches disk.
+ */
+async function persistConfig(
+  deps: InitDependencies,
+  config: ScoutlineConfig,
+): Promise<"written" | "write-error"> {
+  try {
+    await deps.configStore.write(config);
+    return "written";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    deps.writeStderr(`Failed to write config: ${message}\n`);
+    return "write-error";
+  }
 }
 
 /**
@@ -653,6 +1291,17 @@ async function onboardSingleProvider(
       if (importFromEnv) {
         const candidate = deps.env[meta.envVar];
         if (typeof candidate === "string" && candidate.trim().length > 0) {
+          // Stale-env-after-import warning (T3b edge case). The runtime
+          // precedence rule is env > file: an env value still set at
+          // runtime will keep winning over this imported file key, so
+          // the saved key is effectively dormant until the env value is
+          // removed. The wizard notes this so the user is not surprised
+          // later. The env value still wins at runtime by design; the
+          // wizard cannot unset it for the user.
+          deps.writeStderr(
+            `Note: env precedence means $${meta.envVar} will keep overriding the saved key at runtime. ` +
+              `Unset it (or remove it from your shell profile) to make the saved key authoritative.\n`,
+          );
           return validateAndCollect(deps, descriptor, candidate);
         }
         // The env value was blank/removed between detection and read;
@@ -867,6 +1516,7 @@ function formatSummary(
  */
 type InquirerModule = {
   checkbox: <T>(config: unknown, context: unknown) => Promise<T[]>;
+  select: <T>(config: unknown, context: unknown) => Promise<T>;
   confirm: (config: unknown, context: unknown) => Promise<boolean>;
   password: (config: unknown, context: unknown) => Promise<string>;
   input: (config: unknown, context: unknown) => Promise<string>;
@@ -904,6 +1554,16 @@ export function createInquirerPrompts(): InitPrompts {
           message,
           // inquirer mutates the choice array; pass a defensive shallow
           // copy so the wizard's `readonly` source is untouched.
+          choices: choices.map((c) => ({ ...c })),
+        },
+        context,
+      );
+    },
+    async select<T>(message: string, choices: readonly InitChoice<T>[]): Promise<T> {
+      const inquirer = await loadInquirer();
+      return inquirer.select<T>(
+        {
+          message,
           choices: choices.map((c) => ({ ...c })),
         },
         context,

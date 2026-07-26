@@ -49,28 +49,59 @@ All notable changes to this project will be documented in this file.
   third `env` argument with the same default. The SHA-256 / filename
   cache key algorithm is unchanged; migration of existing cache entries
   across credential sources is deferred (see `docs/roadmap.md`).
-- **`scoutline init` fresh-onboarding wizard lands its code (PREVIEW).**
-  The interactive `init` command ships its fresh-onboarding flow today:
-  provider checklist (registry-derived, equal weight, none pre-checked),
-  per-provider ask-key-first → hidden input → single inline validation
-  probe against an ephemeral in-memory environment, honest broad
-  classification of probe failures (`AuthError`/`ApiError` reject and
-  re-prompt; `NetworkError` offers save-unverified; no false-precise
-  subtypes), credit-cost disclosure before any paid probe, env-key
-  import offer, fallback-preference question, and atomic write of
-  `~/.scoutline/config.json` (mode 0600). The candidate credential lives
-  only in the ephemeral probe env until the final atomic write —
-  `process.env` is never mutated. `@inquirer/prompts` is added as a new
-  direct runtime dependency; the wizard is hermetic (every prompt,
-  config-store, descriptor, clock, and TTY access is injected through a
-  new `MainDependencies.initPrompts` / `initConfigStore` seam). **Release
-  gate:** the command's code lands now, but its public docs (top-level
-  `MAIN_HELP` Commands list, README setup section, `skills/scoutline/`)
-  wait for **T3b** (re-config menu, corrupt-config repair, trigger
-  detection for unconfigured commands, and formal non-TTY refusal) so
-  the public claim of a complete `init` is not made prematurely. Until
-  then `init` is undocumented in `MAIN_HELP`; `scoutline init --help`
-  surfaces an explicit PREVIEW caveat.
+- **`scoutline init` interactive onboarding wizard is complete.** The
+  wizard writes `~/.scoutline/config.json` (mode 0600) through a
+  provider checklist (registry-derived, equal weight, none
+  pre-checked), per-provider ask-key-first → hidden input → single
+  inline validation probe against an ephemeral in-memory environment,
+  honest broad classification of probe failures (`AuthError`/`ApiError`
+  reject and re-prompt; `NetworkError` offers save-unverified; no
+  false-precise subtypes), credit-cost disclosure before any paid
+  probe, env-key import offer, fallback-preference question, and
+  atomic write. The candidate credential lives only in the ephemeral
+  probe env until the final atomic write — `process.env` is never
+  mutated. `@inquirer/prompts` is a new direct runtime dependency;
+  the wizard is hermetic (every prompt, config-store, descriptor,
+  clock, and TTY access is injected through `MainDependencies.initPrompts`
+  / `initConfigStore` seams). Four lifecycle states: absent → fresh
+  flow; valid + empty → fresh flow; valid + already-onboarded →
+  re-config menu (edit key, add/remove provider, change fallback,
+  re-run full, cancel); corrupt → backup + rewrite (init is the
+  recovery path). Editing a key invalidates the prior verification
+  record. Formal non-TTY refuse: without a terminal the wizard
+  refuses before any prompt, prints env instructions, and exits.
+  Stale-env-after-import warning notes that env precedence keeps
+  winning at runtime.
+- **Trigger detection for unconfigured commands (Option B).** When a
+  credentialed command runs with environment-variable credentials but
+  no `config.json`, scoutline emits a ONE-TIME stderr hint pointing
+  at `scoutline init` and persists `config.json.hintShown` so the hint
+  never repeats. The command then runs normally with its natural
+  output and exit code. A missing credential everywhere continues to
+  surface the existing `CONFIGURATION_ERROR` exit 3 through the
+  handler's own preflight (the trigger layer does not intercept, so
+  the locked validation-before-configuration ordering is preserved).
+  Credential-free commands (`--help`, `--version`, `cache`, `init`,
+  `<command> --help`) never read the config file — a corrupt
+  `config.json` cannot block help rendering. `doctor` and `quota` are
+  observational: they report per-Provider state and are exempt from
+  trigger detection. Raw Z.AI commands (`tools`, `tool`, `call`,
+  `code`) are credentialed and Z.AI-only; the env-only hint applies.
+- **Doctor verification promotion.** `scoutline doctor` now flips
+  `providers.<id>.verification.status` from `unverified` to `verified`
+  after a successful probe. The promotion is awaited and best-effort:
+  a write failure is isolated through a stderr notice and never turns
+  a successful probe into a Doctor failure. Only `status:"ok"` records
+  are promoted; skipped, failed, no-tools, and network-deferred
+  records are not. The injected `verificationPromoter` /
+  `HintShownStore` seams keep tests hermetic.
+- **Tolerant config load in production.** The dispatcher now uses
+  `inspectConfig` (absent | valid | corrupt) instead of strict
+  `readConfig` for the production path. Corrupt config still refuses
+  credentialed commands with `CONFIGURATION_ERROR` exit 3, but
+  command-local help (`<cmd> --help`) bypasses the refuse so help
+  stays usable. Tests that inject `loadScoutlineConfig` keep the
+  strict-throw semantics for backward compatibility.
 
 ### Changed
 - `loadConfig` and `getApiKey` in `lib/config.ts` now accept an explicit

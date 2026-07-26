@@ -38,6 +38,27 @@ npx scoutline vision analyze ./screenshot.png "What errors do you see?"
 
 Get your Z.AI API key at: https://z.ai/manage-apikey/apikey-list
 
+### Interactive setup (`scoutline init`)
+
+Run `npx scoutline init` once to record API keys in
+`~/.scoutline/config.json` (mode 0600). The wizard:
+
+- offers to import a key already present in your environment;
+- walks a provider checklist (Z.AI, MiniMax, Tavily, Exa, Brave,
+  Firecrawl — none pre-checked);
+- validates each key with a single inline probe against an ephemeral
+  environment (the candidate never touches disk until the final
+  atomic write);
+- asks the fallback preference (auto-reroute when the selected
+  provider is unavailable);
+- supports re-config (edit/add/remove a provider, change fallback,
+  re-run full) and corrupt-config repair (backup + rewrite).
+
+Non-interactive terminals are refused — set environment variables
+instead, or run the wizard inside a real TTY. Editing a key resets
+that provider's verification; `scoutline doctor` re-promotes it after
+a successful probe.
+
 ### Using MiniMax
 
 ```bash

@@ -26,6 +26,46 @@ Provider selection is never inferred from which credentials are present. An
 unconfigured effective Provider is a configuration failure (`exit 3`) for the
 default quota command and a diagnostic failure (`exit 1`) for `doctor`.
 
+Alternatively, run `scoutline init` to record API keys in
+`~/.scoutline/config.json` interactively. The wizard validates each key
+with a single inline probe and writes the file with mode 0600.
+
+## Corrupt `config.json` — `init` is the recovery path
+
+```
+config.json is corrupt
+```
+
+`scoutline init` offers to back up the corrupt file and rewrite a fresh
+config. The backup is named `<config.json>.corrupt-<timestamp>.bak` and is
+never deleted by scoutline. Declining the repair exits without modifying
+the live file.
+
+```bash
+scoutline init   # offers backup + rewrite on a corrupt config
+```
+
+Credential-free commands (`--help`, `--version`, `cache`, `<command> --help`)
+never read the config file, so a corrupt config never blocks help rendering.
+Credentialed commands (`search`, `read`, `vision`, `tools`, etc.) refuse
+with `CONFIGURATION_ERROR` exit 3 until the config is repaired.
+
+## "Using credentials from the environment" one-time hint
+
+When a credentialed command runs with environment-variable credentials but
+no `~/.scoutline/config.json`, scoutline emits a one-time stderr hint
+pointing at `scoutline init`:
+
+```
+scoutline: using credentials from the environment. Run `scoutline init` ...
+```
+
+The hint is persisted as `config.json.hintShown` so it does not repeat. The
+command runs normally afterward with its natural output and exit code. Run
+`scoutline init` to record the keys, or ignore the hint — it fires at most
+once until the config is removed or `hintShown` is reset (which a fresh
+`init` run does).
+
 ## Unknown Provider ID
 
 ```

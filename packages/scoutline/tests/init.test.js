@@ -118,12 +118,14 @@ function createFakeConfigStore({ initial = null } = {}) {
 function createScriptedPrompts() {
   const queue = {
     checkbox: [],
+    select: [],
     confirm: [],
     password: [],
     input: [],
   };
   const calls = {
     checkbox: [],
+    select: [],
     confirm: [],
     password: [],
     input: [],
@@ -135,6 +137,15 @@ function createScriptedPrompts() {
         throw new Error("scripted checkbox queue exhausted: " + message);
       }
       const { answer, cancel } = queue.checkbox.shift();
+      if (cancel) throw new Error("cancel");
+      return answer;
+    },
+    async select(message, choices) {
+      calls.select.push({ message, choices });
+      if (queue.select.length === 0) {
+        throw new Error("scripted select queue exhausted: " + message);
+      }
+      const { answer, cancel } = queue.select.shift();
       if (cancel) throw new Error("cancel");
       return answer;
     },
@@ -172,6 +183,9 @@ function createScriptedPrompts() {
     queueCheckbox(answer) {
       queue.checkbox.push({ answer });
     },
+    queueSelect(answer) {
+      queue.select.push({ answer });
+    },
     queueConfirm(answer) {
       queue.confirm.push({ answer });
     },
@@ -180,6 +194,9 @@ function createScriptedPrompts() {
     },
     queueCheckboxCancel() {
       queue.checkbox.push({ cancel: true });
+    },
+    queueSelectCancel() {
+      queue.select.push({ cancel: true });
     },
     queueConfirmCancel() {
       queue.confirm.push({ cancel: true });
@@ -221,7 +238,7 @@ function createInitDeps({
 // --help short-circuit
 // ---------------------------------------------------------------------------
 
-describe("init --help: stdout-only, exit 0, surfaces preview caveat", () => {
+describe("init --help: stdout-only, exit 0", () => {
   it("writes INIT_HELP to stdout and returns 0", async () => {
     const script = createScriptedPrompts();
     const store = createFakeConfigStore();
@@ -235,15 +252,19 @@ describe("init --help: stdout-only, exit 0, surfaces preview caveat", () => {
     assert.strictEqual(status, 0);
     assert.strictEqual(stderrChunks.length, 0);
     assert.strictEqual(stdoutChunks.length, 1);
-    assert.match(stdoutChunks[0], /PREVIEW/);
-    assert.match(stdoutChunks[0], /re-configuration menu/i);
+    // T3b: the PREVIEW caveat is dropped — the wizard is now complete.
+    assert.ok(!/PREVIEW/.test(stdoutChunks[0]), "INIT_HELP must not carry the PREVIEW caveat");
+    assert.match(stdoutChunks[0], /Interactive onboarding wizard/i);
+    assert.match(stdoutChunks[0], /re-config menu/i);
     // No config interaction on --help.
     assert.strictEqual(store.getWrites().length, 0);
   });
 
   it("INIT_HELP constant matches the help text exactly", () => {
-    assert.match(INIT_HELP, /PREVIEW/);
+    assert.ok(!/PREVIEW/.test(INIT_HELP), "PREVIEW caveat must be gone in T3b");
     assert.match(INIT_HELP, /mode 0600/);
+    assert.match(INIT_HELP, /corrupt/i);
+    assert.match(INIT_HELP, /non-interactive terminals/i);
   });
 });
 
@@ -251,7 +272,7 @@ describe("init --help: stdout-only, exit 0, surfaces preview caveat", () => {
 // Non-TTY graceful guard
 // ---------------------------------------------------------------------------
 
-describe("init non-TTY guard: friendly stderr, exit 1, no writes", () => {
+describe("init non-TTY refuse: formal refuse before any prompt, exit 1", () => {
   it("refuses to enter the interactive flow when stdin is not a TTY", async () => {
     const script = createScriptedPrompts();
     const store = createFakeConfigStore();
@@ -266,9 +287,34 @@ describe("init non-TTY guard: friendly stderr, exit 1, no writes", () => {
 
     assert.strictEqual(status, 1);
     assert.strictEqual(stdoutChunks.length, 0);
-    assert.match(stderrChunks.join(""), /interactive terminal/i);
-    // The wizard must not touch the store under the non-TTY guard.
+    // T3b: the formal refuse points at env vars + init; no longer
+    // mentions a "follow-up release".
+    const joined = stderrChunks.join("");
+    assert.match(joined, /interactive terminal/i);
+    assert.match(joined, /environment variables/i);
+    assert.ok(!/follow-up release/i.test(joined), "formal refuse must not mention follow-up");
+    // The wizard must not touch the store under the non-TTY refuse.
     assert.strictEqual(store.getWrites().length, 0);
+  });
+
+  it("non-TTY refuse surfaces detected env keys without leaking values", async () => {
+    const script = createScriptedPrompts();
+    const store = createFakeConfigStore();
+    const zai = makeFakeDescriptor({ id: "zai" });
+    const { deps, stderrChunks } = createInitDeps({
+      descriptors: [zai.descriptor],
+      prompts: script.prompts,
+      configStore: store,
+      stdinIsTTY: false,
+      env: { Z_AI_API_KEY: "secret-do-not-leak" },
+    });
+
+    const status = await handleInitWithHelp([], deps);
+
+    assert.strictEqual(status, 1);
+    const joined = stderrChunks.join("");
+    assert.match(joined, /Detected env keys.*Z_AI_API_KEY/);
+    assert.ok(!joined.includes("secret-do-not-leak"), "key value must not leak in refuse");
   });
 });
 
@@ -276,12 +322,15 @@ describe("init non-TTY guard: friendly stderr, exit 1, no writes", () => {
 // Already-onboarded short-circuit
 // ---------------------------------------------------------------------------
 
-describe("init already-onboarded: re-config deferred, exit 0", () => {
-  it("when config holds an api key the wizard defers to T3b and exits 0", async () => {
+describe("init already-onboarded: re-config menu (T3b)", () => {
+  it("when config holds an api key the wizard offers the re-config menu, not a deferral", async () => {
     const script = createScriptedPrompts();
     const store = createFakeConfigStore({
       initial: { version: 1, providers: { zai: { apiKey: "prior-key" } } },
     });
+    // The re-config menu's first select prompt — choose "cancel" so the
+    // menu exits cleanly without further interaction.
+    script.queueSelect("cancel");
     const { deps, stderrChunks } = createInitDeps({
       descriptors: [],
       prompts: script.prompts,
@@ -290,17 +339,20 @@ describe("init already-onboarded: re-config deferred, exit 0", () => {
 
     const status = await handleInitWithHelp([], deps);
 
+    // T3b: explicit "cancel" menu choice exits 0 (no changes made).
     assert.strictEqual(status, 0);
-    assert.match(stderrChunks.join(""), /already set up/i);
-    assert.match(stderrChunks.join(""), /follow-up release/i);
+    const joined = stderrChunks.join("");
+    assert.match(joined, /already set up/i);
+    assert.ok(!/follow-up release/i.test(joined), "must not defer to a follow-up release");
     assert.strictEqual(store.getWrites().length, 0);
   });
 
-  it("when config holds onboarded:true (no api key) the wizard still defers", async () => {
+  it("when config holds onboarded:true (no api key) the wizard still enters re-config", async () => {
     const script = createScriptedPrompts();
     const store = createFakeConfigStore({
       initial: { version: 1, providers: { minimax: { onboarded: true } } },
     });
+    script.queueSelect("cancel");
     const { deps } = createInitDeps({
       descriptors: [],
       prompts: script.prompts,
@@ -1157,7 +1209,9 @@ describe("init dispatch through main(): init --help returns 0, no config touch",
 
     assert.strictEqual(status, 0);
     assert.strictEqual(stderr.length, 0);
-    assert.match(stdout[0], /PREVIEW/);
+    // T3b: PREVIEW caveat is dropped.
+    assert.ok(!/PREVIEW/.test(stdout[0]), "main dispatch must not carry PREVIEW caveat");
+    assert.match(stdout[0], /Interactive onboarding wizard/i);
     // --help must not even inspect the store.
     assert.strictEqual(storeCalls, 0);
   });
@@ -1231,5 +1285,323 @@ describe("init dispatch through main(): init --help returns 0, no config touch",
     // Non-TTY guard fires regardless of corrupt state.
     assert.strictEqual(status, 1);
     assert.match(stderr[stderr.length - 1], /interactive terminal/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3b — Re-config menu: edit-key resets verification to unverified
+// ---------------------------------------------------------------------------
+
+describe("init re-config: edit-key invalidates prior verification (T3b)", () => {
+  it("editing a provider key writes the new key; a successful re-probe yields verified", async () => {
+    const zai = makeFakeDescriptor({ id: "zai", behaviour: "resolve" });
+    const initial = {
+      version: 1,
+      fallbackEnabled: true,
+      providers: {
+        zai: {
+          apiKey: "old-key",
+          onboarded: true,
+          // Prior verification from an earlier Doctor probe.
+          verification: { status: "verified", checkedAt: 1_000 },
+        },
+      },
+    };
+    const store = createFakeConfigStore({ initial });
+    const script = createScriptedPrompts();
+    script.queueSelect("edit-key");
+    script.queueSelect("zai");
+    script.queuePassword("new-key");
+    // After the successful edit, the menu loops back → cancel.
+    script.queueSelect("cancel");
+
+    const { deps, stdoutChunks } = createInitDeps({
+      descriptors: [zai.descriptor],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+    assert.strictEqual(status, 0);
+    const writes = store.getWrites();
+    assert.strictEqual(writes.length, 1);
+    const written = writes[0].config;
+    assert.strictEqual(written.providers.zai.apiKey, "new-key");
+    // The wizard's inline re-probe succeeded → verified. The OLD
+    // verification record (checkedAt: 1_000) is REPLACED by the new
+    // one (checkedAt from the injected clock). The "reset" contract
+    // means the prior verified state is never carried over blindly —
+    // a fresh probe is required to re-establish it.
+    assert.strictEqual(written.providers.zai.verification.status, "verified");
+    assert.strictEqual(written.providers.zai.verification.checkedAt, 1_700_000_000_000);
+    assert.notStrictEqual(written.providers.zai.verification.checkedAt, 1_000);
+    // Summary mentions the update + points at doctor.
+    assert.match(stdoutChunks.join(""), /key updated/i);
+    // Old key never leaked.
+    const allOutput = stdoutChunks.join("");
+    assert.ok(!allOutput.includes("old-key"), "old key must not leak");
+  });
+
+  it("editing a provider key with a network failure resets verification to unverified", async () => {
+    const zai = makeFakeDescriptor({
+      id: "zai",
+      behaviour: () => {
+        throw new NetworkError("offline");
+      },
+    });
+    const initial = {
+      version: 1,
+      providers: {
+        zai: {
+          apiKey: "old-key",
+          onboarded: true,
+          verification: { status: "verified", checkedAt: 1_000 },
+        },
+      },
+    };
+    const store = createFakeConfigStore({ initial });
+    const script = createScriptedPrompts();
+    script.queueSelect("edit-key");
+    script.queueSelect("zai");
+    script.queuePassword("new-key");
+    // Network-error → offer save-unverified Yes.
+    script.queueConfirm(true);
+    // Menu loops back → cancel.
+    script.queueSelect("cancel");
+
+    const { deps } = createInitDeps({
+      descriptors: [zai.descriptor],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+    assert.strictEqual(status, 0);
+    const writes = store.getWrites();
+    assert.strictEqual(writes.length, 1);
+    const written = writes[0].config;
+    assert.strictEqual(written.providers.zai.apiKey, "new-key");
+    // The key was edited AND the re-probe failed → verification
+    // resets to unverified (the prior "verified" is invalidated;
+    // Doctor can re-promote after a later successful probe).
+    assert.strictEqual(written.providers.zai.verification.status, "unverified");
+    assert.strictEqual(written.providers.zai.verification.reason, "network-deferred");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3b — Re-config menu: change-fallback
+// ---------------------------------------------------------------------------
+
+describe("init re-config: change-fallback persists the new preference", () => {
+  it("toggling fallbackEnabled writes the updated config", async () => {
+    const initial = {
+      version: 1,
+      fallbackEnabled: true,
+      providers: { zai: { apiKey: "key" } },
+    };
+    const store = createFakeConfigStore({ initial });
+    const script = createScriptedPrompts();
+    script.queueSelect("change-fallback");
+    // New preference: No (disable fallback).
+    script.queueConfirm(false);
+    // Menu loops back → cancel.
+    script.queueSelect("cancel");
+
+    const { deps } = createInitDeps({
+      descriptors: [],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+    assert.strictEqual(status, 0);
+    const writes = store.getWrites();
+    assert.strictEqual(writes.length, 1);
+    assert.strictEqual(writes[0].config.fallbackEnabled, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3b — Re-config menu: remove-provider
+// ---------------------------------------------------------------------------
+
+describe("init re-config: remove-provider drops the entry", () => {
+  it("removing a provider deletes its entry and persists", async () => {
+    const initial = {
+      version: 1,
+      providers: {
+        zai: { apiKey: "zai-key" },
+        minimax: { apiKey: "mmx-key" },
+      },
+    };
+    const store = createFakeConfigStore({ initial });
+    const script = createScriptedPrompts();
+    script.queueSelect("remove-provider");
+    script.queueSelect("minimax");
+    script.queueConfirm(true); // confirm removal
+    // Menu loops back → cancel.
+    script.queueSelect("cancel");
+
+    const { deps, stdoutChunks } = createInitDeps({
+      descriptors: [],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+    assert.strictEqual(status, 0);
+    const writes = store.getWrites();
+    assert.strictEqual(writes.length, 1);
+    const providers = writes[0].config.providers;
+    assert.ok(!providers.minimax, "minimax must be removed");
+    assert.ok(providers.zai, "zai must remain");
+    assert.match(stdoutChunks.join(""), /MiniMax: removed/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3b — Corrupt-config repair
+// ---------------------------------------------------------------------------
+
+describe("init corrupt-config repair: backup + rewrite (T3b)", () => {
+  it("declining repair exits 1 without modifying the file", async () => {
+    const script = createScriptedPrompts();
+    let backupCalled = false;
+    const store = {
+      async inspect() {
+        return {
+          status: "corrupt",
+          filePath: "/tmp/corrupt.json",
+          error: new Error("Unexpected token }"),
+        };
+      },
+      async write() {
+        throw new Error("write must not be called when repair is declined");
+      },
+      backupCorrupt: async () => {
+        backupCalled = true;
+        return true;
+      },
+    };
+    const { deps, stderrChunks } = createInitDeps({
+      descriptors: [],
+      prompts: script.prompts,
+      configStore: store,
+    });
+    // Decline the repair.
+    script.queueConfirm(false);
+
+    const status = await handleInitWithHelp([], deps);
+    assert.strictEqual(status, 1);
+    assert.ok(!backupCalled, "backup must not run when repair is declined");
+    const joined = stderrChunks.join("");
+    assert.match(joined, /corrupt/i);
+    assert.match(joined, /declined/i);
+  });
+
+  it("accepting repair with a successful backup runs the fresh flow", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      // Write a corrupt config to disk.
+      await fs.writeFile(filePath, "{not-json");
+      const zai = makeFakeDescriptor({ id: "zai", behaviour: "resolve" });
+
+      const script = createScriptedPrompts();
+      // Accept repair.
+      script.queueConfirm(true);
+      // Fresh flow: select zai, has-key, password, fallback.
+      script.queueCheckbox(["zai"]);
+      script.queueConfirm(true);
+      script.queuePassword("fresh-key");
+      script.queueConfirm(true);
+
+      const realStore = await import("../dist/lib/config-store.js");
+      const store = {
+        async inspect() {
+          return realStore.inspectConfig({ filePath });
+        },
+        async write(config, options) {
+          await realStore.writeConfig(config, { filePath, ...options });
+        },
+        async backupCorrupt(src, dst) {
+          const fs2 = await import("node:fs/promises");
+          await fs2.rename(src, dst);
+          return true;
+        },
+      };
+
+      const { deps, stderrChunks } = createInitDeps({
+        descriptors: [zai.descriptor],
+        prompts: script.prompts,
+        configStore: store,
+      });
+
+      const status = await handleInitWithHelp([], deps);
+      assert.strictEqual(status, 0);
+      const joined = stderrChunks.join("");
+      assert.match(joined, /corrupt/i);
+      assert.match(joined, /backed up corrupt config/i);
+      // Fresh config landed on disk with the new key.
+      const written = JSON.parse(await fs.readFile(filePath, "utf8"));
+      assert.strictEqual(written.providers.zai.apiKey, "fresh-key");
+      // The backup exists alongside.
+      const fs2 = await import("node:fs/promises");
+      const entries = await fs2.readdir(dir);
+      const backup = entries.find((e) => e.endsWith(".bak"));
+      assert.ok(backup, "a .bak backup file must exist");
+      const backupContent = await fs2.readFile(path.join(dir, backup), "utf8");
+      assert.strictEqual(backupContent, "{not-json", "backup preserves the corrupt bytes");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3b — Stale-env-after-import warning
+// ---------------------------------------------------------------------------
+
+describe("init env-import: stale-env-after-import warning (T3b edge case)", () => {
+  it("importing an env key warns that env precedence keeps winning at runtime", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const zai = makeFakeDescriptor({ id: "zai", behaviour: "resolve" });
+
+      const script = createScriptedPrompts();
+      script.queueCheckbox(["zai"]);
+      // Accept env import.
+      script.queueConfirm(true);
+      script.queueConfirm(true); // fallback
+
+      const realStore = await import("../dist/lib/config-store.js");
+      const store = {
+        async inspect() {
+          return realStore.inspectConfig({ filePath });
+        },
+        async write(config, options) {
+          await realStore.writeConfig(config, { filePath, ...options });
+        },
+      };
+
+      const { deps, stderrChunks } = createInitDeps({
+        descriptors: [zai.descriptor],
+        prompts: script.prompts,
+        configStore: store,
+        env: { Z_AI_API_KEY: "env-imported-key" },
+      });
+
+      const prior = process.env.Z_AI_API_KEY;
+      delete process.env.Z_AI_API_KEY;
+      try {
+        const status = await handleInitWithHelp([], deps);
+        assert.strictEqual(status, 0);
+        const joined = stderrChunks.join("");
+        // T3b: the stale-env warning names the env var and explains
+        // precedence (env > file at runtime).
+        assert.match(joined, /env precedence/i);
+        assert.match(joined, /Z_AI_API_KEY/);
+      } finally {
+        if (prior !== undefined) process.env.Z_AI_API_KEY = prior;
+      }
+    });
   });
 });

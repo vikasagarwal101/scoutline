@@ -52,6 +52,15 @@ Get a Z.AI key at: https://z.ai/manage-apikey/apikey-list
 Get a Tavily key at: https://app.tavily.com/home/api-keys
 Get an Exa key at: https://dashboard.exa.ai
 
+### Interactive onboarding (`scoutline init`)
+
+Run `scoutline init` once to record API keys in
+`~/.scoutline/config.json` (mode 0600) through an interactive wizard.
+The wizard validates each key with a single inline probe, supports
+re-config (edit/add/remove provider, change fallback), and repairs a
+corrupt config (backup + rewrite). Non-interactive terminals are
+refused — set environment variables instead.
+
 ## Provider Selection
 
 Shared commands (`search`, `vision analyze`, `quota`, `doctor`),
@@ -142,6 +151,7 @@ to the active Provider.
 | doctor | Provider-aware diagnostics (schema v2) | `--help` for `--no-tools` |
 | cache | Inspect or clear the local cache | `--help` for stats/clear |
 | code | TypeScript tool chaining (Z.AI) | |
+| init | Interactive onboarding wizard (writes ~/.scoutline/config.json) | `--help` for the four lifecycle states |
 
 ## Quick Start
 

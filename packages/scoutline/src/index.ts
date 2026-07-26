@@ -41,7 +41,20 @@ import {
 import { invokeCommand, type CommandInvocationAdapter } from "./command-invocation.js";
 import { defaultResponseCache, type ResponseCache } from "./lib/cache.js";
 import { configuredSecrets } from "./lib/redact.js";
-import { readConfig, resolveEnvFromConfig, type ScoutlineConfig } from "./lib/config-store.js";
+import { resolveEnvFromConfig, type ScoutlineConfig } from "./lib/config-store.js";
+import {
+  inspectConfig,
+  createDefaultVerificationPromoter,
+  createDefaultHintShownStore,
+  type VerificationPromotionStore,
+  type HintShownStore,
+} from "./lib/config-store.js";
+import {
+  classifyCredentialState,
+  formatEnvOnlyHint,
+  isCommandHelpInvocation,
+  OBSERVATIONAL_COMMANDS,
+} from "./lib/trigger-detection.js";
 import { resolveProviderId } from "./providers/selection.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "./providers/registry.js";
 import type { ProviderDescriptor, ProviderId } from "./providers/types.js";
@@ -88,6 +101,7 @@ Commands:
   doctor   Provider-aware environment + connectivity checks
   cache    Inspect or clear the local cache (stats / clear)
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
+  init     Interactive onboarding wizard (writes ~/.scoutline/config.json)
 
 Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER, then zai):
   --provider <zai|minimax|tavily|exa|brave|firecrawl>   Select the active Provider for shared capabilities
@@ -124,6 +138,7 @@ Help:
   scoutline call --help
   scoutline code --help
   scoutline cache --help
+  scoutline init --help
 `.trim();
 
 function parseArgs(args: string[]): {
@@ -333,6 +348,13 @@ interface HandlerDependencies {
     stateFilePath: string,
     resumeCommand: string,
   ) => (print: () => void) => () => void;
+  /**
+   * Optional verification promoter for Doctor (T3b). Production wires
+   * the configured `verificationPromoter` from `MainDependencies`;
+   * tests inject a double. When absent, Doctor runs without
+   * promotion.
+   */
+  readonly verificationPromoter?: VerificationPromotionStore;
 }
 
 async function handleVision(
@@ -1390,6 +1412,20 @@ async function handleDoctor(
             sleep: deps.searchSleep,
             random: deps.searchRandom,
             cacheSummary,
+            // T3b: thread the injected promoter + clock through to the
+            // report builder so a successful probe can flip the matching
+            // record from `unverified` to `verified`. When the promoter
+            // is absent (hermetic test path), Doctor runs without
+            // promotion. The write-failure sink surfaces promotion
+            // errors as a stderr notice without affecting the exit code.
+            verificationPromoter: deps.verificationPromoter,
+            now: deps.now ?? Date.now,
+            onPromotionError: (providerId, error) => {
+              const message = error instanceof Error ? error.message : String(error);
+              deps.invocation.writeStderr(
+                `scoutline: verification promotion failed for "${providerId}": ${message}\n`,
+              );
+            },
           }),
       }),
     outputMode,
@@ -1678,6 +1714,29 @@ export interface MainDependencies {
    * user's real config root.
    */
   readonly initConfigStore?: InitDependencies["configStore"];
+  /**
+   * Optional injectable verification-promotion store (T3b). Production
+   * wires `createDefaultVerificationPromoter()` (real read-modify-write
+   * against `~/.scoutline/config.json`); tests inject an in-memory
+   * double so Doctor's promotion assertions stay hermetic. When
+   * omitted, the production promoter is constructed at dispatch time.
+   *
+   * Doctor calls `promote(providerId, checkedAt)` after a successful
+   * probe to flip the matching record from `unverified` to `verified`.
+   * Best-effort: a write failure is isolated and never turns a
+   * successful probe into a Doctor failure.
+   */
+  readonly verificationPromoter?: VerificationPromotionStore;
+  /**
+   * Optional injectable hint-shown store (T3b). Production wires
+   * `createDefaultHintShownStore()`; tests inject an in-memory double
+   * so the trigger-detection hint persistence assertions are hermetic.
+   * When omitted, the production store is constructed at dispatch time.
+   *
+   * Trigger detection calls `setHintShown()` once after emitting the
+   * env-only hint so the hint never repeats.
+   */
+  readonly hintShownStore?: HintShownStore;
 }
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1809,6 +1868,16 @@ export async function main(
     researchSleep,
     researchRandom,
     researchRegisterInterrupt: dependencies.researchRegisterInterrupt,
+    // Promoter wiring (T3b). When the caller explicitly injects a
+    // promoter, use it (tests assert behavior this way). Otherwise, in
+    // PRODUCTION (no injected config reader), construct the default
+    // real-file promoter. When a test injects `loadScoutlineConfig`
+    // (hermetic in-memory config), promotion is DISABLED so the
+    // default promoter never reaches the user's real
+    // ~/.scoutline/config.json during a test run.
+    verificationPromoter:
+      dependencies.verificationPromoter ??
+      (dependencies.loadScoutlineConfig ? undefined : createDefaultVerificationPromoter()),
   });
 
   // Cache is credential-free (no Provider resolution, no descriptor lookup,
@@ -1851,18 +1920,51 @@ export async function main(
     }
   }
 
-  // Credentialed path: load the config file (T2a — Plan A). The injected
-  // reader defaults to readConfig (real ~/.scoutline/config.json); tests
-  // inject an in-memory double for hermeticity.
-  const loadScoutlineConfig = dependencies.loadScoutlineConfig ?? readConfig;
+  // Credentialed path: load the config file (T2a — Plan A). T3b makes
+  // the load TOLERANT so command help remains usable under a corrupt
+  // config (review item 9: "do not force a credential check merely to
+  // render help"). The injected reader (when provided) is still strict
+  // for backward compatibility with existing tests; the production
+  // path uses `inspectConfig`.
+  //
+  // Classification of the corrupt case:
+  //   - command help (`<cmd> --help`): proceed with an empty config so
+  //     the handler can render its help. The handler's own help
+  //     short-circuit never touches config.
+  //   - everything else (including observational `doctor`/`quota`):
+  //     refuse with the existing CONFIGURATION_ERROR (exit 3). The
+  //     error's help points at `init` as the recovery path.
+  // Observational commands do NOT bypass the corrupt refuse — they
+  // still need `resolvedEnv` (which needs config) to probe/report.
+  const isHelpInvocation = isCommandHelpInvocation(commandArgs);
+  const isObservational = OBSERVATIONAL_COMMANDS.has(command);
+
   let config: ScoutlineConfig;
-  try {
-    config = await loadScoutlineConfig();
-  } catch (error) {
-    // A corrupt/unreadable config.json blocks credentialed commands but
-    // never the credential-free commands above (help/version/cache).
-    invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
-    return getErrorExitCode(error);
+  if (dependencies.loadScoutlineConfig) {
+    try {
+      config = await dependencies.loadScoutlineConfig();
+    } catch (error) {
+      if (isHelpInvocation) {
+        config = { version: 1, providers: {} };
+      } else {
+        invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+        return getErrorExitCode(error);
+      }
+    }
+  } else {
+    const inspection = await inspectConfig();
+    if (inspection.status === "corrupt") {
+      if (isHelpInvocation) {
+        config = { version: 1, providers: {} };
+      } else {
+        invocation.writeStderr(formatErrorOutput(inspection.error, outputMode, envSecrets));
+        return getErrorExitCode(inspection.error);
+      }
+    } else if (inspection.status === "absent") {
+      config = { version: 1, providers: {} };
+    } else {
+      config = inspection.config;
+    }
   }
 
   // Build resolvedEnv: the injected env with file-configured API keys
@@ -1872,6 +1974,53 @@ export async function main(
   // invocation.
   const resolvedEnv = resolveEnvFromConfig(env, config, providerDescriptors);
   const secrets = configuredSecrets(resolvedEnv);
+
+  // Trigger detection (T3b — Option B). The ONLY interception here is
+  // the env-only one-time hint: when the user is running on
+  // environment-variable credentials and has never been through
+  // `scoutline init`, we emit a single stderr hint pointing at the
+  // wizard and persist `config.json.hintShown` so it never repeats.
+  // The command then runs normally and preserves its natural output/exit.
+  //
+  // The "missing credential everywhere" case is NOT intercepted here:
+  // the handler's own preflight already surfaces the existing
+  // `CONFIGURATION_ERROR` exit 3 (see
+  // {@link missingCredentialError} in trigger-detection.ts for the
+  // shared error contract). Intercepting it pre-dispatch would break
+  // the locked validation-before-configuration ordering (an invalid
+  // `--count` must exit 1 with VALIDATION_ERROR even when no credential
+  // is present — see search.test.js "count validation ordering").
+  //
+  // Hermeticity: trigger detection runs ONLY in full production mode
+  // (no injected `loadScoutlineConfig` AND no injected
+  // `providerDescriptors`). Either injection signals a test that owns
+  // its own config/descriptor construction; fake descriptors routinely
+  // lie about `isConfigured`, so trusting them here would mis-classify.
+  // Dedicated trigger-detection tests run via subprocess (the real
+  // binary) or via `main()` without injecting either, optionally
+  // pointed at a temp `SCOUTLINE_CONFIG_DIR`.
+  const triggerDetectionEnabled =
+    !dependencies.loadScoutlineConfig && !dependencies.providerDescriptors;
+  if (triggerDetectionEnabled && !isHelpInvocation && !isObservational) {
+    const state = classifyCredentialState({
+      descriptors: providerDescriptors,
+      env,
+      resolvedEnv,
+      config,
+    });
+    if (state.kind === "env-only" && config.hintShown !== true) {
+      invocation.writeStderr(formatEnvOnlyHint());
+      // Persist hintShown best-effort. A write failure is isolated: the
+      // hint simply does not repeat within this process; the next run
+      // tries again. The injected store keeps tests hermetic.
+      const hintStore = dependencies.hintShownStore ?? createDefaultHintShownStore();
+      try {
+        await hintStore.setHintShown();
+      } catch {
+        // Best-effort: do not turn a hint into a failure.
+      }
+    }
+  }
 
   // Provider-fallback resolution (T2a — review blocker 5). Precedence:
   //   1. Invocation opt-out (`--no-fallback` flag or `SCOUTLINE_NO_FALLBACK`

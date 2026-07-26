@@ -49,6 +49,13 @@ import { executeWithFallback, type FallbackOutcome } from "./lib/provider-fallba
 import type { SearchCapability } from "./capabilities/search.js";
 import type { ExecutionDependencies } from "./lib/execution.js";
 import { visionOperationToCapability, type VisionOperation } from "./capabilities/vision.js";
+import {
+  handleInitWithHelp,
+  createInquirerPrompts,
+  createDefaultConfigStore,
+  type InitDependencies,
+  type InitPrompts,
+} from "./commands/init.js";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -1656,6 +1663,21 @@ export interface MainDependencies {
     stateFilePath: string,
     resumeCommand: string,
   ) => (print: () => void) => () => void;
+  /**
+   * Optional injectable prompt IO seam for the `init` wizard (T3a —
+   * Plan A). Production wires `createInquirerPrompts` (which lazily
+   * resolves `@inquirer/prompts`); tests inject a scripted double so
+   * the wizard runs fully hermetically without a real TTY.
+   */
+  readonly initPrompts?: InitPrompts;
+  /**
+   * Optional injectable config-store seam for the `init` wizard (T3a).
+   * Production wires `createDefaultConfigStore()` (real `inspectConfig`
+   * + `writeConfig` against `~/.scoutline/config.json`); tests inject
+   * a temp-dir-backed double so onboarding assertions never touch the
+   * user's real config root.
+   */
+  readonly initConfigStore?: InitDependencies["configStore"];
 }
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1796,6 +1818,33 @@ export async function main(
   if (command === "cache") {
     try {
       return await handleCache(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
+  // `init` manages config itself (it inspects + writes via the T1
+  // primitives, never reads the resolvedEnv the credentialed path
+  // produces). Short-circuit before the credentialed config load so a
+  // corrupt or unreadable config.json never blocks the wizard that is
+  // documented to repair it. The wizard is presented-only; it does not
+  // dispatch through the credentialed handler boundary. Release gate
+  // (T3a ticket): the command's code lands now, but its public docs
+  // (MAIN_HELP Commands list, README setup, skills/) wait for T3b.
+  if (command === "init") {
+    const initDeps: InitDependencies = {
+      descriptors: providerDescriptors,
+      prompts: dependencies.initPrompts ?? createInquirerPrompts(),
+      configStore: dependencies.initConfigStore ?? createDefaultConfigStore(),
+      env,
+      now: now ?? Date.now,
+      stdinIsTTY: invocation.stdinIsTTY,
+      writeStderr: (value) => invocation.writeStderr(value),
+      writeStdout: (value) => invocation.writeStdout(value),
+    };
+    try {
+      return await handleInitWithHelp(commandArgs, initDeps);
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
       return getErrorExitCode(error);

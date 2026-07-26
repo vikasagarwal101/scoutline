@@ -49,6 +49,28 @@ All notable changes to this project will be documented in this file.
   third `env` argument with the same default. The SHA-256 / filename
   cache key algorithm is unchanged; migration of existing cache entries
   across credential sources is deferred (see `docs/roadmap.md`).
+- **`scoutline init` fresh-onboarding wizard lands its code (PREVIEW).**
+  The interactive `init` command ships its fresh-onboarding flow today:
+  provider checklist (registry-derived, equal weight, none pre-checked),
+  per-provider ask-key-first → hidden input → single inline validation
+  probe against an ephemeral in-memory environment, honest broad
+  classification of probe failures (`AuthError`/`ApiError` reject and
+  re-prompt; `NetworkError` offers save-unverified; no false-precise
+  subtypes), credit-cost disclosure before any paid probe, env-key
+  import offer, fallback-preference question, and atomic write of
+  `~/.scoutline/config.json` (mode 0600). The candidate credential lives
+  only in the ephemeral probe env until the final atomic write —
+  `process.env` is never mutated. `@inquirer/prompts` is added as a new
+  direct runtime dependency; the wizard is hermetic (every prompt,
+  config-store, descriptor, clock, and TTY access is injected through a
+  new `MainDependencies.initPrompts` / `initConfigStore` seam). **Release
+  gate:** the command's code lands now, but its public docs (top-level
+  `MAIN_HELP` Commands list, README setup section, `skills/scoutline/`)
+  wait for **T3b** (re-config menu, corrupt-config repair, trigger
+  detection for unconfigured commands, and formal non-TTY refusal) so
+  the public claim of a complete `init` is not made prematurely. Until
+  then `init` is undocumented in `MAIN_HELP`; `scoutline init --help`
+  surfaces an explicit PREVIEW caveat.
 
 ### Changed
 - `loadConfig` and `getApiKey` in `lib/config.ts` now accept an explicit

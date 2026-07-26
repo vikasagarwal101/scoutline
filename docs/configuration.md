@@ -10,6 +10,43 @@ export Z_AI_API_KEY="your-api-key"
 `ZAI_API_KEY` remains accepted for compatibility, but new setups should use
 `Z_AI_API_KEY`.
 
+## On-Disk Config Foundation
+
+Scoutline reserves `~/.scoutline/config.json` for its versioned, hand-editable
+user configuration. Set `SCOUTLINE_CONFIG_DIR` to move this file to a different
+root; cache-directory variables (`SCOUTLINE_CACHE_DIR`, `ZAI_MCP_CACHE_DIR`, and
+`ZAI_CACHE_DIR`) do not affect its location.
+
+The version-1 shape is:
+
+```json
+{
+  "version": 1,
+  "fallbackEnabled": true,
+  "hintShown": false,
+  "providers": {
+    "zai": {
+      "apiKey": "...",
+      "onboarded": true,
+      "verification": {
+        "status": "verified",
+        "checkedAt": 1786000060000
+      }
+    }
+  }
+}
+```
+
+Supported provider IDs are `zai`, `minimax`, `tavily`, `exa`, `brave`, and
+`firecrawl`. Unknown IDs are ignored with a warning, and blank API keys are
+treated as absent. Malformed files fail as corrupt configuration; unsupported
+versions require a Scoutline upgrade. Writes use a private (`0600`) temporary
+file followed by atomic replacement.
+
+This release adds the storage substrate only. Existing commands still read
+credentials from environment variables until the install/onboarding consumer
+lands, so adding `config.json` manually does not yet change command behavior.
+
 ## Provider Selection
 
 Shared commands (`search`, `vision`, `quota`, `doctor`), **`repo`**,

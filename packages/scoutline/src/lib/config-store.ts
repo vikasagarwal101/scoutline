@@ -393,3 +393,122 @@ export function resolveEnvFromConfig(
 
   return resolved;
 }
+
+// ---------------------------------------------------------------------------
+// Targeted read-modify-write mutations (T3b — verification promotion +
+// hintShown persistence). These layer on top of {@link inspectConfig} +
+// {@link writeConfig} so the wizard and doctor share the same atomic,
+// 0600-permissioned write primitive as the fresh-onboarding path. Each
+// helper re-reads the live config before mutating so a concurrent
+// onboarding write does not get clobbered; the atomic rename in
+// {@link atomicReplaceFile} keeps the final state crash-safe.
+// ---------------------------------------------------------------------------
+
+/**
+ * Injectable verification-promotion store. Doctor calls `promote` after
+ * a successful Provider probe to flip the matching record from
+ * `unverified` to `verified`. Production wires
+ * {@link createDefaultVerificationPromoter} (real read-modify-write
+ * against `~/.scoutline/config.json`); tests inject in-memory doubles
+ * so the promotion assertions never touch real config-root I/O.
+ *
+ * Contract:
+ *   - Only a Provider whose probe SUCCEEDED is promoted. Skipped,
+ *     failed, no-tools, and network-deferred records are NOT promoted
+ *     (Doctor's report still reflects the probe's authoritative status).
+ *   - A record that is already `verified` (or absent, or has no
+ *     verification record) is a no-op.
+ *   - Write failure is surfaced through the returned promise so the
+ *     caller can isolate it (Doctor logs and continues; the report
+ *     stays unaffected).
+ */
+export interface VerificationPromotionStore {
+  promote(providerId: ProviderId, checkedAt: number): Promise<void>;
+}
+
+/**
+ * Production {@link VerificationPromotionStore}. Reads the live config,
+ * flips the matching Provider record's `verification.status` from
+ * `unverified` to `verified`, and rewrites the file atomically. A
+ * record that is absent, has no verification field, or is already
+ * `verified` is a no-op (no write, no error). The read-modify-write is
+ * not cross-process locked; Doctor is a single-shot CLI command and the
+ * atomic rename keeps the final state crash-safe against partial writes.
+ */
+export function createDefaultVerificationPromoter(
+  options: WriteConfigOptions = {},
+): VerificationPromotionStore {
+  return {
+    async promote(providerId, checkedAt) {
+      const inspection = await inspectConfig(options);
+      if (inspection.status !== "valid") return;
+      const existing = inspection.config.providers[providerId];
+      if (!existing || !existing.verification) return;
+      if (existing.verification.status === "verified") return;
+      const updated: ScoutlineConfig = {
+        ...inspection.config,
+        providers: {
+          ...inspection.config.providers,
+          [providerId]: {
+            ...existing,
+            verification: { status: "verified", checkedAt },
+          },
+        },
+      };
+      await writeConfig(updated, options);
+    },
+  };
+}
+
+/**
+ * Injectable hint-shown store. Trigger detection calls `setHintShown`
+ * once after emitting the env-only hint so the hint never repeats.
+ * Production wires {@link createDefaultHintShownStore}; tests inject
+ * in-memory doubles so the hint persistence assertions stay hermetic.
+ *
+ * Contract:
+ *   - Absent / corrupt config is a no-op (no hint can be persisted when
+ *     the config substrate is unavailable; the hint simply does not
+ *     repeat within this process and is re-emitted on the next run
+ *     after the user repairs via `init`).
+ *   - `hintShown === true` already is a no-op.
+ *   - `false → true` is the only write.
+ */
+export interface HintShownStore {
+  setHintShown(): Promise<void>;
+}
+
+/**
+ * Production {@link HintShownStore}. Reads the live config, sets
+ * `hintShown: true` if it is currently unset/false, and rewrites the
+ * file atomically. Same read-modify-write caveats as the verification
+ * promoter.
+ *
+ * When the config is ABSENT, the store creates a minimal config file
+ * (`{version:1, providers:{}, hintShown:true}`) so the hint does NOT
+ * repeat on every subsequent run — the ticket's "one-time marker"
+ * contract requires persistence, and absent-config is the common case
+ * for a user who just installed scoutline and is running on env vars.
+ * A CORRUPT config is a no-op (init is the recovery path; the hint
+ * store must not silently rewrite a corrupt file).
+ */
+export function createDefaultHintShownStore(options: WriteConfigOptions = {}): HintShownStore {
+  return {
+    async setHintShown() {
+      const inspection = await inspectConfig(options);
+      if (inspection.status === "corrupt") return;
+      if (inspection.status === "valid") {
+        if (inspection.config.hintShown === true) return;
+        const updated: ScoutlineConfig = {
+          ...inspection.config,
+          hintShown: true,
+        };
+        await writeConfig(updated, options);
+        return;
+      }
+      // Absent — create a minimal config carrying just the marker so the
+      // hint does not repeat. This is the common env-only-install case.
+      await writeConfig({ version: CONFIG_VERSION, providers: {}, hintShown: true }, options);
+    },
+  };
+}

@@ -29,6 +29,7 @@ import { executeProviderOperation } from "../lib/execution.js";
 import { UnsupportedCapabilityError } from "../lib/errors.js";
 import { redactSecrets, configuredSecrets } from "../lib/redact.js";
 import type { ProviderDescriptor, ProviderId, ProviderCapability } from "../providers/types.js";
+import type { VerificationPromotionStore } from "../lib/config-store.js";
 
 // ---------------------------------------------------------------------------
 // Report builder
@@ -50,6 +51,33 @@ export interface DoctorDiagnosticsDependencies {
    * simply leaves out the `cache` field.
    */
   readonly cacheSummary?: string;
+  /**
+   * Optional verification promoter (T3b — review item 10). When
+   * supplied, Doctor flips `verification.status: unverified → verified`
+   * for each Provider whose probe SUCCEEDS. The promotion is
+   * best-effort: a write failure is reported through
+   * {@link DoctorDiagnosticsDependencies.onPromotionError} (when
+   * supplied) and never turns a successful probe into a Doctor failure.
+   * Skipped, failed, no-tools, and network-deferred records are NOT
+   * promoted (the probe result is authoritative). When omitted, Doctor
+   * runs without promotion (backward-compatible with existing tests).
+   */
+  readonly verificationPromoter?: VerificationPromotionStore;
+  /**
+   * Optional clock used for the promoted `checkedAt` timestamp.
+   * Defaults to `Date.now`; tests inject a fixed clock for
+   * deterministic timestamps.
+   */
+  readonly now?: () => number;
+  /**
+   * Optional sink for promotion-write failures. Doctor isolates write
+   * failures (a successful probe never becomes a Doctor failure on the
+   * back of a write error); when this sink is supplied, the failure is
+   * reported there so the dispatcher can surface it as a stderr notice
+   * without affecting the exit code. When omitted, write failures are
+   * silently swallowed.
+   */
+  readonly onPromotionError?: (providerId: ProviderId, error: unknown) => void;
 }
 
 interface AdapterWithDiagnostics {
@@ -122,6 +150,29 @@ export async function buildDiagnosticsReport(
         reason: entry.configured ? ("tools-disabled" as const) : ("not-configured" as const),
       }))
     : await probeEntries(baseEntries, deps, secrets);
+
+  // T3b — verification promotion (review item 10). After a successful
+  // probe, flip the matching Provider's `verification.status` from
+  // `unverified` to `verified`. Best-effort: a write failure is
+  // isolated through `onPromotionError` and never turns a successful
+  // probe into a Doctor failure. Only `status: "ok"` records are
+  // promotable; skipped, failed, no-tools, and network-deferred
+  // records are not (the probe result is authoritative). Awaited so a
+  // subsequent read after Doctor completion is deterministic.
+  if (deps.verificationPromoter) {
+    const checkedAt = (deps.now ?? Date.now)();
+    for (const entry of providers) {
+      if (entry.status !== "ok") continue;
+      try {
+        await deps.verificationPromoter.promote(entry.provider, checkedAt);
+      } catch (error) {
+        // Isolated: a write failure does not propagate. The sink (when
+        // supplied) lets the dispatcher surface it as a stderr notice
+        // without affecting the exit code.
+        deps.onPromotionError?.(entry.provider, error);
+      }
+    }
+  }
 
   // L1 fix: the cache summary is formatted by the CLI handler and
   // threaded through deps.cacheSummary. The report builder only embeds

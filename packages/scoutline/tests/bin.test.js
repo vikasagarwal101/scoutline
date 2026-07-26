@@ -75,7 +75,6 @@ describe("help and version: stdout-only", () => {
     assert.strictEqual(r.stderr, "");
     assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+$/);
   });
-
 });
 
 describe("global output options: before and after command token", () => {
@@ -113,12 +112,22 @@ describe("invalid output modes: one JSON error to stderr, exit 1", () => {
     assert.ok(err.error.includes("Invalid output format"));
     assert.strictEqual(err.code, "VALIDATION_ERROR");
   });
-
 });
 
 describe("missing positional values: message, code, stream, exit", () => {
+  // T3b: these tests exercise VALIDATION_ERROR ordering (input checked
+  // inside the handler, after provider preflight). They use a
+  // file-configured credential (via `config`) so provider preflight
+  // passes and the handler reaches its source/path validation.
+  // File-configured classification means trigger detection does NOT
+  // emit the env-only hint, keeping stderr clean for the JSON assert.
+  const FILE_CONFIG = {
+    version: 1,
+    providers: { zai: { apiKey: "test-key-file-configured" } },
+  };
+
   it("vision analyze with no source → VALIDATION_ERROR exit 1 on stderr", async () => {
-    const r = await runProcess(["vision", "analyze"], { env: BASE_ENV });
+    const r = await runProcess(["vision", "analyze"], { config: FILE_CONFIG });
     assert.strictEqual(r.code, 1);
     const err = JSON.parse(r.stderr);
     assert.strictEqual(err.success, false);
@@ -127,7 +136,7 @@ describe("missing positional values: message, code, stream, exit", () => {
   });
 
   it("vision video with no source → VALIDATION_ERROR exit 1", async () => {
-    const r = await runProcess(["vision", "video"], { env: BASE_ENV });
+    const r = await runProcess(["vision", "video"], { config: FILE_CONFIG });
     assert.strictEqual(r.code, 1);
     const err = JSON.parse(r.stderr);
     assert.strictEqual(err.code, "VALIDATION_ERROR");
@@ -135,7 +144,7 @@ describe("missing positional values: message, code, stream, exit", () => {
   });
 
   it("vision diff with only one image → VALIDATION_ERROR exit 1", async () => {
-    const r = await runProcess(["vision", "diff", "a.png"], { env: BASE_ENV });
+    const r = await runProcess(["vision", "diff", "a.png"], { config: FILE_CONFIG });
     assert.strictEqual(r.code, 1);
     const err = JSON.parse(r.stderr);
     assert.strictEqual(err.code, "VALIDATION_ERROR");
@@ -143,7 +152,7 @@ describe("missing positional values: message, code, stream, exit", () => {
   });
 
   it("repo tree with no repo → VALIDATION_ERROR exit 1", async () => {
-    const r = await runProcess(["repo", "tree"], { env: BASE_ENV });
+    const r = await runProcess(["repo", "tree"], { config: FILE_CONFIG });
     assert.strictEqual(r.code, 1);
     const err = JSON.parse(r.stderr);
     assert.strictEqual(err.code, "VALIDATION_ERROR");
@@ -151,7 +160,7 @@ describe("missing positional values: message, code, stream, exit", () => {
   });
 
   it("repo search with no query → VALIDATION_ERROR exit 1", async () => {
-    const r = await runProcess(["repo", "search", "owner/repo"], { env: BASE_ENV });
+    const r = await runProcess(["repo", "search", "owner/repo"], { config: FILE_CONFIG });
     assert.strictEqual(r.code, 1);
     const err = JSON.parse(r.stderr);
     assert.strictEqual(err.code, "VALIDATION_ERROR");
@@ -159,7 +168,7 @@ describe("missing positional values: message, code, stream, exit", () => {
   });
 
   it("repo read with no path → VALIDATION_ERROR exit 1", async () => {
-    const r = await runProcess(["repo", "read", "owner/repo"], { env: BASE_ENV });
+    const r = await runProcess(["repo", "read", "owner/repo"], { config: FILE_CONFIG });
     assert.strictEqual(r.code, 1);
     const err = JSON.parse(r.stderr);
     assert.strictEqual(err.code, "VALIDATION_ERROR");
@@ -167,7 +176,7 @@ describe("missing positional values: message, code, stream, exit", () => {
   });
 
   it("code run with no file → VALIDATION_ERROR exit 1", async () => {
-    const r = await runProcess(["code", "run"], { env: BASE_ENV });
+    const r = await runProcess(["code", "run"], { config: FILE_CONFIG });
     assert.strictEqual(r.code, 1);
     const err = JSON.parse(r.stderr);
     assert.strictEqual(err.code, "VALIDATION_ERROR");
@@ -175,7 +184,7 @@ describe("missing positional values: message, code, stream, exit", () => {
   });
 
   it("code eval with no string → VALIDATION_ERROR exit 1", async () => {
-    const r = await runProcess(["code", "eval"], { env: BASE_ENV });
+    const r = await runProcess(["code", "eval"], { config: FILE_CONFIG });
     assert.strictEqual(r.code, 1);
     const err = JSON.parse(r.stderr);
     assert.strictEqual(err.code, "VALIDATION_ERROR");

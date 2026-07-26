@@ -32,6 +32,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import * as path from "node:path";
 
 import {
   buildDiagnosticsReport,
@@ -39,6 +40,7 @@ import {
   doctorExitCode,
   DOCTOR_HELP,
 } from "../dist/commands/doctor.js";
+import { withTempDir } from "./helpers/temp-dir.js";
 import {
   deriveCapabilityMatrix,
   diagnosticErrorFromError,
@@ -897,5 +899,290 @@ describe("doctor diagnostics — cache summary (Cache Unification Ticket 03)", (
     // cases. The report builder must not turn it into absence.
     assert.ok(report.cache, "empty-string summary is still embedded");
     assert.strictEqual(report.cache.summary, "");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Verification promotion (T3b — review item 10).
+//
+// After a successful probe, Doctor flips the matching Provider's
+// `verification.status` from `unverified` to `verified`. Best-effort:
+// a write failure is isolated and never turns a successful probe into
+// a Doctor failure. Only `status: "ok"` records are promotable.
+// ---------------------------------------------------------------------------
+
+describe("doctor diagnostics — verification promotion (T3b)", () => {
+  it("a successful probe promotes the matching unverified record to verified", async () => {
+    const env = { Z_AI_API_KEY: ZAI_KEY };
+    const descriptors = [makeZaiDescriptor({ listToolsImpl: () => [] })];
+    const promotions = [];
+    const promoter = {
+      async promote(providerId, checkedAt) {
+        promotions.push({ providerId, checkedAt });
+      },
+    };
+    const fixedNow = () => 1_700_000_000_000;
+    const report = await buildDiagnosticsReport({
+      ...baseDeps({ descriptors, env, effectiveProvider: "zai" }),
+      verificationPromoter: promoter,
+      now: fixedNow,
+    });
+    assert.strictEqual(report.providers[0].status, "ok");
+    assert.deepStrictEqual(promotions, [{ providerId: "zai", checkedAt: 1_700_000_000_000 }]);
+  });
+
+  it("a failed probe does NOT promote", async () => {
+    const env = { Z_AI_API_KEY: ZAI_KEY };
+    const descriptors = [
+      makeZaiDescriptor({
+        listToolsImpl: () => {
+          throw new AuthError("bad key");
+        },
+      }),
+    ];
+    const promotions = [];
+    const promoter = {
+      async promote(providerId) {
+        promotions.push(providerId);
+      },
+    };
+    const report = await buildDiagnosticsReport({
+      ...baseDeps({ descriptors, env, effectiveProvider: "zai" }),
+      verificationPromoter: promoter,
+      now: () => 1,
+    });
+    assert.strictEqual(report.providers[0].status, "error");
+    assert.strictEqual(promotions.length, 0, "failed probe must not promote");
+  });
+
+  it("under --no-tools no probe runs and no promotion happens", async () => {
+    const env = { Z_AI_API_KEY: ZAI_KEY };
+    const descriptors = [capabilityDescriptor("zai", ["search"], true)];
+    const promotions = [];
+    const promoter = {
+      async promote(providerId) {
+        promotions.push(providerId);
+      },
+    };
+    const report = await buildDiagnosticsReport({
+      ...baseDeps({ descriptors, env, effectiveProvider: "zai", noTools: true }),
+      verificationPromoter: promoter,
+      now: () => 1,
+    });
+    assert.strictEqual(report.providers[0].status, "skipped");
+    assert.strictEqual(promotions.length, 0, "tools-disabled skip must not promote");
+  });
+
+  it("a write failure is isolated — the probe stays ok and the report succeeds", async () => {
+    const env = { Z_AI_API_KEY: ZAI_KEY };
+    const descriptors = [makeZaiDescriptor({ listToolsImpl: () => [] })];
+    const promotionErrors = [];
+    const promoter = {
+      async promote() {
+        throw new Error("disk full");
+      },
+    };
+    const report = await buildDiagnosticsReport({
+      ...baseDeps({ descriptors, env, effectiveProvider: "zai" }),
+      verificationPromoter: promoter,
+      now: () => 1,
+      onPromotionError: (providerId, error) => {
+        promotionErrors.push({ providerId, message: error.message });
+      },
+    });
+    // The probe result is authoritative — a write failure does not
+    // turn a successful probe into an error.
+    assert.strictEqual(report.providers[0].status, "ok");
+    assert.strictEqual(doctorExitCode(report), 0);
+    // The write failure was reported through the sink.
+    assert.deepStrictEqual(promotionErrors, [{ providerId: "zai", message: "disk full" }]);
+  });
+
+  it("absent verificationPromoter: no promotion, report unaffected (backward-compat)", async () => {
+    const env = { Z_AI_API_KEY: ZAI_KEY };
+    const descriptors = [makeZaiDescriptor({ listToolsImpl: () => [] })];
+    const report = await buildDiagnosticsReport({
+      ...baseDeps({ descriptors, env, effectiveProvider: "zai" }),
+      // No verificationPromoter, no now — backward-compatible shape.
+    });
+    assert.strictEqual(report.providers[0].status, "ok");
+    assert.strictEqual(doctorExitCode(report), 0);
+  });
+
+  it("only the matching successful provider is promoted (mixed outcomes)", async () => {
+    const env = { Z_AI_API_KEY: ZAI_KEY, MINIMAX_API_KEY: MINIMAX_KEY };
+    const descriptors = [
+      makeZaiDescriptor({ listToolsImpl: () => [] }),
+      makeMiniMaxDescriptor({
+        fetchImpl: () => {
+          throw new AuthError("minimax auth failed");
+        },
+      }),
+    ];
+    const promotions = [];
+    const promoter = {
+      async promote(providerId) {
+        promotions.push(providerId);
+      },
+    };
+    const report = await buildDiagnosticsReport({
+      ...baseDeps({ descriptors, env, effectiveProvider: "zai" }),
+      verificationPromoter: promoter,
+      now: () => 5_000,
+    });
+    assert.strictEqual(report.providers[0].status, "ok");
+    assert.strictEqual(report.providers[1].status, "error");
+    // Only the successful Z.AI probe promotes.
+    assert.deepStrictEqual(promotions, ["zai"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Verification promoter store (config-store.ts — T3b).
+//
+// `createDefaultVerificationPromoter` is the production read-modify-write
+// against `~/.scoutline/config.json`. It flips the matching record's
+// `verification.status` from `unverified` to `verified`; absent, corrupt,
+// already-verified, and missing-verification records are no-ops.
+// ---------------------------------------------------------------------------
+
+describe("createDefaultVerificationPromoter (config-store, T3b)", () => {
+  it("flips an unverified record to verified and updates checkedAt", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const { createDefaultVerificationPromoter } = await import("../dist/lib/config-store.js");
+      const filePath = path.join(dir, "config.json");
+      const { writeConfig } = await import("../dist/lib/config-store.js");
+      await writeConfig(
+        {
+          version: 1,
+          providers: {
+            zai: {
+              apiKey: "key",
+              onboarded: true,
+              verification: { status: "unverified", checkedAt: 1_000, reason: "network-deferred" },
+            },
+          },
+        },
+        { filePath },
+      );
+      const promoter = createDefaultVerificationPromoter({ filePath });
+      await promoter.promote("zai", 5_000);
+      const { readConfig } = await import("../dist/lib/config-store.js");
+      const updated = await readConfig({ filePath });
+      assert.strictEqual(updated.providers.zai.verification.status, "verified");
+      assert.strictEqual(updated.providers.zai.verification.checkedAt, 5_000);
+      assert.strictEqual(updated.providers.zai.verification.reason, undefined);
+    });
+  });
+
+  it("an already-verified record is a no-op (no write)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const { createDefaultVerificationPromoter, writeConfig, readConfig } =
+        await import("../dist/lib/config-store.js");
+      const filePath = path.join(dir, "config.json");
+      await writeConfig(
+        {
+          version: 1,
+          providers: {
+            zai: {
+              apiKey: "key",
+              verification: { status: "verified", checkedAt: 9_000 },
+            },
+          },
+        },
+        { filePath },
+      );
+      const promoter = createDefaultVerificationPromoter({ filePath });
+      await promoter.promote("zai", 10_000);
+      const updated = await readConfig({ filePath });
+      // Unchanged.
+      assert.strictEqual(updated.providers.zai.verification.checkedAt, 9_000);
+    });
+  });
+
+  it("a Provider with no verification record is a no-op", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const { createDefaultVerificationPromoter, writeConfig, readConfig } =
+        await import("../dist/lib/config-store.js");
+      const filePath = path.join(dir, "config.json");
+      await writeConfig({ version: 1, providers: { zai: { apiKey: "key" } } }, { filePath });
+      const promoter = createDefaultVerificationPromoter({ filePath });
+      await promoter.promote("zai", 7_000);
+      const updated = await readConfig({ filePath });
+      assert.strictEqual(updated.providers.zai.verification, undefined);
+    });
+  });
+
+  it("an absent config is a no-op (no write, no error)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const { createDefaultVerificationPromoter } = await import("../dist/lib/config-store.js");
+      const filePath = path.join(dir, "config.json");
+      const promoter = createDefaultVerificationPromoter({ filePath });
+      // Must not throw.
+      await promoter.promote("zai", 1);
+      // No file created.
+      const fs2 = await import("node:fs/promises");
+      await assert.rejects(fs2.readFile(filePath, "utf8"));
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hint-shown store (config-store.ts — T3b).
+// ---------------------------------------------------------------------------
+
+describe("createDefaultHintShownStore (config-store, T3b)", () => {
+  it("sets hintShown true from false (persists)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const { createDefaultHintShownStore, writeConfig, readConfig } =
+        await import("../dist/lib/config-store.js");
+      const filePath = path.join(dir, "config.json");
+      await writeConfig({ version: 1, providers: {} }, { filePath });
+      const store = createDefaultHintShownStore({ filePath });
+      await store.setHintShown();
+      const updated = await readConfig({ filePath });
+      assert.strictEqual(updated.hintShown, true);
+    });
+  });
+
+  it("an already-true hintShown is a no-op (no rewrite)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const { createDefaultHintShownStore, writeConfig, readConfig } =
+        await import("../dist/lib/config-store.js");
+      const filePath = path.join(dir, "config.json");
+      await writeConfig({ version: 1, providers: {}, hintShown: true }, { filePath });
+      const store = createDefaultHintShownStore({ filePath });
+      await store.setHintShown();
+      const updated = await readConfig({ filePath });
+      assert.strictEqual(updated.hintShown, true);
+    });
+  });
+
+  it("an absent config creates a minimal config carrying the marker (one-time persistence)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const { createDefaultHintShownStore, readConfig } =
+        await import("../dist/lib/config-store.js");
+      const filePath = path.join(dir, "config.json");
+      const store = createDefaultHintShownStore({ filePath });
+      await store.setHintShown();
+      // The minimal config is created so the hint does not repeat.
+      const updated = await readConfig({ filePath });
+      assert.strictEqual(updated.hintShown, true);
+      assert.deepStrictEqual(updated.providers, {});
+    });
+  });
+
+  it("a corrupt config is a no-op (init is the recovery path, not the hint store)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const { createDefaultHintShownStore } = await import("../dist/lib/config-store.js");
+      const filePath = path.join(dir, "config.json");
+      const fs2 = await import("node:fs/promises");
+      await fs2.writeFile(filePath, "{not-json");
+      const store = createDefaultHintShownStore({ filePath });
+      // Must not throw and must not rewrite the corrupt file.
+      await store.setHintShown();
+      const content = await fs2.readFile(filePath, "utf8");
+      assert.strictEqual(content, "{not-json", "corrupt file must not be rewritten");
+    });
   });
 });

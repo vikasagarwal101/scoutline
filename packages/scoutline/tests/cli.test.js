@@ -28,7 +28,10 @@ describe("CLI Help Commands", () => {
     assert.match(stdout, /shared/i, "calls out shared capabilities");
     assert.match(stdout, /Provider-aware/i, "notes quota/doctor are provider-aware");
     // The legacy "Z.AI-only" framing must NOT be the only framing.
-    assert.ok(!/Z\.AI MCP services/.test(stdout), "main help must no longer say 'Z.AI MCP services'");
+    assert.ok(
+      !/Z\.AI MCP services/.test(stdout),
+      "main help must no longer say 'Z.AI MCP services'",
+    );
   });
 
   it("should show vision help", async () => {
@@ -98,12 +101,12 @@ describe("CLI Help Commands", () => {
     assert.ok(stdout.includes("doctor"));
   });
 });
-
 describe("CLI Error Handling", () => {
+  // T3b: runProcess strips provider keys by default, so these
+  // validation-error tests run credential-free and trigger detection
+  // does not intercept.
   it("should error on unknown command", async () => {
-    const { stderr, code } = await runProcess(["unknown"], {
-      env: { Z_AI_API_KEY: TEST_KEY },
-    });
+    const { stderr, code } = await runProcess(["unknown"]);
     assert.strictEqual(code, 1);
     const error = JSON.parse(stderr);
     assert.strictEqual(error.success, false);
@@ -111,13 +114,10 @@ describe("CLI Error Handling", () => {
   });
 
   it("should error on unknown vision command", async () => {
-    const { stderr, code } = await runProcess(["vision", "unknown", "file.png"], {
-      env: { Z_AI_API_KEY: TEST_KEY },
-    });
+    const { stderr, code } = await runProcess(["vision", "unknown", "file.png"]);
     assert.strictEqual(code, 1);
     const error = JSON.parse(stderr);
     assert.strictEqual(error.success, false);
     assert.ok(error.error.includes("Unknown vision command"));
   });
-
 });

@@ -75,6 +75,7 @@ import {
   ConfigurationError,
   NetworkError,
   QuotaError,
+  ScoutlineError,
   TimeoutError,
   UnsupportedCapabilityError,
   UnsupportedOptionError,
@@ -247,18 +248,14 @@ function preflightDescriptor(
   }
   // Step 3 — adapter-handle agreement. Construct the Adapter and
   // verify the Capability slot is non-null. `create()` is documented
-  // as side-effect-free; a throw here is treated as `unconfigured`
-  // so the dispatch layer's existing exit-3 contract is preserved.
+  // as side-effect-free; if it throws (a programmer/constructor bug),
+  // the exception propagates rather than being silently masked as
+  // "unconfigured" — fail-closed on unknown errors (review fix).
   const slot = adapterSlotFor(capabilityId);
   if (slot === undefined) {
     return { kind: "incapable" };
   }
-  let adapter: ProviderAdapter;
-  try {
-    adapter = descriptor.create({ env });
-  } catch {
-    return { kind: "unconfigured" };
-  }
+  const adapter = descriptor.create({ env });
   // `ProviderAdapter` is an interface with named properties only;
   // cast through `unknown` to access the slot by computed key.
   if ((adapter as unknown as Record<string, unknown>)[slot] === undefined) {
@@ -331,9 +328,7 @@ function buildCandidatePlan(
  *   errors so a programmer mistake cannot be silently masked by a
  *   cross-Provider fallback.
  */
-function classifyError(
-  err: unknown,
-): "validation" | "continue" | "throw" {
+function classifyError(err: unknown): "validation" | "continue" | "throw" {
   if (err instanceof ValidationError) return "validation";
   if (err instanceof UnsupportedCapabilityError) return "continue";
   if (err instanceof UnsupportedOptionError) return "continue";
@@ -346,6 +341,23 @@ function classifyError(
     err instanceof QuotaError
   ) {
     return "continue";
+  }
+  // Some normalized errors are base ScoutlineError instances carrying a
+  // code field rather than a concrete subclass (e.g. Z.AI Reader 403 is
+  // a base ScoutlineError with code AUTH_ERROR, not a concrete AuthError).
+  // Match by code on ScoutlineError instances so they still continue to
+  // the next provider, while plain Errors (test doubles, programmer
+  // mistakes) stay fail-closed.
+  if (err instanceof ScoutlineError) {
+    const continueCodes = new Set([
+      "AUTH_ERROR",
+      "API_ERROR",
+      "NETWORK_ERROR",
+      "TIMEOUT_ERROR",
+      "QUOTA_ERROR",
+      "CONFIGURATION_ERROR",
+    ]);
+    if (continueCodes.has(err.code)) return "continue";
   }
   return "throw";
 }
@@ -500,6 +512,7 @@ export async function executeWithFallback<T>(
   // effective keeps the most recent failure.
   let effectiveError: unknown = undefined;
   let effectiveRan = false;
+  let lastAttemptedId: ProviderId | null = null;
 
   for (let i = 0; i < plan.length; i += 1) {
     const entry = plan[i];
@@ -530,6 +543,7 @@ export async function executeWithFallback<T>(
 
     // Eligible. Run the attempt.
     try {
+      lastAttemptedId = entry.descriptor.id;
       const result = await attempt(entry.descriptor);
       const fellBack = entry.descriptor.id !== opts.effectiveProvider;
       // The summary notice is the only line emitted on the
@@ -568,9 +582,7 @@ export async function executeWithFallback<T>(
       }
       if (opts.fallbackEnabled && i < plan.length - 1) {
         const next = plan[i + 1].descriptor;
-        opts.writeStderr(
-          switchNotice(entry, err, opts.capabilityId, opts.commandLabel, next.id),
-        );
+        opts.writeStderr(switchNotice(entry, err, opts.capabilityId, opts.commandLabel, next.id));
       }
     }
   }
@@ -591,11 +603,8 @@ export async function executeWithFallback<T>(
   // Strict mode (`fallbackEnabled === false`) stays silent so the
   // JSON error contract for scripting users is unaffected.
   if (opts.fallbackEnabled) {
-    const eligibleCount = plan.filter(
-      (p) => p.status.kind === "eligible",
-    ).length;
-    const lastRanError =
-      effectiveRan && effectiveError !== undefined ? effectiveError : null;
+    const eligibleCount = plan.filter((p) => p.status.kind === "eligible").length;
+    const lastRanError = effectiveRan && effectiveError !== undefined ? effectiveError : null;
     if (eligibleCount === 0) {
       // Plan had no eligible entries (every preflight rejected the
       // candidate). Surface a single unambiguous terminal line so
@@ -605,7 +614,7 @@ export async function executeWithFallback<T>(
     } else if (lastRanError !== null) {
       opts.writeStderr(
         terminalExhaustionNotice(
-          plan[plan.length - 1].descriptor.id,
+          lastAttemptedId ?? opts.effectiveProvider,
           lastRanError,
           opts.commandLabel,
         ),
@@ -650,11 +659,7 @@ export async function executeWithFallback<T>(
  * The notice format follows the orchestrator's Review Fix 5
  * guidance: `<last> failed (<code>) — no further candidates`.
  */
-function terminalExhaustionNotice(
-  lastId: ProviderId,
-  err: unknown,
-  _commandLabel: string,
-): string {
+function terminalExhaustionNotice(lastId: ProviderId, err: unknown, _commandLabel: string): string {
   const code =
     typeof err === "object" && err !== null && "code" in err
       ? String((err as { code: unknown }).code)

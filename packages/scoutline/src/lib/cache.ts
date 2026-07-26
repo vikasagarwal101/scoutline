@@ -219,9 +219,20 @@ export function getCacheSizeCapBytes(): number {
  * Build a stable cache key from command + request-affecting args.
  * Post-processing flags (maxChars, outputFormat, extract, fullEnvelope)
  * are intentionally excluded so one cached fetch serves many presentations.
+ *
+ * T2b: an optional `env` parameter (defaulting to `process.env`) threads
+ * the resolved credential view — built in `main` from injected env +
+ * file-configured keys — into `getApiKey` so the cache fingerprint
+ * follows the same credential that authorised the request. Source-
+ * compatible: existing no-argument callers keep fingerprinting against
+ * ambient `process.env`. The SHA-256 / filename algorithm is unchanged.
  */
-export function buildCacheKey(command: string, requestArgs: Record<string, unknown>): string {
-  const apiKey = getApiKey();
+export function buildCacheKey(
+  command: string,
+  requestArgs: Record<string, unknown>,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const apiKey = getApiKey(env);
   // Namespace by api key hash so different keys never collide
   const keyHash = crypto.createHash("sha256").update(apiKey).digest("hex").slice(0, 12);
   const payload = JSON.stringify({ command, args: requestArgs });

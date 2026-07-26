@@ -230,13 +230,17 @@ export interface UtcpClientPort {
 /**
  * Z.AI MCP client options. `utcpFactory` is the existing P0-02 injection
  * seam; `noCache` and `disableRetry` arrive in P2-03 so Adapters can
- * hand policy to shared execution.
+ * hand policy to shared execution. `env` (T2b) carries the resolved
+ * credential view from the descriptor's `create(context)` so the real
+ * `ZaiMcpClient` authorises with a file-configured key rather than
+ * ambient state; tests inject fakes that ignore this field.
  */
 export interface ZaiMcpClientOptions {
   readonly enableVision?: boolean;
   readonly noCache?: boolean;
   readonly disableRetry?: boolean;
   readonly utcpFactory?: () => Promise<UtcpClientPort>;
+  readonly env?: NodeJS.ProcessEnv;
 }
 
 /**

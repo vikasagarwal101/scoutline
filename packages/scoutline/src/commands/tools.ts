@@ -19,6 +19,12 @@ export interface ToolsOptions {
   full?: boolean;
   typescript?: boolean;
   enableVision?: boolean;
+  /**
+   * T2b — Credential view: resolved env (injected env + file keys)
+   * forwarded to the underlying client so a wizard-written key
+   * authorises transport without ambient state.
+   */
+  env?: NodeJS.ProcessEnv;
 }
 
 export async function listTools(
@@ -26,7 +32,7 @@ export async function listTools(
   context?: CommandContext,
 ): Promise<CommandResult> {
   if (options.typescript) {
-    const codeClient = new ZaiCodeModeClient();
+    const codeClient = new ZaiCodeModeClient({ env: options.env });
     try {
       const interfaces = await codeClient.getAllInterfaces();
       return { kind: "data", data: interfaces };
@@ -35,7 +41,7 @@ export async function listTools(
     }
   }
 
-  const client = new ZaiMcpClient({ enableVision: options.enableVision });
+  const client = new ZaiMcpClient({ enableVision: options.enableVision, env: options.env });
   try {
     const tools = await client.listTools();
     const filtered = options.filter
@@ -57,7 +63,7 @@ export async function showTool(
   options: ToolsOptions = {},
   context?: CommandContext,
 ): Promise<CommandResult> {
-  const client = new ZaiMcpClient({ enableVision: options.enableVision });
+  const client = new ZaiMcpClient({ enableVision: options.enableVision, env: options.env });
   try {
     const tool = await client.getTool(name);
     if (!tool) {
@@ -75,6 +81,8 @@ export interface CallToolOptions {
   stdin?: boolean;
   dryRun?: boolean;
   enableVision?: boolean;
+  /** @inheritDoc ToolsOptions.env */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -128,7 +136,7 @@ export async function callTool(
     throw error;
   }
 
-  const client = new ZaiMcpClient({ enableVision: options.enableVision });
+  const client = new ZaiMcpClient({ enableVision: options.enableVision, env: options.env });
   try {
     const resolved = await client.resolveToolName(toolName);
 

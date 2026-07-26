@@ -944,19 +944,29 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
       ]);
     },
     create(context: ProviderContext): ProviderAdapter {
+      // T2b — bind the resolved env (injected env + file keys) into every
+      // capability's client construction path. The capability closes over
+      // `clientFactory` and calls it with per-operation options; wrapping
+      // the factory here merges `env: context.env` into those options so
+      // the real `ZaiMcpClient` (constructed inside `defaultZaiClientFactory`)
+      // authorises with the resolved credential rather than ambient state.
+      // Injected test factories keep working: they receive `env` as an
+      // additive option they can ignore.
+      const envBoundClientFactory = (options: ZaiMcpClientOptions): ZaiAdapterClientPort =>
+        clientFactory({ ...options, env: context.env });
       const search = createZaiSearchCapability({
         env: context.env,
-        clientFactory,
+        clientFactory: envBoundClientFactory,
       });
       const vision = createZaiVisionCapability({
         env: context.env,
-        clientFactory,
+        clientFactory: envBoundClientFactory,
       });
       const quotaOptions: ZaiQuotaCapabilityOptions = { env: context.env, ...quotaTransport };
       const quota = createZaiQuotaCapability(quotaOptions);
       const diagnostics = createZaiDiagnosticsCapability({
         env: context.env,
-        clientFactory,
+        clientFactory: envBoundClientFactory,
       });
       // P6-04: wire the Repository Capability so tests and the future
       // Explorer layer (P6-05+) can reach the implementation through
@@ -968,7 +978,7 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
       // uses the documented 2000 ms default.
       const repository = createZaiRepositoryCapability({
         env: context.env,
-        clientFactory,
+        clientFactory: envBoundClientFactory,
         ...(dependencies?.repositoryCloseTimeoutMs !== undefined && {
           closeTimeoutMs: dependencies.repositoryCloseTimeoutMs,
         }),
@@ -984,7 +994,7 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
       // capability uses the documented 2000 ms default.
       const reader = createZaiReaderCapability({
         env: context.env,
-        clientFactory,
+        clientFactory: envBoundClientFactory,
         ...(dependencies?.readerCloseTimeoutMs !== undefined && {
           closeTimeoutMs: dependencies.readerCloseTimeoutMs,
         }),

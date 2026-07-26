@@ -60,6 +60,16 @@ export interface ModelUsageTotal {
  * the resolved credential view into `getApiKey` so file-configured keys
  * are visible. Source-compatible: existing no-argument callers keep
  * working against ambient `process.env`.
+ *
+ * T2b — coordinator decision (ticket t2b-credential-raw "Scope
+ * discrepancy"): these two back-compat exports are the SECOND documented
+ * intentional ambient compatibility exception (alongside the load-failure
+ * adapter in `node-command-invocation-adapter.ts`). GitNexus rates each
+ * delegate LOW with zero reported callers/processes, and the live Z.AI
+ * quota path uses `providers/zai/quota.ts` which passes an explicit key
+ * to the Provider-local monitor client. If a caller appears later it
+ * MUST pass env explicitly; for now the ambient default is retained so
+ * the public export signature stays source-compatible.
  */
 export async function getQuotaLimit(env: NodeJS.ProcessEnv = process.env): Promise<QuotaLimit> {
   const apiKey = getApiKey(env);

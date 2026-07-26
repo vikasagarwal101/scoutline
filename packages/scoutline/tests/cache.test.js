@@ -316,6 +316,39 @@ describe("cache key shape", () => {
     const b = buildCacheKey("reader.webReader", { q: "node" });
     assert.notStrictEqual(a, b);
   });
+
+  // T2b — Credential view: buildCacheKey accepts an explicit env so the
+  // fingerprint can follow the resolved credential (injected env + file
+  // keys) rather than ambient process.env. The shape and algorithm are
+  // unchanged; only the credential source varies.
+  it("explicit env fingerprints against the supplied key (T2b)", () => {
+    const a = buildCacheKey("search.webSearch", { q: "x" }, { Z_AI_API_KEY: "explicit-a" });
+    const b = buildCacheKey("search.webSearch", { q: "x" }, { Z_AI_API_KEY: "explicit-b" });
+    assert.notStrictEqual(a, b, "different explicit keys must fingerprint differently");
+    assert.match(a, /^search\.webSearch\.[0-9a-f]{12}\.[0-9a-f]{24}\.json$/);
+  });
+
+  it("explicit env is independent of ambient process.env (T2b)", () => {
+    // Same explicit env must produce the same fingerprint regardless
+    // of what ambient process.env currently holds.
+    const env = { Z_AI_API_KEY: "explicit-stable" };
+    const before = buildCacheKey("reader.webReader", { url: "https://e.com" }, env);
+    const prevAmbient = process.env.Z_AI_API_KEY;
+    process.env.Z_AI_API_KEY = "ambient-should-not-affect";
+    try {
+      const after = buildCacheKey("reader.webReader", { url: "https://e.com" }, env);
+      assert.strictEqual(before, after, "explicit env must dominate ambient");
+    } finally {
+      if (prevAmbient === undefined) delete process.env.Z_AI_API_KEY;
+      else process.env.Z_AI_API_KEY = prevAmbient;
+    }
+  });
+
+  it("explicit ZAI_API_KEY alias matches Z_AI_API_KEY with the same value (T2b)", () => {
+    const canonical = buildCacheKey("search.webSearch", { q: "x" }, { Z_AI_API_KEY: "shared" });
+    const alias = buildCacheKey("search.webSearch", { q: "x" }, { ZAI_API_KEY: "shared" });
+    assert.strictEqual(canonical, alias);
+  });
 });
 
 describe("readCache/writeCache behaviour", () => {

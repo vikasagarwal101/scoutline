@@ -50,11 +50,24 @@ lands, so adding `config.json` manually does not yet change command behavior.
 ## File-Configured API Keys
 
 A provider API key stored under `providers.<id>.apiKey` in `config.json`
-flows to every shared command (`search`, `read`, `crawl`, `map`,
-`research`, `repo`, `vision`, `doctor`, `quota`) through the real provider
-descriptor and handler boundary. This means a key configured solely in the
-file — with no corresponding environment variable — is sufficient to run any
-shared command.
+flows to every command — both the shared commands (`search`, `read`,
+`crawl`, `map`, `research`, `repo`, `vision`, `doctor`, `quota`) and the
+raw Z.AI command families (`tools`, `tool`, `call`, `code`) — through the
+real provider descriptor and handler boundary. This means a key
+configured solely in the file — with no corresponding environment
+variable — is sufficient to run any command, including the raw MCP tool
+discovery and Code Mode paths that previously read credentials from
+ambient `process.env`.
+
+The on-disk response cache also fingerprints against the resolved
+credential: a file-only Z.AI key produces a different cache namespace
+than an environment-variable key with a different value, so cache
+entries never collide across credentials. Existing cache entries
+written under an environment-variable key remain valid until they
+expire or are cleared; **migration of those entries to the new
+credential view is deferred** (see `docs/roadmap.md` "Cache-entry
+migration across credential sources"). Only the credential source
+changes; the SHA-256 / filename algorithm is unchanged.
 
 Precedence (highest first):
 
@@ -68,9 +81,11 @@ provider is not used. Whitespace-only values in either source are treated as
 absent.
 
 `process.env` is never mutated. The merged view is built fresh per
-invocation and threaded through the handler boundary. File keys are redacted
-at every outward boundary (output, errors, diagnostics, quota failures)
-exactly like environment-variable keys.
+invocation and threaded through the handler boundary — including into
+the raw Z.AI clients (`ZaiMcpClient`, `ZaiCodeModeClient`) and the cache
+key builder. File keys are redacted at every outward boundary (output,
+errors, diagnostics, quota failures, and cached metadata) exactly like
+environment-variable keys.
 
 Users without a `config.json` see byte-for-byte identical behavior to the
 previous release — the environment-variable path is unchanged.

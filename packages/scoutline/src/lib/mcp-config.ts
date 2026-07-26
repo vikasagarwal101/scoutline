@@ -42,19 +42,35 @@ function toEnvString(value: string | number | undefined): string | undefined {
 
 export interface McpTemplateOptions {
   enableVision?: boolean;
+  /**
+   * T2b — Credential view: the resolved environment built in `main`
+   * (injected env + file-configured keys). When omitted, ambient
+   * `process.env` is used, preserving the source-level contract for
+   * existing callers. The credential, mode, base URL, timeout, and
+   * every Vision-MCP operator knob are read from this view so a
+   * wizard-written key reaches the real registration template without
+   * touching `process.env`.
+   */
+  env?: NodeJS.ProcessEnv;
 }
 
 export function buildMcpCallTemplate(options: McpTemplateOptions = {}) {
-  const config = loadConfig();
-  const apiKey = getApiKey();
+  // T2b: every config/credential read consults the resolved env view
+  // (file keys + injected env) so a wizard-written key reaches the
+  // template's Authorization headers and Vision MCP env without ever
+  // mutating process.env. Defaults to process.env for source-level
+  // back-compat with existing no-argument callers.
+  const env = options.env ?? process.env;
+  const config = loadConfig(env);
+  const apiKey = getApiKey(env);
   const endpoints = getMcpEndpoints();
 
   const timeoutSeconds = Math.max(1, Math.ceil(config.timeout / 1000));
   const sseReadTimeoutSeconds = Math.max(1, Math.ceil(config.timeout / 1000));
 
-  const visionCommand = process.env.Z_AI_VISION_MCP_COMMAND || "npx";
-  const visionArgs = parseArgs(process.env.Z_AI_VISION_MCP_ARGS, ["-y", "@z_ai/mcp-server@latest"]);
-  const visionCwd = process.env.Z_AI_VISION_MCP_CWD || process.cwd();
+  const visionCommand = env.Z_AI_VISION_MCP_COMMAND || "npx";
+  const visionArgs = parseArgs(env.Z_AI_VISION_MCP_ARGS, ["-y", "@z_ai/mcp-server@latest"]);
+  const visionCwd = env.Z_AI_VISION_MCP_CWD || process.cwd();
 
   const mode = config.mode;
   const baseUrl = ensureTrailingSlash(config.baseUrl);
@@ -72,7 +88,7 @@ export function buildMcpCallTemplate(options: McpTemplateOptions = {}) {
     ["Z_AI_VISION_MODEL_TOP_P", toEnvString(config.topP)],
     ["Z_AI_VISION_MODEL_MAX_TOKENS", toEnvString(config.maxTokens)],
     ["Z_AI_TIMEOUT", toEnvString(config.timeout)],
-    ["Z_AI_RETRY_COUNT", toEnvString(process.env.Z_AI_RETRY_COUNT)],
+    ["Z_AI_RETRY_COUNT", toEnvString(env.Z_AI_RETRY_COUNT)],
   ];
 
   for (const [key, value] of envEntries) {
@@ -81,7 +97,7 @@ export function buildMcpCallTemplate(options: McpTemplateOptions = {}) {
     }
   }
 
-  const envVision = !["0", "false"].includes((process.env.Z_AI_VISION_MCP || "").toLowerCase());
+  const envVision = !["0", "false"].includes((env.Z_AI_VISION_MCP || "").toLowerCase());
   const enableVision = options.enableVision ?? envVision;
 
   const mcpServers: Record<string, unknown> = {

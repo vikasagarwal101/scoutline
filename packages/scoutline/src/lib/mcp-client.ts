@@ -74,6 +74,15 @@ export interface ZaiMcpClientOptions {
   noCache?: boolean;
   disableRetry?: boolean;
   utcpFactory?: () => Promise<UtcpClient>;
+  /**
+   * T2b — Credential view: the resolved env (injected env + file keys)
+   * captured at handler dispatch. When omitted, ambient `process.env`
+   * is used so existing direct constructors keep working. When supplied,
+   * the credential, mode, base URL, retry knobs, cache fingerprint, and
+   * configured-secret scrub set all derive from this view rather than
+   * `process.env`.
+   */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -107,7 +116,11 @@ export class ZaiMcpClient {
     try {
       const factory = this.options.utcpFactory || (() => UtcpClient.create());
       this.client = await factory();
-      const result = await this.client.registerManual(buildMcpCallTemplate(this.options));
+      // T2b: pass the captured env (if any) so the registration template
+      // authorises with the resolved credential rather than ambient state.
+      const result = await this.client.registerManual(
+        buildMcpCallTemplate({ enableVision: this.options.enableVision, env: this.options.env }),
+      );
 
       if (!result.success) {
         // Registration errors may carry raw Provider response bodies.
@@ -171,7 +184,7 @@ export class ZaiMcpClient {
     // and accept arbitrary image inputs.
     const cacheable = !this.options.noCache && !toolName.includes(".vision.");
     if (cacheable) {
-      const key = buildCacheKey(toolName, args);
+      const key = buildCacheKey(toolName, args, this.options.env);
       const hit = await readCache<T>(key);
       if (hit !== null) return hit;
       try {
@@ -182,7 +195,9 @@ export class ZaiMcpClient {
         // (cleartext-at-rest leak) and never propagate past the client
         // boundary. Mirrors `writeToolCache`'s `redactTool` scrub. A
         // no-op for normalised Capability data (no credential fields).
-        const safe = redactSecrets(result, configuredSecrets()) as T;
+        // T2b: scrub against the captured env's configured secrets so a
+        // file-only key is redacted identically to an ambient one.
+        const safe = redactSecrets(result, configuredSecrets(this.options.env)) as T;
         await writeCache(key, safe);
         return safe;
       } catch (err) {
@@ -302,7 +317,9 @@ export class ZaiMcpClient {
   }
 
   private resolveEnableVision(): boolean {
-    const envVision = !["0", "false"].includes((process.env.Z_AI_VISION_MCP || "").toLowerCase());
+    const envVision = !["0", "false"].includes(
+      (this.options.env?.Z_AI_VISION_MCP ?? process.env.Z_AI_VISION_MCP ?? "").toLowerCase(),
+    );
     return this.options.enableVision ?? envVision;
   }
 
@@ -312,9 +329,12 @@ export class ZaiMcpClient {
    * `tool-cache.ts` needs to compute a stable key). Owned here because
    * the inputs come from this class's options and the shared config
    * module; the extracted module stays pure of `loadConfig` / `getMcpEndpoints`.
+   *
+   * T2b: `loadConfig` consults the captured env so tool-cache identity
+   * follows the same invocation credential view as registration.
    */
   private getToolCacheConfig(): ToolCacheConfig {
-    const config = loadConfig();
+    const config = loadConfig(this.options.env);
     return {
       mode: config.mode,
       baseUrl: config.baseUrl,
@@ -449,14 +469,16 @@ export class ZaiMcpClient {
       const internal = await this.resolveToolName(publicToolName);
       return this.callToolUncached<T>(internal, args);
     }
-    const key = buildCacheKey(publicToolName, args);
+    const key = buildCacheKey(publicToolName, args, this.options.env);
     const hit = await readCache<T>(key);
     if (hit !== null) return hit;
     const internal = await this.resolveToolName(publicToolName);
     try {
       const result = await this.callToolUncached<T>(internal, args);
       // F2: scrub before persist + return (see callTool above).
-      const safe = redactSecrets(result, configuredSecrets()) as T;
+      // T2b: configuredSecrets against the captured env so a file-only
+      // key is the secret scrubbed against, not just ambient values.
+      const safe = redactSecrets(result, configuredSecrets(this.options.env)) as T;
       await writeCache(key, safe);
       return safe;
     } catch (err) {

@@ -15,6 +15,12 @@ import type { CommandContext, CommandResult } from "../command-invocation.js";
 export interface CodeRunOptions {
   timeout?: number;
   includeLogs?: boolean;
+  /**
+   * T2b — Credential view: resolved env (injected env + file keys)
+   * forwarded to the Code Mode client so a wizard-written key
+   * authorises transport without ambient state.
+   */
+  env?: NodeJS.ProcessEnv;
 }
 
 export async function runCodeFile(
@@ -24,7 +30,7 @@ export async function runCodeFile(
 ): Promise<CommandResult> {
   const code = await fs.readFile(filePath, "utf8");
 
-  const codeClient = new ZaiCodeModeClient();
+  const codeClient = new ZaiCodeModeClient({ env: options.env });
   try {
     const result = await codeClient.callToolChain(code, options.timeout);
     const data = options.includeLogs ? result : result.result;
@@ -39,7 +45,7 @@ export async function evalCode(
   options: CodeRunOptions = {},
   context?: CommandContext,
 ): Promise<CommandResult> {
-  const codeClient = new ZaiCodeModeClient();
+  const codeClient = new ZaiCodeModeClient({ env: options.env });
   try {
     const result = await codeClient.callToolChain(code, options.timeout);
     const data = options.includeLogs ? result : result.result;
@@ -50,9 +56,10 @@ export async function evalCode(
 }
 
 export async function printInterfaces(
+  options: { env?: NodeJS.ProcessEnv } = {},
   context?: CommandContext,
 ): Promise<CommandResult> {
-  const codeClient = new ZaiCodeModeClient();
+  const codeClient = new ZaiCodeModeClient({ env: options.env });
   try {
     const interfaces = await codeClient.getAllInterfaces();
     return { kind: "data", data: interfaces };

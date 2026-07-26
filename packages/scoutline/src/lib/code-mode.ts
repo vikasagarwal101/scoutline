@@ -18,6 +18,14 @@ const DEFAULT_TIMEOUT_MS = parseInt(process.env.Z_AI_TIMEOUT || "30000", 10);
  */
 export interface ZaiCodeModeClientOptions {
   clientFactory?: () => Promise<CodeModeUtcpClient>;
+  /**
+   * T2b — Credential view: resolved env (injected env + file keys).
+   * When omitted, ambient `process.env` is used so existing direct
+   * constructors keep working. When supplied, the registration
+   * template authorises with the resolved credential rather than
+   * ambient state.
+   */
+  env?: NodeJS.ProcessEnv;
 }
 
 export class ZaiCodeModeClient {
@@ -45,7 +53,11 @@ export class ZaiCodeModeClient {
     try {
       const factory = this.options.clientFactory || (() => CodeModeUtcpClient.create());
       this.client = await factory();
-      const result = await this.client.registerManual(buildMcpCallTemplate());
+      // T2b: thread the captured env so the registration template
+      // authorises with the resolved credential.
+      const result = await this.client.registerManual(
+        buildMcpCallTemplate({ env: this.options.env }),
+      );
       if (!result.success) {
         // Registration errors may carry raw Provider response bodies.
         // Never copy them into either the public error or process stderr.

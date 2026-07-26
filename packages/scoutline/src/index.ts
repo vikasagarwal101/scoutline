@@ -1279,6 +1279,7 @@ async function handleTools(
           full: flags.full === true,
           typescript: flags.typescript === true || flags.ts === true,
           enableVision: flags.vision !== false,
+          env: deps.env,
         },
         context,
       ),
@@ -1302,7 +1303,8 @@ async function handleTool(
 
   return invokeCommand(
     deps.invocation,
-    (context) => showTool(positional[0], { enableVision: flags.vision !== false }, context),
+    (context) =>
+      showTool(positional[0], { enableVision: flags.vision !== false, env: deps.env }, context),
     outputMode,
     deps.now,
     deps.secrets,
@@ -1332,6 +1334,7 @@ async function handleCall(
           stdin: flags.stdin === true,
           dryRun: flags["dry-run"] === true,
           enableVision: flags.vision !== false,
+          env: deps.env,
         },
         context,
       ),
@@ -1514,7 +1517,7 @@ async function handleCode(
       }
       return invokeCommand(
         deps.invocation,
-        (context) => runCodeFile(filePath, { timeout, includeLogs }, context),
+        (context) => runCodeFile(filePath, { timeout, includeLogs, env: deps.env }, context),
         outputMode,
         deps.now,
         deps.secrets,
@@ -1527,7 +1530,7 @@ async function handleCode(
       }
       return invokeCommand(
         deps.invocation,
-        (context) => evalCode(code, { timeout, includeLogs }, context),
+        (context) => evalCode(code, { timeout, includeLogs, env: deps.env }, context),
         outputMode,
         deps.now,
         deps.secrets,
@@ -1536,7 +1539,7 @@ async function handleCode(
     case "interfaces":
       return invokeCommand(
         deps.invocation,
-        (context) => printInterfaces(context),
+        (context) => printInterfaces({ env: deps.env }, context),
         outputMode,
         deps.now,
         deps.secrets,

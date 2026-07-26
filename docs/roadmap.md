@@ -217,6 +217,19 @@ Acceptance: tests validate event ordering, valid JSONL framing, cancellation cle
 
 ## Deliberately Out of Scope
 
+- **Cache-entry migration across credential sources (Fork-C).** When a
+  user moves a credential between an environment variable and
+  `config.json` (or changes its value), the response-cache fingerprint
+  changes, so entries written under the old credential stop hitting on
+  the new one. Scoutline does **not** migrate, rewrite, or invalidate
+  those entries — they expire naturally (default 24h TTL) or are
+  cleared manually via `scoutline cache clear`. The credential source
+  change is otherwise transparent: the algorithm, filename shape, and
+  LRU eviction are unchanged, and a cache miss simply re-fetches and
+  writes a fresh entry under the new fingerprint. Reusing entries
+  written under a previous credential is on the roadmap; until then,
+  `scoutline cache clear` after a credential change is the documented
+  recovery path.
 - Cache replay commands (`cache stats` and `cache clear` shipped in P8;
   replay remains out of scope).
 - Serving the CLI itself as an MCP server.

@@ -28,11 +28,40 @@ All notable changes to this project will be documented in this file.
 - **Credential-free commands now short-circuit before config load.**
   `--help`, `--version`, and `cache` (stats/clear) never read
   `config.json`, so a corrupt or unreadable file cannot block them.
+- **File-configured API keys now flow to the raw Z.AI commands and the
+  cache fingerprint.** A key stored under `providers.zai.apiKey` in
+  `~/.scoutline/config.json` now reaches `scoutline tools`, `tool`,
+  `call`, and `code` through the real `ZaiMcpClient` / `ZaiCodeModeClient`
+  boundary, and the on-disk response cache fingerprints against the
+  resolved credential rather than ambient `process.env`. Combined with
+  the shared-command coverage from the previous entry, a file-only key
+  is now sufficient to run **every** command. The normal dispatch path
+  no longer reads ambient `process.env` credentials; the load-failure
+  adapter (`node-command-invocation-adapter.ts`) and the back-compat
+  `lib/monitor-client.ts` quota delegates remain the two documented
+  intentional ambient exceptions (the monitor delegates have zero
+  in-tree callers; the live Z.AI quota path uses
+  `providers/zai/quota.ts`, which passes an explicit key). The
+  `ZaiMcpClientOptions` / `ZaiCodeModeClientOptions` / `McpTemplateOptions`
+  / `ToolsOptions` / `CallToolOptions` / `CodeRunOptions` option bags
+  gain an optional `env` field — additive, source-compatible, and
+  ignored by injected test fakes. `buildCacheKey` accepts an optional
+  third `env` argument with the same default. The SHA-256 / filename
+  cache key algorithm is unchanged; migration of existing cache entries
+  across credential sources is deferred (see `docs/roadmap.md`).
 
 ### Changed
 - `loadConfig` and `getApiKey` in `lib/config.ts` now accept an explicit
   `env` parameter (defaulting to `process.env`). The signature is additive;
   existing no-argument callers keep working unchanged.
+- `buildMcpCallTemplate`, `buildCacheKey`, `ZaiMcpClient`,
+  `ZaiCodeModeClient`, and the Z.AI Provider descriptor's default client
+  factory now consult a captured credential view (resolved env) instead
+  of ambient `process.env`. Each gains an optional `env` parameter /
+  option-bag field that defaults to `process.env`, so existing direct
+  constructors and injected test fakes keep working unchanged. The
+  descriptor's `create(context)` wraps the client factory to merge
+  `context.env` into every capability's client construction call.
 
 ## [0.11.0] - 2026-07-26
 

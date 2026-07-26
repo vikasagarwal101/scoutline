@@ -47,6 +47,49 @@ This release adds the storage substrate only. Existing commands still read
 credentials from environment variables until the install/onboarding consumer
 lands, so adding `config.json` manually does not yet change command behavior.
 
+## File-Configured API Keys
+
+A provider API key stored under `providers.<id>.apiKey` in `config.json`
+flows to every shared command (`search`, `read`, `crawl`, `map`,
+`research`, `repo`, `vision`, `doctor`, `quota`) through the real provider
+descriptor and handler boundary. This means a key configured solely in the
+file — with no corresponding environment variable — is sufficient to run any
+shared command.
+
+Precedence (highest first):
+
+1. **`Z_AI_API_KEY`** (or the matching canonical env var for the provider)
+2. **`ZAI_API_KEY`** (alias; accepted but lower priority than the canonical name)
+3. **File key** (`providers.<id>.apiKey` in `config.json`)
+
+Environment variables always override file keys. If a provider is already
+configured through the environment (primary or alias), the file key for that
+provider is not used. Whitespace-only values in either source are treated as
+absent.
+
+`process.env` is never mutated. The merged view is built fresh per
+invocation and threaded through the handler boundary. File keys are redacted
+at every outward boundary (output, errors, diagnostics, quota failures)
+exactly like environment-variable keys.
+
+Users without a `config.json` see byte-for-byte identical behavior to the
+previous release — the environment-variable path is unchanged.
+
+## Fallback Preference
+
+The `fallbackEnabled` field in `config.json` controls provider fallback at
+runtime. Provider fallback is resolved as:
+
+1. **Invocation opt-out**: `--no-fallback` flag or `SCOUTLINE_NO_FALLBACK=1`
+   environment variable — either disables the cross-provider candidate loop.
+2. **`config.fallbackEnabled`**: the value from `config.json` (set by the
+   onboarding wizard or hand-edited). `false` narrows the executor to the
+   effective provider only.
+3. **Default `true`**: the 0.11.0 always-on contract.
+
+This makes the wizard's onboarding answer effective at runtime. An absent
+`fallbackEnabled` field defaults to `true`.
+
 ## Provider Selection
 
 Shared commands (`search`, `vision`, `quota`, `doctor`), **`repo`**,

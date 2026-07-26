@@ -36,8 +36,17 @@ const MISSING_KEY_HELP = [
   "  https://z.ai/manage-apikey/apikey-list",
 ].join("\n");
 
-export function loadConfig(): ZaiConfig {
-  const apiKey = process.env.Z_AI_API_KEY || process.env.ZAI_API_KEY;
+//
+// T2a — Credential view: `loadConfig` and `getApiKey` accept an explicit
+// `env` parameter (defaulting to `process.env`) so the resolved
+// environment built in `main` — which merges file-configured keys on top
+// of the injected `MainDependencies.env` — reaches every Z.AI credential
+// reader. The signature is additive: existing no-argument callers keep
+// working unchanged against ambient `process.env`.
+//
+
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZaiConfig {
+  const apiKey = env.Z_AI_API_KEY || env.ZAI_API_KEY;
 
   if (!apiKey) {
     // P1-09: throw a normalized ConfigurationError (exit 3) instead of
@@ -47,20 +56,18 @@ export function loadConfig(): ZaiConfig {
     throw new ConfigurationError("Z_AI_API_KEY environment variable is required", MISSING_KEY_HELP);
   }
 
-  const mode = (process.env.Z_AI_MODE || process.env.PLATFORM_MODE || "ZAI").toUpperCase() as
-    | "ZAI"
-    | "ZHIPU";
-  const baseUrl = process.env.Z_AI_BASE_URL || BASE_URLS[mode] || BASE_URLS.ZAI;
+  const mode = (env.Z_AI_MODE || env.PLATFORM_MODE || "ZAI").toUpperCase() as "ZAI" | "ZHIPU";
+  const baseUrl = env.Z_AI_BASE_URL || BASE_URLS[mode] || BASE_URLS.ZAI;
 
   return {
     apiKey,
     mode,
     baseUrl,
-    timeout: parseInt(process.env.Z_AI_TIMEOUT || "30000", 10),
-    visionModel: process.env.Z_AI_VISION_MODEL || "glm-4.6v",
-    temperature: parseFloat(process.env.Z_AI_TEMPERATURE || "0.8"),
-    topP: parseFloat(process.env.Z_AI_TOP_P || "0.6"),
-    maxTokens: parseInt(process.env.Z_AI_MAX_TOKENS || "32768", 10),
+    timeout: parseInt(env.Z_AI_TIMEOUT || "30000", 10),
+    visionModel: env.Z_AI_VISION_MODEL || "glm-4.6v",
+    temperature: parseFloat(env.Z_AI_TEMPERATURE || "0.8"),
+    topP: parseFloat(env.Z_AI_TOP_P || "0.6"),
+    maxTokens: parseInt(env.Z_AI_MAX_TOKENS || "32768", 10),
   };
 }
 
@@ -68,8 +75,8 @@ export function getMcpEndpoints() {
   return MCP_ENDPOINTS;
 }
 
-export function getApiKey(): string {
-  const apiKey = process.env.Z_AI_API_KEY || process.env.ZAI_API_KEY;
+export function getApiKey(env: NodeJS.ProcessEnv = process.env): string {
+  const apiKey = env.Z_AI_API_KEY || env.ZAI_API_KEY;
   if (!apiKey) {
     // P1-09: throw instead of process.exit(3); see loadConfig for rationale.
     throw new ConfigurationError(

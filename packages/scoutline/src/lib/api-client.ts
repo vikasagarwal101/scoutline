@@ -149,8 +149,12 @@ async function withRetry<T>(
 export class ZaiApiClient {
   private config: ZaiConfig;
 
-  constructor(config?: ZaiConfig) {
-    this.config = config || loadConfig();
+  // T2a: the no-config constructor now threads an explicit `env` (defaulting
+  // to `process.env`) into `loadConfig` instead of leaving a hidden ambient
+  // caller. The signature is a strict superset — existing `new ZaiApiClient()`
+  // and `new ZaiApiClient(config)` callers keep working unchanged.
+  constructor(config?: ZaiConfig, env: NodeJS.ProcessEnv = process.env) {
+    this.config = config || loadConfig(env);
   }
 
   private async request<T>(endpoint: string, body: unknown): Promise<T> {

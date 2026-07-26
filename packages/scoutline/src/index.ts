@@ -41,6 +41,7 @@ import {
 import { invokeCommand, type CommandInvocationAdapter } from "./command-invocation.js";
 import { defaultResponseCache, type ResponseCache } from "./lib/cache.js";
 import { configuredSecrets } from "./lib/redact.js";
+import { readConfig, resolveEnvFromConfig, type ScoutlineConfig } from "./lib/config-store.js";
 import { resolveProviderId } from "./providers/selection.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "./providers/registry.js";
 import type { ProviderDescriptor, ProviderId } from "./providers/types.js";
@@ -648,9 +649,7 @@ async function handleSearch(
     location: flags.location as "cn" | "us",
     topic,
     type,
-    maxSummary: flags["max-summary"]
-      ? parseInt(flags["max-summary"] as string, 10)
-      : undefined,
+    maxSummary: flags["max-summary"] ? parseInt(flags["max-summary"] as string, 10) : undefined,
     fields: fields && fields.length > 0 ? fields : undefined,
     noCache: flags["no-cache"] === true,
     merge: flags.merge === true,
@@ -876,7 +875,10 @@ async function handleCrawl(
               noCache: flags["no-cache"] === true,
               maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
             },
-            { capability: adapter.crawl as Parameters<typeof crawl>[2]["capability"], execution: executionDeps },
+            {
+              capability: adapter.crawl as Parameters<typeof crawl>[2]["capability"],
+              execution: executionDeps,
+            },
             context,
           );
         },
@@ -956,7 +958,10 @@ async function handleMap(
               instructions: flags.instructions as string | undefined,
               noCache: flags["no-cache"] === true,
             },
-            { capability: adapter.map as Parameters<typeof map>[2]["capability"], execution: executionDeps },
+            {
+              capability: adapter.map as Parameters<typeof map>[2]["capability"],
+              execution: executionDeps,
+            },
             context,
           );
         },
@@ -1563,6 +1568,20 @@ export interface MainDependencies {
    */
   readonly providerDescriptors?: readonly ProviderDescriptor[];
   /**
+   * Injectable config-file reader (T2a — Plan A). Production defaults to
+   * `readConfig` from `lib/config-store.js`, which reads the versioned
+   * `~/.scoutline/config.json`. Tests inject an in-memory double so
+   * `main()` stays hermetic — no real config-root I/O — and can drive
+   * file-only credential flows without touching disk.
+   *
+   * The reader returns the parsed {@link ScoutlineConfig}; `main` uses it
+   * to build `resolvedEnv` (file keys layered under the injected env) and
+   * to resolve `fallbackEnabled`. A returned config with no `providers`
+   * and no `fallbackEnabled` is a no-op: the env path is byte-for-byte
+   * unchanged from the pre-T2a behavior.
+   */
+  readonly loadScoutlineConfig?: () => Promise<ScoutlineConfig>;
+  /**
    * Injectable shared-Search execution dependencies. Production defaults
    * to the on-disk cache and real sleep/random; tests inject in-memory
    * doubles for deterministic, offline behaviour.
@@ -1684,22 +1703,14 @@ export async function main(
   // Resolve configured Provider credentials from the INJECTED env (B3) so
   // redaction follows the same environment the handlers see — a secret
   // that exists only in MainDependencies.env is still redacted from output.
-  const secrets = configuredSecrets(env);
+  // T2a: this env-only view is used by credential-free commands that
+  // short-circuit before config load; the full resolvedEnv (env + file keys)
+  // is computed below for credentialed paths.
+  const envSecrets = configuredSecrets(env);
 
-  const { outputFormat, forcePretty, forceRaw, provider, noFallback, rest } = extractGlobalOptions([...args]);
-
-  // Provider-fallback kill-switch. The flag and the env are both
-  // opt-outs; either is sufficient to disable the cross-Provider
-  // candidate loop. The flag wins when both are present (the user
-  // is being explicit). `SCOUTLINE_NO_FALLBACK` is read from the
-  // injected `env` (B3) so redaction and executor preflight see
-  // the same environment the user actually configured. Truthy
-  // values include any non-empty string, so `SCOUTLINE_NO_FALLBACK=1`
-  // and `SCOUTLINE_NO_FALLBACK=true` both opt out; an empty string
-  // is the conventional "unset" form.
-  const envDisablesFallback =
-    typeof env.SCOUTLINE_NO_FALLBACK === "string" && env.SCOUTLINE_NO_FALLBACK.length > 0;
-  const fallbackEnabled = !(noFallback || envDisablesFallback);
+  const { outputFormat, forcePretty, forceRaw, provider, noFallback, rest } = extractGlobalOptions([
+    ...args,
+  ]);
 
   // Fixup C — B10: resolve the output mode BEFORE the dispatch try/catch.
   // An invalid explicit mode still surfaces as a typed ValidationError,
@@ -1719,10 +1730,13 @@ export async function main(
   } catch (error) {
     // The explicit mode is invalid — fall back to a deterministic
     // compact form so we can still surface a structured error envelope.
-    invocation.writeStderr(formatErrorOutput(error, "data", secrets));
+    invocation.writeStderr(formatErrorOutput(error, "data", envSecrets));
     return getErrorExitCode(error);
   }
 
+  // Credential-free commands: --help / --version short-circuit before any
+  // config-file load so a corrupt or unreadable config.json never blocks
+  // them (T2a — command classification).
   if (rest.length === 0 || rest[0] === "--help" || rest[0] === "-h") {
     invocation.writeStdout(MAIN_HELP);
     return 0;
@@ -1736,14 +1750,21 @@ export async function main(
   const command = rest[0];
   const commandArgs = rest.slice(1);
 
-  const handlerDeps: HandlerDependencies = {
+  // Build HandlerDependencies for a given credential view. The
+  // cache/sleep/random fields are always available (resolved above); only
+  // env/secrets/fallbackEnabled depend on whether config has been loaded.
+  const buildHandlerDeps = (
+    credEnv: NodeJS.ProcessEnv,
+    credSecrets: string[],
+    credFallback: boolean,
+  ): HandlerDependencies => ({
     invocation,
-    env,
-    secrets,
+    env: credEnv,
+    secrets: credSecrets,
     now,
     provider,
     providerDescriptors,
-    fallbackEnabled,
+    fallbackEnabled: credFallback,
     searchCache,
     searchSleep,
     searchRandom,
@@ -1763,7 +1784,56 @@ export async function main(
     researchSleep,
     researchRandom,
     researchRegisterInterrupt: dependencies.researchRegisterInterrupt,
-  };
+  });
+
+  // Cache is credential-free (no Provider resolution, no descriptor lookup,
+  // no transport). Short-circuit before config load so a corrupt
+  // config.json never blocks cache inspection or clearing. Env-only
+  // secrets suffice: the stats/clear output carries no credentials.
+  if (command === "cache") {
+    try {
+      return await handleCache(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
+  // Credentialed path: load the config file (T2a — Plan A). The injected
+  // reader defaults to readConfig (real ~/.scoutline/config.json); tests
+  // inject an in-memory double for hermeticity.
+  const loadScoutlineConfig = dependencies.loadScoutlineConfig ?? readConfig;
+  let config: ScoutlineConfig;
+  try {
+    config = await loadScoutlineConfig();
+  } catch (error) {
+    // A corrupt/unreadable config.json blocks credentialed commands but
+    // never the credential-free commands above (help/version/cache).
+    invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+    return getErrorExitCode(error);
+  }
+
+  // Build resolvedEnv: the injected env with file-configured API keys
+  // layered in for any Provider NOT already configured via env (env
+  // overrides file; alias precedence preserved). process.env is never
+  // mutated — the returned object is a fresh shallow copy owned by this
+  // invocation.
+  const resolvedEnv = resolveEnvFromConfig(env, config, providerDescriptors);
+  const secrets = configuredSecrets(resolvedEnv);
+
+  // Provider-fallback resolution (T2a — review blocker 5). Precedence:
+  //   1. Invocation opt-out (`--no-fallback` flag or `SCOUTLINE_NO_FALLBACK`
+  //      env non-empty) — either disables the cross-Provider candidate
+  //      loop, matching the 0.11.0 kill-switch contract.
+  //   2. `config.fallbackEnabled` — the wizard's Step-5 preference, so the
+  //      onboarding answer is no longer write-only.
+  //   3. Default `true` (the 0.11.0 always-on contract).
+  const envDisablesFallback =
+    typeof env.SCOUTLINE_NO_FALLBACK === "string" && env.SCOUTLINE_NO_FALLBACK.length > 0;
+  const fallbackEnabled =
+    noFallback || envDisablesFallback ? false : (config.fallbackEnabled ?? true);
+
+  const handlerDeps = buildHandlerDeps(resolvedEnv, secrets, fallbackEnabled);
 
   try {
     switch (command) {
@@ -1789,8 +1859,6 @@ export async function main(
         return await handleCall(commandArgs, outputMode, handlerDeps);
       case "doctor":
         return await handleDoctor(commandArgs, outputMode, handlerDeps);
-      case "cache":
-        return await handleCache(commandArgs, outputMode, handlerDeps);
       case "quota":
         return await handleQuota(commandArgs, outputMode, handlerDeps);
       case "code":

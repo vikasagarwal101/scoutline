@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-27
+
 ### Added
 - Added the versioned `~/.scoutline/config.json` storage substrate for the
   upcoming install/onboarding flow: a dedicated `SCOUTLINE_CONFIG_DIR` root,

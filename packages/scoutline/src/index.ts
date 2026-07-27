@@ -54,6 +54,7 @@ import {
   refreshQuotaSnapshots,
   type QuotaStore,
 } from "./lib/quota-store.js";
+import { createQuotaStoreConsumptionSink, type ConsumptionSink } from "./lib/consumption.js";
 import {
   classifyCredentialState,
   formatEnvOnlyHint,
@@ -360,6 +361,15 @@ interface HandlerDependencies {
    * promotion.
    */
   readonly verificationPromoter?: VerificationPromotionStore;
+  /**
+   * Optional consumption sink (PB-T2 — Plan B). Production wires the
+   * configured `consume` from `MainDependencies` (a quota-store-backed
+   * sink); tests inject an in-memory double so event-sequence
+   * assertions stay hermetic. When absent, no consumption events are
+   * emitted and shared execution is byte-for-byte identical to
+   * pre-PB-T2.
+   */
+  readonly consume?: ConsumptionSink;
 }
 
 async function handleVision(
@@ -443,6 +453,15 @@ async function handleVision(
           const visionDeps: VisionExecutionDependencies = {
             capability: visionCapability,
             ...visionDepsShape,
+            // PB-T2: thread the actual attempted descriptor ID + sink
+            // through so vision emits one consumption event per
+            // billable invoke attempt at the execution seam. The
+            // descriptor ID is the *attempted* provider (not the
+            // registry-derived effective provider) so fallback attempts
+            // record the actual descriptor that invoked transport.
+            ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+            ...(deps.consume !== undefined ? { provider: descriptor.id } : {}),
+            ...(deps.now !== undefined ? { now: deps.now } : {}),
           };
           switch (command) {
             case "analyze":
@@ -1756,6 +1775,29 @@ export interface MainDependencies {
    * immediate `process.exit`.
    */
   readonly quotaStore?: QuotaStore;
+  /**
+   * Optional injectable consumption sink (PB-T2 — Plan B). Production
+   * defaults to `createQuotaStoreConsumptionSink({ store: quotaStore })`
+   * (writes through PB-T1's store, advancing `locallyUpdatedAt` and
+   * adjusting the matching category's count set); tests inject an
+   * in-memory double so event-sequence assertions stay hermetic.
+   *
+   * The sink records ONE event per billable `invoke()` attempt at the
+   * execution seam (`lib/execution.ts`), so cache hits emit nothing,
+   * retries emit one event per attempt, and observational handlers
+   * (`quota`/`doctor`) emit nothing. Variable/unknown-cost capabilities
+   * (Research, Vision, Crawl) persist an explicit `unknown` amount
+   * rather than a fake-precise number.
+   *
+   * Hermeticity gate: the PRODUCTION sink is constructed only in full
+   * production mode (no injected `loadScoutlineConfig` AND no injected
+   * `providerDescriptors`). Either injection signals a test that owns
+   * its own descriptor/config construction; the production sink would
+   * otherwise reach the user's real `~/.scoutline/state.json` during
+   * such a test. Dedicated consumption tests inject this field directly
+   * with `createInMemoryConsumptionSink()`.
+   */
+  readonly consume?: ConsumptionSink;
 }
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1853,6 +1895,34 @@ export async function main(
   const command = rest[0];
   const commandArgs = rest.slice(1);
 
+  // PB-T1/PB-T2 — Quota snapshot store + consumption sink.
+  //
+  // Constructed once here so `buildHandlerDeps` can close over
+  // `consume` and thread it through every handler. The hermeticity
+  // gate (`quotaRefreshEnabled`, mirroring trigger-detection): the
+  // PRODUCTION sink is built ONLY in full production mode (no
+  // injected `loadScoutlineConfig` AND no injected `providerDescriptors`).
+  // Either injection signals a test that owns its own descriptor/config
+  // construction; without this gate, the production sink would silently
+  // reach the user's real `~/.scoutline/state.json` during a test run
+  // that did not inject `quotaStore` either. Tests that need to assert
+  // on consumption inject `MainDependencies.consume` directly.
+  //
+  // The sink is the *where* of consumption recording; shared execution
+  // (`lib/execution.ts`) is the *when* (one event per billable invoke
+  // attempt, after the cache-miss check, around each `invoke()` call).
+  // Shared execution awaits `record()` per invoke attempt, so the write
+  // is on the critical path before the result returns outward —
+  // surviving the bin's immediate `process.exit(status)`.
+  const quotaRefreshEnabled =
+    !dependencies.loadScoutlineConfig && !dependencies.providerDescriptors;
+  const quotaStore = dependencies.quotaStore ?? createDefaultQuotaStore();
+  const consume: ConsumptionSink | undefined =
+    dependencies.consume ??
+    (quotaRefreshEnabled
+      ? createQuotaStoreConsumptionSink({ store: quotaStore, now: now ?? Date.now })
+      : undefined);
+
   // Build HandlerDependencies for a given credential view. The
   // cache/sleep/random fields are always available (resolved above); only
   // env/secrets/fallbackEnabled depend on whether config has been loaded.
@@ -1897,6 +1967,11 @@ export async function main(
     verificationPromoter:
       dependencies.verificationPromoter ??
       (dependencies.loadScoutlineConfig ? undefined : createDefaultVerificationPromoter()),
+    // PB-T2: thread the production consumption sink through. `consume`
+    // is constructed once in `main` (below) and shared by every
+    // handler; tests inject their own through `MainDependencies.consume`.
+    // When undefined (test path that didn't opt in), no events fire.
+    consume,
   });
 
   // Cache is credential-free (no Provider resolution, no descriptor lookup,
@@ -2092,9 +2167,10 @@ export async function main(
   // invocation. Dedicated refresh lifecycle tests run via subprocess
   // (the real binary) or through `refreshQuotaSnapshots` directly.
   // This mirrors the trigger-detection gate (T3b).
-  const quotaRefreshEnabled =
-    !dependencies.loadScoutlineConfig && !dependencies.providerDescriptors;
-  const quotaStore = dependencies.quotaStore ?? createDefaultQuotaStore();
+  //
+  // (`quotaRefreshEnabled`, `quotaStore`, and `consume` are declared
+  // earlier alongside `buildHandlerDeps` so the sink closes over a
+  // defined binding — see PB-T2 above.)
   const isQuotaObservationalCommand = command === "quota" || command === "doctor";
   const refreshOnError = (providerId: string, error: unknown): void => {
     const message = error instanceof Error ? error.message : String(error);

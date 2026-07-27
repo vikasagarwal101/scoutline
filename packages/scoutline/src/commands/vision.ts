@@ -19,6 +19,8 @@ import type { CommandContext, CommandResult } from "../command-invocation.js";
 import type { VisionCapability, VisionRequest, VisionOperation } from "../capabilities/vision.js";
 import { executeProviderOperation } from "../lib/execution.js";
 import { ValidationError } from "../lib/errors.js";
+import type { ConsumptionSink } from "../lib/consumption.js";
+import { defaultAmountForCapability } from "../lib/consumption.js";
 import {
   isMiniMaxVisionOperationSupported,
   SPECIALIZED_VISION_OPERATION_SET,
@@ -123,11 +125,20 @@ export const VISION_HELP = buildVisionHelp();
  * Provider's `VisionCapability`; `sleep`/`random` drive retry backoff
  * deterministically under test. Vision bypasses the response cache, so
  * no cache dependency is threaded here.
+ *
+ * PB-T2: `provider` + `consume` enable consumption emission at the
+ * execution seam. `provider` is the actual attempted descriptor ID
+ * (NOT the registry-derived effective provider); `consume` is the
+ * optional sink. When `consume` is absent, no event is emitted — the
+ * pre-PB-T2 byte-for-byte behavior.
  */
 export interface VisionExecutionDependencies {
   readonly capability: VisionCapability;
   readonly sleep: (ms: number) => Promise<void>;
   readonly random: () => number;
+  readonly provider?: import("../providers/types.js").ProviderId;
+  readonly consume?: ConsumptionSink;
+  readonly now?: () => number;
 }
 
 /**
@@ -135,12 +146,41 @@ export interface VisionExecutionDependencies {
  * retries (DESIGN.md §10); the default policy is applied by
  * `executeProviderOperation`. No cache lookup. Provider fallback is
  * owned by the executor (executeWithFallback), not by this function.
+ *
+ * PB-T2: when `deps.consume` AND `deps.provider` are both present, one
+ * consumption event is emitted per `invoke()` attempt at the execution
+ * seam. Vision bills variable tokens (most adapters don't return
+ * per-call usage), so the default amount is `unknown` — never a
+ * fake-precise number.
  */
 function runVision(request: VisionRequest, deps: VisionExecutionDependencies): Promise<string> {
-  return executeProviderOperation("vision", () => deps.capability.invoke(request), {
-    sleep: deps.sleep,
-    random: deps.random,
-  });
+  const operation = request.operation;
+  // Canonical capability id matches descriptor metadata
+  // (`vision.interpret-image`, `vision.chart`, etc.).
+  const capabilityId =
+    operation === "interpret-image" ? "vision.interpret-image" : `vision.${String(operation)}`;
+  const consumption =
+    deps.consume && deps.provider
+      ? {
+          provider: deps.provider,
+          capabilityId,
+          category: "vision",
+          unit: "tokens" as const,
+          amount: defaultAmountForCapability("vision"),
+        }
+      : undefined;
+  return executeProviderOperation(
+    "vision",
+    () => deps.capability.invoke(request),
+    {
+      sleep: deps.sleep,
+      random: deps.random,
+      ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+      ...(deps.now !== undefined ? { now: deps.now } : {}),
+    },
+    undefined,
+    consumption,
+  );
 }
 
 export async function analyze(

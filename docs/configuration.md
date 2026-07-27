@@ -559,6 +559,110 @@ scoutline --provider minimax read https://example.com    # auto-reroutes; stderr
 scoutline --no-fallback --provider minimax read https://example.com
 ```
 
+## Quota Capability Mapping
+
+The upcoming quota-aware provider selection (Plan B) ranks providers by
+**remaining quota** for the capability being invoked. Because each
+provider normalizes its native quota payload into its own named
+categories, scoutline derives the selection score from an explicit
+static mapping: `(provider, capability) → quota category`. The mapping
+is table-driven (no `if (provider === ...)` branches through selection)
+and lives in `packages/scoutline/src/lib/quota-mapping.ts`. The same
+table drives selection (PB-T4) and dashboard display (PB-T5).
+
+### Authority tiers
+
+Authority and score are kept on separate axes. A provider is either:
+
+- **Mapped** — exposes real credit/token signals. Its categories map to
+  capabilities via the table, and the matched category's
+  `remainingPercent` (already normalized 0..100 by `buildQuotaWindow`)
+  is the selection score.
+- **Always-unknown** — has no authoritative spend signal. Always
+  reported as `authority:"unknown"` regardless of whether a snapshot
+  exists. Eligible as fallback, but never wins over a mapped provider,
+  even one at 5% remaining. (Encoding unknown as a numeric `50` would
+  let it win over a low-scored known provider, contradicting "never
+  fullest"; the explicit tier is the fix.)
+
+| Provider | Tier | Reason |
+| --- | --- | --- |
+| `zai`, `minimax`, `tavily`, `firecrawl` | mapped | Real credit/token signal. |
+| `brave` | always-unknown | Reports a rate-limit window, not spend or credits. Brave uses metered billing; the numeric window is displayed for telemetry but is not a budget signal. |
+| `exa` | always-unknown | Advertises no `quota` capability; nothing to map. |
+
+### Capability → category table
+
+| Provider | Capability | Mapped category | Provider-level fallback |
+| --- | --- | --- | --- |
+| `zai` | `search`, `reader`, `repository-exploration` | `requests` | — |
+| `zai` | every `vision.*` operation | `tokens` | — |
+| `minimax` | `search` | MiniMax model alias (default: `zorla-x`, `MiniMax-Text-01`, `coding-plan`, `general`) | — |
+| `minimax` | every attested `vision.*` operation | MiniMax VLM alias (default: `abab6.5-vl`, `MiniMax-VL-01`, `abab6.5s-chat`, `vlm`) | — |
+| `tavily` | `search` | `search` | `requests` |
+| `tavily` | `reader` | `extract` | `requests` |
+| `tavily` | `crawl`, `map`, `research` | same-named endpoint category | `requests` |
+| `firecrawl` | `search`, `reader`, `crawl`, `map` | `Credits` | — |
+
+`quota` and `diagnostics` are observational on every provider and are
+intentionally absent — they are not selection candidates. Aliases are
+matched **case-sensitively** against the live normalizer's emission
+(Tavily emits lowercase endpoint names; Firecrawl emits a
+case-sensitive `Credits`); a case change is treated as drift and
+surfaces through the fail-open path.
+
+### MiniMax model aliases
+
+MiniMax's `/remains` normalizer emits one category per live
+`model_name` string, and `model_name` values are arbitrary (the live
+schema does NOT emit a stable `general` label — the existing fixtures
+include `zorla-x` and `abab6.5s-chat`). The default alias list above is
+the documented mapping policy: the first alias that matches a live
+category wins. If none match (the live API renames the model), the
+score degrades to unknown + a `CATEGORY_NOT_FOUND` warning — never a
+throw, never a synthesized score.
+
+PB-T4 / tests can override the alias list via the
+`minimaxModelAliases` option on `scoreCapability` /
+`rankProvidersForCapability` when a deployment uses a different model
+name.
+
+### Fail-open paths
+
+The scorer is total: every failure returns an `authority:"unknown"`
+result with a machine-readable `reason`, and the caller never observes
+a throw. Each path emits a structured warning through the injected
+`onWarning` callback (the pure module never writes to stderr directly;
+production wires a stderr writer, tests inject a recorder):
+
+| Reason / warning code | Trigger |
+| --- | --- |
+| `PROVIDER_NON_AUTHORITATIVE` | Brave/Exa — by policy, regardless of snapshot. |
+| `MAPPING_MISSING` | `(provider, capability)` has no row in the table (e.g. `quota`, `diagnostics`). |
+| `SNAPSHOT_MISSING` | Provider has no snapshot in `~/.scoutline/state.json`. |
+| `SNAPSHOT_EMPTY` | Snapshot exists but its `categories` array is empty. |
+| `PROVIDER_FALLBACK_USED` | No alias matched; a provider-level fallback (Tavily aggregate `requests`) was used instead. |
+| `CATEGORY_NOT_FOUND` | No alias and no fallback matched — likely provider-side rename. |
+| `PERCENT_CORRUPT` | Matched category's `remainingPercent` is non-finite or outside 0..100. PB-T1 should prevent this, but a hand-edited `state.json` could violate it; the scorer treats corrupt input as unknown rather than synthesizing a score. |
+
+A depleted category (`remainingPercent: 0`) is **not** corrupt — a
+known-tier provider at 0% still ranks above any unknown-tier provider.
+
+### Ranking output
+
+`rankProvidersForCapability(state, capability, candidates)` returns an
+ordered list:
+
+1. **Known tier** first, sorted by score descending.
+2. **Unknown tier** after every known entry, in registry order.
+3. Ties within a tier break by registry order
+   (`[zai, minimax, tavily, exa, brave, firecrawl]` by default;
+   overridable via the `registryOrder` option).
+
+The ranking is deterministic for identical inputs — same `state` +
+same `candidates` + same `registryOrder` always produces the same
+output order.
+
 ## Security
 
 Keep credentials in your shell profile, secret manager, or CI secret store.

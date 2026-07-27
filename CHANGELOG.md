@@ -134,6 +134,38 @@ All notable changes to this project will be documented in this file.
   `MainDependencies` — without it, no events are emitted and behavior
   is byte-for-byte identical to the previous release. `executeWithFallback`
   and its candidate/error classification remain untouched.
+- **Quota normalization — capability mapping + authority-aware scoring
+  (PB-T3).** New pure module `lib/quota-mapping.ts` derives a remaining
+  score per `(provider, capability)` from PB-T1's raw category
+  snapshot, so the upcoming selection algorithm (PB-T4) can rank
+  providers without learning any provider's category schema. Two
+  review fixes shape the contract:
+  - **Map raw categories, not a pre-derived remaining.** A static
+    table declares which `QuotaCategory.name` governs which
+    `(provider, capability)` pair (Z.AI `requests`/`tokens`; Tavily
+    endpoint categories with aggregate `requests` fallback; Firecrawl
+    `Credits`; MiniMax model-name aliases with a documented default
+    table). The score is the matched category's
+    `current.remainingPercent` (already normalized 0..100 by
+    `buildQuotaWindow`); no re-derivation, no re-clamp. Aliases are
+    matched case-sensitively against the normalizers' emission.
+  - **Separate authority from score.** Providers with a real
+    credit/token signal form a **known tier**, ranked by score;
+    providers without a signal (Brave rate-limit, Exa none) form an
+    explicit **unknown tier**, ranked after every known provider.
+    Unknown is never encoded as a numeric `50` — the prior "neutral 50
+    yet never fullest" contradiction is fixed by keeping authority on
+    a separate axis. A known-tier provider at 5% (or even 0%) still
+    ranks above an unknown-tier Brave/Exa provider.
+  Fail-open is total: a missing snapshot, an empty categories array, a
+  renamed/mismatched category, and a corrupt `remainingPercent` each
+  return a typed `authority:"unknown"` result with a machine-readable
+  reason — never a throw. Every degradation routes through an injected
+  `onWarning` callback (the pure module never calls
+  `process.stderr.write`). `rankProvidersForCapability` returns the
+  deterministic, known-first / unknown-last ordering PB-T4 will walk.
+  This is additive derivation only; existing commands are byte-for-byte
+  unchanged. PB-T4 wires the scorer into the selection algorithm.
 
 ## [0.11.0] - 2026-07-26
 

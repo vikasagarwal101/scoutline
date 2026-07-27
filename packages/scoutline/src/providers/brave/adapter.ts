@@ -54,16 +54,37 @@ import {
   type BraveTransportDeps,
 } from "./client.js";
 import { createBraveDiagnosticsCapability } from "./diagnostics.js";
-import { createBraveQuotaCapability } from "./quota.js";
+import { createBraveQuotaCapability, normalizeBraveQuota } from "./quota.js";
+import type { BraveRateLimitHeaders } from "./client.js";
+import { writeQuotaSnapshot, type ProviderQuotaSnapshot } from "../../lib/quota-store.js";
 
 /**
  * Dependencies the Brave Adapter accepts. The unified `transport`
  * seam carries `fetch` and timer injection; the Search Capability
  * threads it through to the direct-HTTP transport.
+ *
+ * `onRateLimitHarvest` (PB-T1) is the passive-harvest callback invoked
+ * with Brave's `X-RateLimit-*` headers after every successful web
+ * search. Production wires a default that normalizes the headers via
+ * `normalizeBraveQuota` and writes a raw-category snapshot to
+ * `~/.scoutline/state.json` through `writeQuotaSnapshot`; the write is
+ * awaited (so it survives the bin's immediate `process.exit`) and
+ * fail-open (a write error is isolated to a stderr warning and never
+ * converts the search success into a fallback). Tests inject a double
+ * to keep harvest assertions hermetic. `undefined` disables the
+ * harvest (used by tests that only exercise search-result
+ * normalization).
  */
 export interface BraveAdapterDependencies {
   /** Optional transport injection (fetch, timers, env). */
   readonly transport?: BraveTransportDeps;
+  /**
+   * Optional passive-harvest callback fired with Brave's
+   * `X-RateLimit-*` headers after a successful web search. Production
+   * wires a default (see {@link createDefaultBraveHarvest}); tests
+   * inject a recorder or `undefined` to disable.
+   */
+  readonly onRateLimitHarvest?: (headers: BraveRateLimitHeaders) => Promise<void> | void;
 }
 
 // ---------------------------------------------------------------------------
@@ -452,10 +473,20 @@ function normalizeBraveError(error: unknown): Error {
 interface BraveSearchCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly transport?: BraveTransportDeps;
+  /**
+   * Optional passive-harvest callback wired through to
+   * `fetchBraveSearch` as its `onRateLimitHeaders` parameter. The
+   * callback fires after a 2xx web-search response; the transport
+   * catches and swallows any error so a harvest failure never
+   * converts a search success into a fallback. The callback is
+   * awaited so a store write survives the bin's immediate
+   * `process.exit`.
+   */
+  readonly onRateLimitHarvest?: (headers: BraveRateLimitHeaders) => Promise<void> | void;
 }
 
 function createBraveSearchCapability(options: BraveSearchCapabilityOptions): SearchCapability {
-  const { env, transport } = options;
+  const { env, transport, onRateLimitHarvest } = options;
 
   const capability: SearchCapability = {
     validate(request: SearchRequest): void {
@@ -531,7 +562,13 @@ function createBraveSearchCapability(options: BraveSearchCapabilityOptions): Sea
             ? await fetchBraveLlmContext(apiKey, effectiveQuery, params, transport)
             : isNews
               ? await fetchBraveNewsSearch(apiKey, effectiveQuery, params, transport)
-              : await fetchBraveSearch(apiKey, effectiveQuery, params, transport);
+              : await fetchBraveSearch(
+                  apiKey,
+                  effectiveQuery,
+                  params,
+                  transport,
+                  onRateLimitHarvest,
+                );
         return isVideo
           ? normalizeBraveTopLevelResults(raw)
           : isHigh
@@ -549,6 +586,59 @@ function createBraveSearchCapability(options: BraveSearchCapabilityOptions): Sea
 }
 
 // ---------------------------------------------------------------------------
+// Passive harvest default (PB-T1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the production passive-harvest callback for Brave rate-limit
+ * headers. Normalizes the four `X-RateLimit-*` headers via the SAME
+ * `normalizeBraveQuota` the explicit quota probe uses (so the
+ * harvested snapshot matches the probed snapshot's category shape
+ * exactly), then writes a raw-category snapshot to the quota store
+ * through {@link writeQuotaSnapshot}. The write advances `observedAt`
+ * only; `locallyUpdatedAt` is preserved by the store (PB-T2 advances
+ * it).
+ *
+ * Fail-open: any error (header parse failure, store write failure) is
+ * caught and routed to a stderr notice. The returned callback never
+ * rejects, so the transport's `try/catch` around the callback is
+ * belt-and-suspenders — a harvest failure cannot convert a search
+ * success into a fallback.
+ *
+ * `now` is injectable so tests can assert deterministic `observedAt` /
+ * `resetsAt` values without touching `Date.now`.
+ */
+function createDefaultBraveHarvest(
+  now: () => number = Date.now,
+): (headers: BraveRateLimitHeaders) => Promise<void> {
+  return async (headers) => {
+    // Skip silently when no rate-limit headers are present — Brave
+    // does not always attach them (e.g. metered plans, proxy
+    // gateways). An absent header set is the common case, not an
+    // error worth a stderr notice.
+    if (
+      headers.policy === null &&
+      headers.limit === null &&
+      headers.remaining === null &&
+      headers.reset === null
+    ) {
+      return;
+    }
+    try {
+      const result = normalizeBraveQuota(headers, now);
+      const snapshot: ProviderQuotaSnapshot = {
+        observedAt: now(),
+        categories: result.categories,
+      };
+      await writeQuotaSnapshot("brave", snapshot);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`scoutline: brave quota harvest failed: ${message}\n`);
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Descriptor factory
 // ---------------------------------------------------------------------------
 
@@ -562,9 +652,16 @@ function createBraveSearchCapability(options: BraveSearchCapabilityOptions): Sea
  * (typically a fake-fetch wrapper); production uses the no-argument
  * factory which resolves to the global `fetch` and timers inside the
  * transport Module.
+ *
+ * PB-T1: the no-argument factory wires the production passive-harvest
+ * callback ({@link createDefaultBraveHarvest}) so every successful web
+ * search writes a rate-limit snapshot to `state.json`. Tests inject
+ * `onRateLimitHarvest` (or `undefined` to disable) through
+ * `BraveAdapterDependencies`.
  */
 export function createBraveDescriptor(dependencies?: BraveAdapterDependencies): ProviderDescriptor {
   const transport = dependencies?.transport;
+  const onRateLimitHarvest = dependencies?.onRateLimitHarvest ?? createDefaultBraveHarvest();
 
   return {
     id: "brave",
@@ -578,7 +675,11 @@ export function createBraveDescriptor(dependencies?: BraveAdapterDependencies): 
       return new Set<ProviderCapability>(["search", "diagnostics", "quota"]);
     },
     create(context: ProviderContext): ProviderAdapter {
-      const search = createBraveSearchCapability({ env: context.env, transport });
+      const search = createBraveSearchCapability({
+        env: context.env,
+        transport,
+        onRateLimitHarvest,
+      });
       const diagnostics = createBraveDiagnosticsCapability({ env: context.env, transport });
       const quota = createBraveQuotaCapability({ env: context.env, transport });
       return { id: "brave", search, diagnostics, quota };

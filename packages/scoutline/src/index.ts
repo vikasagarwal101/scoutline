@@ -50,6 +50,11 @@ import {
   type HintShownStore,
 } from "./lib/config-store.js";
 import {
+  createDefaultQuotaStore,
+  refreshQuotaSnapshots,
+  type QuotaStore,
+} from "./lib/quota-store.js";
+import {
   classifyCredentialState,
   formatEnvOnlyHint,
   isCommandHelpInvocation,
@@ -1737,6 +1742,20 @@ export interface MainDependencies {
    * env-only hint so the hint never repeats.
    */
   readonly hintShownStore?: HintShownStore;
+  /**
+   * Optional injectable quota snapshot store (PB-T1 — Plan B). Production
+   * defaults to `createDefaultQuotaStore()` (real atomic read-merge-write
+   * against `~/.scoutline/state.json`); tests inject an in-memory double
+   * so refresh assertions stay hermetic. When omitted, the production
+   * store is constructed at dispatch time.
+   *
+   * `main` refreshes the store BEFORE the `quota`/`doctor` handlers
+   * (force) and AFTER every other credentialed command (cadence-gated
+   * by the per-provider staleness threshold). All refreshes and store
+   * writes are awaited before `main` returns so they survive the bin's
+   * immediate `process.exit`.
+   */
+  readonly quotaStore?: QuotaStore;
 }
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -2036,34 +2055,119 @@ export async function main(
 
   const handlerDeps = buildHandlerDeps(resolvedEnv, secrets, fallbackEnabled);
 
+  // PB-T1 — Quota snapshot refresh lifecycle.
+  //
+  // The refresh is awaited and bounded (review blocker 3): every
+  // refresh and store write is awaited before `main` returns so it
+  // survives the bin's immediate `process.exit(status)`. There is no
+  // fire-and-forget tail.
+  //
+  // Two triggers:
+  //   1. Explicit `quota`/`doctor` refresh (force) — runs BEFORE the
+  //      handler so the dashboard/report reflects fresh data. The
+  //      cadence gate is bypassed (the user asked for fresh data); the
+  //      per-provider transport timeout + single-attempt contract
+  //      still applies.
+  //   2. After-command due-refresh (cadence-gated) — runs AFTER every
+  //      other recognized credentialed command. A provider whose
+  //      `observedAt` is within the staleness threshold is skipped
+  //      (Tavily's 10/10min is the floor). This keeps the snapshot
+  //      live between explicit refreshes without excessive polling.
+  //
+  // Failure policy: best-effort. A per-provider refresh failure is
+  // routed to a stderr notice and never rejects the outer promise. The
+  // snapshot stays stale; the next due-refresh retries.
+  //
+  // Lock scope: each provider's `capability.invoke()` runs in parallel
+  // (Promise.all). Store writes are serialized within the process by
+  // the per-file async mutex in `createDefaultQuotaStore`. Cross-process
+  // concurrency is last-write-wins (acceptable for an observational
+  // heuristic; the atomic rename keeps the final state crash-safe).
+  //
+  // Hermeticity gate: the refresh runs ONLY in full production mode
+  // (no injected `loadScoutlineConfig` AND no injected
+  // `providerDescriptors`). Either injection signals a test that owns
+  // its own descriptor/config construction; fake descriptors routinely
+  // count `invoke()` calls and would see the refresh as a stray
+  // invocation. Dedicated refresh lifecycle tests run via subprocess
+  // (the real binary) or through `refreshQuotaSnapshots` directly.
+  // This mirrors the trigger-detection gate (T3b).
+  const quotaRefreshEnabled =
+    !dependencies.loadScoutlineConfig && !dependencies.providerDescriptors;
+  const quotaStore = dependencies.quotaStore ?? createDefaultQuotaStore();
+  const isQuotaObservationalCommand = command === "quota" || command === "doctor";
+  const refreshOnError = (providerId: string, error: unknown): void => {
+    const message = error instanceof Error ? error.message : String(error);
+    invocation.writeStderr(`scoutline: quota refresh failed for "${providerId}": ${message}\n`);
+  };
+
+  if (quotaRefreshEnabled && isQuotaObservationalCommand) {
+    await refreshQuotaSnapshots({
+      descriptors: providerDescriptors,
+      env: resolvedEnv,
+      store: quotaStore,
+      now: now ?? Date.now,
+      force: true,
+      onError: refreshOnError,
+    });
+  }
+
+  let exitCode: number;
+  let commandRecognized = false;
   try {
     switch (command) {
       case "vision":
-        return await handleVision(commandArgs, outputMode, handlerDeps);
+        commandRecognized = true;
+        exitCode = await handleVision(commandArgs, outputMode, handlerDeps);
+        break;
       case "search":
-        return await handleSearch(commandArgs, outputMode, handlerDeps);
+        commandRecognized = true;
+        exitCode = await handleSearch(commandArgs, outputMode, handlerDeps);
+        break;
       case "read":
-        return await handleRead(commandArgs, outputMode, handlerDeps);
+        commandRecognized = true;
+        exitCode = await handleRead(commandArgs, outputMode, handlerDeps);
+        break;
       case "crawl":
-        return await handleCrawl(commandArgs, outputMode, handlerDeps);
+        commandRecognized = true;
+        exitCode = await handleCrawl(commandArgs, outputMode, handlerDeps);
+        break;
       case "map":
-        return await handleMap(commandArgs, outputMode, handlerDeps);
+        commandRecognized = true;
+        exitCode = await handleMap(commandArgs, outputMode, handlerDeps);
+        break;
       case "research":
-        return await handleResearch(commandArgs, outputMode, handlerDeps);
+        commandRecognized = true;
+        exitCode = await handleResearch(commandArgs, outputMode, handlerDeps);
+        break;
       case "repo":
-        return await handleRepo(commandArgs, outputMode, handlerDeps);
+        commandRecognized = true;
+        exitCode = await handleRepo(commandArgs, outputMode, handlerDeps);
+        break;
       case "tools":
-        return await handleTools(commandArgs, outputMode, handlerDeps);
+        commandRecognized = true;
+        exitCode = await handleTools(commandArgs, outputMode, handlerDeps);
+        break;
       case "tool":
-        return await handleTool(commandArgs, outputMode, handlerDeps);
+        commandRecognized = true;
+        exitCode = await handleTool(commandArgs, outputMode, handlerDeps);
+        break;
       case "call":
-        return await handleCall(commandArgs, outputMode, handlerDeps);
+        commandRecognized = true;
+        exitCode = await handleCall(commandArgs, outputMode, handlerDeps);
+        break;
       case "doctor":
-        return await handleDoctor(commandArgs, outputMode, handlerDeps);
+        commandRecognized = true;
+        exitCode = await handleDoctor(commandArgs, outputMode, handlerDeps);
+        break;
       case "quota":
-        return await handleQuota(commandArgs, outputMode, handlerDeps);
+        commandRecognized = true;
+        exitCode = await handleQuota(commandArgs, outputMode, handlerDeps);
+        break;
       case "code":
-        return await handleCode(commandArgs, outputMode, handlerDeps);
+        commandRecognized = true;
+        exitCode = await handleCode(commandArgs, outputMode, handlerDeps);
+        break;
       default:
         invocation.writeStderr(
           formatErrorOutput(
@@ -2075,7 +2179,8 @@ export async function main(
             secrets,
           ),
         );
-        return 1;
+        exitCode = 1;
+        break;
     }
   } catch (error) {
     // Fixup C — B10: pre-invocation validation errors (provider
@@ -2083,6 +2188,35 @@ export async function main(
     // formatted in the resolved output mode — they used to be hardcoded
     // to "data" regardless of what the user asked for.
     invocation.writeStderr(formatErrorOutput(error, outputMode, secrets));
-    return getErrorExitCode(error);
+    exitCode = getErrorExitCode(error);
+    commandRecognized = true;
   }
+
+  // After-command due-refresh (cadence-gated). Skip for:
+  //   - `quota`/`doctor` (already force-refreshed before the handler)
+  //   - help invocations (`<cmd> --help` exits 0 but did no real work)
+  //   - unrecognized commands (the default case above)
+  // Run even when the handler threw (commandRecognized + caught):
+  // the refresh is independent of the command's outcome and the
+  // snapshot stays live regardless. The staleness check inside
+  // `refreshQuotaSnapshots` skips providers whose `observedAt` is
+  // within the threshold, so the common case (fresh snapshot) is a
+  // single state-file read + no transport calls.
+  if (
+    quotaRefreshEnabled &&
+    commandRecognized &&
+    !isQuotaObservationalCommand &&
+    !isHelpInvocation
+  ) {
+    await refreshQuotaSnapshots({
+      descriptors: providerDescriptors,
+      env: resolvedEnv,
+      store: quotaStore,
+      now: now ?? Date.now,
+      force: false,
+      onError: refreshOnError,
+    });
+  }
+
+  return exitCode;
 }

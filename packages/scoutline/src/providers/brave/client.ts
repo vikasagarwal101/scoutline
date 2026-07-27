@@ -144,6 +144,29 @@ function buildQueryString(params?: Readonly<Record<string, unknown>>): string {
 }
 
 /**
+ * Optional callback fired after Brave returns a 2xx response, BEFORE
+ * the body is parsed. Used by the passive harvest (PB-T1): the Brave
+ * search capability reads the four `X-RateLimit-*` headers off the
+ * live response and writes a quota snapshot. The callback receives the
+ * raw header accessor (same shape as `fetchBraveRateLimit`'s header
+ * reader) so the caller can read whatever headers it needs.
+ *
+ * Contract:
+ *   - Fires ONLY on 2xx (a non-2xx drains the body and throws before
+ *     the callback runs).
+ *   - Errors thrown by the callback are CAUGHT AND SWALLOWED by the
+ *     transport so a harvest failure can never convert a search
+ *     success into a provider fallback.
+ *   - The callback is AWAITED so a store write survives the immediate
+ *     `process.exit` the bin performs after `main` returns.
+ *   - Not wired through the news/video/LLM-context sibling wrappers —
+ *     only `fetchBraveSearch` passes it (PB-T1 harvest scope).
+ */
+export type BraveResponseHeaderCallback = (headers: {
+  get(name: string): string | null;
+}) => Promise<void> | void;
+
+/**
  * Perform ONE GET against the Brave Search API. No retry; no response
  * body in public errors. Returns the parsed JSON body (raw; the
  * Adapter post-processes into a normalized shape).
@@ -151,12 +174,19 @@ function buildQueryString(params?: Readonly<Record<string, unknown>>): string {
  * The transport carries `X-Subscription-Token` (NOT
  * `Authorization: Bearer`) and a `User-Agent: scoutline/<version>`
  * string read from `package.json` at module load.
+ *
+ * `onResponseHeaders` (PB-T1) is an optional callback fired after a
+ * 2xx response, before body parsing. It shares the header reader with
+ * `fetchBraveRateLimit`. Only `fetchBraveSearch` currently passes it
+ * (the passive-harvest path); the news/video/LLM-context sibling
+ * wrappers do not.
  */
 export async function getBraveJson(
   apiKey: string,
   path: string,
   params?: Readonly<Record<string, unknown>>,
   deps: BraveTransportDeps = {},
+  onResponseHeaders?: BraveResponseHeaderCallback,
 ): Promise<unknown> {
   const f =
     deps.fetch ??
@@ -188,6 +218,20 @@ export async function getBraveJson(
       await res.text().catch(() => {});
       throw mapStatusError(res.status, timeoutMs);
     }
+    // PB-T1: fire the header callback AFTER res.ok is confirmed but
+    // BEFORE the body is parsed. The callback reads the live headers
+    // (e.g. the four `X-RateLimit-*` values for the passive harvest).
+    // Any error is caught and swallowed here so a harvest write
+    // failure cannot convert a search success into a fallback. The
+    // callback is awaited so a store write survives the bin's
+    // immediate `process.exit`.
+    if (onResponseHeaders) {
+      try {
+        await onResponseHeaders(res.headers);
+      } catch {
+        // Swallow: best-effort harvest.
+      }
+    }
     let parsed: unknown;
     try {
       parsed = await res.json();
@@ -214,14 +258,52 @@ export async function getBraveJson(
  * `params` carries Brave-native API fields already mapped from
  * `SearchControls` by the Adapter (`country`/`freshness`). The query
  * is sent as the `q` query-string parameter.
+ *
+ * `onRateLimitHeaders` (PB-T1) is an optional callback that receives
+ * the four `X-RateLimit-*` response headers as a
+ * {@link BraveRateLimitHeaders} value (same shape as
+ * `fetchBraveRateLimit`'s return). It fires only on a 2xx response;
+ * errors are caught by the transport so a harvest write failure never
+ * converts a search success into a fallback. The callback is awaited
+ * so the store write survives the bin's immediate `process.exit`.
+ *
+ * Only `fetchBraveSearch` carries the harvest callback.
+ * `fetchBraveNewsSearch`, `fetchBraveVideoSearch`, and
+ * `fetchBraveLlmContext` share `getBraveJson` but do NOT pass the
+ * callback, so news/video/LLM-context responses are NOT harvested
+ * (documented scope — the Brave rate-limit headers are present on
+ * every search-family endpoint, but PB-T1 harvests only the web path;
+ * expanding to siblings is a future-ticket decision).
  */
 export async function fetchBraveSearch(
   apiKey: string,
   query: string,
   params?: BraveSearchParams,
   deps: BraveTransportDeps = {},
+  onRateLimitHeaders?: (headers: BraveRateLimitHeaders) => Promise<void> | void,
 ): Promise<unknown> {
-  return getBraveJson(apiKey, "/res/v1/web/search", { q: query, ...(params ?? {}) }, deps);
+  // Bridge the brave-specific header shape to the generic
+  // `getBraveJson` callback. Reads the same four headers as
+  // `fetchBraveRateLimit` so the harvest snapshot matches the
+  // explicit probe's normalization exactly.
+  const headerBridge: BraveResponseHeaderCallback | undefined = onRateLimitHeaders
+    ? (rawHeaders) => {
+        const shaped: BraveRateLimitHeaders = {
+          limit: rawHeaders.get("X-RateLimit-Limit"),
+          policy: rawHeaders.get("X-RateLimit-Policy"),
+          remaining: rawHeaders.get("X-RateLimit-Remaining"),
+          reset: rawHeaders.get("X-RateLimit-Reset"),
+        };
+        return onRateLimitHeaders(shaped);
+      }
+    : undefined;
+  return getBraveJson(
+    apiKey,
+    "/res/v1/web/search",
+    { q: query, ...(params ?? {}) },
+    deps,
+    headerBridge,
+  );
 }
 
 /**

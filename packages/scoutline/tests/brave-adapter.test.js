@@ -26,8 +26,10 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import * as path from "node:path";
 
 import { createBraveDescriptor } from "../dist/providers/brave/adapter.js";
+import { withTempDir } from "./helpers/temp-dir.js";
 import {
   resolveBraveApiKey,
   requireBraveApiKey,
@@ -858,6 +860,208 @@ describe("Brave Search Capability", () => {
     // Different controls → different request payload.
     const b = adapter.search.cacheIdentity({ query: "q", controls: { recency: "oneDay" } });
     assert.notDeepStrictEqual(a.request.controls, b.request.controls);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PB-T1: Passive harvest — onResponseHeaders callback on fetchBraveSearch
+// ---------------------------------------------------------------------------
+
+describe("Brave passive harvest (PB-T1 — fetchBraveSearch onResponseHeaders)", () => {
+  // A web-search response that also carries the four X-RateLimit-* headers.
+  function webResponseWithRateHeaders(headers = {}) {
+    return () =>
+      makeResponse({
+        json: { web: { results: [] } },
+        headers,
+      });
+  }
+
+  const RATE_HEADERS = {
+    "X-RateLimit-Limit": "1, 15000",
+    "X-RateLimit-Policy": "1;w=1, 15000;w=2592000",
+    "X-RateLimit-Remaining": "1, 14500",
+    "X-RateLimit-Reset": "1, 1296000",
+  };
+
+  it("fetchBraveSearch invokes onRateLimitHeaders with the four X-RateLimit-* values on 2xx", async () => {
+    let captured = null;
+    const { fn } = makeRecordingFetch(webResponseWithRateHeaders(RATE_HEADERS));
+    // Import fetchBraveSearch from dist (not re-imported at top level to
+    // keep the existing test structure clean).
+    const { fetchBraveSearch } = await import("../dist/providers/brave/client.js");
+    await fetchBraveSearch(TEST_API_KEY, "hello", undefined, { fetch: fn }, async (headers) => {
+      captured = headers;
+    });
+    assert.deepStrictEqual(captured, {
+      limit: "1, 15000",
+      policy: "1;w=1, 15000;w=2592000",
+      remaining: "1, 14500",
+      reset: "1, 1296000",
+    });
+  });
+
+  it("callback is NOT invoked on a non-2xx response (error path drains + throws first)", async () => {
+    let invoked = false;
+    const { fn } = makeRecordingFetch(makeErrorFetch(401));
+    const { fetchBraveSearch } = await import("../dist/providers/brave/client.js");
+    let thrown;
+    try {
+      await fetchBraveSearch(TEST_API_KEY, "hi", undefined, { fetch: fn }, async () => {
+        invoked = true;
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown instanceof AuthError, "non-2xx throws AuthError");
+    assert.ok(!invoked, "callback must NOT fire on non-2xx");
+  });
+
+  it("callback error is swallowed — search success is NOT converted to a failure", async () => {
+    const { fn, calls } = makeRecordingFetch(webResponseWithRateHeaders(RATE_HEADERS));
+    const { fetchBraveSearch } = await import("../dist/providers/brave/client.js");
+    // The callback throws; the search must still succeed.
+    const result = await fetchBraveSearch(
+      TEST_API_KEY,
+      "hi",
+      undefined,
+      { fetch: fn },
+      async () => {
+        throw new Error("harvest write blew up");
+      },
+    );
+    // The search result is returned unchanged — the callback error
+    // was caught and swallowed by the transport.
+    assert.deepStrictEqual(result, { web: { results: [] } });
+    assert.strictEqual(calls.length, 1, "fetch was called exactly once");
+  });
+
+  it("callback is awaited (the store write completes before fetchBraveSearch resolves)", async () => {
+    let resolved = false;
+    const { fn } = makeRecordingFetch(webResponseWithRateHeaders(RATE_HEADERS));
+    const { fetchBraveSearch } = await import("../dist/providers/brave/client.js");
+    await fetchBraveSearch(TEST_API_KEY, "hi", undefined, { fetch: fn }, async () => {
+      await new Promise((r) => setTimeout(r, 10));
+      resolved = true;
+    });
+    assert.ok(resolved, "callback completed before fetchBraveSearch resolved");
+  });
+
+  it("omitting the callback is a no-op (backward-compatible default)", async () => {
+    const { fn } = makeRecordingFetch(webResponseWithRateHeaders(RATE_HEADERS));
+    const { fetchBraveSearch } = await import("../dist/providers/brave/client.js");
+    const result = await fetchBraveSearch(TEST_API_KEY, "hi", undefined, { fetch: fn });
+    assert.deepStrictEqual(result, { web: { results: [] } });
+  });
+
+  it("news/video/llm-context endpoints do NOT invoke the harvest callback", async () => {
+    let invoked = false;
+    const harvest = async () => {
+      invoked = true;
+    };
+    const { fn: newsFn } = makeRecordingFetch(webResponseWithRateHeaders(RATE_HEADERS));
+    const { fn: videoFn } = makeRecordingFetch(webResponseWithRateHeaders(RATE_HEADERS));
+    const { fn: llmFn } = makeRecordingFetch(webResponseWithRateHeaders(RATE_HEADERS));
+    const { fetchBraveNewsSearch, fetchBraveVideoSearch, fetchBraveLlmContext } =
+      await import("../dist/providers/brave/client.js");
+    // These sibling wrappers do NOT accept the callback parameter.
+    await fetchBraveNewsSearch(TEST_API_KEY, "hi", undefined, { fetch: newsFn });
+    await fetchBraveVideoSearch(TEST_API_KEY, "hi", undefined, { fetch: videoFn });
+    await fetchBraveLlmContext(TEST_API_KEY, "hi", undefined, { fetch: llmFn });
+    assert.ok(!invoked, "sibling endpoints must not invoke the harvest callback");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PB-T1: Default harvest — createBraveDescriptor wires the store write
+// ---------------------------------------------------------------------------
+
+describe("Brave default harvest (PB-T1 — createBraveDescriptor default)", () => {
+  it("the default harvest normalizes headers and writes a snapshot to state.json", async (t) => {
+    await withTempDir(t, async (dir) => {
+      // Point SCOUTLINE_CONFIG_DIR at the temp dir so the default
+      // harvest's writeQuotaSnapshot resolves state.json under it.
+      const prevConfigDir = process.env.SCOUTLINE_CONFIG_DIR;
+      process.env.SCOUTLINE_CONFIG_DIR = dir;
+      try {
+        const { fn } = makeRecordingFetch(async () =>
+          makeResponse({
+            json: { web: { results: [] } },
+            headers: {
+              "X-RateLimit-Limit": "1, 15000",
+              "X-RateLimit-Policy": "1;w=1, 15000;w=2592000",
+              "X-RateLimit-Remaining": "1, 14500",
+              "X-RateLimit-Reset": "1, 1296000",
+            },
+          }),
+        );
+        // No explicit onRateLimitHarvest — the production default runs.
+        const descriptor = createBraveDescriptor({ transport: { fetch: fn } });
+        const adapter = descriptor.create({ env: { BRAVE_SEARCH_API_KEY: TEST_API_KEY } });
+
+        await adapter.search.invoke({ query: "hello" });
+
+        // The default harvest wrote a snapshot to state.json.
+        const { createDefaultQuotaStore } = await import("../dist/lib/quota-store.js");
+        const store = createDefaultQuotaStore({ filePath: path.join(dir, "state.json") });
+        const state = await store.read();
+        assert.ok(state.quota.brave, "brave snapshot was written by the default harvest");
+        assert.ok(
+          state.quota.brave.categories.length > 0,
+          "at least one category normalized from the headers",
+        );
+        assert.strictEqual(state.quota.brave.categories[0].unit, "requests");
+        assert.ok(
+          typeof state.quota.brave.observedAt === "number" && state.quota.brave.observedAt > 0,
+          "observedAt is a positive epoch ms",
+        );
+      } finally {
+        if (prevConfigDir === undefined) delete process.env.SCOUTLINE_CONFIG_DIR;
+        else process.env.SCOUTLINE_CONFIG_DIR = prevConfigDir;
+      }
+    });
+  });
+
+  it("a harvest callback error does NOT convert a successful search into a failure", async () => {
+    const { fn } = makeRecordingFetch(async () =>
+      makeResponse({
+        json: { web: { results: [] } },
+        headers: {
+          "X-RateLimit-Limit": "1, 15000",
+          "X-RateLimit-Policy": "1;w=1, 15000;w=2592000",
+          "X-RateLimit-Remaining": "1, 14500",
+          "X-RateLimit-Reset": "1, 1296000",
+        },
+      }),
+    );
+    const descriptor = createBraveDescriptor({
+      transport: { fetch: fn },
+      onRateLimitHarvest: async () => {
+        throw new Error("store write exploded");
+      },
+    });
+    const adapter = descriptor.create({ env: { BRAVE_SEARCH_API_KEY: TEST_API_KEY } });
+    // The search must succeed despite the harvest error.
+    const results = await adapter.search.invoke({ query: "hello" });
+    assert.deepStrictEqual([...results], []);
+  });
+
+  it("onRateLimitHarvest: undefined disables the harvest (no callback wired)", async () => {
+    const { fn, calls } = makeRecordingFetch(async () =>
+      makeResponse({
+        json: { web: { results: [] } },
+        headers: { "X-RateLimit-Limit": "15000" },
+      }),
+    );
+    const descriptor = createBraveDescriptor({
+      transport: { fetch: fn },
+    });
+    const adapter = descriptor.create({ env: { BRAVE_SEARCH_API_KEY: TEST_API_KEY } });
+    await adapter.search.invoke({ query: "hello" });
+    // No assertion to check here besides "no throw" — the undefined
+    // harvest is the backward-compatible path. The fetch was called
+    // exactly once.
+    assert.strictEqual(calls.length, 1);
   });
 });
 

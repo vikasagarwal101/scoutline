@@ -565,6 +565,41 @@ dependencies; the dispatcher (`src/index.ts`) wires them to the real
 
 `src/lib/output.ts` owns the output contract. Commands send successful values through `formatSuccessOutput`; failures are serialized by `formatErrorOutput` from `src/lib/output.ts` (with a legacy compat re-export from `src/lib/errors.ts`).
 
+### Consumption log seam (PB-T2)
+
+`src/lib/consumption.ts` owns the typed `ConsumptionEvent` and the
+`ConsumptionSink` abstraction. The shared execution primitive
+(`executeProviderOperation` in `src/lib/execution.ts`) is the single
+**when**: it emits one event per billable `invoke()` attempt — before
+the call, so both success and a retrying failure count. Wrappers
+(`executeSearch`, `executeRepositoryOperation`,
+`executeReaderOperation`, `executeCachedOperation`) derive a
+`ConsumptionContext` from the adapter-owned cache identity and pass it
+through; cache-hit returns above the invoke path emit nothing because
+the wrappers never call the retry loop. Observational handlers
+(`scoutline quota`, `scoutline doctor`) call
+`executeProviderOperation` directly without a consumption context, so
+they emit nothing.
+
+The amount is an explicit `exact`/`estimate`/`unknown` discriminated
+value. Providers without per-call usage (Vision, Research, Crawl)
+persist `unknown` rather than a fake-precise number; PB-T3 refines the
+capability→category mapping.
+
+`src/lib/quota-store.ts` gained `writeConsumption(providerId,
+adjustment, at)` (PB-T2). The store advances `locallyUpdatedAt` and
+adjusts the matching category's `current` window (subtracting from
+`remaining`, adding to `used`, recomputing `remainingPercent`,
+clamped at zero) when a finite amount is supplied and the category
+exposes a count set; an absent matching category advances
+`locallyUpdatedAt` only. `observedAt` (ground truth) is never moved.
+Production wires `createQuotaStoreConsumptionSink({ store: quotaStore,
+now, onWarning })`; tests inject `createInMemoryConsumptionSink()`.
+The sink is awaited before the billable invoke returns outward — so
+the write survives the bin's immediate `process.exit(status)`. A
+write failure is converted to a redacted stderr warning inside the
+sink and never reaches the retry classifier.
+
 ## Boundaries
 
 - The CLI does not own the web-search, reader, ZRead, vision, quota, crawl, map, or research implementations; it adapts their transport contracts.

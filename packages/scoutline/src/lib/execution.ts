@@ -35,6 +35,8 @@ import type {
 import { ScoutlineError } from "./errors.js";
 import { buildProviderCacheKey, type ResponseCache } from "./cache.js";
 import type { ProviderId } from "../providers/types.js";
+import type { ConsumptionSink, ConsumptionContext } from "./consumption.js";
+import { emitConsumption, defaultAmountForCapability } from "./consumption.js";
 
 // ---------------------------------------------------------------------------
 // Retry policy
@@ -54,11 +56,21 @@ export interface RetryPolicy {
 /**
  * Dependencies shared execution requires. `sleep` and `random` are
  * injected so retry backoff is deterministic under test.
+ *
+ * `consume` (PB-T2) is an OPTIONAL consumption sink. When present and
+ * a billable wrapper supplies a {@link ConsumptionContext}, the retry
+ * loop emits one event per `invoke()` attempt through this sink. When
+ * absent (the default — and what every existing test passes), no event
+ * is emitted and behavior is byte-for-byte identical to pre-PB-T2.
+ * The sink is awaited; its failure is converted to a warning inside
+ * the sink and never reaches the retry classifier.
  */
 export interface ExecutionDependencies {
-  cache: ResponseCache;
-  sleep(ms: number): Promise<void>;
-  random(): number;
+  readonly cache: ResponseCache;
+  readonly sleep: (ms: number) => Promise<void>;
+  readonly random: () => number;
+  readonly consume?: ConsumptionSink;
+  readonly now?: () => number;
 }
 
 /**
@@ -176,16 +188,43 @@ function isOperationRetryableError(error: unknown): boolean {
  * caller supplies the invoke thunk and the cache strategy. Each
  * outward Provider operation has exactly one retry wrapper; Adapter
  * transport methods perform one attempt and never retry internally.
+ *
+ * PB-T2 — Consumption emission (the execution seam):
+ *   - When `dependencies.consume` AND `consumption` are both supplied,
+ *     one {@link ConsumptionEvent} is emitted **per `invoke()` call**
+ *     (success or failure), BEFORE the invoke runs. Wrappers that have
+ *     already returned on a cache hit never reach this loop, so cache
+ *     hits emit no event. `quota` / `diagnostics` call this function
+ *     directly with no `consumption` argument, so observational
+ *     handlers emit nothing.
+ *   - When either is absent (the default), zero events are emitted
+ *     and behavior is byte-for-byte identical to pre-PB-T2.
+ *   - The sink promise is awaited; its rejection is converted to a
+ *     warning inside the sink and never reaches the retry classifier.
+ *
+ * The 5th parameter is additive and optional; existing 4-arg callers
+ * (Quota, Doctor, and every pre-PB-T2 test) compile and behave
+ * unchanged.
  */
 export async function executeProviderOperation<T>(
   operation: ProviderOperation,
   invoke: () => Promise<T>,
-  dependencies: Pick<ExecutionDependencies, "sleep" | "random">,
+  dependencies: Pick<ExecutionDependencies, "sleep" | "random" | "consume" | "now">,
   retryPolicy?: RetryPolicy,
+  consumption?: ConsumptionContext,
 ): Promise<T> {
   const policy = retryPolicy ?? defaultRetryPolicy(operation);
+  const sink = dependencies.consume;
+  const now = dependencies.now ?? Date.now;
   let attempt = 0;
   for (;;) {
+    // PB-T2: emit BEFORE invoke. One event per loop iteration = one
+    // event per invoke() call. Cache hits never reach here (wrappers
+    // return before invoking). A retrying failure emits once per
+    // attempt.
+    if (sink && consumption) {
+      await emitConsumption(sink, consumption, attempt + 1, now);
+    }
     try {
       return await invoke();
     } catch (error) {
@@ -273,11 +312,28 @@ export async function executeSearch(
 
   // 5 + 6. Invoke through executeProviderOperation; retryable failures
   //        are retried with backoff driven by the injected sleep+random.
+  //
+  // PB-T2: when a consumption sink is wired, derive a ConsumptionContext
+  //        from the cache identity (provider + canonical capability id)
+  //        and pass it through. The default amount is the honest
+  //        per-capability estimate (Search = 1 estimated request). Cache
+  //        hits returned above emit nothing.
+  const consumption: ConsumptionContext | undefined =
+    dependencies.consume !== undefined
+      ? {
+          provider: identity.provider,
+          capabilityId: "search",
+          category: "search",
+          unit: "requests",
+          amount: defaultAmountForCapability("search"),
+        }
+      : undefined;
   const result = await executeProviderOperation(
     "search",
     () => capability.invoke(request),
     dependencies,
     options.retryPolicy,
+    consumption,
   );
 
   // 7. Cache the full normalized result before count is applied.
@@ -400,6 +456,22 @@ export async function executeRepositoryOperation<Request, Result>(
   // 5. Retry-wrapped invoke. Auth, Validation, Unsupported, and
   //    exhausted Quota failures are terminal; transient timeout,
   //    network, and 5xx/429-equivalent failures get one retry.
+  //
+  // PB-T2: when a sink is wired, derive a ConsumptionContext from the
+  //        adapter-owned cache identity. The canonical capability id is
+  //        the descriptor capability (`repository-exploration`); the
+  //        category is the umbrella `repository` namespace. Cache hits
+  //        returned above emit nothing.
+  const consumption: ConsumptionContext | undefined =
+    dependencies.consume !== undefined
+      ? {
+          provider: identity.provider,
+          capabilityId: "repository-exploration",
+          category: "repository",
+          unit: "requests",
+          amount: defaultAmountForCapability("repository-exploration"),
+        }
+      : undefined;
   const result = await executeProviderOperation(
     // `operation.kind` is `RepositoryOperationKind`, which is
     // composed into `ProviderOperation` directly — no cast needed
@@ -408,6 +480,7 @@ export async function executeRepositoryOperation<Request, Result>(
     () => operation.invoke(request),
     dependencies,
     options.retryPolicy,
+    consumption,
   );
 
   // 6. Cache the full normalized result before returning.
@@ -530,11 +603,27 @@ export async function executeReaderOperation(
   // 5. Retry-wrapped invoke. Auth, Validation, Unsupported, and
   //    exhausted Quota failures are terminal; transient timeout,
   //    network, and 5xx/429-equivalent failures get one retry.
+  //
+  // PB-T2: when a sink is wired, derive a ConsumptionContext from the
+  //        adapter-owned cache identity. Canonical capability id is
+  //        `reader`; category/unit mirror it. Cache hits returned
+  //        above emit nothing.
+  const consumption: ConsumptionContext | undefined =
+    dependencies.consume !== undefined
+      ? {
+          provider: identity.provider,
+          capabilityId: "reader",
+          category: "reader",
+          unit: "requests",
+          amount: defaultAmountForCapability("reader"),
+        }
+      : undefined;
   const result = await executeProviderOperation(
     operation.kind,
     () => operation.invoke(request),
     dependencies,
     options.retryPolicy,
+    consumption,
   );
 
   // 6. Cache the full normalized result before returning.
@@ -694,11 +783,38 @@ export async function executeCachedOperation<Request, Result>(
   //    Unsupported, and exhausted Quota failures are terminal; transient
   //    timeout, network, and 5xx/429-equivalent failures get the
   //    operation-specific retry count.
+  //
+  // PB-T2: when a sink is wired, derive a ConsumptionContext from the
+  //        adapter-owned cache identity. Cost model:
+  //          - `crawl`  → unknown (per-page credits, count varies)
+  //          - `map`    → estimate 1 (single batch cost)
+  //          - `research` → unknown (4–250 credits, request-dependent)
+  //        PB-T3 will refine the category→capability mapping; PB-T2
+  //        records the honest default. Cache hits returned above emit
+  //        nothing.
+  const capabilityId = identity.capability;
+  const consumption: ConsumptionContext | undefined =
+    dependencies.consume !== undefined
+      ? {
+          provider: identity.provider,
+          capabilityId,
+          category: capabilityId,
+          ...(capabilityId === "crawl"
+            ? { unit: "credits" as const }
+            : capabilityId === "map"
+              ? { unit: "credits" as const }
+              : capabilityId === "research"
+                ? { unit: "credits" as const }
+                : {}),
+          amount: defaultAmountForCapability(capabilityId),
+        }
+      : undefined;
   const result = await executeProviderOperation(
     identity.capability as ProviderOperation,
     () => operation.invoke(request, options.signal),
     dependencies,
     options.retryPolicy,
+    consumption,
   );
 
   // 5. Cache the full normalized result before returning.

@@ -115,6 +115,25 @@ All notable changes to this project will be documented in this file.
   constructors and injected test fakes keep working unchanged. The
   descriptor's `create(context)` wraps the client factory to merge
   `context.env` into every capability's client construction call.
+- **Local consumption decrement (PB-T2).** Shared execution emits one
+  typed `ConsumptionEvent` per billable `operation.invoke()` attempt at
+  the execution seam (`lib/execution.ts`), bypassing handler-success
+  hooks so cache hits do not decrement, retries count one event per
+  attempt, and observational handlers (`quota`/`doctor`) emit nothing.
+  The event carries provider, canonical capability id, category, unit,
+  and an explicit `exact`/`estimate`/`unknown` amount (never a fake
+  "1"; Research/Vision/Crawl persist `unknown` for variable cost).
+  Production writes through PB-T1's `QuotaStore.writeConsumption`,
+  advancing `locallyUpdatedAt` and adjusting the matching category's
+  count set; `observedAt` (ground truth) is never moved. The write is
+  awaited before the call returns outward and survives the bin's
+  immediate `process.exit`. A sink failure is converted to a redacted
+  stderr warning and never reaches the retry classifier. The
+  `consume?: ConsumptionSink` field is opt-in on
+  `ExecutionDependencies` / `HandlerDependencies` /
+  `MainDependencies` — without it, no events are emitted and behavior
+  is byte-for-byte identical to the previous release. `executeWithFallback`
+  and its candidate/error classification remain untouched.
 
 ## [0.11.0] - 2026-07-26
 

@@ -12,6 +12,7 @@ import crypto from "node:crypto";
 
 import { executeSearch, executeProviderOperation } from "../dist/lib/execution.js";
 import { buildProviderCacheKey } from "../dist/lib/cache.js";
+import { createInMemoryConsumptionSink } from "../dist/lib/consumption.js";
 import {
   ValidationError,
   AuthError,
@@ -295,12 +296,7 @@ describe("executeSearch — cache failure and bypass semantics", () => {
       },
     };
     await assert.rejects(
-      executeSearch(
-        cap,
-        { query: "q" },
-        baseOptions(),
-        baseDeps(cache, makeSleep(), makeRandom()),
-      ),
+      executeSearch(cap, { query: "q" }, baseOptions(), baseDeps(cache, makeSleep(), makeRandom())),
       failure,
     );
     assert.strictEqual(cap.invokeCount, 0);
@@ -318,12 +314,7 @@ describe("executeSearch — cache failure and bypass semantics", () => {
       },
     };
     await assert.rejects(
-      executeSearch(
-        cap,
-        { query: "q" },
-        baseOptions(),
-        baseDeps(cache, makeSleep(), makeRandom()),
-      ),
+      executeSearch(cap, { query: "q" }, baseOptions(), baseDeps(cache, makeSleep(), makeRandom())),
       failure,
     );
     assert.strictEqual(cap.invokeCount, 1);
@@ -707,5 +698,251 @@ describe("executeSearch — legacy Z.AI cache compatibility", () => {
     );
     assert.strictEqual(cap.invokeCount, 1);
     assert.strictEqual(out.length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PB-T2 — Consumption emission at the execution seam
+// ---------------------------------------------------------------------------
+
+describe("executeSearch — PB-T2 consumption emission", () => {
+  it("emits exactly one event on a successful miss (no retry)", async () => {
+    const sink = createInMemoryConsumptionSink();
+    const cache = makeCache();
+    const cap = makeCapability({ results: [{ title: "T", url: "u", summary: "s" }] });
+    await executeSearch(cap, { query: "q" }, baseOptions(), {
+      cache,
+      sleep: makeSleep(),
+      random: makeRandom(),
+      consume: sink,
+      now: () => 1000,
+    });
+    assert.strictEqual(sink.events.length, 1, "one event per invoke");
+    const ev = sink.events[0];
+    assert.strictEqual(ev.provider, "zai");
+    assert.strictEqual(ev.capabilityId, "search");
+    assert.strictEqual(ev.category, "search");
+    assert.strictEqual(ev.unit, "requests");
+    assert.strictEqual(ev.amount.kind, "estimate");
+    assert.strictEqual(ev.attempt, 1);
+    assert.strictEqual(ev.at, 1000);
+  });
+
+  it("emits NO event on a cache hit (cache hits don't decrement)", async () => {
+    const sink = createInMemoryConsumptionSink();
+    const cache = makeCache();
+    const cap = makeCapability();
+    // First call populates the cache.
+    await executeSearch(cap, { query: "q" }, baseOptions(), {
+      cache,
+      sleep: makeSleep(),
+      random: makeRandom(),
+      consume: sink,
+    });
+    assert.strictEqual(sink.events.length, 1);
+    sink.events.length = 0; // reset
+
+    // Second call hits the cache — must NOT emit.
+    const cap2 = makeCapability();
+    await executeSearch(cap2, { query: "q" }, baseOptions(), {
+      cache,
+      sleep: makeSleep(),
+      random: makeRandom(),
+      consume: sink,
+    });
+    assert.strictEqual(sink.events.length, 0, "cache hit emits nothing");
+    assert.strictEqual(cap2.invokeCount, 0, "no invoke on cache hit");
+  });
+
+  it("emits one event per billable attempt on a retried failure → success", async () => {
+    const sink = createInMemoryConsumptionSink();
+    const sleep = makeSleep();
+    const random = makeRandom([0.4]);
+    let count = 0;
+    const cap = makeCapability({
+      invokeImpl: () => {
+        count += 1;
+        if (count === 1) throw new TimeoutError(1000);
+        return [{ title: "ok", url: "u", summary: "s" }];
+      },
+    });
+    await executeSearch(
+      cap,
+      { query: "q" },
+      { noCache: true },
+      {
+        cache: makeCache(),
+        sleep,
+        random,
+        consume: sink,
+      },
+    );
+    assert.strictEqual(cap.invokeCount, 2);
+    assert.strictEqual(sink.events.length, 2, "one event per attempt");
+    assert.strictEqual(sink.events[0].attempt, 1);
+    assert.strictEqual(sink.events[1].attempt, 2);
+  });
+
+  it("emits one event per attempt on a terminal failure (all retries exhausted)", async () => {
+    const sink = createInMemoryConsumptionSink();
+    const cap = makeCapability({
+      invokeImpl: () => {
+        throw new TimeoutError(1000);
+      },
+    });
+    await assert.rejects(
+      executeSearch(
+        cap,
+        { query: "q" },
+        { noCache: true },
+        {
+          cache: makeCache(),
+          sleep: makeSleep(),
+          random: makeRandom(),
+          consume: sink,
+        },
+      ),
+    );
+    // Search default = 1 retry → 2 attempts → 2 events.
+    assert.strictEqual(sink.events.length, 2, "retries counted, not missed");
+    assert.strictEqual(sink.events[0].attempt, 1);
+    assert.strictEqual(sink.events[1].attempt, 2);
+  });
+
+  it("emits exactly one event on a terminal (non-retryable) failure", async () => {
+    const sink = createInMemoryConsumptionSink();
+    const cap = makeCapability({
+      invokeImpl: () => {
+        throw new ValidationError("bad");
+      },
+    });
+    await assert.rejects(
+      executeSearch(
+        cap,
+        { query: "q" },
+        { noCache: true },
+        {
+          cache: makeCache(),
+          sleep: makeSleep(),
+          random: makeRandom(),
+          consume: sink,
+        },
+      ),
+    );
+    assert.strictEqual(sink.events.length, 1, "the failing attempt still emitted");
+  });
+
+  it("emits NOTHING when no sink is wired (byte-for-byte pre-PB-T2)", async () => {
+    const sink = createInMemoryConsumptionSink();
+    const cap = makeCapability();
+    // No `consume` field on deps.
+    await executeSearch(cap, { query: "q" }, baseOptions(), {
+      cache: makeCache(),
+      sleep: makeSleep(),
+      random: makeRandom(),
+    });
+    assert.strictEqual(sink.events.length, 0);
+    // Sanity: the sink was not consulted at all.
+  });
+
+  it("--no-cache still emits (cache bypass does not suppress consumption)", async () => {
+    const sink = createInMemoryConsumptionSink();
+    const cache = makeCache();
+    const cap = makeCapability();
+    await executeSearch(
+      cap,
+      { query: "q" },
+      { noCache: true },
+      {
+        cache,
+        sleep: makeSleep(),
+        random: makeRandom(),
+        consume: sink,
+      },
+    );
+    assert.strictEqual(sink.events.length, 1);
+    assert.strictEqual(cache.writes.length, 0, "no cache write under --no-cache");
+  });
+});
+
+describe("executeProviderOperation — PB-T2 direct-call emission", () => {
+  it("quota operation emits NOTHING even when sink is wired (observational)", async () => {
+    const sink = createInMemoryConsumptionSink();
+    // Quota calls executeProviderOperation directly WITHOUT a consumption
+    // context — this proves the metadata-opt-in contract.
+    const out = await executeProviderOperation("quota", async () => "quota-result", {
+      sleep: makeSleep(),
+      random: makeRandom(),
+      consume: sink,
+    });
+    assert.strictEqual(out, "quota-result");
+    assert.strictEqual(sink.events.length, 0, "quota is observational");
+  });
+
+  it("diagnostics operation emits NOTHING (observational)", async () => {
+    const sink = createInMemoryConsumptionSink();
+    await executeProviderOperation("diagnostics", async () => "diag-result", {
+      sleep: makeSleep(),
+      random: makeRandom(),
+      consume: sink,
+    });
+    assert.strictEqual(sink.events.length, 0, "doctor is observational");
+  });
+
+  it("billable operation with explicit consumption context emits per attempt", async () => {
+    const sink = createInMemoryConsumptionSink();
+    let count = 0;
+    const out = await executeProviderOperation(
+      "search",
+      async () => {
+        count += 1;
+        if (count === 1) throw new NetworkError("down");
+        return "ok";
+      },
+      { sleep: makeSleep(), random: makeRandom([0]), consume: sink, now: () => 5 },
+      { maxRetries: 1, baseDelayMs: 1, maxDelayMs: 1, jitterMs: 0 },
+      {
+        provider: "tavily",
+        capabilityId: "search",
+        category: "search",
+        unit: "requests",
+        amount: { kind: "estimate", value: 1 },
+      },
+    );
+    assert.strictEqual(out, "ok");
+    assert.strictEqual(sink.events.length, 2, "one per attempt");
+    assert.strictEqual(sink.events[0].provider, "tavily");
+    assert.strictEqual(sink.events[0].attempt, 1);
+    assert.strictEqual(sink.events[1].attempt, 2);
+    assert.strictEqual(sink.events[0].at, 5);
+  });
+
+  it("sink rejection never reaches the retry classifier", async () => {
+    /** @type {any} */
+    const explodingSink = {
+      async record() {
+        throw new Error("sink exploded");
+      },
+    };
+    // The retry loop must not see the accounting failure — it must
+    // still classify the underlying invoke error normally.
+    let count = 0;
+    const out = await executeProviderOperation(
+      "search",
+      async () => {
+        count += 1;
+        if (count === 1) throw new NetworkError("down");
+        return "recovered";
+      },
+      { sleep: makeSleep(), random: makeRandom([0]), consume: explodingSink },
+      { maxRetries: 1, baseDelayMs: 1, maxDelayMs: 1, jitterMs: 0 },
+      {
+        provider: "zai",
+        capabilityId: "search",
+        amount: { kind: "estimate", value: 1 },
+      },
+    );
+    assert.strictEqual(out, "recovered", "the retry still happened");
+    assert.strictEqual(count, 2);
   });
 });

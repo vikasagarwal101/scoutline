@@ -38,7 +38,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-import type { QuotaCategory } from "../capabilities/quota.js";
+import type { QuotaCategory, QuotaWindow } from "../capabilities/quota.js";
 import type { ProviderId } from "../providers/types.js";
 import { atomicReplaceFile, resolveConfigRoot, type AtomicReplaceOptions } from "./config-store.js";
 
@@ -113,6 +113,75 @@ export interface QuotaStoreWarning {
 
 function defaultWarningSink(warning: QuotaStoreWarning): void {
   process.stderr.write(`scoutline: ${warning.message}\n`);
+}
+
+// ---------------------------------------------------------------------------
+// Consumption adjustment (PB-T2 — local decrement)
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply a {@link ConsumptionAdjustment} to a single category's `current`
+ * window. Returns a new window (immutable update); never mutates the
+ * input.
+ *
+ * Rules:
+ *   - `unknown` amount → no numeric change. The caller advances
+ *     `locallyUpdatedAt` to record that consumption happened.
+ *   - `exact`/`estimate` amount: when the window exposes a count set
+ *     (`used` + `limit`, both finite), `used` is incremented, the
+ *     derived `remaining` clamped at zero, and `remainingPercent`
+ *     recomputed. Without a count set (percentage-only windows), no
+ *     numeric change is possible — the decrement cannot be expressed
+ *     honestly as a percentage, so the snapshot records the event via
+ *     `locallyUpdatedAt` alone.
+ *   - Non-finite or negative `value` is treated as `unknown` (defensive;
+ *     Adapters are expected to send finite nonnegative amounts).
+ */
+function applyConsumptionToWindow(
+  window: QuotaWindow,
+  adjustment: ConsumptionAdjustment,
+): QuotaWindow {
+  const amount = adjustment.amount;
+  if (amount.kind === "unknown") return window;
+  const value = amount.value;
+  if (!Number.isFinite(value) || value < 0) return window;
+  const used = window.used;
+  const limit = window.limit;
+  if (used === undefined || limit === undefined || !Number.isFinite(limit) || limit <= 0) {
+    // Percentage-only window: an absolute decrement cannot be
+    // expressed honestly as a percentage delta. Leave numeric fields
+    // untouched; `locallyUpdatedAt` still advances.
+    return window;
+  }
+  const newUsed = used + value;
+  const newRemaining = Math.max(0, limit - newUsed);
+  const newPercent = Math.round((newRemaining / limit) * 100 * 10) / 10;
+  const clampedPercent = newPercent < 0 ? 0 : newPercent > 100 ? 100 : newPercent;
+  return {
+    ...window,
+    used: newUsed,
+    remaining: newRemaining,
+    remainingPercent: clampedPercent,
+  };
+}
+
+/**
+ * Match `adjustment.category` + `adjustment.unit` against a snapshot's
+ * categories. Returns the index of the first match, or -1 when no
+ * category matches (or when the adjustment omits a name).
+ */
+function findCategoryIndex(
+  categories: readonly QuotaCategory[],
+  adjustment: ConsumptionAdjustment,
+): number {
+  if (adjustment.category === undefined) return -1;
+  for (let i = 0; i < categories.length; i++) {
+    const c = categories[i];
+    if (c.name !== adjustment.category) continue;
+    if (adjustment.unit !== undefined && c.unit !== adjustment.unit) continue;
+    return i;
+  }
+  return -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +264,39 @@ function parseQuotaState(
 // ---------------------------------------------------------------------------
 
 /**
+ * Quota unit, lifted from {@link QuotaCategory} for store-internal use
+ * without importing the full capability contract. PB-T2's consumption
+ * adjustment matches both `category` name AND `unit` against the
+ * snapshot to avoid cross-unit drift (e.g. applying a `requests`
+ * decrement against a `credits` category).
+ */
+export type QuotaUnit = "requests" | "tokens" | "credits";
+
+/**
+ * The amount a single billable attempt consumed. PB-T2's contract:
+ * never fake-precise. The store adjusts numeric estimates only when a
+ * matching category exposes a count set; an `unknown` amount still
+ * advances `locallyUpdatedAt` (so the snapshot reflects that *some*
+ * consumption happened) but never mutates numeric fields.
+ */
+export type ConsumptionAmount =
+  | { readonly kind: "exact"; readonly value: number }
+  | { readonly kind: "estimate"; readonly value: number }
+  | { readonly kind: "unknown" };
+
+/**
+ * Adjustment payload for {@link QuotaStore.writeConsumption} (PB-T2).
+ * The store matches `category` + `unit` against the snapshot's
+ * categories; an absent match means the category isn't tracked, and
+ * only `locallyUpdatedAt` advances.
+ */
+export interface ConsumptionAdjustment {
+  readonly category?: string;
+  readonly unit?: QuotaUnit;
+  readonly amount: ConsumptionAmount;
+}
+
+/**
  * Injectable quota snapshot store. Production wires
  * {@link createDefaultQuotaStore} (real atomic read-merge-write against
  * `~/.scoutline/state.json`); tests inject in-memory doubles so store
@@ -207,12 +309,23 @@ function parseQuotaState(
  *     providers' snapshots are preserved. Only `observedAt` is
  *     advanced; `locallyUpdatedAt` is preserved from the existing
  *     snapshot (PB-T2 advances it, not PB-T1).
+ *   - {@link writeConsumption} (PB-T2) advances `locallyUpdatedAt` and
+ *     adjusts the matching category's `current` count set when a
+ *     finite decrement is supplied. `observedAt` is preserved (ground
+ *     truth never moves on a local estimate). The adjustment is
+ *     idempotent over a missing snapshot (no-op) and a missing
+ *     category (only `locallyUpdatedAt` advances).
  *   - {@link clear} removes a single provider's snapshot (or all when
  *     no ID is given). Used by future reset/diagnostic commands.
  */
 export interface QuotaStore {
   read(): Promise<QuotaState>;
   writeObserved(providerId: ProviderId, snapshot: ProviderQuotaSnapshot): Promise<void>;
+  writeConsumption(
+    providerId: ProviderId,
+    adjustment: ConsumptionAdjustment,
+    at: number,
+  ): Promise<void>;
   clear(providerId?: ProviderId): Promise<void>;
 }
 
@@ -342,6 +455,39 @@ export function createDefaultQuotaStore(options: QuotaStoreOptions = {}): QuotaS
       });
     },
 
+    async writeConsumption(
+      providerId: ProviderId,
+      adjustment: ConsumptionAdjustment,
+      at: number,
+    ): Promise<void> {
+      await withFileLock(filePath, async () => {
+        const existing = await readStateFile();
+        const prior = existing.quota[providerId];
+        // No snapshot → nothing to decrement against. Advance only
+        // when there's something to advance on. (A future harvest will
+        // establish the snapshot; PB-T2 only adjusts existing ones.)
+        if (!prior) return;
+        const categories = prior.categories;
+        const idx = findCategoryIndex(categories, adjustment);
+        const newCategories =
+          idx >= 0
+            ? categories.map((c, i) =>
+                i === idx ? { ...c, current: applyConsumptionToWindow(c.current, adjustment) } : c,
+              )
+            : categories;
+        const merged: ProviderQuotaSnapshot = {
+          observedAt: prior.observedAt,
+          locallyUpdatedAt: at,
+          categories: newCategories,
+        };
+        const updated: QuotaState = {
+          version: QUOTA_STATE_VERSION,
+          quota: { ...existing.quota, [providerId]: merged },
+        };
+        await writeStateFile(updated);
+      });
+    },
+
     async clear(providerId?: ProviderId): Promise<void> {
       await withFileLock(filePath, async () => {
         const existing = await readStateFile();
@@ -388,6 +534,27 @@ export function createInMemoryQuotaStore(
           ? { locallyUpdatedAt: prior.locallyUpdatedAt }
           : {}),
         categories: snapshot.categories,
+      };
+      state = {
+        version: QUOTA_STATE_VERSION,
+        quota: { ...state.quota, [providerId]: merged },
+      };
+    },
+    async writeConsumption(providerId, adjustment, at) {
+      const prior = state.quota[providerId];
+      if (!prior) return;
+      const categories = prior.categories;
+      const idx = findCategoryIndex(categories, adjustment);
+      const newCategories =
+        idx >= 0
+          ? categories.map((c, i) =>
+              i === idx ? { ...c, current: applyConsumptionToWindow(c.current, adjustment) } : c,
+            )
+          : categories;
+      const merged: ProviderQuotaSnapshot = {
+        observedAt: prior.observedAt,
+        locallyUpdatedAt: at,
+        categories: newCategories,
       };
       state = {
         version: QUOTA_STATE_VERSION,

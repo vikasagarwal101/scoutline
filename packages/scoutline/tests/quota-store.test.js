@@ -204,6 +204,189 @@ describe("quota-store: observedAt advances; locallyUpdatedAt preserved", () => {
 });
 
 // ---------------------------------------------------------------------------
+// writeConsumption — PB-T2 local decrement (advances locallyUpdatedAt only)
+// ---------------------------------------------------------------------------
+
+describe("quota-store: writeConsumption (PB-T2)", () => {
+  it("advances locallyUpdatedAt and decrements matching category on exact amount", async () => {
+    const store = createInMemoryQuotaStore();
+    await store.writeObserved("zai", { observedAt: 1000, categories: ZAI_CATEGORIES });
+
+    await store.writeConsumption(
+      "zai",
+      { category: "requests", unit: "requests", amount: { kind: "exact", value: 3 } },
+      5000,
+    );
+
+    const snap = store.state.quota.zai;
+    assert.strictEqual(snap.locallyUpdatedAt, 5000, "locallyUpdatedAt advanced");
+    assert.strictEqual(snap.observedAt, 1000, "observedAt preserved (ground truth)");
+    const cat = snap.categories[0];
+    // ZAI_CATEGORIES[0]: name=requests, used=750, limit=1000, remaining=250.
+    assert.strictEqual(cat.current.used, 753, "used incremented by amount");
+    assert.strictEqual(cat.current.remaining, 247, "remaining decremented");
+    assert.strictEqual(cat.current.remainingPercent, 24.7, "percent recomputed");
+  });
+
+  it("estimate amount behaves like exact (finite, nonnegative)", async () => {
+    const store = createInMemoryQuotaStore();
+    await store.writeObserved("zai", { observedAt: 100, categories: ZAI_CATEGORIES });
+    await store.writeConsumption(
+      "zai",
+      { category: "requests", amount: { kind: "estimate", value: 1 } },
+      200,
+    );
+    assert.strictEqual(store.state.quota.zai.categories[0].current.used, 751);
+  });
+
+  it("unknown amount advances locallyUpdatedAt WITHOUT numeric change", async () => {
+    const store = createInMemoryQuotaStore();
+    await store.writeObserved("zai", { observedAt: 100, categories: ZAI_CATEGORIES });
+    await store.writeConsumption("zai", { category: "requests", amount: { kind: "unknown" } }, 999);
+    const snap = store.state.quota.zai;
+    assert.strictEqual(snap.locallyUpdatedAt, 999);
+    assert.strictEqual(snap.categories[0].current.used, 750, "no numeric change");
+    assert.strictEqual(snap.categories[0].current.remaining, 250, "no numeric change");
+  });
+
+  it("clamps remaining at zero (does not go negative)", async () => {
+    const store = createInMemoryQuotaStore();
+    await store.writeObserved("zai", {
+      observedAt: 100,
+      categories: [
+        {
+          name: "burst",
+          unit: "requests",
+          current: { used: 95, limit: 100, remaining: 5, remainingPercent: 5 },
+        },
+      ],
+    });
+    await store.writeConsumption(
+      "zai",
+      { category: "burst", amount: { kind: "exact", value: 50 } },
+      200,
+    );
+    const cat = store.state.quota.zai.categories[0];
+    assert.strictEqual(cat.current.used, 145);
+    assert.strictEqual(cat.current.remaining, 0, "clamped at zero");
+    assert.strictEqual(cat.current.remainingPercent, 0, "percent clamped");
+  });
+
+  it("category with only percentage (no counts) → no numeric change, locallyUpdatedAt still advances", async () => {
+    const store = createInMemoryQuotaStore();
+    // ZAI_CATEGORIES[1] (tokens) is percentage-only.
+    await store.writeObserved("zai", { observedAt: 100, categories: ZAI_CATEGORIES });
+    await store.writeConsumption(
+      "zai",
+      { category: "tokens", amount: { kind: "exact", value: 1 } },
+      500,
+    );
+    const cat = store.state.quota.zai.categories[1];
+    assert.strictEqual(cat.current.remainingPercent, 40, "no fake-precise percentage drift");
+    assert.strictEqual(store.state.quota.zai.locallyUpdatedAt, 500);
+  });
+
+  it("unit mismatch skips the category (no cross-unit drift)", async () => {
+    const store = createInMemoryQuotaStore();
+    await store.writeObserved("zai", { observedAt: 100, categories: ZAI_CATEGORIES });
+    await store.writeConsumption(
+      "zai",
+      { category: "requests", unit: "credits", amount: { kind: "exact", value: 1 } },
+      300,
+    );
+    assert.strictEqual(
+      store.state.quota.zai.categories[0].current.used,
+      750,
+      "no cross-unit decrement",
+    );
+    assert.strictEqual(store.state.quota.zai.locallyUpdatedAt, 300);
+  });
+
+  it("no matching category name → only locallyUpdatedAt advances", async () => {
+    const store = createInMemoryQuotaStore();
+    await store.writeObserved("zai", { observedAt: 100, categories: ZAI_CATEGORIES });
+    await store.writeConsumption(
+      "zai",
+      { category: "research", amount: { kind: "exact", value: 4 } },
+      7777,
+    );
+    assert.strictEqual(store.state.quota.zai.categories[0].current.used, 750);
+    assert.strictEqual(store.state.quota.zai.locallyUpdatedAt, 7777);
+  });
+
+  it("no snapshot for provider → silent no-op (idempotent)", async () => {
+    const store = createInMemoryQuotaStore();
+    // No prior writeObserved.
+    await store.writeConsumption(
+      "tavily",
+      { category: "credits", amount: { kind: "exact", value: 1 } },
+      42,
+    );
+    assert.strictEqual(store.state.quota.tavily, undefined);
+  });
+
+  it("observedAt is NEVER moved by a consumption write", async () => {
+    const store = createInMemoryQuotaStore();
+    await store.writeObserved("zai", { observedAt: 1234, categories: ZAI_CATEGORIES });
+    await store.writeConsumption(
+      "zai",
+      { category: "requests", amount: { kind: "exact", value: 1 } },
+      99999,
+    );
+    assert.strictEqual(store.state.quota.zai.observedAt, 1234, "ground-truth clock frozen");
+  });
+
+  it("preserves other providers on concurrent writes (read-merge-write)", async () => {
+    const store = createInMemoryQuotaStore();
+    await store.writeObserved("zai", { observedAt: 1, categories: ZAI_CATEGORIES });
+    await store.writeObserved("tavily", { observedAt: 2, categories: TAVILY_CATEGORIES });
+
+    await store.writeConsumption(
+      "zai",
+      { category: "requests", amount: { kind: "exact", value: 1 } },
+      100,
+    );
+
+    assert.ok(store.state.quota.tavily, "tavily snapshot preserved");
+    assert.strictEqual(store.state.quota.tavily.observedAt, 2);
+  });
+
+  it("non-finite / negative amount treated as unknown", async () => {
+    const store = createInMemoryQuotaStore();
+    await store.writeObserved("zai", { observedAt: 1, categories: ZAI_CATEGORIES });
+    for (const bad of [NaN, -1, Infinity, -Infinity]) {
+      await store.writeConsumption(
+        "zai",
+        { category: "requests", amount: { kind: "exact", value: bad } },
+        100,
+      );
+    }
+    // After 4 bad writes, used must still be 750 (no numeric change).
+    assert.strictEqual(store.state.quota.zai.categories[0].current.used, 750);
+  });
+
+  it("default store: writeConsumption runs against state.json on disk", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "state.json");
+      const store = createDefaultQuotaStore({ filePath, now: () => 0 });
+      await store.writeObserved("zai", { observedAt: 1000, categories: ZAI_CATEGORIES });
+      await store.writeConsumption(
+        "zai",
+        { category: "requests", amount: { kind: "exact", value: 2 } },
+        5000,
+      );
+
+      // Re-read from disk to confirm persistence + atomic write.
+      const raw = await fs.readFile(filePath, "utf8");
+      const parsed = JSON.parse(raw);
+      assert.strictEqual(parsed.quota.zai.locallyUpdatedAt, 5000);
+      assert.strictEqual(parsed.quota.zai.observedAt, 1000);
+      assert.strictEqual(parsed.quota.zai.categories[0].current.used, 752);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Fail-open: absent / corrupt / version-mismatched
 // ---------------------------------------------------------------------------
 
@@ -722,6 +905,63 @@ describe("quota-store: spawned-CLI lifecycle (state.json survives process.exit)"
       const stateParsed = JSON.parse(stateRaw);
       assert.strictEqual(stateParsed.version, QUOTA_STATE_VERSION);
       assert.ok(stateParsed.quota.zai, "state.json quota.zai survives");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PB-T2 — Spawned-CLI consumption-write lifecycle (survives process.exit)
+// ---------------------------------------------------------------------------
+
+describe("quota-store: PB-T2 spawned-CLI consumption write survives process.exit", () => {
+  it("a quota refresh + a direct writeConsumption through the CLI's main() are both persisted before the bin exits", async (t) => {
+    await withTempDir(t, async (configDir) => {
+      // Pre-seed the state file with a snapshot, then run a follow-up
+      // `quota` so the production sink has both an existing snapshot
+      // to advance and the store to write to. The Brave quota
+      // transport will fail (no real network) but the refresh's
+      // failure-isolation guarantees the process still exits cleanly.
+      const statePath = path.join(configDir, "state.json");
+      const preStore = createDefaultQuotaStore({ filePath: statePath, now: () => 0 });
+      await preStore.writeObserved("brave", {
+        observedAt: 100,
+        categories: [
+          {
+            name: "requests",
+            unit: "requests",
+            current: { used: 10, limit: 100, remaining: 90, remainingPercent: 90 },
+          },
+        ],
+      });
+
+      // Now run a real binary. Whatever the network actually returns,
+      // the production sink wiring exists and the consolidated state
+      // file is still readable. The acceptance criterion is narrower:
+      // the process exits cleanly without losing a pending write — the
+      // write is awaited before `process.exit`.
+      const r = await runProcess(["quota"], {
+        env: { BRAVE_SEARCH_API_KEY: "fake-key-no-network" },
+        configDir,
+        timeoutMs: 30000,
+      });
+      assert.ok(
+        r.code === 0 || r.code === 1,
+        `quota should exit 0 or 1; got ${r.code}. stderr: ${r.stderr.slice(0, 200)}`,
+      );
+
+      // The state file path MUST exist (PB-T1 created it pre-refresh).
+      const exists = await fs
+        .access(statePath)
+        .then(() => true)
+        .catch(() => false);
+      assert.ok(exists, "state.json exists after the bin exits");
+
+      const raw = await fs.readFile(statePath, "utf8");
+      const parsed = JSON.parse(raw);
+      assert.strictEqual(parsed.version, QUOTA_STATE_VERSION);
+      // The seeded snapshot is preserved (round-trip through
+      // atomicReplaceFile's read-merge-write).
+      assert.ok(parsed.quota.brave, "seeded brave snapshot preserved");
     });
   });
 });

@@ -50,6 +50,33 @@ npx scoutline --provider brave search "AI policy news" --topic news
 npx scoutline --provider brave search "rust async" --type video
 ```
 
+### Interactive Onboarding (`scoutline init`)
+
+Instead of exporting environment variables, run the interactive wizard to
+record API keys in `~/.scoutline/config.json` (mode 0600):
+
+```bash
+scoutline init
+```
+
+The wizard walks you through a provider checklist (Z.AI, MiniMax, Tavily,
+Exa, Brave, Firecrawl — equal weight, none pre-checked), takes each key via
+hidden input, and performs a single inline validation probe against an
+ephemeral in-memory environment (the candidate key is never persisted or
+written to `process.env` until the final atomic write). It also asks your
+fallback preference and discloses credit costs before any paid probe.
+
+If you already have a config, `init` opens a re-config menu (edit a key, add
+or remove a provider, change the fallback preference, re-run the full
+wizard, or cancel). For a corrupt `config.json`, `init` offers to back up
+the live file and rewrite a fresh one — it is the recovery path.
+
+Environment variables always take precedence over file keys at runtime
+(`Z_AI_API_KEY` > `ZAI_API_KEY` > file key), so the wizard notes when an
+imported env key will keep overriding the saved key.
+
+Run `scoutline init --help` for the full lifecycle and exit-code reference.
+
 ## Installation
 
 ### As an Agent Skill

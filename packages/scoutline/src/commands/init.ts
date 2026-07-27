@@ -937,14 +937,10 @@ async function changeFallback(
       ...config,
       providers: { ...config.providers },
       fallbackEnabled: next,
-      // Clear the hint marker so a later switch back triggers the hint.
-      ...(config.hintShown !== undefined ? {} : {}),
+      // hintShown is intentionally preserved (re-config does not reset it;
+      // only a fresh-write or re-init does).
+      ...(config.hintShown !== undefined ? { hintShown: config.hintShown } : {}),
     };
-    // hintShown is intentionally preserved (re-config does not reset it;
-    // only a fresh-write or re-init does).
-    if (config.hintShown !== undefined) {
-      (updated as { hintShown?: boolean }).hintShown = config.hintShown;
-    }
     return persistConfig(deps, updated);
   } catch {
     return "loop";
@@ -1004,10 +1000,8 @@ async function addProvider(
         verification: onboarding.verification,
       },
     },
+    ...(config.hintShown !== undefined ? { hintShown: config.hintShown } : {}),
   };
-  if (config.hintShown !== undefined) {
-    (updated as { hintShown?: boolean }).hintShown = config.hintShown;
-  }
   const status = persistConfig(deps, updated);
   if ((await status) === "written") {
     deps.writeStdout(
@@ -1066,10 +1060,8 @@ async function removeProvider(
   const updated: ScoutlineConfig = {
     ...config,
     providers: nextProviders,
+    ...(config.hintShown !== undefined ? { hintShown: config.hintShown } : {}),
   };
-  if (config.hintShown !== undefined) {
-    (updated as { hintShown?: boolean }).hintShown = config.hintShown;
-  }
   const status = persistConfig(deps, updated);
   if ((await status) === "written") {
     deps.writeStdout(`${providerMeta(providerId).label}: removed.\n`);
@@ -1150,10 +1142,8 @@ async function editProviderKey(
         verification: result.verification,
       },
     },
+    ...(config.hintShown !== undefined ? { hintShown: config.hintShown } : {}),
   };
-  if (config.hintShown !== undefined) {
-    (updated as { hintShown?: boolean }).hintShown = config.hintShown;
-  }
   const status = persistConfig(deps, updated);
   if ((await status) === "written") {
     deps.writeStdout(

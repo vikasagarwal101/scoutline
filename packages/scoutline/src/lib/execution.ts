@@ -34,9 +34,45 @@ import type {
 } from "../capabilities/reader.js";
 import { ScoutlineError } from "./errors.js";
 import { buildProviderCacheKey, type ResponseCache } from "./cache.js";
-import type { ProviderId } from "../providers/types.js";
+import type { ProviderCapability, ProviderId } from "../providers/types.js";
 import type { ConsumptionSink, ConsumptionContext } from "./consumption.js";
 import { emitConsumption, defaultAmountForCapability } from "./consumption.js";
+import { getCapabilityMapping } from "./quota-mapping.js";
+
+// ---------------------------------------------------------------------------
+// Consumption category resolution (PB-T2 → PB-T3 seam)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the snapshot category name a consumption event should target
+ * for `(provider, capability)` by routing through PB-T3's mapping table.
+ *
+ * The four billable wrappers derive a {@link ConsumptionContext} at the
+ * emission site. Pre-W1 they hardcoded the capability id (`"search"`,
+ * `"reader"`, ...) as the `category`, which only matched the snapshot
+ * category name for Tavily (whose endpoint names coincide with capability
+ * ids). Z.AI stores categories as `"requests"`/`"tokens"` and Firecrawl
+ * as `"Credits"`, so `writeConsumption`'s name match missed → only
+ * `locallyUpdatedAt` advanced, no numeric decrement (W1).
+ *
+ * This helper uses the first static alias (or the provider-level
+ * fallback) from {@link getCapabilityMapping} so the emitted category
+ * matches the name the provider's normalizer wrote into the snapshot.
+ *
+ * For unmapped `(provider, capability)` pairs — observational
+ * capabilities (`quota`/`diagnostics`), providers excluded from the
+ * mapping table by policy (Brave/Exa), and MiniMax's empty-alias
+ * sentinel — the capability id is returned unchanged. It matches no
+ * snapshot category, so only `locallyUpdatedAt` advances, which is the
+ * correct behavior for observational / non-spend capabilities.
+ */
+function resolveConsumptionCategory(provider: ProviderId, capabilityId: string): string {
+  const mapping = getCapabilityMapping(provider, capabilityId as ProviderCapability);
+  if (!mapping) return capabilityId;
+  const alias = mapping.categoryAliases[0];
+  if (alias) return alias;
+  return mapping.providerFallbackCategory ?? capabilityId;
+}
 
 // ---------------------------------------------------------------------------
 // Retry policy
@@ -315,15 +351,18 @@ export async function executeSearch(
   //
   // PB-T2: when a consumption sink is wired, derive a ConsumptionContext
   //        from the cache identity (provider + canonical capability id)
-  //        and pass it through. The default amount is the honest
-  //        per-capability estimate (Search = 1 estimated request). Cache
-  //        hits returned above emit nothing.
+  //        and pass it through. The category is routed through PB-T3's
+  //        mapping table (W1) so it matches the provider-specific snapshot
+  //        category name (ZAI `"requests"`, Firecrawl `"Credits"`, Tavily
+  //        endpoint names) rather than the raw capability id. The default
+  //        amount is the honest per-capability estimate (Search = 1
+  //        estimated request). Cache hits returned above emit nothing.
   const consumption: ConsumptionContext | undefined =
     dependencies.consume !== undefined
       ? {
           provider: identity.provider,
           capabilityId: "search",
-          category: "search",
+          category: resolveConsumptionCategory(identity.provider, "search"),
           unit: "requests",
           amount: defaultAmountForCapability("search"),
         }
@@ -460,14 +499,15 @@ export async function executeRepositoryOperation<Request, Result>(
   // PB-T2: when a sink is wired, derive a ConsumptionContext from the
   //        adapter-owned cache identity. The canonical capability id is
   //        the descriptor capability (`repository-exploration`); the
-  //        category is the umbrella `repository` namespace. Cache hits
-  //        returned above emit nothing.
+  //        category is routed through PB-T3's mapping table (W1) so it
+  //        matches the provider-specific snapshot category name. Cache
+  //        hits returned above emit nothing.
   const consumption: ConsumptionContext | undefined =
     dependencies.consume !== undefined
       ? {
           provider: identity.provider,
           capabilityId: "repository-exploration",
-          category: "repository",
+          category: resolveConsumptionCategory(identity.provider, "repository-exploration"),
           unit: "requests",
           amount: defaultAmountForCapability("repository-exploration"),
         }
@@ -606,14 +646,16 @@ export async function executeReaderOperation(
   //
   // PB-T2: when a sink is wired, derive a ConsumptionContext from the
   //        adapter-owned cache identity. Canonical capability id is
-  //        `reader`; category/unit mirror it. Cache hits returned
-  //        above emit nothing.
+  //        `reader`; the category is routed through PB-T3's mapping table
+  //        (W1) so it matches the provider-specific snapshot category name
+  //        (ZAI `"requests"`, Tavily `"extract"`, Firecrawl `"Credits"`).
+  //        Cache hits returned above emit nothing.
   const consumption: ConsumptionContext | undefined =
     dependencies.consume !== undefined
       ? {
           provider: identity.provider,
           capabilityId: "reader",
-          category: "reader",
+          category: resolveConsumptionCategory(identity.provider, "reader"),
           unit: "requests",
           amount: defaultAmountForCapability("reader"),
         }
@@ -785,20 +827,21 @@ export async function executeCachedOperation<Request, Result>(
   //    operation-specific retry count.
   //
   // PB-T2: when a sink is wired, derive a ConsumptionContext from the
-  //        adapter-owned cache identity. Cost model:
+  //        adapter-owned cache identity. The category is routed through
+  //        PB-T3's mapping table (W1) so it matches the provider-specific
+  //        snapshot category name (Firecrawl `"Credits"`, Tavily endpoint
+  //        names) rather than the raw capability id. Cost model:
   //          - `crawl`  → unknown (per-page credits, count varies)
   //          - `map`    → estimate 1 (single batch cost)
   //          - `research` → unknown (4–250 credits, request-dependent)
-  //        PB-T3 will refine the category→capability mapping; PB-T2
-  //        records the honest default. Cache hits returned above emit
-  //        nothing.
+  //        Cache hits returned above emit nothing.
   const capabilityId = identity.capability;
   const consumption: ConsumptionContext | undefined =
     dependencies.consume !== undefined
       ? {
           provider: identity.provider,
           capabilityId,
-          category: capabilityId,
+          category: resolveConsumptionCategory(identity.provider, capabilityId),
           ...(capabilityId === "crawl"
             ? { unit: "credits" as const }
             : capabilityId === "map"

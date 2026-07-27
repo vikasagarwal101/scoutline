@@ -286,7 +286,7 @@ describe("quota-store: writeConsumption (PB-T2)", () => {
     assert.strictEqual(store.state.quota.zai.locallyUpdatedAt, 500);
   });
 
-  it("unit mismatch skips the category (no cross-unit drift)", async () => {
+  it("unit mismatch still decrements (name identity; snapshot unit authoritative)", async () => {
     const store = createInMemoryQuotaStore();
     await store.writeObserved("zai", { observedAt: 100, categories: ZAI_CATEGORIES });
     await store.writeConsumption(
@@ -294,10 +294,12 @@ describe("quota-store: writeConsumption (PB-T2)", () => {
       { category: "requests", unit: "credits", amount: { kind: "exact", value: 1 } },
       300,
     );
+    // The category is found by NAME ("requests"); the event's unit ("credits")
+    // is advisory — the snapshot's unit is authoritative for the decrement math.
     assert.strictEqual(
       store.state.quota.zai.categories[0].current.used,
-      750,
-      "no cross-unit decrement",
+      751,
+      "name match decrements even when units differ",
     );
     assert.strictEqual(store.state.quota.zai.locallyUpdatedAt, 300);
   });

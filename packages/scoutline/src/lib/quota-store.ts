@@ -175,11 +175,14 @@ function findCategoryIndex(
   adjustment: ConsumptionAdjustment,
 ): number {
   if (adjustment.category === undefined) return -1;
+  // Match by category NAME only. The snapshot's unit is authoritative for
+  // the decrement math; the event's unit is advisory and may differ when
+  // the emission site's default unit doesn't match the provider's snapshot
+  // unit (e.g. Firecrawl search emits unit:"requests" but Credits uses
+  // unit:"credits"). Name identity is sufficient — category names are
+  // unique per provider in the normalized QuotaCategory contract.
   for (let i = 0; i < categories.length; i++) {
-    const c = categories[i];
-    if (c.name !== adjustment.category) continue;
-    if (adjustment.unit !== undefined && c.unit !== adjustment.unit) continue;
-    return i;
+    if (categories[i].name === adjustment.category) return i;
   }
   return -1;
 }

@@ -53,6 +53,7 @@ import {
   createDefaultQuotaStore,
   refreshQuotaSnapshots,
   type QuotaStore,
+  type QuotaState,
 } from "./lib/quota-store.js";
 import { createQuotaStoreConsumptionSink, type ConsumptionSink } from "./lib/consumption.js";
 import {
@@ -61,7 +62,7 @@ import {
   isCommandHelpInvocation,
   OBSERVATIONAL_COMMANDS,
 } from "./lib/trigger-detection.js";
-import { resolveProviderId } from "./providers/selection.js";
+import { resolveProviderId, resolveEffectiveProvider } from "./providers/selection.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "./providers/registry.js";
 import type { ProviderDescriptor, ProviderId } from "./providers/types.js";
 import { executeWithFallback, type FallbackOutcome } from "./lib/provider-fallback.js";
@@ -370,6 +371,18 @@ interface HandlerDependencies {
    * pre-PB-T2.
    */
   readonly consume?: ConsumptionSink;
+  /**
+   * Optional quota snapshot (PB-T4 — Plan B). Production is read once
+   * by `main` via `quotaStore.read()` after the PB-T1 pre-command
+   * refresh and threaded through every handler; tests inject a crafted
+   * snapshot so selection assertions stay hermetic — no real
+   * `state.json` I/O. The seven shared handlers pass this to
+   * `resolveEffectiveProvider` for quota-aware first-pick selection.
+   * When absent, the resolver degrades to the first eligible provider
+   * in registry order (the pre-PB-T4 behaviour). Doctor, quota,
+   * cache, init, and raw Z.AI commands never read it.
+   */
+  readonly quotaState?: QuotaState;
 }
 
 async function handleVision(
@@ -393,19 +406,31 @@ async function handleVision(
   // resolution, support check, or media access.
   const operation = visionOperationForCommand(command);
 
-  // Resolve the effective Provider for Vision (DESIGN.md §6). Invalid
-  // explicit/env input fails here with VALIDATION_ERROR before any Vision
-  // support check or media access. Selection never consults credentials
-  // (FR-003); the configured check below is the executor's responsibility
-  // (Provider Fallback Tech Plan §"Per-handler refactor pattern").
-  const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
-
   // Per-operation capability id (e.g. `vision.interpret-image`,
   // `vision.chart`). The executor's preflight uses this to filter
   // descriptors, and notice wording carries it verbatim. Vision
   // sub-operations share the same `adapter.vision` slot — the
-  // per-operation capability is in the descriptor metadata.
+  // per-operation capability is in the descriptor metadata. Computed
+  // before selection so PB-T4 can rank providers against the exact
+  // sub-operation being dispatched.
   const capabilityId = visionOperationToCapability(operation);
+
+  // Resolve the effective Provider for Vision (DESIGN.md §6). Invalid
+  // explicit/env input fails here with VALIDATION_ERROR before any Vision
+  // support check or media access. Selection never consults credentials
+  // beyond the descriptor `isConfigured` metadata check (FR-003); the
+  // configured check below is the executor's responsibility (Provider
+  // Fallback Tech Plan §"Per-handler refactor pattern"). PB-T4: when
+  // no pin is present, the effective provider is the highest-scored
+  // configured+capable provider for this vision operation against the
+  // injected quota snapshot; pin input still bypasses ranking.
+  const providerId: ProviderId = resolveEffectiveProvider({
+    explicitProvider: deps.provider,
+    env: deps.env,
+    capabilityId,
+    descriptors: deps.providerDescriptors,
+    quotaSnapshot: deps.quotaState,
+  });
 
   // Vision bypasses the response cache (FR-022). The shared execution
   // primitives (sleep/random) are the same ones Search consumes; they
@@ -679,10 +704,19 @@ async function handleSearch(
   // Other command families carry the parsed flag but never resolve or
   // validate it. An invalid explicit/env value throws VALIDATION_ERROR
   // here, before any Adapter construction or invocation. Selection never
-  // consults credentials (FR-003); the configured check is the
-  // executor's responsibility (Provider Fallback Tech Plan §"Per-handler
-  // refactor pattern").
-  const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
+  // consults credentials beyond the descriptor `isConfigured` metadata
+  // check (FR-003); the configured check is the executor's
+  // responsibility (Provider Fallback Tech Plan §"Per-handler refactor
+  // pattern"). PB-T4: when no pin is present, the effective provider is
+  // the highest-scored configured+capable provider for `search` against
+  // the injected quota snapshot; pin input still bypasses ranking.
+  const providerId: ProviderId = resolveEffectiveProvider({
+    explicitProvider: deps.provider,
+    env: deps.env,
+    capabilityId: "search",
+    descriptors: deps.providerDescriptors,
+    quotaSnapshot: deps.quotaState,
+  });
 
   const query = positional.join(" ");
 
@@ -787,10 +821,18 @@ async function handleRead(
   const extract = extractFlag !== undefined ? (extractFlag as ExtractMode) : undefined;
 
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
-  // explicit --provider > SCOUTLINE_PROVIDER > default zai. Selection
-  // never consults credentials (FR-003) and never branches on Provider
-  // ID; an unknown explicit/env value throws VALIDATION_ERROR here.
-  const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
+  // explicit --provider > SCOUTLINE_PROVIDER > quota-ranked pick.
+  // Selection never consults credentials beyond the descriptor
+  // `isConfigured` metadata check (FR-003) and never branches on
+  // Provider ID; an unknown explicit/env value throws
+  // VALIDATION_ERROR here. (PB-T4.)
+  const providerId: ProviderId = resolveEffectiveProvider({
+    explicitProvider: deps.provider,
+    env: deps.env,
+    capabilityId: "reader",
+    descriptors: deps.providerDescriptors,
+    quotaSnapshot: deps.quotaState,
+  });
 
   const readOptions = {
     format: flags.format as "markdown" | "text",
@@ -878,8 +920,15 @@ async function handleCrawl(
   }
 
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
-  // explicit --provider > SCOUTLINE_PROVIDER > default zai.
-  const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
+  // explicit --provider > SCOUTLINE_PROVIDER > quota-ranked pick.
+  // (PB-T4.)
+  const providerId: ProviderId = resolveEffectiveProvider({
+    explicitProvider: deps.provider,
+    env: deps.env,
+    capabilityId: "crawl",
+    descriptors: deps.providerDescriptors,
+    quotaSnapshot: deps.quotaState,
+  });
 
   // Shared Crawl execution dependencies. The cache/sleep/random default
   // to the same production values as Search/Repository/Reader but are
@@ -967,8 +1016,15 @@ async function handleMap(
   }
 
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
-  // explicit --provider > SCOUTLINE_PROVIDER > default zai.
-  const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
+  // explicit --provider > SCOUTLINE_PROVIDER > quota-ranked pick.
+  // (PB-T4.)
+  const providerId: ProviderId = resolveEffectiveProvider({
+    explicitProvider: deps.provider,
+    env: deps.env,
+    capabilityId: "map",
+    descriptors: deps.providerDescriptors,
+    quotaSnapshot: deps.quotaState,
+  });
 
   // Shared Map execution dependencies. The cache/sleep/random default
   // to the same production values as Search/Repository/Reader/Crawl but
@@ -1061,8 +1117,15 @@ async function handleResearch(
   ) as "numbered" | "mla" | "apa" | "chicago" | undefined;
 
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
-  // explicit --provider > SCOUTLINE_PROVIDER > default zai.
-  const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
+  // explicit --provider > SCOUTLINE_PROVIDER > quota-ranked pick.
+  // (PB-T4.)
+  const providerId: ProviderId = resolveEffectiveProvider({
+    explicitProvider: deps.provider,
+    env: deps.env,
+    capabilityId: "research",
+    descriptors: deps.providerDescriptors,
+    quotaSnapshot: deps.quotaState,
+  });
 
   // Shared Research execution dependencies.
   const executionDeps: ExecutionDependencies = {
@@ -1227,10 +1290,18 @@ async function handleRepo(
   }
 
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
-  // explicit --provider > SCOUTLINE_PROVIDER > default zai. Selection
-  // never consults credentials (FR-003) and never branches on Provider
-  // ID; an unknown explicit/env value throws VALIDATION_ERROR here.
-  const providerId: ProviderId = resolveProviderId(deps.provider, deps.env);
+  // explicit --provider > SCOUTLINE_PROVIDER > quota-ranked pick.
+  // Selection never consults credentials beyond the descriptor
+  // `isConfigured` metadata check (FR-003) and never branches on
+  // Provider ID; an unknown explicit/env value throws
+  // VALIDATION_ERROR here. (PB-T4.)
+  const providerId: ProviderId = resolveEffectiveProvider({
+    explicitProvider: deps.provider,
+    env: deps.env,
+    capabilityId: "repository-exploration",
+    descriptors: deps.providerDescriptors,
+    quotaSnapshot: deps.quotaState,
+  });
 
   // Shared Repository execution dependencies. The cache/sleep/random
   // default to the same production values as Search but are kept as
@@ -1798,6 +1869,23 @@ export interface MainDependencies {
    * with `createInMemoryConsumptionSink()`.
    */
   readonly consume?: ConsumptionSink;
+  /**
+   * Optional injectable quota snapshot for selection (PB-T4 — Plan B).
+   * Production reads it once via `quotaStore.read()` after the PB-T1
+   * pre-command refresh (the seven shared handlers consume it through
+   * `resolveEffectiveProvider`); tests inject a crafted snapshot so
+   * selection assertions are hermetic — no real `state.json` read.
+   *
+   * Hermeticity gate mirrors `quotaStore`/`consume`: the PRODUCTION
+   * read happens only in full production mode (no injected
+   * `loadScoutlineConfig` AND no injected `providerDescriptors`).
+   * Either injection signals a test that owns its own
+   * descriptor/config construction; such a test injects `quotaState`
+   * directly when it needs to assert a specific selection outcome, or
+   * leaves it absent so the resolver degrades to first-eligible (the
+   * pre-PB-T4 behaviour).
+   */
+  readonly quotaState?: QuotaState;
 }
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1922,6 +2010,17 @@ export async function main(
     (quotaRefreshEnabled
       ? createQuotaStoreConsumptionSink({ store: quotaStore, now: now ?? Date.now })
       : undefined);
+  // PB-T4: quota snapshot for selection. Declared here so
+  // `buildHandlerDeps` closes over the binding; assigned AFTER the
+  // PB-T1 pre-command refresh so observational commands' fresh data is
+  // reflected. The seven shared handlers consume this via
+  // `resolveEffectiveProvider`; Doctor/quota/cache/init/raw-tools
+  // ignore it. Hermeticity gate mirrors `consume`: the PRODUCTION read
+  // runs only in full production mode; tests inject `quotaState`
+  // directly when they assert a specific selection outcome, and
+  // otherwise leave it undefined so the resolver degrades to
+  // first-eligible (pre-PB-T4 behaviour).
+  let quotaState: QuotaState | undefined = dependencies.quotaState;
 
   // Build HandlerDependencies for a given credential view. The
   // cache/sleep/random fields are always available (resolved above); only
@@ -1972,6 +2071,13 @@ export async function main(
     // handler; tests inject their own through `MainDependencies.consume`.
     // When undefined (test path that didn't opt in), no events fire.
     consume,
+    // PB-T4: thread the quota snapshot for selection. `quotaState` is
+    // resolved once in `main` (below) after the PB-T1 pre-command
+    // refresh and shared by every handler; tests inject their own
+    // through `MainDependencies.quotaState`. When undefined (test path
+    // or no-snapshot production run), `resolveEffectiveProvider`
+    // degrades to first-eligible in registry order.
+    quotaState,
   });
 
   // Cache is credential-free (no Provider resolution, no descriptor lookup,
@@ -2188,61 +2294,79 @@ export async function main(
     });
   }
 
+  // PB-T4: read the quota snapshot once for selection, AFTER any
+  // pre-command refresh so observational commands' fresh data is
+  // reflected. `quotaStore.read()` is fail-open (a corrupt or absent
+  // `state.json` yields an empty state + warning, never a throw), so
+  // this can never block dispatch. Tests that need a specific
+  // selection outcome inject `MainDependencies.quotaState` directly,
+  // which short-circuits this read. The snapshot is observational; the
+  // resolver never writes or decrements it.
+  if (dependencies.quotaState === undefined && quotaRefreshEnabled) {
+    quotaState = await quotaStore.read();
+  }
+  // Thread the resolved snapshot into the handler deps. When undefined
+  // (test path that didn't opt in, or non-production mode without an
+  // injected snapshot), `resolveEffectiveProvider` degrades to
+  // first-eligible — the pre-PB-T4 behaviour.
+  const handlerDepsWithSelection: HandlerDependencies =
+    quotaState === undefined ? handlerDeps : { ...handlerDeps, quotaState };
+
   let exitCode: number;
   let commandRecognized = false;
   try {
     switch (command) {
       case "vision":
         commandRecognized = true;
-        exitCode = await handleVision(commandArgs, outputMode, handlerDeps);
+        exitCode = await handleVision(commandArgs, outputMode, handlerDepsWithSelection);
         break;
       case "search":
         commandRecognized = true;
-        exitCode = await handleSearch(commandArgs, outputMode, handlerDeps);
+        exitCode = await handleSearch(commandArgs, outputMode, handlerDepsWithSelection);
         break;
       case "read":
         commandRecognized = true;
-        exitCode = await handleRead(commandArgs, outputMode, handlerDeps);
+        exitCode = await handleRead(commandArgs, outputMode, handlerDepsWithSelection);
         break;
       case "crawl":
         commandRecognized = true;
-        exitCode = await handleCrawl(commandArgs, outputMode, handlerDeps);
+        exitCode = await handleCrawl(commandArgs, outputMode, handlerDepsWithSelection);
         break;
       case "map":
         commandRecognized = true;
-        exitCode = await handleMap(commandArgs, outputMode, handlerDeps);
+        exitCode = await handleMap(commandArgs, outputMode, handlerDepsWithSelection);
         break;
       case "research":
         commandRecognized = true;
-        exitCode = await handleResearch(commandArgs, outputMode, handlerDeps);
+        exitCode = await handleResearch(commandArgs, outputMode, handlerDepsWithSelection);
         break;
       case "repo":
         commandRecognized = true;
-        exitCode = await handleRepo(commandArgs, outputMode, handlerDeps);
+        exitCode = await handleRepo(commandArgs, outputMode, handlerDepsWithSelection);
         break;
       case "tools":
         commandRecognized = true;
-        exitCode = await handleTools(commandArgs, outputMode, handlerDeps);
+        exitCode = await handleTools(commandArgs, outputMode, handlerDepsWithSelection);
         break;
       case "tool":
         commandRecognized = true;
-        exitCode = await handleTool(commandArgs, outputMode, handlerDeps);
+        exitCode = await handleTool(commandArgs, outputMode, handlerDepsWithSelection);
         break;
       case "call":
         commandRecognized = true;
-        exitCode = await handleCall(commandArgs, outputMode, handlerDeps);
+        exitCode = await handleCall(commandArgs, outputMode, handlerDepsWithSelection);
         break;
       case "doctor":
         commandRecognized = true;
-        exitCode = await handleDoctor(commandArgs, outputMode, handlerDeps);
+        exitCode = await handleDoctor(commandArgs, outputMode, handlerDepsWithSelection);
         break;
       case "quota":
         commandRecognized = true;
-        exitCode = await handleQuota(commandArgs, outputMode, handlerDeps);
+        exitCode = await handleQuota(commandArgs, outputMode, handlerDepsWithSelection);
         break;
       case "code":
         commandRecognized = true;
-        exitCode = await handleCode(commandArgs, outputMode, handlerDeps);
+        exitCode = await handleCode(commandArgs, outputMode, handlerDepsWithSelection);
         break;
       default:
         invocation.writeStderr(

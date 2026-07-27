@@ -361,7 +361,15 @@ Use `--output-format json` for `{ success, data, timestamp }` wrapping.
 returns a **schema-version-2** `DiagnosticsReport` carrying a
 `capabilityMatrix` field (per-capability list of supplying Providers)
 plus a one-line cache summary under `cache.summary`. Both are
-Provider-neutral. `repo` returns the schema-version-1 objects documented
+Provider-neutral. PB-T5 adds additive optional fields to both schemas
+(no version bump): each `quota` success row may carry `quotaSource:
+{ source: "snapshot" | "live", observedAt, authoritative }`, the
+`providers` union may include a `{ status: "none", reason:
+"no-capability" }` row for a configured provider without quota (Exa),
+and each `doctor` provider entry may carry `quota: { source:
+"snapshot" | "none", observedAt?, authoritative }` plus `verification:
+{ status, checkedAt, reason? }`. Pre-PB-T5 consumers ignore these
+fields (handled by fall-through). `repo` returns the schema-version-1 objects documented
 above; the standard envelope wraps them in `json`/`pretty` and the
 exact object is emitted in `data`. `read` returns the schema-version-1
 content-read or extract-read envelope in `data`/`json`/`pretty`;

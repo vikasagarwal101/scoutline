@@ -22,9 +22,11 @@
 import type { CommandResult } from "../command-invocation.js";
 import type {
   ProviderQuotaFailure,
+  ProviderQuotaNone,
   ProviderQuotaSuccess,
   QuotaCapability,
   QuotaDashboard,
+  QuotaSourceLabel,
 } from "../capabilities/quota.js";
 import { quotaFailureFromError } from "../capabilities/quota.js";
 import { executeProviderOperation } from "../lib/execution.js";
@@ -33,6 +35,13 @@ import type { ProviderDescriptor, ProviderId } from "../providers/types.js";
 import { getProviderDescriptor } from "../providers/selection.js";
 import { redactSecrets, configuredSecrets, redactCredentialString } from "../lib/redact.js";
 import { formatQuotaDashboard } from "../lib/tty.js";
+import {
+  DEFAULT_QUOTA_STALE_THRESHOLD_MS,
+  isQuotaSnapshotStale,
+  type ProviderQuotaSnapshot,
+  type QuotaState,
+  type QuotaStore,
+} from "../lib/quota-store.js";
 
 // ---------------------------------------------------------------------------
 // Dashboard builder
@@ -45,6 +54,37 @@ export interface QuotaDashboardDependencies {
   readonly env: NodeJS.ProcessEnv;
   readonly sleep: (ms: number) => Promise<void>;
   readonly random: () => number;
+  /**
+   * Optional quota snapshot (PB-T5 — Plan B). When supplied, the
+   * dashboard reads each configured descriptor's snapshot entry first
+   * and labels the row's source/freshness via {@link QuotaSourceLabel};
+   * a stale or missing entry falls back to a live probe (the fallback's
+   * refresh is awaited-write-through when `quotaStore` is supplied).
+   * When omitted, every configured descriptor is live-probed
+   * byte-for-byte (pre-PB-T5 behavior) and no `quotaSource` field is
+   * attached.
+   */
+  readonly quotaSnapshot?: QuotaState;
+  /**
+   * Optional store for live-probe write-through (PB-T5). When supplied
+   * alongside `quotaSnapshot`, a successful live-probe fallback is
+   * persisted via `writeObserved(providerId, { observedAt, categories })`
+   * before the dashboard returns. When omitted (tests), the live-probe
+   * result is returned but NOT persisted. Never consulted when
+   * `quotaSnapshot` is absent.
+   */
+  readonly quotaStore?: QuotaStore;
+  /**
+   * Optional clock for freshness evaluation. Defaults to `Date.now`.
+   * Used only when `quotaSnapshot` is supplied.
+   */
+  readonly now?: () => number;
+  /**
+   * Optional staleness threshold in milliseconds. Defaults to
+   * {@link DEFAULT_QUOTA_STALE_THRESHOLD_MS} (10 min — Tavily's
+   * 10/10min key limit is the floor).
+   */
+  readonly thresholdMs?: number;
 }
 
 interface AdapterWithQuota {
@@ -72,10 +112,139 @@ async function invokeProviderQuota(
 }
 
 /**
+ * Build a {@link QuotaSourceLabel} for a snapshot row. `authoritative`
+ * is computed solely from `observedAt` against `thresholdMs`; the
+ * snapshot's `locallyUpdatedAt` is intentionally NEVER consulted (it
+ * advances on local consumption, never resetting the ground-truth
+ * staleness clock — see PB-T1's `ProviderQuotaSnapshot` doc).
+ */
+function snapshotSourceLabel(
+  snapshot: ProviderQuotaSnapshot,
+  now: number,
+  thresholdMs: number,
+): QuotaSourceLabel {
+  return {
+    source: "snapshot",
+    observedAt: snapshot.observedAt,
+    authoritative: !isQuotaSnapshotStale(snapshot, now, thresholdMs),
+  };
+}
+
+/**
+ * Resolve a single configured Provider's quota row against the snapshot
+ * (PB-T5). Resolution order, fully snapshot-aware:
+ *
+ *   1. **No `quota` capability (Exa)** — emit a `ProviderQuotaNone`
+ *      row with ZERO adapter/transport calls. Only valid in
+ *      all-provider mode; single-provider mode throws
+ *      `UnsupportedCapabilityError` at the caller.
+ *   2. **Snapshot path on** — read the snapshot entry:
+ *        - fresh → return a `ProviderQuotaSuccess` carrying the
+ *          snapshot's categories verbatim + a `quotaSource` label of
+ *          `{source:"snapshot", authoritative:true}`;
+ *        - missing/stale → fall through to step 3.
+ *   3. **Live probe** — invoke the capability through shared execution;
+ *      attach `quotaSource: {source:"live", authoritative:true}`. When
+ *      `quotaStore` is supplied, await `writeObserved` so the next
+ *      dashboard sees a fresh snapshot.
+ *
+ * Failures on the live probe propagate (single-provider mode throws;
+ * all-provider mode is caught by the caller and normalized). The
+ * `locallyUpdatedAt` field of any prior snapshot is preserved by
+ * `writeObserved` (PB-T1's contract).
+ */
+async function resolveQuotaRow(
+  descriptor: ProviderDescriptor,
+  deps: QuotaDashboardDependencies,
+  secrets: string[],
+  snapshotEnabled: boolean,
+  now: number,
+  thresholdMs: number,
+): Promise<ProviderQuotaSuccess | ProviderQuotaFailure | ProviderQuotaNone> {
+  // Step 1 — Exa and any descriptor without `quota`. Zero transport.
+  // ONLY emitted in all-provider mode — a single-provider pin to a
+  // no-quota Provider is a user error and must throw
+  // `UnsupportedCapabilityError` (the user explicitly asked for one
+  // Provider's quota; a no-signal row would hide the user error).
+  if (deps.allProviders && !descriptor.capabilities().has("quota")) {
+    return { provider: descriptor.id, status: "none", reason: "no-capability" };
+  }
+
+  // Step 2 — snapshot path. Fresh snapshots short-circuit the transport.
+  // The snapshot stores categories only (PB-T1's contract); provider-
+  // authored `warnings` (e.g. Brave's rate-limit caveat) are NOT
+  // carried through the snapshot — they surface only when a live
+  // probe runs (stale/missing). Extending the snapshot schema to
+  // carry warnings is out of scope for PB-T5 (PB-T1 owns the schema).
+  if (snapshotEnabled && deps.quotaSnapshot) {
+    const snapshot = deps.quotaSnapshot.quota[descriptor.id];
+    if (snapshot && !isQuotaSnapshotStale(snapshot, now, thresholdMs)) {
+      // Carry the categories verbatim (PB-T1's contract: the snapshot
+      // stores the LIVE `QuotaCategory[]` shape). The freshness label
+      // is computed solely from `observedAt`; `locallyUpdatedAt` is
+      // intentionally NEVER consulted (it advances on local
+      // consumption, never resetting the ground-truth clock).
+      return {
+        provider: descriptor.id,
+        status: "ok",
+        categories: [...snapshot.categories],
+        quotaSource: snapshotSourceLabel(snapshot, now, thresholdMs),
+      };
+    }
+    // Stale/missing → fall through to live probe.
+  }
+
+  // Step 3 — live probe (snapshot disabled, stale, missing, or corrupt).
+  try {
+    const success = await invokeProviderQuota(descriptor, deps.env, deps.sleep, deps.random);
+    // Awaited write-through so the next dashboard reflects fresh data.
+    // Only attempted when the snapshot path is enabled (pre-PB-T5
+    // callers that did not inject a snapshot have no store contract
+    // either — write-through would surprise them).
+    if (snapshotEnabled && deps.quotaStore) {
+      try {
+        await deps.quotaStore.writeObserved(descriptor.id, {
+          observedAt: now,
+          categories: success.categories,
+        });
+      } catch {
+        // Best-effort: a store write failure does not turn a
+        // successful live probe into a dashboard failure. The
+        // snapshot stays stale; the next due-refresh retries.
+        // The store's own warning sink emits the stderr notice.
+      }
+    }
+    // Attach the `quotaSource` label ONLY when the snapshot path is
+    // enabled. A pre-PB-T5 caller (no `quotaSnapshot` injected) gets
+    // byte-for-byte the previous behavior — no `quotaSource` field,
+    // matching the documented backward-compatibility contract.
+    return snapshotEnabled
+      ? ({
+          ...success,
+          // `source: "live"` is always authoritative (just observed).
+          quotaSource: { source: "live", observedAt: now, authoritative: true },
+        } satisfies ProviderQuotaSuccess)
+      : success;
+  } catch (error) {
+    // Single-provider mode: re-throw (preserve the pre-PB-T5 ordinary
+    // error path). All-provider mode: the caller wraps the row as a
+    // redacted failure.
+    if (!deps.allProviders) throw error;
+    return redactSecrets(
+      quotaFailureFromError(descriptor.id, error),
+      secrets,
+    ) as ProviderQuotaFailure;
+  }
+}
+
+/**
  * Default-mode dashboard. Resolves the effective Provider, requires it
  * to be configured (ConfigurationError, exit 3, before transport), then
- * invokes its quota Capability. Failures propagate through the ordinary
- * error path.
+ * resolves its quota row. Under a pin to a Provider that does not
+ * advertise `quota`, throws `UnsupportedCapabilityError` (the user
+ * explicitly asked for one Provider's quota — a no-signal row would
+ * hide the user error). Failures propagate through the ordinary error
+ * path.
  */
 async function buildDefaultDashboard(deps: QuotaDashboardDependencies): Promise<QuotaDashboard> {
   const descriptor = getProviderDescriptor(deps.effectiveProvider, deps.descriptors);
@@ -84,51 +253,54 @@ async function buildDefaultDashboard(deps: QuotaDashboardDependencies): Promise<
       `Provider "${deps.effectiveProvider}" is not configured. Set its API key (Z_AI_API_KEY, MINIMAX_API_KEY, TAVILY_API_KEY, or BRAVE_SEARCH_API_KEY).`,
     );
   }
-  const success = await invokeProviderQuota(descriptor, deps.env, deps.sleep, deps.random);
+  const now = (deps.now ?? Date.now)();
+  const thresholdMs = deps.thresholdMs ?? DEFAULT_QUOTA_STALE_THRESHOLD_MS;
+  const snapshotEnabled = deps.quotaSnapshot !== undefined;
+  const row = await resolveQuotaRow(descriptor, deps, [], snapshotEnabled, now, thresholdMs);
   return {
     schemaVersion: 1,
     effectiveProvider: deps.effectiveProvider,
-    providers: [success],
+    providers: [row],
   };
 }
 
 /**
- * All-provider dashboard. Queries every configured Provider in static
- * registry order using settled collection. No unconfigured Provider is
- * invoked; the effective Provider is dashboard metadata only. Failures
- * are normalized and recursively redacted before joining the dashboard.
- * No configured Provider is a configuration failure, not an empty
- * success.
+ * All-provider dashboard. For every configured Provider in static
+ * registry order: resolve its row via {@link resolveQuotaRow}, which
+ * honors the snapshot path, emits a `ProviderQuotaNone` row for
+ * descriptors without `quota` (Exa), and falls back to a live probe
+ * when the snapshot is stale/missing/corrupt. Settled collection is
+ * preserved: a configured Provider's failure is normalized and
+ * recursively redacted before joining the dashboard, and the command
+ * exits 1 when any configured Provider fails. No configured Provider
+ * is a configuration failure, not an empty success.
  */
 async function buildAllProvidersDashboard(
   deps: QuotaDashboardDependencies,
 ): Promise<QuotaDashboard> {
-  const configured = deps.descriptors.filter(
-    (d) => d.isConfigured(deps.env) && d.capabilities().has("quota"),
-  );
+  const configured = deps.descriptors.filter((d) => d.isConfigured(deps.env));
   if (configured.length === 0) {
     throw new ConfigurationError(
       "No provider is configured. Set at least one API key (Z_AI_API_KEY, MINIMAX_API_KEY, TAVILY_API_KEY, or BRAVE_SEARCH_API_KEY).",
     );
   }
   const secrets = configuredSecrets(deps.env);
-  const settled = await Promise.allSettled(
-    configured.map((d) => invokeProviderQuota(d, deps.env, deps.sleep, deps.random)),
+  const now = (deps.now ?? Date.now)();
+  const thresholdMs = deps.thresholdMs ?? DEFAULT_QUOTA_STALE_THRESHOLD_MS;
+  const snapshotEnabled = deps.quotaSnapshot !== undefined;
+  // Resolve every configured Provider in registry order. Settled
+  // collection preserves partial failure: a `resolveQuotaRow` throw is
+  // caught here (single-row callers re-throw). Note `resolveQuotaRow`
+  // already redacts all-provider failures itself; the outer
+  // `Promise.allSettled` is a defensive guard against a future code
+  // path that throws synchronously after the per-row try/catch.
+  const settled = await Promise.all(
+    configured.map((d) => resolveQuotaRow(d, deps, secrets, snapshotEnabled, now, thresholdMs)),
   );
-  const providers: Array<ProviderQuotaSuccess | ProviderQuotaFailure> = configured.map((d, i) => {
-    const result = settled[i];
-    if (result.status === "fulfilled") {
-      return result.value;
-    }
-    return redactSecrets(
-      quotaFailureFromError(d.id, result.reason),
-      secrets,
-    ) as ProviderQuotaFailure;
-  });
   return {
     schemaVersion: 1,
     effectiveProvider: deps.effectiveProvider,
-    providers,
+    providers: settled,
   };
 }
 
@@ -225,10 +397,22 @@ Reports plan usage as a normalized, schema-version-1 dashboard
 optional weekly windows, counts, remaining percentage, and ISO reset
 time. No Provider-specific field crosses the Interface.
 
-Default mode reports EVERY configured Provider with a quota Capability,
-in registry order. Pin a single Provider with --provider <id> (or the
-SCOUTLINE_PROVIDER env var); --all-providers explicitly forces the
-multi-Provider default even under a pin.
+Default mode reports EVERY configured Provider in registry order —
+including those without a quota Capability (e.g. Exa emits a no-signal
+row labeled "no-capability"). Pin a single Provider with --provider
+<id> (or the SCOUTLINE_PROVIDER env var); --all-providers explicitly
+forces the multi-Provider default even under a pin. A pin to a Provider
+that does not advertise quota (Exa) errors with UNSUPPORTED_CAPABILITY —
+the no-signal row only appears in multi-Provider mode.
+
+Each successful row carries a quotaSource label (PB-T5): "snapshot"
+(read from ~/.scoutline/state.json and within the freshness threshold),
+"live" (the snapshot was stale/missing and the dashboard fell back to
+a live probe), or omitted (a pre-PB-T5 caller that did not inject a
+snapshot). The label's authoritative flag is false when the snapshot
+is stale — selection (PB-T4) treats such rows as eligible-but-neutral,
+and the dashboard surfaces the same flag so a user can correlate a
+selection pick with the data that drove it.
 
 Options:
   --all-providers   Force multi-Provider mode (the default). Successful
@@ -249,4 +433,10 @@ Notes:
   - Multi-Provider mode never invokes an unconfigured Provider.
   - Single-Provider mode (under a pin) propagates failures as ordinary
     errors (exit 3 for an unconfigured pinned Provider).
+  - Under default (multi-Provider) mode, a Provider without a quota
+    Capability (Exa) appears as a no-signal row with zero transport
+    calls; it never triggers a live-probe fallback.
+  - Brave's row reports a rate-limit window, NOT spend or credits —
+    selection authority is always false for Brave regardless of the
+    freshness label (see "Quota Capability Mapping" in the docs).
 `.trim();

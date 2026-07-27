@@ -471,6 +471,47 @@ appear as `skipped` and do not fail the report. Under `--no-tools` every
 configured Provider is reported as `skipped` (reason `tools-disabled`) and
 does not fail the report either.
 
+## `quota` shows `stale · non-authoritative`
+
+Each row carries a `quotaSource.authoritative` flag (PB-T5). A
+non-authoritative row means the snapshot's `observedAt` is older than
+the 10-minute staleness threshold — the dashboard read the snapshot
+but flagged that it may not reflect current spend. Selection (PB-T4)
+treated this provider as eligible-but-neutral.
+
+To force fresh data:
+
+```bash
+scoutline quota            # the explicit command force-refreshes BEFORE the dashboard
+```
+
+The pre-command refresh bypasses the staleness threshold (the user
+asked for fresh data). If a provider's transport fails, the refresh
+is isolated — the snapshot stays stale, the row stays
+non-authoritative, and a stderr notice identifies the failing
+provider.
+
+## `quota` shows a provider with `status: "none"`
+
+A `{ status: "none", reason: "no-capability" }` row (PB-T5) is a
+configured provider that does not advertise a `quota` capability —
+today, only Exa. The row appears in default (multi-provider) mode
+with zero transport calls. Pinning the same provider explicitly
+(`--provider exa quota`) throws `UnsupportedCapabilityError` instead:
+a single-provider pin is a user request for one provider's quota,
+so a no-signal row would hide the user error. To see Exa's
+inventory without the no-signal row, use `scoutline doctor` (its
+`capabilityMatrix` lists every provider's capabilities).
+
+## `quota` is missing Brave's rate-limit caveat
+
+Brave's snapshot stores categories only (PB-T1's contract).
+Provider-authored warnings (Brave's rate-limit caveat) surface only
+on a live probe — when the snapshot is fresh, the dashboard shows
+Brave's numbers without the caveat. Wait for staleness (10+ min) or
+force a refresh via `scoutline quota`. Extending the snapshot schema
+to carry warnings is tracked as future work.
+
 ## Need more information
 
 Run command-local help, which is the canonical option reference:

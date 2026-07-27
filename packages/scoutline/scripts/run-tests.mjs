@@ -19,7 +19,8 @@
  * CLEAR that variable, so credentials alone never trigger live tests.
  */
 import { spawn } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { readdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -68,6 +69,14 @@ function selectFiles(mode) {
  */
 function childEnvFor(mode) {
   const env = { ...process.env };
+
+  // Isolate the test suite from the user's real ~/.scoutline/config.json.
+  // Tests that inject their own config (loadScoutlineConfig/providerDescriptors)
+  // are unaffected; tests that DON'T inject now see an absent config file
+  // (empty providers) instead of leaking the developer's wizard-written keys.
+  // Uses a unique temp dir per run so concurrent test invocations don't collide.
+  env.SCOUTLINE_CONFIG_DIR = mkdtempSync(path.join(tmpdir(), "scoutline-test-"));
+
   if (mode === "offline" || mode === "smoke") {
     // Belt-and-suspenders: clear BOTH live opt-in variables even if
     // credentials exist. This guarantees that a stray `SCOUTLINE_LIVE_TESTS=1`
@@ -116,9 +125,7 @@ function preflightLiveRelease() {
 
 const mode = process.argv[2];
 if (!mode) {
-  console.error(
-    "Usage: node scripts/run-tests.mjs <offline|smoke|live|live-release>",
-  );
+  console.error("Usage: node scripts/run-tests.mjs <offline|smoke|live|live-release>");
   process.exit(2);
 }
 

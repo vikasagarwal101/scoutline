@@ -48,6 +48,7 @@ import {
   createDefaultHintShownStore,
   type VerificationPromotionStore,
   type HintShownStore,
+  type ProviderVerification,
 } from "./lib/config-store.js";
 import {
   createDefaultQuotaStore,
@@ -55,6 +56,7 @@ import {
   type QuotaStore,
   type QuotaState,
 } from "./lib/quota-store.js";
+import type { ProviderVerificationSummary } from "./capabilities/diagnostics.js";
 import { createQuotaStoreConsumptionSink, type ConsumptionSink } from "./lib/consumption.js";
 import {
   classifyCredentialState,
@@ -383,6 +385,27 @@ interface HandlerDependencies {
    * cache, init, and raw Z.AI commands never read it.
    */
   readonly quotaState?: QuotaState;
+  /**
+   * Optional quota store for live-probe write-through (PB-T5 — Plan B).
+   * Production wires the singleton constructed in `main`; tests inject
+   * an in-memory double so write-through assertions stay hermetic.
+   * Doctor never consults it (Doctor reads the snapshot, never
+   * live-probes quota). The `quota` command consults it only when the
+   * snapshot path is enabled AND a configured Provider's snapshot is
+   * stale/missing (a successful live-probe fallback is persisted
+   * before the dashboard returns). When absent, the `quota` command
+   * emits a `quotaSource` label but does not persist the live refresh.
+   */
+  readonly quotaStore?: QuotaStore;
+  /**
+   * Optional verification records for Doctor's per-Provider
+   * `verification` summary (PB-T5 — Plan B). Production maps
+   * `config.providers[id].verification` (Plan A) to
+   * `ProviderVerificationSummary` (capability contract); tests inject
+   * a crafted record so Doctor assertions stay hermetic. When absent,
+   * the `verification` field is omitted (pre-PB-T5 callers).
+   */
+  readonly verificationRecords?: Partial<Record<ProviderId, ProviderVerificationSummary>>;
 }
 
 async function handleVision(
@@ -1521,6 +1544,17 @@ async function handleDoctor(
                 `scoutline: verification promotion failed for "${providerId}": ${message}\n`,
               );
             },
+            // PB-T5: thread the snapshot + verification records through
+            // to the report builder so each Provider entry carries a
+            // `quota` summary (source/freshness) and a `verification`
+            // summary. Both are pure state reads; Doctor never
+            // live-probes quota. The snapshot appears even under
+            // --no-tools (a snapshot read is local state, not
+            // transport).
+            ...(deps.quotaState !== undefined ? { quotaSnapshot: deps.quotaState } : {}),
+            ...(deps.verificationRecords !== undefined
+              ? { verificationRecords: deps.verificationRecords }
+              : {}),
           }),
       }),
     outputMode,
@@ -1621,6 +1655,17 @@ async function handleQuota(
             env: deps.env,
             sleep: deps.searchSleep,
             random: deps.searchRandom,
+            // PB-T5: thread the snapshot + store + clock through so the
+            // dashboard reads each Provider's snapshot first, labels
+            // source/freshness, and persists a live-probe fallback via
+            // the awaited write-through. When `quotaState` is absent
+            // (test path that didn't opt in), the snapshot path is
+            // disabled and every configured Provider is live-probed
+            // (byte-for-byte pre-PB-T5 behavior — no `quotaSource`
+            // field attached).
+            ...(deps.quotaState !== undefined ? { quotaSnapshot: deps.quotaState } : {}),
+            ...(deps.quotaStore !== undefined ? { quotaStore: deps.quotaStore } : {}),
+            now: deps.now ?? Date.now,
           }),
         writeStderr: (value) => deps.invocation.writeStderr(value),
         secrets: deps.secrets,
@@ -1847,6 +1892,18 @@ export interface MainDependencies {
    */
   readonly quotaStore?: QuotaStore;
   /**
+   * Optional injectable verification records for Doctor's per-Provider
+   * `verification` summary (PB-T5 — Plan B). Production maps
+   * `config.providers[id].verification` (Plan A) to
+   * `ProviderVerificationSummary` (capability contract — structural
+   * twin kept separate so the capability contract stays free of
+   * `lib/config-store.ts` imports); tests inject a crafted record so
+   * Doctor assertions stay hermetic — no real `~/.scoutline/config.json`
+   * read. When omitted, the production path derives the records from
+   * the loaded `config`.
+   */
+  readonly verificationRecords?: Partial<Record<ProviderId, ProviderVerificationSummary>>;
+  /**
    * Optional injectable consumption sink (PB-T2 — Plan B). Production
    * defaults to `createQuotaStoreConsumptionSink({ store: quotaStore })`
    * (writes through PB-T1's store, advancing `locallyUpdatedAt` and
@@ -1889,6 +1946,39 @@ export interface MainDependencies {
 }
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Map Plan A's `ProviderVerification` records (config-store shape) to
+ * the capability contract's `ProviderVerificationSummary` (PB-T5). The
+ * shapes are structurally identical; the indirection exists only so
+ * `capabilities/diagnostics.ts` does not import `lib/config-store.ts`
+ * (the capability contract keeps a strict import boundary). Returns
+ * `undefined` when no Provider has a verification record, so the
+ * dispatcher can omit the dependency entirely (Doctor's report builder
+ * leaves the `verification` field off in that case).
+ *
+ * When the caller injected its own `verificationRecords` (test path),
+ * that injection wins — the test owns the verification view.
+ */
+function loadVerificationRecords(
+  config: ScoutlineConfig,
+  dependencies: MainDependencies,
+): Partial<Record<ProviderId, ProviderVerificationSummary>> | undefined {
+  if (dependencies.verificationRecords !== undefined) return dependencies.verificationRecords;
+  const out: Partial<Record<ProviderId, ProviderVerificationSummary>> = {};
+  let hasAny = false;
+  for (const id of Object.keys(config.providers) as ProviderId[]) {
+    const record: ProviderVerification | undefined = config.providers[id]?.verification;
+    if (!record) continue;
+    out[id] = {
+      status: record.status,
+      checkedAt: record.checkedAt,
+      ...(record.reason !== undefined ? { reason: record.reason } : {}),
+    };
+    hasAny = true;
+  }
+  return hasAny ? out : undefined;
+}
 
 export async function main(
   args: readonly string[],
@@ -2078,6 +2168,18 @@ export async function main(
     // or no-snapshot production run), `resolveEffectiveProvider`
     // degrades to first-eligible in registry order.
     quotaState,
+    // PB-T5: thread the quota store for `quota`'s live-probe
+    // write-through. Doctor ignores this field (it never live-probes
+    // quota). Tests inject an in-memory double; production wires the
+    // singleton constructed in `main`.
+    quotaStore: dependencies.quotaStore ?? (quotaRefreshEnabled ? quotaStore : undefined),
+    // PB-T5: verification records are NOT threaded here. They are
+    // derived from `config` AFTER it is loaded (the credentialed
+    // path); `buildHandlerDeps` runs once BEFORE config load (the
+    // cache short-circuit), so referencing `config` here would be a
+    // use-before-initialization error. The post-config
+    // `handlerDepsWithVerification` spread below threads the resolved
+    // records in for Doctor.
   });
 
   // Cache is credential-free (no Provider resolution, no descriptor lookup,
@@ -2236,6 +2338,19 @@ export async function main(
 
   const handlerDeps = buildHandlerDeps(resolvedEnv, secrets, fallbackEnabled);
 
+  // PB-T5 — derive Plan A verification records from the loaded config
+  // AFTER `config` is in scope. `buildHandlerDeps` runs once BEFORE
+  // config load (the cache short-circuit), so this derivation cannot
+  // live inside it (TDZ on `config`). Returned as a fresh spread so
+  // the cache/init paths that already returned are unaffected; only
+  // the credentialed handler chain sees the verification records.
+  // Returns `undefined` when no Provider has a verification record,
+  // leaving the field absent (Doctor's report builder omits the
+  // `verification` field in that case — backward-compatible).
+  const verificationRecords = loadVerificationRecords(config, dependencies);
+  const handlerDepsWithVerification: HandlerDependencies =
+    verificationRecords === undefined ? handlerDeps : { ...handlerDeps, verificationRecords };
+
   // PB-T1 — Quota snapshot refresh lifecycle.
   //
   // The refresh is awaited and bounded (review blocker 3): every
@@ -2308,9 +2423,13 @@ export async function main(
   // Thread the resolved snapshot into the handler deps. When undefined
   // (test path that didn't opt in, or non-production mode without an
   // injected snapshot), `resolveEffectiveProvider` degrades to
-  // first-eligible — the pre-PB-T4 behaviour.
+  // first-eligible — the pre-PB-T4 behaviour. Built on top of
+  // `handlerDepsWithVerification` so PB-T5's verification records also
+  // reach every handler.
   const handlerDepsWithSelection: HandlerDependencies =
-    quotaState === undefined ? handlerDeps : { ...handlerDeps, quotaState };
+    quotaState === undefined
+      ? handlerDepsWithVerification
+      : { ...handlerDepsWithVerification, quotaState };
 
   let exitCode: number;
   let commandRecognized = false;

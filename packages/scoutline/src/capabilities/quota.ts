@@ -60,6 +60,21 @@ export interface ProviderQuotaSuccess {
    * caveat simply omit the field.
    */
   warnings?: readonly string[];
+  /**
+   * Source + freshness label (PB-T5 — Plan B). Additive under schema
+   * version 1: when omitted (the pre-PB-T5 caller path), the row is a
+   * direct live probe whose freshness is implicit (the dashboard was
+   * just built). When the dashboard reads PB-T1's snapshot, this field
+   * carries the source ("snapshot" vs "live" fallback) and the
+   * authoritative flag so a user can correlate a selection pick with
+   * the data that drove it without misattributing it to fresher data
+   * than it is.
+   *
+   * Freshness is judged solely from `observedAt` — the snapshot's
+   * ground-truth clock — never from `locallyUpdatedAt` (PB-T2's local
+   * decrement never resets the staleness clock).
+   */
+  readonly quotaSource?: QuotaSourceLabel;
 }
 
 export interface ProviderQuotaFailure {
@@ -68,10 +83,60 @@ export interface ProviderQuotaFailure {
   error: { code: ScoutlineErrorCode; message: string; help?: string };
 }
 
+/**
+ * A configured Provider that advertises no `quota` Capability (PB-T5 —
+ * Plan B). Today only Exa matches this row in `all-providers` mode: it
+ * is configured and capable inventory, but has no quota endpoint to
+ * probe. The dashboard emits this variant with **zero adapter/transport
+ * calls** — no descriptor.create(), no quota.invoke(), no fallback to a
+ * live probe. The variant is additive under schema version 1: every
+ * existing consumer (TTY renderer, exit-code computation, warnings
+ * loop) handles `status` via fall-through, so the new `"none"` value
+ * cannot break a pre-PB-T5 caller.
+ *
+ * Single-Provider (`--provider <id>`) mode still throws
+ * `UnsupportedCapabilityError` when the pinned Provider lacks `quota` —
+ * the user explicitly asked for one Provider's quota, so emitting a
+ * no-signal row would hide the user error. The no-signal row appears
+ * only in `all-providers` mode (the default).
+ */
+export interface ProviderQuotaNone {
+  readonly provider: ProviderId;
+  readonly status: "none";
+  readonly reason: "no-capability";
+}
+
+/**
+ * Where a {@link ProviderQuotaSuccess} row's data came from (PB-T5).
+ * Carried as a flat sub-object so consumers that don't read it pay
+ * nothing. See {@link ProviderQuotaSuccess.quotaSource}.
+ */
+export interface QuotaSourceLabel {
+  /**
+   * `"snapshot"` — read from PB-T1's `state.json` and judged fresh.
+   * `"live"` — the snapshot was stale/missing/corrupt, so the
+   * dashboard fell back to a live probe (and awaited the write-through
+   * to the snapshot before returning).
+   */
+  readonly source: "snapshot" | "live";
+  /** Epoch-ms the underlying observation was made (`observedAt`). */
+  readonly observedAt: number;
+  /**
+   * Whether `observedAt` is within the authoritative staleness
+   * threshold (`DEFAULT_QUOTA_STALE_THRESHOLD_MS`, 10 min). Selection
+   * (PB-T4) treats non-authoritative rows as eligible-but-neutral; the
+   * dashboard surfaces the same flag so a user can correlate a
+   * selection pick with the data that drove it. A `"live"` row is
+   * always authoritative (just observed); a `"snapshot"` row is
+   * authoritative iff `observedAt` is within the threshold.
+   */
+  readonly authoritative: boolean;
+}
+
 export interface QuotaDashboard {
   schemaVersion: 1;
   effectiveProvider: ProviderId;
-  providers: Array<ProviderQuotaSuccess | ProviderQuotaFailure>;
+  providers: Array<ProviderQuotaSuccess | ProviderQuotaFailure | ProviderQuotaNone>;
 }
 
 export interface QuotaCapability {

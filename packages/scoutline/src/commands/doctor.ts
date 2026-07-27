@@ -23,6 +23,8 @@ import type {
   DiagnosticsCapability,
   DiagnosticsReport,
   ProviderDiagnostic,
+  ProviderDiagnosticQuota,
+  ProviderVerificationSummary,
 } from "../capabilities/diagnostics.js";
 import { deriveCapabilityMatrix, diagnosticErrorFromError } from "../capabilities/diagnostics.js";
 import { executeProviderOperation } from "../lib/execution.js";
@@ -30,6 +32,11 @@ import { UnsupportedCapabilityError } from "../lib/errors.js";
 import { redactSecrets, configuredSecrets } from "../lib/redact.js";
 import type { ProviderDescriptor, ProviderId, ProviderCapability } from "../providers/types.js";
 import type { VerificationPromotionStore } from "../lib/config-store.js";
+import {
+  DEFAULT_QUOTA_STALE_THRESHOLD_MS,
+  isQuotaSnapshotStale,
+  type QuotaState,
+} from "../lib/quota-store.js";
 
 // ---------------------------------------------------------------------------
 // Report builder
@@ -78,6 +85,38 @@ export interface DoctorDiagnosticsDependencies {
    * silently swallowed.
    */
   readonly onPromotionError?: (providerId: ProviderId, error: unknown) => void;
+  /**
+   * Optional quota snapshot for the per-Provider `quota` summary
+   * (PB-T5 — Plan B). When supplied, each Provider entry embeds a
+   * `{ source, observedAt?, authoritative }` summary derived from its
+   * snapshot entry. When omitted, the `quota` field is omitted on
+   * every entry (backward-compatible with pre-PB-T5 callers). Doctor
+   * NEVER live-probes quota — it only reads the snapshot; the live
+   * probe belongs to the `quota` command. Under `--no-tools` the
+   * field still appears when a snapshot is available (a snapshot
+   * read is a local state read, not transport).
+   */
+  readonly quotaSnapshot?: QuotaState;
+  /**
+   * Optional verification records (Plan A — surfaced in Doctor by
+   * PB-T5). When supplied, each Provider entry embeds a
+   * `verification` summary mirroring the Provider's
+   * `config.providers[id].verification` record. The dispatcher maps
+   * the config-store `ProviderVerification` shape to the capability
+   * contract's `ProviderVerificationSummary` (structural twin — kept
+   * separate so the capability contract does not import
+   * `lib/config-store.ts`). When omitted, the field is omitted
+   * (backward-compatible).
+   */
+  readonly verificationRecords?: Partial<Record<ProviderId, ProviderVerificationSummary>>;
+  /**
+   * Optional staleness threshold for the per-Provider `quota`
+   * summary's `authoritative` flag. Defaults to
+   * {@link DEFAULT_QUOTA_STALE_THRESHOLD_MS} (10 min — Tavily's
+   * 10/10min key limit is the floor). Only consulted when
+   * `quotaSnapshot` is supplied.
+   */
+  readonly thresholdMs?: number;
 }
 
 interface AdapterWithDiagnostics {
@@ -131,11 +170,22 @@ async function probeProvider(
  * configured-state evaluation. Otherwise each configured Provider is
  * probed through shared execution with settled collection, preserving
  * registry order and normalized redacted failures.
+ *
+ * PB-T5: when `deps.quotaSnapshot` is supplied, each entry carries a
+ * `quota` summary derived from the snapshot (source/freshness). When
+ * `deps.verificationRecords` is supplied, each entry carries a
+ * `verification` summary mirroring Plan A's config record. Both fields
+ * are omitted when their dependency is absent (backward-compatible).
+ * Doctor never live-probes quota — it only reads the snapshot. The
+ * `quota` field appears even under `--no-tools` (snapshot reads are
+ * local state, not transport).
  */
 export async function buildDiagnosticsReport(
   deps: DoctorDiagnosticsDependencies,
 ): Promise<DiagnosticsReport> {
   const secrets = configuredSecrets(deps.env);
+  const now = (deps.now ?? Date.now)();
+  const thresholdMs = deps.thresholdMs ?? DEFAULT_QUOTA_STALE_THRESHOLD_MS;
 
   const baseEntries: ProviderDiagnosticBase[] = deps.descriptors.map((descriptor) => ({
     provider: descriptor.id,
@@ -143,13 +193,36 @@ export async function buildDiagnosticsReport(
     capabilities: [...descriptor.capabilities()],
   }));
 
+  // PB-T5 — compute the additive `quota` and `verification` fields
+  // once per Provider. Both are pure lookups against injected state
+  // (snapshot/config records), never transport. Returned as a side
+  // table so the probe branches can attach them without re-reading.
+  const quotaFor = (provider: ProviderId): ProviderDiagnosticQuota | undefined => {
+    if (!deps.quotaSnapshot) return undefined;
+    const snapshot = deps.quotaSnapshot.quota[provider];
+    if (!snapshot) {
+      return { source: "none", authoritative: false };
+    }
+    return {
+      source: "snapshot",
+      observedAt: snapshot.observedAt,
+      authoritative: !isQuotaSnapshotStale(snapshot, now, thresholdMs),
+    };
+  };
+  const verificationFor = (provider: ProviderId): ProviderVerificationSummary | undefined =>
+    deps.verificationRecords?.[provider];
+
   const providers: ProviderDiagnostic[] = deps.noTools
     ? baseEntries.map((entry) => ({
         ...entry,
         status: "skipped" as const,
         reason: entry.configured ? ("tools-disabled" as const) : ("not-configured" as const),
+        ...(quotaFor(entry.provider) !== undefined ? { quota: quotaFor(entry.provider) } : {}),
+        ...(verificationFor(entry.provider) !== undefined
+          ? { verification: verificationFor(entry.provider) }
+          : {}),
       }))
-    : await probeEntries(baseEntries, deps, secrets);
+    : await probeEntries(baseEntries, deps, secrets, quotaFor, verificationFor);
 
   // T3b — verification promotion (review item 10). After a successful
   // probe, flip the matching Provider's `verification.status` from
@@ -160,7 +233,7 @@ export async function buildDiagnosticsReport(
   // records are not (the probe result is authoritative). Awaited so a
   // subsequent read after Doctor completion is deterministic.
   if (deps.verificationPromoter) {
-    const checkedAt = (deps.now ?? Date.now)();
+    const checkedAt = now;
     for (const entry of providers) {
       if (entry.status !== "ok") continue;
       try {
@@ -198,11 +271,20 @@ export async function buildDiagnosticsReport(
  * NOT fail the report. A configured probe failure is normalized and
  * recursively redacted before joining the report; successful entries
  * are preserved alongside it.
+ *
+ * PB-T5: the additive `quota` and `verification` fields are attached
+ * to EVERY entry (success/skipped/error) via the injected lookup
+ * closures — they are pure state reads, not transport, so they appear
+ * regardless of the probe outcome. A failed probe with a fresh
+ * snapshot still surfaces the snapshot summary so a user can see both
+ * the probe failure and the quota state.
  */
 async function probeEntries(
   baseEntries: ProviderDiagnosticBase[],
   deps: DoctorDiagnosticsDependencies,
   secrets: string[],
+  quotaFor: (provider: ProviderId) => ProviderDiagnosticQuota | undefined,
+  verificationFor: (provider: ProviderId) => ProviderVerificationSummary | undefined,
 ): Promise<ProviderDiagnostic[]> {
   const configuredIndexes = baseEntries
     .map((entry, index) => (entry.configured ? index : -1))
@@ -216,17 +298,28 @@ async function probeEntries(
 
   let settledCursor = 0;
   return baseEntries.map((entry) => {
+    const quota = quotaFor(entry.provider);
+    const verification = verificationFor(entry.provider);
+    const additive = {
+      ...(quota !== undefined ? { quota } : {}),
+      ...(verification !== undefined ? { verification } : {}),
+    };
     if (!entry.configured) {
-      return { ...entry, status: "skipped" as const, reason: "not-configured" as const };
+      return {
+        ...entry,
+        status: "skipped" as const,
+        reason: "not-configured" as const,
+        ...additive,
+      };
     }
     const result = settled[settledCursor++];
     if (result.status === "fulfilled") {
-      return { ...entry, status: "ok" as const };
+      return { ...entry, status: "ok" as const, ...additive };
     }
     const redacted = redactSecrets(diagnosticErrorFromError(result.reason), secrets) as NonNullable<
       ProviderDiagnostic["error"]
     >;
-    return { ...entry, status: "error" as const, error: redacted };
+    return { ...entry, status: "error" as const, error: redacted, ...additive };
   });
 }
 

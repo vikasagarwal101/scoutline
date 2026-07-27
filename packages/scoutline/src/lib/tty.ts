@@ -90,17 +90,30 @@ interface QuotaCategoryLike {
   };
 }
 
+interface QuotaSourceLike {
+  source: "snapshot" | "live";
+  observedAt: number;
+  authoritative: boolean;
+}
+
 interface QuotaSuccessLike {
   provider: string;
   status: "ok";
   plan?: string;
   categories: QuotaCategoryLike[];
+  quotaSource?: QuotaSourceLike;
 }
 
 interface QuotaFailureLike {
   provider: string;
   status: "error";
   error: { message: string };
+}
+
+interface QuotaNoneLike {
+  provider: string;
+  status: "none";
+  reason: "no-capability";
 }
 
 /**
@@ -144,11 +157,56 @@ function renderCategory(category: QuotaCategoryLike, lines: string[]): void {
 }
 
 /**
+ * Format a relative-age label for an epoch-ms timestamp (PB-T5).
+ * Returns a short "Xm"/"Xh"/"Xd" string suitable for a TTY row. Used
+ * to surface `observedAt` age so a user can judge whether a selection
+ * pick was made against stale or fresh data. The `now` parameter is
+ * injected by the caller so a deterministic test clock produces a
+ * deterministic label.
+ */
+function formatObservedAge(observedAt: number, now: number): string {
+  const diff = Math.max(0, now - observedAt);
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h`;
+  const day = Math.floor(hr / 24);
+  return `${day}d`;
+}
+
+/**
+ * Render the quotaSource label for a successful row (PB-T5). Mirrors
+ * the public {@link QuotaSourceLabel} shape: source/observedAt/
+ * authoritative. A non-authoritative row is dimmed so a user can see
+ * at a glance that the displayed numbers may be stale. The age label
+ * is computed against the injected clock so tests stay deterministic.
+ */
+function renderSourceLabel(source: QuotaSourceLike, lines: string[], now: number): void {
+  const age = formatObservedAge(source.observedAt, now);
+  const authority = source.authoritative
+    ? color.green("fresh")
+    : color.yellow("stale · non-authoritative");
+  const sourceTxt = source.source === "snapshot" ? color.gray("snapshot") : color.cyan("live");
+  lines.push(
+    `      ${color.gray("source")} ${sourceTxt} · ${authority} ${color.gray(`(${age} ago`)}`,
+  );
+}
+
+/**
  * Provider-neutral TTY rendering of a {@link QuotaDashboard}. Each
  * Provider entry is labelled with its Provider id and each category by
  * its normalized name; progress bars represent the REMAINING percentage.
+ *
+ * PB-T5: a successful row carries a `quotaSource` label rendered as a
+ * separate `source` line beneath the categories (snapshot/live, fresh/
+ * stale). The new `"none"` status (no quota Capability — Exa) renders
+ * a single dim line; it never appears as a failure. The `now` argument
+ * defaults to `Date.now()` so existing callers keep working; tests
+ * inject a fixed clock for deterministic age labels.
  */
-export function formatQuotaDashboard(dashboard: QuotaDashboard): string {
+export function formatQuotaDashboard(dashboard: QuotaDashboard, now: number = Date.now()): string {
   const lines: string[] = [""];
   for (const entry of dashboard.providers) {
     if (entry.status === "ok") {
@@ -158,6 +216,13 @@ export function formatQuotaDashboard(dashboard: QuotaDashboard): string {
       for (const category of success.categories) {
         renderCategory(category, lines);
       }
+      if (success.quotaSource) {
+        renderSourceLabel(success.quotaSource, lines, now);
+      }
+    } else if (entry.status === "none") {
+      const none = entry as QuotaNoneLike;
+      lines.push(`  ${color.bold(none.provider)} ${color.dim("(no quota)")}`);
+      lines.push(`    ${color.gray("no quota capability — skipping probe")}`);
     } else {
       const failure = entry as QuotaFailureLike;
       lines.push(`  ${color.bold(failure.provider)} ${color.red("error")}`);

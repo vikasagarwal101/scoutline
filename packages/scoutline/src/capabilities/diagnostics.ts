@@ -55,6 +55,83 @@ export interface ProviderDiagnostic {
   readonly status: "ok" | "error" | "skipped";
   readonly reason?: "not-configured" | "tools-disabled";
   readonly error?: { code: ScoutlineErrorCode; message: string; help?: string };
+  /**
+   * Quota snapshot summary for this Provider (PB-T5 — Plan B).
+   * Optional: present when the dispatcher threads a quota snapshot
+   * through `DoctorDiagnosticsDependencies.quotaSnapshot`. Doctor
+   * reports each Provider's quota source (snapshot vs none) +
+   * freshness (`observedAt` age; stale → flagged non-authoritative)
+   * so a user can correlate a selection pick with the data that drove
+   * it. Under `--no-tools` the field still appears when a snapshot is
+   * available (a snapshot read is a local state read, not transport).
+   *
+   * Doctor NEVER live-probes quota — it only reads the snapshot. The
+   * `source` is therefore always `"snapshot"` when an entry exists, or
+   * `"none"` when the snapshot has no entry for this Provider.
+   * Additive under schema version 2: pre-PB-T5 callers that omit the
+   * dependency produce entries without this field.
+   */
+  readonly quota?: ProviderDiagnosticQuota;
+  /**
+   * Verification summary mirroring the Provider's Plan A
+   * `config.providers[id].verification` record (PB-T5). Optional:
+   * present when the dispatcher threads the configured providers'
+   * verification records through
+   * `DoctorDiagnosticsDependencies.verificationRecords`. Additive under
+   * schema version 2: pre-PB-T5 callers produce entries without it.
+   */
+  readonly verification?: ProviderVerificationSummary;
+}
+
+/**
+ * Quota summary embedded in a {@link ProviderDiagnostic} (PB-T5 —
+ * Plan B). A structural view of PB-T1's snapshot entry for this
+ * Provider: never carries categories (Doctor is observational; full
+ * categories belong to the `quota` command). Doctor never live-probes
+ * quota, so the source is always `"snapshot"` (when an entry exists)
+ * or `"none"` (when it does not).
+ */
+export interface ProviderDiagnosticQuota {
+  /**
+   * `"snapshot"` — read from PB-T1's `state.json`. `"none"` — the
+   * snapshot has no entry for this Provider (it may be unconfigured,
+   * may not advertise `quota`, or may simply have never been
+   * refreshed). Doctor never emits `"live"`; the live probe belongs
+   * to the `quota` command, not Doctor.
+   */
+  readonly source: "snapshot" | "none";
+  /**
+   * Epoch-ms the snapshot was observed. Omitted when `source` is
+   * `"none"`. Freshness is judged solely from `observedAt` — never
+   * from `locallyUpdatedAt` (PB-T2's local decrement never resets the
+   * staleness clock).
+   */
+  readonly observedAt?: number;
+  /**
+   * Whether `observedAt` is within the authoritative staleness
+   * threshold (`DEFAULT_QUOTA_STALE_THRESHOLD_MS`, 10 min). Always
+   * `false` when `source` is `"none"`. Matches the same flag the
+   * `quota` command and PB-T4's selection resolver use, so a user can
+   * correlate Doctor's "stale" label with a selection pick that was
+   * made against the same snapshot.
+   */
+  readonly authoritative: boolean;
+}
+
+/**
+ * Verification summary mirroring Plan A's
+ * `ProviderVerification` shape (PB-T5). Defined as a structural twin
+ * in the capability contract so `capabilities/diagnostics.ts` does
+ * not import from `lib/config-store.ts` (the capability contract
+ * imports only Provider identity and metadata types and shared
+ * errors — see the boundary rules at the top of this module). The
+ * dispatcher maps `ProviderVerification → ProviderVerificationSummary`
+ * at the report-dependency boundary.
+ */
+export interface ProviderVerificationSummary {
+  readonly status: "verified" | "unverified";
+  readonly checkedAt: number;
+  readonly reason?: string;
 }
 
 /**

@@ -663,6 +663,105 @@ The ranking is deterministic for identical inputs — same `state` +
 same `candidates` + same `registryOrder` always produces the same
 output order.
 
+## Quota snapshot integration
+
+`scoutline quota` and `scoutline doctor` surface the same PB-T1
+snapshot that drives quota-balanced selection (PB-T4), so a user can
+see and trust the quota state behind a selection pick. Both commands
+stay on their existing schema versions — the new fields are additive
+and optional.
+
+### Schema decision (PB-T5, review item 14)
+
+**Additive under existing schema versions**, not a version bump:
+
+| Output | Schema | New fields |
+| --- | --- | --- |
+| `QuotaDashboard` | `schemaVersion: 1` (unchanged) | `ProviderQuotaSuccess.quotaSource?: { source, observedAt, authoritative }`; new union member `ProviderQuotaNone { status: "none", reason: "no-capability" }` |
+| `DiagnosticsReport` | `schemaVersion: 2` (unchanged) | `ProviderDiagnostic.quota?: { source, observedAt?, authoritative }`; `ProviderDiagnostic.verification?: { status, checkedAt, reason? }` |
+
+Rationale: quota/doctor are observational; additive optional fields
+don't break consumers structurally. The new `"none"` union member is
+handled by every existing consumer's fall-through (the TTY renderer
+treats it as a single dim line; the exit-code computation ignores it;
+the warnings loop skips it). The precedent is `ProviderQuotaSuccess.warnings`
+(additive under the same schema) and `DiagnosticsReport.cache` (additive
+under schema v2).
+
+### `quota` source labels
+
+Each successful row carries a `quotaSource` label:
+
+| `source` | Meaning | `authoritative` |
+| --- | --- | --- |
+| `"snapshot"` | Read from `~/.scoutline/state.json` and within the freshness threshold. | `true` iff `observedAt` is within `DEFAULT_QUOTA_STALE_THRESHOLD_MS` (10 min). |
+| `"live"` | The snapshot was stale/missing/corrupt; the dashboard fell back to a live probe. | Always `true` (just observed). |
+| _omitted_ | Pre-PB-T5 caller path — no snapshot was injected. The row is a direct live probe whose freshness is implicit. | _n/a_ |
+
+The dashboard awaits `quotaStore.writeObserved(...)` after every
+successful live-probe fallback so the next dashboard reflects fresh
+data. A store write failure is isolated (the row is still returned
+with `source: "live"`); the store's own warning sink emits the stderr
+notice.
+
+### Exa no-signal row
+
+In default (multi-provider) mode, a configured provider without a
+`quota` capability (today: Exa) now appears as:
+
+```json
+{ "provider": "exa", "status": "none", "reason": "no-capability" }
+```
+
+with **zero adapter/transport calls** — no live-probe fallback is
+attempted. Pre-PB-T5 the multi-provider dashboard excluded Exa via
+a capability filter; the no-signal row is the new contract.
+
+A single-provider pin to a no-quota provider still throws
+`UnsupportedCapabilityError` — pinning `--provider exa quota` is a
+user error (the user explicitly asked for one provider's quota), so a
+no-signal row would hide it. The no-signal row appears only in
+multi-provider mode (the default).
+
+### Brave rate-limit caveat
+
+Brave's snapshot stores categories only (PB-T1's contract).
+Provider-authored `warnings` (e.g. Brave's rate-limit caveat) are
+**not** carried through the snapshot — they surface only when a live
+probe runs (stale/missing). When the snapshot is fresh, the dashboard
+shows Brave's numbers without the caveat. A user who needs the caveat
+can wait for staleness (10+ min) or run a pinned query that bypasses
+the snapshot. Extending the snapshot schema to carry warnings is out
+of scope for PB-T5 (PB-T1 owns the schema).
+
+### `doctor` quota + verification summaries
+
+Each provider entry in the diagnostics report carries:
+
+- `quota`: `{ source: "snapshot" | "none", observedAt?, authoritative }`
+  derived from the snapshot — **never** via a live quota probe (Doctor
+  is observational). The summary appears even under `--no-tools` (a
+  snapshot read is local state, not transport) and even when the
+  diagnostics probe fails (the snapshot is independent of the probe).
+- `verification`: mirrors Plan A's `config.providers[id].verification`
+  record so the user can see when each provider was last verified by
+  a successful `doctor` probe.
+
+### Correlating selection with the dashboard
+
+The `quotaSource.authoritative` flag is the **same flag** PB-T4's
+selection resolver uses. A non-authoritative row means the selection
+treated the provider as eligible-but-neutral. The dashboard surfaces
+the same flag so a user can correlate a selection pick with the data
+that drove it — without misattributing the pick to data fresher than
+it is.
+
+Freshness is judged solely from `observedAt` — the snapshot's
+ground-truth clock. `locallyUpdatedAt` (PB-T2's local decrement)
+**never** resets the staleness clock; a snapshot with a stale
+`observedAt` and a fresh `locallyUpdatedAt` is still
+non-authoritative.
+
 ## Security
 
 Keep credentials in your shell profile, secret manager, or CI secret store.

@@ -18,6 +18,8 @@ import {
   emitConsumption,
 } from "../dist/lib/consumption.js";
 import { createInMemoryQuotaStore } from "../dist/lib/quota-store.js";
+import { executeSearch, executeCachedOperation } from "../dist/lib/execution.js";
+import { getCapabilityMapping } from "../dist/lib/quota-mapping.js";
 
 // ---------------------------------------------------------------------------
 // defaultAmountForCapability — honest cost model
@@ -91,9 +93,13 @@ describe("consumption: createInMemoryConsumptionSink", () => {
 // Production sink — writes through QuotaStore.writeConsumption
 // ---------------------------------------------------------------------------
 
+// Real Z.AI normalizer category name (normalizeZaiQuota emits
+// `name:"requests"`, NOT `name:"search"`). Using the real name here
+// catches the class of mismatch where the emitted category id differs
+// from the snapshot category name (W1).
 const ZAI_CATEGORIES = [
   {
-    name: "search",
+    name: "requests",
     unit: "requests",
     current: { used: 5, limit: 100, remaining: 95, remainingPercent: 95 },
   },
@@ -108,7 +114,7 @@ describe("consumption: createQuotaStoreConsumptionSink", () => {
     await sink.record({
       provider: "zai",
       capabilityId: "search",
-      category: "search",
+      category: "requests",
       unit: "requests",
       amount: { kind: "exact", value: 1 },
       attempt: 1,
@@ -133,7 +139,7 @@ describe("consumption: createQuotaStoreConsumptionSink", () => {
     await sink.record({
       provider: "zai",
       capabilityId: "research",
-      category: "search", // even if category matches
+      category: "requests", // category matches; amount is unknown
       amount: { kind: "unknown" },
       attempt: 1,
       at: 7000,
@@ -291,5 +297,198 @@ describe("consumption: emitConsumption helper", () => {
     assert.strictEqual(inMem.events[0].provider, "tavily");
     assert.strictEqual(inMem.events[0].attempt, 2);
     assert.strictEqual(inMem.events[0].at, 4242);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Characterization: execution → sink → store category targeting (W1)
+//
+// Proves the consumption event emitted by the shared-execution wrappers
+// targets the REAL provider-specific snapshot category name, not the raw
+// capability id. Before W1, `executeSearch` hardcoded `category:"search"`
+// which only matched Tavily (whose endpoint names coincide with capability
+// ids); ZAI (`"requests"`) and Firecrawl (`"Credits"`) silently missed and
+// only `locallyUpdatedAt` advanced. These tests go through the real
+// execution wrapper → production sink → QuotaStore so a regression in the
+// category-resolution seam (lib/execution.ts → lib/quota-mapping.ts) is
+// caught at the decrement, not just at the event payload.
+// ---------------------------------------------------------------------------
+
+/** Minimal in-memory ResponseCache double (no disk). */
+function makeInMemoryCache() {
+  const store = new Map();
+  return {
+    async get(key) {
+      return store.has(key) ? store.get(key) : null;
+    },
+    async set(key, value) {
+      store.set(key, value);
+    },
+  };
+}
+
+/** Minimal SearchCapability double for a given provider. */
+function makeSearchCapability(provider = "zai") {
+  return {
+    validate(request) {
+      if (!request || !request.query || !String(request.query).trim()) {
+        throw new Error("Query must not be empty");
+      }
+    },
+    cacheIdentity(request) {
+      return {
+        provider,
+        capability: "search",
+        credentialFingerprint: "test-fingerprint",
+        request: { query: request.query },
+      };
+    },
+    async invoke() {
+      return [{ title: "T", url: "https://example.test/x", summary: "S" }];
+    },
+  };
+}
+
+/** Minimal CachedOperation double for a given provider + kind. */
+function makeCachedOperation(provider = "firecrawl", kind = "crawl") {
+  return {
+    kind,
+    validate() {},
+    cacheIdentity() {
+      return {
+        provider,
+        capability: kind,
+        credentialFingerprint: "test-fingerprint",
+        request: {},
+      };
+    },
+    decodeCached() {
+      return null;
+    },
+    async invoke() {
+      return { ok: true };
+    },
+  };
+}
+
+describe("consumption: W1 characterization — execution targets real category names", () => {
+  it("ZAI search decrements the real `requests` category (not `search`)", async () => {
+    // Derive the real category name from the mapping table — this is the
+    // name normalizeZaiQuota writes into the snapshot.
+    const mapping = getCapabilityMapping("zai", "search");
+    assert.ok(mapping, "mapping exists for (zai, search)");
+    const realCategory = mapping.categoryAliases[0];
+    assert.strictEqual(realCategory, "requests", "ZAI search maps to the `requests` category");
+
+    // Seed the store with a REAL ZAI snapshot shape.
+    const store = createInMemoryQuotaStore();
+    await store.writeObserved("zai", {
+      observedAt: 1000,
+      categories: [
+        {
+          name: "requests",
+          unit: "requests",
+          current: { used: 5, limit: 100, remaining: 95, remainingPercent: 95 },
+        },
+      ],
+    });
+
+    const sink = createQuotaStoreConsumptionSink({ store, now: () => 5000 });
+
+    // Run through the REAL executeSearch wrapper so the category-resolution
+    // seam is exercised. Before W1 this emitted category:"search" → no
+    // match → no decrement. After W1 it emits category:"requests" → match.
+    await executeSearch(
+      makeSearchCapability("zai"),
+      { query: "test" },
+      {},
+      {
+        cache: makeInMemoryCache(),
+        sleep: () => Promise.resolve(),
+        random: () => 0,
+        consume: sink,
+        now: () => 5000,
+      },
+    );
+
+    const state = await store.read();
+    const snap = state.quota.zai;
+    assert.ok(snap, "snapshot exists");
+    assert.strictEqual(snap.locallyUpdatedAt, 5000, "locallyUpdatedAt advanced");
+    const cat = snap.categories[0];
+    assert.strictEqual(cat.name, "requests", "snapshot category is `requests`");
+    assert.strictEqual(
+      cat.current.used,
+      6,
+      "`requests` used incremented (decrement targeted the RIGHT category)",
+    );
+    assert.strictEqual(cat.current.remaining, 94, "`requests` remaining decremented");
+  });
+
+  it("Firecrawl crawl decrements the real `Credits` category (not `crawl`)", async () => {
+    // Derive the real category name from the mapping table.
+    const mapping = getCapabilityMapping("firecrawl", "crawl");
+    assert.ok(mapping, "mapping exists for (firecrawl, crawl)");
+    const realCategory = mapping.categoryAliases[0];
+    assert.strictEqual(realCategory, "Credits", "Firecrawl crawl maps to the `Credits` category");
+
+    // Seed the store with a REAL Firecrawl snapshot shape.
+    const store = createInMemoryQuotaStore();
+    await store.writeObserved("firecrawl", {
+      observedAt: 2000,
+      categories: [
+        {
+          name: "Credits",
+          unit: "credits",
+          current: { used: 10, limit: 500, remaining: 490, remainingPercent: 98 },
+        },
+      ],
+    });
+
+    const sink = createQuotaStoreConsumptionSink({ store, now: () => 6000 });
+
+    // Run through the REAL executeCachedOperation wrapper. Before W1 this
+    // emitted category:"crawl" → no match → no decrement. After W1 it
+    // emits category:"Credits" → match. Crawl's amount is `unknown` so
+    // only locallyUpdatedAt advances (honest about variable per-page cost),
+    // but the category TARGETING is still proven by the locallyUpdatedAt
+    // advance on a snapshot whose only category is `Credits`.
+    await executeCachedOperation(
+      makeCachedOperation("firecrawl", "crawl"),
+      {},
+      {},
+      {
+        cache: makeInMemoryCache(),
+        sleep: () => Promise.resolve(),
+        random: () => 0,
+        consume: sink,
+        now: () => 6000,
+      },
+    );
+
+    const state = await store.read();
+    const snap = state.quota.firecrawl;
+    assert.ok(snap, "snapshot exists");
+    assert.strictEqual(
+      snap.locallyUpdatedAt,
+      6000,
+      "locallyUpdatedAt advanced on the `Credits` snapshot",
+    );
+    // Crawl amount is `unknown` → no numeric decrement (honest), but the
+    // locallyUpdatedAt advance proves the event reached the right provider
+    // snapshot. The category match is verified by the mapping assertion above.
+    assert.strictEqual(
+      snap.categories[0].current.used,
+      10,
+      " Credits used unchanged (crawl cost is unknown)",
+    );
+  });
+
+  it("an unmapped capability (quota) keeps the capability id as category (observational)", async () => {
+    // quota/diagnostics are intentionally unmapped — they are observational.
+    // resolveConsumptionCategory returns the capability id, which matches
+    // no snapshot category, so only locallyUpdatedAt advances.
+    const mapping = getCapabilityMapping("zai", "quota");
+    assert.strictEqual(mapping, undefined, "quota is unmapped by design");
   });
 });

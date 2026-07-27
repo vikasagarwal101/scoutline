@@ -174,6 +174,32 @@ All notable changes to this project will be documented in this file.
   deterministic, known-first / unknown-last ordering PB-T4 will walk.
   This is additive derivation only; existing commands are byte-for-byte
   unchanged. PB-T4 wires the scorer into the selection algorithm.
+- **Quota-balanced provider selection (PB-T4 — first-pick-only).** When
+  no explicit `--provider` / `SCOUTLINE_PROVIDER` pin is supplied and a
+  quota snapshot is available, the seven shared handlers (`search`,
+  `read`, `crawl`, `map`, `research`, `repo`, `vision`) now resolve the
+  effective provider via PB-T3's authority-aware ranking: the
+  highest-scored **known-tier** configured provider wins; if none are
+  known, the compat default `zai` is returned. An explicit pin still
+  bypasses ranking entirely and preserves the existing typed
+  `ValidationError` / `UNSUPPORTED_CAPABILITY` errors. When no
+  `quotaState` is wired (every existing test and pre-PB-T4 caller),
+  selection delegates to `resolveProviderId` byte-for-byte — no
+  behavioral change. `executeWithFallback` and its candidate/error
+  classification are untouched; only the first-pick resolution changes.
+  Doctor and quota remain observational and never participate in
+  selection.
+
+### Fixed
+- **Test runner isolates `SCOUTLINE_CONFIG_DIR`.** The offline/smoke
+  test modes now set `SCOUTLINE_CONFIG_DIR` to a unique per-run temp
+  directory so the developer's real `~/.scoutline/config.json` (written
+  by `scoutline init`) does not leak into non-hermetic tests that call
+  `main()` without injecting `loadScoutlineConfig` /
+  `providerDescriptors`. Tests that inject their own config are
+  unaffected. Fixes 87 pre-existing failures in repository-command,
+  reader-command, and search-type-control suites; the full suite is now
+  green.
 
 ## [0.11.0] - 2026-07-26
 

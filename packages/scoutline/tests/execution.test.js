@@ -721,7 +721,10 @@ describe("executeSearch — PB-T2 consumption emission", () => {
     const ev = sink.events[0];
     assert.strictEqual(ev.provider, "zai");
     assert.strictEqual(ev.capabilityId, "search");
-    assert.strictEqual(ev.category, "search");
+    // W1: category is routed through PB-T3's mapping table — ZAI search
+    // maps to the real snapshot category name `requests`, not the raw
+    // capability id `search`.
+    assert.strictEqual(ev.category, "requests");
     assert.strictEqual(ev.unit, "requests");
     assert.strictEqual(ev.amount.kind, "estimate");
     assert.strictEqual(ev.attempt, 1);

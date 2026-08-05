@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-08-06
+
+### Fixed
+- **Exa research no longer hard-rejects `--output-length`, `--citation-format`,
+  or `--domain`.** The Exa Agent create body has no native fields for those
+  provider-neutral options (only `query` + `effort`), so the adapter now
+  warn-and-strips them on stderr and continues the run. Previously
+  `UNSUPPORTED_OPTION` aborted the Exa attempt and could turn a recoverable
+  Tavily→Exa fallback into a total failure ([#4](https://github.com/vikasagarwal101/scoutline/issues/4)).
+- **Provider-fallback exhaustion surfaces the last eligible failure when the
+  effective provider never ran.** If the preferred provider was skipped as
+  incapable/unconfigured and later candidates failed at runtime, the JSON
+  error envelope now carries that last actionable error instead of masking
+  it behind `UnsupportedCapabilityError` / `ConfigurationError` for the
+  skipped effective.
+
 ## [0.12.0] - 2026-07-27
 
 ### Added

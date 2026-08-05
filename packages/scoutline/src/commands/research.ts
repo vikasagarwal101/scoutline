@@ -476,8 +476,11 @@ then the configured default):
 Options:
   --model <m>            Research model: mini | pro | auto (default: auto)
   --output-length <l>    Report length: short | standard | long (default: standard)
+                         (honored by Tavily; ignored with a stderr warning on Exa)
   --citation-format <f>  Citations: numbered | mla | apa | chicago (default: numbered)
+                         (honored by Tavily; ignored with a stderr warning on Exa)
   --domain <d>           Restrict research to a single domain
+                         (honored by Tavily; ignored with a stderr warning on Exa)
   --max-chars <n>        Truncate the report text to <n> chars
                          (projection only; cache stores full report)
   --timeout <s>          Polling timeout in seconds (default: 300)

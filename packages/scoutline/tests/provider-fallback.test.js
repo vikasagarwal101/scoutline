@@ -644,6 +644,63 @@ describe("executeWithFallback — exhaustion preserves the effective's real erro
     assert.match(caught.message, /zai/);
   });
 
+  it("re-throws the last eligible runtime error when the effective was skipped as incapable", async () => {
+    // Issue #4 secondary: default zai (no research) → tavily fails →
+    // exa fails. Exhaustion must surface the last eligible failure,
+    // not UnsupportedCapabilityError(zai), so the envelope is
+    // actionable.
+    const registry = [
+      makeDescriptor("zai", {
+        capabilities: ["search"], // does NOT advertise research
+        configured: true,
+        adapterHandle: "search",
+      }),
+      makeDescriptor("tavily", {
+        capabilities: ["research"],
+        configured: true,
+        adapterHandle: "research",
+      }),
+      makeDescriptor("exa", {
+        capabilities: ["research"],
+        configured: true,
+        adapterHandle: "research",
+      }),
+    ];
+    const tavilyErr = new ApiError("Tavily request failed", 500);
+    const exaErr = new UnsupportedOptionError("exa", "research", "outputLength");
+    const cap = captureStderr();
+    let caught;
+    try {
+      await executeWithFallback(
+        {
+          capabilityId: "research",
+          commandLabel: "research",
+          effectiveProvider: "zai",
+          descriptors: registry,
+          env: {},
+          fallbackEnabled: true,
+          writeStderr: cap.writeStderr,
+        },
+        async (d) => {
+          if (d.id === "tavily") throw tavilyErr;
+          if (d.id === "exa") throw exaErr;
+          throw new Error(`unexpected attempt: ${d.id}`);
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    assert.strictEqual(caught, exaErr, "must re-throw the last eligible error");
+    assert.ok(
+      !(caught instanceof UnsupportedCapabilityError),
+      "must not mask with the skipped effective's UnsupportedCapabilityError",
+    );
+    assert.ok(
+      cap.lines.some((l) => l.includes("exa failed") && l.includes("no further candidates")),
+      `expected terminal exhaustion notice for exa, got: ${JSON.stringify(cap.lines)}`,
+    );
+  });
+
   it("never synthesizes a different error type from the effective's outcome", async () => {
     // Critique #7 fix: an unconfigured effective must NEVER
     // surface as `UnsupportedCapabilityError`, and an incapable

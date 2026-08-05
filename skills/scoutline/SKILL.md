@@ -97,6 +97,8 @@ in registry order `[zai, minimax, tavily, exa, brave, firecrawl]`):
 - `crawl` — Tavily (sync), Firecrawl (async, resumable after Ctrl-C).
 - `map` — Tavily, Firecrawl.
 - `research` — Tavily, Exa. Credit-intensive (4-250 credits).
+  `--output-length`, `--citation-format`, and `--domain` are honored by
+  Tavily; Exa warn-and-strips them (Agent create has no native fields).
 
 Z.AI is the only Provider that supplies `repo search/read/tree` and the
 Raw tools (`tools`, `tool`, `call`). Brave does not supply Reader,

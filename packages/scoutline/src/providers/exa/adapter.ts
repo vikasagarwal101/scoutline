@@ -787,24 +787,43 @@ function mapModelToEffort(model: string | undefined): string {
 }
 
 /**
- * Validate a `ResearchRequest` for Exa. Exa supports `query` and
- * `model` natively; `outputLength`, `citationFormat`, and `domain` are
- * concepts the Agent lacks and are rejected before transport.
+ * Exa Agent create accepts `query` + `effort` only (see Exa
+ * `CreateAgentRunRequest`). Provider-neutral `outputLength`,
+ * `citationFormat`, and `domain` have no native Agent fields — strip
+ * them so fallback to Exa still runs, and optionally warn on stderr.
  *
- * **OD1 note:** `domain` is rejected for now. It MAY be revalidatable
- * against the pinned Agent's internal search-tool config — track as a
- * follow-up if the config accepts `includeDomains`.
+ * **OD1 note:** `domain` is stripped for now. It MAY be revalidatable
+ * against Agent search-tool config later if a public `includeDomains`
+ * (or equivalent) appears on create.
+ *
+ * `cacheIdentity` is called twice per research invocation (handler
+ * interrupt path + shared executor), so warn-once is keyed on the
+ * request object via a WeakSet.
  */
-function assertNoUnsupportedResearchOptions(request: ResearchRequest): void {
-  if (request.outputLength !== undefined) {
-    throw new UnsupportedOptionError("exa", "research", "outputLength");
+const warnedExaResearchRequests = new WeakSet<object>();
+
+function normalizeExaResearchRequest(
+  request: ResearchRequest,
+  options: { readonly warn?: boolean } = {},
+): ResearchRequest {
+  const stripped: string[] = [];
+  if (request.outputLength !== undefined) stripped.push("outputLength");
+  if (request.citationFormat !== undefined) stripped.push("citationFormat");
+  if (request.domain !== undefined) stripped.push("domain");
+  if (stripped.length === 0) return request;
+
+  if (options.warn && !warnedExaResearchRequests.has(request)) {
+    warnedExaResearchRequests.add(request);
+    process.stderr.write(
+      `⚠ exa research: ignoring unsupported option(s): ${stripped.join(", ")}\n`,
+    );
   }
-  if (request.citationFormat !== undefined) {
-    throw new UnsupportedOptionError("exa", "research", "citationFormat");
-  }
-  if (request.domain !== undefined) {
-    throw new UnsupportedOptionError("exa", "research", "domain");
-  }
+
+  const normalized: { query: string; model?: ResearchRequest["model"] } = {
+    query: request.query,
+  };
+  if (request.model !== undefined) normalized.model = request.model;
+  return normalized;
 }
 
 /**
@@ -934,16 +953,19 @@ function createExaResearchCapability(options: ExaResearchCapabilityOptions): Res
           "Research query must contain at least one non-whitespace character",
         );
       }
-      assertNoUnsupportedResearchOptions(request);
+      // outputLength / citationFormat / domain are stripped (not rejected)
+      // so Provider fallback can still reach Exa Agent transport.
+      normalizeExaResearchRequest(request);
     },
 
     cacheIdentity(request: ResearchRequest): CacheIdentity<ResearchRequest, ResearchResult> {
       const apiKey = resolveApiKey(env);
+      const normalized = normalizeExaResearchRequest(request, { warn: true });
       return {
         provider: "exa",
         capability: "research",
         credentialFingerprint: credentialFingerprint(apiKey),
-        request,
+        request: normalized,
       };
     },
 
@@ -953,6 +975,10 @@ function createExaResearchCapability(options: ExaResearchCapabilityOptions): Res
 
     async invoke(request: ResearchRequest, signal?: AbortSignal): Promise<ResearchResult> {
       run.validate(request);
+      // Strip again without warning: cacheIdentity already warned when
+      // the shared executor ran; direct invoke callers still get a
+      // correct Agent body (query + effort only).
+      const normalized = normalizeExaResearchRequest(request);
 
       const apiKey = resolveApiKey(env);
       const credFingerprint = credentialFingerprint(apiKey);
@@ -960,7 +986,7 @@ function createExaResearchCapability(options: ExaResearchCapabilityOptions): Res
         provider: "exa",
         capability: "research",
         credentialFingerprint: credFingerprint,
-        request,
+        request: normalized,
       });
 
       const pollIntervalMs = resolvePollIntervalMs(transport?.env);
@@ -979,7 +1005,7 @@ function createExaResearchCapability(options: ExaResearchCapabilityOptions): Res
           //    prevention on a usage-based endpoint).
           runId = await createResearchTask(
             apiKey,
-            request,
+            normalized,
             identityHash,
             researchStateFile,
             transport,
@@ -1014,7 +1040,7 @@ function createExaResearchCapability(options: ExaResearchCapabilityOptions): Res
 
           if (poll.status === "completed") {
             await researchStateFile.remove(identityHash);
-            return normalizeExaResearchResult(poll, request);
+            return normalizeExaResearchResult(poll, normalized);
           }
 
           if (poll.status === "failed") {

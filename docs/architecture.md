@@ -467,7 +467,10 @@ Key boundaries:
   and zero-retry on the cache-wrapped operation. The handler adds a
   polling timeout (default 300 s) and registers a SIGINT handler that
   prints the persisted `request_id` so the user can re-run the same
-  command to resume.
+  command to resume. Tavily maps `--output-length`, `--citation-format`,
+  and `--domain` natively; Exa Agent create accepts only `query` +
+  `effort`, so those three options are warn-and-stripped before
+  transport (so Provider fallback can still succeed via Exa).
 
 ### Research state file
 

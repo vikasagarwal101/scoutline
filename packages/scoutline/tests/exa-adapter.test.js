@@ -1226,28 +1226,80 @@ describe("Exa Research — validation", () => {
     );
   });
 
-  it("rejects outputLength with UnsupportedOptionError", () => {
+  it("accepts outputLength without throwing (stripped before transport)", () => {
     const { adapter } = makeResearchAdapter();
-    assert.throws(
-      () => adapter.research.run.validate({ query: "test", outputLength: "long" }),
-      (e) => e instanceof UnsupportedOptionError && e.message.includes("outputLength"),
+    assert.doesNotThrow(() =>
+      adapter.research.run.validate({ query: "test", outputLength: "long" }),
     );
   });
 
-  it("rejects citationFormat with UnsupportedOptionError", () => {
+  it("accepts citationFormat without throwing (stripped before transport)", () => {
     const { adapter } = makeResearchAdapter();
-    assert.throws(
-      () => adapter.research.run.validate({ query: "test", citationFormat: "mla" }),
-      (e) => e instanceof UnsupportedOptionError && e.message.includes("citationFormat"),
+    assert.doesNotThrow(() =>
+      adapter.research.run.validate({ query: "test", citationFormat: "mla" }),
     );
   });
 
-  it("rejects domain with UnsupportedOptionError", () => {
+  it("accepts domain without throwing (stripped before transport)", () => {
     const { adapter } = makeResearchAdapter();
-    assert.throws(
-      () => adapter.research.run.validate({ query: "test", domain: "example.com" }),
-      (e) => e instanceof UnsupportedOptionError && e.message.includes("domain"),
+    assert.doesNotThrow(() =>
+      adapter.research.run.validate({ query: "test", domain: "example.com" }),
     );
+  });
+});
+
+describe("Exa Research — warn-and-strip unsupported options", () => {
+  it("strips outputLength/citationFormat/domain from cache identity and warns", () => {
+    const { adapter } = makeResearchAdapter();
+    const writes = [];
+    const originalWrite = process.stderr.write;
+    process.stderr.write = (chunk, ...args) => {
+      writes.push(String(chunk));
+      return true;
+    };
+    try {
+      const request = {
+        query: "test",
+        model: "mini",
+        outputLength: "long",
+        citationFormat: "apa",
+        domain: "example.com",
+      };
+      // Handler + executor both call cacheIdentity on the same request;
+      // warn must fire once.
+      const identity = adapter.research.run.cacheIdentity(request);
+      adapter.research.run.cacheIdentity(request);
+      assert.deepEqual(identity.request, { query: "test", model: "mini" });
+      const warnLines = writes.filter((w) => w.includes("exa research: ignoring unsupported option(s):"));
+      assert.equal(warnLines.length, 1, `expected one strip warning, got: ${JSON.stringify(writes)}`);
+      assert.ok(
+        warnLines[0].includes("outputLength") &&
+          warnLines[0].includes("citationFormat") &&
+          warnLines[0].includes("domain"),
+        `expected all three option names, got: ${warnLines[0]}`,
+      );
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+  });
+
+  it("POSTs only query + effort when unsupported options are present", async () => {
+    const { adapter, calls } = makeResearchAdapter({
+      onCreate: () => agentCreateResponse("run_strip", "completed"),
+      onPoll: () => agentPollResponse("completed", { text: "report" }),
+    });
+    await adapter.research.run.invoke({
+      query: "test",
+      outputLength: "standard",
+      citationFormat: "numbered",
+      domain: "example.com",
+    });
+    const post = calls.find((c) => c.init.method === "POST");
+    assert.ok(post, "expected a create POST");
+    const body = JSON.parse(post.init.body);
+    assert.deepEqual(Object.keys(body).sort(), ["effort", "query"]);
+    assert.strictEqual(body.query, "test");
+    assert.strictEqual(body.effort, "auto");
   });
 });
 

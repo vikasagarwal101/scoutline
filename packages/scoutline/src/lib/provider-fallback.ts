@@ -39,11 +39,13 @@
  *      and the runtime-error family. Emit a switch notice when
  *      continuing to the next candidate.
  *   4. Exhaustion. If no eligible candidate succeeds, re-throw the
- *      **effective** provider's own error: the runtime error it
- *      produced if it ran, otherwise the typed preflight error
+ *      **effective** provider's own error when it ran; otherwise the
+ *      last eligible candidate's runtime error when the effective was
+ *      skipped; otherwise the typed preflight error
  *      (`ConfigurationError` for `unconfigured`, `UnsupportedCapabilityError`
- *      for `incapable`). Never synthesize a different error. This
- *      preserves the 0.10.x exit codes and is the critique #7 fix.
+ *      for `incapable`). Never synthesize a substitute error type.
+ *      Preserving the effective's own error when it ran keeps the
+ *      0.10.x exit codes (critique #7).
  *
  * Kill-switch (Tech Plan §"Kill-switch plumbing"). When
  * `fallbackEnabled === false`, the plan is `[effective]` only, and
@@ -457,12 +459,13 @@ function switchNotice(
  * ineligible entries and switch-notices between failed candidates.
  * On success it returns the outcome and (if `fellBack === true`)
  * writes the summary notice `✓ <cmd> completed via <p> (fallback)`.
- * On exhaustion it re-throws the EFFECTIVE provider's own error —
- * the runtime error it produced if it actually ran, otherwise the
- * typed preflight error (`ConfigurationError` for `unconfigured`,
- * `UnsupportedCapabilityError` for `incapable`). The executor never
- * synthesizes a different error, so the 0.10.x exit codes are
- * preserved on exhaustion (critique #7 fix).
+ * On exhaustion it re-throws the EFFECTIVE provider's own error when
+ * that provider ran; when the effective was ineligible and eligible
+ * candidates failed, it re-throws the last eligible failure so the
+ * envelope stays actionable; otherwise the typed preflight error
+ * (`ConfigurationError` / `UnsupportedCapabilityError`). The executor
+ * never synthesizes a substitute error type, so the 0.10.x exit codes
+ * are preserved when the effective ran (critique #7 fix).
  *
  * The kill-switch narrows the plan to `[effective]` and suppresses
  * all notices. The same preflight still runs on the effective
@@ -507,12 +510,15 @@ export async function executeWithFallback<T>(
   );
 
   // Track the effective's outcome so exhaustion surfaces its real
-  // error. We capture the LAST error the effective produced
-  // (typically the only one) so a future change that re-runs the
-  // effective keeps the most recent failure.
+  // error when the effective actually ran (critique #7). Also track
+  // the last eligible attempt's error so that when the effective was
+  // skipped (incapable / unconfigured) but later candidates ran and
+  // failed, exhaustion reports an actionable failure instead of the
+  // effective's preflight typed error.
   let effectiveError: unknown = undefined;
   let effectiveRan = false;
   let lastAttemptedId: ProviderId | null = null;
+  let lastEligibleError: unknown = undefined;
 
   for (let i = 0; i < plan.length; i += 1) {
     const entry = plan[i];
@@ -573,9 +579,11 @@ export async function executeWithFallback<T>(
         throw err;
       }
       // Continue: remember the effective's own error for
-      // exhaustion, then emit a switch notice if there is a
+      // exhaustion, the last eligible error for the skipped-
+      // effective case, then emit a switch notice if there is a
       // next candidate. Notices are stderr-only and only
       // emitted when fallback is enabled.
+      lastEligibleError = err;
       if (entry.descriptor.id === opts.effectiveProvider) {
         effectiveError = err;
         effectiveRan = true;
@@ -587,9 +595,11 @@ export async function executeWithFallback<T>(
     }
   }
 
-  // Exhaustion. Re-throw the effective's OWN error. We never
-  // synthesize a different error; the dispatcher relies on the
-  // typed error to pick the right exit code (critique #7 fix).
+  // Exhaustion. Prefer the effective's OWN error when it ran
+  // (critique #7 / exit-code contract). When the effective was
+  // ineligible and never invoked but eligible candidates ran and
+  // failed, surface the last eligible failure so the JSON envelope
+  // is actionable. Otherwise keep the typed preflight error.
   //
   // Review Fix 5: emit a single terminal stderr notice BEFORE the
   // rethrow so the user sees the final state. Three observable
@@ -602,37 +612,44 @@ export async function executeWithFallback<T>(
   //     beyond the effective's own error envelope.
   // Strict mode (`fallbackEnabled === false`) stays silent so the
   // JSON error contract for scripting users is unaffected.
+  const exhaustionError =
+    effectiveRan && effectiveError !== undefined
+      ? effectiveError
+      : lastEligibleError !== undefined
+        ? lastEligibleError
+        : null;
+
   if (opts.fallbackEnabled) {
     const eligibleCount = plan.filter((p) => p.status.kind === "eligible").length;
-    const lastRanError = effectiveRan && effectiveError !== undefined ? effectiveError : null;
     if (eligibleCount === 0) {
       // Plan had no eligible entries (every preflight rejected the
       // candidate). Surface a single unambiguous terminal line so
       // the user knows the executor walked the plan and had nothing
       // to attempt.
       opts.writeStderr(`⚠ ${opts.commandLabel}: no eligible candidates`);
-    } else if (lastRanError !== null) {
+    } else if (exhaustionError !== null) {
       opts.writeStderr(
         terminalExhaustionNotice(
           lastAttemptedId ?? opts.effectiveProvider,
-          lastRanError,
+          exhaustionError,
           opts.commandLabel,
         ),
       );
     }
     // else: there were eligible candidates and none produced a runtime
     // error path to surface here. The plan was exhausted without an
-    // effective-eligible run (e.g. every candidate short-circuited on
+    // eligible run (e.g. every candidate short-circuited on
     // preflight-rejected neighbours). In that case the typed error
     // from the preferred path carries enough signal; no extra line.
   }
 
-  if (effectiveRan && effectiveError !== undefined) {
-    throw effectiveError;
+  if (exhaustionError !== null) {
+    throw exhaustionError;
   }
   // The effective was ineligible (preflight rejected it without
-  // ever invoking `attempt`). Surface the matching typed error
-  // so the dispatcher exit code matches 0.10.x.
+  // ever invoking `attempt`) and no eligible candidate ran either.
+  // Surface the matching typed error so the dispatcher exit code
+  // matches 0.10.x.
   const effectiveStatus = plan[0].status;
   if (effectiveStatus.kind === "unconfigured") {
     throw new ConfigurationError(

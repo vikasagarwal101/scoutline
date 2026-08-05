@@ -178,7 +178,7 @@ Provider selection, and `doctor`.
 | `read` (Reader) | Yes | **No** | Yes | Yes | No | Yes | Exa/Brave add Reader; Z.AI-only options rejected per provider |
 | `crawl` | **No** | **No** | Yes | No | No | Yes (async) | Tavily sync; Firecrawl async (resumable after Ctrl-C) |
 | `map` | **No** | **No** | Yes | No | No | Yes | URL-set discovery; no per-page content |
-| `research` | **No** | **No** | Yes | Yes | **No** | **No** | Tavily + Exa only (Firecrawl `/deep-research` deprecated); 4-250 credits |
+| `research` | **No** | **No** | Yes | Yes | **No** | **No** | Tavily + Exa only (Firecrawl `/deep-research` deprecated); 4-250 credits; length/citation/domain honored by Tavily, warn-and-stripped on Exa |
 | `repo search` / `repo read` / `repo tree` | Yes | **No** | **No** | **No** | **No** | **No** | Participates in selection; only Z.AI supplies `repository-exploration` |
 | `tools`, `tool`, `call` (Raw tools) | Yes | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
 | `code` (Code Mode) | Yes | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |

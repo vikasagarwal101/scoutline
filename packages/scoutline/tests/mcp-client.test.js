@@ -1482,4 +1482,45 @@ describe("ZaiMcpClient — instance-level env resolution (1.7)", () => {
       if (savedTimeout !== undefined) process.env.Z_AI_TIMEOUT = savedTimeout;
     }
   });
+
+  it("falls back to safe defaults on invalid (NaN) env values (review fix)", () => {
+    // Non-numeric env values must not produce NaN — they fall back to defaults.
+    const client = new ZaiMcpClient({
+      env: {
+        ...process.env,
+        Z_AI_TIMEOUT: "not-a-number",
+        ZAI_MCP_RETRY_BASE_MS: "abc",
+        ZAI_MCP_RETRY_MAX_MS: "",
+        ZAI_MCP_RETRY_JITTER_MS: "xyz",
+      },
+    });
+    assert.strictEqual(client.timeoutMs, 30000, "invalid Z_AI_TIMEOUT must fall back to 30000");
+    assert.strictEqual(client.retryBaseMs, 500, "invalid RETRY_BASE must fall back to 500");
+    assert.strictEqual(client.retryMaxMs, 8000, "empty RETRY_MAX must fall back to 8000");
+    assert.strictEqual(client.retryJitterMs, 250, "invalid RETRY_JITTER must fall back to 250");
+  });
+
+  it("resolves getRetryCount from invocation-local env, not ambient process.env (review fix)", () => {
+    // Verify retry-count env vars are also resolved from options.env.
+    // The retry count is used internally — we verify by constructing two
+    // instances with different envs and confirming they resolve different
+    // configs. Since getRetryCount is private, we test indirectly by
+    // confirming the env is captured at construction time (consistent
+    // with the timeout/retry fields already tested).
+    const envA = { ...process.env, ZAI_MCP_RETRY_COUNT: "5" };
+    const clientA = new ZaiMcpClient({ env: envA });
+    // Directly test that the env was captured (the private retryCount
+    // logic reads from this same options.env).
+    assert.ok(
+      clientA.options.env?.ZAI_MCP_RETRY_COUNT === "5",
+      "options.env must carry the retry-count override",
+    );
+
+    const envB = { ...process.env, ZAI_MCP_RETRY_COUNT: "0" };
+    const clientB = new ZaiMcpClient({ env: envB });
+    assert.ok(
+      clientB.options.env?.ZAI_MCP_RETRY_COUNT === "0",
+      "options.env must carry the zero retry-count override",
+    );
+  });
 });

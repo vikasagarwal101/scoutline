@@ -40,6 +40,16 @@ const FALLBACK_RETRY_BASE_MS = 500;
 const FALLBACK_RETRY_MAX_MS = 8_000;
 const FALLBACK_RETRY_JITTER_MS = 250;
 
+/**
+ * Parse an env-var string into a finite integer, falling back to a
+ * safe default on undefined, empty, or non-numeric input.
+ */
+function parseIntOrDefault(value: string | undefined, fallback: number): number {
+  if (value === undefined || value === "") return fallback;
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -107,10 +117,10 @@ export class ZaiMcpClient {
   constructor(options: ZaiMcpClientOptions = {}) {
     this.options = options;
     const env = options.env ?? process.env;
-    this.timeoutMs = parseInt(env.Z_AI_TIMEOUT || String(FALLBACK_TIMEOUT_MS), 10);
-    this.retryBaseMs = parseInt(env.ZAI_MCP_RETRY_BASE_MS || String(FALLBACK_RETRY_BASE_MS), 10);
-    this.retryMaxMs = parseInt(env.ZAI_MCP_RETRY_MAX_MS || String(FALLBACK_RETRY_MAX_MS), 10);
-    this.retryJitterMs = parseInt(env.ZAI_MCP_RETRY_JITTER_MS || String(FALLBACK_RETRY_JITTER_MS), 10);
+    this.timeoutMs = parseIntOrDefault(env.Z_AI_TIMEOUT, FALLBACK_TIMEOUT_MS);
+    this.retryBaseMs = parseIntOrDefault(env.ZAI_MCP_RETRY_BASE_MS, FALLBACK_RETRY_BASE_MS);
+    this.retryMaxMs = parseIntOrDefault(env.ZAI_MCP_RETRY_MAX_MS, FALLBACK_RETRY_MAX_MS);
+    this.retryJitterMs = parseIntOrDefault(env.ZAI_MCP_RETRY_JITTER_MS, FALLBACK_RETRY_JITTER_MS);
   }
 
   /**
@@ -286,10 +296,11 @@ export class ZaiMcpClient {
   }
 
   private getRetryCount(toolName: string): number {
-    const globalRetries = parseInt(process.env.ZAI_MCP_RETRY_COUNT || "1", 10);
+    const env = this.options.env ?? process.env;
+    const globalRetries = parseInt(env.ZAI_MCP_RETRY_COUNT || "1", 10);
     if (toolName.includes(".vision.")) {
       const visionRetriesRaw =
-        process.env.ZAI_MCP_VISION_RETRY_COUNT || process.env.Z_AI_RETRY_COUNT;
+        env.ZAI_MCP_VISION_RETRY_COUNT || env.Z_AI_RETRY_COUNT;
       if (visionRetriesRaw !== undefined) {
         const parsed = parseInt(visionRetriesRaw, 10);
         return Number.isFinite(parsed) ? parsed : 0;

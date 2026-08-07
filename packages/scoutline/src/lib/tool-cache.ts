@@ -38,8 +38,13 @@ import { redactTool } from "./redact.js";
 /**
  * Cache envelope version. Bumped when the on-disk shape of
  * {@link ToolCachePayload} changes; old envelopes are ignored.
+ *
+ * v2 (1.2 review fix): invalidates pre-fix v1 entries that may contain
+ * un-redacted file-only API keys. `writeToolCache` now threads resolved
+ * secrets into `redactTool`, so v2 entries are safe — but old v1
+ * envelopes must not be served.
  */
-export const TOOL_CACHE_VERSION = 1;
+export const TOOL_CACHE_VERSION = 2;
 
 /**
  * Inputs to the tool-cache key. Captures every dimension that affects

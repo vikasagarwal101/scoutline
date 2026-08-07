@@ -205,8 +205,8 @@ describe("tool-cache: round-trip read/write", () => {
 });
 
 describe("tool-cache: version stamp", () => {
-  it("TOOL_CACHE_VERSION is 1 (matches the v0.4.0 envelope)", () => {
-    assert.strictEqual(TOOL_CACHE_VERSION, 1);
+  it("TOOL_CACHE_VERSION is 2 (bumped to invalidate pre-redaction v1 entries)", () => {
+    assert.strictEqual(TOOL_CACHE_VERSION, 2);
   });
 
   it("old version stamp → miss, no throw", async () => {

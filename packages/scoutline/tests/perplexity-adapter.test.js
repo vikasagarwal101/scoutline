@@ -301,3 +301,78 @@ describe("Perplexity Error Handling", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Diagnostics — offline probe tests (6.7.a)
+// ---------------------------------------------------------------------------
+
+describe("Perplexity Diagnostics — probe (6.7.a)", () => {
+  it("resolves immediately when probe is false (no network)", async () => {
+    let called = false;
+    const fakeFetch = async () => {
+      called = true;
+      return { ok: true, status: 200, text: async () => JSON.stringify({ results: [] }) };
+    };
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+    await adapter.diagnostics.invoke({ probe: false });
+    assert.equal(called, false, "no network call when probe is false");
+  });
+
+  it("performs a search request when probe is true", async () => {
+    let capturedUrl;
+    let capturedInit;
+    const fakeFetch = async (url, init) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return { ok: true, status: 200, text: async () => JSON.stringify({ results: [] }) };
+    };
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+    await adapter.diagnostics.invoke({ probe: true });
+    assert.ok(capturedUrl.includes("/search"), "diagnostics probe must hit /search endpoint");
+    const body = JSON.parse(capturedInit.body);
+    assert.equal(body.query, "scoutline-doctor-probe");
+    assert.equal(body.max_results, 1);
+    assert.ok(
+      capturedInit.headers["Authorization"].includes(TEST_KEY),
+      "Authorization header carries the API key",
+    );
+  });
+
+  it("throws AuthError on 401", async () => {
+    const fakeFetch = async () => ({
+      ok: false,
+      status: 401,
+      text: async () => JSON.stringify({ message: "Unauthorized" }),
+    });
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+    await assert.rejects(
+      () => adapter.diagnostics.invoke({ probe: true }),
+      (e) => e instanceof AuthError,
+    );
+  });
+
+  it("throws ConfigurationError when API key is missing", async () => {
+    const fakeFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ results: [] }),
+    });
+    const adapter = new PerplexityAdapter(
+      { env: {} },
+      { transport: { fetch: fakeFetch } },
+    );
+    await assert.rejects(
+      () => adapter.diagnostics.invoke({ probe: true }),
+      (e) => e instanceof ConfigurationError,
+    );
+  });
+});

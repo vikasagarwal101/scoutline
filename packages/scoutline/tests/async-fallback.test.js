@@ -707,6 +707,76 @@ describe("async fallback — --no-fallback restores strict (Ticket 03)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// SCOUTLINE_NO_FALLBACK=1 env var restores strict (parity with --no-fallback)
+// ---------------------------------------------------------------------------
+
+describe("async fallback — SCOUTLINE_NO_FALLBACK=1 env restores strict (6.6)", () => {
+  it("crawl: SCOUTLINE_NO_FALLBACK=1 → UNSUPPORTED_CAPABILITY exit 1, zero adapter work", async () => {
+    // Same observable behaviour as the --no-fallback CLI flag (above),
+    // but driven through the environment-variable kill-switch path in
+    // main() (src/index.ts:2338). This closes the env-vs-flag parity gap.
+    const minimax = makeCrawlProvider({ id: "minimax", envVar: "MINIMAX_API_KEY" });
+    minimax.descriptor.capabilities = () => new Set(["search"]);
+    const tavily = makeCrawlProvider({
+      id: "tavily",
+      envVar: "TAVILY_API_KEY",
+      ok: CRAWL_OK("tavily"),
+    });
+    const crawlCache = makeInMemoryCache();
+    const { adapter, stderr } = makeAdapter();
+    const status = await main(
+      ["--provider", "minimax", "crawl", "https://example.com"],
+      {
+        invocation: adapter,
+        env: {
+          MINIMAX_API_KEY: "mm",
+          TAVILY_API_KEY: "tv",
+          SCOUTLINE_NO_FALLBACK: "1",
+        },
+        providerDescriptors: [minimax.descriptor, tavily.descriptor],
+        crawlCache,
+      },
+    );
+    assert.strictEqual(status, 1);
+    assert.strictEqual(stderr.length, 1, "no executor notices under SCOUTLINE_NO_FALLBACK=1");
+    assert.strictEqual(JSON.parse(stderr[0]).code, "UNSUPPORTED_CAPABILITY");
+    assert.strictEqual(minimax.invokes.length, 0, "no minimax adapter work under env kill-switch");
+    assert.strictEqual(tavily.invokes.length, 0, "no fallback adapter work under env kill-switch");
+  });
+
+  it("control: SCOUTLINE_NO_FALLBACK unset → fallback still fires", async () => {
+    // The positive control: with the env var unset and the same
+    // capability-mismatch scenario, fallback re-routes to tavily.
+    const minimax = makeCrawlProvider({ id: "minimax", envVar: "MINIMAX_API_KEY" });
+    minimax.descriptor.capabilities = () => new Set(["search"]);
+    const tavily = makeCrawlProvider({
+      id: "tavily",
+      envVar: "TAVILY_API_KEY",
+      ok: CRAWL_OK("tavily"),
+    });
+    const crawlCache = makeInMemoryCache();
+    const { adapter, stdout, stderr } = makeAdapter();
+    const status = await main(
+      ["--provider", "minimax", "crawl", "https://example.com"],
+      {
+        invocation: adapter,
+        env: { MINIMAX_API_KEY: "mm", TAVILY_API_KEY: "tv" },
+        providerDescriptors: [minimax.descriptor, tavily.descriptor],
+        crawlCache,
+      },
+    );
+    assert.strictEqual(status, 0, "fallback reroute succeeds via tavily");
+    assert.strictEqual(tavily.invokes.length, 1, "tavily serves the request via fallback");
+    assert.ok(
+      stderr.some((l) => l.includes("minimax does not support 'crawl'")),
+      `expected minimax skip notice, got: ${JSON.stringify(stderr)}`,
+    );
+    const parsed = JSON.parse(stdout[0]);
+    assert.strictEqual(parsed.pages[0].content, "crawled by tavily");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Cache partitioning across candidates
 // ---------------------------------------------------------------------------
 

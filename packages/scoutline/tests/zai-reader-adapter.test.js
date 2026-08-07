@@ -1056,15 +1056,23 @@ describe("Z.AI Reader Adapter — invoke lifecycle", () => {
       return port;
     };
     wrapper.created = factory.created;
-    const adapter = createZaiDescriptor({ clientFactory: wrapper }).create({
-      env: { Z_AI_API_KEY: TEST_API_KEY },
-    });
+    // Inject a 50ms close bound (matching the sibling test below) so the
+    // test resolves fast with comfortable headroom under the 1s watchdog.
+    // The production default (2000ms) is verified separately by the
+    // constant-assertion test further below.
+    const adapter = createZaiDescriptor({
+      clientFactory: wrapper,
+      readerCloseTimeoutMs: 50,
+    }).create({ env: { Z_AI_API_KEY: TEST_API_KEY } });
     // Bounded by the Adapter's internal close-timeout window. If this
     // test ever flakes or hangs, the close bound needs tightening.
+    // Watchdog reduced from 5s to 1s (6.9) so CI fails fast on a genuine
+    // hang. The 50ms injected close bound resolves well within the 1s
+    // watchdog; the production 2s default is exercised in the sibling test.
     const out = await Promise.race([
       adapter.reader.fetch.invoke({ url: "https://example.com/" }),
       new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Adapter attempt hung on close")), 5_000),
+        setTimeout(() => reject(new Error("Adapter attempt hung on close")), 1_000),
       ),
     ]);
     assert.strictEqual(out.title, "Example Domain");

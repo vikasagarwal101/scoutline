@@ -58,16 +58,15 @@ Each Adapter exposes only the Capabilities the base release actually supports.
 The Descriptor advertises the same Capability set so support can be checked
 without constructing the Adapter.
 
-### MiniMax transitional SDK
+### MiniMax direct transport
 
-The initial MiniMax Adapter uses `mmx-cli/sdk` (pinned to `1.0.16`) as a
-replaceable transport for Search and Vision. Only
-`src/providers/minimax/sdk-client.ts` imports the SDK directly. Quota uses a
-narrow Adapter-local transport against
-`<baseUrl>/v1/api/openplatform/coding_plan/remains` because the pinned SDK
-does not preserve an arbitrary configured quota host. Replacing the SDK
-transport with a direct MiniMax endpoint implementation requires no change
-outside the MiniMax Adapter and its transport tests.
+The MiniMax Adapter uses a direct HTTP transport for Search, Vision, and
+Quota. The transport implementation lives in
+`src/providers/minimax/coding-plan-client.ts`. Quota probes a narrow
+Adapter-local endpoint (`<baseUrl>/v1/api/openplatform/coding_plan/remains`)
+to report plan usage. The earlier `mmx-cli/sdk` dependency was removed in
+0.6.0 — the direct transport requires no SDK and is the sole runtime path
+for every MiniMax capability.
 
 ## Shared Capabilities
 

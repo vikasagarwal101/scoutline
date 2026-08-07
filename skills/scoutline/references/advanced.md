@@ -443,18 +443,14 @@ SCOUTLINE_LIVE_TESTS=1 npm run test:live:release       # requires Z_AI_API_KEY +
 `npm run prepublishOnly` is wired to the full offline suite, so publishing
 without a green offline build fails fast.
 
-## Transitional MiniMax SDK
+## MiniMax Direct Transport
 
-The initial MiniMax Adapter uses `mmx-cli/sdk@1.0.16` as a replaceable
-transport for Search and Vision. Only `src/providers/minimax/sdk-client.ts`
-imports the SDK directly; everything else goes through an Adapter port. Quota
-uses a narrow Adapter-local transport against
-`<baseUrl>/v1/api/openplatform/coding_plan/remains` because the pinned SDK
-does not preserve an arbitrary configured quota host.
-
-Replacing the SDK transport with a direct MiniMax endpoint implementation
-requires no change outside the MiniMax Adapter, its transport tests, the
-package manifest, the lockfile, and the documentation. The same Search,
-Vision, quota, diagnostics, media, error, and live conformance suite must
-pass before the SDK pin is removed. No release date for the direct
-replacement is currently planned.
+The MiniMax Adapter uses a direct HTTP transport for Search, Vision, and
+Quota. The transport implementation lives in
+`src/providers/minimax/coding-plan-client.ts`. Quota uses a narrow
+Adapter-local transport against
+`<baseUrl>/v1/api/openplatform/coding_plan/remains` to report plan usage.
+The earlier `mmx-cli/sdk` dependency was removed in 0.6.0 — the direct
+transport requires no SDK and is the sole runtime path for every MiniMax
+capability. The same Search, Vision, quota, diagnostics, media, error, and
+live conformance suite must pass before any transport change ships.

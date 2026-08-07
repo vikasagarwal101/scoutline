@@ -185,7 +185,7 @@ function runVision(request: VisionRequest, deps: VisionExecutionDependencies): P
 
 export async function analyze(
   imageSource: string,
-  prompt: string,
+  prompt: string | undefined,
   deps: VisionExecutionDependencies,
   context?: CommandContext,
 ): Promise<CommandResult> {
@@ -206,7 +206,7 @@ export async function analyze(
 
 export async function uiToCode(
   imageSource: string,
-  prompt: string,
+  prompt: string | undefined,
   outputType: OutputType,
   deps: VisionExecutionDependencies,
   context?: CommandContext,
@@ -233,7 +233,7 @@ export async function uiToCode(
 
 export async function extractText(
   imageSource: string,
-  prompt: string,
+  prompt: string | undefined,
   language: string | undefined,
   deps: VisionExecutionDependencies,
   context?: CommandContext,
@@ -260,7 +260,7 @@ export async function extractText(
 
 export async function diagnoseError(
   imageSource: string,
-  prompt: string,
+  prompt: string | undefined,
   contextFlag: string | undefined,
   deps: VisionExecutionDependencies,
   context?: CommandContext,
@@ -287,7 +287,7 @@ export async function diagnoseError(
 
 export async function diagram(
   imageSource: string,
-  prompt: string,
+  prompt: string | undefined,
   diagramType: string | undefined,
   deps: VisionExecutionDependencies,
   context?: CommandContext,
@@ -314,7 +314,7 @@ export async function diagram(
 
 export async function chart(
   imageSource: string,
-  prompt: string,
+  prompt: string | undefined,
   focus: string | undefined,
   deps: VisionExecutionDependencies,
   context?: CommandContext,
@@ -342,7 +342,7 @@ export async function chart(
 export async function diff(
   expectedSource: string,
   actualSource: string,
-  prompt: string,
+  prompt: string | undefined,
   deps: VisionExecutionDependencies,
   context?: CommandContext,
 ): Promise<CommandResult> {
@@ -368,7 +368,7 @@ export async function diff(
 
 export async function video(
   videoSource: string,
-  prompt: string,
+  prompt: string | undefined,
   deps: VisionExecutionDependencies,
   context?: CommandContext,
 ): Promise<CommandResult> {

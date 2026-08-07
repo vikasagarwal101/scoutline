@@ -136,7 +136,7 @@ interface ProviderDiagnosticBase {
 
 function nodeMajor(): number {
   const [major] = process.versions.node.split(".");
-  return parseInt(major, 10);
+  return parseInt(major ?? "0", 10);
 }
 
 /**
@@ -291,9 +291,11 @@ async function probeEntries(
     .filter((index) => index >= 0);
 
   const settled = await Promise.allSettled(
-    configuredIndexes.map((index) =>
-      probeProvider(deps.descriptors[index], deps.env, deps.sleep, deps.random),
-    ),
+    configuredIndexes.map((index) => {
+      const descriptor = deps.descriptors[index];
+      if (!descriptor) throw new Error(`Missing descriptor at index ${index}`);
+      return probeProvider(descriptor, deps.env, deps.sleep, deps.random);
+    }),
   );
 
   let settledCursor = 0;
@@ -313,12 +315,13 @@ async function probeEntries(
       };
     }
     const result = settled[settledCursor++];
-    if (result.status === "fulfilled") {
+    if (result?.status === "fulfilled") {
       return { ...entry, status: "ok" as const, ...additive };
     }
-    const redacted = redactSecrets(diagnosticErrorFromError(result.reason), secrets) as NonNullable<
-      ProviderDiagnostic["error"]
-    >;
+    const redacted = redactSecrets(
+      diagnosticErrorFromError(result?.reason),
+      secrets,
+    ) as NonNullable<ProviderDiagnostic["error"]>;
     return { ...entry, status: "error" as const, error: redacted, ...additive };
   });
 }

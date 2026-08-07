@@ -163,6 +163,7 @@ function parseArgs(args: string[]): {
   let i = 0;
   while (i < args.length) {
     const arg = args[i];
+    if (!arg) break;
 
     if (arg.startsWith("--")) {
       const key = arg.slice(2);
@@ -218,6 +219,7 @@ function extractGlobalOptions(args: string[]): {
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
+    if (!arg) continue;
     if (arg === "--output-format" || arg === "-O") {
       outputFormat = args[i + 1];
       i += 1;
@@ -423,8 +425,8 @@ async function handleVision(
     return 0;
   }
 
-  const command = positional[0];
-  const source = positional[1];
+  const command = positional[0] ?? "";
+  const source = positional[1] ?? "";
   const prompt = positional[2];
 
   // Map the subcommand to its Vision operation. Unknown subcommands are
@@ -548,7 +550,7 @@ async function handleVision(
             case "chart":
               return vision.chart(source, prompt, flags.focus as string, visionDeps, context);
             case "diff": {
-              const actual = positional[2];
+              const actual = positional[2] ?? "";
               const diffPrompt = positional[3];
               return vision.diff(source, actual, diffPrompt, visionDeps, context);
             }
@@ -1454,7 +1456,7 @@ async function handleTool(
   return invokeCommand(
     deps.invocation,
     (context) =>
-      showTool(positional[0], { enableVision: flags.vision !== false, env: deps.env }, context),
+      showTool(positional[0] ?? "", { enableVision: flags.vision !== false, env: deps.env }, context),
     outputMode,
     deps.now,
     deps.secrets,
@@ -1477,7 +1479,7 @@ async function handleCall(
     deps.invocation,
     (context) =>
       callTool(
-        positional[0],
+        positional[0] ?? "",
         {
           json: flags.json as string,
           file: flags.file as string,
@@ -2073,7 +2075,7 @@ export async function main(
     return 0;
   }
 
-  const command = rest[0];
+  const command = rest[0] ?? "";
   const commandArgs = rest.slice(1);
 
   // PB-T1/PB-T2 — Quota snapshot store + consumption sink.

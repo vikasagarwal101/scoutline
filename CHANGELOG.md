@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.2] - 2026-08-07
+
+### New-adapter conformance
+
+- Parallel, Perplexity, and Jina now sanitize upstream error
+  messages, validate requests before Provider access, derive
+  normalized `source` from result metadata, and honour cooperative
+  cancellation.
+- Search conformance test now covers all 9 Providers; a new CI
+  guard fails the build if a Provider is added to the registry
+  without a corresponding search-conformance factory.
+
 ## [0.13.1] - 2026-08-07
 
 ### Security

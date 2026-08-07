@@ -95,7 +95,10 @@ export class UnsupportedCapabilityError extends ScoutlineError {
     super(
       `Provider "${provider}" does not support capability "${capability}"`,
       "UNSUPPORTED_CAPABILITY",
-      { exitCode: 1 },
+      {
+        help: "Use --provider <id> to select a Provider that supports this Capability, or remove --no-fallback to enable cross-Provider rerouting.",
+        exitCode: 1,
+      },
     );
     this.name = "UnsupportedCapabilityError";
   }

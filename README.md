@@ -293,6 +293,44 @@ Default output is **data-only JSON** for token efficiency. Use `--output-format`
 | `markdown` | Formatted text for human reading |
 | `refs` | Citation-style URLs only |
 
+## JSON Error Envelope
+
+When a command fails, Scoutline writes a JSON error envelope to stdout (or stderr in `--output-format json` mode). The shape is:
+
+```json
+{
+  "success": false,
+  "error": "Provider \"minimax\" does not support capability \"research\"",
+  "code": "UNSUPPORTED_CAPABILITY",
+  "help": "Use --provider <id> to select a Provider that supports this Capability, or remove --no-fallback to enable cross-Provider rerouting."
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `success` | `false` | Always `false` on errors |
+| `error` | `string` | Human-readable error message |
+| `code` | `string` | Stable error code (see table below) |
+| `help` | `string?` | Actionable next-step suggestion. Present for `UNSUPPORTED_CAPABILITY` and other typed errors that carry guidance. |
+| `statusCode` | `number?` | HTTP status code when applicable (e.g. `401` for `AUTH_ERROR`, `429` for `QUOTA_ERROR`) |
+
+**Stable error codes:**
+
+| Code | Meaning |
+|---|---|
+| `AUTH_ERROR` | Credential missing, invalid, or expired |
+| `API_ERROR` | Provider API returned an error status |
+| `CONFIGURATION_ERROR` | Configuration issue (exit code 3) |
+| `QUOTA_ERROR` | Provider quota exhausted |
+| `UNSUPPORTED_CAPABILITY` | Provider does not advertise the requested capability |
+| `UNSUPPORTED_OPTION` | Provider does not support a specific option for a capability |
+| `VALIDATION_ERROR` | Invalid command-line input |
+| `TIMEOUT_ERROR` | Request timed out |
+| `NETWORK_ERROR` | Network connectivity failure |
+| `FILE_ERROR` | File or media I/O error |
+
+**Backwards compatibility:** the `help` field is additive (added in 0.14.0). Scripts that parse the JSON envelope and ignore unknown fields are unaffected. The `code` field remains stable across releases.
+
 ## Notes
 
 - **Research** is credit-intensive (4-250 credits). Ctrl-C preserves the in-flight task — re-running the same command resumes polling instead of creating a new one. No double charge.

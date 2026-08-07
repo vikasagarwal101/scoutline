@@ -113,6 +113,19 @@ describe("UnsupportedCapabilityError", () => {
     assert.ok(err.message.includes("minimax"));
     assert.ok(err.message.includes("search"));
   });
+
+  // 6.4 — help field must be present on the UNSUPPORTED_CAPABILITY
+  // envelope, suggesting the next action. This assertion fails until
+  // ticket 3.3 adds a default `help` to the constructor.
+  it("envelope includes a non-empty help field with actionable guidance (6.4)", () => {
+    const err = new UnsupportedCapabilityError("minimax", "search");
+    const parsed = JSON.parse(formatErrorOutput(err, "data"));
+    assert.strictEqual(parsed.code, "UNSUPPORTED_CAPABILITY");
+    assert.ok(typeof parsed.help === "string" && parsed.help.length > 0,
+      "help must be a non-empty string");
+    assert.ok(/--provider|--no-fallback/i.test(parsed.help),
+      `help should suggest --provider or --no-fallback: ${parsed.help}`);
+  });
 });
 
 describe("UnsupportedOptionError", () => {
@@ -326,4 +339,42 @@ describe("formatErrorOutput", () => {
     assert.strictEqual(parsed.cause, undefined);
     assert.strictEqual(parsed.responseBody, undefined);
   });
+});
+
+// ---------------------------------------------------------------------------
+// 6.5 — Parameterized envelope-contract test. Every concrete typed error
+// class must produce a valid JSON envelope when passed through
+// `formatErrorOutput`. A regression that drops a field for a specific
+// error type — or a new class that forgets to declare a `code` — will
+// fail here.
+//
+// `help` is allowed-but-not-required for non-UNSUPPORTED classes; the
+// `help` assertion for UNSUPPORTED_CAPABILITY lives in the 6.4 test below.
+// ---------------------------------------------------------------------------
+
+describe("Envelope contract — all typed errors through formatErrorOutput (6.5)", () => {
+  const cases = [
+    { name: "ValidationError",           error: new ValidationError("Bad input"),                    expectedCode: "VALIDATION_ERROR" },
+    { name: "ConfigurationError",         error: new ConfigurationError("config error"),             expectedCode: "CONFIGURATION_ERROR" },
+    { name: "UnsupportedCapabilityError", error: new UnsupportedCapabilityError("minimax", "search"), expectedCode: "UNSUPPORTED_CAPABILITY" },
+    { name: "UnsupportedOptionError",     error: new UnsupportedOptionError("minimax", "search", "domain"), expectedCode: "UNSUPPORTED_OPTION" },
+    { name: "AuthError",                  error: new AuthError("Invalid key"),                       expectedCode: "AUTH_ERROR" },
+    { name: "ApiError",                   error: new ApiError("Server error", 503),                   expectedCode: "API_ERROR" },
+    { name: "NetworkError",              error: new NetworkError("Connection failed"),               expectedCode: "NETWORK_ERROR" },
+    { name: "TimeoutError",              error: new TimeoutError(30000),                             expectedCode: "TIMEOUT_ERROR" },
+    { name: "FileError",                 error: new FileError("File not found", "Check the path"),   expectedCode: "FILE_ERROR" },
+  ];
+
+  for (const { name, error, expectedCode } of cases) {
+    it(`produces a valid envelope for ${name}`, () => {
+      const parsed = JSON.parse(formatErrorOutput(error, "data"));
+      assert.strictEqual(parsed.success, false);
+      assert.strictEqual(typeof parsed.error, "string");
+      assert.ok(parsed.error.length > 0, "error message must be non-empty");
+      assert.strictEqual(parsed.code, expectedCode);
+      // No stack or cause on the public envelope
+      assert.strictEqual(parsed.stack, undefined);
+      assert.strictEqual(parsed.cause, undefined);
+    });
+  }
 });

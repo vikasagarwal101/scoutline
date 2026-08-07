@@ -25,7 +25,6 @@ import {
   redactCredentialString,
 } from "../dist/lib/redact.js";
 import { writeToolCache, readToolCache } from "../dist/lib/tool-cache.js";
-import { formatErrorOutput as formatCompatErrorOutput } from "../dist/lib/errors.js";
 import { formatErrorOutput } from "../dist/lib/output.js";
 
 const Z_KEY = "zai-secret-key-value-AAA";
@@ -447,7 +446,7 @@ describe("redaction across outward-boundary formatters", () => {
     assert.ok(!out.includes(M_KEY), `output contains M_KEY: ${out}`);
   });
 
-  it("formatErrorOutput (errors.ts compat) redacts credentials embedded in message and help", async () => {
+  it("formatErrorOutput (output.ts) redacts credentials embedded in message and help via ambient env", async () => {
     const savedZ = process.env.Z_AI_API_KEY;
     const savedM = process.env.MINIMAX_API_KEY;
     process.env.Z_AI_API_KEY = Z_KEY;
@@ -458,9 +457,9 @@ describe("redaction across outward-boundary formatters", () => {
         help: `Set Z_AI_API_KEY=${Z_KEY}`,
         statusCode: 401,
       });
-      const out = formatCompatErrorOutput(err);
-      assert.ok(!out.includes(Z_KEY), `compat output contains Z_KEY: ${out}`);
-      assert.ok(!out.includes(M_KEY), `compat output contains M_KEY: ${out}`);
+      const out = formatErrorOutput(err, "data");
+      assert.ok(!out.includes(Z_KEY), `output contains Z_KEY: ${out}`);
+      assert.ok(!out.includes(M_KEY), `output contains M_KEY: ${out}`);
       const parsed = JSON.parse(out);
       assert.strictEqual(parsed.code, "AUTH_ERROR");
     } finally {

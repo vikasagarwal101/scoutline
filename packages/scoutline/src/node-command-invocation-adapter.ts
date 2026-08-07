@@ -18,6 +18,20 @@ import type { CommandInvocationAdapter } from "./command-invocation.js";
 import { redactCredentialString, configuredSecrets } from "./lib/redact.js";
 
 /**
+ * Reentrancy depth for `runQuietly`. Because `console.*` are process-global,
+ * overlapping quiet runs must coordinate so that only the outermost call
+ * captures the originals and only the outermost exit restores them.
+ */
+let quietDepth = 0;
+let quietOriginals: {
+  log: typeof console.log;
+  warn: typeof console.warn;
+  info: typeof console.info;
+  debug: typeof console.debug;
+  error: typeof console.error;
+} | null = null;
+
+/**
  * Format a fatal load-failure message for the executable entrypoint.
  *
  * `bin/scoutline.js` calls this from its dynamic-import `.catch` handler
@@ -67,33 +81,43 @@ export function createNodeCommandInvocationAdapter(): CommandInvocationAdapter {
 
     writeStderr(value: string): void {
       // The adapter is the sole authority for trailing newlines on stderr.
-      // Strip a single trailing "\n" from the caller's value so that call
-      // sites that already include one don't produce double-newline blank lines.
-      const normalized = value.endsWith("\n") ? value.slice(0, -1) : value;
+      // Strip ALL trailing newlines from the caller's value so that call
+      // sites that already include them don't produce double-newline blank lines.
+      const normalized = value.replace(/(?:\r?\n)+$/, "");
       process.stderr.write(normalized + "\n");
     },
 
     async runQuietly<T>(operation: () => Promise<T>): Promise<T> {
-      const originals = {
-        log: console.log,
-        warn: console.warn,
-        info: console.info,
-        debug: console.debug,
-        error: console.error,
-      };
-      console.log = () => {};
-      console.warn = () => {};
-      console.info = () => {};
-      console.debug = () => {};
-      console.error = () => {};
+      // Reentrancy: capture originals only on the outermost call (depth 0→1).
+      // Restore them only when the outermost call exits (depth 1→0).
+      // Inner calls increment/decrement depth without touching the originals.
+      if (quietDepth === 0) {
+        quietOriginals = {
+          log: console.log,
+          warn: console.warn,
+          info: console.info,
+          debug: console.debug,
+          error: console.error,
+        };
+        console.log = () => {};
+        console.warn = () => {};
+        console.info = () => {};
+        console.debug = () => {};
+        console.error = () => {};
+      }
+      quietDepth++;
       try {
         return await operation();
       } finally {
-        console.log = originals.log;
-        console.warn = originals.warn;
-        console.info = originals.info;
-        console.debug = originals.debug;
-        console.error = originals.error;
+        quietDepth--;
+        if (quietDepth === 0 && quietOriginals) {
+          console.log = quietOriginals.log;
+          console.warn = quietOriginals.warn;
+          console.info = quietOriginals.info;
+          console.debug = quietOriginals.debug;
+          console.error = quietOriginals.error;
+          quietOriginals = null;
+        }
       }
     },
 

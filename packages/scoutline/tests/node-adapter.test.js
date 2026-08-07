@@ -53,6 +53,12 @@ describe("writeStderr newline normalisation (3.1)", () => {
     assert.ok(!out.includes("\n\n"), "stderr must not contain double newlines");
   });
 
+  it("strips multiple trailing newlines, leaving exactly one", () => {
+    const out = captureStderr("message with extra newlines\n\n\n");
+    assert.strictEqual(out, "message with extra newlines\n");
+    assert.ok(!out.includes("\n\n"), "must not contain double newlines");
+  });
+
   it("snapshot: multiple calls produce clean single-newline output", () => {
     const adapter = createNodeCommandInvocationAdapter();
     const lines = [];
@@ -127,5 +133,30 @@ describe("runQuietly console.error suppression (3.4)", () => {
       /boom/,
     );
     assert.strictEqual(console.error, originalError, "console.error must be restored after throw");
+  });
+
+  it("overlapping runQuietly calls restore correctly (reentrancy)", async () => {
+    const adapter = createNodeCommandInvocationAdapter();
+    const originalError = console.error;
+    const originalLog = console.log;
+
+    // Two overlapping quiet runs: inner must not clobber outer's restore
+    await adapter.runQuietly(async () => {
+      assert.notStrictEqual(console.error, originalError, "outer: error must be suppressed");
+      assert.notStrictEqual(console.log, originalLog, "outer: log must be suppressed");
+
+      await adapter.runQuietly(async () => {
+        assert.notStrictEqual(console.error, originalError, "inner: error must still be suppressed");
+        assert.notStrictEqual(console.log, originalLog, "inner: log must still be suppressed");
+      });
+
+      // After inner exits but outer still active: must STILL be suppressed
+      assert.notStrictEqual(console.error, originalError, "post-inner: error must still be suppressed");
+      assert.notStrictEqual(console.log, originalLog, "post-inner: log must still be suppressed");
+    });
+
+    // After outer exits: originals must be restored
+    assert.strictEqual(console.error, originalError, "after outer: error must be restored");
+    assert.strictEqual(console.log, originalLog, "after outer: log must be restored");
   });
 });

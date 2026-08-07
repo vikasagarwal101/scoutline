@@ -82,7 +82,7 @@ describe("Perplexity Descriptor & Adapter", () => {
     assert.equal(results[0].url, "https://nodejs.org/api/esm.html");
     assert.equal(results[0].summary, "ECMAScript modules are the official standard format.");
     assert.equal(results[0].date, "2025-06-15");
-    assert.equal(results[0].source, "Perplexity");
+    assert.equal(results[0].source, undefined);
     // null date maps to undefined
     assert.equal(results[1].date, undefined);
   });

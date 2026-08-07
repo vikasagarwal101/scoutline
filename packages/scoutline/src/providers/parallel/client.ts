@@ -74,6 +74,7 @@ export async function fetchParallelSearch(
   query: string,
   params: ParallelSearchParams = {},
   deps: ParallelTransportDeps = {},
+  externalSignal?: AbortSignal,
 ): Promise<ParallelSearchResponse> {
   const fetchFn = deps.fetch || globalThis.fetch;
   const setTimer = deps.setTimeout || globalThis.setTimeout;
@@ -90,6 +91,10 @@ export async function fetchParallelSearch(
   }
 
   const controller = new AbortController();
+  // Honour external cancellation (e.g., research AbortSignal)
+  const onExternalAbort = (): void => controller.abort();
+  if (externalSignal?.aborted) controller.abort();
+  externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
   const timer = setTimer(() => controller.abort(), timeoutMs);
 
   try {
@@ -124,6 +129,7 @@ export async function fetchParallelSearch(
       `Parallel AI request failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   } finally {
+    externalSignal?.removeEventListener("abort", onExternalAbort);
     clearTimer(timer);
   }
 }

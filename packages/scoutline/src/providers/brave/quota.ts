@@ -160,7 +160,7 @@ export function normalizeBraveQuota(
       throw braveQuotaParseError();
     }
     const limit = parseFiniteNumber(segs[0]);
-    const wMatch = /^w=(\d+)$/.exec(segs[1]);
+    const wMatch = /^w=(\d+)$/.exec(segs[1] ?? "");
     const windowSeconds = wMatch ? parseFiniteNumber(wMatch[1]) : NaN;
     if (
       !Number.isFinite(limit) ||
@@ -188,8 +188,9 @@ export function normalizeBraveQuota(
   // next-largest window that carries a real cap (do NOT hardcode 2592000).
   let selectedIndex = -1;
   for (let i = 0; i < windows.length; i++) {
-    if (windows[i].limit <= 0) continue;
-    if (selectedIndex === -1 || windows[i].windowSeconds > windows[selectedIndex].windowSeconds) {
+    const win = windows[i];
+    if (!win || win.limit <= 0) continue;
+    if (selectedIndex === -1 || win.windowSeconds > (windows[selectedIndex]?.windowSeconds ?? 0)) {
       selectedIndex = i;
     }
   }
@@ -225,11 +226,11 @@ export function normalizeBraveQuota(
     used,
     limit: selectedLimit,
     resetsAtEpochMs,
-    durationSeconds: windows[selectedIndex].windowSeconds,
+    durationSeconds: windows[selectedIndex]?.windowSeconds ?? 0,
   });
 
   const category: QuotaCategory = {
-    name: rateLimitWindowName(windows[selectedIndex].windowSeconds),
+    name: rateLimitWindowName(windows[selectedIndex]?.windowSeconds ?? 0),
     unit: "requests",
     current,
   };

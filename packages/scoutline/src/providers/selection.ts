@@ -267,5 +267,5 @@ export function resolveEffectiveProvider(options: ResolveEffectiveProviderOption
   const ranked = rankProvidersForCapability(quotaSnapshot, capabilityId, eligibleIds, {
     registryOrder: order,
   });
-  return ranked[0].provider;
+  return ranked[0]?.provider ?? eligibleIds[0] ?? "zai";
 }

@@ -54,7 +54,8 @@ const REDACTED = "[REDACTED]";
  * string rather than a structured object.
  *
  * Replaces:
- *   - Bearer authorization values (any case).
+ *   - Authorization header values under common schemes: `Bearer`,
+ *     `Basic`, `Digest`, `Token`, and `ApiKey` (any case).
  *   - x-api-key assignments (any case; `=`, `:`, or whitespace as the
  *     key/value separator — covers both `x-api-key=value` and
  *     `x-api-key value`).
@@ -66,7 +67,7 @@ const REDACTED = "[REDACTED]";
 export function redactCredentialString(input: string, extraSecrets?: string | string[]): string {
   if (typeof input !== "string") return input;
   let result = input;
-  result = result.replace(/Bearer\s+\S+/gi, REDACTED);
+  result = result.replace(/(?:Bearer|Basic|Digest|Token|ApiKey)\s+\S+/gi, REDACTED);
   // Tavily API keys carry the `tvly-` prefix; redact the full token
   // wherever it appears (logs, URLs, error bodies).
   result = result.replace(/tvly-[A-Za-z0-9_-]+/gi, REDACTED);

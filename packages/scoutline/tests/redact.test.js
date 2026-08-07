@@ -247,6 +247,48 @@ describe("redactCredentialString — single-string redaction", () => {
     );
   });
 
+  it("redacts non-Bearer auth schemes: Basic, Digest, Token, ApiKey (1.6)", () => {
+    // Basic auth (base64 credentials)
+    assert.strictEqual(
+      redactCredentialString("Authorization: Basic dXNlcjpwYXNzMTIz"),
+      "Authorization: [REDACTED]",
+    );
+    // Digest auth
+    assert.strictEqual(
+      redactCredentialString("Authorization: Digest abc123response456"),
+      "Authorization: [REDACTED]",
+    );
+    // Custom Token scheme
+    assert.strictEqual(
+      redactCredentialString("Authorization: Token my-secret-token-XYZ"),
+      "Authorization: [REDACTED]",
+    );
+    // ApiKey scheme
+    assert.strictEqual(
+      redactCredentialString("Authorization: ApiKey sk-abc123def456"),
+      "Authorization: [REDACTED]",
+    );
+    // Case-insensitivity: lowercase scheme keyword
+    assert.strictEqual(
+      redactCredentialString("basic dXNlcjpwYXNz"),
+      "[REDACTED]",
+    );
+    // No over-match: a word that merely starts with a scheme keyword
+    // but has no following whitespace+token must not be redacted.
+    assert.strictEqual(
+      redactCredentialString("Basically this is fine"),
+      "Basically this is fine",
+    );
+    assert.strictEqual(
+      redactCredentialString("Tokenization is useful here"),
+      "Tokenization is useful here",
+    );
+    assert.strictEqual(
+      redactCredentialString("Digestion requires enzymes"),
+      "Digestion requires enzymes",
+    );
+  });
+
   it("redacts x-api-key, Z_AI_API_KEY, ZAI_API_KEY, MINIMAX_API_KEY and EXA_API_KEY assignments", () => {
     assert.strictEqual(redactCredentialString(`x-api-key=${Z_KEY}`), "[REDACTED]");
     assert.strictEqual(redactCredentialString(`Z_AI_API_KEY=${Z_KEY}`), "[REDACTED]");

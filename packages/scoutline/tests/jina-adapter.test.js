@@ -299,3 +299,84 @@ describe("Jina AI Error Handling", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Diagnostics — offline probe tests (6.7.b)
+// ---------------------------------------------------------------------------
+
+describe("Jina Diagnostics — probe (6.7.b)", () => {
+  it("resolves immediately when probe is false (no network)", async () => {
+    let called = false;
+    const fakeFetch = async () => {
+      called = true;
+      return { ok: true, status: 200, text: async () => JSON.stringify({ data: [] }) };
+    };
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+    await adapter.diagnostics.invoke({ probe: false });
+    assert.equal(called, false, "no network call when probe is false");
+  });
+
+  it("performs a search request when probe is true", async () => {
+    let capturedUrl;
+    let capturedInit;
+    const fakeFetch = async (url, init) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return { ok: true, status: 200, text: async () => JSON.stringify({ data: [] }) };
+    };
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+    await adapter.diagnostics.invoke({ probe: true });
+    assert.ok(
+      capturedUrl.includes("s.jina.ai"),
+      "diagnostics probe must hit the s.jina.ai search endpoint",
+    );
+    assert.ok(
+      capturedUrl.includes("scoutline-doctor-probe"),
+      "probe query must be 'scoutline-doctor-probe'",
+    );
+    assert.equal(capturedInit.method, "GET");
+    assert.ok(
+      capturedInit.headers["Authorization"].includes(TEST_KEY),
+      "Authorization header carries the API key when present",
+    );
+  });
+
+  it("works keyless (no JINA_API_KEY) on diagnostics probe", async () => {
+    let capturedInit;
+    const fakeFetch = async (url, init) => {
+      capturedInit = init;
+      return { ok: true, status: 200, text: async () => JSON.stringify({ data: [] }) };
+    };
+    const adapter = new JinaAdapter(
+      { env: {} },
+      { transport: { fetch: fakeFetch } },
+    );
+    await adapter.diagnostics.invoke({ probe: true });
+    assert.ok(
+      !("Authorization" in capturedInit.headers),
+      "no Authorization header in keyless mode",
+    );
+  });
+
+  it("throws AuthError on 401", async () => {
+    const fakeFetch = async () => ({
+      ok: false,
+      status: 401,
+      text: async () => JSON.stringify({ message: "Unauthorized" }),
+    });
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+    await assert.rejects(
+      () => adapter.diagnostics.invoke({ probe: true }),
+      (e) => e instanceof AuthError,
+    );
+  });
+});

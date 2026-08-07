@@ -27,7 +27,7 @@ _Avoid_: normal command
 **Provider fallback**:
 The always-on default (0.11.0+) in which Scoutline silently reroutes a
 shared-capability command to the next eligible configured Provider
-(registry order `[zai, minimax, tavily, exa, brave, firecrawl]`) when
+(registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina]`) when
 the selected Provider does not advertise the Capability or fails at
 runtime. Every Provider switch is announced on stderr; the data
 envelope on stdout is unchanged. `--no-fallback` (or
@@ -91,6 +91,39 @@ single basic scrape) as operational Capabilities. Firecrawl does NOT
 advertise `research` (/deep-research is deprecated).
 _Avoid_: Firecrawl API, Firecrawl MCP
 
+**Parallel AI**:
+The seventh Provider. Its confirmed Capabilities are Search, Reader,
+and Research (asynchronous deep research with citations). Parallel AI
+accepts the `--topic` cross-Provider search control (via keyword
+append in `applySearchTopic`) and rejects domain, recency,
+content-size, location, and type controls. It does not supply Crawl,
+Map, Vision, or Quota. The base release normalizes its diagnostic
+probe as an operational Capability.
+_Avoid_: Parallel API, Parallel AI API
+
+**Perplexity**:
+The eighth Provider. Its confirmed Capabilities are Search (via the
+dedicated `/search` endpoint, which returns per-result URLs unlike
+chat-completions mapping) and Research (via the `sonar-deep-research`
+model on the chat-completions endpoint with `search_results[]`
+citations). Perplexity accepts domain, recency, content-size, and
+topic controls natively; it rejects location and type. It does not
+supply Reader, Crawl, Map, Vision, or Quota. The base release
+normalizes its diagnostic probe as an operational Capability.
+_Avoid_: Perplexity API, Perplexity AI
+
+**Jina AI**:
+The ninth Provider. Its confirmed Capabilities are Search (via
+`s.jina.ai`), Reader (via `r.jina.ai`), and Research (via
+`deepsearch.jina.ai`). Jina AI is keyless-capable — `JINA_API_KEY`
+is optional and enables higher rate limits but is not required.
+Jina accepts the `--topic` cross-Provider search control (via keyword
+append in `applySearchTopic`) and rejects domain, recency,
+content-size, location, and type controls. It does not supply Crawl,
+Map, Vision, or Quota. The base release normalizes its diagnostic
+probe as an operational Capability.
+_Avoid_: Jina API, Jina Reader API
+
 ## Flagged Ambiguities
 
 **Vision**:
@@ -145,9 +178,10 @@ Developer: "Is `--topic` available on every Provider?"
 
 Domain expert: "Yes. `--topic <general|news|finance>` is accepted by every
 Provider, but its implementation differs: Tavily passes the topic natively to
-its API; Z.AI and MiniMax lack a native topic parameter, so the Adapter
-appends a small keyword to the query string inside `invoke()` (see
-`lib/search-topic.ts`); Exa maps it to a `category` parameter."
+its API; Z.AI, MiniMax, Parallel AI, Perplexity, and Jina AI lack a native
+topic parameter, so the Adapter appends a small keyword to the query string
+inside `invoke()` (see `lib/search-topic.ts`); Exa maps it to a `category`
+parameter; Brave routes `news` to a dedicated news endpoint."
 
 Developer: "Can I search for videos with the Brave Provider?"
 

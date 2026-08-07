@@ -1,9 +1,9 @@
 # Architecture
 
 Scoutline is a Node.js command-line client that presents several shared
-Capabilities through one consistent interface. It supports Z.AI, the
-MiniMax Token Plan Provider, Tavily, and Brave through a common Adapter
-boundary.
+Capabilities through one consistent interface. It supports nine Providers —
+Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and
+Jina AI — through a common Adapter boundary.
 
 ## Runtime Flow
 
@@ -12,10 +12,10 @@ scoutline executable
   -> dist/index.js command dispatcher
   -> command handler
   -> Provider selection (--provider / SCOUTLINE_PROVIDER / default "zai")
-  -> Provider Adapter (zai, minimax, tavily, or brave)
+  -> Provider Adapter (zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, or jina)
   -> shared execution (cache + retry)
-  -> Provider transport (Z.AI MCP / mmx-cli transitional SDK / MiniMax direct quota / Tavily direct HTTP / Brave direct HTTP)
-  -> Provider service (Z.AI, ZRead, MiniMax, Tavily, or Brave)
+  -> Provider transport (Z.AI MCP / MiniMax direct HTTP / Tavily direct HTTP / Exa direct HTTP / Brave direct HTTP / Firecrawl direct HTTP / Parallel direct HTTP / Perplexity direct HTTP / Jina direct HTTP)
+  -> Provider service (Z.AI, ZRead, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, or Jina AI)
 ```
 
 `packages/scoutline/bin/scoutline.js` is the published executable. It dynamically loads the compiled `dist/index.js` entry point and emits a structured load error if the package was not built.
@@ -35,10 +35,10 @@ normalization. It never imports command presentation, output mode, or another
 Provider's Adapter.
 
 The production registry at `src/providers/registry.ts` is a static,
-four-entry list `[zai, minimax, tavily, brave]`. There is no dynamic loading,
-no package-name lookup, no Adapter file paths, and no externally
-supplied factories. Tests inject descriptor lists explicitly through
-optional parameters.
+nine-entry list `[zai, minimax, tavily, exa, brave, firecrawl, parallel,
+perplexity, jina]`. There is no dynamic loading, no package-name lookup,
+no Adapter file paths, and no externally supplied factories. Tests
+inject descriptor lists explicitly through optional parameters.
 
 ### Built-in Providers
 
@@ -58,16 +58,15 @@ Each Adapter exposes only the Capabilities the base release actually supports.
 The Descriptor advertises the same Capability set so support can be checked
 without constructing the Adapter.
 
-### MiniMax transitional SDK
+### MiniMax direct transport
 
-The initial MiniMax Adapter uses `mmx-cli/sdk` (pinned to `1.0.16`) as a
-replaceable transport for Search and Vision. Only
-`src/providers/minimax/sdk-client.ts` imports the SDK directly. Quota uses a
-narrow Adapter-local transport against
-`<baseUrl>/v1/api/openplatform/coding_plan/remains` because the pinned SDK
-does not preserve an arbitrary configured quota host. Replacing the SDK
-transport with a direct MiniMax endpoint implementation requires no change
-outside the MiniMax Adapter and its transport tests.
+The MiniMax Adapter uses a direct HTTP transport for Search, Vision, and
+Quota. The transport implementation lives in
+`src/providers/minimax/coding-plan-client.ts`. Quota probes a narrow
+Adapter-local endpoint (`<baseUrl>/v1/api/openplatform/coding_plan/remains`)
+to report plan usage. The earlier `mmx-cli/sdk` dependency was removed in
+0.6.0 — the direct transport requires no SDK and is the sole runtime path
+for every MiniMax capability.
 
 ## Shared Capabilities
 
@@ -84,21 +83,21 @@ single-provider behavior; see
 [`docs/adr/0002-provider-fallback.md`](adr/0002-provider-fallback.md)
 for the rationale and the accepted async double-charge risk.
 
-| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Command |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `search` | Yes | Yes | Yes | Yes | Yes (web/news/video; `--content-size high` → LLM Context) | Yes | `scoutline search` |
-| `vision.interpret-image` | Yes | Yes | No | No | No | No | `scoutline vision analyze` |
-| Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | No | No | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
-| Image diff / video | Yes | No | No | No | No | No | `scoutline vision diff`, `vision video` |
-| `quota` | Yes | Yes | Yes | No (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | `scoutline quota` |
-| `diagnostics` | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
-| Reader | Yes | Falls back (zai/tavily/exa/firecrawl) | Yes (Z.AI-only options are rejected) | Yes (rejects Z.AI-only options) | Falls back | Yes (returns page titles) | `scoutline read` |
-| Repository exploration | Yes | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | `scoutline repo ...` |
-| Crawl | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes (async; resumable after Ctrl-C) | `scoutline crawl` |
-| Map | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes | `scoutline map` |
-| Research | Falls back (tavily/exa) | Falls back (tavily/exa) | Yes (4-250 credits per request) | Yes | Falls back (tavily/exa) | Falls back (tavily/exa) (`/deep-research` deprecated) | `scoutline research` |
-| Raw tools | Yes | No | No | No | `scoutline tools`, `tool`, `call` |
-| Code Mode | Yes | No | No | No | `scoutline code ...` |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | Command |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `search` | Yes | Yes | Yes | Yes | Yes (web/news/video; `--content-size high` → LLM Context) | Yes | Yes | Yes | Yes | `scoutline search` |
+| `vision.interpret-image` | Yes | Yes | No | No | No | No | No | No | No | `scoutline vision analyze` |
+| Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
+| Image diff / video | Yes | No | No | No | No | No | No | No | No | `scoutline vision diff`, `vision video` |
+| `quota` | Yes | Yes | Yes | No (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | No | No | No | `scoutline quota` |
+| `diagnostics` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
+| Reader | Yes | Falls back (zai/tavily/exa/firecrawl/parallel/jina) | Yes (Z.AI-only options are rejected) | Yes (rejects Z.AI-only options) | Falls back (zai/tavily/exa/firecrawl/parallel/jina) | Yes (returns page titles) | Yes | Falls back (zai/tavily/exa/firecrawl/parallel/jina) | Yes | `scoutline read` |
+| Repository exploration | Yes | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | `scoutline repo ...` |
+| Crawl | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes (async; resumable after Ctrl-C) | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | `scoutline crawl` |
+| Map | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | `scoutline map` |
+| Research | Falls back (tavily/exa/parallel/perplexity/jina) | Falls back (tavily/exa/parallel/perplexity/jina) | Yes (4-250 credits per request) | Yes | Falls back (tavily/exa/parallel/perplexity/jina) | Falls back (tavily/exa/parallel/perplexity/jina) (`/deep-research` deprecated) | Yes | Yes | Yes | `scoutline research` |
+| Raw tools | Yes | No | No | No | No | No | No | No | No | `scoutline tools`, `tool`, `call` |
+| Code Mode | Yes | No | No | No | No | No | No | No | No | `scoutline code ...` |
 
 Specialized MiniMax Vision mappings remain conformance-gated and only move
 into the shared matrix once their offline and live attestation passes.

@@ -337,7 +337,7 @@ export interface SearchDependencies {
  * diagnostics capability probes (DESIGN.md §14).
  */
 export interface ZaiAdapterClientPort {
-  callToolRaw<T>(name: string, args: Record<string, unknown>): Promise<T>;
+  callToolRaw<T>(name: string, args: Record<string, unknown>): Promise<T | string>;
   listTools(): Promise<unknown[]>;
   close(): Promise<void>;
 }

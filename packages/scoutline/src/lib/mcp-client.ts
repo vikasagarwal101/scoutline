@@ -437,9 +437,14 @@ export class ZaiMcpClient {
   }
 
   /**
-   * Call a tool by full name or suffix
+   * Call a tool by full name or suffix.
+   *
+   * The return type is `T | string` because the underlying transport may
+   * return a bare string that is not valid JSON (e.g. an MCP error
+   * envelope like `"MCP error -500: ..."`). Callers that expect a
+   * structured `T` must narrow at the boundary.
    */
-  async callToolRaw<T>(toolName: string, args: Record<string, unknown>): Promise<T> {
+  async callToolRaw<T>(toolName: string, args: Record<string, unknown>): Promise<T | string> {
     const resolved = await this.resolveToolName(toolName);
     return this.callTool<T>(resolved, args);
   }

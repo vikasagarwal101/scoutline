@@ -60,6 +60,7 @@ import {
   ValidationError,
 } from "../../lib/errors.js";
 import { requireParallelApiKey, isParallelConfigured } from "./credentials.js";
+import { applySearchTopic } from "../../lib/search-topic.js";
 import {
   fetchParallelSearch,
   fetchParallelExtract,
@@ -181,13 +182,7 @@ export class ParallelAdapter implements ProviderAdapter {
       async invoke(request: SearchRequest): Promise<readonly SearchSource[]> {
         this.validate(request);
         const apiKey = requireParallelApiKey(env);
-        let query = request.query.trim();
-
-        // Parallel AI has no native topic parameter, so we append it to
-        // the query string to bias results.
-        if (request.controls?.topic && request.controls.topic !== "general") {
-          query = `${query} ${request.controls.topic}`;
-        }
+        const query = applySearchTopic(request.query.trim(), request.controls?.topic);
 
         const params: ParallelSearchParams = {};
 

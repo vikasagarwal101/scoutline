@@ -11,7 +11,7 @@ import * as fs from "node:fs/promises";
 import { ZaiMcpClient } from "../lib/mcp-client.js";
 import { ZaiCodeModeClient } from "../lib/code-mode.js";
 import { ValidationError } from "../lib/errors.js";
-import { redactTool } from "../lib/redact.js";
+import { redactTool, configuredSecrets } from "../lib/redact.js";
 import type { CommandContext, CommandResult } from "../command-invocation.js";
 
 export interface ToolsOptions {
@@ -49,7 +49,8 @@ export async function listTools(
       : tools;
 
     if (options.full) {
-      return { kind: "data", data: filtered.map((tool) => redactTool(tool)) };
+      const secrets = configuredSecrets(options.env);
+      return { kind: "data", data: filtered.map((tool) => redactTool(tool, secrets)) };
     }
 
     return { kind: "data", data: filtered.map((tool) => tool.name) };
@@ -69,7 +70,7 @@ export async function showTool(
     if (!tool) {
       throw new ValidationError(`Unknown tool: ${name}`);
     }
-    return { kind: "data", data: redactTool(tool) };
+    return { kind: "data", data: redactTool(tool, configuredSecrets(options.env)) };
   } finally {
     await client.close().catch(() => {});
   }

@@ -20,6 +20,17 @@ All notable changes to this project will be documented in this file.
 - The `init` wizard's Back choice is correctly typed as
   `ProviderId | undefined`.
 
+## 0.14.0 — 2026-08-08
+
+**Actionable errors (minor):**
+
+- The JSON error envelope now includes a `help` field for `UNSUPPORTED_CAPABILITY` and other typed errors, suggesting the next action (e.g., "Use --provider <id> to select a Provider that supports this Capability, or remove --no-fallback to enable cross-Provider rerouting.").
+- All typed error classes are now contract-tested through `formatErrorOutput` (parameterized). A regression that drops a field for a specific error type will fail CI.
+- The JSON error envelope shape is now documented in the README under "JSON Error Envelope," including the stable error codes (`AUTH_ERROR`, `API_ERROR`, `CONFIGURATION_ERROR`, `QUOTA_ERROR`, `UNSUPPORTED_CAPABILITY`, `UNSUPPORTED_OPTION`, `VALIDATION_ERROR`, `TIMEOUT_ERROR`, `NETWORK_ERROR`, `FILE_ERROR`, `UNKNOWN_ERROR`) and the stream contract (error envelopes go to stderr; data-only stdout is preserved).
+- Hot-fix: addresses 4 review findings from the original PR — error-envelope stream corrected to stderr in docs, `UNKNOWN_ERROR` added to the documented codes, `QuotaError` added to the parameterized envelope-contract test, comment direction corrected.
+
+**Backwards compatibility:** the `help` field is additive. Scripts that read the JSON envelope and ignore unknown fields are unaffected. The `code` field remains stable.
+
 ## [0.13.14] - 2026-08-08
 
 ### Security policy

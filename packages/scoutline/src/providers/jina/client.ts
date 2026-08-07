@@ -4,12 +4,11 @@
  * Performs direct HTTP requests against Jina Reader (r.jina.ai) and Search (s.jina.ai).
  */
 
-import { createRequire } from "node:module";
+import pkg from "../../../package.json" with { type: "json" };
 import { ApiError, AuthError, NetworkError, TimeoutError } from "../../lib/errors.js";
 import type { ProviderQuotaFetchResponse } from "../types.js";
 
-const require = createRequire(import.meta.url);
-const { version: VERSION } = require("../../../package.json") as { version: string };
+const { version: VERSION } = pkg;
 
 const READER_BASE_URL = "https://r.jina.ai";
 const SEARCH_BASE_URL = "https://s.jina.ai";

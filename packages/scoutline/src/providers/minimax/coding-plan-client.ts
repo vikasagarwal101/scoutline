@@ -21,7 +21,7 @@
  *   - Must NOT perform field normalization — the Adapter owns that.
  */
 
-import { createRequire } from "node:module";
+import pkg from "../../../package.json" with { type: "json" };
 
 import type { MiniMaxConfig } from "./config.js";
 import {
@@ -33,8 +33,7 @@ import {
 } from "../../lib/errors.js";
 import type { ProviderQuotaFetch } from "../types.js";
 
-const require = createRequire(import.meta.url);
-const { version: VERSION } = require("../../../package.json") as { version: string };
+const { version: VERSION } = pkg;
 
 const SEARCH_PATH = "/v1/coding_plan/search";
 const VLM_PATH = "/v1/coding_plan/vlm";

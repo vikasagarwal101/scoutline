@@ -243,7 +243,13 @@ export function deriveCapabilityMatrix(
     capabilitySets.forEach((set, index) => {
       if (set.has(cap)) {
         const descriptor = descriptors[index];
-        if (descriptor) providers.push(descriptor.id);
+        if (descriptor) {
+          providers.push(descriptor.id);
+        } else {
+          throw new Error(
+            `Capability/descriptor mismatch: descriptor at index ${index} is missing while capabilitySets indicates it advertises "${cap}"`,
+          );
+        }
       }
     });
     return { capability: cap, providers: Object.freeze(providers) as readonly ProviderId[] };

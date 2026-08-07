@@ -37,6 +37,7 @@ import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { getApiKey } from "./config.js";
+import { atomicReplaceFile } from "./config-store.js";
 import type { ProviderId } from "../providers/types.js";
 
 interface CacheEntry<T> {
@@ -399,11 +400,12 @@ export async function writeCache<T>(key: string, data: T): Promise<void> {
   const dir = responseCacheDir();
   const file = path.join(dir, key);
   try {
-    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-    // Tighten directory mode in case it already existed with looser perms.
-    await fs.chmod(dir, 0o700).catch(() => {});
     const entry: CacheEntry<T> = { ts: Date.now(), data };
-    await fs.writeFile(file, JSON.stringify(entry), { mode: 0o600 });
+    // 5.3: use atomic temp-file + rename so a crash mid-write cannot
+    // leave a partially-written cache file. atomicReplaceFile handles
+    // directory creation (mode 0700), exclusive temp-file creation
+    // (mode 0600), fsync, rename, and directory sync.
+    await atomicReplaceFile(file, JSON.stringify(entry));
     await evictIfNeeded(dir);
   } catch {
     // Best-effort cache only

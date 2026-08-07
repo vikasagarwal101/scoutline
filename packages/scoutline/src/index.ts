@@ -163,7 +163,7 @@ function parseArgs(args: string[]): {
   let i = 0;
   while (i < args.length) {
     const arg = args[i];
-    if (!arg) break;
+    if (arg === undefined) break;
 
     if (arg.startsWith("--")) {
       const key = arg.slice(2);
@@ -219,7 +219,7 @@ function extractGlobalOptions(args: string[]): {
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
-    if (!arg) continue;
+    if (arg === undefined) continue;
     if (arg === "--output-format" || arg === "-O") {
       outputFormat = args[i + 1];
       i += 1;

@@ -264,6 +264,40 @@ describe("redactCredentialString — single-string redaction", () => {
     );
   });
 
+  it("redacts bare Firecrawl fc-… keys via length-constrained regex (1.5)", () => {
+    // A canonical long-tail Firecrawl key is redacted by the regex alone
+    // (no configured secret needed).
+    const LONG_FC_KEY = "fc-abcdefghijklmnopqrstuvwxyz0123456789ABCD";
+    assert.strictEqual(
+      redactCredentialString(`api key: ${LONG_FC_KEY}`),
+      "api key: [REDACTED]",
+      "bare fc- key must be redacted by regex backstop",
+    );
+    assert.strictEqual(
+      redactCredentialString(LONG_FC_KEY),
+      "[REDACTED]",
+      "lone fc- key string must be fully redacted",
+    );
+    // Short fc- tokens are NOT redacted (length constraint avoids false
+    // positives on prose like ticket IDs).
+    assert.strictEqual(
+      redactCredentialString("refer to fc-ab for details"),
+      "refer to fc-ab for details",
+      "short fc- token must NOT be redacted",
+    );
+    assert.strictEqual(
+      redactCredentialString("the FC-03 ticket"),
+      "the FC-03 ticket",
+      "uppercase FC- in prose must NOT be redacted by the fc- pattern",
+    );
+    // A string that merely starts with fc- but is too short stays safe.
+    assert.strictEqual(
+      redactCredentialString("fc-short"),
+      "fc-short",
+      "short fc- token must NOT be redacted",
+    );
+  });
+
   it("configuredSecrets surfaces FIRECRAWL_API_KEY (the load-bearing value loop)", () => {
     const secrets = configuredSecrets({ FIRECRAWL_API_KEY: FC_KEY });
     assert.ok(

@@ -70,11 +70,10 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   // Tavily API keys carry the `tvly-` prefix; redact the full token
   // wherever it appears (logs, URLs, error bodies).
   result = result.replace(/tvly-[A-Za-z0-9_-]+/gi, REDACTED);
-  // NOTE: Firecrawl keys are `fc-`-prefixed, but that prefix is too short
-  // to match safely (it false-positives on prose like the "FC-03" ticket
-  // id). Bare Firecrawl key tokens are instead redacted via the
-  // configured-secret value loop (configuredSecrets) in production, and
-  // the FIRECRAWL_API_KEY assignment regex below covers the named form.
+  // Firecrawl API keys carry the `fc-` prefix. The `{20,}` length
+  // constraint avoids false positives on short prose tokens like "fc-ab"
+  // while still matching real Firecrawl keys (which are 32+ chars).
+  result = result.replace(/fc-[a-zA-Z0-9]{20,}/gi, REDACTED);
   // Fixup C — W3: the class accepts either `=`, `:`, or any whitespace
   // as the key/value separator. The trailing `\S+` consumes the secret
   // value; the entire `key + separator + value` span is replaced with

@@ -295,7 +295,7 @@ Default output is **data-only JSON** for token efficiency. Use `--output-format`
 
 ## JSON Error Envelope
 
-When a command fails, Scoutline writes a JSON error envelope to stdout (or stderr in `--output-format json` mode). The shape is:
+When a command fails, Scoutline writes a JSON error envelope to stderr (data-only stdout is preserved). The shape is:
 
 ```json
 {
@@ -327,6 +327,7 @@ When a command fails, Scoutline writes a JSON error envelope to stdout (or stder
 | `VALIDATION_ERROR` | Invalid command-line input |
 | `TIMEOUT_ERROR` | Request timed out |
 | `NETWORK_ERROR` | Network connectivity failure |
+| `UNKNOWN_ERROR` | Generic catch-all for unclassified errors (plain `Error` instances, unknown values passed through `formatErrorOutput`) |
 | `FILE_ERROR` | File or media I/O error |
 
 **Backwards compatibility:** the `help` field is additive (added in 0.14.0). Scripts that parse the JSON envelope and ignore unknown fields are unaffected. The `code` field remains stable across releases.

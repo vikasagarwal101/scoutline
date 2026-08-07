@@ -1,9 +1,9 @@
 # Architecture
 
 Scoutline is a Node.js command-line client that presents several shared
-Capabilities through one consistent interface. It supports Z.AI, the
-MiniMax Token Plan Provider, Tavily, and Brave through a common Adapter
-boundary.
+Capabilities through one consistent interface. It supports nine Providers —
+Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and
+Jina AI — through a common Adapter boundary.
 
 ## Runtime Flow
 
@@ -12,10 +12,10 @@ scoutline executable
   -> dist/index.js command dispatcher
   -> command handler
   -> Provider selection (--provider / SCOUTLINE_PROVIDER / default "zai")
-  -> Provider Adapter (zai, minimax, tavily, or brave)
+  -> Provider Adapter (zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, or jina)
   -> shared execution (cache + retry)
-  -> Provider transport (Z.AI MCP / mmx-cli transitional SDK / MiniMax direct quota / Tavily direct HTTP / Brave direct HTTP)
-  -> Provider service (Z.AI, ZRead, MiniMax, Tavily, or Brave)
+  -> Provider transport (Z.AI MCP / MiniMax direct HTTP / Tavily direct HTTP / Exa direct HTTP / Brave direct HTTP / Firecrawl direct HTTP / Parallel direct HTTP / Perplexity direct HTTP / Jina direct HTTP)
+  -> Provider service (Z.AI, ZRead, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, or Jina AI)
 ```
 
 `packages/scoutline/bin/scoutline.js` is the published executable. It dynamically loads the compiled `dist/index.js` entry point and emits a structured load error if the package was not built.
@@ -35,10 +35,10 @@ normalization. It never imports command presentation, output mode, or another
 Provider's Adapter.
 
 The production registry at `src/providers/registry.ts` is a static,
-four-entry list `[zai, minimax, tavily, brave]`. There is no dynamic loading,
-no package-name lookup, no Adapter file paths, and no externally
-supplied factories. Tests inject descriptor lists explicitly through
-optional parameters.
+nine-entry list `[zai, minimax, tavily, exa, brave, firecrawl, parallel,
+perplexity, jina]`. There is no dynamic loading, no package-name lookup,
+no Adapter file paths, and no externally supplied factories. Tests
+inject descriptor lists explicitly through optional parameters.
 
 ### Built-in Providers
 

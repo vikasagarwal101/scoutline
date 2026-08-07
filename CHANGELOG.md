@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.1] - 2026-08-07
+
+### Security
+
+- **File-only configured API keys** (in `config.json` but not in
+  `process.env`) are now correctly redacted from the on-disk tool
+  cache and from `scoutline tools list/show`. If you previously
+  configured keys this way, run `scoutline cache clear --type tool`
+  to remove any pre-fix un-redacted entries. The tool cache version
+  was bumped from 1 to 2 to invalidate all pre-fix entries.
+- **`ZaiApiClient` now fails closed on `Authorization`-bearing HTTP
+  redirects** (previously Node undici forwarded the `Authorization`
+  header across cross-origin redirects). No known exploitation.
+
 ## [0.13.0] - 2026-08-07
 
 ### Added

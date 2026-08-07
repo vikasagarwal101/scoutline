@@ -20,6 +20,13 @@ All notable changes to this project will be documented in this file.
 - The `init` wizard's Back choice is correctly typed as
   `ProviderId | undefined`.
 
+### [0.14.1] - 2026-08-08
+
+#### Post-release audit fixes
+
+- AbortSignal cancellation is now classified as terminal (not retryable) in the shared execution path. Previously, a user-initiated cancel could trigger a retry. The signal is now checked both after `invoke()` rejects and after the backoff sleep, so cancellation during backoff also terminates promptly.
+- Diagnostics capability mapping now throws on descriptor/index mismatch instead of silently omitting a provider id, making registry inconsistencies immediately visible.
+
 ## 0.14.0 — 2026-08-08
 
 **Actionable errors (minor):**

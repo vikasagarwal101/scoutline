@@ -20,6 +20,16 @@ All notable changes to this project will be documented in this file.
 - The `init` wizard's Back choice is correctly typed as
   `ProviderId | undefined`.
 
+## [0.13.11] - 2026-08-07
+
+### Type-system hardening
+
+- `ScoutlineError.code` is now typed as a tagged union of valid codes; runtime values outside the union are rejected at construction.
+- `parseToolArgs` now rejects non-object JSON values (primitives, `null`, arrays) before they reach `callTool`.
+- `callToolRaw`'s return type is now correctly modelled as `T | string`; callers receive the union they actually get.
+- The provider-fallback executor's capability dispatch is exhaustively typed against `ProviderCapability`; adding a new Capability without updating the executor is now a compile-time error.
+- The `init` wizard's Back choice is correctly typed as `ProviderId | undefined`.
+
 ## [0.13.10] - 2026-08-07
 
 ### Type-system hardening

@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.4] - 2026-08-07
+
+### Documentation
+
+- `CONTEXT.md`, `README.md`, `skills/scoutline/SKILL.md`, and the
+  `--help` output now correctly document that `--topic` is accepted
+  by every Provider (Perplexity and Jina support added in 0.13.3).
+- README, SKILL.md, and `docs/architecture.md` updated to reflect
+  all 9 Providers (Parallel AI, Perplexity, and Jina AI were added
+  in 0.13.0 but the docs were incomplete).
+- `docs/configuration.md`, `docs/troubleshooting.md`, and
+  `skills/scoutline/references/advanced.md` synced to the
+  9-Provider registry.
+- Stale MiniMax SDK section in `docs/architecture.md` and
+  `skills/scoutline/references/advanced.md` replaced with the
+  current direct-transport description.
+
 ## [0.13.3] - 2026-08-07
 
 ### --topic every-Provider contract

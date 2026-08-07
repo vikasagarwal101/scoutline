@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.7] - 2026-08-07
+
+### Test improvements
+
+- `SCOUTLINE_NO_FALLBACK=1` env-var path is now contract-tested through `main()`, mirroring the `--no-fallback` CLI flag.
+- Perplexity and Jina diagnostic probes are now offline-tested with a fake transport.
+- Firecrawl crawl test now uses an injected `sleep` instead of a real 50 ms `setTimeout`.
+- Z.AI reader hang watchdog reduced from 5 s to 1 s.
+- `tests/helpers/fake-adapter.js` documents the fresh-state contract.
+
 ## [0.13.6] - 2026-08-07
 
 ### Programmatic cancellation

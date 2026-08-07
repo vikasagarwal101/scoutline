@@ -7,9 +7,9 @@
  *   - Configuration failures exit 3, ordinary failures exit 1.
  *   - `ZaiError` remains importable with its existing constructor
  *     signature for backward compatibility.
- *   - `formatErrorOutput` (the legacy one-arg compat wrapper) keeps the
- *     public envelope free of stack, cause, raw response bodies, and
- *     credential material.
+ *   - `formatErrorOutput` (the invocation-local 2-arg version from
+ *     `lib/output.ts`) keeps the public envelope free of stack, cause,
+ *     raw response bodies, and credential material.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -28,8 +28,8 @@ import {
   QuotaError,
   isRetryableError,
   getErrorExitCode,
-  formatErrorOutput,
 } from "../dist/lib/errors.js";
+import { formatErrorOutput } from "../dist/lib/output.js";
 
 describe("ScoutlineError", () => {
   it("carries `code`, `retryable`, and `exitCode` from options", () => {
@@ -229,7 +229,7 @@ describe("QuotaError — concrete normalized construction", () => {
 
   it("surfaces through formatErrorOutput with the documented public envelope", () => {
     const err = new QuotaError("quota exhausted for the active provider");
-    const parsed = JSON.parse(formatErrorOutput(err));
+    const parsed = JSON.parse(formatErrorOutput(err, "data"));
     assert.strictEqual(parsed.success, false);
     assert.strictEqual(parsed.code, "QUOTA_ERROR");
     assert.strictEqual(parsed.statusCode, 429);
@@ -285,10 +285,10 @@ describe("getErrorExitCode", () => {
   });
 });
 
-describe("formatErrorOutput (compat)", () => {
+describe("formatErrorOutput", () => {
   it("formats ZaiError with the documented public shape", () => {
     const err = new ZaiError("Test", "CODE", 400, "Help");
-    const parsed = JSON.parse(formatErrorOutput(err));
+    const parsed = JSON.parse(formatErrorOutput(err, "data"));
     assert.strictEqual(parsed.success, false);
     assert.strictEqual(parsed.error, "Test");
     assert.strictEqual(parsed.code, "CODE");
@@ -298,7 +298,7 @@ describe("formatErrorOutput (compat)", () => {
   it("formats generic Error as UNKNOWN_ERROR without a stack", () => {
     const err = new Error("Generic error");
     err.stack = "Error: Generic error\n    at secret:1:1";
-    const parsed = JSON.parse(formatErrorOutput(err));
+    const parsed = JSON.parse(formatErrorOutput(err, "data"));
     assert.strictEqual(parsed.success, false);
     assert.strictEqual(parsed.error, "Generic error");
     assert.strictEqual(parsed.code, "UNKNOWN_ERROR");
@@ -306,7 +306,7 @@ describe("formatErrorOutput (compat)", () => {
   });
 
   it("formats plain string errors as UNKNOWN_ERROR", () => {
-    const parsed = JSON.parse(formatErrorOutput("String error"));
+    const parsed = JSON.parse(formatErrorOutput("String error", "data"));
     assert.strictEqual(parsed.success, false);
     assert.strictEqual(parsed.error, "String error");
     assert.strictEqual(parsed.code, "UNKNOWN_ERROR");
@@ -317,7 +317,7 @@ describe("formatErrorOutput (compat)", () => {
     err.stack = "ZaiError: leak\n    at secret:1:1";
     err.cause = { Authorization: "Bearer abc.def.ghi", Z_AI_API_KEY: "xyz" };
     err.responseBody = "Authorization: Bearer abc.def.ghi\nZ_AI_API_KEY=xyz";
-    const out = formatErrorOutput(err);
+    const out = formatErrorOutput(err, "data");
     assert.ok(!out.includes("Bearer abc.def.ghi"));
     assert.ok(!out.includes("Z_AI_API_KEY=xyz"));
     assert.ok(!out.includes("xyz"));

@@ -74,6 +74,7 @@ export async function fetchParallelSearch(
   query: string,
   params: ParallelSearchParams = {},
   deps: ParallelTransportDeps = {},
+  externalSignal?: AbortSignal,
 ): Promise<ParallelSearchResponse> {
   const fetchFn = deps.fetch || globalThis.fetch;
   const setTimer = deps.setTimeout || globalThis.setTimeout;
@@ -90,6 +91,9 @@ export async function fetchParallelSearch(
   }
 
   const controller = new AbortController();
+  // Honour external cancellation (e.g., research AbortSignal)
+  if (externalSignal?.aborted) controller.abort();
+  externalSignal?.addEventListener("abort", () => controller.abort(), { once: true });
   const timer = setTimer(() => controller.abort(), timeoutMs);
 
   try {

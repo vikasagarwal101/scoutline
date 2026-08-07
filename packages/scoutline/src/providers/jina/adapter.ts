@@ -278,13 +278,14 @@ export class JinaAdapter implements ProviderAdapter {
 
         decodeCached: decodeResearchResult,
 
-        async invoke(request: ResearchRequest): Promise<ResearchResult> {
+        async invoke(request: ResearchRequest, signal?: AbortSignal): Promise<ResearchResult> {
           this.validate(request);
+          if (signal?.aborted) throw new TimeoutError(0, "Research aborted before start");
           const apiKey = resolveJinaApiKey(env);
           const query = request.query.trim();
 
           try {
-            const response = await fetchJinaDeepSearch(apiKey, query, transport);
+            const response = await fetchJinaDeepSearch(apiKey, query, transport, signal);
             const content = response.choices?.[0]?.message?.content || "";
 
             // Extract cited sources from annotations (preferred) or

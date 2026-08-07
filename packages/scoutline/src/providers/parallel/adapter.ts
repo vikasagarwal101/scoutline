@@ -234,8 +234,9 @@ export class ParallelAdapter implements ProviderAdapter {
 
         decodeCached: decodeResearchResult,
 
-        async invoke(request: ResearchRequest): Promise<ResearchResult> {
+        async invoke(request: ResearchRequest, signal?: AbortSignal): Promise<ResearchResult> {
           this.validate(request);
+          if (signal?.aborted) throw new TimeoutError(0, "Research aborted before start");
           const apiKey = requireParallelApiKey(env);
           const query = request.query.trim();
 
@@ -245,6 +246,7 @@ export class ParallelAdapter implements ProviderAdapter {
               query,
               { objective: "deep-research" },
               transport,
+              signal,
             );
             const results = response.results || [];
 

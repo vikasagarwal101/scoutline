@@ -231,6 +231,7 @@ export async function fetchJinaDeepSearch(
   apiKey: string | undefined,
   query: string,
   deps: JinaTransportDeps = {},
+  externalSignal?: AbortSignal,
 ): Promise<JinaDeepSearchResponse> {
   const fetchFn = deps.fetch || globalThis.fetch;
   const setTimer = deps.setTimeout || globalThis.setTimeout;
@@ -256,6 +257,9 @@ export async function fetchJinaDeepSearch(
   }
 
   const controller = new AbortController();
+  // Honour external cancellation (e.g., research AbortSignal)
+  if (externalSignal?.aborted) controller.abort();
+  externalSignal?.addEventListener("abort", () => controller.abort(), { once: true });
   const timer = setTimer(() => controller.abort(), timeoutMs);
 
   try {

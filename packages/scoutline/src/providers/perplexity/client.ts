@@ -189,6 +189,7 @@ export async function fetchPerplexityChat(
   prompt: string,
   model: string = "sonar",
   deps: PerplexityTransportDeps = {},
+  externalSignal?: AbortSignal,
 ): Promise<PerplexityChatResponse> {
   const fetchFn = deps.fetch || globalThis.fetch;
   const setTimer = deps.setTimeout || globalThis.setTimeout;
@@ -209,6 +210,9 @@ export async function fetchPerplexityChat(
   };
 
   const controller = new AbortController();
+  // Honour external cancellation (e.g., research AbortSignal)
+  if (externalSignal?.aborted) controller.abort();
+  externalSignal?.addEventListener("abort", () => controller.abort(), { once: true });
   const timer = setTimer(() => controller.abort(), timeoutMs);
 
   try {

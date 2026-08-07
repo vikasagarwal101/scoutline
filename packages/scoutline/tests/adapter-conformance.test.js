@@ -32,6 +32,7 @@ import {
 } from "../dist/providers/registry.js";
 import { readFixture } from "./helpers/fixtures.js";
 import { FakeUtcpClient } from "./helpers/fake-utcp-client.js";
+import { TimeoutError } from "../dist/lib/errors.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC_DIR = path.resolve(__dirname, "..", "src");
@@ -448,6 +449,61 @@ describe("Source normalization — new adapters omit source when no metadata (2.
     );
     const results = await adapter.search.invoke({ query: "test" });
     assert.equal(results[0].source, undefined, "source must be absent, not hardcoded");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AbortSignal: new adapters honour cooperative cancellation in research (2.6)
+// ---------------------------------------------------------------------------
+
+describe("AbortSignal — new research invokes honour pre-aborted signal (2.6)", () => {
+  /**
+   * A fetch that throws if ever called — proving the pre-abort check
+   * short-circuits before any transport access.
+   */
+  function explodingFetch() {
+    return async () => {
+      throw new Error("fetch must not be called when signal is pre-aborted");
+    };
+  }
+
+  it("Parallel research rejects before transport when signal is pre-aborted", async () => {
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: "k" } },
+      { transport: { fetch: explodingFetch() } },
+    );
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "test" }, controller.signal),
+      (err) => err instanceof TimeoutError,
+    );
+  });
+
+  it("Perplexity research rejects before transport when signal is pre-aborted", async () => {
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: "k" } },
+      { transport: { fetch: explodingFetch() } },
+    );
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "test" }, controller.signal),
+      (err) => err instanceof TimeoutError,
+    );
+  });
+
+  it("Jina research rejects before transport when signal is pre-aborted", async () => {
+    const adapter = new JinaAdapter(
+      { env: {} },
+      { transport: { fetch: explodingFetch() } },
+    );
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "test" }, controller.signal),
+      (err) => err instanceof TimeoutError,
+    );
   });
 });
 

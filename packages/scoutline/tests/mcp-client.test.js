@@ -1464,7 +1464,11 @@ describe("ZaiMcpClient — instance-level env resolution (1.7)", () => {
     process.env.Z_AI_TIMEOUT = "77777";
     try {
       const client = new ZaiMcpClient();
-      assert.strictEqual(client.timeoutMs, 77777, "timeoutMs must reflect process.env at construction time");
+      assert.strictEqual(
+        client.timeoutMs,
+        77777,
+        "timeoutMs must reflect process.env at construction time",
+      );
     } finally {
       if (saved === undefined) delete process.env.Z_AI_TIMEOUT;
       else process.env.Z_AI_TIMEOUT = saved;
@@ -1521,6 +1525,53 @@ describe("ZaiMcpClient — instance-level env resolution (1.7)", () => {
     assert.ok(
       clientB.options.env?.ZAI_MCP_RETRY_COUNT === "0",
       "options.env must carry the zero retry-count override",
+    );
+  });
+
+  it("getRetryCount resolution controls actual retry attempts via callTool (audit-8)", async () => {
+    // Verify that ZAI_MCP_RETRY_COUNT in options.env actually controls
+    // the number of retry attempts — not just that the env is stored.
+    // A fake UTCP client that always throws a 500 (retryable) error
+    // lets us count how many times callTool was invoked.
+
+    // With ZAI_MCP_RETRY_COUNT=0: exactly 1 attempt (no retry)
+    const fake0 = new FakeUtcpClient({
+      discoveredTools: [],
+      errorsByName: { "test.tool": new Error("timeout") },
+    });
+    const client0 = new ZaiMcpClient({
+      env: { ...process.env, ZAI_MCP_RETRY_COUNT: "0" },
+      utcpFactory: async () => fake0,
+    });
+    client0.retryBaseMs = 0;
+    client0.retryMaxMs = 0;
+    client0.retryJitterMs = 0;
+
+    await assert.rejects(client0.callTool("test.tool", {}));
+    assert.strictEqual(
+      fake0.callToolCalls.length,
+      1,
+      "ZAI_MCP_RETRY_COUNT=0 must produce exactly 1 attempt (no retry)",
+    );
+
+    // With ZAI_MCP_RETRY_COUNT=2: exactly 3 attempts (1 initial + 2 retries)
+    const fake2 = new FakeUtcpClient({
+      discoveredTools: [],
+      errorsByName: { "test.tool": new Error("timeout") },
+    });
+    const client2 = new ZaiMcpClient({
+      env: { ...process.env, ZAI_MCP_RETRY_COUNT: "2" },
+      utcpFactory: async () => fake2,
+    });
+    client2.retryBaseMs = 0;
+    client2.retryMaxMs = 0;
+    client2.retryJitterMs = 0;
+
+    await assert.rejects(client2.callTool("test.tool", {}));
+    assert.strictEqual(
+      fake2.callToolCalls.length,
+      3,
+      "ZAI_MCP_RETRY_COUNT=2 must produce exactly 3 attempts (1 initial + 2 retries)",
     );
   });
 });

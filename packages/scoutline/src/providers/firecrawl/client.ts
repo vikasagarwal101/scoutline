@@ -23,13 +23,13 @@
  *     any capability contract.
  */
 
-import { createRequire } from "node:module";
+import pkg from "../../../package.json" with { type: "json" };
 
 import { ApiError, AuthError, NetworkError, TimeoutError } from "../../lib/errors.js";
 import type { ProviderQuotaFetch } from "../types.js";
+import { getGlobalFetch } from "../types.js";
 
-const require = createRequire(import.meta.url);
-const { version: VERSION } = require("../../../package.json") as { version: string };
+const { version: VERSION } = pkg;
 
 const BASE_URL = "https://api.firecrawl.dev";
 const SEARCH_PATH = "/v2/search";
@@ -152,7 +152,7 @@ async function postFirecrawlJson(
   deps: FirecrawlTransportDeps,
   endpointLabel: string,
 ): Promise<unknown> {
-  const f = deps.fetch ?? (fetch as unknown as ProviderQuotaFetch);
+  const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
   const env = deps.env ?? process.env;
@@ -391,7 +391,7 @@ export async function pollFirecrawlCrawl(
   id: string,
   deps: FirecrawlTransportDeps = {},
 ): Promise<FirecrawlCrawlPollResult> {
-  const f = deps.fetch ?? (fetch as unknown as ProviderQuotaFetch);
+  const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
   const env = deps.env ?? process.env;
@@ -537,7 +537,7 @@ async function getFirecrawlJson(
   deps: FirecrawlTransportDeps,
   endpointLabel: string,
 ): Promise<unknown> {
-  const f = deps.fetch ?? (fetch as unknown as ProviderQuotaFetch);
+  const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
   const env = deps.env ?? process.env;

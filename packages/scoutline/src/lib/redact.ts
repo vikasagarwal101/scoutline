@@ -218,6 +218,6 @@ function isPlainObject(value: unknown): boolean {
  */
 export function redactTool(tool: Tool, secrets?: string | string[]): Tool {
   const resolved = secrets === undefined ? configuredSecrets() : normalizeSecrets(secrets);
-  const clone = JSON.parse(JSON.stringify(tool)) as Tool;
+  const clone = structuredClone(tool);
   return redactSecrets(clone, resolved) as Tool;
 }

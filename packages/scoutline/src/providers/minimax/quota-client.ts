@@ -22,6 +22,7 @@
 import type { MiniMaxConfig } from "./config.js";
 import { ApiError, AuthError, NetworkError, TimeoutError } from "../../lib/errors.js";
 import type { ProviderQuotaFetch } from "../types.js";
+import { getGlobalFetch } from "../types.js";
 import type { MiniMaxTransportDeps } from "./coding-plan-client.js";
 
 const QUOTA_PATH = "/v1/api/openplatform/coding_plan/remains";
@@ -86,7 +87,7 @@ export async function fetchMiniMaxQuota(
   config: MiniMaxConfig,
   deps: MiniMaxQuotaClientDeps = {},
 ): Promise<MiniMaxRawQuotaResponse> {
-  const f = deps.fetch ?? (fetch as unknown as MiniMaxQuotaFetch);
+  const f = deps.fetch ?? getGlobalFetch<MiniMaxQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
   const env = deps.env ?? process.env;

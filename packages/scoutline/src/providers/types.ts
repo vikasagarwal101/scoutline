@@ -325,6 +325,19 @@ export type ProviderImageFetch = (
   init: Record<string, unknown>,
 ) => Promise<ProviderImageFetchResponse>;
 
+/**
+ * Return the ambient global fetch narrowed to a provider-specific function
+ * type. Centralizes the `fetch as unknown as T` double-cast so it appears
+ * once instead of being repeated in every provider client.
+ *
+ * The cast is structurally safe: production `fetch` returns a `Response`
+ * that satisfies every provider fetch interface above; tests inject
+ * compatible doubles via `deps.fetch`.
+ */
+export function getGlobalFetch<T extends (...args: never[]) => Promise<unknown> = typeof fetch>(): T {
+  return globalThis.fetch as unknown as T;
+}
+
 /** Dependencies the Phase 2 Search wiring would inject into the registry. */
 export interface SearchDependencies {
   clientFactory(options: ZaiMcpClientOptions): LegacySearchClientPort;

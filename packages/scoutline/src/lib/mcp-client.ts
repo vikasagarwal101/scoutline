@@ -185,7 +185,7 @@ export class ZaiMcpClient {
     const cacheable = !this.options.noCache && !toolName.includes(".vision.");
     if (cacheable) {
       const key = buildCacheKey(toolName, args, this.options.env);
-      const hit = await readCache<T>(key);
+      const hit = await readCache(key) as T | null;
       if (hit !== null) return hit;
       try {
         const result = await this.callToolUncached<T>(toolName, args);
@@ -475,7 +475,7 @@ export class ZaiMcpClient {
       return this.callToolUncached<T>(internal, args);
     }
     const key = buildCacheKey(publicToolName, args, this.options.env);
-    const hit = await readCache<T>(key);
+    const hit = await readCache(key) as T | null;
     if (hit !== null) return hit;
     const internal = await this.resolveToolName(publicToolName);
     try {

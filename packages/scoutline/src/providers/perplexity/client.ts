@@ -6,12 +6,11 @@
  *   - POST /chat/completions — Sonar chat completions (research via sonar-deep-research)
  */
 
-import { createRequire } from "node:module";
+import pkg from "../../../package.json" with { type: "json" };
 import { ApiError, AuthError, NetworkError, TimeoutError } from "../../lib/errors.js";
 import type { ProviderQuotaFetchResponse } from "../types.js";
 
-const require = createRequire(import.meta.url);
-const { version: VERSION } = require("../../../package.json") as { version: string };
+const { version: VERSION } = pkg;
 
 const BASE_URL = "https://api.perplexity.ai";
 const DEFAULT_TIMEOUT_MS = 30000;

@@ -78,10 +78,8 @@ import {
   type InitDependencies,
   type InitPrompts,
 } from "./commands/init.js";
-import { createRequire } from "node:module";
-
-const require = createRequire(import.meta.url);
-const { version: VERSION } = require("../package.json") as { version: string };
+import pkg from "../package.json" with { type: "json" };
+const { version: VERSION } = pkg;
 
 const MAIN_HELP = `
 scoutline v${VERSION} - Multimodal source investigation CLI

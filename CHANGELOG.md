@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.6] - 2026-08-07
+
+### Programmatic cancellation
+
+- `executeSearch`, `executeRepositoryOperation`, and `executeReaderOperation` now accept an optional `AbortSignal` and forward it to the underlying Provider `invoke()`. CLI behaviour is unchanged (SIGINT still kills the process); the change is additive for programmatic consumers (MCP server, library use).
+
 ## [0.13.5] - 2026-08-07
 
 ### Hardening

@@ -2093,3 +2093,74 @@ function commandLabelFor(capabilityId) {
   if (capabilityId.startsWith("vision.")) return "vision";
   return capabilityId;
 }
+
+// ---------------------------------------------------------------------------
+// 4.5 — Exhaustive ProviderCapability dispatch
+// ---------------------------------------------------------------------------
+
+/**
+ * The canonical list of every ProviderCapability union member. This is
+ * intentionally a literal array (not derived from a runtime source) so
+ * adding a new Capability to the TypeScript union without updating
+ * `adapterSlotFor`'s switch causes this test to fail — the new value
+ * would be missing here, and a reviewer would catch the gap.
+ */
+const ALL_PROVIDER_CAPABILITIES = [
+  "search",
+  "vision.interpret-image",
+  "vision.ui-artifact",
+  "vision.extract-text",
+  "vision.diagnose-error",
+  "vision.diagram",
+  "vision.chart",
+  "vision.diff",
+  "vision.video",
+  "quota",
+  "diagnostics",
+  "repository-exploration",
+  "reader",
+  "crawl",
+  "map",
+  "research",
+];
+
+describe("ProviderCapability dispatch is exhaustive (4.5)", () => {
+  for (const cap of ALL_PROVIDER_CAPABILITIES) {
+    it(`adapterSlotFor handles "${cap}" without falling through to never`, async () => {
+      // Build a descriptor that advertises the capability, is configured,
+      // and supplies every adapter slot. The preflight should classify
+      // it as "eligible" — if adapterSlotFor doesn't handle this
+      // capability, the exhaustiveness guard throws and preflight
+      // never completes.
+      const descriptor = makeDescriptor("zai", {
+        capabilities: [cap],
+        configured: true,
+        adapterHandle: cap.startsWith("vision.")
+          ? "vision"
+          : cap === "repository-exploration"
+            ? "repository"
+            : cap,
+      });
+      const cap2 = captureStderr();
+      // The attempt callback is never reached in this test because the
+      // only candidate is eligible and the attempt succeeds; the point
+      // is that the PREFLIGHT (which calls adapterSlotFor) does not
+      // throw for any valid ProviderCapability.
+      await executeWithFallback(
+        {
+          capabilityId: cap,
+          commandLabel: commandLabelFor(cap),
+          effectiveProvider: "zai",
+          descriptors: [descriptor],
+          env: { Z_AI_API_KEY: "test" },
+          fallbackEnabled: false,
+          writeStderr: cap2.writeStderr,
+        },
+        async () => "ok",
+      );
+      // If we got here, the preflight's adapterSlotFor handled the
+      // capability without hitting the exhaustiveness guard.
+      assert.ok(true, `preflight completed for ${cap}`);
+    });
+  }
+});

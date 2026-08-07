@@ -242,7 +242,8 @@ export function deriveCapabilityMatrix(
     const providers: ProviderId[] = [];
     capabilitySets.forEach((set, index) => {
       if (set.has(cap)) {
-        providers.push(descriptors[index].id);
+        const descriptor = descriptors[index];
+        if (descriptor) providers.push(descriptor.id);
       }
     });
     return { capability: cap, providers: Object.freeze(providers) as readonly ProviderId[] };

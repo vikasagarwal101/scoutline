@@ -352,7 +352,7 @@ function parseZaiDirectory(
     const m = line.match(immediateEntryRe);
     if (m) {
       // Level-0 immediate entry — parse and emit.
-      const name = m[1].trim();
+      const name = (m[1] ?? "").trim();
       if (!name) {
         throw new ApiError("Z.AI directory returned a malformed response", 502);
       }
@@ -377,7 +377,7 @@ function parseZaiDirectory(
       // Valid descendant indentation — but a descendant with an empty
       // name is still malformed. Silently skip only if the name is
       // non-empty; otherwise reject.
-      if (d[1].trim()) {
+      if ((d[1] ?? "").trim()) {
         continue;
       }
     }

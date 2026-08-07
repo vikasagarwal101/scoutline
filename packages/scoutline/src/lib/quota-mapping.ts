@@ -787,7 +787,8 @@ export function rankProvidersForCapability(
   const registryOrder = options.registryOrder ?? PROVIDER_IDS;
   const orderRank = new Map<ProviderId, number>();
   for (let i = 0; i < registryOrder.length; i++) {
-    orderRank.set(registryOrder[i], i);
+    const id = registryOrder[i];
+    if (id) orderRank.set(id, i);
   }
   // Providers absent from the supplied registryOrder sort after every
   // known entry, preserving first-occurrence order via a large offset.

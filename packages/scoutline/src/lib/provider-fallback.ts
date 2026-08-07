@@ -522,6 +522,7 @@ export async function executeWithFallback<T>(
 
   for (let i = 0; i < plan.length; i += 1) {
     const entry = plan[i];
+    if (!entry) continue;
 
     // Skip-notices. Emitted only when fallback is enabled; the
     // kill-switch plan has a single entry and the user explicitly
@@ -589,8 +590,10 @@ export async function executeWithFallback<T>(
         effectiveRan = true;
       }
       if (opts.fallbackEnabled && i < plan.length - 1) {
-        const next = plan[i + 1].descriptor;
-        opts.writeStderr(switchNotice(entry, err, opts.capabilityId, opts.commandLabel, next.id));
+        const next = plan[i + 1]?.descriptor;
+        if (next) {
+          opts.writeStderr(switchNotice(entry, err, opts.capabilityId, opts.commandLabel, next.id));
+        }
       }
     }
   }
@@ -650,10 +653,10 @@ export async function executeWithFallback<T>(
   // ever invoking `attempt`) and no eligible candidate ran either.
   // Surface the matching typed error so the dispatcher exit code
   // matches 0.10.x.
-  const effectiveStatus = plan[0].status;
-  if (effectiveStatus.kind === "unconfigured") {
+  const firstEntry = plan[0];
+  if (firstEntry && firstEntry.status.kind === "unconfigured") {
     throw new ConfigurationError(
-      `Provider "${opts.effectiveProvider}" is not configured. ${credentialMessageFor(plan[0].descriptor)}`,
+      `Provider "${opts.effectiveProvider}" is not configured. ${credentialMessageFor(firstEntry.descriptor)}`,
     );
   }
   // `incapable` — capability metadata or adapter-handle check

@@ -305,7 +305,7 @@ function applyCount(
 export async function executeSearch(
   capability: SearchCapability,
   request: SearchRequest,
-  options: { count?: number; noCache?: boolean; retryPolicy?: RetryPolicy },
+  options: { count?: number; noCache?: boolean; retryPolicy?: RetryPolicy; signal?: AbortSignal },
   dependencies: ExecutionDependencies,
 ): Promise<readonly SearchSource[]> {
   // 1. Validate Capability request.
@@ -369,7 +369,7 @@ export async function executeSearch(
       : undefined;
   const result = await executeProviderOperation(
     "search",
-    () => capability.invoke(request),
+    () => capability.invoke(request, options.signal),
     dependencies,
     options.retryPolicy,
     consumption,
@@ -398,6 +398,12 @@ export async function executeSearch(
 export interface ExecuteRepositoryOptions {
   noCache?: boolean;
   retryPolicy?: RetryPolicy;
+  /**
+   * Cooperative-cancellation signal forwarded to `operation.invoke`. When
+   * aborted, a supporting Adapter stops early. Unsupported operations
+   * ignore it.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -517,7 +523,7 @@ export async function executeRepositoryOperation<Request, Result>(
     // composed into `ProviderOperation` directly — no cast needed
     // and a future kind union change propagates automatically.
     operation.kind,
-    () => operation.invoke(request),
+    () => operation.invoke(request, options.signal),
     dependencies,
     options.retryPolicy,
     consumption,
@@ -546,6 +552,12 @@ export async function executeRepositoryOperation<Request, Result>(
 export interface ExecuteReaderOptions {
   noCache?: boolean;
   retryPolicy?: RetryPolicy;
+  /**
+   * Cooperative-cancellation signal forwarded to `operation.invoke`. When
+   * aborted, a supporting Adapter stops early. Unsupported operations
+   * ignore it.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -662,7 +674,7 @@ export async function executeReaderOperation(
       : undefined;
   const result = await executeProviderOperation(
     operation.kind,
-    () => operation.invoke(request),
+    () => operation.invoke(request, options.signal),
     dependencies,
     options.retryPolicy,
     consumption,

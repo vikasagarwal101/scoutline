@@ -708,6 +708,16 @@ describe("Firecrawl Crawl Adapter", () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "fc-lock-"));
     const activeJobs = [];
     let postCount = 0;
+    // Injected sleep — deterministic, no wall-clock dependency. The job is
+    // pushed synchronously before `await sleep(50)`, so a microtask yield is
+    // enough for the second invoke to contend on the create-lock and see the
+    // first's job via the reclamation path. Recording the call lets us assert
+    // the expected delay without paying the real timer cost.
+    const sleepCalls = [];
+    const sleep = (ms) => {
+      sleepCalls.push(ms);
+      return Promise.resolve();
+    };
     const fn = async (url, init) => {
       const u = String(url);
       const method = init?.method ?? "GET";
@@ -716,7 +726,7 @@ describe("Firecrawl Crawl Adapter", () => {
         const id = `job-${postCount}`;
         activeJobs.push({ id, url: "https://lock.example", created_at: new Date().toISOString() });
         // Hold the create critical section briefly so the second invoke contends.
-        await new Promise((r) => setTimeout(r, 50));
+        await sleep(50);
         return makeResponse({ json: { success: true, id } });
       }
       if (method === "GET" && u.endsWith("/v2/crawl/active")) {
@@ -741,6 +751,8 @@ describe("Firecrawl Crawl Adapter", () => {
     ]);
     // The lock serialized the create: only ONE POST (the second reclaimed the first's job).
     assert.equal(postCount, 1, "concurrent identical crawls must not both POST");
+    // The injected sleep was called with the expected delay.
+    assert.deepEqual(sleepCalls, [50], "injected sleep must be called exactly once with 50ms");
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   });
 });

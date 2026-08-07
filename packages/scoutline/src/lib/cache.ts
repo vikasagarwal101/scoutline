@@ -403,6 +403,7 @@ export async function readCache(
   const resolvedTtl = typeof decoderOrTtl === "number" ? decoderOrTtl : ttlMs;
   if (!isCacheEnabled() || resolvedTtl <= 0) return null;
   const file = path.join(responseCacheDir(), key);
+  let data: unknown;
   try {
     const raw = await fs.readFile(file, "utf8");
     const entry = JSON.parse(raw) as CacheEntry<unknown>;
@@ -410,11 +411,14 @@ export async function readCache(
     if (Date.now() - entry.ts > resolvedTtl) return null;
     // Touch the file for LRU freshness (best-effort)
     await fs.utimes(file, new Date(), new Date()).catch(() => {});
-    if (typeof decoderOrTtl === "function") return decoderOrTtl(entry.data);
-    return entry.data;
+    data = entry.data;
   } catch {
     return null;
   }
+  // Run the decoder outside the file-I/O catch so a throwing validator
+  // surfaces as an error rather than being silently swallowed as a miss.
+  if (typeof decoderOrTtl === "function") return decoderOrTtl(data);
+  return data;
 }
 
 export async function writeCache<T>(key: string, data: T): Promise<void> {

@@ -334,7 +334,7 @@ export type ProviderImageFetch = (
  * that satisfies every provider fetch interface above; tests inject
  * compatible doubles via `deps.fetch`.
  */
-export function getGlobalFetch<T = typeof fetch>(): T {
+export function getGlobalFetch<T extends (...args: never[]) => Promise<unknown> = typeof fetch>(): T {
   return globalThis.fetch as unknown as T;
 }
 

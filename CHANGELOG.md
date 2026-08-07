@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.13.0] - 2026-08-07
 
 ### Added
 - **Integrated Parallel AI (`parallel`), Perplexity Sonar API (`perplexity`), and Jina AI (`jina`) providers.**

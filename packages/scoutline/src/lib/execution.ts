@@ -272,6 +272,8 @@ export async function executeProviderOperation<T>(
       const backoff = Math.min(policy.maxDelayMs, policy.baseDelayMs * Math.pow(2, attempt));
       const jitter = Math.floor(dependencies.random() * policy.jitterMs);
       await dependencies.sleep(backoff + jitter);
+      // Re-check after backoff: signal may have aborted during sleep.
+      if (signal?.aborted) throw error;
       attempt += 1;
     }
   }

@@ -1367,3 +1367,71 @@ describe("ZaiMcpClient — response-cache redaction (F2, code-review-baseline)",
     }
   });
 });
+
+describe("ZaiMcpClient.close() does not leak a referenced timer (5.1)", () => {
+  it("clears the close timeout timer after the race completes", async () => {
+    const fake = new FakeUtcpClient();
+    // Make the underlying close() hang so the timeout race is the
+    // resolving path — exercising the timer capture/unref/clear.
+    fake.close = () => new Promise(() => {});
+    const client = new ZaiMcpClient({ utcpFactory: async () => fake });
+    await client.init();
+
+    const timeoutMs = 100;
+    await client.close(timeoutMs);
+
+    // State should be cleaned up regardless of which path resolved.
+    assert.strictEqual(client.client, null, "client reference cleared after close");
+
+    // After close() resolves, no Timeout handle with our duration
+    // should remain referenced in the active handles — the timer was
+    // unref()'d and clearTimeout()'d in the finally block.
+    const handles =
+      typeof process._getActiveHandles === "function" ? process._getActiveHandles() : [];
+    const leakedTimers = handles.filter(
+      (h) =>
+        h &&
+        typeof h === "object" &&
+        "_idleTimeout" in h &&
+        h._idleTimeout === timeoutMs &&
+        typeof h.hasRef === "function" &&
+        h.hasRef(),
+    );
+    assert.strictEqual(
+      leakedTimers.length,
+      0,
+      "close timeout timer must be cleared, not left referenced",
+    );
+  });
+
+  it("does not keep the event loop alive after close when client.close() resolves first", async () => {
+    // When the client's close() resolves before the timeout, the timer
+    // is still pending — it must be unref'd and cleared so it does not
+    // pin the event loop for the remaining timeout duration.
+    const fake = new FakeUtcpClient(); // close() resolves immediately
+    const client = new ZaiMcpClient({ utcpFactory: async () => fake });
+    await client.init();
+
+    const timeoutMs = 5000; // long timeout; if leaked, it pins for 5 s
+    const start = Date.now();
+    await client.close(timeoutMs);
+    const elapsed = Date.now() - start;
+
+    // close() should have returned promptly (not waited for the 5 s timer).
+    assert.ok(elapsed < 1000, `close() took ${elapsed}ms; timer may not have been cleared`);
+
+    // No referenced timer with the 5 s duration should survive.
+    const handles =
+      typeof process._getActiveHandles === "function" ? process._getActiveHandles() : [];
+    const leakedTimers = handles.filter(
+      (h) =>
+        h &&
+        typeof h === "object" &&
+        "_idleTimeout" in h &&
+        h._idleTimeout === timeoutMs &&
+        typeof h.hasRef === "function" &&
+        h.hasRef(),
+    );
+    assert.strictEqual(leakedTimers.length, 0, "5 s timer must not remain referenced after close");
+  });
+});

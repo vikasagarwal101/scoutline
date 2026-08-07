@@ -37,6 +37,7 @@ import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { getApiKey } from "./config.js";
+import { atomicReplaceFile } from "./config-store.js";
 import type { ProviderId } from "../providers/types.js";
 
 interface CacheEntry<T> {
@@ -399,9 +400,12 @@ export async function writeCache<T>(key: string, data: T): Promise<void> {
   const dir = responseCacheDir();
   const file = path.join(dir, key);
   try {
-    await fs.mkdir(dir, { recursive: true });
     const entry: CacheEntry<T> = { ts: Date.now(), data };
-    await fs.writeFile(file, JSON.stringify(entry));
+    // 5.3: use atomic temp-file + rename so a crash mid-write cannot
+    // leave a partially-written cache file. atomicReplaceFile handles
+    // directory creation (mode 0700), exclusive temp-file creation
+    // (mode 0600), fsync, rename, and directory sync.
+    await atomicReplaceFile(file, JSON.stringify(entry));
     await evictIfNeeded(dir);
   } catch {
     // Best-effort cache only
@@ -413,6 +417,10 @@ async function evictIfNeeded(dir: string): Promise<void> {
     const entries = await fs.readdir(dir);
     const stats = await Promise.all(
       entries.map(async (name) => {
+        // Skip atomic-write temp files (.<basename>.<pid>.<uuid>.tmp)
+        // so eviction cannot unlink a concurrent write's staging file
+        // and cause its rename to fail (Greptile P2).
+        if (name.startsWith(".") && name.endsWith(".tmp")) return null;
         try {
           const p = path.join(dir, name);
           const s = await fs.stat(p);

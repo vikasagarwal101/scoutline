@@ -33,6 +33,7 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import type { Tool } from "@utcp/sdk";
 import { toolCacheDir, isCacheEnabled, getCacheTtlMs } from "./cache.js";
+import { atomicReplaceFile } from "./config-store.js";
 import { redactTool } from "./redact.js";
 
 /**
@@ -145,13 +146,16 @@ export async function writeToolCache(
   if (getCacheTtlMs() <= 0) return;
   try {
     const filePath = buildToolCachePath(config);
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
     const payload: ToolCachePayload = {
       version: TOOL_CACHE_VERSION,
       timestamp: Date.now(),
       tools: tools.map((tool) => redactTool(tool, secrets)),
     };
-    await fs.writeFile(filePath, JSON.stringify(payload));
+    // 5.4: use atomic temp-file + rename so a crash mid-write cannot
+    // leave a partially-written tool-cache file. atomicReplaceFile
+    // handles directory creation (mode 0700), exclusive temp-file
+    // creation (mode 0600), fsync, rename, and directory sync.
+    await atomicReplaceFile(filePath, JSON.stringify(payload));
   } catch {
     // Best-effort cache only.
   }

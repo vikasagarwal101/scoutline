@@ -1531,7 +1531,7 @@ describe("ZaiMcpClient — instance-level env resolution (1.7)", () => {
   it("getRetryCount resolution controls actual retry attempts via callTool (audit-8)", async () => {
     // Verify that ZAI_MCP_RETRY_COUNT in options.env actually controls
     // the number of retry attempts — not just that the env is stored.
-    // A fake UTCP client that always throws a 500 (retryable) error
+    // A fake UTCP client that always throws a timeout (retryable) error
     // lets us count how many times callTool was invoked.
 
     // With ZAI_MCP_RETRY_COUNT=0: exactly 1 attempt (no retry)

@@ -24,6 +24,7 @@
 
 import { ApiError, AuthError, NetworkError, TimeoutError } from "../../lib/errors.js";
 import type { ProviderQuotaFetch } from "../types.js";
+import { getGlobalFetch } from "../types.js";
 
 const DEFAULT_MONITOR_BASE = "https://api.z.ai";
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -97,7 +98,7 @@ export async function fetchZaiMonitorPath(
   params: Record<string, string> | undefined,
   deps: ZaiMonitorDeps = {},
 ): Promise<unknown> {
-  const f = deps.fetch ?? (fetch as unknown as ZaiMonitorFetch);
+  const f = deps.fetch ?? getGlobalFetch<ZaiMonitorFetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
   const env = deps.env ?? process.env;

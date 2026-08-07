@@ -41,6 +41,7 @@ import {
   ValidationError,
 } from "../../lib/errors.js";
 import type { ProviderImageFetch } from "../types.js";
+import { getGlobalFetch } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // MiniMax media limits (DESIGN.md §9)
@@ -233,7 +234,7 @@ async function fetchHttpImageAsDataUri(
   source: string,
   deps: ConvertToDataUriDeps,
 ): Promise<string> {
-  const f = deps.fetch ?? (fetch as unknown as ProviderImageFetch);
+  const f = deps.fetch ?? getGlobalFetch<ProviderImageFetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
   const timeoutMs = MINIMAX_IMAGE_FETCH_TIMEOUT_MS;

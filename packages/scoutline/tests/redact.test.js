@@ -283,16 +283,10 @@ describe("redactCredentialString — single-string redaction", () => {
       "Authorization: [REDACTED]",
     );
     // Case-insensitivity: lowercase scheme keyword
-    assert.strictEqual(
-      redactCredentialString("basic dXNlcjpwYXNz"),
-      "[REDACTED]",
-    );
+    assert.strictEqual(redactCredentialString("basic dXNlcjpwYXNz"), "[REDACTED]");
     // No over-match: a word that merely starts with a scheme keyword
     // but has no following whitespace+token must not be redacted.
-    assert.strictEqual(
-      redactCredentialString("Basically this is fine"),
-      "Basically this is fine",
-    );
+    assert.strictEqual(redactCredentialString("Basically this is fine"), "Basically this is fine");
     assert.strictEqual(
       redactCredentialString("Tokenization is useful here"),
       "Tokenization is useful here",
@@ -363,6 +357,24 @@ describe("redactCredentialString — single-string redaction", () => {
       redactCredentialString("fc-short"),
       "fc-short",
       "short fc- token must NOT be redacted",
+    );
+    // Prose-length strings that match the 20-char minimum but are NOT
+    // real keys are still redacted by the regex — this is a known
+    // trade-off documented here as a characterization test. The 20-char
+    // minimum makes this extremely unlikely in practice (real prose
+    // rarely has a 20+ char alphanumeric token starting with fc-).
+    const PROSE_LENGTH_MATCH = "fc-abcdefghijklmnopqrstuvwxyz";
+    assert.strictEqual(
+      redactCredentialString(`see ${PROSE_LENGTH_MATCH} for context`),
+      "see [REDACTED] for context",
+      "prose-length fc- token matching the regex IS redacted (known trade-off)",
+    );
+    // A prose string with spaces in the token after fc- is NOT redacted
+    // (the regex requires [a-zA-Z0-9] only, no spaces).
+    assert.strictEqual(
+      redactCredentialString("fc-abc def ghi jkl mno pqr stu vwx"),
+      "fc-abc def ghi jkl mno pqr stu vwx",
+      "fc- followed by spaces is NOT redacted (regex requires alphanumeric only)",
     );
   });
 

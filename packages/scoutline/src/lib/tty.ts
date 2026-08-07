@@ -35,17 +35,6 @@ export function isTTY(): boolean {
   return Boolean(process.stdout.isTTY);
 }
 
-/** Resolve the effective output mode considering --raw / --pretty-output overrides. */
-export function resolveTtyMode(
-  explicitFormat: string | undefined,
-  opts: { forcePretty?: boolean; forceRaw?: boolean },
-): "tty" | "non-tty" {
-  if (opts.forcePretty) return "tty";
-  if (opts.forceRaw) return "non-tty";
-  if (explicitFormat) return "non-tty"; // user picked a specific -O mode
-  return isTTY() ? "tty" : "non-tty";
-}
-
 interface SearchResultLike {
   rank?: number;
   title?: string;

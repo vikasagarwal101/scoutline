@@ -60,6 +60,7 @@ import {
   ValidationError,
 } from "../../lib/errors.js";
 import { resolveJinaApiKey, isJinaConfigured } from "./credentials.js";
+import { applySearchTopic } from "../../lib/search-topic.js";
 import {
   fetchJinaReader,
   fetchJinaSearch,
@@ -149,15 +150,15 @@ export class JinaAdapter implements ProviderAdapter {
         }
         // Jina's s.jina.ai endpoint takes only the query string — it has
         // no native support for domain filtering, recency, content depth,
-        // location, or topic. Reject them so the user gets a clear signal
+        // or location. Reject them so the user gets a clear signal
         // and fallback can route to a provider that supports them.
+        // Topic is handled by appending a keyword via applySearchTopic in invoke().
         for (const option of [
           "type",
           "domain",
           "recency",
           "contentSize",
           "location",
-          "topic",
         ] as const) {
           if (request.controls?.[option] !== undefined) {
             throw new UnsupportedOptionError("jina", "search", option);
@@ -181,7 +182,7 @@ export class JinaAdapter implements ProviderAdapter {
       async invoke(request: SearchRequest): Promise<readonly SearchSource[]> {
         this.validate(request);
         const apiKey = resolveJinaApiKey(env);
-        const query = request.query.trim();
+        const query = applySearchTopic(request.query.trim(), request.controls?.topic);
 
         try {
           const results = await fetchJinaSearch(apiKey, query, transport);

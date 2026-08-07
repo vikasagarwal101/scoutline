@@ -182,7 +182,8 @@ export function missingCredentialError(
   const vars: string[] = [];
   for (const descriptor of descriptors) {
     if (descriptor.credentialEnvVars && descriptor.credentialEnvVars.length > 0) {
-      vars.push(descriptor.credentialEnvVars[0]);
+      const envVar = descriptor.credentialEnvVars[0];
+      if (envVar) vars.push(envVar);
     }
   }
   const help =

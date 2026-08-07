@@ -182,7 +182,8 @@ function findCategoryIndex(
   // unit:"credits"). Name identity is sufficient — category names are
   // unique per provider in the normalized QuotaCategory contract.
   for (let i = 0; i < categories.length; i++) {
-    if (categories[i].name === adjustment.category) return i;
+    const cat = categories[i];
+    if (cat && cat.name === adjustment.category) return i;
   }
   return -1;
 }

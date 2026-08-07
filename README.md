@@ -24,7 +24,7 @@
 - **Repo** — Search and read GitHub repository code
 - **Tools** — MCP tool discovery, schemas, and raw calls
 - **Code Mode** — TypeScript tool chaining for agent automation
-- **Provider selection** — Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, or Firecrawl
+- **Provider selection** — Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, or Jina AI
 
 ## Quick Start
 
@@ -45,7 +45,7 @@ Run `npx scoutline init` once to record API keys in
 
 - offers to import a key already present in your environment;
 - walks a provider checklist (Z.AI, MiniMax, Tavily, Exa, Brave,
-  Firecrawl — none pre-checked);
+  Firecrawl, Parallel AI, Perplexity, Jina AI — none pre-checked);
 - validates each key with a single inline probe against an ephemeral
   environment (the candidate never touches disk until the final
   atomic write);
@@ -120,6 +120,41 @@ Firecrawl is credit-based. `--content-size high` on search returns richer
 after Ctrl-C with no double-charge (state-file resume + reclaim-on-miss).
 `--provider firecrawl research` is not supported (`UNSUPPORTED_CAPABILITY`).
 
+### Using Parallel AI (Search, Reader, Research)
+
+```bash
+export PARALLEL_API_KEY="your-parallel-key"
+npx scoutline --provider parallel search "AI funding rounds" --topic news
+npx scoutline --provider parallel read https://example.com/
+npx scoutline --provider parallel research "Compare React vs Svelte for production"
+```
+
+Get your Parallel AI API key at: https://api.parallel.ai
+
+### Using Perplexity (Search, Research)
+
+```bash
+export PERPLEXITY_API_KEY="your-perplexity-key"
+npx scoutline --provider perplexity search "latest AI research" --topic news
+npx scoutline --provider perplexity research "Compare Rust async runtimes"
+```
+
+Get your Perplexity API key at: https://www.perplexity.ai/settings/api
+
+### Using Jina AI (Search, Reader, Research)
+
+```bash
+export JINA_API_KEY="your-jina-key"  # optional — keyless supported
+npx scoutline --provider jina search "AI policy news" --topic news
+npx scoutline --provider jina read https://example.com/
+npx scoutline --provider jina research "State of carbon capture 2025"
+```
+
+Get your Jina AI API key at: https://jina.ai/api-dashboard/
+
+Jina AI supports keyless access (no API key required). Setting `JINA_API_KEY`
+enables higher rate limits.
+
 ## Installation
 
 ### As an Agent Skill
@@ -151,7 +186,7 @@ npx scoutline --help
 
 ## Provider Selection
 
-Shared commands accept `--provider <zai|minimax|tavily|exa|brave|firecrawl>`. Resolution precedence:
+Shared commands accept `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina>`. Resolution precedence:
 
 1. Explicit `--provider` flag
 2. `SCOUTLINE_PROVIDER` environment variable
@@ -167,19 +202,19 @@ Selecting a provider that doesn't support a capability auto-reroutes to the next
 
 ### Capability Matrix
 
-| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Command |
-|---|---|---|---|---|---|---|---|
-| Search | Yes | Yes | Yes | Yes | Yes (web/news/video) | Yes | `scoutline search` |
-| Reader | Yes | No | Yes | Yes | No | Yes | `scoutline read` |
-| Crawl | No | No | Yes | No | No | Yes (async) | `scoutline crawl` |
-| Map | No | No | Yes | No | No | Yes | `scoutline map` |
-| Research | No | No | Yes | Yes | No | No | `scoutline research` |
-| Vision (interpret-image) | Yes | Yes | No | No | No | No | `scoutline vision analyze` |
-| Quota | Yes | Yes | Yes | No | Yes (rate-limit window) | Yes (credits) | `scoutline quota` |
-| Diagnostics | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
-| Repo exploration | Yes | No | No | No | No | `scoutline repo` |
-| Raw tools | Yes | No | No | No | No | `scoutline tools` |
-| Code Mode | Yes | No | No | No | No | `scoutline code` |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | Command |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Search | Yes | Yes | Yes | Yes | Yes (web/news/video) | Yes | Yes | Yes | Yes | `scoutline search` |
+| Reader | Yes | No | Yes | Yes | No | Yes | Yes | No | Yes | `scoutline read` |
+| Crawl | No | No | Yes | No | No | Yes (async) | No | No | No | `scoutline crawl` |
+| Map | No | No | Yes | No | No | Yes | No | No | No | `scoutline map` |
+| Research | No | No | Yes | Yes | No | No | Yes | Yes | Yes | `scoutline research` |
+| Vision (interpret-image) | Yes | Yes | No | No | No | No | No | No | No | `scoutline vision analyze` |
+| Quota | Yes | Yes | Yes | No | Yes (rate-limit window) | Yes (credits) | No | No | No | `scoutline quota` |
+| Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
+| Repo exploration | Yes | No | No | No | No | No | No | No | No | `scoutline repo` |
+| Raw tools | Yes | No | No | No | No | No | No | No | No | `scoutline tools` |
+| Code Mode | Yes | No | No | No | No | No | No | No | No | `scoutline code` |
 
 ### Search Controls
 

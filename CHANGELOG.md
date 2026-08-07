@@ -20,6 +20,13 @@ All notable changes to this project will be documented in this file.
 - The `init` wizard's Back choice is correctly typed as
   `ProviderId | undefined`.
 
+### [0.14.2] - 2026-08-08
+
+#### Test-quality improvements
+
+- Redaction false-positive tests now cover prose-length strings matching the `fc-[a-zA-Z0-9]{20,}` regex, documenting the known trade-off (extremely unlikely in practice) and confirming tokens with spaces are not redacted.
+- MCP client retry-count test now verifies actual retry behavior: a fake UTCP client with `ZAI_MCP_RETRY_COUNT=0` produces 1 attempt, `=2` produces 3 attempts — replacing the indirect "env is stored" assertion with a behavioral test.
+
 ### [0.14.1] - 2026-08-08
 
 #### Post-release audit fixes

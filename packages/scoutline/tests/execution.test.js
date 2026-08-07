@@ -108,12 +108,13 @@ function makeCapability({
         legacyCandidates,
       };
     },
-    async invoke(request) {
+    async invoke(request, signal) {
       cap.invokeCount += 1;
       cap.lastInvokeRequest = {
         query: request.query,
         controls: request.controls,
       };
+      cap.lastInvokeSignal = signal;
       events.push({ phase: "invoke", attempt: cap.invokeCount });
       if (invokeImpl) return invokeImpl(cap.invokeCount);
       return results.slice();
@@ -947,5 +948,131 @@ describe("executeProviderOperation — PB-T2 direct-call emission", () => {
     );
     assert.strictEqual(out, "recovered", "the retry still happened");
     assert.strictEqual(count, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5.6 — AbortSignal forwarded to invoke() through executeSearch
+// ---------------------------------------------------------------------------
+
+describe("executeSearch — AbortSignal forwarding (5.6)", () => {
+  it("forwards an AbortSignal to capability.invoke", async () => {
+    const sleep = makeSleep();
+    const random = makeRandom();
+    const cache = makeCache();
+    const cap = makeCapability();
+
+    const controller = new AbortController();
+    // Do NOT abort yet — we want to verify the signal object is forwarded,
+    // not that the fake invoke rejects on it.
+    await executeSearch(
+      cap,
+      { query: "hello" },
+      { ...baseOptions(), signal: controller.signal },
+      baseDeps(cache, sleep, random),
+    );
+
+    assert.strictEqual(
+      cap.lastInvokeSignal,
+      controller.signal,
+      "executeSearch must forward options.signal to invoke()",
+    );
+  });
+
+  it("invoke receives undefined when no signal is supplied", async () => {
+    const sleep = makeSleep();
+    const random = makeRandom();
+    const cache = makeCache();
+    const cap = makeCapability();
+
+    await executeSearch(
+      cap,
+      { query: "hello" },
+      baseOptions(),
+      baseDeps(cache, sleep, random),
+    );
+
+    assert.strictEqual(
+      cap.lastInvokeSignal,
+      undefined,
+      "invoke must receive undefined when no signal is passed",
+    );
+  });
+
+  it("a pre-aborted signal is forwarded so a cooperating invoke can reject", async () => {
+    const sleep = makeSleep();
+    const random = makeRandom();
+    const cache = makeCache();
+
+    // The fake invoke checks the signal and throws if already aborted,
+    // simulating a cooperating Adapter.
+    const cap = makeCapability();
+    cap.invoke = async (request, signal) => {
+      if (signal?.aborted) {
+        throw new Error("aborted before invoke completed");
+      }
+      return [{ title: "T", url: "https://x", summary: "S" }];
+    };
+
+    const controller = new AbortController();
+    controller.abort();
+
+    await assert.rejects(
+      executeSearch(
+        cap,
+        { query: "hello" },
+        { ...baseOptions(), signal: controller.signal },
+        baseDeps(cache, sleep, random),
+      ),
+      /aborted before invoke completed/,
+    );
+  });
+
+  it("an in-flight abort propagates so a cooperating invoke rejects mid-call", async () => {
+    const sleep = makeSleep();
+    const random = makeRandom();
+    const cache = makeCache();
+
+    const controller = new AbortController();
+    let invokeResolve;
+    let invokeReject;
+
+    // Simulate a long-running invoke that listens to the signal via
+    // a promise we control. The invoke registers an abort listener so
+    // that aborting the controller rejects the pending promise —
+    // mirroring how a real fetch-based adapter would propagate it.
+    const cap = makeCapability();
+    cap.invoke = (request, signal) => {
+      return new Promise((resolve, reject) => {
+        invokeResolve = resolve;
+        invokeReject = reject;
+
+        // Abort listener: reject the pending promise when the caller
+        // aborts the signal mid-call.
+        if (signal) {
+          if (signal.aborted) {
+            reject(new Error("aborted"));
+            return;
+          }
+          signal.addEventListener("abort", () => {
+            reject(new Error("aborted mid-flight"));
+          });
+        }
+      });
+    };
+
+    // Start the search — it will hang on the pending invoke promise.
+    const searchPromise = executeSearch(
+      cap,
+      { query: "hello" },
+      { ...baseOptions(), signal: controller.signal },
+      baseDeps(cache, sleep, random),
+    );
+
+    // Abort mid-flight after a microtask (invoke has started).
+    await Promise.resolve();
+    controller.abort();
+
+    await assert.rejects(searchPromise, /aborted mid-flight/);
   });
 });

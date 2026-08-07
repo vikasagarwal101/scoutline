@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.3] - 2026-08-07
+
+### --topic every-Provider contract
+
+- Perplexity and Jina now accept `--topic <general|news|finance>`
+  via the shared `applySearchTopic` helper (previously raised
+  `UnsupportedOptionError`). The user-facing documentation update
+  is folded into 0.13.4.
+
 ## [0.13.2] - 2026-08-07
 
 ### New-adapter conformance

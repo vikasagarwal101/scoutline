@@ -84,21 +84,21 @@ single-provider behavior; see
 [`docs/adr/0002-provider-fallback.md`](adr/0002-provider-fallback.md)
 for the rationale and the accepted async double-charge risk.
 
-| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Command |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `search` | Yes | Yes | Yes | Yes | Yes (web/news/video; `--content-size high` → LLM Context) | Yes | `scoutline search` |
-| `vision.interpret-image` | Yes | Yes | No | No | No | No | `scoutline vision analyze` |
-| Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | No | No | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
-| Image diff / video | Yes | No | No | No | No | No | `scoutline vision diff`, `vision video` |
-| `quota` | Yes | Yes | Yes | No (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | `scoutline quota` |
-| `diagnostics` | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
-| Reader | Yes | Falls back (zai/tavily/exa/firecrawl) | Yes (Z.AI-only options are rejected) | Yes (rejects Z.AI-only options) | Falls back | Yes (returns page titles) | `scoutline read` |
-| Repository exploration | Yes | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | `scoutline repo ...` |
-| Crawl | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes (async; resumable after Ctrl-C) | `scoutline crawl` |
-| Map | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes | `scoutline map` |
-| Research | Falls back (tavily/exa) | Falls back (tavily/exa) | Yes (4-250 credits per request) | Yes | Falls back (tavily/exa) | Falls back (tavily/exa) (`/deep-research` deprecated) | `scoutline research` |
-| Raw tools | Yes | No | No | No | `scoutline tools`, `tool`, `call` |
-| Code Mode | Yes | No | No | No | `scoutline code ...` |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | Command |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `search` | Yes | Yes | Yes | Yes | Yes (web/news/video; `--content-size high` → LLM Context) | Yes | Yes | Yes | Yes | `scoutline search` |
+| `vision.interpret-image` | Yes | Yes | No | No | No | No | No | No | No | `scoutline vision analyze` |
+| Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
+| Image diff / video | Yes | No | No | No | No | No | No | No | No | `scoutline vision diff`, `vision video` |
+| `quota` | Yes | Yes | Yes | No (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | No | No | No | `scoutline quota` |
+| `diagnostics` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
+| Reader | Yes | Falls back (zai/tavily/exa/firecrawl/parallel/jina) | Yes (Z.AI-only options are rejected) | Yes (rejects Z.AI-only options) | Falls back (zai/tavily/exa/firecrawl/parallel/jina) | Yes (returns page titles) | Yes | Falls back (zai/tavily/exa/firecrawl/parallel/jina) | Yes | `scoutline read` |
+| Repository exploration | Yes | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | `scoutline repo ...` |
+| Crawl | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes (async; resumable after Ctrl-C) | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | `scoutline crawl` |
+| Map | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | `scoutline map` |
+| Research | Falls back (tavily/exa/parallel/perplexity/jina) | Falls back (tavily/exa/parallel/perplexity/jina) | Yes (4-250 credits per request) | Yes | Falls back (tavily/exa/parallel/perplexity/jina) | Falls back (tavily/exa/parallel/perplexity/jina) (`/deep-research` deprecated) | Yes | Yes | Yes | `scoutline research` |
+| Raw tools | Yes | No | No | No | No | No | No | No | No | `scoutline tools`, `tool`, `call` |
+| Code Mode | Yes | No | No | No | No | No | No | No | No | `scoutline code ...` |
 
 Specialized MiniMax Vision mappings remain conformance-gated and only move
 into the shared matrix once their offline and live attestation passes.

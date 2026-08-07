@@ -87,6 +87,21 @@ export interface CallToolOptions {
 }
 
 /**
+ * Validate that a parsed JSON value is a plain object suitable for use
+ * as a tool argument bag. Rejects primitives (`string`, `number`,
+ * `boolean`), `null`, and arrays — only `Record<string, unknown>` is
+ * a legal shape for MCP tool arguments.
+ */
+function assertJsonObject(value: unknown): asserts value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    const shape = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+    throw new ValidationError(
+      `Tool arguments must be a JSON object, got ${shape}`,
+    );
+  }
+}
+
+/**
  * Parse tool arguments from one of three sources: --json inline, --file,
  * or stdin (when --stdin or stdin is not a TTY). The caller's
  * CommandContext is required so stdin reads route through the invocation
@@ -99,12 +114,16 @@ async function parseToolArgs(
   if (options.json) {
     const raw = options.json.trim();
     const value = raw.startsWith("@") ? await fs.readFile(raw.slice(1), "utf8") : raw;
-    return JSON.parse(value);
+    const parsed: unknown = JSON.parse(value);
+    assertJsonObject(parsed);
+    return parsed;
   }
 
   if (options.file) {
     const value = await fs.readFile(options.file, "utf8");
-    return JSON.parse(value);
+    const parsed: unknown = JSON.parse(value);
+    assertJsonObject(parsed);
+    return parsed;
   }
 
   if (options.stdin || !context.stdinIsTTY) {
@@ -112,7 +131,9 @@ async function parseToolArgs(
     if (value.trim().length === 0) {
       return {};
     }
-    return JSON.parse(value);
+    const parsed: unknown = JSON.parse(value);
+    assertJsonObject(parsed);
+    return parsed;
   }
 
   return {};

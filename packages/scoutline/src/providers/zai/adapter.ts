@@ -864,7 +864,7 @@ function defaultZaiClientFactory(options: ZaiMcpClientOptions): ZaiAdapterClient
   // Adapt the rich ZaiMcpClient surface to the narrow
   // ZaiAdapterClientPort the Z.AI Search Adapter needs.
   return {
-    callToolRaw<T>(name: string, args: Record<string, unknown>): Promise<T> {
+    callToolRaw<T>(name: string, args: Record<string, unknown>): Promise<T | string> {
       return client.callToolRaw<T>(name, args);
     },
     listTools(): Promise<unknown[]> {

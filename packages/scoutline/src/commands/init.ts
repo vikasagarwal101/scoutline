@@ -1042,18 +1042,17 @@ async function removeProvider(
     deps.writeStderr("No providers are configured.\n");
     return "loop";
   }
-  const choices: InitChoice<ProviderId>[] = configuredIds.map((id) => ({
+  const choices: InitChoice<ProviderId | undefined>[] = configuredIds.map((id) => ({
     value: id,
     name: providerMeta(id).label,
   }));
-  choices.push({ value: undefined as unknown as ProviderId, name: "Back" });
+  choices.push({ value: undefined, name: "Back" });
   let providerId: ProviderId | undefined;
   try {
-    const picked = await deps.prompts.select<ProviderId | undefined>(
+    providerId = await deps.prompts.select<ProviderId | undefined>(
       "Remove which provider?",
       choices,
     );
-    providerId = picked;
   } catch {
     return "loop";
   }
@@ -1104,11 +1103,11 @@ async function editProviderKey(
     deps.writeStderr("No providers are configured.\n");
     return "loop";
   }
-  const choices: InitChoice<ProviderId>[] = configuredIds.map((id) => ({
+  const choices: InitChoice<ProviderId | undefined>[] = configuredIds.map((id) => ({
     value: id,
     name: providerMeta(id).label,
   }));
-  choices.push({ value: undefined as unknown as ProviderId, name: "Back" });
+  choices.push({ value: undefined, name: "Back" });
   let providerId: ProviderId | undefined;
   try {
     providerId = await deps.prompts.select<ProviderId | undefined>(

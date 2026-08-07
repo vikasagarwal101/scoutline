@@ -9,6 +9,20 @@
  * Descriptor (`createFakeRepositoryDescriptor`). Both produce the SAME
  * normalized contract as the Z.AI Adapter WITHOUT touching any ZRead
  * grammar; they are the cross-Adapter conformance proof.
+ *
+ * Fresh-state contract (6.10):
+ *   Each call to `createFakeAdapter` (and every `createFake*` helper in
+ *   this file) returns a brand-new object graph: fresh `calls` arrays,
+ *   fresh `stats` counters, fresh scripted results. There is NO shared
+ *   mutable state across calls. A test that needs a fake adapter calls
+ *   `createFakeAdapter(...)` at the top of its test body — never reuses
+ *   a module-level instance. Adding shared module-level state (e.g. a
+ *   singleton `calls` array) would silently affect 3+ conformance suites
+ *   (`adapter-conformance`, `reader-conformance`, `repository-conformance`)
+ *   that each call `createFakeAdapter` / `createFakeRepositoryCapability` /
+ *   `createFakeReaderCapability` independently and rely on zero cross-test
+ *   bleed. If a reset mechanism is ever needed, it must be opt-in and must
+ *   not change the default fresh-object-graph behaviour.
  */
 import crypto from "node:crypto";
 

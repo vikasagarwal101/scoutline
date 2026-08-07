@@ -34,7 +34,7 @@
  *   contentSize -> search_context_size (medium→"medium", high→"high")
  *   type        -> REJECTED (UnsupportedOptionError)
  *   location    -> REJECTED (UnsupportedOptionError)
- *   topic       -> REJECTED (UnsupportedOptionError)
+ *   topic       -> appended to query string via applySearchTopic
  */
 
 import crypto from "node:crypto";
@@ -71,6 +71,7 @@ import {
   ValidationError,
 } from "../../lib/errors.js";
 import { requirePerplexityApiKey, isPerplexityConfigured } from "./credentials.js";
+import { applySearchTopic } from "../../lib/search-topic.js";
 import {
   fetchPerplexitySearch,
   fetchPerplexityChat,
@@ -192,9 +193,6 @@ export class PerplexityAdapter implements ProviderAdapter {
         if (request.controls?.location !== undefined) {
           throw new UnsupportedOptionError("perplexity", "search", "location");
         }
-        if (request.controls?.topic !== undefined) {
-          throw new UnsupportedOptionError("perplexity", "search", "topic");
-        }
       },
 
       cacheIdentity(request: SearchRequest): SearchCacheIdentity {
@@ -213,7 +211,7 @@ export class PerplexityAdapter implements ProviderAdapter {
       async invoke(request: SearchRequest): Promise<readonly SearchSource[]> {
         this.validate(request);
         const apiKey = requirePerplexityApiKey(env);
-        const query = request.query.trim();
+        const query = applySearchTopic(request.query.trim(), request.controls?.topic);
         const params = mapSearchControls(request.controls) || {};
 
         try {

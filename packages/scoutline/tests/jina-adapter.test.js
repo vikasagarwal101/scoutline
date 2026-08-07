@@ -205,6 +205,72 @@ describe("Jina AI Error Handling", () => {
     );
   });
 
+  it("accepts --topic news and appends to query via applySearchTopic", async () => {
+    let capturedUrl;
+    const fakeFetch = async (url) => {
+      capturedUrl = url;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: [] }),
+      };
+    };
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    // validate must not throw
+    adapter.search.validate({ query: "rust async", controls: { topic: "news" } });
+    await adapter.search.invoke({ query: "rust async", controls: { topic: "news" } });
+    // s.jina.ai/{encoded query} — applySearchTopic appends " latest news"
+    assert.ok(capturedUrl.includes("rust%20async%20latest%20news"));
+  });
+
+  it("accepts --topic finance and appends to query via applySearchTopic", async () => {
+    let capturedUrl;
+    const fakeFetch = async (url) => {
+      capturedUrl = url;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: [] }),
+      };
+    };
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    adapter.search.validate({ query: "tesla stock", controls: { topic: "finance" } });
+    await adapter.search.invoke({ query: "tesla stock", controls: { topic: "finance" } });
+    assert.ok(capturedUrl.includes("tesla%20stock%20financial"));
+  });
+
+  it("accepts --topic general and leaves query unchanged", async () => {
+    let capturedUrl;
+    const fakeFetch = async (url) => {
+      capturedUrl = url;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: [] }),
+      };
+    };
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    adapter.search.validate({ query: "rust async", controls: { topic: "general" } });
+    await adapter.search.invoke({ query: "rust async", controls: { topic: "general" } });
+    assert.ok(capturedUrl.includes("rust%20async"));
+    assert.ok(!capturedUrl.includes("latest%20news"));
+  });
+
   it("rejects reader URL without http(s) prefix", () => {
     const adapter = new JinaAdapter(
       { env: { JINA_API_KEY: TEST_KEY } },

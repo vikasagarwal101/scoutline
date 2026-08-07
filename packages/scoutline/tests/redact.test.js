@@ -247,6 +247,74 @@ describe("redactCredentialString — single-string redaction", () => {
     );
   });
 
+  it("redacts non-Bearer auth schemes: Basic, Digest, Token, ApiKey (1.6)", () => {
+    // Basic auth (base64 credentials)
+    assert.strictEqual(
+      redactCredentialString("Authorization: Basic dXNlcjpwYXNzMTIz"),
+      "Authorization: [REDACTED]",
+    );
+    // Basic auth — short base64 credentials still redacted (no length floor)
+    assert.strictEqual(
+      redactCredentialString("Authorization: Basic YTpi"),
+      "Authorization: [REDACTED]",
+      "short Basic credentials must still be redacted",
+    );
+    // Digest auth — single token
+    assert.strictEqual(
+      redactCredentialString("Authorization: Digest abc123response456"),
+      "Authorization: [REDACTED]",
+    );
+    // Digest auth — full multi-parameter value (all params redacted)
+    assert.strictEqual(
+      redactCredentialString(
+        'Authorization: Digest username="admin", realm="example.org", nonce="abc123", response="def456"',
+      ),
+      "Authorization: [REDACTED]",
+      "all Digest parameters must be redacted including response",
+    );
+    // Custom Token scheme (min 8-char token)
+    assert.strictEqual(
+      redactCredentialString("Authorization: Token my-secret-token-XYZ"),
+      "Authorization: [REDACTED]",
+    );
+    // ApiKey scheme
+    assert.strictEqual(
+      redactCredentialString("Authorization: ApiKey sk-abc123def456"),
+      "Authorization: [REDACTED]",
+    );
+    // Case-insensitivity: lowercase scheme keyword
+    assert.strictEqual(
+      redactCredentialString("basic dXNlcjpwYXNz"),
+      "[REDACTED]",
+    );
+    // No over-match: a word that merely starts with a scheme keyword
+    // but has no following whitespace+token must not be redacted.
+    assert.strictEqual(
+      redactCredentialString("Basically this is fine"),
+      "Basically this is fine",
+    );
+    assert.strictEqual(
+      redactCredentialString("Tokenization is useful here"),
+      "Tokenization is useful here",
+    );
+    assert.strictEqual(
+      redactCredentialString("Digestion requires enzymes"),
+      "Digestion requires enzymes",
+    );
+    // No over-match on short tokens after Bearer/Token/ApiKey (review fix):
+    // "Token Plan" is a domain term, "Plan" is 4 chars — must NOT redact.
+    assert.strictEqual(
+      redactCredentialString("MiniMax Token Plan subscription"),
+      "MiniMax Token Plan subscription",
+      "Token followed by a short word must not be redacted",
+    );
+    assert.strictEqual(
+      redactCredentialString("The bearer of bad news"),
+      "The bearer of bad news",
+      "bearer followed by a short word must not be redacted",
+    );
+  });
+
   it("redacts x-api-key, Z_AI_API_KEY, ZAI_API_KEY, MINIMAX_API_KEY and EXA_API_KEY assignments", () => {
     assert.strictEqual(redactCredentialString(`x-api-key=${Z_KEY}`), "[REDACTED]");
     assert.strictEqual(redactCredentialString(`Z_AI_API_KEY=${Z_KEY}`), "[REDACTED]");
@@ -261,6 +329,40 @@ describe("redactCredentialString — single-string redaction", () => {
     assert.strictEqual(
       redactCredentialString(`key was ${FC_KEY} here`, [FC_KEY]),
       "key was [REDACTED] here",
+    );
+  });
+
+  it("redacts bare Firecrawl fc-… keys via length-constrained regex (1.5)", () => {
+    // A canonical long-tail Firecrawl key is redacted by the regex alone
+    // (no configured secret needed).
+    const LONG_FC_KEY = "fc-abcdefghijklmnopqrstuvwxyz0123456789ABCD";
+    assert.strictEqual(
+      redactCredentialString(`api key: ${LONG_FC_KEY}`),
+      "api key: [REDACTED]",
+      "bare fc- key must be redacted by regex backstop",
+    );
+    assert.strictEqual(
+      redactCredentialString(LONG_FC_KEY),
+      "[REDACTED]",
+      "lone fc- key string must be fully redacted",
+    );
+    // Short fc- tokens are NOT redacted (length constraint avoids false
+    // positives on prose like ticket IDs).
+    assert.strictEqual(
+      redactCredentialString("refer to fc-ab for details"),
+      "refer to fc-ab for details",
+      "short fc- token must NOT be redacted",
+    );
+    assert.strictEqual(
+      redactCredentialString("the FC-03 ticket"),
+      "the FC-03 ticket",
+      "uppercase FC- in prose must NOT be redacted by the fc- pattern",
+    );
+    // A string that merely starts with fc- but is too short stays safe.
+    assert.strictEqual(
+      redactCredentialString("fc-short"),
+      "fc-short",
+      "short fc- token must NOT be redacted",
     );
   });
 

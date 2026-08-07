@@ -121,10 +121,14 @@ describe("UnsupportedCapabilityError", () => {
     const err = new UnsupportedCapabilityError("minimax", "search");
     const parsed = JSON.parse(formatErrorOutput(err, "data"));
     assert.strictEqual(parsed.code, "UNSUPPORTED_CAPABILITY");
-    assert.ok(typeof parsed.help === "string" && parsed.help.length > 0,
-      "help must be a non-empty string");
-    assert.ok(/--provider|--no-fallback/i.test(parsed.help),
-      `help should suggest --provider or --no-fallback: ${parsed.help}`);
+    assert.ok(
+      typeof parsed.help === "string" && parsed.help.length > 0,
+      "help must be a non-empty string",
+    );
+    assert.ok(
+      /--provider|--no-fallback/i.test(parsed.help),
+      `help should suggest --provider or --no-fallback: ${parsed.help}`,
+    );
   });
 });
 
@@ -185,11 +189,11 @@ describe("Legacy subclasses (compat)", () => {
   });
 
   it("TimeoutError accepts an optional `help` override (2-arg form)", () => {
-    const err = new TimeoutError(30000, "Try again or increase timeout with MINIMAX_TIMEOUT env var");
-    assert.strictEqual(
-      err.help,
+    const err = new TimeoutError(
+      30000,
       "Try again or increase timeout with MINIMAX_TIMEOUT env var",
     );
+    assert.strictEqual(err.help, "Try again or increase timeout with MINIMAX_TIMEOUT env var");
   });
 
   it("FileError accepts an optional help hint", () => {
@@ -349,20 +353,45 @@ describe("formatErrorOutput", () => {
 // fail here.
 //
 // `help` is allowed-but-not-required for non-UNSUPPORTED classes; the
-// `help` assertion for UNSUPPORTED_CAPABILITY lives in the 6.4 test below.
+// `help` assertion for UNSUPPORTED_CAPABILITY lives in the 6.4 test above.
 // ---------------------------------------------------------------------------
 
 describe("Envelope contract — all typed errors through formatErrorOutput (6.5)", () => {
   const cases = [
-    { name: "ValidationError",           error: new ValidationError("Bad input"),                    expectedCode: "VALIDATION_ERROR" },
-    { name: "ConfigurationError",         error: new ConfigurationError("config error"),             expectedCode: "CONFIGURATION_ERROR" },
-    { name: "UnsupportedCapabilityError", error: new UnsupportedCapabilityError("minimax", "search"), expectedCode: "UNSUPPORTED_CAPABILITY" },
-    { name: "UnsupportedOptionError",     error: new UnsupportedOptionError("minimax", "search", "domain"), expectedCode: "UNSUPPORTED_OPTION" },
-    { name: "AuthError",                  error: new AuthError("Invalid key"),                       expectedCode: "AUTH_ERROR" },
-    { name: "ApiError",                   error: new ApiError("Server error", 503),                   expectedCode: "API_ERROR" },
-    { name: "NetworkError",              error: new NetworkError("Connection failed"),               expectedCode: "NETWORK_ERROR" },
-    { name: "TimeoutError",              error: new TimeoutError(30000),                             expectedCode: "TIMEOUT_ERROR" },
-    { name: "FileError",                 error: new FileError("File not found", "Check the path"),   expectedCode: "FILE_ERROR" },
+    {
+      name: "ValidationError",
+      error: new ValidationError("Bad input"),
+      expectedCode: "VALIDATION_ERROR",
+    },
+    {
+      name: "ConfigurationError",
+      error: new ConfigurationError("config error"),
+      expectedCode: "CONFIGURATION_ERROR",
+    },
+    { name: "QuotaError", error: new QuotaError(), expectedCode: "QUOTA_ERROR" },
+    {
+      name: "UnsupportedCapabilityError",
+      error: new UnsupportedCapabilityError("minimax", "search"),
+      expectedCode: "UNSUPPORTED_CAPABILITY",
+    },
+    {
+      name: "UnsupportedOptionError",
+      error: new UnsupportedOptionError("minimax", "search", "domain"),
+      expectedCode: "UNSUPPORTED_OPTION",
+    },
+    { name: "AuthError", error: new AuthError("Invalid key"), expectedCode: "AUTH_ERROR" },
+    { name: "ApiError", error: new ApiError("Server error", 503), expectedCode: "API_ERROR" },
+    {
+      name: "NetworkError",
+      error: new NetworkError("Connection failed"),
+      expectedCode: "NETWORK_ERROR",
+    },
+    { name: "TimeoutError", error: new TimeoutError(30000), expectedCode: "TIMEOUT_ERROR" },
+    {
+      name: "FileError",
+      error: new FileError("File not found", "Check the path"),
+      expectedCode: "FILE_ERROR",
+    },
   ];
 
   for (const { name, error, expectedCode } of cases) {

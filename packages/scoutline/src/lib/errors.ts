@@ -27,7 +27,8 @@ export type ScoutlineErrorCode =
   | "UNSUPPORTED_OPTION"
   | "API_ERROR"
   | "FILE_ERROR"
-  | "UNKNOWN_ERROR";
+  | "UNKNOWN_ERROR"
+  | "CONFIGURATION_ERROR";
 
 export interface ScoutlineErrorOptions {
   statusCode?: number;
@@ -37,7 +38,7 @@ export interface ScoutlineErrorOptions {
 }
 
 export class ScoutlineError extends Error {
-  readonly code: ScoutlineErrorCode | string;
+  readonly code: ScoutlineErrorCode;
   readonly statusCode?: number;
   readonly help?: string;
   readonly retryable: boolean;
@@ -45,7 +46,7 @@ export class ScoutlineError extends Error {
 
   constructor(
     message: string,
-    code: ScoutlineErrorCode | string,
+    code: ScoutlineErrorCode,
     options: ScoutlineErrorOptions = {},
   ) {
     super(message);
@@ -64,10 +65,16 @@ export class ScoutlineError extends Error {
  * working without modification. Status codes passed here become
  * `statusCode`; `help` becomes `help`; `retryable` and `exitCode` keep
  * their defaults (`false` / `1`).
+ *
+ * The `code` parameter retains its legacy `string` type so existing
+ * call sites (and tests) that pass non-union string codes keep
+ * compiling. The value is cast through `ScoutlineErrorCode` at the
+ * super call because TypeScript types are erased at runtime — the
+ * parent constructor stores whatever string was passed.
  */
 export class ZaiError extends ScoutlineError {
   constructor(message: string, code: string, statusCode?: number, help?: string) {
-    super(message, code, { statusCode, help });
+    super(message, code as ScoutlineErrorCode, { statusCode, help });
     this.name = "ZaiError";
   }
 }

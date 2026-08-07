@@ -225,16 +225,68 @@ describe("Perplexity Error Handling", () => {
     );
   });
 
-  it("rejects topic control as UnsupportedOptionError", () => {
+  it("accepts --topic news and appends to query via applySearchTopic", async () => {
+    let captured;
+    const fakeFetch = async (url, init) => {
+      captured = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ results: [] }),
+      };
+    };
+
     const adapter = new PerplexityAdapter(
       { env: { PERPLEXITY_API_KEY: TEST_KEY } },
-      { transport: { fetch: async () => ({}) } },
+      { transport: { fetch: fakeFetch } },
     );
 
-    assert.throws(
-      () => adapter.search.validate({ query: "test", controls: { topic: "news" } }),
-      UnsupportedOptionError,
+    // validate must not throw
+    adapter.search.validate({ query: "rust async", controls: { topic: "news" } });
+    await adapter.search.invoke({ query: "rust async", controls: { topic: "news" } });
+    assert.equal(captured.query, "rust async latest news");
+  });
+
+  it("accepts --topic finance and appends to query via applySearchTopic", async () => {
+    let captured;
+    const fakeFetch = async (url, init) => {
+      captured = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ results: [] }),
+      };
+    };
+
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
     );
+
+    adapter.search.validate({ query: "tesla stock", controls: { topic: "finance" } });
+    await adapter.search.invoke({ query: "tesla stock", controls: { topic: "finance" } });
+    assert.equal(captured.query, "tesla stock financial");
+  });
+
+  it("accepts --topic general and leaves query unchanged", async () => {
+    let captured;
+    const fakeFetch = async (url, init) => {
+      captured = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ results: [] }),
+      };
+    };
+
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    adapter.search.validate({ query: "rust async", controls: { topic: "general" } });
+    await adapter.search.invoke({ query: "rust async", controls: { topic: "general" } });
+    assert.equal(captured.query, "rust async");
   });
 
   it("rejects location control as UnsupportedOptionError", () => {

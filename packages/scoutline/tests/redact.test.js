@@ -253,12 +253,26 @@ describe("redactCredentialString — single-string redaction", () => {
       redactCredentialString("Authorization: Basic dXNlcjpwYXNzMTIz"),
       "Authorization: [REDACTED]",
     );
-    // Digest auth
+    // Basic auth — short base64 credentials still redacted (no length floor)
+    assert.strictEqual(
+      redactCredentialString("Authorization: Basic YTpi"),
+      "Authorization: [REDACTED]",
+      "short Basic credentials must still be redacted",
+    );
+    // Digest auth — single token
     assert.strictEqual(
       redactCredentialString("Authorization: Digest abc123response456"),
       "Authorization: [REDACTED]",
     );
-    // Custom Token scheme
+    // Digest auth — full multi-parameter value (all params redacted)
+    assert.strictEqual(
+      redactCredentialString(
+        'Authorization: Digest username="admin", realm="example.org", nonce="abc123", response="def456"',
+      ),
+      "Authorization: [REDACTED]",
+      "all Digest parameters must be redacted including response",
+    );
+    // Custom Token scheme (min 8-char token)
     assert.strictEqual(
       redactCredentialString("Authorization: Token my-secret-token-XYZ"),
       "Authorization: [REDACTED]",
@@ -287,7 +301,7 @@ describe("redactCredentialString — single-string redaction", () => {
       redactCredentialString("Digestion requires enzymes"),
       "Digestion requires enzymes",
     );
-    // No over-match on short tokens after a scheme keyword (review fix):
+    // No over-match on short tokens after Bearer/Token/ApiKey (review fix):
     // "Token Plan" is a domain term, "Plan" is 4 chars — must NOT redact.
     assert.strictEqual(
       redactCredentialString("MiniMax Token Plan subscription"),

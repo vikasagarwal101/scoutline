@@ -67,13 +67,16 @@ const REDACTED = "[REDACTED]";
 export function redactCredentialString(input: string, extraSecrets?: string | string[]): string {
   if (typeof input !== "string") return input;
   let result = input;
-  // 1.6: broaden to non-Bearer schemes. The `[^\s]{8,}` minimum length
-  // avoids false positives on prose like "Token Plan" (a domain term in
-  // this codebase) — real auth-token values are always ≥ 8 chars.
-  // Multi-parameter Digest values (`key=val, key=val, …`) have their
-  // primary credential token redacted here; remaining params are covered
-  // by the configuredSecrets value loop below.
-  result = result.replace(/(?:Bearer|Basic|Digest|Token|ApiKey)\s+[^\s]{8,}/gi, REDACTED);
+  // 1.6: broaden to non-Bearer schemes. Scheme-specialized to balance
+  // false-positive risk against credential-coverage:
+  //   - Bearer/Token/ApiKey: min 8-char token avoids prose false positives
+  //     like "Token Plan" (a domain term in this codebase).
+  //   - Basic: base64 credentials can be short, so no length floor.
+  //   - Digest: comma-separated key=value params — the full param list
+  //     is consumed so sensitive fields (response, nonce) don't leak.
+  result = result.replace(/(?:Bearer|Token|ApiKey)\s+[^\s]{8,}/gi, REDACTED);
+  result = result.replace(/Basic\s+\S+/gi, REDACTED);
+  result = result.replace(/Digest\s+[^\s,]+(?:,\s*[^\s,]+)*/gi, REDACTED);
   // Tavily API keys carry the `tvly-` prefix; redact the full token
   // wherever it appears (logs, URLs, error bodies).
   result = result.replace(/tvly-[A-Za-z0-9_-]+/gi, REDACTED);

@@ -725,7 +725,11 @@ describe("Firecrawl Crawl Adapter", () => {
         postCount += 1;
         const id = `job-${postCount}`;
         activeJobs.push({ id, url: "https://lock.example", created_at: new Date().toISOString() });
-        // Hold the create critical section briefly so the second invoke contends.
+        // The job is pushed synchronously before the yield; the file-based
+        // create-lock serializes concurrent invocations so the second invoke
+        // reclaims via /active rather than posting again. The injected sleep
+        // is a no-op microtask — it records the call for assertion but does
+        // not introduce real wall-clock delay.
         await sleep(50);
         return makeResponse({ json: { success: true, id } });
       }

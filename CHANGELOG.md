@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.5] - 2026-08-07
+
+### Hardening
+
+- Cache and tool-cache files now use explicit `0600` mode (directories `0700`); the previous default `0644` relied on the parent directory mode for protection, which did not hold if `SCOUTLINE_CACHE_DIR` redirected the cache outside `~/.scoutline/`.
+- `writeCache` and `writeToolCache` now use atomic write (temp-file + rename) so a crash mid-write cannot leave a partially-written cache file. The read path was already self-healing.
+- `ZaiMcpClient.close()` and `ZaiCodeModeClient.close()` no longer leak a referenced `setTimeout` timer for up to 2 seconds after each command, eliminating a small post-command event-loop hang.
+
 ## [0.13.4] - 2026-08-07
 
 ### Documentation

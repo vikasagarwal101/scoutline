@@ -15,12 +15,16 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
   configuredSecrets,
   redactSecrets,
   redactTool,
   redactCredentialString,
 } from "../dist/lib/redact.js";
+import { writeToolCache, readToolCache } from "../dist/lib/tool-cache.js";
 import { formatErrorOutput as formatCompatErrorOutput } from "../dist/lib/errors.js";
 import { formatErrorOutput } from "../dist/lib/output.js";
 
@@ -512,5 +516,121 @@ describe("redaction across outward-boundary formatters", () => {
       if (savedZAlias === undefined) delete process.env.ZAI_API_KEY;
       else process.env.ZAI_API_KEY = savedZAlias;
     }
+  });
+});
+
+describe("writeToolCache — file-only key redaction (1.1.a)", () => {
+  it("redacts a file-only configured key when secrets are threaded into writeToolCache", async () => {
+    // A credential that exists ONLY in the injected env (simulating a
+    // file-only key from config.json), NOT in process.env.
+    const FILE_ONLY_KEY = "file-only-zai-key-XYZ-789";
+    const injectedEnv = { Z_AI_API_KEY: FILE_ONLY_KEY };
+
+    // Confirm the gap: the key is not in process.env.
+    assert.ok(
+      !process.env.Z_AI_API_KEY?.includes(FILE_ONLY_KEY),
+      "FILE_ONLY_KEY should not be in process.env",
+    );
+
+    // A tool whose metadata echoes the file-only credential.
+    const tool = {
+      name: "scoutline_zai.test.tool_cache_redact",
+      description: `endpoint uses key ${FILE_ONLY_KEY}`,
+      inputs: {
+        type: "object",
+        properties: {
+          Authorization: FILE_ONLY_KEY,
+        },
+      },
+    };
+
+    const cacheConfig = {
+      mode: "ZAI",
+      baseUrl: "https://test.example.com",
+      endpoints: { search: "https://test.example.com/search" },
+      enableVision: false,
+    };
+
+    // Point the cache at a temp dir and make sure the tool cache is enabled.
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-redact-"));
+    const savedCacheDir = process.env.SCOUTLINE_CACHE_DIR;
+    const savedScoutlineCache = process.env.SCOUTLINE_CACHE;
+    const savedToolCache = process.env.ZAI_MCP_TOOL_CACHE;
+    process.env.SCOUTLINE_CACHE_DIR = tmpDir;
+    delete process.env.SCOUTLINE_CACHE;
+    delete process.env.ZAI_MCP_TOOL_CACHE;
+
+    try {
+      // Write with secrets resolved from the injected env — the fix.
+      await writeToolCache(cacheConfig, [tool], configuredSecrets(injectedEnv));
+
+      const cached = await readToolCache(cacheConfig);
+      assert.ok(cached, "tool cache must be readable after write");
+      assert.strictEqual(
+        cached[0].description,
+        "endpoint uses key [REDACTED]",
+        "file-only key must be redacted in tool description",
+      );
+      assert.strictEqual(
+        cached[0].inputs.properties.Authorization,
+        "[REDACTED]",
+        "file-only key must be redacted in tool inputs",
+      );
+    } finally {
+      if (savedCacheDir === undefined) delete process.env.SCOUTLINE_CACHE_DIR;
+      else process.env.SCOUTLINE_CACHE_DIR = savedCacheDir;
+      if (savedScoutlineCache === undefined) delete process.env.SCOUTLINE_CACHE;
+      else process.env.SCOUTLINE_CACHE = savedScoutlineCache;
+      if (savedToolCache === undefined) delete process.env.ZAI_MCP_TOOL_CACHE;
+      else process.env.ZAI_MCP_TOOL_CACHE = savedToolCache;
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+});
+
+describe("tools list/show — file-only key redaction via configuredSecrets (1.1.b)", () => {
+  it("a file-only key in options.env is redacted when secrets are threaded into redactTool", () => {
+    // A credential that exists ONLY in the handler's options.env
+    // (simulating a file-configured key), NOT in process.env.
+    const FILE_ONLY_KEY = "file-only-handler-key-1-1-b-456";
+    const handlerEnv = { Z_AI_API_KEY: FILE_ONLY_KEY };
+
+    // Confirm the key is not in process.env (the gap).
+    assert.ok(
+      !process.env.Z_AI_API_KEY?.includes(FILE_ONLY_KEY),
+      "FILE_ONLY_KEY should not be in process.env",
+    );
+
+    // The tools handler pattern after the fix:
+    // redactTool(tool, configuredSecrets(options.env))
+    const secrets = configuredSecrets(handlerEnv);
+    assert.ok(
+      secrets.includes(FILE_ONLY_KEY),
+      "configuredSecrets must include the file-only key from options.env",
+    );
+
+    const tool = {
+      name: "scoutline.zai.search.web_search_prime",
+      description: `endpoint key: ${FILE_ONLY_KEY}`,
+      inputs: {
+        type: "object",
+        properties: {
+          Authorization: FILE_ONLY_KEY,
+        },
+      },
+    };
+
+    // What listTools/showTool now do after the fix:
+    const redacted = redactTool(tool, secrets);
+    assert.strictEqual(redacted.description, "endpoint key: [REDACTED]");
+    assert.strictEqual(redacted.inputs.properties.Authorization, "[REDACTED]");
+
+    // Prove the gap is real: without passing secrets, the file-only key
+    // would NOT be redacted (it's not in process.env).
+    const withoutSecrets = redactTool(tool);
+    assert.ok(
+      withoutSecrets.description.includes(FILE_ONLY_KEY),
+      "without secrets, file-only key must NOT be redacted (proves the gap)",
+    );
   });
 });

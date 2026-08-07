@@ -145,13 +145,16 @@ export async function writeToolCache(
   if (getCacheTtlMs() <= 0) return;
   try {
     const filePath = buildToolCachePath(config);
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    const dir = path.dirname(filePath);
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    // Tighten directory mode in case it already existed with looser perms.
+    await fs.chmod(dir, 0o700).catch(() => {});
     const payload: ToolCachePayload = {
       version: TOOL_CACHE_VERSION,
       timestamp: Date.now(),
       tools: tools.map((tool) => redactTool(tool, secrets)),
     };
-    await fs.writeFile(filePath, JSON.stringify(payload));
+    await fs.writeFile(filePath, JSON.stringify(payload), { mode: 0o600 });
   } catch {
     // Best-effort cache only.
   }

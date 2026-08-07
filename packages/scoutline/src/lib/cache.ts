@@ -399,9 +399,11 @@ export async function writeCache<T>(key: string, data: T): Promise<void> {
   const dir = responseCacheDir();
   const file = path.join(dir, key);
   try {
-    await fs.mkdir(dir, { recursive: true });
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    // Tighten directory mode in case it already existed with looser perms.
+    await fs.chmod(dir, 0o700).catch(() => {});
     const entry: CacheEntry<T> = { ts: Date.now(), data };
-    await fs.writeFile(file, JSON.stringify(entry));
+    await fs.writeFile(file, JSON.stringify(entry), { mode: 0o600 });
     await evictIfNeeded(dir);
   } catch {
     // Best-effort cache only

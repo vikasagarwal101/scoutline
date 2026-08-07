@@ -33,6 +33,7 @@ import pkg from "../../../package.json" with { type: "json" };
 
 import { ApiError, AuthError, NetworkError, QuotaError, TimeoutError } from "../../lib/errors.js";
 import type { ProviderQuotaFetch } from "../types.js";
+import { getGlobalFetch } from "../types.js";
 
 const { version: VERSION } = pkg;
 
@@ -169,7 +170,7 @@ async function postExaJson(
   endpointLabel: string,
   extraHeaders?: Record<string, string>,
 ): Promise<unknown> {
-  const f = deps.fetch ?? (fetch as unknown as ProviderQuotaFetch);
+  const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
   const env = deps.env ?? process.env;
@@ -368,7 +369,7 @@ export async function pollExaAgentRun(
   runId: string,
   deps: ExaTransportDeps = {},
 ): Promise<ExaAgentRunPollResult> {
-  const f = deps.fetch ?? (fetch as unknown as ProviderQuotaFetch);
+  const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
   const env = deps.env ?? process.env;

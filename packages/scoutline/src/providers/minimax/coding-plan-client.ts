@@ -32,6 +32,7 @@ import {
   TimeoutError,
 } from "../../lib/errors.js";
 import type { ProviderQuotaFetch } from "../types.js";
+import { getGlobalFetch } from "../types.js";
 
 const { version: VERSION } = pkg;
 
@@ -189,7 +190,7 @@ async function postCodingPlanJson(
   deps: MiniMaxTransportDeps,
   endpointLabel: "search" | "vlm",
 ): Promise<unknown> {
-  const f = deps.fetch ?? (fetch as unknown as ProviderQuotaFetch);
+  const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
   const env = deps.env ?? process.env;

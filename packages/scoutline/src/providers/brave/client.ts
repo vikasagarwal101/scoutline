@@ -33,6 +33,7 @@ import pkg from "../../../package.json" with { type: "json" };
 
 import { ApiError, AuthError, NetworkError, TimeoutError } from "../../lib/errors.js";
 import type { ProviderImageFetchResponse } from "../types.js";
+import { getGlobalFetch } from "../types.js";
 
 const { version: VERSION } = pkg;
 
@@ -42,12 +43,15 @@ const DEFAULT_TIMEOUT_MS = 30000;
 const USER_AGENT = `scoutline/${VERSION}`;
 const TIMEOUT_HELP_TEXT = "Try again or increase timeout with BRAVE_TIMEOUT env var";
 
+/** Injectable fetch signature for Brave transport (duck-typed port). */
+export type BraveFetch = (
+  input: string,
+  init: Record<string, unknown>,
+) => Promise<ProviderImageFetchResponse>;
+
 /** Injectable transport dependencies (fetch, timers, env). */
 export interface BraveTransportDeps {
-  readonly fetch?: (
-    input: string,
-    init: Record<string, unknown>,
-  ) => Promise<ProviderImageFetchResponse>;
+  readonly fetch?: BraveFetch;
   readonly setTimeout?: typeof setTimeout;
   readonly clearTimeout?: typeof clearTimeout;
   readonly env?: NodeJS.ProcessEnv;
@@ -187,12 +191,7 @@ export async function getBraveJson(
   deps: BraveTransportDeps = {},
   onResponseHeaders?: BraveResponseHeaderCallback,
 ): Promise<unknown> {
-  const f =
-    deps.fetch ??
-    (fetch as unknown as (
-      input: string,
-      init: Record<string, unknown>,
-    ) => Promise<ProviderImageFetchResponse>);
+  const f = deps.fetch ?? getGlobalFetch<BraveFetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
   const env = deps.env ?? process.env;
@@ -423,12 +422,7 @@ export async function fetchBraveRateLimit(
   apiKey: string,
   deps: BraveTransportDeps = {},
 ): Promise<BraveRateLimitHeaders> {
-  const f =
-    deps.fetch ??
-    (fetch as unknown as (
-      input: string,
-      init: Record<string, unknown>,
-    ) => Promise<ProviderImageFetchResponse>);
+  const f = deps.fetch ?? getGlobalFetch<BraveFetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
   const env = deps.env ?? process.env;

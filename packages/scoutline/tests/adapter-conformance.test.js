@@ -133,6 +133,25 @@ function makeBraveCapability(rawResult) {
   return adapter.search;
 }
 
+/**
+ * Tavily Adapter factory: accepts a raw Tavily-shaped response
+ * (`results[].title/url/content`), builds a fake fetch that returns the
+ * scripted response, and returns the descriptor's Search Capability.
+ */
+function makeTavilyCapability(rawResult) {
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rawResult),
+    json: async () => rawResult,
+    headers: { get: () => null },
+    arrayBuffer: async () => new ArrayBuffer(0),
+  });
+  const descriptor = createTavilyDescriptor({ transport: { fetch: fetchFn } });
+  const adapter = descriptor.create({ env: { TAVILY_API_KEY: "k" } });
+  return adapter.search;
+}
+
 // ---------------------------------------------------------------------------
 // Vision conformance: same interpret-image request, same normalized text (P3-03)
 // ---------------------------------------------------------------------------
@@ -270,6 +289,24 @@ describe("Search Adapter conformance — shared normalized output", () => {
     };
     const braveNormalized = await runSearchConformance(makeBraveCapability, braveRaw);
     assert.deepStrictEqual(braveNormalized, expected);
+
+    // Tavily raw response (results[].title/url/content).
+    const tavilyRaw = {
+      results: [
+        {
+          title: "Conformance result one",
+          url: "https://example.test/one",
+          content: "Shared normalized summary one.",
+        },
+        {
+          title: "Conformance result two",
+          url: "https://example.test/two",
+          content: "Shared normalized summary two.",
+        },
+      ],
+    };
+    const tavilyNormalized = await runSearchConformance(makeTavilyCapability, tavilyRaw);
+    assert.deepStrictEqual(tavilyNormalized, expected);
   });
 
   it("normalized output drops Provider-only fields (refer, icon, media, publish_date)", async () => {

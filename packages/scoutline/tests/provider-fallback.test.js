@@ -1359,6 +1359,9 @@ describe("executeWithFallback — production registry carries credential hint en
       exa: ["EXA_API_KEY"],
       brave: ["BRAVE_SEARCH_API_KEY"],
       firecrawl: ["FIRECRAWL_API_KEY"],
+      parallel: ["PARALLEL_API_KEY"],
+      perplexity: ["PERPLEXITY_API_KEY"],
+      jina: ["JINA_API_KEY"],
     };
     for (const descriptor of BUILT_IN_PROVIDER_DESCRIPTORS) {
       const vars = descriptor.credentialEnvVars;
@@ -1382,10 +1385,17 @@ describe("executeWithFallback — production registry carries credential hint en
     // did not. So the default provider (zai) was falling back to the
     // generic "Set the required API key." string. This test
     // exercises the production code path end-to-end.
+    //
+    // Jina is excluded because it supports keyless access and is
+    // always configured — including it would let the executor succeed
+    // via Jina instead of surfacing the zai ConfigurationError.
+    const credentialRequiredDescriptors = BUILT_IN_PROVIDER_DESCRIPTORS.filter(
+      (d) => d.id !== "jina",
+    );
     let caught;
     try {
-      await run([...BUILT_IN_PROVIDER_DESCRIPTORS], "zai", {
-        // No credentials at all — every descriptor is unconfigured.
+      await run([...credentialRequiredDescriptors], "zai", {
+        // No credentials at all — every remaining descriptor is unconfigured.
         env: {},
         attempt: async () => "should-not-reach",
       });
@@ -1413,9 +1423,13 @@ describe("executeWithFallback — production registry carries credential hint en
   it("an unconfigured minimax effective surfaces a ConfigurationError naming MINIMAX_API_KEY", async () => {
     // Sibling coverage for the second built-in whose descriptor
     // lives outside src/providers/types.ts.
+    // Jina excluded (keyless — always configured).
+    const credentialRequiredDescriptors = BUILT_IN_PROVIDER_DESCRIPTORS.filter(
+      (d) => d.id !== "jina",
+    );
     let caught;
     try {
-      await run([...BUILT_IN_PROVIDER_DESCRIPTORS], "minimax", {
+      await run([...credentialRequiredDescriptors], "minimax", {
         env: {},
       });
     } catch (err) {

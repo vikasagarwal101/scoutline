@@ -1,8 +1,8 @@
 /**
  * Static Provider Registry (DESIGN.md §5, P2-05).
  *
- * The production registry is a static list of the two real Search
- * Provider Descriptors, in the fixed order [zai, minimax]. It performs
+ * The production registry is a static list of built-in Provider
+ * Descriptors in canonical fallback order. It performs
  * NO dynamic imports, accepts no package names, file paths, or
  * externally supplied factories. Tests inject descriptor lists through
  * the explicit optional parameters of {@link getProviderDescriptor} and
@@ -21,6 +21,9 @@ import { createTavilyDescriptor } from "./tavily/adapter.js";
 import { createExaDescriptor } from "./exa/adapter.js";
 import { createBraveDescriptor } from "./brave/adapter.js";
 import { createFirecrawlDescriptor } from "./firecrawl/adapter.js";
+import { createParallelDescriptor } from "./parallel/adapter.js";
+import { createPerplexityDescriptor } from "./perplexity/adapter.js";
+import { createJinaDescriptor } from "./jina/adapter.js";
 import type { ProviderDescriptor, ProviderId } from "./types.js";
 import {
   getProviderDescriptor as lookupProviderDescriptor,
@@ -40,6 +43,9 @@ export const BUILT_IN_PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [
   createExaDescriptor(),
   createBraveDescriptor(),
   createFirecrawlDescriptor(),
+  createParallelDescriptor(),
+  createPerplexityDescriptor(),
+  createJinaDescriptor(),
 ];
 
 /**

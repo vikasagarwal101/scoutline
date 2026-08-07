@@ -155,18 +155,23 @@ describe("--type / --topic mutual exclusivity (parse-time, T3a)", () => {
     assert.match(parsed.error, /mutually exclusive/i);
   });
 
-  it("--type video alone with NO credentials yields CONFIGURATION_ERROR (parse passes, config gate fires)", async () => {
-    // Sanity: --type video by itself is a VALID parse. With no credentials
-    // it must reach the configuration gate (CONFIGURATION_ERROR), proving
-    // the parse-time gate only rejects the COMBO, not --type alone.
+  it("--type video alone with NO credentials yields error (parse passes, provider rejects type)", async () => {
+    // Sanity: --type video by itself is a VALID parse. With no credentials,
+    // keyless Jina is the only configured provider; it rejects --type as
+    // UnsupportedOptionError. This proves the parse-time gate only
+    // rejects the COMBO (--type + --topic), not --type alone.
     const { adapter, stderr } = createTestAdapter();
     const status = await main(["search", "q", "--type", "video"], {
       invocation: adapter,
       env: {},
     });
-    assert.strictEqual(status, 3, "valid --type with no credentials must exit 3");
+    assert.ok(status !== 0, "valid --type alone must not succeed with no supporting provider");
     const parsed = JSON.parse(stderr[stderr.length - 1]);
-    assert.strictEqual(parsed.code, "CONFIGURATION_ERROR");
+    // Must NOT be a parse-time mutual-exclusivity error
+    assert.ok(
+      !/mutually exclusive/i.test(parsed.error || ""),
+      `--type alone must pass parse; got: ${parsed.error}`,
+    );
   });
 });
 

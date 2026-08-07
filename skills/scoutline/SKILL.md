@@ -1,31 +1,25 @@
 ---
 name: scoutline
 description: |
-  Z.AI, MiniMax, Tavily, Exa, Brave, and Firecrawl CLI providing:
+  Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and Jina AI CLI providing:
   - Vision: image/video analysis, OCR, UI-to-code, error diagnosis (GLM-4.6V)
-  - Search: real-time web search with domain/recency/topic filtering (and
-    Brave-only `--type video`)
-  - Reader: web page to markdown extraction (Z.AI, Tavily, Exa, or Firecrawl)
+  - Search: real-time web search with domain/recency/topic filtering
+  - Reader: web page to markdown extraction (Z.AI, Tavily, Exa, Firecrawl, Parallel, or Jina)
   - Crawl: multi-page website traversal (Tavily or Firecrawl)
   - Map: URL-set discovery without fetching pages (Tavily or Firecrawl)
-  - Research: asynchronous deep research with citations (Tavily or Exa)
+  - Research: asynchronous deep research with citations (Tavily, Exa, Parallel, Perplexity, or Jina)
   - Repo: GitHub code search and reading via ZRead (Z.AI)
   - Tools: MCP tool discovery, schemas, and raw calls (Z.AI)
   - Code: TypeScript tool chaining (Z.AI)
-  - Provider selection: --provider <zai|minimax|tavily|exa|brave|firecrawl> for shared
+  - Provider selection: --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina> for shared
     capabilities, repo, read, crawl, map, and research
   Use for visual content analysis, web search, page reading, multi-page
-  site traversal, deep research, or GitHub exploration. Requires
-  Z_AI_API_KEY (default), MINIMAX_API_KEY (with --provider minimax),
-  TAVILY_API_KEY (with --provider tavily for Search/Reader/Crawl/
-  Map/Research), EXA_API_KEY (with --provider exa for Search/Reader/
-  Research), BRAVE_SEARCH_API_KEY (with --provider brave for Search), or
-  FIRECRAWL_API_KEY (with --provider firecrawl for Search/Reader/Crawl/Map).
+  site traversal, deep research, or GitHub exploration.
 ---
 
 # Scoutline
 
-Access Z.AI, MiniMax, Tavily, Exa, and Brave capabilities via `npx scoutline`. The
+Access Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and Jina AI capabilities via `npx scoutline`. The
 CLI is self-documenting — use `--help` at any level.
 
 ## Setup
@@ -36,7 +30,6 @@ export Z_AI_API_KEY="your-api-key"
 
 # OR MiniMax Token Plan
 export MINIMAX_API_KEY="your-minimax-key"
-export MINIMAX_REGION=global  # optional: defaults to "global"; alternative is "cn"
 
 # OR Tavily (Search, Reader, Crawl, Map, Research)
 export TAVILY_API_KEY="your-tavily-key"
@@ -46,6 +39,18 @@ export EXA_API_KEY="your-exa-key"
 
 # OR Brave (Search: web, news, video)
 export BRAVE_SEARCH_API_KEY="your-brave-key"
+
+# OR Firecrawl (Search, Reader, Crawl, Map)
+export FIRECRAWL_API_KEY="your-firecrawl-key"
+
+# OR Parallel AI (Search, Research, Reader)
+export PARALLEL_API_KEY="your-parallel-key"
+
+# OR Perplexity (Search, Research)
+export PERPLEXITY_API_KEY="your-perplexity-key"
+
+# OR Jina AI (Search, Reader, Research)
+export JINA_API_KEY="your-jina-key"
 ```
 
 Get a Z.AI key at: https://z.ai/manage-apikey/apikey-list

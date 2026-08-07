@@ -417,6 +417,10 @@ async function evictIfNeeded(dir: string): Promise<void> {
     const entries = await fs.readdir(dir);
     const stats = await Promise.all(
       entries.map(async (name) => {
+        // Skip atomic-write temp files (.<basename>.<pid>.<uuid>.tmp)
+        // so eviction cannot unlink a concurrent write's staging file
+        // and cause its rename to fail (Greptile P2).
+        if (name.startsWith(".") && name.endsWith(".tmp")) return null;
         try {
           const p = path.join(dir, name);
           const s = await fs.stat(p);

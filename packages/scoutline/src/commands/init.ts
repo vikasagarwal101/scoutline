@@ -184,6 +184,24 @@ const PROVIDER_PROMPT_META: Record<ProviderId, ProviderPromptMeta> = {
     registrationUrl: "https://www.firecrawl.dev/signin",
     probeCostsCredit: true,
   },
+  parallel: {
+    label: "Parallel AI",
+    envVar: "PARALLEL_API_KEY",
+    registrationUrl: "https://parallel.ai",
+    probeCostsCredit: true,
+  },
+  perplexity: {
+    label: "Perplexity Sonar",
+    envVar: "PERPLEXITY_API_KEY",
+    registrationUrl: "https://www.perplexity.ai/settings/api",
+    probeCostsCredit: true,
+  },
+  jina: {
+    label: "Jina AI",
+    envVar: "JINA_API_KEY",
+    registrationUrl: "https://jina.ai",
+    probeCostsCredit: false,
+  },
 };
 
 /**

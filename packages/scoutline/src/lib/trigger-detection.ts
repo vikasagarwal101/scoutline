@@ -123,7 +123,17 @@ export interface CredentialClassificationInput {
  */
 export function classifyCredentialState(input: CredentialClassificationInput): CredentialState {
   const { descriptors, env, resolvedEnv, config } = input;
-  const anyEnvConfigured = descriptors.some((d) => d.isConfigured(env));
+  // For the env-configured check, a keyless provider (one that reports
+  // isConfigured without any of its credentialEnvVars actually set in env)
+  // does NOT count as env-configured — there is no credential to record.
+  const anyEnvConfigured = descriptors.some((d) => {
+    if (!d.isConfigured(env)) return false;
+    const credVars = d.credentialEnvVars ?? [];
+    return credVars.some((v) => {
+      const val = env[v];
+      return typeof val === "string" && val.trim().length > 0;
+    });
+  });
   const anyResolvedConfigured = descriptors.some((d) => d.isConfigured(resolvedEnv));
   const anyFileConfigured = Object.values(config.providers).some((provider) => {
     const key = provider?.apiKey;

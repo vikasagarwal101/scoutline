@@ -319,7 +319,11 @@ then zai):
   - Exa and Firecrawl also advertise the reader Capability. Selecting
     exa or firecrawl routes Read through their Adapters; some Z.AI-only
     options are rejected with UNSUPPORTED_OPTION.
-  - MiniMax and Brave do NOT advertise reader. By default (0.11.0+)
+  - Parallel AI (Extract API) and Jina AI (r.jina.ai) also advertise
+    reader. Selecting parallel or jina routes Read through their
+    Adapters; some Z.AI-only options are rejected with UNSUPPORTED_OPTION.
+    Jina supports keyless access (no API key required).
+  - MiniMax, Brave, and Perplexity do NOT advertise reader. By default (0.11.0+)
     Provider fallback emits a stderr notice and silently reroutes to
     the next eligible configured supplier (zai, tavily, exa, or
     firecrawl). Under --no-fallback (or SCOUTLINE_NO_FALLBACK=1) the
@@ -343,7 +347,7 @@ Options:
                   code | links | tables | headings
 
 Common Options:
-  --provider <id>            Override the active Provider (zai | minimax | tavily | exa | firecrawl)
+  --provider <id>            Override the active Provider (zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina)
   --output-format <mode>     One of: ${OUTPUT_MODE_LIST} (default: data)
   -O <mode>                  Alias for --output-format
 

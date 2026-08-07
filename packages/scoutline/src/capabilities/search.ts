@@ -147,6 +147,11 @@ export interface SearchCapability {
    * Invoke the Provider and return normalized sources. The Adapter
    * closes its transport and never retries inside this method; shared
    * execution owns retry policy.
+   *
+   * `signal` is an OPTIONAL cooperative-cancellation channel. When a
+   * caller threads an `AbortSignal` through `executeSearch`, the Adapter
+   * MAY observe it to stop early. Operations that have nothing to abort
+   * simply ignore it.
    */
-  invoke(request: SearchRequest): Promise<readonly SearchSource[]>;
+  invoke(request: SearchRequest, signal?: AbortSignal): Promise<readonly SearchSource[]>;
 }

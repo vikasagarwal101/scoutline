@@ -221,8 +221,13 @@ export interface RepositoryOperation<Request, Result> {
    * Invoke the Provider and return the normalized result. The Adapter
    * closes its transport and never retries inside this method;
    * shared execution owns retry policy.
+   *
+   * `signal` is an OPTIONAL cooperative-cancellation channel. When a
+   * caller threads an `AbortSignal` through `executeRepositoryOperation`,
+   * the Adapter MAY observe it to stop early. Operations that have
+   * nothing to abort simply ignore it.
    */
-  invoke(request: Request): Promise<Result>;
+  invoke(request: Request, signal?: AbortSignal): Promise<Result>;
 }
 
 // ---------------------------------------------------------------------------

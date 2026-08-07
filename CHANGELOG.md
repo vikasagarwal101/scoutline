@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.8] - 2026-08-07
+
+### Cleanup
+
+- Legacy `formatErrorOutput` (1-arg) removed from `lib/errors.ts`; the 2-arg version in `lib/output.ts` is the sole path.
+- Superseded `src/lib/silence.ts` removed.
+- Unused `resolveTtyMode` removed from `src/lib/tty.ts`.
+
 ## [0.13.7] - 2026-08-07
 
 ### Test improvements

@@ -38,8 +38,13 @@ import { redactTool } from "./redact.js";
 /**
  * Cache envelope version. Bumped when the on-disk shape of
  * {@link ToolCachePayload} changes; old envelopes are ignored.
+ *
+ * v2 (1.2 review fix): invalidates pre-fix v1 entries that may contain
+ * un-redacted file-only API keys. `writeToolCache` now threads resolved
+ * secrets into `redactTool`, so v2 entries are safe — but old v1
+ * envelopes must not be served.
  */
-export const TOOL_CACHE_VERSION = 1;
+export const TOOL_CACHE_VERSION = 2;
 
 /**
  * Inputs to the tool-cache key. Captures every dimension that affects
@@ -123,8 +128,19 @@ export async function readToolCache(config: ToolCacheConfig): Promise<Tool[] | n
  * tool before serialization (B2 fix) so the on-disk envelope never
  * contains raw Provider credentials. Best-effort: I/O failures are
  * swallowed (cache is disposable).
+ *
+ * The optional `secrets` argument lets a caller thread the credentials
+ * resolved from an injected environment (e.g. `ZaiMcpClient.options.env`)
+ * into redaction, so a secret that exists only in the injected env — and
+ * not in ambient `process.env` — is still redacted. When omitted,
+ * `redactTool` falls back to `configuredSecrets()` from `process.env`,
+ * which may miss file-only configured keys (1.1.a).
  */
-export async function writeToolCache(config: ToolCacheConfig, tools: Tool[]): Promise<void> {
+export async function writeToolCache(
+  config: ToolCacheConfig,
+  tools: Tool[],
+  secrets?: string[],
+): Promise<void> {
   if (!isToolCacheEnabled()) return;
   if (getCacheTtlMs() <= 0) return;
   try {
@@ -133,7 +149,7 @@ export async function writeToolCache(config: ToolCacheConfig, tools: Tool[]): Pr
     const payload: ToolCachePayload = {
       version: TOOL_CACHE_VERSION,
       timestamp: Date.now(),
-      tools: tools.map((tool) => redactTool(tool)),
+      tools: tools.map((tool) => redactTool(tool, secrets)),
     };
     await fs.writeFile(filePath, JSON.stringify(payload));
   } catch {

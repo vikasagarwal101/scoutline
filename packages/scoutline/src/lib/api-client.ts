@@ -171,10 +171,25 @@ export class ZaiApiClient {
           "Accept-Language": "en-US,en",
         },
         body: JSON.stringify(body),
+        // 1.2: prevent the runtime from silently following redirects,
+        // which could forward the Authorization header to a different
+        // origin. 3xx responses are handled explicitly below.
+        redirect: "manual",
         signal: controller.signal,
       });
 
       clearTimeout(timeoutId);
+
+      // 1.2: Fail closed on redirects. With `redirect: "manual"`, a 3xx
+      // response surfaces here instead of being silently followed. The
+      // Authorization header must never be forwarded to a potentially
+      // different origin, so we reject explicitly.
+      if (response.status >= 300 && response.status < 400) {
+        throw new ApiError(
+          `Unexpected redirect (${response.status}) from ${endpoint}`,
+          response.status,
+        );
+      }
 
       if (!response.ok) {
         const text = await response.text();

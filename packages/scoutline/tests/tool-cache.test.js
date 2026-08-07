@@ -22,6 +22,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
+import * as fsSync from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -516,6 +517,36 @@ describe("tool-cache: ZAI_CACHE_DIR alias still resolves the path (B3 + D2)", ()
 
       const expectedFile = path.join(dir, "tools", `tools-${buildToolCacheKey(config)}.json`);
       await fs.access(expectedFile);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+});
+
+describe("tool-cache: file modes are restrictive (1.3)", () => {
+  it("writeToolCache creates files with mode 0600 and directory 0700", async () => {
+    clearCacheEnv();
+    const dir = await redirectCacheRoot();
+    try {
+      const config = baseConfig();
+      await writeToolCache(config, sampleTools());
+
+      const filePath = buildToolCachePath(config);
+      const fileStat = fsSync.statSync(filePath);
+      const fileMode = fileStat.mode & 0o777;
+      assert.strictEqual(
+        fileMode,
+        0o600,
+        `expected file mode 0600, got ${fileMode.toString(8)}`,
+      );
+
+      const dirStat = fsSync.statSync(path.dirname(filePath));
+      const dirMode = dirStat.mode & 0o777;
+      assert.strictEqual(
+        dirMode,
+        0o700,
+        `expected directory mode 0700, got ${dirMode.toString(8)}`,
+      );
     } finally {
       await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
     }

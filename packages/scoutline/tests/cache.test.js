@@ -13,6 +13,7 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
+import * as fsSync from "node:fs";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { withTempDir } from "./helpers/temp-dir.js";
@@ -1300,5 +1301,36 @@ describe("P6-08 legacy repository cache continuity (plumbing)", () => {
     });
     const all = [searchKey, fileKey, dirRootKey, dirNonRootKey];
     assert.strictEqual(new Set(all).size, all.length, "all four legacy keys must be distinct");
+  });
+});
+
+describe("cache file modes are restrictive (1.3)", () => {
+  it("writeCache creates cache files with mode 0600 and directory 0700", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const key = "mode-test." + Math.random().toString(36).slice(2) + ".json";
+        await writeCache(key, { secret: "sensitive" });
+
+        const filePath = path.join(dir, "cache", key);
+        const fileStat = fsSync.statSync(filePath);
+        const fileMode = fileStat.mode & 0o777;
+        assert.strictEqual(
+          fileMode,
+          0o600,
+          `expected file mode 0600, got ${fileMode.toString(8)}`,
+        );
+
+        const dirStat = fsSync.statSync(path.join(dir, "cache"));
+        const dirMode = dirStat.mode & 0o777;
+        assert.strictEqual(
+          dirMode,
+          0o700,
+          `expected directory mode 0700, got ${dirMode.toString(8)}`,
+        );
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
   });
 });

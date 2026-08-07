@@ -131,10 +131,24 @@ export class ZaiCodeModeClient {
 
   async close(timeoutMs: number = 2000): Promise<void> {
     if (this.client) {
-      await Promise.race([
-        this.client.close(),
-        new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
-      ]);
+      // 5.2: capture the timeout timer so it can be unref()'d (does not
+      // keep the event loop alive) and cleared after the race completes.
+      // Matches the closeWithBound pattern in providers/zai/repository.ts.
+      let timer: NodeJS.Timeout | undefined;
+      const timeoutPromise = new Promise<void>((resolve) => {
+        timer = setTimeout(() => resolve(), timeoutMs);
+        if (timer && typeof timer === "object" && "unref" in timer) {
+          (timer as { unref: () => void }).unref();
+        }
+      });
+      try {
+        await Promise.race([
+          this.client.close().catch(() => undefined),
+          timeoutPromise,
+        ]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
       this.client = null;
       this.isInitialized = false;
       this.initPromise = null;

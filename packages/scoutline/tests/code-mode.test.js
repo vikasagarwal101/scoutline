@@ -270,3 +270,76 @@ describe("ZaiCodeModeClient — init registration raw-body scrubbing (Fixup D �
     }
   });
 });
+
+describe("ZaiCodeModeClient.close() does not leak a referenced timer (5.2)", () => {
+  it("clears the close timeout timer after the race completes", async () => {
+    // Create a fake code-mode client whose close() hangs so the timeout
+    // race is the resolving path — exercising the timer capture/unref/clear.
+    const fakeClient = {
+      registerManual: () => Promise.resolve({ success: true, errors: [] }),
+      close: () => new Promise(() => {}), // never resolves
+      callToolChain: () => Promise.resolve(""),
+      getAllToolsTypeScriptInterfaces: () => Promise.resolve(""),
+    };
+    const client = new ZaiCodeModeClient({
+      clientFactory: async () => fakeClient,
+    });
+    // Force init so this.client is set before close().
+    await client.callToolChain("test").catch(() => {});
+
+    const timeoutMs = 100;
+    await client.close(timeoutMs);
+
+    // No referenced timer with our duration should survive — the timer
+    // was unref()'d and clearTimeout()'d in the finally block.
+    const handles =
+      typeof process._getActiveHandles === "function" ? process._getActiveHandles() : [];
+    const leakedTimers = handles.filter(
+      (h) =>
+        h &&
+        typeof h === "object" &&
+        "_idleTimeout" in h &&
+        h._idleTimeout === timeoutMs &&
+        typeof h.hasRef === "function" &&
+        h.hasRef(),
+    );
+    assert.strictEqual(
+      leakedTimers.length,
+      0,
+      "close timeout timer must be cleared, not left referenced",
+    );
+  });
+
+  it("does not keep the event loop alive when client.close() resolves first", async () => {
+    const fakeClient = {
+      registerManual: () => Promise.resolve({ success: true, errors: [] }),
+      close: () => Promise.resolve(),
+      callToolChain: () => Promise.resolve(""),
+      getAllToolsTypeScriptInterfaces: () => Promise.resolve(""),
+    };
+    const client = new ZaiCodeModeClient({
+      clientFactory: async () => fakeClient,
+    });
+    await client.callToolChain("test").catch(() => {});
+
+    const timeoutMs = 5000;
+    const start = Date.now();
+    await client.close(timeoutMs);
+    const elapsed = Date.now() - start;
+
+    assert.ok(elapsed < 1000, `close() took ${elapsed}ms; timer may not have been cleared`);
+
+    const handles =
+      typeof process._getActiveHandles === "function" ? process._getActiveHandles() : [];
+    const leakedTimers = handles.filter(
+      (h) =>
+        h &&
+        typeof h === "object" &&
+        "_idleTimeout" in h &&
+        h._idleTimeout === timeoutMs &&
+        typeof h.hasRef === "function" &&
+        h.hasRef(),
+    );
+    assert.strictEqual(leakedTimers.length, 0, "5 s timer must not remain referenced after close");
+  });
+});

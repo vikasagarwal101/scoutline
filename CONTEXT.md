@@ -145,9 +145,10 @@ Developer: "Is `--topic` available on every Provider?"
 
 Domain expert: "Yes. `--topic <general|news|finance>` is accepted by every
 Provider, but its implementation differs: Tavily passes the topic natively to
-its API; Z.AI and MiniMax lack a native topic parameter, so the Adapter
-appends a small keyword to the query string inside `invoke()` (see
-`lib/search-topic.ts`); Exa maps it to a `category` parameter."
+its API; Z.AI, MiniMax, Parallel AI, Perplexity, and Jina AI lack a native
+topic parameter, so the Adapter appends a small keyword to the query string
+inside `invoke()` (see `lib/search-topic.ts`); Exa maps it to a `category`
+parameter; Brave routes `news` to a dedicated news endpoint."
 
 Developer: "Can I search for videos with the Brave Provider?"
 

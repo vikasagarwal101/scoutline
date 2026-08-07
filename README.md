@@ -183,7 +183,7 @@ Selecting a provider that doesn't support a capability auto-reroutes to the next
 
 ### Search Controls
 
-`--topic <general|news|finance>` is accepted by all providers. Tavily passes it natively; Z.AI and MiniMax append a keyword to the query; Exa maps it to a category; Brave routes `news` to a dedicated news endpoint.
+`--topic <general|news|finance>` is accepted by all providers. Tavily passes it natively; Z.AI, MiniMax, Parallel AI, Perplexity, and Jina AI append a keyword to the query; Exa maps it to a category; Brave routes `news` to a dedicated news endpoint.
 
 `--type <video>` is Brave-only (mutually exclusive with `--topic`).
 

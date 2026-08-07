@@ -20,6 +20,14 @@ All notable changes to this project will be documented in this file.
 - The `init` wizard's Back choice is correctly typed as
   `ProviderId | undefined`.
 
+## [0.13.13] - 2026-08-08
+
+### Redaction and environment
+
+- Firecrawl API keys (`fc-…`) now have a length-constrained regex backstop; previously, only literal-value replacement covered bare Firecrawl keys.
+- The redaction regex recognizes non-Bearer auth schemes (`Basic`, `Digest`, custom headers).
+- `ZaiMcpClient`'s retry/timeout constants are now resolved from the invocation-local environment, not frozen at module import time.
+
 ## [0.13.12] - 2026-08-08
 
 ### Type-system cleanups

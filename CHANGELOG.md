@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.9] - 2026-08-07
+
+### UX polish
+
+- Stderr newline ownership moved to the invocation adapter (single authority); some messages no longer produce unexpected blank lines.
+- `runQuietly` now suppresses dependency `console.error` noise that previously interleaved with structured stderr output.
+
 ## [0.13.8] - 2026-08-07
 
 ### Cleanup

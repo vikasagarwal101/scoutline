@@ -22,6 +22,9 @@ import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
 import { createTavilyDescriptor } from "../dist/providers/tavily/adapter.js";
 import { createExaDescriptor } from "../dist/providers/exa/adapter.js";
 import { createBraveDescriptor } from "../dist/providers/brave/adapter.js";
+import { createParallelDescriptor } from "../dist/providers/parallel/adapter.js";
+import { createPerplexityDescriptor } from "../dist/providers/perplexity/adapter.js";
+import { createJinaDescriptor } from "../dist/providers/jina/adapter.js";
 import {
   BUILT_IN_PROVIDER_DESCRIPTORS,
   getProviderDescriptor,
@@ -290,6 +293,52 @@ describe("Search Adapter conformance — shared normalized output", () => {
         );
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error sanitization: new adapters must not leak raw upstream messages
+// ---------------------------------------------------------------------------
+
+describe("Error sanitization — new adapters strip raw upstream messages (2.1)", () => {
+  const SECRET = "Bearer sk-leak-me-12345";
+
+  /**
+   * Fake fetch that throws a NetworkError whose message contains a
+   * credential — simulating a raw upstream error body leaking through
+   * the transport. The adapter's normalizeXxxError must sanitize it.
+   */
+  function leakingFetch() {
+    return async () => {
+      throw new Error(`fetch failed: getaddrinfo ENOTFOUND ${SECRET}`);
+    };
+  }
+
+  it("Parallel search does not leak raw error messages", async () => {
+    const descriptor = createParallelDescriptor({ transport: { fetch: leakingFetch() } });
+    const adapter = descriptor.create({ env: { PARALLEL_API_KEY: "k" } });
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "test" }),
+      (err) => !err.message.includes(SECRET),
+    );
+  });
+
+  it("Perplexity search does not leak raw error messages", async () => {
+    const descriptor = createPerplexityDescriptor({ transport: { fetch: leakingFetch() } });
+    const adapter = descriptor.create({ env: { PERPLEXITY_API_KEY: "k" } });
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "test" }),
+      (err) => !err.message.includes(SECRET),
+    );
+  });
+
+  it("Jina search does not leak raw error messages", async () => {
+    const descriptor = createJinaDescriptor({ transport: { fetch: leakingFetch() } });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "test" }),
+      (err) => !err.message.includes(SECRET),
+    );
   });
 });
 

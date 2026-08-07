@@ -85,25 +85,45 @@ function credentialFingerprint(apiKey: string): string {
 
 /**
  * Normalize a Provider failure with sanitized messages. Raw response
- * bodies never cross the adapter boundary.
+ * bodies never cross the adapter boundary. Curated constant messages
+ * only, never interpolate `error.message`.
  */
 function normalizePerplexityError(error: unknown): Error {
+  // QuotaError pass-through — terminal retry guarantee preserved.
+  if (error instanceof QuotaError) return error;
+
+  // Configuration/option/validation errors carry clean, human-authored
+  // messages and are safe to surface verbatim.
   if (
-    error instanceof QuotaError ||
     error instanceof ValidationError ||
     error instanceof UnsupportedOptionError ||
-    error instanceof ConfigurationError ||
-    error instanceof AuthError ||
-    error instanceof ApiError ||
-    error instanceof NetworkError ||
-    error instanceof TimeoutError
+    error instanceof ConfigurationError
   ) {
     return error;
   }
-  return new ApiError(
-    `Perplexity request failed: ${error instanceof Error ? error.message : String(error)}`,
-    500,
-  );
+  // Re-wrap typed transport errors with sanitized messages so a raw
+  // Provider response body embedded upstream never survives. Code +
+  // statusCode (retry signal) are preserved.
+  if (error instanceof AuthError) {
+    return new AuthError("Perplexity authentication failed", "PERPLEXITY_API_KEY");
+  }
+  if (error instanceof NetworkError) {
+    return new NetworkError("Perplexity network error");
+  }
+  if (error instanceof TimeoutError) {
+    return new TimeoutError(
+      error.durationMs,
+      "Try again or increase timeout with PERPLEXITY_TIMEOUT env var",
+    );
+  }
+  if (error instanceof ApiError) {
+    const statusCode = error.statusCode || 500;
+    if (statusCode === 429) {
+      return new ApiError("Perplexity rate limit exceeded", 429);
+    }
+    return new ApiError("Perplexity request failed", statusCode);
+  }
+  return new ApiError("Perplexity request failed", 500);
 }
 
 function mapRecencyToFilter(recency: SearchRecency): PerplexitySearchParams["search_recency_filter"] {

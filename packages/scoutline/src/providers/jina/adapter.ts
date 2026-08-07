@@ -186,12 +186,15 @@ export class JinaAdapter implements ProviderAdapter {
         try {
           const results = await fetchJinaSearch(apiKey, query, transport);
 
-          return results.map((item) => ({
-            title: item.title || "Untitled",
-            url: item.url || "",
-            summary: item.description || item.content || "",
-            date: item.publishedTime || undefined,
-          }));
+          return results.map((item) => {
+            const result: SearchSource = {
+              title: item.title || "Untitled",
+              url: item.url || "",
+              summary: item.description || item.content || "",
+            };
+            if (item.publishedTime) result.date = item.publishedTime;
+            return result;
+          });
         } catch (error) {
           throw normalizeJinaError(error);
         }

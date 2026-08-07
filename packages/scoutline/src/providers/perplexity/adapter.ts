@@ -222,12 +222,15 @@ export class PerplexityAdapter implements ProviderAdapter {
 
           return results
             .filter((item) => item.url)
-            .map((item) => ({
-              title: item.title || "Untitled",
-              url: item.url!,
-              summary: item.snippet || "",
-              date: item.date || undefined,
-            }));
+            .map((item) => {
+              const result: SearchSource = {
+                title: item.title || "Untitled",
+                url: item.url!,
+                summary: item.snippet || "",
+              };
+              if (item.date) result.date = item.date;
+              return result;
+            });
         } catch (error) {
           throw normalizePerplexityError(error);
         }

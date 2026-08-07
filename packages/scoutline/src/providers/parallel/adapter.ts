@@ -190,12 +190,15 @@ export class ParallelAdapter implements ProviderAdapter {
           const response = await fetchParallelSearch(apiKey, query, params, transport);
           const results = response.results || [];
 
-          return results.map((item) => ({
-            title: item.title || "Untitled",
-            url: item.url || "",
-            summary: item.excerpts?.join("\n\n") || "",
-            date: item.publish_date || undefined,
-          }));
+          return results.map((item) => {
+            const result: SearchSource = {
+              title: item.title || "Untitled",
+              url: item.url || "",
+              summary: item.excerpts?.join("\n\n") || "",
+            };
+            if (item.publish_date) result.date = item.publish_date;
+            return result;
+          });
         } catch (error) {
           throw normalizeParallelError(error);
         }

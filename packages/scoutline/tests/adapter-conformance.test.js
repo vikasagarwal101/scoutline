@@ -22,6 +22,7 @@ import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
 import { createTavilyDescriptor } from "../dist/providers/tavily/adapter.js";
 import { createExaDescriptor } from "../dist/providers/exa/adapter.js";
 import { createBraveDescriptor } from "../dist/providers/brave/adapter.js";
+import { createFirecrawlDescriptor } from "../dist/providers/firecrawl/adapter.js";
 import { createParallelDescriptor, ParallelAdapter } from "../dist/providers/parallel/adapter.js";
 import { createPerplexityDescriptor, PerplexityAdapter } from "../dist/providers/perplexity/adapter.js";
 import { createJinaDescriptor, JinaAdapter } from "../dist/providers/jina/adapter.js";
@@ -149,6 +150,98 @@ function makeTavilyCapability(rawResult) {
   });
   const descriptor = createTavilyDescriptor({ transport: { fetch: fetchFn } });
   const adapter = descriptor.create({ env: { TAVILY_API_KEY: "k" } });
+  return adapter.search;
+}
+
+/**
+ * Exa Adapter factory: accepts a raw Exa-shaped response
+ * (`results[].title/url/highlights`), builds a fake fetch, and returns
+ * the descriptor's Search Capability.
+ */
+function makeExaCapability(rawResult) {
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rawResult),
+    json: async () => rawResult,
+    headers: { get: () => null },
+    arrayBuffer: async () => new ArrayBuffer(0),
+  });
+  const descriptor = createExaDescriptor({ transport: { fetch: fetchFn } });
+  const adapter = descriptor.create({ env: { EXA_API_KEY: "k" } });
+  return adapter.search;
+}
+
+/**
+ * Firecrawl Adapter factory: accepts a raw Firecrawl-shaped response
+ * (`data.web[].title/url/description`), builds a fake fetch, and returns
+ * the descriptor's Search Capability.
+ */
+function makeFirecrawlCapability(rawResult) {
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rawResult),
+    json: async () => rawResult,
+    headers: { get: () => null },
+    arrayBuffer: async () => new ArrayBuffer(0),
+  });
+  const descriptor = createFirecrawlDescriptor({ transport: { fetch: fetchFn } });
+  const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: "k" } });
+  return adapter.search;
+}
+
+/**
+ * Parallel Adapter factory: accepts a raw Parallel-shaped response
+ * (`results[].title/url/excerpts`), builds a fake fetch, and returns
+ * the adapter's Search Capability.
+ */
+function makeParallelCapability(rawResult) {
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rawResult),
+  });
+  const adapter = new ParallelAdapter(
+    { env: { PARALLEL_API_KEY: "k" } },
+    { transport: { fetch: fetchFn } },
+  );
+  return adapter.search;
+}
+
+/**
+ * Perplexity Adapter factory: accepts a raw Perplexity-shaped response
+ * (`results[].title/url/snippet`), builds a fake fetch, and returns
+ * the adapter's Search Capability.
+ */
+function makePerplexityCapability(rawResult) {
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rawResult),
+  });
+  const adapter = new PerplexityAdapter(
+    { env: { PERPLEXITY_API_KEY: "k" } },
+    { transport: { fetch: fetchFn } },
+  );
+  return adapter.search;
+}
+
+/**
+ * Jina Adapter factory: accepts a raw Jina-shaped response
+ * (`data[].title/url/description`), builds a fake fetch, and returns
+ * the adapter's Search Capability.
+ */
+function makeJinaCapability(rawResult) {
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rawResult),
+  });
+  const adapter = new JinaAdapter(
+    { env: {} },
+    { transport: { fetch: fetchFn } },
+  );
   return adapter.search;
 }
 
@@ -307,6 +400,98 @@ describe("Search Adapter conformance — shared normalized output", () => {
     };
     const tavilyNormalized = await runSearchConformance(makeTavilyCapability, tavilyRaw);
     assert.deepStrictEqual(tavilyNormalized, expected);
+
+    // Exa raw response (results[].title/url/highlights[]).
+    const exaRaw = {
+      results: [
+        {
+          title: "Conformance result one",
+          url: "https://example.test/one",
+          highlights: ["Shared normalized summary one."],
+        },
+        {
+          title: "Conformance result two",
+          url: "https://example.test/two",
+          highlights: ["Shared normalized summary two."],
+        },
+      ],
+    };
+    const exaNormalized = await runSearchConformance(makeExaCapability, exaRaw);
+    assert.deepStrictEqual(exaNormalized, expected);
+
+    // Firecrawl raw response (data.web[].title/url/description).
+    const firecrawlRaw = {
+      data: {
+        web: [
+          {
+            title: "Conformance result one",
+            url: "https://example.test/one",
+            description: "Shared normalized summary one.",
+          },
+          {
+            title: "Conformance result two",
+            url: "https://example.test/two",
+            description: "Shared normalized summary two.",
+          },
+        ],
+      },
+    };
+    const firecrawlNormalized = await runSearchConformance(makeFirecrawlCapability, firecrawlRaw);
+    assert.deepStrictEqual(firecrawlNormalized, expected);
+
+    // Parallel raw response (results[].title/url/excerpts[]).
+    const parallelRaw = {
+      results: [
+        {
+          title: "Conformance result one",
+          url: "https://example.test/one",
+          excerpts: ["Shared normalized summary one."],
+        },
+        {
+          title: "Conformance result two",
+          url: "https://example.test/two",
+          excerpts: ["Shared normalized summary two."],
+        },
+      ],
+    };
+    const parallelNormalized = await runSearchConformance(makeParallelCapability, parallelRaw);
+    assert.deepStrictEqual(parallelNormalized, expected);
+
+    // Perplexity raw response (results[].title/url/snippet).
+    const perplexityRaw = {
+      results: [
+        {
+          title: "Conformance result one",
+          url: "https://example.test/one",
+          snippet: "Shared normalized summary one.",
+        },
+        {
+          title: "Conformance result two",
+          url: "https://example.test/two",
+          snippet: "Shared normalized summary two.",
+        },
+      ],
+    };
+    const perplexityNormalized = await runSearchConformance(makePerplexityCapability, perplexityRaw);
+    assert.deepStrictEqual(perplexityNormalized, expected);
+
+    // Jina raw response (data[].title/url/description).
+    const jinaRaw = {
+      data: [
+        {
+          title: "Conformance result one",
+          url: "https://example.test/one",
+          description: "Shared normalized summary one.",
+        },
+        {
+          title: "Conformance result two",
+          url: "https://example.test/two",
+          description: "Shared normalized summary two.",
+        },
+      ],
+    };
+    const jinaNormalized = await runSearchConformance(makeJinaCapability, jinaRaw);
+    assert.deepStrictEqual(jinaNormalized, expected);
   });
 
   it("normalized output drops Provider-only fields (refer, icon, media, publish_date)", async () => {

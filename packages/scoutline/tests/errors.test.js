@@ -113,6 +113,19 @@ describe("UnsupportedCapabilityError", () => {
     assert.ok(err.message.includes("minimax"));
     assert.ok(err.message.includes("search"));
   });
+
+  // 6.4 — help field must be present on the UNSUPPORTED_CAPABILITY
+  // envelope, suggesting the next action. This assertion fails until
+  // ticket 3.3 adds a default `help` to the constructor.
+  it("envelope includes a non-empty help field with actionable guidance (6.4)", () => {
+    const err = new UnsupportedCapabilityError("minimax", "search");
+    const parsed = JSON.parse(formatErrorOutput(err, "data"));
+    assert.strictEqual(parsed.code, "UNSUPPORTED_CAPABILITY");
+    assert.ok(typeof parsed.help === "string" && parsed.help.length > 0,
+      "help must be a non-empty string");
+    assert.ok(/--provider|--no-fallback/i.test(parsed.help),
+      `help should suggest --provider or --no-fallback: ${parsed.help}`);
+  });
 });
 
 describe("UnsupportedOptionError", () => {

@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Integrated Parallel AI (`parallel`), Perplexity Sonar API (`perplexity`), and Jina AI (`jina`) providers.**
+  - **Parallel AI**: Adds `search` (semantic search with dense excerpts), `research` (deep research via `objective=deep-research`), `reader` (Extract API — full page content including PDFs and JS-rendered pages), and `diagnostics` capabilities via `PARALLEL_API_KEY`.
+  - **Perplexity Sonar**: Adds `search` (dedicated Search API with ranked results, snippets, and dates), `research` (deep research report synthesis via `sonar-deep-research` model with structured `search_results[]` sources), and `diagnostics` capabilities via `PERPLEXITY_API_KEY`.
+  - **Jina AI**: Adds `search` (`s.jina.ai` neural web search), `reader` (`r.jina.ai` web-to-markdown extraction), `research` (`deepsearch.jina.ai` multi-step agentic research with reasoning and citations), and `diagnostics` capabilities via `JINA_API_KEY` (keyless supported).
+
+### Fixed
+- **Provider help strings in `crawl`, `map`, `read`, and `research` commands** now include `brave`, which was previously omitted.
+
 ## [0.12.1] - 2026-08-06
 
 ### Fixed

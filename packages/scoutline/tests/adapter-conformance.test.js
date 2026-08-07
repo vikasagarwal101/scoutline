@@ -301,7 +301,17 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
   it("contains exactly [zai, minimax, tavily, exa, brave, firecrawl] in that order", () => {
     assert.deepStrictEqual(
       BUILT_IN_PROVIDER_DESCRIPTORS.map((d) => d.id),
-      ["zai", "minimax", "tavily", "exa", "brave", "firecrawl"],
+      [
+        "zai",
+        "minimax",
+        "tavily",
+        "exa",
+        "brave",
+        "firecrawl",
+        "parallel",
+        "perplexity",
+        "jina",
+      ],
     );
   });
 

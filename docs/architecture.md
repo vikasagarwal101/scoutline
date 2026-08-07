@@ -50,6 +50,9 @@ optional parameters.
 | `exa` | `EXA_API_KEY` | `https://api.exa.ai` | Direct-HTTP transport; Search (web only), Reader (per-URL), Research (Exa Agent), Diagnostics. No Crawl/Map/Quota/Vision |
 | `brave` | `BRAVE_SEARCH_API_KEY` | `https://api.search.brave.com` | Direct-HTTP transport (`X-Subscription-Token`); Search (web/news/video + `--content-size high` → LLM Context), Quota, Diagnostics. No Reader/Crawl/Map/Research/Vision |
 | `firecrawl` | `FIRECRAWL_API_KEY` | `https://api.firecrawl.dev` (v2) | Direct-HTTP transport; Search, Reader, Crawl (async), Map, Quota (credits), Diagnostics. Credit-based; no Research (`/deep-research` deprecated) |
+| `parallel` | `PARALLEL_API_KEY` | `https://api.parallel.ai` | Direct-HTTP transport; Search, Research, Reader, Diagnostics |
+| `perplexity` | `PERPLEXITY_API_KEY` | `https://api.perplexity.ai` | Direct-HTTP transport; Search (`/search`), Research (`/chat/completions` sonar-deep-research), Diagnostics |
+| `jina` | `JINA_API_KEY` | `https://r.jina.ai`, `https://s.jina.ai`, `https://deepsearch.jina.ai` | Direct-HTTP transport; Search, Reader, Research, Diagnostics |
 
 Each Adapter exposes only the Capabilities the base release actually supports.
 The Descriptor advertises the same Capability set so support can be checked

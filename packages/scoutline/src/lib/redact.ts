@@ -41,6 +41,9 @@ const CREDENTIAL_KEYS: ReadonlySet<string> = new Set([
   "exa_api_key",
   "brave_search_api_key",
   "firecrawl_api_key",
+  "parallel_api_key",
+  "perplexity_api_key",
+  "jina_api_key",
 ]);
 
 const REDACTED = "[REDACTED]";

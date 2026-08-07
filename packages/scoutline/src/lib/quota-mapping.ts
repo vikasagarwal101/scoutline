@@ -430,6 +430,21 @@ export const PROVIDER_AUTHORITY_POLICIES: readonly ProviderAuthorityPolicy[] = [
     kind: "always-unknown",
     reason: "Exa does not advertise a quota capability; no signal to map.",
   },
+  {
+    provider: "parallel",
+    kind: "always-unknown",
+    reason: "Parallel AI does not advertise a quota capability; no signal to map.",
+  },
+  {
+    provider: "perplexity",
+    kind: "always-unknown",
+    reason: "Perplexity does not advertise a quota capability; no signal to map.",
+  },
+  {
+    provider: "jina",
+    kind: "always-unknown",
+    reason: "Jina AI does not advertise a quota capability; no signal to map.",
+  },
 ];
 
 // ---------------------------------------------------------------------------

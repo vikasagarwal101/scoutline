@@ -1359,6 +1359,9 @@ describe("executeWithFallback — production registry carries credential hint en
       exa: ["EXA_API_KEY"],
       brave: ["BRAVE_SEARCH_API_KEY"],
       firecrawl: ["FIRECRAWL_API_KEY"],
+      parallel: ["PARALLEL_API_KEY"],
+      perplexity: ["PERPLEXITY_API_KEY"],
+      jina: ["JINA_API_KEY"],
     };
     for (const descriptor of BUILT_IN_PROVIDER_DESCRIPTORS) {
       const vars = descriptor.credentialEnvVars;

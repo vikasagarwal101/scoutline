@@ -113,7 +113,7 @@ Commands:
   init     Interactive onboarding wizard (writes ~/.scoutline/config.json)
 
 Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER, then zai):
-  --provider <zai|minimax|tavily|exa|brave|firecrawl>   Select the active Provider for shared capabilities
+  --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina>   Select the active Provider for shared capabilities
   SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
 
 Shared capabilities accept --provider. The 'repo', 'read', 'crawl', 'map',

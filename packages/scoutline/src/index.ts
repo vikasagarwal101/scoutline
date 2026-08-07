@@ -90,16 +90,16 @@ Usage: scoutline <command> [args] [options]
 
 Commands:
   vision   Image and video analysis (Z.AI; MiniMax for interpret-image)
-  search   Real-time web search (shared: Z.AI + MiniMax + Tavily + Exa + Brave; --topic
+  search   Real-time web search (shared: all 9 Providers; --topic
            honored by every Provider)
-  read     Fetch and parse web pages (Provider Capability; Z.AI and Tavily
-           supply it, MiniMax returns UNSUPPORTED_CAPABILITY)
-  crawl    Crawl a website from a starting URL (Provider Capability; Tavily
-           supports it, Z.AI/MiniMax return UNSUPPORTED_CAPABILITY)
+  read     Fetch and parse web pages (Provider Capability; Z.AI, Tavily,
+           Exa, Firecrawl, Parallel, and Jina supply it)
+  crawl    Crawl a website from a starting URL (Provider Capability;
+           Tavily and Firecrawl support it)
   map      Discover the URL structure of a website (Provider Capability;
-           Tavily supports it, Z.AI/MiniMax return UNSUPPORTED_CAPABILITY)
-  research Deep research with citations (Provider Capability; Tavily
-           supports it, Z.AI/MiniMax return UNSUPPORTED_CAPABILITY)
+           Tavily and Firecrawl support it)
+  research Deep research with citations (Provider Capability; Tavily,
+           Exa, Parallel, Perplexity, and Jina support it)
   repo     GitHub repository exploration (Provider Capability; Z.AI supports it,
            MiniMax and Tavily return UNSUPPORTED_CAPABILITY)
   quota    Provider-aware plan usage (calls remaining, reset time; default

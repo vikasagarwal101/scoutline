@@ -70,7 +70,7 @@ refused — set environment variables instead.
 
 Shared commands (`search`, `vision analyze`, `quota`, `doctor`),
 **`repo`**, **`read`**, **`crawl`**, **`map`**, and **`research`**
-accept the global `--provider <zai|minimax|tavily|exa|brave|firecrawl>` flag. Precedence
+accept the global `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina>` flag. Precedence
 is the flag, then the `SCOUTLINE_PROVIDER` environment variable, then
 the default `zai`. Provider selection is never inferred from
 credentials. Unknown values fail fast with `VALIDATION_ERROR`.
@@ -79,10 +79,11 @@ credentials. Unknown values fail fast with `VALIDATION_ERROR`.
 remain Z.AI-only.
 
 Capability coverage at launch (generated from the production registry
-in registry order `[zai, minimax, tavily, exa, brave, firecrawl]`):
+in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina]`):
 
-- `search` — Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl. The only
-  search control honored by every Provider is `--topic <general|news|finance>`.
+- `search` — Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI,
+  Perplexity, Jina AI. The only search control honored by every Provider
+  is `--topic <general|news|finance>`.
   Brave is the only Provider that accepts `--type video`; every other
   Provider rejects `controls.type` as `UnsupportedOptionError` so
   option-level fallback continues to Brave.
@@ -91,27 +92,29 @@ in registry order `[zai, minimax, tavily, exa, brave, firecrawl]`):
   follow the same registry and are mediated by MiniMax's compiled
   conformance registry.
 - `quota` — Z.AI, MiniMax, Tavily, Firecrawl (credits), Brave.
-  Exa does not advertise quota.
+  Exa, Parallel AI, Perplexity, and Jina AI do not advertise quota.
 - `diagnostics` — every built-in Provider (Z.AI, MiniMax, Tavily, Exa,
-  Brave, Firecrawl).
-- `read` — Z.AI, Tavily, Exa, Firecrawl (MiniMax and Brave do not
-  advertise it; Tavily/Exa/Firecrawl reject Z.AI-only reader options:
-  `--with-links`, `--no-gfm`, `--keep-img-data-url`,
-  `--with-images-summary`).
+  Brave, Firecrawl, Parallel AI, Perplexity, Jina AI).
+- `read` — Z.AI, Tavily, Exa, Firecrawl, Parallel AI, Jina AI (MiniMax,
+  Brave, and Perplexity do not advertise it; Tavily/Exa/Firecrawl reject
+  Z.AI-only reader options: `--with-links`, `--no-gfm`,
+  `--keep-img-data-url`, `--with-images-summary`).
 - `repo` — Z.AI only (provider-exploration is Z.AI-supplied).
 - `crawl` — Tavily (sync), Firecrawl (async, resumable after Ctrl-C).
 - `map` — Tavily, Firecrawl.
-- `research` — Tavily, Exa. Credit-intensive (4-250 credits).
-  `--output-length`, `--citation-format`, and `--domain` are honored by
-  Tavily; Exa warn-and-strips them (Agent create has no native fields).
+- `research` — Tavily, Exa, Parallel AI, Perplexity, Jina AI.
+  Credit-intensive (4-250 credits). `--output-length`, `--citation-format`,
+  and `--domain` are honored by Tavily; Exa warn-and-strips them (Agent
+  create has no native fields).
 
 Z.AI is the only Provider that supplies `repo search/read/tree` and the
-Raw tools (`tools`, `tool`, `call`). Brave does not supply Reader,
-Crawl, Map, Research, or Vision. **Provider fallback is always-on by
-default**
+Raw tools (`tools`, `tool`, `call`). Brave, Parallel AI, Perplexity, and
+Jina AI do not supply Reader (Brave/Perplexity), Crawl, Map, Research
+(only Parallel/Perplexity/Jina supply Research), or Vision. **Provider
+fallback is always-on by default**
 (0.11.0+): selecting a non-supplier emits a stderr notice and silently
 reroutes to the next eligible configured Provider in registry order
-`[zai, minimax, tavily, exa, brave, firecrawl]`. Pass
+`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina]`. Pass
 `--no-fallback` (or set `SCOUTLINE_NO_FALLBACK=1`) to restore the
 previous strict `UNSUPPORTED_CAPABILITY` behavior — the preflight
 still runs capability metadata → configuration → adapter handle in
@@ -119,22 +122,22 @@ order on the effective Provider only.
 
 ## Capability Matrix
 
-| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Command |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Search | Yes | Yes (no domain/recency/content-size/location) | Yes (no location) | Yes (no location) | Yes (web/news/video; `--content-size high` → LLM Context) | Yes (no location; `--content-size high` = markdown, +1 credit/result) | `scoutline search` |
-| General single-image interpretation | Yes | Yes (JPG/JPEG/PNG/WebP ≤50 MiB) | No | No | No | `scoutline vision analyze` |
-| Specialized Vision (UI-to-code, OCR, error diagnosis, diagram) | Yes | Available (live-attested; conformance-gated) | No | No | No | `scoutline vision ui-to-code`, `vision extract-text`, `vision diagnose-error`, `vision diagram` |
-| Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | No | No | No | `scoutline vision chart` |
-| Two-image diff, video | Yes | No | No | No | No | `scoutline vision diff`, `vision video` |
-| Quota (normalized) | Yes | Yes | Yes | **No** (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | `scoutline quota [--all-providers]` |
-| Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes (single-scrape probe) | `scoutline doctor [--no-tools]` |
-| Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes (rejects Z.AI-only options) | Yes (rejects Z.AI-only options) | **No** (UNSUPPORTED_CAPABILITY) | Yes (returns page titles) | `scoutline read` |
-| Repository exploration (search/read/tree) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | `scoutline repo ...` |
-| Crawl | **No** | **No** | Yes | **No** | **No** | Yes (async; resumable after Ctrl-C) | `scoutline crawl` |
-| Map | **No** | **No** | Yes | **No** | **No** | Yes | `scoutline map` |
-| Research (4-250 credits) | **No** | **No** | Yes | Yes | **No** | **No** (`/deep-research` deprecated) | `scoutline research` |
-| Raw tools | Yes | No | No | No | No | No | `scoutline tools`, `tool`, `call` |
-| Code Mode | Yes | No | No | No | No | No | `scoutline code ...` |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | Command |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Search | Yes | Yes (no domain/recency/content-size/location) | Yes (no location) | Yes (no location) | Yes (web/news/video; `--content-size high` → LLM Context) | Yes (no location; `--content-size high` = markdown, +1 credit/result) | Yes (topic only; rejects other controls) | Yes (domain, recency, content-size; topic via keyword) | Yes (topic only; rejects other controls) | `scoutline search` |
+| General single-image interpretation | Yes | Yes (JPG/JPEG/PNG/WebP ≤50 MiB) | No | No | No | No | No | No | No | `scoutline vision analyze` |
+| Specialized Vision (UI-to-code, OCR, error diagnosis, diagram) | Yes | Available (live-attested; conformance-gated) | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `vision extract-text`, `vision diagnose-error`, `vision diagram` |
+| Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | No | No | No | No | No | No | No | `scoutline vision chart` |
+| Two-image diff, video | Yes | No | No | No | No | No | No | No | No | `scoutline vision diff`, `vision video` |
+| Quota (normalized) | Yes | Yes | Yes | **No** (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | **No** | **No** | **No** | `scoutline quota [--all-providers]` |
+| Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes (single-scrape probe) | Yes | Yes | Yes | `scoutline doctor [--no-tools]` |
+| Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes (rejects Z.AI-only options) | Yes (rejects Z.AI-only options) | **No** (UNSUPPORTED_CAPABILITY) | Yes (returns page titles) | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes | `scoutline read` |
+| Repository exploration (search/read/tree) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | `scoutline repo ...` |
+| Crawl | **No** | **No** | Yes | **No** | **No** | Yes (async; resumable after Ctrl-C) | **No** | **No** | **No** | `scoutline crawl` |
+| Map | **No** | **No** | Yes | **No** | **No** | Yes | **No** | **No** | **No** | `scoutline map` |
+| Research (4-250 credits) | **No** | **No** | Yes | Yes | **No** | **No** (`/deep-research` deprecated) | Yes | Yes | Yes | `scoutline research` |
+| Raw tools | Yes | No | No | No | No | No | No | No | No | `scoutline tools`, `tool`, `call` |
+| Code Mode | Yes | No | No | No | No | No | No | No | No | `scoutline code ...` |
 
 Vision results are never cached. Z.AI image limits are JPG/JPEG/PNG ≤5 MiB.
 Search result count is applied locally after normalization and is never sent

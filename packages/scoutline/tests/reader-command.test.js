@@ -1443,7 +1443,7 @@ describe("Reader Migration 04 help text — read participates in Provider select
     await main(["--help"], { invocation: adapter, env: {} });
     const help = captured.join("\n");
     assert.match(help, /read\s+Fetch and parse web pages.*Provider Capability/s);
-    assert.match(help, /MiniMax returns UNSUPPORTED_CAPABILITY/);
+    assert.match(help, /Parallel, and Jina supply it/);
   });
 
   it("read --help bypasses provider resolution and resolves cleanly with no creds", async () => {

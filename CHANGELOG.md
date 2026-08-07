@@ -20,6 +20,13 @@ All notable changes to this project will be documented in this file.
 - The `init` wizard's Back choice is correctly typed as
   `ProviderId | undefined`.
 
+## [0.13.14] - 2026-08-08
+
+### Security policy
+
+- `SECURITY.md` now documents the supported version policy, the scope of "vulnerability," and a one-paragraph summary of the redaction guarantees.
+- A new ADR records the plaintext-at-rest credential storage as an accepted CLI tradeoff (consistent with AWS CLI, gcloud, kubectl) until OS-keyring integration is adopted.
+
 ## [0.13.13] - 2026-08-08
 
 ### Redaction and environment

@@ -69,11 +69,11 @@ once until the config is removed or `hintShown` is reset (which a fresh
 ## Unknown Provider ID
 
 ```
-Unknown provider "<value>". Accepted provider IDs: zai, minimax, tavily, exa, brave.
+Unknown provider "<value>". Accepted provider IDs: zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina.
 ```
 
 `--provider` and `SCOUTLINE_PROVIDER` accept `zai`, `minimax`, `tavily`,
-`exa`, or `brave`. Unknown or empty values fail with `VALIDATION_ERROR` (`exit 1`) before
+`exa`, `brave`, `firecrawl`, `parallel`, `perplexity`, or `jina`. Unknown or empty values fail with `VALIDATION_ERROR` (`exit 1`) before
 any Provider invocation. `read`, `repo`, `crawl`, `map`, and `research`
 participate in selection but are supplied by different subsets of Providers
 (see the Capability Matrix). `tools`, `tool`, `call`, and `code` accept the

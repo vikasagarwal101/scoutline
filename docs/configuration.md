@@ -37,8 +37,9 @@ The version-1 shape is:
 }
 ```
 
-Supported provider IDs are `zai`, `minimax`, `tavily`, `exa`, `brave`, and
-`firecrawl`. Unknown IDs are ignored with a warning, and blank API keys are
+Supported provider IDs are `zai`, `minimax`, `tavily`, `exa`, `brave`,
+`firecrawl`, `parallel`, `perplexity`, and `jina`. Unknown IDs are ignored
+with a warning, and blank API keys are
 treated as absent. Malformed files fail as corrupt configuration; unsupported
 versions require a Scoutline upgrade. Writes use a private (`0600`) temporary
 file followed by atomic replacement.
@@ -187,7 +188,7 @@ scoutline --no-fallback --provider minimax read https://example.com
 | `Z_AI_TEMPERATURE` | `0.8` | Vision generation temperature. |
 | `Z_AI_TOP_P` | `0.6` | Vision generation top-p value. |
 | `Z_AI_MAX_TOKENS` | `32768` | Vision response token limit. |
-| `SCOUTLINE_PROVIDER` | (none) | Selects the effective Provider (`zai`, `minimax`, `tavily`, or `brave`) for shared capabilities. |
+| `SCOUTLINE_PROVIDER` | (none) | Selects the effective Provider (`zai`, `minimax`, `tavily`, `exa`, `brave`, `firecrawl`, `parallel`, `perplexity`, or `jina`) for shared capabilities. |
 | `SCOUTLINE_NO_FALLBACK` | (unset) | When set to a non-empty value, restores the strict single-provider, fail-loud behavior for shared capabilities — `--no-fallback` on the CLI is the per-invocation equivalent. |
 
 ## MiniMax Token Plan Settings
@@ -656,7 +657,7 @@ ordered list:
 1. **Known tier** first, sorted by score descending.
 2. **Unknown tier** after every known entry, in registry order.
 3. Ties within a tier break by registry order
-   (`[zai, minimax, tavily, exa, brave, firecrawl]` by default;
+   (`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina]` by default;
    overridable via the `registryOrder` option).
 
 The ranking is deterministic for identical inputs — same `state` +

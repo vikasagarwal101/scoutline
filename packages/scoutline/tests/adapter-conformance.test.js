@@ -524,21 +524,23 @@ describe("Search Adapter conformance — shared normalized output", () => {
 // ---------------------------------------------------------------------------
 
 /**
- * The set of Provider IDs that have a search-conformance factory in this
- * test file. When a new Provider is added to the registry, its ID must be
- * added here AND a factory function + conformance assertion must be added
- * to the test above. This guard prevents silent onboarding gaps.
+ * Map of Provider ID → factory function for search conformance. Each
+ * entry MUST be a real callable factory that accepts a provider-shaped
+ * raw fixture and returns a SearchCapability. When a new Provider is
+ * added to the registry, its factory must be added here. This guard
+ * prevents silent onboarding gaps — adding just the ID without a
+ * working factory will fail.
  */
-const SEARCH_CONFORMANCE_PROVIDERS = new Set([
-  "zai",
-  "minimax",
-  "tavily",
-  "exa",
-  "brave",
-  "firecrawl",
-  "parallel",
-  "perplexity",
-  "jina",
+const SEARCH_CONFORMANCE_FACTORIES = new Map([
+  ["zai", makeZaiCapability],
+  ["minimax", makeMiniMaxCapability],
+  ["tavily", makeTavilyCapability],
+  ["exa", makeExaCapability],
+  ["brave", makeBraveCapability],
+  ["firecrawl", makeFirecrawlCapability],
+  ["parallel", makeParallelCapability],
+  ["perplexity", makePerplexityCapability],
+  ["jina", makeJinaCapability],
 ]);
 
 describe("CI completeness gate — every search Provider has a conformance factory (6.2)", () => {
@@ -547,11 +549,12 @@ describe("CI completeness gate — every search Provider has a conformance facto
       d.capabilities().has("search"),
     );
     for (const descriptor of searchProviders) {
+      const factory = SEARCH_CONFORMANCE_FACTORIES.get(descriptor.id);
       assert.ok(
-        SEARCH_CONFORMANCE_PROVIDERS.has(descriptor.id),
+        typeof factory === "function",
         `Provider "${descriptor.id}" advertises search but has no conformance factory. ` +
           `Add a make${descriptor.id.charAt(0).toUpperCase() + descriptor.id.slice(1)}Capability ` +
-          `factory and add "${descriptor.id}" to SEARCH_CONFORMANCE_PROVIDERS.`,
+          `factory and register it in SEARCH_CONFORMANCE_FACTORIES.`,
       );
     }
   });

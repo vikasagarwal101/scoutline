@@ -258,8 +258,9 @@ export async function fetchJinaDeepSearch(
 
   const controller = new AbortController();
   // Honour external cancellation (e.g., research AbortSignal)
+  const onExternalAbort = (): void => controller.abort();
   if (externalSignal?.aborted) controller.abort();
-  externalSignal?.addEventListener("abort", () => controller.abort(), { once: true });
+  externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
   const timer = setTimer(() => controller.abort(), timeoutMs);
 
   try {
@@ -290,6 +291,7 @@ export async function fetchJinaDeepSearch(
       `Jina AI DeepSearch failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   } finally {
+    externalSignal?.removeEventListener("abort", onExternalAbort);
     clearTimer(timer);
   }
 }

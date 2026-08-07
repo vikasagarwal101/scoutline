@@ -211,8 +211,9 @@ export async function fetchPerplexityChat(
 
   const controller = new AbortController();
   // Honour external cancellation (e.g., research AbortSignal)
+  const onExternalAbort = (): void => controller.abort();
   if (externalSignal?.aborted) controller.abort();
-  externalSignal?.addEventListener("abort", () => controller.abort(), { once: true });
+  externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
   const timer = setTimer(() => controller.abort(), timeoutMs);
 
   try {
@@ -250,6 +251,7 @@ export async function fetchPerplexityChat(
       `Perplexity request failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   } finally {
+    externalSignal?.removeEventListener("abort", onExternalAbort);
     clearTimer(timer);
   }
 }

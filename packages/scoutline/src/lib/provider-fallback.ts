@@ -118,7 +118,7 @@ import {
  *   receive through `deps.invocation.writeStderr`.
  */
 export interface FallbackExecutionOptions {
-  readonly capabilityId: string;
+  readonly capabilityId: ProviderCapability;
   readonly commandLabel: string;
   readonly effectiveProvider: ProviderId;
   readonly descriptors: readonly ProviderDescriptor[];
@@ -180,11 +180,13 @@ interface CandidatePlanEntry {
  * `ProviderAdapter` interface exposes for it. Vision sub-operations
  * (`vision.interpret-image`, `vision.ui-artifact`, ...) all share
  * the same `adapter.vision` slot, distinguished at the Capability
- * layer by `visionCapability.supports(operation)`. Returns
- * `undefined` for unknown capability ids so the preflight can
- * classify them as `incapable`.
+ * layer by `visionCapability.supports(operation)`.
+ *
+ * The switch is exhaustive over `ProviderCapability`: adding a new
+ * Capability to the union without adding a case here is a compile-time
+ * error, so the executor can never silently miss a new Capability.
  */
-function adapterSlotFor(capabilityId: string): keyof ProviderAdapter | undefined {
+function adapterSlotFor(capabilityId: ProviderCapability): keyof ProviderAdapter {
   switch (capabilityId) {
     case "search":
       return "search";
@@ -202,15 +204,21 @@ function adapterSlotFor(capabilityId: string): keyof ProviderAdapter | undefined
       return "diagnostics";
     case "repository-exploration":
       return "repository";
-    default:
-      // Every Vision sub-operation is served by the same
-      // `adapter.vision` slot, so any `vision.*` capability id maps
-      // to that slot. The Capability layer handles operation-level
-      // support via `visionCapability.supports`.
-      if (capabilityId.startsWith("vision.")) {
-        return "vision";
-      }
-      return undefined;
+    case "vision.interpret-image":
+    case "vision.ui-artifact":
+    case "vision.extract-text":
+    case "vision.diagnose-error":
+    case "vision.diagram":
+    case "vision.chart":
+    case "vision.diff":
+    case "vision.video":
+      return "vision";
+    default: {
+      // Exhaustiveness guard: if a new ProviderCapability is added
+      // without a case above, this assignment fails to compile.
+      const _exhaustive: never = capabilityId;
+      throw new Error(`Unreachable: unhandled capability ${_exhaustive}`);
+    }
   }
 }
 
@@ -235,11 +243,11 @@ function adapterSlotFor(capabilityId: string): keyof ProviderAdapter | undefined
  */
 function preflightDescriptor(
   descriptor: ProviderDescriptor,
-  capabilityId: string,
+  capabilityId: ProviderCapability,
   env: NodeJS.ProcessEnv,
 ): PreflightStatus {
   // Step 1 — capability metadata (FR-023).
-  if (!descriptor.capabilities().has(capabilityId as ProviderCapability)) {
+  if (!descriptor.capabilities().has(capabilityId)) {
     return { kind: "incapable" };
   }
   // Step 2 — configuration (FR-024). Runs only if the capability is
@@ -254,9 +262,6 @@ function preflightDescriptor(
   // the exception propagates rather than being silently masked as
   // "unconfigured" — fail-closed on unknown errors (review fix).
   const slot = adapterSlotFor(capabilityId);
-  if (slot === undefined) {
-    return { kind: "incapable" };
-  }
   const adapter = descriptor.create({ env });
   // `ProviderAdapter` is an interface with named properties only;
   // cast through `unknown` to access the slot by computed key.
@@ -277,7 +282,7 @@ function preflightDescriptor(
 function buildCandidatePlan(
   effective: ProviderDescriptor,
   descriptors: readonly ProviderDescriptor[],
-  capabilityId: string,
+  capabilityId: ProviderCapability,
   env: NodeJS.ProcessEnv,
   fallbackEnabled: boolean,
 ): CandidatePlanEntry[] {

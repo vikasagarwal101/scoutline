@@ -1124,6 +1124,46 @@ describe("invokeCommand — tools routed through the seam (P1-06)", () => {
     assert.strictEqual(parsed.code, "VALIDATION_ERROR");
     assert.match(parsed.error, /Invalid JSON/);
   });
+
+  // 4.3 — parseToolArgs validates JSON shape: non-object values are
+  // rejected before they reach callTool.
+  for (const [label, malformed] of [
+    ["number", "42"],
+    ["string", '"hello"'],
+    ["boolean", "true"],
+    ["null", "null"],
+    ["array", "[1, 2, 3]"],
+  ]) {
+    it(`callTool rejects ${label} JSON as malformed tool arguments (4.3)`, async () => {
+      const { callTool } = await import("../dist/commands/tools.js");
+      const { adapter, stderr } = createRecordingAdapter();
+      const status = await invokeCommand(
+        adapter,
+        (ctx) => callTool("scoutline.zai.test.tool", { json: malformed }, ctx),
+        "data",
+      );
+      assert.strictEqual(status, 1);
+      const parsed = JSON.parse(stderr[stderr.length - 1]);
+      assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+      assert.match(parsed.error, /must be a JSON object/);
+    });
+  }
+
+  it("callTool accepts a valid JSON object for --json (4.3 regression)", async () => {
+    const { callTool } = await import("../dist/commands/tools.js");
+    const { adapter, stderr } = createRecordingAdapter();
+    // A valid object should get past parseToolArgs and fail at the
+    // credential check (exit 3) rather than the validation check.
+    const status = await invokeCommand(
+      adapter,
+      (ctx) =>
+        callTool("scoutline.zai.test.tool", { json: '{"key":"value"}', dryRun: true }, ctx),
+      "data",
+    );
+    assert.strictEqual(status, 3, "valid object should reach credential check, not validation");
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.code, "CONFIGURATION_ERROR");
+  });
 });
 
 describe("invokeCommand — code routed through the seam (P1-07)", () => {

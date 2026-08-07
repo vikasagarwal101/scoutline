@@ -60,6 +60,7 @@ import {
   ValidationError,
 } from "../../lib/errors.js";
 import { requireParallelApiKey, isParallelConfigured } from "./credentials.js";
+import { applySearchTopic } from "../../lib/search-topic.js";
 import {
   fetchParallelSearch,
   fetchParallelExtract,
@@ -75,25 +76,45 @@ function credentialFingerprint(apiKey: string): string {
 /**
  * Normalize a Provider failure with sanitized messages. Raw response
  * bodies never cross the adapter boundary. Same pattern as the Tavily
- * adapter's `normalizeTavilyError`.
+ * adapter's `normalizeTavilyError` — curated constant messages only,
+ * never interpolate `error.message`.
  */
 function normalizeParallelError(error: unknown): Error {
+  // QuotaError pass-through — terminal retry guarantee preserved.
+  if (error instanceof QuotaError) return error;
+
+  // Configuration/option/validation errors carry clean, human-authored
+  // messages and are safe to surface verbatim.
   if (
-    error instanceof QuotaError ||
     error instanceof ValidationError ||
     error instanceof UnsupportedOptionError ||
-    error instanceof ConfigurationError ||
-    error instanceof AuthError ||
-    error instanceof ApiError ||
-    error instanceof NetworkError ||
-    error instanceof TimeoutError
+    error instanceof ConfigurationError
   ) {
     return error;
   }
-  return new ApiError(
-    `Parallel AI request failed: ${error instanceof Error ? error.message : String(error)}`,
-    500,
-  );
+  // Re-wrap typed transport errors with sanitized messages so a raw
+  // Provider response body embedded upstream never survives. Code +
+  // statusCode (retry signal) are preserved.
+  if (error instanceof AuthError) {
+    return new AuthError("Parallel AI authentication failed", "PARALLEL_API_KEY");
+  }
+  if (error instanceof NetworkError) {
+    return new NetworkError("Parallel AI network error");
+  }
+  if (error instanceof TimeoutError) {
+    return new TimeoutError(
+      error.durationMs,
+      "Try again or increase timeout with PARALLEL_TIMEOUT env var",
+    );
+  }
+  if (error instanceof ApiError) {
+    const statusCode = error.statusCode || 500;
+    if (statusCode === 429) {
+      return new ApiError("Parallel AI rate limit exceeded", 429);
+    }
+    return new ApiError("Parallel AI request failed", statusCode);
+  }
+  return new ApiError("Parallel AI request failed", 500);
 }
 
 export interface ParallelAdapterDependencies {
@@ -159,14 +180,9 @@ export class ParallelAdapter implements ProviderAdapter {
       },
 
       async invoke(request: SearchRequest): Promise<readonly SearchSource[]> {
+        this.validate(request);
         const apiKey = requireParallelApiKey(env);
-        let query = request.query.trim();
-
-        // Parallel AI has no native topic parameter, so we append it to
-        // the query string to bias results.
-        if (request.controls?.topic && request.controls.topic !== "general") {
-          query = `${query} ${request.controls.topic}`;
-        }
+        const query = applySearchTopic(request.query.trim(), request.controls?.topic);
 
         const params: ParallelSearchParams = {};
 
@@ -174,13 +190,15 @@ export class ParallelAdapter implements ProviderAdapter {
           const response = await fetchParallelSearch(apiKey, query, params, transport);
           const results = response.results || [];
 
-          return results.map((item) => ({
-            title: item.title || "Untitled",
-            url: item.url || "",
-            summary: item.excerpts?.join("\n\n") || "",
-            source: "Parallel AI",
-            date: item.publish_date || undefined,
-          }));
+          return results.map((item) => {
+            const result: SearchSource = {
+              title: item.title || "Untitled",
+              url: item.url || "",
+              summary: item.excerpts?.join("\n\n") || "",
+            };
+            if (item.publish_date) result.date = item.publish_date;
+            return result;
+          });
         } catch (error) {
           throw normalizeParallelError(error);
         }
@@ -219,7 +237,9 @@ export class ParallelAdapter implements ProviderAdapter {
 
         decodeCached: decodeResearchResult,
 
-        async invoke(request: ResearchRequest): Promise<ResearchResult> {
+        async invoke(request: ResearchRequest, signal?: AbortSignal): Promise<ResearchResult> {
+          this.validate(request);
+          if (signal?.aborted) throw new TimeoutError(0, "Research aborted before start");
           const apiKey = requireParallelApiKey(env);
           const query = request.query.trim();
 
@@ -229,6 +249,7 @@ export class ParallelAdapter implements ProviderAdapter {
               query,
               { objective: "deep-research" },
               transport,
+              signal,
             );
             const results = response.results || [];
 
@@ -297,6 +318,7 @@ export class ParallelAdapter implements ProviderAdapter {
         decodeCached: decodeReaderFetchResult,
 
         async invoke(request: ReaderFetchRequest): Promise<ReaderFetchResult> {
+          this.validate(request);
           const apiKey = requireParallelApiKey(env);
 
           try {

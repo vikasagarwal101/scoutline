@@ -22,6 +22,10 @@ import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
 import { createTavilyDescriptor } from "../dist/providers/tavily/adapter.js";
 import { createExaDescriptor } from "../dist/providers/exa/adapter.js";
 import { createBraveDescriptor } from "../dist/providers/brave/adapter.js";
+import { createFirecrawlDescriptor } from "../dist/providers/firecrawl/adapter.js";
+import { createParallelDescriptor, ParallelAdapter } from "../dist/providers/parallel/adapter.js";
+import { createPerplexityDescriptor, PerplexityAdapter } from "../dist/providers/perplexity/adapter.js";
+import { createJinaDescriptor, JinaAdapter } from "../dist/providers/jina/adapter.js";
 import {
   BUILT_IN_PROVIDER_DESCRIPTORS,
   getProviderDescriptor,
@@ -29,6 +33,7 @@ import {
 } from "../dist/providers/registry.js";
 import { readFixture } from "./helpers/fixtures.js";
 import { FakeUtcpClient } from "./helpers/fake-utcp-client.js";
+import { TimeoutError } from "../dist/lib/errors.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC_DIR = path.resolve(__dirname, "..", "src");
@@ -126,6 +131,117 @@ function makeBraveCapability(rawResult) {
   });
   const descriptor = createBraveDescriptor({ transport: { fetch: fetchFn } });
   const adapter = descriptor.create({ env: { BRAVE_SEARCH_API_KEY: "k" } });
+  return adapter.search;
+}
+
+/**
+ * Tavily Adapter factory: accepts a raw Tavily-shaped response
+ * (`results[].title/url/content`), builds a fake fetch that returns the
+ * scripted response, and returns the descriptor's Search Capability.
+ */
+function makeTavilyCapability(rawResult) {
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rawResult),
+    json: async () => rawResult,
+    headers: { get: () => null },
+    arrayBuffer: async () => new ArrayBuffer(0),
+  });
+  const descriptor = createTavilyDescriptor({ transport: { fetch: fetchFn } });
+  const adapter = descriptor.create({ env: { TAVILY_API_KEY: "k" } });
+  return adapter.search;
+}
+
+/**
+ * Exa Adapter factory: accepts a raw Exa-shaped response
+ * (`results[].title/url/highlights`), builds a fake fetch, and returns
+ * the descriptor's Search Capability.
+ */
+function makeExaCapability(rawResult) {
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rawResult),
+    json: async () => rawResult,
+    headers: { get: () => null },
+    arrayBuffer: async () => new ArrayBuffer(0),
+  });
+  const descriptor = createExaDescriptor({ transport: { fetch: fetchFn } });
+  const adapter = descriptor.create({ env: { EXA_API_KEY: "k" } });
+  return adapter.search;
+}
+
+/**
+ * Firecrawl Adapter factory: accepts a raw Firecrawl-shaped response
+ * (`data.web[].title/url/description`), builds a fake fetch, and returns
+ * the descriptor's Search Capability.
+ */
+function makeFirecrawlCapability(rawResult) {
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rawResult),
+    json: async () => rawResult,
+    headers: { get: () => null },
+    arrayBuffer: async () => new ArrayBuffer(0),
+  });
+  const descriptor = createFirecrawlDescriptor({ transport: { fetch: fetchFn } });
+  const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: "k" } });
+  return adapter.search;
+}
+
+/**
+ * Parallel Adapter factory: accepts a raw Parallel-shaped response
+ * (`results[].title/url/excerpts`), builds a fake fetch, and returns
+ * the adapter's Search Capability.
+ */
+function makeParallelCapability(rawResult) {
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rawResult),
+  });
+  const adapter = new ParallelAdapter(
+    { env: { PARALLEL_API_KEY: "k" } },
+    { transport: { fetch: fetchFn } },
+  );
+  return adapter.search;
+}
+
+/**
+ * Perplexity Adapter factory: accepts a raw Perplexity-shaped response
+ * (`results[].title/url/snippet`), builds a fake fetch, and returns
+ * the adapter's Search Capability.
+ */
+function makePerplexityCapability(rawResult) {
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rawResult),
+  });
+  const adapter = new PerplexityAdapter(
+    { env: { PERPLEXITY_API_KEY: "k" } },
+    { transport: { fetch: fetchFn } },
+  );
+  return adapter.search;
+}
+
+/**
+ * Jina Adapter factory: accepts a raw Jina-shaped response
+ * (`data[].title/url/description`), builds a fake fetch, and returns
+ * the adapter's Search Capability.
+ */
+function makeJinaCapability(rawResult) {
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rawResult),
+  });
+  const adapter = new JinaAdapter(
+    { env: {} },
+    { transport: { fetch: fetchFn } },
+  );
   return adapter.search;
 }
 
@@ -266,6 +382,116 @@ describe("Search Adapter conformance — shared normalized output", () => {
     };
     const braveNormalized = await runSearchConformance(makeBraveCapability, braveRaw);
     assert.deepStrictEqual(braveNormalized, expected);
+
+    // Tavily raw response (results[].title/url/content).
+    const tavilyRaw = {
+      results: [
+        {
+          title: "Conformance result one",
+          url: "https://example.test/one",
+          content: "Shared normalized summary one.",
+        },
+        {
+          title: "Conformance result two",
+          url: "https://example.test/two",
+          content: "Shared normalized summary two.",
+        },
+      ],
+    };
+    const tavilyNormalized = await runSearchConformance(makeTavilyCapability, tavilyRaw);
+    assert.deepStrictEqual(tavilyNormalized, expected);
+
+    // Exa raw response (results[].title/url/highlights[]).
+    const exaRaw = {
+      results: [
+        {
+          title: "Conformance result one",
+          url: "https://example.test/one",
+          highlights: ["Shared normalized summary one."],
+        },
+        {
+          title: "Conformance result two",
+          url: "https://example.test/two",
+          highlights: ["Shared normalized summary two."],
+        },
+      ],
+    };
+    const exaNormalized = await runSearchConformance(makeExaCapability, exaRaw);
+    assert.deepStrictEqual(exaNormalized, expected);
+
+    // Firecrawl raw response (data.web[].title/url/description).
+    const firecrawlRaw = {
+      data: {
+        web: [
+          {
+            title: "Conformance result one",
+            url: "https://example.test/one",
+            description: "Shared normalized summary one.",
+          },
+          {
+            title: "Conformance result two",
+            url: "https://example.test/two",
+            description: "Shared normalized summary two.",
+          },
+        ],
+      },
+    };
+    const firecrawlNormalized = await runSearchConformance(makeFirecrawlCapability, firecrawlRaw);
+    assert.deepStrictEqual(firecrawlNormalized, expected);
+
+    // Parallel raw response (results[].title/url/excerpts[]).
+    const parallelRaw = {
+      results: [
+        {
+          title: "Conformance result one",
+          url: "https://example.test/one",
+          excerpts: ["Shared normalized summary one."],
+        },
+        {
+          title: "Conformance result two",
+          url: "https://example.test/two",
+          excerpts: ["Shared normalized summary two."],
+        },
+      ],
+    };
+    const parallelNormalized = await runSearchConformance(makeParallelCapability, parallelRaw);
+    assert.deepStrictEqual(parallelNormalized, expected);
+
+    // Perplexity raw response (results[].title/url/snippet).
+    const perplexityRaw = {
+      results: [
+        {
+          title: "Conformance result one",
+          url: "https://example.test/one",
+          snippet: "Shared normalized summary one.",
+        },
+        {
+          title: "Conformance result two",
+          url: "https://example.test/two",
+          snippet: "Shared normalized summary two.",
+        },
+      ],
+    };
+    const perplexityNormalized = await runSearchConformance(makePerplexityCapability, perplexityRaw);
+    assert.deepStrictEqual(perplexityNormalized, expected);
+
+    // Jina raw response (data[].title/url/description).
+    const jinaRaw = {
+      data: [
+        {
+          title: "Conformance result one",
+          url: "https://example.test/one",
+          description: "Shared normalized summary one.",
+        },
+        {
+          title: "Conformance result two",
+          url: "https://example.test/two",
+          description: "Shared normalized summary two.",
+        },
+      ],
+    };
+    const jinaNormalized = await runSearchConformance(makeJinaCapability, jinaRaw);
+    assert.deepStrictEqual(jinaNormalized, expected);
   });
 
   it("normalized output drops Provider-only fields (refer, icon, media, publish_date)", async () => {
@@ -290,6 +516,257 @@ describe("Search Adapter conformance — shared normalized output", () => {
         );
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CI completeness gate: every search-advertising Provider must have a factory
+// ---------------------------------------------------------------------------
+
+/**
+ * Map of Provider ID → factory function for search conformance. Each
+ * entry MUST be a real callable factory that accepts a provider-shaped
+ * raw fixture and returns a SearchCapability. When a new Provider is
+ * added to the registry, its factory must be added here. This guard
+ * prevents silent onboarding gaps — adding just the ID without a
+ * working factory will fail.
+ */
+const SEARCH_CONFORMANCE_FACTORIES = new Map([
+  ["zai", makeZaiCapability],
+  ["minimax", makeMiniMaxCapability],
+  ["tavily", makeTavilyCapability],
+  ["exa", makeExaCapability],
+  ["brave", makeBraveCapability],
+  ["firecrawl", makeFirecrawlCapability],
+  ["parallel", makeParallelCapability],
+  ["perplexity", makePerplexityCapability],
+  ["jina", makeJinaCapability],
+]);
+
+describe("CI completeness gate — every search Provider has a conformance factory (6.2)", () => {
+  it("all registry providers advertising 'search' have a conformance factory", () => {
+    const searchProviders = BUILT_IN_PROVIDER_DESCRIPTORS.filter((d) =>
+      d.capabilities().has("search"),
+    );
+    for (const descriptor of searchProviders) {
+      const factory = SEARCH_CONFORMANCE_FACTORIES.get(descriptor.id);
+      assert.ok(
+        typeof factory === "function",
+        `Provider "${descriptor.id}" advertises search but has no conformance factory. ` +
+          `Add a make${descriptor.id.charAt(0).toUpperCase() + descriptor.id.slice(1)}Capability ` +
+          `factory and register it in SEARCH_CONFORMANCE_FACTORIES.`,
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error sanitization: new adapters must not leak raw upstream messages
+// ---------------------------------------------------------------------------
+
+describe("Error sanitization — new adapters strip raw upstream messages (2.1)", () => {
+  const SECRET = "Bearer sk-leak-me-12345";
+
+  /**
+   * Fake fetch that throws a NetworkError whose message contains a
+   * credential — simulating a raw upstream error body leaking through
+   * the transport. The adapter's normalizeXxxError must sanitize it.
+   */
+  function leakingFetch() {
+    return async () => {
+      throw new Error(`fetch failed: getaddrinfo ENOTFOUND ${SECRET}`);
+    };
+  }
+
+  it("Parallel search does not leak raw error messages", async () => {
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: "k" } },
+      { transport: { fetch: leakingFetch() } },
+    );
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "test" }),
+      (err) => !err.message.includes(SECRET),
+    );
+  });
+
+  it("Perplexity search does not leak raw error messages", async () => {
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: "k" } },
+      { transport: { fetch: leakingFetch() } },
+    );
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "test" }),
+      (err) => !err.message.includes(SECRET),
+    );
+  });
+
+  it("Jina search does not leak raw error messages", async () => {
+    const adapter = new JinaAdapter(
+      { env: {} },
+      { transport: { fetch: leakingFetch() } },
+    );
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "test" }),
+      (err) => !err.message.includes(SECRET),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Validate-before-access: new adapters must call validate() before Provider HTTP (2.3)
+// ---------------------------------------------------------------------------
+
+describe("Validate-before-access — new adapters reject invalid requests (2.3)", () => {
+  /**
+   * A fetch that throws if ever called — proving validate() short-circuits
+   * before any transport access.
+   */
+  function explodingFetch() {
+    return async () => {
+      throw new Error("fetch must not be called when validation fails");
+    };
+  }
+
+  it("Parallel search rejects invalid query before transport access", async () => {
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: "k" } },
+      { transport: { fetch: explodingFetch() } },
+    );
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "  " }),
+      (err) => err.name === "ValidationError",
+    );
+  });
+
+  it("Perplexity search rejects invalid query before transport access", async () => {
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: "k" } },
+      { transport: { fetch: explodingFetch() } },
+    );
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "" }),
+      (err) => err.name === "ValidationError",
+    );
+  });
+
+  it("Jina search rejects invalid query before transport access", async () => {
+    const adapter = new JinaAdapter(
+      { env: {} },
+      { transport: { fetch: explodingFetch() } },
+    );
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "   " }),
+      (err) => err.name === "ValidationError",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Source normalization: new adapters must not hardcode Provider identity (2.4)
+// ---------------------------------------------------------------------------
+
+describe("Source normalization — new adapters omit source when no metadata (2.4)", () => {
+  it("Parallel search omits source (no structured metadata field)", async () => {
+    const fetchFn = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        results: [{ title: "T", url: "https://example.test", excerpts: ["S"] }],
+      }),
+    });
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: "k" } },
+      { transport: { fetch: fetchFn } },
+    );
+    const results = await adapter.search.invoke({ query: "test" });
+    assert.equal(results[0].source, undefined, "source must be absent, not hardcoded");
+  });
+
+  it("Perplexity search omits source (no structured metadata field)", async () => {
+    const fetchFn = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        results: [{ title: "T", url: "https://example.test", snippet: "S" }],
+      }),
+    });
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: "k" } },
+      { transport: { fetch: fetchFn } },
+    );
+    const results = await adapter.search.invoke({ query: "test" });
+    assert.equal(results[0].source, undefined, "source must be absent, not hardcoded");
+  });
+
+  it("Jina search omits source (no structured metadata field)", async () => {
+    const fetchFn = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        data: [{ title: "T", url: "https://example.test", description: "S" }],
+      }),
+    });
+    const adapter = new JinaAdapter(
+      { env: {} },
+      { transport: { fetch: fetchFn } },
+    );
+    const results = await adapter.search.invoke({ query: "test" });
+    assert.equal(results[0].source, undefined, "source must be absent, not hardcoded");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AbortSignal: new adapters honour cooperative cancellation in research (2.6)
+// ---------------------------------------------------------------------------
+
+describe("AbortSignal — new research invokes honour pre-aborted signal (2.6)", () => {
+  /**
+   * A fetch that throws if ever called — proving the pre-abort check
+   * short-circuits before any transport access.
+   */
+  function explodingFetch() {
+    return async () => {
+      throw new Error("fetch must not be called when signal is pre-aborted");
+    };
+  }
+
+  it("Parallel research rejects before transport when signal is pre-aborted", async () => {
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: "k" } },
+      { transport: { fetch: explodingFetch() } },
+    );
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "test" }, controller.signal),
+      (err) => err instanceof TimeoutError,
+    );
+  });
+
+  it("Perplexity research rejects before transport when signal is pre-aborted", async () => {
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: "k" } },
+      { transport: { fetch: explodingFetch() } },
+    );
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "test" }, controller.signal),
+      (err) => err instanceof TimeoutError,
+    );
+  });
+
+  it("Jina research rejects before transport when signal is pre-aborted", async () => {
+    const adapter = new JinaAdapter(
+      { env: {} },
+      { transport: { fetch: explodingFetch() } },
+    );
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "test" }, controller.signal),
+      (err) => err instanceof TimeoutError,
+    );
   });
 });
 

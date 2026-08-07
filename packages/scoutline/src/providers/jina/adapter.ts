@@ -74,25 +74,45 @@ function credentialFingerprint(apiKey: string | undefined): string {
 
 /**
  * Normalize a Provider failure with sanitized messages. Raw response
- * bodies never cross the adapter boundary.
+ * bodies never cross the adapter boundary. Curated constant messages
+ * only, never interpolate `error.message`.
  */
 function normalizeJinaError(error: unknown): Error {
+  // QuotaError pass-through — terminal retry guarantee preserved.
+  if (error instanceof QuotaError) return error;
+
+  // Configuration/option/validation errors carry clean, human-authored
+  // messages and are safe to surface verbatim.
   if (
-    error instanceof QuotaError ||
     error instanceof ValidationError ||
     error instanceof UnsupportedOptionError ||
-    error instanceof ConfigurationError ||
-    error instanceof AuthError ||
-    error instanceof ApiError ||
-    error instanceof NetworkError ||
-    error instanceof TimeoutError
+    error instanceof ConfigurationError
   ) {
     return error;
   }
-  return new ApiError(
-    `Jina AI request failed: ${error instanceof Error ? error.message : String(error)}`,
-    500,
-  );
+  // Re-wrap typed transport errors with sanitized messages so a raw
+  // Provider response body embedded upstream never survives. Code +
+  // statusCode (retry signal) are preserved.
+  if (error instanceof AuthError) {
+    return new AuthError("Jina AI authentication failed", "JINA_API_KEY");
+  }
+  if (error instanceof NetworkError) {
+    return new NetworkError("Jina AI network error");
+  }
+  if (error instanceof TimeoutError) {
+    return new TimeoutError(
+      error.durationMs,
+      "Try again or increase timeout with JINA_TIMEOUT env var",
+    );
+  }
+  if (error instanceof ApiError) {
+    const statusCode = error.statusCode || 500;
+    if (statusCode === 429) {
+      return new ApiError("Jina AI rate limit exceeded", 429);
+    }
+    return new ApiError("Jina AI request failed", statusCode);
+  }
+  return new ApiError("Jina AI request failed", 500);
 }
 
 function assertHttpUrl(url: unknown): asserts url is string {
@@ -159,19 +179,22 @@ export class JinaAdapter implements ProviderAdapter {
       },
 
       async invoke(request: SearchRequest): Promise<readonly SearchSource[]> {
+        this.validate(request);
         const apiKey = resolveJinaApiKey(env);
         const query = request.query.trim();
 
         try {
           const results = await fetchJinaSearch(apiKey, query, transport);
 
-          return results.map((item) => ({
-            title: item.title || "Untitled",
-            url: item.url || "",
-            summary: item.description || item.content || "",
-            source: "Jina AI",
-            date: item.publishedTime || undefined,
-          }));
+          return results.map((item) => {
+            const result: SearchSource = {
+              title: item.title || "Untitled",
+              url: item.url || "",
+              summary: item.description || item.content || "",
+            };
+            if (item.publishedTime) result.date = item.publishedTime;
+            return result;
+          });
         } catch (error) {
           throw normalizeJinaError(error);
         }
@@ -200,6 +223,7 @@ export class JinaAdapter implements ProviderAdapter {
         decodeCached: decodeReaderFetchResult,
 
         async invoke(request: ReaderFetchRequest): Promise<ReaderFetchResult> {
+          this.validate(request);
           const apiKey = resolveJinaApiKey(env);
 
           try {
@@ -257,12 +281,14 @@ export class JinaAdapter implements ProviderAdapter {
 
         decodeCached: decodeResearchResult,
 
-        async invoke(request: ResearchRequest): Promise<ResearchResult> {
+        async invoke(request: ResearchRequest, signal?: AbortSignal): Promise<ResearchResult> {
+          this.validate(request);
+          if (signal?.aborted) throw new TimeoutError(0, "Research aborted before start");
           const apiKey = resolveJinaApiKey(env);
           const query = request.query.trim();
 
           try {
-            const response = await fetchJinaDeepSearch(apiKey, query, transport);
+            const response = await fetchJinaDeepSearch(apiKey, query, transport, signal);
             const content = response.choices?.[0]?.message?.content || "";
 
             // Extract cited sources from annotations (preferred) or

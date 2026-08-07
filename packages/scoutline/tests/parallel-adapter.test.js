@@ -82,7 +82,7 @@ describe("Parallel AI Descriptor & Adapter", () => {
     // Excerpts should be joined with double newlines
     assert.equal(results[0].summary, "Learn async in Rust\n\nTokio runtime basics");
     assert.equal(results[0].date, "2024-01-15");
-    assert.equal(results[0].source, "Parallel AI");
+    assert.equal(results[0].source, undefined);
   });
 
   it("handles results with null publish_date", async () => {

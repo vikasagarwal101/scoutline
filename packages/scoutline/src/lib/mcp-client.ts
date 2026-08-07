@@ -378,7 +378,7 @@ export class ZaiMcpClient {
       throw new ApiError("MCP client not initialized", 500);
     }
     const tools = await this.client.getTools();
-    await writeToolCache(this.getToolCacheConfig(), tools);
+    await writeToolCache(this.getToolCacheConfig(), tools, configuredSecrets(this.options.env));
     return tools;
   }
 

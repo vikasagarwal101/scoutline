@@ -79,11 +79,13 @@ export function createNodeCommandInvocationAdapter(): CommandInvocationAdapter {
         warn: console.warn,
         info: console.info,
         debug: console.debug,
+        error: console.error,
       };
       console.log = () => {};
       console.warn = () => {};
       console.info = () => {};
       console.debug = () => {};
+      console.error = () => {};
       try {
         return await operation();
       } finally {
@@ -91,6 +93,7 @@ export function createNodeCommandInvocationAdapter(): CommandInvocationAdapter {
         console.warn = originals.warn;
         console.info = originals.info;
         console.debug = originals.debug;
+        console.error = originals.error;
       }
     },
 

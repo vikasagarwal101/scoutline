@@ -1,10 +1,13 @@
 /**
  * Node Command Invocation Adapter — unit tests (Story 0.13.9).
  *
- * Verifies the adapter's stderr newline ownership guarantee (3.1).
+ * Verifies two UX-polish guarantees from the adapter:
+ *   3.1 — writeStderr is the sole newline authority (no double newlines)
+ *   3.4 — runQuietly suppresses console.error
+ *
  * These tests exercise the REAL adapter from `dist/`, not a fake. They
- * capture process.stderr output via temporary overrides so no noise
- * leaks into the test runner.
+ * capture process.stderr / console.error output via temporary overrides
+ * so no noise leaks into the test runner.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -71,5 +74,58 @@ describe("writeStderr newline normalisation (3.1)", () => {
       "first line\nsecond line\nthird line\n",
       "combined stderr output must be single-newline separated",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3.4 — runQuietly suppresses console.error
+// ---------------------------------------------------------------------------
+
+describe("runQuietly console.error suppression (3.4)", () => {
+  it("suppresses console.error during operation", async () => {
+    const adapter = createNodeCommandInvocationAdapter();
+    let errorWasNoop = false;
+    const originalError = console.error;
+    await adapter.runQuietly(async () => {
+      // If suppression is in place, console.error is a noop (not the original)
+      errorWasNoop = console.error === originalError;
+    });
+    assert.strictEqual(errorWasNoop, false, "console.error must be suppressed during runQuietly");
+    assert.strictEqual(console.error, originalError, "console.error must be restored after runQuietly");
+  });
+
+  it("integration: dependency console.error noise does not reach stderr", async () => {
+    const adapter = createNodeCommandInvocationAdapter();
+    const stderrMessages = [];
+    const originalStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => {
+      stderrMessages.push(chunk.toString());
+      return true;
+    };
+    try {
+      await adapter.runQuietly(async () => {
+        // Simulate a dependency writing to console.error
+        console.error("dependency noise");
+        // Now write structured stderr through the adapter
+        adapter.writeStderr("structured message\n");
+      });
+    } finally {
+      process.stderr.write = originalStderrWrite;
+    }
+    const combined = stderrMessages.join("");
+    assert.ok(!combined.includes("dependency noise"), "console.error noise must not reach stderr");
+    assert.ok(combined.includes("structured message\n"), "structured stderr must still appear");
+  });
+
+  it("restores console.error even if operation throws", async () => {
+    const adapter = createNodeCommandInvocationAdapter();
+    const originalError = console.error;
+    await assert.rejects(
+      adapter.runQuietly(async () => {
+        throw new Error("boom");
+      }),
+      /boom/,
+    );
+    assert.strictEqual(console.error, originalError, "console.error must be restored after throw");
   });
 });

@@ -343,6 +343,49 @@ describe("Error sanitization — new adapters strip raw upstream messages (2.1)"
 });
 
 // ---------------------------------------------------------------------------
+// Validate-before-access: new adapters must call validate() before Provider HTTP (2.3)
+// ---------------------------------------------------------------------------
+
+describe("Validate-before-access — new adapters reject invalid requests (2.3)", () => {
+  /**
+   * A fetch that throws if ever called — proving validate() short-circuits
+   * before any transport access.
+   */
+  function explodingFetch() {
+    return async () => {
+      throw new Error("fetch must not be called when validation fails");
+    };
+  }
+
+  it("Parallel search rejects invalid query before transport access", async () => {
+    const descriptor = createParallelDescriptor({ transport: { fetch: explodingFetch() } });
+    const adapter = descriptor.create({ env: { PARALLEL_API_KEY: "k" } });
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "  " }),
+      (err) => err.name === "ValidationError",
+    );
+  });
+
+  it("Perplexity search rejects invalid query before transport access", async () => {
+    const descriptor = createPerplexityDescriptor({ transport: { fetch: explodingFetch() } });
+    const adapter = descriptor.create({ env: { PERPLEXITY_API_KEY: "k" } });
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "" }),
+      (err) => err.name === "ValidationError",
+    );
+  });
+
+  it("Jina search rejects invalid query before transport access", async () => {
+    const descriptor = createJinaDescriptor({ transport: { fetch: explodingFetch() } });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "   " }),
+      (err) => err.name === "ValidationError",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Static registry (DESIGN.md §5)
 // ---------------------------------------------------------------------------
 

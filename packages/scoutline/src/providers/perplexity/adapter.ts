@@ -211,6 +211,7 @@ export class PerplexityAdapter implements ProviderAdapter {
       },
 
       async invoke(request: SearchRequest): Promise<readonly SearchSource[]> {
+        this.validate(request);
         const apiKey = requirePerplexityApiKey(env);
         const query = request.query.trim();
         const params = mapSearchControls(request.controls) || {};
@@ -266,6 +267,7 @@ export class PerplexityAdapter implements ProviderAdapter {
         decodeCached: decodeResearchResult,
 
         async invoke(request: ResearchRequest): Promise<ResearchResult> {
+          this.validate(request);
           const apiKey = requirePerplexityApiKey(env);
           const query = request.query.trim();
 

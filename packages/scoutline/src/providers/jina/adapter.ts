@@ -179,6 +179,7 @@ export class JinaAdapter implements ProviderAdapter {
       },
 
       async invoke(request: SearchRequest): Promise<readonly SearchSource[]> {
+        this.validate(request);
         const apiKey = resolveJinaApiKey(env);
         const query = request.query.trim();
 
@@ -220,6 +221,7 @@ export class JinaAdapter implements ProviderAdapter {
         decodeCached: decodeReaderFetchResult,
 
         async invoke(request: ReaderFetchRequest): Promise<ReaderFetchResult> {
+          this.validate(request);
           const apiKey = resolveJinaApiKey(env);
 
           try {
@@ -278,6 +280,7 @@ export class JinaAdapter implements ProviderAdapter {
         decodeCached: decodeResearchResult,
 
         async invoke(request: ResearchRequest): Promise<ResearchResult> {
+          this.validate(request);
           const apiKey = resolveJinaApiKey(env);
           const query = request.query.trim();
 

@@ -179,6 +179,7 @@ export class ParallelAdapter implements ProviderAdapter {
       },
 
       async invoke(request: SearchRequest): Promise<readonly SearchSource[]> {
+        this.validate(request);
         const apiKey = requireParallelApiKey(env);
         let query = request.query.trim();
 
@@ -240,6 +241,7 @@ export class ParallelAdapter implements ProviderAdapter {
         decodeCached: decodeResearchResult,
 
         async invoke(request: ResearchRequest): Promise<ResearchResult> {
+          this.validate(request);
           const apiKey = requireParallelApiKey(env);
           const query = request.query.trim();
 
@@ -317,6 +319,7 @@ export class ParallelAdapter implements ProviderAdapter {
         decodeCached: decodeReaderFetchResult,
 
         async invoke(request: ReaderFetchRequest): Promise<ReaderFetchResult> {
+          this.validate(request);
           const apiKey = requireParallelApiKey(env);
 
           try {

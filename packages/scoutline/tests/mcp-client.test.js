@@ -1435,3 +1435,51 @@ describe("ZaiMcpClient.close() does not leak a referenced timer (5.1)", () => {
     assert.strictEqual(leakedTimers.length, 0, "5 s timer must not remain referenced after close");
   });
 });
+
+describe("ZaiMcpClient — instance-level env resolution (1.7)", () => {
+  it("resolves timeout and retry constants from options.env, not module import time", () => {
+    // An instance constructed with a custom env that overrides all four
+    // retry/timeout knobs must reflect those values, not the module-level
+    // defaults that were frozen at import time before the fix.
+    const customEnv = {
+      ...process.env,
+      Z_AI_TIMEOUT: "99999",
+      ZAI_MCP_RETRY_BASE_MS: "111",
+      ZAI_MCP_RETRY_MAX_MS: "2222",
+      ZAI_MCP_RETRY_JITTER_MS: "333",
+    };
+    const client = new ZaiMcpClient({ env: customEnv });
+
+    // The private fields are compiled to ordinary properties in dist/.
+    assert.strictEqual(client.timeoutMs, 99999, "timeoutMs must come from options.env");
+    assert.strictEqual(client.retryBaseMs, 111, "retryBaseMs must come from options.env");
+    assert.strictEqual(client.retryMaxMs, 2222, "retryMaxMs must come from options.env");
+    assert.strictEqual(client.retryJitterMs, 333, "retryJitterMs must come from options.env");
+  });
+
+  it("falls back to process.env when options.env is not supplied", () => {
+    // Without options.env the client reads process.env at construction time
+    // (not module import time), so values set before construction are honored.
+    const saved = process.env.Z_AI_TIMEOUT;
+    process.env.Z_AI_TIMEOUT = "77777";
+    try {
+      const client = new ZaiMcpClient();
+      assert.strictEqual(client.timeoutMs, 77777, "timeoutMs must reflect process.env at construction time");
+    } finally {
+      if (saved === undefined) delete process.env.Z_AI_TIMEOUT;
+      else process.env.Z_AI_TIMEOUT = saved;
+    }
+  });
+
+  it("uses fallback defaults when no env override is set", () => {
+    // Clear any process.env override so the fallback constant applies.
+    const savedTimeout = process.env.Z_AI_TIMEOUT;
+    delete process.env.Z_AI_TIMEOUT;
+    try {
+      const client = new ZaiMcpClient({ env: {} });
+      assert.strictEqual(client.timeoutMs, 30000, "timeoutMs fallback must be 30000");
+    } finally {
+      if (savedTimeout !== undefined) process.env.Z_AI_TIMEOUT = savedTimeout;
+    }
+  });
+});

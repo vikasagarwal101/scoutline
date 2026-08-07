@@ -30,10 +30,15 @@ import { readToolCache, writeToolCache, type ToolCacheConfig } from "./tool-cach
 import { redactSecrets, configuredSecrets } from "./redact.js";
 import type { ReaderRawResponse } from "../capabilities/reader.js";
 
-const DEFAULT_TIMEOUT_MS = parseInt(process.env.Z_AI_TIMEOUT || "30000", 10);
-const DEFAULT_RETRY_BASE_MS = parseInt(process.env.ZAI_MCP_RETRY_BASE_MS || "500", 10);
-const DEFAULT_RETRY_MAX_MS = parseInt(process.env.ZAI_MCP_RETRY_MAX_MS || "8000", 10);
-const DEFAULT_RETRY_JITTER_MS = parseInt(process.env.ZAI_MCP_RETRY_JITTER_MS || "250", 10);
+// Retry/timeout defaults resolved per-instance from the invocation-local
+// env (options.env ?? process.env) in the constructor — not frozen at
+// module import time. See ticket 1.7.
+
+/** Fallbacks when the corresponding env var is unset. */
+const FALLBACK_TIMEOUT_MS = 30_000;
+const FALLBACK_RETRY_BASE_MS = 500;
+const FALLBACK_RETRY_MAX_MS = 8_000;
+const FALLBACK_RETRY_JITTER_MS = 250;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -93,9 +98,19 @@ export class ZaiMcpClient {
   private initPromise: Promise<void> | null = null;
   private isInitialized = false;
   private options: ZaiMcpClientOptions;
+  // 1.7: resolved from invocation-local env at construction time.
+  private readonly timeoutMs: number;
+  private readonly retryBaseMs: number;
+  private readonly retryMaxMs: number;
+  private readonly retryJitterMs: number;
 
   constructor(options: ZaiMcpClientOptions = {}) {
     this.options = options;
+    const env = options.env ?? process.env;
+    this.timeoutMs = parseInt(env.Z_AI_TIMEOUT || String(FALLBACK_TIMEOUT_MS), 10);
+    this.retryBaseMs = parseInt(env.ZAI_MCP_RETRY_BASE_MS || String(FALLBACK_RETRY_BASE_MS), 10);
+    this.retryMaxMs = parseInt(env.ZAI_MCP_RETRY_MAX_MS || String(FALLBACK_RETRY_MAX_MS), 10);
+    this.retryJitterMs = parseInt(env.ZAI_MCP_RETRY_JITTER_MS || String(FALLBACK_RETRY_JITTER_MS), 10);
   }
 
   /**
@@ -160,7 +175,7 @@ export class ZaiMcpClient {
           throw new AuthError("Authentication failed");
         }
         if (error.message.includes("timeout") || error.message.includes("ETIMEDOUT")) {
-          throw new TimeoutError(DEFAULT_TIMEOUT_MS);
+          throw new TimeoutError(this.timeoutMs);
         }
         if (
           error.message.includes("ECONNREFUSED") ||
@@ -237,10 +252,10 @@ export class ZaiMcpClient {
         if (attempt <= maxRetries && this.isRetriableError(error)) {
           await this.close().catch(() => {});
           const backoff = Math.min(
-            DEFAULT_RETRY_MAX_MS,
-            DEFAULT_RETRY_BASE_MS * Math.pow(2, attempt - 1),
+            this.retryMaxMs,
+            this.retryBaseMs * Math.pow(2, attempt - 1),
           );
-          const jitter = Math.floor(Math.random() * DEFAULT_RETRY_JITTER_MS);
+          const jitter = Math.floor(Math.random() * this.retryJitterMs);
           await sleep(backoff + jitter);
           continue;
         }
@@ -252,7 +267,7 @@ export class ZaiMcpClient {
             throw new AuthError("Authentication failed");
           }
           if (error.message.includes("timeout") || error.message.includes("ETIMEDOUT")) {
-            throw new TimeoutError(DEFAULT_TIMEOUT_MS);
+            throw new TimeoutError(this.timeoutMs);
           }
           if (error.message.includes("ECONNREFUSED") || error.message.includes("network")) {
             throw new NetworkError("MCP network error");

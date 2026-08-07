@@ -20,6 +20,15 @@ All notable changes to this project will be documented in this file.
 - The `init` wizard's Back choice is correctly typed as
   `ProviderId | undefined`.
 
+## [0.13.12] - 2026-08-08
+
+### Type-system cleanups
+
+- `package.json` is now loaded via native import attributes where possible, instead of `createRequire`.
+- Global fetch narrowing is centralized in a typed wrapper.
+- Cache decoding now accepts a decoder function or returns `unknown`.
+- Tool JSON is now `structuredClone`-cloned (preserves future non-JSON fields).
+
 ## [0.13.11] - 2026-08-07
 
 ### Type-system hardening

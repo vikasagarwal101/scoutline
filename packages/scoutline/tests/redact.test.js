@@ -287,6 +287,18 @@ describe("redactCredentialString — single-string redaction", () => {
       redactCredentialString("Digestion requires enzymes"),
       "Digestion requires enzymes",
     );
+    // No over-match on short tokens after a scheme keyword (review fix):
+    // "Token Plan" is a domain term, "Plan" is 4 chars — must NOT redact.
+    assert.strictEqual(
+      redactCredentialString("MiniMax Token Plan subscription"),
+      "MiniMax Token Plan subscription",
+      "Token followed by a short word must not be redacted",
+    );
+    assert.strictEqual(
+      redactCredentialString("The bearer of bad news"),
+      "The bearer of bad news",
+      "bearer followed by a short word must not be redacted",
+    );
   });
 
   it("redacts x-api-key, Z_AI_API_KEY, ZAI_API_KEY, MINIMAX_API_KEY and EXA_API_KEY assignments", () => {

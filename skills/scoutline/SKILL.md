@@ -4,10 +4,10 @@ description: |
   Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and Jina AI CLI providing:
   - Vision: image/video analysis, OCR, UI-to-code, error diagnosis (GLM-4.6V)
   - Search: real-time web search with domain/recency/topic filtering
-  - Reader: web page to markdown extraction (Z.AI, Tavily, Exa, Firecrawl, Perplexity, or Jina)
+  - Reader: web page to markdown extraction (Z.AI, Tavily, Exa, Firecrawl, Parallel, or Jina)
   - Crawl: multi-page website traversal (Tavily or Firecrawl)
   - Map: URL-set discovery without fetching pages (Tavily or Firecrawl)
-  - Research: asynchronous deep research with citations (Tavily, Exa, Parallel, or Perplexity)
+  - Research: asynchronous deep research with citations (Tavily, Exa, Parallel, Perplexity, or Jina)
   - Repo: GitHub code search and reading via ZRead (Z.AI)
   - Tools: MCP tool discovery, schemas, and raw calls (Z.AI)
   - Code: TypeScript tool chaining (Z.AI)

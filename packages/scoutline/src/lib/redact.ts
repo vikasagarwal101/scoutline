@@ -94,6 +94,9 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   result = result.replace(/EXA_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
   result = result.replace(/BRAVE_SEARCH_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
   result = result.replace(/FIRECRAWL_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
+  result = result.replace(/PARALLEL_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
+  result = result.replace(/PERPLEXITY_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
+  result = result.replace(/JINA_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
   // Embedded credential substrings inside URLs, e.g.
   // `https://user:secret@host/path`. Catches both `https://` and
   // `http://` schemes and replaces the entire URL with the marker so
@@ -146,6 +149,9 @@ export function configuredSecrets(env: NodeJS.ProcessEnv = process.env): string[
     env.EXA_API_KEY,
     env.BRAVE_SEARCH_API_KEY,
     env.FIRECRAWL_API_KEY,
+    env.PARALLEL_API_KEY,
+    env.PERPLEXITY_API_KEY,
+    env.JINA_API_KEY,
   ];
   return normalizeSecrets(candidates.filter((c): c is string => typeof c === "string"));
 }

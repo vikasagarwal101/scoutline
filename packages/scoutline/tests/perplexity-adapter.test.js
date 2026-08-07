@@ -88,11 +88,9 @@ describe("Perplexity Descriptor & Adapter", () => {
   });
 
   it("maps search controls to API params", async () => {
+    let captured;
     const fakeFetch = async (url, init) => {
-      const body = JSON.parse(init.body);
-      assert.deepEqual(body.search_domain_filter, ["example.com"]);
-      assert.equal(body.search_recency_filter, "week");
-      assert.equal(body.search_context_size, "high");
+      captured = JSON.parse(init.body);
       return {
         ok: true,
         status: 200,
@@ -109,6 +107,10 @@ describe("Perplexity Descriptor & Adapter", () => {
       query: "test",
       controls: { domain: "example.com", recency: "oneWeek", contentSize: "high" },
     });
+
+    assert.deepEqual(captured.search_domain_filter, ["example.com"]);
+    assert.equal(captured.search_recency_filter, "week");
+    assert.equal(captured.search_context_size, "high");
   });
 
   it("invokes research via sonar-deep-research model", async () => {

@@ -458,10 +458,13 @@ second task (no double charge).
 Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER,
 then the configured default):
   - Tavily and Exa advertise the research Capability and supply the Adapter.
+  - Parallel AI (objective=deep-research), Perplexity (sonar-deep-research),
+    and Jina AI (deepsearch.jina.ai) also advertise research.
   - Z.AI, MiniMax, and Firecrawl do NOT advertise research (Firecrawl
     /deep-research is deprecated). By default (0.11.0+) Provider
     fallback emits a stderr notice and silently reroutes to the next
-    eligible configured supplier (Tavily or Exa). Under --no-fallback
+    eligible configured supplier (Tavily, Exa, Parallel, Perplexity, or
+    Jina). Under --no-fallback
     (or SCOUTLINE_NO_FALLBACK=1) the preflight surfaces
     UNSUPPORTED_CAPABILITY for the selected non-supplier.
 

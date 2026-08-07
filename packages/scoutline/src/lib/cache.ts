@@ -375,19 +375,42 @@ export function buildLegacyReaderCacheKey(
 // Response cache I/O (writes land under <root>/cache/)
 // ---------------------------------------------------------------------------
 
-export async function readCache<T>(key: string, ttlMs = getCacheTtlMs()): Promise<T | null> {
+/**
+ * Read a cached value with a decoder function that validates and narrows
+ * the raw JSON. Returns `null` on miss, expiry, or disabled cache.
+ */
+export async function readCache<T>(
+  key: string,
+  decoder: (raw: unknown) => T,
+  ttlMs?: number,
+): Promise<T | null>;
+
+/**
+ * Read a cached value without a decoder. Returns `unknown` so the caller
+ * must narrow the result — no unsafe generic assumption is made about the
+ * stored shape.
+ */
+export async function readCache(key: string, ttlMs?: number): Promise<unknown | null>;
+
+export async function readCache(
+  key: string,
+  decoderOrTtl?: number | ((raw: unknown) => unknown),
+  ttlMs = getCacheTtlMs(),
+): Promise<unknown | null> {
   // H1 fix: call-time enabled check so per-suite env mutations are
   // observed. Module-load capture would silently freeze this to whatever
   // the env was at first import.
-  if (!isCacheEnabled() || ttlMs <= 0) return null;
+  const resolvedTtl = typeof decoderOrTtl === "number" ? decoderOrTtl : ttlMs;
+  if (!isCacheEnabled() || resolvedTtl <= 0) return null;
   const file = path.join(responseCacheDir(), key);
   try {
     const raw = await fs.readFile(file, "utf8");
-    const entry = JSON.parse(raw) as CacheEntry<T>;
+    const entry = JSON.parse(raw) as CacheEntry<unknown>;
     if (!entry || typeof entry.ts !== "number") return null;
-    if (Date.now() - entry.ts > ttlMs) return null;
+    if (Date.now() - entry.ts > resolvedTtl) return null;
     // Touch the file for LRU freshness (best-effort)
     await fs.utimes(file, new Date(), new Date()).catch(() => {});
+    if (typeof decoderOrTtl === "function") return decoderOrTtl(entry.data);
     return entry.data;
   } catch {
     return null;
@@ -591,7 +614,8 @@ async function inventorySubdir(dir: string): Promise<{ entries: number; totalByt
  * tests inject in-memory doubles.
  */
 export interface ResponseCache {
-  get<T>(key: string): Promise<T | null>;
+  get<T>(key: string, decoder: (raw: unknown) => T): Promise<T | null>;
+  get(key: string): Promise<unknown | null>;
   set<T>(key: string, value: T): Promise<void>;
 }
 
@@ -651,8 +675,8 @@ export function buildProviderCacheKey(input: ProviderCacheKeyInput): string {
  * and directory resolution remain identical to the legacy path.
  */
 export const defaultResponseCache: ResponseCache = {
-  get<T>(key: string): Promise<T | null> {
-    return readCache<T>(key);
+  get(key: string, decoder?: (raw: unknown) => unknown): Promise<unknown | null> {
+    return decoder ? readCache(key, decoder) : readCache(key);
   },
   set<T>(key: string, value: T): Promise<void> {
     return writeCache<T>(key, value);

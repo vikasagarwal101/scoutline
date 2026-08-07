@@ -325,7 +325,7 @@ export async function executeSearch(
   });
 
   if (!options.noCache) {
-    const cached = await dependencies.cache.get<readonly SearchSource[]>(newKey);
+    const cached = (await dependencies.cache.get(newKey)) as readonly SearchSource[] | null;
     if (cached !== null) {
       return applyCount(cached, options.count);
     }
@@ -335,7 +335,7 @@ export async function executeSearch(
     //    file is never changed or deleted.
     if (identity.legacyCandidates) {
       for (const candidate of identity.legacyCandidates) {
-        const raw = await dependencies.cache.get<unknown>(candidate.key);
+        const raw = await dependencies.cache.get(candidate.key);
         if (raw === null) continue;
         const decoded = candidate.decode(raw);
         if (decoded !== null) {
@@ -474,7 +474,7 @@ export async function executeRepositoryOperation<Request, Result>(
   });
 
   if (!options.noCache) {
-    const raw = await dependencies.cache.get<unknown>(newKey);
+    const raw = await dependencies.cache.get(newKey);
     if (raw !== null) {
       const decoded = operation.decodeCached(raw);
       if (decoded !== null) {
@@ -488,7 +488,7 @@ export async function executeRepositoryOperation<Request, Result>(
     //    populates the new key but the legacy file is never
     //    changed or deleted.
     for (const candidate of identity.legacyCandidates) {
-      const legacyRaw = await dependencies.cache.get<unknown>(candidate.key);
+      const legacyRaw = await dependencies.cache.get(candidate.key);
       if (legacyRaw === null) continue;
       const decoded = candidate.decode(legacyRaw);
       if (decoded !== null) {
@@ -628,7 +628,7 @@ export async function executeReaderOperation(
   });
 
   if (!options.noCache) {
-    const raw = await dependencies.cache.get<unknown>(newKey);
+    const raw = await dependencies.cache.get(newKey);
     if (raw !== null) {
       const decoded = operation.decodeCached(raw);
       if (decoded !== null) {
@@ -642,7 +642,7 @@ export async function executeReaderOperation(
     //    populates the new key but the legacy file is never
     //    changed or deleted.
     for (const candidate of identity.legacyCandidates) {
-      const legacyRaw = await dependencies.cache.get<unknown>(candidate.key);
+      const legacyRaw = await dependencies.cache.get(candidate.key);
       if (legacyRaw === null) continue;
       const decoded = candidate.decode(legacyRaw);
       if (decoded !== null) {
@@ -821,7 +821,7 @@ export async function executeCachedOperation<Request, Result>(
   });
 
   if (!options.noCache) {
-    const raw = await dependencies.cache.get<unknown>(newKey);
+    const raw = await dependencies.cache.get(newKey);
     if (raw !== null) {
       const decoded = operation.decodeCached(raw);
       if (decoded !== null) {

@@ -248,6 +248,7 @@ export async function executeProviderOperation<T>(
   dependencies: Pick<ExecutionDependencies, "sleep" | "random" | "consume" | "now">,
   retryPolicy?: RetryPolicy,
   consumption?: ConsumptionContext,
+  signal?: AbortSignal,
 ): Promise<T> {
   const policy = retryPolicy ?? defaultRetryPolicy(operation);
   const sink = dependencies.consume;
@@ -264,11 +265,15 @@ export async function executeProviderOperation<T>(
     try {
       return await invoke();
     } catch (error) {
+      // Caller-initiated cancellation is terminal — never retry.
+      if (signal?.aborted) throw error;
       if (attempt >= policy.maxRetries) throw error;
       if (!isOperationRetryableError(error)) throw error;
       const backoff = Math.min(policy.maxDelayMs, policy.baseDelayMs * Math.pow(2, attempt));
       const jitter = Math.floor(dependencies.random() * policy.jitterMs);
       await dependencies.sleep(backoff + jitter);
+      // Re-check after backoff: signal may have aborted during sleep.
+      if (signal?.aborted) throw error;
       attempt += 1;
     }
   }
@@ -373,6 +378,7 @@ export async function executeSearch(
     dependencies,
     options.retryPolicy,
     consumption,
+    options.signal,
   );
 
   // 7. Cache the full normalized result before count is applied.
@@ -527,6 +533,7 @@ export async function executeRepositoryOperation<Request, Result>(
     dependencies,
     options.retryPolicy,
     consumption,
+    options.signal,
   );
 
   // 6. Cache the full normalized result before returning.
@@ -678,6 +685,7 @@ export async function executeReaderOperation(
     dependencies,
     options.retryPolicy,
     consumption,
+    options.signal,
   );
 
   // 6. Cache the full normalized result before returning.
@@ -870,6 +878,7 @@ export async function executeCachedOperation<Request, Result>(
     dependencies,
     options.retryPolicy,
     consumption,
+    options.signal,
   );
 
   // 5. Cache the full normalized result before returning.

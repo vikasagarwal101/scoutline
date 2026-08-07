@@ -54,7 +54,8 @@ const REDACTED = "[REDACTED]";
  * string rather than a structured object.
  *
  * Replaces:
- *   - Bearer authorization values (any case).
+ *   - Authorization header values under common schemes: `Bearer`,
+ *     `Basic`, `Digest`, `Token`, and `ApiKey` (any case).
  *   - x-api-key assignments (any case; `=`, `:`, or whitespace as the
  *     key/value separator — covers both `x-api-key=value` and
  *     `x-api-key value`).
@@ -66,15 +67,23 @@ const REDACTED = "[REDACTED]";
 export function redactCredentialString(input: string, extraSecrets?: string | string[]): string {
   if (typeof input !== "string") return input;
   let result = input;
-  result = result.replace(/Bearer\s+\S+/gi, REDACTED);
+  // 1.6: broaden to non-Bearer schemes. Scheme-specialized to balance
+  // false-positive risk against credential-coverage:
+  //   - Bearer/Token/ApiKey: min 8-char token avoids prose false positives
+  //     like "Token Plan" (a domain term in this codebase).
+  //   - Basic: base64 credentials can be short, so no length floor.
+  //   - Digest: comma-separated key=value params — the full param list
+  //     is consumed so sensitive fields (response, nonce) don't leak.
+  result = result.replace(/(?:Bearer|Token|ApiKey)\s+[^\s]{8,}/gi, REDACTED);
+  result = result.replace(/Basic\s+\S+/gi, REDACTED);
+  result = result.replace(/Digest\s+[^\s,]+(?:,\s*[^\s,]+)*/gi, REDACTED);
   // Tavily API keys carry the `tvly-` prefix; redact the full token
   // wherever it appears (logs, URLs, error bodies).
   result = result.replace(/tvly-[A-Za-z0-9_-]+/gi, REDACTED);
-  // NOTE: Firecrawl keys are `fc-`-prefixed, but that prefix is too short
-  // to match safely (it false-positives on prose like the "FC-03" ticket
-  // id). Bare Firecrawl key tokens are instead redacted via the
-  // configured-secret value loop (configuredSecrets) in production, and
-  // the FIRECRAWL_API_KEY assignment regex below covers the named form.
+  // Firecrawl API keys carry the `fc-` prefix. The `{20,}` length
+  // constraint avoids false positives on short prose tokens like "fc-ab"
+  // while still matching real Firecrawl keys (which are 32+ chars).
+  result = result.replace(/fc-[a-zA-Z0-9]{20,}/gi, REDACTED);
   // Fixup C — W3: the class accepts either `=`, `:`, or any whitespace
   // as the key/value separator. The trailing `\S+` consumes the secret
   // value; the entire `key + separator + value` span is replaced with

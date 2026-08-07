@@ -66,7 +66,11 @@ export function createNodeCommandInvocationAdapter(): CommandInvocationAdapter {
     },
 
     writeStderr(value: string): void {
-      process.stderr.write(value + "\n");
+      // The adapter is the sole authority for trailing newlines on stderr.
+      // Strip a single trailing "\n" from the caller's value so that call
+      // sites that already include one don't produce double-newline blank lines.
+      const normalized = value.endsWith("\n") ? value.slice(0, -1) : value;
+      process.stderr.write(normalized + "\n");
     },
 
     async runQuietly<T>(operation: () => Promise<T>): Promise<T> {

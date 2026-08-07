@@ -2,20 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.13.9] - 2026-08-07
+## [0.13.10] - 2026-XX-XX
 
-### UX polish
+### Type-system hardening
 
-- Stderr newline ownership moved to the invocation adapter (single authority); some messages no longer produce unexpected blank lines.
-- `runQuietly` now suppresses dependency `console.error` noise that previously interleaved with structured stderr output.
-
-## [0.13.8] - 2026-08-07
-
-### Cleanup
-
-- Legacy `formatErrorOutput` (1-arg) removed from `lib/errors.ts`; the 2-arg version in `lib/output.ts` is the sole path.
-- Superseded `src/lib/silence.ts` removed.
-- Unused `resolveTtyMode` removed from `src/lib/tty.ts`.
+- `tsconfig.json` now enables `noFallthroughCasesInSwitch` and
+  `noUncheckedIndexedAccess`. No public-API change. Some
+  previously implicit `T | undefined` returns are now explicit;
+  callers that relied on the implicit type are caught at
+  compile time.
 
 ## [0.13.7] - 2026-08-07
 

@@ -46,7 +46,7 @@ export function extractCode(content: string): CodeBlock[] {
   let m: RegExpExecArray | null;
   while ((m = re.exec(content)) !== null) {
     const lang = m[2]?.trim() || null;
-    blocks.push({ language: lang, code: m[3] });
+    blocks.push({ language: lang, code: m[3] ?? "" });
   }
   return blocks;
 }
@@ -59,7 +59,7 @@ export function extractLinks(content: string): Link[] {
   const mdRe = /\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
   let m: RegExpExecArray | null;
   while ((m = mdRe.exec(content)) !== null) {
-    const url = m[2];
+    const url = m[2] ?? "";
     if (seen.has(url)) continue;
     seen.add(url);
     links.push({ text: m[1] || null, url });
@@ -84,13 +84,13 @@ export function extractTables(content: string): Table[] {
   const lines = content.split("\n");
   let i = 0;
   while (i < lines.length) {
-    const line = lines[i];
+    const line = lines[i] ?? "";
     // A table starts with a row of | cells followed by a separator row.
-    if (line.includes("|") && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1])) {
+    if (line.includes("|") && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1] ?? "")) {
       const block: string[] = [line];
       let j = i + 1;
-      while (j < lines.length && lines[j].includes("|")) {
-        block.push(lines[j]);
+      while (j < lines.length && (lines[j] ?? "").includes("|")) {
+        block.push(lines[j] ?? "");
         j++;
       }
       tables.push({ rows: block.length, markdown: block.join("\n") });
@@ -108,8 +108,8 @@ export function extractHeadings(content: string): Heading[] {
   for (const line of lines) {
     const m = line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
     if (m) {
-      const level = m[1].length as Heading["level"];
-      const text = m[2];
+      const level = (m[1] ?? "").length as Heading["level"];
+      const text = m[2] ?? "";
       // GitHub-style slug: lowercase, strip punctuation, spaces → hyphens
       const slug = text
         .toLowerCase()

@@ -54,7 +54,7 @@ export function looksLikeEncodedMcpError(raw: unknown): boolean {
 export function extractEncodedStatus(raw: string): number | null {
   const m = raw.match(ENCODED_MCP_ERROR_RE);
   if (!m) return null;
-  const n = Number.parseInt(m[1], 10);
+  const n = Number.parseInt(m[1] ?? "", 10);
   return Number.isFinite(n) ? n : null;
 }
 
@@ -62,14 +62,14 @@ export function extractEncodedStatus(raw: string): number | null {
 export function extractEncodedCode(raw: string): number | null {
   const m = raw.match(/^error\.code:\s*(\d+)/m);
   if (!m) return null;
-  const n = Number.parseInt(m[1], 10);
+  const n = Number.parseInt(m[1] ?? "", 10);
   return Number.isFinite(n) ? n : null;
 }
 
 /** Extract the documented `error.message:` line text, if present. */
 export function extractEncodedMessage(raw: string): string | null {
   const m = raw.match(/^error\.message:\s*([^\n]+)/m);
-  return m ? m[1] : null;
+  return m ? (m[1] ?? null) : null;
 }
 
 /**

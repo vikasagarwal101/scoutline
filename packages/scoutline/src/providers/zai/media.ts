@@ -182,7 +182,7 @@ const ZAI_FETCH_USER_AGENT = `scoutline (https://github.com/vikasagarwal101/scou
  */
 function contentTypeToExtension(contentType: string | null): string | null {
   if (!contentType) return null;
-  const base = contentType.split(";")[0].trim().toLowerCase();
+  const base = (contentType.split(";")[0] ?? "").trim().toLowerCase();
   const map: Record<string, string> = {
     "image/jpeg": ".jpg",
     "image/jpg": ".jpg",

@@ -169,7 +169,7 @@ export function resolveImageSource(source: string): string {
  */
 function detectMimeFromContentType(contentType: string | null): string {
   if (!contentType) return "image/jpeg";
-  const base = contentType.split(";")[0].trim().toLowerCase();
+  const base = (contentType.split(";")[0] ?? "").trim().toLowerCase();
   if (base === "image/jpeg" || base === "image/jpg") return "image/jpeg";
   if (base === "image/png") return "image/png";
   if (base === "image/webp") return "image/webp";

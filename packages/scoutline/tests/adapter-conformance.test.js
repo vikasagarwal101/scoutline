@@ -520,6 +520,44 @@ describe("Search Adapter conformance — shared normalized output", () => {
 });
 
 // ---------------------------------------------------------------------------
+// CI completeness gate: every search-advertising Provider must have a factory
+// ---------------------------------------------------------------------------
+
+/**
+ * The set of Provider IDs that have a search-conformance factory in this
+ * test file. When a new Provider is added to the registry, its ID must be
+ * added here AND a factory function + conformance assertion must be added
+ * to the test above. This guard prevents silent onboarding gaps.
+ */
+const SEARCH_CONFORMANCE_PROVIDERS = new Set([
+  "zai",
+  "minimax",
+  "tavily",
+  "exa",
+  "brave",
+  "firecrawl",
+  "parallel",
+  "perplexity",
+  "jina",
+]);
+
+describe("CI completeness gate — every search Provider has a conformance factory (6.2)", () => {
+  it("all registry providers advertising 'search' have a conformance factory", () => {
+    const searchProviders = BUILT_IN_PROVIDER_DESCRIPTORS.filter((d) =>
+      d.capabilities().has("search"),
+    );
+    for (const descriptor of searchProviders) {
+      assert.ok(
+        SEARCH_CONFORMANCE_PROVIDERS.has(descriptor.id),
+        `Provider "${descriptor.id}" advertises search but has no conformance factory. ` +
+          `Add a make${descriptor.id.charAt(0).toUpperCase() + descriptor.id.slice(1)}Capability ` +
+          `factory and add "${descriptor.id}" to SEARCH_CONFORMANCE_PROVIDERS.`,
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Error sanitization: new adapters must not leak raw upstream messages
 // ---------------------------------------------------------------------------
 

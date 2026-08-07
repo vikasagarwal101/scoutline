@@ -1,5 +1,25 @@
 # Security Policy
 
+## Supported Versions
+
+The latest minor release line is supported for security fixes. Prior minor
+lines receive fixes on a best-effort basis.
+
+## Scope
+
+This policy covers the published npm package `scoutline`, the CLI runtime,
+and the on-disk credential storage. Development dependencies are out of
+scope unless they affect the published package.
+
+## Secret-Handling Guarantees
+
+Scoutline recursively redacts credential values at every outward boundary —
+stdout output, stderr error envelopes, diagnostic output, the response cache,
+the tool-discovery cache, and fatal shell errors. Credentials configured via
+`config.json` or environment variables are resolved at invocation time and
+never written to logs. API keys are stored at rest in plaintext JSON (mode
+0600, directory 0700), consistent with AWS CLI, gcloud, and kubectl.
+
 ## Reporting a Vulnerability
 
 If you believe you have found a security vulnerability, please do not open a

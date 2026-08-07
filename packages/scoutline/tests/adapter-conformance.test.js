@@ -22,9 +22,9 @@ import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
 import { createTavilyDescriptor } from "../dist/providers/tavily/adapter.js";
 import { createExaDescriptor } from "../dist/providers/exa/adapter.js";
 import { createBraveDescriptor } from "../dist/providers/brave/adapter.js";
-import { createParallelDescriptor } from "../dist/providers/parallel/adapter.js";
-import { createPerplexityDescriptor } from "../dist/providers/perplexity/adapter.js";
-import { createJinaDescriptor } from "../dist/providers/jina/adapter.js";
+import { createParallelDescriptor, ParallelAdapter } from "../dist/providers/parallel/adapter.js";
+import { createPerplexityDescriptor, PerplexityAdapter } from "../dist/providers/perplexity/adapter.js";
+import { createJinaDescriptor, JinaAdapter } from "../dist/providers/jina/adapter.js";
 import {
   BUILT_IN_PROVIDER_DESCRIPTORS,
   getProviderDescriptor,
@@ -315,8 +315,10 @@ describe("Error sanitization — new adapters strip raw upstream messages (2.1)"
   }
 
   it("Parallel search does not leak raw error messages", async () => {
-    const descriptor = createParallelDescriptor({ transport: { fetch: leakingFetch() } });
-    const adapter = descriptor.create({ env: { PARALLEL_API_KEY: "k" } });
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: "k" } },
+      { transport: { fetch: leakingFetch() } },
+    );
     await assert.rejects(
       () => adapter.search.invoke({ query: "test" }),
       (err) => !err.message.includes(SECRET),
@@ -324,8 +326,10 @@ describe("Error sanitization — new adapters strip raw upstream messages (2.1)"
   });
 
   it("Perplexity search does not leak raw error messages", async () => {
-    const descriptor = createPerplexityDescriptor({ transport: { fetch: leakingFetch() } });
-    const adapter = descriptor.create({ env: { PERPLEXITY_API_KEY: "k" } });
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: "k" } },
+      { transport: { fetch: leakingFetch() } },
+    );
     await assert.rejects(
       () => adapter.search.invoke({ query: "test" }),
       (err) => !err.message.includes(SECRET),
@@ -333,8 +337,10 @@ describe("Error sanitization — new adapters strip raw upstream messages (2.1)"
   });
 
   it("Jina search does not leak raw error messages", async () => {
-    const descriptor = createJinaDescriptor({ transport: { fetch: leakingFetch() } });
-    const adapter = descriptor.create({ env: {} });
+    const adapter = new JinaAdapter(
+      { env: {} },
+      { transport: { fetch: leakingFetch() } },
+    );
     await assert.rejects(
       () => adapter.search.invoke({ query: "test" }),
       (err) => !err.message.includes(SECRET),
@@ -358,8 +364,10 @@ describe("Validate-before-access — new adapters reject invalid requests (2.3)"
   }
 
   it("Parallel search rejects invalid query before transport access", async () => {
-    const descriptor = createParallelDescriptor({ transport: { fetch: explodingFetch() } });
-    const adapter = descriptor.create({ env: { PARALLEL_API_KEY: "k" } });
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: "k" } },
+      { transport: { fetch: explodingFetch() } },
+    );
     await assert.rejects(
       () => adapter.search.invoke({ query: "  " }),
       (err) => err.name === "ValidationError",
@@ -367,8 +375,10 @@ describe("Validate-before-access — new adapters reject invalid requests (2.3)"
   });
 
   it("Perplexity search rejects invalid query before transport access", async () => {
-    const descriptor = createPerplexityDescriptor({ transport: { fetch: explodingFetch() } });
-    const adapter = descriptor.create({ env: { PERPLEXITY_API_KEY: "k" } });
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: "k" } },
+      { transport: { fetch: explodingFetch() } },
+    );
     await assert.rejects(
       () => adapter.search.invoke({ query: "" }),
       (err) => err.name === "ValidationError",
@@ -376,12 +386,68 @@ describe("Validate-before-access — new adapters reject invalid requests (2.3)"
   });
 
   it("Jina search rejects invalid query before transport access", async () => {
-    const descriptor = createJinaDescriptor({ transport: { fetch: explodingFetch() } });
-    const adapter = descriptor.create({ env: {} });
+    const adapter = new JinaAdapter(
+      { env: {} },
+      { transport: { fetch: explodingFetch() } },
+    );
     await assert.rejects(
       () => adapter.search.invoke({ query: "   " }),
       (err) => err.name === "ValidationError",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Source normalization: new adapters must not hardcode Provider identity (2.4)
+// ---------------------------------------------------------------------------
+
+describe("Source normalization — new adapters omit source when no metadata (2.4)", () => {
+  it("Parallel search omits source (no structured metadata field)", async () => {
+    const fetchFn = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        results: [{ title: "T", url: "https://example.test", excerpts: ["S"] }],
+      }),
+    });
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: "k" } },
+      { transport: { fetch: fetchFn } },
+    );
+    const results = await adapter.search.invoke({ query: "test" });
+    assert.equal(results[0].source, undefined, "source must be absent, not hardcoded");
+  });
+
+  it("Perplexity search omits source (no structured metadata field)", async () => {
+    const fetchFn = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        results: [{ title: "T", url: "https://example.test", snippet: "S" }],
+      }),
+    });
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: "k" } },
+      { transport: { fetch: fetchFn } },
+    );
+    const results = await adapter.search.invoke({ query: "test" });
+    assert.equal(results[0].source, undefined, "source must be absent, not hardcoded");
+  });
+
+  it("Jina search omits source (no structured metadata field)", async () => {
+    const fetchFn = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        data: [{ title: "T", url: "https://example.test", description: "S" }],
+      }),
+    });
+    const adapter = new JinaAdapter(
+      { env: {} },
+      { transport: { fetch: fetchFn } },
+    );
+    const results = await adapter.search.invoke({ query: "test" });
+    assert.equal(results[0].source, undefined, "source must be absent, not hardcoded");
   });
 });
 

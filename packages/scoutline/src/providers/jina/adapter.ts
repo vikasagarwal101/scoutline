@@ -190,7 +190,6 @@ export class JinaAdapter implements ProviderAdapter {
             title: item.title || "Untitled",
             url: item.url || "",
             summary: item.description || item.content || "",
-            source: "Jina AI",
             date: item.publishedTime || undefined,
           }));
         } catch (error) {

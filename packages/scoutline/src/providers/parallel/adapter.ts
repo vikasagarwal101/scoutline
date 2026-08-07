@@ -199,7 +199,6 @@ export class ParallelAdapter implements ProviderAdapter {
             title: item.title || "Untitled",
             url: item.url || "",
             summary: item.excerpts?.join("\n\n") || "",
-            source: "Parallel AI",
             date: item.publish_date || undefined,
           }));
         } catch (error) {

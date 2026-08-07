@@ -226,7 +226,6 @@ export class PerplexityAdapter implements ProviderAdapter {
               title: item.title || "Untitled",
               url: item.url!,
               summary: item.snippet || "",
-              source: "Perplexity",
               date: item.date || undefined,
             }));
         } catch (error) {

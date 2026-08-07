@@ -233,10 +233,9 @@ describe("timeout precedence and default", () => {
 
 describe("missing credential through the CLI", () => {
   it("scoutline quota with no key returns one structured error, exit 3, and no transport", async () => {
-    // Default mode is now multi-Provider, so "no key" must mean NO
-    // Provider is configured. Clear every Provider credential (and the
-    // SCOUTLINE_PROVIDER pin) so all-providers mode surfaces
-    // ConfigurationError before any transport is constructed.
+    // Pin to zai (which requires a key) so the config gate fires with
+    // CONFIGURATION_ERROR. Without a pin, keyless Jina would make the
+    // command succeed, which defeats the test's intent.
     const r = await runProcess(["quota"], {
       env: {
         Z_AI_API_KEY: "",
@@ -246,9 +245,7 @@ describe("missing credential through the CLI", () => {
         BRAVE_SEARCH_API_KEY: "",
         EXA_API_KEY: "",
         FIRECRAWL_API_KEY: "",
-        // Undefined so runProcess strips any inherited pin (an empty
-        // string would instead surface VALIDATION_ERROR).
-        SCOUTLINE_PROVIDER: undefined,
+        SCOUTLINE_PROVIDER: "zai",
       },
       timeoutMs: 8000,
     });

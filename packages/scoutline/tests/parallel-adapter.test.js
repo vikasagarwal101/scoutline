@@ -178,7 +178,7 @@ describe("Parallel AI Descriptor & Adapter", () => {
 
     await assert.rejects(
       () => adapter.reader.fetch.invoke({ url: "https://broken.page" }),
-      (err) => err instanceof ApiError,
+      (err) => err instanceof ApiError && err.statusCode === 404,
     );
   });
 

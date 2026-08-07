@@ -114,6 +114,9 @@ export async function fetchParallelSearch(
     if (err instanceof AuthError || err instanceof ApiError || err instanceof TimeoutError) {
       throw err;
     }
+    if (err instanceof SyntaxError) {
+      throw new ApiError("Parallel AI returned a malformed JSON response", 500);
+    }
     if (err instanceof Error && err.name === "AbortError") {
       throw new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
     }
@@ -186,6 +189,9 @@ export async function fetchParallelExtract(
   } catch (err: unknown) {
     if (err instanceof AuthError || err instanceof ApiError || err instanceof TimeoutError) {
       throw err;
+    }
+    if (err instanceof SyntaxError) {
+      throw new ApiError("Parallel AI returned a malformed JSON response", 500);
     }
     if (err instanceof Error && err.name === "AbortError") {
       throw new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);

@@ -386,7 +386,7 @@ export interface ProviderAuthorityPolicy {
 }
 
 /**
- * The static authority-policy table. Two providers are explicitly
+ * The static authority-policy table. Five providers are explicitly
  * non-authoritative:
  *
  * - **Brave**: reports a rate-limit window via `X-RateLimit-*` headers,
@@ -397,8 +397,10 @@ export interface ProviderAuthorityPolicy {
  *   authority axis deliberately ignores it.
  * - **Exa**: advertises no `quota` capability at all. There is nothing
  *   to map or synthesize.
+ * - **Parallel AI, Perplexity, Jina AI**: none advertise a quota
+ *   capability; there is no signal to map.
  *
- * Both providers stay **eligible** for PB-T4 fallback (their
+ * All five providers stay **eligible** for PB-T4 fallback (their
  * `authority:"unknown"` score sorts after every known provider), so
  * they can still be picked when no known provider remains.
  */

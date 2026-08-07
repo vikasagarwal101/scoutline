@@ -140,6 +140,9 @@ export class ParallelAdapter implements ProviderAdapter {
         if (request.controls?.recency !== undefined) {
           throw new UnsupportedOptionError("parallel", "search", "recency");
         }
+        if (request.controls?.contentSize !== undefined) {
+          throw new UnsupportedOptionError("parallel", "search", "contentSize");
+        }
       },
 
       cacheIdentity(request: SearchRequest): SearchCacheIdentity {
@@ -191,6 +194,16 @@ export class ParallelAdapter implements ProviderAdapter {
           if (!request.query || request.query.trim().length === 0) {
             throw new ValidationError("Research query must not be empty");
           }
+          for (const option of [
+            "model",
+            "outputLength",
+            "citationFormat",
+            "domain",
+          ] as const) {
+            if (request[option] !== undefined) {
+              throw new UnsupportedOptionError("parallel", "research", option);
+            }
+          }
         },
 
         cacheIdentity(request: ResearchRequest) {
@@ -231,12 +244,14 @@ export class ParallelAdapter implements ProviderAdapter {
             return {
               schemaVersion: 1,
               query,
-              model: request.model || "auto",
+              model: "auto",
               report,
-              sources: results.map((r) => ({
-                title: r.title || "Untitled",
-                url: r.url || "",
-              })),
+              sources: results
+                .filter((r) => r.url)
+                .map((r) => ({
+                  title: r.title || "Untitled",
+                  url: r.url!,
+                })),
             };
           } catch (error) {
             throw normalizeParallelError(error);
@@ -250,6 +265,21 @@ export class ParallelAdapter implements ProviderAdapter {
         kind: "reader-fetch",
         validate(request: ReaderFetchRequest): void {
           assertHttpUrl(request.url);
+          // Parallel Extract always returns markdown content.
+          if (request.format === "text") {
+            throw new UnsupportedOptionError("parallel", "reader", "format");
+          }
+          for (const key of [
+            "withLinksSummary",
+            "noGfm",
+            "keepImgDataUrl",
+            "withImagesSummary",
+            "retainImages",
+          ] as const) {
+            if (request[key] === true) {
+              throw new UnsupportedOptionError("parallel", "reader", key);
+            }
+          }
         },
 
         cacheIdentity(request: ReaderFetchRequest) {
@@ -286,6 +316,10 @@ export class ParallelAdapter implements ProviderAdapter {
 
             const result = response.results?.[0];
             const content = result?.full_content || result?.excerpts?.join("\n\n") || "";
+
+            if (content.length === 0) {
+              throw new ApiError("Parallel AI extract returned no content", 422);
+            }
 
             return {
               schemaVersion: 1,

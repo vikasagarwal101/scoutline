@@ -28,9 +28,9 @@ describe("Jina AI Credentials", () => {
     assert.equal(resolveJinaApiKey({ JINA_API_KEY: "   " }), undefined);
   });
 
-  it("checks if jina is configured", () => {
+  it("checks if jina is configured (always true — keyless supported)", () => {
     assert.equal(isJinaConfigured({ JINA_API_KEY: TEST_KEY }), true);
-    assert.equal(isJinaConfigured({}), false);
+    assert.equal(isJinaConfigured({}), true);
   });
 });
 

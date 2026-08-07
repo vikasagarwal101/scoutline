@@ -116,6 +116,9 @@ export async function fetchJinaReader(
     if (err instanceof AuthError || err instanceof ApiError || err instanceof TimeoutError) {
       throw err;
     }
+    if (err instanceof SyntaxError) {
+      throw new ApiError("Jina AI returned a malformed JSON response", 500);
+    }
     if (err instanceof Error && err.name === "AbortError") {
       throw new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
     }
@@ -176,6 +179,9 @@ export async function fetchJinaSearch(
     if (err instanceof AuthError || err instanceof ApiError || err instanceof TimeoutError) {
       throw err;
     }
+    if (err instanceof SyntaxError) {
+      throw new ApiError("Jina AI returned a malformed JSON response", 500);
+    }
     if (err instanceof Error && err.name === "AbortError") {
       throw new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
     }
@@ -193,6 +199,8 @@ export async function fetchJinaSearch(
 
 const DEEPSEARCH_BASE_URL = "https://deepsearch.jina.ai";
 const DEFAULT_DEEPSEARCH_TIMEOUT_MS = 120000;
+const DEEPSEARCH_TIMEOUT_HELP_TEXT =
+  "Try again or increase timeout with JINA_DEEPSEARCH_TIMEOUT env var";
 
 export interface JinaDeepSearchUrlCitation {
   readonly title?: string;
@@ -268,8 +276,11 @@ export async function fetchJinaDeepSearch(
     if (err instanceof AuthError || err instanceof ApiError || err instanceof TimeoutError) {
       throw err;
     }
+    if (err instanceof SyntaxError) {
+      throw new ApiError("Jina AI returned a malformed JSON response", 500);
+    }
     if (err instanceof Error && err.name === "AbortError") {
-      throw new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
+      throw new TimeoutError(timeoutMs, DEEPSEARCH_TIMEOUT_HELP_TEXT);
     }
     throw new NetworkError(
       `Jina AI DeepSearch failed: ${err instanceof Error ? err.message : String(err)}`,

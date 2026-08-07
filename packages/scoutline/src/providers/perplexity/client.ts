@@ -19,6 +19,8 @@ const DEFAULT_DEEPSEARCH_TIMEOUT_MS = 300000;
 
 const USER_AGENT = `scoutline/${VERSION}`;
 const TIMEOUT_HELP_TEXT = "Try again or increase timeout with PERPLEXITY_TIMEOUT env var";
+const RESEARCH_TIMEOUT_HELP_TEXT =
+  "Try again or increase timeout with PERPLEXITY_RESEARCH_TIMEOUT env var";
 
 export interface PerplexityTransportDeps {
   readonly fetch?: (
@@ -164,6 +166,9 @@ export async function fetchPerplexitySearch(
     if (err instanceof AuthError || err instanceof ApiError || err instanceof TimeoutError) {
       throw err;
     }
+    if (err instanceof SyntaxError) {
+      throw new ApiError("Perplexity returned a malformed JSON response", 500);
+    }
     if (err instanceof Error && err.name === "AbortError") {
       throw new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
     }
@@ -228,8 +233,14 @@ export async function fetchPerplexityChat(
     if (err instanceof AuthError || err instanceof ApiError || err instanceof TimeoutError) {
       throw err;
     }
+    if (err instanceof SyntaxError) {
+      throw new ApiError("Perplexity returned a malformed JSON response", 500);
+    }
     if (err instanceof Error && err.name === "AbortError") {
-      throw new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
+      throw new TimeoutError(
+        timeoutMs,
+        isResearch ? RESEARCH_TIMEOUT_HELP_TEXT : TIMEOUT_HELP_TEXT,
+      );
     }
     throw new NetworkError(
       `Perplexity request failed: ${err instanceof Error ? err.message : String(err)}`,

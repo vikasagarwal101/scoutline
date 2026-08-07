@@ -1,7 +1,7 @@
 /**
  * Jina AI Provider Adapter.
  *
- * Implements Search, Reader, and Diagnostics capabilities for Jina AI.
+ * Implements Search, Reader, Research, and Diagnostics capabilities for Jina AI.
  *
  * Field mapping (Jina API → Provider-neutral):
  *   Search (s.jina.ai):
@@ -127,8 +127,21 @@ export class JinaAdapter implements ProviderAdapter {
         if (!request.query || request.query.trim().length === 0) {
           throw new ValidationError("Search query must not be empty");
         }
-        if (request.controls?.type !== undefined) {
-          throw new UnsupportedOptionError("jina", "search", "type");
+        // Jina's s.jina.ai endpoint takes only the query string — it has
+        // no native support for domain filtering, recency, content depth,
+        // location, or topic. Reject them so the user gets a clear signal
+        // and fallback can route to a provider that supports them.
+        for (const option of [
+          "type",
+          "domain",
+          "recency",
+          "contentSize",
+          "location",
+          "topic",
+        ] as const) {
+          if (request.controls?.[option] !== undefined) {
+            throw new UnsupportedOptionError("jina", "search", option);
+          }
         }
       },
 
@@ -218,6 +231,16 @@ export class JinaAdapter implements ProviderAdapter {
         validate(request: ResearchRequest): void {
           if (!request.query || request.query.trim().length === 0) {
             throw new ValidationError("Research query must not be empty");
+          }
+          for (const option of [
+            "model",
+            "outputLength",
+            "citationFormat",
+            "domain",
+          ] as const) {
+            if (request[option] !== undefined) {
+              throw new UnsupportedOptionError("jina", "research", option);
+            }
           }
         },
 

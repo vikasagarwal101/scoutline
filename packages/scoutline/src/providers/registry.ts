@@ -1,8 +1,8 @@
 /**
  * Static Provider Registry (DESIGN.md §5, P2-05).
  *
- * The production registry is a static list of the two real Search
- * Provider Descriptors, in the fixed order [zai, minimax]. It performs
+ * The production registry is a static list of built-in Provider
+ * Descriptors in canonical fallback order. It performs
  * NO dynamic imports, accepts no package names, file paths, or
  * externally supplied factories. Tests inject descriptor lists through
  * the explicit optional parameters of {@link getProviderDescriptor} and

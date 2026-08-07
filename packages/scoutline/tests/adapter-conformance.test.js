@@ -298,7 +298,7 @@ describe("Search Adapter conformance — shared normalized output", () => {
 // ---------------------------------------------------------------------------
 
 describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
-  it("contains exactly [zai, minimax, tavily, exa, brave, firecrawl] in that order", () => {
+  it("contains exactly [zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina] in that order", () => {
     assert.deepStrictEqual(
       BUILT_IN_PROVIDER_DESCRIPTORS.map((d) => d.id),
       [
@@ -408,31 +408,31 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     const onlyZai = getConfiguredProviderDescriptors({ Z_AI_API_KEY: "k" });
     assert.deepStrictEqual(
       onlyZai.map((d) => d.id),
-      ["zai"],
+      ["zai", "jina"],
     );
 
     const onlyMm = getConfiguredProviderDescriptors({ MINIMAX_API_KEY: "k" });
     assert.deepStrictEqual(
       onlyMm.map((d) => d.id),
-      ["minimax"],
+      ["minimax", "jina"],
     );
 
     const onlyTv = getConfiguredProviderDescriptors({ TAVILY_API_KEY: "k" });
     assert.deepStrictEqual(
       onlyTv.map((d) => d.id),
-      ["tavily"],
+      ["tavily", "jina"],
     );
 
     const onlyBrave = getConfiguredProviderDescriptors({ BRAVE_SEARCH_API_KEY: "k" });
     assert.deepStrictEqual(
       onlyBrave.map((d) => d.id),
-      ["brave"],
+      ["brave", "jina"],
     );
 
     const onlyExa = getConfiguredProviderDescriptors({ EXA_API_KEY: "k" });
     assert.deepStrictEqual(
       onlyExa.map((d) => d.id),
-      ["exa"],
+      ["exa", "jina"],
     );
 
     const both = getConfiguredProviderDescriptors({
@@ -441,7 +441,7 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     });
     assert.deepStrictEqual(
       both.map((d) => d.id),
-      ["zai", "minimax"],
+      ["zai", "minimax", "jina"],
     );
 
     const all = getConfiguredProviderDescriptors({
@@ -453,13 +453,14 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     });
     assert.deepStrictEqual(
       all.map((d) => d.id),
-      ["zai", "minimax", "tavily", "exa", "brave"],
+      ["zai", "minimax", "tavily", "exa", "brave", "jina"],
     );
 
+    // Jina is always configured (keyless access supported)
     const neither = getConfiguredProviderDescriptors({});
     assert.deepStrictEqual(
       neither.map((d) => d.id),
-      [],
+      ["jina"],
     );
   });
 

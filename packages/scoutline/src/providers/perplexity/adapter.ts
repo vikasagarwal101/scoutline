@@ -199,13 +199,15 @@ export class PerplexityAdapter implements ProviderAdapter {
           const response = await fetchPerplexitySearch(apiKey, query, params, transport);
           const results = response.results || [];
 
-          return results.map((item) => ({
-            title: item.title || "Untitled",
-            url: item.url || "",
-            summary: item.snippet || "",
-            source: "Perplexity",
-            date: item.date || undefined,
-          }));
+          return results
+            .filter((item) => item.url)
+            .map((item) => ({
+              title: item.title || "Untitled",
+              url: item.url!,
+              summary: item.snippet || "",
+              source: "Perplexity",
+              date: item.date || undefined,
+            }));
         } catch (error) {
           throw normalizePerplexityError(error);
         }
@@ -219,6 +221,15 @@ export class PerplexityAdapter implements ProviderAdapter {
           if (!request.query || request.query.trim().length === 0) {
             throw new ValidationError("Research query must not be empty");
           }
+          for (const option of [
+            "outputLength",
+            "citationFormat",
+            "domain",
+          ] as const) {
+            if (request[option] !== undefined) {
+              throw new UnsupportedOptionError("perplexity", "research", option);
+            }
+          }
         },
 
         cacheIdentity(request: ResearchRequest) {
@@ -228,7 +239,7 @@ export class PerplexityAdapter implements ProviderAdapter {
             capability: "research",
             operation: "research-fetch",
             credentialFingerprint: credentialFingerprint(apiKey),
-            request,
+            request: { ...request, query: request.query.trim() },
           };
         },
 
@@ -248,9 +259,10 @@ export class PerplexityAdapter implements ProviderAdapter {
             const content = response.choices?.[0]?.message?.content || "";
 
             // Prefer search_results[] (structured sources with titles)
-            // over citations[] (bare URLs).
+            // over citations[] (bare URLs). Fall back to citations[] when
+            // search_results[] has no usable URLs.
             const sources: { title: string; url: string }[] = [];
-            if (response.search_results && response.search_results.length > 0) {
+            if (response.search_results) {
               for (const entry of response.search_results) {
                 if (entry.url) {
                   sources.push({
@@ -259,7 +271,8 @@ export class PerplexityAdapter implements ProviderAdapter {
                   });
                 }
               }
-            } else if (response.citations && response.citations.length > 0) {
+            }
+            if (sources.length === 0 && response.citations) {
               for (const url of response.citations) {
                 sources.push({ title: `Source ${sources.length + 1}`, url });
               }

@@ -178,7 +178,7 @@ Provider selection, and `doctor`.
 | `read` (Reader) | Yes | **No** | Yes | Yes | No | Yes | Yes | No | Yes | Parallel (Extract API) & Jina add Reader support |
 | `crawl` | **No** | **No** | Yes | No | No | Yes (async) | No | No | No | Tavily sync; Firecrawl async (resumable after Ctrl-C) |
 | `map` | **No** | **No** | Yes | No | No | Yes | No | No | No | URL-set discovery; no per-page content |
-| `research` | **No** | **No** | Yes | Yes | **No** | **No** | Yes | Yes | Yes | Tavily, Exa, Parallel, Perplexity Sonar-pro, and Jina DeepSearch report synthesis |
+| `research` | **No** | **No** | Yes | Yes | **No** | **No** | Yes | Yes | Yes | Tavily, Exa, Parallel, Perplexity `sonar-deep-research`, and Jina DeepSearch report synthesis |
 | `repo search` / `repo read` / `repo tree` | Yes | **No** | **No** | **No** | **No** | **No** | **No** | **No** | **No** | Participates in selection; only Z.AI supplies `repository-exploration` |
 | `tools`, `tool`, `call` (Raw tools) | Yes | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
 | `code` (Code Mode) | Yes | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |

@@ -2,34 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.13.11] - 2026-XX-XX
+## [0.14.2] - 2026-08-08
 
-### Type-system hardening
-
-- `ScoutlineError.code` is now typed as a tagged union of valid
-  codes; runtime values outside the union are rejected at
-  construction.
-- `parseToolArgs` now rejects non-object JSON values (primitives,
-  `null`, arrays) before they reach `callTool`.
-- `callToolRaw`'s return type is now correctly modelled; callers
-  receive the union they actually get.
-- The provider-fallback executor's capability dispatch is
-  exhaustively typed against `ProviderCapability`; adding a new
-  Capability without updating the executor is now a compile-time
-  error.
-- The `init` wizard's Back choice is correctly typed as
-  `ProviderId | undefined`.
-
-### [0.14.2] - 2026-08-08
-
-#### Test-quality improvements
+### Test-quality improvements
 
 - Redaction false-positive tests now cover prose-length strings matching the `fc-[a-zA-Z0-9]{20,}` regex, documenting the known trade-off (extremely unlikely in practice) and confirming tokens with spaces are not redacted.
 - MCP client retry-count test now verifies actual retry behavior: a fake UTCP client with `ZAI_MCP_RETRY_COUNT=0` produces 1 attempt, `=2` produces 3 attempts — replacing the indirect "env is stored" assertion with a behavioral test.
 
-### [0.14.1] - 2026-08-08
+## [0.14.1] - 2026-08-08
 
-#### Post-release audit fixes
+### Post-release audit fixes
 
 - AbortSignal cancellation is now classified as terminal (not retryable) in the shared execution path. Previously, a user-initiated cancel could trigger a retry. The signal is now checked both after `invoke()` rejects and after the backoff sleep, so cancellation during backoff also terminates promptly.
 - Diagnostics capability mapping now throws on descriptor/index mismatch instead of silently omitting a provider id, making registry inconsistencies immediately visible.

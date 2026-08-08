@@ -155,6 +155,9 @@ function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
 }
 
+/** Tavily direct-HTTP endpoint identities; a union so typos can't reroute crawl/map 403s into auth failures (T8-01). */
+type TavilyEndpointLabel = "search" | "extract" | "crawl" | "map" | "research" | "usage";
+
 /**
  * Layer 1 — HTTP-status mapping. Runs BEFORE the body is parsed; on a
  * non-200 response we discard the body and throw a typed error.
@@ -179,7 +182,11 @@ function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
  * text). The transport never embeds credential material in any error
  * message.
  */
-function mapStatusError(status: number, timeoutMs: number, endpointLabel: string): Error {
+function mapStatusError(
+  status: number,
+  timeoutMs: number,
+  endpointLabel: TavilyEndpointLabel,
+): Error {
   if (status === 401) {
     return new AuthError("Tavily authentication failed", "TAVILY_API_KEY");
   }
@@ -241,7 +248,7 @@ async function postTavilyJson(
   path: string,
   body: Record<string, unknown>,
   deps: TavilyTransportDeps,
-  endpointLabel: string,
+  endpointLabel: TavilyEndpointLabel,
   /**
    * Optional client-side AbortController timeout in ms. When omitted, the
    * transport resolves the timeout from `deps.env` (`TAVILY_TIMEOUT`,
@@ -451,7 +458,7 @@ async function getTavilyJson(
   apiKey: string,
   path: string,
   deps: TavilyTransportDeps,
-  endpointLabel: string,
+  endpointLabel: TavilyEndpointLabel,
 ): Promise<unknown> {
   const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;

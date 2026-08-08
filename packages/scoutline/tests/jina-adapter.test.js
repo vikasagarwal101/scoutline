@@ -5,11 +5,15 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { createJinaDescriptor, JinaAdapter } from "../dist/providers/jina/adapter.js";
+import { resolveJinaApiKey, isJinaConfigured } from "../dist/providers/jina/credentials.js";
 import {
-  resolveJinaApiKey,
-  isJinaConfigured,
-} from "../dist/providers/jina/credentials.js";
-import { ApiError, AuthError, QuotaError, UnsupportedOptionError, ValidationError } from "../dist/lib/errors.js";
+  ApiError,
+  AuthError,
+  QuotaError,
+  TimeoutError,
+  UnsupportedOptionError,
+  ValidationError,
+} from "../dist/lib/errors.js";
 
 const TEST_KEY = "jina-test-api-key";
 
@@ -38,7 +42,12 @@ describe("Jina AI Descriptor & Adapter", () => {
   it("creates descriptor with correct metadata", () => {
     const desc = createJinaDescriptor();
     assert.equal(desc.id, "jina");
-    assert.deepEqual(Array.from(desc.capabilities()), ["search", "reader", "research", "diagnostics"]);
+    assert.deepEqual(Array.from(desc.capabilities()), [
+      "search",
+      "reader",
+      "research",
+      "diagnostics",
+    ]);
   });
 
   it("invokes search with mock transport", async () => {
@@ -75,10 +84,7 @@ describe("Jina AI Descriptor & Adapter", () => {
       ],
     });
 
-    const adapter = new JinaAdapter(
-      { env: {} },
-      { transport: { fetch: fakeFetch } },
-    );
+    const adapter = new JinaAdapter({ env: {} }, { transport: { fetch: fakeFetch } });
 
     const results = await adapter.search.invoke({ query: "test" });
     assert.equal(results.length, 1);
@@ -111,21 +117,34 @@ describe("Jina AI Descriptor & Adapter", () => {
       return {
         ok: true,
         status: 200,
-        text: async () => JSON.stringify({
-          choices: [
-            {
-              message: {
-                role: "assistant",
-                content: "Rust async programming uses futures and the async/await syntax.",
-                annotations: [
-                  { url_citation: { title: "Rust Book", url: "https://doc.rust-lang.org/book", exactQuote: "async/await" } },
-                  { url_citation: { title: "Tokio Tutorial", url: "https://tokio.rs/tutorial", exactQuote: "runtime" } },
-                ],
+        text: async () =>
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: "Rust async programming uses futures and the async/await syntax.",
+                  annotations: [
+                    {
+                      url_citation: {
+                        title: "Rust Book",
+                        url: "https://doc.rust-lang.org/book",
+                        exactQuote: "async/await",
+                      },
+                    },
+                    {
+                      url_citation: {
+                        title: "Tokio Tutorial",
+                        url: "https://tokio.rs/tutorial",
+                        exactQuote: "runtime",
+                      },
+                    },
+                  ],
+                },
               },
-            },
-          ],
-          visitedURLs: ["https://doc.rust-lang.org/book", "https://tokio.rs/tutorial"],
-        }),
+            ],
+            visitedURLs: ["https://doc.rust-lang.org/book", "https://tokio.rs/tutorial"],
+          }),
       };
     };
 
@@ -147,10 +166,11 @@ describe("Jina AI Descriptor & Adapter", () => {
     const fakeFetch = async () => ({
       ok: true,
       status: 200,
-      text: async () => JSON.stringify({
-        choices: [{ message: { content: "Research answer." } }],
-        visitedURLs: ["https://source1.com", "https://source2.com"],
-      }),
+      text: async () =>
+        JSON.stringify({
+          choices: [{ message: { content: "Research answer." } }],
+          visitedURLs: ["https://source1.com", "https://source2.com"],
+        }),
     });
 
     const adapter = new JinaAdapter(
@@ -208,6 +228,30 @@ describe("Jina AI Error Handling", () => {
     await assert.rejects(
       () => adapter.search.invoke({ query: "test" }),
       (err) => err instanceof QuotaError && err.retryable === false,
+    );
+  });
+
+  it("maps a timeout during error-body read to TimeoutError (8J.5)", async () => {
+    // Non-OK response whose body read aborts (e.g. client timeout during
+    // error classification) must surface as TimeoutError, not the
+    // status-derived error classification would otherwise produce.
+    const abortError = Object.assign(new Error("aborted"), { name: "AbortError" });
+    const fakeFetch = async () => ({
+      ok: false,
+      status: 500,
+      text: async () => {
+        throw abortError;
+      },
+    });
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "test" }),
+      (err) => err instanceof TimeoutError,
     );
   });
 
@@ -335,10 +379,7 @@ describe("Jina AI Error Handling", () => {
       () => adapter.reader.fetch.validate({ url: "ftp://example.com" }),
       ValidationError,
     );
-    assert.throws(
-      () => adapter.reader.fetch.validate({ url: "not-a-url" }),
-      ValidationError,
-    );
+    assert.throws(() => adapter.reader.fetch.validate({ url: "not-a-url" }), ValidationError);
   });
 
   it("rejects empty reader URL", () => {
@@ -347,10 +388,7 @@ describe("Jina AI Error Handling", () => {
       { transport: { fetch: async () => ({}) } },
     );
 
-    assert.throws(
-      () => adapter.reader.fetch.validate({ url: "  " }),
-      ValidationError,
-    );
+    assert.throws(() => adapter.reader.fetch.validate({ url: "  " }), ValidationError);
   });
 });
 
@@ -407,10 +445,7 @@ describe("Jina Diagnostics — probe (6.7.b)", () => {
       capturedInit = init;
       return { ok: true, status: 200, text: async () => JSON.stringify({ data: [] }) };
     };
-    const adapter = new JinaAdapter(
-      { env: {} },
-      { transport: { fetch: fakeFetch } },
-    );
+    const adapter = new JinaAdapter({ env: {} }, { transport: { fetch: fakeFetch } });
     await adapter.diagnostics.invoke({ probe: true });
     assert.ok(
       !("Authorization" in capturedInit.headers),

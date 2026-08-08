@@ -1,0 +1,564 @@
+{
+  "type": "news",
+  "query": {
+    "original": "rust programming language",
+    "spellcheck_off": false,
+    "show_strict_warning": false
+  },
+  "results": [
+    {
+      "type": "news_result",
+      "title": "Learning Rust 🦀: 01- Intro and Setup - DEV Community",
+      "url": "https://dev.to/fadygrab/learning-rust-1-intro-and-setup-5a77",
+      "description": "I will follow loosely the contents of \"The Rust Programming Language, 2nd Edition\" by Steve Klabnik and Carol Nichols which I'm currently reading to learn Rust (It's a great book by the way!). I will try to write each article of this series from the perspective of an intermediate Python developer ...",
+      "age": "June 3, 2023",
+      "page_age": "2023-06-03T11:24:38",
+      "profile": {
+        "name": "DEV Community",
+        "url": "https://dev.to/fadygrab/learning-rust-1-intro-and-setup-5a77"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "dev.to",
+        "hostname": "dev.to",
+        "favicon": "https://imgs.search.brave.com/UUpF8I85K--vkQzrhameM7iRPRU5VCTXyWbS4sk6G2g/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvNTg5MTcxNDBh/N2U4ODc4MDg0NWQ4/MzU0YWJkNDY3ZWRm/MjUxY2U1YjY5MzJm/YWRlOTI4YjAyZDI1/ZjU0MmJjNi9kZXYu/dG8v",
+        "path": "› fadygrab  › learning-rust-1-intro-and-setup-5a77"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/qHKu_LvGRMFgm13BToOMQP8YJi-kksYHaios_VbXDtQ/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9tZWRp/YTIuZGV2LnRvL2R5/bmFtaWMvaW1hZ2Uv/d2lkdGg9MTAwMCxo/ZWlnaHQ9NTAwLGZp/dD1jb3ZlcixncmF2/aXR5PWF1dG8sZm9y/bWF0PWF1dG8vaHR0/cHMlM0ElMkYlMkZk/ZXYtdG8tdXBsb2Fk/cy5zMy5hbWF6b25h/d3MuY29tJTJGdXBs/b2FkcyUyRmFydGlj/bGVzJTJGYW5oNjlp/aWFuYm52N2NsamMw/NnEucG5n"
+      },
+      "extra_snippets": [
+        "I will follow loosely the contents of \"The Rust Programming Language, 2nd Edition\" by Steve Klabnik and Carol Nichols which I'm currently reading to learn Rust (It's a great book by the way!). I will try to write each article of this series from the perspective of an intermediate Python developer so this series won't be suitable for the absolute programming beginners.",
+        "Almost every Rust introductory article out there speaks of two main Rust features, \"fast performance\" and \"Memory safety\". The first one is self-explanatory; it is fast due to the fact that it is a low-ish level programming language that is closer to the computer hardware than other languages without intermediary layers (its similarity to C and C++ is almost always brought up).",
+        "Some other languages (like C and C++) don't do that and the Programmer has to allocate and release memory for his program which (if done wrong) can lead to problems! Imagine this, you have allocated some memory space for your program but released it too soon, problem! Or released it not soon enough, data corruption! Rust handles that with its \"ownership system\" (which I'll talk about in future articles) that ensures memory safety all the time!",
+        "About Me: Hi! My name is Fady. I'm a Telecommunications engineer transitioning into the... Tagged with learning, rust."
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "Rust 101 — Everything you need to know about Rust | by Nishant Aanjaney Jalan | CodeX | Medium",
+      "url": "https://medium.com/codex/rust-101-everything-you-need-to-know-about-rust-f3dd0ae99f4c",
+      "description": "Rust 101 — Everything you need to know about Rust Introduction to Rust Programming — the most loved programming language Since 2014, I have learnt quite a few languages, mainly focusing on Java …",
+      "age": "February 25, 2023",
+      "page_age": "2023-02-25T05:51:46",
+      "profile": {
+        "name": "Medium",
+        "url": "https://medium.com/codex/rust-101-everything-you-need-to-know-about-rust-f3dd0ae99f4c"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "medium.com",
+        "hostname": "medium.com",
+        "favicon": "https://imgs.search.brave.com/4R4hFITz_F_be0roUiWbTZKhsywr3fnLTMTkFL5HFow/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvOTZhYmQ1N2Q4/NDg4ZDcyODIyMDZi/MzFmOWNhNjE3Y2E4/Y2YzMThjNjljNDIx/ZjllZmNhYTcwODhl/YTcwNDEzYy9tZWRp/dW0uY29tLw",
+        "path": "› codex  › rust-101-everything-you-need-to-know-about-rust-f3dd0ae99f4c"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/0rKdyx8B0VFMA7t2VfPELBd3XP7YVWjsCY6W-k9y_c8/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9taXJv/Lm1lZGl1bS5jb20v/djIvcmVzaXplOmZp/dDo3MDkvMCpFcXFy/djl6VnBIOTlYNzI2/LnBuZw"
+      },
+      "extra_snippets": [
+        "Although I recently learnt Haskell for university purposes, I wanted to learn a new language that has a better overall reputation. A few weeks ago, I turned to Rust, and it has been really good so far. In this article, I am going to share the basics of Rust so that you can start programming today.",
+        "Code should be able to run without crashing first time — Yes, you heard me. Rust is a statically typed language, and based on the way it is constructed, it leaves almost (I say, almost!) no room for your program to crash.",
+        "Rust is a programming language that is built to be fast, secure, reliable and supposedly easier to program.",
+        "Rust was, on the contrary, not built to replace C or C++. It’s aim is completely different, that is, to be an all-purpose general programming language."
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "The Rust Programming Language, 3rd Edition | No Starch Press",
+      "url": "https://nostarch.com/rust-programming-language-3e",
+      "description": "The Rust Programming Language, 3rd Edition, teaches you to write code that the compiler can verify, teams can maintain, and systems can evolve safely over time.",
+      "age": "December 12, 2024",
+      "page_age": "2024-12-12T17:07:53",
+      "profile": {
+        "name": "No Starch Press",
+        "url": "https://nostarch.com/rust-programming-language-3e"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "nostarch.com",
+        "hostname": "nostarch.com",
+        "favicon": "https://imgs.search.brave.com/y_HHu4LI6jPPwOOfpKPlAzVqDJkQjEvYgVg7giO3nqg/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvNTA5ZWIxZDY1/NjViZjRmMzYxOWIw/Y2NhNGZlZDg0NWRj/YTE3MDk0MWJkMTVh/N2U5ZjZkYzhlM2Nl/ZGNiNTk1OS9ub3N0/YXJjaC5jb20v",
+        "path": "› rust-programming-language-3e"
+      },
+      "thumbnail": {
+        "src": ""
+      },
+      "extra_snippets": [
+        "Written by longtime Rust community members, this book shows you how to work effectively with Rust’s type system, concurrency model, and tooling, using patterns and idioms chosen for long-term stability. ... Three substantial project chapters—focusing on a number-guessing game, a command-line tool, and a multithreaded server—demonstrate how these concepts work together in complete, real programs.",
+        "Whether you’re new to Rust or already using it in production, this book helps you write code that scales safely and makes its guarantees explicit. New to this edition: Complete async programming chapter Miri for analyzing unsafe code Built on the Rust 2024 Edition Modern Rust idioms, tooling, and practices",
+        "In addition to his open source software contributions and regular public speaking, he created the New Rustacean podcast (2015–2019). ... Chapter 1: Getting Started Chapter 2: Programming a Guessing Game Chapter 3: Common Programming Concepts Chapter 4: Understanding Ownership Chapter 5: Using Structs to Structure Related Data Chapter 6: Enums and Pattern Matching Chapter 7: Packages, Crates, and Modules Chapter 8: Common Collections Chapter 9: Error Handling Chapter 10: Generic Types, Traits, and Lifetimes Chapter 11: Writing Automated Tests Chapter 12: An I/O Project: Building a Command Lin",
+        "Carol Nichols is a member of the Rust Crates.io Team and former member of the Rust Core Team. She’s a co-founder of Integer 32, LLC, the world’s first Rust-focused software consultancy."
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "Introduction to Rust Programming Language - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/rust/introduction-to-rust-programming-language/",
+      "description": "Your All-in-One Learning Portal. It contains well written, well thought and well explained computer science and programming articles, quizzes and practice/competitive programming/company interview Questions.",
+      "age": "March 18, 2021",
+      "page_age": "2021-03-18T19:08:24",
+      "profile": {
+        "name": "GeeksforGeeks",
+        "url": "https://www.geeksforgeeks.org/rust/introduction-to-rust-programming-language/"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "geeksforgeeks.org",
+        "hostname": "www.geeksforgeeks.org",
+        "favicon": "https://imgs.search.brave.com/bGE5KD5Za34la_MeOAt7584d1aXRWEQopsXEQyAALPw/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvYjBhOGQ3MmNi/ZWE5N2EwMmZjYzA1/ZTI0ZTFhMGUyMTE0/MGM0ZTBmMWZlM2Y2/Yzk2ODMxZTRhYTBi/NDdjYTE0OS93d3cu/Z2Vla3Nmb3JnZWVr/cy5vcmcv",
+        "path": "› rust  › introduction-to-rust-programming-language"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/ccYo8KGOJOWHc0SXk3GWRVpHd_X1jkelMrex-8vgpcI/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9tZWRp/YS5nZWVrc2Zvcmdl/ZWtzLm9yZy93cC1j/b250ZW50L3VwbG9h/ZHMvMjAyMzA3MTIx/MjE3MjAvSW50cm9k/dWN0aW9uLXRvLVJ1/c3QtUHJvZ3JhbW1p/bmctTGFuZ3VhZ2Vf/QXJ0LWJvYXJkLTEu/d2VicA"
+      },
+      "extra_snippets": [
+        "This is much more powerful than C/C++ because we cannot write the wrong parallel code you can never see fault in rust. It is very fast in representing a lot of programming paradigms very well. But the question arises as there are already so many programming languages like Python, C++, Java, etc, then why the need for developing a new programming language?",
+        "The answer to this is the other programming languages have a lot of control over the hardware that you are running, like, you can optimize it well, translate directly to assembly code, but it's not very safe. So rust provides us all the controls that we can have and all the levels of security that we can achieve.",
+        "The big project of Rust is \"servo\", It is a project to write out the totally parallel layout engine like Gecko in Firefox or WebKit in Safari. Servo built the layout engine, something to render HTML from bottom to top. ... Functions are the block of reusable code that can perform similar related actions. You have already seen one of the most important functions in the language: the main function, which is the entry point of many programs.",
+        "Rust supports more complex code as compared to other languages, so we can achieve more in less code. It enables cross-platform development. Ease of integration: Rust can be easily integrated with C and many other famous programming languages."
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "How Rust went from a side project to the world's most-loved programming language | MIT Technology Review",
+      "url": "https://www.technologyreview.com/2023/02/14/1067869/rust-worlds-fastest-growing-programming-language/",
+      "description": "When the coder discussion board Stack Overflow conducts its annual poll of developers around the world, Rust has been rated the most “loved” programming language for seven years running. Even the US government is avidly promoting software in Rust as a way to make its processes more secure.",
+      "age": "February 14, 2023",
+      "page_age": "2023-02-14T10:00:00",
+      "profile": {
+        "name": "MIT Technology Review",
+        "url": "https://www.technologyreview.com/2023/02/14/1067869/rust-worlds-fastest-growing-programming-language/"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "technologyreview.com",
+        "hostname": "www.technologyreview.com",
+        "favicon": "https://imgs.search.brave.com/eqtMGlQxMR6YkRMU-mfzyfKIOH3iW9OYBKHsyp0AD1Q/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvZDNjYWUwNWU4/OWQzNTY4ZjJlZWU4/N2IzZWUzNGJhMmE0/MWZhYTllMjhhNzdj/YzhjYzkxOThhZGMy/MDFhZjgxNC93d3cu/dGVjaG5vbG9neXJl/dmlldy5jb20v",
+        "path": "› 2023  › 02  › 14  › 1067869  › rust-worlds-fastest-growing-programming-language"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/lLgLqEJiM6Mzxu-5K5pF7PNFilIupeknn7ybHwETe5k/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly93cC50/ZWNobm9sb2d5cmV2/aWV3LmNvbS93cC1j/b250ZW50L3VwbG9h/ZHMvMjAyMy8wMi9q/aW5od2FqYW5nX2My/LmpwZz9yZXNpemU9/MTIwMCw2MDA"
+      },
+      "extra_snippets": [
+        "But it’s meteor-strike rare for one to take hold and become part of the pantheon of well-known languages alongside, say, JavaScript or Python or Java. How did Rust do it? To grasp what makes Rust so useful, it’s worth taking a peek beneath the hood at how programming languages deal with computer memory.",
+        "So the world of programming became divided, roughly, into two tribes. If software needed to run fast or on a tiny chip in an embedded device, it was more likely to be written in C or C++. If it was a web app or mobile-phone app—an increasingly big chunk of the world of code—then you used a newer, garbage-collected language. With Rust, Hoare aimed to create a language that split the difference between these approaches.",
+        "Rust, they realized, could help them build a better browser engine. Browsers are notoriously complex pieces of software with many opportunities for dangerous memory bugs. One employee who got involved was Patrick Walton, who’d joined Mozilla after deciding to leave his PhD studies in programming languages.",
+        "Many, like Mozilla engineers Niko Matsakis and Felix Klock, had academic experience researching memory and coding languages. Executives at Mozilla realized Rust could help them build a better browser engine, and they put several engineers on the project. These included Patrick Walton (1), who had joined Mozilla after deciding to leave his PhD studies in programming languages; Niko Matsakis (2) and Felix Klock (3), both of whom had academic experience researching memory and coding languages; and Manish Goregaokar (4), who currently runs Rust’s developer tools team."
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "What is the Rust language? Safe, fast, and easy software development | InfoWorld",
+      "url": "https://www.infoworld.com/article/2255250/what-is-rust-safe-fast-and-easy-software-development.html",
+      "description": "Unlike most programming languages, Rust doesn't make you choose between speed, safety, and ease of use. Find out how Rust delivers better code with fewer compromises, and a few downsides to consider before learning Rust.",
+      "age": "October 6, 2021",
+      "page_age": "2021-10-06T17:00:00",
+      "profile": {
+        "name": "InfoWorld",
+        "url": "https://www.infoworld.com/article/2255250/what-is-rust-safe-fast-and-easy-software-development.html"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "infoworld.com",
+        "hostname": "www.infoworld.com",
+        "favicon": "https://imgs.search.brave.com/Hb93ZIZx0o3exU-ch0QmrjpTHi4k2wq0_8fTPpC2Ayc/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvYjkzNmE5ZDBl/OGI4YWU0NDY5MGQ4/OWE1MmYxMzk2ZWEy/MGZkMzk3ZTNlYjNj/ZjI4YmY1YzU3MmUx/MmVjMWQ3MC93d3cu/aW5mb3dvcmxkLmNv/bS8",
+        "path": "› article  › 2255250  › what-is-rust-safe-fast-and-easy-software-development.html"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/jwUE3Tswr7Fbx_oBdkKp9wDqC2aBPE5hAdRQCF4JYC0/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly93d3cu/aW5mb3dvcmxkLmNv/bS93cC1jb250ZW50/L3VwbG9hZHMvMjAy/NS8wNS8yMjU1MjUw/LTAtMTQ0NDMyMDAt/MTc0NzcxNjY0MS1y/dXN0LWtpbmctaXJv/bi1icm9uemUtMTAw/Njg5ODI1LW9yaWcu/anBnP3F1YWxpdHk9/NTAmYW1wO3N0cmlw/PWFsbCZhbXA7dz0x/MDI0"
+      },
+      "extra_snippets": [
+        "Programming languages that emphasize convenience and safety tend to be slow (like Python). Languages that emphasize performance tend to be difficult to use and quick to blow things up (like C and C++). That has been the state of software development for a good long time now. Is it possible to deliver speed, safety, and ease of use in a single language? The Rust language, originally created by Graydon Hoare and currently sponsored by Google, Microsoft, Mozilla, Arm, and others, attempts to bring together these three attributes in one language.",
+        "Get up to speed quickly on the Rust language, designed to create fast, system-level software. This two-minute animated explainer shows how Rust bypasses the thorny issues of memory and management. Rust is meant to be fast, safe, and reasonably easy to use. It’s also intended to be used widely, and not simply end up as a curiosity or an also-ran in the programming language sweepstakes.",
+        "This article is a quick look at the key characteristics that make Rust an increasingly popular language for developers seeking an alternative to the status quo. We’ll also consider some of the downsides to adopting Rust. Rust code compiles to native machine code across multiple platforms. Binaries are self-contained, with no external runtime apart from what the operating system might provide, and the generated code is meant to perform as well as comparable code written in C or C++. Rust won’t compile programs that attempt unsafe memory usage.",
+        "In other languages, many classes of memory errors are discovered when a program is running. Rust’s syntax and language metaphors ensure that common memory-related problems in other languages—null or dangling pointers, data races, and so on—never make it into production."
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "The Language Better Than Rust. Saying that a language is better then… | by John Philip | Rustaceans | Aug, 2026 | Medium",
+      "url": "https://medium.com/rustaceans/the-language-better-than-rust-2b8f27b5bb90",
+      "description": "The Language Better Than Rust Saying that a language is better then Rust will get you yelled at in certain Discord servers, Hacker News threads, and conference hallways. Good Engineers should argue …",
+      "age": "5 days ago",
+      "page_age": "2026-08-04T08:32:50",
+      "profile": {
+        "name": "Medium",
+        "url": "https://medium.com/rustaceans/the-language-better-than-rust-2b8f27b5bb90"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "medium.com",
+        "hostname": "medium.com",
+        "favicon": "https://imgs.search.brave.com/4R4hFITz_F_be0roUiWbTZKhsywr3fnLTMTkFL5HFow/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvOTZhYmQ1N2Q4/NDg4ZDcyODIyMDZi/MzFmOWNhNjE3Y2E4/Y2YzMThjNjljNDIx/ZjllZmNhYTcwODhl/YTcwNDEzYy9tZWRp/dW0uY29tLw",
+        "path": "› rustaceans  › the-language-better-than-rust-2b8f27b5bb90"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/sn1v_uB04w8BQujCkKlxVf7pUNT2I4gV8HDlOpGsgRg/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9taXJv/Lm1lZGl1bS5jb20v/djIvZGE6dHJ1ZS9y/ZXNpemU6Zml0OjEy/MDAvMCp2anhTRXZ6/TWxLWFJZbUg4"
+      },
+      "extra_snippets": [
+        "Rust Programming Language · Rustlang · Programming · Software Development · John Philip · 3 min read · ·2 days ago · -- 2 · Listen · Share · Press enter or click to view image in full size · Photo by SIMON LEE on Unsplash · Saying that a language is better then Rust will get you yelled at in certain Discord servers, Hacker News threads, and conference hallways.",
+        "Saying that a language is better then Rust will get you yelled at in certain Discord servers, Hacker News threads, and conference hallways…",
+        "Saying that a language is better then Rust will get you yelled at in certain Discord servers, Hacker News threads, and conference hallways. Good Engineers should argue about tools the way chefs argue about knives.",
+        "For systems work, embedded, kernels, high-performance networking, and anything that used to require writing careful C while praying, Rust is currently the strongest default choice available. So why do I still refuse to crown it the final boss? Because languages are not absolute rankings."
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "Introduction to Rust · Learn Rust | LearningRust.org",
+      "url": "https://learningrust.org/lessons/01-introduction",
+      "description": "TL;DR: Rust is a systems programming language that guarantees memory safety without a garbage collector. In this lesson you'll write your first Rust program, learn why ownership makes Rust different, and see zero-cost abstractions in action. Estimated: 15 minutes.",
+      "profile": {
+        "name": "Learningrust",
+        "url": "https://learningrust.org/lessons/01-introduction"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "learningrust.org",
+        "hostname": "learningrust.org",
+        "favicon": "https://imgs.search.brave.com/Kkhs4d_6um-yguokXevGVXx3je6m7mWjPDVeQ1Uzi6w/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvMGQ4Zjg0ZjVm/ZGMyNGZmYzY4NzFm/YWM4NmY2Yjg2MDBm/YzU4NjYyYmNmYjY1/ZjkxMjk5Njg5NTA5/ZGFlY2M1ZS9sZWFy/bmluZ3J1c3Qub3Jn/Lw",
+        "path": "› lessons  › 01-introduction"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/My8zMF_5F0c7COl5oQBRAIFQhseN9BerkTvJ-pYT7Lc/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9sZWFy/bmluZ3J1c3Qub3Jn/L29nL3J1c3QucG5n"
+      },
+      "extra_snippets": [
+        "It was originally developed by Mozilla Research and has since become one of the most loved programming languages according to Stack Overflow's annual developer survey. Every programming journey starts with \"Hello, World!\" — hit Run to see Rust in action:",
+        "Rust is a systems programming language that focuses on safety, concurrency, and performance.",
+        "Learn Rust from scratch — discover why Rust is popular, set up your environment, and write your first program as a beginner",
+        "Welcome to your first lesson in Rust programming!"
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "Rust Programming Language: Unleashing Safety, Performance, and Concurrency in Modern Development | by Beck Moulton | Level Up Coding",
+      "url": "https://levelup.gitconnected.com/rust-programming-language-unleashing-safety-performance-and-concurrency-in-modern-development-c06adbb4e54d",
+      "description": "In the past five years, Rust has become one of the most popular and beloved programming languages, thanks to its incredible development…",
+      "age": "January 30, 2024",
+      "page_age": "2024-01-30T17:52:34",
+      "profile": {
+        "name": "GitConnected",
+        "url": "https://levelup.gitconnected.com/rust-programming-language-unleashing-safety-performance-and-concurrency-in-modern-development-c06adbb4e54d"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "levelup.gitconnected.com",
+        "hostname": "levelup.gitconnected.com",
+        "favicon": "https://imgs.search.brave.com/ZR7NdNQSBoCTA_FpuTIqfLzriPqO0VQ4NMenfyiBI1g/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvNjA0NjhhMmQx/MGY4N2QyNDIwZTFm/ZWJhZjdkNmVlZWI1/MjQ5MDdjOTI2OWQ4/MDA1ZGQ5ZDI3Zjkx/OTUxZWMxOS9sZXZl/bHVwLmdpdGNvbm5l/Y3RlZC5jb20v",
+        "path": "› rust-programming-language-unleashing-safety-performance-and-concurrency-in-modern-development-c06adbb4e54d"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/LYSgxLmM3dVTq57yMiEbrjgKietp9qs7EffDM8EumPY/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9taXJv/Lm1lZGl1bS5jb20v/djIvZGE6dHJ1ZS9y/ZXNpemU6Zml0OjEw/ODAvMCpaX1hFelBi/VXZFRGh1WUVi"
+      },
+      "extra_snippets": [
+        "Rust prioritizes safety, performance, and concurrency. It allows programmers to harness the control capabilities of low-level languages to create applications while having the powerful abstraction capabilities of high-level languages.",
+        "As a systems language, Rust offers extensive control over hardware resources. This makes it as efficient as C and C++ in many benchmark tests, with added safety guarantees. Due to Rust’s explicit nature and absence of runtime, it allows for inlining, loop unrolling, and other aggressive optimizations. ... Rust combines various programming styles, including procedural, actor-based concurrency, object-oriented, and pure functional.",
+        "Rust’s creators and community make it easy for beginners to grasp the language. The software packages required to generate Rust binary files are unified. External compilers like GCCO are only necessary when working with components outside the Rust system, such as compiling C libraries from source code. ... With Rust, compiling code containing detectable errors is not allowed. This feature enables developers to focus on the core logic of the program rather than correcting issues.",
+        "Rust-analyzer is an efficient language server providing features like code analysis and autocompletion for Rust code. It is easy to use and compatible with multiple text editors and IDEs. Rustfmt is a formatting tool specifically designed to ensure consistent formatting of Rust code. ... Rust provides a wealth of useful documentation. Here are some valuable resources: The Rust Programming Language Book (in-depth explanation of Rust and its core concepts)"
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "Rust Programming Language Adoption Statistics 2026",
+      "url": "https://commandlinux.com/statistics/rust-programming-language-adoption/",
+      "description": "Rust adoption continues to climb, with 48.8% of organizations making non-trivial use of the language in 2025—up 10.1 percentage points in just two years, according to the latest State of Rust Survey.",
+      "age": "3 weeks ago",
+      "page_age": "2026-07-18T19:18:21",
+      "profile": {
+        "name": "Command Linux",
+        "url": "https://commandlinux.com/statistics/rust-programming-language-adoption/"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "commandlinux.com",
+        "hostname": "commandlinux.com",
+        "favicon": "https://imgs.search.brave.com/UdkBfYAQ_lT6mgaqMKVRqU3f8ZuiRRG6gWltkjoZN1k/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvZWM4YTE5MDYy/ZjMxMjQ0OTcwNzgx/N2VhMjgwMmJhYTg0/NjFlNmM3MzFlNGE0/NTgzODhmNDU1OTVm/OGE2NGQyMi9jb21t/YW5kbGludXguY29t/Lw",
+        "path": "› statistics  › rust-programming-language-adoption"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/9IVtHJ9mxka1G6Nfu27OVN-sdRAAASWQ5T7alN1tmEw/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9jb21t/YW5kbGludXguY29t/L3dwLWNvbnRlbnQv/dXBsb2Fkcy8yMDI2/LzA3L1J1c3QtcHJv/Z3JhbW1pbmctbGFu/Z3VhZ2UtYWRvcHRp/b24uanBn"
+      },
+      "extra_snippets": [
+        "The Linux kernel reclassified Rust from experimental to a core language in December 2025. Rust developers in the US average $145,447 on Glassdoor, with the 90th percentile at $239,003. Rust job postings grew 35% year over year in 2025, per iMocha hiring data. The short version: Rust programming language adoption crossed from experiment to budget line.",
+        "That intake rate is high for a language a decade past 1.0, and it tracks with developer sentiment: Stack Overflow’s 2024 survey recorded an 83% admiration rate. For context on where Rust sits against Python, JavaScript, and Go, see our data on the most popular web development languages in 2026, and our ranking of the best Linux distros for programming covers where much of that Rust work happens.",
+        "48.8% of organizations now make non-trivial use of Rust, up 10.1 percentage points in two years, based on the 2025 State of Rust Survey released in March 2026. This post covers verified Rust programming language adoption statistics: enterprise uptake, developer counts, production deployments, salaries, and the roadblocks that remain.",
+        "Among organizations already running Rust, 84.8% say the language helped them achieve their goals and 78.5% say adoption was worth the cost, according to The New Stack’s March 2026 analysis."
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "Rust: The Programming Language That’s Redefining Systems Development | by FAANG | Level Up Coding",
+      "url": "https://levelup.gitconnected.com/rust-the-programming-language-thats-redefining-systems-development-043120a510dd",
+      "description": "If you’ve been following the programming language landscape over the past decade, you’ve almost certainly heard of Rust. What started as a…",
+      "age": "April 6, 2026",
+      "page_age": "2026-04-06T17:14:26",
+      "profile": {
+        "name": "GitConnected",
+        "url": "https://levelup.gitconnected.com/rust-the-programming-language-thats-redefining-systems-development-043120a510dd"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "levelup.gitconnected.com",
+        "hostname": "levelup.gitconnected.com",
+        "favicon": "https://imgs.search.brave.com/ZR7NdNQSBoCTA_FpuTIqfLzriPqO0VQ4NMenfyiBI1g/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvNjA0NjhhMmQx/MGY4N2QyNDIwZTFm/ZWJhZjdkNmVlZWI1/MjQ5MDdjOTI2OWQ4/MDA1ZGQ5ZDI3Zjkx/OTUxZWMxOS9sZXZl/bHVwLmdpdGNvbm5l/Y3RlZC5jb20v",
+        "path": "› rust-the-programming-language-thats-redefining-systems-development-043120a510dd"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/bw9-5lu4my0aL3uNKABJpifqnuy46M1EqhjzSJGgb8I/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9taXJv/Lm1lZGl1bS5jb20v/djIvZGE6dHJ1ZS9y/ZXNpemU6Zml0OjEy/MDAvMCpMNkZ5bmE2/QnJwcjMtZWMx"
+      },
+      "extra_snippets": [
+        "Rust: The Programming Language That’s Redefining Systems Development If you’ve been following the programming language landscape over the past decade, you’ve almost certainly heard of Rust …",
+        "If you’ve been following the programming language landscape over the past decade, you’ve almost certainly heard of Rust. What started as a personal side project by Graydon Hoare in 2006 has evolved into one of the most admired and fastest-growing programming languages in the world.",
+        "In this article, we’ll dive deep into what makes Rust unique, explore its core concepts like ownership and borrowing, compare it to established languages like C++, examine its growing ecosystem, and look at why it’s becoming the go-to choice for everything from web browsers to blockchain to embedded systems. Rust began as Graydon Hoare’s personal experiment in 2006, while he was working at Mozilla Research. Hoare wanted to create what he called a “slightly less annoying” programming language — one that combined the raw performance of C and C++ with the safety guarantees of higher-level languages."
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "15 Rust Attributes You Never Use (But Should) | by bektiaw | Aug, 2026 | Medium",
+      "url": "https://medium.com/@bektiaw/15-rust-attributes-you-never-use-but-should-fadca74c0dee",
+      "description": "RUST | PROGRAMMING | SOFTWARE DEVELOPMENT | SYSTEMS PROGRAMMING 15 Rust Attributes You Never Use (But Should) Write Faster, Safer, and Easier-to-Debug Rust Code Attributes are powerful tools in Rust …",
+      "age": "1 week ago",
+      "page_age": "2026-08-02T16:31:01",
+      "profile": {
+        "name": "Medium",
+        "url": "https://medium.com/@bektiaw/15-rust-attributes-you-never-use-but-should-fadca74c0dee"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "medium.com",
+        "hostname": "medium.com",
+        "favicon": "https://imgs.search.brave.com/4R4hFITz_F_be0roUiWbTZKhsywr3fnLTMTkFL5HFow/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvOTZhYmQ1N2Q4/NDg4ZDcyODIyMDZi/MzFmOWNhNjE3Y2E4/Y2YzMThjNjljNDIx/ZjllZmNhYTcwODhl/YTcwNDEzYy9tZWRp/dW0uY29tLw",
+        "path": "› @bektiaw  › 15-rust-attributes-you-never-use-but-should-fadca74c0dee"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/1sK6hIcmecKmt4Rv5bZB2wZPnMmOtiTGVTzdGv9TOiM/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9taXJv/Lm1lZGl1bS5jb20v/djIvcmVzaXplOmZp/dDoxMjAwLzEqOGEx/OTRFZTFXcUFPQlZn/eVJsUHlBZy5wbmc"
+      },
+      "extra_snippets": [
+        "Rust Programming Language · Software Development · Software Engineering · Technology · bektiaw · 14 min read · ·5 days ago · -- Listen · Share · Press enter or click to view image in full size · An attribute in Rust is metadata attached to code items.",
+        "I Write about Programming | Linux | DevOps | Cloud - support me: https://paypal.me/bektiaw || https://buymeacoffee.com/bektiaw ... An attribute in Rust is metadata attached to code items.",
+        "#[tokio::main] async fn main() { println!(\"Hello from async Rust!\"); do_work().await; } async fn do_work() { println!(\"Doing async work...\"); } #[tokio::main] → gives the compiler an instruction to transform the main function into code that starts the async runtime, without us manually writing the runtime setup. ... I Write about Programming | Linux | DevOps | Cloud - support me: https://paypal.me/bektiaw || https://buymeacoffee.com/bektiaw"
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "Should you learn Rust as your next programming language? - DEV Community",
+      "url": "https://dev.to/francescoxx/should-i-learn-rust-as-a-my-next-programming-language-ach",
+      "description": "Hi, I want to focus on why you might be interested in learning Rust in this short article. If you're... Tagged with programming, opensource, rust, beginners.",
+      "age": "May 9, 2025",
+      "page_age": "2025-05-09T07:29:53",
+      "profile": {
+        "name": "DEV Community",
+        "url": "https://dev.to/francescoxx/should-i-learn-rust-as-a-my-next-programming-language-ach"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "dev.to",
+        "hostname": "dev.to",
+        "favicon": "https://imgs.search.brave.com/UUpF8I85K--vkQzrhameM7iRPRU5VCTXyWbS4sk6G2g/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvNTg5MTcxNDBh/N2U4ODc4MDg0NWQ4/MzU0YWJkNDY3ZWRm/MjUxY2U1YjY5MzJm/YWRlOTI4YjAyZDI1/ZjU0MmJjNi9kZXYu/dG8v",
+        "path": "› francescoxx  › should-i-learn-rust-as-a-my-next-programming-language-ach"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/zmT208WBBFJ84JWdJQoM_y1d8X9NFmoVEhbTxOhcG_E/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9tZWRp/YTIuZGV2LnRvL2R5/bmFtaWMvaW1hZ2Uv/d2lkdGg9MTAwMCxo/ZWlnaHQ9NTAwLGZp/dD1jb3ZlcixncmF2/aXR5PWF1dG8sZm9y/bWF0PWF1dG8vaHR0/cHMlM0ElMkYlMkZk/ZXYtdG8tdXBsb2Fk/cy5zMy5hbWF6b25h/d3MuY29tJTJGdXBs/b2FkcyUyRmFydGlj/bGVzJTJGaGxvZGQ2/c3NndmlqcmhuamJv/ZXUucG5n"
+      },
+      "extra_snippets": [
+        "When I first started exploring new languages, I found it helpful to break down dense documentation the same way I used book summaries online, it helped simplify complex concepts and made learning smoother. Rust may have a steep learning curve, but it’s rewarding if you enjoy structured and efficient programming.",
+        "Rust has been voted the most-admired programming language in the latest Stack Overflow survey.",
+        "Rust is definitely worth considering as your next language. Its memory safety and performance make it ideal for systems programming, and the growing community ensures strong long-term support.",
+        "love the honesty, i get real stubborn about picking up new languages too - you think most folks get stuck because of fear of starting over or something else? ... #rust #webdev #programming #opensource Better than Next.js? Is Rust Finally Ready for Full-Stack Web Development?"
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "Is Rust the Future of Programming? - The JetBrains Blog",
+      "url": "https://blog.jetbrains.com/rust/2025/05/13/is-rust-the-future-of-programming/",
+      "description": "Rust is rewriting the rules of modern software development as the fastest-growing programming language. Its unmatched performance, memory safety without garbage collection, and concurrency capabilities are capturing developers’ attention worldwide. According to our data, with 2,267,000 developers ...",
+      "age": "May 13, 2025",
+      "page_age": "2025-05-13T00:00:00",
+      "profile": {
+        "name": "JetBrains",
+        "url": "https://blog.jetbrains.com/rust/2025/05/13/is-rust-the-future-of-programming/"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "blog.jetbrains.com",
+        "hostname": "blog.jetbrains.com",
+        "favicon": "https://imgs.search.brave.com/IBVWg1JL11i7Qpeg_zwUsHD18OYjlFzBo1TL7231AxQ/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvZjljNmY2Yjdi/YjM3YWMzZGI5YTYz/ZjRjNGJhZGI2Njc5/ZWQ2NGM4ZTFkYTk3/OGMwZWE3YzNmNDI3/OWExZjBkYS9ibG9n/LmpldGJyYWlucy5j/b20v",
+        "path": "› rust  › 2025  › 05  › 13  › is-rust-the-future-of-programming"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/l9zq6Ky8S6lwzHNlnmG4K3aOMCVUOq9hc_4vhTYtXDY/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9ibG9n/LmpldGJyYWlucy5j/b20vd3AtY29udGVu/dC91cGxvYWRzLzIw/MjUvMDUvUlItc29j/aWFsLUJsb2dTb2Np/YWxTaGFyZS0yNTYw/eDE0NDAtMS5wbmc"
+      },
+      "extra_snippets": [
+        "Rust is rewriting the rules of modern software development as the fastest-growing programming language. Its unmatched performance, memory safety without garbage collection, and concurrency capabilities are capturing developers’ attention worldwide. According to our data, with 2,267,000 developers using Rust in the last 12 months and 709,000 identifying it as a primary language, Rust’s footprint in the programming world is expanding rapidly.",
+        "Among those who migrated from specific languages, C++ remained the most commonly replaced language in 2024, reflecting Rust’s positioning as a safer and more modern alternative to legacy system-level tools. Other notable mentions include Python, C, and Go, showing Rust’s ability to compete across multiple domains, from scripting to systems programming.",
+        "The adoption of REST APIs leads as the most common method of integration, reflecting Rust’s use in web development and backend services. Language interoperability (via foreign functions) is also significant, signaling Rust’s frequent use alongside systems programming languages like C and C++.",
+        "Rust’s evolution in 2024 demonstrates its growing role as a foundational language for modern software development. From its increasing adoption in professional environments to its use across diverse industries like systems programming, web development, and embedded systems, Rust is no longer just a systems language – it’s a versatile, community-driven force."
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "Rust in Visual Studio Code",
+      "url": "https://code.visualstudio.com/docs/languages/rust",
+      "description": "Rust is a powerful programming language, often used for systems programming where performance and correctness are high priorities. If you are new to Rust and want to learn more, The Rust Programming Language online book is a great place to start.",
+      "age": "November 3, 2021",
+      "page_age": "2021-11-03T00:00:00",
+      "profile": {
+        "name": "Visual Studio Code",
+        "url": "https://code.visualstudio.com/docs/languages/rust"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "code.visualstudio.com",
+        "hostname": "code.visualstudio.com",
+        "favicon": "https://imgs.search.brave.com/Ss8On-q_OmE9m3HK81vWCxjsSiBf3GQKVNyv-aR6BQs/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvM2Q1MjIwOWMx/Yjk0OTY2NjgyOGVk/MGJlNDQ2YTFjZGQy/ODNkNjI3ZTg0MTc3/MzU1NGE1N2ZjMzMz/ZWEyNTE5OS9jb2Rl/LnZpc3VhbHN0dWRp/by5jb20v",
+        "path": "› docs  › languages  › rust"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/cF-LEPPEsVxqhq7aGR4kvd6Slo1ix-h38g45WcONMX8/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9jb2Rl/LnZpc3VhbHN0dWRp/by5jb20vb3Blbmdy/YXBoaW1nL2dlbmVy/YXRlZC9kb2NzL2xh/bmd1YWdlcy9ydXN0/LndlYnA"
+      },
+      "extra_snippets": [
+        "When you install Rust, you also get the full Rust documentation set locally installed on your machine, which you can review by typing rustup doc. The Rust documentation, including The Rust Programming Language and The Cargo Book, will open in your local browser so you can continue your Rust journey while offline.",
+        "Learn about Visual Studio Code editor features (code completion, debugging, snippets, linting) for Rust.",
+        "When you install Rust with rustup, the toolset includes the rustc compiler, the rustfmt source code formatter, and the clippy Rust linter. You also get Cargo, the Rust package manager, to help download Rust dependencies and build and run Rust programs. You'll find that you end up using cargo for just about everything when working with Rust.",
+        "The rust-analyzer extension has basic debugging support via the Rust Analyzer: Debug command available in the Command Palette (⇧⌘P (Windows, Linux Ctrl+Shift+P)) and the Run|Debug CodeLens in the editor. Let's debug the Hello World program, we created earlier."
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "How To Learn Rust in 2026 | The RustRover Blog",
+      "url": "https://blog.jetbrains.com/rust/2024/09/20/how-to-learn-rust/",
+      "description": "So, you're thinking about choosing Rust as your next programming language to learn. You already know what it means to write code and have some experience with at least one programming language, probab",
+      "age": "September 20, 2024",
+      "page_age": "2024-09-20T00:00:00",
+      "profile": {
+        "name": "JetBrains",
+        "url": "https://blog.jetbrains.com/rust/2024/09/20/how-to-learn-rust/"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "blog.jetbrains.com",
+        "hostname": "blog.jetbrains.com",
+        "favicon": "https://imgs.search.brave.com/IBVWg1JL11i7Qpeg_zwUsHD18OYjlFzBo1TL7231AxQ/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvZjljNmY2Yjdi/YjM3YWMzZGI5YTYz/ZjRjNGJhZGI2Njc5/ZWQ2NGM4ZTFkYTk3/OGMwZWE3YzNmNDI3/OWExZjBkYS9ibG9n/LmpldGJyYWlucy5j/b20v",
+        "path": "› rust  › 2024  › 09  › 20  › how-to-learn-rust"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/JFxusCZ1WRBxzBLyAWQzJSwXEMg8jFGYh43jgMbvkJ0/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9ibG9n/LmpldGJyYWlucy5j/b20vd3AtY29udGVu/dC91cGxvYWRzLzIw/MjQvMDkvcnItc29j/aWFsX3NoYXJlX2Js/b2dfMTI4MHg3MjBf/ZW4tMS5wbmc"
+      },
+      "extra_snippets": [
+        "So, you’re thinking about choosing Rust as your next programming language to learn. You already know what it means to write code and have some experience with at least one programming language, probably Python or JavaScript. You’ve heard about Rust here and there.",
+        "People say it’s a modern systems programming language that brings safety and performance and solves problems that are hard to avoid in other programming languages (such as C or C++). Someone mentioned that Rust’s popularity is growing. You regularly see blog posts describing how Google, Microsoft, Amazon, and other big players in the field have already adopted it.",
+        "However, it’s also been whispered that Rust is not the easiest language to learn, so you worry about whether you can handle it. If you recognize yourself in the description above, this post is for you. I aim to answer all the questions you might have about approaching Rust. I’ll first discuss why it’s beneficial for software developers to learn Rust and compare it with other competing programming languages.",
+        "Developer surveys show that Rust continues to grow steadily across learning, hobby, and professional use. According to survey data, 9% of software developers use Rust as their primary programming language. More importantly, 52% report that they are currently learning the it."
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "Why scientists are turning to Rust | Nature",
+      "url": "https://www.nature.com/articles/d41586-020-03382-2",
+      "description": "Despite having a steep learning curve, the programming language offers speed and safety.",
+      "age": "December 1, 2020",
+      "page_age": "2020-12-01T00:00:00",
+      "profile": {
+        "name": "Nature",
+        "url": "https://www.nature.com/articles/d41586-020-03382-2"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "nature.com",
+        "hostname": "www.nature.com",
+        "favicon": "https://imgs.search.brave.com/0fL1osa7ifHN59zuJ6uJJLU7Z-L3ioVavMKYltv4AFQ/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvZTRhOGIyNjMw/Y2Y5NTYwZWIxNjNl/MDlkYjQ3Y2FiOWVh/MThhOTUyZDIwYWZj/NGRkMDk2MzZjZGRi/MzI1YTkxOC93d3cu/bmF0dXJlLmNvbS8",
+        "path": "› articles  › d41586-020-03382-2"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/RJDtuqKSmHYgfdNL3vxKPD12kYttVocQOBhxvwKrUoQ/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9tZWRp/YS5uYXR1cmUuY29t/L2x3MTIwMC9tYWdh/emluZS1hc3NldHMv/ZDQxNTg2LTAyMC0w/MzM4Mi0yL2Q0MTU4/Ni0wMjAtMDMzODIt/Ml8xODYyOTEwMC5q/cGc"
+      },
+      "extra_snippets": [
+        "Nature - Despite having a steep learning curve, the programming language offers speed and safety.",
+        "In 2015, bioinformatician Johannes Köster was what he called “kind of a full-time Python guy”. He had already written one popular tool — the workflow manager Snakemake — in the programming language. Now he was contemplating a project that required a level of computational performance that Python simply couldn’t deliver."
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "What's so great about Rust? — Bitfield Consulting",
+      "url": "https://bitfieldconsulting.com/posts/why-rust",
+      "description": "Yet it doesn’t spend too many innovation tokens: Rust is founded on solid, well-proven principles that have worked in other languages for decades. Rust leans hard into helping us write correct programs, catching as many problems as possible at compile time, and catching any that remain at ...",
+      "age": "February 1, 2026",
+      "page_age": "2026-02-01T12:46:00",
+      "profile": {
+        "name": "Bitfield Consulting",
+        "url": "https://bitfieldconsulting.com/posts/why-rust"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "bitfieldconsulting.com",
+        "hostname": "bitfieldconsulting.com",
+        "favicon": "https://imgs.search.brave.com/S_7Xk9pPQJRs_iyvz2F7_VeefWA1L37dpfltxdhRf48/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvYjU1YjA5NDJk/YmMyZTIzODFhMTJi/YzA4MTE3ZDQyYmNm/Y2EzYzFiOTdhZDU3/OTVjNjUyMmM2ZjZh/MWRkODk0NS9iaXRm/aWVsZGNvbnN1bHRp/bmcuY29tLw",
+        "path": "› posts  › why-rust"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/7eyDDnfZ9I_BapN6kJ25FUQwehz8OCUJ0adX6DWxktY/rs:fit:200:200:1:0/g:ce/aHR0cDovL3N0YXRp/YzEuc3F1YXJlc3Bh/Y2UuY29tL3N0YXRp/Yy81ZTEwYmRjMjBl/ZmI4ZjBkMTY5Zjg1/ZjkvNWU5NDk5MTM0/MzRiYWEyMjIzMTIx/Yjg1LzY5NzI2MGM4/YTZlNWZhMDA4MzZm/MTBmYy8xNzgxODY0/ODA1NDQ2L3dvcnRo/LXlvdXItdGltZS53/ZWJwP2Zvcm1hdD0x/NTAwdw"
+      },
+      "extra_snippets": [
+        "Yet it doesn’t spend too many innovation tokens: Rust is founded on solid, well-proven principles that have worked in other languages for decades. Rust leans hard into helping us write correct programs, catching as many problems as possible at compile time, and catching any that remain at run time.",
+        "Rust automatically eliminates many of the correctness and security problems that plague other languages, such as buffer overflows. Data safety. Rust prevents accidental corruption or mutation of data by making sure that only one program thread or task at a time can have write access to values, preventing data races and other mutability issues.",
+        "You won’t find yourself siloed by your choice of language; instead, Rust keeps your options open. Happy developers make for a happy community, and the Rust community has a friendly and welcoming atmosphere. Newbies feel supported, and there’s a creative diversity of opinions and backgrounds. Governance is democratic and by consent; Rust is owned by its users, and no big-tech company can take it over or slap a licence fee on it. Rust programmers take documentation seriously: the language has great facilities for writing detailed hypertext docs with live, interactive examples, Rust itself has all the docs you’ll ever need, and most Rust crates are incredibly well-documented.",
+        "For beginners, it’s a great first language. Not only will Rust teach you most of the important software concepts that apply to all languages, it’ll also help you build a safe, thoughtful, and disciplined approach to programming."
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "Rust tutorial: Get started with the Rust language | InfoWorld",
+      "url": "https://www.infoworld.com/article/2258463/rust-tutorial-get-started-with-the-rust-language.html",
+      "description": "Close down all programs that might be using Cargo. Copy the .cargo directory in your user profile to where you want it to live. Set the environment variables CARGO_HOME and RUSTUP_HOME to point to the new directory. Set the PATH to point to the bin subdirectory of the new directory. Type cargo to ensure Cargo is running properly. Despite Rust being a relatively new language...",
+      "age": "November 21, 2022",
+      "page_age": "2022-11-21T19:00:00",
+      "profile": {
+        "name": "InfoWorld",
+        "url": "https://www.infoworld.com/article/2258463/rust-tutorial-get-started-with-the-rust-language.html"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "infoworld.com",
+        "hostname": "www.infoworld.com",
+        "favicon": "https://imgs.search.brave.com/Hb93ZIZx0o3exU-ch0QmrjpTHi4k2wq0_8fTPpC2Ayc/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvYjkzNmE5ZDBl/OGI4YWU0NDY5MGQ4/OWE1MmYxMzk2ZWEy/MGZkMzk3ZTNlYjNj/ZjI4YmY1YzU3MmUx/MmVjMWQ3MC93d3cu/aW5mb3dvcmxkLmNv/bS8",
+        "path": "› article  › 2258463  › rust-tutorial-get-started-with-the-rust-language.html"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/NNOa7kcIe_X-85-94anT0W8mdH6tbYqK6g9ATken6cc/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly93d3cu/aW5mb3dvcmxkLmNv/bS93cC1jb250ZW50/L3VwbG9hZHMvMjAy/NS8wOS8yMjU4NDYz/LTAtNzY1Nzk4MDAt/MTc1ODA5OTc2Mi1z/aHV0dGVyc3RvY2tf/MjEzMzIzOTIwOS0y/LTEwMDkzNDI3My1v/cmlnLmpwZz9xdWFs/aXR5PTUwJmFtcDtz/dHJpcD1hbGwmYW1w/O3c9MTAyNA"
+      },
+      "extra_snippets": [
+        "Close down all programs that might be using Cargo. Copy the .cargo directory in your user profile to where you want it to live. Set the environment variables CARGO_HOME and RUSTUP_HOME to point to the new directory. Set the PATH to point to the bin subdirectory of the new directory. Type cargo to ensure Cargo is running properly. Despite Rust being a relatively new language, it’s already garnered strong support from many common IDEs.",
+        "RustProgramming LanguagesSoftware DevelopmentDevelopment Tools ... Serdar Yegulalp is a senior writer at InfoWorld. A veteran technology journalist, Serdar has been writing about computers, operating systems, databases, programming, and other information technology topics for 30 years.",
+        "At InfoWorld, Serdar has covered software development, devops, containerization, machine learning, and artificial intelligence, winning several B2B journalism awards including a 2024 Neal Award and a 2025 Azbee Award for best instructional content and best how-to article, respectively. He currently focuses on software development tools and technologies and major programming languages including Python, Rust, Go, Zig, and Wasm.",
+        "When a Rust project is compiled, all its dependencies are obtained and compiled automatically, as well. Detailed line-by-line feedback appears for anything that raises a warning or error. ... Package management is a key part of any modern programming environment."
+      ]
+    },
+    {
+      "type": "news_result",
+      "title": "What is Tauri? | Tauri",
+      "url": "https://v2.tauri.app/start/",
+      "description": "Tauri is a framework for building tiny, fast binaries for all major desktop and mobile platforms. Developers can integrate any frontend framework that compiles to HTML, JavaScript, and CSS for building their user experience while leveraging languages such as Rust, Swift, and Kotlin for backend ...",
+      "age": "3 weeks ago",
+      "page_age": "2026-07-22T00:00:00",
+      "profile": {
+        "name": "Tauri",
+        "url": "https://v2.tauri.app/start/"
+      },
+      "meta_url": {
+        "scheme": "https",
+        "netloc": "v2.tauri.app",
+        "hostname": "v2.tauri.app",
+        "favicon": "https://imgs.search.brave.com/W4FcVE3_RpZyndq4OrdOMajEftZfyWVfLcG5FHq4vCM/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvYjRlZjJlN2Yw/YjIzNDJlMGEyODBj/YjdjMWQ3NDQxYzQ4/ZDllNzFjMzUxOTYy/M2ZkOThhN2FjNTAz/YTY3NjgyOC92Mi50/YXVyaS5hcHAv",
+        "path": "› start"
+      },
+      "thumbnail": {
+        "src": "https://imgs.search.brave.com/42VTvmWL8L71xFpEUYeN6CTHUvuukqINWNhRs0bmpZ4/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly92Mi50/YXVyaS5hcHAvb2cu/cG5nP3Y9MQ"
+      },
+      "extra_snippets": [
+        "Tauri is a framework for building tiny, fast binaries for all major desktop and mobile platforms. Developers can integrate any frontend framework that compiles to HTML, JavaScript, and CSS for building their user experience while leveraging languages such as Rust, Swift, and Kotlin for backend logic when needed.",
+        "Information for getting up and running with Tauri, including prerequisites and installation instructions",
+        "By being built on Rust, Tauri is able to take advantage of the memory, thread, and type-safety offered by Rust.",
+        "Apps built on Tauri can automatically get those benefits even without needing to be developed by Rust experts."
+      ]
+    }
+  ]
+}

@@ -517,9 +517,11 @@ export async function listActiveFirecrawlCrawls(
     out.push({
       id,
       ...(typeof entry.url === "string" ? { url: entry.url } : {}),
-      ...((typeof entry.createdAt === "string" || typeof entry.created_at === "string")
-        ? { createdAt: (entry.createdAt ?? entry.created_at) as string }
-        : {}),
+      ...(typeof entry.createdAt === "string"
+        ? { createdAt: entry.createdAt }
+        : typeof entry.created_at === "string"
+          ? { createdAt: entry.created_at }
+          : {}),
       ...(entry.options !== undefined ? { options: entry.options } : {}),
     });
   }

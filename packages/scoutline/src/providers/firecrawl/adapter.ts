@@ -895,8 +895,8 @@ function matchActiveCrawl(
   const now = Date.now();
   for (const entry of active) {
     if (entry.url !== request.url) continue;
-    const tsRaw = entry.createdAt ?? entry.created_at;
-    const ts = tsRaw !== undefined ? Date.parse(tsRaw) : NaN;
+    const tsRaw = typeof entry.createdAt === "string" ? entry.createdAt : entry.created_at;
+    const ts = typeof tsRaw === "string" ? Date.parse(tsRaw) : NaN;
     if (!Number.isFinite(ts) || now - ts > CRAWL_RECLAIM_STALE_MS) continue;
     if (entry.options !== undefined && !crawlOptionsCompatible(entry.options, params)) continue;
     return entry.id;

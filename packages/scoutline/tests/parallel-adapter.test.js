@@ -10,7 +10,14 @@ import {
   requireParallelApiKey,
   isParallelConfigured,
 } from "../dist/providers/parallel/credentials.js";
-import { ApiError, AuthError, ConfigurationError, UnsupportedOptionError, ValidationError } from "../dist/lib/errors.js";
+import {
+  ApiError,
+  AuthError,
+  ConfigurationError,
+  QuotaError,
+  UnsupportedOptionError,
+  ValidationError,
+} from "../dist/lib/errors.js";
 
 const TEST_KEY = "parallel-test-api-key";
 
@@ -51,7 +58,12 @@ describe("Parallel AI Descriptor & Adapter", () => {
   it("creates descriptor with correct metadata", () => {
     const desc = createParallelDescriptor();
     assert.equal(desc.id, "parallel");
-    assert.deepEqual(Array.from(desc.capabilities()), ["search", "research", "reader", "diagnostics"]);
+    assert.deepEqual(Array.from(desc.capabilities()), [
+      "search",
+      "research",
+      "reader",
+      "diagnostics",
+    ]);
   });
 
   it("invokes search with mock transport using real API shape", async () => {
@@ -133,18 +145,19 @@ describe("Parallel AI Descriptor & Adapter", () => {
       return {
         ok: true,
         status: 200,
-        text: async () => JSON.stringify({
-          results: [
-            {
-              url: "https://example.com/page",
-              title: "Example Page",
-              publish_date: null,
-              excerpts: ["Full page content extracted by Parallel AI."],
-              full_content: "",
-            },
-          ],
-          errors: [],
-        }),
+        text: async () =>
+          JSON.stringify({
+            results: [
+              {
+                url: "https://example.com/page",
+                title: "Example Page",
+                publish_date: null,
+                excerpts: ["Full page content extracted by Parallel AI."],
+                full_content: "",
+              },
+            ],
+            errors: [],
+          }),
       };
     };
 
@@ -165,10 +178,13 @@ describe("Parallel AI Descriptor & Adapter", () => {
     const fakeFetch = async () => ({
       ok: true,
       status: 200,
-      text: async () => JSON.stringify({
-        results: [],
-        errors: [{ url: "https://broken.page", error_type: "fetch_failed", http_status_code: 404 }],
-      }),
+      text: async () =>
+        JSON.stringify({
+          results: [],
+          errors: [
+            { url: "https://broken.page", error_type: "fetch_failed", http_status_code: 404 },
+          ],
+        }),
     });
 
     const adapter = new ParallelAdapter(
@@ -219,7 +235,10 @@ describe("Parallel AI Descriptor & Adapter", () => {
     adapter.research.run.validate({ query: "AI search engines" });
     const res = await adapter.research.run.invoke({ query: "AI search engines" });
     // Report is built from concatenated excerpts
-    assert.equal(res.report, "Deep research architecture overview\n\nDetailed findings on AI search");
+    assert.equal(
+      res.report,
+      "Deep research architecture overview\n\nDetailed findings on AI search",
+    );
     assert.equal(res.sources.length, 2);
     assert.equal(res.sources[0].url, "https://parallel.ai/docs");
   });
@@ -273,6 +292,107 @@ describe("Parallel AI Error Handling", () => {
       () => adapter.search.invoke({ query: "test" }),
       (err) => err instanceof ApiError && err.statusCode === 429,
     );
+  });
+
+  it("maps 402 to terminal QuotaError (8P.5)", async () => {
+    const fakeFetch = async () => ({
+      ok: false,
+      status: 402,
+      text: async () => JSON.stringify({ message: "Insufficient credit" }),
+    });
+
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "test" }),
+      (err) => err instanceof QuotaError && err.retryable === false,
+    );
+  });
+
+  it("maps 422 to ValidationError (8P.5)", async () => {
+    const fakeFetch = async () => ({
+      ok: false,
+      status: 422,
+      text: async () => JSON.stringify({ message: "Validation failed" }),
+    });
+
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "test" }),
+      (err) => err instanceof ValidationError,
+    );
+  });
+
+  it("sends x-api-key header, not Authorization: Bearer (8P.6)", async () => {
+    let capturedHeaders = null;
+    const fakeFetch = async (_url, init) => {
+      capturedHeaders = init.headers;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ results: [] }),
+      };
+    };
+
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await adapter.search.invoke({ query: "test" });
+    assert.ok(capturedHeaders, "headers must be captured");
+    assert.strictEqual(capturedHeaders["x-api-key"], TEST_KEY, "must send x-api-key header");
+    assert.ok(!("Authorization" in capturedHeaders), "must NOT send Authorization header");
+  });
+
+  it("maps 402 to QuotaError on extract path (8P.5)", async () => {
+    const fakeFetch = async () => ({
+      ok: false,
+      status: 402,
+      text: async () => JSON.stringify({ message: "Insufficient credit" }),
+    });
+
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.reader.fetch.invoke({ url: "https://example.com" }),
+      (err) => err instanceof QuotaError && err.retryable === false,
+    );
+  });
+
+  it("sends x-api-key header on extract path (8P.6)", async () => {
+    let capturedHeaders = null;
+    const fakeFetch = async (_url, init) => {
+      capturedHeaders = init.headers;
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            results: [{ url: "https://example.com", full_content: "Page content" }],
+          }),
+      };
+    };
+
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await adapter.reader.fetch.invoke({ url: "https://example.com" });
+    assert.ok(capturedHeaders, "headers must be captured");
+    assert.strictEqual(capturedHeaders["x-api-key"], TEST_KEY, "must send x-api-key header");
+    assert.ok(!("Authorization" in capturedHeaders), "must NOT send Authorization header");
   });
 
   it("rejects domain control as UnsupportedOptionError", () => {

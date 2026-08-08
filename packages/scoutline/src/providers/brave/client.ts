@@ -31,7 +31,7 @@
 
 import pkg from "../../../package.json" with { type: "json" };
 
-import { ApiError, AuthError, NetworkError, TimeoutError } from "../../lib/errors.js";
+import { ApiError, AuthError, NetworkError, QuotaError, TimeoutError } from "../../lib/errors.js";
 import type { ProviderImageFetchResponse } from "../types.js";
 import { getGlobalFetch } from "../types.js";
 
@@ -98,7 +98,10 @@ function mapStatusError(status: number, timeoutMs: number): Error {
     return new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
   }
   if (status === 429) {
-    return new ApiError("Brave rate limit exceeded", 429);
+    return new QuotaError(
+      "Brave quota exhausted. Check your Brave plan rate limits.",
+      "Inspect your Brave subscription tier and current X-RateLimit-* values via scoutline quota --provider brave",
+    );
   }
   if (status === 400 || status === 404 || status === 410 || status === 422) {
     return new ApiError("Brave request failed", status);
@@ -110,7 +113,7 @@ function mapStatusError(status: number, timeoutMs: number): Error {
 }
 
 function normalizeTransportError(err: unknown, timeoutMs: number): Error {
-  if (err instanceof AuthError || err instanceof ApiError || err instanceof TimeoutError) {
+  if (err instanceof AuthError || err instanceof ApiError || err instanceof NetworkError || err instanceof QuotaError || err instanceof TimeoutError) {
     return err;
   }
   if (err instanceof Error) {

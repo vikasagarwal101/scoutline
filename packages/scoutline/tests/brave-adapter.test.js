@@ -41,6 +41,7 @@ import {
   ApiError,
   AuthError,
   ConfigurationError,
+  QuotaError,
   ScoutlineError,
   TimeoutError,
   UnsupportedOptionError,
@@ -244,13 +245,14 @@ describe("Brave client getBraveJson", () => {
     assert.ok(err instanceof AuthError);
   });
 
-  it("maps 429 to ApiError(429)", async () => {
+  it("maps 429 to terminal QuotaError (BRAVE-1)", async () => {
     const { fn } = makeRecordingFetch(makeErrorFetch(429));
     const err = await getBraveJson(TEST_API_KEY, "/res/v1/x", { q: "hi" }, { fetch: fn }).then(
       () => null,
       (e) => e,
     );
-    assert.ok(err instanceof ApiError && err.statusCode === 429, "must be ApiError 429");
+    assert.ok(err instanceof QuotaError, "must be QuotaError");
+    assert.strictEqual(err.retryable, false, "must be terminal (not retried)");
   });
 
   it("maps 5xx to ApiError with the real status", async () => {

@@ -5,7 +5,7 @@
  */
 
 import pkg from "../../../package.json" with { type: "json" };
-import { ApiError, AuthError, NetworkError, TimeoutError } from "../../lib/errors.js";
+import { ApiError, AuthError, NetworkError, QuotaError, TimeoutError, ValidationError } from "../../lib/errors.js";
 import type { ProviderQuotaFetchResponse } from "../types.js";
 
 const { version: VERSION } = pkg;
@@ -53,8 +53,17 @@ function mapStatusError(status: number, timeoutMs: number): Error {
   if (status === 401 || status === 403) {
     return new AuthError("Parallel AI authentication failed", "PARALLEL_API_KEY");
   }
+  if (status === 402) {
+    return new QuotaError(
+      "Parallel AI quota exhausted. Insufficient account credit.",
+      "Check your Parallel AI account credit at parallel.ai",
+    );
+  }
   if (status === 408 || status === 504) {
     return new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
+  }
+  if (status === 422) {
+    return new ValidationError("Parallel AI request validation failed");
   }
   if (status === 429) {
     return new ApiError("Parallel AI rate limit exceeded", 429);
@@ -101,7 +110,7 @@ export async function fetchParallelSearch(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
+        "x-api-key": apiKey,
         "User-Agent": USER_AGENT,
       },
       body: JSON.stringify(body),
@@ -115,7 +124,7 @@ export async function fetchParallelSearch(
     const text = await response.text();
     return JSON.parse(text) as ParallelSearchResponse;
   } catch (err: unknown) {
-    if (err instanceof AuthError || err instanceof ApiError || err instanceof TimeoutError) {
+    if (err instanceof AuthError || err instanceof ApiError || err instanceof QuotaError || err instanceof TimeoutError || err instanceof ValidationError) {
       throw err;
     }
     if (err instanceof SyntaxError) {
@@ -178,7 +187,7 @@ export async function fetchParallelExtract(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
+        "x-api-key": apiKey,
         "User-Agent": USER_AGENT,
       },
       body: JSON.stringify(body),
@@ -192,7 +201,7 @@ export async function fetchParallelExtract(
     const text = await response.text();
     return JSON.parse(text) as ParallelExtractResponse;
   } catch (err: unknown) {
-    if (err instanceof AuthError || err instanceof ApiError || err instanceof TimeoutError) {
+    if (err instanceof AuthError || err instanceof ApiError || err instanceof QuotaError || err instanceof TimeoutError || err instanceof ValidationError) {
       throw err;
     }
     if (err instanceof SyntaxError) {

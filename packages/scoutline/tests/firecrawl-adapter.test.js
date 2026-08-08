@@ -486,7 +486,8 @@ describe("Firecrawl Crawl Adapter", () => {
 
   // F-5: reclaim-on-miss must read the v2 `createdAt` field (not v1
   // `created_at`) so the staleness guard fires. Fixture-backed for
-  // deterministic wire-shape verification.
+  // deterministic wire-shape verification — uses the fixture's real
+  // { success, crawls } envelope so the `crawls` key path is exercised.
   it("reclaims using createdAt from the active fixture (F-5)", async () => {
     const activeFixture = JSON.parse(
       await fs.readFile(
@@ -496,13 +497,36 @@ describe("Firecrawl Crawl Adapter", () => {
     );
     // Refresh the timestamp so the staleness guard passes at test time.
     activeFixture.crawls[0].createdAt = new Date().toISOString();
-    const { adapter, calls } = makeCrawlAdapter({
-      onActive: () => activeFixture.crawls,
-      onPoll: () => ({
-        success: true,
-        status: "completed",
-        data: [{ markdown: "# fixture", metadata: { sourceURL: "https://docs.example.com" } }],
-      }),
+    const calls = [];
+    const fn = async (url, init) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      calls.push({ url: u, method, init });
+      // Return the fixture's REAL { success, crawls } envelope for /active
+      // — this exercises the `raw.crawls ?? raw.data` read path.
+      if (method === "GET" && u.endsWith("/v2/crawl/active")) {
+        return makeResponse({ json: activeFixture });
+      }
+      if (method === "GET" && u.includes("/v2/crawl/")) {
+        return makeResponse({
+          json: {
+            success: true,
+            status: "completed",
+            data: [{ markdown: "# fixture", metadata: { sourceURL: "https://docs.example.com" } }],
+          },
+        });
+      }
+      return makeResponse({ json: { success: true } });
+    };
+    const descriptor = createFirecrawlDescriptor({
+      transport: {
+        fetch: fn,
+        env: { FIRECRAWL_TIMEOUT: "5000", FIRECRAWL_CRAWL_POLL_INTERVAL_MS: "0" },
+      },
+      crawlStateFile: createInMemoryAsyncJobStateFile(),
+    });
+    const adapter = descriptor.create({
+      env: { FIRECRAWL_API_KEY: TEST_API_KEY, FIRECRAWL_CRAWL_POLL_INTERVAL_MS: "0" },
     });
     const out = await adapter.crawl.fetch.invoke({ url: "https://docs.example.com", depth: 2 });
     assert.equal(out.totalPages, 1);

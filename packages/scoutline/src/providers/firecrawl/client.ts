@@ -168,7 +168,7 @@ function normalizeTransportError(err: unknown, timeoutMs: number): Error {
  * response, and applies the **error-envelope dual-check**: Firecrawl
  * returns HTTP 200 with `{ success: false }` for some business errors,
  * so a parsed body that signals failure throws a terminal `ApiError`
- * (422 — business errors are not retried).
+ * (400 — business errors are not retried).
  */
 async function postFirecrawlJson(
   apiKey: string,

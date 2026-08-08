@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.4] - 2026-08-09
+
+### Error-classification hardening (Angle 8, Track 1)
+
+- Parallel: HTTP 402 → terminal `QuotaError`, 422 → `ValidationError` (were generic `ApiError`); direct-API auth switched to the documented `x-api-key` header (was `Authorization: Bearer`).
+- Jina: 429 → terminal `QuotaError` (was retryable); 403 body-parsed to distinguish insufficient-balance (`QuotaError`) from credential failure (`AuthError`); the balance-keyword match narrowed so "insufficient permissions" no longer misclassifies as a quota error.
+- Brave: 429 → terminal `QuotaError` (was retryable `ApiError(429)`), so the shared retry classifier no longer hammers an exhausted quota.
+- Tavily: endpoint-aware 403 — crawl/map "URL is not supported" → `ApiError(403)` (was misleadingly `AuthError`); the endpoint label is now a string-literal union so a typo can't reroute a URL rejection into an auth failure.
+- Each fix carries a status-probe regression test asserting the typed error class.
+
 ## [0.14.3] - 2026-08-09
 
 ### Firecrawl domain-correctness fixes (Angle 8)

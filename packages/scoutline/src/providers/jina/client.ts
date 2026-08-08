@@ -100,9 +100,7 @@ function mapStatusError(status: number, timeoutMs: number, errorBody?: string): 
       body.includes("quota") ||
       body.includes("exhausted") ||
       body.includes("credit") ||
-      body.includes("billing") ||
-      body.includes("insufficient balance") ||
-      body.includes("insufficient credit")
+      body.includes("billing")
     ) {
       return new QuotaError(
         "Jina AI quota exhausted. Insufficient balance or resource limit.",

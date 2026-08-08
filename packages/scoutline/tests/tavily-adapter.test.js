@@ -657,3 +657,33 @@ describe("Tavily Descriptor — metadata", () => {
     assert.ok(adapter.diagnostics);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Crawl/Map: endpoint-aware 403 (T8-01)
+// ---------------------------------------------------------------------------
+
+describe("Tavily Crawl/Map Adapter — endpoint-aware 403 (T8-01)", () => {
+  it("crawl 403 maps to ApiError(403), NOT AuthError", async () => {
+    const { adapter } = makeAdapter(makeErrorFetch(403));
+    await assert.rejects(
+      () => adapter.crawl.fetch.invoke({ url: "https://example.com" }),
+      (e) => e instanceof ApiError && e.statusCode === 403,
+    );
+  });
+
+  it("map 403 maps to ApiError(403), NOT AuthError", async () => {
+    const { adapter } = makeAdapter(makeErrorFetch(403));
+    await assert.rejects(
+      () => adapter.map.fetch.invoke({ url: "https://example.com" }),
+      (e) => e instanceof ApiError && e.statusCode === 403,
+    );
+  });
+
+  it("search 403 still maps to AuthError (unchanged)", async () => {
+    const { adapter } = makeAdapter(makeErrorFetch(403));
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "test" }),
+      (e) => e instanceof AuthError,
+    );
+  });
+});

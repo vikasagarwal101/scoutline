@@ -333,6 +333,47 @@ describe("Parallel AI Error Handling", () => {
     assert.ok(!("Authorization" in capturedHeaders), "must NOT send Authorization header");
   });
 
+  it("maps 402 to QuotaError on extract path (8P.5)", async () => {
+    const fakeFetch = async () => ({
+      ok: false,
+      status: 402,
+      text: async () => JSON.stringify({ message: "Insufficient credit" }),
+    });
+
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.reader.fetch.invoke({ url: "https://example.com" }),
+      (err) => err instanceof QuotaError && err.retryable === false,
+    );
+  });
+
+  it("sends x-api-key header on extract path (8P.6)", async () => {
+    let capturedHeaders = null;
+    const fakeFetch = async (_url, init) => {
+      capturedHeaders = init.headers;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          results: [{ url: "https://example.com", full_content: "Page content" }],
+        }),
+      };
+    };
+
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await adapter.reader.fetch.invoke({ url: "https://example.com" });
+    assert.ok(capturedHeaders, "headers must be captured");
+    assert.strictEqual(capturedHeaders["x-api-key"], TEST_KEY, "must send x-api-key header");
+  });
+
   it("rejects domain control as UnsupportedOptionError", () => {
     const adapter = new ParallelAdapter(
       { env: { PARALLEL_API_KEY: TEST_KEY } },

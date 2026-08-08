@@ -42,6 +42,21 @@ export interface JinaResponse {
   readonly data?: JinaDataItem | readonly JinaDataItem[];
 }
 
+/**
+ * Read the error response body for classification purposes. Preserves
+ * AbortError so a timeout during body read still surfaces as
+ * TimeoutError (not a status-derived error). Non-abort read failures
+ * fall back to an empty string so classification proceeds normally.
+ */
+async function readErrorBody(response: { text(): Promise<string> }): Promise<string> {
+  try {
+    return await response.text();
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") throw err;
+    return "";
+  }
+}
+
 function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = parseInt(env.JINA_TIMEOUT || String(DEFAULT_TIMEOUT_MS), 10);
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
@@ -145,7 +160,7 @@ export async function fetchJinaReader(
     });
 
     if (!response.ok) {
-      const errorBody = await response.text().catch(() => "");
+      const errorBody = await readErrorBody(response);
       throw mapStatusError(response.status, timeoutMs, errorBody);
     }
 
@@ -209,7 +224,7 @@ export async function fetchJinaSearch(
     });
 
     if (!response.ok) {
-      const errorBody = await response.text().catch(() => "");
+      const errorBody = await readErrorBody(response);
       throw mapStatusError(response.status, timeoutMs, errorBody);
     }
 
@@ -321,7 +336,7 @@ export async function fetchJinaDeepSearch(
     });
 
     if (!response.ok) {
-      const errorBody = await response.text().catch(() => "");
+      const errorBody = await readErrorBody(response);
       throw mapStatusError(response.status, timeoutMs, errorBody);
     }
 

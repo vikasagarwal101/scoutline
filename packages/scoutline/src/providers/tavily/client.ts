@@ -179,7 +179,7 @@ function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
  * text). The transport never embeds credential material in any error
  * message.
  */
-function mapStatusError(status: number, timeoutMs: number, endpointLabel?: string): Error {
+function mapStatusError(status: number, timeoutMs: number, endpointLabel: string): Error {
   if (status === 401) {
     return new AuthError("Tavily authentication failed", "TAVILY_API_KEY");
   }

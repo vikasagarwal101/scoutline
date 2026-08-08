@@ -100,7 +100,7 @@ function mapStatusError(status: number, timeoutMs: number): Error {
   if (status === 429) {
     return new QuotaError(
       "Brave quota exhausted. Check your Brave plan rate limits.",
-      "Inspect your Brave subscription tier and current X-RateLimit-* values via scoutline doctor brave",
+      "Inspect your Brave subscription tier and current X-RateLimit-* values via scoutline quota --provider brave",
     );
   }
   if (status === 400 || status === 404 || status === 410 || status === 422) {
@@ -113,7 +113,7 @@ function mapStatusError(status: number, timeoutMs: number): Error {
 }
 
 function normalizeTransportError(err: unknown, timeoutMs: number): Error {
-  if (err instanceof AuthError || err instanceof ApiError || err instanceof QuotaError || err instanceof TimeoutError) {
+  if (err instanceof AuthError || err instanceof ApiError || err instanceof NetworkError || err instanceof QuotaError || err instanceof TimeoutError) {
     return err;
   }
   if (err instanceof Error) {

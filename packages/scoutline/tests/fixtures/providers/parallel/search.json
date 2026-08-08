@@ -1,0 +1,93 @@
+{
+  "search_id": "search_ab18c9ef225d73d21c4cb478b8211389",
+  "results": [
+    {
+      "url": "https://rust-lang.org/learn",
+      "title": "Learn Rust - Rust Programming Language",
+      "publish_date": null,
+      "excerpts": [
+        "# Learn Rust\n## Get started with Rust\nAffectionately nicknamed “the book,” The Rust Programming Language will give you an overview of the language from first principles. You’ll build a few projects along the way, and by the end, you’ll have a solid grasp of the language.\n[Read the Book!](https://doc.rust-lang.org/book/)\nIf reading multiple hundreds of pages about a language isn’t your style, then Rust By Example has you covered. While the book talks about code with a lot of words, RBE shows off a bunch of code, and keeps the talking to a minimum. It also includes exercises!\n\n...\n\nAlternatively, Rustlings guides you through downloading and setting up the Rust toolchain, and teaches you the basics of reading and writing Rust syntax, on the command line. It's an alternative to Rust by Example that works with your own environment.\n[Do the Rustlings course!](https://github.com/rust-lang/rustlings/)\n\n...\n\n## Master Rust\nCurious about the darkest corners of the language? Here’s where you can get into the nitty-gritty:\nA bookshelf icon\nThe Reference is not a formal spec, but is more detailed and comprehensive than the book.\n[Read the reference](https://doc.rust-lang.org/reference/index.html)\nTwo hands cradling fire\nThe Rustonomicon is your guidebook to the dark arts of unsafe Rust. It’s also sometimes called “the ’nomicon.”\n[Read the ’nomicon](https://doc.rust-lang.org/nomicon/index.html)\nA hand sharing sparkles\nThe Unstable Book has documentation for unstable features that you can only use with nightly Rust.\n\n...\n\n### Get help!\n* Documentation\n* [Rust Forge (Contributor Documentation)](http://forge.rust-lang.org)\n* [Ask a Question on the Users Forum](https://users.rust-lang.org)\nLanguage English (en-US) Español (es) Français (fr) Italiano (it) 日本語 (ja) Português (pt-BR) Русский (ru) Türkçe (tr) 简体中文 (zh-CN) 正體中文 (zh-TW)"
+      ]
+    },
+    {
+      "url": "https://rust-lang.org/",
+      "title": "\n            Rust Programming Language\n        ",
+      "publish_date": null,
+      "excerpts": [
+        "# Rust\n## A language empowering everyone\nto build reliable and efficient software.\nGet Started\n[Version 1.97.1](https://blog.rust-lang.org/releases/latest)\n\n## Why Rust?\n### Performance\nRust is blazingly fast and memory-efficient: with no runtime or\ngarbage collector, it can power performance-critical services, run on\nembedded devices, and easily integrate with other languages.\n\n### Reliability\nRust’s rich type system and ownership model guarantee memory-safety\nand thread-safety — enabling you to eliminate many classes of\nbugs at compile-time.\n\n### Productivity\nRust has great documentation, a friendly compiler with useful error\nmessages, and top-notch tooling — an integrated package manager\nand build tool, smart multi-editor support with auto-completion and\ntype inspections, an auto-formatter, and more.\n\n## Build it in Rust\nIn 2018, the Rust community decided to improve the programming experience\nfor a few distinct domains (see [the 2018 roadmap](https://blog.rust-lang.org/2018/03/12/roadmap.html) ). For these, you can find many high-quality crates and some\nawesome guides on how to get started.\nterminal\n\n...\n\n## Get involved\n### Contribute code\nRust is truly a community effort, and we welcome contribution from hobbyists and production users, from\nnewcomers and seasoned professionals. Come help us make the Rust experience even better!\n[Read Contribution Guide](https://rustc-dev-guide.rust-lang.org/getting-started.html)"
+      ]
+    },
+    {
+      "url": "https://www.scs.stanford.edu/~zyedidia/docs/rust/rust_book.pdf",
+      "title": "The Rust Programming Language",
+      "publish_date": null,
+      "excerpts": [
+        "# **Common Programming Concepts**\n## **Variables and Mutability**\n### As you saw in the guessing game tutorial in Chapter 2, you can declare a new variable with the same name as a previous variable. Rustaceans say that the first variable is\nshadow a variable by using the same variable’s name and repeating the use of the let\n\n...\n\n## **Data Types**\n### **The Character Type**\nRust’s char type is the language’s most primitive alphabetic type. Here are some examples\nof declaring char values:\n\n...\n\n## **Functions**\n### Functions are prevalent in Rust code. You’ve already seen one of the most important\nfunctions in the language: the main function, which is the entry point of many programs.\nYou’ve also seen the fn keyword, which allows you to declare new functions.\n\n...\n\n# **Fearless Concurrency**\n## **Extensible Concurrency with the** Sync **and** Send **Traits**\n### Interestingly, the Rust language has _very_ few concurrency features. Almost every concurrency feature we’ve talked about so far in this chapter has been part of the stan\nHowever, two concurrency concepts are embedded in the language: the std::marker traits\n\n...\n\n# **Advanced Features**\n## **Unsafe Rust**\n### **Calling Rust Functions from Other Languages**\nWe can also use extern to create an interface that allows other languages to call Rust\nfunctions. Instead of creating a whole extern block, we add the extern keyword and\nspecify the ABI to use just before the fn keyword for the relevant function. We also"
+      ]
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Rust_%28programming_language%29",
+      "title": "Rust (programming language) - Wikipedia",
+      "publish_date": null,
+      "excerpts": [
+        "**Rust** is a [general-purpose](https://en.wikipedia.org/wiki/General-purpose_programming_language \"General-purpose programming language\") [programming language](https://en.wikipedia.org/wiki/Programming_language \"Programming language\") which emphasizes [performance](https://en.wikipedia.org/wiki/Computer_performance \"Computer performance\") ,\n\n...\n\nRust supports multiple [programming paradigms](https://en.wikipedia.org/wiki/Programming_paradigm \"Programming paradigm\") .\n\n...\n\n# History\n## Syntax and features\nRust's [syntax](https://en.wikipedia.org/wiki/Syntax_(programming_languages) \"Syntax (programming languages)\") is similar to that of [C](https://en.wikipedia.org/wiki/C_(programming_language) \"C (programming language)\") and [C++](https://en.wikipedia.org/wiki/C++ \"C++\") , [[ 45 ]]() [[ 46 ]](:4-51) although many of its\n\n...\n\n## References\n### Others\n[\"The Rust programming language now has its own independent foundation\"](https://web.archive.org/web/20230320172900/https://www.techrepublic.com/article/the-rust-programming-language-now-has-its-own-independent-foundation/) . _[TechRepublic](https://en.wikipedia.org/wiki/TechRepublic \"TechRepublic\")_ .\n\n...\n\n## External links\n* [R](https://en.wikipedia.org/wiki/R_(programming_language) \"R (programming language)\")\n* [Ruby](https://en.wikipedia.org/wiki/Ruby_(programming_language) \"Ruby (programming language)\")\n* [Rust](https://en.wikipedia.org/wiki/Rust_(programming_language))\n* [SAS](https://en.wikipedia.org/wiki/SAS_language \"SAS language\")"
+      ]
+    },
+    {
+      "url": "https://coderspace.io/en/blog/what-is-rust-programming-language",
+      "title": "What is the Rust Programming Language?",
+      "publish_date": null,
+      "excerpts": [
+        "# What is the Rust Programming Language?\n## Summarize this content with artificial intelligence!\n![gemini logo](https://coderspace-storage-prod.s3.eu-central-1.amazonaws.com/static/img/logos/gemini-color.webp)\n**Rust**; **security**, **speed** and **concurrency** focused modern system programming language. It enables developers to write safe and efficient code.\n\n...\n\n## **Application Types that Can Be Written with Rust**\n### **3. Network Programming**\n**Due to its memory safety** and **concurrency** features, Rust is an ideal programming language for network programming. The language's Tokio software library offers a set of useful tools that developers can use to build secure, efficient, and scalable network applications.\n\n...\n\n## **Why Rust Language?**\n* **1️⃣ Security:** Rust's ownership model and static type system enable safer software development by preventing memory errors and null pointer dereferences.\n* **2️⃣ Concurrency:** Rust's concurrency model provides safe and efficient concurrent programming. This allows better utilization of modern hardware.\n* **3️⃣ Developer Productivity:** Rust's easy syntax, modern tools, and comprehensive documentation improve developer productivity and code maintenance.\n\n...\n\n## **Resources to Learn Rust**\n**📕 The Rust Programming Language (Official Rust Book):** This book, available for free on Rust's official website, is the most comprehensive resource for learning the Rust programming language. It covers everything step by step, from beginner to advanced levels."
+      ]
+    },
+    {
+      "url": "https://nostarch.com/rust-programming-language-3e",
+      "title": "The Rust Programming Language, 3rd Edition | No Starch Press",
+      "publish_date": "2026-04-09",
+      "excerpts": [
+        "# The Rust Programming Language, 3rd Edition\n_The Rust Programming Language, 3rd Edition,_ teaches you to write code that the compiler can verify, teams can maintain, and systems can evolve safely over time.\nWritten by longtime Rust community members, this book shows you how to work effectively with Rust’s type system, concurrency model, and tooling, using patterns and idioms chosen for long-term stability.\n\n...\n\n* Design programs that communicate their invariants to the compiler\n* Use ownership, lifetimes, and traits to model real-world constraints\n* Write concurrent and multithreaded code with confidence and clarity\n* Build, test, document, and refactor projects using Cargo effectively\n* Handle errors explicitly and idiomatically\n* Apply expressive pattern matching to simplify complex logic\n\n...\n\nComplete async programming chapter\nMiri for analyzing unsafe code\nBuilt on the Rust 2024 Edition\nModern Rust idioms, tooling, and practices\nAuthor Bio"
+      ]
+    },
+    {
+      "url": "https://www.numberanalytics.com/blog/ultimate-guide-to-rust-programming",
+      "title": "\n          Mastering Rust Programming Language\n    ",
+      "publish_date": "2026-06-09",
+      "excerpts": [
+        "# Mastering Rust Programming Language\n## Introduction to Rust\n### Overview of Rust's History and Philosophy\nRust is a systems programming language that was first released in 2010 by Mozilla Research. It was designed to provide a safe and efficient way to build systems software, such as operating systems, file systems, and network protocols.\nThe language is based on the principles of safety, performance, and concurrency.\nRust's philosophy is centered around the concept of \"ownership\" and \"borrowing,\" which ensures that the language is memory-safe without the need for a garbage collector.\nThis is achieved through a compile-time borrow checker that enforces a set of rules to prevent common programming errors such as null pointer dereferences and data races.\n\n...\n\n## Rust Fundamentals\n### Variables, Data Types, and Operators in Rust\n```\nlet x: i32 = 10; // immutable variable\nlet mut y: i32 = 20; // mutable variable\ny = 30; // okay, y is mutable\nx = 40; // error, x is immutable\n\nRust has a range of operators for performing arithmetic, comparison, and logical operations. Here's a summary of the operators in Rust:\n\n```"
+      ]
+    },
+    {
+      "url": "https://www.simplilearn.com/tutorials/programming-tutorial/rust-programming-language",
+      "title": "What is Rust Programming Language?",
+      "publish_date": "2025-11-13",
+      "excerpts": [
+        "# What is Rust Programming Language?\n## What is Rust Programming Language?\nRust is an advanced systems [programming language](https://www.simplilearn.com/best-programming-languages-start-learning-today-article \"programming language\") and it is Stack Overflow’s most loved language. This language is widely accepted for its focus on safety, performance, and concurrency.\n\n...\n\n## Features of Rust\nGenerics provide flexibility in writing code that can work with different data types, enhancing code reusability and performance.\n* Fearless Concurrency: Rust's concurrency model, based on ownership and traits, guarantees safe and efficient concurrent code without data races.\n\n...\n\n## Mention the Advantages and Disadvantages of Rust\n### Advantages of Rust\n* Concurrency: Rust's ownership system and lightweight threads (known as \"async\") make it easy to write concurrent and parallel code without sacrificing safety.\n* Performance: Rust has fine-grained control over memory allocation and low-level optimization techniques.\n\n...\n\n### Disadvantages of Rust\n* Steep learning curve: Rust has a unique syntax and concepts that can be challenging for beginners. Understanding and correctly using concepts like ownership, borrowing, and lifetimes requires a learning investment.\n\n...\n\n## FAQs\n### 6. Is Rust An OOP?\nNo, Rust is not [Object-oriented programming](https://www.simplilearn.com/tutorials/php-tutorial/oops-in-php \"Object-oriented programming\") since Rust is built exactly differently from OOP."
+      ]
+    },
+    {
+      "url": "https://doc.rust-lang.org/",
+      "title": "Rust Documentation",
+      "publish_date": null,
+      "excerpts": [
+        "# Rust Documentation\n## § Learning Rust\nIf you’d like to learn Rust, this is the section for you! All of these resources\nassume that you have programmed before, but not in any specific language:\n\n### § The Rust Programming Language\nAffectionately nicknamed “the book,” The Rust Programming Language will give you an overview of the language from first principles. You’ll build a\nfew projects along the way, and by the end, you’ll have a solid grasp of how to\nuse the language.\n\n### § Rust By Example\nIf reading multiple hundreds of pages about a language isn’t your style, then Rust By Example has you covered. RBE shows off a\nbunch of code without using a lot of words. It also includes exercises!\n\n...\n\n## § Mastering Rust\n### § The Style Guide\nThe Rust Style Guide describes the standard formatting\nof Rust code. Most developers use `cargo fmt` to invoke `rustfmt` and format the\ncode automatically (the result matches this style guide).\n\n### § The Rustonomicon\nThe Rustonomicon is your guidebook to the dark arts of\nunsafe Rust. It’s also sometimes called “the ’nomicon.”"
+      ]
+    },
+    {
+      "url": "https://www.tutorialspoint.com/rust/index.htm",
+      "title": "Rust Tutorial TutorialsPoint https://www.tutorialspoint.com › rust",
+      "publish_date": null,
+      "excerpts": [
+        "# Rust Tutorial\nRust is a modern systems programming language developed by the Mozilla Corporation. It is intended to be a language for highly concurrent and highly secure systems. It compiles to native code; hence, it is blazingly fast like C and C++.\nThis tutorial adopts a simple and practical approach to describe the concepts of Rust programming.\n> This Rust Tutorial is based on the Latest Rust 1.94.1 version.\n\n...\n\n## Rust Online Compiler\nTry to click the icon run button to run the following Rust code to print conventional \"Hello, World!\".\n> Below code box allows you to change the value of the code. Try to change the value inside **print()** and run it again to verify the result.\n```\n// This is my first Rust program.\n// This will print 'Hello, World!' as the output\n\nfn main(){\n   println!(\"Hello, World!\");\n}\n```\n\n## Audience\nThis tutorial has been prepared for beginners to help them understand the basic and advanced concepts of Rust."
+      ]
+    }
+  ],
+  "warnings": null,
+  "usage": [
+    {
+      "name": "sku_search",
+      "count": 1
+    }
+  ],
+  "session_id": "session_ab18c9ef225d73d21c4cb478b8211389"
+}

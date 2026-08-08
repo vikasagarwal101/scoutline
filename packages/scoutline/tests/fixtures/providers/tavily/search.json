@@ -1,0 +1,50 @@
+{
+  "query": "rust programming language",
+  "follow_up_questions": null,
+  "answer": null,
+  "images": [],
+  "results": [
+    {
+      "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+      "title": "Rust (programming language) - Wikipedia",
+      "content": "Rust is a general-purpose programming language which emphasizes performance, type safety, concurrency \"Concurrency (computer science)\"), and memory safety. [...] Rust (programming language) \"Category:Rust (programming language)\")\n Compiled programming languages\n Concurrent programming languages\n Free and open source compilers\n Free software projects\n Functional languages\n Mozilla\n Multi-paradigm programming languages\n Pattern matching programming languages\n Procedural programming languages\n Programming languages created in 2015\n Software using the Apache license\n Software using the MIT license\n Statically typed programming languages [...] Rust's syntax \"Syntax (programming languages)\") is similar to that of C \"C (programming language)\") and C++, although many of its features were influenced by functional programming languages such as OCaml. Hoare has described Rust as targeted at frustrated C++ developers.\n\n### Hello World program\n\n[edit&action=edit&section=8 \"Edit section: Hello World program\")]",
+      "score": 0.9304142,
+      "raw_content": null,
+      "id": "8805c3-00"
+    },
+    {
+      "url": "https://medium.com/codex/rust-101-everything-you-need-to-know-about-rust-f3dd0ae99f4c",
+      "title": "Medium",
+      "content": "## Why Rust?\n\nRust is a programming language that is built to be fast, secure, reliable and supposedly easier to program. Rust was, on the contrary, not built to replace C or C++. It’s aim is completely different, that is, to be an all-purpose general programming language.\n\n## Features of Rust\n\nNow let us get into actually programming in Rust.\n\n## Installing Rust On Your System\n\nThe Rust Book explains how you can install Rust on your system.\n\n## The Rust Programming Language [...] `Ok(data)`\n\nThis is most of what you would require to start basic programming in Rust. I hope you are able to see how Rust is useful and a powerful language. I am still learning the basics of Rust and would post more articles on Rust in the future.\n\nThis article is part of my Rust Programming List:\n\n## Rust Programming\n\n### Edit description\n\nmedium.com\n\n--\n\n--\n\n2\n\nCodeX\nCodeX\n\n## Published in CodeX\n\nEverything connected with Tech & Code. Follow to join our 1M+ monthly readers [...] Sign up\n\nSign in\n\nSign up\n\nSign in\n\nUnknown user\n\n## CodeX\n\nCodeX\n\nEverything connected with Tech & Code. Follow to join our 1M+ monthly readers\n\n# Rust 101 — Everything you need to know about Rust\n\n## Introduction to Rust Programming — the most loved programming language\n\nNishant Aanjaney Jalan\n\n--\n\n2\n\nListen\n\nShare",
+      "score": 0.85624856,
+      "raw_content": null,
+      "id": "470bcf-01"
+    },
+    {
+      "url": "https://users.rust-lang.org/t/why-and-why-not-rust/98354",
+      "title": "Why and Why not Rust? - The Rust Programming Language Forum",
+      "content": "Rust is extremely powerful but has a higher initial barrier to entry than most languages due to its type system and ownership model (affine types).\n\nWhat can I do with Rust?\n\nIt's a general purpose programming language, so you can do pretty much everything with it. It isn't a scripting language though.\n\nWho is the competitor of Rust? [...] I find it interesting that nobody has brought up the competitors to Rust in the sense of \"new systems-level programming language aiming to displace C and C++\", of which there are several:\n\nI'm curious how these related to some of Rust's features. [...] Who is the competitor of Rust?\n\nIf you accept that Rust is NOT optimised for a certain type of problems, then any general purpose language would be a competitor to consider. Personally I compared to C (the language I think I know), Python (the language everybody knows these days) and C++ (the only realistic follow up to C from the time I learned C, that is the late 1980’s, early 1990’s)",
+      "score": 0.8058924,
+      "raw_content": null,
+      "id": "3475b8-02"
+    },
+    {
+      "url": "https://www.rust-lang.org/en-US",
+      "title": "Rust Programming Language",
+      "content": "# Rust\n\n## A language empowering everyone to build reliable and efficient software.\n\nGet Started \n\nVersion 1.97.1\n\n## Why Rust?\n\n### Performance\n\nRust is blazingly fast and memory-efficient: with no runtime or garbage collector, it can power performance-critical services, run on embedded devices, and easily integrate with other languages.\n\n### Reliability [...] ### Reliability\n\nRust’s rich type system and ownership model guarantee memory-safety and thread-safety — enabling you to eliminate many classes of bugs at compile-time.\n\n### Productivity\n\nRust has great documentation, a friendly compiler with useful error messages, and top-notch tooling — an integrated package manager and build tool, smart multi-editor support with auto-completion and type inspections, an auto-formatter, and more.\n\n## Build it in Rust [...] ### WebAssembly\n\nUse Rust to supercharge your JavaScript, one module at a time. Publish to npm, bundle with webpack, and you’re off to the races.\n\nWriting Web Apps\n\na cloud with nodes\n\n### Networking\n\nPredictable performance. Tiny resource footprint. Rock-solid reliability. Rust is great for network services.\n\nWorking On Servers\n\nan embedded device chip\n\n### Embedded\n\nTargeting low-resource devices? Need low-level control without giving up high-level conveniences? Rust has you covered.",
+      "score": 0.7817479,
+      "raw_content": null,
+      "id": "8709b0-03"
+    },
+    {
+      "url": "https://www.reddit.com/r/learnrust/comments/1binxlv/rust_a_living_hell_the_perspective_from_a",
+      "title": "Rust - A Living Hell",
+      "content": "Rust continues to be the most-admired programming language with an 83% score this year.Image 18 r/rust•2y ago    ### Rust continues to be the most-admired programming language with an 83% score this year.    699 upvotes ·109 comments    \n\n  \n\n   Rust with raylibImage 19 r/rust_gamedev•1y ago    ### Rust with raylib    20 upvotes ·9 comments    \n\n  \n\n   newToRustImage 20 r/ProgrammerHumor•15h ago    ### newToRust  Image 21: r/ProgrammerHumor - newToRust   457 upvotes ·88 comments [...] Langs in Rust: a list of more than 100 programming languages implemented in Rust!Image 37 r/rust•3y ago    ### Langs in Rust: a list of more than 100 programming languages implemented in Rust!  Image 38: r/rust - Langs in Rust: a list of more than 100 programming languages implemented in Rust!github    49 upvotes ·11 comments [...] More replies\n\n the hardest programming language I learned; and by far. I have had my fair share of ups and downs with learning Rust and I experienced a fair bit of frustrations myself, specially in the beginning.\n\nWhat really helped, for me at least, was to watch other people code un rust. Listen to their thought process and see how they tackle issues. Just taking in the knowledge passively, not unlike when learning a foreign (non-programming) language.",
+      "score": 0.7760977,
+      "raw_content": null,
+      "id": "e2a615-04"
+    }
+  ],
+  "response_time": 0,
+  "request_id": "e94d8a32-4474-44d7-b4fe-b0b8ac60845a"
+}

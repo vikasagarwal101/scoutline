@@ -1,0 +1,1318 @@
+{
+  "type": "search",
+  "query": {
+    "original": "rust programming language",
+    "show_strict_warning": false,
+    "is_navigational": false,
+    "is_news_breaking": false,
+    "spellcheck_off": false,
+    "country": "us",
+    "bad_results": false,
+    "should_fallback": false,
+    "postal_code": "",
+    "city": "",
+    "header_country": "",
+    "more_results_available": true,
+    "state": ""
+  },
+  "infobox": {
+    "type": "graph",
+    "results": [
+      {
+        "title": "Rust",
+        "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "memory-safe programming language without garbage collection",
+        "family_friendly": true,
+        "type": "infobox",
+        "position": 1,
+        "label": "programming language",
+        "category": "programming",
+        "long_desc": "Rust is a general-purpose programming language which emphasizes performance, type safety, concurrency, and memory safety. Rust supports multiple programming paradigms. It was influenced by ideas from functional programming, including immutability, higher-order functions, algebraic data types, ...",
+        "attributes": [
+          [
+            "Paradigms",
+            "<a href='https://en.wikipedia.org/wiki/Comparison_of_multi-paradigm_programming_languages'>Multi-paradigm</a>:<br><a href='https://en.wikipedia.org/wiki/Concurrent_computing'>concurrent</a><br><a href='https://en.wikipedia.org/wiki/Functional_programming'>functional</a><br><a href='https://en.wikipedia.org/wiki/Generic_programming'>generic</a><br><a href='https://en.wikipedia.org/wiki/Imperative_programming'>imperative</a><br><a href='https://en.wikipedia.org/wiki/Structured_programming'>structured</a>"
+          ],
+          [
+            "Developer",
+            "The Rust Team"
+          ],
+          [
+            "First appeared",
+            "January 19, 2012; 14 years ago (2012-01-19)"
+          ],
+          [
+            "Stable release",
+            "1.97.1<br>/ July 16, 2026; 22 days ago (July 16, 2026)"
+          ],
+          [
+            "Typing discipline",
+            "<a href='https://en.wikipedia.org/wiki/Affine_type_system'>Affine</a><br><a href='https://en.wikipedia.org/wiki/Type_inference'>inferred</a><br><a href='https://en.wikipedia.org/wiki/Nominal_type_system'>nominal</a><br><a href='https://en.wikipedia.org/wiki/Static_typing'>static</a><br><a href='https://en.wikipedia.org/wiki/Strong_and_weak_typing'>strong</a>"
+          ],
+          [
+            "Implementation language",
+            "<a href='https://en.wikipedia.org/wiki/OCaml'>OCaml</a> (2006–2011)<br>Rust (2012–present)"
+          ],
+          [
+            "Platform",
+            "<a href='https://en.wikipedia.org/wiki/Cross-platform'>Cross-platform</a>"
+          ],
+          [
+            "OS",
+            "<a href='https://en.wikipedia.org/wiki/Cross-platform'>Cross-platform</a>"
+          ],
+          [
+            "License",
+            "<a href='https://en.wikipedia.org/wiki/MIT_License'>MIT</a>, <a href='https://en.wikipedia.org/wiki/Apache_License'>Apache 2.0</a>"
+          ],
+          [
+            "Filename extensions",
+            ".rs, .rlib"
+          ]
+        ],
+        "profiles": [
+          {
+            "name": "Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+            "long_name": "en.wikipedia.org",
+            "img": "https://imgs.search.brave.com/m6XxME4ek8DGIUcEPCqjRoDjf2e54EwL9pQzyzogLYk/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvNjQwNGZhZWY0/ZTQ1YWUzYzQ3MDUw/MmMzMGY3NTQ0ZjNj/NDUwMDk5ZTI3MWRk/NWYyNTM4N2UwOTE0/NTI3ZDQzNy9lbi53/aWtpcGVkaWEub3Jn/Lw"
+          },
+          {
+            "name": "Reddit",
+            "url": "https://www.reddit.com/r/rust/",
+            "long_name": "reddit.com",
+            "img": "https://imgs.search.brave.com/U-eHNCapRHVNWWCVPPMTIvOofZULh0_A_FQKe8xTE4I/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvN2ZiNTU0M2Nj/MTFhZjRiYWViZDlk/MjJiMjBjMzFjMDRk/Y2IzYWI0MGI0MjVk/OGY5NzQzOGQ5NzQ5/NWJhMWI0NC93d3cu/cmVkZGl0LmNvbS8"
+          },
+          {
+            "name": "YouTube",
+            "url": "https://www.youtube.com/channel/UCaYhcUwRBNscFNUKTjgPFiA",
+            "long_name": "youtube.com",
+            "img": "https://imgs.search.brave.com/Wg4wjE5SHAargkzePU3eSLmWgVz84BEZk1SjSglJK_U/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvOTkyZTZiMWU3/YzU3Nzc5YjExYzUy/N2VhZTIxOWNlYjM5/ZGVjN2MyZDY4Nzdh/ZDYzMTYxNmI5N2Rk/Y2Q3N2FkNy93d3cu/eW91dHViZS5jb20v"
+          },
+          {
+            "name": "GitHub",
+            "url": "https://github.com/rust-lang",
+            "long_name": "github.com",
+            "img": "https://imgs.search.brave.com/xxsA4YxzaR0cl-DBsH9-lpv2gsif3KMYgM87p26bs_o/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvYWQyNWM1NjA5/ZjZmZjNlYzI2MDNk/N2VkNmJhYjE2MzZl/MDY5ZTMxMDUzZmY1/NmU3NWIzNWVmMjk0/NTBjMjJjZi9naXRo/dWIuY29tLw"
+          },
+          {
+            "name": "LOC",
+            "url": "https://id.loc.gov/authorities/sh2018000672",
+            "long_name": "Library of Congress",
+            "img": "https://imgs.search.brave.com/YM9op4taK9JJ_Lnp7FWFudCXaEYJnrio_LJ9L6EdAnY/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvYzMyOGFmMGY2/NDAyODg4ZjFhZjNm/Zjc2MWM4Njg4Mzk2/M2Q0YzJiNDhmMmM0/ZDg5NGFlM2ZmNzc1/ZGEyZjA0Yy9pZC5s/b2MuZ292Lw"
+          },
+          {
+            "name": "Zhihu",
+            "url": "https://www.zhihu.com/topic/19674381",
+            "long_name": "zhihu.com",
+            "img": "https://imgs.search.brave.com/VNnFTqCrnlzNYtmpyFQSVg-K_dqzaMoUkffw57h8ZY0/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvOTIzNDAyMjM4/YzAwYzk2NDEwM2Fi/MzRlNmU3YjBkMTI1/Y2VkMTFlYmM2M2Jj/OGE1MGFiYTEzMWNh/NDcxMTkxYy93d3cu/emhpaHUuY29tLw"
+          },
+          {
+            "name": "Wikidata",
+            "url": "http://www.wikidata.org/entity/Q575650",
+            "long_name": "wikidata.org",
+            "img": "https://imgs.search.brave.com/8vIq-V97PH8S0N-pyaeHgq_gFHOA8hXjBunynHio-Uw/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvYzdkMGIyYTky/OTJjN2RjNDEyNWYx/MGQxNjAzNmZlNDk4/ZTRmNDczNjk0ZTZl/N2IxZjI0NTVkMGE3/YTBiYjEzYi93d3cu/d2lraWRhdGEub3Jn/Lw"
+          },
+          {
+            "name": "X",
+            "url": "https://x.com/rustlang",
+            "long_name": "x.com",
+            "img": "https://imgs.search.brave.com/VpOsyUaQQGp5MT_drqEzgpxdO8o12jax0jeq0Vojuto/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvMmQzM2JiZDhi/OWVhNGYxZmRkNDli/NzAxODUzMzFhYTNm/ODcxNmE4ZGQ5OTE3/MWU4OGZjNDQyZDdh/NzQ4MWE4YS94LmNv/bS8"
+          },
+          {
+            "name": "Openalex",
+            "url": "https://openalex.org/C197781089",
+            "long_name": "openalex.org",
+            "img": "https://imgs.search.brave.com/BgM_WUoVkewc3x76WdQEfU6rKtYnzdH4f9Vx8yNubW0/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvZGM1Yjk2Yzg0/MjQ2MWQzMmMyNDU0/YzUyZWNmYTAyNWFm/NDEyNmZjYjdmMmFj/MzFhZjQxZjBmMzU4/ZTdkNDgzMi9vcGVu/YWxleC5vcmcv"
+          },
+          {
+            "name": "DNB",
+            "url": "https://d-nb.info/gnd/1078438080",
+            "long_name": "Deutschen National Bibliothek",
+            "img": "https://imgs.search.brave.com/GpZpAf8vhNDG_E1gHnEhSCkTV8w_baDoEAtgiKNM4g0/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvOTE4YjM1YTg4/MjJiZTUzYzUzZWU4/ODA2MTY5MjQ5Mzg5/N2RkMjhiYWNkYWEw/MDIyNDMyNThiZDVk/ZjAzMDg0ZC9kLW5i/LmluZm8v"
+          }
+        ],
+        "website_url": "https://rust-lang.org/",
+        "ratings": [],
+        "providers": [
+          {
+            "type": "external",
+            "name": "Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+            "img": "https://imgs.search.brave.com/m6XxME4ek8DGIUcEPCqjRoDjf2e54EwL9pQzyzogLYk/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvNjQwNGZhZWY0/ZTQ1YWUzYzQ3MDUw/MmMzMGY3NTQ0ZjNj/NDUwMDk5ZTI3MWRk/NWYyNTM4N2UwOTE0/NTI3ZDQzNy9lbi53/aWtpcGVkaWEub3Jn/Lw"
+          }
+        ],
+        "images": [
+          {
+            "src": "https://imgs.search.brave.com/M-UTsIFU1sqlZy2KqTIxUuH37hkPFlqwOQCTfwfPJAg/rs:fit:500:0:0:0/g:ce/aHR0cHM6Ly91cGxv/YWQud2lraW1lZGlh/Lm9yZy93aWtpcGVk/aWEvY29tbW9ucy90/aHVtYi9kL2Q1L1J1/c3RfcHJvZ3JhbW1p/bmdfbGFuZ3VhZ2Vf/YmxhY2tfbG9nby5z/dmcvMjUwcHgtUnVz/dF9wcm9ncmFtbWlu/Z19sYW5ndWFnZV9i/bGFja19sb2dvLnN2/Zy5wbmc_dXRtX3Nv/dXJjZT13d3cud2lr/aWRhdGEub3JnJmFt/cDt1dG1fY2FtcGFp/Z249cmVzdCZhbXA7/dXRtX2NvbnRlbnQ9/dGh1bWJuYWls",
+            "alt": "Rust programming language black logo",
+            "original": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d5/Rust_programming_language_black_logo.svg/250px-Rust_programming_language_black_logo.svg.png?utm_source=www.wikidata.org&amp;utm_campaign=rest&amp;utm_content=thumbnail",
+            "logo": true
+          }
+        ],
+        "subtype": "generic",
+        "found_in_urls": [
+          "https://rust-lang.org/en-US/",
+          "https://en.wikipedia.org/wiki/Rust_(programming_language)"
+        ]
+      },
+      {
+        "title": "What is Rust used for?",
+        "url": "https://www.reddit.com/r/rust/comments/bjgfcp/what_is_rust_used_for/",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "",
+        "family_friendly": true,
+        "type": "infobox",
+        "position": 8,
+        "attributes": [],
+        "providers": [
+          {
+            "type": "external",
+            "name": "reddit.com",
+            "url": "https://www.reddit.com/r/rust/comments/bjgfcp/what_is_rust_used_for/",
+            "img": "https://imgs.search.brave.com/U-eHNCapRHVNWWCVPPMTIvOofZULh0_A_FQKe8xTE4I/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvN2ZiNTU0M2Nj/MTFhZjRiYWViZDlk/MjJiMjBjMzFjMDRk/Y2IzYWI0MGI0MjVk/OGY5NzQzOGQ5NzQ5/NWJhMWI0NC93d3cu/cmVkZGl0LmNvbS8"
+          }
+        ],
+        "subtype": "code",
+        "data": {
+          "question": "What is Rust used for?",
+          "answer": {
+            "text": "If you already have programmed in other languages and you are concerned about memory security, well, rust is for you. However, many people use Rust because they are tired of using old languages like C or C++ with all their limitations. They are doing their best to create a new ecosystem where you can you can make software using an efficient workflow. Take for example the inclusion of external libraries in a project. With C++, for example, you have to manually download all the dependency and link them to your project. There are some tools that help you in this process, but those tools are not native to the language, and if a library you want to link to your project does not use such a tool, you have to do everything manually. In the Rust ecosystem there is no problem, since everybody uses a package manager called Cargo,that downloads and links all the necessary dependencies for you. You can use Rust in every area of programming, like operating systems, game development, web development, and so on. The ecosystem is not 100% ready, but it is continuously growing, so in the future it will be easier and easier to make stuff in Rust. If you want to learn more about Rust, go to https://www.rust-lang.org/learn",
+            "author": "fendoroid",
+            "upvoteCount": 18
+          }
+        },
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "reddit.com",
+          "hostname": "www.reddit.com",
+          "favicon": "https://imgs.search.brave.com/U-eHNCapRHVNWWCVPPMTIvOofZULh0_A_FQKe8xTE4I/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvN2ZiNTU0M2Nj/MTFhZjRiYWViZDlk/MjJiMjBjMzFjMDRk/Y2IzYWI0MGI0MjVk/OGY5NzQzOGQ5NzQ5/NWJhMWI0NC93d3cu/cmVkZGl0LmNvbS8",
+          "path": "› r  › rust  › comments  › bjgfcp  › what_is_rust_used_for"
+        }
+      }
+    ]
+  },
+  "mixed": {
+    "type": "mixed",
+    "main": [
+      {
+        "type": "web",
+        "index": 0,
+        "all": false
+      },
+      {
+        "type": "infobox",
+        "index": 0,
+        "all": false
+      },
+      {
+        "type": "web",
+        "index": 1,
+        "all": false
+      },
+      {
+        "type": "videos",
+        "all": true
+      },
+      {
+        "type": "web",
+        "index": 2,
+        "all": false
+      },
+      {
+        "type": "web",
+        "index": 3,
+        "all": false
+      },
+      {
+        "type": "web",
+        "index": 4,
+        "all": false
+      },
+      {
+        "type": "web",
+        "index": 5,
+        "all": false
+      },
+      {
+        "type": "web",
+        "index": 6,
+        "all": false
+      },
+      {
+        "type": "web",
+        "index": 7,
+        "all": false
+      },
+      {
+        "type": "web",
+        "index": 8,
+        "all": false
+      },
+      {
+        "type": "web",
+        "index": 9,
+        "all": false
+      },
+      {
+        "type": "web",
+        "index": 10,
+        "all": false
+      },
+      {
+        "type": "web",
+        "index": 11,
+        "all": false
+      },
+      {
+        "type": "web",
+        "index": 12,
+        "all": false
+      },
+      {
+        "type": "web",
+        "index": 13,
+        "all": false
+      },
+      {
+        "type": "web",
+        "index": 14,
+        "all": false
+      },
+      {
+        "type": "web",
+        "index": 15,
+        "all": false
+      },
+      {
+        "type": "web",
+        "index": 16,
+        "all": false
+      },
+      {
+        "type": "web",
+        "index": 17,
+        "all": false
+      },
+      {
+        "type": "web",
+        "index": 18,
+        "all": false
+      },
+      {
+        "type": "web",
+        "index": 19,
+        "all": false
+      }
+    ],
+    "top": [],
+    "side": []
+  },
+  "videos": {
+    "type": "videos",
+    "results": [
+      {
+        "type": "video_result",
+        "url": "https://www.youtube.com/watch?v=AiIsdA2i_7o",
+        "title": "All the Rust Programming Language features - YouTube",
+        "description": "In this video, I compress in 4 minutes most of the powerful features in the Rust programming language.#programming #rust The Rust series is available here:ht...",
+        "age": "October 31, 2024",
+        "page_age": "2024-10-31T13:20:31",
+        "fetched_content_timestamp": 1785990161,
+        "video": {
+          "duration": "04:10",
+          "creator": "Francesco Ciulla",
+          "publisher": "YouTube"
+        },
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "youtube.com",
+          "hostname": "www.youtube.com",
+          "favicon": "https://imgs.search.brave.com/Wg4wjE5SHAargkzePU3eSLmWgVz84BEZk1SjSglJK_U/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvOTkyZTZiMWU3/YzU3Nzc5YjExYzUy/N2VhZTIxOWNlYjM5/ZGVjN2MyZDY4Nzdh/ZDYzMTYxNmI5N2Rk/Y2Q3N2FkNy93d3cu/eW91dHViZS5jb20v",
+          "path": "› watch"
+        },
+        "thumbnail": {
+          "src": "https://imgs.search.brave.com/KzW7brgnjNEb8Lcla66GRjc99eztFVp63hQXw2Hu7I8/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9pLnl0/aW1nLmNvbS92aS9B/aUlzZEEyaV83by9t/YXhyZXNkZWZhdWx0/LmpwZw",
+          "original": "https://i.ytimg.com/vi/AiIsdA2i_7o/maxresdefault.jpg"
+        }
+      },
+      {
+        "type": "video_result",
+        "url": "https://www.youtube.com/watch?v=meEXag1XCFw",
+        "title": "Why Everyone's Switching to Rust (And Why You Shouldn't) - YouTube",
+        "description": "Rust is everywhere.Build, Upgrade, and Save All Month Long at Micro Center: https://micro.center/a8050dSign-Up for VIP Days at Micro Center Phoenix: https://",
+        "age": "August 19, 2025",
+        "page_age": "2025-08-19T16:01:14",
+        "fetched_content_timestamp": 1785860497,
+        "video": {
+          "duration": "14:44",
+          "creator": "ForrestKnight",
+          "publisher": "YouTube"
+        },
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "youtube.com",
+          "hostname": "www.youtube.com",
+          "favicon": "https://imgs.search.brave.com/Wg4wjE5SHAargkzePU3eSLmWgVz84BEZk1SjSglJK_U/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvOTkyZTZiMWU3/YzU3Nzc5YjExYzUy/N2VhZTIxOWNlYjM5/ZGVjN2MyZDY4Nzdh/ZDYzMTYxNmI5N2Rk/Y2Q3N2FkNy93d3cu/eW91dHViZS5jb20v",
+          "path": "› watch"
+        },
+        "thumbnail": {
+          "src": "https://imgs.search.brave.com/bTzFOuNKAsPizxqcxYKW2MRZ6oAd84wG2zbTgMhJPSc/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9pLnl0/aW1nLmNvbS92aS9t/ZUVYYWcxWENGdy9t/YXhyZXNkZWZhdWx0/LmpwZw",
+          "original": "https://i.ytimg.com/vi/meEXag1XCFw/maxresdefault.jpg"
+        }
+      },
+      {
+        "type": "video_result",
+        "url": "https://www.youtube.com/watch?v=meq4FxGvJCc",
+        "title": "Rust is now one of the most popular languages in the world - YouTube",
+        "description": "👉Join the Rust Live Accelerator waitlist: https://letsgetrusty.com/join/wv-meq4FxGvJCcRust just claimed its place as the 10th most popular programming langu",
+        "age": "4 weeks ago",
+        "page_age": "2026-07-14T15:00:32",
+        "fetched_content_timestamp": 1785810782,
+        "video": {
+          "duration": "04:18",
+          "creator": "Let's Get Rusty",
+          "publisher": "YouTube"
+        },
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "youtube.com",
+          "hostname": "www.youtube.com",
+          "favicon": "https://imgs.search.brave.com/Wg4wjE5SHAargkzePU3eSLmWgVz84BEZk1SjSglJK_U/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvOTkyZTZiMWU3/YzU3Nzc5YjExYzUy/N2VhZTIxOWNlYjM5/ZGVjN2MyZDY4Nzdh/ZDYzMTYxNmI5N2Rk/Y2Q3N2FkNy93d3cu/eW91dHViZS5jb20v",
+          "path": "› watch"
+        },
+        "thumbnail": {
+          "src": "https://imgs.search.brave.com/EXyOFG0KoLHsIWa5s3_WHO4IJ6530yMNK2tyhWDL08o/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9pLnl0/aW1nLmNvbS92aS9t/ZXE0RnhHdkpDYy9t/YXhyZXNkZWZhdWx0/LmpwZw",
+          "original": "https://i.ytimg.com/vi/meq4FxGvJCc/maxresdefault.jpg"
+        }
+      },
+      {
+        "type": "video_result",
+        "url": "https://www.youtube.com/watch?v=--uiLxOFDPY",
+        "title": "Why Rust? Should you pick up RUST as your next programming language?",
+        "description": "👉Get Rust training from Let’s Get Rusty:https://letsgetrusty.com/start-with-francescoThe question I get the most often is not about a specific Rust feature",
+        "age": "September 12, 2025",
+        "page_age": "2025-09-12T13:15:25",
+        "fetched_content_timestamp": 1786189703,
+        "video": {
+          "duration": "05:09",
+          "creator": "Francesco Ciulla",
+          "publisher": "YouTube"
+        },
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "youtube.com",
+          "hostname": "www.youtube.com",
+          "favicon": "https://imgs.search.brave.com/Wg4wjE5SHAargkzePU3eSLmWgVz84BEZk1SjSglJK_U/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvOTkyZTZiMWU3/YzU3Nzc5YjExYzUy/N2VhZTIxOWNlYjM5/ZGVjN2MyZDY4Nzdh/ZDYzMTYxNmI5N2Rk/Y2Q3N2FkNy93d3cu/eW91dHViZS5jb20v",
+          "path": "› watch"
+        },
+        "thumbnail": {
+          "src": "https://imgs.search.brave.com/HV8n4Oo3xCFbQWtNryY5CiuvRzDHSHstfZr1pLDJT1g/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9pLnl0/aW1nLmNvbS92aS8t/LXVpTHhPRkRQWS9t/YXhyZXNkZWZhdWx0/LmpwZw",
+          "original": "https://i.ytimg.com/vi/--uiLxOFDPY/maxresdefault.jpg"
+        }
+      },
+      {
+        "type": "video_result",
+        "url": "https://www.youtube.com/watch?v=owtLkXNDMv4",
+        "title": "Learn a New Programming Language (Rust) with Me - YouTube",
+        "description": "0:00 Intro1:06 Warmup2:11 Documentation Walkthrough4:13 Learning Resources6:58 Chapter 17:28 Chapter 2 (Guessing Game Project)9:08 Chapter 3 (Basics)10:04 Ru...",
+        "age": "July 14, 2024",
+        "page_age": "2024-07-14T13:07:39",
+        "fetched_content_timestamp": 1724350301,
+        "video": {
+          "duration": "13:26",
+          "views": 29456,
+          "creator": "The Code Dose",
+          "publisher": "YouTube"
+        },
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "youtube.com",
+          "hostname": "www.youtube.com",
+          "favicon": "https://imgs.search.brave.com/Wg4wjE5SHAargkzePU3eSLmWgVz84BEZk1SjSglJK_U/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvOTkyZTZiMWU3/YzU3Nzc5YjExYzUy/N2VhZTIxOWNlYjM5/ZGVjN2MyZDY4Nzdh/ZDYzMTYxNmI5N2Rk/Y2Q3N2FkNy93d3cu/eW91dHViZS5jb20v",
+          "path": "› watch"
+        },
+        "thumbnail": {
+          "src": "https://imgs.search.brave.com/2RQm-LiHQg-o1sXgS2ZIidHlU3vaZNxtZmYFx2Uzpbg/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9pLnl0/aW1nLmNvbS92aS9v/d3RMa1hORE12NC9t/YXhyZXNkZWZhdWx0/LmpwZw",
+          "original": "https://i.ytimg.com/vi/owtLkXNDMv4/maxresdefault.jpg"
+        }
+      }
+    ],
+    "mutated_by_goggles": false
+  },
+  "web": {
+    "type": "search",
+    "results": [
+      {
+        "title": "Rust Programming Language",
+        "url": "https://rust-lang.org/en-US/",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "Redirecting to /",
+        "profile": {
+          "name": "Rust",
+          "url": "https://rust-lang.org/en-US/",
+          "long_name": "rust-lang.org",
+          "img": "https://imgs.search.brave.com/KM3UVnh_2VxQjDofcZZ7qQzMlQVdYlUJC5n4bboPPGU/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvN2MzNTM1MGEx/ZTA0YTg3Y2U4NjA0/MTc1N2ViYjlkZDg5/OGY3NGQzMTliZGM2/Nzc1ZWMwMDlkNjhl/NTg1OGVlMC9ydXN0/LWxhbmcub3JnLw"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "generic",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "rust-lang.org",
+          "hostname": "rust-lang.org",
+          "favicon": "https://imgs.search.brave.com/KM3UVnh_2VxQjDofcZZ7qQzMlQVdYlUJC5n4bboPPGU/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvN2MzNTM1MGEx/ZTA0YTg3Y2U4NjA0/MTc1N2ViYjlkZDg5/OGY3NGQzMTliZGM2/Nzc1ZWMwMDlkNjhl/NTg1OGVlMC9ydXN0/LWxhbmcub3JnLw",
+          "path": "› en-US"
+        }
+      },
+      {
+        "title": "Rust (programming language) - Wikipedia",
+        "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "<strong>Rust</strong> is a general-purpose <strong>programming</strong> <strong>language</strong> which emphasizes performance, type safety, concurrency, and memory safety. <strong>Rust</strong> supports multiple <strong>programming</strong> paradigms. It was influenced by ideas from functional <strong>programming</strong>, including immutability, higher-order functions, algebraic data types, ...",
+        "page_age": "2026-08-06T19:03:34",
+        "profile": {
+          "name": "Wikipedia",
+          "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+          "long_name": "en.wikipedia.org",
+          "img": "https://imgs.search.brave.com/m6XxME4ek8DGIUcEPCqjRoDjf2e54EwL9pQzyzogLYk/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvNjQwNGZhZWY0/ZTQ1YWUzYzQ3MDUw/MmMzMGY3NTQ0ZjNj/NDUwMDk5ZTI3MWRk/NWYyNTM4N2UwOTE0/NTI3ZDQzNy9lbi53/aWtpcGVkaWEub3Jn/Lw"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "generic",
+        "is_live": false,
+        "deep_results": {
+          "buttons": [
+            {
+              "type": "button_result",
+              "title": "History",
+              "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)#History"
+            },
+            {
+              "type": "button_result",
+              "title": "Syntax and features",
+              "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)#Syntax_and_features"
+            },
+            {
+              "type": "button_result",
+              "title": "Safety",
+              "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)#Safety"
+            },
+            {
+              "type": "button_result",
+              "title": "Ecosystem",
+              "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)#Ecosystem"
+            },
+            {
+              "type": "button_result",
+              "title": "Performance",
+              "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)#Performance"
+            },
+            {
+              "type": "button_result",
+              "title": "Adoption",
+              "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)#Adoption"
+            },
+            {
+              "type": "button_result",
+              "title": "In academic research",
+              "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)#In_academic_research"
+            },
+            {
+              "type": "button_result",
+              "title": "Community",
+              "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)#Community"
+            }
+          ]
+        },
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "en.wikipedia.org",
+          "hostname": "en.wikipedia.org",
+          "favicon": "https://imgs.search.brave.com/m6XxME4ek8DGIUcEPCqjRoDjf2e54EwL9pQzyzogLYk/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvNjQwNGZhZWY0/ZTQ1YWUzYzQ3MDUw/MmMzMGY3NTQ0ZjNj/NDUwMDk5ZTI3MWRk/NWYyNTM4N2UwOTE0/NTI3ZDQzNy9lbi53/aWtpcGVkaWEub3Jn/Lw",
+          "path": "› wiki  › Rust_(programming_language)"
+        },
+        "age": "2 days ago",
+        "extra_snippets": [
+          "He described the language as \"technology from the past come to save the future from itself.\" Early Rust developer Manish Goregaokar similarly described Rust as being based on \"mostly decades-old research.\" During the early years, the Rust compiler was written in about 38,000 lines of OCaml. Early Rust contained several features no longer present today, including explicit object-oriented programming via an obj keyword and a typestates system for variable state changes, such as going from uninitialized to initialized.",
+          "According to Steve Klabnik, Rust was influenced during this period by developers coming from C++ (e.g., low-level performance of features), scripting languages (e.g., Cargo and package management), and functional programming (e.g., type systems development).",
+          "The struct keyword is used to denote a record type that groups multiple related values. enums can take on different variants at runtime, with their capabilities similar to algebraic data types found in functional programming languages. Both records and enum variants can contain fields with different types. Alternative names, or aliases, for the same type can be defined with the type keyword. The impl keyword can define methods for a user-defined type. Data and functions are defined separately. Implementations fulfill a role similar to that of classes within other languages. The Rust standard library defines and implements many widely used custom data types, including core data structures such as Vec, Option, and HashMap, as well as smart pointer types.",
+          "In the 2025 Stack Overflow Developer Survey, 14.8% of respondents had recently done extensive development in Rust. The survey named Rust the \"most admired programming language\" annually from 2016 to 2025 (inclusive), as measured by the number of existing developers interested in continuing to work in the language."
+        ]
+      },
+      {
+        "title": "r/learnrust on Reddit: Rust - A Living Hell - The Perspective From A Programmer Of 30 Years",
+        "url": "https://www.reddit.com/r/learnrust/comments/1binxlv/rust_a_living_hell_the_perspective_from_a/",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "A lot of things deliberately &quot;don&#x27;t work&quot; in Rust because of a language philosophy that tries to enforce a lot of correctness at compile time. That means an idiomatic Rust program is less likely to have runtime surprises but it can also stop you from doing something that &quot;will be fine for now&quot;.",
+        "page_age": "2024-03-20T00:40:56",
+        "profile": {
+          "name": "Reddit",
+          "url": "https://www.reddit.com/r/learnrust/comments/1binxlv/rust_a_living_hell_the_perspective_from_a/",
+          "long_name": "reddit.com",
+          "img": "https://imgs.search.brave.com/U-eHNCapRHVNWWCVPPMTIvOofZULh0_A_FQKe8xTE4I/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvN2ZiNTU0M2Nj/MTFhZjRiYWViZDlk/MjJiMjBjMzFjMDRk/Y2IzYWI0MGI0MjVk/OGY5NzQzOGQ5NzQ5/NWJhMWI0NC93d3cu/cmVkZGl0LmNvbS8"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "qa",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "reddit.com",
+          "hostname": "www.reddit.com",
+          "favicon": "https://imgs.search.brave.com/U-eHNCapRHVNWWCVPPMTIvOofZULh0_A_FQKe8xTE4I/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvN2ZiNTU0M2Nj/MTFhZjRiYWViZDlk/MjJiMjBjMzFjMDRk/Y2IzYWI0MGI0MjVk/OGY5NzQzOGQ5NzQ5/NWJhMWI0NC93d3cu/cmVkZGl0LmNvbS8",
+          "path": "  › r/learnrust  › rust - a living hell - the perspective from a programmer of 30 years"
+        },
+        "thumbnail": {
+          "src": "https://imgs.search.brave.com/A5H_aQiEBuUODR0lNeU8iDfhrWUvO8oEmRGE_mcS_gM/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly93d3cu/cmVkZGl0c3RhdGlj/LmNvbS9pY29uLnBu/Zw",
+          "original": "https://www.redditstatic.com/icon.png",
+          "logo": true
+        },
+        "age": "March 20, 2024",
+        "qa": {
+          "question": "<p>\n      I have been programming for 30 years. I know C, Haskell, Java, Kotlin, Swift, Python, APL. I have always had fun programming. Every language I have learned and used was an exciting experience. It has always been fun to learn new ways of thinking for approaching and solving problems. Each one gave a different and interesting perspective and set of challenges ....but they were all FUN.\n    </p><p>\n      Haskell was probably one of the more difficult experiences I had. I basically had to re-learn how to think and its type system can be a pain. Virtually none of the previous programming skills I had translated to Haskell. But, the difficulty paid off and I was able to take concepts I learned back to other languages.\n    </p><p>\n      When I decided to learn Rust, I had the same initial excitement of learning something new that I had when learning past languages. I read the Rust book and it all seemed to make sense.\n    </p><p>\n      The next obvious step was to make something in Rust. This is when everything turned from excitement to an absolute nightmare. Battle after battle after battle. Fighting with the Haskell type system was never anywhere nearly this difficult. I pushed through it and pushed through it and pushed through it. Making effort to learn something, after 30 years of programming, is not a new experience for me by any means.\n    </p><p>\n      I have reached my breaking point. This has been the worst experience learning a programming language that I have ever had by far. I found absolutely no joy in it in any shape or form. Every single step on the path was full of absolute frustration and misery. This has nearly killed my desire to program.\n    </p>",
+          "answer": {
+            "text": "<span>Sounds like you'd benefit from feedback on your code and how to use Rust design patterns. A lot of things deliberately \"don't work\" in Rust because of a language philosophy that tries to enforce a lot of correctness at compile time. That means an idiomatic Rust program is less likely to have runtime surprises but it can also stop you from doing something that \"will be fine for now\".</span>\n",
+            "upvoteCount": 102
+          }
+        },
+        "article": {
+          "author": [
+            {
+              "type": "person",
+              "name": "rndaz",
+              "url": "https://www.reddit.com/user/rndaz/"
+            }
+          ],
+          "date": "Mar 19, 2024",
+          "publisher": {
+            "type": "organization",
+            "name": "Reddit",
+            "url": "https://www.reddit.com",
+            "thumbnail": {
+              "src": "https://imgs.search.brave.com/vwRCTZCyS3UsCGj7HsYLzWpcOMhAEqq9hhxBK8tt7Dw/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly93d3cu/cmVkZGl0c3RhdGlj/LmNvbS9zaHJlZGRp/dC9hc3NldHMvZmF2/aWNvbi82NHg2NC5w/bmc",
+              "original": "https://www.redditstatic.com/shreddit/assets/favicon/64x64.png"
+            }
+          }
+        },
+        "extra_snippets": [
+          "Virtually none of the previous programming skills I had translated to Haskell. But, the difficulty paid off and I was able to take concepts I learned back to other languages. When I decided to learn Rust, I had the same initial excitement of learning something new that I had when learning past languages.",
+          "This has been the worst experience learning a programming language that I have ever had by far. I found absolutely no joy in it in any shape or form. Every single step on the path was full of absolute frustration and misery. This has nearly killed my desire to program. Share ... Rust design patterns.",
+          "A lot of things deliberately \"don't work\" in Rust because of a language philosophy that tries to enforce a lot of correctness at compile time. That means an idiomatic Rust program is less likely to have runtime surprises but it can also stop you from doing something that \"will be fine for now\".",
+          "There are tons of experienced developers who have learned Rust. Everyone learns and approaches the learning process differently. ... I too have been a programmer for 30 years, and have a series of languages under my belt."
+        ]
+      },
+      {
+        "title": "The Rust Programming Language",
+        "url": "https://www.reddit.com/r/rust/",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "A place for all things related to the Rust programming language—an open-source systems language that emphasizes performance, reliability, and productivity.",
+        "page_age": "2010-12-02T21:27:18",
+        "profile": {
+          "name": "Reddit",
+          "url": "https://www.reddit.com/r/rust/",
+          "long_name": "reddit.com",
+          "img": "https://imgs.search.brave.com/U-eHNCapRHVNWWCVPPMTIvOofZULh0_A_FQKe8xTE4I/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvN2ZiNTU0M2Nj/MTFhZjRiYWViZDlk/MjJiMjBjMzFjMDRk/Y2IzYWI0MGI0MjVk/OGY5NzQzOGQ5NzQ5/NWJhMWI0NC93d3cu/cmVkZGl0LmNvbS8"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "generic",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "reddit.com",
+          "hostname": "www.reddit.com",
+          "favicon": "https://imgs.search.brave.com/U-eHNCapRHVNWWCVPPMTIvOofZULh0_A_FQKe8xTE4I/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvN2ZiNTU0M2Nj/MTFhZjRiYWViZDlk/MjJiMjBjMzFjMDRk/Y2IzYWI0MGI0MjVk/OGY5NzQzOGQ5NzQ5/NWJhMWI0NC93d3cu/cmVkZGl0LmNvbS8",
+          "path": "› r  › rust"
+        },
+        "thumbnail": {
+          "src": "https://imgs.search.brave.com/j_ZjRhi6JRRhrJFPvBIYFNNCwjmBwE2nyXmO44e_AbQ/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9zdHls/ZXMucmVkZGl0bWVk/aWEuY29tL3Q1XzJz/N2xqL3N0eWxlcy9j/b21tdW5pdHlJY29u/X3BqZzNrdHp5anU3/NzEucG5nP3dpZHRo/PTY0JmZyYW1lPTEm/YXV0bz13ZWJwJnM9/NTY3MWM3NTI0YjRl/NzQ3Y2IxY2IyZDQ4/ZjlmZGE4MGYzY2Vh/ZWZjZQ",
+          "original": "https://styles.redditmedia.com/t5_2s7lj/styles/communityIcon_pjg3ktzyju771.png?width=64&frame=1&auto=webp&s=5671c7524b4e747cb1cb2d48f9fda80f3ceaefce",
+          "logo": true
+        },
+        "age": "December 2, 2010",
+        "extra_snippets": [
+          "r/rust: A place for all things related to the Rust programming language—an open-source systems language that emphasizes performance, reliability, and…",
+          "On the other hand, many Rust programs broke for me for a reason or another. Many were unuseable, many didn't even load, but all of them gave me an error (that I couldn't really fix, it was an issue of the program and I'd have to change source code to make it work). I don't entirely like C and I think there's many better options available, so I'm not trying to defend it. But for a language that has \"security\" as its main selling point, I find this pattern rather strange.",
+          "For Rust questions, use the stickied Q&A thread. Arts-and-crafts posts are permitted on weekends. No meta posts; message the mods instead. ... Criticism is encouraged, though it must be constructive, useful and actionable. Avoid posting links to web pages which allow commenting, such as Twitter, or Github projects/issues when criticizing them. Please create a read-only mirror and link that instead. ... A programming language is rarely worth getting worked up over.",
+          "Hey everyone, just started learning Rust. Wanted to jump in and get a feel for the language firsthand instead of only reading about it. Excited to see what all the hype is about and figure out why so many devs love it."
+        ]
+      },
+      {
+        "title": "Rust 101 — Everything you need to know about Rust | by Nishant Aanjaney Jalan | CodeX | Medium",
+        "url": "https://medium.com/codex/rust-101-everything-you-need-to-know-about-rust-f3dd0ae99f4c",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "Rust is a programming language that is <strong>built to be fast, secure, reliable and supposedly easier to program</strong>.",
+        "page_age": "2023-02-25T05:51:46",
+        "profile": {
+          "name": "Medium",
+          "url": "https://medium.com/codex/rust-101-everything-you-need-to-know-about-rust-f3dd0ae99f4c",
+          "long_name": "medium.com",
+          "img": "https://imgs.search.brave.com/4R4hFITz_F_be0roUiWbTZKhsywr3fnLTMTkFL5HFow/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvOTZhYmQ1N2Q4/NDg4ZDcyODIyMDZi/MzFmOWNhNjE3Y2E4/Y2YzMThjNjljNDIx/ZjllZmNhYTcwODhl/YTcwNDEzYy9tZWRp/dW0uY29tLw"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "article",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "medium.com",
+          "hostname": "medium.com",
+          "favicon": "https://imgs.search.brave.com/4R4hFITz_F_be0roUiWbTZKhsywr3fnLTMTkFL5HFow/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvOTZhYmQ1N2Q4/NDg4ZDcyODIyMDZi/MzFmOWNhNjE3Y2E4/Y2YzMThjNjljNDIx/ZjllZmNhYTcwODhl/YTcwNDEzYy9tZWRp/dW0uY29tLw",
+          "path": "› codex  › rust-101-everything-you-need-to-know-about-rust-f3dd0ae99f4c"
+        },
+        "thumbnail": {
+          "src": "https://imgs.search.brave.com/R57SJ-meshJGo1qxlQU2wcdw2M7xOCYXMTR4_k78svs/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9taXJv/Lm1lZGl1bS5jb20v/MCpFcXFydjl6VnBI/OTlYNzI2LnBuZw",
+          "original": "https://miro.medium.com/0*Eqqrv9zVpH99X726.png",
+          "logo": false
+        },
+        "age": "February 25, 2023",
+        "article": {
+          "author": [
+            {
+              "type": "person",
+              "name": "Nishant Aanjaney Jalan",
+              "url": "https://medium.com/@cybercoder.naj"
+            }
+          ],
+          "date": "Feb 25, 2023",
+          "publisher": {
+            "type": "organization",
+            "name": "CodeX",
+            "url": "https://medium.com/codex",
+            "thumbnail": {
+              "src": "https://imgs.search.brave.com/2oS4gizLjFZ853E0acR6gcdGrcbIHF0BjUQ2Gxu0DJM/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9taXJv/Lm1lZGl1bS5jb20v/djIvcmVzaXplOmZp/dDoxMDAwLzElMkFW/cUgwYk9yZmplVWt6/bnBoSUM3S0JnLnBu/Zw",
+              "original": "https://miro.medium.com/v2/resize:fit:1000/1%2AVqH0bOrfjeUkznphIC7KBg.png"
+            }
+          },
+          "isAccessibleForFree": true
+        },
+        "extra_snippets": [
+          "Although I recently learnt Haskell for university purposes, I wanted to learn a new language that has a better overall reputation. A few weeks ago, I turned to Rust, and it has been really good so far. In this article, I am going to share the basics of Rust so that you can start programming today.",
+          "Code should be able to run without crashing first time — Yes, you heard me. Rust is a statically typed language, and based on the way it is constructed, it leaves almost (I say, almost!) no room for your program to crash.",
+          "Rust is a programming language that is built to be fast, secure, reliable and supposedly easier to program.",
+          "Rust was, on the contrary, not built to replace C or C++. It’s aim is completely different, that is, to be an all-purpose general programming language."
+        ]
+      },
+      {
+        "title": "Rust Tutorial",
+        "url": "https://www.w3schools.com/rust/",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "Rust is <strong>a popular programming language used to build everything from web servers to game engines</strong>.",
+        "profile": {
+          "name": "W3Schools",
+          "url": "https://www.w3schools.com/rust/",
+          "long_name": "w3schools.com",
+          "img": "https://imgs.search.brave.com/D9KKNW7B_PBGo-trytMGRrRqvqMVW5Q5mDruXSPmBO4/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvYjVlMGVkZDVj/ZGMyZWRmMzAwODRi/ZDAwZGE4NWI3NmU4/MjRhNjEzOGFhZWY3/ZGViMjY1OWY2ZDYw/YTZiOGUyZS93d3cu/dzNzY2hvb2xzLmNv/bS8"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "generic",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "w3schools.com",
+          "hostname": "www.w3schools.com",
+          "favicon": "https://imgs.search.brave.com/D9KKNW7B_PBGo-trytMGRrRqvqMVW5Q5mDruXSPmBO4/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvYjVlMGVkZDVj/ZGMyZWRmMzAwODRi/ZDAwZGE4NWI3NmU4/MjRhNjEzOGFhZWY3/ZGViMjY1OWY2ZDYw/YTZiOGUyZS93d3cu/dzNzY2hvb2xzLmNv/bS8",
+          "path": "› rust"
+        },
+        "thumbnail": {
+          "src": "https://imgs.search.brave.com/9mJENdKXrTwGf6-xbqPvs47GTLiuqxHqcFfNEei0o3w/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly93d3cu/dzNzY2hvb2xzLmNv/bS9pbWFnZXMvdzNz/Y2hvb2xzX2xvZ29f/NDM2XzIucG5n",
+          "original": "https://www.w3schools.com/images/w3schools_logo_436_2.png",
+          "logo": true
+        },
+        "extra_snippets": [
+          "W3Schools offers free online tutorials, references and exercises in all the major languages of the web. Covering popular subjects like HTML, CSS, JavaScript, Python, SQL, Java, and many, many more.",
+          "Well organized and easy to understand Web building tutorials with lots of examples of how to use HTML, CSS, JavaScript, SQL, PHP, Python, Bootstrap, Java and XML.",
+          "HTML CSS JAVASCRIPT SQL PYTHON JAVA PHP W3.CSS C C++ C# HOW TO BOOTSTRAP REACT MYSQL JQUERY EXCEL XML DJANGO NUMPY PANDAS NODEJS DSA TYPESCRIPT SWIFT ANGULAR ANGULARJS GIT POSTGRESQL MONGODB ASP AI R GO KOTLIN SWIFT SASS VUE GEN AI SCIPY AWS CYBERSECURITY DATA SCIENCE INTRO TO PROGRAMMING HTML & CSS BASH RUST TOOLS",
+          "Rust is known for being very fast, and is similar to C and C++ in language."
+        ]
+      },
+      {
+        "title": "Learning Rust 🦀: 01- Intro and Setup - DEV Community",
+        "url": "https://dev.to/fadygrab/learning-rust-1-intro-and-setup-5a77",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "Almost every Rust introductory article out there speaks of two main Rust features, &quot;fast performance&quot; and &quot;Memory safety&quot;. The first one is self-explanatory; it is fast due to the fact that it is a low-ish level programming language that is closer to the computer hardware than other languages without intermediary layers (its similarity to C and C++ is almost always brought up).",
+        "page_age": "2023-06-12T17:04:22",
+        "profile": {
+          "name": "DEV Community",
+          "url": "https://dev.to/fadygrab/learning-rust-1-intro-and-setup-5a77",
+          "long_name": "dev.to",
+          "img": "https://imgs.search.brave.com/UUpF8I85K--vkQzrhameM7iRPRU5VCTXyWbS4sk6G2g/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvNTg5MTcxNDBh/N2U4ODc4MDg0NWQ4/MzU0YWJkNDY3ZWRm/MjUxY2U1YjY5MzJm/YWRlOTI4YjAyZDI1/ZjU0MmJjNi9kZXYu/dG8v"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "article",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "dev.to",
+          "hostname": "dev.to",
+          "favicon": "https://imgs.search.brave.com/UUpF8I85K--vkQzrhameM7iRPRU5VCTXyWbS4sk6G2g/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvNTg5MTcxNDBh/N2U4ODc4MDg0NWQ4/MzU0YWJkNDY3ZWRm/MjUxY2U1YjY5MzJm/YWRlOTI4YjAyZDI1/ZjU0MmJjNi9kZXYu/dG8v",
+          "path": "› fadygrab  › learning-rust-1-intro-and-setup-5a77"
+        },
+        "thumbnail": {
+          "src": "https://imgs.search.brave.com/lP95dL5OWQoN7gNgKeIM6aRT0JEoAdzEnnLEyuFnHJA/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9tZWRp/YTIuZGV2LnRvL2R5/bmFtaWMvaW1hZ2Uv/d2lkdGg9MTA4MCxo/ZWlnaHQ9MTA4MCxm/aXQ9Y292ZXIsZ3Jh/dml0eT1hdXRvLGZv/cm1hdD1hdXRvL2h0/dHBzJTNBJTJGJTJG/ZGV2LXRvLXVwbG9h/ZHMuczMuYW1hem9u/YXdzLmNvbSUyRnVw/bG9hZHMlMkZhcnRp/Y2xlcyUyRmFuaDY5/aWlhbmJudjdjbGpj/MDZxLnBuZw",
+          "original": "https://media2.dev.to/dynamic/image/width=1080,height=1080,fit=cover,gravity=auto,format=auto/https%3A%2F%2Fdev-to-uploads.s3.amazonaws.com%2Fuploads%2Farticles%2Fanh69iianbnv7cljc06q.png",
+          "logo": false
+        },
+        "age": "June 12, 2023",
+        "article": {
+          "author": [
+            {
+              "type": "person",
+              "name": "Fady GA 😎",
+              "url": "https://dev.to/fadygrab"
+            }
+          ],
+          "date": "Jun 03, 2023",
+          "publisher": {
+            "type": "organization",
+            "name": "DEV Community",
+            "thumbnail": {
+              "src": "https://imgs.search.brave.com/G0tiJm-WvQZs-ogiTsZl65hSL9gaBnaPKXQHCudMtfA/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9tZWRp/YTIuZGV2LnRvL2R5/bmFtaWMvaW1hZ2Uv/d2lkdGg9MTkyLGhl/aWdodD0sZml0PXNj/YWxlLWRvd24sZ3Jh/dml0eT1hdXRvLGZv/cm1hdD1hdXRvL2h0/dHBzJTNBJTJGJTJG/ZGV2LXRvLXVwbG9h/ZHMuczMuYW1hem9u/YXdzLmNvbSUyRnVw/bG9hZHMlMkZhcnRp/Y2xlcyUyRjhqN2t2/cDY2MHJxenQ5OXp1/aThlLnBuZw",
+              "original": "https://media2.dev.to/dynamic/image/width=192,height=,fit=scale-down,gravity=auto,format=auto/https%3A%2F%2Fdev-to-uploads.s3.amazonaws.com%2Fuploads%2Farticles%2F8j7kvp660rqzt99zui8e.png"
+            }
+          }
+        },
+        "extra_snippets": [
+          "I will follow loosely the contents of \"The Rust Programming Language, 2nd Edition\" by Steve Klabnik and Carol Nichols which I'm currently reading to learn Rust (It's a great book by the way!). I will try to write each article of this series from the perspective of an intermediate Python developer so this series won't be suitable for the absolute programming beginners.",
+          "Almost every Rust introductory article out there speaks of two main Rust features, \"fast performance\" and \"Memory safety\". The first one is self-explanatory; it is fast due to the fact that it is a low-ish level programming language that is closer to the computer hardware than other languages without intermediary layers (its similarity to C and C++ is almost always brought up).",
+          "Some other languages (like C and C++) don't do that and the Programmer has to allocate and release memory for his program which (if done wrong) can lead to problems! Imagine this, you have allocated some memory space for your program but released it too soon, problem! Or released it not soon enough, data corruption! Rust handles that with its \"ownership system\" (which I'll talk about in future articles) that ensures memory safety all the time!",
+          "About Me: Hi! My name is Fady. I'm a Telecommunications engineer transitioning into the... Tagged with learning, rust."
+        ]
+      },
+      {
+        "title": "The Rust Programming Language, 3rd Edition | No Starch Press",
+        "url": "https://nostarch.com/rust-programming-language-3e",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "The Rust Programming Language, 3rd Edition, <strong>teaches you to write code that the compiler can verify, teams can maintain, and systems can evolve safely over time</strong>.",
+        "page_age": "2026-04-09T18:56:54",
+        "profile": {
+          "name": "No Starch Press",
+          "url": "https://nostarch.com/rust-programming-language-3e",
+          "long_name": "nostarch.com",
+          "img": "https://imgs.search.brave.com/y_HHu4LI6jPPwOOfpKPlAzVqDJkQjEvYgVg7giO3nqg/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvNTA5ZWIxZDY1/NjViZjRmMzYxOWIw/Y2NhNGZlZDg0NWRj/YTE3MDk0MWJkMTVh/N2U5ZjZkYzhlM2Nl/ZGNiNTk1OS9ub3N0/YXJjaC5jb20v"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "generic",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "nostarch.com",
+          "hostname": "nostarch.com",
+          "favicon": "https://imgs.search.brave.com/y_HHu4LI6jPPwOOfpKPlAzVqDJkQjEvYgVg7giO3nqg/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvNTA5ZWIxZDY1/NjViZjRmMzYxOWIw/Y2NhNGZlZDg0NWRj/YTE3MDk0MWJkMTVh/N2U5ZjZkYzhlM2Nl/ZGNiNTk1OS9ub3N0/YXJjaC5jb20v",
+          "path": "› rust-programming-language-3e"
+        },
+        "age": "April 9, 2026",
+        "extra_snippets": [
+          "Written by longtime Rust community members, this book shows you how to work effectively with Rust’s type system, concurrency model, and tooling, using patterns and idioms chosen for long-term stability. ... Three substantial project chapters—focusing on a number-guessing game, a command-line tool, and a multithreaded server—demonstrate how these concepts work together in complete, real programs.",
+          "Whether you’re new to Rust or already using it in production, this book helps you write code that scales safely and makes its guarantees explicit. New to this edition: Complete async programming chapter Miri for analyzing unsafe code Built on the Rust 2024 Edition Modern Rust idioms, tooling, and practices",
+          "In addition to his open source software contributions and regular public speaking, he created the New Rustacean podcast (2015–2019). ... Chapter 1: Getting Started Chapter 2: Programming a Guessing Game Chapter 3: Common Programming Concepts Chapter 4: Understanding Ownership Chapter 5: Using Structs to Structure Related Data Chapter 6: Enums and Pattern Matching Chapter 7: Packages, Crates, and Modules Chapter 8: Common Collections Chapter 9: Error Handling Chapter 10: Generic Types, Traits, and Lifetimes Chapter 11: Writing Automated Tests Chapter 12: An I/O Project: Building a Command Lin",
+          "Carol Nichols is a member of the Rust Crates.io Team and former member of the Rust Core Team. She’s a co-founder of Integer 32, LLC, the world’s first Rust-focused software consultancy."
+        ]
+      },
+      {
+        "title": "r/rust on Reddit: What is Rust used for?",
+        "url": "https://www.reddit.com/r/rust/comments/bjgfcp/what_is_rust_used_for/",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "For people coming from garbage collected languages, a winning point about Rust is rewriting performance-critical parts without fear of memory errors, which can often bring great speedups. ... Rust is for applications where memory and performance is a factor, but long compile times are not an issue ... In general everywhere C++ is used but is boring because of his unsafe type system. Rust is awesome for many things : JavaScript engine programming 😁 it was created on that purpose",
+        "page_age": "2019-05-01T12:20:03",
+        "profile": {
+          "name": "Reddit",
+          "url": "https://www.reddit.com/r/rust/comments/bjgfcp/what_is_rust_used_for/",
+          "long_name": "reddit.com",
+          "img": "https://imgs.search.brave.com/U-eHNCapRHVNWWCVPPMTIvOofZULh0_A_FQKe8xTE4I/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvN2ZiNTU0M2Nj/MTFhZjRiYWViZDlk/MjJiMjBjMzFjMDRk/Y2IzYWI0MGI0MjVk/OGY5NzQzOGQ5NzQ5/NWJhMWI0NC93d3cu/cmVkZGl0LmNvbS8"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "qa",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "reddit.com",
+          "hostname": "www.reddit.com",
+          "favicon": "https://imgs.search.brave.com/U-eHNCapRHVNWWCVPPMTIvOofZULh0_A_FQKe8xTE4I/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvN2ZiNTU0M2Nj/MTFhZjRiYWViZDlk/MjJiMjBjMzFjMDRk/Y2IzYWI0MGI0MjVk/OGY5NzQzOGQ5NzQ5/NWJhMWI0NC93d3cu/cmVkZGl0LmNvbS8",
+          "path": "  › r/rust  › what is rust used for?"
+        },
+        "thumbnail": {
+          "src": "https://imgs.search.brave.com/-CdPziJpHDIRUiu-d28nTz9cJfOXkIrp0ooT3tG5WQ0/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9zaGFy/ZS5yZWRkLml0L3By/ZXZpZXcvcG9zdC9i/amdmY3A",
+          "original": "https://share.redd.it/preview/post/bjgfcp",
+          "logo": false
+        },
+        "age": "May 1, 2019",
+        "qa": {
+          "question": "<p>\n    I&#39;m sorry but I&#39;m not a pro in systems programming but why should I think about learning Rust?\n  </p>",
+          "answer": {
+            "text": "<div>\n<p>\n    If you already have programmed in other languages and you are concerned about memory security, well, rust is for you.\n  </p>\n<p>\n    However, many people use Rust because they are tired of using old languages like C or C++ with all their limitations. They are doing their best to create a new ecosystem where you can you can make software using an efficient workflow. Take for example the inclusion of external libraries in a project. With C++, for example, you have to manually download all the dependency and link them to your project. There are some tools that help you in this process, but those tools are not native to the language, and if a library you want to link to your project does not use such a tool, you have to do everything manually. In the Rust ecosystem there is no problem, since everybody uses a package manager called Cargo,that downloads and links all the necessary dependencies for you.\n  </p>\n<p>\n    You can use Rust in every area of programming, like operating systems, game development, web development, and so on. The ecosystem is not 100% ready, but it is continuously growing, so in the future it will be easier and easier to make stuff in Rust.\n  </p>\n<p>\n    If you want to learn more about Rust, go to <a rpl class=\"relative pointer-events-auto a cursor-pointer\n  \n  \n  \n  \n  underline\n  \" href=\"https://www.rust-lang.org/learn\" rel=\"noopener nofollow ugc\" target=\"_blank\">https://www.rust-lang.org/learn</a>\n  </p>\n</div>\n",
+            "upvoteCount": 18
+          }
+        },
+        "extra_snippets": [
+          "There are some tools that help you in this process, but those tools are not native to the language, and if a library you want to link to your project does not use such a tool, you have to do everything manually. In the Rust ecosystem there is no problem, since everybody uses a package manager called Cargo,that downloads and links all the necessary dependencies for you. You can use Rust in every area of programming, like operating systems, game development, web development, and so on.",
+          "If you want to learn more about Rust, go to https://www.rust-lang.org/learn ... Do you like programming languages with types?",
+          "Do you like deploying raw binaries without managing a vm or runtime? Rust can do that. ... I'd rather not. Dynamically typed programming languages are a nightmare to use.",
+          "For people coming from garbage collected languages, a winning point about Rust is rewriting performance-critical parts without fear of memory errors, which can often bring great speedups. ... Rust is for applications where memory and performance is a factor, but long compile times are not an issue ... In general everywhere C++ is used but is boring because of his unsafe type system. Rust is awesome for many things : JavaScript engine programming 😁 it was created on that purpose"
+        ]
+      },
+      {
+        "title": "Introduction - The Rust Programming Language",
+        "url": "https://web.mit.edu/rust-lang_v1.25/arch/amd64_ubuntu1404/share/doc/rust/html/book/second-edition/ch01-00-introduction.html",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "Rust is a programming language that <strong>helps you write faster, more reliable software</strong>. High-level ergonomics and low-level control are often at odds with each other in programming language design; Rust stands to challenge that.",
+        "profile": {
+          "name": "MIT",
+          "url": "https://web.mit.edu/rust-lang_v1.25/arch/amd64_ubuntu1404/share/doc/rust/html/book/second-edition/ch01-00-introduction.html",
+          "long_name": "web.mit.edu",
+          "img": "https://imgs.search.brave.com/ddIiSRxQJOFN40uzra1BosIyWQEQk0jPNB4xlTg3SQY/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvZjg0M2IxZWRk/YmNmZTg1MjExNWFi/MmIwZGU4MmE4Yzg5/ZGQxNzU1MTBjZjZk/MDI1MWMzN2MyMTdi/YWQ0YzkwZC93ZWIu/bWl0LmVkdS8"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "generic",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "web.mit.edu",
+          "hostname": "web.mit.edu",
+          "favicon": "https://imgs.search.brave.com/ddIiSRxQJOFN40uzra1BosIyWQEQk0jPNB4xlTg3SQY/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvZjg0M2IxZWRk/YmNmZTg1MjExNWFi/MmIwZGU4MmE4Yzg5/ZGQxNzU1MTBjZjZk/MDI1MWMzN2MyMTdi/YWQ0YzkwZC93ZWIu/bWl0LmVkdS8",
+          "path": "› rust-lang_v1.25  › arch  › amd64_ubuntu1404  › share  › doc  › rust  › html  › book  › second-edition  › ch01-00-introduction.html"
+        },
+        "extra_snippets": [
+          "Rust is proving to be a productive tool for collaborating among large teams of developers with varying levels of systems programming knowledge. Low-level code is prone to a variety of subtle bugs, which in most other languages can only be caught through extensive testing and careful code review by experienced developers.",
+          "Rust also brings contemporary developer tools to the systems programming world: Cargo, the included dependency manager and build tool, makes adding, compiling, and managing dependencies painless and consistent across the Rust ecosystem. Rustfmt ensures a consistent coding style across developers. The Rust Language Server powers IDE integration for code completion and inline error messages.",
+          "We’d love for you to contribute to the Rust language. By speed, we mean both the speed of the programs that Rust lets you create and the speed at which Rust lets you write them. The Rust compiler’s checks ensure stability through feature additions and refactoring, as opposed to brittle legacy code in languages without these checks that developers are afraid to modify.",
+          "This isn’t a complete list of everyone the Rust language hopes to support, but these are some of the biggest stakeholders. Overall, Rust’s greatest ambition is to take trade-offs that have been accepted by programmers for decades and eliminate the dichotomy."
+        ]
+      },
+      {
+        "title": "What is Rust and why is it so popular? - Stack Overflow",
+        "url": "https://stackoverflow.blog/2020/01/20/what-is-rust-and-why-is-it-so-popular/",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "This means any value may be what it says or nothing, effectively creating a second possible type for every type. Like Haskell and some other modern programming languages, Rust encodes this possibility using an optional type, and the compiler requires you to handle the None case.",
+        "page_age": "2020-01-20T00:00:00",
+        "profile": {
+          "name": "Stack Overflow",
+          "url": "https://stackoverflow.blog/2020/01/20/what-is-rust-and-why-is-it-so-popular/",
+          "long_name": "stackoverflow.blog",
+          "img": "https://imgs.search.brave.com/nHSlmEoUbL41OIgI1Gz6bkrt7aSMVybujjhQXpfM4-c/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvNDgyNjY2MTMx/MGMzYmRlZGI5N2I0/NzkxZjhjMTZlNzI0/M2Q3ZjEzY2JhNjZh/ODc0NDYzYzg3MDI3/OTU3ZjU5ZS9zdGFj/a292ZXJmbG93LmJs/b2cv"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "article",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "stackoverflow.blog",
+          "hostname": "stackoverflow.blog",
+          "favicon": "https://imgs.search.brave.com/nHSlmEoUbL41OIgI1Gz6bkrt7aSMVybujjhQXpfM4-c/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvNDgyNjY2MTMx/MGMzYmRlZGI5N2I0/NzkxZjhjMTZlNzI0/M2Q3ZjEzY2JhNjZh/ODc0NDYzYzg3MDI3/OTU3ZjU5ZS9zdGFj/a292ZXJmbG93LmJs/b2cv",
+          "path": "› 2020  › 01  › 20  › what-is-rust-and-why-is-it-so-popular"
+        },
+        "thumbnail": {
+          "src": "https://imgs.search.brave.com/F3vrQCSlOU82xWsWyWpwcw5mpfdP-C028yVqg5Nr3-0/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9jZG4u/c3RhY2tvdmVyZmxv/dy5jby9pbWFnZXMv/am83bjRrOHMvcHJv/ZHVjdGlvbi9iZGE1/MWQ1ZmFkZDQyZjI2/NDE4ZjY4MTlhNmRh/NDE5ODVlYzgzOGZk/LTI1NjB4MTcwNy5q/cGc_cmVjdD0wLDE4/MiwyNTYwLDEzNDQm/dz0xMjAwJmg9NjMw/JmF1dG89Zm9ybWF0",
+          "original": "https://cdn.stackoverflow.co/images/jo7n4k8s/production/bda51d5fadd42f26418f6819a6da41985ec838fd-2560x1707.jpg?rect=0,182,2560,1344&w=1200&h=630&auto=format",
+          "logo": false
+        },
+        "age": "January 20, 2020",
+        "extra_snippets": [
+          "It’s not all roses in Rust-land, so I talk about the downsides, too. The arguments between programmers who prefer dynamic versus static type systems are likely to endure for decades more, but it's hard to argue about the benefits of static types. You only need to look at the rise of languages like TypeScript or features like Python's type hints as people have become frustrated with the current state of dynamic typing in today's larger codebases.",
+          "This means any value may be what it says or nothing, effectively creating a second possible type for every type. Like Haskell and some other modern programming languages, Rust encodes this possibility using an optional type, and the compiler requires you to handle the None case.",
+          "Rust's static typing does its best to get out of the programmer's way while encouraging long-term maintainability. Some statically-typed languages place a large burden on the programmer, requiring them to repeat the type of a variable multiple times, which hinders readability and refactoring.",
+          "Other statically-typed languages allow whole-program type inference. While convenient during initial development, this reduces the ability of the compiler to provide useful error information when types no longer match. Rust learns from both of these styles and requires top-level items like function arguments and constants to have explicit types, while allowing type inference inside of function bodies."
+        ]
+      },
+      {
+        "title": "Learn the Rust programming language - Course for beginners - YouTube",
+        "url": "https://www.youtube.com/watch?v=gAX3Zj-JGE0",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "Do you want to learn Rust in a single video? That&#x27;s challenging, but I&#x27;ll try my best. In this 3.5-hour video on learning Rust, you&#x27;ll develop a solid unders...",
+        "page_age": "2025-05-06T13:45:46",
+        "profile": {
+          "name": "YouTube",
+          "url": "https://www.youtube.com/watch?v=gAX3Zj-JGE0",
+          "long_name": "youtube.com",
+          "img": "https://imgs.search.brave.com/Wg4wjE5SHAargkzePU3eSLmWgVz84BEZk1SjSglJK_U/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvOTkyZTZiMWU3/YzU3Nzc5YjExYzUy/N2VhZTIxOWNlYjM5/ZGVjN2MyZDY4Nzdh/ZDYzMTYxNmI5N2Rk/Y2Q3N2FkNy93d3cu/eW91dHViZS5jb20v"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "video",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "youtube.com",
+          "hostname": "www.youtube.com",
+          "favicon": "https://imgs.search.brave.com/Wg4wjE5SHAargkzePU3eSLmWgVz84BEZk1SjSglJK_U/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvOTkyZTZiMWU3/YzU3Nzc5YjExYzUy/N2VhZTIxOWNlYjM5/ZGVjN2MyZDY4Nzdh/ZDYzMTYxNmI5N2Rk/Y2Q3N2FkNy93d3cu/eW91dHViZS5jb20v",
+          "path": "› watch"
+        },
+        "thumbnail": {
+          "src": "https://imgs.search.brave.com/7w_r_ER-VlWkR1m3o3vNg0k2phCoBrrpqYgtLYM4OPg/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9pLnl0/aW1nLmNvbS92aS9n/QVgzWmotSkdFMC9t/YXhyZXNkZWZhdWx0/LmpwZw",
+          "original": "https://i.ytimg.com/vi/gAX3Zj-JGE0/maxresdefault.jpg",
+          "logo": false
+        },
+        "age": "May 6, 2025",
+        "video": {
+          "duration": "03:30:58",
+          "thumbnail": {
+            "src": "https://imgs.search.brave.com/7w_r_ER-VlWkR1m3o3vNg0k2phCoBrrpqYgtLYM4OPg/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9pLnl0/aW1nLmNvbS92aS9n/QVgzWmotSkdFMC9t/YXhyZXNkZWZhdWx0/LmpwZw",
+            "original": "https://i.ytimg.com/vi/gAX3Zj-JGE0/maxresdefault.jpg"
+          }
+        }
+      },
+      {
+        "title": "The Rust Programming Language",
+        "url": "https://www.scs.stanford.edu/~zyedidia/docs/rust/rust_book.pdf",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "The Rust · programming language helps you write faster, more reliable software.",
+        "profile": {
+          "name": "Stanford SCS",
+          "url": "https://www.scs.stanford.edu/~zyedidia/docs/rust/rust_book.pdf",
+          "long_name": "scs.stanford.edu",
+          "img": "https://imgs.search.brave.com/6g7fR--_WuoOjqR39GXjOoTOokb13vwwQt4otLI85js/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvODU2OTY1ZGQw/ZmYzMzYxN2Q2M2Mz/ZTc2OTlhOWIzMDBh/MDU5OGQ0MTYzZTY2/YWI1NWNhYjZiOWQy/MzFmMTE5Ny93d3cu/c2NzLnN0YW5mb3Jk/LmVkdS8"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "generic",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "scs.stanford.edu",
+          "hostname": "www.scs.stanford.edu",
+          "favicon": "https://imgs.search.brave.com/6g7fR--_WuoOjqR39GXjOoTOokb13vwwQt4otLI85js/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvODU2OTY1ZGQw/ZmYzMzYxN2Q2M2Mz/ZTc2OTlhOWIzMDBh/MDU5OGQ0MTYzZTY2/YWI1NWNhYjZiOWQy/MzFmMTE5Ny93d3cu/c2NzLnN0YW5mb3Jk/LmVkdS8",
+          "path": "› ~zyedidia  › docs  › rust  › rust_book.pdf"
+        },
+        "content_type": "pdf",
+        "extra_snippets": [
+          "Rust is for people who crave speed and stability in a language. By speed, we mean both how · quickly Rust code can run and the speed at which Rust lets you write programs.",
+          "Now that you’ve installed Rust, it’s time to write your ﬁrst Rust program. It’s traditional when · learning a new language to write a little program that prints the text Hello, world!",
+          "Chapter 4 explores ownership, a feature that makes Rust diﬀerent from other languages. ... Chapter 5 discusses structs and method syntax, and Chapter 6 explains how enums work. ... Speciﬁcally, you’ll learn about variables, basic types, functions, comments, and control ﬂow. These foundations will be in every Rust program, and learning them early will give you a",
+          "Welcome to The Rust Programming Language, an introductory book about Rust."
+        ]
+      },
+      {
+        "title": "What's Different About This Book? - The Rust Programming Language",
+        "url": "https://rust-book.cs.brown.edu/",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "This book is an experimental fork of The Rust Programming Language created by researchers at the Cognitive Engineering Lab at Brown University. If you’re curious, this page explains what makes this book different from the original TRPL book.",
+        "profile": {
+          "name": "The Rust Programming Language",
+          "url": "https://rust-book.cs.brown.edu/",
+          "long_name": "rust-book.cs.brown.edu",
+          "img": "https://imgs.search.brave.com/CEZSm-y0pdf_YhZUtzSslduPw9Elo1FIjaEnTSUsp8U/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvMWI1Y2ZmNjYz/YTUyZjAxMGMyOWY4/YjUwYjYzZTg2YmZh/MWYyOTJkMzczM2Y4/NDc1ZDliYjg3MzQ1/YjYxZThmZC9ydXN0/LWJvb2suY3MuYnJv/d24uZWR1Lw"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "generic",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "rust-book.cs.brown.edu",
+          "hostname": "rust-book.cs.brown.edu",
+          "favicon": "https://imgs.search.brave.com/CEZSm-y0pdf_YhZUtzSslduPw9Elo1FIjaEnTSUsp8U/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvMWI1Y2ZmNjYz/YTUyZjAxMGMyOWY4/YjUwYjYzZTg2YmZh/MWYyOTJkMzczM2Y4/NDc1ZDliYjg3MzQ1/YjYxZThmZC9ydXN0/LWJvb2suY3MuYnJv/d24uZWR1Lw",
+          "path": ""
+        },
+        "extra_snippets": [
+          "Interested in participating in other experiments about making Rust easier to learn and use? Please sign up here: https://forms.gle/U3jEUkb2fGXykp1DA · Thus far, this experiment has led to two open-access publications. Check them out if you’re interested to see the academic research behind this book: “Profiling Programming Language Learning” Will Crichton and Shriram Krishnamurthi.",
+          "Beyond ownership, we’ve made a number of small edits to the book to target misconceptions observed in the quiz responses. If you spot an issue in a quiz or other part of the book, you can file an issue on our Github repository: https://github.com/cognitive-engineering-lab/rust-book",
+          "CCF-2227863, and partially supported by Amazon Web Services. Any opinions, findings, and conclusions or recommendations expressed in this material are those of the authors and do not reflect the views of our funders. We are grateful to Carol Nichols and the Rust Foundation for helping publicize the experiment.",
+          "This book’s content is mostly similar to TRPL, and we synchronize the books every few months. The biggest difference is the chapter on Understanding Ownership. This book explains ownership using ideas and visualizations that our research has demonstrated can better improve your understanding of Rust compared to the original book."
+        ]
+      },
+      {
+        "title": "Rust Programming Language: Why you should learn it",
+        "url": "https://developer.ibm.com/articles/os-developers-know-rust/",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "Discover Rust, a C-like language that supports imperative, functional, and object-oriented programming.",
+        "page_age": "2024-06-11T00:00:00",
+        "profile": {
+          "name": "IBM",
+          "url": "https://developer.ibm.com/articles/os-developers-know-rust/",
+          "long_name": "developer.ibm.com",
+          "img": "https://imgs.search.brave.com/sxpZ_Lew2qB-1T8IYEcxxTuW-IUSZxsmZXpEF52Y6jM/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvNzAzOGM0NzYy/ZWIyNjI3ZmRkYzVh/YmQxZGU0ZThlOTMy/MjIwNWNmODUyZGIy/YjlmMzAzMTM2MjZm/ZTc4OGUzOS9kZXZl/bG9wZXIuaWJtLmNv/bS8"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "article",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "developer.ibm.com",
+          "hostname": "developer.ibm.com",
+          "favicon": "https://imgs.search.brave.com/sxpZ_Lew2qB-1T8IYEcxxTuW-IUSZxsmZXpEF52Y6jM/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvNzAzOGM0NzYy/ZWIyNjI3ZmRkYzVh/YmQxZGU0ZThlOTMy/MjIwNWNmODUyZGIy/YjlmMzAzMTM2MjZm/ZTc4OGUzOS9kZXZl/bG9wZXIuaWJtLmNv/bS8",
+          "path": "› articles  › os-developers-know-rust"
+        },
+        "thumbnail": {
+          "src": "https://imgs.search.brave.com/S3RF3UOLbYubqqVQm6IAxrzH_JxmbWn2RwEgSzqdfOs/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9kZXZl/bG9wZXIuaWJtLmNv/bS9hcnRpY2xlcy9v/cy1kZXZlbG9wZXJz/LWtub3ctcnVzdC8",
+          "original": "https://developer.ibm.com/articles/os-developers-know-rust/",
+          "logo": false
+        },
+        "age": "June 11, 2024",
+        "article": {
+          "author": [
+            {
+              "type": "person",
+              "name": "M. Tim Jones"
+            }
+          ],
+          "date": "Mar 08, 2018",
+          "publisher": {
+            "type": "organization",
+            "name": "IBM Developer",
+            "url": "https://developer.ibm.com",
+            "thumbnail": {
+              "src": "https://imgs.search.brave.com/adXo7CrnWdPq3zNcPXAxNh06tUelbNa_Cz-7M5nnzGQ/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9zMy51/cy5jbG91ZC1vYmpl/Y3Qtc3RvcmFnZS5h/cHBkb21haW4uY2xv/dWQvaWJtZGV2d3Av/aWNvbnMvc29jaWFs/L3NvY2lhbC5qcGc",
+              "original": "https://s3.us.cloud-object-storage.appdomain.cloud/ibmdevwp/icons/social/social.jpg"
+            }
+          }
+        }
+      },
+      {
+        "title": "What is the Rust language? Safe, fast, and easy software development | InfoWorld",
+        "url": "https://www.infoworld.com/article/2255250/what-is-rust-safe-fast-and-easy-software-development.html",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "Get up to speed quickly on the Rust language, designed to create fast, system-level software. This two-minute animated explainer shows how Rust bypasses the thorny issues of memory and management. Rust is meant to be fast, safe, and reasonably easy to use. It’s also intended to be used widely, and not simply end up as a curiosity or an also-ran in the programming language sweepstakes.",
+        "page_age": "2024-11-20T09:00:00",
+        "profile": {
+          "name": "InfoWorld",
+          "url": "https://www.infoworld.com/article/2255250/what-is-rust-safe-fast-and-easy-software-development.html",
+          "long_name": "infoworld.com",
+          "img": "https://imgs.search.brave.com/Hb93ZIZx0o3exU-ch0QmrjpTHi4k2wq0_8fTPpC2Ayc/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvYjkzNmE5ZDBl/OGI4YWU0NDY5MGQ4/OWE1MmYxMzk2ZWEy/MGZkMzk3ZTNlYjNj/ZjI4YmY1YzU3MmUx/MmVjMWQ3MC93d3cu/aW5mb3dvcmxkLmNv/bS8"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "article",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "infoworld.com",
+          "hostname": "www.infoworld.com",
+          "favicon": "https://imgs.search.brave.com/Hb93ZIZx0o3exU-ch0QmrjpTHi4k2wq0_8fTPpC2Ayc/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvYjkzNmE5ZDBl/OGI4YWU0NDY5MGQ4/OWE1MmYxMzk2ZWEy/MGZkMzk3ZTNlYjNj/ZjI4YmY1YzU3MmUx/MmVjMWQ3MC93d3cu/aW5mb3dvcmxkLmNv/bS8",
+          "path": "  › home  › software development"
+        },
+        "thumbnail": {
+          "src": "https://imgs.search.brave.com/yBZRRRM7o-yQOq5Al50q-KT6KYgAEpIdxIrqowPzBxc/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly93d3cu/aW5mb3dvcmxkLmNv/bS93cC1jb250ZW50/L3VwbG9hZHMvMjAy/NS8wNS8yMjU1MjUw/LTAtMTQ0NDMyMDAt/MTc0NzcxNjY0MS1y/dXN0LWtpbmctaXJv/bi1icm9uemUtMTAw/Njg5ODI1LW9yaWcu/anBnP3F1YWxpdHk9/NTAmc3RyaXA9YWxs",
+          "original": "https://www.infoworld.com/wp-content/uploads/2025/05/2255250-0-14443200-1747716641-rust-king-iron-bronze-100689825-orig.jpg?quality=50&strip=all",
+          "logo": false
+        },
+        "age": "November 20, 2024",
+        "extra_snippets": [
+          "Programming languages that emphasize convenience and safety tend to be slow (like Python). Languages that emphasize performance tend to be difficult to use and quick to blow things up (like C and C++). That has been the state of software development for a good long time now. Is it possible to deliver speed, safety, and ease of use in a single language? The Rust language, originally created by Graydon Hoare and currently sponsored by Google, Microsoft, Mozilla, Arm, and others, attempts to bring together these three attributes in one language.",
+          "Get up to speed quickly on the Rust language, designed to create fast, system-level software. This two-minute animated explainer shows how Rust bypasses the thorny issues of memory and management. Rust is meant to be fast, safe, and reasonably easy to use. It’s also intended to be used widely, and not simply end up as a curiosity or an also-ran in the programming language sweepstakes.",
+          "This article is a quick look at the key characteristics that make Rust an increasingly popular language for developers seeking an alternative to the status quo. We’ll also consider some of the downsides to adopting Rust. Rust code compiles to native machine code across multiple platforms. Binaries are self-contained, with no external runtime apart from what the operating system might provide, and the generated code is meant to perform as well as comparable code written in C or C++. Rust won’t compile programs that attempt unsafe memory usage.",
+          "In other languages, many classes of memory errors are discovered when a program is running. Rust’s syntax and language metaphors ensure that common memory-related problems in other languages—null or dangling pointers, data races, and so on—never make it into production."
+        ]
+      },
+      {
+        "title": "GitHub - rust-lang/rust: Empowering everyone to build reliable and efficient software. · GitHub",
+        "url": "https://github.com/rust-lang/rust",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "This is the main source code repository for Rust. It contains the compiler, standard library, and documentation. Performance: Fast and memory-efficient, suitable for critical services, embedded devices, and easily integrated with other languages.",
+        "page_age": "2026-08-03T17:10:03",
+        "profile": {
+          "name": "GitHub",
+          "url": "https://github.com/rust-lang/rust",
+          "long_name": "github.com",
+          "img": "https://imgs.search.brave.com/xxsA4YxzaR0cl-DBsH9-lpv2gsif3KMYgM87p26bs_o/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvYWQyNWM1NjA5/ZjZmZjNlYzI2MDNk/N2VkNmJhYjE2MzZl/MDY5ZTMxMDUzZmY1/NmU3NWIzNWVmMjk0/NTBjMjJjZi9naXRo/dWIuY29tLw"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "software",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "github.com",
+          "hostname": "github.com",
+          "favicon": "https://imgs.search.brave.com/xxsA4YxzaR0cl-DBsH9-lpv2gsif3KMYgM87p26bs_o/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvYWQyNWM1NjA5/ZjZmZjNlYzI2MDNk/N2VkNmJhYjE2MzZl/MDY5ZTMxMDUzZmY1/NmU3NWIzNWVmMjk0/NTBjMjJjZi9naXRo/dWIuY29tLw",
+          "path": "› rust-lang  › rust"
+        },
+        "thumbnail": {
+          "src": "https://imgs.search.brave.com/rKj20wEqbdOMTuxY8BEd9e_pLrrGn1-QfEzpuIheBWA/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9vcGVu/Z3JhcGguZ2l0aHVi/YXNzZXRzLmNvbS84/Njc2NGNhOGViYTc5/Zjk5NzVmMDdlMGNi/MGQwN2I1YjlkODk4/YmMzMjk1YjBiZjA2/YzQ4ZDI4MDA1NWFl/NWQ3L3J1c3QtbGFu/Zy9ydXN0",
+          "original": "https://opengraph.githubassets.com/86764ca8eba79f9975f07e0cb0d07b5b9d898bc3295b0bf06c48d280055ae5d7/rust-lang/rust",
+          "logo": false
+        },
+        "age": "5 days ago",
+        "software": {
+          "name": "rust",
+          "author": "rust-lang",
+          "is_npm": false,
+          "is_pypi": false,
+          "programmingLanguage": ""
+        },
+        "extra_snippets": [
+          "This is the main source code repository for Rust. It contains the compiler, standard library, and documentation. Performance: Fast and memory-efficient, suitable for critical services, embedded devices, and easily integrated with other languages.",
+          "If you want to use these names or brands, please read the Rust language trademark policy.",
+          "See https://www.rust-lang.org/community for a list of chat platforms and forums.",
+          "For a detailed explanation of the compiler's architecture and how to begin contributing, see the rustc-dev-guide."
+        ]
+      },
+      {
+        "title": "The Rust Programming Language - The Rust Programming Language",
+        "url": "https://doc.rust-lang.org/book/",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "See the “Installation” section of Chapter 1 for instructions on installing or updating Rust, and see Appendix E for information on editions.",
+        "profile": {
+          "name": "The Rust Programming Language",
+          "url": "https://doc.rust-lang.org/book/",
+          "long_name": "doc.rust-lang.org",
+          "img": "https://imgs.search.brave.com/X0kUIulv-1nkhvBRXl50t5KCcrDldegWvFmljckJQ6c/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvZjQ4YzkxYmZm/YTgxMDQ2Yjc0MGFl/MjE4ODgyZGU3MTY5/ZWUyZDNiNjVmNzE4/MjZhM2RiODhkZmU5/Nzg0NTJmOC9kb2Mu/cnVzdC1sYW5nLm9y/Zy8"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "generic",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "doc.rust-lang.org",
+          "hostname": "doc.rust-lang.org",
+          "favicon": "https://imgs.search.brave.com/X0kUIulv-1nkhvBRXl50t5KCcrDldegWvFmljckJQ6c/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvZjQ4YzkxYmZm/YTgxMDQ2Yjc0MGFl/MjE4ODgyZGU3MTY5/ZWUyZDNiNjVmNzE4/MjZhM2RiODhkZmU5/Nzg0NTJmOC9kb2Mu/cnVzdC1sYW5nLm9y/Zy8",
+          "path": "› book"
+        },
+        "extra_snippets": [
+          "This version of the text assumes you’re using Rust 1.90.0 (released 2025-09-18) or later with edition = \"2024\" in the Cargo.toml file of all projects to configure them to use Rust 2024 Edition idioms.",
+          "See the “Installation” section of Chapter 1 for instructions on installing or updating Rust, and see Appendix E for information on editions.",
+          "The HTML format is available online at https://doc.rust-lang.org/stable/book/ and offline with installations of Rust made with rustup; run rustup doc --book to open.",
+          "🚨 Want a more interactive learning experience? Try out a different version of the Rust Book, featuring: quizzes, highlighting, visualizations, and more: https://rust-book.cs.brown.edu"
+        ]
+      },
+      {
+        "title": "r/rust on Reddit: Is Rust a good programming language for a total begginer to learn?",
+        "url": "https://www.reddit.com/r/rust/comments/lyeakw/is_rust_a_good_programming_language_for_a_total/",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "Rust feels a lot like: lisp, forth, haskell, apl. It&#x27;s a language that challenges your preconceptions and forces you to reevaluate what you believe to be true. It&#x27;s a great language to learn if you already have some exposure to programming.",
+        "page_age": "2021-03-06T05:18:49",
+        "profile": {
+          "name": "Reddit",
+          "url": "https://www.reddit.com/r/rust/comments/lyeakw/is_rust_a_good_programming_language_for_a_total/",
+          "long_name": "reddit.com",
+          "img": "https://imgs.search.brave.com/U-eHNCapRHVNWWCVPPMTIvOofZULh0_A_FQKe8xTE4I/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvN2ZiNTU0M2Nj/MTFhZjRiYWViZDlk/MjJiMjBjMzFjMDRk/Y2IzYWI0MGI0MjVk/OGY5NzQzOGQ5NzQ5/NWJhMWI0NC93d3cu/cmVkZGl0LmNvbS8"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "qa",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "reddit.com",
+          "hostname": "www.reddit.com",
+          "favicon": "https://imgs.search.brave.com/U-eHNCapRHVNWWCVPPMTIvOofZULh0_A_FQKe8xTE4I/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvN2ZiNTU0M2Nj/MTFhZjRiYWViZDlk/MjJiMjBjMzFjMDRk/Y2IzYWI0MGI0MjVk/OGY5NzQzOGQ5NzQ5/NWJhMWI0NC93d3cu/cmVkZGl0LmNvbS8",
+          "path": "  › r/rust  › is rust a good programming language for a total begginer to learn?"
+        },
+        "thumbnail": {
+          "src": "https://imgs.search.brave.com/2Gl3gMKfMQg-8s1d4-J5vtTUyUV3MnmIRxRC1FjvNwk/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly9zaGFy/ZS5yZWRkLml0L3By/ZXZpZXcvcG9zdC9s/eWVha3c",
+          "original": "https://share.redd.it/preview/post/lyeakw",
+          "logo": false
+        },
+        "age": "March 6, 2021",
+        "qa": {
+          "question": "<p>I want to learn how to program, I hear rust is very popular.</p><p>But at the same time I&#39;ve seen that it is compared to c++, which I hear is notoriously difficult aha.</p><p>If it is good for a beginner, can you suggest some good resources to learn?</p><p>Thank you</p><p>EDIT:</p><p>I have been blown away by the response from you guys and I&#39;ll try to get back to everyone as you&#39;ve been so helpful.</p><p>Lots of different opinions here but all I value and I have a lot to think about</p>",
+          "answer": {
+            "text": "<span>No, I wouldn't recommend Rust as a first language. It is more difficult than many of the alternatives and most of the \"beginner\" learning resources for it actually assume that you already know how to program in some other language.</span>\n",
+            "upvoteCount": 528
+          }
+        },
+        "extra_snippets": [
+          "No, I wouldn't recommend Rust as a first language. It is more difficult than many of the alternatives and most of the \"beginner\" learning resources for it actually assume that you already know how to program in some other language.",
+          "Rust feels a lot like: lisp, forth, haskell, apl. It's a language that challenges your preconceptions and forces you to reevaluate what you believe to be true. It's a great language to learn if you already have some exposure to programming.",
+          "The compiler, build system, and test facilities are all really high quality, so you can probably use rust as your first language successfully. However, it's also different enough from \"traditional\" programming that you might have some trouble understanding and being understood by programmers who do not know rust.",
+          "I'm not sure I like this argument. It's like saying you can't appreciate programming languages if you don't learn assembly. ... 100%. Between the defaults, compiler, cargo, and the community rust enforces a minimum bar one must code to. The first piece of software I wrote was in Rust."
+        ]
+      },
+      {
+        "title": "Rust (programming language) - General - OpenZeppelin Forum",
+        "url": "https://forum.openzeppelin.com/t/rust-programming-language/1867",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "Rust is <strong>a multi-paradigm system programming language focused on safety, especially safe concurrency</strong>. Rust is syntactically similar to C++, but is designed to provide better memory safety while maintaining high performance.",
+        "page_age": "2019-12-17T22:50:34",
+        "profile": {
+          "name": "OpenZeppelin",
+          "url": "https://forum.openzeppelin.com/t/rust-programming-language/1867",
+          "long_name": "forum.openzeppelin.com",
+          "img": "https://imgs.search.brave.com/QQj64DOsd7O2KJv4EgnxXzW_NAsATwu2AviL0Gbf7Sg/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvMTMyYzIxMjBm/ZmU3OGE5N2UxNzUz/MmMyNzg1ZjNmZDZl/NWE0OTk4OTRiOGRm/NmI1ODM1OGM1MjM4/YzI3MjZlNC9mb3J1/bS5vcGVuemVwcGVs/aW4uY29tLw"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "article",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "forum.openzeppelin.com",
+          "hostname": "forum.openzeppelin.com",
+          "favicon": "https://imgs.search.brave.com/QQj64DOsd7O2KJv4EgnxXzW_NAsATwu2AviL0Gbf7Sg/rs:fit:32:32:1:0/g:ce/aHR0cDovL2Zhdmlj/b25zLnNlYXJjaC5i/cmF2ZS5jb20vaWNv/bnMvMTMyYzIxMjBm/ZmU3OGE5N2UxNzUz/MmMyNzg1ZjNmZDZl/NWE0OTk4OTRiOGRm/NmI1ODM1OGM1MjM4/YzI3MjZlNC9mb3J1/bS5vcGVuemVwcGVs/aW4uY29tLw",
+          "path": "  › general"
+        },
+        "thumbnail": {
+          "src": "https://imgs.search.brave.com/Q9TlHEETflaiAW-T6TQrBi-qPbAUy_VHAXZFUh_C-ss/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly91czEu/ZGlzY291cnNlLWNk/bi5jb20vZmxleDAy/Mi91cGxvYWRzL3pl/cHBlbGluL29yaWdp/bmFsLzNYLzcvMi83/MjcyYjM4MzgxYWJk/YTQyNzk1NmYyNWI4/ODU3ZDk2NThhMDJi/YWNmLnBuZw",
+          "original": "https://us1.discourse-cdn.com/flex022/uploads/zeppelin/original/3X/7/2/7272b38381abda427956f25b8857d9658a02bacf.png",
+          "logo": false
+        },
+        "age": "December 17, 2019",
+        "article": {
+          "author": [
+            {
+              "type": "person",
+              "name": "elopio",
+              "url": "https://forum.openzeppelin.com/u/elopio"
+            }
+          ],
+          "date": "Dec 04, 2019",
+          "publisher": {
+            "type": "organization",
+            "name": "OpenZeppelin",
+            "thumbnail": {
+              "src": "https://imgs.search.brave.com/xiJ06o6gs-rEekeTj4TEfWdEJgkUK1thg-Ot571x3iI/rs:fit:200:200:1:0/g:ce/aHR0cHM6Ly91czEu/ZGlzY291cnNlLWNk/bi5jb20vZmxleDAy/Mi91cGxvYWRzL3pl/cHBlbGluL29yaWdp/bmFsLzNYLzIvZC8y/ZGIyNjhiYmZmNjVm/MGM3ZGQ0NjdkNDE0/ZjhkOWFlOGNmZmIy/ZGFmLnBuZw",
+              "original": "https://us1.discourse-cdn.com/flex022/uploads/zeppelin/original/3X/2/d/2db268bbff65f0c7dd467d414f8d9ae8cffb2daf.png"
+            }
+          }
+        },
+        "extra_snippets": [
+          "Find resources about other languages in the Programming Languages Reference List. A language empowering everyone to build reliable and efficient software. Rust is a multi-paradigm system programming language focused on safety, especially safe concurrency. Rust is syntactically similar to C++, but is designed to provide better memory safety while maintaining high performance.",
+          "Find resources about other languages in the Programming Languages Reference List. A language empowering everyone to build reliable and efficient software. Rust is a multi-paradigm system programming language focused …"
+        ]
+      }
+    ],
+    "family_friendly": true
+  }
+}

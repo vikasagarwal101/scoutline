@@ -25,7 +25,7 @@
 
 import pkg from "../../../package.json" with { type: "json" };
 
-import { ApiError, AuthError, NetworkError, TimeoutError } from "../../lib/errors.js";
+import { ApiError, AuthError, NetworkError, QuotaError, TimeoutError } from "../../lib/errors.js";
 import type { ProviderQuotaFetch } from "../types.js";
 import { getGlobalFetch } from "../types.js";
 
@@ -110,14 +110,39 @@ function mapStatusError(status: number, timeoutMs: number): Error {
   if (status === 401 || status === 403) {
     return new AuthError("Firecrawl authentication failed", "FIRECRAWL_API_KEY");
   }
+  // 402 is exclusively "Payment Required: Insufficient credits" per the
+  // Firecrawl error catalog — map to terminal QuotaError so the CLI surfaces
+  // an actionable billing hint instead of a bare "request failed" (F-2).
+  if (status === 402) {
+    return new QuotaError(
+      "Firecrawl plan credits exhausted",
+      "Top up credits, enable auto-recharge, or upgrade your plan at firecrawl.dev",
+    );
+  }
   if (status === 408 || status === 504) {
     return new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
+  }
+  // 503 "Service Unavailable" is retryable per the Firecrawl error catalog —
+  // map to NetworkError so the retry classifier treats it as transient via
+  // code-based classification (NETWORK_ERROR is always retryable) rather than
+  // relying on the 5xx status-range fallback (F-6).
+  if (status === 503) {
+    return new NetworkError("Firecrawl service unavailable");
   }
   return new ApiError("Firecrawl request failed", status);
 }
 
 function normalizeTransportError(err: unknown, timeoutMs: number): Error {
-  if (err instanceof AuthError || err instanceof ApiError || err instanceof TimeoutError) {
+  // Pass through typed errors from mapStatusError — QuotaError (402) and
+  // NetworkError (503) must survive this rewrap so the adapter's
+  // normalizeFirecrawlError can preserve their semantics.
+  if (
+    err instanceof AuthError ||
+    err instanceof ApiError ||
+    err instanceof TimeoutError ||
+    err instanceof NetworkError ||
+    err instanceof QuotaError
+  ) {
     return err;
   }
   if (err instanceof Error) {
@@ -183,9 +208,11 @@ async function postFirecrawlJson(
     } catch {
       throw new ApiError(`Firecrawl ${endpointLabel} returned a malformed response`, 500);
     }
-    // Dual-check: 200 with { success: false } is a business error.
+    // Dual-check: 200 with { success: false } is a business error (F-4).
+    // 400 (Bad Request) — the only documented 422 is the narrow extraction-
+    // schema case; search/map/crawl business errors are 400-class.
     if (isPlainObject(parsed) && parsed.success === false) {
-      throw new ApiError(`Firecrawl ${endpointLabel} request failed`, 422);
+      throw new ApiError(`Firecrawl ${endpointLabel} request failed`, 400);
     }
     return parsed;
   } catch (err) {
@@ -310,7 +337,8 @@ const CREDIT_USAGE_PATH = "/v2/team/credit-usage";
  * fields as `/scrape`.
  */
 export interface FirecrawlCrawlParams {
-  readonly maxDepth?: number;
+  /** v2 wire field name (was v1 `maxDepth`, which Firecrawl silently ignored). */
+  readonly maxDiscoveryDepth?: number;
   readonly limit?: number;
   readonly includePaths?: readonly string[];
   readonly excludePaths?: readonly string[];
@@ -323,7 +351,7 @@ export interface FirecrawlCrawlCreateResult {
 }
 
 /** Poll status values Firecrawl returns for GET /v2/crawl/{id}. */
-export type FirecrawlCrawlStatus = "scraping" | "completed" | "failed" | "not_found";
+export type FirecrawlCrawlStatus = "scraping" | "completed" | "failed" | "cancelled" | "not_found";
 
 /**
  * Structured poll result. `status:"not_found"` is returned (not thrown)
@@ -343,6 +371,8 @@ export interface FirecrawlCrawlPollResult {
 export interface FirecrawlActiveCrawl {
   readonly id: string;
   readonly url?: string;
+  /** v2 wire field (camelCase). `created_at` kept as a backward-compat alias. */
+  readonly createdAt?: string;
   readonly created_at?: string;
   readonly options?: unknown;
 }
@@ -360,7 +390,7 @@ export async function createFirecrawlCrawl(
   deps: FirecrawlTransportDeps = {},
 ): Promise<FirecrawlCrawlCreateResult> {
   const body: Record<string, unknown> = { url };
-  if (params.maxDepth !== undefined) body.maxDepth = params.maxDepth;
+  if (params.maxDiscoveryDepth !== undefined) body.maxDiscoveryDepth = params.maxDiscoveryDepth;
   if (params.limit !== undefined) body.limit = params.limit;
   if (params.includePaths !== undefined) body.includePaths = [...params.includePaths];
   if (params.excludePaths !== undefined) body.excludePaths = [...params.excludePaths];
@@ -436,7 +466,7 @@ export async function pollFirecrawlCrawl(
     if (parsed.success === false || status === "failed") {
       return { status: "failed" };
     }
-    if (status !== "scraping" && status !== "completed") {
+    if (status !== "scraping" && status !== "completed" && status !== "cancelled") {
       throw new ApiError("Firecrawl crawl returned a malformed response", 500);
     }
     if (status !== "completed") {
@@ -487,7 +517,9 @@ export async function listActiveFirecrawlCrawls(
     out.push({
       id,
       ...(typeof entry.url === "string" ? { url: entry.url } : {}),
-      ...(typeof entry.created_at === "string" ? { created_at: entry.created_at } : {}),
+      ...((typeof entry.createdAt === "string" || typeof entry.created_at === "string")
+        ? { createdAt: (entry.createdAt ?? entry.created_at) as string }
+        : {}),
       ...(entry.options !== undefined ? { options: entry.options } : {}),
     });
   }
@@ -564,7 +596,7 @@ async function getFirecrawlJson(
       throw new ApiError(`Firecrawl ${endpointLabel} returned a malformed response`, 500);
     }
     if (isPlainObject(parsed) && parsed.success === false) {
-      throw new ApiError(`Firecrawl ${endpointLabel} request failed`, 422);
+      throw new ApiError(`Firecrawl ${endpointLabel} request failed`, 400);
     }
     return parsed;
   } catch (err) {

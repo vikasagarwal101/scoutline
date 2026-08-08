@@ -353,6 +353,7 @@ function inferStatusCode(known?: number): number {
  */
 function firecrawlApiErrorMessage(statusCode: number): string {
   if (statusCode === 429) return "Firecrawl rate limit exceeded";
+  if (statusCode === 499) return "Firecrawl crawl job cancelled";
   return "Firecrawl request failed";
 }
 
@@ -752,13 +753,13 @@ function makeCrawlSleep(
 function mapCrawlControls(request: CrawlRequest): FirecrawlCrawlParams {
   const contentFormat = request.format ?? "markdown";
   const params: {
-    maxDepth?: number;
+    maxDiscoveryDepth?: number;
     limit?: number;
     includePaths?: readonly string[];
     excludePaths?: readonly string[];
     scrapeOptions: { formats: readonly string[]; proxy: "basic" };
   } = { scrapeOptions: { formats: [contentFormat], proxy: "basic" } };
-  if (request.depth !== undefined) params.maxDepth = request.depth;
+  if (request.depth !== undefined) params.maxDiscoveryDepth = request.depth;
   if (request.limit !== undefined) params.limit = request.limit;
   const includePaths = splitPathPatterns(request.selectPaths);
   if (includePaths !== undefined) params.includePaths = includePaths;
@@ -840,14 +841,21 @@ function stringArrayEqualUnordered(a: unknown, expected: readonly string[] | und
 /**
  * Best-effort compatibility check between an active-job `options` blob and
  * the params this request would send. The server echoes the request
- * options; verifying the cost-bearing fields (limit, maxDepth, path
+ * options; verifying the cost-bearing fields (limit, maxDiscoveryDepth, path
  * filters, scrapeOptions.formats) is a strong signal it is the same job.
  * Missing or differently-shaped options → not compatible (safer to create
  * fresh than to mis-adopt a different crawl and return the wrong pages).
  */
 function crawlOptionsCompatible(options: unknown, params: FirecrawlCrawlParams): boolean {
   if (!isPlainObject(options)) return false;
-  if (params.maxDepth !== undefined && options.maxDepth !== params.maxDepth) return false;
+  // Check the v2 field name (maxDiscoveryDepth). The server echoes the
+  // request body, so after the F-1 fix it echoes maxDiscoveryDepth.
+  if (
+    params.maxDiscoveryDepth !== undefined &&
+    options.maxDiscoveryDepth !== params.maxDiscoveryDepth
+  ) {
+    return false;
+  }
   if (params.limit !== undefined && options.limit !== params.limit) return false;
   const expectedFormats = params.scrapeOptions?.formats;
   const so = options.scrapeOptions;
@@ -865,15 +873,19 @@ function crawlOptionsCompatible(options: unknown, params: FirecrawlCrawlParams):
 
 /**
  * Reclaim-on-miss: find an in-flight job matching this request by `url`
- * (with a `created_at` recency guard against adopting stale jobs, and a
+ * (with a `createdAt` recency guard against adopting stale jobs, and a
  * best-effort options check when the server echoes them). A missing or
- * unparseable `created_at` is treated as stale (skipped) so a zombie entry
+ * unparseable timestamp is treated as stale (skipped) so a zombie entry
  * is never adopted. Returns the job id, or `undefined` when no match exists.
+ *
+ * Reads `createdAt` (the v2 wire field) with a `created_at` fallback for
+ * backward compatibility (F-5).
  */
 function matchActiveCrawl(
   active: readonly {
     id: string;
     url?: string;
+    createdAt?: string;
     created_at?: string;
     options?: unknown;
   }[],
@@ -883,7 +895,8 @@ function matchActiveCrawl(
   const now = Date.now();
   for (const entry of active) {
     if (entry.url !== request.url) continue;
-    const ts = entry.created_at !== undefined ? Date.parse(entry.created_at) : NaN;
+    const tsRaw = entry.createdAt ?? entry.created_at;
+    const ts = tsRaw !== undefined ? Date.parse(tsRaw) : NaN;
     if (!Number.isFinite(ts) || now - ts > CRAWL_RECLAIM_STALE_MS) continue;
     if (entry.options !== undefined && !crawlOptionsCompatible(entry.options, params)) continue;
     return entry.id;
@@ -1029,6 +1042,11 @@ function createFirecrawlCrawlCapability(options: FirecrawlCrawlCapabilityOptions
         throw new UnsupportedOptionError("firecrawl", "crawl", "breadth");
       }
       if (request.depth !== undefined) {
+        // F-7: Firecrawl's v2 docs document maxDiscoveryDepth as an integer
+        // with no upper bound, but this adapter caps at 5 as a deliberate
+        // cost-safety measure (tech-plan D9 — each depth level multiplies
+        // credit consumption). The cap is documented in the crawl command's
+        // --depth help text ("Crawl depth, 1-5").
         if (!Number.isInteger(request.depth) || request.depth < 1 || request.depth > 5) {
           throw new ValidationError("Crawl depth must be an integer between 1 and 5");
         }
@@ -1110,6 +1128,13 @@ function createFirecrawlCrawlCapability(options: FirecrawlCrawlCapabilityOptions
           if (poll.status === "failed") {
             await stateFile.remove(identityHash);
             throw new ApiError("Firecrawl crawl job failed", 500);
+          }
+          if (poll.status === "cancelled") {
+            // F-3: "cancelled" is a documented terminal poll status. Drop
+            // state and throw a typed terminal — 499 is the standard
+            // client-closed-request code, keeping the retry classifier clean.
+            await stateFile.remove(identityHash);
+            throw new ApiError("Firecrawl crawl job cancelled", 499);
           }
           if (poll.status === "not_found") {
             // Server-side job disappeared — drop state and create fresh,

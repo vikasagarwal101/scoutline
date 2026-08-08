@@ -22,11 +22,16 @@ import crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 import { createFirecrawlDescriptor } from "../dist/providers/firecrawl/adapter.js";
 import {
   ApiError,
   AuthError,
+  NetworkError,
+  QuotaError,
   UnsupportedOptionError,
   ValidationError,
 } from "../dist/lib/errors.js";
@@ -334,13 +339,37 @@ describe("Firecrawl Map Adapter", () => {
 // ---------------------------------------------------------------------------
 
 describe("Firecrawl error-envelope dual-check", () => {
-  it("treats HTTP 200 with {success:false} as a business error (ApiError 422)", async () => {
+  it("treats HTTP 200 with {success:false} as a business error (ApiError 400)", async () => {
     const { adapter } = makeAdapter(async () =>
       makeResponse({ ok: true, status: 200, json: { success: false, error: "nope" } }),
     );
     await assert.rejects(
       () => adapter.search.invoke({ query: "q" }),
-      (err) => err instanceof ApiError && err.statusCode === 422,
+      (err) => err instanceof ApiError && err.statusCode === 400,
+    );
+  });
+
+  // F-2: HTTP 402 must surface as a terminal QuotaError so the CLI can show
+  // an actionable billing hint instead of a bare "request failed".
+  it("maps HTTP 402 to a terminal QuotaError (F-2)", async () => {
+    const { adapter } = makeAdapter(async () =>
+      makeResponse({ ok: false, status: 402, body: '{"error":"insufficient credits"}' }),
+    );
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "q" }),
+      (err) => err instanceof QuotaError && err.retryable === false,
+    );
+  });
+
+  // F-6: HTTP 503 must surface as a retryable NetworkError so the retry
+  // classifier treats it as transient via code-based classification.
+  it("maps HTTP 503 to a retryable NetworkError (F-6)", async () => {
+    const { adapter } = makeAdapter(async () =>
+      makeResponse({ ok: false, status: 503, body: '{"error":"unavailable"}' }),
+    );
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "q" }),
+      (err) => err instanceof NetworkError,
     );
   });
 });
@@ -443,6 +472,51 @@ describe("Firecrawl Crawl Adapter", () => {
     assert.equal(createBody.proxy, undefined);
   });
 
+  // F-1: --depth must serialize as the v2 wire field `maxDiscoveryDepth`,
+  // not the v1 `maxDepth` which Firecrawl's server silently ignores.
+  it("serializes --depth as maxDiscoveryDepth in the crawl body (F-1)", async () => {
+    const { adapter, calls } = makeCrawlAdapter({});
+    await adapter.crawl.fetch.invoke({ url: "https://d.example", depth: 3 });
+    const createBody = JSON.parse(
+      calls.find((c) => c.method === "POST" && c.url.endsWith("/v2/crawl")).init.body,
+    );
+    assert.equal(createBody.maxDiscoveryDepth, 3, "wire body must use maxDiscoveryDepth");
+    assert.equal(createBody.maxDepth, undefined, "v1 field name must NOT appear");
+  });
+
+  // F-5: reclaim-on-miss must read the v2 `createdAt` field (not v1
+  // `created_at`) so the staleness guard fires. Fixture-backed for
+  // deterministic wire-shape verification.
+  it("reclaims using createdAt from the active fixture (F-5)", async () => {
+    const activeFixture = JSON.parse(
+      await fs.readFile(
+        path.join(__dirname, "fixtures/providers/firecrawl/active.json"),
+        "utf8",
+      ),
+    );
+    // Refresh the timestamp so the staleness guard passes at test time.
+    activeFixture.crawls[0].createdAt = new Date().toISOString();
+    const { adapter, calls } = makeCrawlAdapter({
+      onActive: () => activeFixture.crawls,
+      onPoll: () => ({
+        success: true,
+        status: "completed",
+        data: [{ markdown: "# fixture", metadata: { sourceURL: "https://docs.example.com" } }],
+      }),
+    });
+    const out = await adapter.crawl.fetch.invoke({ url: "https://docs.example.com", depth: 2 });
+    assert.equal(out.totalPages, 1);
+    // Reclaimed from /active — no create POST.
+    assert.ok(
+      !calls.some((c) => c.method === "POST" && c.url.endsWith("/v2/crawl")),
+      "must reclaim without re-POSTing",
+    );
+    assert.ok(
+      calls.some((c) => c.url.includes("/v2/crawl/crawl-fixture-active-001")),
+      "must poll the adopted fixture job id",
+    );
+  });
+
   it("resumes an in-flight job from the state file (NO create POST)", async () => {
     const stateFile = createInMemoryAsyncJobStateFile();
     const identityHash = computeAsyncJobStateHash({
@@ -481,8 +555,8 @@ describe("Firecrawl Crawl Adapter", () => {
         {
           id: "job-active",
           url: "https://rec.example",
-          created_at: new Date().toISOString(),
-          options: { maxDepth: 2, scrapeOptions: { formats: ["markdown"] }, proxy: "basic" },
+          createdAt: new Date().toISOString(),
+          options: { maxDiscoveryDepth: 2, scrapeOptions: { formats: ["markdown"] }, proxy: "basic" },
         },
       ],
       onPoll: () => ({
@@ -515,6 +589,22 @@ describe("Firecrawl Crawl Adapter", () => {
       stateFile,
     );
     await assert.rejects(() => adapter.crawl.fetch.invoke({ url: "https://f.example" }), ApiError);
+  });
+
+  // F-3: "cancelled" is a documented terminal poll status — it must NOT
+  // surface as ApiError 500 "malformed response".
+  it("drops state and throws ApiError 499 on a cancelled job (F-3)", async () => {
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const { adapter } = makeCrawlAdapter(
+      { onPoll: () => ({ success: true, status: "cancelled" }) },
+      stateFile,
+    );
+    await assert.rejects(
+      () => adapter.crawl.fetch.invoke({ url: "https://c.example" }),
+      (err) => err instanceof ApiError && err.statusCode === 499,
+    );
+    // State file MUST be dropped (terminal status).
+    assert.equal(stateFile.store.size, 0, "state file dropped after cancellation");
   });
 
   it("normalizes a 401 into AuthError", async () => {
@@ -665,7 +755,7 @@ describe("Firecrawl Crawl Adapter", () => {
         {
           id: "job-other",
           url: "https://m.example",
-          created_at: new Date().toISOString(),
+          createdAt: new Date().toISOString(),
           options: { includePaths: ["/other/*"] },
         },
       ],
@@ -685,7 +775,7 @@ describe("Firecrawl Crawl Adapter", () => {
           json: {
             success: true,
             crawls: [
-              { id: "job-c", url: "https://ac.example", created_at: new Date().toISOString() },
+              { id: "job-c", url: "https://ac.example", createdAt: new Date().toISOString() },
             ],
           },
         });
@@ -724,7 +814,7 @@ describe("Firecrawl Crawl Adapter", () => {
       if (method === "POST" && u.endsWith("/v2/crawl")) {
         postCount += 1;
         const id = `job-${postCount}`;
-        activeJobs.push({ id, url: "https://lock.example", created_at: new Date().toISOString() });
+        activeJobs.push({ id, url: "https://lock.example", createdAt: new Date().toISOString() });
         // The job is pushed synchronously before the yield; the file-based
         // create-lock serializes concurrent invocations so the second invoke
         // reclaims via /active rather than posting again. The injected sleep

@@ -1,0 +1,14 @@
+{
+  "code": 200,
+  "status": 20000,
+  "data": {
+    "title": "Rust (programming language)",
+    "description": "",
+    "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+    "content": "",
+    "text": "Rust\n\nRust is a multi-paradigm programming language designed for performance and safety, especially safe concurrency. Rust is syntactically similar to C++ but can guarantee memory safety by using a borrow checker to validate references. Rust achieves memory safety without a garbage collector, enabling improved performance and lower memory usage.\n\nFirst appeared: January 19, 2012\nParadigms: Multi-paradigm: concurrent, functional, generic, imperative, structured\nTyping discipline: Inferred, static, strong, nominative, partially manifest\nLicense: MIT or Apache 2.0",
+    "usage": {
+      "tokens": 500
+    }
+  }
+}

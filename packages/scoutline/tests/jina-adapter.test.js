@@ -109,6 +109,104 @@ describe("Jina AI Descriptor & Adapter", () => {
     const res = await adapter.reader.fetch.invoke({ url: "https://example.com/docs" });
     assert.equal(res.title, "Scoutline Docs");
     assert.equal(res.content, "# Markdown Content from Jina Reader");
+    assert.equal(res.contentFormat, "markdown");
+  });
+
+  it("reader forwards format option as X-Return-Format header (8J.2)", async () => {
+    let capturedHeaders = null;
+    const fakeFetch = async (url, init) => {
+      capturedHeaders = init.headers;
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            data: {
+              title: "Test",
+              url: "https://example.com",
+              content: "# Markdown",
+            },
+          }),
+      };
+    };
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await adapter.reader.fetch.invoke({
+      url: "https://example.com",
+      format: "markdown",
+    });
+    assert.equal(capturedHeaders["X-Return-Format"], "markdown");
+  });
+
+  it("reader decodes data.text for text-mode responses (8J.2)", async () => {
+    const fixture = JSON.parse(
+      await import("node:fs").then((fs) =>
+        fs.readFileSync("./tests/fixtures/providers/jina/reader-text.json", "utf8"),
+      ),
+    );
+
+    let capturedHeaders = null;
+    const fakeFetch = async (url, init) => {
+      capturedHeaders = init.headers;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(fixture),
+      };
+    };
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const res = await adapter.reader.fetch.invoke({
+      url: "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+      format: "text",
+    });
+
+    // Text-mode: X-Return-Format must be forwarded.
+    assert.equal(capturedHeaders["X-Return-Format"], "text");
+    // data.text must be decoded (not data.content, which is empty in text mode).
+    assert.ok(res.content.length > 0, "text-mode content must not be empty");
+    assert.ok(
+      res.content.includes("Rust is a multi-paradigm programming language"),
+      "content must come from data.text",
+    );
+    assert.equal(res.contentFormat, "text");
+    assert.equal(res.title, "Rust (programming language)");
+  });
+
+  it("reader forwards retainImages and timeout options as headers (8J.2)", async () => {
+    let capturedHeaders = null;
+    const fakeFetch = async (url, init) => {
+      capturedHeaders = init.headers;
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            data: { title: "T", url: "https://example.com", content: "C" },
+          }),
+      };
+    };
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await adapter.reader.fetch.invoke({
+      url: "https://example.com",
+      retainImages: true,
+      timeout: 60000,
+    });
+    assert.equal(capturedHeaders["X-Retain-Images"], "true");
+    assert.equal(capturedHeaders["X-Timeout"], "60");
   });
 
   it("invokes research capability (DeepSearch API)", async () => {

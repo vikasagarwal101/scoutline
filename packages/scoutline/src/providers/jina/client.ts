@@ -31,6 +31,13 @@ export interface JinaDataItem {
   readonly title?: string;
   readonly url?: string;
   readonly content?: string;
+  /**
+   * Text-mode response field (8J.2). When `X-Return-Format: text` is
+   * requested, Jina places the page content in `data.text` instead of
+   * `data.content`. Declared so the adapter can decode text-mode responses
+   * without normalizing valid text as empty.
+   */
+  readonly text?: string;
   readonly description?: string;
   readonly publishedTime?: string;
   readonly metadata?: unknown;
@@ -40,6 +47,29 @@ export interface JinaDataItem {
 export interface JinaResponse {
   readonly code?: number;
   readonly data?: JinaDataItem | readonly JinaDataItem[];
+}
+
+/**
+ * Normalized Reader options forwarded to Jina's documented headers (8J.2).
+ * Each maps to a Jina Reader request header (see
+ * https://github.com/jina-ai/reader/blob/main/src/dto/crawler-options.ts):
+ *
+ *   format         -> X-Return-Format ("markdown" | "text")
+ *   retainImages   -> X-Retain-Images ("true" | "false")
+ *   withLinksSummary -> X-With-Links-Summary ("true" | "false")
+ *   noGfm          -> X-With-Generated-Alt-Tag ("false" when noGfm, "true" otherwise)
+ *   keepImgDataUrl -> X-Keep-Img-Data-Url ("true" | "false")
+ *   withImagesSummary -> X-With-Images-Summary ("true" | "false")
+ *   timeout        -> X-Timeout (seconds; clamped to Jina's 180s ceiling)
+ */
+export interface JinaReaderOptions {
+  readonly format?: "markdown" | "text";
+  readonly retainImages?: boolean;
+  readonly withLinksSummary?: boolean;
+  readonly noGfm?: boolean;
+  readonly keepImgDataUrl?: boolean;
+  readonly withImagesSummary?: boolean;
+  readonly timeout?: number;
 }
 
 /**
@@ -131,6 +161,7 @@ export async function fetchJinaReader(
   apiKey: string | undefined,
   targetUrl: string,
   deps: JinaTransportDeps = {},
+  options?: JinaReaderOptions,
 ): Promise<JinaDataItem> {
   const fetchFn = deps.fetch || globalThis.fetch;
   const setTimer = deps.setTimeout || globalThis.setTimeout;
@@ -145,6 +176,34 @@ export async function fetchJinaReader(
   };
   if (apiKey) {
     headers["Authorization"] = `Bearer ${apiKey}`;
+  }
+
+  // Forward normalized Reader options to Jina's documented headers (8J.2).
+  if (options) {
+    if (options.format) {
+      headers["X-Return-Format"] = options.format;
+    }
+    if (options.retainImages !== undefined) {
+      headers["X-Retain-Images"] = options.retainImages ? "true" : "false";
+    }
+    if (options.withLinksSummary !== undefined) {
+      headers["X-With-Links-Summary"] = options.withLinksSummary ? "true" : "false";
+    }
+    if (options.noGfm !== undefined) {
+      headers["X-With-Generated-Alt-Tag"] = options.noGfm ? "false" : "true";
+    }
+    if (options.keepImgDataUrl !== undefined) {
+      headers["X-Keep-Img-Data-Url"] = options.keepImgDataUrl ? "true" : "false";
+    }
+    if (options.withImagesSummary !== undefined) {
+      headers["X-With-Images-Summary"] = options.withImagesSummary ? "true" : "false";
+    }
+    if (options.timeout !== undefined) {
+      // Jina documents a 180-second ceiling for X-Timeout. The
+      // ReaderFetchRequest.timeout is in milliseconds (CLI convention);
+      // convert to seconds before forwarding.
+      headers["X-Timeout"] = String(Math.min(Math.round(options.timeout / 1000), 180));
+    }
   }
 
   const controller = new AbortController();

@@ -167,13 +167,27 @@ function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
  * Both are terminal because `isOperationRetryableError` treats an
  * `ApiError` with non-429/non-5xx status as non-retryable.
  *
+ * Endpoint-aware 403 (T8-01): crawl and map return HTTP 403 when the
+ * target URL is not supported (e.g. robots.txt disallow). This is NOT
+ * an auth failure — the API key is valid; the URL is rejected. The
+ * `endpointLabel` parameter lets us distinguish: crawl/map 403 →
+ * `ApiError(403)` with a URL-not-supported message; search/extract/
+ * research/usage 403 → `AuthError` (genuine credential failure).
+ *
  * `timeoutMs` is forwarded so 408/504 can throw `TimeoutError`
  * carrying the configured duration (and the `TAVILY_TIMEOUT` help
  * text). The transport never embeds credential material in any error
  * message.
  */
-function mapStatusError(status: number, timeoutMs: number): Error {
-  if (status === 401 || status === 403) {
+function mapStatusError(status: number, timeoutMs: number, endpointLabel?: string): Error {
+  if (status === 401) {
+    return new AuthError("Tavily authentication failed", "TAVILY_API_KEY");
+  }
+  if (status === 403) {
+    // Crawl/map 403 means "URL is not supported" — not an auth failure.
+    if (endpointLabel === "crawl" || endpointLabel === "map") {
+      return new ApiError("Tavily URL is not supported for crawl/map", 403);
+    }
     return new AuthError("Tavily authentication failed", "TAVILY_API_KEY");
   }
   if (status === 408 || status === 504) {
@@ -259,7 +273,7 @@ async function postTavilyJson(
     clearT(timeoutId);
     if (!res.ok) {
       await res.text().catch(() => {});
-      throw mapStatusError(res.status, timeoutMs);
+      throw mapStatusError(res.status, timeoutMs, endpointLabel);
     }
     let parsed: unknown;
     try {
@@ -460,7 +474,7 @@ async function getTavilyJson(
     clearT(timeoutId);
     if (!res.ok) {
       await res.text().catch(() => {});
-      throw mapStatusError(res.status, timeoutMs);
+      throw mapStatusError(res.status, timeoutMs, endpointLabel);
     }
     let parsed: unknown;
     try {
@@ -586,7 +600,7 @@ export async function pollTavilyResearch(
     }
     if (!res.ok) {
       await res.text().catch(() => {});
-      throw mapStatusError(res.status, timeoutMs);
+      throw mapStatusError(res.status, timeoutMs, "research");
     }
     let parsed: unknown;
     try {

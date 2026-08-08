@@ -317,6 +317,7 @@ function inferStatusCode(lower: string, known?: number): number {
  * normalization, the cache, and stdout. Curated constants only.
  */
 function tavilyApiErrorMessage(statusCode: number): string {
+  if (statusCode === 403) return "Tavily URL is not supported for crawl/map";
   if (statusCode === 429) return "Tavily rate limit exceeded";
   if (statusCode === 432) {
     return "Tavily plan limit exceeded. Upgrade your plan at app.tavily.com.";

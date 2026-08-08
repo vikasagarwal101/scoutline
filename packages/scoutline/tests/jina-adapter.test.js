@@ -9,7 +9,7 @@ import {
   resolveJinaApiKey,
   isJinaConfigured,
 } from "../dist/providers/jina/credentials.js";
-import { ApiError, AuthError, UnsupportedOptionError, ValidationError } from "../dist/lib/errors.js";
+import { ApiError, AuthError, QuotaError, UnsupportedOptionError, ValidationError } from "../dist/lib/errors.js";
 
 const TEST_KEY = "jina-test-api-key";
 
@@ -179,7 +179,7 @@ describe("Jina AI Error Handling", () => {
     );
   });
 
-  it("maps 429 to ApiError with status 429", async () => {
+  it("maps 429 to terminal QuotaError (8J.5)", async () => {
     const fakeFetch = mockFetch({ message: "Rate limited" }, 429);
 
     const adapter = new JinaAdapter(
@@ -189,7 +189,43 @@ describe("Jina AI Error Handling", () => {
 
     await assert.rejects(
       () => adapter.search.invoke({ query: "test" }),
-      (err) => err instanceof ApiError && err.statusCode === 429,
+      (err) => err instanceof QuotaError && err.retryable === false,
+    );
+  });
+
+  it("maps 403 insufficient-balance to QuotaError (8J.5)", async () => {
+    const fakeFetch = async () => ({
+      ok: false,
+      status: 403,
+      text: async () => JSON.stringify({ message: "Insufficient balance" }),
+    });
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "test" }),
+      (err) => err instanceof QuotaError && err.retryable === false,
+    );
+  });
+
+  it("maps 403 credential-failure to AuthError (8J.5)", async () => {
+    const fakeFetch = async () => ({
+      ok: false,
+      status: 403,
+      text: async () => JSON.stringify({ message: "Forbidden" }),
+    });
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "test" }),
+      (err) => err instanceof AuthError,
     );
   });
 

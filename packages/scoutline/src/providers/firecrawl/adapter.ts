@@ -759,7 +759,10 @@ function mapCrawlControls(request: CrawlRequest): FirecrawlCrawlParams {
     excludePaths?: readonly string[];
     scrapeOptions: { formats: readonly string[]; proxy: "basic" };
   } = { scrapeOptions: { formats: [contentFormat], proxy: "basic" } };
-  if (request.depth !== undefined) params.maxDiscoveryDepth = request.depth;
+  // Firecrawl maxDiscoveryDepth is 0-based (root = depth 0; N crawls root
+  // + N hops). CLI --depth is 1-based with 1 = single page (root only), so
+  // subtract 1 (--depth 1 -> maxDiscoveryDepth 0 = root only).
+  if (request.depth !== undefined) params.maxDiscoveryDepth = request.depth - 1;
   if (request.limit !== undefined) params.limit = request.limit;
   const includePaths = splitPathPatterns(request.selectPaths);
   if (includePaths !== undefined) params.includePaths = includePaths;

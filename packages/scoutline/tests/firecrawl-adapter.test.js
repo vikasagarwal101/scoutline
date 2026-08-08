@@ -480,7 +480,11 @@ describe("Firecrawl Crawl Adapter", () => {
     const createBody = JSON.parse(
       calls.find((c) => c.method === "POST" && c.url.endsWith("/v2/crawl")).init.body,
     );
-    assert.equal(createBody.maxDiscoveryDepth, 3, "wire body must use maxDiscoveryDepth");
+    assert.equal(
+      createBody.maxDiscoveryDepth,
+      2,
+      "depth:3 -> maxDiscoveryDepth:2 (Firecrawl maxDiscoveryDepth is 0-based; CLI --depth is 1-based)",
+    );
     assert.equal(createBody.maxDepth, undefined, "v1 field name must NOT appear");
   });
 
@@ -490,10 +494,7 @@ describe("Firecrawl Crawl Adapter", () => {
   // { success, crawls } envelope so the `crawls` key path is exercised.
   it("reclaims using createdAt from the active fixture (F-5)", async () => {
     const activeFixture = JSON.parse(
-      await fs.readFile(
-        path.join(__dirname, "fixtures/providers/firecrawl/active.json"),
-        "utf8",
-      ),
+      await fs.readFile(path.join(__dirname, "fixtures/providers/firecrawl/active.json"), "utf8"),
     );
     // Refresh the timestamp so the staleness guard passes at test time.
     activeFixture.crawls[0].createdAt = new Date().toISOString();
@@ -528,7 +529,7 @@ describe("Firecrawl Crawl Adapter", () => {
     const adapter = descriptor.create({
       env: { FIRECRAWL_API_KEY: TEST_API_KEY, FIRECRAWL_CRAWL_POLL_INTERVAL_MS: "0" },
     });
-    const out = await adapter.crawl.fetch.invoke({ url: "https://docs.example.com", depth: 2 });
+    const out = await adapter.crawl.fetch.invoke({ url: "https://docs.example.com", depth: 3 });
     assert.equal(out.totalPages, 1);
     // Reclaimed from /active — no create POST.
     assert.ok(
@@ -580,7 +581,11 @@ describe("Firecrawl Crawl Adapter", () => {
           id: "job-active",
           url: "https://rec.example",
           createdAt: new Date().toISOString(),
-          options: { maxDiscoveryDepth: 2, scrapeOptions: { formats: ["markdown"] }, proxy: "basic" },
+          options: {
+            maxDiscoveryDepth: 1,
+            scrapeOptions: { formats: ["markdown"] },
+            proxy: "basic",
+          },
         },
       ],
       onPoll: () => ({

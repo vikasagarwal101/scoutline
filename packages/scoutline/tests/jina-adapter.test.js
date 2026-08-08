@@ -229,6 +229,24 @@ describe("Jina AI Error Handling", () => {
     );
   });
 
+  it("maps 403 insufficient-permissions to AuthError, NOT QuotaError (Greptile P1)", async () => {
+    const fakeFetch = async () => ({
+      ok: false,
+      status: 403,
+      text: async () => JSON.stringify({ message: "Insufficient permissions for this resource" }),
+    });
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "test" }),
+      (err) => err instanceof AuthError && !(err instanceof QuotaError),
+    );
+  });
+
   it("rejects type control as UnsupportedOptionError", () => {
     const adapter = new JinaAdapter(
       { env: { JINA_API_KEY: TEST_KEY } },

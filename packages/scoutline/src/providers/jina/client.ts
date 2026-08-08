@@ -72,16 +72,22 @@ function mapStatusError(status: number, timeoutMs: number, errorBody?: string): 
   if (status === 403) {
     // Jina returns 403 for BOTH invalid credentials AND insufficient
     // balance/resource limits. Parse the structured error body to
-    // distinguish: balance/limit indicators → QuotaError (terminal);
+    // distinguish: balance indicators → QuotaError (terminal);
     // everything else → AuthError.
+    //
+    // Keywords are intentionally NARROW: "insufficient" alone would match
+    // "insufficient permissions" (an auth issue), and "limit" alone would
+    // match "rate limit" or "permission limit". Only balance/billing-
+    // specific terms qualify.
     const body = (errorBody ?? "").toLowerCase();
     if (
-      body.includes("insufficient") ||
       body.includes("balance") ||
       body.includes("quota") ||
-      body.includes("limit") ||
       body.includes("exhausted") ||
-      body.includes("credit")
+      body.includes("credit") ||
+      body.includes("billing") ||
+      body.includes("insufficient balance") ||
+      body.includes("insufficient credit")
     ) {
       return new QuotaError(
         "Jina AI quota exhausted. Insufficient balance or resource limit.",

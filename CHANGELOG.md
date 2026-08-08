@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.3] - 2026-08-09
+
+### Firecrawl domain-correctness fixes (Angle 8)
+
+- `--depth` now controls crawl depth end-to-end: serialized as the v2 `maxDiscoveryDepth` field (the v1 `maxDepth` was silently ignored by Firecrawl's server), with the correct 0-based mapping (`--depth N` → `maxDiscoveryDepth N-1`; `--depth 1` crawls only the root, matching the CLI contract). Previously every `--depth` invocation was a no-op in production.
+- HTTP 402 (insufficient credits) is now mapped to terminal `QuotaError` instead of generic `ApiError`, surfacing the actionable billing signal instead of a retryable-looking failure.
+- A server-`cancelled` crawl is now handled as a documented terminal status (`ApiError` 499) instead of a 500 "malformed response".
+- Business-error `{success:false}` envelopes now propagate the server code with HTTP 400 (not a hardcoded 422).
+- Active-crawls reclaim-on-miss now reads the v2 `createdAt` field (not v1 `created_at`), so the staleness guard actually fires — fixing a silent credit double-charge on Ctrl-C-and-re-run.
+- HTTP 503 is now mapped to retryable `NetworkError`.
+- The `--depth` cap (1-5) rationale is now documented in the crawl command help.
+
 ## [0.14.2] - 2026-08-08
 
 ### Test-quality improvements

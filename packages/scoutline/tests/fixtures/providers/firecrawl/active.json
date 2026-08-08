@@ -1,0 +1,19 @@
+{
+  "success": true,
+  "crawls": [
+    {
+      "id": "crawl-fixture-active-001",
+      "teamId": "team-fixture",
+      "url": "https://docs.example.com",
+      "createdAt": "2026-08-09T12:00:00.000Z",
+      "options": {
+        "maxDiscoveryDepth": 2,
+        "limit": 50,
+        "scrapeOptions": {
+          "formats": ["markdown"],
+          "proxy": "basic"
+        }
+      }
+    }
+  ]
+}

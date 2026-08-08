@@ -22,6 +22,7 @@ import {
   AuthError,
   ConfigurationError,
   NetworkError,
+  QuotaError,
   TimeoutError,
 } from "../../lib/errors.js";
 import { requireFirecrawlApiKey } from "./credentials.js";
@@ -38,6 +39,7 @@ function normalizeProbeError(error: unknown): Error {
     error instanceof AuthError ||
     error instanceof ApiError ||
     error instanceof NetworkError ||
+    error instanceof QuotaError ||
     error instanceof TimeoutError ||
     error instanceof ConfigurationError
   ) {

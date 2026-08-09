@@ -282,6 +282,113 @@ describe("Jina AI Descriptor & Adapter", () => {
   });
 });
 
+describe("Jina AI Control Acceptance (8J.3/8J.4)", () => {
+  it("search accepts domain and sends X-Site header (8J.3)", async () => {
+    let capturedHeaders = null;
+    const fakeFetch = async (url, init) => {
+      capturedHeaders = init.headers;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: [] }),
+      };
+    };
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    adapter.search.validate({ query: "test", controls: { domain: "example.com" } });
+    await adapter.search.invoke({ query: "test", controls: { domain: "example.com" } });
+    assert.equal(capturedHeaders["X-Site"], "example.com", "domain must map to X-Site header");
+  });
+
+  it("search accepts location and sends gl in POST body (8J.3)", async () => {
+    let capturedInit = null;
+    const fakeFetch = async (url, init) => {
+      capturedInit = init;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: [] }),
+      };
+    };
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    adapter.search.validate({ query: "test", controls: { location: "us" } });
+    await adapter.search.invoke({ query: "test", controls: { location: "us" } });
+    assert.equal(capturedInit.method, "POST", "location must trigger POST");
+    const body = JSON.parse(capturedInit.body);
+    assert.equal(body.gl, "us", "location must map to gl field in POST body");
+    assert.equal(body.q, "test", "query must be in q field");
+  });
+
+  it("search still uses GET when no location is specified (8J.3)", async () => {
+    let capturedInit = null;
+    const fakeFetch = async (url, init) => {
+      capturedInit = init;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: [] }),
+      };
+    };
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await adapter.search.invoke({ query: "test" });
+    assert.equal(capturedInit.method, "GET", "GET path used when no location");
+  });
+
+  it("search rejects invalid domain syntax (8J.3)", () => {
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: async () => ({}) } },
+    );
+
+    assert.throws(
+      () => adapter.search.validate({ query: "test", controls: { domain: "https://example.com" } }),
+      ValidationError,
+    );
+  });
+
+  it("research accepts domain and sends only_hostnames (8J.4)", async () => {
+    let capturedBody = null;
+    const fakeFetch = async (url, init) => {
+      capturedBody = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            choices: [{ message: { content: "Research answer." } }],
+          }),
+      };
+    };
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    adapter.research.run.validate({ query: "test", domain: "example.com" });
+    await adapter.research.run.invoke({ query: "test", domain: "example.com" });
+    assert.deepEqual(
+      capturedBody.only_hostnames,
+      ["example.com"],
+      "domain must map to only_hostnames array",
+    );
+  });
+});
+
 describe("Jina AI Error Handling", () => {
   it("maps 401 to AuthError", async () => {
     const fakeFetch = mockFetch({ message: "Unauthorized" }, 401);

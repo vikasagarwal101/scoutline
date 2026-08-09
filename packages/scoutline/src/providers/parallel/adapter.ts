@@ -140,17 +140,23 @@ function assertHttpUrl(url: unknown): asserts url is string {
 const PARALLEL_MAX_QUERY_LENGTH = 200;
 
 /**
- * Count Unicode code points in a string. Uses a quick upper-bound check
- * with `.length` (UTF-16 code units) first — only strings whose UTF-16
- * length exceeds the limit incur the spread-to-array cost.
+ * Bounded Unicode code-point counter for the query-length limit. Uses a
+ * quick upper-bound check with `.length` (UTF-16 code units) first; only
+ * strings exceeding the limit are iterated, and the iteration
+ * short-circuits at the (limit+1)th code point so rejecting an oversized
+ * input is O(limit), not O(input).
  */
 function exceedsCodePointLimit(str: string, limit: number): boolean {
   // Fast path: UTF-16 length ≤ limit means code points are also ≤ limit
   // (each code point is 1-2 UTF-16 code units, never more).
   if (str.length <= limit) return false;
-  // Slow path: count actual Unicode code points via spread, which
-  // iterates code points rather than UTF-16 code units.
-  return [...str].length > limit;
+  // Bounded code-point count (for...of yields code points). Short-circuit
+  // at limit+1 so a huge payload is rejected without proportional work.
+  let count = 0;
+  for (const _ of str) {
+    if (++count > limit) return true;
+  }
+  return false;
 }
 
 /**
@@ -159,14 +165,25 @@ function exceedsCodePointLimit(str: string, limit: number): boolean {
  * filter). Uses a 30-day convention for `oneMonth` to avoid month-end
  * rollover issues with `setUTCMonth`.
  */
-function recencyToAfterDate(recency: import("../../capabilities/search.js").SearchRecency, now: Date = new Date()): string | undefined {
+function recencyToAfterDate(
+  recency: import("../../capabilities/search.js").SearchRecency,
+  now: Date = new Date(),
+): string | undefined {
   if (recency === "noLimit") return undefined;
   const d = new Date(now.getTime());
   switch (recency) {
-    case "oneDay": d.setUTCDate(d.getUTCDate() - 1); break;
-    case "oneWeek": d.setUTCDate(d.getUTCDate() - 7); break;
-    case "oneMonth": d.setUTCDate(d.getUTCDate() - 30); break;
-    case "oneYear": d.setUTCDate(d.getUTCDate() - 365); break;
+    case "oneDay":
+      d.setUTCDate(d.getUTCDate() - 1);
+      break;
+    case "oneWeek":
+      d.setUTCDate(d.getUTCDate() - 7);
+      break;
+    case "oneMonth":
+      d.setUTCDate(d.getUTCDate() - 30);
+      break;
+    case "oneYear":
+      d.setUTCDate(d.getUTCDate() - 365);
+      break;
   }
   return d.toISOString().split("T")[0]!;
 }
@@ -189,7 +206,8 @@ function mapSearchControlsToParams(
   now: Date = new Date(),
 ): ParallelSearchParams | undefined {
   if (!controls) return undefined;
-  if (!controls.domain && !controls.recency && !controls.location && !controls.contentSize) return undefined;
+  if (!controls.domain && !controls.recency && !controls.location && !controls.contentSize)
+    return undefined;
 
   const sourcePolicy: { include_domains?: readonly string[]; after_date?: string } = {};
   if (controls.domain) {
@@ -210,7 +228,9 @@ function mapSearchControlsToParams(
     advancedSettings.location = controls.location;
   }
   if (controls.contentSize) {
-    advancedSettings.excerpt_settings = { max_chars_per_result: contentSizeToExcerptBudget(controls.contentSize) };
+    advancedSettings.excerpt_settings = {
+      max_chars_per_result: contentSizeToExcerptBudget(controls.contentSize),
+    };
   }
 
   return {
@@ -317,12 +337,7 @@ export class ParallelAdapter implements ProviderAdapter {
               `Parallel AI research query exceeds the ${PARALLEL_MAX_QUERY_LENGTH}-character limit`,
             );
           }
-          for (const option of [
-            "model",
-            "outputLength",
-            "citationFormat",
-            "domain",
-          ] as const) {
+          for (const option of ["model", "outputLength", "citationFormat", "domain"] as const) {
             if (request[option] !== undefined) {
               throw new UnsupportedOptionError("parallel", "research", option);
             }
@@ -360,12 +375,13 @@ export class ParallelAdapter implements ProviderAdapter {
 
             // Parallel AI does not return a synthesized report field.
             // Build the report from the excerpts of all results.
-            const report = results.length > 0
-              ? results
-                  .map((r) => r.excerpts?.join("\n"))
-                  .filter((text): text is string => typeof text === "string" && text.length > 0)
-                  .join("\n\n")
-              : "No research findings available.";
+            const report =
+              results.length > 0
+                ? results
+                    .map((r) => r.excerpts?.join("\n"))
+                    .filter((text): text is string => typeof text === "string" && text.length > 0)
+                    .join("\n\n")
+                : "No research findings available.";
 
             return {
               schemaVersion: 1,

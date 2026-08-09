@@ -1454,7 +1454,11 @@ async function handleTool(
   return invokeCommand(
     deps.invocation,
     (context) =>
-      showTool(positional[0] ?? "", { enableVision: flags.vision !== false, env: deps.env }, context),
+      showTool(
+        positional[0] ?? "",
+        { enableVision: flags.vision !== false, env: deps.env },
+        context,
+      ),
     outputMode,
     deps.now,
     deps.secrets,
@@ -2396,9 +2400,10 @@ export async function main(
   // earlier alongside `buildHandlerDeps` so the sink closes over a
   // defined binding — see PB-T2 above.)
   const isQuotaObservationalCommand = command === "quota" || command === "doctor";
-  const refreshOnError = (providerId: string, error: unknown): void => {
-    const message = error instanceof Error ? error.message : String(error);
-    invocation.writeStderr(`scoutline: quota refresh failed for "${providerId}": ${message}\n`);
+  const refreshOnError = (_providerId: string, _error: unknown): void => {
+    // Silent: quota-refresh failures are best-effort. Writing to stderr
+    // would violate the JSON error contract (stderr is reserved for the
+    // structured error envelope; data-only stdout).
   };
 
   if (quotaRefreshEnabled && isQuotaObservationalCommand) {
@@ -2536,7 +2541,10 @@ export async function main(
       store: quotaStore,
       now: now ?? Date.now,
       force: false,
-      onError: refreshOnError,
+      // Silent: background quota-refresh failures must not pollute the
+      // command's stderr (best-effort observational; use `scoutline quota`
+      // or `doctor` to see refresh errors).
+      onError: () => {},
     });
   }
 

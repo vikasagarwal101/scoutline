@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.6] - 2026-08-09
+
+### Rejected-but-supported controls + capability gating (Angle 8)
+
+- **Jina capability-aware keyless gating (8J.1, HIGH):** `isConfigured` now takes an optional `capabilityId`. Reader (`r.jina.ai`) remains keyless; Search/Research/Diagnostics (and the Search-based diagnostics probe) require `JINA_API_KEY`, so fallback no longer selects Jina for an operation guaranteed to fail with 401. Backward-compatible — callers that omit `capabilityId` behave as before. The diagnostics probe now fails-closed with `ConfigurationError` when no key is present.
+- **Control acceptance (rejected-but-supported pattern):** Parallel now accepts `domain`/`recency`/`location`/`contentSize` via `advanced_settings` and enforces the documented 200-char per-query limit (bounded code-point count); Jina accepts search `domain` (`X-Site`)/`location` (`gl`) and research `domain` (DeepSearch `only_hostnames`); Exa accepts `location` via `userLocation`. A shared domain-validation helper deduplicates the logic.
+- Each newly-accepted control carries a wire-parameter regression test; the capability gating carries no-key tests per advertised capability.
+
 ## [0.14.5] - 2026-08-09
 
 ### Reader-completeness (Angle 8, Track 4)

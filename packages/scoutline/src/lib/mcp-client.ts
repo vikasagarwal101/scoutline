@@ -74,6 +74,23 @@ export interface WebSearchResult {
 }
 
 /**
+ * Minimal structural surface of the UTCP client consumed by
+ * {@link ZaiMcpClient}. Production code uses `UtcpClient.create()` which
+ * structurally satisfies this interface. The `close` method is optional
+ * because test doubles may omit it — the real `UtcpClient` always has it.
+ * This keeps the lib → providers dependency direction intact (no import
+ * of the providers port) while avoiding an `as unknown as` cast at the
+ * adapter boundary.
+ */
+interface McpUtcpClient {
+  registerManual(template: unknown): Promise<{ success: boolean; errors: string[] }>;
+  getTools(): Promise<Tool[]>;
+  callTool(name: string, args: Record<string, unknown>): Promise<unknown>;
+  /** Optional: the real UtcpClient has it; test doubles may omit it. */
+  close?(): Promise<void>;
+}
+
+/**
  * Constructor options for {@link ZaiMcpClient}.
  *
  * `utcpFactory` is a behaviour-preserving injection seam: when omitted the
@@ -88,7 +105,7 @@ export interface ZaiMcpClientOptions {
   enableVision?: boolean;
   noCache?: boolean;
   disableRetry?: boolean;
-  utcpFactory?: () => Promise<UtcpClient>;
+  utcpFactory?: () => Promise<McpUtcpClient>;
   /**
    * T2b — Credential view: the resolved env (injected env + file keys)
    * captured at handler dispatch. When omitted, ambient `process.env`
@@ -104,7 +121,7 @@ export interface ZaiMcpClientOptions {
  * Unified MCP client for all Z.AI MCP services
  */
 export class ZaiMcpClient {
-  private client: UtcpClient | null = null;
+  private client: McpUtcpClient | null = null;
   private initPromise: Promise<void> | null = null;
   private isInitialized = false;
   private options: ZaiMcpClientOptions;
@@ -788,7 +805,7 @@ export class ZaiMcpClient {
       });
       try {
         await Promise.race([
-          this.client.close().catch(() => undefined),
+          (this.client.close?.() ?? Promise.resolve()).catch(() => undefined),
           timeoutPromise,
         ]);
       } finally {

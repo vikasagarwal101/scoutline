@@ -15,8 +15,6 @@
  *     boundary and never echoed outward.
  *   - HTTP 402 maps to {@link QuotaError} (Exa returns 402 for three
  *     exhaustion states: account, key, and team budget).
- *   - The `Exa-Beta` header is endpoint-scoped to `/agent/runs*`
- *     (Research, EXA-T04); search and contents calls do NOT send it.
  *
  * Boundary rules (ARCHITECTURE.md §2):
  *   - May import Adapter-local config and normalized errors.
@@ -42,15 +40,6 @@ const SEARCH_PATH = "/search";
 const CONTENTS_PATH = "/contents";
 const AGENT_RUNS_PATH = "/agent/runs";
 const DEFAULT_TIMEOUT_MS = 30000;
-
-/**
- * Pinned Exa Agent API beta version. Every `/agent/runs*` request
- * (create, poll) MUST carry `Exa-Beta: <this value>` or the endpoint
- * returns 400 before any lifecycle logic runs. The header is
- * endpoint-scoped — search and contents calls do NOT send it. Pin as a
- * transport constant so a future version bump is a one-line change.
- */
-const EXA_BETA_HEADER = "agent-2026-05-07";
 
 const USER_AGENT = `scoutline/${VERSION}`;
 const TIMEOUT_HELP_TEXT = "Try again or increase timeout with EXA_TIMEOUT env var";
@@ -174,7 +163,6 @@ async function postExaJson(
   body: Record<string, unknown>,
   deps: ExaTransportDeps,
   endpointLabel: string,
-  extraHeaders?: Record<string, string>,
 ): Promise<unknown> {
   const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;
@@ -191,11 +179,6 @@ async function postExaJson(
       "Content-Type": "application/json",
       "User-Agent": USER_AGENT,
     };
-    if (extraHeaders) {
-      for (const [key, value] of Object.entries(extraHeaders)) {
-        headers[key] = value;
-      }
-    }
     const res = await f(url, {
       method: "POST",
       headers,
@@ -230,7 +213,7 @@ async function postExaJson(
  * `params` carries Exa-native API fields (camelCase) already mapped
  * from `SearchControls` by the Adapter. Search always sends
  * `contents: { highlights: true }` (token-efficient; populates
- * `summary`). The `Exa-Beta` header is NOT sent on search calls.
+ * `summary`).
  */
 export async function fetchExaSearch(
   apiKey: string,
@@ -270,8 +253,7 @@ export async function fetchExaSearch(
  * the Adapter post-processes into a normalized `ReaderFetchResult`).
  *
  * The caller wraps a single URL as `urls: [url]`. `text: true` is
- * always set (Exa returns text content). The `Exa-Beta` header is NOT
- * sent on contents calls (endpoint-scoped to Agent only).
+ * always set (Exa returns text content).
  *
  * `params.livecrawlTimeout` is in milliseconds. The Adapter converts
  * from the CLI's seconds-based `--timeout` before calling; the transport
@@ -332,10 +314,9 @@ export interface ExaAgentRunPollResult {
  * response body in public errors. Returns the structured create result
  * `{ id, status }`.
  *
- * **MUST send** the `Exa-Beta: agent-2026-05-07` header — the endpoint
- * returns 400 without it. Shared execution wraps this with
- * `maxRetries: 0` (double-charge prevention on a usage-based endpoint),
- * so a transient create-time failure is terminal.
+ * Shared execution wraps this with `maxRetries: 0` (double-charge
+ * prevention on a usage-based endpoint), so a transient create-time
+ * failure is terminal.
  */
 export async function createExaAgentRun(
   apiKey: string,
@@ -346,9 +327,7 @@ export async function createExaAgentRun(
   if (params.effort !== undefined) {
     body.effort = params.effort;
   }
-  const raw = await postExaJson(apiKey, AGENT_RUNS_PATH, body, deps, "agent-run", {
-    "Exa-Beta": EXA_BETA_HEADER,
-  });
+  const raw = await postExaJson(apiKey, AGENT_RUNS_PATH, body, deps, "agent-run");
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new ApiError("Exa agent run returned a malformed response", 500);
   }
@@ -364,8 +343,6 @@ export async function createExaAgentRun(
 /**
  * Perform ONE GET against the Exa /agent/runs/{id} endpoint. No retry.
  * Returns a structured poll result.
- *
- * **MUST send** the `Exa-Beta: agent-2026-05-07` header.
  *
  * Unlike other GETs, a 404 is NOT a terminal transport error here: it
  * means the server-side run expired/disappeared, so the Adapter can
@@ -395,7 +372,6 @@ export async function pollExaAgentRun(
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "User-Agent": USER_AGENT,
-          "Exa-Beta": EXA_BETA_HEADER,
         },
         signal: controller.signal,
       });

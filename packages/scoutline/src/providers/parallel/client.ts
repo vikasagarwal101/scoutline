@@ -475,7 +475,9 @@ function normalizeTaskRunResult(parsed: unknown): ParallelTaskRunResult {
 
   const runStatus = run.status;
 
-  if (runStatus === "failed") {
+  if (runStatus === "failed" || runStatus === "cancelled") {
+    // "failed" and "cancelled" are terminal non-success states. Map
+    // both to "failed" so the poll loop stops and cleans up.
     const error = run.error;
     const errorMessage =
       isRecord(error) && typeof error.message === "string" ? error.message : undefined;
@@ -485,9 +487,19 @@ function normalizeTaskRunResult(parsed: unknown): ParallelTaskRunResult {
     };
   }
 
-  // queued, running, action_required, cancelling, cancelled — poll again.
-  if (runStatus !== "completed") {
+  if (runStatus === "completed") {
+    // Completed — extract output.content and output.basis citations.
+  } else if (
+    runStatus === "queued" ||
+    runStatus === "running" ||
+    runStatus === "action_required"
+  ) {
+    // Non-terminal — poll again.
     return { status: "running" };
+  } else {
+    // Unknown status — treat as malformed so the poll loop doesn't
+    // spin forever on an unrecognized terminal state.
+    throw new ApiError("Parallel AI task result returned a malformed response", 500);
   }
 
   // Completed — extract output.content and output.basis citations.

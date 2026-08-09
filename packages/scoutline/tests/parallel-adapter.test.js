@@ -627,6 +627,48 @@ describe("Parallel AI Descriptor & Adapter", () => {
     assert.equal(posts.length, 2, "must create a fresh task after 404");
   });
 
+  it("research terminates after repeated 404 instead of unbounded recreation (Cubic P0)", async () => {
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const { fetch: taskFetch, calls } = makeTaskFetch({
+      // Every poll returns 404 — the freshly created tasks keep disappearing
+      pollResponses: [NOT_FOUND_404, NOT_FOUND_404, NOT_FOUND_404],
+    });
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
+    );
+
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "repeated 404" }),
+      (err) => err instanceof ApiError && err.statusCode === 500,
+    );
+
+    // At most 2 POSTs: initial create + 1 recreation. NOT unbounded.
+    const posts = calls.filter((c) => c.method === "POST" && c.url.includes("/v1/tasks/runs"));
+    assert.equal(posts.length, 2, "must not create more than 2 tasks (initial + 1 recreation)");
+  });
+
+  it("research treats cancelled status as terminal failure (Cubic P1)", async () => {
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const cancelledResult = {
+      status: 200,
+      body: {
+        run: { run_id: "trun-cancelled", status: "cancelled" },
+        output: null,
+      },
+    };
+    const { fetch: taskFetch } = makeTaskFetch({ pollResponses: [cancelledResult] });
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
+    );
+
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "cancelled test" }),
+      (err) => err instanceof ApiError && err.statusCode === 500,
+    );
+  });
+
   it("research sends x-api-key header on task create and result (8P.6)", async () => {
     const stateFile = createInMemoryAsyncJobStateFile();
     let createHeaders = null;

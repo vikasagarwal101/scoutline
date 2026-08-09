@@ -556,6 +556,7 @@ export class ParallelAdapter implements ProviderAdapter {
             //    active). No client-side sleep is needed between polls;
             //    the server IS the wait. A setImmediate yield between
             //    iterations lets signal handlers fire.
+            let recreatedAfterNotFound = false;
             for (;;) {
               if (signal?.aborted) {
                 throw new TimeoutError(0, "Research polling aborted");
@@ -568,20 +569,31 @@ export class ParallelAdapter implements ProviderAdapter {
               );
 
               if (result.status === "completed") {
-                await researchStateFile.remove(identityHash);
+                // Best-effort cleanup — a filesystem error here must
+                // not discard a successfully completed paid report.
+                await researchStateFile.remove(identityHash).catch(() => {});
                 return normalizeParallelResearchResult(result, request);
               }
 
               if (result.status === "failed") {
-                await researchStateFile.remove(identityHash);
+                await researchStateFile.remove(identityHash).catch(() => {});
                 throw new ApiError("Parallel AI research task failed", 500);
               }
 
               if (result.status === "not_found") {
-                // 404 — the server-side task expired/disappeared. Delete
-                // the stale state file and create a fresh task, then
-                // continue polling.
-                await researchStateFile.remove(identityHash);
+                // 404 — the server-side task expired/disappeared.
+                // Allow at most ONE recreation; a second 404 means the
+                // freshly created task also failed to register, so we
+                // terminate rather than risk unbounded paid creations.
+                if (recreatedAfterNotFound) {
+                  await researchStateFile.remove(identityHash).catch(() => {});
+                  throw new ApiError(
+                    "Parallel AI research task not found after creation",
+                    500,
+                  );
+                }
+                recreatedAfterNotFound = true;
+                await researchStateFile.remove(identityHash).catch(() => {});
                 runId = await createParallelResearchTask(
                   apiKey,
                   request,
@@ -731,7 +743,11 @@ async function createParallelResearchTask(
       // it). Fall through and poll the task we just created — it is
       // valid server-side even if we cannot persist it.
     } else {
-      throw err;
+      // Non-EEXIST error (disk full, permissions). The task was created
+      // server-side — degrade to non-resumable mode rather than
+      // abandoning a paid task. The current invocation will still poll
+      // and retrieve the result; only resume-after-interrupt is lost.
+      // Intentionally swallow — the run_id is valid server-side.
     }
   }
   return runId;

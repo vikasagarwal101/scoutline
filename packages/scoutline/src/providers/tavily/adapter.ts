@@ -92,6 +92,7 @@ import {
 } from "../../lib/errors.js";
 import type { CacheIdentity } from "../../lib/execution.js";
 import { asyncJobStateDir } from "../../lib/cache.js";
+import { withAsyncFileLock } from "../../lib/async-file-lock.js";
 import { requireTavilyApiKey, isTavilyConfigured } from "./credentials.js";
 import {
   fetchTavilySearch,
@@ -124,6 +125,8 @@ export interface TavilyAdapterDependencies {
   readonly transport?: TavilyTransportDeps;
   /** Optional Research state-file port (tech-plan §3). */
   readonly researchStateFile?: AsyncJobStateFile;
+  /** Disk dir for the research create-lock; undefined in tests (no-op lock). */
+  readonly researchStateDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -973,12 +976,14 @@ interface TavilyResearchCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly transport?: TavilyTransportDeps;
   readonly researchStateFile: AsyncJobStateFile;
+  /** Disk dir for the create-lock; undefined in tests (no-op lock). */
+  readonly researchStateDir?: string;
 }
 
 function createTavilyResearchCapability(
   options: TavilyResearchCapabilityOptions,
 ): ResearchCapability {
-  const { env, transport, researchStateFile } = options;
+  const { env, transport, researchStateFile, researchStateDir } = options;
 
   const run: ResearchOperation = {
     kind: "research-fetch",
@@ -1035,16 +1040,39 @@ function createTavilyResearchCapability(
           // Resume the existing task — no new POST.
           requestId = existingState.requestId;
         } else {
-          // 2. No in-flight task: POST to create one. NO retry — a
-          //    transient POST failure is terminal (the user re-runs);
-          //    retrying risks a double-charge if the POST succeeded
-          //    server-side but the response was lost.
-          requestId = await createResearchTask(
-            apiKey,
-            request,
+          // 2. No in-flight task: create under a lock so concurrent
+          //    identical invocations serialize. The second caller
+          //    waits, then re-reads the state file and finds the
+          //    first's persisted requestId instead of creating (and
+          //    billing) a second task.
+          requestId = await withAsyncFileLock(
+            researchStateDir,
             identityHash,
-            researchStateFile,
-            transport,
+            async () => {
+              // Re-check under the lock — another caller may have
+              // created and persisted while we waited to acquire.
+              const state = await researchStateFile.read(identityHash);
+              if (state !== null) {
+                return state.requestId;
+              }
+              // No existing task: POST to create one. NO retry — a
+              // transient POST failure is terminal (the user re-runs);
+              // retrying risks a double-charge if the POST succeeded
+              // server-side but the response was lost.
+              return createResearchTask(
+                apiKey,
+                request,
+                identityHash,
+                researchStateFile,
+                transport,
+              );
+            },
+            {
+              timeoutMs: 30000,
+              staleMs: 10 * 60 * 1000,
+              setTimeout: transport?.setTimeout,
+              timeoutLabel: "Tavily research",
+            },
           );
         }
 
@@ -1167,6 +1195,7 @@ export function createTavilyDescriptor(
   const researchStateFile =
     dependencies?.researchStateFile ??
     createProductionAsyncJobStateFile(asyncJobStateDir("research"));
+  const researchStateDir = dependencies?.researchStateDir ?? asyncJobStateDir("research");
 
   return {
     id: "tavily",
@@ -1205,6 +1234,7 @@ export function createTavilyDescriptor(
         env: context.env,
         transport,
         researchStateFile,
+        researchStateDir,
       });
       const quota = createTavilyQuotaCapability({
         env: context.env,

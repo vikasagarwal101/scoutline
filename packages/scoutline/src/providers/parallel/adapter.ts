@@ -38,8 +38,6 @@
  */
 
 import crypto from "node:crypto";
-import * as fs from "node:fs/promises";
-import path from "node:path";
 import type {
   ProviderAdapter,
   ProviderCapability,
@@ -73,6 +71,7 @@ import {
   createProductionAsyncJobStateFile,
 } from "../../lib/async-job-state.js";
 import { asyncJobStateDir } from "../../lib/cache.js";
+import { withAsyncFileLock } from "../../lib/async-file-lock.js";
 import {
   ApiError,
   AuthError,
@@ -413,12 +412,10 @@ const RESEARCH_LOCK_STALE_MS = 10 * 60 * 1000;
  * Serialize the create→persist critical section per request so two
  * concurrent identical research invocations can't both POST (and charge)
  * a task — the second waits, then re-reads the state file and finds the
- * first's persisted `run_id` instead of re-POSTing. Uses an exclusive
- * `wx`-create lockfile sibling to the state file; a stale lock (holder
- * crashed) is broken after {@link RESEARCH_LOCK_STALE_MS}.
+ * first's persisted `run_id` instead of re-POSTing.
  *
- * Mirrors Firecrawl's `withCrawlLock` pattern. When `stateDir` is
- * undefined (in-memory test mode), the lock is a no-op.
+ * Delegates to the shared {@link withAsyncFileLock} helper. When `stateDir`
+ * is undefined (in-memory test mode), the lock is a no-op.
  */
 async function withResearchLock<T>(
   stateDir: string | undefined,
@@ -426,35 +423,12 @@ async function withResearchLock<T>(
   fn: () => Promise<T>,
   deps: ParallelTransportDeps | undefined,
 ): Promise<T> {
-  if (stateDir === undefined) return fn();
-  const setT = deps?.setTimeout ?? setTimeout;
-  const sleep = (ms: number): Promise<void> => new Promise((r) => setT(() => r(), ms));
-  await fs.mkdir(stateDir, { recursive: true }).catch(() => {});
-  const lockPath = path.join(stateDir, `${identityHash}.lock`);
-  const deadline = Date.now() + RESEARCH_LOCK_TIMEOUT_MS;
-  for (;;) {
-    try {
-      const handle = await fs.open(lockPath, "wx");
-      try {
-        return await fn();
-      } finally {
-        await handle.close().catch(() => {});
-        await fs.unlink(lockPath).catch(() => {});
-      }
-    } catch (err) {
-      if (!isEexistError(err)) throw err;
-      if (Date.now() > deadline) {
-        throw new ApiError("Parallel AI research create-lock timed out", 500);
-      }
-      // Break a stale lock (the holder died without releasing).
-      const stat = await fs.stat(lockPath).catch(() => null);
-      if (stat && Date.now() - stat.mtimeMs > RESEARCH_LOCK_STALE_MS) {
-        await fs.unlink(lockPath).catch(() => {});
-        continue;
-      }
-      await sleep(500);
-    }
-  }
+  return withAsyncFileLock(stateDir, identityHash, fn, {
+    timeoutMs: RESEARCH_LOCK_TIMEOUT_MS,
+    staleMs: RESEARCH_LOCK_STALE_MS,
+    setTimeout: deps?.setTimeout,
+    timeoutLabel: "Parallel AI research",
+  });
 }
 
 export class ParallelAdapter implements ProviderAdapter {

@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.10] - 2026-08-09
+
+### Cleanup: jina header harvesting + shared create-lock (Angle 8 follow-ups)
+
+- **Jina quota reporting (8J.5 telemetry):** the transport now harvests `X-RateLimit-Remaining-Requests` and `X-RateLimit-Remaining-Tokens` response headers (verified against Jina's OpenAPI schema — not the `x-ratelimit-limit`/`x-usage-tokens` the original finding claimed). A new `jina/quota.ts` capability infers the account tier from the remaining values, so `scoutline quota --provider jina` reports real remaining quota.
+- **Shared async-file-lock (consolidation):** extracted `lib/async-file-lock.ts` from the near-identical `withCrawlLock` (firecrawl) and `withResearchLock` (parallel). Firecrawl + parallel migrated to delegate (no behavior change). Tavily research now uses the shared lock, closing the concurrent-double-create gap. All cleanup paths (404 + terminal) use identity-guarded state removal (remove only when `requestId` matches), preventing a lagging poll from deleting a replacement task's state. Lock timing constants centralized.
+
 ## [0.14.9] - 2026-08-09
 
 ### Jina research: deepsearch streaming (Angle 8, 8J.6)

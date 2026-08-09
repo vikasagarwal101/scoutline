@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.5] - 2026-08-09
+
+### Reader-completeness (Angle 8, Track 4)
+
+- Parallel reader now requests `advanced_settings.full_content`, so the full page (not bounded excerpts) is fetched and mapped to content.
+- Jina reader now forwards all normalized options (format, image retention, GFM/alt-tag, link/image summaries, timeout) to Jina's documented headers; decodes `data.text` for text-mode responses (previously normalized as empty); echoes the requested `contentFormat`. The timeout now correctly converts the CLI's seconds to Jina's `X-Timeout` (a units bug that would have sent `X-Timeout: 0` was caught in review and fixed). Stale "API bug" comment removed.
+- Tavily reader now forwards `format` to the extract API wire body (previously set only the output label); `format` is typed as `"markdown" | "text"`.
+- Tavily map client timeout now mirrors the crawl pattern (`max(default, 150s+5s)`), so map operations no longer abort before the 150s server ceiling.
+- Each fix carries a wire-level regression test (jina markdown + text-mode fixtures; tavily request-body assertion; parallel `full_content` assertion).
+
 ## [0.14.4] - 2026-08-09
 
 ### Error-classification hardening (Angle 8, Track 1)

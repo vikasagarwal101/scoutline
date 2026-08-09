@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.8] - 2026-08-09
+
+### Exa research: drop vestigial beta header (EXA-8-01 reclassified)
+
+- **EXA-8-01's premise was inverted.** The finding assumed `/agent/runs` was a deprecated beta to migrate away from and `/research/v1` was the stable target. **Live API verification proved the opposite**: `/research/v1` returns **410 Gone (`RESEARCH_RETIRED`)** and `/agent/runs` is the **current, working** endpoint (confirmed in the OpenAPI spec). The prescribed migration was therefore **not performed** — it would have broken production research.
+- The actual defect was a vestigial pinned `Exa-Beta` request header (accepted but unnecessary); removed from create + poll. The now-dead `extraHeaders` transport parameter is also removed.
+- Added live-captured `/agent/runs` fixtures (create + completed-poll) and a fixture wire-shape test, grounding the existing research lifecycle against the real response shape.
+
 ## [0.14.7] - 2026-08-09
 
 ### Parallel research: real Task/Deep Research API (Angle 8, 8P.1 HIGH)

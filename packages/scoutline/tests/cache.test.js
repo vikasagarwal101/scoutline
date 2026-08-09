@@ -1440,26 +1440,44 @@ describe("concurrent writeCache serializes via inter-process lock (5.5)", () => 
       // Set a 1MB size cap so a few large entries trigger eviction.
       process.env.SCOUTLINE_CACHE_SIZE_MB = "1";
       try {
+        const cacheDir = path.join(dir, "cache");
+
+        // Seed a separate *.lock file BEFORE writing. This file is NOT
+        // the active cache-write.lock (so it won't block withAsyncFileLock),
+        // but evictIfNeeded must still skip it because of the *.lock guard.
+        // If the guard were removed, this file would be the oldest entry
+        // (tiny mtime) and could be evicted under size pressure.
+        const sentinelLock = path.join(cacheDir, "test-sentinel.lock");
+        await fs.mkdir(cacheDir, { recursive: true });
+        await fs.writeFile(sentinelLock, "lock-sentinel");
+        // Age it so it's the oldest file in the dir.
+        const oldTime = new Date(Date.now() - 60000);
+        await fs.utimes(sentinelLock, oldTime, oldTime);
+
         // Write entries large enough to exceed the 1MB cap.
-        // During each writeCache call, the cache-write.lock file exists
-        // in the cache dir while evictIfNeeded runs. The *.lock exclusion
-        // in evictIfNeeded prevents the lockfile from being evicted.
         const large = "x".repeat(400_000); // ~400KB per entry
         for (let i = 0; i < 4; i++) {
           await writeCache(`k${i}.json`, { data: large });
         }
 
-        // After 4 writes (~1.6MB total) with a 1MB cap, eviction should
-        // have removed older entries. Verify eviction actually ran:
+        // Eviction ran: oldest cache entry evicted, newest survives.
         const k0 = await readCache("k0.json");
         const k3 = await readCache("k3.json");
         assert.strictEqual(k0, null, "oldest entry should have been evicted");
         assert.ok(k3 !== null, "newest entry should survive eviction");
 
-        // Verify the lockfile was not left behind (properly released).
-        const lockPath = path.join(dir, "cache", "cache-write.lock");
+        // The sentinel *.lock file must survive eviction — this directly
+        // verifies the name.endsWith(".lock") guard in evictIfNeeded.
+        const sentinelExists = await fs.access(sentinelLock).then(() => true).catch(() => false);
+        assert.strictEqual(sentinelExists, true, "*.lock file must not be evicted");
+
+        // The active lockfile was properly released.
+        const lockPath = path.join(cacheDir, "cache-write.lock");
         const lockExists = await fs.access(lockPath).then(() => true).catch(() => false);
         assert.strictEqual(lockExists, false, "lockfile should be released after writes complete");
+
+        // Clean up sentinel.
+        await fs.unlink(sentinelLock).catch(() => {});
       } finally {
         delete process.env.SCOUTLINE_CACHE_DIR;
         delete process.env.SCOUTLINE_CACHE_SIZE_MB;

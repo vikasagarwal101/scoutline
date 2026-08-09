@@ -74,6 +74,23 @@ export interface WebSearchResult {
 }
 
 /**
+ * Minimal structural surface of the UTCP client consumed by
+ * {@link ZaiMcpClient}. Production code uses `UtcpClient.create()` which
+ * structurally satisfies this interface; the providers layer's
+ * {@link UtcpClientPort} (which lacks `close()`) also satisfies it because
+ * `close` is optional. This keeps the lib → providers dependency direction
+ * intact (no import of the providers port) while allowing the providers'
+ * options type to flow into the constructor without a cast.
+ */
+interface McpUtcpClient {
+  registerManual(template: unknown): Promise<{ success: boolean; errors: string[] }>;
+  getTools(): Promise<unknown[]>;
+  callTool(name: string, args: Record<string, unknown>): Promise<unknown>;
+  /** Optional: the real UtcpClient has it; test doubles may omit it. */
+  close?(): Promise<void>;
+}
+
+/**
  * Constructor options for {@link ZaiMcpClient}.
  *
  * `utcpFactory` is a behaviour-preserving injection seam: when omitted the
@@ -88,7 +105,7 @@ export interface ZaiMcpClientOptions {
   enableVision?: boolean;
   noCache?: boolean;
   disableRetry?: boolean;
-  utcpFactory?: () => Promise<UtcpClient>;
+  utcpFactory?: () => Promise<McpUtcpClient>;
   /**
    * T2b — Credential view: the resolved env (injected env + file keys)
    * captured at handler dispatch. When omitted, ambient `process.env`
@@ -104,7 +121,7 @@ export interface ZaiMcpClientOptions {
  * Unified MCP client for all Z.AI MCP services
  */
 export class ZaiMcpClient {
-  private client: UtcpClient | null = null;
+  private client: McpUtcpClient | null = null;
   private initPromise: Promise<void> | null = null;
   private isInitialized = false;
   private options: ZaiMcpClientOptions;
@@ -403,7 +420,10 @@ export class ZaiMcpClient {
     if (!this.client) {
       throw new ApiError("MCP client not initialized", 500);
     }
-    const tools = await this.client.getTools();
+    // Narrow the structural-port result to Tool[]: the real UtcpClient
+    // returns Tool[], but McpUtcpClient.getTools() is typed unknown[]
+    // to avoid leaking the SDK type through the structural interface.
+    const tools = (await this.client.getTools()) as Tool[];
     await writeToolCache(this.getToolCacheConfig(), tools, configuredSecrets(this.options.env));
     return tools;
   }
@@ -788,7 +808,7 @@ export class ZaiMcpClient {
       });
       try {
         await Promise.race([
-          this.client.close().catch(() => undefined),
+          (this.client.close?.() ?? Promise.resolve()).catch(() => undefined),
           timeoutPromise,
         ]);
       } finally {

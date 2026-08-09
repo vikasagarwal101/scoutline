@@ -18,8 +18,11 @@
  *     choices[0].message.content -> report
  *     annotations[].url_citation -> sources[]
  *
- * Jina supports keyless access; the API key is optional and the
- * credential fingerprint hashes `"keyless"` when absent.
+ * Jina capability-aware credential model (8J.1):
+ * - Reader (r.jina.ai) is keyless — available without JINA_API_KEY.
+ * - Search (s.jina.ai), Research (deepsearch.jina.ai), and Diagnostics
+ *   require JINA_API_KEY. The credential fingerprint hashes `"keyless"`
+ *   when absent (Reader still works; others fail-closed at preflight).
  */
 
 import crypto from "node:crypto";
@@ -62,6 +65,7 @@ import {
 } from "../../lib/errors.js";
 import { resolveJinaApiKey, isJinaConfigured } from "./credentials.js";
 import { applySearchTopic } from "../../lib/search-topic.js";
+import { validateDomain } from "../../lib/domain-validation.js";
 import {
   fetchJinaReader,
   fetchJinaSearch,
@@ -149,21 +153,21 @@ export class JinaAdapter implements ProviderAdapter {
         if (!request.query || request.query.trim().length === 0) {
           throw new ValidationError("Search query must not be empty");
         }
-        // Jina's s.jina.ai endpoint takes only the query string — it has
-        // no native support for domain filtering, recency, content depth,
-        // or location. Reject them so the user gets a clear signal
-        // and fallback can route to a provider that supports them.
+        // Jina's s.jina.ai endpoint supports domain (X-Site header) and
+        // location (gl field) (8J.3). recency, contentSize, and type have
+        // no faithful mapping and are still rejected.
         // Topic is handled by appending a keyword via applySearchTopic in invoke().
         for (const option of [
           "type",
-          "domain",
           "recency",
           "contentSize",
-          "location",
         ] as const) {
           if (request.controls?.[option] !== undefined) {
             throw new UnsupportedOptionError("jina", "search", option);
           }
+        }
+        if (request.controls?.domain !== undefined) {
+          validateDomain(request.controls.domain);
         }
       },
 
@@ -186,7 +190,10 @@ export class JinaAdapter implements ProviderAdapter {
         const query = applySearchTopic(request.query.trim(), request.controls?.topic);
 
         try {
-          const results = await fetchJinaSearch(apiKey, query, transport);
+          const results = await fetchJinaSearch(apiKey, query, transport, {
+            domain: request.controls?.domain,
+            location: request.controls?.location,
+          });
 
           return results.map((item) => {
             const result: SearchSource = {
@@ -271,15 +278,19 @@ export class JinaAdapter implements ProviderAdapter {
           if (!request.query || request.query.trim().length === 0) {
             throw new ValidationError("Research query must not be empty");
           }
+          // Jina DeepSearch supports domain via only_hostnames (8J.4).
+          // model, outputLength, and citationFormat have no mapping.
           for (const option of [
             "model",
             "outputLength",
             "citationFormat",
-            "domain",
           ] as const) {
             if (request[option] !== undefined) {
               throw new UnsupportedOptionError("jina", "research", option);
             }
+          }
+          if (request.domain !== undefined) {
+            validateDomain(request.domain);
           }
         },
 
@@ -303,7 +314,9 @@ export class JinaAdapter implements ProviderAdapter {
           const query = request.query.trim();
 
           try {
-            const response = await fetchJinaDeepSearch(apiKey, query, transport, signal);
+            const response = await fetchJinaDeepSearch(apiKey, query, transport, signal, {
+              domain: request.domain,
+            });
             const content = response.choices?.[0]?.message?.content || "";
 
             // Extract cited sources from annotations (preferred) or

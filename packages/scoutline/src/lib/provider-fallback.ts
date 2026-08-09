@@ -252,8 +252,10 @@ function preflightDescriptor(
   }
   // Step 2 — configuration (FR-024). Runs only if the capability is
   // supported; an unsupported Provider is incapable, never
-  // unconfigured.
-  if (!descriptor.isConfigured(env)) {
+  // unconfigured. The capability-aware `isConfigured` check (8J.1)
+  // lets Providers like Jina report Reader as configured keylessly
+  // while Search/Research/Diagnostics require a key.
+  if (!descriptor.isConfigured(env, capabilityId)) {
     return { kind: "unconfigured" };
   }
   // Step 3 — adapter-handle agreement. Construct the Adapter and

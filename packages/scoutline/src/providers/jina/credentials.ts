@@ -3,12 +3,20 @@
  *
  * Single source of truth for the Jina AI API key (`JINA_API_KEY`).
  *
- * Jina supports keyless access (free tier), so the key is optional.
- * `isJinaConfigured` always returns true because the transport works
- * without authentication. An API key raises rate limits and is
- * recommended for production use, but is not required for the provider
- * to participate in selection, fallback, or diagnostics.
+ * Capability-aware configuration (8J.1):
+ * - Reader (`r.jina.ai`) is keyless — available without `JINA_API_KEY`.
+ * - Search (`s.jina.ai`), DeepSearch (`deepsearch.jina.ai`), and the
+ *   Search-based diagnostics probe all require `JINA_API_KEY`. Live probes
+ *   confirmed they return HTTP 401 without a key.
+ *
+ * `isJinaConfigured` is capability-aware: when called with a specific
+ * `capabilityId`, it checks the key requirement for that capability.
+ * Without a `capabilityId`, it returns `true` whenever the Provider can
+ * serve at least one capability keylessly (Reader), so the Doctor listing
+ * and global availability checks still surface Jina.
  */
+
+import type { ProviderCapability } from "../types.js";
 
 function pickNonBlank(raw: unknown): string | undefined {
   if (typeof raw !== "string") return undefined;
@@ -19,7 +27,33 @@ export function resolveJinaApiKey(env: NodeJS.ProcessEnv): string | undefined {
   return pickNonBlank(env.JINA_API_KEY);
 }
 
-export function isJinaConfigured(_env: NodeJS.ProcessEnv): boolean {
-  // Jina supports keyless access — always available.
-  return true;
+/**
+ * Capabilities that require `JINA_API_KEY`. Reader is excluded because
+ * `r.jina.ai` supports keyless access.
+ */
+const KEYED_CAPABILITIES: ReadonlySet<ProviderCapability> = new Set([
+  "search",
+  "research",
+  "diagnostics",
+]);
+
+export function isJinaConfigured(
+  env: NodeJS.ProcessEnv,
+  capabilityId?: ProviderCapability,
+): boolean {
+  // No capability context — Jina is "configured" as long as it can serve
+  // at least one capability. Reader is keyless, so always available.
+  if (capabilityId === undefined) {
+    return true;
+  }
+  // Reader (r.jina.ai) is keyless — always available.
+  if (capabilityId === "reader") {
+    return true;
+  }
+  // Search, Research, and Diagnostics require JINA_API_KEY.
+  if (KEYED_CAPABILITIES.has(capabilityId)) {
+    return resolveJinaApiKey(env) !== undefined;
+  }
+  // Unknown capability for Jina — not configured.
+  return false;
 }

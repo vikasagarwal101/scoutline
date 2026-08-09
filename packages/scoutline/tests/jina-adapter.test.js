@@ -9,6 +9,7 @@ import { resolveJinaApiKey, isJinaConfigured } from "../dist/providers/jina/cred
 import {
   ApiError,
   AuthError,
+  ConfigurationError,
   QuotaError,
   TimeoutError,
   UnsupportedOptionError,
@@ -32,9 +33,22 @@ describe("Jina AI Credentials", () => {
     assert.equal(resolveJinaApiKey({ JINA_API_KEY: "   " }), undefined);
   });
 
-  it("checks if jina is configured (always true — keyless supported)", () => {
+  it("checks capability-aware configuration (8J.1)", () => {
+    // Without capabilityId — Jina is always configured (keyless Reader available)
     assert.equal(isJinaConfigured({ JINA_API_KEY: TEST_KEY }), true);
     assert.equal(isJinaConfigured({}), true);
+    // Reader is keyless — always available
+    assert.equal(isJinaConfigured({ JINA_API_KEY: TEST_KEY }, "reader"), true);
+    assert.equal(isJinaConfigured({}, "reader"), true);
+    // Search requires a key
+    assert.equal(isJinaConfigured({ JINA_API_KEY: TEST_KEY }, "search"), true);
+    assert.equal(isJinaConfigured({}, "search"), false);
+    // Research requires a key
+    assert.equal(isJinaConfigured({ JINA_API_KEY: TEST_KEY }, "research"), true);
+    assert.equal(isJinaConfigured({}, "research"), false);
+    // Diagnostics requires a key (probe uses Search endpoint)
+    assert.equal(isJinaConfigured({ JINA_API_KEY: TEST_KEY }, "diagnostics"), true);
+    assert.equal(isJinaConfigured({}, "diagnostics"), false);
   });
 });
 
@@ -279,6 +293,113 @@ describe("Jina AI Descriptor & Adapter", () => {
     const res = await adapter.research.run.invoke({ query: "test" });
     assert.equal(res.sources.length, 2);
     assert.equal(res.sources[0].url, "https://source1.com");
+  });
+});
+
+describe("Jina AI Control Acceptance (8J.3/8J.4)", () => {
+  it("search accepts domain and sends X-Site header (8J.3)", async () => {
+    let capturedHeaders = null;
+    const fakeFetch = async (url, init) => {
+      capturedHeaders = init.headers;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: [] }),
+      };
+    };
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    adapter.search.validate({ query: "test", controls: { domain: "example.com" } });
+    await adapter.search.invoke({ query: "test", controls: { domain: "example.com" } });
+    assert.equal(capturedHeaders["X-Site"], "example.com", "domain must map to X-Site header");
+  });
+
+  it("search accepts location and sends gl in POST body (8J.3)", async () => {
+    let capturedInit = null;
+    const fakeFetch = async (url, init) => {
+      capturedInit = init;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: [] }),
+      };
+    };
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    adapter.search.validate({ query: "test", controls: { location: "us" } });
+    await adapter.search.invoke({ query: "test", controls: { location: "us" } });
+    assert.equal(capturedInit.method, "POST", "location must trigger POST");
+    const body = JSON.parse(capturedInit.body);
+    assert.equal(body.gl, "us", "location must map to gl field in POST body");
+    assert.equal(body.q, "test", "query must be in q field");
+  });
+
+  it("search still uses GET when no location is specified (8J.3)", async () => {
+    let capturedInit = null;
+    const fakeFetch = async (url, init) => {
+      capturedInit = init;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: [] }),
+      };
+    };
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await adapter.search.invoke({ query: "test" });
+    assert.equal(capturedInit.method, "GET", "GET path used when no location");
+  });
+
+  it("search rejects invalid domain syntax (8J.3)", () => {
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: async () => ({}) } },
+    );
+
+    assert.throws(
+      () => adapter.search.validate({ query: "test", controls: { domain: "https://example.com" } }),
+      ValidationError,
+    );
+  });
+
+  it("research accepts domain and sends only_hostnames (8J.4)", async () => {
+    let capturedBody = null;
+    const fakeFetch = async (url, init) => {
+      capturedBody = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            choices: [{ message: { content: "Research answer." } }],
+          }),
+      };
+    };
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    adapter.research.run.validate({ query: "test", domain: "example.com" });
+    await adapter.research.run.invoke({ query: "test", domain: "example.com" });
+    assert.deepEqual(
+      capturedBody.only_hostnames,
+      ["example.com"],
+      "domain must map to only_hostnames array",
+    );
   });
 });
 
@@ -537,17 +658,14 @@ describe("Jina Diagnostics — probe (6.7.b)", () => {
     );
   });
 
-  it("works keyless (no JINA_API_KEY) on diagnostics probe", async () => {
-    let capturedInit;
-    const fakeFetch = async (url, init) => {
-      capturedInit = init;
-      return { ok: true, status: 200, text: async () => JSON.stringify({ data: [] }) };
+  it("rejects keyless diagnostics probe with ConfigurationError (8J.1)", async () => {
+    const fakeFetch = async () => {
+      throw new Error("should not be called");
     };
     const adapter = new JinaAdapter({ env: {} }, { transport: { fetch: fakeFetch } });
-    await adapter.diagnostics.invoke({ probe: true });
-    assert.ok(
-      !("Authorization" in capturedInit.headers),
-      "no Authorization header in keyless mode",
+    await assert.rejects(
+      () => adapter.diagnostics.invoke({ probe: true }),
+      (e) => e instanceof ConfigurationError && e.message.includes("JINA_API_KEY"),
     );
   });
 
@@ -565,5 +683,60 @@ describe("Jina Diagnostics — probe (6.7.b)", () => {
       () => adapter.diagnostics.invoke({ probe: true }),
       (e) => e instanceof AuthError,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Capability gating — 8J.1
+// ---------------------------------------------------------------------------
+
+describe("Jina Capability Gating (8J.1)", () => {
+  it("descriptor isConfigured is capability-aware", () => {
+    const desc = createJinaDescriptor();
+
+    // Without capability context — always configured (keyless Reader)
+    assert.equal(desc.isConfigured({}), true);
+    assert.equal(desc.isConfigured({ JINA_API_KEY: TEST_KEY }), true);
+
+    // Reader is keyless
+    assert.equal(desc.isConfigured({}, "reader"), true);
+    assert.equal(desc.isConfigured({ JINA_API_KEY: TEST_KEY }, "reader"), true);
+
+    // Search/Research/Diagnostics require key
+    assert.equal(desc.isConfigured({}, "search"), false);
+    assert.equal(desc.isConfigured({ JINA_API_KEY: TEST_KEY }, "search"), true);
+    assert.equal(desc.isConfigured({}, "research"), false);
+    assert.equal(desc.isConfigured({ JINA_API_KEY: TEST_KEY }, "research"), true);
+    assert.equal(desc.isConfigured({}, "diagnostics"), false);
+    assert.equal(desc.isConfigured({ JINA_API_KEY: TEST_KEY }, "diagnostics"), true);
+  });
+
+  it("descriptor still advertises all capabilities regardless of key state", () => {
+    const desc = createJinaDescriptor();
+    // capabilities() is static metadata — it advertises what Jina CAN do.
+    // The capability-aware isConfigured check gates whether it's ready
+    // to serve a specific capability.
+    const capsNoKey = desc.capabilities();
+    const capsWithKey = desc.capabilities();
+    assert.deepEqual(Array.from(capsNoKey), Array.from(capsWithKey));
+    assert.ok(capsNoKey.has("search"));
+    assert.ok(capsNoKey.has("reader"));
+    assert.ok(capsNoKey.has("research"));
+    assert.ok(capsNoKey.has("diagnostics"));
+  });
+
+  it("fallback never selects Jina for search without key (8J.1)", () => {
+    // Simulate the preflight that provider-fallback.ts runs.
+    // A descriptor that isConfigured(env, "search") === false is
+    // tagged "unconfigured" and skipped, preventing a guaranteed 401.
+    const desc = createJinaDescriptor();
+    const isReady = desc.isConfigured({}, "search");
+    assert.equal(isReady, false, "Jina search must not be eligible without JINA_API_KEY");
+  });
+
+  it("fallback selects Jina for reader even without key (8J.1)", () => {
+    const desc = createJinaDescriptor();
+    const isReady = desc.isConfigured({}, "reader");
+    assert.equal(isReady, true, "Jina reader must be eligible keyless");
   });
 });

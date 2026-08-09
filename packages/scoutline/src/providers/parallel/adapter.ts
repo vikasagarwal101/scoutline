@@ -16,11 +16,12 @@
  *   Request: advanced_settings.full_content = true (8P.2)
  *
  * Control mapping (SearchControls → Parallel-native API params):
- *   topic     -> appended to query string (Parallel has no native topic field)
- *   type      -> REJECTED (UnsupportedOptionError)
- *   location  -> REJECTED (UnsupportedOptionError)
- *   domain    -> REJECTED (UnsupportedOptionError; API does not accept it)
- *   recency   -> REJECTED (UnsupportedOptionError; API does not accept it)
+ *   topic       -> appended to query string (Parallel has no native topic field)
+ *   type        -> REJECTED (UnsupportedOptionError)
+ *   domain      -> advanced_settings.source_policy.include_domains (8P.3)
+ *   recency     -> advanced_settings.source_policy.after_date (RFC 3339) (8P.3)
+ *   location    -> advanced_settings.location (8P.3; only "us" accepted)
+ *   contentSize -> advanced_settings.excerpt_settings.max_chars_per_result (8P.3)
  */
 
 import crypto from "node:crypto";
@@ -62,6 +63,7 @@ import {
 } from "../../lib/errors.js";
 import { requireParallelApiKey, isParallelConfigured } from "./credentials.js";
 import { applySearchTopic } from "../../lib/search-topic.js";
+import { validateDomain } from "../../lib/domain-validation.js";
 import {
   fetchParallelSearch,
   fetchParallelExtract,
@@ -131,6 +133,111 @@ function assertHttpUrl(url: unknown): asserts url is string {
   }
 }
 
+/**
+ * Maximum query length enforced by Parallel's Search API (8P.4).
+ * Each element of `search_queries` is capped at 200 characters.
+ */
+const PARALLEL_MAX_QUERY_LENGTH = 200;
+
+/**
+ * Bounded Unicode code-point counter for the query-length limit. Uses a
+ * quick upper-bound check with `.length` (UTF-16 code units) first; only
+ * strings exceeding the limit are iterated, and the iteration
+ * short-circuits at the (limit+1)th code point so rejecting an oversized
+ * input is O(limit), not O(input).
+ */
+function exceedsCodePointLimit(str: string, limit: number): boolean {
+  // Fast path: UTF-16 length ≤ limit means code points are also ≤ limit
+  // (each code point is 1-2 UTF-16 code units, never more).
+  if (str.length <= limit) return false;
+  // Bounded code-point count (for...of yields code points). Short-circuit
+  // at limit+1 so a huge payload is rejected without proportional work.
+  let count = 0;
+  for (const _ of str) {
+    if (++count > limit) return true;
+  }
+  return false;
+}
+
+/**
+ * Map a provider-neutral SearchRecency to a Parallel `after_date` string
+ * (RFC 3339 / ISO 8601 date). Returns `undefined` for `noLimit` (no date
+ * filter). Uses a 30-day convention for `oneMonth` to avoid month-end
+ * rollover issues with `setUTCMonth`.
+ */
+function recencyToAfterDate(
+  recency: import("../../capabilities/search.js").SearchRecency,
+  now: Date = new Date(),
+): string | undefined {
+  if (recency === "noLimit") return undefined;
+  const d = new Date(now.getTime());
+  switch (recency) {
+    case "oneDay":
+      d.setUTCDate(d.getUTCDate() - 1);
+      break;
+    case "oneWeek":
+      d.setUTCDate(d.getUTCDate() - 7);
+      break;
+    case "oneMonth":
+      d.setUTCDate(d.getUTCDate() - 30);
+      break;
+    case "oneYear":
+      d.setUTCDate(d.getUTCDate() - 365);
+      break;
+  }
+  return d.toISOString().split("T")[0]!;
+}
+
+/**
+ * Map contentSize to an excerpt budget (max_chars_per_result).
+ * `high` requests more content per result; `medium` is the default
+ * budget. Values are conservative within Parallel's documented ranges.
+ */
+function contentSizeToExcerptBudget(contentSize: "medium" | "high"): number {
+  return contentSize === "high" ? 5000 : 1000;
+}
+
+/**
+ * Map provider-neutral SearchControls to Parallel-native advanced_settings.
+ * Returns `undefined` when no controls apply.
+ */
+function mapSearchControlsToParams(
+  controls: import("../../capabilities/search.js").SearchControls | undefined,
+  now: Date = new Date(),
+): ParallelSearchParams | undefined {
+  if (!controls) return undefined;
+  if (!controls.domain && !controls.recency && !controls.location && !controls.contentSize)
+    return undefined;
+
+  const sourcePolicy: { include_domains?: readonly string[]; after_date?: string } = {};
+  if (controls.domain) {
+    sourcePolicy.include_domains = [controls.domain];
+  }
+  if (controls.recency) {
+    const afterDate = recencyToAfterDate(controls.recency, now);
+    if (afterDate) {
+      sourcePolicy.after_date = afterDate;
+    }
+  }
+
+  const advancedSettings: Record<string, unknown> = {};
+  if (Object.keys(sourcePolicy).length > 0) {
+    advancedSettings.source_policy = sourcePolicy;
+  }
+  if (controls.location) {
+    advancedSettings.location = controls.location;
+  }
+  if (controls.contentSize) {
+    advancedSettings.excerpt_settings = {
+      max_chars_per_result: contentSizeToExcerptBudget(controls.contentSize),
+    };
+  }
+
+  return {
+    ...(Object.keys(advancedSettings).length > 0 ? { advanced_settings: advancedSettings } : {}),
+  };
+}
+
 export class ParallelAdapter implements ProviderAdapter {
   readonly id: ProviderId = "parallel";
   readonly search: SearchCapability;
@@ -150,20 +257,27 @@ export class ParallelAdapter implements ProviderAdapter {
         if (!request.query || request.query.trim().length === 0) {
           throw new ValidationError("Search query must not be empty");
         }
+        // Enforce Parallel's documented 200-char per-query limit (8P.4).
+        // Validate the final expanded query (after topic suffix) so topic
+        // appends don't turn a locally-valid request into a remote 422.
+        // Count Unicode code points (not UTF-16 code units) so queries
+        // with non-BMP characters (emoji etc.) are not over-rejected.
+        const expandedQuery = applySearchTopic(request.query.trim(), request.controls?.topic);
+        if (exceedsCodePointLimit(expandedQuery, PARALLEL_MAX_QUERY_LENGTH)) {
+          throw new ValidationError(
+            `Parallel AI search query exceeds the ${PARALLEL_MAX_QUERY_LENGTH}-character limit (after topic expansion)`,
+          );
+        }
         if (request.controls?.type !== undefined) {
           throw new UnsupportedOptionError("parallel", "search", "type");
         }
-        if (request.controls?.location !== undefined) {
-          throw new UnsupportedOptionError("parallel", "search", "location");
-        }
+        // Accept domain, recency, location, and contentSize (8P.3).
+        // Validate domain syntax; reject locations Parallel can't honor.
         if (request.controls?.domain !== undefined) {
-          throw new UnsupportedOptionError("parallel", "search", "domain");
+          validateDomain(request.controls.domain);
         }
-        if (request.controls?.recency !== undefined) {
-          throw new UnsupportedOptionError("parallel", "search", "recency");
-        }
-        if (request.controls?.contentSize !== undefined) {
-          throw new UnsupportedOptionError("parallel", "search", "contentSize");
+        if (request.controls?.location !== undefined && request.controls.location !== "us") {
+          throw new UnsupportedOptionError("parallel", "search", "location");
         }
       },
 
@@ -185,7 +299,8 @@ export class ParallelAdapter implements ProviderAdapter {
         const apiKey = requireParallelApiKey(env);
         const query = applySearchTopic(request.query.trim(), request.controls?.topic);
 
-        const params: ParallelSearchParams = {};
+        const controlParams = mapSearchControlsToParams(request.controls);
+        const params: ParallelSearchParams = { ...controlParams };
 
         try {
           const response = await fetchParallelSearch(apiKey, query, params, transport);
@@ -213,12 +328,16 @@ export class ParallelAdapter implements ProviderAdapter {
           if (!request.query || request.query.trim().length === 0) {
             throw new ValidationError("Research query must not be empty");
           }
-          for (const option of [
-            "model",
-            "outputLength",
-            "citationFormat",
-            "domain",
-          ] as const) {
+          // Research also sends queries via search_queries — enforce the
+          // same 200-char per-query limit (8P.4, Cubic P2). Count Unicode
+          // code points for consistency with the search check.
+          const researchQuery = request.query.trim();
+          if (exceedsCodePointLimit(researchQuery, PARALLEL_MAX_QUERY_LENGTH)) {
+            throw new ValidationError(
+              `Parallel AI research query exceeds the ${PARALLEL_MAX_QUERY_LENGTH}-character limit`,
+            );
+          }
+          for (const option of ["model", "outputLength", "citationFormat", "domain"] as const) {
             if (request[option] !== undefined) {
               throw new UnsupportedOptionError("parallel", "research", option);
             }
@@ -256,12 +375,13 @@ export class ParallelAdapter implements ProviderAdapter {
 
             // Parallel AI does not return a synthesized report field.
             // Build the report from the excerpts of all results.
-            const report = results.length > 0
-              ? results
-                  .map((r) => r.excerpts?.join("\n"))
-                  .filter((text): text is string => typeof text === "string" && text.length > 0)
-                  .join("\n\n")
-              : "No research findings available.";
+            const report =
+              results.length > 0
+                ? results
+                    .map((r) => r.excerpts?.join("\n"))
+                    .filter((text): text is string => typeof text === "string" && text.length > 0)
+                    .join("\n\n")
+                : "No research findings available.";
 
             return {
               schemaVersion: 1,

@@ -457,27 +457,179 @@ describe("Parallel AI Error Handling", () => {
     assert.ok(!("Authorization" in capturedHeaders), "must NOT send Authorization header");
   });
 
-  it("rejects domain control as UnsupportedOptionError", () => {
+  it("accepts domain control and maps to source_policy.include_domains (8P.3)", async () => {
+    let capturedBody = null;
+    const fakeFetch = async (url, init) => {
+      capturedBody = JSON.parse(init.body);
+      return { ok: true, status: 200, text: async () => JSON.stringify({ results: [] }) };
+    };
+
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    adapter.search.validate({ query: "test", controls: { domain: "example.com" } });
+    await adapter.search.invoke({ query: "test", controls: { domain: "example.com" } });
+    assert.deepEqual(
+      capturedBody.advanced_settings.source_policy.include_domains,
+      ["example.com"],
+      "domain must map to source_policy.include_domains",
+    );
+  });
+
+  it("accepts recency control and maps to source_policy.after_date (8P.3)", async () => {
+    let capturedBody = null;
+    const fakeFetch = async (url, init) => {
+      capturedBody = JSON.parse(init.body);
+      return { ok: true, status: 200, text: async () => JSON.stringify({ results: [] }) };
+    };
+
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    adapter.search.validate({ query: "test", controls: { recency: "oneWeek" } });
+    await adapter.search.invoke({ query: "test", controls: { recency: "oneWeek" } });
+    const afterDate = capturedBody.advanced_settings.source_policy.after_date;
+    assert.ok(afterDate, "after_date must be present");
+    assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(afterDate), "after_date must be an RFC 3339 date");
+  });
+
+  it("omits after_date for recency noLimit (8P.3)", async () => {
+    let capturedBody = null;
+    const fakeFetch = async (url, init) => {
+      capturedBody = JSON.parse(init.body);
+      return { ok: true, status: 200, text: async () => JSON.stringify({ results: [] }) };
+    };
+
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await adapter.search.invoke({ query: "test", controls: { recency: "noLimit" } });
+    assert.ok(
+      !capturedBody.advanced_settings?.source_policy?.after_date,
+      "after_date must be absent for noLimit",
+    );
+  });
+
+  it("accepts location 'us' and maps to advanced_settings.location (8P.3)", async () => {
+    let capturedBody = null;
+    const fakeFetch = async (url, init) => {
+      capturedBody = JSON.parse(init.body);
+      return { ok: true, status: 200, text: async () => JSON.stringify({ results: [] }) };
+    };
+
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    adapter.search.validate({ query: "test", controls: { location: "us" } });
+    await adapter.search.invoke({ query: "test", controls: { location: "us" } });
+    assert.equal(capturedBody.advanced_settings.location, "us", "location must map to advanced_settings.location");
+  });
+
+  it("rejects unsupported location 'cn' as UnsupportedOptionError (8P.3)", () => {
     const adapter = new ParallelAdapter(
       { env: { PARALLEL_API_KEY: TEST_KEY } },
       { transport: { fetch: async () => ({}) } },
     );
 
     assert.throws(
-      () => adapter.search.validate({ query: "test", controls: { domain: "example.com" } }),
+      () => adapter.search.validate({ query: "test", controls: { location: "cn" } }),
       UnsupportedOptionError,
     );
   });
 
-  it("rejects recency control as UnsupportedOptionError", () => {
+  it("accepts contentSize and maps to excerpt_settings.max_chars_per_result (8P.3)", async () => {
+    let capturedBody = null;
+    const fakeFetch = async (url, init) => {
+      capturedBody = JSON.parse(init.body);
+      return { ok: true, status: 200, text: async () => JSON.stringify({ results: [] }) };
+    };
+
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    adapter.search.validate({ query: "test", controls: { contentSize: "high" } });
+    await adapter.search.invoke({ query: "test", controls: { contentSize: "high" } });
+    assert.equal(
+      capturedBody.advanced_settings.excerpt_settings.max_chars_per_result,
+      5000,
+      "contentSize high must map to 5000-char excerpt budget",
+    );
+  });
+
+  it("rejects overlong query (>200 chars) with ValidationError (8P.4)", () => {
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: async () => ({}) } },
+    );
+
+    const longQuery = "a".repeat(201);
+    assert.throws(
+      () => adapter.search.validate({ query: longQuery }),
+      (e) => e instanceof ValidationError && e.message.includes("200"),
+    );
+  });
+
+  it("rejects query that exceeds 200 chars after topic expansion (8P.4)", () => {
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: async () => ({}) } },
+    );
+
+    // 195 chars + " latest news" (12 chars) = 207 chars — over the limit
+    const baseQuery = "a".repeat(195);
+    assert.throws(
+      () => adapter.search.validate({ query: baseQuery, controls: { topic: "news" } }),
+      (e) => e instanceof ValidationError && e.message.includes("topic expansion"),
+    );
+  });
+
+  it("accepts query at exactly 200 chars after topic expansion (8P.4)", () => {
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: async () => ({}) } },
+    );
+
+    // 188 chars + " latest news" (12 chars) = 200 chars — exactly at limit
+    const baseQuery = "a".repeat(188);
+    adapter.search.validate({ query: baseQuery, controls: { topic: "news" } });
+  });
+
+  it("rejects invalid domain syntax (8P.3)", () => {
     const adapter = new ParallelAdapter(
       { env: { PARALLEL_API_KEY: TEST_KEY } },
       { transport: { fetch: async () => ({}) } },
     );
 
     assert.throws(
-      () => adapter.search.validate({ query: "test", controls: { recency: "oneWeek" } }),
-      UnsupportedOptionError,
+      () => adapter.search.validate({ query: "test", controls: { domain: "https://example.com" } }),
+      ValidationError,
+    );
+    assert.throws(
+      () => adapter.search.validate({ query: "test", controls: { domain: "example.com/path" } }),
+      ValidationError,
+    );
+  });
+
+  it("rejects overlong research query (>200 chars) with ValidationError (8P.4)", () => {
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: async () => ({}) } },
+    );
+
+    const longQuery = "a".repeat(201);
+    assert.throws(
+      () => adapter.research.run.validate({ query: longQuery }),
+      (e) => e instanceof ValidationError && e.message.includes("200"),
     );
   });
 });

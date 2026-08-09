@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.9] - 2026-08-09
+
+### Jina research: deepsearch streaming (Angle 8, 8J.6)
+
+- DeepSearch now sends `stream: true` and parses the SSE response (was hardcoded `stream: false`, risking gateway HTTP 524 on long research runs per Jina's explicit warning). The SSE parser accumulates content + citations from the stream, fails closed on premature EOF / malformed JSON, whitelists delta types, de-duplicates annotations/visitedURLs, and produces the same normalized result as the non-stream path — so the adapter is unchanged.
+- HTTP 524 (Cloudflare origin timeout) is now classified as `TimeoutError` (was generic `ApiError`), with DeepSearch-specific help text.
+- The streaming SSE contract was verified against Jina's docs and a live API call (a 6992-line fixture was captured and the parser validated against it).
+
 ## [0.14.8] - 2026-08-09
 
 ### Exa research: drop vestigial beta header (EXA-8-01 reclassified)

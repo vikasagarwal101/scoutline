@@ -28,6 +28,21 @@ export interface ParallelTransportDeps {
 
 export interface ParallelSearchParams {
   readonly objective?: string;
+  /**
+   * Advanced search settings forwarded to Parallel's API
+   * (8P.3 — control acceptance). Contains source_policy, location,
+   * and excerpt_settings mapped from provider-neutral SearchControls.
+   */
+  readonly advanced_settings?: {
+    readonly source_policy?: {
+      readonly include_domains?: readonly string[];
+      readonly after_date?: string;
+    };
+    readonly location?: string;
+    readonly excerpt_settings?: {
+      readonly max_chars_per_result?: number;
+    };
+  };
 }
 
 export interface ParallelSearchResultItem {
@@ -96,6 +111,9 @@ export async function fetchParallelSearch(
   };
   if (params.objective) {
     body.objective = params.objective;
+  }
+  if (params.advanced_settings) {
+    body.advanced_settings = params.advanced_settings;
   }
 
   const controller = new AbortController();

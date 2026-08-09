@@ -71,6 +71,11 @@ export interface TavilySearchParams {
  */
 export interface TavilyExtractParams {
   readonly extract_depth?: string;
+  /**
+   * Output format forwarded to the Tavily extract API (T8-03). Controls
+   * whether the API returns markdown or plain text in `raw_content`.
+   */
+  readonly format?: "markdown" | "text";
 }
 
 /**
@@ -99,7 +104,8 @@ export interface TavilyCrawlParams {
  *
  * Map returns URLs only — no `format`, `extract_depth`, or `timeout`
  * fields. The /map endpoint surfaces the discovered site structure and
- * deliberately omits per-page extraction controls.
+ * deliberately omits per-page extraction controls. The client-side timeout
+ * mirrors the crawl pattern (T8-02): at least 150s + 5s buffer.
  */
 export interface TavilyMapParams {
   readonly max_depth?: number;
@@ -252,8 +258,8 @@ async function postTavilyJson(
   /**
    * Optional client-side AbortController timeout in ms. When omitted, the
    * transport resolves the timeout from `deps.env` (`TAVILY_TIMEOUT`,
-   * default 30s). Crawl passes an explicit value so the client waits at
-   * least as long as the server-side `body.timeout` ceiling (150s default).
+   * default 30s). Crawl and map pass an explicit value so the client
+   * waits at least as long as the server-side ceiling (150s default).
    */
   timeoutMsOverride?: number,
 ): Promise<unknown> {
@@ -346,6 +352,9 @@ export async function fetchTavilyExtract(
   const body: Record<string, unknown> = { urls: [url] };
   if (params?.extract_depth !== undefined) {
     body.extract_depth = params.extract_depth;
+  }
+  if (params?.format !== undefined) {
+    body.format = params.format;
   }
   return postTavilyJson(apiKey, EXTRACT_PATH, body, deps, "extract");
 }
@@ -445,7 +454,17 @@ export async function fetchTavilyMap(
       body.instructions = params.instructions;
     }
   }
-  return postTavilyJson(apiKey, MAP_PATH, body, deps, "map");
+  // The client-side AbortController MUST wait at least as long as the
+  // server-side ceiling (T8-02). Tavily's map API has a 150-second server-
+  // side timeout (range 10–150). If the transport default
+  // (`TAVILY_TIMEOUT`, 30s) is shorter, any map exceeding it would be
+  // aborted client-side while the server is still working. Mirror the
+  // crawl timeout pattern.
+  const clientTimeoutMs = Math.max(
+    resolveTimeoutMs(deps.env ?? process.env),
+    150 * 1000 + 5000,
+  );
+  return postTavilyJson(apiKey, MAP_PATH, body, deps, "map", clientTimeoutMs);
 }
 
 /**

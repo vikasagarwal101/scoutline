@@ -451,10 +451,9 @@ function parseDeepSearchSSE(text: string): JinaDeepSearchResponse {
     let chunk: DeepSearchStreamChunk;
     try {
       const parsed: unknown = JSON.parse(payload);
-      // Validate structural shape — not just JSON syntax. A valid JSON
-      // value that isn't a non-null object (e.g. null, 42, "string")
-      // is a malformed SSE event, not a parseable chunk.
-      if (typeof parsed !== "object" || parsed === null) {
+      // Validate structural shape — not just JSON syntax. Reject any
+      // non-object value (null, arrays, numbers, strings) as malformed.
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         throw new ApiError("Jina AI returned a malformed SSE response", 502);
       }
       chunk = parsed as DeepSearchStreamChunk;
@@ -482,9 +481,9 @@ function parseDeepSearchSSE(text: string): JinaDeepSearchResponse {
 
     // Annotations (citations) arrive on the terminal chunk. De-duplicate
     // by URL in case the server sends cumulative lists across chunks.
-    if (delta.annotations && delta.annotations.length > 0) {
+    if (Array.isArray(delta.annotations) && delta.annotations.length > 0) {
       for (const ann of delta.annotations) {
-        const url = ann.url_citation?.url;
+        const url = ann?.url_citation?.url;
         if (url && seenCitationUrls.has(url)) continue;
         if (url) seenCitationUrls.add(url);
         annotations.push(ann);
@@ -493,9 +492,9 @@ function parseDeepSearchSSE(text: string): JinaDeepSearchResponse {
 
     // visitedURLs arrive on the terminal chunk at the top level. De-duplicate
     // to avoid repeated URLs if sent across multiple chunks.
-    if (chunk.visitedURLs && chunk.visitedURLs.length > 0) {
+    if (Array.isArray(chunk.visitedURLs) && chunk.visitedURLs.length > 0) {
       for (const url of chunk.visitedURLs) {
-        visitedUrlSet.add(url);
+        if (typeof url === "string") visitedUrlSet.add(url);
       }
     }
   }

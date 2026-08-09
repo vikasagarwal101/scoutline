@@ -246,7 +246,7 @@ export function resolveEffectiveProvider(options: ResolveEffectiveProviderOption
   for (const id of order) {
     const descriptor = descriptors.find((d) => d.id === id);
     if (!descriptor) continue;
-    if (!descriptor.isConfigured(env)) continue;
+    if (!descriptor.isConfigured(env, capabilityId)) continue;
     if (!descriptor.capabilities().has(capabilityId)) continue;
     eligibleIds.push(id);
   }

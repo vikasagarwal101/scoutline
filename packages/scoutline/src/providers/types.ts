@@ -160,7 +160,19 @@ export interface ProviderAdapter {
  */
 export interface ProviderDescriptor {
   readonly id: ProviderId;
-  isConfigured(env: NodeJS.ProcessEnv): boolean;
+  /**
+   * Whether the Provider is ready to serve the given capability under
+   * the injected environment. The optional `capabilityId` enables
+   * capability-aware configuration (8J.1): a Provider like Jina AI that
+   * supports keyless Reader but requires a key for Search/Research can
+   * report `true` for Reader without a key and `false` for the others.
+   *
+   * Callers that omit `capabilityId` (e.g. `getConfiguredProviderDescriptors`
+   * for the Doctor listing) get the Provider's global readiness — whether
+   * it can serve ANY capability — so a keyless-capable Provider still
+   * appears in the listing.
+   */
+  isConfigured(env: NodeJS.ProcessEnv, capabilityId?: ProviderCapability): boolean;
   capabilities(): ReadonlySet<ProviderCapability>;
   create(context: ProviderContext): ProviderAdapter;
   /**

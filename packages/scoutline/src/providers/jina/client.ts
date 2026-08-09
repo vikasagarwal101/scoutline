@@ -260,6 +260,18 @@ export async function fetchJinaSearch(
   apiKey: string | undefined,
   query: string,
   deps: JinaTransportDeps = {},
+  options?: {
+    /**
+     * Domain restriction forwarded as Jina's `X-Site` header (8J.3).
+     * Accepts a bare hostname like "example.com".
+     */
+    readonly domain?: string;
+    /**
+     * Two-letter ISO country code for result localization (8J.3).
+     * Sent as the `gl` field in a POST JSON body.
+     */
+    readonly location?: string;
+  },
 ): Promise<readonly JinaDataItem[]> {
   const fetchFn = deps.fetch || globalThis.fetch;
   const setTimer = deps.setTimeout || globalThis.setTimeout;
@@ -267,7 +279,6 @@ export async function fetchJinaSearch(
   const env = deps.env || process.env;
   const timeoutMs = resolveTimeoutMs(env);
 
-  const endpoint = `${SEARCH_BASE_URL}/${encodeURIComponent(query)}`;
   const headers: Record<string, string> = {
     "Accept": "application/json",
     "User-Agent": USER_AGENT,
@@ -275,16 +286,38 @@ export async function fetchJinaSearch(
   if (apiKey) {
     headers["Authorization"] = `Bearer ${apiKey}`;
   }
+  // Forward domain restriction via Jina's documented X-Site header (8J.3).
+  if (options?.domain) {
+    headers["X-Site"] = options.domain;
+  }
 
   const controller = new AbortController();
   const timer = setTimer(() => controller.abort(), timeoutMs);
 
+  // When location is specified, use POST JSON (Jina documents gl as a
+  // POST body field). Without location, GET path form remains the
+  // simplest transport (8J.3).
+  const usePost = options?.location !== undefined;
+  const endpoint = usePost
+    ? SEARCH_BASE_URL
+    : `${SEARCH_BASE_URL}/${encodeURIComponent(query)}`;
+
+  const init: Record<string, unknown> = {
+    method: usePost ? "POST" : "GET",
+    headers,
+    signal: controller.signal,
+  };
+  if (usePost) {
+    headers["Content-Type"] = "application/json";
+    const body: Record<string, unknown> = { q: query };
+    if (options?.location) {
+      body.gl = options.location;
+    }
+    init.body = JSON.stringify(body);
+  }
+
   try {
-    const response = await fetchFn(endpoint, {
-      method: "GET",
-      headers,
-      signal: controller.signal,
-    });
+    const response = await fetchFn(endpoint, init);
 
     if (!response.ok) {
       const errorBody = await readErrorBody(response);
@@ -359,6 +392,13 @@ export async function fetchJinaDeepSearch(
   query: string,
   deps: JinaTransportDeps = {},
   externalSignal?: AbortSignal,
+  options?: {
+    /**
+     * Domain restriction forwarded as DeepSearch's `only_hostnames`
+     * array (8J.4). Accepts a bare hostname like "example.com".
+     */
+    readonly domain?: string;
+  },
 ): Promise<JinaDeepSearchResponse> {
   const fetchFn = deps.fetch || globalThis.fetch;
   const setTimer = deps.setTimeout || globalThis.setTimeout;
@@ -367,13 +407,17 @@ export async function fetchJinaDeepSearch(
   const timeoutMs = resolveDeepSearchTimeoutMs(env);
 
   const url = `${DEEPSEARCH_BASE_URL}/v1/chat/completions`;
-  const body = {
+  const body: Record<string, unknown> = {
     model: "jina-deepsearch-v1",
     messages: [{ role: "user", content: query }],
     stream: false,
     reasoning_effort: "medium",
     max_returned_urls: 10,
   };
+  // Forward domain restriction via DeepSearch's only_hostnames (8J.4).
+  if (options?.domain) {
+    body.only_hostnames = [options.domain];
+  }
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",

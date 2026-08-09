@@ -17,11 +17,25 @@ const DEFAULT_TIMEOUT_MS = 30000;
 const USER_AGENT = `scoutline/${VERSION}`;
 const TIMEOUT_HELP_TEXT = "Try again or increase timeout with JINA_TIMEOUT env var";
 
+/**
+ * Jina transport response — extends the base provider fetch response with
+ * optional response headers. Production `fetch` returns a `Response` that
+ * always has `headers`; test fakes may omit them (optional), and the
+ * transport harvests headers defensively (skips when absent).
+ *
+ * Defined as a Jina-local type (not added to the shared
+ * {@link ProviderQuotaFetchResponse}) because the base type has a CRITICAL
+ * upstream blast radius (56 symbols across every provider).
+ */
+export interface JinaFetchResponse extends ProviderQuotaFetchResponse {
+  readonly headers?: { get(name: string): string | null };
+}
+
 export interface JinaTransportDeps {
   readonly fetch?: (
     input: string,
     init: Record<string, unknown>,
-  ) => Promise<ProviderQuotaFetchResponse>;
+  ) => Promise<JinaFetchResponse>;
   readonly setTimeout?: typeof setTimeout;
   readonly clearTimeout?: typeof clearTimeout;
   readonly env?: NodeJS.ProcessEnv;
@@ -42,6 +56,13 @@ export interface JinaDataItem {
   readonly publishedTime?: string;
   readonly metadata?: unknown;
   readonly external?: unknown;
+  /**
+   * Token usage for this result item, as returned in the response body.
+   * Visible in captured fixtures: Reader returns a single top-level
+   * `usage.tokens`, Search returns per-result `usage.tokens`. Harvested
+   * by the quota capability to surface token consumption.
+   */
+  readonly usage?: { readonly tokens?: number };
 }
 
 export interface JinaResponse {
@@ -610,6 +631,120 @@ export async function fetchJinaDeepSearch(
     );
   } finally {
     externalSignal?.removeEventListener("abort", onExternalAbort);
+    clearTimer(timer);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rate-limit header harvesting (8J.5 telemetry)
+// ---------------------------------------------------------------------------
+
+/**
+ * Jina's rate-limit response headers, as documented in the OpenAPI schema
+ * (api.jina.ai/openapi.json):
+ *
+ *   "Rate limit headers are included in responses:
+ *    `X-RateLimit-Remaining-Requests`, `X-RateLimit-Remaining-Tokens`."
+ *
+ * **Header-name correction (lesson 0.14.8):** finding 8J.5 originally
+ * claimed `x-ratelimit-limit`, `x-ratelimit-remaining`, and `x-usage-tokens`.
+ * The OpenAPI schema contradicts this — the actual headers are
+ * `X-RateLimit-Remaining-Requests` and `X-RateLimit-Remaining-Tokens`.
+ * No `X-RateLimit-Limit` or reset header is exposed.
+ *
+ * The documented rate-limit tiers (per OpenAPI schema):
+ *   Free:   500 RPM,   1M TPM,   5 concurrency
+ *   Tier 1: 500 RPM,  10M TPM,  50 concurrency
+ *   Tier 2: 5,000 RPM, 100M TPM, 500 concurrency
+ */
+export interface JinaRateLimitHeaders {
+  /** Remaining requests in the current per-minute window (null if absent). */
+  readonly remainingRequests: number | null;
+  /** Remaining tokens in the current per-minute window (null if absent). */
+  readonly remainingTokens: number | null;
+}
+
+/**
+ * Read Jina's rate-limit headers from a fetch response. Returns null for
+ * each header when absent or non-numeric. HTTP header names are
+ * case-insensitive, so `headers.get("x-ratelimit-remaining-requests")`
+ * matches `X-RateLimit-Remaining-Requests`.
+ */
+function readRateLimitHeaders(
+  headers: { get(name: string): string | null } | undefined,
+): JinaRateLimitHeaders {
+  if (!headers) return { remainingRequests: null, remainingTokens: null };
+  const h = headers; // non-undefined capture for closure
+
+  function readNumber(name: string): number | null {
+    const raw = h.get(name);
+    if (raw === null || raw === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  }
+
+  return {
+    remainingRequests: readNumber("x-ratelimit-remaining-requests"),
+    remainingTokens: readNumber("x-ratelimit-remaining-tokens"),
+  };
+}
+
+/**
+ * Perform a lightweight Search probe against `s.jina.ai` and return the
+ * rate-limit response headers. The probe sends a minimal query (costs
+ * exactly ONE request and ~10k fixed tokens) and drains the body — only
+ * the headers are needed.
+ *
+ * Mirrors Brave's `fetchBraveRateLimit` pattern: one direct probe, read
+ * headers, drain body, normalize outside. Requires `JINA_API_KEY` (Search
+ * is not keyless — 8J.1).
+ */
+export async function fetchJinaRateLimit(
+  apiKey: string,
+  deps: JinaTransportDeps = {},
+): Promise<JinaRateLimitHeaders> {
+  const fetchFn = deps.fetch || globalThis.fetch;
+  const setTimer = deps.setTimeout || globalThis.setTimeout;
+  const clearTimer = deps.clearTimeout || globalThis.clearTimeout;
+  const env = deps.env || process.env;
+  const timeoutMs = resolveTimeoutMs(env);
+
+  const endpoint = `${SEARCH_BASE_URL}/${encodeURIComponent("scoutline-quota-probe")}`;
+  const headers: Record<string, string> = {
+    "Accept": "application/json",
+    "User-Agent": USER_AGENT,
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+  };
+
+  const controller = new AbortController();
+  const timer = setTimer(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetchFn(endpoint, {
+      method: "GET",
+      headers,
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const errorBody = await readErrorBody(response);
+      throw mapStatusError(response.status, timeoutMs, errorBody);
+    }
+
+    // Drain the body to free the socket — only headers are needed.
+    await response.text().catch(() => {});
+    return readRateLimitHeaders(response.headers);
+  } catch (err: unknown) {
+    if (err instanceof AuthError || err instanceof ApiError || err instanceof QuotaError || err instanceof TimeoutError) {
+      throw err;
+    }
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
+    }
+    throw new NetworkError(
+      `Jina AI rate-limit probe failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  } finally {
     clearTimer(timer);
   }
 }

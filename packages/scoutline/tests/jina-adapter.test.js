@@ -11,6 +11,7 @@ import {
   AuthError,
   ConfigurationError,
   QuotaError,
+  ScoutlineError,
   TimeoutError,
   UnsupportedOptionError,
   ValidationError,
@@ -79,6 +80,9 @@ describe("Jina AI Credentials", () => {
     // Diagnostics requires a key (probe uses Search endpoint)
     assert.equal(isJinaConfigured({ JINA_API_KEY: TEST_KEY }, "diagnostics"), true);
     assert.equal(isJinaConfigured({}, "diagnostics"), false);
+    // Quota requires a key (probe uses Search endpoint — 8J.5)
+    assert.equal(isJinaConfigured({ JINA_API_KEY: TEST_KEY }, "quota"), true);
+    assert.equal(isJinaConfigured({}, "quota"), false);
   });
 });
 
@@ -90,6 +94,7 @@ describe("Jina AI Descriptor & Adapter", () => {
       "search",
       "reader",
       "research",
+      "quota",
       "diagnostics",
     ]);
   });
@@ -1048,6 +1053,7 @@ describe("Jina Capability Gating (8J.1)", () => {
     assert.ok(capsNoKey.has("search"));
     assert.ok(capsNoKey.has("reader"));
     assert.ok(capsNoKey.has("research"));
+    assert.ok(capsNoKey.has("quota"));
     assert.ok(capsNoKey.has("diagnostics"));
   });
 
@@ -1064,5 +1070,154 @@ describe("Jina Capability Gating (8J.1)", () => {
     const desc = createJinaDescriptor();
     const isReady = desc.isConfigured({}, "reader");
     assert.equal(isReady, true, "Jina reader must be eligible keyless");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Quota capability — X-RateLimit header harvesting (8J.5 telemetry)
+// ---------------------------------------------------------------------------
+//
+// Header names verified against Jina's OpenAPI schema (api.jina.ai/openapi.json):
+//   "Rate limit headers are included in responses:
+//    X-RateLimit-Remaining-Requests, X-RateLimit-Remaining-Tokens"
+//
+// Finding 8J.5 originally claimed `x-ratelimit-limit`, `x-ratelimit-remaining`,
+// `x-usage-tokens` — these do NOT exist. The actual headers are the
+// Remaining-* variants above (lesson 0.14.8: a finding's premise can be inverted).
+//
+// Documented rate-limit tiers (OpenAPI schema):
+//   Free:   500 RPM,   1M TPM
+//   Tier 1: 500 RPM,  10M TPM
+//   Tier 2: 5,000 RPM, 100M TPM
+describe("Jina AI Quota (8J.5 telemetry)", () => {
+  /**
+   * Build a fake fetch that returns rate-limit headers matching Jina's
+   * documented response-header contract (OpenAPI schema).
+   */
+  function mockQuotaFetch(opts = {}) {
+    const {
+      remainingRequests = "499",
+      remainingTokens = "999000",
+      status = 200,
+      body = { data: [] },
+    } = opts;
+    const headerMap = new Map();
+    if (remainingRequests !== null) headerMap.set("x-ratelimit-remaining-requests", remainingRequests);
+    if (remainingTokens !== null) headerMap.set("x-ratelimit-remaining-tokens", remainingTokens);
+    return async () => ({
+      ok: status >= 200 && status < 300,
+      status,
+      headers: { get: (name) => headerMap.get(name.toLowerCase()) ?? null },
+      text: async () => JSON.stringify(body),
+    });
+  }
+
+  it("reports quota with correct header names (X-RateLimit-Remaining-Requests/Tokens)", async () => {
+    // Free-tier remaining: 499 RPM (of 500), 999000 TPM (of 1M)
+    const fakeFetch = mockQuotaFetch({ remainingRequests: "499", remainingTokens: "999000" });
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const result = await adapter.quota.invoke();
+    assert.equal(result.provider, "jina");
+    assert.equal(result.status, "ok");
+    assert.ok(result.categories.length >= 1, "must have at least one category");
+
+    // Requests category
+    const reqCat = result.categories.find((c) => c.unit === "requests");
+    assert.ok(reqCat, "must have a requests category");
+    assert.equal(reqCat.name, "rate_limit_requests");
+    assert.equal(reqCat.current.used, 1, "500 - 499 = 1 used");
+    assert.equal(reqCat.current.limit, 500, "inferred Free-tier RPM limit");
+    assert.equal(reqCat.current.remaining, 499);
+    assert.equal(reqCat.current.durationSeconds, 60, "per-minute window");
+
+    // Tokens category
+    const tokCat = result.categories.find((c) => c.unit === "tokens");
+    assert.ok(tokCat, "must have a tokens category");
+    assert.equal(tokCat.name, "rate_limit_tokens");
+    assert.equal(tokCat.current.limit, 1_000_000, "inferred Free-tier TPM limit");
+    assert.equal(tokCat.current.used, 1000, "1M - 999000 = 1000 used");
+
+    // Caveat warning
+    assert.ok(result.warnings && result.warnings.length > 0, "must include rate-limit caveat");
+  });
+
+  it("infers Tier 2 limits when remaining RPM exceeds 500", async () => {
+    // Tier 2: 5000 RPM, 100M TPM. Remaining: 4500 RPM, 95M TPM.
+    const fakeFetch = mockQuotaFetch({ remainingRequests: "4500", remainingTokens: "95000000" });
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const result = await adapter.quota.invoke();
+    const reqCat = result.categories.find((c) => c.unit === "requests");
+    assert.equal(reqCat.current.limit, 5000, "inferred Tier 2 RPM limit");
+    assert.equal(reqCat.current.used, 500);
+
+    const tokCat = result.categories.find((c) => c.unit === "tokens");
+    assert.equal(tokCat.current.limit, 100_000_000, "inferred Tier 2 TPM limit");
+  });
+
+  it("infers Tier 1 TPM when remaining tokens between 1M and 10M", async () => {
+    // Tier 1: 500 RPM, 10M TPM. Remaining: 200 RPM, 8M TPM.
+    const fakeFetch = mockQuotaFetch({ remainingRequests: "200", remainingTokens: "8000000" });
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const result = await adapter.quota.invoke();
+    const tokCat = result.categories.find((c) => c.unit === "tokens");
+    assert.equal(tokCat.current.limit, 10_000_000, "inferred Tier 1 TPM limit");
+  });
+
+  it("fails with QUOTA_ERROR when no rate-limit headers present", async () => {
+    const fakeFetch = mockQuotaFetch({ remainingRequests: null, remainingTokens: null });
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.quota.invoke(),
+      (err) => err instanceof ScoutlineError && err.code === "QUOTA_ERROR",
+    );
+  });
+
+  it("throws ConfigurationError without JINA_API_KEY", async () => {
+    const fakeFetch = mockQuotaFetch();
+    const adapter = new JinaAdapter(
+      { env: {} },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.quota.invoke(),
+      (err) => err instanceof ConfigurationError,
+    );
+  });
+
+  it("quota probe sends Authorization header", async () => {
+    let sentHeaders = null;
+    const fakeFetch = async (url, init) => {
+      sentHeaders = init?.headers;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => name.toLowerCase() === "x-ratelimit-remaining-requests" ? "499" : null },
+        text: async () => JSON.stringify({ data: [] }),
+      };
+    };
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await adapter.quota.invoke();
+    assert.equal(sentHeaders.Authorization, `Bearer ${TEST_KEY}`);
   });
 });

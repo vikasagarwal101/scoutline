@@ -29,11 +29,13 @@ export function resolveJinaApiKey(env: NodeJS.ProcessEnv): string | undefined {
 
 /**
  * Capabilities that require `JINA_API_KEY`. Reader is excluded because
- * `r.jina.ai` supports keyless access.
+ * `r.jina.ai` supports keyless access. Quota uses the Search endpoint for
+ * its probe (8J.5), so it requires a key.
  */
 const KEYED_CAPABILITIES: ReadonlySet<ProviderCapability> = new Set([
   "search",
   "research",
+  "quota",
   "diagnostics",
 ]);
 

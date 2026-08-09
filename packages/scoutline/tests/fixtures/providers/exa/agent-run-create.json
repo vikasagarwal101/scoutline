@@ -1,0 +1,30 @@
+{
+  "id": "agent_run_dc83d9a1c00a4aa6a8fdf01600b83301",
+  "object": "agent_run",
+  "status": "running",
+  "stopReason": null,
+  "createdAt": "2026-08-09T03:50:50.541Z",
+  "completedAt": null,
+  "request": {
+    "query": "What is the capital of France?",
+    "effort": "low"
+  },
+  "output": {
+    "text": "",
+    "structured": null,
+    "grounding": []
+  },
+  "usage": {
+    "agentComputeUnits": 0,
+    "searches": 0,
+    "emails": 0,
+    "phoneNumbers": 0
+  },
+  "costDollars": {
+    "total": 0,
+    "agentCompute": 0,
+    "search": 0,
+    "emails": 0,
+    "phoneNumbers": 0
+  }
+}

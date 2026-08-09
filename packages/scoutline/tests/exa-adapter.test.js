@@ -23,6 +23,7 @@ import crypto from "node:crypto";
 
 import { createExaDescriptor } from "../dist/providers/exa/adapter.js";
 import { createInMemoryAsyncJobStateFile } from "../dist/lib/async-job-state.js";
+import { readFixture } from "./helpers/fixtures.js";
 import {
   ApiError,
   AuthError,
@@ -951,28 +952,28 @@ function agentPollResponse(status, output) {
 }
 
 // ---------------------------------------------------------------------------
-// Research: Exa-Beta header assertions
+// Research: no Exa-Beta header (EXA-8-01 — header is vestigial, not needed)
 // ---------------------------------------------------------------------------
 
-describe("Exa Research — Exa-Beta header", () => {
-  it("create (POST /agent/runs) carries Exa-Beta: agent-2026-05-07", async () => {
+describe("Exa Research — no Exa-Beta header", () => {
+  it("create (POST /agent/runs) does NOT carry Exa-Beta header", async () => {
     const { adapter, calls } = makeResearchAdapter({
       onCreate: () => agentCreateResponse("run_1", "completed"),
       onPoll: () => agentPollResponse("completed", { text: "report" }),
     });
     await adapter.research.run.invoke({ query: "test" });
     const createCall = calls.find((c) => c.init.method === "POST");
-    assert.strictEqual(createCall.init.headers["Exa-Beta"], "agent-2026-05-07");
+    assert.strictEqual(createCall.init.headers["Exa-Beta"], undefined);
   });
 
-  it("poll (GET /agent/runs/:id) carries Exa-Beta: agent-2026-05-07", async () => {
+  it("poll (GET /agent/runs/:id) does NOT carry Exa-Beta header", async () => {
     const { adapter, calls } = makeResearchAdapter({
       onCreate: () => agentCreateResponse(),
       onPoll: () => agentPollResponse("completed", { text: "report" }),
     });
     await adapter.research.run.invoke({ query: "test" });
     const pollCall = calls.find((c) => c.init.method === "GET");
-    assert.strictEqual(pollCall.init.headers["Exa-Beta"], "agent-2026-05-07");
+    assert.strictEqual(pollCall.init.headers["Exa-Beta"], undefined);
   });
 
   it("search does NOT carry the Exa-Beta header", async () => {
@@ -1122,6 +1123,44 @@ describe("Exa Research — lifecycle", () => {
       (e) => e instanceof ApiError && e.statusCode === 503,
     );
     assert.strictEqual(createCount, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Research: live fixture wire-shape validation (EXA-8-01)
+// Verifies that the code correctly normalizes a response matching the
+// real /agent/runs API shape captured on 2026-08-09 (no Exa-Beta header).
+// Fixtures: tests/fixtures/providers/exa/agent-run-create.json,
+//           tests/fixtures/providers/exa/agent-run-poll-completed.json
+// ---------------------------------------------------------------------------
+
+describe("Exa Research — live fixture wire-shape", () => {
+  it("normalizes a completed poll matching the live API fixture", async () => {
+    const createFixture = await readFixture("providers/exa/agent-run-create.json");
+    const pollFixture = await readFixture("providers/exa/agent-run-poll-completed.json");
+    const { adapter } = makeResearchAdapter({
+      onCreate: () => makeResponse({ json: createFixture }),
+      onPoll: () => makeResponse({ json: pollFixture }),
+    });
+    const result = await adapter.research.run.invoke({
+      query: "What is the capital of France?",
+      model: "mini",
+    });
+    assert.strictEqual(
+      result.report,
+      "The capital of France is **Paris**. [Encyclopaedia Britannica](https://www.britannica.com/place/France)",
+    );
+    assert.strictEqual(result.sources.length, 2);
+    assert.deepEqual(result.sources[0], {
+      title: "France | Britannica",
+      url: "https://www.britannica.com/place/France",
+    });
+    assert.deepEqual(result.sources[1], {
+      title: "Paris | Britannica",
+      url: "https://www.britannica.com/place/Paris",
+    });
+    // Model is echoed from the request, not the effort string.
+    assert.strictEqual(result.model, "mini");
   });
 });
 

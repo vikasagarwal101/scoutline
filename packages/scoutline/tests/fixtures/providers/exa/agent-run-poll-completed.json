@@ -1,0 +1,45 @@
+{
+  "id": "agent_run_dc83d9a1c00a4aa6a8fdf01600b83301",
+  "object": "agent_run",
+  "status": "completed",
+  "stopReason": "schema_satisfied",
+  "createdAt": "2026-08-09T03:50:50.739Z",
+  "completedAt": "2026-08-09T03:50:56.280Z",
+  "request": {
+    "query": "What is the capital of France?",
+    "effort": "low"
+  },
+  "output": {
+    "text": "The capital of France is **Paris**. [Encyclopaedia Britannica](https://www.britannica.com/place/France)",
+    "structured": null,
+    "grounding": [
+      {
+        "field": "text",
+        "citations": [
+          {
+            "url": "https://www.britannica.com/place/France",
+            "title": "France | Britannica"
+          },
+          {
+            "url": "https://www.britannica.com/place/Paris",
+            "title": "Paris | Britannica"
+          }
+        ],
+        "confidence": "high"
+      }
+    ]
+  },
+  "usage": {
+    "agentComputeUnits": 0.1,
+    "searches": 3,
+    "emails": 0,
+    "phoneNumbers": 0
+  },
+  "costDollars": {
+    "total": 0.025,
+    "agentCompute": 0.01,
+    "search": 0.015,
+    "emails": 0,
+    "phoneNumbers": 0
+  }
+}

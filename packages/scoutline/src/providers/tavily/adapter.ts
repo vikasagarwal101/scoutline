@@ -1102,21 +1102,25 @@ function createTavilyResearchCapability(
             // 404 — the server-side task expired/disappeared. Route the
             // recreation through the same lock as initial creation so
             // concurrent callers hitting not_found serialize. Under the
-            // lock, remove the stale state, reread, and only recreate if
-            // no replacement was already persisted by another caller.
+            // lock, reread the state file:
+            //   - If another caller already persisted a replacement
+            //     requestId (different from the one that went not_found),
+            //     adopt it.
+            //   - Otherwise, remove the stale state and create a fresh
+            //     task. createResearchTask's wx-write handles the race
+            //     where another caller wrote between our remove and write.
             requestId = await withAsyncFileLock(
               researchStateDir,
               identityHash,
               async () => {
-                // Remove the stale state file so createResearchTask's
-                // wx-flag write succeeds.
-                await researchStateFile.remove(identityHash);
-                // Reread under the lock — another caller may have already
-                // recreated and persisted a replacement requestId.
                 const state = await researchStateFile.read(identityHash);
-                if (state !== null) {
+                if (state !== null && state.requestId !== requestId) {
+                  // Another caller already recreated — adopt theirs.
                   return state.requestId;
                 }
+                // State is null or references the stale requestId.
+                // Remove so createResearchTask's wx-write succeeds.
+                await researchStateFile.remove(identityHash);
                 return createResearchTask(
                   apiKey,
                   request,

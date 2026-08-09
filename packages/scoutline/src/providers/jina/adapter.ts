@@ -1,7 +1,7 @@
 /**
  * Jina AI Provider Adapter.
  *
- * Implements Search, Reader, Research, and Diagnostics capabilities for Jina AI.
+ * Implements Search, Reader, Research, Quota, and Diagnostics capabilities for Jina AI.
  *
  * Field mapping (Jina API → Provider-neutral):
  *   Search (s.jina.ai):
@@ -20,9 +20,10 @@
  *
  * Jina capability-aware credential model (8J.1):
  * - Reader (r.jina.ai) is keyless — available without JINA_API_KEY.
- * - Search (s.jina.ai), Research (deepsearch.jina.ai), and Diagnostics
- *   require JINA_API_KEY. The credential fingerprint hashes `"keyless"`
- *   when absent (Reader still works; others fail-closed at preflight).
+ * - Search (s.jina.ai), Research (deepsearch.jina.ai), Quota, and
+ *   Diagnostics require JINA_API_KEY. The credential fingerprint hashes
+ *   `"keyless"` when absent (Reader still works; others fail-closed at
+ *   preflight).
  */
 
 import crypto from "node:crypto";

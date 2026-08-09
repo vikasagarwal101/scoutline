@@ -93,9 +93,17 @@ export async function withAsyncFileLock<T>(
       const stat = await fs.stat(lockPath).catch(() => null);
       if (stat && Date.now() - stat.mtimeMs > options.staleMs) {
         await fs.unlink(lockPath).catch(() => {});
+        // Back off after stale-break attempt to avoid a tight loop if
+        // the unlink failed or another waiter re-acquired immediately.
+        await sleep(500);
         continue;
       }
       await sleep(500);
+      // Re-check deadline after sleeping — the 500ms sleep may have
+      // crossed it, and the next open attempt bypasses the check above.
+      if (Date.now() > deadline) {
+        throw new Error(`${options.timeoutLabel} create-lock timed out`);
+      }
       continue;
     }
     // Lock acquired — run fn() and always clean up.

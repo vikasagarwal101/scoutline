@@ -59,8 +59,9 @@ export interface JinaDataItem {
   /**
    * Token usage for this result item, as returned in the response body.
    * Visible in captured fixtures: Reader returns a single top-level
-   * `usage.tokens`, Search returns per-result `usage.tokens`. Harvested
-   * by the quota capability to surface token consumption.
+   * `usage.tokens`, Search returns per-result `usage.tokens`. Declared
+   * so callers can access it; the quota capability uses response headers
+   * (`X-RateLimit-Remaining-*`) rather than body usage for its probe.
    */
   readonly usage?: { readonly tokens?: number };
 }

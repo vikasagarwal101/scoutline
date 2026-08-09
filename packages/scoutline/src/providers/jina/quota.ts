@@ -120,8 +120,10 @@ function inferLimit(remaining: number, documentedLimits: readonly number[]): num
  * window). Throws `QUOTA_ERROR` when both headers are absent or when the
  * inferred limit is null (remaining exceeds all documented tiers).
  *
- * @param now Injectable clock (unused for resetsAt since Jina exposes no
- *   reset header, but kept for interface symmetry with Brave).
+ * **Limitation:** tier inference from remaining alone is inherently
+ * imprecise — a high-tier account that has consumed most of its window
+ * is indistinguishable from a lower-tier account. This is a fundamental
+ * constraint of Jina's remaining-only header model (no limit header).
  */
 export function normalizeJinaQuota(
   headers: { readonly remainingRequests: number | null; readonly remainingTokens: number | null },

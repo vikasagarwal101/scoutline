@@ -5,9 +5,9 @@
  *
  * Capability-aware configuration (8J.1):
  * - Reader (`r.jina.ai`) is keyless — available without `JINA_API_KEY`.
- * - Search (`s.jina.ai`), DeepSearch (`deepsearch.jina.ai`), and the
- *   Search-based diagnostics probe all require `JINA_API_KEY`. Live probes
- *   confirmed they return HTTP 401 without a key.
+ * - Search (`s.jina.ai`), DeepSearch (`deepsearch.jina.ai`), Quota, and
+ *   the Search-based diagnostics probe all require `JINA_API_KEY`. Live
+ *   probes confirmed they return HTTP 401 without a key.
  *
  * `isJinaConfigured` is capability-aware: when called with a specific
  * `capabilityId`, it checks the key requirement for that capability.

@@ -1,7 +1,7 @@
 /**
  * Jina AI Provider Adapter.
  *
- * Implements Search, Reader, Research, and Diagnostics capabilities for Jina AI.
+ * Implements Search, Reader, Research, Quota, and Diagnostics capabilities for Jina AI.
  *
  * Field mapping (Jina API → Provider-neutral):
  *   Search (s.jina.ai):
@@ -20,9 +20,10 @@
  *
  * Jina capability-aware credential model (8J.1):
  * - Reader (r.jina.ai) is keyless — available without JINA_API_KEY.
- * - Search (s.jina.ai), Research (deepsearch.jina.ai), and Diagnostics
- *   require JINA_API_KEY. The credential fingerprint hashes `"keyless"`
- *   when absent (Reader still works; others fail-closed at preflight).
+ * - Search (s.jina.ai), Research (deepsearch.jina.ai), Quota, and
+ *   Diagnostics require JINA_API_KEY. The credential fingerprint hashes
+ *   `"keyless"` when absent (Reader still works; others fail-closed at
+ *   preflight).
  */
 
 import crypto from "node:crypto";
@@ -33,6 +34,7 @@ import type {
   ProviderDescriptor,
   ProviderId,
 } from "../types.js";
+import type { QuotaCapability } from "../../capabilities/quota.js";
 import type {
   SearchCacheIdentity,
   SearchCapability,
@@ -73,6 +75,7 @@ import {
   type JinaTransportDeps,
 } from "./client.js";
 import { createJinaDiagnosticsCapability } from "./diagnostics.js";
+import { createJinaQuotaCapability } from "./quota.js";
 
 function credentialFingerprint(apiKey: string | undefined): string {
   return crypto.createHash("sha256").update(apiKey || "keyless").digest("hex");
@@ -147,6 +150,7 @@ export class JinaAdapter implements ProviderAdapter {
   readonly search: SearchCapability;
   readonly reader: ReaderCapability;
   readonly research: ResearchCapability;
+  readonly quota: QuotaCapability;
   readonly diagnostics: DiagnosticsCapability;
 
   constructor(
@@ -364,6 +368,7 @@ export class JinaAdapter implements ProviderAdapter {
     };
 
     this.diagnostics = createJinaDiagnosticsCapability({ env, transport });
+    this.quota = createJinaQuotaCapability({ env, transport });
   }
 }
 
@@ -373,7 +378,7 @@ export function createJinaDescriptor(): ProviderDescriptor {
     credentialEnvVars: ["JINA_API_KEY"],
     isConfigured: isJinaConfigured,
     capabilities(): ReadonlySet<ProviderCapability> {
-      return new Set(["search", "reader", "research", "diagnostics"]);
+      return new Set(["search", "reader", "research", "quota", "diagnostics"]);
     },
     create: (context: ProviderContext) => new JinaAdapter(context),
   };

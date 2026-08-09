@@ -19,6 +19,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { createTavilyDescriptor } from "../dist/providers/tavily/adapter.js";
 import {
@@ -28,6 +31,7 @@ import {
   UnsupportedOptionError,
   ValidationError,
 } from "../dist/lib/errors.js";
+import { createInMemoryAsyncJobStateFile } from "../dist/lib/async-job-state.js";
 
 const TEST_API_KEY = "tvly-test-key-DO-NOT-LEAK";
 const EXPECTED_FINGERPRINT = crypto.createHash("sha256").update(TEST_API_KEY).digest("hex");
@@ -773,5 +777,260 @@ describe("Tavily Map Adapter — client timeout ceiling (T8-02)", () => {
       actualTimeoutMs >= 200000,
       `map client timeout (${actualTimeoutMs}ms) must respect TAVILY_TIMEOUT=200000 when larger than 155s`,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Research concurrent-double-create lock (0.14.10 — Option B shared lock)
+// ---------------------------------------------------------------------------
+//
+// Mirrors the proven pattern from tests/parallel-adapter.test.js
+// "research withResearchLock prevents concurrent double-create (Cubic P1)":
+// two concurrent identical Tavily research invokes must share a single
+// create POST (the second caller finds the first's persisted requestId
+// under the lock).
+describe("Tavily Research — concurrent double-create lock", () => {
+  it("research create-lock prevents concurrent double-create", async () => {
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tavily-research-lock-"));
+    let postCount = 0;
+
+    // Simulate a realistic poll window: A's first poll returns pending
+    // after a short delay, keeping A in the poll loop while B acquires
+    // the lock and finds A's persisted requestId.
+    let pollCount = 0;
+    const fakeFetch = async (url, init) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+
+      // POST /research — create task
+      if (method === "POST" && u.includes("/research")) {
+        postCount++;
+        const body = { request_id: `tavily-concurrent-${postCount}`, status: "pending" };
+        return {
+          ok: true,
+          status: 201,
+          text: async () => JSON.stringify(body),
+          json: async () => body,
+        };
+      }
+
+      // GET /research/{id} — poll status
+      if (method === "GET" && u.includes("/research/")) {
+        pollCount++;
+        // First poll: delay 20ms then return pending. This keeps caller A
+        // in the poll loop while B acquires the lock and re-reads the
+        // persisted state.
+        if (pollCount === 1) {
+          await new Promise((r) => setTimeout(r, 20));
+          const body = { status: "pending" };
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(body),
+            json: async () => body,
+          };
+        }
+        // Subsequent polls: completed
+        const body = {
+          status: "completed",
+          content: "Shared report.",
+          sources: [],
+        };
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify(body),
+          json: async () => body,
+        };
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ results: [] }), json: async () => ({ results: [] }) };
+    };
+
+    const descriptor = createTavilyDescriptor({
+      transport: {
+        fetch: fakeFetch,
+        // Cap lock retry at 10ms (well under the 20ms poll delay) so B
+        // acquires the lock while A is still in the poll loop.
+        setTimeout: (fn, ms) => setTimeout(fn, Math.min(ms, 10)),
+      },
+      researchStateFile: stateFile,
+      researchStateDir: tmpDir,
+    });
+    const adapter = descriptor.create({ env: { TAVILY_API_KEY: TEST_API_KEY } });
+
+    const request = { query: "concurrent test" };
+    const [result1, result2] = await Promise.all([
+      adapter.research.run.invoke(request),
+      adapter.research.run.invoke(request),
+    ]);
+
+    // Only ONE POST — the second invoke found the first's persisted requestId
+    assert.equal(postCount, 1, "concurrent identical invokes must share a single POST");
+    // Both get results
+    assert.equal(result1.report, "Shared report.");
+    assert.equal(result2.report, "Shared report.");
+
+    // Cleanup
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("second-404 cleanup only removes owning caller's state, not a replacement", async () => {
+    // Regression test for the identity-lock guard on the second-404 path.
+    // Scenario: caller A's task returns 404 twice (recreatedAfterNotFound).
+    // Between A's first and second 404, caller B creates a replacement task
+    // and persists a new state file. When A hits the second 404 and cleans
+    // up, it must NOT delete B's replacement state.
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tavily-404-guard-"));
+    let postCount = 0;
+    let pollCount = 0;
+    // The requestId that the "replacement" caller writes
+    const replacementId = "tavily-replacement-by-other";
+
+    const fakeFetch = async (url, init) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+
+      // POST /research — create task
+      if (method === "POST" && u.includes("/research")) {
+        postCount++;
+        const body = { request_id: `tavily-404-${postCount}`, status: "pending" };
+        return {
+          ok: true, status: 201,
+          text: async () => JSON.stringify(body),
+          json: async () => body,
+        };
+      }
+
+      // GET /research/{id} — poll status
+      if (method === "GET" && u.includes("/research/")) {
+        pollCount++;
+        // First two polls: return not_found (404) to trigger
+        // recreatedAfterNotFound guard.
+        if (pollCount <= 2) {
+          // Before the second 404 cleanup, inject a replacement state
+          // as if another caller had already recreated.
+          if (pollCount === 2) {
+            // Simulate concurrent caller writing a replacement state.
+            await stateFile.write("test-identity", {
+              requestId: replacementId,
+              identityHash: "test-identity",
+              createdAt: new Date().toISOString(),
+              status: "pending",
+            });
+          }
+          return { ok: false, status: 404, text: async () => "{}", json: async () => ({}) };
+        }
+        // Subsequent polls for the replacement: completed
+        return {
+          ok: true, status: 200,
+          text: async () => JSON.stringify({ status: "completed", content: "OK.", sources: [] }),
+          json: async () => ({ status: "completed", content: "OK.", sources: [] }),
+        };
+      }
+      return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
+    };
+
+    const descriptor = createTavilyDescriptor({
+      transport: {
+        fetch: fakeFetch,
+        setTimeout: (fn, ms) => setTimeout(fn, Math.min(ms, 10)),
+      },
+      researchStateFile: stateFile,
+      researchStateDir: tmpDir,
+    });
+    const adapter = descriptor.create({ env: { TAVILY_API_KEY: TEST_API_KEY } });
+
+    // The invoke should throw after the second 404 (recreatedAfterNotFound).
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "404 guard test" }),
+      (err) => err instanceof ApiError && err.statusCode === 500,
+    );
+
+    // The replacement state must NOT have been deleted — the identity
+    // guard verified requestId mismatch and left it intact.
+    const survivingState = await stateFile.read("test-identity");
+    assert.ok(survivingState, "replacement state must survive the second-404 cleanup");
+    assert.equal(survivingState.requestId, replacementId);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("terminal cleanup only removes owning caller's state, not a replacement", async () => {
+    // Regression test for the identity-lock guard on terminal (completed/
+    // failed) cleanup. A lagging poll that reaches terminal cleanup could
+    // delete a newer replacement task's state — same risk class as 404.
+    // Scenario: caller A polls task T1, which completes. But before A's
+    // cleanup runs, caller B has already replaced the state with task T2.
+    // A's cleanup must not delete B's T2 state.
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tavily-terminal-guard-"));
+    const originalId = "tavily-terminal-original";
+    const replacementId = "tavily-terminal-replacement";
+    let firstPollDone = false;
+
+    const fakeFetch = async (url, init) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+
+      // POST /research — create task (returns originalId)
+      if (method === "POST" && u.includes("/research")) {
+        const body = { request_id: originalId, status: "pending" };
+        return {
+          ok: true, status: 201,
+          text: async () => JSON.stringify(body),
+          json: async () => body,
+        };
+      }
+
+      // GET /research/{id} — poll status
+      if (method === "GET" && u.includes("/research/")) {
+        if (!firstPollDone) {
+          firstPollDone = true;
+          // Before cleanup, inject a replacement state as if another
+          // caller had replaced the task while we were polling.
+          await stateFile.write("test-identity", {
+            requestId: replacementId,
+            identityHash: "test-identity",
+            createdAt: new Date().toISOString(),
+            status: "pending",
+          });
+          // Return completed for the original task
+          return {
+            ok: true, status: 200,
+            text: async () => JSON.stringify({ status: "completed", content: "Done.", sources: [] }),
+            json: async () => ({ status: "completed", content: "Done.", sources: [] }),
+          };
+        }
+        return {
+          ok: true, status: 200,
+          text: async () => JSON.stringify({ status: "completed", content: "Done.", sources: [] }),
+          json: async () => ({ status: "completed", content: "Done.", sources: [] }),
+        };
+      }
+      return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
+    };
+
+    const descriptor = createTavilyDescriptor({
+      transport: {
+        fetch: fakeFetch,
+        setTimeout: (fn, ms) => setTimeout(fn, Math.min(ms, 10)),
+      },
+      researchStateFile: stateFile,
+      researchStateDir: tmpDir,
+    });
+    const adapter = descriptor.create({ env: { TAVILY_API_KEY: TEST_API_KEY } });
+
+    const result = await adapter.research.run.invoke({ query: "terminal guard test" });
+    assert.equal(result.report, "Done.");
+
+    // The replacement state must survive — the identity guard checked
+    // requestId mismatch (original !== replacement) and left it intact.
+    const survivingState = await stateFile.read("test-identity");
+    assert.ok(survivingState, "replacement state must survive terminal cleanup");
+    assert.equal(survivingState.requestId, replacementId);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 });

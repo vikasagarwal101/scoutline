@@ -92,6 +92,7 @@ import {
 } from "../../lib/errors.js";
 import type { CacheIdentity } from "../../lib/execution.js";
 import { asyncJobStateDir } from "../../lib/cache.js";
+import { withAsyncFileLock, DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_LOCK_STALE_MS } from "../../lib/async-file-lock.js";
 import { requireTavilyApiKey, isTavilyConfigured } from "./credentials.js";
 import {
   fetchTavilySearch,
@@ -124,6 +125,8 @@ export interface TavilyAdapterDependencies {
   readonly transport?: TavilyTransportDeps;
   /** Optional Research state-file port (tech-plan §3). */
   readonly researchStateFile?: AsyncJobStateFile;
+  /** Disk dir for the research create-lock; undefined in tests (no-op lock). */
+  readonly researchStateDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -973,12 +976,14 @@ interface TavilyResearchCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly transport?: TavilyTransportDeps;
   readonly researchStateFile: AsyncJobStateFile;
+  /** Disk dir for the create-lock; undefined in tests (no-op lock). */
+  readonly researchStateDir?: string;
 }
 
 function createTavilyResearchCapability(
   options: TavilyResearchCapabilityOptions,
 ): ResearchCapability {
-  const { env, transport, researchStateFile } = options;
+  const { env, transport, researchStateFile, researchStateDir } = options;
 
   const run: ResearchOperation = {
     kind: "research-fetch",
@@ -1024,6 +1029,38 @@ function createTavilyResearchCapability(
       const sleep = makeSleep(transport, signal);
 
       try {
+        // Lock options shared by all lock-protected sections in this
+        // capability (initial create, not_found recreation, terminal
+        // cleanup). Uses the shared default timing constants.
+        const lockOpts = {
+          timeoutMs: DEFAULT_LOCK_TIMEOUT_MS,
+          staleMs: DEFAULT_LOCK_STALE_MS,
+          setTimeout: transport?.setTimeout,
+          timeoutLabel: "Tavily research",
+        };
+
+        /**
+         * Identity-guarded state removal: take the lock, re-read the
+         * state file, and remove it ONLY when its requestId still
+         * matches this invocation's. A concurrent caller may have
+         * already replaced the state with a newer task; deleting their
+         * state would reopen the double-create path. Failures are
+         * swallowed (best-effort cleanup).
+         */
+        const safeRemoveState = async (id: string): Promise<void> => {
+          await withAsyncFileLock(
+            researchStateDir,
+            identityHash,
+            async () => {
+              const state = await researchStateFile.read(identityHash);
+              if (state?.requestId === id) {
+                await researchStateFile.remove(identityHash);
+              }
+            },
+            lockOpts,
+          ).catch(() => {});
+        };
+
         // 1. Check for an in-flight task (resume after Ctrl-C / crash).
         //    A valid state file with a pending/in_progress status means a
         //    task was already created server-side — poll it instead of
@@ -1035,20 +1072,39 @@ function createTavilyResearchCapability(
           // Resume the existing task — no new POST.
           requestId = existingState.requestId;
         } else {
-          // 2. No in-flight task: POST to create one. NO retry — a
-          //    transient POST failure is terminal (the user re-runs);
-          //    retrying risks a double-charge if the POST succeeded
-          //    server-side but the response was lost.
-          requestId = await createResearchTask(
-            apiKey,
-            request,
+          // 2. No in-flight task: create under a lock so concurrent
+          //    identical invocations serialize. The second caller
+          //    waits, then re-reads the state file and finds the
+          //    first's persisted requestId instead of creating (and
+          //    billing) a second task.
+          requestId = await withAsyncFileLock(
+            researchStateDir,
             identityHash,
-            researchStateFile,
-            transport,
+            async () => {
+              // Re-check under the lock — another caller may have
+              // created and persisted while we waited to acquire.
+              const state = await researchStateFile.read(identityHash);
+              if (state !== null) {
+                return state.requestId;
+              }
+              // No existing task: POST to create one. NO retry — a
+              // transient POST failure is terminal (the user re-runs);
+              // retrying risks a double-charge if the POST succeeded
+              // server-side but the response was lost.
+              return createResearchTask(
+                apiKey,
+                request,
+                identityHash,
+                researchStateFile,
+                transport,
+              );
+            },
+            lockOpts,
           );
         }
 
         // 3. Poll loop until terminal status.
+        let recreatedAfterNotFound = false;
         for (;;) {
           // Re-check the abort signal each iteration. If the command
           // handler's --timeout fired during the create POST or between
@@ -1059,29 +1115,62 @@ function createTavilyResearchCapability(
           const poll = await pollTavilyResearch(apiKey, requestId, transport);
 
           if (poll.status === "completed") {
-            // Success — delete the state file and return the result.
-            await researchStateFile.remove(identityHash);
+            // Success — delete the state file (identity-guarded) and
+            // return the result.
+            await safeRemoveState(requestId);
             return normalizeTavilyResearchResult(poll, request);
           }
 
           if (poll.status === "failed") {
-            // Server-side failure — delete the state file and throw.
-            await researchStateFile.remove(identityHash);
+            // Server-side failure — delete the state file
+            // (identity-guarded) and throw.
+            await safeRemoveState(requestId);
             throw new ApiError("Tavily research task failed", 500);
           }
 
           if (poll.status === "not_found") {
-            // 404 — the server-side task expired/disappeared. Delete the
-            // stale state file and create a fresh task, then continue
-            // polling. The state file is removed first so the `wx`-flag
-            // write in createResearchTask succeeds.
-            await researchStateFile.remove(identityHash);
-            requestId = await createResearchTask(
-              apiKey,
-              request,
+            // 404 — the server-side task expired/disappeared. Allow at
+            // most ONE recreation; a second 404 means the freshly created
+            // task also failed to register, so terminate rather than risk
+            // unbounded paid creations (mirrors Parallel's guard).
+            if (recreatedAfterNotFound) {
+              await safeRemoveState(requestId);
+              throw new ApiError(
+                "Tavily research task not found after recreation",
+                500,
+              );
+            }
+            recreatedAfterNotFound = true;
+            // Route the recreation through the same lock as initial
+            // creation so concurrent callers hitting not_found serialize.
+            // Under the lock, reread the state file:
+            //   - If another caller already persisted a replacement
+            //     requestId (different from the one that went not_found),
+            //     adopt it.
+            //   - Otherwise, remove the stale state and create a fresh
+            //     task. createResearchTask's wx-write handles the race
+            //     where another caller wrote between our remove and write.
+            requestId = await withAsyncFileLock(
+              researchStateDir,
               identityHash,
-              researchStateFile,
-              transport,
+              async () => {
+                const state = await researchStateFile.read(identityHash);
+                if (state !== null && state.requestId !== requestId) {
+                  // Another caller already recreated — adopt theirs.
+                  return state.requestId;
+                }
+                // State is null or references the stale requestId.
+                // Remove so createResearchTask's wx-write succeeds.
+                await researchStateFile.remove(identityHash);
+                return createResearchTask(
+                  apiKey,
+                  request,
+                  identityHash,
+                  researchStateFile,
+                  transport,
+                );
+              },
+              lockOpts,
             );
             continue;
           }
@@ -1167,6 +1256,7 @@ export function createTavilyDescriptor(
   const researchStateFile =
     dependencies?.researchStateFile ??
     createProductionAsyncJobStateFile(asyncJobStateDir("research"));
+  const researchStateDir = dependencies?.researchStateDir ?? asyncJobStateDir("research");
 
   return {
     id: "tavily",
@@ -1205,6 +1295,7 @@ export function createTavilyDescriptor(
         env: context.env,
         transport,
         researchStateFile,
+        researchStateDir,
       });
       const quota = createTavilyQuotaCapability({
         env: context.env,

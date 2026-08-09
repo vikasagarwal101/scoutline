@@ -577,7 +577,12 @@ export class ParallelAdapter implements ProviderAdapter {
 
               if (result.status === "failed") {
                 await researchStateFile.remove(identityHash).catch(() => {});
-                throw new ApiError("Parallel AI research task failed", 500);
+                throw new ApiError(
+                  result.errorMessage
+                    ? `Parallel AI research task failed: ${result.errorMessage}`
+                    : "Parallel AI research task failed",
+                  500,
+                );
               }
 
               if (result.status === "not_found") {

@@ -27,8 +27,6 @@
  */
 
 import crypto from "node:crypto";
-import * as fs from "node:fs/promises";
-import path from "node:path";
 
 import type {
   ProviderAdapter,
@@ -70,6 +68,7 @@ import {
   type AsyncJobStateFile,
 } from "../../lib/async-job-state.js";
 import { asyncJobStateDir } from "../../lib/cache.js";
+import { withAsyncFileLock, DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_LOCK_STALE_MS } from "../../lib/async-file-lock.js";
 import {
   ApiError,
   AuthError,
@@ -939,20 +938,13 @@ async function persistCrawlId(
 // Concurrent-create lock (cost-safety — review C3)
 // ---------------------------------------------------------------------------
 
-/** How long to wait for a contended crawl create-lock before giving up. */
-const CRAWL_LOCK_TIMEOUT_MS = 30000;
-/** A lock older than this is treated as stale (holder died) and broken. */
-const CRAWL_LOCK_STALE_MS = 10 * 60 * 1000;
-
 /**
  * Serialize the listActive→create→persist critical section per request so two
  * concurrent identical crawls can't both POST (and charge) a job — the second
  * waits, then reclaims the first's job from `/active` instead of re-POSTing.
- * Uses an exclusive `wx`-create lockfile sibling to the state file; a stale
- * lock (holder crashed) is broken after {@link CRAWL_LOCK_STALE_MS}.
  *
- * When `stateDir` is undefined (in-memory test mode), the lock is a no-op —
- * tests are single-process and need no cross-process serialization.
+ * Delegates to the shared {@link withAsyncFileLock} helper. When `stateDir`
+ * is undefined (in-memory test mode), the lock is a no-op.
  */
 async function withCrawlLock<T>(
   stateDir: string | undefined,
@@ -960,35 +952,12 @@ async function withCrawlLock<T>(
   fn: () => Promise<T>,
   deps: FirecrawlTransportDeps | undefined,
 ): Promise<T> {
-  if (stateDir === undefined) return fn();
-  const setT = deps?.setTimeout ?? setTimeout;
-  const sleep = (ms: number): Promise<void> => new Promise((r) => setT(() => r(), ms));
-  await fs.mkdir(stateDir, { recursive: true }).catch(() => {});
-  const lockPath = path.join(stateDir, `${identityHash}.lock`);
-  const deadline = Date.now() + CRAWL_LOCK_TIMEOUT_MS;
-  for (;;) {
-    try {
-      const handle = await fs.open(lockPath, "wx");
-      try {
-        return await fn();
-      } finally {
-        await handle.close().catch(() => {});
-        await fs.unlink(lockPath).catch(() => {});
-      }
-    } catch (err) {
-      if (!isEexistError(err)) throw err;
-      if (Date.now() > deadline) {
-        throw new ApiError("Firecrawl crawl create-lock timed out", 500);
-      }
-      // Break a stale lock (the holder died without releasing).
-      const stat = await fs.stat(lockPath).catch(() => null);
-      if (stat && Date.now() - stat.mtimeMs > CRAWL_LOCK_STALE_MS) {
-        await fs.unlink(lockPath).catch(() => {});
-        continue;
-      }
-      await sleep(500);
-    }
-  }
+  return withAsyncFileLock(stateDir, identityHash, fn, {
+    timeoutMs: DEFAULT_LOCK_TIMEOUT_MS,
+    staleMs: DEFAULT_LOCK_STALE_MS,
+    setTimeout: deps?.setTimeout,
+    timeoutLabel: "Firecrawl crawl",
+  });
 }
 
 /**

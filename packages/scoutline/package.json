@@ -1,6 +1,6 @@
 {
   "name": "scoutline",
-  "version": "0.14.7",
+  "version": "0.14.8",
   "description": "Multimodal source investigation CLI for web, repositories, and visual media.",
   "type": "module",
   "bin": {

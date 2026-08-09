@@ -10,9 +10,10 @@
  *   results[].publish_date  -> date
  *
  * Reader (Extract API):
- *   results[].full_content  -> content (fallback: excerpts joined)
+ *   results[].full_content  -> content (primary; excerpts are a degraded fallback)
  *   results[].title         -> title
  *   results[].url           -> finalUrl
+ *   Request: advanced_settings.full_content = true (8P.2)
  *
  * Control mapping (SearchControls → Parallel-native API params):
  *   topic     -> appended to query string (Parallel has no native topic field)

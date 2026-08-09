@@ -177,7 +177,13 @@ export async function fetchParallelExtract(
   const timeoutMs = resolveTimeoutMs(env);
 
   const url = `${BASE_URL}/v1/extract`;
-  const body = { urls: [targetUrl] };
+  // Request guaranteed full-page content (8P.2). Without
+  // `advanced_settings.full_content`, Parallel returns bounded excerpts
+  // by default, which the adapter would then present as the complete page.
+  const body = {
+    urls: [targetUrl],
+    advanced_settings: { full_content: true },
+  };
 
   const controller = new AbortController();
   const timer = setTimer(() => controller.abort(), timeoutMs);

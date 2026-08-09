@@ -31,6 +31,13 @@ export interface JinaDataItem {
   readonly title?: string;
   readonly url?: string;
   readonly content?: string;
+  /**
+   * Text-mode response field (8J.2). When `X-Return-Format: text` is
+   * requested, Jina places the page content in `data.text` instead of
+   * `data.content`. Declared so the adapter can decode text-mode responses
+   * without normalizing valid text as empty.
+   */
+  readonly text?: string;
   readonly description?: string;
   readonly publishedTime?: string;
   readonly metadata?: unknown;
@@ -40,6 +47,29 @@ export interface JinaDataItem {
 export interface JinaResponse {
   readonly code?: number;
   readonly data?: JinaDataItem | readonly JinaDataItem[];
+}
+
+/**
+ * Normalized Reader options forwarded to Jina's documented headers (8J.2).
+ * Each maps to a Jina Reader request header (see
+ * https://github.com/jina-ai/reader/blob/main/src/dto/crawler-options.ts):
+ *
+ *   format         -> X-Return-Format ("markdown" | "text")
+ *   retainImages   -> X-Retain-Images ("true" | "false")
+ *   withLinksSummary -> X-With-Links-Summary ("true" | "false")
+ *   noGfm          -> not forwarded (Jina has no GFM toggle; no-op)
+ *   keepImgDataUrl -> X-Keep-Img-Data-Url ("true" | "false")
+ *   withImagesSummary -> X-With-Images-Summary ("true" | "false")
+ *   timeout        -> X-Timeout (seconds; clamped to Jina's 180s ceiling)
+ */
+export interface JinaReaderOptions {
+  readonly format?: "markdown" | "text";
+  readonly retainImages?: boolean;
+  readonly withLinksSummary?: boolean;
+  readonly noGfm?: boolean;
+  readonly keepImgDataUrl?: boolean;
+  readonly withImagesSummary?: boolean;
+  readonly timeout?: number;
 }
 
 /**
@@ -131,6 +161,7 @@ export async function fetchJinaReader(
   apiKey: string | undefined,
   targetUrl: string,
   deps: JinaTransportDeps = {},
+  options?: JinaReaderOptions,
 ): Promise<JinaDataItem> {
   const fetchFn = deps.fetch || globalThis.fetch;
   const setTimer = deps.setTimeout || globalThis.setTimeout;
@@ -147,8 +178,42 @@ export async function fetchJinaReader(
     headers["Authorization"] = `Bearer ${apiKey}`;
   }
 
+  // Forward normalized Reader options to Jina's documented headers (8J.2).
+  // noGfm is intentionally NOT forwarded: Jina Reader has no GFM toggle
+  // header, so the option has no faithful mapping and is a no-op.
+  if (options) {
+    if (options.format) {
+      headers["X-Return-Format"] = options.format;
+    }
+    if (options.retainImages !== undefined) {
+      headers["X-Retain-Images"] = options.retainImages ? "true" : "false";
+    }
+    if (options.withLinksSummary !== undefined) {
+      headers["X-With-Links-Summary"] = options.withLinksSummary ? "true" : "false";
+    }
+    if (options.keepImgDataUrl !== undefined) {
+      headers["X-Keep-Img-Data-Url"] = options.keepImgDataUrl ? "true" : "false";
+    }
+    if (options.withImagesSummary !== undefined) {
+      headers["X-With-Images-Summary"] = options.withImagesSummary ? "true" : "false";
+    }
+    if (options.timeout !== undefined) {
+      // ReaderFetchRequest.timeout is in seconds (see commands/read.ts
+      // --timeout <s>). Jina's X-Timeout is also seconds with a 180s
+      // ceiling. Forward directly — no unit conversion needed.
+      headers["X-Timeout"] = String(Math.min(options.timeout, 180));
+    }
+  }
+
+  // If the caller specified a server-side timeout, ensure the client-side
+  // AbortController waits at least that long (plus a 5s network buffer)
+  // so we don't abort before the server can deliver its response.
+  const clientTimeoutMs = options?.timeout !== undefined
+    ? Math.max(timeoutMs, options.timeout * 1000 + 5000)
+    : timeoutMs;
+
   const controller = new AbortController();
-  const timer = setTimer(() => controller.abort(), timeoutMs);
+  const timer = setTimer(() => controller.abort(), clientTimeoutMs);
 
   try {
     const response = await fetchFn(endpoint, {
@@ -159,7 +224,7 @@ export async function fetchJinaReader(
 
     if (!response.ok) {
       const errorBody = await readErrorBody(response);
-      throw mapStatusError(response.status, timeoutMs, errorBody);
+      throw mapStatusError(response.status, clientTimeoutMs, errorBody);
     }
 
     const text = await response.text();
@@ -181,7 +246,7 @@ export async function fetchJinaReader(
       throw new ApiError("Jina AI returned a malformed JSON response", 500);
     }
     if (err instanceof Error && err.name === "AbortError") {
-      throw new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
+      throw new TimeoutError(clientTimeoutMs, TIMEOUT_HELP_TEXT);
     }
     throw new NetworkError(
       `Jina AI request failed: ${err instanceof Error ? err.message : String(err)}`,

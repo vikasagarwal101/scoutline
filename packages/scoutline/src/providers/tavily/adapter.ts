@@ -539,7 +539,9 @@ function createTavilyReaderCapability(options: TavilyReaderCapabilityOptions): R
 
       const apiKey = resolveApiKey(env);
       try {
-        const raw = await fetchTavilyExtract(apiKey, request.url, undefined, transport);
+        const params: TavilyExtractParams =
+          request.format !== undefined ? { format: request.format } : {};
+        const raw = await fetchTavilyExtract(apiKey, request.url, params, transport);
         return normalizeTavilyExtractResult(raw, request);
       } catch (error) {
         throw normalizeTavilyError(error);

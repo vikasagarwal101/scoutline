@@ -12,7 +12,8 @@
  *   Reader (r.jina.ai):
  *     data.title         -> title
  *     data.url           -> finalUrl
- *     data.content       -> content
+ *     data.content       -> content (markdown mode)
+ *     data.text          -> content (text mode; 8J.2)
  *   Research (deepsearch.jina.ai):
  *     choices[0].message.content -> report
  *     annotations[].url_citation -> sources[]
@@ -228,18 +229,31 @@ export class JinaAdapter implements ProviderAdapter {
           const apiKey = resolveJinaApiKey(env);
 
           try {
-            const data = await fetchJinaReader(apiKey, request.url, transport);
+            const data = await fetchJinaReader(apiKey, request.url, transport, {
+              format: request.format,
+              retainImages: request.retainImages,
+              withLinksSummary: request.withLinksSummary,
+              noGfm: request.noGfm,
+              keepImgDataUrl: request.keepImgDataUrl,
+              withImagesSummary: request.withImagesSummary,
+              timeout: request.timeout,
+            });
+
+            // Decode content: markdown mode uses `data.content`, text mode
+            // uses `data.text` (8J.2). Text-mode responses place the page
+            // body in `data.text`, not `data.content`.
+            const contentFormat = request.format ?? "markdown";
+            const content = contentFormat === "text"
+              ? (data.text || data.content || "")
+              : (data.content || "");
 
             return {
               schemaVersion: 1,
               url: request.url,
               finalUrl: data.url || request.url,
               title: data.title || null,
-              content: data.content || "",
-              // r.jina.ai always returns markdown content regardless of the
-              // request format option; X-Return-Format: text returns empty
-              // content (API bug). Report what the API actually delivers.
-              contentFormat: "markdown",
+              content,
+              contentFormat,
               ...(data.metadata !== undefined ? { metadata: data.metadata } : {}),
               ...(data.external !== undefined ? { external: data.external } : {}),
             };

@@ -38,6 +38,11 @@ import os from "node:os";
 import path from "node:path";
 import { getApiKey } from "./config.js";
 import { atomicReplaceFile } from "./config-store.js";
+import {
+  withAsyncFileLock,
+  DEFAULT_LOCK_TIMEOUT_MS,
+  DEFAULT_LOCK_STALE_MS,
+} from "./async-file-lock.js";
 import type { ProviderId } from "../providers/types.js";
 
 interface CacheEntry<T> {
@@ -428,12 +433,30 @@ export async function writeCache<T>(key: string, data: T): Promise<void> {
   const file = path.join(dir, key);
   try {
     const entry: CacheEntry<T> = { ts: Date.now(), data };
-    // 5.3: use atomic temp-file + rename so a crash mid-write cannot
-    // leave a partially-written cache file. atomicReplaceFile handles
-    // directory creation (mode 0700), exclusive temp-file creation
-    // (mode 0600), fsync, rename, and directory sync.
-    await atomicReplaceFile(file, JSON.stringify(entry));
-    await evictIfNeeded(dir);
+    // 5.5: serialize the write+evict critical section with an inter-process
+    // advisory lock so concurrent CLI invocations don't race on the same
+    // cache directory. The lock is write-only — readCache stays lock-free
+    // (atomic temp+rename + self-healing read is sufficient for readers).
+    // A single fixed identity means all writes to this dir serialize through
+    // one lockfile. Lock-acquire failures are swallowed here alongside write
+    // failures — the best-effort, never-throws contract is preserved.
+    await withAsyncFileLock(
+      dir,
+      "cache-write",
+      async () => {
+        // 5.3: use atomic temp-file + rename so a crash mid-write cannot
+        // leave a partially-written cache file. atomicReplaceFile handles
+        // directory creation (mode 0700), exclusive temp-file creation
+        // (mode 0600), fsync, rename, and directory sync.
+        await atomicReplaceFile(file, JSON.stringify(entry));
+        await evictIfNeeded(dir);
+      },
+      {
+        timeoutMs: DEFAULT_LOCK_TIMEOUT_MS,
+        staleMs: DEFAULT_LOCK_STALE_MS,
+        timeoutLabel: "Cache write",
+      },
+    );
   } catch {
     // Best-effort cache only
   }

@@ -1334,3 +1334,68 @@ describe("cache file modes are restrictive (1.3)", () => {
     });
   });
 });
+
+describe("concurrent writeCache serializes via inter-process lock (5.5)", () => {
+  it("two concurrent writers to the same key do not throw and produce a valid cache entry", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const key = "concurrent-test.json";
+
+        // Fire two writes simultaneously — the inter-process lock should
+        // serialize them so neither throws and the final file is valid.
+        const results = await Promise.allSettled([
+          writeCache(key, { writer: "A", seq: 1 }),
+          writeCache(key, { writer: "B", seq: 2 }),
+        ]);
+
+        // Neither write should reject (best-effort contract).
+        for (const r of results) {
+          assert.strictEqual(r.status, "fulfilled", "writeCache should never throw");
+        }
+
+        // The file must exist and be a valid cache entry.
+        const cached = await readCache(key);
+        assert.ok(cached !== null, "cache entry should exist after concurrent writes");
+        assert.ok(
+          cached.writer === "A" || cached.writer === "B",
+          `cached writer should be A or B, got ${JSON.stringify(cached)}`,
+        );
+
+        // The lockfile should have been cleaned up after both writes complete.
+        const lockPath = path.join(dir, "cache", "cache-write.lock");
+        const lockExists = await fs.access(lockPath).then(() => true).catch(() => false);
+        assert.strictEqual(lockExists, false, "lockfile should be released after writes complete");
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("concurrent writes to different keys serialize and all entries are readable", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const keys = ["k1.json", "k2.json", "k3.json", "k4.json", "k5.json"];
+
+        // All five writes go through the same lockfile ("cache-write"),
+        // so they serialize. None should throw.
+        const results = await Promise.allSettled(
+          keys.map((k, i) => writeCache(k, { index: i })),
+        );
+        for (const r of results) {
+          assert.strictEqual(r.status, "fulfilled");
+        }
+
+        // Every key should be readable.
+        for (let i = 0; i < keys.length; i++) {
+          const val = await readCache(keys[i]);
+          assert.ok(val !== null, `key ${keys[i]} should be cached`);
+          assert.strictEqual(val.index, i);
+        }
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+});

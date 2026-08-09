@@ -65,6 +65,7 @@ import {
 } from "../../lib/errors.js";
 import { resolveJinaApiKey, isJinaConfigured } from "./credentials.js";
 import { applySearchTopic } from "../../lib/search-topic.js";
+import { validateDomain } from "../../lib/domain-validation.js";
 import {
   fetchJinaReader,
   fetchJinaSearch,
@@ -126,22 +127,6 @@ function assertHttpUrl(url: unknown): asserts url is string {
   }
   if (!/^https?:\/\//.test(url)) {
     throw new ValidationError("URL must start with http:// or https://");
-  }
-}
-
-/**
- * Validate a domain string is a plausible hostname (8J.3/8J.4). Rejects
- * URLs, ports, wildcards, and protocol prefixes.
- */
-function validateDomain(domain: string): void {
-  if (typeof domain !== "string" || domain.trim().length === 0) {
-    throw new ValidationError("Domain must be a non-empty string");
-  }
-  if (/^https?:\/\//.test(domain) || domain.includes("/") || domain.includes(":") || domain.includes("*")) {
-    throw new ValidationError(`Invalid domain "${domain}" — expected a bare hostname like "example.com"`);
-  }
-  if (!/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$/.test(domain)) {
-    throw new ValidationError(`Invalid domain "${domain}" — expected a bare hostname like "example.com"`);
   }
 }
 

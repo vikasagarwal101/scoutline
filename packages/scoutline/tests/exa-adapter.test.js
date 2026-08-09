@@ -2,7 +2,7 @@
  * Exa Adapter conformance tests (EXA-T01, tech-plan §7).
  *
  * Verifies the Exa direct-HTTP transport Adapter:
- *   - Search validation: empty query, --location rejection
+ *   - Search validation: empty query, --location acceptance (EXA-8-02)
  *   - Search normalization: results[].title/url/highlights/author/
  *     publishedDate -> title/url/summary/source/date (highlights joined)
  *   - Search control mapping: domain, recency (→startPublishedDate),

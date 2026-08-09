@@ -54,6 +54,7 @@ export function createJinaDiagnosticsCapability(
       if (!apiKey) {
         throw new ConfigurationError(
           "Jina AI diagnostics requires JINA_API_KEY (the probe uses the Search endpoint, which is not keyless).",
+          "Set JINA_API_KEY to enable Jina diagnostics.",
         );
       }
       try {

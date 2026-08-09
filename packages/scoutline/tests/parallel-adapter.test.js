@@ -579,15 +579,29 @@ describe("Parallel AI Error Handling", () => {
     );
   });
 
-  it("accepts query at exactly 200 chars (8P.4)", () => {
+  it("rejects query that exceeds 200 chars after topic expansion (8P.4)", () => {
     const adapter = new ParallelAdapter(
       { env: { PARALLEL_API_KEY: TEST_KEY } },
       { transport: { fetch: async () => ({}) } },
     );
 
-    const exactQuery = "a".repeat(200);
-    // Must not throw
-    adapter.search.validate({ query: exactQuery });
+    // 195 chars + " latest news" (12 chars) = 207 chars — over the limit
+    const baseQuery = "a".repeat(195);
+    assert.throws(
+      () => adapter.search.validate({ query: baseQuery, controls: { topic: "news" } }),
+      (e) => e instanceof ValidationError && e.message.includes("topic expansion"),
+    );
+  });
+
+  it("accepts query at exactly 200 chars after topic expansion (8P.4)", () => {
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: async () => ({}) } },
+    );
+
+    // 188 chars + " latest news" (12 chars) = 200 chars — exactly at limit
+    const baseQuery = "a".repeat(188);
+    adapter.search.validate({ query: baseQuery, controls: { topic: "news" } });
   });
 
   it("rejects invalid domain syntax (8P.3)", () => {
@@ -603,6 +617,19 @@ describe("Parallel AI Error Handling", () => {
     assert.throws(
       () => adapter.search.validate({ query: "test", controls: { domain: "example.com/path" } }),
       ValidationError,
+    );
+  });
+
+  it("rejects overlong research query (>200 chars) with ValidationError (8P.4)", () => {
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: async () => ({}) } },
+    );
+
+    const longQuery = "a".repeat(201);
+    assert.throws(
+      () => adapter.research.run.validate({ query: longQuery }),
+      (e) => e instanceof ValidationError && e.message.includes("200"),
     );
   });
 });

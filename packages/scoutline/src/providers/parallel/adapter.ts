@@ -63,6 +63,7 @@ import {
 } from "../../lib/errors.js";
 import { requireParallelApiKey, isParallelConfigured } from "./credentials.js";
 import { applySearchTopic } from "../../lib/search-topic.js";
+import { validateDomain } from "../../lib/domain-validation.js";
 import {
   fetchParallelSearch,
   fetchParallelExtract,
@@ -133,25 +134,6 @@ function assertHttpUrl(url: unknown): asserts url is string {
 }
 
 /**
- * Validate a domain string is a plausible hostname. Rejects URLs, ports,
- * wildcards, and protocol prefixes — accepts only bare hostnames like
- * "example.com" or "sub.example.co.uk".
- */
-function validateDomain(domain: string): void {
-  if (typeof domain !== "string" || domain.trim().length === 0) {
-    throw new ValidationError("Domain must be a non-empty string");
-  }
-  // Reject protocol-prefixed values, paths, ports, wildcards.
-  if (/^https?:\/\//.test(domain) || domain.includes("/") || domain.includes(":") || domain.includes("*")) {
-    throw new ValidationError(`Invalid domain "${domain}" — expected a bare hostname like "example.com"`);
-  }
-  // Basic hostname check: labels of alphanumerics/hyphens, dot-separated.
-  if (!/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$/.test(domain)) {
-    throw new ValidationError(`Invalid domain "${domain}" — expected a bare hostname like "example.com"`);
-  }
-}
-
-/**
  * Maximum query length enforced by Parallel's Search API (8P.4).
  * Each element of `search_queries` is capped at 200 characters.
  */
@@ -160,18 +142,17 @@ const PARALLEL_MAX_QUERY_LENGTH = 200;
 /**
  * Map a provider-neutral SearchRecency to a Parallel `after_date` string
  * (RFC 3339 / ISO 8601 date). Returns `undefined` for `noLimit` (no date
- * filter). Uses UTC midnight for determinism.
- *
- * `now` is injected so tests get deterministic dates.
+ * filter). Uses a 30-day convention for `oneMonth` to avoid month-end
+ * rollover issues with `setUTCMonth`.
  */
 function recencyToAfterDate(recency: import("../../capabilities/search.js").SearchRecency, now: Date = new Date()): string | undefined {
   if (recency === "noLimit") return undefined;
-  const d = new Date(now);
+  const d = new Date(now.getTime());
   switch (recency) {
     case "oneDay": d.setUTCDate(d.getUTCDate() - 1); break;
     case "oneWeek": d.setUTCDate(d.getUTCDate() - 7); break;
-    case "oneMonth": d.setUTCMonth(d.getUTCMonth() - 1); break;
-    case "oneYear": d.setUTCFullYear(d.getUTCFullYear() - 1); break;
+    case "oneMonth": d.setUTCDate(d.getUTCDate() - 30); break;
+    case "oneYear": d.setUTCDate(d.getUTCDate() - 365); break;
   }
   return d.toISOString().split("T")[0]!;
 }
@@ -243,9 +224,12 @@ export class ParallelAdapter implements ProviderAdapter {
           throw new ValidationError("Search query must not be empty");
         }
         // Enforce Parallel's documented 200-char per-query limit (8P.4).
-        if (request.query.length > PARALLEL_MAX_QUERY_LENGTH) {
+        // Validate the final expanded query (after topic suffix) so topic
+        // appends don't turn a locally-valid request into a remote 422.
+        const expandedQuery = applySearchTopic(request.query.trim(), request.controls?.topic);
+        if (expandedQuery.length > PARALLEL_MAX_QUERY_LENGTH) {
           throw new ValidationError(
-            `Parallel AI search query exceeds the ${PARALLEL_MAX_QUERY_LENGTH}-character limit (${request.query.length} chars)`,
+            `Parallel AI search query exceeds the ${PARALLEL_MAX_QUERY_LENGTH}-character limit (${expandedQuery.length} chars after topic expansion)`,
           );
         }
         if (request.controls?.type !== undefined) {
@@ -307,6 +291,13 @@ export class ParallelAdapter implements ProviderAdapter {
         validate(request: ResearchRequest): void {
           if (!request.query || request.query.trim().length === 0) {
             throw new ValidationError("Research query must not be empty");
+          }
+          // Research also sends queries via search_queries — enforce the
+          // same 200-char per-query limit (8P.4, Cubic P2).
+          if (request.query.trim().length > PARALLEL_MAX_QUERY_LENGTH) {
+            throw new ValidationError(
+              `Parallel AI research query exceeds the ${PARALLEL_MAX_QUERY_LENGTH}-character limit (${request.query.trim().length} chars)`,
+            );
           }
           for (const option of [
             "model",

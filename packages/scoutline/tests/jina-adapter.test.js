@@ -1162,6 +1162,29 @@ describe("Jina AI Quota (8J.5 telemetry)", () => {
     assert.equal(tokCat.current.limit, 100_000_000, "inferred Tier 2 TPM limit");
   });
 
+  it("infers lower-tier limit when Tier 2 account has low remaining RPM", async () => {
+    // Edge case (CodeRabbit): a Tier 2 account that has used most of its
+    // 5000 RPM window would show remaining < 500. The inference correctly
+    // maps to 500 (the smallest documented limit ≥ remaining) — it cannot
+    // distinguish this from a Free/Tier 1 account at the same remaining.
+    // This is an inherent limitation of the remaining-only header model.
+    const fakeFetch = mockQuotaFetch({ remainingRequests: "400", remainingTokens: "95000000" });
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const result = await adapter.quota.invoke();
+    // RPM: 400 ≤ 500, so inferred limit = 500 (Free/Tier 1)
+    const reqCat = result.categories.find((c) => c.unit === "requests");
+    assert.equal(reqCat.current.limit, 500, "inferred Free/Tier 1 RPM limit");
+    assert.equal(reqCat.current.remaining, 400);
+
+    // TPM: 95M > 10M, so inferred limit = 100M (Tier 2)
+    const tokCat = result.categories.find((c) => c.unit === "tokens");
+    assert.equal(tokCat.current.limit, 100_000_000, "inferred Tier 2 TPM limit");
+  });
+
   it("infers Tier 1 TPM when remaining tokens between 1M and 10M", async () => {
     // Tier 1: 500 RPM, 10M TPM. Remaining: 200 RPM, 8M TPM.
     const fakeFetch = mockQuotaFetch({ remainingRequests: "200", remainingTokens: "8000000" });

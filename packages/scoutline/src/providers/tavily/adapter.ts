@@ -1099,17 +1099,38 @@ function createTavilyResearchCapability(
           }
 
           if (poll.status === "not_found") {
-            // 404 — the server-side task expired/disappeared. Delete the
-            // stale state file and create a fresh task, then continue
-            // polling. The state file is removed first so the `wx`-flag
-            // write in createResearchTask succeeds.
-            await researchStateFile.remove(identityHash);
-            requestId = await createResearchTask(
-              apiKey,
-              request,
+            // 404 — the server-side task expired/disappeared. Route the
+            // recreation through the same lock as initial creation so
+            // concurrent callers hitting not_found serialize. Under the
+            // lock, remove the stale state, reread, and only recreate if
+            // no replacement was already persisted by another caller.
+            requestId = await withAsyncFileLock(
+              researchStateDir,
               identityHash,
-              researchStateFile,
-              transport,
+              async () => {
+                // Remove the stale state file so createResearchTask's
+                // wx-flag write succeeds.
+                await researchStateFile.remove(identityHash);
+                // Reread under the lock — another caller may have already
+                // recreated and persisted a replacement requestId.
+                const state = await researchStateFile.read(identityHash);
+                if (state !== null) {
+                  return state.requestId;
+                }
+                return createResearchTask(
+                  apiKey,
+                  request,
+                  identityHash,
+                  researchStateFile,
+                  transport,
+                );
+              },
+              {
+                timeoutMs: 30000,
+                staleMs: 10 * 60 * 1000,
+                setTimeout: transport?.setTimeout,
+                timeoutLabel: "Tavily research",
+              },
             );
             continue;
           }

@@ -79,15 +79,12 @@ export async function withAsyncFileLock<T>(
   const deadline = Date.now() + options.timeoutMs;
 
   for (;;) {
+    let handle;
     try {
-      const handle = await fs.open(lockPath, "wx");
-      try {
-        return await fn();
-      } finally {
-        await handle.close().catch(() => {});
-        await fs.unlink(lockPath).catch(() => {});
-      }
+      handle = await fs.open(lockPath, "wx");
     } catch (err) {
+      // Only EEXIST from the wx-create is a lock-contention signal.
+      // Errors from fn() (below) propagate directly without retry.
       if (!isEexistError(err)) throw err;
       if (Date.now() > deadline) {
         throw new Error(`${options.timeoutLabel} create-lock timed out`);
@@ -99,6 +96,14 @@ export async function withAsyncFileLock<T>(
         continue;
       }
       await sleep(500);
+      continue;
+    }
+    // Lock acquired — run fn() and always clean up.
+    try {
+      return await fn();
+    } finally {
+      await handle.close().catch(() => {});
+      await fs.unlink(lockPath).catch(() => {});
     }
   }
 }

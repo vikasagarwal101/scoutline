@@ -433,7 +433,8 @@ interface DeepSearchStreamChunk {
 function parseDeepSearchSSE(text: string): JinaDeepSearchResponse {
   let content = "";
   let annotations: JinaDeepSearchAnnotation[] = [];
-  let visitedURLs: string[] = [];
+  const seenCitationUrls = new Set<string>();
+  const visitedUrlSet = new Set<string>();
   let sawTerminal = false;
 
   for (const line of text.split("\n")) {
@@ -471,14 +472,23 @@ function parseDeepSearchSSE(text: string): JinaDeepSearchResponse {
       content += delta.content;
     }
 
-    // Annotations (citations) arrive on the terminal chunk.
+    // Annotations (citations) arrive on the terminal chunk. De-duplicate
+    // by URL in case the server sends cumulative lists across chunks.
     if (delta.annotations && delta.annotations.length > 0) {
-      annotations = annotations.concat(delta.annotations);
+      for (const ann of delta.annotations) {
+        const url = ann.url_citation?.url;
+        if (url && seenCitationUrls.has(url)) continue;
+        if (url) seenCitationUrls.add(url);
+        annotations.push(ann);
+      }
     }
 
-    // visitedURLs arrive on the terminal chunk at the top level.
+    // visitedURLs arrive on the terminal chunk at the top level. De-duplicate
+    // to avoid repeated URLs if sent across multiple chunks.
     if (chunk.visitedURLs && chunk.visitedURLs.length > 0) {
-      visitedURLs = visitedURLs.concat(chunk.visitedURLs);
+      for (const url of chunk.visitedURLs) {
+        visitedUrlSet.add(url);
+      }
     }
   }
 
@@ -498,7 +508,7 @@ function parseDeepSearchSSE(text: string): JinaDeepSearchResponse {
         },
       },
     ],
-    ...(visitedURLs.length > 0 ? { visitedURLs } : {}),
+    ...(visitedUrlSet.size > 0 ? { visitedURLs: [...visitedUrlSet] } : {}),
   };
 }
 

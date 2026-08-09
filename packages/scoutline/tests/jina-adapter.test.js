@@ -562,8 +562,10 @@ describe("Jina DeepSearch Streaming (8J.6)", () => {
   });
 
   it("handles [DONE] sentinel gracefully", async () => {
+    // Content chunk has NO finish_reason — termination depends solely
+    // on the [DONE] sentinel, exercising that branch.
     const sseBody = [
-      `data: ${JSON.stringify({ choices: [{ delta: { content: "Done test.", type: "text" }, finish_reason: "stop" }] })}\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Done test.", type: "text" } }] })}\n`,
       "data: [DONE]\n",
     ].join("\n");
 

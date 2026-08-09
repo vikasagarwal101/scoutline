@@ -1105,7 +1105,26 @@ function createTavilyResearchCapability(
             // task also failed to register, so terminate rather than risk
             // unbounded paid creations (mirrors Parallel's guard).
             if (recreatedAfterNotFound) {
-              await researchStateFile.remove(identityHash).catch(() => {});
+              // Clean up under the lock — only remove the state file if
+              // it still references OUR requestId. A concurrent caller
+              // may have already replaced it with a newer task; deleting
+              // their state would reopen the double-create path.
+              await withAsyncFileLock(
+                researchStateDir,
+                identityHash,
+                async () => {
+                  const state = await researchStateFile.read(identityHash);
+                  if (state?.requestId === requestId) {
+                    await researchStateFile.remove(identityHash);
+                  }
+                },
+                {
+                  timeoutMs: 30000,
+                  staleMs: 10 * 60 * 1000,
+                  setTimeout: transport?.setTimeout,
+                  timeoutLabel: "Tavily research",
+                },
+              ).catch(() => {});
               throw new ApiError(
                 "Tavily research task not found after recreation",
                 500,

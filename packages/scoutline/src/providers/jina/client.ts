@@ -57,7 +57,7 @@ export interface JinaResponse {
  *   format         -> X-Return-Format ("markdown" | "text")
  *   retainImages   -> X-Retain-Images ("true" | "false")
  *   withLinksSummary -> X-With-Links-Summary ("true" | "false")
- *   noGfm          -> X-With-Generated-Alt-Tag ("false" when noGfm, "true" otherwise)
+ *   noGfm          -> not forwarded (Jina has no GFM toggle; no-op)
  *   keepImgDataUrl -> X-Keep-Img-Data-Url ("true" | "false")
  *   withImagesSummary -> X-With-Images-Summary ("true" | "false")
  *   timeout        -> X-Timeout (seconds; clamped to Jina's 180s ceiling)

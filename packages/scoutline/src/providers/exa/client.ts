@@ -163,7 +163,6 @@ async function postExaJson(
   body: Record<string, unknown>,
   deps: ExaTransportDeps,
   endpointLabel: string,
-  extraHeaders?: Record<string, string>,
 ): Promise<unknown> {
   const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;
@@ -180,11 +179,6 @@ async function postExaJson(
       "Content-Type": "application/json",
       "User-Agent": USER_AGENT,
     };
-    if (extraHeaders) {
-      for (const [key, value] of Object.entries(extraHeaders)) {
-        headers[key] = value;
-      }
-    }
     const res = await f(url, {
       method: "POST",
       headers,

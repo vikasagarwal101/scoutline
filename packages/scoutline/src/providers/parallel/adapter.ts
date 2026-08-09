@@ -140,6 +140,20 @@ function assertHttpUrl(url: unknown): asserts url is string {
 const PARALLEL_MAX_QUERY_LENGTH = 200;
 
 /**
+ * Count Unicode code points in a string. Uses a quick upper-bound check
+ * with `.length` (UTF-16 code units) first — only strings whose UTF-16
+ * length exceeds the limit incur the spread-to-array cost.
+ */
+function exceedsCodePointLimit(str: string, limit: number): boolean {
+  // Fast path: UTF-16 length ≤ limit means code points are also ≤ limit
+  // (each code point is 1-2 UTF-16 code units, never more).
+  if (str.length <= limit) return false;
+  // Slow path: count actual Unicode code points via spread, which
+  // iterates code points rather than UTF-16 code units.
+  return [...str].length > limit;
+}
+
+/**
  * Map a provider-neutral SearchRecency to a Parallel `after_date` string
  * (RFC 3339 / ISO 8601 date). Returns `undefined` for `noLimit` (no date
  * filter). Uses a 30-day convention for `oneMonth` to avoid month-end
@@ -226,10 +240,12 @@ export class ParallelAdapter implements ProviderAdapter {
         // Enforce Parallel's documented 200-char per-query limit (8P.4).
         // Validate the final expanded query (after topic suffix) so topic
         // appends don't turn a locally-valid request into a remote 422.
+        // Count Unicode code points (not UTF-16 code units) so queries
+        // with non-BMP characters (emoji etc.) are not over-rejected.
         const expandedQuery = applySearchTopic(request.query.trim(), request.controls?.topic);
-        if (expandedQuery.length > PARALLEL_MAX_QUERY_LENGTH) {
+        if (exceedsCodePointLimit(expandedQuery, PARALLEL_MAX_QUERY_LENGTH)) {
           throw new ValidationError(
-            `Parallel AI search query exceeds the ${PARALLEL_MAX_QUERY_LENGTH}-character limit (${expandedQuery.length} chars after topic expansion)`,
+            `Parallel AI search query exceeds the ${PARALLEL_MAX_QUERY_LENGTH}-character limit (after topic expansion)`,
           );
         }
         if (request.controls?.type !== undefined) {
@@ -293,10 +309,12 @@ export class ParallelAdapter implements ProviderAdapter {
             throw new ValidationError("Research query must not be empty");
           }
           // Research also sends queries via search_queries — enforce the
-          // same 200-char per-query limit (8P.4, Cubic P2).
-          if (request.query.trim().length > PARALLEL_MAX_QUERY_LENGTH) {
+          // same 200-char per-query limit (8P.4, Cubic P2). Count Unicode
+          // code points for consistency with the search check.
+          const researchQuery = request.query.trim();
+          if (exceedsCodePointLimit(researchQuery, PARALLEL_MAX_QUERY_LENGTH)) {
             throw new ValidationError(
-              `Parallel AI research query exceeds the ${PARALLEL_MAX_QUERY_LENGTH}-character limit (${request.query.trim().length} chars)`,
+              `Parallel AI research query exceeds the ${PARALLEL_MAX_QUERY_LENGTH}-character limit`,
             );
           }
           for (const option of [

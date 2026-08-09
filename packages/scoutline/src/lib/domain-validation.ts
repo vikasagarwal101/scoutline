@@ -33,15 +33,19 @@ function displayDomain(domain: string): string {
  * `ValidationError` on invalid input.
  */
 export function validateDomain(domain: string): void {
-  if (typeof domain !== "string" || domain.trim().length === 0) {
+  if (typeof domain !== "string" || domain.length === 0) {
     throw new ValidationError("Domain must be a non-empty string");
   }
-  // Fail fast: enforce the 253-char hostname limit BEFORE pattern
-  // matching so oversized input doesn't drive avoidable regex work.
+  // Fail fast: enforce the 253-char hostname limit BEFORE any scanning
+  // (including trim()) so oversized input is rejected immediately.
   if (domain.length > MAX_HOSTNAME_LENGTH) {
     throw new ValidationError(
       `Domain exceeds ${MAX_HOSTNAME_LENGTH}-character hostname limit`,
     );
+  }
+  // Now safe to trim — the string is bounded.
+  if (domain.trim().length === 0) {
+    throw new ValidationError("Domain must be a non-empty string");
   }
   // Reject protocol-prefixed values, paths, ports, wildcards.
   if (

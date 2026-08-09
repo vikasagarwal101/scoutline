@@ -492,7 +492,8 @@ function normalizeTaskRunResult(parsed: unknown): ParallelTaskRunResult {
   } else if (
     runStatus === "queued" ||
     runStatus === "running" ||
-    runStatus === "action_required"
+    runStatus === "action_required" ||
+    runStatus === "cancelling"
   ) {
     // Non-terminal — poll again.
     return { status: "running" };

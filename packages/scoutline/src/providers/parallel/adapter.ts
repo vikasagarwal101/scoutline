@@ -661,12 +661,10 @@ export class ParallelAdapter implements ProviderAdapter {
 
               if (result.status === "failed") {
                 await researchStateFile.remove(identityHash).catch(() => {});
-                throw new ApiError(
-                  result.errorMessage
-                    ? `Parallel AI research task failed: ${result.errorMessage}`
-                    : "Parallel AI research task failed",
-                  500,
-                );
+                // Note: normalizeParallelError sanitizes this to a constant
+                // message at the adapter boundary (NFR-006). The provider's
+                // raw error message never reaches the user by design.
+                throw new ApiError("Parallel AI research task failed", 500);
               }
 
               if (result.status === "not_found") {

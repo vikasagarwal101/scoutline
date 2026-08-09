@@ -75,6 +75,12 @@ export interface ExaSearchParams {
   readonly startPublishedDate?: string;
   readonly type?: string;
   readonly category?: string;
+  /**
+   * Two-letter ISO country code for result personalization (EXA-8-02).
+   * Maps to Exa's `userLocation` parameter. Accepts `"cn"` and `"us"`
+   * (the two values in `SearchControls.location`).
+   */
+  readonly userLocation?: string;
 }
 
 /**
@@ -248,6 +254,9 @@ export async function fetchExaSearch(
     }
     if (params.category !== undefined) {
       body.category = params.category;
+    }
+    if (params.userLocation !== undefined) {
+      body.userLocation = params.userLocation;
     }
   }
   // Always request highlights — token-efficient summary source.

@@ -189,6 +189,7 @@ function mapSearchControls(
     startPublishedDate?: string;
     type?: string;
     category?: string;
+    userLocation?: string;
   } = {};
   if (controls.domain) {
     params.includeDomains = [controls.domain];
@@ -203,6 +204,9 @@ function mapSearchControls(
   if (controls.topic) {
     const category = mapTopicToCategory(controls.topic);
     if (category) params.category = category;
+  }
+  if (controls.location) {
+    params.userLocation = controls.location;
   }
   return params;
 }
@@ -387,15 +391,11 @@ function createExaSearchCapability(options: ExaSearchCapabilityOptions): SearchC
           "Search query must contain at least one non-whitespace character",
         );
       }
-      // Exa supports domain, recency, contentSize, and topic natively.
-      // location is Z.AI-specific and rejected before any transport
-      // call. type is Brave-only (routes to its video endpoint); every
-      // other Provider rejects it before any transport call so the
-      // option-level fallback contract can continue past Exa to the
-      // capable provider (Review Fix 2).
-      if (request.controls?.location !== undefined) {
-        throw new UnsupportedOptionError("exa", "search", "location");
-      }
+      // Exa supports domain, recency, contentSize, topic, and location
+      // natively (EXA-8-02: location → userLocation). type is Brave-only
+      // (routes to its video endpoint); every other Provider rejects it
+      // before any transport call so the option-level fallback contract
+      // can continue past Exa to the capable provider (Review Fix 2).
       if (request.controls?.type !== undefined) {
         throw new UnsupportedOptionError("exa", "search", "type");
       }

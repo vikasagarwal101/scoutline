@@ -114,19 +114,16 @@ describe("Exa Search Adapter — validation", () => {
     );
   });
 
-  it("rejects --location with UnsupportedOptionError", () => {
-    const { adapter } = makeAdapter(async () => makeResponse());
-    assert.throws(
-      () =>
-        adapter.search.validate({
-          query: "test",
-          controls: { location: "us" },
-        }),
-      (e) => e instanceof UnsupportedOptionError && e.message.includes("location"),
-    );
+  it("accepts --location and maps to userLocation wire parameter (EXA-8-02)", async () => {
+    const { adapter, calls } = makeAdapter(async () => makeResponse({ json: { results: [] } }));
+    // validate must not throw
+    adapter.search.validate({ query: "test", controls: { location: "us" } });
+    await adapter.search.invoke({ query: "test", controls: { location: "us" } });
+    const capturedBody = JSON.parse(calls[0].init.body);
+    assert.equal(capturedBody.userLocation, "us", "location must map to userLocation in request body");
   });
 
-  it("accepts domain, recency, contentSize, and topic controls", () => {
+  it("accepts domain, recency, contentSize, topic, and location controls", () => {
     const { adapter } = makeAdapter(async () => makeResponse());
     // Should not throw — Exa supports these natively.
     adapter.search.validate({
@@ -136,6 +133,7 @@ describe("Exa Search Adapter — validation", () => {
         recency: "oneWeek",
         contentSize: "high",
         topic: "news",
+        location: "us",
       },
     });
   });

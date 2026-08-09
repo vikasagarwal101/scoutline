@@ -110,7 +110,7 @@ function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
  * The transport never embeds credential material or raw response bodies
  * in any error message.
  */
-function mapStatusError(status: number, timeoutMs: number, errorBody?: string): Error {
+function mapStatusError(status: number, timeoutMs: number, errorBody?: string, timeoutHelpText: string = TIMEOUT_HELP_TEXT): Error {
   if (status === 401) {
     return new AuthError("Jina AI authentication failed", "JINA_API_KEY");
   }
@@ -139,8 +139,11 @@ function mapStatusError(status: number, timeoutMs: number, errorBody?: string): 
     }
     return new AuthError("Jina AI authentication failed", "JINA_API_KEY");
   }
-  if (status === 408 || status === 504) {
-    return new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
+  if (status === 408 || status === 504 || status === 524) {
+    // 524 is Cloudflare's origin-timeout, the specific status Jina warns
+    // about for non-streaming DeepSearch (8J.6). Classified as a timeout
+    // rather than a generic API failure.
+    return new TimeoutError(timeoutMs, timeoutHelpText);
   }
   if (status === 429) {
     return new QuotaError(
@@ -369,6 +372,7 @@ export interface JinaDeepSearchUrlCitation {
 }
 
 export interface JinaDeepSearchAnnotation {
+  readonly type?: string;
   readonly url_citation?: JinaDeepSearchUrlCitation;
 }
 
@@ -380,6 +384,139 @@ export interface JinaDeepSearchResponse {
     };
   }[];
   readonly visitedURLs?: readonly string[];
+}
+
+/**
+ * Shape of a single SSE chunk from DeepSearch streaming (OpenAI-compatible
+ * chat.completion.chunk). The `delta.type` field distinguishes reasoning
+ * steps ("think") from the final answer ("text"):
+ *
+ *   delta.type === "think" — reasoning/search steps (internal, NOT the answer)
+ *   delta.type === "text"  — the final answer content (accumulate this)
+ *
+ * The terminal chunk carries `finish_reason: "stop"`, `delta.annotations`
+ * (citations), and top-level `visitedURLs`. There is no `data: [DONE]`
+ * sentinel — the stream ends after the terminal chunk.
+ *
+ * Verified against Jina's live DeepSearch API and docs (jina.ai/deepsearch),
+ * which explicitly recommends streaming: "We strongly recommend keeping
+ * this option enabled since DeepSearch requests can take significant time
+ * to complete. Disabling streaming may result in '524 timeout' errors."
+ */
+interface DeepSearchStreamChunk {
+  readonly choices?: readonly {
+    readonly delta?: {
+      readonly content?: string;
+      readonly type?: string;
+      readonly annotations?: readonly JinaDeepSearchAnnotation[];
+    };
+    readonly finish_reason?: string | null;
+  }[];
+  readonly visitedURLs?: readonly string[];
+}
+
+/**
+ * Parse a DeepSearch SSE response body into the same
+ * {@link JinaDeepSearchResponse} shape the non-streaming path produced.
+ *
+ * Accumulates `delta.content` ONLY from chunks whose `delta.type` is
+ * `"text"` (the final answer) or absent (defensive standard-OpenAI
+ * fallback). Skips `"think"` chunks (reasoning/search steps) and any
+ * unknown future types. Citations arrive as `delta.annotations` on the
+ * terminal chunk; `visitedURLs` at top level.
+ *
+ * Fails closed: if the stream ends without a terminal event
+ * (`finish_reason: "stop"` or `[DONE]`), throws rather than returning a
+ * potentially incomplete report. Malformed data payloads are treated as
+ * API errors rather than silently dropped.
+ */
+function parseDeepSearchSSE(text: string): JinaDeepSearchResponse {
+  let content = "";
+  let annotations: JinaDeepSearchAnnotation[] = [];
+  const seenCitationUrls = new Set<string>();
+  const visitedUrlSet = new Set<string>();
+  let sawTerminal = false;
+
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) continue;
+
+    const payload = trimmed.slice("data:".length).trim();
+    if (payload === "") continue;
+    if (payload === "[DONE]") {
+      sawTerminal = true;
+      break;
+    }
+
+    let chunk: DeepSearchStreamChunk;
+    try {
+      const parsed: unknown = JSON.parse(payload);
+      // Validate structural shape — not just JSON syntax. Reject any
+      // non-object value (null, arrays, numbers, strings) as malformed.
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new ApiError("Jina AI returned a malformed SSE response", 502);
+      }
+      chunk = parsed as DeepSearchStreamChunk;
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      // JSON syntax error — indicates response corruption. Fail
+      // rather than silently dropping answer text or citations.
+      throw new ApiError("Jina AI returned a malformed SSE response", 502);
+    }
+
+    // Track terminal event (finish_reason: "stop").
+    if (chunk.choices?.[0]?.finish_reason === "stop") {
+      sawTerminal = true;
+    }
+
+    const delta = chunk.choices?.[0]?.delta;
+    if (!delta) continue;
+
+    // Only accumulate answer content from "text" chunks (or standard
+    // OpenAI chunks with no type field). Excludes "think" (reasoning)
+    // and any unknown future delta types from the report.
+    if (delta.content && (delta.type === "text" || delta.type === undefined)) {
+      content += delta.content;
+    }
+
+    // Annotations (citations) arrive on the terminal chunk. Filter to
+    // entries with a valid url_citation.url, de-duplicate by URL.
+    if (Array.isArray(delta.annotations) && delta.annotations.length > 0) {
+      for (const ann of delta.annotations) {
+        const url = ann?.url_citation?.url;
+        if (typeof url !== "string" || seenCitationUrls.has(url)) continue;
+        seenCitationUrls.add(url);
+        annotations.push(ann);
+      }
+    }
+
+    // visitedURLs arrive on the terminal chunk at the top level. De-duplicate
+    // to avoid repeated URLs if sent across multiple chunks.
+    if (Array.isArray(chunk.visitedURLs) && chunk.visitedURLs.length > 0) {
+      for (const url of chunk.visitedURLs) {
+        if (typeof url === "string") visitedUrlSet.add(url);
+      }
+    }
+  }
+
+  // Fail closed: a stream that ended without a terminal event indicates
+  // a truncated response (network issue, server crash). Returning the
+  // partial content would silently give the user an incomplete report.
+  if (!sawTerminal) {
+    throw new ApiError("Jina AI DeepSearch stream ended without completion", 502);
+  }
+
+  return {
+    choices: [
+      {
+        message: {
+          content,
+          ...(annotations.length > 0 ? { annotations } : {}),
+        },
+      },
+    ],
+    ...(visitedUrlSet.size > 0 ? { visitedURLs: [...visitedUrlSet] } : {}),
+  };
 }
 
 function resolveDeepSearchTimeoutMs(env: NodeJS.ProcessEnv): number {
@@ -410,7 +547,14 @@ export async function fetchJinaDeepSearch(
   const body: Record<string, unknown> = {
     model: "jina-deepsearch-v1",
     messages: [{ role: "user", content: query }],
-    stream: false,
+    // Streaming is strongly recommended by Jina: non-streaming DeepSearch
+    // can hit gateway HTTP 524 on long research runs because the origin
+    // sends no data while processing (8J.6). With stream: true, the server
+    // emits SSE events (reasoning steps + final answer) incrementally,
+    // keeping the gateway alive. We read the full body via text() and parse
+    // the SSE — the 524 prevention comes from the server actively sending
+    // data, not from how the client reads it.
+    stream: true,
     reasoning_effort: "medium",
     max_returned_urls: 10,
   };
@@ -444,11 +588,13 @@ export async function fetchJinaDeepSearch(
 
     if (!response.ok) {
       const errorBody = await readErrorBody(response);
-      throw mapStatusError(response.status, timeoutMs, errorBody);
+      throw mapStatusError(response.status, timeoutMs, errorBody, DEEPSEARCH_TIMEOUT_HELP_TEXT);
     }
 
     const text = await response.text();
-    return JSON.parse(text) as JinaDeepSearchResponse;
+    // Parse the SSE stream into the same JinaDeepSearchResponse shape
+    // the non-streaming path produced (8J.6).
+    return parseDeepSearchSSE(text);
   } catch (err: unknown) {
     if (err instanceof AuthError || err instanceof ApiError || err instanceof QuotaError || err instanceof TimeoutError) {
       throw err;

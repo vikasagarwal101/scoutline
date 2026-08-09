@@ -1398,4 +1398,74 @@ describe("concurrent writeCache serializes via inter-process lock (5.5)", () => 
       }
     });
   });
+
+  it("writeCache blocks while the lock is held externally, then completes on release", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const key = "blocked-write.json";
+        const lockPath = path.join(dir, "cache", "cache-write.lock");
+
+        // Ensure the cache dir exists, then hold the lock externally.
+        await fs.mkdir(path.join(dir, "cache"), { recursive: true });
+        const handle = await fs.open(lockPath, "wx");
+
+        // Start writeCache — it should block waiting for the lock.
+        let writeCompleted = false;
+        const writePromise = writeCache(key, { value: 42 }).then(() => {
+          writeCompleted = true;
+        });
+
+        // Give writeCache time to discover the lock is contended.
+        await new Promise((r) => setTimeout(r, 200));
+        assert.strictEqual(writeCompleted, false, "writeCache must block while lock is held");
+
+        // Release the lock — writeCache should proceed.
+        await handle.close();
+        await fs.unlink(lockPath);
+        await writePromise;
+        assert.strictEqual(writeCompleted, true, "writeCache should complete after lock release");
+
+        const cached = await readCache(key);
+        assert.deepStrictEqual(cached, { value: 42 });
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("eviction skips the lockfile so it survives a size-cap-triggered eviction", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const cacheDir = path.join(dir, "cache");
+        // Set a very small size cap to force eviction.
+        process.env.SCOUTLINE_CACHE_SIZE_CAP_BYTES = "100";
+
+        const key = "evict-test.json";
+        // Write enough data to exceed the 100-byte cap.
+        await writeCache(key, { data: "x".repeat(200) });
+
+        // The lockfile should still exist if a write is in progress,
+        // but since the write completed, the lock is released. Instead,
+        // verify the eviction logic by checking that a stale lockfile
+        // placed before a triggering write is NOT removed by eviction.
+        const lockPath = path.join(cacheDir, "cache-write.lock");
+        await fs.writeFile(lockPath, "stale-lock-marker");
+
+        // Write another large entry to trigger eviction again.
+        await writeCache("evict-trigger.json", { data: "y".repeat(200) });
+
+        // The lockfile we placed must survive eviction.
+        const lockExists = await fs.access(lockPath).then(() => true).catch(() => false);
+        assert.strictEqual(lockExists, true, "lockfile must not be evicted by evictIfNeeded");
+
+        // Clean up the stale lockfile.
+        await fs.unlink(lockPath).catch(() => {});
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+        delete process.env.SCOUTLINE_CACHE_SIZE_CAP_BYTES;
+      }
+    });
+  });
 });

@@ -470,7 +470,10 @@ async function evictIfNeeded(dir: string): Promise<void> {
         // Skip atomic-write temp files (.<basename>.<pid>.<uuid>.tmp)
         // so eviction cannot unlink a concurrent write's staging file
         // and cause its rename to fail (Greptile P2).
-        if (name.startsWith(".") && name.endsWith(".tmp")) return null;
+        // Also skip the inter-process write lockfile (cache-write.lock)
+        // so eviction cannot delete the lock while a writer holds it (5.5).
+        if ((name.startsWith(".") && name.endsWith(".tmp")) || name.endsWith(".lock"))
+          return null;
         try {
           const p = path.join(dir, name);
           const s = await fs.stat(p);

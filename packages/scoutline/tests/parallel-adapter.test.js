@@ -3,6 +3,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 
 import { createParallelDescriptor, ParallelAdapter } from "../dist/providers/parallel/adapter.js";
 import {
@@ -18,6 +19,10 @@ import {
   UnsupportedOptionError,
   ValidationError,
 } from "../dist/lib/errors.js";
+import {
+  createInMemoryAsyncJobStateFile,
+  computeAsyncJobStateHash,
+} from "../dist/lib/async-job-state.js";
 
 const TEST_KEY = "parallel-test-api-key";
 
@@ -35,6 +40,127 @@ function mockFetch(responseBody, status = 200) {
     };
   };
 }
+
+// ---------------------------------------------------------------------------
+// Task API (Deep Research) mock — 8P.1
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a fake fetch that handles POST /v1/tasks/runs (create) and
+ * GET /v1/tasks/runs/{run_id}/result (retrieve).
+ *
+ * - POST always returns 202 { run_id, status: "queued" } with an
+ *   incrementing run id ("trun-test-1", "trun-test-2", ...).
+ * - GET returns responses from `pollResponses` in order, then
+ *   defaults to completed.
+ *
+ * `postStatus` overrides the POST response status for failure tests.
+ */
+function makeTaskFetch({ pollResponses = [], postStatus = 202, postRunId } = {}) {
+  let pollIndex = 0;
+  let runCounter = 0;
+  const calls = [];
+  const fn = async (url, init) => {
+    const u = String(url);
+    const method = init?.method ?? "GET";
+    calls.push({ url: u, method, body: init?.body });
+
+    if (method === "POST" && u.includes("/v1/tasks/runs")) {
+      if (postStatus >= 400) {
+        return {
+          ok: false,
+          status: postStatus,
+          text: async () => JSON.stringify({ error: { message: "fail" } }),
+        };
+      }
+      runCounter++;
+      const rid = postRunId ?? `trun-test-${runCounter}`;
+      return {
+        ok: true,
+        status: 202,
+        text: async () => JSON.stringify({ run_id: rid, status: "queued" }),
+      };
+    }
+
+    if (method === "GET" && u.includes("/result")) {
+      if (pollIndex < pollResponses.length) {
+        const resp = pollResponses[pollIndex++];
+        return {
+          ok: resp.ok ?? (resp.status >= 200 && resp.status < 300),
+          status: resp.status,
+          text: async () => (typeof resp.body === "string" ? resp.body : JSON.stringify(resp.body)),
+        };
+      }
+      // Default: completed with a synthesized report
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            run: { run_id: "trun-default", status: "completed", processor: "pro" },
+            output: {
+              type: "text",
+              content: "## Research Report\n\nSynthesized findings with inline citations.",
+              basis: [
+                {
+                  field: "summary",
+                  reasoning: "Synthesized from multiple sources.",
+                  citations: [
+                    {
+                      title: "Primary Source",
+                      url: "https://example.com/primary",
+                      excerpts: ["Key finding excerpt."],
+                    },
+                  ],
+                  confidence: "high",
+                },
+              ],
+            },
+          }),
+      };
+    }
+
+    // Fall through for any search/extract requests
+    return { ok: true, status: 200, text: async () => JSON.stringify({ results: [] }) };
+  };
+  return { fetch: fn, calls };
+}
+
+const COMPLETED_RESULT = {
+  status: 200,
+  body: {
+    run: { run_id: "trun-completed", status: "completed", processor: "ultra" },
+    output: {
+      type: "text",
+      content: "## Deep Research Report\n\nMulti-step synthesized analysis.",
+      basis: [
+        {
+          field: "analysis",
+          reasoning: "Based on verified sources.",
+          citations: [
+            { title: "Source A", url: "https://a.example.com", excerpts: ["Finding A"] },
+            { title: "Source B", url: "https://b.example.com", excerpts: ["Finding B"] },
+          ],
+          confidence: "high",
+        },
+      ],
+    },
+  },
+};
+
+const RUNNING_408 = { status: 408, body: '{"error":{"message":"timed out, run still active"}}' };
+const NOT_FOUND_404 = { status: 404, body: '{"error":{"message":"Run failed or run id not found"}}' };
+const FAILED_RESULT = {
+  status: 200,
+  body: {
+    run: {
+      run_id: "trun-failed",
+      status: "failed",
+      error: { message: "processing_error", ref_id: "ref-123" },
+    },
+    output: null,
+  },
+};
 
 describe("Parallel AI Credentials", () => {
   it("resolves valid API key from environment", () => {
@@ -272,50 +398,273 @@ describe("Parallel AI Descriptor & Adapter", () => {
     );
   });
 
-  it("invokes research capability using real API shape", async () => {
-    const fakeFetch = mockFetch({
-      search_id: "search_research123",
-      results: [
-        {
-          title: "Parallel AI Docs",
-          url: "https://parallel.ai/docs",
-          excerpts: ["Deep research architecture overview"],
-        },
-        {
-          title: "Research Paper",
-          url: "https://example.com/paper",
-          excerpts: ["Detailed findings on AI search"],
-        },
-      ],
+  it("invokes research via the Task/Deep Research API (create→poll→retrieve) (8P.1)", async () => {
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const { fetch: taskFetch, calls } = makeTaskFetch({
+      pollResponses: [RUNNING_408, COMPLETED_RESULT],
     });
 
     const adapter = new ParallelAdapter(
       { env: { PARALLEL_API_KEY: TEST_KEY } },
-      { transport: { fetch: fakeFetch } },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
     );
 
     adapter.research.run.validate({ query: "AI search engines" });
     const res = await adapter.research.run.invoke({ query: "AI search engines" });
-    // Report is built from concatenated excerpts
-    assert.equal(
-      res.report,
-      "Deep research architecture overview\n\nDetailed findings on AI search",
-    );
+
+    // Result is a SYNTHESIZED report, not concatenated search excerpts
+    assert.equal(res.schemaVersion, 1);
+    assert.equal(res.query, "AI search engines");
+    assert.equal(res.report, "## Deep Research Report\n\nMulti-step synthesized analysis.");
+    assert.equal(res.model, "ultra"); // echoed processor from run
     assert.equal(res.sources.length, 2);
-    assert.equal(res.sources[0].url, "https://parallel.ai/docs");
+    assert.equal(res.sources[0].title, "Source A");
+    assert.equal(res.sources[0].url, "https://a.example.com");
+
+    // POST /v1/tasks/runs happened exactly once
+    const posts = calls.filter((c) => c.method === "POST" && c.url.includes("/v1/tasks/runs"));
+    assert.equal(posts.length, 1, "must POST exactly one create request");
+
+    // GET /result happened (at least 2 polls: 408 then completed)
+    const gets = calls.filter((c) => c.method === "GET" && c.url.includes("/result"));
+    assert.ok(gets.length >= 2, "must poll at least twice (running → completed)");
+
+    // Create request uses the Task API body shape (input, processor, task_spec)
+    const createBody = JSON.parse(posts[0].body);
+    assert.equal(createBody.input, "AI search engines");
+    assert.ok(createBody.processor, "create body must include a processor");
+    assert.ok(createBody.task_spec, "create body must include task_spec");
+    assert.equal(createBody.task_spec.output_schema.type, "text");
+
+    // State file cleaned up after completion
+    const identityHash = computeAsyncJobStateHash({
+      provider: "parallel",
+      capability: "research",
+      credentialFingerprint: crypto.createHash("sha256").update(TEST_KEY).digest("hex"),
+      request: { query: "AI search engines" },
+    });
+    assert.equal(stateFile.store.has(identityHash), false, "state file must be deleted on completion");
   });
 
-  it("research falls back to placeholder when no results", async () => {
-    const fakeFetch = mockFetch({ results: [] });
+  it("research does NOT call /v1/search — uses Task API exclusively (8P.1)", async () => {
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const { fetch: taskFetch, calls } = makeTaskFetch({
+      pollResponses: [COMPLETED_RESULT],
+    });
 
     const adapter = new ParallelAdapter(
       { env: { PARALLEL_API_KEY: TEST_KEY } },
-      { transport: { fetch: fakeFetch } },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
     );
 
-    const res = await adapter.research.run.invoke({ query: "empty topic" });
-    assert.equal(res.report, "No research findings available.");
-    assert.equal(res.sources.length, 0);
+    await adapter.research.run.invoke({ query: "test query" });
+
+    // No request should hit /v1/search
+    const searchCalls = calls.filter((c) => c.url.includes("/v1/search"));
+    assert.equal(searchCalls.length, 0, "research must NOT call /v1/search");
+  });
+
+  it("research deduplicates sources by URL from basis citations (8P.1)", async () => {
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const dedupResult = {
+      status: 200,
+      body: {
+        run: { run_id: "trun-dedup", status: "completed", processor: "pro" },
+        output: {
+          type: "text",
+          content: "Report with deduplicated sources.",
+          basis: [
+            {
+              field: "point1",
+              reasoning: "From multiple sources.",
+              citations: [
+                { title: "Source A", url: "https://dup.example.com" },
+                { title: "Source B", url: "https://unique.example.com" },
+              ],
+            },
+            {
+              field: "point2",
+              reasoning: "Also references A.",
+              citations: [
+                { title: "Source A again", url: "https://dup.example.com" },
+                { title: "Source C", url: "https://c.example.com" },
+              ],
+            },
+          ],
+        },
+      },
+    };
+
+    const { fetch: taskFetch } = makeTaskFetch({ pollResponses: [dedupResult] });
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
+    );
+
+    const res = await adapter.research.run.invoke({ query: "dedup test" });
+    // 3 unique URLs (dup.example.com appears twice in basis)
+    assert.equal(res.sources.length, 3);
+    assert.equal(res.sources[0].url, "https://dup.example.com");
+    assert.equal(res.sources[0].title, "Source A"); // first-seen title preserved
+    assert.equal(res.sources[1].url, "https://unique.example.com");
+    assert.equal(res.sources[2].url, "https://c.example.com");
+  });
+
+  it("research maps model to processor in create request (8P.1)", async () => {
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const { fetch: taskFetch, calls } = makeTaskFetch({
+      pollResponses: [COMPLETED_RESULT],
+    });
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
+    );
+
+    await adapter.research.run.invoke({ query: "model test", model: "pro" });
+    const post = calls.find((c) => c.method === "POST" && c.url.includes("/v1/tasks/runs"));
+    const body = JSON.parse(post.body);
+    assert.equal(body.processor, "ultra", "model pro must map to processor ultra");
+  });
+
+  it("research maps domain to source_policy.include_domains (8P.1)", async () => {
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const { fetch: taskFetch, calls } = makeTaskFetch({
+      pollResponses: [COMPLETED_RESULT],
+    });
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
+    );
+
+    await adapter.research.run.invoke({ query: "domain test", domain: "example.com" });
+    const post = calls.find((c) => c.method === "POST" && c.url.includes("/v1/tasks/runs"));
+    const body = JSON.parse(post.body);
+    assert.deepEqual(body.source_policy.include_domains, ["example.com"]);
+  });
+
+  it("research resumes from state file instead of creating new task (8P.1)", async () => {
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const request = { query: "resume test" };
+    const identityHash = computeAsyncJobStateHash({
+      provider: "parallel",
+      capability: "research",
+      credentialFingerprint: crypto.createHash("sha256").update(TEST_KEY).digest("hex"),
+      request,
+    });
+
+    // Pre-populate: simulate a task created by a previous (interrupted) run
+    stateFile.store.set(
+      identityHash,
+      JSON.stringify({
+        requestId: "trun-from-prev-run",
+        identityHash,
+        createdAt: new Date().toISOString(),
+        status: "pending",
+      }),
+    );
+
+    const { fetch: taskFetch, calls } = makeTaskFetch({
+      pollResponses: [COMPLETED_RESULT],
+    });
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
+    );
+
+    const res = await adapter.research.run.invoke(request);
+    assert.equal(res.report, "## Deep Research Report\n\nMulti-step synthesized analysis.");
+
+    // No POST — the existing task was polled directly
+    const posts = calls.filter((c) => c.method === "POST" && c.url.includes("/v1/tasks/runs"));
+    assert.equal(posts.length, 0, "must not POST when resuming from state file");
+
+    // State file cleaned up
+    assert.equal(stateFile.store.has(identityHash), false);
+  });
+
+  it("research throws ApiError on task failure and cleans up state file (8P.1)", async () => {
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const { fetch: taskFetch } = makeTaskFetch({
+      pollResponses: [FAILED_RESULT],
+    });
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
+    );
+
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "fail test" }),
+      (err) => err instanceof ApiError && err.statusCode === 500,
+    );
+
+    const identityHash = computeAsyncJobStateHash({
+      provider: "parallel",
+      capability: "research",
+      credentialFingerprint: crypto.createHash("sha256").update(TEST_KEY).digest("hex"),
+      request: { query: "fail test" },
+    });
+    assert.equal(stateFile.store.has(identityHash), false, "state file must be deleted on failure");
+  });
+
+  it("research handles 404 not_found by creating a fresh task (8P.1)", async () => {
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const { fetch: taskFetch, calls } = makeTaskFetch({
+      // First poll: 404 (stale/expired run)
+      // Then new POST creates a fresh run
+      // Then completed
+      pollResponses: [NOT_FOUND_404, COMPLETED_RESULT],
+    });
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
+    );
+
+    const res = await adapter.research.run.invoke({ query: "404 recovery" });
+    assert.equal(res.report, "## Deep Research Report\n\nMulti-step synthesized analysis.");
+
+    // Two POSTs: initial create + fresh create after 404
+    const posts = calls.filter((c) => c.method === "POST" && c.url.includes("/v1/tasks/runs"));
+    assert.equal(posts.length, 2, "must create a fresh task after 404");
+  });
+
+  it("research sends x-api-key header on task create and result (8P.6)", async () => {
+    const stateFile = createInMemoryAsyncJobStateFile();
+    let createHeaders = null;
+    let resultHeaders = null;
+    const fakeFetch = async (url, init) => {
+      const u = String(url);
+      if (init?.method === "POST" && u.includes("/v1/tasks/runs")) {
+        createHeaders = init.headers;
+        return {
+          ok: true,
+          status: 202,
+          text: async () => JSON.stringify({ run_id: "trun-hdr", status: "queued" }),
+        };
+      }
+      if (init?.method === "GET" && u.includes("/result")) {
+        resultHeaders = init.headers;
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              run: { status: "completed", processor: "pro" },
+              output: { type: "text", content: "Report.", basis: [] },
+            }),
+        };
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ results: [] }) };
+    };
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch }, researchStateFile: stateFile },
+    );
+
+    await adapter.research.run.invoke({ query: "header test" });
+    assert.strictEqual(createHeaders["x-api-key"], TEST_KEY, "create must send x-api-key");
+    assert.ok(!("Authorization" in createHeaders), "create must NOT send Authorization");
+    assert.strictEqual(resultHeaders["x-api-key"], TEST_KEY, "result must send x-api-key");
+    assert.ok(!("Authorization" in resultHeaders), "result must NOT send Authorization");
   });
 });
 
@@ -620,16 +969,40 @@ describe("Parallel AI Error Handling", () => {
     );
   });
 
-  it("rejects overlong research query (>200 chars) with ValidationError (8P.4)", () => {
+  it("rejects overlong research input (>15000 chars) with ValidationError (8P.1)", () => {
     const adapter = new ParallelAdapter(
       { env: { PARALLEL_API_KEY: TEST_KEY } },
       { transport: { fetch: async () => ({}) } },
     );
 
-    const longQuery = "a".repeat(201);
+    const longQuery = "a".repeat(15001);
     assert.throws(
       () => adapter.research.run.validate({ query: longQuery }),
-      (e) => e instanceof ValidationError && e.message.includes("200"),
+      (e) => e instanceof ValidationError && e.message.includes("15000"),
     );
+  });
+
+  it("accepts research input at exactly 15000 chars (8P.1)", () => {
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: async () => ({}) } },
+    );
+
+    const maxQuery = "a".repeat(15000);
+    adapter.research.run.validate({ query: maxQuery });
+  });
+
+  it("accepts model, domain, outputLength, citationFormat for research (8P.1)", () => {
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: async () => ({}) } },
+    );
+
+    // These were previously rejected as UnsupportedOptionError.
+    // Now they map to processor/source_policy/description.
+    adapter.research.run.validate({ query: "test", model: "pro" });
+    adapter.research.run.validate({ query: "test", domain: "example.com" });
+    adapter.research.run.validate({ query: "test", outputLength: "long" });
+    adapter.research.run.validate({ query: "test", citationFormat: "apa" });
   });
 });

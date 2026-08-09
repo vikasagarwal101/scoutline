@@ -853,12 +853,14 @@ function createZaiDiagnosticsCapability(
  * a fake factory through {@link createZaiDescriptor}'s dependencies.
  */
 function defaultZaiClientFactory(options: ZaiMcpClientOptions): ZaiAdapterClientPort {
-  // 4.10: Pass only the fields the adapter actually uses — the adapter
-  // never injects `utcpFactory`, so it is omitted here and the lib's
-  // constructor falls through to the default `UtcpClient.create()`.
-  // This avoids a cast at the options boundary: the providers-layer
-  // `UtcpClientPort` declares `getTools(): Promise<unknown[]>`, which
-  // is wider than the lib's `McpUtcpClient` (`Promise<Tool[]>`).
+  // 4.10: Pass only the fields the adapter actually uses. The adapter
+  // never injects `utcpFactory` (tests inject fakes through
+  // `createZaiDescriptor`'s `dependencies.clientFactory` instead), so it
+  // is omitted here and the lib's constructor falls through to the
+  // default `UtcpClient.create()`. This avoids a cast at the options
+  // boundary: the providers-layer `UtcpClientPort` declares
+  // `getTools(): Promise<unknown[]>`, which is wider than the lib's
+  // `McpUtcpClient` (`Promise<Tool[]>`).
   const client = new ZaiMcpClient({
     enableVision: options.enableVision,
     noCache: options.noCache,

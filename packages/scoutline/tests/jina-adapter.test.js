@@ -583,14 +583,24 @@ describe("Jina DeepSearch Streaming (8J.6)", () => {
   });
 
   it("honors AbortSignal — throws TimeoutError on abort", async () => {
-    // Simulate an aborted fetch by having the signal abort before the
-    // response body is read. The AbortController in fetchJinaDeepSearch
-    // links the external signal to the fetch signal.
-    const fakeFetch = async (url, init) => {
-      // Simulate abort during the fetch by throwing AbortError
-      const err = new Error("The user aborted a request");
-      err.name = "AbortError";
-      throw err;
+    // The fake fetch returns a promise that rejects ONLY when init.signal
+    // (the controller's signal) is actually aborted. This genuinely
+    // exercises the externalSignal → controller.abort() → init.signal
+    // wiring — if the linkage is broken, the promise never resolves and
+    // the test times out rather than falsely passing.
+    const fakeFetch = (url, init) => {
+      if (init.signal.aborted) {
+        const err = new Error("The user aborted a request");
+        err.name = "AbortError";
+        return Promise.reject(err);
+      }
+      return new Promise((_, reject) => {
+        init.signal.addEventListener("abort", () => {
+          const err = new Error("The user aborted a request");
+          err.name = "AbortError";
+          reject(err);
+        });
+      });
     };
 
     const adapter = new JinaAdapter(
@@ -600,12 +610,13 @@ describe("Jina DeepSearch Streaming (8J.6)", () => {
 
     const ac = new AbortController();
     const promise = adapter.research.run.invoke({ query: "test" }, ac.signal);
+    // Abort after the fetch is in-flight
     ac.abort();
 
     await assert.rejects(promise, (err) => err instanceof TimeoutError);
   });
 
-  it("maps HTTP 524 to TimeoutError (gateway origin timeout)", async () => {
+  it("maps HTTP 524 to TimeoutError with DeepSearch-specific help text", async () => {
     const fakeFetch = async () => ({
       ok: false,
       status: 524,
@@ -619,7 +630,11 @@ describe("Jina DeepSearch Streaming (8J.6)", () => {
 
     await assert.rejects(
       () => adapter.research.run.invoke({ query: "test" }),
-      (err) => err instanceof TimeoutError,
+      (err) => {
+        if (!(err instanceof TimeoutError)) return false;
+        // Help text must reference JINA_DEEPSEARCH_TIMEOUT, not the generic JINA_TIMEOUT
+        return err.help?.includes("JINA_DEEPSEARCH_TIMEOUT");
+      },
     );
   });
 
@@ -658,6 +673,57 @@ describe("Jina DeepSearch Streaming (8J.6)", () => {
     assert.equal(res.sources.length, 1);
     assert.equal(res.sources[0].title, "Doc");
     assert.equal(res.sources[0].url, "https://doc.example.com");
+  });
+
+  it("fails closed on premature EOF — no terminal event", async () => {
+    // Stream has content but no finish_reason: "stop" or [DONE] —
+    // indicates a truncated response. Must NOT return partial content.
+    const sseBody = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "<think>skip</think>\n\n", type: "think" }, finish_reason: "thinking_end" }] })}\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Partial answer.", type: "text" } }] })}\n`,
+      // No terminal chunk — stream just ends
+    ].join("\n");
+
+    const fakeFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => sseBody,
+    });
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "test" }),
+      (err) => err instanceof ApiError,
+    );
+  });
+
+  it("fails on malformed SSE data payload", async () => {
+    // A data: line with invalid JSON indicates response corruption.
+    const sseBody = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "<think>skip</think>\n\n", type: "think" }, finish_reason: "thinking_end" }] })}\n`,
+      "data: {invalid json\n",
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Answer.", type: "text" }, finish_reason: "stop" }] })}\n`,
+    ].join("\n");
+
+    const fakeFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => sseBody,
+    });
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "test" }),
+      (err) => err instanceof ApiError,
+    );
   });
 });
 

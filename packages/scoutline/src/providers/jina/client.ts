@@ -110,7 +110,7 @@ function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
  * The transport never embeds credential material or raw response bodies
  * in any error message.
  */
-function mapStatusError(status: number, timeoutMs: number, errorBody?: string): Error {
+function mapStatusError(status: number, timeoutMs: number, errorBody?: string, timeoutHelpText: string = TIMEOUT_HELP_TEXT): Error {
   if (status === 401) {
     return new AuthError("Jina AI authentication failed", "JINA_API_KEY");
   }
@@ -143,7 +143,7 @@ function mapStatusError(status: number, timeoutMs: number, errorBody?: string): 
     // 524 is Cloudflare's origin-timeout, the specific status Jina warns
     // about for non-streaming DeepSearch (8J.6). Classified as a timeout
     // rather than a generic API failure.
-    return new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
+    return new TimeoutError(timeoutMs, timeoutHelpText);
   }
   if (status === 429) {
     return new QuotaError(
@@ -419,37 +419,55 @@ interface DeepSearchStreamChunk {
  * Parse a DeepSearch SSE response body into the same
  * {@link JinaDeepSearchResponse} shape the non-streaming path produced.
  *
- * Accumulates `delta.content` from chunks whose `delta.type` is `"text"`
- * (the final answer) or absent (defensive standard-OpenAI fallback).
- * Skips `"think"` chunks (reasoning/search steps). Citations arrive as
- * `delta.annotations` on the terminal chunk; `visitedURLs` at top level.
+ * Accumulates `delta.content` ONLY from chunks whose `delta.type` is
+ * `"text"` (the final answer) or absent (defensive standard-OpenAI
+ * fallback). Skips `"think"` chunks (reasoning/search steps) and any
+ * unknown future types. Citations arrive as `delta.annotations` on the
+ * terminal chunk; `visitedURLs` at top level.
+ *
+ * Fails closed: if the stream ends without a terminal event
+ * (`finish_reason: "stop"` or `[DONE]`), throws rather than returning a
+ * potentially incomplete report. Malformed data payloads are treated as
+ * API errors rather than silently dropped.
  */
 function parseDeepSearchSSE(text: string): JinaDeepSearchResponse {
   let content = "";
   let annotations: JinaDeepSearchAnnotation[] = [];
   let visitedURLs: string[] = [];
+  let sawTerminal = false;
 
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("data:")) continue;
 
     const payload = trimmed.slice("data:".length).trim();
-    if (payload === "[DONE]" || payload === "") continue;
+    if (payload === "") continue;
+    if (payload === "[DONE]") {
+      sawTerminal = true;
+      break;
+    }
 
     let chunk: DeepSearchStreamChunk;
     try {
       chunk = JSON.parse(payload) as DeepSearchStreamChunk;
     } catch {
-      // Malformed SSE line — skip rather than fail the entire response.
-      continue;
+      // Malformed data payload — indicates response corruption. Fail
+      // rather than silently dropping answer text or citations.
+      throw new ApiError("Jina AI returned a malformed SSE response", 502);
+    }
+
+    // Track terminal event (finish_reason: "stop").
+    if (chunk.choices?.[0]?.finish_reason === "stop") {
+      sawTerminal = true;
     }
 
     const delta = chunk.choices?.[0]?.delta;
     if (!delta) continue;
 
-    // Only accumulate answer content, not reasoning steps.
-    // "think" chunks are internal reasoning; "text" chunks are the answer.
-    if (delta.content && delta.type !== "think") {
+    // Only accumulate answer content from "text" chunks (or standard
+    // OpenAI chunks with no type field). Excludes "think" (reasoning)
+    // and any unknown future delta types from the report.
+    if (delta.content && (delta.type === "text" || delta.type === undefined)) {
       content += delta.content;
     }
 
@@ -462,6 +480,13 @@ function parseDeepSearchSSE(text: string): JinaDeepSearchResponse {
     if (chunk.visitedURLs && chunk.visitedURLs.length > 0) {
       visitedURLs = visitedURLs.concat(chunk.visitedURLs);
     }
+  }
+
+  // Fail closed: a stream that ended without a terminal event indicates
+  // a truncated response (network issue, server crash). Returning the
+  // partial content would silently give the user an incomplete report.
+  if (!sawTerminal) {
+    throw new ApiError("Jina AI DeepSearch stream ended without completion", 502);
   }
 
   return {
@@ -546,7 +571,7 @@ export async function fetchJinaDeepSearch(
 
     if (!response.ok) {
       const errorBody = await readErrorBody(response);
-      throw mapStatusError(response.status, timeoutMs, errorBody);
+      throw mapStatusError(response.status, timeoutMs, errorBody, DEEPSEARCH_TIMEOUT_HELP_TEXT);
     }
 
     const text = await response.text();

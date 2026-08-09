@@ -77,7 +77,7 @@ export interface WebSearchResult {
  * Minimal structural surface of the UTCP client consumed by
  * {@link ZaiMcpClient}. Production code uses `UtcpClient.create()` which
  * structurally satisfies this interface; the providers layer's
- * {@link UtcpClientPort} (which lacks `close()`) also satisfies it because
+ * `UtcpClientPort` (which lacks `close()`) also satisfies it because
  * `close` is optional. This keeps the lib → providers dependency direction
  * intact (no import of the providers port) while allowing the providers'
  * options type to flow into the constructor without a cast.

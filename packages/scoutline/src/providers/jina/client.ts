@@ -139,7 +139,10 @@ function mapStatusError(status: number, timeoutMs: number, errorBody?: string): 
     }
     return new AuthError("Jina AI authentication failed", "JINA_API_KEY");
   }
-  if (status === 408 || status === 504) {
+  if (status === 408 || status === 504 || status === 524) {
+    // 524 is Cloudflare's origin-timeout, the specific status Jina warns
+    // about for non-streaming DeepSearch (8J.6). Classified as a timeout
+    // rather than a generic API failure.
     return new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
   }
   if (status === 429) {
@@ -369,6 +372,7 @@ export interface JinaDeepSearchUrlCitation {
 }
 
 export interface JinaDeepSearchAnnotation {
+  readonly type?: string;
   readonly url_citation?: JinaDeepSearchUrlCitation;
 }
 
@@ -380,6 +384,97 @@ export interface JinaDeepSearchResponse {
     };
   }[];
   readonly visitedURLs?: readonly string[];
+}
+
+/**
+ * Shape of a single SSE chunk from DeepSearch streaming (OpenAI-compatible
+ * chat.completion.chunk). The `delta.type` field distinguishes reasoning
+ * steps ("think") from the final answer ("text"):
+ *
+ *   delta.type === "think" — reasoning/search steps (internal, NOT the answer)
+ *   delta.type === "text"  — the final answer content (accumulate this)
+ *
+ * The terminal chunk carries `finish_reason: "stop"`, `delta.annotations`
+ * (citations), and top-level `visitedURLs`. There is no `data: [DONE]`
+ * sentinel — the stream ends after the terminal chunk.
+ *
+ * Verified against Jina's live DeepSearch API and docs (jina.ai/deepsearch),
+ * which explicitly recommends streaming: "We strongly recommend keeping
+ * this option enabled since DeepSearch requests can take significant time
+ * to complete. Disabling streaming may result in '524 timeout' errors."
+ */
+interface DeepSearchStreamChunk {
+  readonly choices?: readonly {
+    readonly delta?: {
+      readonly content?: string;
+      readonly type?: string;
+      readonly annotations?: readonly JinaDeepSearchAnnotation[];
+    };
+    readonly finish_reason?: string | null;
+  }[];
+  readonly visitedURLs?: readonly string[];
+}
+
+/**
+ * Parse a DeepSearch SSE response body into the same
+ * {@link JinaDeepSearchResponse} shape the non-streaming path produced.
+ *
+ * Accumulates `delta.content` from chunks whose `delta.type` is `"text"`
+ * (the final answer) or absent (defensive standard-OpenAI fallback).
+ * Skips `"think"` chunks (reasoning/search steps). Citations arrive as
+ * `delta.annotations` on the terminal chunk; `visitedURLs` at top level.
+ */
+function parseDeepSearchSSE(text: string): JinaDeepSearchResponse {
+  let content = "";
+  let annotations: JinaDeepSearchAnnotation[] = [];
+  let visitedURLs: string[] = [];
+
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) continue;
+
+    const payload = trimmed.slice("data:".length).trim();
+    if (payload === "[DONE]" || payload === "") continue;
+
+    let chunk: DeepSearchStreamChunk;
+    try {
+      chunk = JSON.parse(payload) as DeepSearchStreamChunk;
+    } catch {
+      // Malformed SSE line — skip rather than fail the entire response.
+      continue;
+    }
+
+    const delta = chunk.choices?.[0]?.delta;
+    if (!delta) continue;
+
+    // Only accumulate answer content, not reasoning steps.
+    // "think" chunks are internal reasoning; "text" chunks are the answer.
+    if (delta.content && delta.type !== "think") {
+      content += delta.content;
+    }
+
+    // Annotations (citations) arrive on the terminal chunk.
+    if (delta.annotations && delta.annotations.length > 0) {
+      annotations = annotations.concat(delta.annotations);
+    }
+
+    // visitedURLs arrive on the terminal chunk at the top level.
+    if (chunk.visitedURLs && chunk.visitedURLs.length > 0) {
+      visitedURLs = visitedURLs.concat(chunk.visitedURLs);
+    }
+  }
+
+  return {
+    choices: [
+      {
+        message: {
+          content,
+          ...(annotations.length > 0 ? { annotations } : {}),
+        },
+      },
+    ],
+    ...(visitedURLs.length > 0 ? { visitedURLs } : {}),
+  };
 }
 
 function resolveDeepSearchTimeoutMs(env: NodeJS.ProcessEnv): number {
@@ -410,7 +505,14 @@ export async function fetchJinaDeepSearch(
   const body: Record<string, unknown> = {
     model: "jina-deepsearch-v1",
     messages: [{ role: "user", content: query }],
-    stream: false,
+    // Streaming is strongly recommended by Jina: non-streaming DeepSearch
+    // can hit gateway HTTP 524 on long research runs because the origin
+    // sends no data while processing (8J.6). With stream: true, the server
+    // emits SSE events (reasoning steps + final answer) incrementally,
+    // keeping the gateway alive. We read the full body via text() and parse
+    // the SSE — the 524 prevention comes from the server actively sending
+    // data, not from how the client reads it.
+    stream: true,
     reasoning_effort: "medium",
     max_returned_urls: 10,
   };
@@ -448,7 +550,9 @@ export async function fetchJinaDeepSearch(
     }
 
     const text = await response.text();
-    return JSON.parse(text) as JinaDeepSearchResponse;
+    // Parse the SSE stream into the same JinaDeepSearchResponse shape
+    // the non-streaming path produced (8J.6).
+    return parseDeepSearchSSE(text);
   } catch (err: unknown) {
     if (err instanceof AuthError || err instanceof ApiError || err instanceof QuotaError || err instanceof TimeoutError) {
       throw err;

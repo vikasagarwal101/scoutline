@@ -26,6 +26,36 @@ function mockFetch(responseBody, status = 200) {
   });
 }
 
+/**
+ * Build a synthetic SSE response body for DeepSearch streaming (8J.6).
+ * Each event is a `data: {JSON}\n` line. The terminal chunk carries
+ * annotations, visitedURLs, and finish_reason: "stop".
+ *
+ * @param {string} answerContent — the final answer text (delta.type "text")
+ * @param {object} [opts]
+ * @param {string} [opts.thinkContent] — reasoning step content (delta.type "think"); skipped by parser
+ * @param {Array} [opts.annotations] — citation annotations on the terminal chunk
+ * @param {Array} [opts.visitedURLs] — visited URLs on the terminal chunk
+ */
+function mockDeepSearchSSE(answerContent, opts = {}) {
+  const { thinkContent = "Reasoning about the query.", annotations = [], visitedURLs = [] } = opts;
+  const events = [
+    // Reasoning step (think) — should be skipped by the parser
+    JSON.stringify({
+      choices: [{ delta: { content: `<think>${thinkContent}</think>\n\n`, type: "think" }, finish_reason: "thinking_end" }],
+    }),
+    // Final answer (text) — should be accumulated
+    JSON.stringify({
+      choices: [{
+        delta: { content: answerContent, type: "text", ...(annotations.length > 0 ? { annotations } : {}) },
+        finish_reason: "stop",
+      }],
+      ...(visitedURLs.length > 0 ? { visitedURLs } : {}),
+    }),
+  ];
+  return events.map((e) => `data: ${e}\n`).join("\n");
+}
+
 describe("Jina AI Credentials", () => {
   it("resolves valid API key from environment", () => {
     assert.equal(resolveJinaApiKey({ JINA_API_KEY: "  key789  " }), "  key789  ");
@@ -230,33 +260,30 @@ describe("Jina AI Descriptor & Adapter", () => {
         ok: true,
         status: 200,
         text: async () =>
-          JSON.stringify({
-            choices: [
-              {
-                message: {
-                  role: "assistant",
-                  content: "Rust async programming uses futures and the async/await syntax.",
-                  annotations: [
-                    {
-                      url_citation: {
-                        title: "Rust Book",
-                        url: "https://doc.rust-lang.org/book",
-                        exactQuote: "async/await",
-                      },
-                    },
-                    {
-                      url_citation: {
-                        title: "Tokio Tutorial",
-                        url: "https://tokio.rs/tutorial",
-                        exactQuote: "runtime",
-                      },
-                    },
-                  ],
+          mockDeepSearchSSE(
+            "Rust async programming uses futures and the async/await syntax.",
+            {
+              annotations: [
+                {
+                  type: "url_citation",
+                  url_citation: {
+                    title: "Rust Book",
+                    url: "https://doc.rust-lang.org/book",
+                    exactQuote: "async/await",
+                  },
                 },
-              },
-            ],
-            visitedURLs: ["https://doc.rust-lang.org/book", "https://tokio.rs/tutorial"],
-          }),
+                {
+                  type: "url_citation",
+                  url_citation: {
+                    title: "Tokio Tutorial",
+                    url: "https://tokio.rs/tutorial",
+                    exactQuote: "runtime",
+                  },
+                },
+              ],
+              visitedURLs: ["https://doc.rust-lang.org/book", "https://tokio.rs/tutorial"],
+            },
+          ),
       };
     };
 
@@ -279,8 +306,7 @@ describe("Jina AI Descriptor & Adapter", () => {
       ok: true,
       status: 200,
       text: async () =>
-        JSON.stringify({
-          choices: [{ message: { content: "Research answer." } }],
+        mockDeepSearchSSE("Research answer.", {
           visitedURLs: ["https://source1.com", "https://source2.com"],
         }),
     });
@@ -381,10 +407,7 @@ describe("Jina AI Control Acceptance (8J.3/8J.4)", () => {
       return {
         ok: true,
         status: 200,
-        text: async () =>
-          JSON.stringify({
-            choices: [{ message: { content: "Research answer." } }],
-          }),
+        text: async () => mockDeepSearchSSE("Research answer."),
       };
     };
 
@@ -400,6 +423,241 @@ describe("Jina AI Control Acceptance (8J.3/8J.4)", () => {
       ["example.com"],
       "domain must map to only_hostnames array",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DeepSearch Streaming — 8J.6
+// ---------------------------------------------------------------------------
+
+describe("Jina DeepSearch Streaming (8J.6)", () => {
+  it("sends stream: true in the request body", async () => {
+    let capturedBody = null;
+    const fakeFetch = async (url, init) => {
+      capturedBody = JSON.parse(init.body);
+      return { ok: true, status: 200, text: async () => mockDeepSearchSSE("Answer.") };
+    };
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await adapter.research.run.invoke({ query: "test" });
+    assert.equal(capturedBody.stream, true, "stream must be true in request body (8J.6)");
+  });
+
+  it("accumulates text content and skips think chunks", async () => {
+    // Multi-chunk SSE: several think fragments + one text answer fragment
+    const sseBody = [
+      // Reasoning fragments (think) — must be skipped
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "<think>", type: "think" } }] })}\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Reasoning step.", type: "think" } }] })}\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "</think>\n\n", type: "think" }, finish_reason: "thinking_end" }] })}\n`,
+      // Answer fragment (text) — must be accumulated
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "The answer is 42.", type: "text" }, finish_reason: "stop" }] })}\n`,
+    ].join("\n");
+
+    const fakeFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => sseBody,
+    });
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const res = await adapter.research.run.invoke({ query: "meaning of life" });
+    assert.equal(res.report, "The answer is 42.", "only text content accumulated, think skipped");
+    assert.ok(!res.report.includes("think"), "no think tags in report");
+    assert.ok(!res.report.includes("Reasoning"), "no reasoning in report");
+  });
+
+  it("accumulates content across multiple text chunks", async () => {
+    const sseBody = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "<think>skip</think>\n\n", type: "think" }, finish_reason: "thinking_end" }] })}\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Part 1. ", type: "text" } }] })}\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Part 2. ", type: "text" } }] })}\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Part 3.", type: "text" }, finish_reason: "stop" }] })}\n`,
+    ].join("\n");
+
+    const fakeFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => sseBody,
+    });
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const res = await adapter.research.run.invoke({ query: "test" });
+    assert.equal(res.report, "Part 1. Part 2. Part 3.");
+  });
+
+  it("extracts citations from terminal chunk annotations", async () => {
+    const sseBody = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "<think>reasoning</think>\n\n", type: "think" }, finish_reason: "thinking_end" }] })}\n`,
+      `data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            content: "The answer with citations.",
+            type: "text",
+            annotations: [
+              { type: "url_citation", url_citation: { title: "Source A", url: "https://a.example.com" } },
+              { type: "url_citation", url_citation: { title: "Source B", url: "https://b.example.com" } },
+            ],
+          },
+          finish_reason: "stop",
+        }],
+        visitedURLs: ["https://a.example.com", "https://b.example.com"],
+      })}\n`,
+    ].join("\n");
+
+    const fakeFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => sseBody,
+    });
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const res = await adapter.research.run.invoke({ query: "test" });
+    assert.equal(res.report, "The answer with citations.");
+    assert.equal(res.sources.length, 2);
+    assert.equal(res.sources[0].title, "Source A");
+    assert.equal(res.sources[0].url, "https://a.example.com");
+    assert.equal(res.sources[1].url, "https://b.example.com");
+  });
+
+  it("falls back to visitedURLs when no annotations in stream", async () => {
+    const sseBody = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "<think>skip</think>\n\n", type: "think" }, finish_reason: "thinking_end" }] })}\n`,
+      `data: ${JSON.stringify({
+        choices: [{ delta: { content: "Answer without annotations.", type: "text" }, finish_reason: "stop" }],
+        visitedURLs: ["https://visited1.com", "https://visited2.com"],
+      })}\n`,
+    ].join("\n");
+
+    const fakeFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => sseBody,
+    });
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const res = await adapter.research.run.invoke({ query: "test" });
+    assert.equal(res.sources.length, 2);
+    assert.equal(res.sources[0].url, "https://visited1.com");
+  });
+
+  it("handles [DONE] sentinel gracefully", async () => {
+    const sseBody = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Done test.", type: "text" }, finish_reason: "stop" }] })}\n`,
+      "data: [DONE]\n",
+    ].join("\n");
+
+    const fakeFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => sseBody,
+    });
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const res = await adapter.research.run.invoke({ query: "test" });
+    assert.equal(res.report, "Done test.");
+  });
+
+  it("honors AbortSignal — throws TimeoutError on abort", async () => {
+    // Simulate an aborted fetch by having the signal abort before the
+    // response body is read. The AbortController in fetchJinaDeepSearch
+    // links the external signal to the fetch signal.
+    const fakeFetch = async (url, init) => {
+      // Simulate abort during the fetch by throwing AbortError
+      const err = new Error("The user aborted a request");
+      err.name = "AbortError";
+      throw err;
+    };
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const ac = new AbortController();
+    const promise = adapter.research.run.invoke({ query: "test" }, ac.signal);
+    ac.abort();
+
+    await assert.rejects(promise, (err) => err instanceof TimeoutError);
+  });
+
+  it("maps HTTP 524 to TimeoutError (gateway origin timeout)", async () => {
+    const fakeFetch = async () => ({
+      ok: false,
+      status: 524,
+      text: async () => JSON.stringify({ message: "origin timeout" }),
+    });
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "test" }),
+      (err) => err instanceof TimeoutError,
+    );
+  });
+
+  it("accumulated streaming result matches non-stream mapping", async () => {
+    // This test verifies that the streaming SSE parse produces the exact
+    // same normalized ResearchResult shape as the old non-stream mapping:
+    //   choices[0].message.content -> report
+    //   message.annotations -> sources
+    //   visitedURLs -> fallback sources
+    const annotations = [
+      { type: "url_citation", url_citation: { title: "Doc", url: "https://doc.example.com" } },
+    ];
+    const sseBody = mockDeepSearchSSE("Final research report content.", {
+      thinkContent: "Complex reasoning about the query that should not appear in output.",
+      annotations,
+      visitedURLs: ["https://doc.example.com"],
+    });
+
+    const fakeFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => sseBody,
+    });
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const res = await adapter.research.run.invoke({ query: "test query" });
+    // Same shape as non-stream mapping
+    assert.equal(res.schemaVersion, 1);
+    assert.equal(res.query, "test query");
+    assert.equal(res.model, "jina-deepsearch-v1");
+    assert.equal(res.report, "Final research report content.");
+    assert.equal(res.sources.length, 1);
+    assert.equal(res.sources[0].title, "Doc");
+    assert.equal(res.sources[0].url, "https://doc.example.com");
   });
 });
 

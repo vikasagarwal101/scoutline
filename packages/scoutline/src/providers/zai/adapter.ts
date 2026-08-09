@@ -61,7 +61,6 @@ import {
 import { getMcpToolName } from "../../lib/mcp-config.js";
 import {
   ZaiMcpClient,
-  type ZaiMcpClientOptions as McpClientOptions,
 } from "../../lib/mcp-client.js";
 import { buildLegacyRepositoryCacheKey } from "../../lib/cache.js";
 import { applySearchTopic } from "../../lib/search-topic.js";
@@ -854,13 +853,20 @@ function createZaiDiagnosticsCapability(
  * a fake factory through {@link createZaiDescriptor}'s dependencies.
  */
 function defaultZaiClientFactory(options: ZaiMcpClientOptions): ZaiAdapterClientPort {
-  // The Provider-types `ZaiMcpClientOptions` declares a narrower
-  // `utcpFactory` return type (`UtcpClientPort`) than the
-  // `ZaiMcpClient` constructor's local interface (`UtcpClient`). The
-  // runtime object is structurally compatible — the narrower port is a
-  // behavioural subset the client consumes via duck-typing — so we cast
-  // at the boundary instead of leaking the SDK type outward.
-  const client = new ZaiMcpClient(options as unknown as McpClientOptions);
+  // 4.10: Pass only the fields the adapter actually uses. The adapter
+  // never injects `utcpFactory` (tests inject fakes through
+  // `createZaiDescriptor`'s `dependencies.clientFactory` instead), so it
+  // is omitted here and the lib's constructor falls through to the
+  // default `UtcpClient.create()`. This avoids a cast at the options
+  // boundary: the providers-layer `UtcpClientPort` declares
+  // `getTools(): Promise<unknown[]>`, which is wider than the lib's
+  // `McpUtcpClient` (`Promise<Tool[]>`).
+  const client = new ZaiMcpClient({
+    enableVision: options.enableVision,
+    noCache: options.noCache,
+    disableRetry: options.disableRetry,
+    env: options.env,
+  });
   // Adapt the rich ZaiMcpClient surface to the narrow
   // ZaiAdapterClientPort the Z.AI Search Adapter needs.
   return {

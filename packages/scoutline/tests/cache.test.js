@@ -1334,3 +1334,154 @@ describe("cache file modes are restrictive (1.3)", () => {
     });
   });
 });
+
+describe("concurrent writeCache serializes via inter-process lock (5.5)", () => {
+  it("two concurrent writers to the same key do not throw and produce a valid cache entry", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const key = "concurrent-test.json";
+
+        // Fire two writes simultaneously — the inter-process lock should
+        // serialize them so neither throws and the final file is valid.
+        const results = await Promise.allSettled([
+          writeCache(key, { writer: "A", seq: 1 }),
+          writeCache(key, { writer: "B", seq: 2 }),
+        ]);
+
+        // Neither write should reject (best-effort contract).
+        for (const r of results) {
+          assert.strictEqual(r.status, "fulfilled", "writeCache should never throw");
+        }
+
+        // The file must exist and be a valid cache entry.
+        const cached = await readCache(key);
+        assert.ok(cached !== null, "cache entry should exist after concurrent writes");
+        assert.ok(
+          cached.writer === "A" || cached.writer === "B",
+          `cached writer should be A or B, got ${JSON.stringify(cached)}`,
+        );
+
+        // The lockfile should have been cleaned up after both writes complete.
+        const lockPath = path.join(dir, "cache", "cache-write.lock");
+        const lockExists = await fs.access(lockPath).then(() => true).catch(() => false);
+        assert.strictEqual(lockExists, false, "lockfile should be released after writes complete");
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("concurrent writes to different keys serialize and all entries are readable", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const keys = ["k1.json", "k2.json", "k3.json", "k4.json", "k5.json"];
+
+        // All five writes go through the same lockfile ("cache-write"),
+        // so they serialize. None should throw.
+        const results = await Promise.allSettled(
+          keys.map((k, i) => writeCache(k, { index: i })),
+        );
+        for (const r of results) {
+          assert.strictEqual(r.status, "fulfilled");
+        }
+
+        // Every key should be readable.
+        for (let i = 0; i < keys.length; i++) {
+          const val = await readCache(keys[i]);
+          assert.ok(val !== null, `key ${keys[i]} should be cached`);
+          assert.strictEqual(val.index, i);
+        }
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("writeCache blocks while the lock is held externally, then completes on release", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const key = "blocked-write.json";
+        const lockPath = path.join(dir, "cache", "cache-write.lock");
+
+        // Ensure the cache dir exists, then hold the lock externally.
+        await fs.mkdir(path.join(dir, "cache"), { recursive: true });
+        const handle = await fs.open(lockPath, "wx");
+
+        // Start writeCache — it should block waiting for the lock.
+        let writeCompleted = false;
+        const writePromise = writeCache(key, { value: 42 }).then(() => {
+          writeCompleted = true;
+        });
+
+        // Give writeCache time to discover the lock is contended.
+        await new Promise((r) => setTimeout(r, 200));
+        assert.strictEqual(writeCompleted, false, "writeCache must block while lock is held");
+
+        // Release the lock — writeCache should proceed.
+        await handle.close();
+        await fs.unlink(lockPath);
+        await writePromise;
+        assert.strictEqual(writeCompleted, true, "writeCache should complete after lock release");
+
+        const cached = await readCache(key);
+        assert.deepStrictEqual(cached, { value: 42 });
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("eviction skips the lockfile during size-cap-triggered eviction", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      // Set a 1MB size cap so a few large entries trigger eviction.
+      process.env.SCOUTLINE_CACHE_SIZE_MB = "1";
+      try {
+        const cacheDir = path.join(dir, "cache");
+
+        // Seed a separate *.lock file BEFORE writing. This file is NOT
+        // the active cache-write.lock (so it won't block withAsyncFileLock),
+        // but evictIfNeeded must still skip it because of the *.lock guard.
+        // If the guard were removed, this file would be the oldest entry
+        // (tiny mtime) and could be evicted under size pressure.
+        const sentinelLock = path.join(cacheDir, "test-sentinel.lock");
+        await fs.mkdir(cacheDir, { recursive: true });
+        await fs.writeFile(sentinelLock, "lock-sentinel");
+        // Age it so it's the oldest file in the dir.
+        const oldTime = new Date(Date.now() - 60000);
+        await fs.utimes(sentinelLock, oldTime, oldTime);
+
+        // Write entries large enough to exceed the 1MB cap.
+        const large = "x".repeat(400_000); // ~400KB per entry
+        for (let i = 0; i < 4; i++) {
+          await writeCache(`k${i}.json`, { data: large });
+        }
+
+        // Eviction ran: oldest cache entry evicted, newest survives.
+        const k0 = await readCache("k0.json");
+        const k3 = await readCache("k3.json");
+        assert.strictEqual(k0, null, "oldest entry should have been evicted");
+        assert.ok(k3 !== null, "newest entry should survive eviction");
+
+        // The sentinel *.lock file must survive eviction — this directly
+        // verifies the name.endsWith(".lock") guard in evictIfNeeded.
+        const sentinelExists = await fs.access(sentinelLock).then(() => true).catch(() => false);
+        assert.strictEqual(sentinelExists, true, "*.lock file must not be evicted");
+
+        // The active lockfile was properly released.
+        const lockPath = path.join(cacheDir, "cache-write.lock");
+        const lockExists = await fs.access(lockPath).then(() => true).catch(() => false);
+        assert.strictEqual(lockExists, false, "lockfile should be released after writes complete");
+
+        // Clean up sentinel.
+        await fs.unlink(sentinelLock).catch(() => {});
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+        delete process.env.SCOUTLINE_CACHE_SIZE_MB;
+      }
+    });
+  });
+});

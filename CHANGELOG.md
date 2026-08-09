@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.7] - 2026-08-09
+
+### Parallel research: real Task/Deep Research API (Angle 8, 8P.1 HIGH)
+
+- `scoutline research --provider parallel` now invokes Parallel's real asynchronous Task/Deep Research API (`POST /v1/tasks/runs` → long-poll result) instead of relabeling a search call as research. The create→poll→retrieve lifecycle maps `output.content` → report and `output.basis[].citations[]` → sources, with `run_id` state-file resume (mirrors Tavily's research lifecycle). Processor map: mini→pro-fast, pro→ultra, auto→pro; input limit raised to the documented 15,000 chars.
+- A `withResearchLock` (mirroring firecrawl's `withCrawlLock`) prevents concurrent identical research invokes from double-creating/double-billing — the second caller finds the persisted `run_id` and polls it.
+- Removes the false-equivalence tests that previously encoded the search-alias as "research".
+- Known follow-up: Tavily research has the same concurrent-double-create gap (no lock) — same `withCrawlLock` precedent would apply.
+
 ## [0.14.6] - 2026-08-09
 
 ### Rejected-but-supported controls + capability gating (Angle 8)

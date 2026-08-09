@@ -1,0 +1,44 @@
+{
+  "_source": "Live API capture via POST https://api.exa.ai/agent/runs (2026-08-09). Captured with EXA_API_KEY. Sensitive data unchanged (no credentials in body). Query intentionally trivial.",
+  "_request": {
+    "method": "POST",
+    "path": "/agent/runs",
+    "headers": {
+      "Authorization": "Bearer <redacted>",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "query": "What is the capital of France?",
+      "effort": "low"
+    },
+    "_note": "No Exa-Beta header sent — endpoint works without it."
+  },
+  "id": "agent_run_dc83d9a1c00a4aa6a8fdf01600b83301",
+  "object": "agent_run",
+  "status": "running",
+  "stopReason": null,
+  "createdAt": "2026-08-09T03:50:50.541Z",
+  "completedAt": null,
+  "request": {
+    "query": "What is the capital of France?",
+    "effort": "low"
+  },
+  "output": {
+    "text": "",
+    "structured": null,
+    "grounding": []
+  },
+  "usage": {
+    "agentComputeUnits": 0,
+    "searches": 0,
+    "emails": 0,
+    "phoneNumbers": 0
+  },
+  "costDollars": {
+    "total": 0,
+    "agentCompute": 0,
+    "search": 0,
+    "emails": 0,
+    "phoneNumbers": 0
+  }
+}

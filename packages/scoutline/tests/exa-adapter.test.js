@@ -951,28 +951,28 @@ function agentPollResponse(status, output) {
 }
 
 // ---------------------------------------------------------------------------
-// Research: Exa-Beta header assertions
+// Research: no Exa-Beta header (EXA-8-01 — header is vestigial, not needed)
 // ---------------------------------------------------------------------------
 
-describe("Exa Research — Exa-Beta header", () => {
-  it("create (POST /agent/runs) carries Exa-Beta: agent-2026-05-07", async () => {
+describe("Exa Research — no Exa-Beta header", () => {
+  it("create (POST /agent/runs) does NOT carry Exa-Beta header", async () => {
     const { adapter, calls } = makeResearchAdapter({
       onCreate: () => agentCreateResponse("run_1", "completed"),
       onPoll: () => agentPollResponse("completed", { text: "report" }),
     });
     await adapter.research.run.invoke({ query: "test" });
     const createCall = calls.find((c) => c.init.method === "POST");
-    assert.strictEqual(createCall.init.headers["Exa-Beta"], "agent-2026-05-07");
+    assert.strictEqual(createCall.init.headers["Exa-Beta"], undefined);
   });
 
-  it("poll (GET /agent/runs/:id) carries Exa-Beta: agent-2026-05-07", async () => {
+  it("poll (GET /agent/runs/:id) does NOT carry Exa-Beta header", async () => {
     const { adapter, calls } = makeResearchAdapter({
       onCreate: () => agentCreateResponse(),
       onPoll: () => agentPollResponse("completed", { text: "report" }),
     });
     await adapter.research.run.invoke({ query: "test" });
     const pollCall = calls.find((c) => c.init.method === "GET");
-    assert.strictEqual(pollCall.init.headers["Exa-Beta"], "agent-2026-05-07");
+    assert.strictEqual(pollCall.init.headers["Exa-Beta"], undefined);
   });
 
   it("search does NOT carry the Exa-Beta header", async () => {
@@ -1122,6 +1122,78 @@ describe("Exa Research — lifecycle", () => {
       (e) => e instanceof ApiError && e.statusCode === 503,
     );
     assert.strictEqual(createCount, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Research: live fixture wire-shape validation (EXA-8-01)
+// Verifies that the code correctly normalizes a response matching the
+// real /agent/runs API shape captured on 2026-08-09.
+// Fixtures: tests/fixtures/providers/exa/agent-run-create.json,
+//           tests/fixtures/providers/exa/agent-run-poll-completed.json
+// ---------------------------------------------------------------------------
+
+describe("Exa Research — live fixture wire-shape", () => {
+  it("normalizes a completed poll matching the live API fixture", async () => {
+    const fixture = {
+      id: "agent_run_dc83d9a1c00a4aa6a8fdf01600b83301",
+      object: "agent_run",
+      status: "completed",
+      stopReason: "schema_satisfied",
+      createdAt: "2026-08-09T03:50:50.739Z",
+      completedAt: "2026-08-09T03:50:56.280Z",
+      request: { query: "What is the capital of France?", effort: "low" },
+      output: {
+        text: "The capital of France is **Paris**.",
+        structured: null,
+        grounding: [
+          {
+            field: "text",
+            citations: [
+              { url: "https://www.britannica.com/place/France", title: "France | Britannica" },
+              { url: "https://www.britannica.com/place/Paris", title: "Paris | Britannica" },
+            ],
+            confidence: "high",
+          },
+        ],
+      },
+      usage: { agentComputeUnits: 0.1, searches: 3, emails: 0, phoneNumbers: 0 },
+      costDollars: { total: 0.025, agentCompute: 0.01, search: 0.015, emails: 0, phoneNumbers: 0 },
+    };
+    const { adapter } = makeResearchAdapter({
+      onCreate: () =>
+        makeResponse({
+          json: {
+            id: fixture.id,
+            object: "agent_run",
+            status: "running",
+            stopReason: null,
+            createdAt: fixture.createdAt,
+            completedAt: null,
+            request: fixture.request,
+            output: { text: "", structured: null, grounding: [] },
+            usage: { agentComputeUnits: 0, searches: 0, emails: 0, phoneNumbers: 0 },
+            costDollars: { total: 0, agentCompute: 0, search: 0, emails: 0, phoneNumbers: 0 },
+          },
+        }),
+      onPoll: () => makeResponse({ json: fixture }),
+    });
+    const result = await adapter.research.run.invoke({
+      query: "What is the capital of France?",
+      model: "mini",
+    });
+    assert.strictEqual(result.report, "The capital of France is **Paris**.");
+    assert.strictEqual(result.sources.length, 2);
+    assert.deepEqual(result.sources[0], {
+      title: "France | Britannica",
+      url: "https://www.britannica.com/place/France",
+    });
+    assert.deepEqual(result.sources[1], {
+      title: "Paris | Britannica",
+      url: "https://www.britannica.com/place/Paris",
+    });
+    // Model is echoed from the request, not the effort string.
+    assert.strictEqual(result.model, "mini");
   });
 });
 

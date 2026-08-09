@@ -71,7 +71,7 @@ import {
   createProductionAsyncJobStateFile,
 } from "../../lib/async-job-state.js";
 import { asyncJobStateDir } from "../../lib/cache.js";
-import { withAsyncFileLock } from "../../lib/async-file-lock.js";
+import { withAsyncFileLock, DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_LOCK_STALE_MS } from "../../lib/async-file-lock.js";
 import {
   ApiError,
   AuthError,
@@ -403,11 +403,6 @@ function isEexistError(err: unknown): boolean {
 // Concurrent-create lock (cost-safety — Cubic P1)
 // ---------------------------------------------------------------------------
 
-/** How long to wait for a contended research create-lock before giving up. */
-const RESEARCH_LOCK_TIMEOUT_MS = 30000;
-/** A lock older than this is treated as stale (holder died) and broken. */
-const RESEARCH_LOCK_STALE_MS = 10 * 60 * 1000;
-
 /**
  * Serialize the create→persist critical section per request so two
  * concurrent identical research invocations can't both POST (and charge)
@@ -424,8 +419,8 @@ async function withResearchLock<T>(
   deps: ParallelTransportDeps | undefined,
 ): Promise<T> {
   return withAsyncFileLock(stateDir, identityHash, fn, {
-    timeoutMs: RESEARCH_LOCK_TIMEOUT_MS,
-    staleMs: RESEARCH_LOCK_STALE_MS,
+    timeoutMs: DEFAULT_LOCK_TIMEOUT_MS,
+    staleMs: DEFAULT_LOCK_STALE_MS,
     setTimeout: deps?.setTimeout,
     timeoutLabel: "Parallel AI research",
   });

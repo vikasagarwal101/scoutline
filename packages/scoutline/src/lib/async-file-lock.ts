@@ -21,6 +21,14 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 
 /**
+ * Default lock timing constants. Consumers that need the standard values
+ * (30s acquire timeout, 10-min stale threshold) should import these
+ * instead of duplicating magic numbers.
+ */
+export const DEFAULT_LOCK_TIMEOUT_MS = 30000;
+export const DEFAULT_LOCK_STALE_MS = 10 * 60 * 1000;
+
+/**
  * Options for {@link withAsyncFileLock}.
  */
 export interface AsyncFileLockOptions {

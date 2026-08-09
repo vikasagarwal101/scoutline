@@ -68,7 +68,7 @@ import {
   type AsyncJobStateFile,
 } from "../../lib/async-job-state.js";
 import { asyncJobStateDir } from "../../lib/cache.js";
-import { withAsyncFileLock } from "../../lib/async-file-lock.js";
+import { withAsyncFileLock, DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_LOCK_STALE_MS } from "../../lib/async-file-lock.js";
 import {
   ApiError,
   AuthError,
@@ -938,11 +938,6 @@ async function persistCrawlId(
 // Concurrent-create lock (cost-safety — review C3)
 // ---------------------------------------------------------------------------
 
-/** How long to wait for a contended crawl create-lock before giving up. */
-const CRAWL_LOCK_TIMEOUT_MS = 30000;
-/** A lock older than this is treated as stale (holder died) and broken. */
-const CRAWL_LOCK_STALE_MS = 10 * 60 * 1000;
-
 /**
  * Serialize the listActive→create→persist critical section per request so two
  * concurrent identical crawls can't both POST (and charge) a job — the second
@@ -958,8 +953,8 @@ async function withCrawlLock<T>(
   deps: FirecrawlTransportDeps | undefined,
 ): Promise<T> {
   return withAsyncFileLock(stateDir, identityHash, fn, {
-    timeoutMs: CRAWL_LOCK_TIMEOUT_MS,
-    staleMs: CRAWL_LOCK_STALE_MS,
+    timeoutMs: DEFAULT_LOCK_TIMEOUT_MS,
+    staleMs: DEFAULT_LOCK_STALE_MS,
     setTimeout: deps?.setTimeout,
     timeoutLabel: "Firecrawl crawl",
   });

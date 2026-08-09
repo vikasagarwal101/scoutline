@@ -92,7 +92,7 @@ import {
 } from "../../lib/errors.js";
 import type { CacheIdentity } from "../../lib/execution.js";
 import { asyncJobStateDir } from "../../lib/cache.js";
-import { withAsyncFileLock } from "../../lib/async-file-lock.js";
+import { withAsyncFileLock, DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_LOCK_STALE_MS } from "../../lib/async-file-lock.js";
 import { requireTavilyApiKey, isTavilyConfigured } from "./credentials.js";
 import {
   fetchTavilySearch,
@@ -1029,6 +1029,38 @@ function createTavilyResearchCapability(
       const sleep = makeSleep(transport, signal);
 
       try {
+        // Lock options shared by all lock-protected sections in this
+        // capability (initial create, not_found recreation, terminal
+        // cleanup). Uses the shared default timing constants.
+        const lockOpts = {
+          timeoutMs: DEFAULT_LOCK_TIMEOUT_MS,
+          staleMs: DEFAULT_LOCK_STALE_MS,
+          setTimeout: transport?.setTimeout,
+          timeoutLabel: "Tavily research",
+        };
+
+        /**
+         * Identity-guarded state removal: take the lock, re-read the
+         * state file, and remove it ONLY when its requestId still
+         * matches this invocation's. A concurrent caller may have
+         * already replaced the state with a newer task; deleting their
+         * state would reopen the double-create path. Failures are
+         * swallowed (best-effort cleanup).
+         */
+        const safeRemoveState = async (id: string): Promise<void> => {
+          await withAsyncFileLock(
+            researchStateDir,
+            identityHash,
+            async () => {
+              const state = await researchStateFile.read(identityHash);
+              if (state?.requestId === id) {
+                await researchStateFile.remove(identityHash);
+              }
+            },
+            lockOpts,
+          ).catch(() => {});
+        };
+
         // 1. Check for an in-flight task (resume after Ctrl-C / crash).
         //    A valid state file with a pending/in_progress status means a
         //    task was already created server-side — poll it instead of
@@ -1067,12 +1099,7 @@ function createTavilyResearchCapability(
                 transport,
               );
             },
-            {
-              timeoutMs: 30000,
-              staleMs: 10 * 60 * 1000,
-              setTimeout: transport?.setTimeout,
-              timeoutLabel: "Tavily research",
-            },
+            lockOpts,
           );
         }
 
@@ -1088,14 +1115,16 @@ function createTavilyResearchCapability(
           const poll = await pollTavilyResearch(apiKey, requestId, transport);
 
           if (poll.status === "completed") {
-            // Success — delete the state file and return the result.
-            await researchStateFile.remove(identityHash);
+            // Success — delete the state file (identity-guarded) and
+            // return the result.
+            await safeRemoveState(requestId);
             return normalizeTavilyResearchResult(poll, request);
           }
 
           if (poll.status === "failed") {
-            // Server-side failure — delete the state file and throw.
-            await researchStateFile.remove(identityHash);
+            // Server-side failure — delete the state file
+            // (identity-guarded) and throw.
+            await safeRemoveState(requestId);
             throw new ApiError("Tavily research task failed", 500);
           }
 
@@ -1105,26 +1134,7 @@ function createTavilyResearchCapability(
             // task also failed to register, so terminate rather than risk
             // unbounded paid creations (mirrors Parallel's guard).
             if (recreatedAfterNotFound) {
-              // Clean up under the lock — only remove the state file if
-              // it still references OUR requestId. A concurrent caller
-              // may have already replaced it with a newer task; deleting
-              // their state would reopen the double-create path.
-              await withAsyncFileLock(
-                researchStateDir,
-                identityHash,
-                async () => {
-                  const state = await researchStateFile.read(identityHash);
-                  if (state?.requestId === requestId) {
-                    await researchStateFile.remove(identityHash);
-                  }
-                },
-                {
-                  timeoutMs: 30000,
-                  staleMs: 10 * 60 * 1000,
-                  setTimeout: transport?.setTimeout,
-                  timeoutLabel: "Tavily research",
-                },
-              ).catch(() => {});
+              await safeRemoveState(requestId);
               throw new ApiError(
                 "Tavily research task not found after recreation",
                 500,
@@ -1160,12 +1170,7 @@ function createTavilyResearchCapability(
                   transport,
                 );
               },
-              {
-                timeoutMs: 30000,
-                staleMs: 10 * 60 * 1000,
-                setTimeout: transport?.setTimeout,
-                timeoutLabel: "Tavily research",
-              },
+              lockOpts,
             );
             continue;
           }

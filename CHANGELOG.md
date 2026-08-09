@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.11] - 2026-08-09
+
+### Post-arc tech-debt cleanup (cache lock + Z.AI boundary cast)
+
+- **Inter-process cache lock (finding 5.5):** concurrent `scoutline` invocations writing the same response-cache key now serialize through an advisory lock. `writeCache` + `evictIfNeeded` are wrapped in the existing `lib/async-file-lock.ts` (reused — no new dependency) under a single fixed identity (`cache-write`); reads stay lock-free. The best-effort, never-throws contract is preserved (lock-acquire failures are swallowed alongside write failures). Eviction now skips `*.lock` files so it cannot delete an active lockfile. Previously, concurrent writes were last-write-wins via the atomic temp+rename — tolerable but undefined; the behavior is now defined.
+- **Z.AI SDK-boundary double cast removed (finding 4.10):** the `as unknown as McpClientOptions` cast at `defaultZaiClientFactory` is eliminated. The root cause was a mismatch between two internal same-named `ZaiMcpClientOptions` types (lib vs providers); the lib now declares a local structural `McpUtcpClient` port (`getTools(): Promise<Tool[]>`), and the adapter forwards only the fields it uses (omitting `utcpFactory`, which it never injects). Net casts vs main: −1; no replacement cast introduced. Type-only change — runtime behavior unchanged.
+- **Tests:** 4 new concurrent-cache tests (parallel writers, external-lock blocking observation, size-cap eviction preserving the lockfile via an aged sentinel). Suite: 2751 → 2755.
+
 ## [0.14.10] - 2026-08-09
 
 ### Cleanup: jina header harvesting + shared create-lock (Angle 8 follow-ups)

@@ -106,11 +106,17 @@ function normalizeJinaError(error: unknown): Error {
     return new NetworkError("Jina AI network error");
   }
   if (error instanceof TimeoutError) {
-    // Preserve the transport-specific help text (Reader/Search point to
-    // JINA_TIMEOUT; DeepSearch points to JINA_DEEPSEARCH_TIMEOUT).
+    // Forward the transport-specific help text only if it's a known,
+    // curated Jina constant (Reader/Search → JINA_TIMEOUT; DeepSearch →
+    // JINA_DEEPSEARCH_TIMEOUT). This preserves endpoint-specific guidance
+    // without exposing arbitrary upstream text through the normalizer.
+    const help = error.help;
+    if (help && help.includes("JINA_")) {
+      return new TimeoutError(error.durationMs, help);
+    }
     return new TimeoutError(
       error.durationMs,
-      error.help,
+      "Try again or increase timeout with JINA_TIMEOUT env var",
     );
   }
   if (error instanceof ApiError) {

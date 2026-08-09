@@ -450,9 +450,17 @@ function parseDeepSearchSSE(text: string): JinaDeepSearchResponse {
 
     let chunk: DeepSearchStreamChunk;
     try {
-      chunk = JSON.parse(payload) as DeepSearchStreamChunk;
-    } catch {
-      // Malformed data payload — indicates response corruption. Fail
+      const parsed: unknown = JSON.parse(payload);
+      // Validate structural shape — not just JSON syntax. A valid JSON
+      // value that isn't a non-null object (e.g. null, 42, "string")
+      // is a malformed SSE event, not a parseable chunk.
+      if (typeof parsed !== "object" || parsed === null) {
+        throw new ApiError("Jina AI returned a malformed SSE response", 502);
+      }
+      chunk = parsed as DeepSearchStreamChunk;
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      // JSON syntax error — indicates response corruption. Fail
       // rather than silently dropping answer text or citations.
       throw new ApiError("Jina AI returned a malformed SSE response", 502);
     }

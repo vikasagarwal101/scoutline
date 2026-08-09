@@ -38,6 +38,8 @@
  */
 
 import crypto from "node:crypto";
+import * as fs from "node:fs/promises";
+import path from "node:path";
 import type {
   ProviderAdapter,
   ProviderCapability,
@@ -152,6 +154,12 @@ export interface ParallelAdapterDependencies {
    * in-memory doubles to exercise the lifecycle deterministically.
    */
   readonly researchStateFile?: AsyncJobStateFile;
+  /**
+   * Disk dir for the research create-lock (Cubic P1); defaults to
+   * `asyncJobStateDir("research")`. When undefined (in-memory test
+   * mode), the lock is a no-op.
+   */
+  readonly researchStateDir?: string;
 }
 
 function assertHttpUrl(url: unknown): asserts url is string {
@@ -392,6 +400,63 @@ function isEexistError(err: unknown): boolean {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Concurrent-create lock (cost-safety — Cubic P1)
+// ---------------------------------------------------------------------------
+
+/** How long to wait for a contended research create-lock before giving up. */
+const RESEARCH_LOCK_TIMEOUT_MS = 30000;
+/** A lock older than this is treated as stale (holder died) and broken. */
+const RESEARCH_LOCK_STALE_MS = 10 * 60 * 1000;
+
+/**
+ * Serialize the create→persist critical section per request so two
+ * concurrent identical research invocations can't both POST (and charge)
+ * a task — the second waits, then re-reads the state file and finds the
+ * first's persisted `run_id` instead of re-POSTing. Uses an exclusive
+ * `wx`-create lockfile sibling to the state file; a stale lock (holder
+ * crashed) is broken after {@link RESEARCH_LOCK_STALE_MS}.
+ *
+ * Mirrors Firecrawl's `withCrawlLock` pattern. When `stateDir` is
+ * undefined (in-memory test mode), the lock is a no-op.
+ */
+async function withResearchLock<T>(
+  stateDir: string | undefined,
+  identityHash: string,
+  fn: () => Promise<T>,
+  deps: ParallelTransportDeps | undefined,
+): Promise<T> {
+  if (stateDir === undefined) return fn();
+  const setT = deps?.setTimeout ?? setTimeout;
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setT(() => r(), ms));
+  await fs.mkdir(stateDir, { recursive: true }).catch(() => {});
+  const lockPath = path.join(stateDir, `${identityHash}.lock`);
+  const deadline = Date.now() + RESEARCH_LOCK_TIMEOUT_MS;
+  for (;;) {
+    try {
+      const handle = await fs.open(lockPath, "wx");
+      try {
+        return await fn();
+      } finally {
+        await handle.close().catch(() => {});
+        await fs.unlink(lockPath).catch(() => {});
+      }
+    } catch (err) {
+      if (!isEexistError(err)) throw err;
+      if (Date.now() > deadline) {
+        throw new ApiError("Parallel AI research create-lock timed out", 500);
+      }
+      // Break a stale lock (the holder died without releasing).
+      const stat = await fs.stat(lockPath).catch(() => null);
+      if (stat && Date.now() - stat.mtimeMs > RESEARCH_LOCK_STALE_MS) {
+        await fs.unlink(lockPath).catch(() => {});
+        continue;
+      }
+      await sleep(500);
+    }
+  }
+}
+
 export class ParallelAdapter implements ProviderAdapter {
   readonly id: ProviderId = "parallel";
   readonly search: SearchCapability;
@@ -407,6 +472,7 @@ export class ParallelAdapter implements ProviderAdapter {
     const env = context.env;
     const researchStateFile =
       deps.researchStateFile ?? createProductionAsyncJobStateFile(asyncJobStateDir("research"));
+    const researchStateDir = deps.researchStateDir ?? asyncJobStateDir("research");
 
     this.search = {
       validate(request: SearchRequest): void {
@@ -536,18 +602,36 @@ export class ParallelAdapter implements ProviderAdapter {
             if (existingState !== null) {
               runId = existingState.requestId;
             } else {
-              // 2. No in-flight task: POST to create one. NO retry — a
-              //    transient POST failure is terminal (the user re-runs);
-              //    retrying risks a double-charge if the POST succeeded
-              //    server-side but the response was lost.
-              runId = await createParallelResearchTask(
-                apiKey,
-                request,
-                taskParams,
+              // 2. No in-flight task: create under a lock so concurrent
+              //    identical invocations serialize. The second caller
+              //    waits, then re-reads the state file and finds the
+              //    first's persisted run_id instead of creating (and
+              //    billing) a second task (Cubic P1).
+              runId = await withResearchLock(
+                researchStateDir,
                 identityHash,
-                researchStateFile,
+                async () => {
+                  // Re-check under the lock — another caller may have
+                  // created and persisted while we waited to acquire.
+                  const state = await researchStateFile.read(identityHash);
+                  if (state !== null) {
+                    return state.requestId;
+                  }
+                  // No existing task: POST to create one. NO retry — a
+                  // transient POST failure is terminal (the user re-runs);
+                  // retrying risks a double-charge if the POST succeeded
+                  // server-side but the response was lost.
+                  return createParallelResearchTask(
+                    apiKey,
+                    request,
+                    taskParams,
+                    identityHash,
+                    researchStateFile,
+                    transport,
+                    signal,
+                  );
+                },
                 transport,
-                signal,
               );
             }
 
@@ -762,9 +846,9 @@ export function createParallelDescriptor(
   dependencies?: ParallelAdapterDependencies,
 ): ProviderDescriptor {
   const transport = dependencies?.transport;
+  const researchStateDir = dependencies?.researchStateDir ?? asyncJobStateDir("research");
   const researchStateFile =
-    dependencies?.researchStateFile ??
-    createProductionAsyncJobStateFile(asyncJobStateDir("research"));
+    dependencies?.researchStateFile ?? createProductionAsyncJobStateFile(researchStateDir);
   return {
     id: "parallel",
     credentialEnvVars: ["PARALLEL_API_KEY"],
@@ -773,6 +857,6 @@ export function createParallelDescriptor(
       return new Set(["search", "research", "reader", "diagnostics"]);
     },
     create: (context: ProviderContext) =>
-      new ParallelAdapter(context, { transport, researchStateFile }),
+      new ParallelAdapter(context, { transport, researchStateFile, researchStateDir }),
   };
 }

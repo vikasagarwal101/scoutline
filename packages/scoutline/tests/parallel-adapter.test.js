@@ -4,6 +4,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import * as fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 
 import { createParallelDescriptor, ParallelAdapter } from "../dist/providers/parallel/adapter.js";
 import {
@@ -667,6 +670,84 @@ describe("Parallel AI Descriptor & Adapter", () => {
       () => adapter.research.run.invoke({ query: "cancelled test" }),
       (err) => err instanceof ApiError && err.statusCode === 500,
     );
+  });
+
+  it("research withResearchLock prevents concurrent double-create (Cubic P1)", async () => {
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "parallel-research-lock-"));
+    let postCount = 0;
+
+    // Simulate a realistic server long-poll: A's first /result poll
+    // returns 408 after a short delay, keeping A in the poll loop while
+    // B acquires the lock and finds A's persisted run_id. In production,
+    // the server's 60s long-poll provides this window naturally.
+    let getResultCount = 0;
+    const fakeFetch = async (url, init) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+
+      if (method === "POST" && u.includes("/v1/tasks/runs")) {
+        postCount++;
+        return {
+          ok: true,
+          status: 202,
+          text: async () =>
+            JSON.stringify({ run_id: `trun-concurrent-${postCount}`, status: "queued" }),
+        };
+      }
+
+      if (method === "GET" && u.includes("/result")) {
+        getResultCount++;
+        // First poll: delay 20ms then return 408 (running). This keeps
+        // caller A in the poll loop while B acquires the lock and
+        // re-reads the persisted state.
+        if (getResultCount === 1) {
+          await new Promise((r) => setTimeout(r, 20));
+          return {
+            ok: false,
+            status: 408,
+            text: async () => '{"error":{"message":"timed out, run still active"}}',
+          };
+        }
+        // Subsequent polls: completed
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              run: { status: "completed", processor: "pro" },
+              output: { type: "text", content: "Shared report.", basis: [] },
+            }),
+        };
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ results: [] }) };
+    };
+
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      {
+        // Cap lock retry at 10ms (well under the 20ms poll delay) so B
+        // acquires the lock while A is still in the poll loop.
+        transport: { fetch: fakeFetch, setTimeout: (fn, ms) => setTimeout(fn, Math.min(ms, 10)) },
+        researchStateFile: stateFile,
+        researchStateDir: tmpDir,
+      },
+    );
+
+    const request = { query: "concurrent test" };
+    const [result1, result2] = await Promise.all([
+      adapter.research.run.invoke(request),
+      adapter.research.run.invoke(request),
+    ]);
+
+    // Only ONE POST — the second invoke found the first's persisted run_id
+    assert.equal(postCount, 1, "concurrent identical invokes must share a single POST");
+    // Both get results
+    assert.equal(result1.report, "Shared report.");
+    assert.equal(result2.report, "Shared report.");
+
+    // Cleanup
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("research sends x-api-key header on task create and result (8P.6)", async () => {

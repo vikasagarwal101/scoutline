@@ -1077,6 +1077,7 @@ function createTavilyResearchCapability(
         }
 
         // 3. Poll loop until terminal status.
+        let recreatedAfterNotFound = false;
         for (;;) {
           // Re-check the abort signal each iteration. If the command
           // handler's --timeout fired during the create POST or between
@@ -1099,10 +1100,21 @@ function createTavilyResearchCapability(
           }
 
           if (poll.status === "not_found") {
-            // 404 — the server-side task expired/disappeared. Route the
-            // recreation through the same lock as initial creation so
-            // concurrent callers hitting not_found serialize. Under the
-            // lock, reread the state file:
+            // 404 — the server-side task expired/disappeared. Allow at
+            // most ONE recreation; a second 404 means the freshly created
+            // task also failed to register, so terminate rather than risk
+            // unbounded paid creations (mirrors Parallel's guard).
+            if (recreatedAfterNotFound) {
+              await researchStateFile.remove(identityHash).catch(() => {});
+              throw new ApiError(
+                "Tavily research task not found after recreation",
+                500,
+              );
+            }
+            recreatedAfterNotFound = true;
+            // Route the recreation through the same lock as initial
+            // creation so concurrent callers hitting not_found serialize.
+            // Under the lock, reread the state file:
             //   - If another caller already persisted a replacement
             //     requestId (different from the one that went not_found),
             //     adopt it.

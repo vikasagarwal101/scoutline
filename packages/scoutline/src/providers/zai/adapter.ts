@@ -853,11 +853,18 @@ function createZaiDiagnosticsCapability(
  * a fake factory through {@link createZaiDescriptor}'s dependencies.
  */
 function defaultZaiClientFactory(options: ZaiMcpClientOptions): ZaiAdapterClientPort {
-  // 4.10: The lib's `ZaiMcpClientOptions` now accepts a structural
-  // `McpUtcpClient` for `utcpFactory` (with optional `close`), so the
-  // providers-layer options (which declare the narrower `UtcpClientPort`
-  // return type) flow through without a cast.
-  const client = new ZaiMcpClient(options);
+  // 4.10: Pass only the fields the adapter actually uses — the adapter
+  // never injects `utcpFactory`, so it is omitted here and the lib's
+  // constructor falls through to the default `UtcpClient.create()`.
+  // This avoids a cast at the options boundary: the providers-layer
+  // `UtcpClientPort` declares `getTools(): Promise<unknown[]>`, which
+  // is wider than the lib's `McpUtcpClient` (`Promise<Tool[]>`).
+  const client = new ZaiMcpClient({
+    enableVision: options.enableVision,
+    noCache: options.noCache,
+    disableRetry: options.disableRetry,
+    env: options.env,
+  });
   // Adapt the rich ZaiMcpClient surface to the narrow
   // ZaiAdapterClientPort the Z.AI Search Adapter needs.
   return {

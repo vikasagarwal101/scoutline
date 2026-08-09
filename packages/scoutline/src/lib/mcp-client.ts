@@ -76,15 +76,15 @@ export interface WebSearchResult {
 /**
  * Minimal structural surface of the UTCP client consumed by
  * {@link ZaiMcpClient}. Production code uses `UtcpClient.create()` which
- * structurally satisfies this interface; the providers layer's
- * `UtcpClientPort` (which lacks `close()`) also satisfies it because
- * `close` is optional. This keeps the lib → providers dependency direction
- * intact (no import of the providers port) while allowing the providers'
- * options type to flow into the constructor without a cast.
+ * structurally satisfies this interface. The `close` method is optional
+ * because test doubles may omit it — the real `UtcpClient` always has it.
+ * This keeps the lib → providers dependency direction intact (no import
+ * of the providers port) while avoiding an `as unknown as` cast at the
+ * adapter boundary.
  */
 interface McpUtcpClient {
   registerManual(template: unknown): Promise<{ success: boolean; errors: string[] }>;
-  getTools(): Promise<unknown[]>;
+  getTools(): Promise<Tool[]>;
   callTool(name: string, args: Record<string, unknown>): Promise<unknown>;
   /** Optional: the real UtcpClient has it; test doubles may omit it. */
   close?(): Promise<void>;
@@ -420,10 +420,7 @@ export class ZaiMcpClient {
     if (!this.client) {
       throw new ApiError("MCP client not initialized", 500);
     }
-    // Narrow the structural-port result to Tool[]: the real UtcpClient
-    // returns Tool[], but McpUtcpClient.getTools() is typed unknown[]
-    // to avoid leaking the SDK type through the structural interface.
-    const tools = (await this.client.getTools()) as Tool[];
+    const tools = await this.client.getTools();
     await writeToolCache(this.getToolCacheConfig(), tools, configuredSecrets(this.options.env));
     return tools;
   }

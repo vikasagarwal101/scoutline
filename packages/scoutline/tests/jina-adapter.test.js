@@ -145,7 +145,7 @@ describe("Jina AI Descriptor & Adapter", () => {
   it("reader decodes data.text for text-mode responses (8J.2)", async () => {
     const fixture = JSON.parse(
       await import("node:fs").then((fs) =>
-        fs.readFileSync("./tests/fixtures/providers/jina/reader-text.json", "utf8"),
+        fs.readFileSync(new URL("./fixtures/providers/jina/reader-text.json", import.meta.url), "utf8"),
       ),
     );
 
@@ -203,7 +203,7 @@ describe("Jina AI Descriptor & Adapter", () => {
     await adapter.reader.fetch.invoke({
       url: "https://example.com",
       retainImages: true,
-      timeout: 60000,
+      timeout: 60,
     });
     assert.equal(capturedHeaders["X-Retain-Images"], "true");
     assert.equal(capturedHeaders["X-Timeout"], "60");

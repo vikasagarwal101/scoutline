@@ -174,6 +174,68 @@ describe("Parallel AI Descriptor & Adapter", () => {
     assert.equal(res.contentFormat, "markdown");
   });
 
+  it("reader request includes advanced_settings.full_content: true (8P.2)", async () => {
+    let capturedBody = null;
+    const fakeFetch = async (url, init) => {
+      assert.ok(url.includes("/v1/extract"));
+      capturedBody = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            results: [
+              {
+                url: "https://example.com",
+                title: "Example Page",
+                full_content: "Full page content.",
+              },
+            ],
+          }),
+      };
+    };
+
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await adapter.reader.fetch.invoke({ url: "https://example.com" });
+    assert.ok(capturedBody.advanced_settings, "body must include advanced_settings");
+    assert.strictEqual(
+      capturedBody.advanced_settings.full_content,
+      true,
+      "advanced_settings.full_content must be true",
+    );
+  });
+
+  it("reader prefers full_content over excerpts (8P.2)", async () => {
+    const fakeFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          results: [
+            {
+              url: "https://example.com",
+              title: "Example Page",
+              excerpts: ["Excerpt fragment one."],
+              full_content: "The complete page body, not just a bounded excerpt.",
+            },
+          ],
+        }),
+    });
+
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const result = await adapter.reader.fetch.invoke({ url: "https://example.com" });
+    assert.equal(result.content, "The complete page body, not just a bounded excerpt.");
+    assert.notEqual(result.content, "Excerpt fragment one.");
+  });
+
   it("reader surfaces extraction errors from errors[]", async () => {
     const fakeFetch = async () => ({
       ok: true,
@@ -393,68 +455,6 @@ describe("Parallel AI Error Handling", () => {
     assert.ok(capturedHeaders, "headers must be captured");
     assert.strictEqual(capturedHeaders["x-api-key"], TEST_KEY, "must send x-api-key header");
     assert.ok(!("Authorization" in capturedHeaders), "must NOT send Authorization header");
-  });
-
-  it("reader request includes advanced_settings.full_content: true (8P.2)", async () => {
-    let capturedBody = null;
-    const fakeFetch = async (url, init) => {
-      assert.ok(url.includes("/v1/extract"));
-      capturedBody = JSON.parse(init.body);
-      return {
-        ok: true,
-        status: 200,
-        text: async () =>
-          JSON.stringify({
-            results: [
-              {
-                url: "https://example.com",
-                title: "Example Page",
-                full_content: "Full page content.",
-              },
-            ],
-          }),
-      };
-    };
-
-    const adapter = new ParallelAdapter(
-      { env: { PARALLEL_API_KEY: TEST_KEY } },
-      { transport: { fetch: fakeFetch } },
-    );
-
-    await adapter.reader.fetch.invoke({ url: "https://example.com" });
-    assert.ok(capturedBody.advanced_settings, "body must include advanced_settings");
-    assert.strictEqual(
-      capturedBody.advanced_settings.full_content,
-      true,
-      "advanced_settings.full_content must be true",
-    );
-  });
-
-  it("reader prefers full_content over excerpts (8P.2)", async () => {
-    const fakeFetch = async () => ({
-      ok: true,
-      status: 200,
-      text: async () =>
-        JSON.stringify({
-          results: [
-            {
-              url: "https://example.com",
-              title: "Example Page",
-              excerpts: ["Excerpt fragment one."],
-              full_content: "The complete page body, not just a bounded excerpt.",
-            },
-          ],
-        }),
-    });
-
-    const adapter = new ParallelAdapter(
-      { env: { PARALLEL_API_KEY: TEST_KEY } },
-      { transport: { fetch: fakeFetch } },
-    );
-
-    const result = await adapter.reader.fetch.invoke({ url: "https://example.com" });
-    assert.equal(result.content, "The complete page body, not just a bounded excerpt.");
-    assert.notEqual(result.content, "Excerpt fragment one.");
   });
 
   it("rejects domain control as UnsupportedOptionError", () => {

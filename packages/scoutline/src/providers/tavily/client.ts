@@ -75,7 +75,7 @@ export interface TavilyExtractParams {
    * Output format forwarded to the Tavily extract API (T8-03). Controls
    * whether the API returns markdown or plain text in `raw_content`.
    */
-  readonly format?: string;
+  readonly format?: "markdown" | "text";
 }
 
 /**
@@ -258,8 +258,8 @@ async function postTavilyJson(
   /**
    * Optional client-side AbortController timeout in ms. When omitted, the
    * transport resolves the timeout from `deps.env` (`TAVILY_TIMEOUT`,
-   * default 30s). Crawl passes an explicit value so the client waits at
-   * least as long as the server-side `body.timeout` ceiling (150s default).
+   * default 30s). Crawl and map pass an explicit value so the client
+   * waits at least as long as the server-side ceiling (150s default).
    */
   timeoutMsOverride?: number,
 ): Promise<unknown> {

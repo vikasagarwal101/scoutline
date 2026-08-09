@@ -713,3 +713,65 @@ describe("Tavily Crawl/Map Adapter — endpoint-aware 403 (T8-01)", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Map: client-side timeout ceiling (T8-02)
+// ---------------------------------------------------------------------------
+
+describe("Tavily Map Adapter — client timeout ceiling (T8-02)", () => {
+  it("map client timeout is at least 155s (150s server + 5s buffer)", async () => {
+    let actualTimeoutMs = null;
+    const calls = [];
+    const fn = async (url, init) => {
+      calls.push({ url: String(url), init });
+      return makeResponse({ json: { results: ["https://example.com"] } });
+    };
+    // Inject a custom setTimeout to capture the timeout value.
+    const customSetTimeout = (cb, ms) => {
+      actualTimeoutMs = ms;
+      return 1; // dummy timer id
+    };
+    const descriptor = createTavilyDescriptor({
+      transport: {
+        fetch: fn,
+        setTimeout: customSetTimeout,
+        clearTimeout: () => {},
+        env: { TAVILY_TIMEOUT: "5000" },
+      },
+    });
+    const adapter = descriptor.create({ env: { TAVILY_API_KEY: TEST_API_KEY } });
+
+    await adapter.map.fetch.invoke({ url: "https://example.com" });
+    assert.ok(actualTimeoutMs !== null, "setTimeout must have been called");
+    assert.ok(
+      actualTimeoutMs >= 155000,
+      `map client timeout (${actualTimeoutMs}ms) must be >= 155000ms (150s server + 5s buffer)`,
+    );
+  });
+
+  it("map client timeout respects a larger TAVILY_TIMEOUT env", async () => {
+    let actualTimeoutMs = null;
+    const fn = async (url, init) => {
+      return makeResponse({ json: { results: ["https://example.com"] } });
+    };
+    const customSetTimeout = (cb, ms) => {
+      actualTimeoutMs = ms;
+      return 1;
+    };
+    const descriptor = createTavilyDescriptor({
+      transport: {
+        fetch: fn,
+        setTimeout: customSetTimeout,
+        clearTimeout: () => {},
+        env: { TAVILY_TIMEOUT: "200000" },
+      },
+    });
+    const adapter = descriptor.create({ env: { TAVILY_API_KEY: TEST_API_KEY } });
+
+    await adapter.map.fetch.invoke({ url: "https://example.com" });
+    assert.ok(
+      actualTimeoutMs >= 200000,
+      `map client timeout (${actualTimeoutMs}ms) must respect TAVILY_TIMEOUT=200000 when larger than 155s`,
+    );
+  });
+});

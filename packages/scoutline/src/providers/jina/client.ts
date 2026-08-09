@@ -479,13 +479,13 @@ function parseDeepSearchSSE(text: string): JinaDeepSearchResponse {
       content += delta.content;
     }
 
-    // Annotations (citations) arrive on the terminal chunk. De-duplicate
-    // by URL in case the server sends cumulative lists across chunks.
+    // Annotations (citations) arrive on the terminal chunk. Filter to
+    // entries with a valid url_citation.url, de-duplicate by URL.
     if (Array.isArray(delta.annotations) && delta.annotations.length > 0) {
       for (const ann of delta.annotations) {
         const url = ann?.url_citation?.url;
-        if (url && seenCitationUrls.has(url)) continue;
-        if (url) seenCitationUrls.add(url);
+        if (typeof url !== "string" || seenCitationUrls.has(url)) continue;
+        seenCitationUrls.add(url);
         annotations.push(ann);
       }
     }

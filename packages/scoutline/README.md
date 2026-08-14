@@ -15,7 +15,7 @@
 
 ## Features
 
-- **Vision** - Analyze images, screenshots, diagrams, charts, videos using GLM-4.6V
+- **Vision** - Analyze images, screenshots, diagrams, charts, videos using GLM-5V-Turbo
 - **Search** - Real-time web search with domain and recency filtering
 - **Reader** - Fetch and parse web pages to markdown
 - **Repo** - Search and read GitHub repository code via ZRead

@@ -184,7 +184,7 @@ scoutline --no-fallback --provider minimax read https://example.com
 | `Z_AI_MODE` or `PLATFORM_MODE` | `ZAI` | Selects `ZAI` or `ZHIPU` base URLs. |
 | `Z_AI_BASE_URL` | Mode-specific URL | Overrides the API base URL. |
 | `Z_AI_TIMEOUT` | `30000` | Request timeout in milliseconds. |
-| `Z_AI_VISION_MODEL` | `glm-4.6v` | Vision model name. |
+| `Z_AI_VISION_MODEL` | `glm-5v-turbo` | Vision model name. |
 | `Z_AI_TEMPERATURE` | `0.8` | Vision generation temperature. |
 | `Z_AI_TOP_P` | `0.6` | Vision generation top-p value. |
 | `Z_AI_MAX_TOKENS` | `32768` | Vision response token limit. |

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Vision default model upgraded to GLM-5V-Turbo
+
+- **Default vision model changed from `glm-4.6v` to `glm-5v-turbo`** (the correct API identifier for Z.AI's GLM-5V-Turbo vision model — there is no `glm-5.0v`). Verified live against the Coding Plan endpoint (`api.z.ai/api/coding/paas/v4`): a vision analysis request with `glm-5v-turbo` succeeds. Override remains available via `Z_AI_VISION_MODEL`. README, `docs/configuration.md`, and `skills/scoutline/` updated to match.
+
 ## [0.14.11] - 2026-08-09
 
 ### Post-arc tech-debt cleanup (cache lock + Z.AI boundary cast)

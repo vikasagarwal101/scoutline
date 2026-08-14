@@ -2,7 +2,7 @@
 name: scoutline
 description: |
   Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and Jina AI CLI providing:
-  - Vision: image/video analysis, OCR, UI-to-code, error diagnosis (GLM-4.6V)
+  - Vision: image/video analysis, OCR, UI-to-code, error diagnosis (GLM-5V-Turbo)
   - Search: real-time web search with domain/recency/topic filtering
   - Reader: web page to markdown extraction (Z.AI, Tavily, Exa, Firecrawl, Parallel, or Jina)
   - Crawl: multi-page website traversal (Tavily or Firecrawl)

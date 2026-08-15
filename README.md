@@ -218,13 +218,13 @@ Selecting a provider that doesn't support a capability auto-reroutes to the next
 
 ### Search Controls
 
-`--topic <general|news|finance>` is accepted by all providers. Tavily passes it natively; Z.AI, MiniMax, Parallel AI, Perplexity, and Jina AI append a keyword to the query; Exa maps it to a category; Brave routes `news` to a dedicated news endpoint.
+`--topic <general|news|finance>` is accepted by all providers. Tavily passes it natively; Z.AI, MiniMax, Parallel AI, Perplexity, and Jina AI append a keyword to the query; Exa maps it to a category; Firecrawl maps `news` to a news source type; Brave routes `news` to a dedicated news endpoint.
 
 `--type <video>` is Brave-only (mutually exclusive with `--topic`).
 
-`--domain` and `--recency` are honored by Z.AI, Tavily, Exa, Brave, and Firecrawl (Brave maps `--domain` → `site:`, `--recency` → `freshness`). `--location` is Z.AI- and Brave-only (Brave → `country`); MiniMax rejects these controls.
+`--domain` and `--recency` are honored by Z.AI, Tavily, Exa, Brave, Firecrawl, and Parallel AI (Brave maps `--domain` → `site:`, `--recency` → `freshness`; Parallel forwards both through `advanced_settings`). Jina honors `--domain` (`X-Site`) but not `--recency`. `--location` is honored by Z.AI, Brave (`country`), Parallel AI (`us` only), and Jina (`gl`); MiniMax rejects these controls.
 
-`--content-size` is a deliberate per-provider overload: `high` maps to Z.AI `content_size`, Tavily `search_depth=advanced`, and Brave's LLM Context endpoint (extracted passages joined into summaries); Exa accepts it; Firecrawl returns scraped markdown summaries (+1 credit/result); MiniMax rejects it (`UNSUPPORTED_OPTION`).
+`--content-size` is a deliberate per-provider overload: `high` maps to Z.AI `content_size`, Tavily `search_depth=advanced`, Brave's LLM Context endpoint (extracted passages joined into summaries), and Parallel AI's per-result excerpt budget; Exa accepts it; Firecrawl returns scraped markdown summaries (+1 credit/result); MiniMax and Jina reject it (`UNSUPPORTED_OPTION`).
 
 ## Usage
 

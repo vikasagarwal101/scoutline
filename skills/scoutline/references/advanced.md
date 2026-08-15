@@ -19,10 +19,11 @@ invocation. Provider selection is never inferred from credentials.
 
 `tools`, `tool`, `call`, and `code` accept the flag but ignore it; they
 remain Z.AI-only and do not validate the supplied value. `repo` and `read`
-participate in selection: Z.AI, Tavily, Exa, and Firecrawl supply
-`reader`; only Z.AI supplies `repository-exploration`. `crawl` and `map`
-participate in selection and are supplied by Tavily and Firecrawl.
-`research` is supplied by Tavily and Exa. By default (0.11.0+) Provider
+participate in selection: Z.AI, Tavily, Exa, Firecrawl, Parallel, and
+Jina supply `reader`; only Z.AI supplies `repository-exploration`.
+`crawl` and `map` participate in selection and are supplied by Tavily
+and Firecrawl. `research` is supplied by Tavily, Exa, Parallel,
+Perplexity, and Jina. By default (0.11.0+) Provider
 fallback is always-on: selecting a non-supplier emits a stderr notice
 and silently reroutes to the next eligible configured supplier in
 registry order. Under `--no-fallback` (or `SCOUTLINE_NO_FALLBACK=1`)
@@ -329,12 +330,13 @@ scoutline doctor --provider tavily
 Inventory derivation is descriptor-driven: `capabilityMatrix` lists, for
 each advertised capability, exactly which built-in Providers supply it.
 `sharedCapabilities` and `zaiOnlyCapabilities` are gone; their two-array
-derivation silently hid any capability supplied by 2-of-3 providers.
-The matrix replaces them. `repository-exploration` is reported under Z.AI
-alone; `reader` is reported under Z.AI and Tavily; `crawl`, `map`, and
-`research` are reported under Tavily alone. Doctor help explicitly names
-MiniMax as unsupported for `repo` and `read`; Z.AI and MiniMax as
-unsupported for `crawl`, `map`, and `research`.
+derivation silently hid capabilities supplied by a subset of providers.
+The matrix replaces them. `repository-exploration` is reported under
+Z.AI alone; `reader` under Z.AI, Tavily, Exa, Firecrawl, Parallel, and
+Jina; `crawl` and `map` under Tavily and Firecrawl; `research` under
+Tavily, Exa, Parallel, Perplexity, and Jina. Doctor help derives its
+unsupported lists from the same descriptor metadata for every other
+Provider.
 
 ### Repository Pipeline
 

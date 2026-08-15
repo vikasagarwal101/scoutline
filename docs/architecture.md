@@ -52,7 +52,7 @@ inject descriptor lists explicitly through optional parameters.
 | `firecrawl` | `FIRECRAWL_API_KEY` | `https://api.firecrawl.dev` (v2) | Direct-HTTP transport; Search, Reader, Crawl (async), Map, Quota (credits), Diagnostics. Credit-based; no Research (`/deep-research` deprecated) |
 | `parallel` | `PARALLEL_API_KEY` | `https://api.parallel.ai` | Direct-HTTP transport; Search, Research, Reader, Diagnostics |
 | `perplexity` | `PERPLEXITY_API_KEY` | `https://api.perplexity.ai` | Direct-HTTP transport; Search (`/search`), Research (`/chat/completions` sonar-deep-research), Diagnostics |
-| `jina` | `JINA_API_KEY` (optional, keyless supported) | `https://r.jina.ai`, `https://s.jina.ai`, `https://deepsearch.jina.ai` | Direct-HTTP transport; Search, Reader, Research, Diagnostics |
+| `jina` | `JINA_API_KEY` (optional, keyless supported) | `https://r.jina.ai`, `https://s.jina.ai`, `https://deepsearch.jina.ai` | Direct-HTTP transport; Search, Reader, Research, Quota (rate-limit telemetry), Diagnostics |
 
 Each Adapter exposes only the Capabilities the base release actually supports.
 The Descriptor advertises the same Capability set so support can be checked
@@ -89,7 +89,7 @@ for the rationale and the accepted async double-charge risk.
 | `vision.interpret-image` | Yes | Yes | No | No | No | No | No | No | No | `scoutline vision analyze` |
 | Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
 | Image diff / video | Yes | No | No | No | No | No | No | No | No | `scoutline vision diff`, `vision video` |
-| `quota` | Yes | Yes | Yes | No (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | No | No | No | `scoutline quota` |
+| `quota` | Yes | Yes | Yes | No (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | `scoutline quota` |
 | `diagnostics` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
 | Reader | Yes | Falls back (zai/tavily/exa/firecrawl/parallel/jina) | Yes (Z.AI-only options are rejected) | Yes (rejects Z.AI-only options) | Falls back (zai/tavily/exa/firecrawl/parallel/jina) | Yes (returns page titles) | Yes | Falls back (zai/tavily/exa/firecrawl/parallel/jina) | Yes | `scoutline read` |
 | Repository exploration | Yes | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | `scoutline repo ...` |
@@ -112,30 +112,42 @@ inject Adapters — they never read Provider fields directly.
 
 ### Search
 
-Both Adapters return `SearchSource[]` (`title`, `url`, `summary`, optional
-`source`, optional `date`). Shared command meaning — query splitting, parallel
-scheduling, dedupe, ranking, summary truncation, field projection, and
-presentation — is identical for both Providers. Result count is applied
-locally after normalization and never enters an Adapter request or cache key.
+Every search Adapter returns the same normalized `SearchSource[]`
+(`title`, `url`, `summary`, optional `source`, optional `date`). Shared
+command meaning — query splitting, parallel scheduling, dedupe, ranking,
+summary truncation, field projection, and presentation — is identical
+for every Provider. Result count is applied locally after normalization
+and never enters an Adapter request or cache key.
 
-Z.AI accepts domain, recency, content-size, location, and topic controls.
-MiniMax accepts topic only and rejects every other control with
-`UNSUPPORTED_OPTION` before any SDK access. Tavily accepts domain,
-recency, content-size, and topic natively (passes `topic` through
-unchanged) and rejects `location` as `UNSUPPORTED_OPTION`. Brave accepts
-domain (→ `site:`), recency (→ `freshness`), location (→ `country`),
-content-size (where `high` maps to its LLM Context endpoint), and topic
-(`news` routes to a dedicated endpoint); Brave is also the only Provider
-that advertises `--type video` (mutually exclusive with `--topic`).
-`--content-size` is a deliberate per-provider overload: `high` maps to
-Z.AI `content_size`, Tavily `search_depth=advanced`, and Brave LLM
-Context, while MiniMax rejects it with `UNSUPPORTED_OPTION`.
+`--topic <general|news|finance>` is the only search control every
+Provider advertises. For Providers that lack a native topic parameter,
+the Adapter appends a small keyword to the query string inside
+`invoke()` (see `lib/search-topic.ts`); Tavily passes `topic` through to
+its API unchanged, Exa maps it to a category, Firecrawl maps `news` to a
+news source type, and Brave routes `news` to a dedicated endpoint. All
+other controls are per-Adapter: an unsupported control is rejected with
+`UNSUPPORTED_OPTION` before any transport access, which is also what
+lets provider fallback retry the option on the next candidate. The
+current control matrix:
 
-`--topic` is therefore the only cross-Provider search control: every
-Provider advertises it. For Providers that lack a native topic
-parameter, the Adapter appends a small keyword to the query string
-inside `invoke()` (see `lib/search-topic.ts`); Tavily passes `topic`
-through to its API unchanged.
+- Z.AI — domain, recency, content-size (`high` → `content_size`),
+  location, topic.
+- MiniMax — topic only; every other control is rejected.
+- Tavily — domain, recency, content-size (`high` →
+  `search_depth=advanced`), topic; `location` is rejected.
+- Exa — domain, recency, content-size, topic.
+- Brave — domain (→ `site:`), recency (→ `freshness`), location
+  (→ `country`), content-size (`high` → the LLM Context endpoint),
+  topic; Brave is the only Provider that advertises `--type video`
+  (mutually exclusive with `--topic`).
+- Firecrawl — domain, recency, content-size (`high` returns scraped
+  markdown summaries at +1 credit/result), topic.
+- Parallel — domain, recency, location, content-size (forwarded through
+  `advanced_settings`; location accepts `us` only); topic via keyword.
+- Perplexity — domain, recency, content-size (`high` →
+  `search_context_size`); topic via keyword; `location` is rejected.
+- Jina — domain (→ `X-Site`) and location (→ `gl`); recency,
+  content-size, and type are rejected; topic via keyword.
 
 ### Vision
 
@@ -280,18 +292,21 @@ public Interface.
 The `DiagnosticsReport` (`schemaVersion: 2`) carries a
 `capabilityMatrix` derived purely from descriptor metadata. For each
 advertised capability, the matrix lists exactly which built-in
-Providers supply it. Capabilities supplied by multiple Providers (Search,
-quota, diagnostics, reader) are visible per-Provider, not collapsed.
-Capabilities supplied by exactly one Provider (`repository-exploration`,
-`crawl`, `map`, `research`) are listed for that Provider alone.
+Providers supply it. Capabilities supplied by multiple Providers (every
+capability except `repository-exploration`) are visible per-Provider,
+not collapsed. Capabilities supplied by exactly one Provider
+(`repository-exploration`, Z.AI only) are listed for that Provider
+alone.
 
 `sharedCapabilities` and `zaiOnlyCapabilities` are gone: their
 two-array derivation silently hid any capability supplied by more than
 one Provider. `deriveCapabilityMatrix` is the single inventory function;
 its output is always strictly more informative than the previous
-two-array view. Doctor help names MiniMax and Brave as unsupported for
-`repo`; Z.AI, MiniMax, and Brave as unsupported for `crawl`, `map`, and
-`research`; and MiniMax and Brave as unsupported for `read` — it reports
+two-array view. Doctor help derives its unsupported-provider lists from
+the same descriptor metadata (today: every Provider except Z.AI for
+`repo`; every Provider except Tavily and Firecrawl for `crawl` and
+`map`; Z.AI, MiniMax, Brave, and Firecrawl for `research`; MiniMax,
+Brave, and Perplexity for `read`) — it reports
 the effective Provider for shared capabilities and never widens to M3
 transport.
 
@@ -323,18 +338,21 @@ read argv + global flags
 Key boundaries:
 
 - **Selection happens before configuration.** Descriptor metadata is the
-  support truth. MiniMax does not advertise `reader`; an explicit or
-  environment-selected MiniMax returns `UNSUPPORTED_CAPABILITY` before
+  support truth. Six Providers advertise `reader` (Z.AI, Tavily, Exa,
+  Firecrawl, Parallel, Jina); MiniMax, Brave, and Perplexity do not, and
+  an explicit or environment-selected non-supplier returns
+  `UNSUPPORTED_CAPABILITY` before
   `descriptor.isConfigured`, `descriptor.create`, credential resolution
-  for use, cache identity, or transport construction. Tavily advertises
-  `reader`; selecting Tavily routes through the Tavily Adapter, which
-  rejects the Z.AI-only options (`--with-links`, `--no-gfm`,
+  for use, cache identity, or transport construction. The Tavily, Exa,
+  Firecrawl, and Parallel Adapters
+  reject the Z.AI-only options (`--with-links`, `--no-gfm`,
   `--keep-img-data-url`, `--with-images-summary`) with
   `UNSUPPORTED_OPTION` when the user has explicitly set them to
-  `true`.
-- **Descriptor/Adapter agreement is mandatory.** The Z.AI and Tavily
-  descriptors advertise `reader`; both Adapters supply `adapter.reader`.
-  The MiniMax descriptor advertises neither and the Adapter supplies
+  `true`; the Jina Adapter maps them to its native reader headers.
+- **Descriptor/Adapter agreement is mandatory.** Every descriptor that
+  advertises `reader` has an Adapter supplying `adapter.reader`; the
+  MiniMax, Brave, and Perplexity descriptors advertise neither and
+  their Adapters supply
   none. A future Provider that disagrees in either direction fails
   closed.
 - **No Explorer for Reader.** A single fetch does not need BFS, depth
@@ -404,17 +422,18 @@ public Interface.
 ### Diagnostics inventory
 
 `capabilityMatrix` is derived purely from descriptor metadata. The
-matrix lists Z.AI and Tavily as the suppliers of `reader`; MiniMax is
-absent because its descriptor does not advertise it. Doctor help names
-MiniMax as unsupported for `read`.
+matrix lists the six `reader` suppliers (Z.AI, Tavily, Exa, Firecrawl,
+Parallel, Jina); MiniMax, Brave, and Perplexity are absent because
+their descriptors do not advertise it.
 
 ## Crawl, Map, Research Capabilities
 
 `scoutline crawl`, `scoutline map`, and `scoutline research` participate
 in Provider selection. Crawl and Map are supplied by Tavily and Firecrawl;
-Research is shared between Tavily and Exa (Firecrawl's `/deep-research` is
-deprecated). Provider fallback is **always-on** (0.11.0+): selecting
-Z.AI, MiniMax, or Brave (explicitly or via `SCOUTLINE_PROVIDER`) for
+Research is supplied by Tavily, Exa, Parallel, Perplexity, and Jina
+(Firecrawl's `/deep-research` is deprecated and Firecrawl does not
+advertise Research). Provider fallback is **always-on** (0.11.0+):
+selecting any non-supplier (explicitly or via `SCOUTLINE_PROVIDER`) for
 any of the three emits a stderr notice and reroutes to the next
 eligible provider in registry order. The descriptor's
 `UNSUPPORTED_CAPABILITY` signal still surfaces under `--no-fallback`
@@ -453,11 +472,12 @@ crawl argv + global flags
 Key boundaries:
 
 - **Capability ownership.** Crawl and Map are advertised by the Tavily
-  and Firecrawl descriptors; Research is advertised by Tavily and Exa
-  (Firecrawl `/deep-research` is deprecated and Firecrawl does not
-  advertise Research). The matching Adapter supplies the Capability
-  implementation. Z.AI, MiniMax, and Brave descriptors do not advertise
-  any of the three; their Adapters supply nothing.
+  and Firecrawl descriptors; Research is advertised by Tavily, Exa,
+  Parallel, Perplexity, and Jina (Firecrawl `/deep-research` is
+  deprecated and Firecrawl does not advertise Research). The matching
+  Adapter supplies the Capability implementation. The remaining
+  descriptors (Z.AI, MiniMax, Brave — and Firecrawl for Research) do
+  not advertise the capability; their Adapters supply nothing.
 - **Map is the simplest of the three.** The Tavily `/map` endpoint
   returns a URL set with no per-page content, so the handler has no
   `--max-chars` projection. Crawl and Research are richer; the
@@ -604,6 +624,17 @@ The sink is awaited before the billable invoke returns outward — so
 the write survives the bin's immediate `process.exit(status)`. A
 write failure is converted to a redacted stderr warning inside the
 sink and never reaches the retry classifier.
+
+**Current wiring (0.14.x):** the seam is complete at the execution
+layer, but only the `vision` handler currently forwards the sink into
+its execution dependencies — `search`, `read`, `crawl`, `map`,
+`research`, and `repo` invocations build their execution dependencies
+without a consumption context, so those capabilities emit nothing today
+(the wiring notes in `src/index.ts` flag this as later-ticket work).
+Additionally, the sink mutates the provider's latest quota snapshot in
+place; there is no append-only history, so `scoutline usage` reporting
+requires new capture. Completing the handler wiring and adding a
+retained ledger remain open follow-ups.
 
 ## Boundaries
 

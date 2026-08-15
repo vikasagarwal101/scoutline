@@ -91,15 +91,16 @@ in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perpl
   (`ui-artifact`, `extract-text`, `diagnose-error`, `diagram`, `chart`)
   follow the same registry and are mediated by MiniMax's compiled
   conformance registry.
-- `quota` — Z.AI, MiniMax, Tavily, Firecrawl (credits), Brave.
-  Exa, Parallel AI, Perplexity, and Jina AI do not advertise quota.
+- `quota` — Z.AI, MiniMax, Tavily, Firecrawl (credits), Brave
+  (rate-limit window), Jina AI (rate-limit telemetry). Exa, Parallel AI,
+  and Perplexity do not advertise quota.
 - `diagnostics` — every built-in Provider (Z.AI, MiniMax, Tavily, Exa,
   Brave, Firecrawl, Parallel AI, Perplexity, Jina AI).
 - `read` — Z.AI, Tavily, Exa, Firecrawl, Parallel AI, Jina AI (MiniMax,
-  Brave, and Perplexity do not advertise it; Tavily/Exa/Firecrawl reject
-  Z.AI-only reader options: `--with-links`, `--no-gfm`,
-  `--keep-img-data-url`, `--with-images-summary`).
-- `repo` — Z.AI only (provider-exploration is Z.AI-supplied).
+  Brave, and Perplexity do not advertise it; Tavily/Exa/Firecrawl/Parallel
+  reject Z.AI-only reader options: `--with-links`, `--no-gfm`,
+  `--keep-img-data-url`, `--with-images-summary`; Jina maps them natively).
+- `repo` — Z.AI only (repository-exploration is Z.AI-supplied).
 - `crawl` — Tavily (sync), Firecrawl (async, resumable after Ctrl-C).
 - `map` — Tavily, Firecrawl.
 - `research` — Tavily, Exa, Parallel AI, Perplexity, Jina AI.
@@ -108,9 +109,10 @@ in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perpl
   create has no native fields).
 
 Z.AI is the only Provider that supplies `repo search/read/tree` and the
-Raw tools (`tools`, `tool`, `call`). Brave, Parallel AI, Perplexity, and
-Jina AI do not supply Reader (Brave/Perplexity), Crawl, Map, Research
-(only Parallel/Perplexity/Jina supply Research), or Vision. **Provider
+Raw tools (`tools`, `tool`, `call`). Reader is supplied by Z.AI, Tavily,
+Exa, Firecrawl, Parallel AI, and Jina AI; Crawl and Map by Tavily and
+Firecrawl only; Research by Tavily, Exa, Parallel AI, Perplexity, and
+Jina AI; Vision by Z.AI and MiniMax only. **Provider
 fallback is always-on by default**
 (0.11.0+): selecting a non-supplier emits a stderr notice and silently
 reroutes to the next eligible configured Provider in registry order
@@ -124,12 +126,12 @@ order on the effective Provider only.
 
 | Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | Command |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Search | Yes | Yes (no domain/recency/content-size/location) | Yes (no location) | Yes (no location) | Yes (web/news/video; `--content-size high` → LLM Context) | Yes (no location; `--content-size high` = markdown, +1 credit/result) | Yes (topic only; rejects other controls) | Yes (domain, recency, content-size; topic via keyword) | Yes (topic only; rejects other controls) | `scoutline search` |
+| Search | Yes | Yes (no domain/recency/content-size/location) | Yes (no location) | Yes (no location) | Yes (web/news/video; `--content-size high` → LLM Context) | Yes (no location; `--content-size high` = markdown, +1 credit/result) | Yes (domain, recency, location, content-size via `advanced_settings`; topic via keyword) | Yes (domain, recency, content-size; topic via keyword) | Yes (domain, location; rejects recency/content-size; topic via keyword) | `scoutline search` |
 | General single-image interpretation | Yes | Yes (JPG/JPEG/PNG/WebP ≤50 MiB) | No | No | No | No | No | No | No | `scoutline vision analyze` |
 | Specialized Vision (UI-to-code, OCR, error diagnosis, diagram) | Yes | Available (live-attested; conformance-gated) | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `vision extract-text`, `vision diagnose-error`, `vision diagram` |
 | Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | No | No | No | No | No | No | No | `scoutline vision chart` |
 | Two-image diff, video | Yes | No | No | No | No | No | No | No | No | `scoutline vision diff`, `vision video` |
-| Quota (normalized) | Yes | Yes | Yes | **No** (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | **No** | **No** | **No** | `scoutline quota [--all-providers]` |
+| Quota (normalized) | Yes | Yes | Yes | **No** (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | **No** | **No** | Yes (rate-limit telemetry, not spend) | `scoutline quota [--all-providers]` |
 | Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes (single-scrape probe) | Yes | Yes | Yes | `scoutline doctor [--no-tools]` |
 | Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes (rejects Z.AI-only options) | Yes (rejects Z.AI-only options) | **No** (UNSUPPORTED_CAPABILITY) | Yes (returns page titles) | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes | `scoutline read` |
 | Repository exploration (search/read/tree) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | `scoutline repo ...` |
@@ -149,10 +151,10 @@ to the active Provider.
 |---------|---------|------|
 | vision | Analyze images, screenshots, videos | `--help` for 8 subcommands |
 | search | Real-time web search | `--help` for filtering options (incl. `--topic`) |
-| read | Fetch web pages as markdown (Z.AI or Tavily) | `--help` for format options |
-| crawl | Multi-page website traversal (Tavily) | `--help` for depth/breadth/filters |
-| map | URL-set discovery without fetching pages (Tavily) | `--help` for depth/breadth/filters |
-| research | Deep research with citations (Tavily; 4-250 credits) | `--help` for model/citation/timeout |
+| read | Fetch web pages as markdown (six providers) | `--help` for format options |
+| crawl | Multi-page website traversal (Tavily or Firecrawl) | `--help` for depth/breadth/filters |
+| map | URL-set discovery without fetching pages (Tavily or Firecrawl) | `--help` for depth/breadth/filters |
+| research | Deep research with citations (five providers; 4-250 credits) | `--help` for model/citation/timeout |
 | repo | GitHub code search and reading (Z.AI) | `--help` for tree/search/read |
 | quota | Provider-normalized plan usage dashboard | `--help` for `--all-providers` |
 | tools | List available MCP tools (Z.AI) | |

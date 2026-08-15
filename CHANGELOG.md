@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Documentation: provider-neutral canonization + v2 plan seeds
+
+- **Doc-drift fix (provider-agnostic behavior canonized):** `docs/architecture.md` no longer speaks the two-provider dialect — the Search section now documents the full per-provider control matrix (incl. Parallel's `advanced_settings` controls and Jina's `X-Site`/`gl`, shipped in 0.14.6 but undocumented); Reader/Crawl/Map/Research sections list the real supplier sets (reader: six providers; research: five); the diagnostics-inventory paragraphs derive from the current nine-provider matrix. `skills/scoutline/references/advanced.md`, `skills/scoutline/SKILL.md` (quota now includes Jina; command one-liners fixed; `repository-exploration` typo), `docs/configuration.md` (stale "storage substrate only" paragraph removed; quota-aware selection marked shipped; always-unknown tier table completed with jina/parallel/perplexity), and `README.md` (Search Controls completed for Parallel/Jina/Firecrawl/Perplexity) are aligned to the same facts.
+- **PB-T2 honesty note:** `architecture.md` now documents that the consumption seam is wired end-to-end for vision only — the other shared handlers do not yet thread the sink (matching the wiring notes in `src/index.ts`); completing the wiring and adding a retained ledger are open follow-ups.
+
 ### Vision default model upgraded to GLM-5V-Turbo
 
 - **Default vision model changed from `glm-4.6v` to `glm-5v-turbo`** (the correct API identifier for Z.AI's GLM-5V-Turbo vision model — there is no `glm-5.0v`). Verified live against the Coding Plan endpoint (`api.z.ai/api/coding/paas/v4`): a vision analysis request with `glm-5v-turbo` succeeds. Override remains available via `Z_AI_VISION_MODEL`. README, `docs/configuration.md`, and `skills/scoutline/` updated to match.

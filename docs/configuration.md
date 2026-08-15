@@ -44,10 +44,6 @@ treated as absent. Malformed files fail as corrupt configuration; unsupported
 versions require a Scoutline upgrade. Writes use a private (`0600`) temporary
 file followed by atomic replacement.
 
-This release adds the storage substrate only. Existing commands still read
-credentials from environment variables until the install/onboarding consumer
-lands, so adding `config.json` manually does not yet change command behavior.
-
 ## File-Configured API Keys
 
 A provider API key stored under `providers.<id>.apiKey` in `config.json`
@@ -166,7 +162,7 @@ scoutline search "TypeScript best practices"
 scoutline repo search facebook/react "server components"
 scoutline --provider minimax repo search owner/repo query  # auto-reroutes to zai; stderr notice
 
-# Default (0.11.0+): read auto-reroutes to Z.AI/Tavily/Exa/Firecrawl
+# Default (0.11.0+): read auto-reroutes to the next eligible reader supplier
 scoutline read https://example.com
 scoutline --provider minimax read https://example.com      # auto-reroutes; stderr notice
 
@@ -543,7 +539,7 @@ MiniMax does not advertise the `reader` Capability in the current release.
 By default (0.11.0+) provider fallback handles this automatically:
 selecting MiniMax (explicitly or via `SCOUTLINE_PROVIDER`) for `read`
 emits a stderr notice and reroutes to the next eligible provider
-(Z.AI, Tavily, Exa, or Firecrawl) that supplies the `reader` Capability.
+(Z.AI, Tavily, Exa, Firecrawl, Parallel, or Jina) that supplies the `reader` Capability.
 To restore the previous strict single-provider behavior, opt out with
 `--no-fallback` (or `SCOUTLINE_NO_FALLBACK=1`) — under the kill-switch
 the preflight surfaces `UNSUPPORTED_CAPABILITY` for MiniMax before
@@ -562,7 +558,7 @@ scoutline --no-fallback --provider minimax read https://example.com
 
 ## Quota Capability Mapping
 
-The upcoming quota-aware provider selection (Plan B) ranks providers by
+Quota-aware provider selection (Plan B, shipped) ranks providers by
 **remaining quota** for the capability being invoked. Because each
 provider normalizes its native quota payload into its own named
 categories, scoutline derives the selection score from an explicit
@@ -590,7 +586,8 @@ Authority and score are kept on separate axes. A provider is either:
 | --- | --- | --- |
 | `zai`, `minimax`, `tavily`, `firecrawl` | mapped | Real credit/token signal. |
 | `brave` | always-unknown | Reports a rate-limit window, not spend or credits. Brave uses metered billing; the numeric window is displayed for telemetry but is not a budget signal. |
-| `exa` | always-unknown | Advertises no `quota` capability; nothing to map. |
+| `jina` | always-unknown | Rate-limit telemetry (`X-RateLimit-Remaining-*` headers), not spend; not a budget signal. |
+| `exa`, `parallel`, `perplexity` | always-unknown | Advertise no `quota` capability; nothing to map. |
 
 ### Capability → category table
 

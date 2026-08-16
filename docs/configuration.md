@@ -44,10 +44,6 @@ treated as absent. Malformed files fail as corrupt configuration; unsupported
 versions require a Scoutline upgrade. Writes use a private (`0600`) temporary
 file followed by atomic replacement.
 
-This release adds the storage substrate only. Existing commands still read
-credentials from environment variables until the install/onboarding consumer
-lands, so adding `config.json` manually does not yet change command behavior.
-
 ## File-Configured API Keys
 
 A provider API key stored under `providers.<id>.apiKey` in `config.json`
@@ -105,6 +101,63 @@ runtime. Provider fallback is resolved as:
 
 This makes the wizard's onboarding answer effective at runtime. An absent
 `fallbackEnabled` field defaults to `true`.
+
+## Routing Table
+
+The optional `routing` key in `config.json` sets a standing per-capability
+provider preference:
+
+```json
+{
+  "version": 1,
+  "routing": {
+    "search": ["tavily", "brave"],
+    "crawl": ["firecrawl"]
+  }
+}
+```
+
+When no explicit `--provider` / `SCOUTLINE_PROVIDER` pin exists, the first
+configured-and-capable provider in the routed list is selected for that
+capability — routing is an **instruction, not a hint**: it wins over quota
+ranking. Routing never reduces availability (no eligible routed provider →
+the existing quota-ranked path runs unchanged), and it routes only the
+*first pick*: the runtime fallback chain stays registry-ordered.
+
+**Validation is lenient at load time**: unknown provider ids
+(`UNKNOWN_PROVIDER` warning) and unknown capability keys
+(`UNKNOWN_CAPABILITY` warning) are dropped with a stderr warning; a broken
+routing table never prevents config load. **Known trade-off:** an older
+binary that rewrites the config drops the key entirely (older `parseConfig`
+rebuilds from known fields only) — accepted over a schema-version bump,
+which would hard-fail older binaries.
+
+Set it interactively (`scoutline init` → re-config → "Edit routing table")
+or scriptably:
+
+```bash
+scoutline config set routing.search tavily,brave   # STRICT: typos fail, not drop
+scoutline config unset routing.search
+```
+
+## `config` Command Family
+
+`scoutline config get [key]` / `set <key> <value>` / `unset <key>` is the
+non-TTY settings surface (dotted paths: `routing`, `routing.<capability>`,
+`fallbackEnabled`, read-only `providers.<id>`). Behavior:
+
+- **`get` is always redacted** — credential values are masked by value match
+  and by credential field name, so a file-stored API key is never printable
+  in any output mode.
+- **`set` is strict, deliberately asymmetric with load-time leniency**: an
+  explicit single-value command must not silently store something different
+  than typed, so `config set routing.search tavlly` fails with
+  `VALIDATION_ERROR` (exit 1) naming the accepted provider list.
+- **Credential paths refuse `set` outright** (`providers.<id>.apiKey` →
+  `VALIDATION_ERROR` pointing at `scoutline init` / environment variables);
+  API keys never belong in command arguments.
+- Writes are atomic read-modify-write with a round-trip re-parse guarantee
+  and take effect on the next command invocation.
 
 ## Provider Selection
 
@@ -166,7 +219,7 @@ scoutline search "TypeScript best practices"
 scoutline repo search facebook/react "server components"
 scoutline --provider minimax repo search owner/repo query  # auto-reroutes to zai; stderr notice
 
-# Default (0.11.0+): read auto-reroutes to Z.AI/Tavily/Exa/Firecrawl
+# Default (0.11.0+): read auto-reroutes to the next eligible reader supplier
 scoutline read https://example.com
 scoutline --provider minimax read https://example.com      # auto-reroutes; stderr notice
 
@@ -184,7 +237,7 @@ scoutline --no-fallback --provider minimax read https://example.com
 | `Z_AI_MODE` or `PLATFORM_MODE` | `ZAI` | Selects `ZAI` or `ZHIPU` base URLs. |
 | `Z_AI_BASE_URL` | Mode-specific URL | Overrides the API base URL. |
 | `Z_AI_TIMEOUT` | `30000` | Request timeout in milliseconds. |
-| `Z_AI_VISION_MODEL` | `glm-4.6v` | Vision model name. |
+| `Z_AI_VISION_MODEL` | `glm-5v-turbo` | Vision model name. |
 | `Z_AI_TEMPERATURE` | `0.8` | Vision generation temperature. |
 | `Z_AI_TOP_P` | `0.6` | Vision generation top-p value. |
 | `Z_AI_MAX_TOKENS` | `32768` | Vision response token limit. |
@@ -543,7 +596,7 @@ MiniMax does not advertise the `reader` Capability in the current release.
 By default (0.11.0+) provider fallback handles this automatically:
 selecting MiniMax (explicitly or via `SCOUTLINE_PROVIDER`) for `read`
 emits a stderr notice and reroutes to the next eligible provider
-(Z.AI, Tavily, Exa, or Firecrawl) that supplies the `reader` Capability.
+(Z.AI, Tavily, Exa, Firecrawl, Parallel, or Jina) that supplies the `reader` Capability.
 To restore the previous strict single-provider behavior, opt out with
 `--no-fallback` (or `SCOUTLINE_NO_FALLBACK=1`) — under the kill-switch
 the preflight surfaces `UNSUPPORTED_CAPABILITY` for MiniMax before
@@ -562,7 +615,7 @@ scoutline --no-fallback --provider minimax read https://example.com
 
 ## Quota Capability Mapping
 
-The upcoming quota-aware provider selection (Plan B) ranks providers by
+Quota-aware provider selection (Plan B, shipped) ranks providers by
 **remaining quota** for the capability being invoked. Because each
 provider normalizes its native quota payload into its own named
 categories, scoutline derives the selection score from an explicit
@@ -590,7 +643,8 @@ Authority and score are kept on separate axes. A provider is either:
 | --- | --- | --- |
 | `zai`, `minimax`, `tavily`, `firecrawl` | mapped | Real credit/token signal. |
 | `brave` | always-unknown | Reports a rate-limit window, not spend or credits. Brave uses metered billing; the numeric window is displayed for telemetry but is not a budget signal. |
-| `exa` | always-unknown | Advertises no `quota` capability; nothing to map. |
+| `jina` | always-unknown | Rate-limit telemetry (`X-RateLimit-Remaining-*` headers), not spend; not a budget signal. |
+| `exa`, `parallel`, `perplexity` | always-unknown | Advertise no `quota` capability; nothing to map. |
 
 ### Capability → category table
 

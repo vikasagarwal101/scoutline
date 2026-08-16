@@ -64,7 +64,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZaiConfig {
     mode,
     baseUrl,
     timeout: parseInt(env.Z_AI_TIMEOUT || "30000", 10),
-    visionModel: env.Z_AI_VISION_MODEL || "glm-4.6v",
+    visionModel: env.Z_AI_VISION_MODEL || "glm-5v-turbo",
     temperature: parseFloat(env.Z_AI_TEMPERATURE || "0.8"),
     topP: parseFloat(env.Z_AI_TOP_P || "0.6"),
     maxTokens: parseInt(env.Z_AI_MAX_TOKENS || "32768", 10),

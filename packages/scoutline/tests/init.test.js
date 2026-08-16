@@ -204,6 +204,12 @@ function createScriptedPrompts() {
     queuePasswordCancel() {
       queue.password.push({ cancel: true });
     },
+    queueInput(answer) {
+      queue.input.push({ answer });
+    },
+    queueInputCancel() {
+      queue.input.push({ cancel: true });
+    },
   };
 }
 
@@ -1603,5 +1609,135 @@ describe("init env-import: stale-env-after-import warning (T3b edge case)", () =
         if (prior !== undefined) process.env.Z_AI_API_KEY = prior;
       }
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Routing-table plan, Ticket 7 — re-config routing editor
+// ---------------------------------------------------------------------------
+
+describe("init re-config: routing editor", () => {
+  it("adds routing lines and persists (warn-and-drop keeps valid lines)", async () => {
+    const initial = { version: 1, providers: { zai: { apiKey: "key" } } };
+    const store = createFakeConfigStore({ initial });
+    const script = createScriptedPrompts();
+    script.queueSelect("edit-routing");
+    script.queueInput("search: tavily, tavlly, brave");
+    script.queueInput("crawl: firecrawl");
+    script.queueInput(""); // blank line finishes
+    script.queueSelect("cancel");
+
+    const { deps } = createInitDeps({ descriptors: [], prompts: script.prompts, configStore: store });
+    const status = await handleInitWithHelp([], deps);
+    assert.strictEqual(status, 0);
+    const writes = store.getWrites();
+    assert.strictEqual(writes.length, 1);
+    assert.deepStrictEqual(writes[0].config.routing, {
+      search: ["tavily", "brave"],
+      crawl: ["firecrawl"],
+    });
+  });
+
+  it("normalizes mixed-case capability keys like provider ids", async () => {
+    const initial = { version: 1, providers: { zai: { apiKey: "key" } } };
+    const store = createFakeConfigStore({ initial });
+    const script = createScriptedPrompts();
+    script.queueSelect("edit-routing");
+    script.queueInput("Search: TAVILY");
+    script.queueInput(""); // blank line finishes
+    script.queueSelect("cancel");
+
+    const { deps } = createInitDeps({ descriptors: [], prompts: script.prompts, configStore: store });
+    const status = await handleInitWithHelp([], deps);
+    assert.strictEqual(status, 0);
+    const writes = store.getWrites();
+    assert.strictEqual(writes.length, 1);
+    assert.deepStrictEqual(writes[0].config.routing, { search: ["tavily"] });
+  });
+
+  it("an empty value after the colon removes the capability entry", async () => {
+    const initial = {
+      version: 1,
+      providers: { zai: { apiKey: "key" } },
+      routing: { search: ["tavily"], crawl: ["firecrawl"] },
+    };
+    const store = createFakeConfigStore({ initial });
+    const script = createScriptedPrompts();
+    script.queueSelect("edit-routing");
+    script.queueInput("search:");
+    script.queueInput("");
+    script.queueSelect("cancel");
+
+    const { deps } = createInitDeps({ descriptors: [], prompts: script.prompts, configStore: store });
+    const status = await handleInitWithHelp([], deps);
+    assert.strictEqual(status, 0);
+    const writes = store.getWrites();
+    assert.deepStrictEqual(writes[0].config.routing, { crawl: ["firecrawl"] });
+  });
+
+  it("removing the last entry drops the routing key entirely", async () => {
+    const initial = {
+      version: 1,
+      providers: { zai: { apiKey: "key" } },
+      routing: { search: ["tavily"] },
+    };
+    const store = createFakeConfigStore({ initial });
+    const script = createScriptedPrompts();
+    script.queueSelect("edit-routing");
+    script.queueInput("search:");
+    script.queueInput("");
+    script.queueSelect("cancel");
+
+    const { deps } = createInitDeps({ descriptors: [], prompts: script.prompts, configStore: store });
+    await handleInitWithHelp([], deps);
+    const writes = store.getWrites();
+    assert.strictEqual(writes[0].config.routing, undefined);
+    assert.ok(!("routing" in writes[0].config));
+  });
+
+  it("unknown capability lines are skipped, not stored", async () => {
+    const initial = { version: 1, providers: { zai: { apiKey: "key" } } };
+    const store = createFakeConfigStore({ initial });
+    const script = createScriptedPrompts();
+    script.queueSelect("edit-routing");
+    script.queueInput("serch: tavily");
+    script.queueInput("search: brave");
+    script.queueInput("");
+    script.queueSelect("cancel");
+
+    const { deps } = createInitDeps({ descriptors: [], prompts: script.prompts, configStore: store });
+    await handleInitWithHelp([], deps);
+    const writes = store.getWrites();
+    assert.deepStrictEqual(writes[0].config.routing, { search: ["brave"] });
+  });
+
+  it("a line with no colon is skipped with a warning", async () => {
+    const initial = { version: 1, providers: { zai: { apiKey: "key" } } };
+    const store = createFakeConfigStore({ initial });
+    const script = createScriptedPrompts();
+    script.queueSelect("edit-routing");
+    script.queueInput("tavily");
+    script.queueInput("search: brave");
+    script.queueInput("");
+    script.queueSelect("cancel");
+
+    const { deps } = createInitDeps({ descriptors: [], prompts: script.prompts, configStore: store });
+    await handleInitWithHelp([], deps);
+    const writes = store.getWrites();
+    assert.deepStrictEqual(writes[0].config.routing, { search: ["brave"] });
+  });
+
+  it("cancel on the first input prompt loops back without writing", async () => {
+    const initial = { version: 1, providers: { zai: { apiKey: "key" } } };
+    const store = createFakeConfigStore({ initial });
+    const script = createScriptedPrompts();
+    script.queueSelect("edit-routing");
+    script.queueInputCancel();
+    script.queueSelect("cancel");
+
+    const { deps } = createInitDeps({ descriptors: [], prompts: script.prompts, configStore: store });
+    const status = await handleInitWithHelp([], deps);
+    assert.strictEqual(status, 0);
+    assert.strictEqual(store.getWrites().length, 0);
   });
 });

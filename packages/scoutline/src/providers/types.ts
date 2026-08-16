@@ -92,6 +92,31 @@ export type ProviderCapability =
   | "map"
   | "research";
 
+/**
+ * Runtime mirror of {@link ProviderCapability} for validation surfaces
+ * that must check membership at runtime (e.g. the config routing key).
+ * The `satisfies` check keeps array and union in lockstep at compile
+ * time.
+ */
+export const PROVIDER_CAPABILITIES = [
+  "search",
+  "vision.interpret-image",
+  "vision.ui-artifact",
+  "vision.extract-text",
+  "vision.diagnose-error",
+  "vision.diagram",
+  "vision.chart",
+  "vision.diff",
+  "vision.video",
+  "quota",
+  "diagnostics",
+  "repository-exploration",
+  "reader",
+  "crawl",
+  "map",
+  "research",
+] as const satisfies readonly ProviderCapability[];
+
 // ---------------------------------------------------------------------------
 // Provider context and Adapter
 // ---------------------------------------------------------------------------

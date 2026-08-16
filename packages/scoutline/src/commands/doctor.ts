@@ -47,6 +47,12 @@ export interface DoctorDiagnosticsDependencies {
   readonly effectiveProvider: ProviderId;
   readonly descriptors: readonly ProviderDescriptor[];
   readonly env: NodeJS.ProcessEnv;
+  /**
+   * Effective (post-validation) per-capability routing table from
+   * config.json; absent when unconfigured. Embedded additively into
+   * the report.
+   */
+  readonly routing?: Readonly<Record<string, readonly ProviderId[]>>;
   readonly sleep: (ms: number) => Promise<void>;
   readonly random: () => number;
   /**
@@ -256,6 +262,9 @@ export async function buildDiagnosticsReport(
     schemaVersion: 2,
     effectiveProvider: deps.effectiveProvider,
     capabilityMatrix: deriveCapabilityMatrix(deps.descriptors),
+    ...(deps.routing !== undefined && Object.keys(deps.routing).length > 0
+      ? { routing: deps.routing }
+      : {}),
     node: {
       version: process.version,
       visionMcpCompatible: nodeMajor() >= 22,
@@ -384,8 +393,12 @@ Usage: scoutline doctor [options]
 Reports a schema-version-2 diagnostics report listing every built-in
 Provider (zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina) with its configured state, declared
 Capabilities, and connectivity status. The effective Provider (resolved
-from --provider, SCOUTLINE_PROVIDER, or the default zai) is the
-Provider that serves a requested capability. The capabilityMatrix field
+from --provider, SCOUTLINE_PROVIDER, or a per-capability routing table
+in config.json, or the quota-ranked default) is the
+Provider that serves a requested capability. The routing field embeds
+the effective routing table when one is configured (view/edit it with
+"scoutline config get routing" / "config set routing.<capability>").
+The capabilityMatrix field
 lists, for each advertised capability, which providers supply it —
 derived from descriptor metadata, so it always reflects the descriptors
 passed to this command.

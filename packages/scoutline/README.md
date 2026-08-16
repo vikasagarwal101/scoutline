@@ -15,13 +15,13 @@
 
 ## Features
 
-- **Vision** - Analyze images, screenshots, diagrams, charts, videos using GLM-4.6V
+- **Vision** - Analyze images, screenshots, diagrams, charts, videos using GLM-5V-Turbo
 - **Search** - Real-time web search with domain and recency filtering
 - **Reader** - Fetch and parse web pages to markdown
 - **Repo** - Search and read GitHub repository code via ZRead
 - **Tools** - MCP tool discovery, schemas, and raw calls
 - **Code Mode** - TypeScript tool chaining for agent automation
-- **Provider selection** - Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, or Firecrawl
+- **Provider selection** - Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, or Jina AI
 
 ## Quick Start
 
@@ -113,7 +113,17 @@ Shared commands (`search`, `vision`, `quota`, `doctor`, `repo`) accept a global
 
 1. Explicit `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina>` on the command line
 2. `SCOUTLINE_PROVIDER` environment variable
-3. Compatibility default `zai`
+3. Per-capability **routing table** (`config.json` `routing` key; the first
+   configured, capable provider in the list wins — over quota ranking)
+4. Quota-ranked pick among configured, capable providers (registry-order tiebreak)
+
+Set a standing preference once and skip per-command flags:
+
+```bash
+scoutline config set routing.search tavily,brave   # search prefers Tavily, then Brave
+scoutline config set routing.crawl firecrawl
+scoutline config get routing                       # view the effective table
+```
 
 Examples:
 
@@ -125,7 +135,7 @@ scoutline --provider minimax search "React 19 features"
 export SCOUTLINE_PROVIDER=minimax
 scoutline quota
 
-# 3. Default Z.AI when nothing is supplied
+# 3/4. Routing table, then quota-ranked pick, when nothing is supplied
 scoutline search "TypeScript best practices"
 ```
 
@@ -173,7 +183,7 @@ Provider selection, and `doctor`.
 | `vision.chart` | Yes | Pending | No | No | No | No | No | No | No | Implemented, pending live conformance |
 | `vision.diff` (image diff) | Yes | No | No | No | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
 | `vision.video` | Yes | No | No | No | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
-| `quota` | Yes | Yes | Yes | No | Yes | Yes (credits) | No | No | No | Normalized `QuotaDashboard` (ADR-0001) |
+| `quota` | Yes | Yes | Yes | No | Yes | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | Normalized `QuotaDashboard` (ADR-0001) |
 | `diagnostics` (`doctor`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Lists every Provider; probes configured |
 | `read` (Reader) | Yes | **No** | Yes | Yes | No | Yes | Yes | No | Yes | Parallel (Extract API) & Jina add Reader support |
 | `crawl` | **No** | **No** | Yes | No | No | Yes (async) | No | No | No | Tavily sync; Firecrawl async (resumable after Ctrl-C) |
@@ -310,6 +320,11 @@ scoutline doctor --provider minimax   # MiniMax connectivity
 # Cache - inspect or clear the local cache
 scoutline cache stats                 # show inventory of both subdirectories
 scoutline cache clear                 # delete every file under cache/ and tools/
+
+# Config - inspect and change settings (scriptable, always redacted)
+scoutline config get                  # full config dump (credentials masked)
+scoutline config set routing.search tavily,brave
+scoutline config unset routing.search
 ```
 
 ## Output Format

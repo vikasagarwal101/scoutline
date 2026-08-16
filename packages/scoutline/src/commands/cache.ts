@@ -309,9 +309,12 @@ Subcommands:
           effective TTL; with --older-than, that duration replaces the
           TTL. --provider and --capability narrow the response-cache
           scan to v2 filenames only (DESIGN D2: legacy files are
-          age-selected, never selector-selected). Unknown
+          age-selected, never selector-selected). --provider may appear
+          before or after the command token. Unknown
           --provider/--capability values are NOT pre-validated — they
-          filename-match nothing and produce a zero-work success.
+          filename-match nothing in the response cache, while the
+          selector-free tool scan still prunes expired tool entries
+          (tool filenames are unpartitioned; DESIGN D4).
 
 Duration syntax for --older-than (DESIGN D3): 24h, 90m, 30s, or a bare
 integer (seconds). Example: --older-than 1h prunes anything older than
@@ -327,10 +330,11 @@ means "no freshness rule", not "delete everything").
 
 Exit codes:
   0  Success.
-  1  Validation error (bad --older-than / unknown subcommand) or I/O
-     error including a cache-write lock timeout (DESIGN D5: the prune
-     scan serializes on the response-dir lock a concurrent write holds;
-     a lock-acquire timeout throws and is reported as a sanitized JSON
+  1  Validation error (bad or valueless --older-than / --provider /
+     --capability, unknown subcommand) or I/O error including a
+     cache-write lock timeout (DESIGN D5: the prune scan serializes on
+     the response-dir lock a concurrent write holds; a lock-acquire
+     timeout throws and is reported as a sanitized FILE_ERROR JSON
      error envelope).
 
 Examples:

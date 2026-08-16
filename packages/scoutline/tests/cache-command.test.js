@@ -50,6 +50,7 @@ import {
 import { handleCache } from "../dist/index.js";
 import { runProcess } from "./helpers/run-process.js";
 import { defaultResponseCache } from "../dist/lib/cache.js";
+import { ValidationError } from "../dist/lib/errors.js";
 
 // ---------------------------------------------------------------------------
 // Pure formatting helpers
@@ -662,44 +663,90 @@ describe("cache prune dispatcher — handleCache wiring (Ticket 5)", () => {
   it("throws ValidationError on an invalid --older-than value, propagated as exit 1", async () => {
     // The dispatcher converts a null parsePruneDuration result into a
     // VALIDATION_ERROR. The command seam is not yet entered, so the
-    // injected double MUST NOT be called. `main()` wraps `handleCache`
-    // in a try/catch that writes the sanitized stderr envelope and
-    // returns the exit code; the test mirrors that boundary so the
-    // assertion sees the envelope, not the raw throw.
+    // injected double MUST NOT be called. Review fixup: assert
+    // directly on the thrown ValidationError instead of re-building
+    // main()'s envelope here — production formatting flows through
+    // formatErrorOutput(error, outputMode, envSecrets) and is covered
+    // end-to-end by the subprocess test below.
     const deps = makeDispatcherDeps(async () => {
       throw new Error("pruneCaches should not be called for invalid --older-than");
     });
-    let captured;
-    const depsWithStderr = {
-      ...deps,
-      invocation: {
-        ...deps.invocation,
-        writeStderr: (value) => {
-          captured = value;
-        },
+    await assert.rejects(
+      () => handleCache(["prune", "--older-than", "bogus"], "data", deps),
+      (error) => {
+        assert.ok(error instanceof ValidationError, `is ValidationError: ${error}`);
+        assert.strictEqual(error.code, "VALIDATION_ERROR");
+        assert.strictEqual(error.exitCode, 1);
+        assert.ok(/--older-than/.test(error.message), `error mentions --older-than: ${error.message}`);
+        return true;
       },
+    );
+  });
+
+  it("recovers the --provider selector from deps.provider when the global extractor stripped it", async () => {
+    // Review P1: `main` accepts `--provider` before OR after the command
+    // token and removes it from the rest stream in
+    // extractGlobalOptions, threading the value through
+    // buildHandlerDeps. The dispatcher must fall back to deps.provider
+    // so the selector survives; pre-fix it was silently dropped and
+    // prune deleted expired entries for EVERY provider.
+    let received;
+    const deps = {
+      ...makeDispatcherDeps(async (selectors) => {
+        received = selectors;
+        return { prunedResponses: 0, prunedTools: 0, bytesFreed: 0 };
+      }),
+      provider: "zai",
     };
-    let code;
-    try {
-      code = await handleCache(["prune", "--older-than", "bogus"], "data", depsWithStderr);
-    } catch (error) {
-      const statusCode = error && typeof error === "object" && "exitCode" in error
-        ? error.exitCode
-        : undefined;
-      code = statusCode ?? 1;
-      const envelope = JSON.stringify({
-        success: false,
-        code: error && typeof error === "object" && "code" in error ? error.code : "UNKNOWN",
-        error: error && typeof error === "object" && "message" in error ? error.message : String(error),
-      });
-      depsWithStderr.invocation.writeStderr(envelope + "\n");
-    }
-    assert.strictEqual(code, 1, "invalid --older-than exits 1");
-    assert.ok(typeof captured === "string", "a stderr envelope was written");
-    const parsed = JSON.parse(captured);
-    assert.strictEqual(parsed.success, false);
-    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
-    assert.ok(/--older-than/.test(parsed.error), `error mentions --older-than: ${parsed.error}`);
+    const code = await handleCache(["prune"], "data", deps);
+    assert.strictEqual(code, 0);
+    assert.strictEqual(received.provider, "zai");
+  });
+
+  it("a command-local --provider wins over the deps.provider fallback", async () => {
+    let received;
+    const deps = {
+      ...makeDispatcherDeps(async (selectors) => {
+        received = selectors;
+        return { prunedResponses: 0, prunedTools: 0, bytesFreed: 0 };
+      }),
+      provider: "zai",
+    };
+    const code = await handleCache(["prune", "--provider", "tavily"], "data", deps);
+    assert.strictEqual(code, 0);
+    assert.strictEqual(received.provider, "tavily");
+  });
+
+  it("throws ValidationError on a bare --provider with no value", async () => {
+    // Review P3: a valueless flag must not degrade into a boolean that
+    // matches nothing — mirror the bare --older-than guard.
+    const deps = makeDispatcherDeps(async () => {
+      throw new Error("pruneCaches should not be called for a bare --provider");
+    });
+    await assert.rejects(
+      () => handleCache(["prune", "--provider"], "data", deps),
+      (error) => {
+        assert.ok(error instanceof ValidationError, `is ValidationError: ${error}`);
+        assert.strictEqual(error.code, "VALIDATION_ERROR");
+        assert.ok(/--provider requires a value/.test(error.message), `message: ${error.message}`);
+        return true;
+      },
+    );
+  });
+
+  it("throws ValidationError on a bare --capability with no value", async () => {
+    const deps = makeDispatcherDeps(async () => {
+      throw new Error("pruneCaches should not be called for a bare --capability");
+    });
+    await assert.rejects(
+      () => handleCache(["prune", "--capability"], "data", deps),
+      (error) => {
+        assert.ok(error instanceof ValidationError, `is ValidationError: ${error}`);
+        assert.strictEqual(error.code, "VALIDATION_ERROR");
+        assert.ok(/--capability requires a value/.test(error.message), `message: ${error.message}`);
+        return true;
+      },
+    );
   });
 });
 
@@ -715,6 +762,71 @@ describe("CLI: scoutline cache prune (Ticket 5)", () => {
     assert.strictEqual(err.success, false);
     assert.strictEqual(err.code, "VALIDATION_ERROR");
     assert.ok(err.error.includes("--older-than"), `error mentions --older-than: ${err.error}`);
+  });
+
+  it("prunes only the selected provider when --provider precedes the command token", async () => {
+    // Review P1 end-to-end regression: extractGlobalOptions strips the
+    // pre-token --provider, so the selector must travel through the
+    // dispatcher deps. Pre-fix this command pruned BOTH providers'
+    // expired entries.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-cache-prune-provider-"));
+    try {
+      const now = Date.now();
+      const cacheDir = path.join(dir, "cache");
+      await fs.mkdir(cacheDir, { recursive: true });
+      // Hash segments only need to be non-empty for filename parsing;
+      // prune never validates them against credentials.
+      const cred = "c".repeat(64);
+      const req = "r".repeat(64);
+      const zaiEntry = `v2.search.zai.${cred}.${req}.json`;
+      const tavilyEntry = `v2.search.tavily.${cred}.${req}.json`;
+      await fs.writeFile(
+        path.join(cacheDir, zaiEntry),
+        JSON.stringify({ ts: now - 100_000, data: {} }),
+      );
+      await fs.writeFile(
+        path.join(cacheDir, tavilyEntry),
+        JSON.stringify({ ts: now - 100_000, data: {} }),
+      );
+
+      const { stdout, stderr, code } = await runProcess(
+        ["--provider", "zai", "--output-format", "data", "cache", "prune", "--older-than", "60s"],
+        { env: { ...BASE_ENV, SCOUTLINE_CACHE_DIR: dir } },
+      );
+      assert.strictEqual(code, 0, `unexpected exit (stderr: ${stderr})`);
+      const parsed = JSON.parse(stdout);
+      assert.strictEqual(parsed.prunedResponses, 1, `prune report: ${stdout}`);
+      assert.strictEqual(
+        await fs.access(path.join(cacheDir, zaiEntry)).then(
+          () => false,
+          () => true,
+        ),
+        true,
+        "selected provider's expired entry is deleted",
+      );
+      assert.strictEqual(
+        await fs.access(path.join(cacheDir, tavilyEntry)).then(
+          () => true,
+          () => false,
+        ),
+        true,
+        "other provider's expired entry survives the selector",
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it("exits 1 with VALIDATION_ERROR for a bare --provider with no value", async () => {
+    const { stdout, stderr, code } = await runProcess(["cache", "prune", "--provider"], {
+      env: BASE_ENV,
+    });
+    assert.strictEqual(code, 1);
+    assert.strictEqual(stdout, "");
+    const err = JSON.parse(stderr);
+    assert.strictEqual(err.success, false);
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
+    assert.ok(/--provider requires a value/.test(err.error), `error: ${err.error}`);
   });
 
   it("exits 0 and reports zero counts for an empty cache directory", async () => {

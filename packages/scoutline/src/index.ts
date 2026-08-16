@@ -2351,6 +2351,22 @@ export async function main(
     }
   }
 
+  // `config` manages config.json itself through the typed key registry:
+  // its own read/parse/write resolves against the INJECTED env, never
+  // resolvedEnv, so the dispatcher's inspected file (ambient env) can
+  // never diverge from the file the command acts on. Short-circuit
+  // before the credentialed config load so a corrupt or unreadable
+  // config.json never blocks the command family documented to inspect
+  // and repair it (same rationale as `cache`/`init`).
+  if (command === "config") {
+    try {
+      return await handleConfig(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
   // Credentialed path: load the config file (T2a — Plan A). T3b makes
   // the load TOLERANT so command help remains usable under a corrupt
   // config (review item 9: "do not force a credential check merely to
@@ -2596,10 +2612,6 @@ export async function main(
       case "tools":
         commandRecognized = true;
         exitCode = await handleTools(commandArgs, outputMode, handlerDepsWithSelection);
-        break;
-      case "config":
-        commandRecognized = true;
-        exitCode = await handleConfig(commandArgs, outputMode, handlerDeps);
         break;
       case "tool":
         commandRecognized = true;

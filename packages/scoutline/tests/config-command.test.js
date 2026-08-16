@@ -231,11 +231,14 @@ async function withTempConfig(t, initialConfig, run) {
   await run(dir);
 }
 
-function baseDeps(invocation, env) {
+async function baseDeps(invocation, env) {
   return {
     invocation,
     env,
-    quotaState: createInMemoryQuotaStore().read(),
+    // `quotaState` must be the resolved QuotaState, not the Promise
+    // `read()` returns — main skips its production read when the field
+    // is defined and would thread the Promise through to handlers.
+    quotaState: await createInMemoryQuotaStore().read(),
   };
 }
 
@@ -250,7 +253,7 @@ describe("config command dispatcher", () => {
       },
       async (dir) => {
         const { invocation, stdout, stderr } = makeInvocation();
-        const status = await main(["config", "get"], baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }));
+        const status = await main(["config", "get"], await baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }));
         assert.strictEqual(status, 0);
         assert.ok(stdout().includes("tavily"));
         assert.ok(stdout().includes("brave"));
@@ -260,11 +263,40 @@ describe("config command dispatcher", () => {
     );
   });
 
+  it("config short-circuits before the credentialed config load", async (t) => {
+    await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
+      const { invocation, stdout, stderr } = makeInvocation();
+      const failingLoad = async () => {
+        throw new Error("credentialed config load must not run for config");
+      };
+      const status = await main(
+        ["config", "get"],
+        { ...(await baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir })), loadScoutlineConfig: failingLoad },
+      );
+      assert.strictEqual(status, 0);
+      assert.strictEqual(stderr(), "");
+      assert.ok(stdout().length > 0, "config dump rendered");
+    });
+  });
+
+  it("config get with a typo'd capability fails, never (not set)", async (t) => {
+    await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
+      const { invocation, stdout, stderr } = makeInvocation();
+      const status = await main(
+        ["config", "get", "routing.serch"],
+        await baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }),
+      );
+      assert.strictEqual(status, 1);
+      assert.ok(stderr().includes("Unknown capability"), stderr());
+      assert.ok(!stdout().includes("(not set)"));
+    });
+  });
+
   it("config set end-to-end persists and is visible to the next get", async (t) => {
     await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
       const env = { SCOUTLINE_CONFIG_DIR: dir };
       const setIo = makeInvocation();
-      const setStatus = await main(["config", "set", "routing.search", "brave, zai"], baseDeps(setIo.invocation, env));
+      const setStatus = await main(["config", "set", "routing.search", "brave, zai"], await baseDeps(setIo.invocation, env));
       assert.strictEqual(setStatus, 0);
 
       const { readConfig } = await import("../dist/lib/config-store.js");
@@ -275,7 +307,7 @@ describe("config command dispatcher", () => {
       assert.deepStrictEqual(stored.routing, { search: ["brave", "zai"] });
 
       const getIo = makeInvocation();
-      const getStatus = await main(["config", "get", "routing.search"], baseDeps(getIo.invocation, env));
+      const getStatus = await main(["config", "get", "routing.search"], await baseDeps(getIo.invocation, env));
       assert.strictEqual(getStatus, 0);
       assert.ok(getIo.stdout().includes("brave"));
     });
@@ -284,7 +316,7 @@ describe("config command dispatcher", () => {
   it("config set with a typo exits 1 with the JSON error envelope on stderr", async (t) => {
     await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
       const { invocation, stdout, stderr } = makeInvocation();
-      const status = await main(["config", "set", "routing.search", "tavlly"], baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }));
+      const status = await main(["config", "set", "routing.search", "tavlly"], await baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }));
       assert.strictEqual(status, 1);
       assert.strictEqual(stdout(), "");
       assert.ok(stderr().includes("VALIDATION_ERROR"));
@@ -297,7 +329,7 @@ describe("config command dispatcher", () => {
       const { invocation, stderr } = makeInvocation();
       const status = await main(
         ["config", "set", "providers.zai.apiKey", "sk-xyz"],
-        baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }),
+        await baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }),
       );
       assert.strictEqual(status, 1);
       assert.ok(stderr().includes("init"));
@@ -312,7 +344,7 @@ describe("config command dispatcher", () => {
         const { invocation } = makeInvocation();
         const status = await main(
           ["config", "unset", "routing.search"],
-          baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }),
+          await baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }),
         );
         assert.strictEqual(status, 0);
         const { readConfig } = await import("../dist/lib/config-store.js");
@@ -328,7 +360,7 @@ describe("config command dispatcher", () => {
   it("config --help prints the family help", async (t) => {
     await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
       const { invocation, stdout } = makeInvocation();
-      const status = await main(["config", "--help"], baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }));
+      const status = await main(["config", "--help"], await baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }));
       assert.strictEqual(status, 0);
       assert.ok(stdout().includes("scoutline config get"));
     });

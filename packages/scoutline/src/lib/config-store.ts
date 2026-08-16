@@ -476,10 +476,38 @@ export function resolveConfigKey(path: string): ConfigKeyDescriptor | null {
   const trimmed = path.trim();
   if (trimmed === "fallbackEnabled") return KEY_FALLBACK_ENABLED;
   if (trimmed === "routing") return KEY_ROUTING_TABLE;
-  if (trimmed.startsWith("routing.")) return KEY_ROUTING_CAPABILITY;
+  if (trimmed.startsWith("routing.")) {
+    // Capability-validated: `routing.serch` must not resolve — get/set/
+    // unset agree that it is an unknown key, never a silent "(not set)".
+    const capability = trimmed.slice("routing.".length);
+    return (PROVIDER_CAPABILITIES as readonly string[]).includes(capability)
+      ? KEY_ROUTING_CAPABILITY
+      : null;
+  }
   const providerMatch = /^providers\.([a-z0-9-]+)(?:\.[A-Za-z0-9-]+)*$/.exec(trimmed);
   if (providerMatch?.[1]) return providerKey(providerMatch[1]);
   return null;
+}
+
+/**
+ * Shared unknown-path error for the three config subcommands: a
+ * `routing.<x>` path names the accepted capabilities (the specific
+ * wording set/unset have always produced); any other unknown path
+ * points at the family help.
+ */
+export function unknownConfigKeyError(path: string): ValidationError {
+  const trimmed = path.trim();
+  if (trimmed.startsWith("routing.")) {
+    const capability = trimmed.slice("routing.".length);
+    return new ValidationError(
+      `Unknown capability "${capability}".`,
+      `Use one of: ${PROVIDER_CAPABILITIES.join(", ")}.`,
+    );
+  }
+  return new ValidationError(
+    `Unknown config key "${trimmed}".`,
+    'Run "scoutline config --help" for the settable keys.',
+  );
 }
 
 /** Strict parse of a `routing.<capability>` value: comma-separated ids. */
@@ -533,10 +561,7 @@ export async function setConfigValue(
 ): Promise<ScoutlineConfig> {
   const key = resolveConfigKey(path);
   if (key === null) {
-    throw new ValidationError(
-      `Unknown config key "${path}".`,
-      'Run "scoutline config --help" for the settable keys.',
-    );
+    throw unknownConfigKeyError(path);
   }
   if (!key.settable) {
     if (key.credential) {
@@ -575,7 +600,7 @@ export async function setConfigValue(
       "This is an internal invariant failure; please report it.",
     );
   }
-  await writeConfig(reparsed.config, { ...options, onWarning: () => {} });
+  await writeConfig(reparsed.config, options);
   return reparsed.config;
 }
 
@@ -591,10 +616,7 @@ export async function unsetConfigValue(
 ): Promise<ScoutlineConfig> {
   const key = resolveConfigKey(path);
   if (key === null) {
-    throw new ValidationError(
-      `Unknown config key "${path}".`,
-      'Run "scoutline config --help" for the settable keys.',
-    );
+    throw unknownConfigKeyError(path);
   }
   const current = await readConfig(options);
   let next: ScoutlineConfig;
@@ -641,7 +663,7 @@ export async function unsetConfigValue(
       'Run "scoutline config --help" for the settable keys.',
     );
   }
-  await writeConfig(next, { ...options, onWarning: () => {} });
+  await writeConfig(next, options);
   return next;
 }
 

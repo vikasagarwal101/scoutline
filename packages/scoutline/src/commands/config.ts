@@ -17,6 +17,7 @@
 import type { CommandResult, TextOutputMode } from "../command-invocation.js";
 import {
   resolveConfigKey,
+  unknownConfigKeyError,
   type ScoutlineConfig,
 } from "../lib/config-store.js";
 import { ValidationError } from "../lib/errors.js";
@@ -105,10 +106,14 @@ export async function configGetCommand(
   }
   const key = resolveConfigKey(path);
   if (key === null || !key.gettable) {
-    throw new ValidationError(
-      `Unknown config key "${path}".`,
-      'Valid keys: routing, routing.<capability>, fallbackEnabled, providers.<id>. Run "scoutline config --help".',
-    );
+    // A typo'd routing capability is an unknown key here too — never a
+    // silent "(not set)"; other unknown paths list the valid roots.
+    throw path.trim().startsWith("routing.")
+      ? unknownConfigKeyError(path)
+      : new ValidationError(
+          `Unknown config key "${path}".`,
+          'Valid keys: routing, routing.<capability>, fallbackEnabled, providers.<id>. Run "scoutline config --help".',
+        );
   }
   const raw = valueAtPath(config, path);
   const redacted = redactSecrets(raw ?? null, secrets);

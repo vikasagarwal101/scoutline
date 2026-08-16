@@ -464,14 +464,6 @@ describe("config routing key", () => {
 // ===========================================================================
 
 describe("config key registry", () => {
-  async function makeStore(t, initial) {
-    const { writeConfig } = await import("../dist/lib/config-store.js");
-    await withTempDir(t, async (dir) => {
-      await writeConfig(initial, { filePath: path.join(dir, "config.json"), onWarning: () => {} });
-    });
-    return path.join(t.dir ?? "", ""); // placeholder, replaced below
-  }
-
   // The registry helpers take explicit filePath options; every test
   // builds its own temp config so nothing touches the real store.
   async function withConfig(t, initial, run) {
@@ -494,6 +486,59 @@ describe("config key registry", () => {
     assert.strictEqual(resolveConfigKey("version"), null);
     assert.strictEqual(resolveConfigKey("hintShown"), null);
     assert.strictEqual(resolveConfigKey("nope.nope"), null);
+  });
+
+  it("resolveConfigKey rejects unknown capabilities", async () => {
+    const { resolveConfigKey } = await import("../dist/lib/config-store.js");
+    assert.strictEqual(resolveConfigKey("routing.serch"), null);
+    assert.strictEqual(resolveConfigKey("routing."), null);
+    assert.notStrictEqual(resolveConfigKey("routing.search"), null);
+  });
+
+  it("routing set on the table path itself is refused (not settable)", async (t) => {
+    await withConfig(t, { version: 1, providers: {} }, async (filePath) => {
+      const { setConfigValue } = await import("../dist/lib/config-store.js");
+      await assert.rejects(
+        () => setConfigValue("routing", "search:tavily", { filePath }),
+        (error) => error.name === "ValidationError" && error.message.includes("not settable"),
+      );
+    });
+  });
+
+  it("unset routing removes the whole table; absent table fails", async (t) => {
+    await withConfig(
+      t,
+      { version: 1, providers: {}, routing: { search: ["tavily"] } },
+      async (filePath) => {
+        const { unsetConfigValue, readConfig } = await import("../dist/lib/config-store.js");
+        const updated = await unsetConfigValue("routing", { filePath });
+        assert.strictEqual(updated.routing, undefined);
+        const reread = await readConfig({ filePath, onWarning: () => {} });
+        assert.strictEqual(reread.routing, undefined);
+        await assert.rejects(
+          () => unsetConfigValue("routing", { filePath }),
+          (error) => error.name === "ValidationError" && error.message.includes("not set"),
+        );
+      },
+    );
+  });
+
+  it("unset fallbackEnabled removes the switch; absent switch fails", async (t) => {
+    await withConfig(
+      t,
+      { version: 1, providers: {}, fallbackEnabled: false },
+      async (filePath) => {
+        const { unsetConfigValue, readConfig } = await import("../dist/lib/config-store.js");
+        const updated = await unsetConfigValue("fallbackEnabled", { filePath });
+        assert.strictEqual(updated.fallbackEnabled, undefined);
+        const reread = await readConfig({ filePath, onWarning: () => {} });
+        assert.strictEqual(reread.fallbackEnabled, undefined);
+        await assert.rejects(
+          () => unsetConfigValue("fallbackEnabled", { filePath }),
+          (error) => error.name === "ValidationError" && error.message.includes("not set"),
+        );
+      },
+    );
   });
 
   it("routing set parses a strict comma list and persists", async (t) => {

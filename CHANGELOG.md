@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.15.0] - 2026-08-16
 
 ### Per-capability provider routing + `config` command family
 

@@ -657,6 +657,7 @@ Commands:
   search <owner/repo> <query>   Search docs and code in repository
   tree <owner/repo>             Get repository directory structure
   read <owner/repo> <path>      Read a file from repository
+  brief <owner/repo>            Compose tree + search + read into one envelope
 
 Search Options:
   --language <lang>   Result language: en (default) or zh
@@ -668,6 +669,15 @@ Tree Options:
 
 Read Options:
   --max-chars <n>     Truncate file content to <n> chars
+
+Brief Options:
+  --focus <list>              Subset of: structure, readme, manifest, files
+                              (default: all four; comma-separated, order preserved)
+  --path <path>               Tree scope (search/read have no path parameter)
+  --depth <n>                 Tree traversal depth (default: 1)
+  --max-chars <n>             Per-call search/read character budget (forwarded
+                              to every search and read probe; the tree is
+                              never character-limited)
 
 Common Options:
   --no-cache                 Bypass the response cache for this invocation
@@ -693,6 +703,12 @@ Output format (intentional schema-version-1 migration):
              originalContentLength}
   - tree:   {schemaVersion, repository, path, depth,
              snapshots:[{repository, path, entries:[{name, path, kind}]}]}
+  - brief:  {schemaVersion, repository, focus, coverage:{probes},
+             tree?, docs?, entryPoints?, files?, detected:{hasReadme,
+             hasManifest, manifestKinds}}  (sections gated by --focus;
+             coverage.probes records every probe attempt as ok/failed/
+             skipped). Tree is never character-limited; --max-chars
+             applies per call to searches and reads only.
   Root path is the empty string "". --max-chars applies only to
   search/read content; tree is never character-limited.
   Output modes for repo results:
@@ -709,6 +725,8 @@ Examples:
   scoutline repo tree vercel/next.js --path packages --depth 2
   scoutline repo read anthropics/anthropic-sdk-python src/anthropic/client.py
   scoutline repo read facebook/react README.md --max-chars 3000
+  scoutline repo brief facebook/react
+  scoutline repo brief facebook/react --focus structure,readme
   scoutline --provider minimax repo search owner/repo query   # UNSUPPORTED_CAPABILITY
 
 Notes:

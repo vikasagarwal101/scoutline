@@ -33,6 +33,8 @@ import {
   cacheStats,
   buildProviderCacheKey,
   defaultResponseCache,
+  parsePruneDuration,
+  parseCacheFileName,
 } from "../dist/lib/cache.js";
 
 // P6-08A: install a test-local fake credential so `buildCacheKey()`'s
@@ -1483,5 +1485,122 @@ describe("concurrent writeCache serializes via inter-process lock (5.5)", () => 
         delete process.env.SCOUTLINE_CACHE_SIZE_MB;
       }
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Prune selection helpers (pure, no I/O) — DESIGN D2/D3
+// ---------------------------------------------------------------------------
+
+describe("parsePruneDuration — pure --older-than parser (D3)", () => {
+  it("accepts hour suffix and returns milliseconds", () => {
+    assert.strictEqual(parsePruneDuration("24h"), 24 * 60 * 60 * 1000);
+    assert.strictEqual(parsePruneDuration("1h"), 3_600_000);
+  });
+
+  it("accepts minute suffix and returns milliseconds", () => {
+    assert.strictEqual(parsePruneDuration("90m"), 90 * 60 * 1000);
+  });
+
+  it("accepts second suffix and returns milliseconds", () => {
+    assert.strictEqual(parsePruneDuration("30s"), 30_000);
+  });
+
+  it("treats a bare integer as seconds", () => {
+    assert.strictEqual(parsePruneDuration("600"), 600_000);
+  });
+
+  it("accepts zero as a valid threshold (prunes everything)", () => {
+    assert.strictEqual(parsePruneDuration("0"), 0);
+    assert.strictEqual(parsePruneDuration("0h"), 0);
+  });
+
+  it("returns null for unknown unit suffixes", () => {
+    assert.strictEqual(parsePruneDuration("1x"), null);
+    assert.strictEqual(parsePruneDuration("5d"), null);
+  });
+
+  it("returns null for a unit with no number", () => {
+    assert.strictEqual(parsePruneDuration("h"), null);
+    assert.strictEqual(parsePruneDuration("m"), null);
+  });
+
+  it("returns null for negative durations", () => {
+    assert.strictEqual(parsePruneDuration("-5m"), null);
+    assert.strictEqual(parsePruneDuration("-1"), null);
+  });
+
+  it("returns null for empty or whitespace-only input", () => {
+    assert.strictEqual(parsePruneDuration(""), null);
+    assert.strictEqual(parsePruneDuration("   "), null);
+  });
+
+  it("returns null for non-integer and malformed numeric input", () => {
+    assert.strictEqual(parsePruneDuration("1.5h"), null);
+    assert.strictEqual(parsePruneDuration("1 h"), null);
+    assert.strictEqual(parsePruneDuration("12hh"), null);
+    assert.strictEqual(parsePruneDuration("abc"), null);
+  });
+
+  it("is a pure function: identical input yields identical output", () => {
+    assert.strictEqual(parsePruneDuration("24h"), parsePruneDuration("24h"));
+  });
+});
+
+describe("parseCacheFileName — v2 filename selector parsing (D2)", () => {
+  const credHash = crypto.createHash("sha256").update("cred").digest("hex");
+  const reqHash = crypto.createHash("sha256").update("req").digest("hex");
+
+  it("parses a v2 search/zai key produced by buildProviderCacheKey", () => {
+    const name = buildProviderCacheKey({
+      provider: "zai",
+      capability: "search",
+      credentialFingerprint: credHash,
+      request: { query: "hello" },
+    });
+    assert.deepStrictEqual(parseCacheFileName(name), {
+      capability: "search",
+      provider: "zai",
+    });
+  });
+
+  it("parses a v2 read/tavily key", () => {
+    const name = `v2.read.tavily.${credHash}.${reqHash}.json`;
+    assert.deepStrictEqual(parseCacheFileName(name), {
+      capability: "read",
+      provider: "tavily",
+    });
+  });
+
+  it("returns null for a legacy (non-v2) filename", () => {
+    assert.strictEqual(parseCacheFileName(`search.${reqHash}.json`), null);
+    assert.strictEqual(parseCacheFileName(`${reqHash}.json`), null);
+  });
+
+  it("returns null for a v2-prefixed name with too few segments", () => {
+    assert.strictEqual(parseCacheFileName("v2.only-three-parts.json"), null);
+    assert.strictEqual(parseCacheFileName(`v2.search.zai.${credHash}.json`), null);
+  });
+
+  it("returns null for temp staging files and lock files", () => {
+    assert.strictEqual(parseCacheFileName(".abc.tmp"), null);
+    assert.strictEqual(
+      parseCacheFileName(`.v2.search.zai.${credHash}.${reqHash}.json.1234.uuid.tmp`),
+      null,
+    );
+    assert.strictEqual(parseCacheFileName("cache-write.lock"), null);
+  });
+
+  it("returns null for a v2 name without the .json extension", () => {
+    assert.strictEqual(parseCacheFileName(`v2.search.zai.${credHash}.${reqHash}`), null);
+  });
+
+  it("returns null for empty capability or provider segments", () => {
+    assert.strictEqual(parseCacheFileName(`v2..zai.${credHash}.${reqHash}.json`), null);
+    assert.strictEqual(parseCacheFileName(`v2.search..${credHash}.${reqHash}.json`), null);
+  });
+
+  it("returns null for empty input", () => {
+    assert.strictEqual(parseCacheFileName(""), null);
   });
 });

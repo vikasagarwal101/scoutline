@@ -613,6 +613,81 @@ export async function cacheStats(): Promise<{
   };
 }
 
+// ---------------------------------------------------------------------------
+// Prune selection helpers (pure — no I/O, no env reads)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a `--older-than` duration into milliseconds (DESIGN D3).
+ *
+ * Accepted forms, mirroring `formatTtl`'s units in reverse:
+ * `<N>h` (hours), `<N>m` (minutes), `<N>s` (seconds), and a bare
+ * `<N>` interpreted as seconds. `N` must be a non-negative integer;
+ * `0` is valid and means "prune everything".
+ *
+ * Returns `null` for any other input (unknown unit, missing number,
+ * negative, fractional, empty). Callers translate `null` into a
+ * `VALIDATION_ERROR` — this helper never throws.
+ */
+export function parsePruneDuration(spec: string): number | null {
+  if (typeof spec !== "string") return null;
+  const trimmed = spec.trim();
+  if (trimmed === "") return null;
+
+  const match = /^(\d+)([hms]?)$/.exec(trimmed);
+  if (!match) return null;
+
+  const amount = Number(match[1]);
+  if (!Number.isSafeInteger(amount) || amount < 0) return null;
+
+  switch (match[2]) {
+    case "h":
+      return amount * 60 * 60 * 1000;
+    case "m":
+      return amount * 60 * 1000;
+    case "s":
+      return amount * 1000;
+    default:
+      // Bare integer is seconds.
+      return amount * 1000;
+  }
+}
+
+/**
+ * Capability/provider pair decoded from a v2 cache filename.
+ */
+export interface ParsedCacheFileName {
+  readonly capability: string;
+  readonly provider: string;
+}
+
+/**
+ * Parse a provider-partitioned cache filename (DESIGN D2).
+ *
+ * v2 keys are `v2.<capability>.<provider>.<credential-hash>.<request-hash>.json`
+ * (see {@link buildProviderCacheKey}), so selector matching is a pure
+ * string operation with zero content reads.
+ *
+ * Returns `null` for every other shape — legacy (non-v2) entries,
+ * `.tmp` staging files, `.lock` files, and malformed names. Those are
+ * selectable by age only and bucket under `legacy` in stats.
+ */
+export function parseCacheFileName(name: string): ParsedCacheFileName | null {
+  if (typeof name !== "string" || name === "") return null;
+  if (!name.startsWith("v2.") || !name.endsWith(".json")) return null;
+
+  const segments = name.split(".");
+  // v2 | capability | provider | credential-hash | request-hash | json
+  if (segments.length !== 6) return null;
+
+  const capability = segments[1];
+  const provider = segments[2];
+  if (!capability || !provider) return null;
+  if (!segments[3] || !segments[4]) return null;
+
+  return { capability, provider };
+}
+
 async function inventorySubdir(dir: string): Promise<{ entries: number; totalBytes: number }> {
   let entries = 0;
   let totalBytes = 0;

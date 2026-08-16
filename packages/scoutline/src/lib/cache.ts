@@ -38,6 +38,7 @@ import os from "node:os";
 import path from "node:path";
 import { getApiKey } from "./config.js";
 import { atomicReplaceFile } from "./config-store.js";
+import { FileError } from "./errors.js";
 import {
   withAsyncFileLock,
   DEFAULT_LOCK_TIMEOUT_MS,
@@ -604,6 +605,13 @@ export interface PruneCachesOptions {
   readonly lockTimeoutMs?: number;
   /** Stale-lock threshold (ms). Default `DEFAULT_LOCK_STALE_MS`. */
   readonly lockStaleMs?: number;
+  /**
+   * Instrumentation seam invoked after an entry is judged expired but
+   * before it is unlinked. Production never passes it; tests use it to
+   * interpose a concurrent replacement inside the stat→unlink window
+   * and assert the revalidation guard skips the stale unlink.
+   */
+  readonly beforeUnlink?: (filePath: string) => Promise<void>;
 }
 
 /**
@@ -647,16 +655,38 @@ export async function pruneCaches(
 
   // Response dir: serialize with writers on the same identity so a prune
   // never races a concurrent evictIfNeeded sweep or atomic rename (D4).
-  const responses = await withAsyncFileLock(
-    responseCacheDir(),
-    "cache-write",
-    async () => pruneSubdirByAge(responseCacheDir(), thresholdMs, selectors),
-    { timeoutMs: lockTimeoutMs, staleMs: lockStaleMs, timeoutLabel: "Cache prune" },
-  );
+  // A lock-acquire timeout is a typed FILE_ERROR (D5) so the dispatcher's
+  // error boundary emits a sanitized envelope with the designed code —
+  // `withAsyncFileLock` itself throws a plain Error (no `.code`), which
+  // would otherwise surface as UNKNOWN_ERROR.
+  let responses: { pruned: number; bytesFreed: number };
+  try {
+    responses = await withAsyncFileLock(
+      responseCacheDir(),
+      "cache-write",
+      async () =>
+        pruneSubdirByAge(responseCacheDir(), thresholdMs, selectors, options.beforeUnlink),
+      { timeoutMs: lockTimeoutMs, staleMs: lockStaleMs, timeoutLabel: "Cache prune" },
+    );
+  } catch (error) {
+    // Timeout recognition mirrors `lockFailureToConfigurationError`
+    // (config-store): the message tail is the one stable part of
+    // `${timeoutLabel} create-lock timed out`.
+    if (error instanceof Error && error.message.endsWith("create-lock timed out")) {
+      throw new FileError(
+        error.message,
+        "Another scoutline process holds the cache-write lock; try again once it finishes.",
+      );
+    }
+    throw error;
+  }
 
   // Tool dir: same age rule, lock-free, no selectors (filenames are
   // unpartitioned — they encode the config hash, not provider/capability).
-  const tools = await pruneSubdirByAge(toolCacheDir(), thresholdMs);
+  // Lock-free means a concurrent `writeToolCache` atomic rename CAN land
+  // mid-scan; `pruneSubdirByAge` revalidates each file's identity before
+  // unlinking so a fresh replacement for an expired name survives.
+  const tools = await pruneSubdirByAge(toolCacheDir(), thresholdMs, {}, options.beforeUnlink);
 
   return {
     prunedResponses: responses.pruned,
@@ -686,13 +716,19 @@ function entryAgeMs(raw: unknown): number | null {
  * files and `.<name>.<pid>.<uuid>.tmp` staging files (mirrors
  * `evictIfNeeded`'s skip discipline); matches `provider`/`capability`
  * selectors against v2 filenames only (D2); deletes entries whose stored
- * age exceeds `thresholdMs`. Individual failures are skipped like
- * `clearSubdir`; counts reflect actual deletions.
+ * age exceeds `thresholdMs`. Before unlinking, the file's identity is
+ * revalidated (inode/size/mtime): the tool dir is scanned lock-free
+ * (DESIGN D4), so a concurrent `writeToolCache` can replace an expired
+ * file with a fresh atomic rename mid-scan — a changed identity means
+ * the expiry decision is stale and the replacement is left alone.
+ * Individual failures are skipped like `clearSubdir`; counts reflect
+ * actual deletions.
  */
 async function pruneSubdirByAge(
   dir: string,
   thresholdMs: number,
   selectors: { provider?: string; capability?: string } = {},
+  beforeUnlink?: (filePath: string) => Promise<void>,
 ): Promise<{ pruned: number; bytesFreed: number }> {
   let pruned = 0;
   let bytesFreed = 0;
@@ -715,6 +751,17 @@ async function pruneSubdirByAge(
         const s = await fs.stat(p);
         const ageMs = entryAgeMs(JSON.parse(await fs.readFile(p, "utf8")));
         if (ageMs === null || ageMs <= thresholdMs) continue;
+        // Instrumentation point: production never passes this; tests use
+        // it to interpose a replacement inside the stat→unlink window.
+        await beforeUnlink?.(p);
+        // Revalidate identity before unlinking. `atomicReplaceFile`-style
+        // writes rename a NEW inode into place; in-place rewrites change
+        // size/mtime. Any drift means the content we aged is not the
+        // content on disk now — skip rather than delete a fresh write.
+        const current = await fs.stat(p);
+        if (current.ino !== s.ino || current.size !== s.size || current.mtimeMs !== s.mtimeMs) {
+          continue;
+        }
         await fs.unlink(p);
         pruned += 1;
         bytesFreed += s.size;
@@ -882,8 +929,12 @@ async function inventorySubdir(
   let totalBytes = 0;
   let live = 0;
   let expired = 0;
-  const byProvider: Record<string, CacheStatsBucket> = {};
-  const byCapability: Record<string, CacheStatsBucket> = {};
+  // Null-prototype accumulators: filename segments are untrusted keys, and
+  // a crafted `v2.<cap>.__proto__.<hash>.<hash>.json` must become an OWN
+  // bucket, not corrupt the accumulator through Object.prototype's
+  // `__proto__` accessor (review P2).
+  const byProvider: Record<string, CacheStatsBucket> = Object.create(null);
+  const byCapability: Record<string, CacheStatsBucket> = Object.create(null);
   try {
     const names = await fs.readdir(dir);
     // Live-vs-expired uses the same freshness boundary as prune (DESIGN
@@ -891,6 +942,11 @@ async function inventorySubdir(
     // every entry is the D8 cost note — stats is an explicit invocation.
     const ttlMs = getCacheTtlMs();
     for (const name of names) {
+      // Skip lockfiles and atomic-write staging files — the same
+      // discipline as `evictIfNeeded`/`pruneSubdirByAge`. They are
+      // coordination artifacts, not cache entries, and must not be
+      // counted as live entries or bucketed as `legacy` (review P2).
+      if ((name.startsWith(".") && name.endsWith(".tmp")) || name.endsWith(".lock")) continue;
       const p = path.join(dir, name);
       try {
         const s = await fs.stat(p);
@@ -925,8 +981,15 @@ async function inventorySubdir(
     byCapability?: Record<string, CacheStatsBucket>;
   } = { entries, totalBytes, live, expired };
   if (breakdown) {
-    result.byProvider = byProvider;
-    result.byCapability = byCapability;
+    // Boundary conversion back to a plain-proto record: the null-proto
+    // accumulator is an internal hardening detail, not part of the
+    // public Record shape. Object spread copies own enumerable
+    // properties via CreateDataProperty, so even a literal "__proto__"
+    // bucket key becomes an own data property on the fresh plain object
+    // — JSON output and deepStrictEqual consumers see an ordinary
+    // Record shape either way.
+    result.byProvider = { ...byProvider };
+    result.byCapability = { ...byCapability };
   }
   return result;
 }
@@ -938,7 +1001,12 @@ function addToBucket(
   sizeBytes: number,
   isExpired: boolean,
 ): void {
-  const existing = buckets[key];
+  // Own-key read only: inherited properties (e.g. `constructor` on a
+  // plain object, anything on a null-prototype accumulator's chain)
+  // must never be mistaken for an existing bucket.
+  const existing = Object.prototype.hasOwnProperty.call(buckets, key)
+    ? buckets[key]
+    : undefined;
   buckets[key] = existing
     ? {
         entries: existing.entries + 1,

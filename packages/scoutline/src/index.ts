@@ -254,7 +254,18 @@ function extractGlobalOptions(args: string[]): {
       // removed from the rest stream so command-local positional parsing
       // never observes it. Only shared Search resolves/validates it; the
       // Z.AI-only command families carry it but never consult it.
-      provider = args[i + 1];
+      // A valueless trailing `--provider` is a VALIDATION_ERROR, not a
+      // silent no-op: `parseArgs` would yield `true` and the flag would
+      // vanish from the rest stream, matching nothing (review fixup —
+      // mirrors `cache prune`'s bare `--older-than` guard).
+      const value = args[i + 1];
+      if (value === undefined) {
+        throw new ValidationError(
+          "--provider requires a value.",
+          "Pass a Provider id after --provider, e.g. --provider zai.",
+        );
+      }
+      provider = value;
       i += 1;
       continue;
     }
@@ -312,8 +323,11 @@ function resolveOutputMode(
  *
  * `provider` is the parsed global `--provider` flag. Shared Search, the
  * P6-07 Repository commands, and the Reader Migration 04 `read` command
- * resolve/validate it; the remaining Z.AI-only command families (tools,
- * tool, call, code) carry it but never consult it. `providerDescriptors`
+ * resolve/validate it; `cache prune` reads it as a PRUNE SELECTOR
+ * (`--provider` is stripped from the rest stream before `handleCache`
+ * sees it, so the dispatcher falls back to this field); the remaining
+ * Z.AI-only command families (tools, tool, call, code) carry it but
+ * never consult it. `providerDescriptors`
  * is the injectable registry (tests pass doubles; production uses the
  * static built-in list).
  *
@@ -1743,7 +1757,11 @@ async function handleConfig(
  * `--provider` / `--capability` flags into the `PruneSelectors` shape
  * the lib expects (DESIGN D2/D3); unknown provider/capability values
  * are intentionally NOT pre-validated against the registry — they
- * filename-match nothing and produce zero-work success (DESIGN D2). A
+ * filename-match nothing in the response cache while the selector-free
+ * tool scan still runs (DESIGN D2/D4). `--provider` may appear before
+ * or after the command token: `extractGlobalOptions` strips it either
+ * way and this handler recovers it from `deps.provider`. A valueless
+ * `--older-than`/`--provider`/`--capability` is a VALIDATION_ERROR. A
  * lock-acquire timeout in the production `pruneCaches` THROWS (DESIGN
  * D5) so the dispatcher's error boundary emits a sanitized stderr
  * envelope with exit 1.
@@ -1810,8 +1828,36 @@ export async function handleCache(
           "Use one of: Nh, Nm, Ns, or N (seconds). Examples: --older-than 24h, --older-than 30m.",
         );
       }
-      const provider = flags.provider as string | undefined;
-      const capability = flags.capability as string | undefined;
+      // parseArgs yields `true` for a value flag with no argument, so
+      // the boolean case is real here (bare `--provider`/`--capability`
+      // guard below); the cast must keep it, unlike the old
+      // `as string | undefined`.
+      const provider = flags.provider as string | boolean | undefined;
+      const capability = flags.capability as string | boolean | undefined;
+      // A value flag parsed as `true` means the user passed a bare
+      // `--provider`/`--capability` with no value. Mirror the bare
+      // `--older-than` guard above instead of letting the boolean match
+      // nothing and silently prune/exchange nothing (review fixup).
+      if (provider === true) {
+        throw new ValidationError(
+          "--provider requires a value.",
+          "Pass a Provider id after --provider, e.g. --provider zai.",
+        );
+      }
+      if (capability === true) {
+        throw new ValidationError(
+          "--capability requires a value.",
+          "Pass a capability id after --capability, e.g. --capability search.",
+        );
+      }
+      // `extractGlobalOptions` removes `--provider` (in either position)
+      // from the args before `handleCache` sees them and threads the
+      // value through `deps.provider`; direct/in-process callers still
+      // pass the flag in `args`. Consult both so the selector works via
+      // `main` AND via `handleCache(args, ...)` (review P1).
+      const providerSelector =
+        typeof provider === "string" ? provider : deps.provider;
+      const capabilitySelector = typeof capability === "string" ? capability : undefined;
       // Build the selector shape the lib expects. Undefined flags are
       // omitted so the lib's optional-field contract is preserved. The
       // command seam receives this verbatim; production
@@ -1819,8 +1865,8 @@ export async function handleCache(
       // exact same object.
       const selectors: PruneSelectors = {
         ...(olderThanMs !== undefined ? { olderThanMs } : {}),
-        ...(provider !== undefined ? { provider } : {}),
-        ...(capability !== undefined ? { capability } : {}),
+        ...(providerSelector !== undefined ? { provider: providerSelector } : {}),
+        ...(capabilitySelector !== undefined ? { capability: capabilitySelector } : {}),
       };
       // The injected seam is the existing dependency seam (Ticket 5);
       // production wires the on-disk `pruneCaches` from `src/lib/cache.js`
@@ -2275,9 +2321,18 @@ export async function main(
   // is computed below for credentialed paths.
   const envSecrets = configuredSecrets(env);
 
-  const { outputFormat, forcePretty, forceRaw, provider, noFallback, rest } = extractGlobalOptions([
-    ...args,
-  ]);
+  // Extraction can now throw (valueless trailing `--provider`); give it
+  // the same error boundary as `resolveOutputMode` below — sanitized
+  // data-mode envelope (the requested output mode is not yet known when
+  // extraction itself fails) and the error's exit code.
+  let extracted: ReturnType<typeof extractGlobalOptions>;
+  try {
+    extracted = extractGlobalOptions([...args]);
+  } catch (error) {
+    invocation.writeStderr(formatErrorOutput(error, "data", envSecrets));
+    return getErrorExitCode(error);
+  }
+  const { outputFormat, forcePretty, forceRaw, provider, noFallback, rest } = extracted;
 
   // Fixup C — B10: resolve the output mode BEFORE the dispatch try/catch.
   // An invalid explicit mode still surfaces as a typed ValidationError,

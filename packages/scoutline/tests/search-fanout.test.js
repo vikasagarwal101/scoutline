@@ -152,6 +152,85 @@ describe("canonicalUrl: idempotence", () => {
   });
 });
 
+// WHATWG accepts arbitrary slash/backslash separator runs before the
+// authority of a SPECIAL scheme (http/https/ws/wss/ftp/file) — `///`,
+// `/\`, even zero separators all reach the authority state, and `\`
+// terminates the authority there. The raw re-slice in canonicalUrl must
+// follow the parser's authority boundary, or it duplicates host text
+// into the path or fabricates userinfo, giving parser-equivalent
+// provider URLs different dedupe keys (review fix, PR #36).
+describe("canonicalUrl: authority boundary follows the WHATWG parser", () => {
+  it("extra slash separators never duplicate the host into the path", () => {
+    assert.strictEqual(
+      canonicalUrl("https:///example.com/path"),
+      canonicalUrl("https://example.com/path"),
+    );
+    assert.strictEqual(canonicalUrl("https:///example.com/path"), "https://example.com/path");
+    assert.strictEqual(canonicalUrl("https:////example.com/path"), "https://example.com/path");
+  });
+
+  it("mixed slash/backslash separators collapse to the same identity", () => {
+    assert.strictEqual(
+      canonicalUrl("https:/\\example.com/path"),
+      "https://example.com/path",
+    );
+    // Backslash path bytes stay raw (D4 byte preservation) but the
+    // authority boundary is the parser's: host once, no userinfo.
+    assert.strictEqual(
+      canonicalUrl("https:\\\\example.com\\path"),
+      "https://example.com\\path",
+    );
+  });
+
+  it("a zero/one-slash authority keeps its userinfo (parser-equivalent to //)", () => {
+    assert.strictEqual(canonicalUrl("https:user@example.com/p"), "https://user@example.com/p");
+    assert.strictEqual(canonicalUrl("https:/user@example.com/p"), "https://user@example.com/p");
+    assert.strictEqual(canonicalUrl("https:///user@example.com/p"), "https://user@example.com/p");
+  });
+
+  it("a backslash terminates the authority for special schemes — no invented userinfo", () => {
+    // The parser ends the authority at the `\`; `x@user` is PATH text,
+    // never userinfo. The old scan read `example.com\x@user` as the
+    // authority and fabricated the userinfo `example.com\x@`.
+    const key = canonicalUrl("https://example.com\\x@user/path");
+    assert.strictEqual(key, "https://example.com\\x@user/path");
+    // Host text appears exactly once (no duplication) and `@` exactly
+    // once (no fabricated userinfo).
+    assert.strictEqual(
+      key.indexOf("example.com"),
+      key.lastIndexOf("example.com"),
+      "host text must not be duplicated",
+    );
+    assert.strictEqual(key.indexOf("@"), key.lastIndexOf("@"), "no invented userinfo");
+  });
+
+  it("backslash-separator authorities keep their userinfo", () => {
+    assert.strictEqual(
+      canonicalUrl("https:////user@host/p"),
+      "https://user@host/p",
+    );
+  });
+
+  it("non-special schemes keep the exact-// rule (backslash is not a separator there)", () => {
+    // `foo://user@bar.baz/path`: userinfo + raw path preserved, exactly
+    // as before the boundary fix — only special schemes accept the
+    // lenient separator forms.
+    assert.strictEqual(canonicalUrl("foo://user@bar.baz/path"), "foo://user@bar.baz/path");
+  });
+
+  it("idempotence holds for the exotic-separator forms", () => {
+    const urls = [
+      "https:///example.com/path",
+      "https:/\\user@example.com/p",
+      "https://example.com\\x@user/path",
+    ];
+    for (const u of urls) {
+      const once = canonicalUrl(u);
+      assert.strictEqual(canonicalUrl(once), once, `idempotence broken for ${u}`);
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // parseProviderIds — comma-split + validate + dedupe (DESIGN D1)
 // ---------------------------------------------------------------------------

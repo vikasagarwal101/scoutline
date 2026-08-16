@@ -190,8 +190,9 @@ scoutline config unset fanout       # remove the standing switch
 ```
 
 **Cost:** every search will bill ALL configured search providers — N arms
-= N billable calls (when `routing.search` is set, only the configured
-routed providers are billed). Arms run in parallel (one client each,
+= N billable calls (when `routing.search` is set, only the eligible
+routed providers — configured and search-capable — are billed;
+`config set fanout true` names exactly those). Arms run in parallel (one client each,
 pinned — no per-arm fallback); a provider that rejects a search control
 drops with a stderr notice and never fails the invocation. Results are
 deduplicated by canonical URL identity (scheme/host lowercased, default

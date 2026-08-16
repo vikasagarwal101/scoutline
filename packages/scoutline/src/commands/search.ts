@@ -702,6 +702,33 @@ Provider selection (precedence: explicit flag, then SCOUTLINE_PROVIDER, then zai
   --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina>   Select the search provider (default: zai)
   SCOUTLINE_PROVIDER=<id>                 Fallback when --provider is not passed
 
+Multi-provider fan-out — activation tiers (highest precedence first):
+  1. --provider <tavily,exa,...> or --provider all
+        Fan-out on the listed providers; \`all\` expands to every
+        configured provider that advertises search, registry order.
+  2. A single --provider id, or SCOUTLINE_PROVIDER set
+        Single provider only — an explicit pin; fan-out is ignored.
+  3. \`scoutline config set fanout true\` (with no pin)
+        Fan-out on routing.search when set, else every configured
+        search provider, registry order.
+  4. No pin and fanout off (the default)
+        Single provider via the standard selection order.
+
+  Cost (when fan-out is active):
+  every search will bill ALL configured search providers — N arms = N billable calls.
+  Disable with \`scoutline config set fanout false\`.
+
+  Merging: arms run in parallel (one client each, pinned — no per-arm
+  fallback) and are deduped by canonical URL identity: scheme and host
+  lowercased; :80/:443 ports, fragments, and trailing slashes stripped;
+  utm_* and fbclid parameters removed. The canonical form is a
+  dedupe identity ONLY — the emitted url, title, and summary are the
+  first arm's originals. The first arm wins metadata collisions;
+  \`occurrences\` counts across all arms; the merged list is sliced to
+  --count after merging; \`--merge\` composes with fan-out. A failed
+  arm is dropped with a stderr notice; if every arm fails, the last
+  arm's error surfaces.
+
 Note: support for the optional controls below varies by provider AND by
 control — a control accepted by one provider may be rejected
 (UNSUPPORTED_OPTION) by another before invocation. Run
@@ -758,6 +785,7 @@ Default JSON shape:
       "source": "example.com",
       "date": "2024-01-15",
       "occurrences": 2   // only present with --merge when >1
+      "mergedFrom": ["tavily", "exa"]   // fan-out only: arms that surfaced this result
     }
   ]
 `.trim();

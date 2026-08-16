@@ -17,7 +17,13 @@ import assert from "node:assert/strict";
 
 import { canonicalUrl } from "../dist/lib/url.js";
 import { parseProviderIds } from "../dist/providers/selection.js";
-import { mergeResults, search, resolveFanoutPlan, executeFanoutPlan } from "../dist/commands/search.js";
+import {
+  mergeResults,
+  search,
+  resolveFanoutPlan,
+  executeFanoutPlan,
+  SEARCH_HELP,
+} from "../dist/commands/search.js";
 import { main } from "../dist/index.js";
 import { ValidationError } from "../dist/lib/errors.js";
 
@@ -1132,5 +1138,203 @@ describe("executeFanoutPlan: single-pin golden via main() (byte-identical stdout
       !errA.some((n) => /fanned out to/.test(n)),
       "no fan-out summary on the single-pin path",
     );
+  });
+});
+
+// =============================================================================
+// Ticket 4 — Config toggle + help (DESIGN D7)
+//
+// The `fanout` typed registry row makes the switch a first-class config
+// key (`config set/get/unset fanout`) with the mandated cost sentence on
+// enable, and SEARCH_HELP documents the four activation tiers, the cost
+// line, `mergedFrom`, and the identity-only canonicalization note. The
+// golden test drives the toggle through the REAL config store: enabling
+// fans out, and toggling back off restores the never-enabled single
+// path byte-for-byte. (The `--provider tavily` single-pin suppress
+// notice under fanout=true is already pinned by the Ticket 3 golden
+// above.)
+// =============================================================================
+
+describe("SEARCH_HELP: fan-out documentation anchors (Ticket 4, D7)", () => {
+  it("documents all four activation tiers", () => {
+    assert.ok(SEARCH_HELP.includes("activation tiers"), "section heading");
+    // Tier 1: explicit comma-list / all → fan-out.
+    assert.ok(SEARCH_HELP.includes("--provider all"), "tier 1: all sentinel");
+    assert.ok(/--provider <[a-z]+,[a-z]+/i.test(SEARCH_HELP), "tier 1: comma-list");
+    // Tier 2: single id / env pin → single, fan-out ignored.
+    assert.ok(SEARCH_HELP.includes("SCOUTLINE_PROVIDER"), "tier 2: env pin");
+    assert.match(SEARCH_HELP, /explicit pin; fan-out is ignored/i, "tier 2 wording");
+    // Tier 3: config switch, routing.search order.
+    assert.ok(SEARCH_HELP.includes("config set fanout true"), "tier 3: config switch");
+    assert.ok(SEARCH_HELP.includes("routing.search"), "tier 3: routing order");
+    // Tier 4: default single.
+    assert.match(SEARCH_HELP, /No pin and fanout off \(the default\)/, "tier 4: default");
+  });
+
+  it("carries the mandated cost line verbatim", () => {
+    assert.ok(
+      SEARCH_HELP.includes(
+        "every search will bill ALL configured search providers — N arms = N billable calls",
+      ),
+      "cost sentence must appear verbatim",
+    );
+  });
+
+  it("documents mergedFrom and the identity-only canonicalization note", () => {
+    assert.ok(SEARCH_HELP.includes("mergedFrom"), "mergedFrom doc");
+    assert.ok(SEARCH_HELP.includes("utm_*"), "tracking-param removal named");
+    assert.match(SEARCH_HELP, /dedupe identity ONLY/i, "identity-only note");
+    assert.ok(SEARCH_HELP.includes("first arm"), "first-arm metadata wins");
+  });
+
+  it("keeps the existing single-path documentation (regression anchors)", () => {
+    assert.ok(SEARCH_HELP.includes("--merge"));
+    assert.ok(SEARCH_HELP.includes("--count"));
+    assert.ok(SEARCH_HELP.includes("--topic"));
+    assert.ok(SEARCH_HELP.includes("SCOUTLINE_PROVIDER=<id>"));
+  });
+});
+
+describe("config toggle: fanout on → off restores the single path (golden)", () => {
+  it("toggling fanout off is byte-identical to never enabling it", async (t) => {
+    const fsMod = await import("node:fs/promises");
+    const osMod = await import("node:os");
+    const pathMod = await import("node:path");
+    const { writeConfig, readConfig, setConfigValue } = await import(
+      "../dist/lib/config-store.js"
+    );
+
+    function makeConfiguredDescriptor(id, results) {
+      const invokes = [];
+      return {
+        descriptor: {
+          id,
+          isConfigured: () => true,
+          capabilities: () => new Set(["search"]),
+          create: () => ({
+            id,
+            search: {
+              validate() {},
+              cacheIdentity(r) {
+                return {
+                  provider: id,
+                  capability: "search",
+                  credentialFingerprint: "fp-" + id,
+                  request: r,
+                  legacyCandidates: [],
+                };
+              },
+              async invoke(r) {
+                invokes.push(r);
+                return results.map((entry) => ({ ...entry }));
+              },
+            },
+          }),
+        },
+        invokes,
+      };
+    }
+    // Three configured providers: zai (the single-path default pick)
+    // plus tavily/exa with one overlapping URL → the ON run fans out to
+    // all three and proves provenance on the overlap; the OFF/NEVER
+    // runs stay single (zai) with no fan-out vocabulary.
+    const zai = makeConfiguredDescriptor("zai", [
+      { title: "Zai", url: "https://e/z", summary: "from zai" },
+    ]);
+    const tav = makeConfiguredDescriptor("tavily", [
+      { title: "Tav", url: "https://e/p", summary: "from tavily" },
+    ]);
+    const exa = makeConfiguredDescriptor("exa", [
+      { title: "Exa", url: "https://e/p", summary: "from exa" },
+    ]);
+
+    const mkOptions = (dir) => ({ filePath: pathMod.join(dir, "config.json"), onWarning: () => {} });
+    const dirs = [];
+    t.after(async () => {
+      for (const dir of dirs) await fsMod.rm(dir, { recursive: true, force: true });
+    });
+    const tempDir = async () => {
+      const dir = await fsMod.mkdtemp(pathMod.join(osMod.tmpdir(), "scoutline-fanout-toggle-"));
+      dirs.push(dir);
+      await writeConfig({ version: 1, providers: {} }, mkOptions(dir));
+      return dir;
+    };
+
+    const freshCache = () => {
+      const store = new Map();
+      return {
+        async get(k) {
+          return store.has(k) ? store.get(k) : null;
+        },
+        async set(k, v) {
+          store.set(k, v);
+        },
+      };
+    };
+
+    // One search run against the REAL config store at `dir` (production
+    // read path: main → loadScoutlineConfig → config.fanout).
+    const runSearch = async (dir) => {
+      const stdout = [];
+      const stderr = [];
+      const adapter = {
+        stdoutIsTTY: false,
+        stdinIsTTY: false,
+        environmentOutputMode: "data",
+        readStdin: async () => "",
+        writeStdout: (v) => stdout.push(v),
+        writeStderr: (v) => stderr.push(v),
+        runQuietly: async (op) => op(),
+        setExitCode: () => {},
+      };
+      const status = await main(["search", "q"], {
+        invocation: adapter,
+        env: {},
+        providerDescriptors: [zai.descriptor, tav.descriptor, exa.descriptor],
+        loadScoutlineConfig: () => readConfig(mkOptions(dir)),
+        searchCache: freshCache(),
+        searchSleep: async () => {},
+        searchRandom: () => 0.5,
+      });
+      return { status, stdout: stdout.slice(), stderr: stderr.slice() };
+    };
+
+    // ON — enable through the Ticket 4 registry surface.
+    const onDir = await tempDir();
+    await setConfigValue("fanout", "true", mkOptions(onDir));
+    const on = await runSearch(onDir);
+    assert.strictEqual(on.status, 0);
+    assert.ok(
+      on.stderr.some((n) => /fanned out to 3 providers \(zai, tavily, exa\)/.test(n)),
+      `fan-out summary notice expected, got: ${JSON.stringify(on.stderr)}`,
+    );
+    const onData = JSON.parse(on.stdout[0]);
+    assert.strictEqual(onData.length, 2, "overlap merged + zai's distinct URL");
+    const merged = onData.find((r) => r.url === "https://e/p");
+    assert.ok(merged, "overlapping result present");
+    assert.deepStrictEqual(merged.mergedFrom, ["tavily", "exa"]);
+    assert.strictEqual(merged.occurrences, 2);
+
+    // OFF — toggle back off through the same surface.
+    await setConfigValue("fanout", "false", mkOptions(onDir));
+    const off = await runSearch(onDir);
+    assert.strictEqual(off.status, 0);
+    assert.ok(
+      !JSON.stringify(off.stdout).includes("mergedFrom"),
+      "toggle-off output omits mergedFrom",
+    );
+    assert.deepStrictEqual(off.stderr, [], "no notices after toggle-off");
+
+    // NEVER — a config that never carried the switch.
+    const neverDir = await tempDir();
+    const never = await runSearch(neverDir);
+    assert.strictEqual(never.status, 0);
+
+    // The golden: toggle-off restores the never-enabled single path
+    // byte-for-byte (stdout AND stderr).
+    assert.deepStrictEqual(off.stdout, never.stdout, "toggle-off stdout must be byte-identical");
+    assert.deepStrictEqual(off.stderr, never.stderr, "toggle-off stderr must be byte-identical");
+    // And the environment really did toggle: the ON output differs.
+    assert.notDeepStrictEqual(on.stdout, off.stdout, "fan-out engaged on the ON run");
   });
 });

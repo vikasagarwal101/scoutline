@@ -27,6 +27,12 @@ export interface ProviderConfig {
 export interface ScoutlineConfig {
   readonly version: typeof CONFIG_VERSION;
   readonly fallbackEnabled?: boolean;
+  /**
+   * Multi-provider search fan-out switch (search-fanout plan, DESIGN
+   * D7). Absent/false → single-provider search (default, byte-identical
+   * pre-fan-out behavior); true → tier-3 activation per DESIGN D1.
+   */
+  readonly fanout?: boolean;
   readonly providers: Partial<Record<ProviderId, ProviderConfig>>;
   readonly hintShown?: boolean;
   /**
@@ -189,6 +195,7 @@ function parseConfig(contents: string): ParsedConfig {
   }
   if (
     (parsed.fallbackEnabled !== undefined && typeof parsed.fallbackEnabled !== "boolean") ||
+    (parsed.fanout !== undefined && typeof parsed.fanout !== "boolean") ||
     (parsed.hintShown !== undefined && typeof parsed.hintShown !== "boolean") ||
     (parsed.providers !== undefined && !isRecord(parsed.providers))
   ) {
@@ -217,6 +224,7 @@ function parseConfig(contents: string): ParsedConfig {
       ...(parsed.fallbackEnabled !== undefined
         ? { fallbackEnabled: parsed.fallbackEnabled as boolean }
         : {}),
+      ...(parsed.fanout !== undefined ? { fanout: parsed.fanout as boolean } : {}),
       providers,
       ...(parsed.hintShown !== undefined ? { hintShown: parsed.hintShown as boolean } : {}),
       ...(routing !== undefined ? { routing } : {}),
@@ -435,6 +443,14 @@ export interface ConfigKeyDescriptor {
   /** true → `config get` redacts the value; `config set` refuses it. */
   readonly credential: boolean;
   readonly describe: string;
+  /**
+   * Sentence the `config set` success path emits (stderr notice) when
+   * this key stores boolean `true` — the cost warning a switch-on must
+   * carry (search-fanout DESIGN D7: `config set fanout true` must state
+   * that every search bills ALL configured search providers). Absent on
+   * keys whose enablement carries no such warning.
+   */
+  readonly setTrueNotice?: string;
 }
 
 const KEY_FALLBACK_ENABLED: ConfigKeyDescriptor = {
@@ -443,6 +459,19 @@ const KEY_FALLBACK_ENABLED: ConfigKeyDescriptor = {
   settable: true,
   credential: false,
   describe: "boolean — always-on provider fallback switch",
+};
+
+/** The mandated fan-out cost warning (search-fanout DESIGN D7, verbatim). */
+export const FANOUT_COST_SENTENCE =
+  "every search will bill ALL configured search providers — N arms = N billable calls";
+
+const KEY_FANOUT: ConfigKeyDescriptor = {
+  path: "fanout",
+  gettable: true,
+  settable: true,
+  credential: false,
+  describe: "boolean — multi-provider search fan-out switch (default false)",
+  setTrueNotice: FANOUT_COST_SENTENCE,
 };
 
 const KEY_ROUTING_TABLE: ConfigKeyDescriptor = {
@@ -498,6 +527,7 @@ function providerFieldKey(fullPath: string, id: string): ConfigKeyDescriptor {
 export function resolveConfigKey(path: string): ConfigKeyDescriptor | null {
   const trimmed = path.trim();
   if (trimmed === "fallbackEnabled") return KEY_FALLBACK_ENABLED;
+  if (trimmed === "fanout") return KEY_FANOUT;
   if (trimmed === "routing") return KEY_ROUTING_TABLE;
   if (trimmed.startsWith("routing.")) {
     // Capability-validated: `routing.serch` must not resolve — get/set/
@@ -680,7 +710,7 @@ export async function setConfigValue(
   return serializeConfigWrite(options, async () => {
     const current = await readConfig(options);
     let next: ScoutlineConfig;
-    if (key === KEY_FALLBACK_ENABLED) {
+    if (key === KEY_FALLBACK_ENABLED || key === KEY_FANOUT) {
       const lowered = value.trim().toLowerCase();
       if (lowered !== "true" && lowered !== "false") {
         throw new ValidationError(
@@ -688,7 +718,10 @@ export async function setConfigValue(
           "Use one of: true, false.",
         );
       }
-      next = { ...current, fallbackEnabled: lowered === "true" };
+      next =
+        key === KEY_FALLBACK_ENABLED
+          ? { ...current, fallbackEnabled: lowered === "true" }
+          : { ...current, fanout: lowered === "true" };
     } else {
       const { capability, ids } = parseRoutingValue(path, value);
       const routing = { ...current.routing, [capability]: ids };
@@ -758,6 +791,13 @@ export async function unsetConfigValue(
       }
       const { fallbackEnabled: _fb, ...rest } = current;
       void _fb;
+      next = rest;
+    } else if (trimmed === "fanout") {
+      if (current.fanout === undefined) {
+        throw new ValidationError('"fanout" is not set.', "Nothing to unset.");
+      }
+      const { fanout: _fo, ...rest } = current;
+      void _fo;
       next = rest;
     } else {
       throw new ValidationError(

@@ -37,6 +37,14 @@ export interface ConfigGetDependencies {
 export interface ConfigSetDependencies {
   /** Strict set (production: `setConfigValue`). */
   readonly set: (path: string, value: string) => Promise<ScoutlineConfig>;
+  /**
+   * Success-path notice channel (production: the invocation context's
+   * `notice`, stderr). Used for registry-mandated warnings like the
+   * fan-out cost sentence (search-fanout DESIGN D7) — visible in every
+   * output mode while stdout stays data-only. Optional so presentation
+   * doubles stay minimal.
+   */
+  readonly notify?: (message: string) => void;
 }
 
 export interface ConfigUnsetDependencies {
@@ -73,6 +81,7 @@ function valueAtPath(config: ScoutlineConfig, path: string): unknown {
   if (trimmed === "routing") return config.routing;
   if (trimmed.startsWith("routing.")) return config.routing?.[trimmed.slice("routing.".length)];
   if (trimmed === "fallbackEnabled") return config.fallbackEnabled;
+  if (trimmed === "fanout") return config.fanout;
   const providerMatch = /^providers\.([a-z0-9-]+)(?:\.[A-Za-z0-9-]+)*$/.exec(trimmed);
   if (providerMatch?.[1]) return config.providers[providerMatch[1] as keyof typeof config.providers];
   return undefined;
@@ -112,7 +121,7 @@ export async function configGetCommand(
       ? unknownConfigKeyError(path)
       : new ValidationError(
           `Unknown config key "${path}".`,
-          'Valid keys: routing, routing.<capability>, fallbackEnabled, providers.<id>. Run "scoutline config --help".',
+          'Valid keys: routing, routing.<capability>, fallbackEnabled, fanout, providers.<id>. Run "scoutline config --help".',
         );
   }
   const raw = valueAtPath(config, path);
@@ -135,6 +144,13 @@ export async function configSetCommand(
 ): Promise<CommandResult<{ path: string; value: unknown }>> {
   const updated = await deps.set(path, value);
   const raw = valueAtPath(updated, path);
+  // Registry-mandated enable-time warning (fan-out cost sentence, D7):
+  // emitted as a stderr notice so it reaches every output mode while
+  // stdout stays data-only.
+  const key = resolveConfigKey(path);
+  if (key?.setTrueNotice !== undefined && raw === true) {
+    deps.notify?.(key.setTrueNotice);
+  }
   return {
     kind: "data",
     data: { path: path.trim(), value: raw },
@@ -171,6 +187,9 @@ Keys:
   routing.<capability>        Ordered provider list for one capability.
                              Example: scoutline config set routing.search tavily,brave
   fallbackEnabled             true|false — the always-on provider fallback switch.
+  fanout                      true|false — the multi-provider search fan-out
+                             switch (default false; enabling warns that every
+                             search bills ALL configured search providers).
   providers.<id>              Provider configuration (view only; credential
                              values are always masked).
 

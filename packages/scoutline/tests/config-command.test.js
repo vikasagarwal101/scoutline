@@ -410,3 +410,115 @@ describe("config command dispatcher", () => {
     });
   });
 });
+
+// ===========================================================================
+// Search-fanout plan, Ticket 4 — the `fanout` typed registry row. The
+// switch is a first-class config key: strict boolean set, get round-trip,
+// unset removal, and the mandated cost sentence on enable (DESIGN D7).
+// All runs go through main() against a hermetic SCOUTLINE_CONFIG_DIR.
+// ===========================================================================
+
+describe("config fanout key (search-fanout plan, Ticket 4)", () => {
+  const COST_SENTENCE =
+    "every search will bill ALL configured search providers — N arms = N billable calls";
+
+  async function readStored(dir) {
+    const { readConfig } = await import("../dist/lib/config-store.js");
+    return readConfig({
+      filePath: pathMod.join(dir, "config.json"),
+      onWarning: () => {},
+    });
+  }
+
+  it("config set fanout true: exit 0, cost sentence on stderr, data-only stdout, persisted", async (t) => {
+    await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
+      const io = makeInvocation();
+      const status = await main(
+        ["config", "set", "fanout", "true"],
+        await baseDeps(io.invocation, { SCOUTLINE_CONFIG_DIR: dir }),
+      );
+      assert.strictEqual(status, 0);
+      assert.deepStrictEqual(JSON.parse(io.stdout()), { path: "fanout", value: true });
+      assert.ok(io.stderr().includes(COST_SENTENCE), `cost sentence expected: ${io.stderr()}`);
+      assert.strictEqual((await readStored(dir)).fanout, true);
+    });
+  });
+
+  it("config get fanout round-trips the stored value", async (t) => {
+    await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
+      const env = { SCOUTLINE_CONFIG_DIR: dir };
+      const setIo = makeInvocation();
+      await main(["config", "set", "fanout", "true"], await baseDeps(setIo.invocation, env));
+      const getIo = makeInvocation();
+      const status = await main(["config", "get", "fanout"], await baseDeps(getIo.invocation, env));
+      assert.strictEqual(status, 0);
+      assert.strictEqual(getIo.stdout().trim(), "true");
+    });
+  });
+
+  it("config get fanout on a fresh config reports null (not set)", async (t) => {
+    await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
+      const io = makeInvocation();
+      const status = await main(
+        ["config", "get", "fanout"],
+        await baseDeps(io.invocation, { SCOUTLINE_CONFIG_DIR: dir }),
+      );
+      assert.strictEqual(status, 0);
+      assert.strictEqual(io.stdout().trim(), "null");
+    });
+  });
+
+  it("config set fanout false persists false and emits no cost sentence", async (t) => {
+    await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
+      const io = makeInvocation();
+      const status = await main(
+        ["config", "set", "fanout", "false"],
+        await baseDeps(io.invocation, { SCOUTLINE_CONFIG_DIR: dir }),
+      );
+      assert.strictEqual(status, 0);
+      assert.strictEqual(io.stderr(), "", "cost sentence is an enable-time warning only");
+      assert.strictEqual((await readStored(dir)).fanout, false);
+    });
+  });
+
+  it("config set fanout rejects non-boolean values (strict parse)", async (t) => {
+    await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
+      const io = makeInvocation();
+      const status = await main(
+        ["config", "set", "fanout", "yes"],
+        await baseDeps(io.invocation, { SCOUTLINE_CONFIG_DIR: dir }),
+      );
+      assert.strictEqual(status, 1);
+      assert.ok(io.stderr().includes("VALIDATION_ERROR"), io.stderr());
+      assert.ok(io.stderr().includes("Invalid boolean"), io.stderr());
+      assert.ok(io.stderr().includes("true, false"), io.stderr());
+      assert.strictEqual((await readStored(dir)).fanout, undefined);
+    });
+  });
+
+  it("config unset fanout removes the switch; a second unset fails", async (t) => {
+    await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
+      const env = { SCOUTLINE_CONFIG_DIR: dir };
+      const setIo = makeInvocation();
+      await main(["config", "set", "fanout", "true"], await baseDeps(setIo.invocation, env));
+
+      const unsetIo = makeInvocation();
+      const status = await main(
+        ["config", "unset", "fanout"],
+        await baseDeps(unsetIo.invocation, env),
+      );
+      assert.strictEqual(status, 0);
+      const stored = await readStored(dir);
+      assert.strictEqual(stored.fanout, undefined);
+      assert.ok(!("fanout" in stored), "fanout key fully removed");
+
+      const againIo = makeInvocation();
+      const again = await main(
+        ["config", "unset", "fanout"],
+        await baseDeps(againIo.invocation, env),
+      );
+      assert.strictEqual(again, 1);
+      assert.ok(againIo.stderr().includes("not set"), againIo.stderr());
+    });
+  });
+});

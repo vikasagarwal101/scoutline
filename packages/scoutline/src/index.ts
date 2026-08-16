@@ -1929,9 +1929,12 @@ async function handleConfig(
       }
       return invokeCommand(
         deps.invocation,
-        () =>
+        (context) =>
           configSetCommand(setPath, setValue, {
             set: (path, value) => setConfigValue(path, value, configOptions),
+            // Registry-mandated enable-time warnings (e.g. the fan-out
+            // cost sentence, search-fanout DESIGN D7) ride stderr.
+            notify: context.notice,
           }),
         outputMode,
         deps.now,

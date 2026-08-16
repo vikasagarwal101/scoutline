@@ -723,3 +723,180 @@ describe("config key registry", () => {
     );
   });
 });
+
+// ===========================================================================
+// Fan-out cost notice (search-fanout DESIGN D7) — the `config set fanout
+// true` cost sentence must be built from the SAME eligible arm set
+// `resolveFanoutPlan` computes for tier 3: routing.search ∩ (configured ∩
+// search-capable). Naming raw routing entries overstates the billable set
+// whenever a routed provider lacks credentials or the search capability
+// (review fix, PR #36).
+// ===========================================================================
+
+describe("fanoutCostNotice", () => {
+  /**
+   * Descriptor double mirroring the eligibility gate
+   * `eligibleSearchArms` applies: isConfigured(env, "search") plus the
+   * capabilities() "search" membership.
+   */
+  function descriptorDouble(id, { envVar, capabilityId = "search", capabilities = ["search"] }) {
+    return {
+      id,
+      isConfigured: (env) => Boolean(envVar && env[envVar]),
+      capabilities: () => new Set(capabilities),
+      credentialEnvVars: envVar ? [envVar] : undefined,
+    };
+  }
+
+  const TAVILY = descriptorDouble("tavily", { envVar: "TAVILY_API_KEY" });
+  const BRAVE = descriptorDouble("brave", { envVar: "BRAVE_SEARCH_API_KEY" });
+  const ZAI = descriptorDouble("zai", { envVar: "Z_AI_API_KEY" });
+
+  it("no routing.search → the blanket D7 sentence, unchanged", async () => {
+    const { fanoutCostNotice, FANOUT_COST_SENTENCE } = await import("../dist/lib/config-store.js");
+    assert.strictEqual(
+      fanoutCostNotice(
+        { version: 1, providers: {} },
+        { env: { TAVILY_API_KEY: "k" }, descriptors: [TAVILY, BRAVE] },
+      ),
+      FANOUT_COST_SENTENCE,
+    );
+  });
+
+  it("names only the ELIGIBLE routed arms — an unconfigured routed provider is never named", async () => {
+    const { fanoutCostNotice } = await import("../dist/lib/config-store.js");
+    const notice = fanoutCostNotice(
+      { version: 1, providers: {}, routing: { search: ["tavily", "brave"] } },
+      { env: { TAVILY_API_KEY: "k" }, descriptors: [TAVILY, BRAVE] },
+    );
+    assert.ok(notice.includes("routing.search (tavily)"), notice);
+    assert.ok(!notice.includes("brave"), `unconfigured routed arm must not be named: ${notice}`);
+    assert.ok(notice.includes("N arms = N billable calls"), notice);
+  });
+
+  it("a file-configured API key counts as eligible (same env merge as search)", async () => {
+    const { fanoutCostNotice } = await import("../dist/lib/config-store.js");
+    // No env credentials at all; tavily's key lives in the config file.
+    // resolveFanoutPlan sees it through resolveEnvFromConfig, so the
+    // notice must too — otherwise it would falsely exclude the arm.
+    const notice = fanoutCostNotice(
+      {
+        version: 1,
+        providers: { tavily: { apiKey: "file-key" } },
+        routing: { search: ["tavily"] },
+      },
+      { env: {}, descriptors: [TAVILY, BRAVE] },
+    );
+    assert.ok(notice.includes("routing.search (tavily)"), notice);
+  });
+
+  it("a configured provider without the search capability is not eligible", async () => {
+    const { fanoutCostNotice } = await import("../dist/lib/config-store.js");
+    const readerOnly = descriptorDouble("jina", {
+      envVar: "JINA_API_KEY",
+      capabilities: ["reader"],
+    });
+    const notice = fanoutCostNotice(
+      { version: 1, providers: {}, routing: { search: ["jina"] } },
+      { env: { JINA_API_KEY: "k" }, descriptors: [readerOnly, TAVILY] },
+    );
+    assert.ok(!notice.includes("(jina)"), `non-search arm must not be named: ${notice}`);
+    assert.ok(notice.includes("zero arms"), notice);
+  });
+
+  it("no eligible routed arm → zero-arms sentence that names no provider", async () => {
+    const { fanoutCostNotice } = await import("../dist/lib/config-store.js");
+    const notice = fanoutCostNotice(
+      { version: 1, providers: {}, routing: { search: ["brave"] } },
+      { env: { TAVILY_API_KEY: "k" }, descriptors: [TAVILY, BRAVE] },
+    );
+    assert.ok(notice.includes("routing.search"), notice);
+    assert.ok(notice.includes("zero arms"), notice);
+    assert.ok(!notice.includes("brave"), `ineligible arm must not be named: ${notice}`);
+    assert.ok(!notice.includes("tavily"), `unrouted configured arm must not be named: ${notice}`);
+    assert.ok(!notice.includes("billable calls"), `nothing bills at zero arms: ${notice}`);
+  });
+
+  it("without an eligibility context it never names raw routing entries (blanket fallback)", async () => {
+    const { fanoutCostNotice, FANOUT_COST_SENTENCE } = await import("../dist/lib/config-store.js");
+    // Minimal command doubles may not thread env/descriptors; the
+    // notice then falls back to the blanket sentence rather than
+    // asserting a billable set it cannot verify.
+    assert.strictEqual(
+      fanoutCostNotice({ version: 1, providers: {}, routing: { search: ["tavily"] } }),
+      FANOUT_COST_SENTENCE,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review fix (PR #36): keyless-capability postures must not suppress
+// file-configured search credentials.
+// ---------------------------------------------------------------------------
+
+describe("resolveEnvFromConfig: keyless capability postures", () => {
+  /**
+   * Mirrors the real Jina descriptor: capability-LESS isConfigured is
+   * the keyless Reader posture (always true); the SEARCH capability
+   * requires JINA_API_KEY.
+   */
+  const JINA = {
+    id: "jina",
+    isConfigured: (env, capabilityId) =>
+      capabilityId === undefined ? true : Boolean(env.JINA_API_KEY),
+    capabilities: () => new Set(["search", "reader", "research", "diagnostics"]),
+    credentialEnvVars: ["JINA_API_KEY"],
+  };
+
+  it("a file-only Jina key merges into the resolved env despite the keyless Reader posture", async () => {
+    const { resolveEnvFromConfig } = await import("../dist/lib/config-store.js");
+    const resolved = resolveEnvFromConfig(
+      {},
+      { version: 1, providers: { jina: { apiKey: "file-key" } } },
+      [JINA],
+    );
+    assert.strictEqual(resolved.JINA_API_KEY, "file-key");
+  });
+
+  it("an env-supplied credential still wins over the file key (primary or alias)", async () => {
+    const { resolveEnvFromConfig } = await import("../dist/lib/config-store.js");
+    for (const env of [{ JINA_API_KEY: "env-key" }, { JINA_API_KEY: " " }]) {
+      const resolved = resolveEnvFromConfig(
+        { ...env },
+        { version: 1, providers: { jina: { apiKey: "file-key" } } },
+        [JINA],
+      );
+      // Non-empty env value (or a blank one that the file fills in).
+      if (env.JINA_API_KEY.trim()) {
+        assert.strictEqual(resolved.JINA_API_KEY, "env-key");
+      } else {
+        assert.strictEqual(resolved.JINA_API_KEY, "file-key");
+      }
+    }
+  });
+});
+
+describe("fanoutCostNotice: keyless postures", () => {
+  const JINA = {
+    id: "jina",
+    isConfigured: (env, capabilityId) =>
+      capabilityId === undefined ? true : Boolean(env.JINA_API_KEY),
+    capabilities: () => new Set(["search", "reader", "research", "diagnostics"]),
+    credentialEnvVars: ["JINA_API_KEY"],
+  };
+
+  it("file-only Jina key in routing.search is named as a billable arm (not zero-arms)", async () => {
+    const { fanoutCostNotice } = await import("../dist/lib/config-store.js");
+    const notice = fanoutCostNotice(
+      {
+        version: 1,
+        providers: { jina: { apiKey: "file-key" } },
+        routing: { search: ["jina"] },
+      },
+      { env: {}, descriptors: [JINA] },
+    );
+    assert.ok(notice.includes("routing.search (jina)"), notice);
+    assert.ok(notice.includes("N arms = N billable calls"), notice);
+    assert.ok(!notice.toLowerCase().includes("no provider bills"), notice);
+  });
+});

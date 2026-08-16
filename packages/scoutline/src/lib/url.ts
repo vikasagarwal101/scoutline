@@ -104,8 +104,13 @@ export function canonicalUrl(input: string): string {
   const schemeEnd = input.indexOf(":");
   const afterScheme = schemeEnd >= 0 ? input.slice(schemeEnd + 1) : "";
   const special = SPECIAL_PROTOCOLS.has(parsed.protocol);
+  // WHATWG strips ASCII tab/newline/CR everywhere before parsing, so
+  // they may legally sit between the scheme and the authority; the raw
+  // scan must skip them there too, or the control chars glue onto the
+  // authority and the identity diverges from the parsed host (review
+  // fix, PR #36).
   const authorityStart = special
-    ? afterScheme.search(/[^/\\]/)
+    ? afterScheme.search(/[^\t\n\r/\\]/)
     : afterScheme.startsWith("//")
       ? 2
       : -1;

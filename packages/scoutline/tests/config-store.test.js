@@ -828,3 +828,75 @@ describe("fanoutCostNotice", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review fix (PR #36): keyless-capability postures must not suppress
+// file-configured search credentials.
+// ---------------------------------------------------------------------------
+
+describe("resolveEnvFromConfig: keyless capability postures", () => {
+  /**
+   * Mirrors the real Jina descriptor: capability-LESS isConfigured is
+   * the keyless Reader posture (always true); the SEARCH capability
+   * requires JINA_API_KEY.
+   */
+  const JINA = {
+    id: "jina",
+    isConfigured: (env, capabilityId) =>
+      capabilityId === undefined ? true : Boolean(env.JINA_API_KEY),
+    capabilities: () => new Set(["search", "reader", "research", "diagnostics"]),
+    credentialEnvVars: ["JINA_API_KEY"],
+  };
+
+  it("a file-only Jina key merges into the resolved env despite the keyless Reader posture", async () => {
+    const { resolveEnvFromConfig } = await import("../dist/lib/config-store.js");
+    const resolved = resolveEnvFromConfig(
+      {},
+      { version: 1, providers: { jina: { apiKey: "file-key" } } },
+      [JINA],
+    );
+    assert.strictEqual(resolved.JINA_API_KEY, "file-key");
+  });
+
+  it("an env-supplied credential still wins over the file key (primary or alias)", async () => {
+    const { resolveEnvFromConfig } = await import("../dist/lib/config-store.js");
+    for (const env of [{ JINA_API_KEY: "env-key" }, { JINA_API_KEY: " " }]) {
+      const resolved = resolveEnvFromConfig(
+        { ...env },
+        { version: 1, providers: { jina: { apiKey: "file-key" } } },
+        [JINA],
+      );
+      // Non-empty env value (or a blank one that the file fills in).
+      if (env.JINA_API_KEY.trim()) {
+        assert.strictEqual(resolved.JINA_API_KEY, "env-key");
+      } else {
+        assert.strictEqual(resolved.JINA_API_KEY, "file-key");
+      }
+    }
+  });
+});
+
+describe("fanoutCostNotice: keyless postures", () => {
+  const JINA = {
+    id: "jina",
+    isConfigured: (env, capabilityId) =>
+      capabilityId === undefined ? true : Boolean(env.JINA_API_KEY),
+    capabilities: () => new Set(["search", "reader", "research", "diagnostics"]),
+    credentialEnvVars: ["JINA_API_KEY"],
+  };
+
+  it("file-only Jina key in routing.search is named as a billable arm (not zero-arms)", async () => {
+    const { fanoutCostNotice } = await import("../dist/lib/config-store.js");
+    const notice = fanoutCostNotice(
+      {
+        version: 1,
+        providers: { jina: { apiKey: "file-key" } },
+        routing: { search: ["jina"] },
+      },
+      { env: {}, descriptors: [JINA] },
+    );
+    assert.ok(notice.includes("routing.search (jina)"), notice);
+    assert.ok(notice.includes("N arms = N billable calls"), notice);
+    assert.ok(!notice.toLowerCase().includes("no provider bills"), notice);
+  });
+});

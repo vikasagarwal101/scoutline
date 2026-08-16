@@ -150,7 +150,7 @@ order on the effective Provider only.
 | Quota (normalized) | Yes | Yes | Yes | **No** (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | **No** | **No** | Yes (rate-limit telemetry, not spend) | `scoutline quota [--all-providers]` |
 | Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes (single-scrape probe) | Yes | Yes | Yes | `scoutline doctor [--no-tools]` |
 | Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes (rejects Z.AI-only options) | Yes (rejects Z.AI-only options) | **No** (UNSUPPORTED_CAPABILITY) | Yes (returns page titles) | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes | `scoutline read` |
-| Repository exploration (search/read/tree) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | `scoutline repo ...` |
+| Repository exploration (search/read/tree/brief) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | `scoutline repo ...` |
 | Crawl | **No** | **No** | Yes | **No** | **No** | Yes (async; resumable after Ctrl-C) | **No** | **No** | **No** | `scoutline crawl` |
 | Map | **No** | **No** | Yes | **No** | **No** | Yes | **No** | **No** | **No** | `scoutline map` |
 | Research (4-250 credits) | **No** | **No** | Yes | Yes | **No** | **No** (`/deep-research` deprecated) | Yes | Yes | Yes | `scoutline research` |
@@ -171,7 +171,7 @@ to the active Provider.
 | crawl | Multi-page website traversal (Tavily or Firecrawl) | `--help` for depth/breadth/filters |
 | map | URL-set discovery without fetching pages (Tavily or Firecrawl) | `--help` for depth/breadth/filters |
 | research | Deep research with citations (five providers; 4-250 credits) | `--help` for model/citation/timeout |
-| repo | GitHub code search and reading (Z.AI) | `--help` for tree/search/read |
+| repo | GitHub code search and reading (Z.AI) | `--help` for tree/search/read/brief |
 | quota | Provider-normalized plan usage dashboard | `--help` for `--all-providers` |
 | tools | List available MCP tools (Z.AI) | |
 | tool | Show tool schema | |
@@ -236,9 +236,9 @@ npx scoutline@0.14.11 config get routing
 
 ## Repository Exploration
 
-`scoutline repo search`, `scoutline repo read`, and `scoutline repo tree`
-participate in Provider selection. Z.AI advertises and supplies
-`repository-exploration`; the other built-in Providers do not. By
+`scoutline repo search`, `scoutline repo read`, `scoutline repo tree`, and
+`scoutline repo brief` participate in Provider selection. Z.AI advertises
+and supplies `repository-exploration`; the other built-in Providers do not. By
 default (0.11.0+) Provider fallback auto-reroutes to Z.AI with a
 stderr notice; under `--no-fallback` (or `SCOUTLINE_NO_FALLBACK=1`)
 the preflight surfaces `UNSUPPORTED_CAPABILITY` for the selected
@@ -254,6 +254,7 @@ raw ZRead text or depth-dependent raw Tree shape:
 | `repo search` | `{schemaVersion:1, repository, query, language, excerpts:[{text}], truncated, originalTextLength}` |
 | `repo read` | `{schemaVersion:1, repository, path, content, truncated, originalContentLength}` |
 | `repo tree` | `{schemaVersion:1, repository, path, depth, snapshots:[{repository, path, entries:[{name, path, kind}]}]}` (structured at every depth, including depth 1) |
+| `repo brief` | `{schemaVersion:1, repository, focus, coverage:{probes}, tree?, docs?, entryPoints?, files?:[{path, content, truncated, originalContentLength}], detected:{hasReadme, hasManifest, manifestKinds}}` (sections gated by `--focus`; `coverage` and `detected` always present) |
 
 Root Tree path is the empty string `""`. Default Search language is `"en"`
 (pass `--language zh` for Chinese). Output modes for `repo` results:
@@ -263,6 +264,25 @@ timestamp}` envelope (indent 0 for `json`, indent 2 for `pretty`); and
 the text-oriented modes (`compact`, `markdown`, `refs`, `tty`) receive
 the JSON fallback — the same value as `data` mode — because `repo`
 supplies no per-mode prose presentation override.
+
+### `repo brief` (composed envelope)
+
+`scoutline repo brief <owner/repo>` composes the three operations — tree,
+search, and read — into one schema-version-1 `RepositoryBrief` envelope.
+`--focus` subsets the sealed set `structure, readme, manifest, files`
+(default all four); focus gates the envelope sections, not the internal
+probes — the tree still runs when `readme`/`manifest`/`files` needs its
+paths. File selection is tree-derived and deterministic: the shallowest
+README plus one manifest per kind (`package.json`, `pyproject.toml`,
+`Cargo.toml`, `go.mod`), capped at 4 reads. `--max-chars` is a per-call
+budget forwarded to every search and read; the tree is never
+character-limited. A failed probe is recorded in `coverage.probes`
+(ok/failed/skipped with a stable code and redacted message) while the
+brief continues — `coverage` and `detected` are always present, so
+consumers distinguish "not requested", "failed", and "dependency
+failed" from the probe records, never from missing keys. The brief is
+never cached as a unit; its probes reuse the per-operation repository
+cache entries, and identical responses yield byte-identical output.
 
 ### `--max-chars` is deterministic and local
 
@@ -274,7 +294,9 @@ supplies no per-mode prose presentation override.
 - `repo read` → only `content` is truncated; `originalContentLength` and
   `truncated` describe the pre-truncation state;
 - `repo tree` → never character-limited; metadata and JSON envelopes are not
-  part of any budget.
+  part of any budget;
+- `repo brief` → forwarded verbatim to every search and read probe as a
+  per-call budget; the tree probe is never character-limited.
 
 ### Errors and lifecycle
 

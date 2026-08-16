@@ -273,6 +273,7 @@ scoutline vision diagnose-error ./error.png
 # Repo
 scoutline repo tree facebook/react
 scoutline repo search vercel/next.js "app router"
+scoutline repo brief facebook/react
 
 # Diagnostics
 scoutline doctor                      # full diagnostics

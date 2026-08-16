@@ -1862,3 +1862,138 @@ describe("pruneCaches — TTL/selector/lock discipline (D1–D6)", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Enriched cacheStats (D7): per-provider/capability + live-vs-expired
+// ---------------------------------------------------------------------------
+
+describe("cacheStats — enriched per-provider/capability + live-vs-expired stats (D7)", () => {
+  const credHash = crypto.createHash("sha256").update("cred").digest("hex");
+  const reqHash = crypto.createHash("sha256").update("req").digest("hex");
+  const v2Name = (capability, provider) =>
+    `v2.${capability}.${provider}.${credHash}.${reqHash}.json`;
+
+  it("breaks response entries down by provider and capability, with live/expired ages", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const now = Date.now();
+        const cacheDir = path.join(dir, "cache");
+        await fs.mkdir(cacheDir, { recursive: true });
+
+        // v2 zai/search fresh (within the 24h default TTL), v2 tavily/search
+        // expired (older than 24h), legacy (non-v2) expired.
+        const freshZai = v2Name("search", "zai");
+        const expiredTavily = v2Name("search", "tavily");
+        const legacy = `search.${reqHash}.json`;
+        await fs.writeFile(path.join(cacheDir, freshZai), JSON.stringify({ ts: now - 1_000, data: {} }));
+        await fs.writeFile(path.join(cacheDir, expiredTavily), JSON.stringify({ ts: now - 100_000_000, data: {} }));
+        await fs.writeFile(path.join(cacheDir, legacy), JSON.stringify({ ts: now - 100_000_000, data: {} }));
+
+        const freshSize = (await fs.stat(path.join(cacheDir, freshZai))).size;
+        const tavilySize = (await fs.stat(path.join(cacheDir, expiredTavily))).size;
+        const legacySize = (await fs.stat(path.join(cacheDir, legacy))).size;
+
+        const rc = (await cacheStats()).responseCache;
+
+        // Flat shape: existing fields present, additive live/expired.
+        assert.strictEqual(rc.entries, 3);
+        assert.strictEqual(rc.totalBytes, freshSize + tavilySize + legacySize);
+        assert.strictEqual(rc.live, 1);
+        assert.strictEqual(rc.expired, 2);
+        assert.strictEqual(rc.live + rc.expired, rc.entries);
+
+        // byProvider buckets (D7): zai/tavily from v2 filenames, legacy for non-v2.
+        assert.deepStrictEqual(rc.byProvider.zai, { entries: 1, totalBytes: freshSize, live: 1, expired: 0 });
+        assert.deepStrictEqual(rc.byProvider.tavily, { entries: 1, totalBytes: tavilySize, live: 0, expired: 1 });
+        assert.deepStrictEqual(rc.byProvider.legacy, { entries: 1, totalBytes: legacySize, live: 0, expired: 1 });
+
+        // byCapability buckets: both v2 entries are "search"; legacy is separate.
+        assert.deepStrictEqual(rc.byCapability.search, {
+          entries: 2,
+          totalBytes: freshSize + tavilySize,
+          live: 1,
+          expired: 1,
+        });
+        assert.deepStrictEqual(rc.byCapability.legacy, { entries: 1, totalBytes: legacySize, live: 0, expired: 1 });
+
+        // Every breakdown bucket satisfies live + expired = entries.
+        const buckets = [
+          rc.byProvider.zai,
+          rc.byProvider.tavily,
+          rc.byProvider.legacy,
+          rc.byCapability.search,
+          rc.byCapability.legacy,
+        ];
+        for (const bucket of buckets) {
+          assert.strictEqual(bucket.live + bucket.expired, bucket.entries);
+        }
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("tool dir reports live/expired but has no by* breakdown keys", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const now = Date.now();
+        const toolsDir = path.join(dir, "tools");
+        await fs.mkdir(toolsDir, { recursive: true });
+        // Tool entries use the tool envelope's `timestamp` age marker.
+        await fs.writeFile(
+          path.join(toolsDir, "tools-fresh.json"),
+          JSON.stringify({ version: 1, timestamp: now - 1_000, tools: [] }),
+        );
+        await fs.writeFile(
+          path.join(toolsDir, "tools-old.json"),
+          JSON.stringify({ version: 1, timestamp: now - 100_000_000, tools: [] }),
+        );
+
+        const tc = (await cacheStats()).toolCache;
+        assert.strictEqual(tc.entries, 2);
+        assert.strictEqual(tc.live, 1);
+        assert.strictEqual(tc.expired, 1);
+        assert.strictEqual(tc.live + tc.expired, tc.entries);
+        // D7: no by* keys on the tool dir (filenames are unpartitioned).
+        assert.strictEqual("byProvider" in tc, false);
+        assert.strictEqual("byCapability" in tc, false);
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("empty and missing dirs report zeros with empty breakdown buckets", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        // Missing subdirs: readdir fails, everything is zero.
+        let stats = await cacheStats();
+        assert.strictEqual(stats.responseCache.entries, 0);
+        assert.strictEqual(stats.responseCache.totalBytes, 0);
+        assert.strictEqual(stats.responseCache.live, 0);
+        assert.strictEqual(stats.responseCache.expired, 0);
+        assert.deepStrictEqual(stats.responseCache.byProvider, {});
+        assert.deepStrictEqual(stats.responseCache.byCapability, {});
+        assert.strictEqual(stats.toolCache.entries, 0);
+        assert.strictEqual(stats.toolCache.live, 0);
+        assert.strictEqual(stats.toolCache.expired, 0);
+        assert.strictEqual("byProvider" in stats.toolCache, false);
+
+        // Empty subdirs: same zeros, buckets still present for the response dir.
+        await fs.mkdir(path.join(dir, "cache"), { recursive: true });
+        await fs.mkdir(path.join(dir, "tools"), { recursive: true });
+        stats = await cacheStats();
+        assert.strictEqual(stats.responseCache.entries, 0);
+        assert.strictEqual(stats.responseCache.live, 0);
+        assert.strictEqual(stats.responseCache.expired, 0);
+        assert.deepStrictEqual(stats.responseCache.byProvider, {});
+        assert.deepStrictEqual(stats.responseCache.byCapability, {});
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+});

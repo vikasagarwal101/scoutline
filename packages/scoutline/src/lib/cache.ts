@@ -729,25 +729,46 @@ async function pruneSubdirByAge(
 }
 
 /**
+ * Per-bucket cache inventory counts. Every breakdown bucket repeats
+ * `{entries, totalBytes, live, expired}` (DESIGN D7).
+ */
+export interface CacheStatsBucket {
+  readonly entries: number;
+  readonly totalBytes: number;
+  readonly live: number;
+  readonly expired: number;
+}
+
+/**
  * Inventory both caches. The shape extends the v0.4.0 flat shape with
  * nested `responseCache` and `toolCache` sections (H3 fix). The
  * top-level `entries` and `totalBytes` fields are removed — callers
  * must read from the nested sections.
+ *
+ * Enrichment (DESIGN D7) is additive only: the response cache gains
+ * `live`/`expired` counts and per-provider/per-capability breakdown
+ * buckets (with a `legacy` bucket for non-v2 filenames); the tool
+ * cache gains `live`/`expired` but has no `by*` keys (its filenames
+ * are unpartitioned). Existing fields are byte-identical, so the
+ * Doctor one-line summary (`formatDoctorCacheSummary`) is unaffected.
  */
 export async function cacheStats(): Promise<{
   dir: string;
   enabled: boolean;
   ttlMs: number;
   sizeCapBytes: number;
-  responseCache: { entries: number; totalBytes: number };
-  toolCache: { entries: number; totalBytes: number };
+  responseCache: CacheStatsBucket & {
+    byProvider: Readonly<Record<string, CacheStatsBucket>>;
+    byCapability: Readonly<Record<string, CacheStatsBucket>>;
+  };
+  toolCache: CacheStatsBucket;
 }> {
   const dir = resolveCacheRoot();
   const responseDir = responseCacheDir();
   const toolDir = toolCacheDir();
 
   const [responseStats, toolStats] = await Promise.all([
-    inventorySubdir(responseDir),
+    inventorySubdir(responseDir, true),
     inventorySubdir(toolDir),
   ]);
 
@@ -756,8 +777,20 @@ export async function cacheStats(): Promise<{
     enabled: isCacheEnabled(),
     ttlMs: getCacheTtlMs(),
     sizeCapBytes: getCacheSizeCapBytes(),
-    responseCache: responseStats,
-    toolCache: toolStats,
+    responseCache: {
+      entries: responseStats.entries,
+      totalBytes: responseStats.totalBytes,
+      live: responseStats.live,
+      expired: responseStats.expired,
+      byProvider: responseStats.byProvider ?? {},
+      byCapability: responseStats.byCapability ?? {},
+    },
+    toolCache: {
+      entries: toolStats.entries,
+      totalBytes: toolStats.totalBytes,
+      live: toolStats.live,
+      expired: toolStats.expired,
+    },
   };
 }
 
@@ -836,24 +869,89 @@ export function parseCacheFileName(name: string): ParsedCacheFileName | null {
   return { capability, provider };
 }
 
-async function inventorySubdir(dir: string): Promise<{ entries: number; totalBytes: number }> {
+async function inventorySubdir(
+  dir: string,
+  breakdown?: boolean,
+): Promise<
+  CacheStatsBucket & {
+    byProvider?: Record<string, CacheStatsBucket>;
+    byCapability?: Record<string, CacheStatsBucket>;
+  }
+> {
   let entries = 0;
   let totalBytes = 0;
+  let live = 0;
+  let expired = 0;
+  const byProvider: Record<string, CacheStatsBucket> = {};
+  const byCapability: Record<string, CacheStatsBucket> = {};
   try {
     const names = await fs.readdir(dir);
+    // Live-vs-expired uses the same freshness boundary as prune (DESIGN
+    // D3): an entry is expired when its stored age exceeds the TTL. Reading
+    // every entry is the D8 cost note — stats is an explicit invocation.
+    const ttlMs = getCacheTtlMs();
     for (const name of names) {
+      const p = path.join(dir, name);
       try {
-        const s = await fs.stat(path.join(dir, name));
+        const s = await fs.stat(p);
         entries += 1;
         totalBytes += s.size;
+        let isExpired = false;
+        try {
+          const ageMs = entryAgeMs(JSON.parse(await fs.readFile(p, "utf8")));
+          isExpired = ageMs !== null && ageMs > ttlMs;
+        } catch {
+          // Unreadable / unparseable: age unknown, not proven expired → live.
+        }
+        if (isExpired) expired += 1;
+        else live += 1;
+
+        if (breakdown) {
+          const parsed = parseCacheFileName(name);
+          const providerKey = parsed ? parsed.provider : "legacy";
+          const capabilityKey = parsed ? parsed.capability : "legacy";
+          addToBucket(byProvider, providerKey, s.size, isExpired);
+          addToBucket(byCapability, capabilityKey, s.size, isExpired);
+        }
       } catch {
-        // skip
+        // skip unstat-able entries, like the pre-enrichment inventory
       }
     }
   } catch {
     // dir doesn't exist yet
   }
-  return { entries, totalBytes };
+  const result: CacheStatsBucket & {
+    byProvider?: Record<string, CacheStatsBucket>;
+    byCapability?: Record<string, CacheStatsBucket>;
+  } = { entries, totalBytes, live, expired };
+  if (breakdown) {
+    result.byProvider = byProvider;
+    result.byCapability = byCapability;
+  }
+  return result;
+}
+
+/** Accumulate one entry into a per-key breakdown bucket (DESIGN D7). */
+function addToBucket(
+  buckets: Record<string, CacheStatsBucket>,
+  key: string,
+  sizeBytes: number,
+  isExpired: boolean,
+): void {
+  const existing = buckets[key];
+  buckets[key] = existing
+    ? {
+        entries: existing.entries + 1,
+        totalBytes: existing.totalBytes + sizeBytes,
+        live: existing.live + (isExpired ? 0 : 1),
+        expired: existing.expired + (isExpired ? 1 : 0),
+      }
+    : {
+        entries: 1,
+        totalBytes: sizeBytes,
+        live: isExpired ? 0 : 1,
+        expired: isExpired ? 1 : 0,
+      };
 }
 
 // ---------------------------------------------------------------------------

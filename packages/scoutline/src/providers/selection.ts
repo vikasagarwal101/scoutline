@@ -168,6 +168,20 @@ export interface ResolveEffectiveProviderOptions {
    * tie-break outcomes; production never overrides.
    */
   readonly registryOrder?: readonly ProviderId[];
+  /**
+   * Per-capability routed preference lists (routing-table plan). When
+   * `routing[capabilityId]` exists and no pin is present, the resolver
+   * walks that list in order and returns the FIRST provider that is
+   * both configured and capable — routing is an instruction, not a
+   * hint: quota ranking does NOT reorder the routed prefix. If no
+   * routed provider is eligible, resolution falls through to the
+   * existing ranked path unchanged (routing can only change the
+   * answer, never eliminate candidates). Absent/undefined →
+   * byte-identical pre-routing behavior. The resolver is never
+   * responsible for validating list contents; an unknown id simply
+   * matches no descriptor and is skipped.
+   */
+  readonly routing?: Readonly<Record<string, readonly ProviderId[]>>;
 }
 
 /**
@@ -188,6 +202,11 @@ export interface ResolveEffectiveProviderOptions {
  *      snapshot delegates identically: tests that inject descriptors
  *      but no snapshot get byte-for-byte the pre-PB-T4 selection
  *      (compat `"zai"`), so the full existing test suite stays green.
+ *   1.5 **Routed preference walk** (routing-table plan). When
+ *      `routing[capabilityId]` is present (and only on the no-pin,
+ *      snapshot-present path), walk it in order and return the first
+ *      configured-and-capable entry; quota ranking does not reorder
+ *      the routed prefix. Exhaustion falls through to step 2.
  *   2. **Eligibility filter.** Among the injected descriptors, keep
  *      those that are BOTH configured (`isConfigured(env)`) AND
  *      advertise `capabilityId` (`capabilities().has(capabilityId)`),
@@ -236,6 +255,23 @@ export function resolveEffectiveProvider(options: ResolveEffectiveProviderOption
     quotaSnapshot === undefined
   ) {
     return resolveProviderId(explicitProvider, env);
+  }
+
+  // 1.5 Routed preference walk (routing-table plan DESIGN D1/D3). Only
+  //     the no-pin + snapshot-present path consults routing. The walk
+  //     mirrors the eligibility checks of step 2 so a routed pick is
+  //     indistinguishable from a ranked pick from the executor's point
+  //     of view. Exhaustion falls through to the ranked path — routing
+  //     never eliminates candidates.
+  const routed = options.routing?.[capabilityId as string];
+  if (routed !== undefined) {
+    for (const id of routed) {
+      const descriptor = descriptors.find((d) => d.id === id);
+      if (!descriptor) continue;
+      if (!descriptor.isConfigured(env, capabilityId)) continue;
+      if (!descriptor.capabilities().has(capabilityId)) continue;
+      return id;
+    }
   }
 
   // 2. Eligibility filter in stable registry order. Passing candidates

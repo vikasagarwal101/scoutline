@@ -210,7 +210,7 @@ Selecting a provider that doesn't support a capability auto-reroutes to the next
 | Map | No | No | Yes | No | No | Yes | No | No | No | `scoutline map` |
 | Research | No | No | Yes | Yes | No | No | Yes | Yes | Yes | `scoutline research` |
 | Vision (interpret-image) | Yes | Yes | No | No | No | No | No | No | No | `scoutline vision analyze` |
-| Quota | Yes | Yes | Yes | No | Yes (rate-limit window) | Yes (credits) | No | No | No | `scoutline quota` |
+| Quota | Yes | Yes | Yes | No | Yes (rate-limit window) | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | `scoutline quota` |
 | Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
 | Repo exploration | Yes | No | No | No | No | No | No | No | No | `scoutline repo` |
 | Raw tools | Yes | No | No | No | No | No | No | No | No | `scoutline tools` |

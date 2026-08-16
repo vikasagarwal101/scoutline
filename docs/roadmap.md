@@ -28,11 +28,6 @@ features next; features that reverse a written decision (ADR) last.
   — delete TTL-expired entries (TTL is read-only today; expired files linger
   until LRU eviction); `cache stats` gains per-provider/per-capability
   breakdown, derivable from v2 filenames alone. Effort: small.
-- **Per-capability provider routing table**
-  (`docs/plans/v2/04-capability-routing-table.md`) — additive `config.json`
-  key ordering candidate providers per capability; extends, never shrinks,
-  the fallback chain. Explicit `--provider`/env pin still overrides.
-  Effort: small.
 - **`repo brief`** (`docs/plans/v2/16-repo-brief.md`) — deterministic
   repository orientation composing the already-shipped tree/search/read
   primitives, with evidence links per conclusion; schemaVersion-1 envelope
@@ -75,8 +70,10 @@ features next; features that reverse a written decision (ADR) last.
   merge; also a `fanout` config-key toggle (default off) with an
   explicit multi-credit cost message. Reverses ADR-0002 decision 6 —
   **[ADR-0004](adr/0004-multi-provider-search-fanout.md) drafted
-  (proposed); plan queued at `docs/plans/search-fanout/`**, sequenced
-  after the routing-table plan lands (shared `handleSearch` surface).
+  (proposed); plan queued at `docs/plans/search-fanout/`**; the
+  routing table it was sequenced after has shipped (`routing` config key +
+  `config` command family), so the shared `handleSearch` surface is
+  available.
 - **`serve` — MCP server mode** (`docs/plans/v2/12-mcp-server-mode.md`) —
   expose the capability layer as MCP tools served by scoutline itself.
   Reverses the "serving the CLI itself as an MCP server" exclusion below.

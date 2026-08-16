@@ -19,7 +19,7 @@ description: |
 
 # Scoutline
 
-Access Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and Jina AI capabilities via `npx scoutline`. The
+Access Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and Jina AI capabilities via `npx scoutline@0.14.11`. The
 CLI is self-documenting — use `--help` at any level.
 
 ## Setup
@@ -70,10 +70,10 @@ refused — set environment variables instead.
 ### Settings via `scoutline config` (scriptable, no TTY)
 
 ```bash
-npx scoutline config get                        # full config, credentials always masked
-npx scoutline config set routing.search tavily,brave   # strict: typos FAIL, not drop
-npx scoutline config unset routing.search
-npx scoutline config set fallbackEnabled false
+npx scoutline@0.14.11 config get                        # full config, credentials always masked
+npx scoutline@0.14.11 config set routing.search tavily,brave   # strict: typos FAIL, not drop
+npx scoutline@0.14.11 config unset routing.search
+npx scoutline@0.14.11 config set fallbackEnabled false
 ```
 
 The `routing` key sets a standing per-capability provider preference:
@@ -185,52 +185,52 @@ to the active Provider.
 
 ```bash
 # Z.AI (default)
-npx scoutline vision analyze ./screenshot.png "What errors do you see?"
-npx scoutline search "React 19 new features" --count 5
-npx scoutline read https://docs.example.com/api
-npx scoutline read https://docs.example.com/api --with-images-summary --no-gfm
-npx scoutline repo search facebook/react "server components"
-npx scoutline repo search openai/codex "config" --language en
-npx scoutline repo tree openai/codex --path codex-rs --depth 2
-npx scoutline quota
-npx scoutline doctor
+npx scoutline@0.14.11 vision analyze ./screenshot.png "What errors do you see?"
+npx scoutline@0.14.11 search "React 19 new features" --count 5
+npx scoutline@0.14.11 read https://docs.example.com/api
+npx scoutline@0.14.11 read https://docs.example.com/api --with-images-summary --no-gfm
+npx scoutline@0.14.11 repo search facebook/react "server components"
+npx scoutline@0.14.11 repo search openai/codex "config" --language en
+npx scoutline@0.14.11 repo tree openai/codex --path codex-rs --depth 2
+npx scoutline@0.14.11 quota
+npx scoutline@0.14.11 doctor
 
 # MiniMax Token Plan
-npx scoutline --provider minimax search "AI policy news"
-npx scoutline --provider minimax vision analyze ./diagram.png "Explain this"
-npx scoutline --provider minimax quota
-npx scoutline doctor --provider minimax
+npx scoutline@0.14.11 --provider minimax search "AI policy news"
+npx scoutline@0.14.11 --provider minimax vision analyze ./diagram.png "Explain this"
+npx scoutline@0.14.11 --provider minimax quota
+npx scoutline@0.14.11 doctor --provider minimax
 
 # Tavily (Search, Reader, Crawl, Map, Research)
-npx scoutline --provider tavily search "AI funding rounds" --topic news
-npx scoutline --provider tavily read https://example.com/
-npx scoutline --provider tavily crawl https://docs.example.com --depth 2
-npx scoutline --provider tavily map https://docs.example.com
-npx scoutline --provider tavily research "Rust async runtime comparison"
-npx scoutline doctor --provider tavily
+npx scoutline@0.14.11 --provider tavily search "AI funding rounds" --topic news
+npx scoutline@0.14.11 --provider tavily read https://example.com/
+npx scoutline@0.14.11 --provider tavily crawl https://docs.example.com --depth 2
+npx scoutline@0.14.11 --provider tavily map https://docs.example.com
+npx scoutline@0.14.11 --provider tavily research "Rust async runtime comparison"
+npx scoutline@0.14.11 doctor --provider tavily
 
 # Exa (Search, Reader, Research)
-npx scoutline --provider exa search "latest AI research" --topic news
-npx scoutline --provider exa read https://example.com/
-npx scoutline --provider exa research "Compare Rust async runtimes"
-npx scoutline doctor --provider exa
+npx scoutline@0.14.11 --provider exa search "latest AI research" --topic news
+npx scoutline@0.14.11 --provider exa read https://example.com/
+npx scoutline@0.14.11 --provider exa research "Compare Rust async runtimes"
+npx scoutline@0.14.11 doctor --provider exa
 
 # Brave (Search: web, news, video)
-npx scoutline --provider brave search "AI policy news" --topic news
-npx scoutline --provider brave search "rust async" --type video
-npx scoutline --provider brave search "large context topic" --content-size high
-npx scoutline --provider brave quota
-npx scoutline doctor --provider brave
+npx scoutline@0.14.11 --provider brave search "AI policy news" --topic news
+npx scoutline@0.14.11 --provider brave search "rust async" --type video
+npx scoutline@0.14.11 --provider brave search "large context topic" --content-size high
+npx scoutline@0.14.11 --provider brave quota
+npx scoutline@0.14.11 doctor --provider brave
 
 # All-Provider quota
-npx scoutline quota --all-providers
+npx scoutline@0.14.11 quota --all-providers
 
 # Local cache inspection and clearing
-npx scoutline cache stats                 # inventory both subdirectories
-npx scoutline cache clear                 # delete every file in cache/ and tools/
+npx scoutline@0.14.11 cache stats                 # inventory both subdirectories
+npx scoutline@0.14.11 cache clear                 # delete every file in cache/ and tools/
 
 # Config (see "Settings via scoutline config" above)
-npx scoutline config get routing
+npx scoutline@0.14.11 config get routing
 ```
 
 ## Repository Exploration

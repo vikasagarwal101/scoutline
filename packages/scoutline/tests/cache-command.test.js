@@ -889,6 +889,46 @@ describe("CLI: scoutline cache prune (Ticket 5)", () => {
     );
   });
 
+  it("ignores an invalid explicit output format on the extraction boundary (compact fallback)", async () => {
+    // Review P3 (round 3): the shared lenient resolver treats an invalid
+    // explicit --output-format as absent when re-deriving the mode for an
+    // extraction failure, so the envelope stays deterministic compact
+    // JSON; a well-formed argv surfaces the invalid-mode diagnostic via
+    // the strict path instead.
+    const { stdout, stderr, code } = await runProcess(
+      ["--output-format", "bogus", "cache", "prune", "--provider"],
+      { env: BASE_ENV },
+    );
+    assert.strictEqual(code, 1);
+    assert.strictEqual(stdout, "");
+    const err = JSON.parse(stderr);
+    assert.strictEqual(err.success, false);
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
+    assert.ok(/--provider requires a value/.test(err.error), `error: ${err.error}`);
+    assert.strictEqual(stderr.trim(), JSON.stringify(err), "envelope is compact data mode");
+  });
+
+  it("binds a mode flag shadowing --output-format's value exactly like extractGlobalOptions", async () => {
+    // Review P3 (round 3): `--output-format --pretty-output` binds the
+    // follower as the (invalid) format value in extractGlobalOptions, so
+    // the best-effort re-derivation must consume it the same way instead
+    // of rescuing it as the --pretty-output flag; the invalid value then
+    // drops through the lenient resolver to the deterministic compact
+    // fallback rather than diverging from the normal path's read of the
+    // same tokens.
+    const { stdout, stderr, code } = await runProcess(
+      ["cache", "prune", "--output-format", "--pretty-output", "--provider"],
+      { env: BASE_ENV },
+    );
+    assert.strictEqual(code, 1);
+    assert.strictEqual(stdout, "");
+    const err = JSON.parse(stderr);
+    assert.strictEqual(err.success, false);
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
+    assert.ok(/--provider requires a value/.test(err.error), `error: ${err.error}`);
+    assert.strictEqual(stderr.trim(), JSON.stringify(err), "envelope is compact data mode");
+  });
+
   it("exits 0 and reports zero counts for an empty cache directory", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-cache-prune-empty-"));
     try {

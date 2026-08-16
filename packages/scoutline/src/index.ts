@@ -289,20 +289,38 @@ function extractGlobalOptions(args: string[]): {
   return { outputFormat, forcePretty, forceRaw, provider, noFallback, rest };
 }
 
+/**
+ * The single shared output-mode resolver for every path in `main`:
+ * normal pre-dispatch resolution AND the extraction-failure boundary
+ * (via `bestEffortOutputMode`). Precedence: explicit `--output-format`
+ * > `--pretty-output` > `--raw` > env override > TTY detection >
+ * deterministic `data` fallback.
+ *
+ * `options.lenient` swaps the strict invalid-explicit `ValidationError`
+ * for a fall-through so the resolver is total on the error boundary,
+ * where a throw would escape the very catch that formats it. A
+ * well-formed argv always surfaces the invalid mode through the strict
+ * path (review fixup, round 3).
+ */
 function resolveOutputMode(
   explicit: string | undefined,
   forcePretty: boolean,
   forceRaw: boolean,
   adapter: CommandInvocationAdapter,
+  options: { lenient?: boolean } = {},
 ): OutputMode {
   if (explicit !== undefined) {
-    if (!isOutputMode(explicit)) {
+    if (isOutputMode(explicit)) {
+      return explicit;
+    }
+    if (!options.lenient) {
       throw new ValidationError(
         `Invalid output format: ${explicit}`,
         `Use one of: ${OUTPUT_MODES.join(", ")}`,
       );
     }
-    return explicit;
+    // Lenient: treat the invalid explicit mode as absent and fall
+    // through the shared chain below.
   }
   if (forcePretty) return "tty";
   if (forceRaw) return "data";
@@ -318,20 +336,22 @@ function resolveOutputMode(
  * Resolve the output mode for errors that escape `extractGlobalOptions`
  * itself (a valueless or option-shadowed `--provider`). The partially
  * parsed result never escapes the throw, so the requested mode is
- * re-derived from the raw argv with the same precedence
- * `resolveOutputMode` applies (explicit > --pretty-output > --raw >
- * env > tty) — but this variant never throws: an invalid explicit mode
- * is ignored here (keeping the deterministic compact fallback) because
- * a well-formed argv surfaces it through `resolveOutputMode`'s own
- * boundary. Review fixup (round 2): the extraction catch previously
- * hardcoded `data`, so `--output-format pretty ... --provider` reported
- * the extraction failure in compact JSON despite the requested mode.
+ * re-derived from the raw argv. This helper owns ONLY the argv
+ * re-extraction — token consumption mirrors `extractGlobalOptions`
+ * exactly (the follower of `--output-format`/`-O` is its value) — and
+ * delegates every precedence and fallback decision to the one shared
+ * `resolveOutputMode` through its non-throwing `lenient` path, so
+ * normal and extraction-error resolution cannot diverge (review
+ * fixup, round 3). Round 2 context: the extraction catch previously
+ * hardcoded `data`, so `--output-format pretty ... --provider`
+ * reported the extraction failure in compact JSON despite the
+ * requested mode.
  */
 function bestEffortOutputMode(
   args: readonly string[],
   adapter: CommandInvocationAdapter,
 ): OutputMode {
-  let outputFormat: OutputMode | undefined;
+  let outputFormat: string | undefined;
   let forcePretty = false;
   let forceRaw = false;
   for (let i = 0; i < args.length; i += 1) {
@@ -339,7 +359,7 @@ function bestEffortOutputMode(
     if (arg === undefined) continue;
     if (arg === "--output-format" || arg === "-O") {
       const value = args[i + 1];
-      if (value !== undefined && isOutputMode(value)) {
+      if (value !== undefined) {
         outputFormat = value;
         i += 1;
       }
@@ -354,15 +374,9 @@ function bestEffortOutputMode(
       continue;
     }
   }
-  if (outputFormat !== undefined) return outputFormat;
-  if (forcePretty) return "tty";
-  if (forceRaw) return "data";
-  const envMode = adapter.environmentOutputMode;
-  if (typeof envMode === "string" && isOutputMode(envMode)) {
-    return envMode;
-  }
-  if (adapter.stdoutIsTTY) return "tty";
-  return "data";
+  return resolveOutputMode(outputFormat, forcePretty, forceRaw, adapter, {
+    lenient: true,
+  });
 }
 
 /**

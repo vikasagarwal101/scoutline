@@ -31,7 +31,8 @@ import {
   UnsupportedCapabilityError,
 } from "../lib/errors.js";
 import { redactCredentialString } from "../lib/redact.js";
-import { parseProviderIds } from "../providers/selection.js";
+import type { ConsumptionSink } from "../lib/consumption.js";
+import { parseProviderId, parseProviderIds } from "../providers/selection.js";
 
 type RecencyFilter = "oneDay" | "oneWeek" | "oneMonth" | "oneYear" | "noLimit";
 
@@ -247,6 +248,24 @@ function formatSources(sources: readonly SearchSource[], maxSummary?: number): F
   });
 }
 
+/**
+ * Split a `--merge` query into sub-queries: split on unescaped `|` (a
+ * literal pipe is escaped as `\|`), trim, and drop empty fragments. A
+ * merge query with no non-empty fragments is a usage error. Shared by
+ * the single-provider path and the fan-out executor — DESIGN D3's merge
+ * grid is (arm × sub-query), so every arm runs every sub-query.
+ */
+function splitMergeSubQueries(query: string): string[] {
+  const subQueries = query
+    .split(/(?<!\\)\|/)
+    .map((q) => q.replace(/\\\|/g, "|").trim())
+    .filter((q) => q.length > 0);
+  if (subQueries.length === 0) {
+    throw new Error("--merge requires at least one non-empty query (split with '|')");
+  }
+  return subQueries;
+}
+
 export async function search(
   query: string,
   options: SearchOptions = {},
@@ -259,13 +278,7 @@ export async function search(
   // A literal pipe in a single query can be escaped as `\|` (won't split).
   let subQueries: string[] = [query];
   if (options.merge) {
-    subQueries = query
-      .split(/(?<!\\)\|/)
-      .map((q) => q.replace(/\\\|/g, "|").trim())
-      .filter((q) => q.length > 0);
-    if (subQueries.length === 0) {
-      throw new Error("--merge requires at least one non-empty query (split with '|')");
-    }
+    subQueries = splitMergeSubQueries(query);
   }
 
   const isMerge = subQueries.length > 1;
@@ -434,9 +447,17 @@ export function resolveFanoutPlan(options: ResolveFanoutPlanOptions): FanoutPlan
       }
       return { mode: "single", arms: [arm] };
     }
-    // parsed === null (unknown id): fall through to the existing
-    // single path; `resolveProviderId` inside `resolveEffectiveProvider`
-    // surfaces the typed VALIDATION_ERROR on the same invocation.
+    // parsed === null: a non-empty explicit value that names no valid
+    // id, comma list, or the "all" sentinel. Surface the typed
+    // VALIDATION_ERROR HERE (parseProviderId owns the CLI's
+    // provider-error wording and throws for every input this parse
+    // rejects) — falling through would let tier 3 (fanout=true)
+    // silently convert the typo'd pin into a fan-out activation and
+    // the error would never surface (review fix, PR #36).
+    parseProviderId(explicitProviderRaw);
+    // Unreachable: parseProviderId throws for every null-parse input.
+    // The return keeps the branch total should the parsers diverge.
+    return { mode: "single", arms: [] };
   }
 
   // Tier 2: SCOUTLINE_PROVIDER env pin → single.
@@ -498,10 +519,10 @@ export function resolveFanoutPlan(options: ResolveFanoutPlanOptions): FanoutPlan
 /**
  * Options for {@link executeFanoutPlan}. The executor owns the
  * per-arm Lifecycle (descriptor.create → adapter → executeSearch →
- * close) and the merged error envelope. `query` is the resolved
- * single query — fan-out does NOT combine with `--merge` (each arm
- * runs one query; merging sub-queries across providers is a separate
- * concern).
+ * close) and the merged error envelope. `query` is the resolved raw
+ * query; when `searchOptions.merge` is set the executor splits it on
+ * unescaped `|` and runs EVERY sub-query on EVERY arm — DESIGN D3's
+ * (arm × sub-query) merge grid.
  *
  * `dependencies` is a subset of {@link SearchExecutionDependencies}:
  * the per-arm capability is constructed internally by the executor
@@ -513,6 +534,16 @@ export interface FanoutExecutionDependencies {
   readonly sleep: (ms: number) => Promise<void>;
   readonly random: () => number;
   readonly retryPolicy?: RetryPolicy;
+  /**
+   * Optional consumption sink (PB-T2 parity with the other billable
+   * seams). When present, every arm's `executeSearch` emits one
+   * consumption event per billable invoke attempt through it — fan-out
+   * arms must not silently skip local quota accounting (review fix,
+   * PR #36).
+   */
+  readonly consume?: ConsumptionSink;
+  /** Timestamp source for consumption events; defaults to `Date.now`. */
+  readonly now?: () => number;
 }
 
 export interface FanoutExecutionOptions {
@@ -526,19 +557,23 @@ export interface FanoutExecutionOptions {
 
 interface FanoutArmSuccess {
   readonly arm: ProviderId;
-  readonly results: FormattedResult[];
+  /** One FormattedResult[] per sub-query (DESIGN D3's grid column). */
+  readonly results: FormattedResult[][];
 }
 
 /**
- * Run a single arm: create the adapter, run one executeSearch, format
- * the normalized sources into FormattedResult[]. The arm is the owner
- * of its own transport (the one-client-per-query pattern
- * unconditionally — same as the `--merge` sub-queries in `search`).
+ * Run a single arm: create the adapter, run one executeSearch PER
+ * SUB-QUERY, and format the normalized sources into one
+ * FormattedResult[] per sub-query. The arm owns its transport per
+ * call (the one-client-per-query pattern unconditionally — each
+ * executeSearch isolates its client exactly like the single-provider
+ * `--merge` sub-queries in `search`).
  */
 async function runFanoutArm(
   armId: ProviderId,
+  subQueries: readonly string[],
   options: FanoutExecutionOptions,
-): Promise<FormattedResult[]> {
+): Promise<FormattedResult[][]> {
   const descriptor = options.descriptors.find((d) => d.id === armId);
   if (!descriptor) {
     // Should never happen — the resolver already filtered — but a
@@ -554,22 +589,36 @@ async function runFanoutArm(
     throw new UnsupportedCapabilityError(armId, "search");
   }
   const controls = buildControls(options.searchOptions);
-  const request: SearchRequest = controls ? { query: options.query, controls } : { query: options.query };
-  const sources = await executeSearch(
-    capability,
-    request,
-    {
-      count: options.searchOptions.count,
-      noCache: options.searchOptions.noCache,
-      retryPolicy: options.dependencies.retryPolicy,
-    },
-    {
-      cache: options.dependencies.cache,
-      sleep: options.dependencies.sleep,
-      random: options.dependencies.random,
-    },
+  // One executeSearch per (arm × sub-query): sub-queries run in
+  // parallel inside the arm (same scheduling as the single-provider
+  // `--merge` path) and each call owns its transport. The consumption
+  // sink + clock are threaded so every billable call records.
+  const perSubQuerySources = await Promise.all(
+    subQueries.map((q) => {
+      const request: SearchRequest = controls ? { query: q, controls } : { query: q };
+      return executeSearch(
+        capability,
+        request,
+        {
+          count: options.searchOptions.count,
+          noCache: options.searchOptions.noCache,
+          retryPolicy: options.dependencies.retryPolicy,
+        },
+        {
+          cache: options.dependencies.cache,
+          sleep: options.dependencies.sleep,
+          random: options.dependencies.random,
+          ...(options.dependencies.consume !== undefined
+            ? { consume: options.dependencies.consume }
+            : {}),
+          ...(options.dependencies.now !== undefined ? { now: options.dependencies.now } : {}),
+        },
+      );
+    }),
   );
-  return formatSources(sources, options.searchOptions.maxSummary);
+  return perSubQuerySources.map((sources) =>
+    formatSources(sources, options.searchOptions.maxSummary),
+  );
 }
 
 /**
@@ -625,12 +674,21 @@ export async function executeFanoutPlan(
     );
   }
 
+  // Sub-query split (DESIGN D3: the merge grid is arms × sub-queries).
+  // `--merge` composes with fan-out — every arm runs every sub-query
+  // (review fix, PR #36); without it the raw query is one sub-query.
+  const subQueries = options.searchOptions.merge
+    ? splitMergeSubQueries(options.query)
+    : [options.query];
+
   // Run every arm in parallel. Promise.allSettled ensures one arm's
   // failure does not abort the rest; the per-arm pipeline is isolated
   // (one client per arm, no fallback chain).
   const settled = await Promise.allSettled(
     arms.map((armId) =>
-      runFanoutArm(armId, options).then((results): FanoutArmSuccess => ({ arm: armId, results })),
+      runFanoutArm(armId, subQueries, options).then(
+        (results): FanoutArmSuccess => ({ arm: armId, results }),
+      ),
     ),
   );
 
@@ -661,22 +719,27 @@ export async function executeFanoutPlan(
     throw new Error("Fan-out produced no successes and no failures; plan was empty after filtering.");
   }
 
-  // Build the (arm × sub-query) grid for mergeResults. Fan-out runs one
-  // query per arm, so sub-queries is a single-element list per arm.
+  // Build the (arm × sub-query) grid for mergeResults. Each success
+  // carries one FormattedResult[] per sub-query; occurrence counting
+  // and mergedFrom accumulation span the whole grid (D3).
   const grid: MergeGridArm[] = successes.map((s) => ({
     provider: s.arm,
-    results: [s.results],
+    results: s.results,
   }));
   const merged: FormattedResult[] = mergeResults(grid, {
     emitMergedFrom: true,
     count: options.searchOptions.count,
   });
 
-  // Summary notice (D5). K = total raw results across successful arms
-  // (the post-truncate count the executor collected); M = merged
-  // unique count. A arm with 0 results contributes 0 to K — the
-  // notice still names the arm so the operator sees the full set.
-  const totalRaw = successes.reduce((sum, s) => sum + s.results.length, 0);
+  // Summary notice (D5). K = total raw results across the whole
+  // arms × sub-queries grid (the post-truncate counts the executor
+  // collected); M = merged unique count. An arm with 0 results
+  // contributes 0 to K — the notice still names the arm so the
+  // operator sees the full set.
+  const totalRaw = successes.reduce(
+    (sum, s) => sum + s.results.reduce((n, list) => n + list.length, 0),
+    0,
+  );
   if (context) {
     const armList = arms.join(", ");
     context.notice(
@@ -721,13 +784,16 @@ Multi-provider fan-out — activation tiers (highest precedence first):
   Merging: arms run in parallel (one client each, pinned — no per-arm
   fallback) and are deduped by canonical URL identity: scheme and host
   lowercased; :80/:443 ports, fragments, and trailing slashes stripped;
-  utm_* and fbclid parameters removed. The canonical form is a
-  dedupe identity ONLY — the emitted url, title, and summary are the
-  first arm's originals. The first arm wins metadata collisions;
-  \`occurrences\` counts across all arms; the merged list is sliced to
-  --count after merging; \`--merge\` composes with fan-out. A failed
-  arm is dropped with a stderr notice; if every arm fails, the last
-  arm's error surfaces.
+  utm_* and fbclid parameters removed (names are matched after
+  percent-decoding, so ?%66bclid=x collapses with ?fbclid=x; the raw
+  path — including dot segments — and userinfo are preserved verbatim).
+  The canonical form is a dedupe identity ONLY — the emitted url,
+  title, and summary are the first arm's originals. The first arm wins
+  metadata collisions; \`occurrences\` counts across all arms; the
+  merged list is sliced to --count after merging; \`--merge\` composes
+  with fan-out: every arm runs every sub-query and occurrences span
+  the arms × sub-queries grid. A failed arm is dropped with a stderr
+  notice; if every arm fails, the last arm's error surfaces.
 
 Note: support for the optional controls below varies by provider AND by
 control — a control accepted by one provider may be rejected

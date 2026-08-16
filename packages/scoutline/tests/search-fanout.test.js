@@ -622,24 +622,75 @@ describe("resolveFanoutPlan: explicit --provider tier (D1.1)", () => {
     );
   });
 
-  it("returns fanout when explicit raw is invalid (no pin; falls through to default)", () => {
-    // parseProviderIds returns null for invalid; explicit presence is
-    // checked but the resolver must NOT fall through to the env/default
-    // path silently — the commander surfaces VALIDATION_ERROR upstream.
-    // For the resolver's perspective, an unknown id still triggers Tier 1
-    // (fanout intent) only via parseProviderIds; an unknown id is null
-    // and the resolver should NOT route to fanout. The dispatcher
-    // surface this as VALIDATION_ERROR.
+  it("throws VALIDATION_ERROR for an invalid explicit raw (fanout off; review fix)", () => {
+    // A non-empty explicit value that names no valid id, comma list,
+    // or "all" sentinel is a usage error — parseProviderIds returns
+    // null and the resolver surfaces the typed VALIDATION_ERROR (the
+    // same wording parseProviderId produces) instead of falling
+    // through to the env/config/default tiers.
+    assert.throws(
+      () =>
+        resolveFanoutPlan({
+          explicitProviderRaw: "tavlly",
+          env,
+          configFanout: false,
+          descriptors,
+        }),
+      (error) => {
+        assert.strictEqual(error.name, "ValidationError");
+        assert.match(error.message, /Unknown provider "tavlly"/);
+        return true;
+      },
+    );
+  });
+
+  it("throws VALIDATION_ERROR for an invalid explicit raw even when fanout=true (review fix)", () => {
+    // The P1 case: with the config switch on, a typo'd pin used to
+    // fall through to tier 3 and silently converted into a fan-out
+    // activation. The parse failure must surface before the config
+    // fan-out tier is ever evaluated.
+    assert.throws(
+      () =>
+        resolveFanoutPlan({
+          explicitProviderRaw: "tavlly",
+          env,
+          configFanout: true,
+          descriptors,
+        }),
+      (error) => {
+        assert.strictEqual(error.name, "ValidationError");
+        assert.match(error.message, /Unknown provider "tavlly"/);
+        return true;
+      },
+    );
+  });
+
+  it("throws VALIDATION_ERROR when a comma list contains an unknown id (review fix)", () => {
+    assert.throws(
+      () =>
+        resolveFanoutPlan({
+          explicitProviderRaw: "tavily,openai",
+          env,
+          configFanout: true,
+          descriptors,
+        }),
+      (error) => {
+        assert.strictEqual(error.name, "ValidationError");
+        return true;
+      },
+    );
+  });
+
+  it("treats a whitespace-only explicit raw as absent (tier evaluation continues)", () => {
     const plan = resolveFanoutPlan({
-      explicitProviderRaw: "tavlly",
+      explicitProviderRaw: "   ",
       env,
-      configFanout: false,
+      configFanout: true,
       descriptors,
     });
-    // Null parse → Tier 2 (single + suppress? no, no fanout set) → single
-    // by exact-id string, OR a dedicated null branch. The dispatcher
-    // will surface the original error before the executor runs.
-    assert.strictEqual(plan.mode, "single");
+    // Absent explicit → tier 3 fan-out over configured∩advertising.
+    assert.strictEqual(plan.mode, "fanout");
+    assert.deepStrictEqual(plan.arms, ["zai", "minimax", "tavily"]);
   });
 });
 
@@ -868,8 +919,10 @@ describe("executeFanoutPlan: partial failure exit 0 with drop notices (D5/D6)", 
     assert.ok(drop, `expected arm drop notice, got: ${JSON.stringify(notices)}`);
   });
 
-  it("does NOT include mergedFrom on the single-provider path's golden output", async () => {
-    // single-pin path complete sanity, in-process (not via main()).
+  it("emits mergedFrom on the fan-out path (two-arm shared URL)", async () => {
+    // Fan-out provenance sanity, in-process (not via main()). The
+    // single-provider path's no-mergedFrom guarantee is pinned by the
+    // golden tests below (mergeResults unit + main() single-pin run).
     const tav = makeFanoutDescriptor("tavily", {
       q: [{ title: "Tav", url: "https://e/p", summary: "s" }],
     });
@@ -1450,5 +1503,301 @@ describe("Ticket 5 — main-driven hermetic wire test (fan-out end-to-end)", () 
     // Both arms really executed exactly once (one client per arm).
     assert.strictEqual(tav.invokes.length, 1);
     assert.strictEqual(exa.invokes.length, 1);
+  });
+});
+
+// =============================================================================
+// Review fixes (PR #36 feedback) — behavior changes pinned tests-first.
+//
+// 1. `--merge` composes with fan-out: the executor splits the query per
+//    arm and merges the (arm × sub-query) grid — the whole `a|b` string
+//    must NEVER reach a provider as one query.
+// 2. Consumption: fan-out arms thread the configured sink so every
+//    billable arm records through local quota accounting.
+// 3. canonicalUrl identity hardening: percent-encoded tracking names
+//    collapse with decoded ones; raw path (dot segments) and userinfo
+//    are preserved verbatim — D4 authorizes no other normalization.
+// =============================================================================
+
+describe("executeFanoutPlan: --merge composes with fan-out (arms × sub-queries grid, review fix)", () => {
+  it("splits the query per arm; every arm runs every sub-query; occurrences span the grid", async () => {
+    const tav = makeFanoutDescriptor("tavily", {
+      a: [{ title: "T-a", url: "https://e/shared", summary: "t a" }],
+      b: [{ title: "T-b", url: "https://e/shared", summary: "t b" }],
+    });
+    const exa = makeFanoutDescriptor("exa", {
+      a: [{ title: "E-a", url: "https://e/shared", summary: "e a" }],
+      b: [{ title: "E-b", url: "https://e/exa-only", summary: "e b" }],
+    });
+    const { context, notices } = makeFanoutContext();
+    const result = await executeFanoutPlan(
+      { mode: "fanout", arms: ["tavily", "exa"] },
+      {
+        descriptors: [tav.descriptor, exa.descriptor],
+        env: {},
+        query: "a|b",
+        searchOptions: { merge: true },
+        dependencies: makeExecDepsForFanout(),
+      },
+      context,
+    );
+    // Each arm ran BOTH sub-queries — never the raw "a|b" string.
+    assert.deepStrictEqual(
+      tav.invokes.map((r) => r.query),
+      ["a", "b"],
+    );
+    assert.deepStrictEqual(
+      exa.invokes.map((r) => r.query),
+      ["a", "b"],
+    );
+    const merged = result.data;
+    assert.strictEqual(merged.length, 2);
+    const shared = merged.find((r) => r.url === "https://e/shared");
+    assert.ok(shared, "shared result present");
+    assert.strictEqual(shared.occurrences, 3, "2 tavily sub-queries + 1 exa sub-query");
+    assert.deepStrictEqual(shared.mergedFrom, ["tavily", "exa"]);
+    const only = merged.find((r) => r.url === "https://e/exa-only");
+    assert.ok(only, "exa-only result present");
+    assert.strictEqual(only.occurrences, 1);
+    assert.deepStrictEqual(only.mergedFrom, ["exa"]);
+    // D5: the fan-out summary replaces the single-path merged notice.
+    assert.ok(
+      notices.some((n) => /fanned out to 2 providers/.test(n)),
+      `fan-out summary expected, got: ${JSON.stringify(notices)}`,
+    );
+    assert.ok(!notices.some((n) => /merged 2 queries/.test(n)), "no separate merged notice");
+  });
+
+  it("honors the \\| escape: one literal-pipe sub-query per arm", async () => {
+    const tav = makeFanoutDescriptor("tavily", {
+      "x|y": [{ title: "T", url: "https://e/t", summary: "t" }],
+    });
+    const result = await executeFanoutPlan(
+      { mode: "fanout", arms: ["tavily"] },
+      {
+        descriptors: [tav.descriptor],
+        env: {},
+        query: "x\\|y",
+        searchOptions: { merge: true },
+        dependencies: makeExecDepsForFanout(),
+      },
+      makeFanoutContext().context,
+    );
+    assert.deepStrictEqual(
+      tav.invokes.map((r) => r.query),
+      ["x|y"],
+    );
+    assert.strictEqual(result.data.length, 1);
+  });
+
+  it("without --merge the raw query runs as ONE sub-query per arm", async () => {
+    const tav = makeFanoutDescriptor("tavily", {
+      "a|b": [{ title: "T", url: "https://e/t", summary: "t" }],
+    });
+    await executeFanoutPlan(
+      { mode: "fanout", arms: ["tavily"] },
+      {
+        descriptors: [tav.descriptor],
+        env: {},
+        query: "a|b",
+        searchOptions: {},
+        dependencies: makeExecDepsForFanout(),
+      },
+      makeFanoutContext().context,
+    );
+    assert.deepStrictEqual(
+      tav.invokes.map((r) => r.query),
+      ["a|b"],
+    );
+  });
+
+  it("rejects a merge query with no non-empty fragments (same error as the single path)", async () => {
+    const tav = makeFanoutDescriptor("tavily", {});
+    await assert.rejects(
+      () =>
+        executeFanoutPlan(
+          { mode: "fanout", arms: ["tavily"] },
+          {
+            descriptors: [tav.descriptor],
+            env: {},
+            query: " | ",
+            searchOptions: { merge: true },
+            dependencies: makeExecDepsForFanout(),
+          },
+          makeFanoutContext().context,
+        ),
+      /--merge requires at least one non-empty query/,
+    );
+  });
+});
+
+describe("executeFanoutPlan: consumption sink (review fix)", () => {
+  it("records one search consumption event per arm through the configured sink", async () => {
+    const tav = makeFanoutDescriptor("tavily", {
+      q: [{ title: "T", url: "https://e/t", summary: "t" }],
+    });
+    const exa = makeFanoutDescriptor("exa", {
+      q: [{ title: "E", url: "https://e/e", summary: "e" }],
+    });
+    const events = [];
+    const sink = {
+      async record(event) {
+        events.push(event);
+      },
+    };
+    const result = await executeFanoutPlan(
+      { mode: "fanout", arms: ["tavily", "exa"] },
+      {
+        descriptors: [tav.descriptor, exa.descriptor],
+        env: {},
+        query: "q",
+        searchOptions: {},
+        dependencies: { ...makeExecDepsForFanout(), consume: sink, now: () => 4242 },
+      },
+      makeFanoutContext().context,
+    );
+    assert.strictEqual(result.kind, "data");
+    assert.strictEqual(events.length, 2, "one event per arm");
+    assert.deepStrictEqual(
+      events.map((e) => e.provider).sort(),
+      ["exa", "tavily"],
+    );
+    for (const e of events) {
+      assert.strictEqual(e.capabilityId, "search");
+      assert.strictEqual(e.attempt, 1);
+      assert.strictEqual(e.at, 4242, "injected now() timestamps the event");
+    }
+  });
+
+  it("main() threads the configured consume sink into every fan-out arm", async () => {
+    function makeSinkDescriptor(id, results) {
+      return {
+        id,
+        isConfigured: () => true,
+        capabilities: () => new Set(["search"]),
+        create: () => ({
+          id,
+          search: {
+            validate() {},
+            cacheIdentity(r) {
+              return {
+                provider: id,
+                capability: "search",
+                credentialFingerprint: "fp-" + id,
+                request: r,
+                legacyCandidates: [],
+              };
+            },
+            async invoke() {
+              return results.map((entry) => ({ ...entry }));
+            },
+          },
+        }),
+      };
+    }
+    const events = [];
+    const stdout = [];
+    const stderr = [];
+    const adapter = {
+      stdoutIsTTY: false,
+      stdinIsTTY: false,
+      environmentOutputMode: "data",
+      readStdin: async () => "",
+      writeStdout: (v) => stdout.push(v),
+      writeStderr: (v) => stderr.push(v),
+      runQuietly: async (op) => op(),
+      setExitCode: () => {},
+    };
+    const store = new Map();
+    const status = await main(["--provider", "tavily,exa", "search", "q"], {
+      invocation: adapter,
+      env: {},
+      providerDescriptors: [
+        makeSinkDescriptor("tavily", [{ title: "T", url: "https://e/t", summary: "t" }]),
+        makeSinkDescriptor("exa", [{ title: "E", url: "https://e/e", summary: "e" }]),
+      ],
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+      searchCache: {
+        async get(k) {
+          return store.has(k) ? store.get(k) : null;
+        },
+        async set(k, v) {
+          store.set(k, v);
+        },
+      },
+      searchSleep: async () => {},
+      searchRandom: () => 0.5,
+      consume: {
+        async record(event) {
+          events.push(event);
+        },
+      },
+    });
+    assert.strictEqual(status, 0, `exit 0 expected, stderr: ${JSON.stringify(stderr)}`);
+    assert.strictEqual(events.length, 2, "both arms billed through the sink");
+    assert.deepStrictEqual(
+      events.map((e) => e.provider).sort(),
+      ["exa", "tavily"],
+    );
+  });
+});
+
+describe("canonicalUrl: review fixes (decoded tracking names, raw path/userinfo preservation)", () => {
+  it("collapses a percent-encoded tracking name with its decoded twin (%66bclid ≡ fbclid)", () => {
+    assert.strictEqual(
+      canonicalUrl("https://e/a?%66bclid=x&keep=1"),
+      canonicalUrl("https://e/a?fbclid=x&keep=1"),
+    );
+    assert.strictEqual(canonicalUrl("https://e/a?%66bclid=x&keep=1"), "https://e/a?keep=1");
+  });
+
+  it("matches utm_* after percent-decoding too", () => {
+    assert.strictEqual(canonicalUrl("https://e/a?%75tm_source=x&k=1"), "https://e/a?k=1");
+  });
+
+  it("keeps a malformed percent-escape in the name (identity never throws)", () => {
+    assert.strictEqual(canonicalUrl("https://e/a?%zz=1&k=2"), "https://e/a?%zz=1&k=2");
+  });
+
+  it("preserves userinfo in the identity (D4 authorizes no authority dropping)", () => {
+    assert.strictEqual(canonicalUrl("https://user@example.com/a"), "https://user@example.com/a");
+    assert.strictEqual(
+      canonicalUrl("https://user:pass@example.com/a"),
+      "https://user:pass@example.com/a",
+    );
+    assert.notStrictEqual(
+      canonicalUrl("https://user@example.com/a"),
+      canonicalUrl("https://example.com/a"),
+      "credential-bearing URL must not merge with the bare-authority twin",
+    );
+  });
+
+  it("preserves dot segments in the path (no unauthorized normalization)", () => {
+    assert.strictEqual(canonicalUrl("https://example.com/a/../b"), "https://example.com/a/../b");
+    assert.notStrictEqual(
+      canonicalUrl("https://example.com/a/../b"),
+      canonicalUrl("https://example.com/b"),
+    );
+    assert.strictEqual(canonicalUrl("https://example.com/./a/"), "https://example.com/./a");
+  });
+
+  it("keeps the documented transformations on top of the raw path", () => {
+    assert.strictEqual(
+      canonicalUrl("HTTPS://EXAMPLE.com:443/A/../b?utm_source=x&k=1#frag"),
+      "https://example.com/A/../b?k=1",
+    );
+  });
+
+  it("stays idempotent on the new identity forms", () => {
+    const urls = [
+      "https://user@example.com/a/../b?k=1",
+      "https://e/a?%66bclid=x&keep=1",
+      "https://e/a?%zz=1",
+    ];
+    for (const u of urls) {
+      const once = canonicalUrl(u);
+      const twice = canonicalUrl(once);
+      assert.strictEqual(twice, once, `idempotence broken for ${u}`);
+    }
   });
 });

@@ -998,6 +998,11 @@ async function handleSearch(
               sleep: deps.searchSleep,
               random: deps.searchRandom,
               retryPolicy: undefined,
+              // PB-T2 parity (review fix, PR #36): thread the configured
+              // consumption sink + clock so each arm's executeSearch
+              // bills the arm's provider through local quota accounting.
+              ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+              ...(deps.now !== undefined ? { now: deps.now } : {}),
             },
             secrets: deps.secrets,
           },

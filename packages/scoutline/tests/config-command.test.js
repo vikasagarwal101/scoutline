@@ -521,4 +521,46 @@ describe("config fanout key (search-fanout plan, Ticket 4)", () => {
       assert.ok(againIo.stderr().includes("not set"), againIo.stderr());
     });
   });
+
+  it("config set fanout true names the routed arms when routing.search narrows them (review fix)", async (t) => {
+    // With a routing table in play, tier-3 fan-out queries only the
+    // routed eligible arms — the blanket "ALL configured providers"
+    // claim would overstate the billable set.
+    await withTempConfig(
+      t,
+      { version: 1, providers: {}, routing: { search: ["tavily", "brave"] } },
+      async (dir) => {
+        const io = makeInvocation();
+        const status = await main(
+          ["config", "set", "fanout", "true"],
+          await baseDeps(io.invocation, { SCOUTLINE_CONFIG_DIR: dir }),
+        );
+        assert.strictEqual(status, 0);
+        assert.ok(
+          io.stderr().includes("routing.search (tavily, brave)"),
+          `routed arms named: ${io.stderr()}`,
+        );
+        assert.ok(
+          !io.stderr().includes("bill ALL configured"),
+          "no blanket ALL-providers claim when routing narrows the arms",
+        );
+        assert.strictEqual((await readStored(dir)).fanout, true);
+      },
+    );
+  });
+
+  it("config --help documents `config unset fanout` (review fix)", async (t) => {
+    await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
+      const io = makeInvocation();
+      const status = await main(
+        ["config", "--help"],
+        await baseDeps(io.invocation, { SCOUTLINE_CONFIG_DIR: dir }),
+      );
+      assert.strictEqual(status, 0);
+      assert.ok(
+        io.stdout().includes("config unset fanout"),
+        "help must show how to remove the standing fan-out switch",
+      );
+    });
+  });
 });

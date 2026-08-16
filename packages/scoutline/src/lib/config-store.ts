@@ -447,10 +447,14 @@ export interface ConfigKeyDescriptor {
    * Sentence the `config set` success path emits (stderr notice) when
    * this key stores boolean `true` — the cost warning a switch-on must
    * carry (search-fanout DESIGN D7: `config set fanout true` must state
-   * that every search bills ALL configured search providers). Absent on
-   * keys whose enablement carries no such warning.
+   * the billable cost). Receives the UPDATED config so the warning can
+   * describe the arms that will actually run: when `routing.search`
+   * narrows tier-3 fan-out, the notice names the routed providers
+   * instead of claiming every search bills ALL configured providers
+   * (review fix, PR #36). Absent on keys whose enablement carries no
+   * such warning.
    */
-  readonly setTrueNotice?: string;
+  readonly setTrueNotice?: (config: ScoutlineConfig) => string;
 }
 
 const KEY_FALLBACK_ENABLED: ConfigKeyDescriptor = {
@@ -465,13 +469,28 @@ const KEY_FALLBACK_ENABLED: ConfigKeyDescriptor = {
 export const FANOUT_COST_SENTENCE =
   "every search will bill ALL configured search providers — N arms = N billable calls";
 
+/**
+ * Enable-time cost warning for `config set fanout true` (D7). When
+ * `routing.search` narrows the tier-3 fan-out arms, name THOSE
+ * providers — with a routing table in play the blanket "ALL configured
+ * providers" claim overstates the billable set (the resolver queries
+ * only the routed eligible arms, DESIGN D1.3).
+ */
+export function fanoutCostNotice(config: ScoutlineConfig): string {
+  const routed = config.routing?.["search"];
+  if (routed !== undefined && routed.length > 0) {
+    return `every search will bill the configured search providers in routing.search (${routed.join(", ")}) — N arms = N billable calls`;
+  }
+  return FANOUT_COST_SENTENCE;
+}
+
 const KEY_FANOUT: ConfigKeyDescriptor = {
   path: "fanout",
   gettable: true,
   settable: true,
   credential: false,
   describe: "boolean — multi-provider search fan-out switch (default false)",
-  setTrueNotice: FANOUT_COST_SENTENCE,
+  setTrueNotice: fanoutCostNotice,
 };
 
 const KEY_ROUTING_TABLE: ConfigKeyDescriptor = {

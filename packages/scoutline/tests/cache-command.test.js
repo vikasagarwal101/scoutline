@@ -829,6 +829,66 @@ describe("CLI: scoutline cache prune (Ticket 5)", () => {
     assert.ok(/--provider requires a value/.test(err.error), `error: ${err.error}`);
   });
 
+  it("exits 1 when --provider is followed by another option instead of a value (no partial prune)", async () => {
+    // Review P1 (round 2): extractGlobalOptions used to consume the next
+    // option token as the provider value, so `--provider --older-than 60s`
+    // silently ran a prune scoped to provider "--older-than" — the
+    // selector-free tool scan still deleted expired tool entries. A
+    // dash-prefixed follower is a missing value, not a Provider id.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-cache-prune-dashvalue-"));
+    try {
+      const now = Date.now();
+      const toolsDir = path.join(dir, "tools");
+      await fs.mkdir(toolsDir, { recursive: true });
+      const staleTool = "tools-stale.json";
+      await fs.writeFile(
+        path.join(toolsDir, staleTool),
+        JSON.stringify({ version: 1, timestamp: now - 100_000, tools: [] }),
+      );
+
+      const { stdout, stderr, code } = await runProcess(
+        ["cache", "prune", "--provider", "--older-than", "60s"],
+        { env: { ...BASE_ENV, SCOUTLINE_CACHE_DIR: dir } },
+      );
+      assert.strictEqual(code, 1, `unexpected exit (stdout: ${stdout})`);
+      assert.strictEqual(stdout, "");
+      const err = JSON.parse(stderr);
+      assert.strictEqual(err.success, false);
+      assert.strictEqual(err.code, "VALIDATION_ERROR");
+      assert.ok(/--provider requires a value/.test(err.error), `error: ${err.error}`);
+      // A rejected command must not perform ANY deletion: the expired tool
+      // entry that the malformed prune would otherwise reach survives.
+      const toolSurvived = await fs
+        .access(path.join(toolsDir, staleTool))
+        .then(() => true)
+        .catch(() => false);
+      assert.strictEqual(toolSurvived, true, "expired tool entry survives the rejected prune");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it("honors a requested pretty output mode for extraction-failure envelopes", async () => {
+    // Review P2 (round 2): when --output-format pretty precedes the failing
+    // trailing --provider, the extraction catch must resolve the requested
+    // mode instead of hardcoding compact data output.
+    const { stdout, stderr, code } = await runProcess(
+      ["--output-format", "pretty", "cache", "prune", "--provider"],
+      { env: BASE_ENV },
+    );
+    assert.strictEqual(code, 1);
+    assert.strictEqual(stdout, "");
+    const err = JSON.parse(stderr);
+    assert.strictEqual(err.success, false);
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
+    assert.ok(/--provider requires a value/.test(err.error), `error: ${err.error}`);
+    assert.strictEqual(
+      stderr.trim(),
+      JSON.stringify(err, null, 2),
+      `error envelope is pretty-printed: ${stderr}`,
+    );
+  });
+
   it("exits 0 and reports zero counts for an empty cache directory", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-cache-prune-empty-"));
     try {

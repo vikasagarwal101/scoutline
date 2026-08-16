@@ -254,12 +254,16 @@ function extractGlobalOptions(args: string[]): {
       // removed from the rest stream so command-local positional parsing
       // never observes it. Only shared Search resolves/validates it; the
       // Z.AI-only command families carry it but never consult it.
-      // A valueless trailing `--provider` is a VALIDATION_ERROR, not a
-      // silent no-op: `parseArgs` would yield `true` and the flag would
-      // vanish from the rest stream, matching nothing (review fixup —
-      // mirrors `cache prune`'s bare `--older-than` guard).
+      // A valueless `--provider` — trailing, or followed by another
+      // option token — is a VALIDATION_ERROR, not a silent no-op
+      // (review fixup, round 2). Consuming a dash-prefixed follower as
+      // the value made `cache prune --provider --older-than 60s` run a
+      // prune scoped to provider "--older-than" while the selector-free
+      // tool scan still deleted expired tool entries. Provider ids never
+      // start with "-", so a dash-prefixed follower is a missing value;
+      // this mirrors `parseArgs`' refusal to bind dash-prefixed values.
       const value = args[i + 1];
-      if (value === undefined) {
+      if (value === undefined || value.startsWith("-")) {
         throw new ValidationError(
           "--provider requires a value.",
           "Pass a Provider id after --provider, e.g. --provider zai.",
@@ -300,6 +304,57 @@ function resolveOutputMode(
     }
     return explicit;
   }
+  if (forcePretty) return "tty";
+  if (forceRaw) return "data";
+  const envMode = adapter.environmentOutputMode;
+  if (typeof envMode === "string" && isOutputMode(envMode)) {
+    return envMode;
+  }
+  if (adapter.stdoutIsTTY) return "tty";
+  return "data";
+}
+
+/**
+ * Resolve the output mode for errors that escape `extractGlobalOptions`
+ * itself (a valueless or option-shadowed `--provider`). The partially
+ * parsed result never escapes the throw, so the requested mode is
+ * re-derived from the raw argv with the same precedence
+ * `resolveOutputMode` applies (explicit > --pretty-output > --raw >
+ * env > tty) — but this variant never throws: an invalid explicit mode
+ * is ignored here (keeping the deterministic compact fallback) because
+ * a well-formed argv surfaces it through `resolveOutputMode`'s own
+ * boundary. Review fixup (round 2): the extraction catch previously
+ * hardcoded `data`, so `--output-format pretty ... --provider` reported
+ * the extraction failure in compact JSON despite the requested mode.
+ */
+function bestEffortOutputMode(
+  args: readonly string[],
+  adapter: CommandInvocationAdapter,
+): OutputMode {
+  let outputFormat: OutputMode | undefined;
+  let forcePretty = false;
+  let forceRaw = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === undefined) continue;
+    if (arg === "--output-format" || arg === "-O") {
+      const value = args[i + 1];
+      if (value !== undefined && isOutputMode(value)) {
+        outputFormat = value;
+        i += 1;
+      }
+      continue;
+    }
+    if (arg === "--pretty-output") {
+      forcePretty = true;
+      continue;
+    }
+    if (arg === "--raw") {
+      forceRaw = true;
+      continue;
+    }
+  }
+  if (outputFormat !== undefined) return outputFormat;
   if (forcePretty) return "tty";
   if (forceRaw) return "data";
   const envMode = adapter.environmentOutputMode;
@@ -2322,14 +2377,17 @@ export async function main(
   const envSecrets = configuredSecrets(env);
 
   // Extraction can now throw (valueless trailing `--provider`); give it
-  // the same error boundary as `resolveOutputMode` below — sanitized
-  // data-mode envelope (the requested output mode is not yet known when
-  // extraction itself fails) and the error's exit code.
+  // the same error boundary as `resolveOutputMode` below — a sanitized
+  // envelope in the output mode the argv requested (re-derived from the
+  // raw argv via `bestEffortOutputMode` because the partially parsed
+  // result never escapes the throw) and the error's exit code.
   let extracted: ReturnType<typeof extractGlobalOptions>;
   try {
     extracted = extractGlobalOptions([...args]);
   } catch (error) {
-    invocation.writeStderr(formatErrorOutput(error, "data", envSecrets));
+    invocation.writeStderr(
+      formatErrorOutput(error, bestEffortOutputMode(args, invocation), envSecrets),
+    );
     return getErrorExitCode(error);
   }
   const { outputFormat, forcePretty, forceRaw, provider, noFallback, rest } = extracted;

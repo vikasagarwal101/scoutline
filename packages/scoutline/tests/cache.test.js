@@ -1925,6 +1925,45 @@ describe("pruneCaches — TTL/selector/lock discipline (D1–D6)", () => {
     });
   });
 
+  it("an mtime-only touch (LRU read) does not rescue an expired entry from prune", async (t) => {
+    await withTempDir(t, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const now = Date.now();
+        const cacheDir = path.join(dir, "cache");
+        await fs.mkdir(cacheDir, { recursive: true });
+        const entry = v2Name("search", "zai");
+        const entryPath = path.join(cacheDir, entry);
+        await fs.writeFile(entryPath, JSON.stringify({ ts: now - 100_000, data: {} }));
+
+        // Review P2 (round 2): mtime is not an identity signal. readCache
+        // utimes entries for LRU freshness (cache.ts readCache) without
+        // taking the write lock, so a concurrent read between the scan's
+        // stat and the revalidation stat changes ONLY mtime — same inode,
+        // same size. The expired entry must still be pruned.
+        const result = await pruneCaches(
+          { olderThanMs: 60_000 },
+          {
+            beforeUnlink: async (p) => {
+              if (p !== entryPath) return;
+              const later = new Date(now + 5_000);
+              await fs.utimes(entryPath, later, later);
+            },
+          },
+        );
+
+        assert.strictEqual(
+          result.prunedResponses,
+          1,
+          `expired entry pruned despite the LRU touch: ${JSON.stringify(result)}`,
+        );
+        assert.strictEqual(await fileExists(entryPath), false);
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
   it("unknown selectors zero the response scan; the selector-free tool scan still prunes (D2/D4)", async (t) => {
     await withTempDir(t, async (dir) => {
       process.env.SCOUTLINE_CACHE_DIR = dir;

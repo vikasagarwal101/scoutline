@@ -2703,6 +2703,226 @@ describe("P6-08 cross-Adapter dispatcher through main() (Search/Read/Tree × Z.A
   });
 
   // -------------------------------------------------------------------------
+  // Brief × {Z.AI, fake} through main() (repo-brief Ticket 4).
+  //
+  // The brief envelope composes ONLY normalized capability results
+  // (SCHEMA.md invariant 4: no Provider-originated field name outside
+  // the reused normalized types). Both Adapters are fed inputs that
+  // normalize to the SAME per-operation values — the Z.AI Adapter from
+  // raw ZRead grammar, the fake from structured results — so a cross-
+  // Adapter `deepStrictEqual` on the FULL composed envelope (coverage,
+  // tree, docs, entryPoints, files, and detected included) proves the
+  // composition itself introduces no Provider seam.
+  // -------------------------------------------------------------------------
+
+  describe("Brief through main() (composed-envelope conformance)", () => {
+    /**
+     * Request-aware fake results. The brief issues TWO searches (the
+     * README query and the manifest-names query) and TWO reads
+     * (README.md and package.json — the selection the brief root
+     * listing below yields). The Z.AI Adapter derives `query`/`path`
+     * from each request; the fake must mirror that, so its scripted
+     * results are functions of the request rather than the static
+     * values the sibling suites use.
+     */
+    function sharedSearchResultForQuery(query) {
+      const text = "shared conformance excerpt";
+      return {
+        schemaVersion: 1,
+        repository: "owner/repo",
+        query,
+        language: "en",
+        excerpts: [{ text }],
+        truncated: false,
+        originalTextLength: text.length,
+      };
+    }
+    function sharedFileResultForPath(path) {
+      const body = "shared file body";
+      return {
+        schemaVersion: 1,
+        repository: "owner/repo",
+        path,
+        content: body,
+        truncated: false,
+        originalContentLength: body.length,
+      };
+    }
+
+    /**
+     * Brief-specific root listing: the shared 2-entry listing plus a
+     * `package.json` manifest entry. The brief's composition is only
+     * fully exercised when the tree yields BOTH a README and a
+     * manifest (read selection, the second read probe, and
+     * detected.manifestKinds all depend on it), so the brief case
+     * carries its own controlled raw + structured pair rather than
+     * reusing the leaner sibling fixtures.
+     */
+    function briefRootListing() {
+      return {
+        repository: "owner/repo",
+        path: "",
+        entries: [
+          { name: "src", path: "src", kind: "directory" },
+          { name: "README.md", path: "README.md", kind: "file" },
+          { name: "package.json", path: "package.json", kind: "file" },
+        ],
+      };
+    }
+    function rawForBriefRootListing() {
+      return "<structure>\nowner-repo/\n├── src/\n├── README.md\n└── package.json\n</structure>";
+    }
+
+    /**
+     * The full brief envelope both Adapters must produce under the
+     * default focus (all four sections) for the brief root listing.
+     * The listing contains README.md and package.json, so the read
+     * selection is exactly [README.md, package.json] and detected
+     * pins hasReadme/hasManifest with manifestKinds ["package.json"].
+     */
+    function expectedBriefData() {
+      return {
+        schemaVersion: 1,
+        repository: "owner/repo",
+        focus: ["structure", "readme", "manifest", "files"],
+        coverage: {
+          probes: [
+            { kind: "tree", label: "tree", status: "ok" },
+            { kind: "search", label: "search:readme", status: "ok" },
+            { kind: "search", label: "search:manifest", status: "ok" },
+            { kind: "read", label: "read:README.md", status: "ok" },
+            { kind: "read", label: "read:package.json", status: "ok" },
+          ],
+        },
+        tree: {
+          schemaVersion: 1,
+          repository: "owner/repo",
+          path: "",
+          depth: 1,
+          snapshots: [briefRootListing()],
+        },
+        docs: sharedSearchResultForQuery("README"),
+        entryPoints: sharedSearchResultForQuery("package.json pyproject.toml Cargo.toml go.mod"),
+        files: [
+          {
+            path: "README.md",
+            content: "shared file body",
+            truncated: false,
+            originalContentLength: "shared file body".length,
+          },
+          {
+            path: "package.json",
+            content: "shared file body",
+            truncated: false,
+            originalContentLength: "shared file body".length,
+          },
+        ],
+        detected: { hasReadme: true, hasManifest: true, manifestKinds: ["package.json"] },
+      };
+    }
+
+    function buildBriefZaiDescriptor() {
+      return buildZaiDescriptor({
+        searchRaw: rawForSharedSearch(),
+        fileRaw: rawForSharedFile(),
+        dirRaw: rawForBriefRootListing(),
+      });
+    }
+    function buildBriefFakeDescriptor() {
+      return buildFakeDescriptor({
+        searchResult: (request) => sharedSearchResultForQuery(request.query),
+        fileResult: (request) => sharedFileResultForPath(request.path),
+        // The brief's tree probe at the default depth requests only
+        // the root listing; any other path is a fixture error.
+        listDirectoryResult: (request) => {
+          assert.strictEqual(request.path, "", "brief fixture serves the root listing only");
+          return briefRootListing();
+        },
+      });
+    }
+
+    it("both Adapters produce status 0, empty stderr, byte-identical stdout, and the exact composed envelope across all four modes", async () => {
+      const modeMatrix = ["data", "json", "pretty", "compact"];
+      for (const mode of modeMatrix) {
+        const zaiResult = await runOne({
+          descriptor: buildBriefZaiDescriptor(),
+          argv: ["repo", "brief", "owner/repo"],
+          mode,
+        });
+        const fakeResult = await runOne({
+          descriptor: buildBriefFakeDescriptor(),
+          argv: ["repo", "brief", "owner/repo"],
+          mode,
+        });
+
+        // Per-Adapter invariants.
+        assert.strictEqual(
+          zaiResult.status,
+          0,
+          `Z.AI brief status for mode ${mode}: ${zaiResult.stderr[0] || "<no stderr>"}`,
+        );
+        assert.strictEqual(
+          fakeResult.status,
+          0,
+          `fake brief status for mode ${mode}: ${fakeResult.stderr[0] || "<no stderr>"}`,
+        );
+        assert.deepStrictEqual(zaiResult.stderr, [], `Z.AI brief stderr for mode ${mode}`);
+        assert.deepStrictEqual(fakeResult.stderr, [], `fake brief stderr for mode ${mode}`);
+        assert.strictEqual(zaiResult.stdout.length, 1, `Z.AI brief stdout lines for mode ${mode}`);
+        assert.strictEqual(fakeResult.stdout.length, 1, `fake brief stdout lines for mode ${mode}`);
+
+        // Cross-Adapter byte-identical stdout: the composed envelope
+        // does not branch on Provider ID.
+        assert.deepStrictEqual(
+          zaiResult.stdout,
+          fakeResult.stdout,
+          `mode ${mode}: Z.AI and fake brief stdout must match`,
+        );
+
+        // Exact expected composed envelope. deepStrictEqual is total:
+        // any Provider-only field name anywhere in the envelope (or a
+        // missing/renamed normalized one) fails here.
+        const parsed = JSON.parse(zaiResult.stdout[0]);
+        const expected =
+          mode === "json" || mode === "pretty"
+            ? { success: true, data: expectedBriefData(), timestamp: FIXED_NOW }
+            : expectedBriefData();
+        assert.deepStrictEqual(parsed, expected, `mode ${mode}: exact expected brief envelope`);
+      }
+    });
+
+    it("brief envelope carries no Provider-only fields or raw ZRead grammar fragments", async () => {
+      // Seam proof mirroring the legacy-matrix style: no raw wrapper
+      // tag, tree glyph, or ZRead request-argument name may appear
+      // anywhere in the serialized envelope. (The deepStrictEqual
+      // above already proves field-for-field identity; this keeps the
+      // negative-space contract visible next to it.)
+      const zaiResult = await runOne({
+        descriptor: buildBriefZaiDescriptor(),
+        argv: ["repo", "brief", "owner/repo"],
+        mode: "data",
+      });
+      assert.strictEqual(zaiResult.status, 0);
+      const serialized = zaiResult.stdout[0];
+      for (const marker of [
+        "<excerpt>",
+        "<file_content>",
+        "<structure>",
+        "├──",
+        "└──",
+        "repo_name",
+        "file_path",
+        "dir_path",
+      ]) {
+        assert.ok(
+          !serialized.includes(marker),
+          `raw Provider fragment "${marker}" leaked into the brief envelope`,
+        );
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Fake explicit empty Search and empty Tree/Directory results through
   // the public command/Explorer seam (FR-091).
   //

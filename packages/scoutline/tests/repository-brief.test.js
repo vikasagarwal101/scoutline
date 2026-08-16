@@ -1626,3 +1626,116 @@ describe("Ticket 3 — no-supplier dispatch fail-closed (DESIGN D6 (a))", () => 
     assert.strictEqual(m.zai.stats.createCalls, 0);
   });
 });
+
+// ===========================================================================
+// Ticket 4 — cache interaction (brief twice in one suite).
+//
+// Drives `repo brief` twice through `main` against ONE capability and
+// ONE recording cache (the `makeRecordingCache` pattern from
+// `repository-command.test.js:108`, wired here through
+// `makeBriefMainDeps`). The cold run must invoke every Explorer probe
+// and write one normalized cache unit per operation; the warm run's
+// Explorer calls must hit the cache with zero new invokes and zero new
+// writes. The composed brief itself is never a cache unit: no key
+// containing "brief" may ever appear, because `repoBrief` composes
+// operation-level units without touching the cache directly.
+// ===========================================================================
+
+describe("Ticket 4 — cache interaction: brief twice in one suite", () => {
+  it("cold run invokes every probe and writes one unit per operation; warm run hits the cache with zero new invokes/writes", async () => {
+    const m = makeBriefMainDeps(BRIEF_DEFAULT_IMPLS);
+    const { adapter, stdout } = createBriefRecordingAdapter();
+    const argv = ["repo", "brief", "owner/repo"];
+
+    // Run 1 — cold cache: every Explorer probe misses, invokes, and
+    // writes its normalized unit. The default root listing
+    // (README.md + package.json) yields tree + 2 searches + 2 reads.
+    const status1 = await main(argv, { ...m.mainDeps, now: () => FIXED_NOW, invocation: adapter });
+    assert.strictEqual(status1, 0);
+    assert.strictEqual(stdout.length, 1);
+    const firstOut = stdout[0];
+
+    const counts1 = briefCapabilityCallCount(m.capability);
+    assert.strictEqual(counts1.listDirectoryInvoke, 1, "cold tree probe invokes once");
+    assert.strictEqual(
+      counts1.searchInvoke,
+      2,
+      "cold searches invoke twice (readme + manifest)",
+    );
+    assert.strictEqual(
+      counts1.readFileInvoke,
+      2,
+      "cold reads invoke twice (README.md + package.json)",
+    );
+    assert.strictEqual(m.cacheRec.sets.length, 5, "cold run writes one unit per operation");
+    assert.strictEqual(m.cacheRec.gets.length, 5, "cold run reads the normalized key per operation");
+
+    // Run 2 — warm cache: same suite (same capability, same cache).
+    const status2 = await main(argv, { ...m.mainDeps, now: () => FIXED_NOW, invocation: adapter });
+    assert.strictEqual(status2, 0);
+    assert.strictEqual(stdout.length, 2);
+
+    // Second run's Explorer calls hit the cache: ZERO new invokes.
+    const counts2 = briefCapabilityCallCount(m.capability);
+    assert.strictEqual(counts2.listDirectoryInvoke, 1, "warm tree probe does not re-invoke");
+    assert.strictEqual(counts2.searchInvoke, 2, "warm searches do not re-invoke");
+    assert.strictEqual(counts2.readFileInvoke, 2, "warm reads do not re-invoke");
+    // Zero new writes — every unit was already stored.
+    assert.strictEqual(m.cacheRec.sets.length, 5, "warm run writes nothing");
+    // The warm run still performed one cache read per probe (the hit).
+    assert.strictEqual(
+      m.cacheRec.gets.length,
+      10,
+      "warm run reads the normalized key once per operation",
+    );
+    // Validation and identity still run on cache hits — the executor
+    // needs the identity to BUILD the key it just hit.
+    assert.strictEqual(counts2.searchValidate, 4, "validate runs once per search per run");
+    assert.strictEqual(counts2.searchIdentity, 4, "cacheIdentity runs once per search per run");
+
+    // DESIGN D2 byte-determinism: identical inputs + warm cache →
+    // identical stdout.
+    assert.strictEqual(stdout[1], firstOut, "warm-cache brief output is byte-identical");
+  });
+
+  it("the brief itself is never written as a cache unit (no brief key ever appears)", async () => {
+    const m = makeBriefMainDeps(BRIEF_DEFAULT_IMPLS);
+    const { adapter } = createBriefRecordingAdapter();
+    const status1 = await main(["repo", "brief", "owner/repo"], {
+      ...m.mainDeps,
+      invocation: adapter,
+    });
+    const status2 = await main(["repo", "brief", "owner/repo"], {
+      ...m.mainDeps,
+      invocation: adapter,
+    });
+    assert.strictEqual(status1, 0);
+    assert.strictEqual(status2, 0);
+
+    // Across BOTH runs (reads and writes), no cache key may name the
+    // brief — composition is a pure projection over operation-level
+    // units and never persists the composed envelope.
+    const allKeys = [...m.cacheRec.gets, ...m.cacheRec.sets.map((s) => s.key)];
+    assert.ok(allKeys.length > 0, "the two runs exercised the cache");
+    for (const key of allKeys) {
+      assert.ok(!key.includes("brief"), `brief-leaking cache key observed: ${key}`);
+    }
+
+    // Positive form: every written unit is an OPERATION-level unit in
+    // the repository-exploration namespace (search/read-file/
+    // list-directory), and the five units are distinct.
+    assert.strictEqual(m.cacheRec.sets.length, 5);
+    for (const s of m.cacheRec.sets) {
+      assert.match(
+        s.key,
+        /^v2\.repository-exploration-repository-(search|read-file|list-directory)\./,
+        `expected an operation-level cache key, got ${s.key}`,
+      );
+    }
+    assert.strictEqual(
+      new Set(m.cacheRec.sets.map((s) => s.key)).size,
+      5,
+      "the five cached units are distinct operations",
+    );
+  });
+});

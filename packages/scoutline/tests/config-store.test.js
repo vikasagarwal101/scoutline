@@ -322,3 +322,135 @@ describe("writeConfig", () => {
     });
   });
 });
+
+// ===========================================================================
+// Routing key (routing-table plan, Ticket 2) — additive optional key,
+// lenient load-time validation: warn and drop, never a load failure.
+// ===========================================================================
+
+describe("config routing key", () => {
+  async function inspect(contents) {
+    const { inspectConfig } = await import("../dist/lib/config-store.js");
+    return withTempFileContents(contents, (filePath) => inspectConfig({ filePath }));
+  }
+
+  // Helper: write raw JSON contents to a temp config file and run the
+  // given async callback against its path. Reuses the suite's temp-dir
+  // discipline so no test touches the real ~/.scoutline/config.json.
+  async function withTempFileContents(contents, run) {
+    const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+    const os = await import("node:os");
+    const pathMod = await import("node:path");
+    const dir = await mkdtemp(pathMod.join(os.tmpdir(), "scoutline-routing-"));
+    try {
+      const filePath = pathMod.join(dir, "config.json");
+      await writeFile(filePath, typeof contents === "string" ? contents : JSON.stringify(contents));
+      return await run(filePath);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("parses a valid routing table", async () => {
+    const result = await inspect({
+      version: 1,
+      providers: {},
+      routing: { search: ["tavily", "brave"], crawl: ["firecrawl"] },
+    });
+    assert.strictEqual(result.status, "valid");
+    assert.deepStrictEqual(result.config.routing, {
+      search: ["tavily", "brave"],
+      crawl: ["firecrawl"],
+    });
+    assert.deepStrictEqual(result.warnings, []);
+  });
+
+  it("unknown provider id is warned and dropped; the rest of the list is kept", async () => {
+    const result = await inspect({
+      version: 1,
+      providers: {},
+      routing: { search: ["tavlly", "brave"] },
+    });
+    assert.strictEqual(result.status, "valid");
+    assert.deepStrictEqual(result.config.routing, { search: ["brave"] });
+    assert.strictEqual(result.warnings.length, 1);
+    assert.strictEqual(result.warnings[0].code, "UNKNOWN_PROVIDER");
+    assert.ok(result.warnings[0].message.includes("tavlly"));
+  });
+
+  it("unknown capability key is warned and dropped (UNKNOWN_CAPABILITY)", async () => {
+    const result = await inspect({
+      version: 1,
+      providers: {},
+      routing: { serch: ["tavily"], crawl: ["firecrawl"] },
+    });
+    assert.strictEqual(result.status, "valid");
+    assert.deepStrictEqual(result.config.routing, { crawl: ["firecrawl"] });
+    assert.strictEqual(result.warnings.length, 1);
+    assert.strictEqual(result.warnings[0].code, "UNKNOWN_CAPABILITY");
+    assert.ok(result.warnings[0].message.includes("serch"));
+  });
+
+  it("duplicate ids deduplicate preserving first occurrence", async () => {
+    const result = await inspect({
+      version: 1,
+      providers: {},
+      routing: { search: ["tavily", "tavily", "brave"] },
+    });
+    assert.deepStrictEqual(result.config.routing, { search: ["tavily", "brave"] });
+  });
+
+  it("empty list is treated as absent (key omitted from parsed config)", async () => {
+    const result = await inspect({
+      version: 1,
+      providers: {},
+      routing: { search: [] },
+    });
+    assert.strictEqual(result.config.routing, undefined);
+  });
+
+  it("malformed routing value (not a record) warns and drops, never fails the load", async () => {
+    const result = await inspect({
+      version: 1,
+      providers: {},
+      routing: "tavily",
+    });
+    assert.strictEqual(result.status, "valid");
+    assert.strictEqual(result.config.routing, undefined);
+    assert.ok(result.warnings.length >= 1);
+  });
+
+  it("malformed list entries (non-strings) warn and drop the key", async () => {
+    const result = await inspect({
+      version: 1,
+      providers: {},
+      routing: { search: ["tavily", 42] },
+    });
+    assert.strictEqual(result.status, "valid");
+    assert.strictEqual(result.config.routing, undefined);
+    assert.ok(result.warnings.length >= 1);
+  });
+
+  it("writeConfig round-trips the routing key", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const pathMod = await import("node:path");
+      const fsMod = await import("node:fs/promises");
+      const { writeConfig, readConfig } = await import("../dist/lib/config-store.js");
+      const filePath = pathMod.join(dir, "config.json");
+      await writeConfig(
+        { version: 1, providers: {}, routing: { search: ["tavily", "brave"] } },
+        { filePath, onWarning: () => {} },
+      );
+      const onDisk = JSON.parse(await fsMod.readFile(filePath, "utf8"));
+      assert.deepStrictEqual(onDisk.routing, { search: ["tavily", "brave"] });
+      const reread = await readConfig({ filePath, onWarning: () => {} });
+      assert.deepStrictEqual(reread.routing, { search: ["tavily", "brave"] });
+    });
+  });
+
+  it("config without a routing key parses with no warnings and no routing field", async () => {
+    const result = await inspect({ version: 1, providers: {} });
+    assert.strictEqual(result.config.routing, undefined);
+    assert.deepStrictEqual(result.warnings, []);
+  });
+});

@@ -2,7 +2,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { PROVIDER_IDS, type ProviderId } from "../providers/types.js";
+import { PROVIDER_CAPABILITIES, PROVIDER_IDS, type ProviderId } from "../providers/types.js";
 import { ConfigurationError } from "./errors.js";
 
 export const CONFIG_VERSION = 1 as const;
@@ -24,11 +24,21 @@ export interface ScoutlineConfig {
   readonly fallbackEnabled?: boolean;
   readonly providers: Partial<Record<ProviderId, ProviderConfig>>;
   readonly hintShown?: boolean;
+  /**
+   * Per-capability routed provider preference (routing-table plan).
+   * Keys are capability ids (validated against PROVIDER_CAPABILITIES);
+   * values are ordered ProviderId lists. Validation is LENIENT at load
+   * time: unknown ids/capabilities and malformed entries warn and drop
+   * (never a load failure). An empty list is stored as absent. Absent
+   * on configs written by older binaries (they rebuild from known
+   * fields) — the documented drop trade-off.
+   */
+  readonly routing?: Readonly<Record<string, readonly ProviderId[]>>;
 }
 
 export interface ConfigStoreOptions {
   readonly filePath?: string;
-  readonly onWarning?: (warning: ConfigWarning) => void;
+  readonly onWarning?: (warning: AnyConfigWarning) => void;
 }
 
 export interface AtomicReplaceOptions {
@@ -47,13 +57,26 @@ export interface ConfigWarning {
   readonly message: string;
 }
 
+/**
+ * Routing-specific config warning: an unknown capability key or a
+ * malformed routing list in config.json. Warn-and-drop like
+ * UNKNOWN_PROVIDER — never a load failure.
+ */
+export interface RoutingConfigWarning {
+  readonly code: "UNKNOWN_CAPABILITY";
+  readonly capability: string;
+  readonly message: string;
+}
+
+export type AnyConfigWarning = ConfigWarning | RoutingConfigWarning;
+
 export type ConfigInspection =
   | { readonly status: "absent"; readonly filePath: string }
   | {
       readonly status: "valid";
       readonly filePath: string;
       readonly config: ScoutlineConfig;
-      readonly warnings: readonly ConfigWarning[];
+      readonly warnings: readonly AnyConfigWarning[];
     }
   | {
       readonly status: "corrupt";
@@ -93,7 +116,7 @@ function emptyConfig(): ScoutlineConfig {
 
 interface ParsedConfig {
   readonly config: ScoutlineConfig;
-  readonly warnings: readonly ConfigWarning[];
+  readonly warnings: readonly AnyConfigWarning[];
 }
 
 function corruptConfig(): ConfigurationError {
@@ -168,7 +191,7 @@ function parseConfig(contents: string): ParsedConfig {
   }
 
   const providers: Partial<Record<ProviderId, ProviderConfig>> = {};
-  const warnings: ConfigWarning[] = [];
+  const warnings: AnyConfigWarning[] = [];
   for (const [providerId, value] of Object.entries(parsed.providers ?? {})) {
     if (!(PROVIDER_IDS as readonly string[]).includes(providerId)) {
       warnings.push({
@@ -181,6 +204,8 @@ function parseConfig(contents: string): ParsedConfig {
     providers[providerId as ProviderId] = parseProviderConfig(value);
   }
 
+  const routing = parseRoutingConfig(parsed.routing, warnings);
+
   return {
     config: {
       version: CONFIG_VERSION,
@@ -189,9 +214,75 @@ function parseConfig(contents: string): ParsedConfig {
         : {}),
       providers,
       ...(parsed.hintShown !== undefined ? { hintShown: parsed.hintShown as boolean } : {}),
+      ...(routing !== undefined ? { routing } : {}),
     },
     warnings,
   };
+}
+
+/**
+ * Lenient validation of the optional `routing` key (routing-table plan
+ * DESIGN D4). Every failure mode warns and drops — a broken routing
+ * table never prevents config load. Unknown provider ids inside a list
+ * drop individually; unknown capability keys and malformed lists drop
+ * whole entries; duplicates deduplicate preserving first occurrence;
+ * an all-dropped or empty list leaves the key absent.
+ */
+function parseRoutingConfig(
+  value: unknown,
+  warnings: AnyConfigWarning[],
+): Record<string, ProviderId[]> | undefined {
+  const capabilitySet = new Set<string>(PROVIDER_CAPABILITIES);
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    warnings.push({
+      code: "UNKNOWN_CAPABILITY",
+      capability: "routing",
+      message: 'Ignoring malformed "routing" in config.json (expected an object of capability -> provider lists).',
+    });
+    return undefined;
+  }
+  let routing: Record<string, ProviderId[]> | undefined;
+  for (const [capability, list] of Object.entries(value as Record<string, unknown>)) {
+    if (!capabilitySet.has(capability)) {
+      warnings.push({
+        code: "UNKNOWN_CAPABILITY",
+        capability,
+        message: `Ignoring unknown capability "${capability}" in config.json routing.`,
+      });
+      continue;
+    }
+    if (!Array.isArray(list) || list.some((entry) => typeof entry !== "string")) {
+      warnings.push({
+        code: "UNKNOWN_CAPABILITY",
+        capability,
+        message: `Ignoring malformed routing list for "${capability}" in config.json (expected an array of provider ids).`,
+      });
+      continue;
+    }
+    const ids: ProviderId[] = [];
+    const seen = new Set<string>();
+    for (const raw of list as string[]) {
+      const id = raw.trim().toLowerCase();
+      if (id.length === 0) continue;
+      if (!(PROVIDER_IDS as readonly string[]).includes(id)) {
+        warnings.push({
+          code: "UNKNOWN_PROVIDER",
+          providerId: id,
+          message: `Ignoring unknown provider "${id}" in config.json routing for "${capability}".`,
+        });
+        continue;
+      }
+      if (!seen.has(id)) {
+        seen.add(id);
+        ids.push(id as ProviderId);
+      }
+    }
+    if (ids.length > 0) {
+      (routing ??= {})[capability] = ids;
+    }
+  }
+  return routing;
 }
 
 export async function readConfig(options: ConfigStoreOptions = {}): Promise<ScoutlineConfig> {
@@ -209,7 +300,7 @@ export async function readConfig(options: ConfigStoreOptions = {}): Promise<Scou
   const parsed = parseConfig(contents);
   const onWarning =
     options.onWarning ??
-    ((warning: ConfigWarning) => process.stderr.write(`Warning: ${warning.message}\n`));
+    ((warning: AnyConfigWarning) => process.stderr.write(`Warning: ${warning.message}\n`));
   for (const warning of parsed.warnings) onWarning(warning);
   return parsed.config;
 }
@@ -304,7 +395,7 @@ export async function writeConfig(
   const parsed = parseConfig(JSON.stringify(config));
   const onWarning =
     options.onWarning ??
-    ((warning: ConfigWarning) => process.stderr.write(`Warning: ${warning.message}\n`));
+    ((warning: AnyConfigWarning) => process.stderr.write(`Warning: ${warning.message}\n`));
   for (const warning of parsed.warnings) onWarning(warning);
   const payload = `${JSON.stringify(parsed.config, null, 2)}\n`;
   try {

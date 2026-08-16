@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### `cache prune` + enriched `cache stats`
+
+- **`scoutline cache prune`:** new `cache` subcommand deleting expired entries from both the response cache and the tool cache by each entry's stored `ts` (never mtime — reads touch mtime for LRU, so it is unreliable for age). Without flags, prune uses the effective TTL as the age threshold; `--older-than <D>` (`24h`, `90m`, `30s`, or a bare integer of seconds) **replaces** the TTL when present. `--provider <id>` and `--capability <id>` selectors AND together and narrow the response-cache scan by parsing v2 filenames only (legacy non-v2 files stay age-selectable but are never selector-selected; unknown selector values are not pre-validated — they filename-match nothing and produce a zero-work success). Invalid `--older-than` fails with `VALIDATION_ERROR` (exit 1). Response pruning serializes on the response dir's `cache-write` lock (the same identity writes hold), so a prune can never race a concurrent eviction sweep or atomic rename; a lock timeout surfaces as a sanitized `FILE_ERROR` envelope instead of being swallowed, and `.lock`/`.tmp` staging files are never touched. A disabled cache (`SCOUTLINE_CACHE=0`) does not short-circuit prune — deletion is not a cache read/write.
+- **Enriched `cache stats` (additive):** `responseCache` and `toolCache` gain `live`/`expired` counts from the same `ts`-vs-threshold comparison prune uses, and `responseCache` adds `byProvider`/`byCapability` breakdowns where every bucket repeats `{entries, totalBytes, live, expired}`; non-v2 legacy filenames group under a `legacy` bucket. Existing fields and Doctor's one-line cache summary are unchanged.
+
 ## [0.15.0] - 2026-08-16
 
 ### Per-capability provider routing + `config` command family

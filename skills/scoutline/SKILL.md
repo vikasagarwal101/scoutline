@@ -225,9 +225,10 @@ npx scoutline@0.14.11 doctor --provider brave
 # All-Provider quota
 npx scoutline@0.14.11 quota --all-providers
 
-# Local cache inspection and clearing
+# Local cache inspection, clearing, and pruning
 npx scoutline@0.14.11 cache stats                 # inventory both subdirectories
 npx scoutline@0.14.11 cache clear                 # delete every file in cache/ and tools/
+npx scoutline@0.14.11 cache prune --older-than 24h   # delete entries older than 24h (Nh|Nm|Ns|seconds)
 
 # Config (see "Settings via scoutline config" above)
 npx scoutline@0.14.11 config get routing
@@ -410,17 +411,28 @@ text-oriented modes emit the `content` string for content reads
 (`{schemaVersion, baseUrl|query, pages|report, ...}`) in `data` mode;
 `map` returns `{schemaVersion, baseUrl, urls, totalUrls}`.
 
-`cache stats` and `cache clear` return their raw JSON shape in `data`
-mode (`{dir, enabled, ttlMs, sizeCapBytes, responseCache, toolCache}`
-and `{responsesCleared, toolsCleared, bytesFreed}` respectively) and a
-multi-line / one-line rendering in every text-oriented mode.
+`cache stats`, `cache clear`, and `cache prune` return their raw JSON
+shape in `data` mode (`{dir, enabled, ttlMs, sizeCapBytes,
+responseCache, toolCache}`, `{responsesCleared, toolsCleared,
+bytesFreed}`, and `{prunedResponses, prunedTools, bytesFreed}`
+respectively) and a multi-line / one-line rendering in every
+text-oriented mode. `cache stats` also reports additively:
+`responseCache`/`toolCache` carry `live`/`expired` counts (derived from
+each entry's stored `ts` vs the TTL), and `responseCache` breaks down
+into `byProvider`/`byCapability` buckets (each `{entries, totalBytes,
+live, expired}`; non-v2 filenames group under `legacy`).
 
 ## Local Cache
 
 The local cache lives at `~/.scoutline/` on every platform with two
 sibling subdirectories: `cache/` (Provider responses) and `tools/`
-(MCP tool discovery). Inspect or clear it with `scoutline cache stats`
-and `scoutline cache clear`.
+(MCP tool discovery). Inspect, clear, or prune it with
+`scoutline cache stats`, `scoutline cache clear`, and
+`scoutline cache prune`. Prune deletes expired entries by stored
+timestamp: `--older-than <D>` (`24h`, `90m`, `30s`, or bare seconds)
+replaces the TTL threshold; `--provider`/`--capability` selectors AND
+together and match v2 filenames only (legacy files are age-selected,
+never selector-selected).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |

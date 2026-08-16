@@ -79,9 +79,11 @@ describe("CLI Help Commands", () => {
     assert.ok(stdout.includes("search"));
     assert.ok(stdout.includes("tree"));
     assert.ok(stdout.includes("read"));
+    assert.ok(stdout.includes("brief"));
     assert.ok(stdout.includes("--language"));
     assert.ok(stdout.includes("--path"));
     assert.ok(stdout.includes("--depth"));
+    assert.ok(stdout.includes("--focus"));
   });
 
   it("should show code help", async () => {

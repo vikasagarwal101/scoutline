@@ -9,7 +9,8 @@ import { read, READ_HELP } from "./commands/read.js";
 import { crawl, CRAWL_HELP } from "./commands/crawl.js";
 import { map, MAP_HELP } from "./commands/map.js";
 import { research, RESEARCH_HELP } from "./commands/research.js";
-import { repoSearch, repoTree, repoRead, REPO_HELP } from "./commands/repo.js";
+import { repoSearch, repoTree, repoRead, repoBrief, REPO_HELP, parseBriefFocus } from "./commands/repo.js";
+import type { RepoBriefFocus } from "./capabilities/repository.js";
 import { listTools, showTool, callTool, TOOLS_HELP, CALL_HELP } from "./commands/tools.js";
 import { doctor, buildDiagnosticsReport, DOCTOR_HELP } from "./commands/doctor.js";
 import { quota, buildQuotaDashboard, QUOTA_HELP } from "./commands/quota.js";
@@ -1416,6 +1417,7 @@ async function handleRepo(
   // ordering tests.
   let searchQuery: string | undefined;
   let readPath: string | undefined;
+  let briefFocus: readonly RepoBriefFocus[] | undefined;
   if (command === "search") {
     searchQuery = positional.slice(2).join(" ");
     if (!repo || !searchQuery) {
@@ -1435,6 +1437,28 @@ async function handleRepo(
         "Missing repo or path",
         "Usage: scoutline repo read <owner/repo> <path>",
       );
+    }
+  } else if (command === "brief") {
+    // Brief composes tree + search + read into one envelope; only the
+    // `<owner/repo>` positional is required (DESIGN D5). The optional
+    // `--focus`/`--path`/`--depth`/`--max-chars`/`--no-cache` flags are
+    // threaded into the options object below. Parse-level validation
+    // for the flag VALUES (sealed focus set, positive integers, etc.)
+    // lives in `commands/repo.ts` so the same rules are reused by direct
+    // handler tests; here we only translate raw CLI strings into the
+    // typed shape.
+    if (!repo) {
+      throw new ValidationError(
+        "Missing repo",
+        "Usage: scoutline repo brief <owner/repo>",
+      );
+    }
+    const focusRaw = flags.focus;
+    if (focusRaw !== undefined) {
+      if (focusRaw === true) {
+        throw new ValidationError("--focus requires a value.");
+      }
+      briefFocus = parseBriefFocus(String(focusRaw));
     }
   } else {
     throw new ValidationError(
@@ -1515,6 +1539,19 @@ async function handleRepo(
                 repo,
                 readPath as string,
                 { maxChars, noCache },
+                { capability, execution: executionDeps },
+                context,
+              );
+            case "brief":
+              return repoBrief(
+                repo,
+                {
+                  ...(briefFocus !== undefined ? { focus: briefFocus } : {}),
+                  path: treePath,
+                  depth,
+                  maxChars,
+                  noCache,
+                },
                 { capability, execution: executionDeps },
                 context,
               );

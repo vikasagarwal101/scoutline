@@ -23,8 +23,15 @@ import type { ResponseCache } from "../lib/cache.js";
 import type { RetryPolicy } from "../lib/execution.js";
 import { executeSearch } from "../lib/execution.js";
 import { canonicalUrl } from "../lib/url.js";
-import type { ProviderId } from "../providers/types.js";
+import type { ProviderDescriptor, ProviderId } from "../providers/types.js";
 import { formatSearchResultsPretty } from "../lib/tty.js";
+import {
+  ValidationError,
+  UnsupportedOptionError,
+  UnsupportedCapabilityError,
+} from "../lib/errors.js";
+import { redactCredentialString } from "../lib/redact.js";
+import { parseProviderIds } from "../providers/selection.js";
 
 type RecencyFilter = "oneDay" | "oneWeek" | "oneMonth" | "oneYear" | "noLimit";
 
@@ -307,6 +314,381 @@ export async function search(
       ? formattedResults.map((r) => filterFields(r, options.fields))
       : formattedResults;
 
+  return { kind: "data", data, presentations };
+}
+
+// ---------------------------------------------------------------------------
+// Fan-out activation resolver (Ticket 3 — DESIGN D1, pure)
+//
+// Pure, deterministic resolution of the activation tier + ordered arm list.
+// Called once at the top of `handleSearch`. Decides between the existing
+// single-pin path (Tier 2) and the new multi-provider fan-out path
+// (Tiers 1, 3, 4 default). Untrusted tier boundaries are pinned by
+// ADR-0004: explicit raw has the highest precedence; fanout=true is the
+// ambient switch; absence falls through to today's single-pinned path
+// unchanged. The resolver never performs I/O, reads credentials, or
+// constructs an Adapter.
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolved activation plan. `mode` is the dispatcher hinge; `arms` is
+ * the ordered Provider list to execute (already expanded and
+ * filtered — never the `"all"` sentinel; the resolver owns the
+ * expansion against its injected descriptors). `suppress` is the
+ * human-readable reason the resolver ignored fan-out (e.g. "explicit
+ * pin: fan-out ignored"); emitted on the single-pin path so the user
+ * understands why fan-out did not engage.
+ */
+export interface FanoutPlan {
+  readonly mode: "single" | "fanout";
+  readonly arms: ProviderId[];
+  readonly suppress?: string;
+}
+
+/**
+ * Options for {@link resolveFanoutPlan}. The resolver is pure: every
+ * input is an injected value, no I/O, no environment reads. `configFanout`
+ * is the lone scalar read from the user config (Ticket 4 owns the
+ * registry row); `routing` is the typed routing table already in
+ * `HandlerDependencies`. `descriptors` is the live provider registry —
+ * the resolver uses it for `isConfigured(env)` + `capabilities()`
+ * filtering (the same gate `resolveEffectiveProvider` uses) so the
+ * arm list the executor sees is the same list the executor would
+ * otherwise walk, giving the dispatcher a single source of truth.
+ */
+export interface ResolveFanoutPlanOptions {
+  /** Raw `--provider` value (or undefined). Empty string is treated as absent. */
+  readonly explicitProviderRaw: string | undefined;
+  /** The resolved env the handler runs under (env + file-configured keys). */
+  readonly env: NodeJS.ProcessEnv;
+  /** Whether `fanout` is enabled in the active config. */
+  readonly configFanout: boolean;
+  /** Resolved per-capability routing table (routing-table plan). */
+  readonly routing?: Readonly<Record<string, readonly ProviderId[]>>;
+  /** Live provider registry; the resolver filters by capability "search". */
+  readonly descriptors: readonly ProviderDescriptor[];
+}
+
+/**
+ * Configured ∩ advertising descriptors for `search`, in the registry
+ * order the descriptors were injected (production passes the stable
+ * `PROVIDER_IDS` order). Shared by the `"all"` expansion and the
+ * tier-3 default fan-out arms.
+ */
+function eligibleSearchArms(
+  descriptors: readonly ProviderDescriptor[],
+  env: NodeJS.ProcessEnv,
+): ProviderId[] {
+  const arms: ProviderId[] = [];
+  for (const descriptor of descriptors) {
+    if (!descriptor.isConfigured(env, "search")) continue;
+    if (!descriptor.capabilities().has("search")) continue;
+    arms.push(descriptor.id);
+  }
+  return arms;
+}
+
+/**
+ * Resolve the activation plan (D1). Tiers in precedence order:
+ *
+ *   1. **Explicit raw** (D1.1): a comma list or `"all"` → fanout
+ *      (`"all"` expands to configured ∩ advertising in registry
+ *      order); a single id → single (with suppress when
+ *      `configFanout=true`).
+ *   2. **SCOUTLINE_PROVIDER env** (D1.2): a pin → single (suppress
+ *      when `configFanout=true`).
+ *   3. **`configFanout=true` with no pin** (D1.3): fanout; arms =
+ *      `routing.search` filtered/deduped (if set), else configured ∩
+ *      advertising in registry order.
+ *   4. **Default** (D1.4): single; arm = first configured ∩
+ *      advertising in registry order (informational — the dispatcher
+ *      still consults `resolveEffectiveProvider` for quota ranking).
+ *
+ * The resolver exposes its decision only through the returned
+ * `FanoutPlan`; the dispatcher hinges on `mode`. The truth table is
+ * pinned by Ticket 3 tests.
+ */
+export function resolveFanoutPlan(options: ResolveFanoutPlanOptions): FanoutPlan {
+  const { explicitProviderRaw, env, configFanout, routing, descriptors } = options;
+
+  // Tier 1: explicit raw. parseProviderIds does the heavy lifting:
+  // comma-list → IDs, "all" → sentinel, single id → one-element
+  // array, garbage → null. We then translate each result into the
+  // dispatcher-facing mode. Unknown ids are left to the existing
+  // `resolveProviderId` path to surface VALIDATION_ERROR.
+  if (explicitProviderRaw !== undefined && explicitProviderRaw.trim().length > 0) {
+    const parsed = parseProviderIds(explicitProviderRaw);
+    if (parsed === "all") {
+      // `"all"` expands NOW so the executor never sees the sentinel.
+      return { mode: "fanout", arms: eligibleSearchArms(descriptors, env) };
+    }
+    if (Array.isArray(parsed)) {
+      if (parsed.length > 1) {
+        return { mode: "fanout", arms: parsed };
+      }
+      // Single id → single mode. Suppress notice when fanout=true so the
+      // user knows the explicit pin precedence overrode the switch.
+      const arm = parsed[0] as ProviderId;
+      if (configFanout) {
+        return { mode: "single", arms: [arm], suppress: `explicit pin: fan-out ignored` };
+      }
+      return { mode: "single", arms: [arm] };
+    }
+    // parsed === null (unknown id): fall through to the existing
+    // single path; `resolveProviderId` inside `resolveEffectiveProvider`
+    // surfaces the typed VALIDATION_ERROR on the same invocation.
+  }
+
+  // Tier 2: SCOUTLINE_PROVIDER env pin → single.
+  const envProvider = env.SCOUTLINE_PROVIDER;
+  if (envProvider !== undefined && envProvider.trim().length > 0) {
+    const arm = envProvider.trim().toLowerCase() as ProviderId;
+    if (configFanout) {
+      return { mode: "single", arms: [arm], suppress: `SCOUTLINE_PROVIDER pin: fan-out ignored` };
+    }
+    return { mode: "single", arms: [arm] };
+  }
+
+  // Tier 3: fanout=true with no pin → fanout; arms = routing.search
+  // (filtered/deduped) when set, else configured ∩ advertising in
+  // registry order.
+  if (configFanout) {
+    const routed = routing?.["search"];
+    if (routed !== undefined && routed.length > 0) {
+      // Filter against configured∩advertising while preserving the
+      // routed order; dedupe by first encounter (the routing list is
+      // a user-supplied preference, so first-write wins on the user's
+      // intent).
+      const eligible = new Set(eligibleSearchArms(descriptors, env));
+      const arms: ProviderId[] = [];
+      const seen = new Set<string>();
+      for (const id of routed) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        if (!eligible.has(id)) continue;
+        arms.push(id);
+      }
+      return { mode: "fanout", arms };
+    }
+    return { mode: "fanout", arms: eligibleSearchArms(descriptors, env) };
+  }
+
+  // Tier 4: default single path. The dispatcher still consults
+  // `resolveEffectiveProvider` for quota-ranked first-pick; the arm
+  // reported here is the informational first-eligible in registry
+  // order.
+  const firstEligible = eligibleSearchArms(descriptors, env);
+  return { mode: "single", arms: firstEligible.slice(0, 1) };
+}
+
+// ---------------------------------------------------------------------------
+// Fan-out executor (Ticket 3 — DESIGN D2, D5, D6)
+//
+// Parallel per-arm execution with one client per arm. Arms are pinned
+// (no `executeWithFallback` per arm, ADR-0004 §1) and the per-arm
+// pipeline is the same `executeSearch` we use for the single path,
+// so each arm reads/writes its own provider-partitioned cache key
+// (`v2.search.<provider>…`). Settled wrapper per arm: an `UnsupportedOptionError`
+// is an arm drop (never a whole-invocation failure); any other error
+// counts as a failure. ≥1 arm ok → merged output, exit 0; all arms
+// failed → throw the last arm's typed error through the standard
+// boundary (exit per its code); zero arms → `VALIDATION_ERROR`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Options for {@link executeFanoutPlan}. The executor owns the
+ * per-arm Lifecycle (descriptor.create → adapter → executeSearch →
+ * close) and the merged error envelope. `query` is the resolved
+ * single query — fan-out does NOT combine with `--merge` (each arm
+ * runs one query; merging sub-queries across providers is a separate
+ * concern).
+ *
+ * `dependencies` is a subset of {@link SearchExecutionDependencies}:
+ * the per-arm capability is constructed internally by the executor
+ * (one per arm), so the caller does not supply a single shared
+ * capability. Only the shared cache/policy seams cross arms.
+ */
+export interface FanoutExecutionDependencies {
+  readonly cache: ResponseCache;
+  readonly sleep: (ms: number) => Promise<void>;
+  readonly random: () => number;
+  readonly retryPolicy?: RetryPolicy;
+}
+
+export interface FanoutExecutionOptions {
+  readonly descriptors: readonly ProviderDescriptor[];
+  readonly env: NodeJS.ProcessEnv;
+  readonly query: string;
+  readonly searchOptions: SearchOptions;
+  readonly dependencies: FanoutExecutionDependencies;
+  readonly secrets?: string[];
+}
+
+interface FanoutArmSuccess {
+  readonly arm: ProviderId;
+  readonly results: FormattedResult[];
+}
+
+/**
+ * Run a single arm: create the adapter, run one executeSearch, format
+ * the normalized sources into FormattedResult[]. The arm is the owner
+ * of its own transport (the one-client-per-query pattern
+ * unconditionally — same as the `--merge` sub-queries in `search`).
+ */
+async function runFanoutArm(
+  armId: ProviderId,
+  options: FanoutExecutionOptions,
+): Promise<FormattedResult[]> {
+  const descriptor = options.descriptors.find((d) => d.id === armId);
+  if (!descriptor) {
+    // Should never happen — the resolver already filtered — but a
+    // surface error here is safer than a bare undefined deref.
+    throw new ValidationError(
+      `Unknown provider "${armId}" in fan-out plan.`,
+      "Re-run with a configured provider.",
+    );
+  }
+  const adapter = descriptor.create({ env: options.env });
+  const capability = adapter.search as SearchCapability | undefined;
+  if (!capability) {
+    throw new UnsupportedCapabilityError(armId, "search");
+  }
+  const controls = buildControls(options.searchOptions);
+  const request: SearchRequest = controls ? { query: options.query, controls } : { query: options.query };
+  const sources = await executeSearch(
+    capability,
+    request,
+    {
+      count: options.searchOptions.count,
+      noCache: options.searchOptions.noCache,
+      retryPolicy: options.dependencies.retryPolicy,
+    },
+    {
+      cache: options.dependencies.cache,
+      sleep: options.dependencies.sleep,
+      random: options.dependencies.random,
+    },
+  );
+  return formatSources(sources, options.searchOptions.maxSummary);
+}
+
+/**
+ * Build a single arm's notice line (D5). Every failed arm is a "drop"
+ * in the D6 sense ("drops as notices + data"): an
+ * `UnsupportedOptionError` names the rejected control; any other
+ * error names its code and a redacted message. The message is
+ * redacted via `redactCredentialString` so a transport error that
+ * echoes a credential never reaches stderr verbatim.
+ */
+function armNotice(armId: ProviderId, error: unknown, secrets: readonly string[]): string {
+  if (error instanceof UnsupportedOptionError) {
+    return `arm ${armId} dropped: UNSUPPORTED_OPTION (${error.option})`;
+  }
+  const code = (error as { code?: string })?.code ?? "UNKNOWN_ERROR";
+  const rawMessage = (error as { message?: string })?.message ?? String(error);
+  const safeMessage = redactCredentialString(rawMessage, [...secrets]);
+  return `arm ${armId} dropped: ${code}: ${safeMessage}`;
+}
+
+/**
+ * Execute the fan-out plan: parallel per-arm search, settled wrapper,
+ * per-arm notices, D5/D6 exit policy, combined summary notice. The
+ * single-pin path is NOT routed through this executor (Tier 2 / Tier 4
+ * stay verbatim through `executeWithFallback`); the executor asserts
+ * `mode === "fanout"` on entry so a misuse throws loudly.
+ */
+export async function executeFanoutPlan(
+  plan: FanoutPlan,
+  options: FanoutExecutionOptions,
+  context?: CommandContext,
+): Promise<CommandResult> {
+  if (plan.mode !== "fanout") {
+    throw new ValidationError(
+      "executeFanoutPlan only accepts mode='fanout'.",
+      "Use the single-pin path for single mode.",
+    );
+  }
+  const arms = plan.arms;
+  if (arms.length === 0) {
+    // D6: zero arms resolved → VALIDATION_ERROR naming the configured
+    // set and the registry so the operator sees both halves of the
+    // mismatch (what could serve vs. what exists).
+    const configuredSet =
+      options.descriptors
+        .filter((d) => d.isConfigured(options.env, "search") && d.capabilities().has("search"))
+        .map((d) => d.id)
+        .join(", ") || "(none)";
+    const registrySet = options.descriptors.map((d) => d.id).join(", ") || "(none)";
+    throw new ValidationError(
+      `Fan-out produced no arms; configured search providers: ${configuredSet} (registry: ${registrySet}).`,
+      "Configure at least one provider's API key, or unset 'fanout' / routing.search.",
+    );
+  }
+
+  // Run every arm in parallel. Promise.allSettled ensures one arm's
+  // failure does not abort the rest; the per-arm pipeline is isolated
+  // (one client per arm, no fallback chain).
+  const settled = await Promise.allSettled(
+    arms.map((armId) =>
+      runFanoutArm(armId, options).then((results): FanoutArmSuccess => ({ arm: armId, results })),
+    ),
+  );
+
+  const successes: FanoutArmSuccess[] = [];
+  const failures: { arm: ProviderId; error: unknown }[] = [];
+  for (let i = 0; i < settled.length; i++) {
+    const entry = settled[i];
+    const armId = arms[i]!;
+    if (entry !== undefined && entry.status === "fulfilled") {
+      successes.push(entry.value);
+    } else if (entry !== undefined) {
+      failures.push({ arm: armId, error: entry.reason });
+    }
+  }
+
+  // Per-arm notices (D5). Every non-success arm surfaces here as a
+  // drop; UnsupportedOptionError carries the rejected control name.
+  if (context) {
+    for (const { arm, error } of failures) {
+      context.notice(armNotice(arm, error, options.secrets ?? []));
+    }
+  }
+
+  // D6: all-fail → throw the last arm's typed error through the boundary.
+  if (successes.length === 0) {
+    const last = failures[failures.length - 1];
+    if (last) throw last.error;
+    throw new Error("Fan-out produced no successes and no failures; plan was empty after filtering.");
+  }
+
+  // Build the (arm × sub-query) grid for mergeResults. Fan-out runs one
+  // query per arm, so sub-queries is a single-element list per arm.
+  const grid: MergeGridArm[] = successes.map((s) => ({
+    provider: s.arm,
+    results: [s.results],
+  }));
+  const merged: FormattedResult[] = mergeResults(grid, {
+    emitMergedFrom: true,
+    count: options.searchOptions.count,
+  });
+
+  // Summary notice (D5). K = total raw results across successful arms
+  // (the post-truncate count the executor collected); M = merged
+  // unique count. A arm with 0 results contributes 0 to K — the
+  // notice still names the arm so the operator sees the full set.
+  const totalRaw = successes.reduce((sum, s) => sum + s.results.length, 0);
+  if (context) {
+    const armList = arms.join(", ");
+    context.notice(
+      `fanned out to ${arms.length} providers (${armList}) → ${merged.length} unique of ${totalRaw} results`,
+    );
+  }
+
+  const presentations = buildPresentations(merged);
+  const data =
+    options.searchOptions.fields && options.searchOptions.fields.length > 0
+      ? merged.map((r) => filterFields(r, options.searchOptions.fields))
+      : merged;
   return { kind: "data", data, presentations };
 }
 

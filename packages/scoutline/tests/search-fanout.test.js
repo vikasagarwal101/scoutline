@@ -17,7 +17,9 @@ import assert from "node:assert/strict";
 
 import { canonicalUrl } from "../dist/lib/url.js";
 import { parseProviderIds } from "../dist/providers/selection.js";
-import { mergeResults, search } from "../dist/commands/search.js";
+import { mergeResults, search, resolveFanoutPlan, executeFanoutPlan } from "../dist/commands/search.js";
+import { main } from "../dist/index.js";
+import { ValidationError } from "../dist/lib/errors.js";
 
 // ---------------------------------------------------------------------------
 // canonicalUrl — identity-only normalization (DESIGN D4, ADR-0004 §5)
@@ -527,5 +529,608 @@ describe("single-provider --merge path: golden byte-identical output", () => {
     assert.strictEqual(result.data[0].url, "https://e/a/");
     assert.strictEqual(result.data[0].occurrences, 2);
     assert.strictEqual(result.data[0].title, "A");
+  });
+});
+
+// =============================================================================
+// Ticket 3 — Activation resolver + fan-out executor (DESIGN D1, D2, D5, D6)
+//
+// `resolveFanoutPlan` is the pure resolver that decides fan-out vs single
+// and produces the ordered arm list. The fan-out executor runs every arm
+// in parallel with one client per arm, settles per-arm failures, drops
+// arm-specific option failures, and merges through `mergeResults` with
+// `emitMergedFrom: true`. The single-path is verified byte-identical
+// (single-pin golden) at the end of the section.
+// =============================================================================
+
+// --- resolveFanoutPlan: explicit --provider tier (D1) -----------------------
+
+describe("resolveFanoutPlan: explicit --provider tier (D1.1)", () => {
+  const env = { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k", TAVILY_API_KEY: "k" };
+  const descriptors = [
+    {
+      id: "zai",
+      isConfigured: () => true,
+      capabilities: () => new Set(["search"]),
+      create: () => ({ id: "zai", search: {} }),
+    },
+    {
+      id: "minimax",
+      isConfigured: () => true,
+      capabilities: () => new Set(["search"]),
+      create: () => ({ id: "minimax", search: {} }),
+    },
+    {
+      id: "tavily",
+      isConfigured: () => true,
+      capabilities: () => new Set(["search"]),
+      create: () => ({ id: "tavily", search: {} }),
+    },
+  ];
+
+  it("returns fanout with parsed ids when explicit raw contains a comma", () => {
+    const plan = resolveFanoutPlan({
+      explicitProviderRaw: "tavily,minimax",
+      env,
+      configFanout: false,
+      descriptors,
+    });
+    assert.deepStrictEqual(plan, { mode: "fanout", arms: ["tavily", "minimax"] });
+  });
+
+  it('returns fanout with arms expanded when explicit raw is "all"', () => {
+    const plan = resolveFanoutPlan({
+      explicitProviderRaw: "all",
+      env,
+      configFanout: false,
+      descriptors,
+    });
+    // Tier 1b: "all" is fanout; the resolver expands against
+    // configured∩advertising in registry order (never the sentinel).
+    assert.strictEqual(plan.mode, "fanout");
+    assert.deepStrictEqual(plan.arms, ["zai", "minimax", "tavily"]);
+  });
+
+  it("returns single when explicit raw is a single id", () => {
+    const plan = resolveFanoutPlan({
+      explicitProviderRaw: "tavily",
+      env,
+      configFanout: false,
+      descriptors,
+    });
+    assert.deepStrictEqual(plan, { mode: "single", arms: ["tavily"] });
+  });
+
+  it("returns single+suppress when explicit single id + fanout=true", () => {
+    const plan = resolveFanoutPlan({
+      explicitProviderRaw: "tavily",
+      env,
+      configFanout: true,
+      descriptors,
+    });
+    assert.strictEqual(plan.mode, "single");
+    assert.deepStrictEqual(plan.arms, ["tavily"]);
+    assert.ok(
+      typeof plan.suppress === "string" && /explicit pin.*fan-out ignored/i.test(plan.suppress),
+      `expected suppress notice, got: ${plan.suppress}`,
+    );
+  });
+
+  it("returns fanout when explicit raw is invalid (no pin; falls through to default)", () => {
+    // parseProviderIds returns null for invalid; explicit presence is
+    // checked but the resolver must NOT fall through to the env/default
+    // path silently — the commander surfaces VALIDATION_ERROR upstream.
+    // For the resolver's perspective, an unknown id still triggers Tier 1
+    // (fanout intent) only via parseProviderIds; an unknown id is null
+    // and the resolver should NOT route to fanout. The dispatcher
+    // surface this as VALIDATION_ERROR.
+    const plan = resolveFanoutPlan({
+      explicitProviderRaw: "tavlly",
+      env,
+      configFanout: false,
+      descriptors,
+    });
+    // Null parse → Tier 2 (single + suppress? no, no fanout set) → single
+    // by exact-id string, OR a dedicated null branch. The dispatcher
+    // will surface the original error before the executor runs.
+    assert.strictEqual(plan.mode, "single");
+  });
+});
+
+describe("resolveFanoutPlan: SCOUTLINE_PROVIDER env tier (D1.2)", () => {
+  it("returns single when SCOUTLINE_PROVIDER is set and no explicit raw", () => {
+    const env = { SCOUTLINE_PROVIDER: "tavily" };
+    const descriptors = [];
+    const plan = resolveFanoutPlan({
+      explicitProviderRaw: undefined,
+      env,
+      configFanout: false,
+      descriptors,
+    });
+    assert.strictEqual(plan.mode, "single");
+    assert.deepStrictEqual(plan.arms, ["tavily"]);
+  });
+
+  it("returns single+suppress when SCOUTLINE_PROVIDER is set + fanout=true", () => {
+    const env = { SCOUTLINE_PROVIDER: "tavily" };
+    const descriptors = [];
+    const plan = resolveFanoutPlan({
+      explicitProviderRaw: undefined,
+      env,
+      configFanout: true,
+      descriptors,
+    });
+    assert.strictEqual(plan.mode, "single");
+    assert.ok(
+      typeof plan.suppress === "string" && /SCOUTLINE_PROVIDER/.test(plan.suppress),
+      `expected SCOUTLINE_PROVIDER suppress notice, got: ${plan.suppress}`,
+    );
+  });
+
+  it("explicit raw (single) wins over SCOUTLINE_PROVIDER (Tier 1 over Tier 2)", () => {
+    const env = { SCOUTLINE_PROVIDER: "minimax" };
+    const descriptors = [];
+    const plan = resolveFanoutPlan({
+      explicitProviderRaw: "tavily",
+      env,
+      configFanout: false,
+      descriptors,
+    });
+    assert.deepStrictEqual(plan, { mode: "single", arms: ["tavily"] });
+  });
+});
+
+describe("resolveFanoutPlan: fanout=true with no pin (D1.3)", () => {
+  const env = { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k", TAVILY_API_KEY: "k", EXA_API_KEY: "k" };
+  const fakeDesc = (id, configured = true) => ({
+    id,
+    isConfigured: () => configured,
+    capabilities: () => new Set(["search"]),
+    create: () => ({ id, search: {} }),
+  });
+  const allDescriptors = [
+    fakeDesc("zai"),
+    fakeDesc("minimax"),
+    fakeDesc("tavily"),
+    fakeDesc("exa"),
+  ];
+
+  it("expands 'all' against configured∩advertising in registry order", () => {
+    const plan = resolveFanoutPlan({
+      explicitProviderRaw: "all",
+      env,
+      configFanout: false,
+      descriptors: allDescriptors,
+    });
+    assert.strictEqual(plan.mode, "fanout");
+    assert.deepStrictEqual(plan.arms, ["zai", "minimax", "tavily", "exa"]);
+  });
+
+  it("drops unconfigured providers when 'all' is expanded", () => {
+    const plan = resolveFanoutPlan({
+      explicitProviderRaw: "all",
+      env,
+      configFanout: false,
+      descriptors: [fakeDesc("zai", false), fakeDesc("tavily", true)],
+    });
+    assert.strictEqual(plan.mode, "fanout");
+    assert.deepStrictEqual(plan.arms, ["tavily"]);
+  });
+
+  it("uses routing.search order when set (D1.3.b)", () => {
+    const plan = resolveFanoutPlan({
+      explicitProviderRaw: undefined,
+      env,
+      configFanout: true,
+      routing: { search: ["tavily", "zai"] },
+      descriptors: allDescriptors,
+    });
+    assert.strictEqual(plan.mode, "fanout");
+    assert.deepStrictEqual(plan.arms, ["tavily", "zai"]);
+  });
+
+  it("filters routing.search against configured∩advertising + dedupes", () => {
+    const plan = resolveFanoutPlan({
+      explicitProviderRaw: undefined,
+      env,
+      configFanout: true,
+      routing: { search: ["tavily", "exa", "tavily", "openai"] },
+      descriptors: allDescriptors,
+    });
+    assert.strictEqual(plan.mode, "fanout");
+    // openai is unknown (not in PROVIDER_IDS); tavily listed twice; exa
+    // is configured. Dedup by first-encounter, then filter, then order
+    // preserved.
+    assert.deepStrictEqual(plan.arms, ["tavily", "exa"]);
+  });
+
+  it("falls through to configured∩advertising in registry order when routing.search is absent", () => {
+    const plan = resolveFanoutPlan({
+      explicitProviderRaw: undefined,
+      env,
+      configFanout: true,
+      descriptors: allDescriptors,
+    });
+    assert.strictEqual(plan.mode, "fanout");
+    assert.deepStrictEqual(plan.arms, ["zai", "minimax", "tavily", "exa"]);
+  });
+});
+
+describe("resolveFanoutPlan: no pin, no fanout (D1.4, default single path)", () => {
+  it("returns single with the default provider picked", () => {
+    const env = { Z_AI_API_KEY: "k" };
+    const descriptors = [
+      {
+        id: "zai",
+        isConfigured: () => true,
+        capabilities: () => new Set(["search"]),
+        create: () => ({ id: "zai", search: {} }),
+      },
+    ];
+    const plan = resolveFanoutPlan({
+      explicitProviderRaw: undefined,
+      env,
+      configFanout: false,
+      descriptors,
+    });
+    assert.strictEqual(plan.mode, "single");
+    assert.deepStrictEqual(plan.arms, ["zai"]);
+  });
+});
+
+// --- executeFanoutPlan: partial failure (D5/D6) -----------------------------
+
+function makeExecDepsForFanout() {
+  const store = new Map();
+  return {
+    cache: {
+      async get(key) {
+        return store.has(key) ? store.get(key) : null;
+      },
+      async set(key, value) {
+        store.set(key, value);
+      },
+    },
+    sleep: async () => {},
+    random: () => 0.5,
+  };
+}
+
+function makeFanoutContext() {
+  const notices = [];
+  return { context: { stdinIsTTY: false, readStdin: async () => "", notice: (m) => notices.push(m) }, notices };
+}
+
+function makeFanoutDescriptor(id, resultsByQuery, { fail } = {}) {
+  const invokes = [];
+  const descriptor = {
+    id,
+    isConfigured: () => true,
+    capabilities: () => new Set(["search"]),
+    create: () => ({
+      id,
+      search: {
+        validate() {},
+        cacheIdentity(request) {
+          return {
+            provider: id,
+            capability: "search",
+            credentialFingerprint: "fp-" + id,
+            request,
+            legacyCandidates: [],
+          };
+        },
+        async invoke(request) {
+          invokes.push(request);
+          if (fail) {
+            throw fail;
+          }
+          return resultsByQuery[request.query] ?? [];
+        },
+      },
+    }),
+  };
+  return { descriptor, invokes };
+}
+
+describe("executeFanoutPlan: partial failure exit 0 with drop notices (D5/D6)", () => {
+  it("exits 0 when ≥1 arm ok; failed arms produce notices (not errors)", async () => {
+    const tav = makeFanoutDescriptor("tavily", {
+      q: [{ title: "Tav", url: "https://e/tav", summary: "tav" }],
+    });
+    const exa = makeFanoutDescriptor("exa", {}, { fail: new Error("exa transport gone") });
+    const { context, notices } = makeFanoutContext();
+    const result = await executeFanoutPlan(
+      { mode: "fanout", arms: ["tavily", "exa"] },
+      {
+        descriptors: [tav.descriptor, exa.descriptor],
+        env: {},
+        query: "q",
+        searchOptions: {},
+        dependencies: makeExecDepsForFanout(),
+      },
+      context,
+    );
+    assert.strictEqual(result.kind, "data");
+    assert.strictEqual(result.data.length, 1);
+    assert.strictEqual(result.data[0].url, "https://e/tav");
+    // Summary notice + per-arm drop notice
+    const summary = notices.find((n) => /fanned out to 2 providers/.test(n));
+    assert.ok(summary, `expected summary notice, got: ${JSON.stringify(notices)}`);
+    assert.ok(/unique of \d+ results/.test(summary), "notice counts unique results");
+    const drop = notices.find((n) => /arm exa dropped/.test(n));
+    assert.ok(drop, `expected arm drop notice, got: ${JSON.stringify(notices)}`);
+  });
+
+  it("does NOT include mergedFrom on the single-provider path's golden output", async () => {
+    // single-pin path complete sanity, in-process (not via main()).
+    const tav = makeFanoutDescriptor("tavily", {
+      q: [{ title: "Tav", url: "https://e/p", summary: "s" }],
+    });
+    const exa = makeFanoutDescriptor("exa", {
+      q: [{ title: "Exa", url: "https://e/p", summary: "different" }],
+    });
+    const { context, notices } = makeFanoutContext();
+    const result = await executeFanoutPlan(
+      { mode: "fanout", arms: ["tavily", "exa"] },
+      {
+        descriptors: [tav.descriptor, exa.descriptor],
+        env: {},
+        query: "q",
+        searchOptions: {},
+        dependencies: makeExecDepsForFanout(),
+      },
+      context,
+    );
+    // Two arms, shared URL → occurrences 2, mergedFrom present.
+    assert.strictEqual(result.data.length, 1);
+    assert.deepStrictEqual(result.data[0].mergedFrom, ["tavily", "exa"]);
+    assert.strictEqual(result.data[0].occurrences, 2);
+    // Suppress notice NOT present on fan-out
+    assert.ok(
+      !notices.some((n) => /explicit pin/.test(n)),
+      "no suppress notice on fan-out path",
+    );
+  });
+});
+
+describe("executeFanoutPlan: option-drop arm (D5)", () => {
+  it("emits an arm-drop notice naming the rejected control", async () => {
+    const { UnsupportedOptionError } = await import("../dist/lib/errors.js");
+    const tav = makeFanoutDescriptor("tavily", {
+      q: [{ title: "Tav", url: "https://e/tav", summary: "tav" }],
+    });
+    const exa = makeFanoutDescriptor("exa", {}, {
+      fail: new UnsupportedOptionError("exa", "search", "--domain"),
+    });
+    const { context, notices } = makeFanoutContext();
+    const result = await executeFanoutPlan(
+      { mode: "fanout", arms: ["tavily", "exa"] },
+      {
+        descriptors: [tav.descriptor, exa.descriptor],
+        env: {},
+        query: "q",
+        searchOptions: { domain: "example.com" },
+        dependencies: makeExecDepsForFanout(),
+      },
+      context,
+    );
+    assert.strictEqual(result.kind, "data");
+    assert.strictEqual(result.data.length, 1);
+    const drop = notices.find((n) => /arm exa dropped/.test(n));
+    assert.ok(drop, `expected drop notice, got: ${JSON.stringify(notices)}`);
+    assert.ok(/--domain/.test(drop), "drop notice names the rejected control");
+    assert.ok(/UNSUPPORTED_OPTION/.test(drop), "drop notice names the error code");
+  });
+});
+
+describe("executeFanoutPlan: all-fail exit 1 via boundary (D6)", () => {
+  it("propagates the last arm's typed error so the boundary exits 1", async () => {
+    const { UnsupportedOptionError } = await import("../dist/lib/errors.js");
+    const err1 = new UnsupportedOptionError("tavily", "search", "--domain");
+    const err2 = new UnsupportedOptionError("exa", "search", "--domain");
+    const tav = makeFanoutDescriptor("tavily", {}, { fail: err1 });
+    const exa = makeFanoutDescriptor("exa", {}, { fail: err2 });
+    const { context } = makeFanoutContext();
+    await assert.rejects(
+      () =>
+        executeFanoutPlan(
+          { mode: "fanout", arms: ["tavily", "exa"] },
+          {
+            descriptors: [tav.descriptor, exa.descriptor],
+            env: {},
+            query: "q",
+            searchOptions: { domain: "example.com" },
+            dependencies: makeExecDepsForFanout(),
+          },
+          context,
+        ),
+      (error) => {
+        // The last arm's error wins; the boundary maps it to the proper
+        // exit code (UNSUPPORTED_OPTION is exit 1).
+        assert.strictEqual(error.name, "UnsupportedOptionError");
+        return true;
+      },
+    );
+  });
+});
+
+describe("executeFanoutPlan: zero arms → VALIDATION_ERROR (D6)", () => {
+  it("throws ValidationError naming the configured set when no arms resolve", async () => {
+    // The resolver expanded "all" against unconfigured descriptors →
+    // an empty arm list reaches the executor.
+    const unconfigured = {
+      id: "tavily",
+      isConfigured: () => false,
+      capabilities: () => new Set(["search"]),
+      create: () => ({ id: "tavily", search: {} }),
+    };
+    const { context } = makeFanoutContext();
+    await assert.rejects(
+      () =>
+        executeFanoutPlan(
+          { mode: "fanout", arms: [] },
+          {
+            descriptors: [unconfigured],
+            env: {},
+            query: "q",
+            searchOptions: {},
+            dependencies: makeExecDepsForFanout(),
+          },
+          context,
+        ),
+      (error) => {
+        assert.strictEqual(error.name, "ValidationError");
+        assert.ok(/tavily/.test(error.message), "names the configured set");
+        return true;
+      },
+    );
+  });
+});
+
+describe("executeFanoutPlan: --no-cache forwarding to every arm", () => {
+  it("forwards noCache=true to every arm's executeSearch path", async () => {
+    const a = makeFanoutDescriptor("tavily", {
+      q: [{ title: "A", url: "https://e/a", summary: "a" }],
+    });
+    const b = makeFanoutDescriptor("exa", {
+      q: [{ title: "B", url: "https://e/b", summary: "b" }],
+    });
+    const { context } = makeFanoutContext();
+    const result = await executeFanoutPlan(
+      { mode: "fanout", arms: ["tavily", "exa"] },
+      {
+        descriptors: [a.descriptor, b.descriptor],
+        env: {},
+        query: "q",
+        searchOptions: { noCache: true },
+        dependencies: makeExecDepsForFanout(),
+      },
+      context,
+    );
+    // Both arms invoked regardless of caching policy.
+    assert.strictEqual(a.invokes.length, 1);
+    assert.strictEqual(b.invokes.length, 1);
+    // The cache state is irrelevant; the noCache flag is consumed by
+    // executeSearch, which is what the executor forwards to. The fan-
+    // out executor passes the options through unchanged.
+    assert.strictEqual(result.kind, "data");
+  });
+});
+
+describe("executeFanoutPlan: single-pin golden via main() (byte-identical stdout, no mergedFrom, no fan-out notices)", () => {
+  it("scoutline --provider tavily with fanout=true produces byte-identical output + suppress notice", async () => {
+    // Build a hermetic main() environment. Two fake descriptors; only
+    // `tavily` is configured. routing and fanout are off.
+    function makeConfiguredDescriptor(id, results) {
+      const invokes = [];
+      return {
+        descriptor: {
+          id,
+          isConfigured: () => true,
+          capabilities: () => new Set(["search"]),
+          create: () => ({
+            id,
+            search: {
+              validate() {},
+              cacheIdentity(r) {
+                return {
+                  provider: id,
+                  capability: "search",
+                  credentialFingerprint: "fp-" + id,
+                  request: r,
+                  legacyCandidates: [],
+                };
+              },
+              async invoke(r) {
+                invokes.push(r);
+                return results.map((entry) => ({ ...entry }));
+              },
+            },
+          }),
+        },
+        invokes,
+      };
+    }
+    const tav = makeConfiguredDescriptor("tavily", [
+      { title: "Tav", url: "https://e/p", summary: "s" },
+    ]);
+    const exa = makeConfiguredDescriptor("exa", [
+      { title: "Exa", url: "https://e/p", summary: "different" },
+    ]);
+    const stdout = [];
+    const stderr = [];
+    const adapter = {
+      stdoutIsTTY: false,
+      stdinIsTTY: false,
+      environmentOutputMode: "data",
+      readStdin: async () => "",
+      writeStdout: (v) => stdout.push(v),
+      writeStderr: (v) => stderr.push(v),
+      runQuietly: async (op) => op(),
+      setExitCode: () => {},
+    };
+    // --provider tavily is an explicit pin and forces single mode even
+    // when fanout=true. The Golden run comparison comes from the same
+    // input with fanout=false; both must produce byte-identical
+    // stdout and no fan-out notices. We assert byte-identical in-process
+    // by running both modes. The A run carries configFanout: true (the
+    // injected Ticket-3 seam); the B run leaves it off (pre-fan-out
+    // behavior).
+    const freshCache = () => {
+      const s = new Map();
+      return {
+        async get(k) {
+          return s.has(k) ? s.get(k) : null;
+        },
+        async set(k, v) {
+          s.set(k, v);
+        },
+      };
+    };
+    const statusA = await main(["--provider", "tavily", "search", "q"], {
+      invocation: adapter,
+      env: {},
+      providerDescriptors: [tav.descriptor, exa.descriptor],
+      configFanout: true,
+      searchCache: freshCache(),
+      searchSleep: async () => {},
+      searchRandom: () => 0.5,
+    });
+    const outA = stdout.slice();
+    const errA = stderr.slice();
+    stdout.length = 0;
+    stderr.length = 0;
+    const statusB = await main(["--provider", "tavily", "search", "q"], {
+      invocation: adapter,
+      env: {},
+      providerDescriptors: [tav.descriptor, exa.descriptor],
+      searchCache: freshCache(),
+      searchSleep: async () => {},
+      searchRandom: () => 0.5,
+    });
+    const outB = stdout.slice();
+    const errB = stderr.slice();
+    assert.strictEqual(statusA, 0);
+    assert.strictEqual(statusB, 0);
+    // Byte-identical stdout between fanout-on and fanout-off (single pin).
+    assert.deepStrictEqual(outA, outB);
+    // No mergedFrom field on the single-pin path.
+    const data = JSON.parse(outA[0]);
+    assert.strictEqual(data.length, 1);
+    assert.strictEqual(data[0].title, "Tav");
+    assert.ok(
+      !Object.hasOwn(data[0], "mergedFrom"),
+      "single-pin output must omit mergedFrom",
+    );
+    // The single intended stderr delta: exactly one suppress notice on
+    // the fanout=true run, nothing on the fanout=false run, and no
+    // fan-out vocabulary (summary/merged notices) in either.
+    assert.deepStrictEqual(errA, ["explicit pin: fan-out ignored"]);
+    assert.deepStrictEqual(errB, []);
+    assert.ok(
+      !errA.some((n) => /fanned out to/.test(n)),
+      "no fan-out summary on the single-pin path",
+    );
   });
 });

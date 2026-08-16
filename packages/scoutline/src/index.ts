@@ -4,7 +4,7 @@
 
 import * as vision from "./commands/vision.js";
 import type { VisionExecutionDependencies } from "./commands/vision.js";
-import { search, SEARCH_HELP } from "./commands/search.js";
+import { search, SEARCH_HELP, resolveFanoutPlan, executeFanoutPlan } from "./commands/search.js";
 import { read, READ_HELP } from "./commands/read.js";
 import { crawl, CRAWL_HELP } from "./commands/crawl.js";
 import { map, MAP_HELP } from "./commands/map.js";
@@ -478,6 +478,16 @@ export interface HandlerDependencies {
    * byte-identical to pre-routing behavior.
    */
   readonly routing?: Readonly<Record<string, readonly ProviderId[]>>;
+  /**
+   * Whether multi-provider search fan-out is enabled (search-fanout
+   * plan, Ticket 3). Production derives this from the loaded config
+   * (`config.fanout === true`; the typed registry row + `config set`
+   * surface arrive in Ticket 4); tests inject it directly so
+   * activation-tier assertions stay hermetic. Absent/false → the
+   * search handler's fan-out path never engages (byte-identical
+   * pre-fan-out behavior).
+   */
+  readonly configFanout?: boolean;
   readonly searchCache: ResponseCache;
   readonly searchSleep: (ms: number) => Promise<void>;
   readonly searchRandom: () => number;
@@ -934,9 +944,51 @@ async function handleSearch(
   // executeX). `--merge` runs the whole parallel sub-query batch inside
   // a single attempt so a fallback switch replaces the entire batch,
   // never individual sub-queries (Tech Plan §"Handler non-uniformity").
+  //
+  // Ticket 3 — Fan-out activation (search-fanout plan, DESIGN D1):
+  // resolve the activation plan first. When `mode === "fanout"`, the
+  // call routes through `executeFanoutPlan` (parallel pinned arms,
+  // D2/D5/D6) instead of the single-pin fallback executor. The single
+  // path stays verbatim for byte-identical output (the single-pin
+  // golden test in `tests/search-fanout.test.js` pins this).
+  const configFanout = deps.configFanout === true;
+  const fanoutPlan = resolveFanoutPlan({
+    explicitProviderRaw: deps.provider,
+    env: deps.env,
+    configFanout,
+    routing: deps.routing,
+    descriptors: deps.providerDescriptors,
+  });
   return invokeCommand(
     deps.invocation,
     async (context) => {
+      // The suppress notice (explicit-pin precedence over the fan-out
+      // switch) is emitted before dispatch on BOTH paths so the wording
+      // is identical wherever the resolver flagged it. Fan-out mode
+      // never sets `suppress` today (pins resolve to single), but the
+      // hook is mode-agnostic by construction.
+      if (fanoutPlan.suppress) {
+        context.notice(fanoutPlan.suppress);
+      }
+      if (fanoutPlan.mode === "fanout") {
+        return executeFanoutPlan(
+          fanoutPlan,
+          {
+            descriptors: deps.providerDescriptors,
+            env: deps.env,
+            query,
+            searchOptions,
+            dependencies: {
+              cache: deps.searchCache,
+              sleep: deps.searchSleep,
+              random: deps.searchRandom,
+              retryPolicy: undefined,
+            },
+            secrets: deps.secrets,
+          },
+          context,
+        );
+      }
       const outcome = await executeWithFallback(
         {
           capabilityId: "search",
@@ -2221,6 +2273,14 @@ export interface MainDependencies {
    */
   readonly loadScoutlineConfig?: () => Promise<ScoutlineConfig>;
   /**
+   * Injectable fan-out activation override (search-fanout plan,
+   * Ticket 3). When provided, this wins over the file-configured
+   * `fanout` value so activation-tier tests stay hermetic (no real
+   * config.json needed). Production leaves it undefined and derives
+   * the switch from the loaded config.
+   */
+  readonly configFanout?: boolean;
+  /**
    * Injectable shared-Search execution dependencies. Production defaults
    * to the on-disk cache and real sleep/random; tests inject in-memory
    * doubles for deterministic, offline behaviour.
@@ -2594,6 +2654,7 @@ export async function main(
     credSecrets: string[],
     credFallback: boolean,
     credRouting: HandlerDependencies["routing"] = undefined,
+    credFanout: boolean | undefined = undefined,
   ): HandlerDependencies => ({
     invocation,
     env: credEnv,
@@ -2603,6 +2664,7 @@ export async function main(
     providerDescriptors,
     fallbackEnabled: credFallback,
     routing: credRouting,
+    configFanout: credFanout,
     searchCache,
     searchSleep,
     searchRandom,
@@ -2833,7 +2895,20 @@ export async function main(
   const fallbackEnabled =
     noFallback || envDisablesFallback ? false : (config.fallbackEnabled ?? true);
 
-  const handlerDeps = buildHandlerDeps(resolvedEnv, secrets, fallbackEnabled, config.routing);
+  // Ticket 3 — resolve the fan-out activation switch. The injected
+  // `MainDependencies.configFanout` (tests) wins over the file-configured
+  // value; the typed registry row + `config set fanout` surface arrive in
+  // Ticket 4. Read leniently: an absent or non-boolean field simply means
+  // fan-out stays off.
+  const configFanout =
+    dependencies.configFanout ?? ((config as { fanout?: unknown }).fanout === true);
+  const handlerDeps = buildHandlerDeps(
+    resolvedEnv,
+    secrets,
+    fallbackEnabled,
+    config.routing,
+    configFanout,
+  );
 
   // PB-T5 — derive Plan A verification records from the loaded config
   // AFTER `config` is in scope. `buildHandlerDeps` runs once BEFORE

@@ -454,3 +454,165 @@ describe("config routing key", () => {
     assert.deepStrictEqual(result.warnings, []);
   });
 });
+
+// ===========================================================================
+// Typed key registry (routing-table plan, Ticket 3) — strict set/unset
+// helpers over atomic read-modify-write. Set is STRICT (explicit
+// command must not silently store a different value than typed);
+// credential-bearing paths refuse set outright (API keys never ride
+// argv).
+// ===========================================================================
+
+describe("config key registry", () => {
+  async function makeStore(t, initial) {
+    const { writeConfig } = await import("../dist/lib/config-store.js");
+    await withTempDir(t, async (dir) => {
+      await writeConfig(initial, { filePath: path.join(dir, "config.json"), onWarning: () => {} });
+    });
+    return path.join(t.dir ?? "", ""); // placeholder, replaced below
+  }
+
+  // The registry helpers take explicit filePath options; every test
+  // builds its own temp config so nothing touches the real store.
+  async function withConfig(t, initial, run) {
+    const { writeConfig } = await import("../dist/lib/config-store.js");
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      await writeConfig(initial, { filePath, onWarning: () => {} });
+      await run(filePath);
+    });
+  }
+
+  it("resolveConfigKey matches exact and parameterized paths", async () => {
+    const { resolveConfigKey } = await import("../dist/lib/config-store.js");
+    assert.ok(resolveConfigKey("fallbackEnabled")?.settable);
+    const routing = resolveConfigKey("routing.search");
+    assert.ok(routing?.settable);
+    assert.strictEqual(resolveConfigKey("routing")?.path, "routing");
+    const provider = resolveConfigKey("providers.tavily");
+    assert.ok(provider?.gettable && !provider?.settable && provider?.credential);
+    assert.strictEqual(resolveConfigKey("version"), null);
+    assert.strictEqual(resolveConfigKey("hintShown"), null);
+    assert.strictEqual(resolveConfigKey("nope.nope"), null);
+  });
+
+  it("routing set parses a strict comma list and persists", async (t) => {
+    await withConfig(t, { version: 1, providers: {} }, async (filePath) => {
+      const { setConfigValue, readConfig } = await import("../dist/lib/config-store.js");
+      const updated = await setConfigValue("routing.search", "tavily, brave", { filePath });
+      assert.deepStrictEqual(updated.routing, { search: ["tavily", "brave"] });
+      const reread = await readConfig({ filePath, onWarning: () => {} });
+      assert.deepStrictEqual(reread.routing, { search: ["tavily", "brave"] });
+    });
+  });
+
+  it("routing set with a typo'd provider id fails strictly, naming the id", async (t) => {
+    await withConfig(t, { version: 1, providers: {} }, async (filePath) => {
+      const { setConfigValue } = await import("../dist/lib/config-store.js");
+      await assert.rejects(
+        () => setConfigValue("routing.search", "tavlly,brave", { filePath }),
+        (error) => {
+          assert.strictEqual(error.name, "ValidationError");
+          assert.ok(error.message.includes("tavlly"));
+          assert.ok(error.message.includes("tavily"));
+          return true;
+        },
+      );
+    });
+  });
+
+  it("routing set with an unknown capability fails strictly", async (t) => {
+    await withConfig(t, { version: 1, providers: {} }, async (filePath) => {
+      const { setConfigValue } = await import("../dist/lib/config-store.js");
+      await assert.rejects(
+        () => setConfigValue("routing.serch", "tavily", { filePath }),
+        (error) => error.name === "ValidationError",
+      );
+    });
+  });
+
+  it("routing set with an empty list fails (not silently absent)", async (t) => {
+    await withConfig(t, { version: 1, providers: {} }, async (filePath) => {
+      const { setConfigValue } = await import("../dist/lib/config-store.js");
+      await assert.rejects(
+        () => setConfigValue("routing.search", " , ", { filePath }),
+        (error) => error.name === "ValidationError",
+      );
+    });
+  });
+
+  it("fallbackEnabled set accepts true/false and round-trips", async (t) => {
+    await withConfig(t, { version: 1, providers: {} }, async (filePath) => {
+      const { setConfigValue, readConfig } = await import("../dist/lib/config-store.js");
+      const updated = await setConfigValue("fallbackEnabled", "false", { filePath });
+      assert.strictEqual(updated.fallbackEnabled, false);
+      const reread = await readConfig({ filePath, onWarning: () => {} });
+      assert.strictEqual(reread.fallbackEnabled, false);
+    });
+  });
+
+  it("fallbackEnabled set rejects non-boolean strings", async (t) => {
+    await withConfig(t, { version: 1, providers: {} }, async (filePath) => {
+      const { setConfigValue } = await import("../dist/lib/config-store.js");
+      await assert.rejects(
+        () => setConfigValue("fallbackEnabled", "maybe", { filePath }),
+        (error) => error.name === "ValidationError",
+      );
+    });
+  });
+
+  it("credential-bearing paths refuse set with a pointer to init/env", async (t) => {
+    await withConfig(t, { version: 1, providers: {} }, async (filePath) => {
+      const { setConfigValue } = await import("../dist/lib/config-store.js");
+      await assert.rejects(
+        () => setConfigValue("providers.zai.apiKey", "sk-secret", { filePath }),
+        (error) => {
+          assert.strictEqual(error.name, "ValidationError");
+          assert.ok(error.help.includes("init"));
+          return true;
+        },
+      );
+    });
+  });
+
+  it("unset removes a routing capability, then the whole table when last", async (t) => {
+    await withConfig(
+      t,
+      { version: 1, providers: {}, routing: { search: ["tavily"], crawl: ["firecrawl"] } },
+      async (filePath) => {
+        const { unsetConfigValue, readConfig } = await import("../dist/lib/config-store.js");
+        let updated = await unsetConfigValue("routing.search", { filePath });
+        assert.deepStrictEqual(updated.routing, { crawl: ["firecrawl"] });
+        updated = await unsetConfigValue("routing.crawl", { filePath });
+        assert.strictEqual(updated.routing, undefined);
+        const reread = await readConfig({ filePath, onWarning: () => {} });
+        assert.strictEqual(reread.routing, undefined);
+      },
+    );
+  });
+
+  it("unset of a nonexistent path fails", async (t) => {
+    await withConfig(t, { version: 1, providers: {} }, async (filePath) => {
+      const { unsetConfigValue } = await import("../dist/lib/config-store.js");
+      await assert.rejects(
+        () => unsetConfigValue("routing.search", { filePath }),
+        (error) => error.name === "ValidationError",
+      );
+    });
+  });
+
+  it("set preserves unrelated keys (read-modify-write isolation)", async (t) => {
+    await withConfig(
+      t,
+      { version: 1, providers: {}, fallbackEnabled: true, hintShown: true },
+      async (filePath) => {
+        const { setConfigValue, readConfig } = await import("../dist/lib/config-store.js");
+        await setConfigValue("routing.search", "brave", { filePath });
+        const reread = await readConfig({ filePath, onWarning: () => {} });
+        assert.strictEqual(reread.fallbackEnabled, true);
+        assert.strictEqual(reread.hintShown, true);
+        assert.deepStrictEqual(reread.routing, { search: ["brave"] });
+      },
+    );
+  });
+});

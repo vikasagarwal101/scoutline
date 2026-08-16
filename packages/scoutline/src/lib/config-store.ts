@@ -3,7 +3,7 @@ import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { PROVIDER_CAPABILITIES, PROVIDER_IDS, type ProviderId } from "../providers/types.js";
-import { ConfigurationError } from "./errors.js";
+import { ConfigurationError, ValidationError } from "./errors.js";
 
 export const CONFIG_VERSION = 1 as const;
 
@@ -406,6 +406,243 @@ export async function writeConfig(
       "Check the config directory permissions and try again.",
     );
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// Typed key registry (routing-table plan, Ticket 3) — the `config`
+// command family's seam. Adding a settings key = adding one row below;
+// get/set/unset, validation, and atomic persistence come for free.
+// ---------------------------------------------------------------------------
+
+/**
+ * One settable/gettable settings surface. `parseValue` is STRICT: it
+ * throws ValidationError on anything it cannot store verbatim-in-meaning
+ * (contrast the lenient load-time warn-and-drop of parseConfig — an
+ * explicit single-value command must not silently store a different
+ * value than the user typed).
+ */
+export interface ConfigKeyDescriptor {
+  /** Literal path, or a parameterized prefix for `match` handling. */
+  readonly path: string;
+  readonly gettable: boolean;
+  readonly settable: boolean;
+  /** true → `config get` redacts the value; `config set` refuses it. */
+  readonly credential: boolean;
+  readonly describe: string;
+}
+
+const KEY_FALLBACK_ENABLED: ConfigKeyDescriptor = {
+  path: "fallbackEnabled",
+  gettable: true,
+  settable: true,
+  credential: false,
+  describe: "boolean — always-on provider fallback switch",
+};
+
+const KEY_ROUTING_TABLE: ConfigKeyDescriptor = {
+  path: "routing",
+  gettable: true,
+  settable: false,
+  credential: false,
+  describe: "per-capability routed provider preference table",
+};
+
+const KEY_ROUTING_CAPABILITY: ConfigKeyDescriptor = {
+  path: "routing.<capability>",
+  gettable: true,
+  settable: true,
+  credential: false,
+  describe: "ordered provider list for one capability (comma-separated)",
+};
+
+function providerKey(id: string): ConfigKeyDescriptor {
+  return {
+    path: `providers.${id}`,
+    gettable: true,
+    settable: false,
+    credential: true,
+    describe: `provider configuration for ${id} (view only; credentials redacted)`,
+  };
+}
+
+/**
+ * Resolve a dotted settings path to its key descriptor, or null when
+ * the path names no registered key (including internal fields like
+ * `version`/`hintShown`, which are deliberately not config-command
+ * surfaces).
+ */
+export function resolveConfigKey(path: string): ConfigKeyDescriptor | null {
+  const trimmed = path.trim();
+  if (trimmed === "fallbackEnabled") return KEY_FALLBACK_ENABLED;
+  if (trimmed === "routing") return KEY_ROUTING_TABLE;
+  if (trimmed.startsWith("routing.")) return KEY_ROUTING_CAPABILITY;
+  const providerMatch = /^providers\.([a-z0-9-]+)(?:\.[A-Za-z0-9-]+)*$/.exec(trimmed);
+  if (providerMatch?.[1]) return providerKey(providerMatch[1]);
+  return null;
+}
+
+/** Strict parse of a `routing.<capability>` value: comma-separated ids. */
+function parseRoutingValue(path: string, value: string): { capability: string; ids: ProviderId[] } {
+  const capability = path.trim().slice("routing.".length);
+  if (!new Set<string>(PROVIDER_CAPABILITIES).has(capability)) {
+    throw new ValidationError(
+      `Unknown capability "${capability}".`,
+      `Use one of: ${PROVIDER_CAPABILITIES.join(", ")}.`,
+    );
+  }
+  const ids: ProviderId[] = [];
+  const seen = new Set<string>();
+  for (const raw of value.split(",")) {
+    const id = raw.trim().toLowerCase();
+    if (id.length === 0) continue;
+    if (!(PROVIDER_IDS as readonly string[]).includes(id)) {
+      throw new ValidationError(
+        `Unknown provider "${id}". Accepted provider IDs: ${PROVIDER_IDS.join(", ")}.`,
+        `Accepted provider IDs: ${PROVIDER_IDS.join(", ")}.`,
+      );
+    }
+    if (!seen.has(id)) {
+      seen.add(id);
+      ids.push(id as ProviderId);
+    }
+  }
+  if (ids.length === 0) {
+    throw new ValidationError(
+      "Routing list must contain at least one provider id.",
+      "Example: scoutline config set routing.search tavily,brave",
+    );
+  }
+  return { capability, ids };
+}
+
+/** Options for the typed set/unset helpers (same surface as writeConfig). */
+export interface ConfigKeyOptions extends WriteConfigOptions {}
+
+/**
+ * Set one registered key, strictly. Read-modify-write through the
+ * existing atomic save path, with a round-trip guarantee: the stored
+ * config re-parses (leniently, warning-free) to the same value.
+ * Credential-bearing paths refuse with a pointer to `init` / env —
+ * API keys never belong in command arguments (AGENTS.md).
+ */
+export async function setConfigValue(
+  path: string,
+  value: string,
+  options: ConfigKeyOptions = {},
+): Promise<ScoutlineConfig> {
+  const key = resolveConfigKey(path);
+  if (key === null) {
+    throw new ValidationError(
+      `Unknown config key "${path}".`,
+      'Run "scoutline config --help" for the settable keys.',
+    );
+  }
+  if (!key.settable) {
+    if (key.credential) {
+      throw new ValidationError(
+        `"${key.path}" is credential-bearing; API keys are never set via command arguments.`,
+        "Use `scoutline init` or the provider's environment variable instead.",
+      );
+    }
+    throw new ValidationError(
+      `"${key.path}" is not settable.`,
+      'Run "scoutline config --help" for the settable keys.',
+    );
+  }
+  const current = await readConfig(options);
+  let next: ScoutlineConfig;
+  if (key === KEY_FALLBACK_ENABLED) {
+    const lowered = value.trim().toLowerCase();
+    if (lowered !== "true" && lowered !== "false") {
+      throw new ValidationError(
+        `Invalid boolean "${value}".`,
+        "Use one of: true, false.",
+      );
+    }
+    next = { ...current, fallbackEnabled: lowered === "true" };
+  } else {
+    const { capability, ids } = parseRoutingValue(path, value);
+    const routing = { ...current.routing, [capability]: ids };
+    next = { ...current, routing };
+  }
+  const reparsed = parseConfig(JSON.stringify(next));
+  if (reparsed.warnings.length > 0) {
+    // Strictly validated values must round-trip warning-free; if they
+    // ever do not, refuse rather than store something unexpected.
+    throw new ValidationError(
+      "Refusing to store a value that does not round-trip cleanly.",
+      "This is an internal invariant failure; please report it.",
+    );
+  }
+  await writeConfig(reparsed.config, { ...options, onWarning: () => {} });
+  return reparsed.config;
+}
+
+/**
+ * Unset one registered key: a routing capability removes that entry
+ * (and the table itself when the last entry goes); `routing` removes
+ * the whole table; `fallbackEnabled` removes the switch. Unsetting a
+ * nonexistent entry fails — silence would look like success.
+ */
+export async function unsetConfigValue(
+  path: string,
+  options: ConfigKeyOptions = {},
+): Promise<ScoutlineConfig> {
+  const key = resolveConfigKey(path);
+  if (key === null) {
+    throw new ValidationError(
+      `Unknown config key "${path}".`,
+      'Run "scoutline config --help" for the settable keys.',
+    );
+  }
+  const current = await readConfig(options);
+  let next: ScoutlineConfig;
+  const trimmed = path.trim();
+  if (trimmed === "routing") {
+    if (current.routing === undefined) {
+      throw new ValidationError(
+        '"routing" is not set.',
+        "Nothing to unset.",
+      );
+    }
+    const { routing: _drop, ...rest } = current;
+    void _drop;
+    next = rest;
+  } else if (trimmed.startsWith("routing.")) {
+    const capability = trimmed.slice("routing.".length);
+    if (!new Set<string>(PROVIDER_CAPABILITIES).has(capability)) {
+      throw new ValidationError(
+        `Unknown capability "${capability}".`,
+        `Use one of: ${PROVIDER_CAPABILITIES.join(", ")}.`,
+      );
+    }
+    if (current.routing?.[capability] === undefined) {
+      throw new ValidationError(
+        `"routing.${capability}" is not set.`,
+        "Nothing to unset.",
+      );
+    }
+    const routing = { ...current.routing };
+    delete routing[capability];
+    const { routing: _old, ...rest } = current;
+    void _old;
+    next = Object.keys(routing).length > 0 ? { ...rest, routing } : rest;
+  } else if (trimmed === "fallbackEnabled") {
+    if (current.fallbackEnabled === undefined) {
+      throw new ValidationError('"fallbackEnabled" is not set.', "Nothing to unset.");
+    }
+    const { fallbackEnabled: _fb, ...rest } = current;
+    void _fb;
+    next = rest;
+  } else {
+    throw new ValidationError(
+      `"${key.path}" is not unsettable via config.`,
+      'Run "scoutline config --help" for the settable keys.',
+    );
+  }
+  await writeConfig(next, { ...options, onWarning: () => {} });
+  return next;
 }
 
 // ---------------------------------------------------------------------------

@@ -292,6 +292,50 @@ describe("config command dispatcher", () => {
     });
   });
 
+  it("trailing arguments are rejected for every config subcommand", async (t) => {
+    await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
+      for (const argv of [
+        ["config", "get", "routing", "extra"],
+        ["config", "set", "fallbackEnabled", "true", "extra"],
+        ["config", "unset", "routing", "extra"],
+      ]) {
+        const { invocation, stderr } = makeInvocation();
+        const status = await main(argv, await baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }));
+        assert.strictEqual(status, 1, argv.join(" "));
+        assert.ok(stderr().includes("Usage"), argv.join(" "));
+      }
+    });
+  });
+
+  it("provider field paths are unknown to get (never a provider dump)", async (t) => {
+    await withTempConfig(
+      t,
+      { version: 1, providers: { zai: { apiKey: "sk-live-zai-key-12345", onboarded: true } } },
+      async (dir) => {
+        const { invocation, stderr } = makeInvocation();
+        const status = await main(
+          ["config", "get", "providers.zai.apiKey"],
+          await baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }),
+        );
+        assert.strictEqual(status, 1);
+        assert.ok(stderr().includes("Unknown config key"), stderr());
+      },
+    );
+  });
+
+  it("unknown provider ids are unknown keys, not credential paths", async (t) => {
+    await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
+      const { invocation, stderr } = makeInvocation();
+      const status = await main(
+        ["config", "set", "providers.tylvy.apiKey", "sk-xyz"],
+        await baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }),
+      );
+      assert.strictEqual(status, 1);
+      assert.ok(stderr().includes("Unknown config key"), stderr());
+      assert.ok(!stderr().includes("credential-bearing"), stderr());
+    });
+  });
+
   it("config set end-to-end persists and is visible to the next get", async (t) => {
     await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
       const env = { SCOUTLINE_CONFIG_DIR: dir };

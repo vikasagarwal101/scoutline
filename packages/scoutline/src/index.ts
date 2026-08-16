@@ -1639,6 +1639,12 @@ async function handleConfig(
   const subcommand = positional[0];
   switch (subcommand) {
     case "get":
+      if (positional.length > 2) {
+        throw new ValidationError(
+          `config get takes at most one key (got ${positional.length - 1} arguments).`,
+          "Usage: scoutline config get [key]",
+        );
+      }
       return invokeCommand(
         deps.invocation,
         () =>
@@ -1659,6 +1665,12 @@ async function handleConfig(
           "Usage: scoutline config set <key> <value>",
         );
       }
+      if (positional.length > 3) {
+        throw new ValidationError(
+          `config set takes exactly a key and a value (got ${positional.length - 1} arguments).`,
+          "Usage: scoutline config set <key> <value>",
+        );
+      }
       return invokeCommand(
         deps.invocation,
         () =>
@@ -1675,6 +1687,12 @@ async function handleConfig(
       if (unsetPath === undefined) {
         throw new ValidationError(
           "config unset requires a key",
+          "Usage: scoutline config unset <key>",
+        );
+      }
+      if (positional.length > 2) {
+        throw new ValidationError(
+          `config unset takes exactly one key (got ${positional.length - 1} arguments).`,
           "Usage: scoutline config unset <key>",
         );
       }

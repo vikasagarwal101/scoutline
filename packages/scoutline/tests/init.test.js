@@ -1638,6 +1638,23 @@ describe("init re-config: routing editor", () => {
     });
   });
 
+  it("normalizes mixed-case capability keys like provider ids", async () => {
+    const initial = { version: 1, providers: { zai: { apiKey: "key" } } };
+    const store = createFakeConfigStore({ initial });
+    const script = createScriptedPrompts();
+    script.queueSelect("edit-routing");
+    script.queueInput("Search: TAVILY");
+    script.queueInput(""); // blank line finishes
+    script.queueSelect("cancel");
+
+    const { deps } = createInitDeps({ descriptors: [], prompts: script.prompts, configStore: store });
+    const status = await handleInitWithHelp([], deps);
+    assert.strictEqual(status, 0);
+    const writes = store.getWrites();
+    assert.strictEqual(writes.length, 1);
+    assert.deepStrictEqual(writes[0].config.routing, { search: ["tavily"] });
+  });
+
   it("an empty value after the colon removes the capability entry", async () => {
     const initial = {
       version: 1,

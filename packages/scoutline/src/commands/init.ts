@@ -1015,7 +1015,9 @@ async function editRouting(
         deps.writeStderr(`  \u26a0\ufe0f  skipped "${line}" \u2014 expected "capability: provider1,provider2"\n`);
         continue;
       }
-      const capability = line.slice(0, sep).trim();
+      // Capability keys are canonical lowercase ids; accept mixed-case
+      // input the same way provider ids below accept "TAVILY".
+      const capability = line.slice(0, sep).trim().toLowerCase();
       const value = line.slice(sep + 1).trim();
       if (!capabilitySet.has(capability)) {
         deps.writeStderr(`  \u26a0\ufe0f  unknown capability "${capability}" \u2014 skipped\n`);

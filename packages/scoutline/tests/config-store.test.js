@@ -488,6 +488,17 @@ describe("config key registry", () => {
     assert.strictEqual(resolveConfigKey("nope.nope"), null);
   });
 
+  it("resolveConfigKey validates provider ids and splits field paths", async () => {
+    const { resolveConfigKey } = await import("../dist/lib/config-store.js");
+    const view = resolveConfigKey("providers.tavily");
+    assert.ok(view?.gettable && !view?.settable && view?.credential);
+    const field = resolveConfigKey("providers.tavily.apiKey");
+    assert.ok(field && !field.gettable && !field.settable && field.credential);
+    assert.strictEqual(resolveConfigKey("providers.tylvy"), null);
+    assert.strictEqual(resolveConfigKey("providers.tylvy.apiKey"), null);
+    assert.strictEqual(resolveConfigKey("providers."), null);
+  });
+
   it("resolveConfigKey rejects unknown capabilities", async () => {
     const { resolveConfigKey } = await import("../dist/lib/config-store.js");
     assert.strictEqual(resolveConfigKey("routing.serch"), null);

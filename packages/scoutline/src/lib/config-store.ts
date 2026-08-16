@@ -4,6 +4,11 @@ import * as fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { PROVIDER_CAPABILITIES, PROVIDER_IDS, type ProviderId } from "../providers/types.js";
 import { ConfigurationError, ValidationError } from "./errors.js";
+import {
+  withAsyncFileLock,
+  DEFAULT_LOCK_TIMEOUT_MS,
+  DEFAULT_LOCK_STALE_MS,
+} from "./async-file-lock.js";
 
 export const CONFIG_VERSION = 1 as const;
 
@@ -467,6 +472,22 @@ function providerKey(id: string): ConfigKeyDescriptor {
 }
 
 /**
+ * Sub-field path (`providers.zai.apiKey`): resolves so `set`/`unset`
+ * refuse it as credential-bearing, but `get` reports it as unknown —
+ * field paths are not a viewable surface, and returning the whole
+ * provider object would misrepresent the request.
+ */
+function providerFieldKey(id: string): ConfigKeyDescriptor {
+  return {
+    path: `providers.${id}`,
+    gettable: false,
+    settable: false,
+    credential: true,
+    describe: `provider field under ${id} (credential-bearing; not a config surface)`,
+  };
+}
+
+/**
  * Resolve a dotted settings path to its key descriptor, or null when
  * the path names no registered key (including internal fields like
  * `version`/`hintShown`, which are deliberately not config-command
@@ -484,8 +505,16 @@ export function resolveConfigKey(path: string): ConfigKeyDescriptor | null {
       ? KEY_ROUTING_CAPABILITY
       : null;
   }
-  const providerMatch = /^providers\.([a-z0-9-]+)(?:\.[A-Za-z0-9-]+)*$/.exec(trimmed);
-  if (providerMatch?.[1]) return providerKey(providerMatch[1]);
+  if (trimmed.startsWith("providers.")) {
+    // Provider ids are validated against the registry: `providers.tylvy`
+    // is an unknown key, not a misleading credential path. Sub-field
+    // paths resolve to the field descriptor (credential refusal for
+    // set/unset; get reports unknown rather than dumping the provider).
+    const idMatch = /^providers\.([a-z0-9-]+)((?:\.[A-Za-z0-9-]+)+)?$/.exec(trimmed);
+    if (idMatch?.[1] && (PROVIDER_IDS as readonly string[]).includes(idMatch[1])) {
+      return idMatch[2] ? providerFieldKey(idMatch[1]) : providerKey(idMatch[1]);
+    }
+  }
   return null;
 }
 
@@ -495,14 +524,17 @@ export function resolveConfigKey(path: string): ConfigKeyDescriptor | null {
  * wording set/unset have always produced); any other unknown path
  * points at the family help.
  */
+function unknownCapabilityError(capability: string): ValidationError {
+  return new ValidationError(
+    `Unknown capability "${capability}".`,
+    `Use one of: ${PROVIDER_CAPABILITIES.join(", ")}.`,
+  );
+}
+
 export function unknownConfigKeyError(path: string): ValidationError {
   const trimmed = path.trim();
   if (trimmed.startsWith("routing.")) {
-    const capability = trimmed.slice("routing.".length);
-    return new ValidationError(
-      `Unknown capability "${capability}".`,
-      `Use one of: ${PROVIDER_CAPABILITIES.join(", ")}.`,
-    );
+    return unknownCapabilityError(trimmed.slice("routing.".length));
   }
   return new ValidationError(
     `Unknown config key "${trimmed}".`,
@@ -510,14 +542,31 @@ export function unknownConfigKeyError(path: string): ValidationError {
   );
 }
 
+/**
+ * Serialize a config read-modify-write against overlapping processes.
+ * The file replacement itself is atomic, but two concurrent
+ * set/unset commands could otherwise read the same snapshot and the
+ * later write would silently drop the earlier command's change. Same
+ * advisory-lock pattern as cache writes (`async-file-lock.ts`); lock
+ * failures propagate — failing loud beats silently losing a change.
+ */
+async function serializeConfigWrite<T>(
+  options: ConfigKeyOptions,
+  run: () => Promise<T>,
+): Promise<T> {
+  const dir = path.dirname(options.filePath ?? configFilePath());
+  return withAsyncFileLock(dir, "config-write", run, {
+    timeoutMs: DEFAULT_LOCK_TIMEOUT_MS,
+    staleMs: DEFAULT_LOCK_STALE_MS,
+    timeoutLabel: "Config write",
+  });
+}
+
 /** Strict parse of a `routing.<capability>` value: comma-separated ids. */
 function parseRoutingValue(path: string, value: string): { capability: string; ids: ProviderId[] } {
   const capability = path.trim().slice("routing.".length);
   if (!new Set<string>(PROVIDER_CAPABILITIES).has(capability)) {
-    throw new ValidationError(
-      `Unknown capability "${capability}".`,
-      `Use one of: ${PROVIDER_CAPABILITIES.join(", ")}.`,
-    );
+    throw unknownCapabilityError(capability);
   }
   const ids: ProviderId[] = [];
   const seen = new Set<string>();
@@ -575,33 +624,35 @@ export async function setConfigValue(
       'Run "scoutline config --help" for the settable keys.',
     );
   }
-  const current = await readConfig(options);
-  let next: ScoutlineConfig;
-  if (key === KEY_FALLBACK_ENABLED) {
-    const lowered = value.trim().toLowerCase();
-    if (lowered !== "true" && lowered !== "false") {
+  return serializeConfigWrite(options, async () => {
+    const current = await readConfig(options);
+    let next: ScoutlineConfig;
+    if (key === KEY_FALLBACK_ENABLED) {
+      const lowered = value.trim().toLowerCase();
+      if (lowered !== "true" && lowered !== "false") {
+        throw new ValidationError(
+          `Invalid boolean "${value}".`,
+          "Use one of: true, false.",
+        );
+      }
+      next = { ...current, fallbackEnabled: lowered === "true" };
+    } else {
+      const { capability, ids } = parseRoutingValue(path, value);
+      const routing = { ...current.routing, [capability]: ids };
+      next = { ...current, routing };
+    }
+    const reparsed = parseConfig(JSON.stringify(next));
+    if (reparsed.warnings.length > 0) {
+      // Strictly validated values must round-trip warning-free; if they
+      // ever do not, refuse rather than store something unexpected.
       throw new ValidationError(
-        `Invalid boolean "${value}".`,
-        "Use one of: true, false.",
+        "Refusing to store a value that does not round-trip cleanly.",
+        "This is an internal invariant failure; please report it.",
       );
     }
-    next = { ...current, fallbackEnabled: lowered === "true" };
-  } else {
-    const { capability, ids } = parseRoutingValue(path, value);
-    const routing = { ...current.routing, [capability]: ids };
-    next = { ...current, routing };
-  }
-  const reparsed = parseConfig(JSON.stringify(next));
-  if (reparsed.warnings.length > 0) {
-    // Strictly validated values must round-trip warning-free; if they
-    // ever do not, refuse rather than store something unexpected.
-    throw new ValidationError(
-      "Refusing to store a value that does not round-trip cleanly.",
-      "This is an internal invariant failure; please report it.",
-    );
-  }
-  await writeConfig(reparsed.config, options);
-  return reparsed.config;
+    await writeConfig(reparsed.config, options);
+    return reparsed.config;
+  });
 }
 
 /**
@@ -618,53 +669,52 @@ export async function unsetConfigValue(
   if (key === null) {
     throw unknownConfigKeyError(path);
   }
-  const current = await readConfig(options);
-  let next: ScoutlineConfig;
-  const trimmed = path.trim();
-  if (trimmed === "routing") {
-    if (current.routing === undefined) {
+  return serializeConfigWrite(options, async () => {
+    const current = await readConfig(options);
+    let next: ScoutlineConfig;
+    const trimmed = path.trim();
+    if (trimmed === "routing") {
+      if (current.routing === undefined) {
+        throw new ValidationError(
+          '"routing" is not set.',
+          "Nothing to unset.",
+        );
+      }
+      const { routing: _drop, ...rest } = current;
+      void _drop;
+      next = rest;
+    } else if (trimmed.startsWith("routing.")) {
+      const capability = trimmed.slice("routing.".length);
+      if (!new Set<string>(PROVIDER_CAPABILITIES).has(capability)) {
+        throw unknownCapabilityError(capability);
+      }
+      if (current.routing?.[capability] === undefined) {
+        throw new ValidationError(
+          `"routing.${capability}" is not set.`,
+          "Nothing to unset.",
+        );
+      }
+      const routing = { ...current.routing };
+      delete routing[capability];
+      const { routing: _old, ...rest } = current;
+      void _old;
+      next = Object.keys(routing).length > 0 ? { ...rest, routing } : rest;
+    } else if (trimmed === "fallbackEnabled") {
+      if (current.fallbackEnabled === undefined) {
+        throw new ValidationError('"fallbackEnabled" is not set.', "Nothing to unset.");
+      }
+      const { fallbackEnabled: _fb, ...rest } = current;
+      void _fb;
+      next = rest;
+    } else {
       throw new ValidationError(
-        '"routing" is not set.',
-        "Nothing to unset.",
+        `"${key.path}" is not unsettable via config.`,
+        'Run "scoutline config --help" for the settable keys.',
       );
     }
-    const { routing: _drop, ...rest } = current;
-    void _drop;
-    next = rest;
-  } else if (trimmed.startsWith("routing.")) {
-    const capability = trimmed.slice("routing.".length);
-    if (!new Set<string>(PROVIDER_CAPABILITIES).has(capability)) {
-      throw new ValidationError(
-        `Unknown capability "${capability}".`,
-        `Use one of: ${PROVIDER_CAPABILITIES.join(", ")}.`,
-      );
-    }
-    if (current.routing?.[capability] === undefined) {
-      throw new ValidationError(
-        `"routing.${capability}" is not set.`,
-        "Nothing to unset.",
-      );
-    }
-    const routing = { ...current.routing };
-    delete routing[capability];
-    const { routing: _old, ...rest } = current;
-    void _old;
-    next = Object.keys(routing).length > 0 ? { ...rest, routing } : rest;
-  } else if (trimmed === "fallbackEnabled") {
-    if (current.fallbackEnabled === undefined) {
-      throw new ValidationError('"fallbackEnabled" is not set.', "Nothing to unset.");
-    }
-    const { fallbackEnabled: _fb, ...rest } = current;
-    void _fb;
-    next = rest;
-  } else {
-    throw new ValidationError(
-      `"${key.path}" is not unsettable via config.`,
-      'Run "scoutline config --help" for the settable keys.',
-    );
-  }
-  await writeConfig(next, options);
-  return next;
+    await writeConfig(next, options);
+    return next;
+  });
 }
 
 // ---------------------------------------------------------------------------

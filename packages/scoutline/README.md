@@ -397,8 +397,8 @@ the previous strict single-provider behavior.
 
 ### Breaking data-mode migration (v0.2 → v1)
 
-The three `repo` successes return **schema-version-1 structured values** in
-every output mode. This is an intentional breaking change from the v0.2 raw
+The `repo search`, `read`, `tree`, and `brief` successes return
+**schema-version-1 structured values** in every output mode. This is an intentional breaking change from the v0.2 raw
 Search/File strings and the depth-dependent raw Tree shape:
 
 | Command | v0.2 (legacy, now obsolete) | v1 (current) |

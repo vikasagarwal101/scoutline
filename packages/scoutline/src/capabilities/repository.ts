@@ -198,7 +198,13 @@ export interface RepoBriefProbeRecord {
 
 /**
  * Coverage section of the brief envelope. `probes` is total and
- * ordered: every focus-requested probe appears with a terminal status.
+ * ordered: one terminal record per Explorer call the brief attempted,
+ * plus one placeholder `read:<files>` record when the whole read stage
+ * was skipped (focus-excluded / dependency-failed). Read records are
+ * per-path, so a `files`-focused brief whose tree-derived selection is
+ * empty attempts zero reads and emits no read record — distinguish
+ * "requested but nothing selected" from "not requested" via `focus`
+ * plus `detected`, never by counting records.
  */
 export interface RepoBriefCoverage {
   readonly probes: readonly RepoBriefProbeRecord[];

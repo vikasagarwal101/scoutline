@@ -273,8 +273,10 @@ search, and read — into one schema-version-1 `RepositoryBrief` envelope.
 (default all four); focus gates the envelope sections, not the internal
 probes — the tree still runs when `readme`/`manifest`/`files` needs its
 paths. File selection is tree-derived and deterministic: the shallowest
-README plus one manifest per kind (`package.json`, `pyproject.toml`,
-`Cargo.toml`, `go.mod`), capped at 4 reads. `--max-chars` is a per-call
+README first, then one manifest per kind (`package.json`,
+`pyproject.toml`, `Cargo.toml`, `go.mod`) — capped at 4 reads total.
+The cap counts the README, so when a README is present only the first
+three manifest kinds are read (`go.mod` is the one dropped). `--max-chars` is a per-call
 budget forwarded to every search and read; the tree is never
 character-limited. A failed probe is recorded in `coverage.probes`
 (ok/failed/skipped with a stable code and redacted message) while the

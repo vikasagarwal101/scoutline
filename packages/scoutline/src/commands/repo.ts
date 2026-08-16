@@ -113,8 +113,9 @@ const README_BASENAME_RE = /^readme(?:\.[a-z0-9]+)?$/i;
  */
 function pathDepth(path: string): number {
   if (path.length === 0) return 0;
-  // split("/").length - 1 — root is excluded by the empty-string check
-  // above; an empty string returns 0, otherwise the count of segments.
+  // For non-empty paths the depth IS the segment count returned by
+  // split("/").length — no subtraction: the root ("") already returned
+  // 0 above, so "a" → 1 and "a/b" → 2, matching the JSDoc.
   return path.split("/").length;
 }
 
@@ -269,7 +270,10 @@ export interface RepoBriefOptions {
   /**
    * Requested focus, a subset of the sealed `REPO_BRIEF_FOCUS` set, in
    * caller order. Omitted defaults to all four. Non-empty; each token
-   * must be a sealed member (DESIGN D7 step 3).
+   * must be a sealed member (DESIGN D7 step 3). Duplicate tokens are
+   * collapsed preserving first occurrence, matching `parseBriefFocus`,
+   * so direct handler callers cannot smuggle duplicates into the
+   * envelope's `focus` field.
    */
   focus?: readonly RepoBriefFocus[];
   /** Tree-only scope (DESIGN D3: search/read have no path parameter). */
@@ -292,6 +296,14 @@ export interface RepoBriefOptions {
 export interface RepoHandlerDependencies {
   readonly capability: RepositoryCapability;
   readonly execution: ExecutionDependencies;
+  /**
+   * Invocation-resolved credential values used to redact failed-probe
+   * error messages. Injected by `src/index.ts` already resolved from
+   * the invocation's env (including injected credentials absent from
+   * ambient `process.env`). Omitted → the ambient `configuredSecrets()`
+   * fallback, mirroring `invokeCommand`'s output/error boundary.
+   */
+  readonly secrets?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -397,13 +409,14 @@ async function settleProbe<T>(
   kind: "tree" | "search" | "read",
   label: string,
   fn: () => Promise<T>,
+  secrets: readonly string[],
 ): Promise<SettledProbe<T>> {
   try {
     const value = await fn();
     probes.push({ kind, label, status: "ok" });
     return { ok: true, value };
   } catch (error) {
-    probes.push({ kind, label, status: "failed", error: probeErrorInfo(error) });
+    probes.push({ kind, label, status: "failed", error: probeErrorInfo(error, secrets) });
     return { ok: false, error };
   }
 }
@@ -412,10 +425,16 @@ async function settleProbe<T>(
  * Derive the stable code + redacted message for a probe failure record.
  * Mirrors the standard stderr boundary (`formatErrorOutput`): a shaped
  * error's `code` string is preserved, everything else falls back to
- * `UNKNOWN_ERROR`; the message is redacted against configured
- * credentials so no credential-shaped substring leaks into the envelope.
+ * `UNKNOWN_ERROR`; the message is redacted against the invocation's
+ * resolved credentials (threaded via `RepoHandlerDependencies.secrets`
+ * so injected-environment credentials absent from ambient `process.env`
+ * are still covered) so no credential-shaped substring leaks into the
+ * envelope.
  */
-function probeErrorInfo(error: unknown): { code: string; message: string } {
+function probeErrorInfo(
+  error: unknown,
+  secrets: readonly string[],
+): { code: string; message: string } {
   const code =
     error !== null &&
     typeof error === "object" &&
@@ -423,7 +442,7 @@ function probeErrorInfo(error: unknown): { code: string; message: string } {
       ? (error as { code: string }).code
       : "UNKNOWN_ERROR";
   const rawMessage = error instanceof Error ? error.message : String(error);
-  return { code, message: redactCredentialString(rawMessage, configuredSecrets()) };
+  return { code, message: redactCredentialString(rawMessage, [...secrets]) };
 }
 
 /**
@@ -484,7 +503,8 @@ export async function repoBrief(
   if (options.depth !== undefined) parseBriefDepth(options.depth);
   if (options.maxChars !== undefined) parseBriefMaxChars(options.maxChars);
 
-  const focus = options.focus ?? [...REPO_BRIEF_FOCUS];
+  const focus =
+    options.focus === undefined ? [...REPO_BRIEF_FOCUS] : [...new Set(options.focus)];
   if (focus.length === 0) {
     throw new ValidationError(
       "--focus must include at least one of: structure, readme, manifest, files",
@@ -506,6 +526,11 @@ export async function repoBrief(
   const probes: RepoBriefProbeRecord[] = [];
   let lastError: unknown = undefined;
 
+  // Invocation-resolved credentials for failed-probe redaction. Direct
+  // handler callers that omit `deps.secrets` get the ambient fallback
+  // (same posture as `invokeCommand`'s error boundary).
+  const secrets = deps.secrets ?? configuredSecrets();
+
   // Probe 1: tree — always runs (read-path selection and `detected`
   // both derive from it; DESIGN D1).
   const treeProbe = await settleProbe(probes, "tree", "tree", () =>
@@ -515,6 +540,7 @@ export async function repoBrief(
       { noCache: options.noCache },
       deps.execution,
     ),
+    secrets,
   );
   if (!treeProbe.ok) lastError = treeProbe.error;
 
@@ -528,6 +554,7 @@ export async function repoBrief(
         { noCache: options.noCache, maxChars: options.maxChars },
         deps.execution,
       ),
+      secrets,
     );
     if (probe.ok) docs = probe.value;
     else lastError = probe.error;
@@ -550,6 +577,7 @@ export async function repoBrief(
         { noCache: options.noCache, maxChars: options.maxChars },
         deps.execution,
       ),
+      secrets,
     );
     if (probe.ok) entryPoints = probe.value;
     else lastError = probe.error;
@@ -579,6 +607,7 @@ export async function repoBrief(
             { noCache: options.noCache, maxChars: options.maxChars },
             deps.execution,
           ),
+          secrets,
         );
         if (probe.ok) {
           files.push({

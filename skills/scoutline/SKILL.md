@@ -2,7 +2,7 @@
 name: scoutline
 description: |
   Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and Jina AI CLI providing:
-  - Vision: image/video analysis, OCR, UI-to-code, error diagnosis (GLM-4.6V)
+  - Vision: image/video analysis, OCR, UI-to-code, error diagnosis (GLM-5V-Turbo)
   - Search: real-time web search with domain/recency/topic filtering
   - Reader: web page to markdown extraction (Z.AI, Tavily, Exa, Firecrawl, Parallel, or Jina)
   - Crawl: multi-page website traversal (Tavily or Firecrawl)
@@ -19,7 +19,7 @@ description: |
 
 # Scoutline
 
-Access Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and Jina AI capabilities via `npx scoutline`. The
+Access Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and Jina AI capabilities via `npx scoutline@0.14.11`. The
 CLI is self-documenting — use `--help` at any level.
 
 ## Setup
@@ -62,9 +62,25 @@ Get an Exa key at: https://dashboard.exa.ai
 Run `scoutline init` once to record API keys in
 `~/.scoutline/config.json` (mode 0600) through an interactive wizard.
 The wizard validates each key with a single inline probe, supports
-re-config (edit/add/remove provider, change fallback), and repairs a
+re-config (edit/add/remove provider, change fallback, edit the
+routing table), and repairs a
 corrupt config (backup + rewrite). Non-interactive terminals are
 refused — set environment variables instead.
+
+### Settings via `scoutline config` (scriptable, no TTY)
+
+```bash
+npx scoutline@0.14.11 config get                        # full config, credentials always masked
+npx scoutline@0.14.11 config set routing.search tavily,brave   # strict: typos FAIL, not drop
+npx scoutline@0.14.11 config unset routing.search
+npx scoutline@0.14.11 config set fallbackEnabled false
+```
+
+The `routing` key sets a standing per-capability provider preference:
+with no `--provider` / `SCOUTLINE_PROVIDER` pin, the first
+configured-and-capable provider in the list wins (over quota ranking).
+Credential paths (`providers.<id>.apiKey`) refuse `set` — use `init`
+or env vars; API keys never belong in command arguments.
 
 ## Provider Selection
 
@@ -91,15 +107,16 @@ in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perpl
   (`ui-artifact`, `extract-text`, `diagnose-error`, `diagram`, `chart`)
   follow the same registry and are mediated by MiniMax's compiled
   conformance registry.
-- `quota` — Z.AI, MiniMax, Tavily, Firecrawl (credits), Brave.
-  Exa, Parallel AI, Perplexity, and Jina AI do not advertise quota.
+- `quota` — Z.AI, MiniMax, Tavily, Firecrawl (credits), Brave
+  (rate-limit window), Jina AI (rate-limit telemetry). Exa, Parallel AI,
+  and Perplexity do not advertise quota.
 - `diagnostics` — every built-in Provider (Z.AI, MiniMax, Tavily, Exa,
   Brave, Firecrawl, Parallel AI, Perplexity, Jina AI).
 - `read` — Z.AI, Tavily, Exa, Firecrawl, Parallel AI, Jina AI (MiniMax,
-  Brave, and Perplexity do not advertise it; Tavily/Exa/Firecrawl reject
-  Z.AI-only reader options: `--with-links`, `--no-gfm`,
-  `--keep-img-data-url`, `--with-images-summary`).
-- `repo` — Z.AI only (provider-exploration is Z.AI-supplied).
+  Brave, and Perplexity do not advertise it; Tavily/Exa/Firecrawl/Parallel
+  reject Z.AI-only reader options: `--with-links`, `--no-gfm`,
+  `--keep-img-data-url`, `--with-images-summary`; Jina maps them natively).
+- `repo` — Z.AI only (repository-exploration is Z.AI-supplied).
 - `crawl` — Tavily (sync), Firecrawl (async, resumable after Ctrl-C).
 - `map` — Tavily, Firecrawl.
 - `research` — Tavily, Exa, Parallel AI, Perplexity, Jina AI.
@@ -108,9 +125,10 @@ in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perpl
   create has no native fields).
 
 Z.AI is the only Provider that supplies `repo search/read/tree` and the
-Raw tools (`tools`, `tool`, `call`). Brave, Parallel AI, Perplexity, and
-Jina AI do not supply Reader (Brave/Perplexity), Crawl, Map, Research
-(only Parallel/Perplexity/Jina supply Research), or Vision. **Provider
+Raw tools (`tools`, `tool`, `call`). Reader is supplied by Z.AI, Tavily,
+Exa, Firecrawl, Parallel AI, and Jina AI; Crawl and Map by Tavily and
+Firecrawl only; Research by Tavily, Exa, Parallel AI, Perplexity, and
+Jina AI; Vision by Z.AI and MiniMax only. **Provider
 fallback is always-on by default**
 (0.11.0+): selecting a non-supplier emits a stderr notice and silently
 reroutes to the next eligible configured Provider in registry order
@@ -124,12 +142,12 @@ order on the effective Provider only.
 
 | Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | Command |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Search | Yes | Yes (no domain/recency/content-size/location) | Yes (no location) | Yes (no location) | Yes (web/news/video; `--content-size high` → LLM Context) | Yes (no location; `--content-size high` = markdown, +1 credit/result) | Yes (topic only; rejects other controls) | Yes (domain, recency, content-size; topic via keyword) | Yes (topic only; rejects other controls) | `scoutline search` |
+| Search | Yes | Yes (no domain/recency/content-size/location) | Yes (no location) | Yes (no location) | Yes (web/news/video; `--content-size high` → LLM Context) | Yes (no location; `--content-size high` = markdown, +1 credit/result) | Yes (domain, recency, location, content-size via `advanced_settings`; topic via keyword) | Yes (domain, recency, content-size; topic via keyword) | Yes (domain, location; rejects recency/content-size; topic via keyword) | `scoutline search` |
 | General single-image interpretation | Yes | Yes (JPG/JPEG/PNG/WebP ≤50 MiB) | No | No | No | No | No | No | No | `scoutline vision analyze` |
 | Specialized Vision (UI-to-code, OCR, error diagnosis, diagram) | Yes | Available (live-attested; conformance-gated) | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `vision extract-text`, `vision diagnose-error`, `vision diagram` |
 | Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | No | No | No | No | No | No | No | `scoutline vision chart` |
 | Two-image diff, video | Yes | No | No | No | No | No | No | No | No | `scoutline vision diff`, `vision video` |
-| Quota (normalized) | Yes | Yes | Yes | **No** (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | **No** | **No** | **No** | `scoutline quota [--all-providers]` |
+| Quota (normalized) | Yes | Yes | Yes | **No** (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | **No** | **No** | Yes (rate-limit telemetry, not spend) | `scoutline quota [--all-providers]` |
 | Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes (single-scrape probe) | Yes | Yes | Yes | `scoutline doctor [--no-tools]` |
 | Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes (rejects Z.AI-only options) | Yes (rejects Z.AI-only options) | **No** (UNSUPPORTED_CAPABILITY) | Yes (returns page titles) | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes | `scoutline read` |
 | Repository exploration (search/read/tree) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | `scoutline repo ...` |
@@ -149,10 +167,10 @@ to the active Provider.
 |---------|---------|------|
 | vision | Analyze images, screenshots, videos | `--help` for 8 subcommands |
 | search | Real-time web search | `--help` for filtering options (incl. `--topic`) |
-| read | Fetch web pages as markdown (Z.AI or Tavily) | `--help` for format options |
-| crawl | Multi-page website traversal (Tavily) | `--help` for depth/breadth/filters |
-| map | URL-set discovery without fetching pages (Tavily) | `--help` for depth/breadth/filters |
-| research | Deep research with citations (Tavily; 4-250 credits) | `--help` for model/citation/timeout |
+| read | Fetch web pages as markdown (six providers) | `--help` for format options |
+| crawl | Multi-page website traversal (Tavily or Firecrawl) | `--help` for depth/breadth/filters |
+| map | URL-set discovery without fetching pages (Tavily or Firecrawl) | `--help` for depth/breadth/filters |
+| research | Deep research with citations (five providers; 4-250 credits) | `--help` for model/citation/timeout |
 | repo | GitHub code search and reading (Z.AI) | `--help` for tree/search/read |
 | quota | Provider-normalized plan usage dashboard | `--help` for `--all-providers` |
 | tools | List available MCP tools (Z.AI) | |
@@ -167,49 +185,52 @@ to the active Provider.
 
 ```bash
 # Z.AI (default)
-npx scoutline vision analyze ./screenshot.png "What errors do you see?"
-npx scoutline search "React 19 new features" --count 5
-npx scoutline read https://docs.example.com/api
-npx scoutline read https://docs.example.com/api --with-images-summary --no-gfm
-npx scoutline repo search facebook/react "server components"
-npx scoutline repo search openai/codex "config" --language en
-npx scoutline repo tree openai/codex --path codex-rs --depth 2
-npx scoutline quota
-npx scoutline doctor
+npx scoutline@0.14.11 vision analyze ./screenshot.png "What errors do you see?"
+npx scoutline@0.14.11 search "React 19 new features" --count 5
+npx scoutline@0.14.11 read https://docs.example.com/api
+npx scoutline@0.14.11 read https://docs.example.com/api --with-images-summary --no-gfm
+npx scoutline@0.14.11 repo search facebook/react "server components"
+npx scoutline@0.14.11 repo search openai/codex "config" --language en
+npx scoutline@0.14.11 repo tree openai/codex --path codex-rs --depth 2
+npx scoutline@0.14.11 quota
+npx scoutline@0.14.11 doctor
 
 # MiniMax Token Plan
-npx scoutline --provider minimax search "AI policy news"
-npx scoutline --provider minimax vision analyze ./diagram.png "Explain this"
-npx scoutline --provider minimax quota
-npx scoutline doctor --provider minimax
+npx scoutline@0.14.11 --provider minimax search "AI policy news"
+npx scoutline@0.14.11 --provider minimax vision analyze ./diagram.png "Explain this"
+npx scoutline@0.14.11 --provider minimax quota
+npx scoutline@0.14.11 doctor --provider minimax
 
 # Tavily (Search, Reader, Crawl, Map, Research)
-npx scoutline --provider tavily search "AI funding rounds" --topic news
-npx scoutline --provider tavily read https://example.com/
-npx scoutline --provider tavily crawl https://docs.example.com --depth 2
-npx scoutline --provider tavily map https://docs.example.com
-npx scoutline --provider tavily research "Rust async runtime comparison"
-npx scoutline doctor --provider tavily
+npx scoutline@0.14.11 --provider tavily search "AI funding rounds" --topic news
+npx scoutline@0.14.11 --provider tavily read https://example.com/
+npx scoutline@0.14.11 --provider tavily crawl https://docs.example.com --depth 2
+npx scoutline@0.14.11 --provider tavily map https://docs.example.com
+npx scoutline@0.14.11 --provider tavily research "Rust async runtime comparison"
+npx scoutline@0.14.11 doctor --provider tavily
 
 # Exa (Search, Reader, Research)
-npx scoutline --provider exa search "latest AI research" --topic news
-npx scoutline --provider exa read https://example.com/
-npx scoutline --provider exa research "Compare Rust async runtimes"
-npx scoutline doctor --provider exa
+npx scoutline@0.14.11 --provider exa search "latest AI research" --topic news
+npx scoutline@0.14.11 --provider exa read https://example.com/
+npx scoutline@0.14.11 --provider exa research "Compare Rust async runtimes"
+npx scoutline@0.14.11 doctor --provider exa
 
 # Brave (Search: web, news, video)
-npx scoutline --provider brave search "AI policy news" --topic news
-npx scoutline --provider brave search "rust async" --type video
-npx scoutline --provider brave search "large context topic" --content-size high
-npx scoutline --provider brave quota
-npx scoutline doctor --provider brave
+npx scoutline@0.14.11 --provider brave search "AI policy news" --topic news
+npx scoutline@0.14.11 --provider brave search "rust async" --type video
+npx scoutline@0.14.11 --provider brave search "large context topic" --content-size high
+npx scoutline@0.14.11 --provider brave quota
+npx scoutline@0.14.11 doctor --provider brave
 
 # All-Provider quota
-npx scoutline quota --all-providers
+npx scoutline@0.14.11 quota --all-providers
 
 # Local cache inspection and clearing
-npx scoutline cache stats                 # inventory both subdirectories
-npx scoutline cache clear                 # delete every file in cache/ and tools/
+npx scoutline@0.14.11 cache stats                 # inventory both subdirectories
+npx scoutline@0.14.11 cache clear                 # delete every file in cache/ and tools/
+
+# Config (see "Settings via scoutline config" above)
+npx scoutline@0.14.11 config get routing
 ```
 
 ## Repository Exploration

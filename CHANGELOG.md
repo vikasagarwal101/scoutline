@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Per-capability provider routing + `config` command family
+
+- **Routing table (`config.json` `routing` key):** an optional per-capability ordered provider preference list. When no explicit `--provider` / `SCOUTLINE_PROVIDER` pin exists, the first configured-and-capable provider in the routed list is selected for that capability — routing is an instruction, not a hint: it wins over quota ranking. Routing never reduces availability (no eligible routed provider → the existing quota-ranked path unchanged), and explicit pins always bypass it. Load-time validation is lenient: unknown provider ids (`UNKNOWN_PROVIDER`) and unknown capability keys (new `UNKNOWN_CAPABILITY`) warn and drop, never failing config load. Known trade-off: an older binary that rewrites the config drops the key (accepted over a `version` bump, which would hard-fail older binaries).
+- **`scoutline config get/set/unset`:** a scriptable, non-TTY settings surface over a typed key registry (`fallbackEnabled`, `routing` / `routing.<capability>`, read-only `providers.<id>`). `get` output is always redacted (credential values masked by value match and by field name); `set` is strict — a typo'd provider or capability fails with the accepted list instead of storing something different — and credential-bearing paths refuse outright with a pointer to `init` / env vars (API keys never ride command arguments). Writes are atomic read-modify-write with a round-trip re-parse guarantee.
+- **Config family hardening:** `config` commands run before the credential-bearing config load, so a corrupt `config.json` never blocks inspecting or changing settings. Typos fail fast everywhere they can be typed: unknown capabilities and unknown provider ids are rejected with the accepted list, provider field paths (`providers.<id>.<field>`) are refused by `get` rather than dumping the whole provider object, and trailing unexpected arguments are rejected instead of silently ignored. Concurrent `config set`/`config unset` invocations serialize through an advisory lock (same pattern as cache writes), so overlapping changes can no longer silently overwrite each other. `set`/`unset` surface write-time config warnings. The `init` routing editor accepts mixed-case capability keys. Skill docs pin `npx scoutline@<version>` examples; README/roadmap provider-quota, search-controls, and shipped-feature references re-synced.
+- **`scoutline init`** re-config menu gains an "Edit routing table" action (interactive wizard for humans; `config` for scripts/agents — both funnel through the same validation). **`scoutline doctor`** embeds the effective routing table additively (`routing` field; schemaVersion stays 2) and its help documents the full selection precedence.
+
+### Documentation: provider-neutral canonization + v2 plan seeds
+
+- **Doc-drift fix (provider-agnostic behavior canonized):** `docs/architecture.md` no longer speaks the two-provider dialect — the Search section now documents the full per-provider control matrix (incl. Parallel's `advanced_settings` controls and Jina's `X-Site`/`gl`, shipped in 0.14.6 but undocumented); Reader/Crawl/Map/Research sections list the real supplier sets (reader: six providers; research: five); the diagnostics-inventory paragraphs derive from the current nine-provider matrix. `skills/scoutline/references/advanced.md`, `skills/scoutline/SKILL.md` (quota now includes Jina; command one-liners fixed; `repository-exploration` typo), `docs/configuration.md` (stale "storage substrate only" paragraph removed; quota-aware selection marked shipped; always-unknown tier table completed with jina/parallel/perplexity), and `README.md` (Search Controls completed for Parallel/Jina/Firecrawl/Perplexity) are aligned to the same facts.
+- **PB-T2 honesty note:** `architecture.md` now documents that the consumption seam is wired end-to-end for vision only — the other shared handlers do not yet thread the sink (matching the wiring notes in `src/index.ts`); completing the wiring and adding a retained ledger are open follow-ups.
+
+### Vision default model upgraded to GLM-5V-Turbo
+
+- **Default vision model changed from `glm-4.6v` to `glm-5v-turbo`** (the correct API identifier for Z.AI's GLM-5V-Turbo vision model — there is no `glm-5.0v`). Verified live against the Coding Plan endpoint (`api.z.ai/api/coding/paas/v4`): a vision analysis request with `glm-5v-turbo` succeeds. Override remains available via `Z_AI_VISION_MODEL`. README, `docs/configuration.md`, and `skills/scoutline/` updated to match.
+
 ## [0.14.11] - 2026-08-09
 
 ### Post-arc tech-debt cleanup (cache lock + Z.AI boundary cast)

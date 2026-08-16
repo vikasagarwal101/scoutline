@@ -1186,3 +1186,44 @@ describe("createDefaultHintShownStore (config-store, T3b)", () => {
     });
   });
 });
+
+// ===========================================================================
+// Routing surface (routing-table plan, Ticket 6) — additive report field.
+// ===========================================================================
+
+describe("doctor routing field", () => {
+  async function buildReportWith(overrides = {}) {
+    const { buildDiagnosticsReport } = await import("../dist/commands/doctor.js");
+    return buildDiagnosticsReport({
+      noTools: true,
+      effectiveProvider: "zai",
+      descriptors: [],
+      env: {},
+      sleep: async () => {},
+      random: () => 0.5,
+      ...overrides,
+    });
+  }
+
+  it("embeds the effective routing table additively", async () => {
+    const report = await buildReportWith({ routing: { search: ["tavily", "brave"] } });
+    assert.strictEqual(report.schemaVersion, 2);
+    assert.deepStrictEqual(report.routing, { search: ["tavily", "brave"] });
+  });
+
+  it("omits the field when no routing is configured", async () => {
+    const report = await buildReportWith();
+    assert.strictEqual("routing" in report, false);
+  });
+
+  it("omits the field for an empty (all-dropped) table", async () => {
+    const report = await buildReportWith({ routing: {} });
+    assert.strictEqual("routing" in report, false);
+  });
+
+  it("help documents the routing precedence and config surface", async () => {
+    const { DOCTOR_HELP } = await import("../dist/commands/doctor.js");
+    assert.ok(DOCTOR_HELP.includes("routing table"));
+    assert.ok(DOCTOR_HELP.includes("config set routing"));
+  });
+});

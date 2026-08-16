@@ -21,6 +21,12 @@ import {
   type CacheStatsReport,
   type CacheClearReport,
 } from "./commands/cache.js";
+import {
+  CONFIG_HELP,
+  configGetCommand,
+  configSetCommand,
+  configUnsetCommand,
+} from "./commands/config.js";
 import { cacheStats, clearAllCaches } from "./lib/cache.js";
 import { isExtractMode, type ExtractMode } from "./lib/extract.js";
 import {
@@ -38,10 +44,19 @@ import {
   UnsupportedCapabilityError,
   getErrorExitCode,
 } from "./lib/errors.js";
+import * as os from "node:os";
 import { invokeCommand, type CommandInvocationAdapter } from "./command-invocation.js";
 import { defaultResponseCache, type ResponseCache } from "./lib/cache.js";
 import { configuredSecrets } from "./lib/redact.js";
-import { resolveEnvFromConfig, type ScoutlineConfig } from "./lib/config-store.js";
+import {
+  configFilePath,
+  readConfig,
+  resolveConfigRootPure,
+  resolveEnvFromConfig,
+  setConfigValue,
+  unsetConfigValue,
+  type ScoutlineConfig,
+} from "./lib/config-store.js";
 import {
   inspectConfig,
   createDefaultVerificationPromoter,
@@ -331,6 +346,12 @@ interface HandlerDependencies {
   readonly provider?: string;
   readonly providerDescriptors: readonly ProviderDescriptor[];
   readonly fallbackEnabled: boolean;
+  /**
+   * Validated per-capability routing preference (routing-table plan).
+   * Absent → handlers pass `routing: undefined` and selection is
+   * byte-identical to pre-routing behavior.
+   */
+  readonly routing?: Readonly<Record<string, readonly ProviderId[]>>;
   readonly searchCache: ResponseCache;
   readonly searchSleep: (ms: number) => Promise<void>;
   readonly searchRandom: () => number;
@@ -456,6 +477,7 @@ async function handleVision(
     capabilityId,
     descriptors: deps.providerDescriptors,
     quotaSnapshot: deps.quotaState,
+    routing: deps.routing,
   });
 
   // Vision bypasses the response cache (FR-022). The shared execution
@@ -742,6 +764,7 @@ async function handleSearch(
     capabilityId: "search",
     descriptors: deps.providerDescriptors,
     quotaSnapshot: deps.quotaState,
+    routing: deps.routing,
   });
 
   const query = positional.join(" ");
@@ -858,6 +881,7 @@ async function handleRead(
     capabilityId: "reader",
     descriptors: deps.providerDescriptors,
     quotaSnapshot: deps.quotaState,
+    routing: deps.routing,
   });
 
   const readOptions = {
@@ -954,6 +978,7 @@ async function handleCrawl(
     capabilityId: "crawl",
     descriptors: deps.providerDescriptors,
     quotaSnapshot: deps.quotaState,
+    routing: deps.routing,
   });
 
   // Shared Crawl execution dependencies. The cache/sleep/random default
@@ -1050,6 +1075,7 @@ async function handleMap(
     capabilityId: "map",
     descriptors: deps.providerDescriptors,
     quotaSnapshot: deps.quotaState,
+    routing: deps.routing,
   });
 
   // Shared Map execution dependencies. The cache/sleep/random default
@@ -1151,6 +1177,7 @@ async function handleResearch(
     capabilityId: "research",
     descriptors: deps.providerDescriptors,
     quotaSnapshot: deps.quotaState,
+    routing: deps.routing,
   });
 
   // Shared Research execution dependencies.
@@ -1327,6 +1354,7 @@ async function handleRepo(
     capabilityId: "repository-exploration",
     descriptors: deps.providerDescriptors,
     quotaSnapshot: deps.quotaState,
+    routing: deps.routing,
   });
 
   // Shared Repository execution dependencies. The cache/sleep/random
@@ -1536,6 +1564,7 @@ async function handleDoctor(
             env: deps.env,
             sleep: deps.searchSleep,
             random: deps.searchRandom,
+            routing: deps.routing,
             cacheSummary,
             // T3b: thread the injected promoter + clock through to the
             // report builder so a successful probe can flip the matching
@@ -1577,6 +1606,115 @@ async function handleDoctor(
  * helpers owned by `src/lib/cache.ts` (Ticket 01) through the
  * presentation-only handlers in `src/commands/cache.ts`.
  */
+async function handleConfig(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+): Promise<number> {
+  const { flags, positional } = parseArgs(args);
+
+  if (flags.help || flags.h || positional.length === 0) {
+    deps.invocation.writeStdout(CONFIG_HELP);
+    return 0;
+  }
+
+  // Config-store warnings (lenient load-time validation) surface on
+  // stderr through the invocation adapter so test harnesses observe
+  // them. The messages are our own static strings, not provider-authored.
+  const onWarning = (warning: { message: string }): void => {
+    deps.invocation.writeStderr(`Warning: ${warning.message}\n`);
+  };
+
+  // Config I/O resolves against the INJECTED env (which production
+  // derives from process.env, and hermetic tests override with
+  // SCOUTLINE_CONFIG_DIR) — never directly against process.env, so the
+  // handler never reads or writes outside the invocation's environment.
+  const configOptions = {
+    filePath: configFilePath(
+      resolveConfigRootPure(deps.env, { homedir: os.homedir() }),
+    ),
+    onWarning,
+  };
+
+  const subcommand = positional[0];
+  switch (subcommand) {
+    case "get":
+      if (positional.length > 2) {
+        throw new ValidationError(
+          `config get takes at most one key (got ${positional.length - 1} arguments).`,
+          "Usage: scoutline config get [key]",
+        );
+      }
+      return invokeCommand(
+        deps.invocation,
+        () =>
+          configGetCommand(positional[1], {
+            read: () => readConfig(configOptions),
+            secrets: () => configuredSecrets(deps.env),
+          }),
+        outputMode,
+        deps.now,
+        deps.secrets,
+      );
+    case "set": {
+      const setPath = positional[1];
+      const setValue = positional[2];
+      if (setPath === undefined || setValue === undefined) {
+        throw new ValidationError(
+          "config set requires a key and a value",
+          "Usage: scoutline config set <key> <value>",
+        );
+      }
+      if (positional.length > 3) {
+        throw new ValidationError(
+          `config set takes exactly a key and a value (got ${positional.length - 1} arguments).`,
+          "Usage: scoutline config set <key> <value>",
+        );
+      }
+      return invokeCommand(
+        deps.invocation,
+        () =>
+          configSetCommand(setPath, setValue, {
+            set: (path, value) => setConfigValue(path, value, configOptions),
+          }),
+        outputMode,
+        deps.now,
+        deps.secrets,
+      );
+    }
+    case "unset": {
+      const unsetPath = positional[1];
+      if (unsetPath === undefined) {
+        throw new ValidationError(
+          "config unset requires a key",
+          "Usage: scoutline config unset <key>",
+        );
+      }
+      if (positional.length > 2) {
+        throw new ValidationError(
+          `config unset takes exactly one key (got ${positional.length - 1} arguments).`,
+          "Usage: scoutline config unset <key>",
+        );
+      }
+      return invokeCommand(
+        deps.invocation,
+        () =>
+          configUnsetCommand(unsetPath, {
+            unset: (path) => unsetConfigValue(path, configOptions),
+          }),
+        outputMode,
+        deps.now,
+        deps.secrets,
+      );
+    }
+    default:
+      throw new ValidationError(
+        `Unknown config command: ${subcommand}`,
+        'Run "scoutline config --help" for available commands',
+      );
+  }
+}
+
 async function handleCache(
   args: string[],
   outputMode: OutputMode,
@@ -2126,6 +2264,7 @@ export async function main(
     credEnv: NodeJS.ProcessEnv,
     credSecrets: string[],
     credFallback: boolean,
+    credRouting: HandlerDependencies["routing"] = undefined,
   ): HandlerDependencies => ({
     invocation,
     env: credEnv,
@@ -2134,6 +2273,7 @@ export async function main(
     provider,
     providerDescriptors,
     fallbackEnabled: credFallback,
+    routing: credRouting,
     searchCache,
     searchSleep,
     searchRandom,
@@ -2223,6 +2363,22 @@ export async function main(
     };
     try {
       return await handleInitWithHelp(commandArgs, initDeps);
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
+  // `config` manages config.json itself through the typed key registry:
+  // its own read/parse/write resolves against the INJECTED env, never
+  // resolvedEnv, so the dispatcher's inspected file (ambient env) can
+  // never diverge from the file the command acts on. Short-circuit
+  // before the credentialed config load so a corrupt or unreadable
+  // config.json never blocks the command family documented to inspect
+  // and repair it (same rationale as `cache`/`init`).
+  if (command === "config") {
+    try {
+      return await handleConfig(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
       return getErrorExitCode(error);
@@ -2343,7 +2499,7 @@ export async function main(
   const fallbackEnabled =
     noFallback || envDisablesFallback ? false : (config.fallbackEnabled ?? true);
 
-  const handlerDeps = buildHandlerDeps(resolvedEnv, secrets, fallbackEnabled);
+  const handlerDeps = buildHandlerDeps(resolvedEnv, secrets, fallbackEnabled, config.routing);
 
   // PB-T5 — derive Plan A verification records from the loaded config
   // AFTER `config` is in scope. `buildHandlerDeps` runs once BEFORE

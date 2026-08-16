@@ -836,3 +836,259 @@ describe("resolveEffectiveProvider: observational + raw handlers bypass ranking"
     assert.ok(stdout.length > 0, "tools --help must produce help text");
   });
 });
+
+// ===========================================================================
+// Routing preference (routing-table plan, Ticket 1) — an ordered
+// per-capability list that wins over quota ranking for the FIRST pick,
+// never reduces availability, and is bypassed by every pin path.
+// ===========================================================================
+
+describe("resolveEffectiveProvider: routing preference", () => {
+  it("routed first pick wins over a higher-quota unrouted known provider", async () => {
+    // Without routing this fixture resolves to tavily (95% > 25%).
+    // The routed list is an instruction, not a hint (plan DESIGN D1).
+    const snapshot = await stateWith([
+      { provider: "zai", categories: ZAI_CATEGORIES_25 },
+      { provider: "tavily", categories: TAVILY_CATEGORIES_95 },
+    ]);
+    const result = resolveEffectiveProvider({
+      explicitProvider: undefined,
+      env: { Z_AI_API_KEY: "z", TAVILY_API_KEY: "t" },
+      capabilityId: "search",
+      descriptors: [
+        makeDescriptor("zai", { configured: true, capabilities: ["search"] }),
+        makeDescriptor("tavily", { configured: true, capabilities: ["search"] }),
+      ],
+      quotaSnapshot: snapshot,
+      routing: { search: ["zai"] },
+    });
+    assert.strictEqual(result, "zai");
+  });
+
+  it("routed order honored: first entry unconfigured falls to the next", async () => {
+    const snapshot = await stateWith([
+      { provider: "zai", categories: ZAI_CATEGORIES_25 },
+    ]);
+    const result = resolveEffectiveProvider({
+      explicitProvider: undefined,
+      env: { Z_AI_API_KEY: "z", BRAVE_API_KEY: "b" },
+      capabilityId: "search",
+      descriptors: [
+        makeDescriptor("zai", { configured: true, capabilities: ["search"] }),
+        makeDescriptor("tavily", { configured: false, capabilities: ["search"] }),
+        makeDescriptor("brave", { configured: true, capabilities: ["search"] }),
+      ],
+      quotaSnapshot: snapshot,
+      routing: { search: ["tavily", "brave"] },
+    });
+    assert.strictEqual(result, "brave");
+  });
+
+  it("routed provider incapable for the capability is skipped", async () => {
+    const snapshot = await stateWith([
+      { provider: "zai", categories: ZAI_CATEGORIES_25 },
+    ]);
+    const result = resolveEffectiveProvider({
+      explicitProvider: undefined,
+      env: { Z_AI_API_KEY: "z", MINIMAX_API_KEY: "m" },
+      capabilityId: "search",
+      descriptors: [
+        makeDescriptor("zai", { configured: true, capabilities: ["search"] }),
+        makeDescriptor("minimax", { configured: true, capabilities: ["vision"] }),
+      ],
+      quotaSnapshot: snapshot,
+      routing: { search: ["minimax"] },
+    });
+    assert.strictEqual(result, "zai");
+  });
+
+  it("no routed provider eligible -> identical to the same input without routing", async () => {
+    const snapshot = await stateWith([
+      { provider: "zai", categories: ZAI_CATEGORIES_25 },
+      { provider: "tavily", categories: TAVILY_CATEGORIES_95 },
+    ]);
+    const descriptors = [
+      makeDescriptor("zai", { configured: true, capabilities: ["search"] }),
+      makeDescriptor("tavily", { configured: false, capabilities: ["search"] }),
+    ];
+    const options = {
+      explicitProvider: undefined,
+      env: { Z_AI_API_KEY: "z" },
+      capabilityId: "search",
+      descriptors,
+      quotaSnapshot: snapshot,
+    };
+    const unrouted = resolveEffectiveProvider(options);
+    const routed = resolveEffectiveProvider({ ...options, routing: { search: ["tavily"] } });
+    assert.strictEqual(routed, unrouted);
+  });
+
+  it("explicit pin ignores routing entirely", async () => {
+    const snapshot = await stateWith([
+      { provider: "zai", categories: ZAI_CATEGORIES_25 },
+    ]);
+    const result = resolveEffectiveProvider({
+      explicitProvider: "tavily",
+      env: { TAVILY_API_KEY: "t" },
+      capabilityId: "search",
+      descriptors: [
+        makeDescriptor("zai", { configured: true, capabilities: ["search"] }),
+        makeDescriptor("tavily", { configured: true, capabilities: ["search"] }),
+      ],
+      quotaSnapshot: snapshot,
+      routing: { search: ["zai"] },
+    });
+    assert.strictEqual(result, "tavily");
+  });
+
+  it("env pin ignores routing entirely", async () => {
+    const snapshot = await stateWith([
+      { provider: "zai", categories: ZAI_CATEGORIES_25 },
+    ]);
+    const result = resolveEffectiveProvider({
+      explicitProvider: undefined,
+      env: { SCOUTLINE_PROVIDER: "tavily", TAVILY_API_KEY: "t" },
+      capabilityId: "search",
+      descriptors: [
+        makeDescriptor("zai", { configured: true, capabilities: ["search"] }),
+        makeDescriptor("tavily", { configured: true, capabilities: ["search"] }),
+      ],
+      quotaSnapshot: snapshot,
+      routing: { search: ["zai"] },
+    });
+    assert.strictEqual(result, "tavily");
+  });
+
+  it("routing for a different capability is not consulted", async () => {
+    const snapshot = await stateWith([
+      { provider: "zai", categories: ZAI_CATEGORIES_25 },
+      { provider: "tavily", categories: TAVILY_CATEGORIES_95 },
+    ]);
+    const result = resolveEffectiveProvider({
+      explicitProvider: undefined,
+      env: { Z_AI_API_KEY: "z", TAVILY_API_KEY: "t" },
+      capabilityId: "search",
+      descriptors: [
+        makeDescriptor("zai", { configured: true, capabilities: ["search", "crawl"] }),
+        makeDescriptor("tavily", { configured: true, capabilities: ["search"] }),
+      ],
+      quotaSnapshot: snapshot,
+      routing: { crawl: ["zai"] },
+    });
+    assert.strictEqual(result, "tavily");
+  });
+
+  it("routing absent -> byte-identical to pre-routing behavior (golden)", async () => {
+    const snapshot = await stateWith([
+      { provider: "zai", categories: ZAI_CATEGORIES_25 },
+      { provider: "tavily", categories: TAVILY_CATEGORIES_95 },
+    ]);
+    const options = {
+      explicitProvider: undefined,
+      env: { Z_AI_API_KEY: "z", TAVILY_API_KEY: "t" },
+      capabilityId: "search",
+      descriptors: [
+        makeDescriptor("zai", { configured: true, capabilities: ["search"] }),
+        makeDescriptor("tavily", { configured: true, capabilities: ["search"] }),
+      ],
+      quotaSnapshot: snapshot,
+    };
+    // No routing field at all, and an explicitly-undefined field, must
+    // both resolve exactly as the pre-change resolver did: tavily.
+    assert.strictEqual(resolveEffectiveProvider(options), "tavily");
+    assert.strictEqual(
+      resolveEffectiveProvider({ ...options, routing: undefined }),
+      "tavily",
+    );
+  });
+});
+
+// ===========================================================================
+// Dispatcher routing threading (routing-table plan, Ticket 5) — a
+// routing entry in config.json drives the effective provider for the
+// next command, with no pin present. Quota ranking would pick tavily
+// (95% > 25%); routing says zai.
+// ===========================================================================
+
+describe("routing table drives dispatch selection", () => {
+  it("config.json routing.search picks the routed provider over quota ranking", async (t) => {
+    const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+    const os = await import("node:os");
+    const pathMod = await import("node:path");
+    const dir = await mkdtemp(pathMod.join(os.tmpdir(), "scoutline-routing-dispatch-"));
+    t.after(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+    await writeFile(
+      pathMod.join(dir, "config.json"),
+      JSON.stringify({ version: 1, providers: {}, routing: { search: ["zai"] } }),
+    );
+
+    const snapshot = await stateWith([
+      { provider: "zai", categories: ZAI_CATEGORIES_25 },
+      { provider: "tavily", categories: TAVILY_CATEGORIES_95 },
+    ]);
+    const built = [
+      makeDispatchDescriptor("zai", "Z_AI_API_KEY", "search", () => []),
+      makeDispatchDescriptor("tavily", "TAVILY_API_KEY", "search", () => []),
+    ];
+    const { adapter } = createTestAdapter();
+
+    const { readConfig } = await import("../dist/lib/config-store.js");
+    const status = await main(["search", "hello"], {
+      invocation: adapter,
+      env: {
+        SCOUTLINE_CONFIG_DIR: dir,
+        Z_AI_API_KEY: "z",
+        TAVILY_API_KEY: "t",
+      },
+      loadScoutlineConfig: () =>
+        readConfig({ filePath: pathMod.join(dir, "config.json"), onWarning: () => {} }),
+      providerDescriptors: built.map((b) => b.descriptor),
+      quotaState: snapshot,
+      searchCache: makeInMemoryCache(),
+      searchSleep: async () => {},
+      searchRandom: () => 0.5,
+    });
+    assert.strictEqual(status, 0);
+    const firstInvoked = built.find((b) => b.invokes.length > 0);
+    assert.ok(firstInvoked, "at least one provider must be invoked");
+    assert.strictEqual(firstInvoked.descriptor.id, "zai");
+  });
+
+  it("without a routing table, the same fixture still picks the quota winner", async (t) => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const os = await import("node:os");
+    const pathMod = await import("node:path");
+    const dir = await mkdtemp(pathMod.join(os.tmpdir(), "scoutline-routing-dispatch-"));
+    t.after(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    const snapshot = await stateWith([
+      { provider: "zai", categories: ZAI_CATEGORIES_25 },
+      { provider: "tavily", categories: TAVILY_CATEGORIES_95 },
+    ]);
+    const built = [
+      makeDispatchDescriptor("zai", "Z_AI_API_KEY", "search", () => []),
+      makeDispatchDescriptor("tavily", "TAVILY_API_KEY", "search", () => []),
+    ];
+    const { adapter } = createTestAdapter();
+
+    const { readConfig } = await import("../dist/lib/config-store.js");
+    const status = await main(["search", "hello"], {
+      invocation: adapter,
+      env: { SCOUTLINE_CONFIG_DIR: dir, Z_AI_API_KEY: "z", TAVILY_API_KEY: "t" },
+      loadScoutlineConfig: () =>
+        readConfig({ filePath: pathMod.join(dir, "config.json"), onWarning: () => {} }),
+      providerDescriptors: built.map((b) => b.descriptor),
+      quotaState: snapshot,
+      searchCache: makeInMemoryCache(),
+      searchSleep: async () => {},
+      searchRandom: () => 0.5,
+    });
+    assert.strictEqual(status, 0);
+    const firstInvoked = built.find((b) => b.invokes.length > 0);
+    assert.strictEqual(firstInvoked.descriptor.id, "tavily");
+  });
+});

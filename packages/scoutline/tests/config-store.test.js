@@ -499,18 +499,20 @@ describe("config key registry", () => {
     });
   });
 
-  it("lock-acquisition failures surface as ConfigurationError; run errors pass through", async (t) => {
+  it("lock-create failures surface as ConfigurationError with permission advice; run errors pass through", async (t) => {
     await withTempDir(t, async (dir) => {
       const blocker = path.join(dir, "blocker");
       await fs.writeFile(blocker, "not a directory");
       const { setConfigValue } = await import("../dist/lib/config-store.js");
       // dirname(filePath) is a regular file, so the lock create fails
-      // with ENOTDIR (a non-EEXIST open error): a lock-level failure
-      // that must land in the writeConfig ConfigurationError contract.
+      // with ENOTDIR (a non-EEXIST open error): an environment failure
+      // that must land in the writeConfig ConfigurationError contract
+      // with permission advice, NOT the contention/try-again advice.
       const filePath = path.join(blocker, "config.json");
       await assert.rejects(
         () => setConfigValue("fallbackEnabled", "true", { filePath }),
-        (error) => error.name === "ConfigurationError",
+        (error) =>
+          error.name === "ConfigurationError" && error.help.includes("permissions"),
       );
       // A validation failure inside the locked section stays a
       // ValidationError, never the lock/ConfigurationError wrap.
@@ -521,6 +523,20 @@ describe("config key registry", () => {
         (error) => error.name === "ValidationError",
       );
     });
+  });
+
+  it("lock timeout vs environment failure get distinct advice", async () => {
+    const { lockFailureToConfigurationError } = await import("../dist/lib/config-store.js");
+    const timeout = lockFailureToConfigurationError(
+      new Error("Config write create-lock timed out"),
+    );
+    assert.strictEqual(timeout.name, "ConfigurationError");
+    assert.ok(timeout.help.includes("holds the config-write lock"), timeout.help);
+    assert.ok(!timeout.help.includes("permissions"), timeout.help);
+    const eacces = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    const environment = lockFailureToConfigurationError(eacces);
+    assert.ok(environment.help.includes("permissions"), environment.help);
+    assert.ok(!environment.help.includes("holds the config-write lock"), environment.help);
   });
 
   it("resolveConfigKey validates provider ids and splits field paths", async () => {

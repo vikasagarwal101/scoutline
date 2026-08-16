@@ -587,11 +587,32 @@ async function serializeConfigWrite<T>(
     if (typeof error === "object" && error !== null && raisedByRun.has(error)) {
       throw error;
     }
-    throw new ConfigurationError(
+    throw lockFailureToConfigurationError(error);
+  }
+}
+
+/**
+ * Map a lock-level failure (never a `run()` error — the WeakSet in
+ * {@link serializeConfigWrite} has already excluded those) onto the
+ * writeConfig `ConfigurationError` contract, with advice that matches
+ * the cause. `withAsyncFileLock` raises exactly two failure shapes:
+ * an acquire-deadline timeout (genuine contention — retrying later
+ * can succeed) and raw non-EEXIST `fs.open` errors such as ENOTDIR or
+ * EACCES (environment problems — retrying cannot fix them). The
+ * timeout is recognized by its message tail, the one stable part of
+ * `${timeoutLabel} create-lock timed out`.
+ */
+export function lockFailureToConfigurationError(error: unknown): ConfigurationError {
+  if (error instanceof Error && error.message.endsWith("create-lock timed out")) {
+    return new ConfigurationError(
       "Unable to write config.json",
-      "The config-write lock could not be acquired; another scoutline process may be writing. Try again.",
+      "Another scoutline process holds the config-write lock; try again once it finishes.",
     );
   }
+  return new ConfigurationError(
+    "Unable to write config.json",
+    "The config-write lock could not be created; check the config directory permissions and try again.",
+  );
 }
 
 /** Strict parse of a `routing.<capability>` value: comma-separated ids. */

@@ -25,15 +25,21 @@
 
 import type { CommandContext, CommandResult } from "../command-invocation.js";
 import type {
+  RepositoryBrief,
   RepositoryCapability,
+  RepositorySearchResult,
   RepositoryTreeResult,
+  RepoBriefDetected,
+  RepoBriefFileEntry,
   RepoBriefFocus,
+  RepoBriefProbeRecord,
   RepoManifestKind,
 } from "../capabilities/repository.js";
 import type { ExecutionDependencies } from "../lib/execution.js";
 import { OUTPUT_MODES } from "../lib/output.js";
 import { explorerSearch, explorerReadFile, explorerTree } from "./repository-explorer.js";
 import { ValidationError } from "../lib/errors.js";
+import { configuredSecrets, redactCredentialString } from "../lib/redact.js";
 
 // ---------------------------------------------------------------------------
 // Parse-level validation
@@ -259,6 +265,23 @@ export interface RepoReadOptions {
   noCache?: boolean;
 }
 
+export interface RepoBriefOptions {
+  /**
+   * Requested focus, a subset of the sealed `REPO_BRIEF_FOCUS` set, in
+   * caller order. Omitted defaults to all four. Non-empty; each token
+   * must be a sealed member (DESIGN D7 step 3).
+   */
+  focus?: readonly RepoBriefFocus[];
+  /** Tree-only scope (DESIGN D3: search/read have no path parameter). */
+  path?: string;
+  /** Tree-only depth; defaults to the Explorer's default (1). */
+  depth?: number;
+  /** Per-call search/read budget; tree is never character-limited. */
+  maxChars?: number;
+  /** Bypasses the response cache for every probe. */
+  noCache?: boolean;
+}
+
 /**
  * Dependencies injected by `src/index.ts` after Provider selection,
  * capability support check, configuration check, Adapter
@@ -351,6 +374,266 @@ export async function repoRead(
     deps.execution,
   );
   return { kind: "data", data: result };
+}
+
+// ---------------------------------------------------------------------------
+// Repository Brief — handler composition (DESIGN D3/D4/D6, SCHEMA.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * A settled probe outcome: either a normalized result or the raw thrown
+ * error. The ordered coverage record is pushed inside `settleProbe`, so
+ * the `coverage.probes` list is the authoritative execution log.
+ */
+type SettledProbe<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
+/**
+ * Run one Explorer call inside the settled wrapper (DESIGN D6): a throw
+ * becomes a `failed` probe record (stable code + redacted message) and
+ * the brief continues. On success the probe is recorded `ok`.
+ */
+async function settleProbe<T>(
+  probes: RepoBriefProbeRecord[],
+  kind: "tree" | "search" | "read",
+  label: string,
+  fn: () => Promise<T>,
+): Promise<SettledProbe<T>> {
+  try {
+    const value = await fn();
+    probes.push({ kind, label, status: "ok" });
+    return { ok: true, value };
+  } catch (error) {
+    probes.push({ kind, label, status: "failed", error: probeErrorInfo(error) });
+    return { ok: false, error };
+  }
+}
+
+/**
+ * Derive the stable code + redacted message for a probe failure record.
+ * Mirrors the standard stderr boundary (`formatErrorOutput`): a shaped
+ * error's `code` string is preserved, everything else falls back to
+ * `UNKNOWN_ERROR`; the message is redacted against configured
+ * credentials so no credential-shaped substring leaks into the envelope.
+ */
+function probeErrorInfo(error: unknown): { code: string; message: string } {
+  const code =
+    error !== null &&
+    typeof error === "object" &&
+    typeof (error as { code?: unknown }).code === "string"
+      ? (error as { code: string }).code
+      : "UNKNOWN_ERROR";
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  return { code, message: redactCredentialString(rawMessage, configuredSecrets()) };
+}
+
+/**
+ * Tree-derived structural signals (SCHEMA.md `RepoBriefDetected`). Every
+ * field is `null` when the tree probe failed or was focus-excluded —
+ * never guessed from search excerpts. `manifestKinds` lists every
+ * present kind in canonical order, independent of the 4-read selection
+ * cap (the cap is a read-budget, not a detection signal).
+ */
+function detectBriefSignals(tree: RepositoryTreeResult): RepoBriefDetected {
+  let hasReadme = false;
+  for (const snapshot of tree.snapshots) {
+    for (const entry of snapshot.entries) {
+      if (entry.kind !== "file") continue;
+      if (README_BASENAME_RE.test(basenameOf(entry.path))) {
+        hasReadme = true;
+      }
+    }
+  }
+  const manifestKinds: RepoManifestKind[] = [];
+  for (const kind of MANIFEST_KIND_ORDER) {
+    const winner = selectWinnerByDepth(tree, (_path, basename) => basename === kind);
+    if (winner) manifestKinds.push(kind);
+  }
+  return {
+    hasReadme,
+    hasManifest: manifestKinds.length > 0,
+    manifestKinds,
+  };
+}
+
+/**
+ * Repository Brief. Composes the three Explorer operations into one
+ * schema-version-1 envelope (DESIGN D2/D3/D4). Fixed probe order:
+ * tree → search("README") → search(manifest names) → read loop (README
+ * first, then manifests in canonical kind order, cap 4 total reads).
+ *
+ * Parse-level validation (DESIGN D7): `validateRepo`, `--depth` and
+ * `--max-chars` positive integers, `--focus` a non-empty subset of the
+ * sealed set (default all four). Forwarding (DESIGN D3): `--no-cache`
+ * to every call; `--max-chars` to searches/reads only (the tree is
+ * never character-limited); `--depth`/`--path` to the tree only.
+ *
+ * Every Explorer call runs settled (DESIGN D6): a throw becomes a
+ * `failed` probe record and the brief continues. Exit policy: ≥1 probe
+ * `ok` → `{kind: "data"}` (exit 0); every probe terminal and failed →
+ * the last error is rethrown so the executor routes it through the
+ * standard stderr boundary (exit 1).
+ */
+export async function repoBrief(
+  repo: string,
+  options: RepoBriefOptions,
+  deps: RepoHandlerDependencies,
+  _context?: CommandContext,
+): Promise<CommandResult<RepositoryBrief>> {
+  validateRepo(repo);
+
+  if (options.depth !== undefined) parseBriefDepth(options.depth);
+  if (options.maxChars !== undefined) parseBriefMaxChars(options.maxChars);
+
+  const focus = options.focus ?? [...REPO_BRIEF_FOCUS];
+  if (focus.length === 0) {
+    throw new ValidationError(
+      "--focus must include at least one of: structure, readme, manifest, files",
+    );
+  }
+  for (const token of focus) {
+    if (!(REPO_BRIEF_FOCUS as readonly string[]).includes(token)) {
+      throw new ValidationError(
+        `Unknown --focus value "${token}". Allowed: ${REPO_BRIEF_FOCUS.join(", ")}`,
+      );
+    }
+  }
+
+  const wantsStructure = focus.includes("structure");
+  const wantsReadme = focus.includes("readme");
+  const wantsManifest = focus.includes("manifest");
+  const wantsFiles = focus.includes("files");
+
+  const probes: RepoBriefProbeRecord[] = [];
+  let lastError: unknown = undefined;
+
+  // Probe 1: tree — always runs (read-path selection and `detected`
+  // both derive from it; DESIGN D1).
+  const treeProbe = await settleProbe(probes, "tree", "tree", () =>
+    explorerTree(
+      deps.capability,
+      { repository: repo, path: options.path, depth: options.depth },
+      { noCache: options.noCache },
+      deps.execution,
+    ),
+  );
+  if (!treeProbe.ok) lastError = treeProbe.error;
+
+  // Probe 2: search("README") — only under `readme` focus.
+  let docs: RepositorySearchResult | undefined;
+  if (wantsReadme) {
+    const probe = await settleProbe(probes, "search", "search:readme", () =>
+      explorerSearch(
+        deps.capability,
+        { repository: repo, query: README_QUERY },
+        { noCache: options.noCache, maxChars: options.maxChars },
+        deps.execution,
+      ),
+    );
+    if (probe.ok) docs = probe.value;
+    else lastError = probe.error;
+  } else {
+    probes.push({
+      kind: "search",
+      label: "search:readme",
+      status: "skipped",
+      reason: "focus-excluded",
+    });
+  }
+
+  // Probe 3: search(manifest names) — only under `manifest` focus.
+  let entryPoints: RepositorySearchResult | undefined;
+  if (wantsManifest) {
+    const probe = await settleProbe(probes, "search", "search:manifest", () =>
+      explorerSearch(
+        deps.capability,
+        { repository: repo, query: MANIFEST_QUERY },
+        { noCache: options.noCache, maxChars: options.maxChars },
+        deps.execution,
+      ),
+    );
+    if (probe.ok) entryPoints = probe.value;
+    else lastError = probe.error;
+  } else {
+    probes.push({
+      kind: "search",
+      label: "search:manifest",
+      status: "skipped",
+      reason: "focus-excluded",
+    });
+  }
+
+  // Probe 4: read loop — only under `files` focus, using Ticket 1's
+  // deterministic tree-derived selection (DESIGN D1/D7 steps 5-8).
+  const files: RepoBriefFileEntry[] = [];
+  if (wantsFiles) {
+    if (treeProbe.ok) {
+      const selection = selectBriefFiles(treeProbe.value);
+      const readPaths: string[] = [];
+      if (selection.readme !== undefined) readPaths.push(selection.readme);
+      readPaths.push(...selection.manifests);
+      for (const path of readPaths) {
+        const probe = await settleProbe(probes, "read", `read:${path}`, () =>
+          explorerReadFile(
+            deps.capability,
+            { repository: repo, path },
+            { noCache: options.noCache, maxChars: options.maxChars },
+            deps.execution,
+          ),
+        );
+        if (probe.ok) {
+          files.push({
+            path: probe.value.path,
+            content: probe.value.content,
+            truncated: probe.value.truncated,
+            originalContentLength: probe.value.originalContentLength,
+          });
+        } else {
+          lastError = probe.error;
+        }
+      }
+    } else {
+      // The tree failed; read selection has no path inventory to run
+      // against, so the files probe is recorded as dependency-failed.
+      probes.push({
+        kind: "read",
+        label: "read:<files>",
+        status: "skipped",
+        reason: "dependency-failed",
+      });
+    }
+  } else {
+    probes.push({
+      kind: "read",
+      label: "read:<files>",
+      status: "skipped",
+      reason: "focus-excluded",
+    });
+  }
+
+  // Exit policy (DESIGN D6): ≥1 probe `ok` → data (exit 0), because
+  // degradations are data in `coverage`, not stderr noise. Otherwise
+  // rethrow the last error so the executor surfaces it via the standard
+  // stderr boundary (exit 1).
+  if (!probes.some((p) => p.status === "ok")) {
+    throw lastError;
+  }
+
+  const brief: RepositoryBrief = {
+    schemaVersion: 1,
+    repository: repo,
+    focus,
+    coverage: { probes },
+    ...(wantsStructure && treeProbe.ok ? { tree: treeProbe.value } : {}),
+    ...(wantsReadme && docs !== undefined ? { docs } : {}),
+    ...(wantsManifest && entryPoints !== undefined ? { entryPoints } : {}),
+    ...(wantsFiles && files.length > 0 ? { files } : {}),
+    detected:
+      treeProbe.ok
+        ? detectBriefSignals(treeProbe.value)
+        : { hasReadme: null, hasManifest: null, manifestKinds: null },
+  };
+
+  return { kind: "data", data: brief };
 }
 
 // ---------------------------------------------------------------------------

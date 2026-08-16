@@ -1,6 +1,12 @@
 # Multi-Provider Search Fan-Out
 
-Status: proposed (2026-08-15; not yet implemented)
+Status: accepted (2026-08-15; implemented 2026-08-16)
+
+Ships in: the first release cut after 0.15.0 (see `CHANGELOG.md`
+"Unreleased"). Implemented by the search-fanout plan
+(`docs/plans/search-fanout/`, tickets 1-5): activation tiers, parallel
+pinned arms, canonical-URL merge with `mergedFrom` provenance, arm-drop
+notices, and the `fanout` config toggle with the cost sentence.
 
 ## Context
 

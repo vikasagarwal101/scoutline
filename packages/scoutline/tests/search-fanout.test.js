@@ -1338,3 +1338,117 @@ describe("config toggle: fanout on → off restores the single path (golden)", (
     assert.notDeepStrictEqual(on.stdout, off.stdout, "fan-out engaged on the ON run");
   });
 });
+
+// =============================================================================
+// Ticket 5 — Wire (end-to-end through main) + ADR-0004 ship
+//
+// The Tier-1 comma-list pin (`--provider tavily,exa`) is the one
+// activation tier that must survive the REAL main wire: global option
+// extraction → handleSearch → resolveFanoutPlan → executeFanoutPlan →
+// mergeResults → outputSuccess. Hermetic: fake descriptors, injected
+// config loader (empty config — no fanout switch needed, Tier 1 wins),
+// in-memory cache, deterministic sleep/random. stderr carries the D5
+// fan-out summary notice ONLY — no other notices on the happy path.
+// =============================================================================
+
+describe("Ticket 5 — main-driven hermetic wire test (fan-out end-to-end)", () => {
+  it("--provider tavily,exa merges overlapping fixtures through main; exit 0; stderr carries the summary notice only", async () => {
+    function makeWireDescriptor(id, results) {
+      const invokes = [];
+      return {
+        descriptor: {
+          id,
+          isConfigured: () => true,
+          capabilities: () => new Set(["search"]),
+          create: () => ({
+            id,
+            search: {
+              validate() {},
+              cacheIdentity(r) {
+                return {
+                  provider: id,
+                  capability: "search",
+                  credentialFingerprint: "fp-" + id,
+                  request: r,
+                  legacyCandidates: [],
+                };
+              },
+              async invoke(r) {
+                invokes.push(r);
+                return results.map((entry) => ({ ...entry }));
+              },
+            },
+          }),
+        },
+        invokes,
+      };
+    }
+    // Two fake providers with overlapping fixtures. The overlap is a
+    // canonical-identity collision (D4): trailing slash + utm_* +
+    // fragment must dedupe to the first writer's original URL.
+    const tav = makeWireDescriptor("tavily", [
+      { title: "Shared (tavily)", url: "https://e/shared", summary: "tavily's copy" },
+      { title: "Tav-only", url: "https://e/tav-only", summary: "t" },
+    ]);
+    const exa = makeWireDescriptor("exa", [
+      { title: "Shared (exa)", url: "https://e/shared/?utm_source=x#frag", summary: "exa's copy" },
+      { title: "Exa-only", url: "https://e/exa-only", summary: "x" },
+    ]);
+    const stdout = [];
+    const stderr = [];
+    const adapter = {
+      stdoutIsTTY: false,
+      stdinIsTTY: false,
+      environmentOutputMode: "data",
+      readStdin: async () => "",
+      writeStdout: (v) => stdout.push(v),
+      writeStderr: (v) => stderr.push(v),
+      runQuietly: async (op) => op(),
+      setExitCode: () => {},
+    };
+    const freshCache = () => {
+      const store = new Map();
+      return {
+        async get(k) {
+          return store.has(k) ? store.get(k) : null;
+        },
+        async set(k, v) {
+          store.set(k, v);
+        },
+      };
+    };
+    // Hermetic env: the injected loader returns an empty config — the
+    // Tier-1 explicit multi-pin must activate fan-out with NO config
+    // switch and NO env pin.
+    const status = await main(["--provider", "tavily,exa", "search", "q"], {
+      invocation: adapter,
+      env: {},
+      providerDescriptors: [tav.descriptor, exa.descriptor],
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+      searchCache: freshCache(),
+      searchSleep: async () => {},
+      searchRandom: () => 0.5,
+    });
+    assert.strictEqual(status, 0, `exit 0 expected, stderr: ${JSON.stringify(stderr)}`);
+    // stderr carries the D5 summary notice ONLY — nothing else.
+    assert.deepStrictEqual(stderr, [
+      "fanned out to 2 providers (tavily, exa) → 3 unique of 4 results",
+    ]);
+    // Merged data-mode output end-to-end (stdout stays data-only).
+    const data = JSON.parse(stdout[0]);
+    assert.ok(Array.isArray(data), "data mode emits the results array");
+    assert.strictEqual(data.length, 3, "overlap collapsed: 3 unique of 4 raw results");
+    const merged = data[0];
+    assert.strictEqual(merged.url, "https://e/shared", "first writer's original url survives");
+    assert.strictEqual(merged.title, "Shared (tavily)", "first arm's metadata wins the collision");
+    assert.strictEqual(merged.summary, "tavily's copy");
+    assert.strictEqual(merged.occurrences, 2);
+    assert.deepStrictEqual(merged.mergedFrom, ["tavily", "exa"]);
+    // Distinct results keep their single-provider provenance.
+    assert.deepStrictEqual(data[1].mergedFrom, ["tavily"]);
+    assert.deepStrictEqual(data[2].mergedFrom, ["exa"]);
+    // Both arms really executed exactly once (one client per arm).
+    assert.strictEqual(tav.invokes.length, 1);
+    assert.strictEqual(exa.invokes.length, 1);
+  });
+});

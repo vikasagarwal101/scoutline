@@ -220,6 +220,11 @@ repo argv + global flags
   -> schema-version-1 CommandResult
 ```
 
+`scoutline repo brief` composes the same three operations — tree, search,
+and read — into one schema-version-1 `RepositoryBrief` envelope with
+focus-gated sections (`tree`/`docs`/`entryPoints`/`files`), an always-present
+`coverage` probe record, and tree-derived `detected` signals.
+
 Key boundaries:
 
 - **Selection happens before configuration.** Descriptor metadata is the

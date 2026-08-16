@@ -9,7 +9,17 @@ import { read, READ_HELP } from "./commands/read.js";
 import { crawl, CRAWL_HELP } from "./commands/crawl.js";
 import { map, MAP_HELP } from "./commands/map.js";
 import { research, RESEARCH_HELP } from "./commands/research.js";
-import { repoSearch, repoTree, repoRead, REPO_HELP } from "./commands/repo.js";
+import {
+  repoSearch,
+  repoTree,
+  repoRead,
+  repoBrief,
+  REPO_HELP,
+  parseBriefFocus,
+  parseBriefDepth,
+  parseBriefMaxChars,
+} from "./commands/repo.js";
+import type { RepoBriefFocus } from "./capabilities/repository.js";
 import { listTools, showTool, callTool, TOOLS_HELP, CALL_HELP } from "./commands/tools.js";
 import { doctor, buildDiagnosticsReport, DOCTOR_HELP } from "./commands/doctor.js";
 import { quota, buildQuotaDashboard, QUOTA_HELP } from "./commands/quota.js";
@@ -216,6 +226,30 @@ function parseArgs(args: string[]): {
   }
 
   return { flags, positional };
+}
+
+/**
+ * Collect every occurrence of a long `--<name>` flag in argv order,
+ * mirroring parseArgs' value-consumption rule (the next argument is the
+ * value iff it exists, is non-empty, and does not start with "-").
+ * Valueless occurrences are returned as `true`. parseArgs keeps only the
+ * LAST occurrence of a repeated flag; callers whose flag is repeatable
+ * (e.g. the brief's `--focus`) scan argv with this helper instead.
+ */
+function collectLongFlagValues(args: string[], name: string): (string | true)[] {
+  const values: (string | true)[] = [];
+  const flag = `--${name}`;
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] !== flag) continue;
+    const nextArg = args[i + 1];
+    if (nextArg && !nextArg.startsWith("-")) {
+      values.push(nextArg);
+      i += 1;
+    } else {
+      values.push(true);
+    }
+  }
+  return values;
 }
 
 function extractGlobalOptions(args: string[]): {
@@ -1416,6 +1450,9 @@ async function handleRepo(
   // ordering tests.
   let searchQuery: string | undefined;
   let readPath: string | undefined;
+  let briefFocus: readonly RepoBriefFocus[] | undefined;
+  let briefDepth: number | undefined;
+  let briefMaxChars: number | undefined;
   if (command === "search") {
     searchQuery = positional.slice(2).join(" ");
     if (!repo || !searchQuery) {
@@ -1435,6 +1472,59 @@ async function handleRepo(
         "Missing repo or path",
         "Usage: scoutline repo read <owner/repo> <path>",
       );
+    }
+  } else if (command === "brief") {
+    // Brief composes tree + search + read into one envelope; only the
+    // `<owner/repo>` positional is required (DESIGN D5). The optional
+    // `--focus`/`--path`/`--depth`/`--max-chars`/`--no-cache` flags are
+    // threaded into the options object below. Parse-level validation for
+    // every brief flag VALUE runs HERE, before Provider resolution and
+    // the capability preflight, so malformed input surfaces
+    // VALIDATION_ERROR uniformly (never UNSUPPORTED_CAPABILITY first):
+    // the sealed focus set via `parseBriefFocus`, and strict
+    // positive-integer `--depth`/`--max-chars` via the same exported
+    // parsers `commands/repo.ts` re-runs for direct handler callers.
+    // The raw flag strings are parsed here — NOT `parseInt`-coerced —
+    // so `--depth 1.5` and `--max-chars 500x` are errors, not silently
+    // truncated to 1 and 500.
+    if (!repo) {
+      throw new ValidationError(
+        "Missing repo",
+        "Usage: scoutline repo brief <owner/repo>",
+      );
+    }
+    // `--no-focus` is meaningless for brief (focus is opt-in via
+    // `--focus <list>`) and must fail even when combined with a valid
+    // `--focus` — never silently ignored.
+    if (flags["no-focus"] === true) {
+      throw new ValidationError(
+        "--no-focus is not a valid repo brief flag. Use --focus <list> to subset the focus set.",
+      );
+    }
+    // `--focus` is repeatable: parseArgs keeps only the LAST occurrence,
+    // so scan argv directly and combine every occurrence in first-seen
+    // order — parseBriefFocus dedupes across the combined list. Any
+    // valueless occurrence is an error, same as a lone valueless flag.
+    const focusOccurrences = collectLongFlagValues(args, "focus");
+    if (focusOccurrences.length > 0) {
+      if (focusOccurrences.some((v) => v === true)) {
+        throw new ValidationError("--focus requires a value.");
+      }
+      briefFocus = parseBriefFocus(focusOccurrences.join(","));
+    }
+    const depthRaw = flags.depth;
+    if (depthRaw !== undefined) {
+      if (depthRaw === true) {
+        throw new ValidationError("--depth requires a value.");
+      }
+      briefDepth = parseBriefDepth(depthRaw);
+    }
+    const briefMaxCharsRaw = flags["max-chars"];
+    if (briefMaxCharsRaw !== undefined) {
+      if (briefMaxCharsRaw === true) {
+        throw new ValidationError("--max-chars requires a value.");
+      }
+      briefMaxChars = parseBriefMaxChars(briefMaxCharsRaw);
     }
   } else {
     throw new ValidationError(
@@ -1516,6 +1606,19 @@ async function handleRepo(
                 readPath as string,
                 { maxChars, noCache },
                 { capability, execution: executionDeps },
+                context,
+              );
+            case "brief":
+              return repoBrief(
+                repo,
+                {
+                  ...(briefFocus !== undefined ? { focus: briefFocus } : {}),
+                  path: treePath,
+                  depth: briefDepth,
+                  maxChars: briefMaxChars,
+                  noCache,
+                },
+                { capability, execution: executionDeps, secrets: deps.secrets },
                 context,
               );
             default:

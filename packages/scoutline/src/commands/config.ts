@@ -146,10 +146,13 @@ export async function configSetCommand(
   const raw = valueAtPath(updated, path);
   // Registry-mandated enable-time warning (fan-out cost sentence, D7):
   // emitted as a stderr notice so it reaches every output mode while
-  // stdout stays data-only.
+  // stdout stays data-only. The registry supplies the sentence for the
+  // UPDATED config — with `routing.search` set it names the routed
+  // arms instead of claiming ALL configured providers (review fix,
+  // PR #36).
   const key = resolveConfigKey(path);
   if (key?.setTrueNotice !== undefined && raw === true) {
-    deps.notify?.(key.setTrueNotice);
+    deps.notify?.(key.setTrueNotice(updated));
   }
   return {
     kind: "data",
@@ -188,8 +191,11 @@ Keys:
                              Example: scoutline config set routing.search tavily,brave
   fallbackEnabled             true|false — the always-on provider fallback switch.
   fanout                      true|false — the multi-provider search fan-out
-                             switch (default false; enabling warns that every
-                             search bills ALL configured search providers).
+                             switch (default false; enabling warns about the
+                             billable cost — every configured search provider,
+                             or the routing.search subset when routed).
+                             Remove the standing switch with
+                             \`scoutline config unset fanout\`.
   providers.<id>              Provider configuration (view only; credential
                              values are always masked).
 
@@ -202,7 +208,8 @@ Behaviour:
         provider's environment variable (API keys never belong in command
         arguments).
   unset Removes a routing capability (and the table when the last entry
-        goes), the whole routing table, or the fallbackEnabled switch.
+        goes), the whole routing table, the fallbackEnabled switch, or
+        the fanout switch.
 
 Routing semantics: when no --provider / SCOUTLINE_PROVIDER pin exists,
 the routed list orders provider selection for that capability — the
@@ -219,6 +226,8 @@ Examples:
   scoutline config get routing
   scoutline config set routing.search tavily,brave
   scoutline config set fallbackEnabled false
+  scoutline config set fanout true
   scoutline config unset routing.search
+  scoutline config unset fanout
   scoutline config --help
 `.trim();

@@ -215,7 +215,7 @@ scoutline --provider all search "AI policy news"
 scoutline config set fanout true    # standing preference (default off)
 ```
 
-**Cost:** every search will bill ALL configured search providers — N arms = N billable calls. Arms run in parallel (one client each, pinned — no per-arm fallback); a provider that rejects a search control drops with a stderr notice and never fails the invocation. Results are deduplicated by canonical URL identity (scheme/host lowercased, default ports, fragments, trailing slashes, and `utm_*`/`fbclid` parameters removed — the original URLs are preserved in output), ranked by cross-provider occurrences, and each result carries `mergedFrom` listing the providers that returned it. Disable the standing switch with `scoutline config set fanout false`.
+**Cost:** every search will bill ALL configured search providers — N arms = N billable calls (when `routing.search` is set, only the configured routed providers are billed). Arms run in parallel (one client each, pinned — no per-arm fallback); a provider that rejects a search control drops with a stderr notice and never fails the invocation. Results are deduplicated by canonical URL identity (scheme/host lowercased, default ports, fragments, trailing slashes, and `utm_*`/`fbclid` parameters removed — tracking names are matched after percent-decoding, the raw path and userinfo are preserved verbatim, and the original URLs are kept in output), ranked by cross-provider occurrences, and each result carries `mergedFrom` listing the providers that returned it. `--merge` composes with fan-out: every arm runs every sub-query and occurrences span the arms × sub-queries grid. Disable the standing switch with `scoutline config set fanout false`.
 
 ### Capability Matrix
 

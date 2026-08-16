@@ -288,11 +288,12 @@ export async function cachePruneCommand(
 }
 
 export const CACHE_HELP = `
-Cache - Inspect and clear the local cache
+Cache - Inspect, clear, or prune the local cache
 
 Usage:
-  scoutline cache stats   # show inventory of both cache subdirectories
-  scoutline cache clear   # delete every file in both cache subdirectories
+  scoutline cache stats                       # show inventory of both cache subdirectories
+  scoutline cache clear                       # delete every file in both cache subdirectories
+  scoutline cache prune [--older-than <D>] [--provider <id>] [--capability <id>]
 
 Subcommands:
   stats   Print the cache directory, status (enabled/disabled, TTL, size
@@ -303,18 +304,40 @@ Subcommands:
           directories themselves are preserved so the next invocation
           recreates entries without a directory-creation race. The
           orphaned legacy ~/.cache/zai-cli/ directory is never touched.
+  prune   Delete expired entries from both caches by stored timestamp
+          (DESIGN D1: ts, never mtime). Without flags, prune uses the
+          effective TTL; with --older-than, that duration replaces the
+          TTL. --provider and --capability narrow the response-cache
+          scan to v2 filenames only (DESIGN D2: legacy files are
+          age-selected, never selector-selected). Unknown
+          --provider/--capability values are NOT pre-validated — they
+          filename-match nothing and produce a zero-work success.
+
+Duration syntax for --older-than (DESIGN D3): 24h, 90m, 30s, or a bare
+integer (seconds). Example: --older-than 1h prunes anything older than
+the effective TTL even when TTL is 24h.
 
 The cache root defaults to ~/.scoutline/ on every platform; override it
 with SCOUTLINE_CACHE_DIR (ZAI_MCP_CACHE_DIR and ZAI_CACHE_DIR are
 accepted as lower-precedence legacy aliases). Disable both caches with
-SCOUTLINE_CACHE=0 (legacy alias: ZAI_CACHE=0).
+SCOUTLINE_CACHE=0 (legacy alias: ZAI_CACHE=0). A disabled cache does
+NOT short-circuit prune: deletion is not a cache read/write (D6). With
+no --older-than under a disabled cache, prune reports zeros (TTL of 0
+means "no freshness rule", not "delete everything").
 
 Exit codes:
   0  Success.
-  1  I/O error (reported as a sanitized JSON error envelope).
+  1  Validation error (bad --older-than / unknown subcommand) or I/O
+     error including a cache-write lock timeout (DESIGN D5: the prune
+     scan serializes on the response-dir lock a concurrent write holds;
+     a lock-acquire timeout throws and is reported as a sanitized JSON
+     error envelope).
 
 Examples:
   scoutline cache stats
   scoutline cache clear
+  scoutline cache prune
+  scoutline cache prune --older-than 1h
+  scoutline cache prune --older-than 24h --provider zai --capability search
   scoutline cache --help
 `.trim();

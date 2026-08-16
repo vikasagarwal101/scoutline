@@ -16,10 +16,12 @@ import { quota, buildQuotaDashboard, QUOTA_HELP } from "./commands/quota.js";
 import {
   cacheStatsCommand,
   cacheClearCommand,
+  cachePruneCommand,
   formatDoctorCacheSummary,
   CACHE_HELP,
   type CacheStatsReport,
   type CacheClearReport,
+  type CachePruneReport,
 } from "./commands/cache.js";
 import {
   CONFIG_HELP,
@@ -27,7 +29,8 @@ import {
   configSetCommand,
   configUnsetCommand,
 } from "./commands/config.js";
-import { cacheStats, clearAllCaches } from "./lib/cache.js";
+import { cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
+import type { PruneSelectors, PruneCachesResult } from "./lib/cache.js";
 import { isExtractMode, type ExtractMode } from "./lib/extract.js";
 import {
   runCodeFile,
@@ -337,8 +340,14 @@ function resolveOutputMode(
  * Search and Repository; separate optional MainDependencies so reader
  * tests can inject isolated in-memory doubles. Not a rename of either
  * prior seam.
+ *
+ * `pruneCaches` is the cache-prune dispatcher seam (Cache Prune
+ * Ticket 5). Production wires the on-disk `pruneCaches` from
+ * `src/lib/cache.js`; tests inject a double so the dispatcher can be
+ * exercised in-process without real I/O. Defaults to the production
+ * function when omitted.
  */
-interface HandlerDependencies {
+export interface HandlerDependencies {
   readonly invocation: CommandInvocationAdapter;
   readonly env: NodeJS.ProcessEnv;
   readonly secrets: string[];
@@ -430,6 +439,15 @@ interface HandlerDependencies {
    * the `verification` field is omitted (pre-PB-T5 callers).
    */
   readonly verificationRecords?: Partial<Record<ProviderId, ProviderVerificationSummary>>;
+  /**
+   * Optional injectable `pruneCaches` for the `cache prune` subcommand
+   * (Cache Prune Ticket 5). Production wires the on-disk
+   * `pruneCaches` from `src/lib/cache.js` (see `MainDependencies`);
+   * tests inject a double so the dispatcher's selector-parsing /
+   * error-propagation contract can be exercised without touching disk.
+   * When absent, the dispatcher uses the production function.
+   */
+  readonly pruneCaches?: (selectors: PruneSelectors) => Promise<PruneCachesResult>;
 }
 
 async function handleVision(
@@ -1715,7 +1733,22 @@ async function handleConfig(
   }
 }
 
-async function handleCache(
+/**
+ * `scoutline cache <stats|clear|prune>` — local cache utility. Like
+ * Doctor, it bypasses Provider resolution entirely (no descriptor
+ * lookup, no Adapter, no transport). The command surfaces the inventory
+ * and clear helpers owned by `src/lib/cache.ts` (Ticket 01) through the
+ * presentation-only handlers in `src/commands/cache.ts`. The `prune`
+ * case was added in Cache Prune Ticket 5 and parses `--older-than` /
+ * `--provider` / `--capability` flags into the `PruneSelectors` shape
+ * the lib expects (DESIGN D2/D3); unknown provider/capability values
+ * are intentionally NOT pre-validated against the registry — they
+ * filename-match nothing and produce zero-work success (DESIGN D2). A
+ * lock-acquire timeout in the production `pruneCaches` THROWS (DESIGN
+ * D5) so the dispatcher's error boundary emits a sanitized stderr
+ * envelope with exit 1.
+ */
+export async function handleCache(
   args: string[],
   outputMode: OutputMode,
   deps: HandlerDependencies,
@@ -1751,6 +1784,63 @@ async function handleCache(
         deps.now,
         deps.secrets,
       );
+    case "prune": {
+      // Parse `--older-than` into milliseconds. A null result is the
+      // contract for any unparseable spec (DESIGN D3); surface it as a
+      // VALIDATION_ERROR (exit 1) BEFORE entering the command seam so a
+      // bad flag never touches the on-disk cache. The flag may be
+      // absent (undefined) — in which case the lib falls back to the
+      // effective TTL (DESIGN D3) — but if present, it must parse.
+      let olderThanMs: number | undefined;
+      const rawOlderThan = flags["older-than"];
+      if (rawOlderThan !== undefined && rawOlderThan !== true) {
+        const parsed = parsePruneDuration(rawOlderThan as string);
+        if (parsed === null) {
+          throw new ValidationError(
+            `Invalid --older-than value "${rawOlderThan}"`,
+            "Use one of: Nh, Nm, Ns, or N (seconds). Examples: --older-than 24h, --older-than 30m.",
+          );
+        }
+        olderThanMs = parsed;
+      } else if (rawOlderThan === true) {
+        // `--older-than` without a value: same parse-level failure mode
+        // as `--count` (Fixup D — see `parseAndValidateCount`).
+        throw new ValidationError(
+          "--older-than requires a value.",
+          "Use one of: Nh, Nm, Ns, or N (seconds). Examples: --older-than 24h, --older-than 30m.",
+        );
+      }
+      const provider = flags.provider as string | undefined;
+      const capability = flags.capability as string | undefined;
+      // Build the selector shape the lib expects. Undefined flags are
+      // omitted so the lib's optional-field contract is preserved. The
+      // command seam receives this verbatim; production
+      // `cachePruneCommand` and the in-process test double observe the
+      // exact same object.
+      const selectors: PruneSelectors = {
+        ...(olderThanMs !== undefined ? { olderThanMs } : {}),
+        ...(provider !== undefined ? { provider } : {}),
+        ...(capability !== undefined ? { capability } : {}),
+      };
+      // The injected seam is the existing dependency seam (Ticket 5);
+      // production wires the on-disk `pruneCaches` from `src/lib/cache.js`
+      // via `MainDependencies.pruneCaches` and a `buildHandlerDeps`
+      // override. When the seam is absent the dispatcher falls back to
+      // the production function so call sites outside `main` continue
+      // to work.
+      const runPrune = deps.pruneCaches ?? pruneCaches;
+      return invokeCommand(
+        deps.invocation,
+        () =>
+          cachePruneCommand(
+            { prune: (s) => runPrune(s) as Promise<CachePruneReport> },
+            selectors,
+          ),
+        outputMode,
+        deps.now,
+        deps.secrets,
+      );
+    }
     default:
       throw new ValidationError(
         `Unknown cache command: ${subcommand}`,
@@ -2088,6 +2178,15 @@ export interface MainDependencies {
    * pre-PB-T4 behaviour).
    */
   readonly quotaState?: QuotaState;
+  /**
+   * Optional injectable `pruneCaches` for the `cache prune` subcommand
+   * (Cache Prune Ticket 5). Production defaults to the on-disk
+   * `pruneCaches` from `src/lib/cache.js`; tests inject a double so the
+   * dispatcher's selector-parsing / error-propagation contract can be
+   * exercised without touching disk. When omitted, the dispatcher
+   * falls back to the production function so the seam stays opt-in.
+   */
+  readonly pruneCaches?: (selectors: PruneSelectors) => Promise<PruneCachesResult>;
 }
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -2320,6 +2419,11 @@ export async function main(
     // quota). Tests inject an in-memory double; production wires the
     // singleton constructed in `main`.
     quotaStore: dependencies.quotaStore ?? (quotaRefreshEnabled ? quotaStore : undefined),
+    // Cache Prune Ticket 5: thread the optional injected `pruneCaches`
+    // through to `handleCache`. Production defaults to the on-disk
+    // function from `src/lib/cache.js`; tests inject a double so the
+    // dispatcher contract can be exercised without touching disk.
+    pruneCaches: dependencies.pruneCaches,
     // PB-T5: verification records are NOT threaded here. They are
     // derived from `config` AFTER it is loaded (the credentialed
     // path); `buildHandlerDeps` runs once BEFORE config load (the

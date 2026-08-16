@@ -1,23 +1,29 @@
 /**
- * Cache command — `scoutline cache stats` and `scoutline cache clear`
- * (Cache Module Unification Ticket 03).
+ * Cache command — `scoutline cache stats`, `scoutline cache clear`,
+ * `scoutline cache prune` (Cache Module Unification Ticket 03 +
+ * Cache Prune Ticket 5).
  *
  * Verifies:
  *   - The pure formatting helpers (`formatBytes`, `formatTtl`,
- *     `formatCacheStats`, `formatCacheClear`,
+ *     `formatCacheStats`, `formatCacheClear`, `formatCachePrune`,
  *     `formatDoctorCacheSummary`).
- *   - The command handlers (`cacheStatsCommand`, `cacheClearCommand`)
- *     return data CommandResults with TTY/compact/markdown/refs
- *     presentation overrides and exit 0 on success.
+ *   - The command handlers (`cacheStatsCommand`, `cacheClearCommand`,
+ *     `cachePruneCommand`) return data CommandResults with
+ *     TTY/compact/markdown/refs presentation overrides and exit 0 on
+ *     success.
+ *   - The dispatcher `handleCache` parses `--older-than` / `--provider` /
+ *     `--capability` flags into the `CachePruneSelectors` shape and
+ *     passes them verbatim to the injected `pruneCaches` dependency
+ *     (Ticket 5).
  *   - The CLI surface (`scoutline cache stats`, `scoutline cache clear`,
- *     `scoutline cache --help`) via subprocess with isolated
- *     `SCOUTLINE_CACHE_DIR`.
- *   - Exit codes: 0 on success, 1 on I/O error.
+ *     `scoutline cache prune`, `scoutline cache --help`) via subprocess
+ *     with isolated `SCOUTLINE_CACHE_DIR`.
+ *   - Exit codes: 0 on success, 1 on validation / I/O error.
  *
- * The underlying `cacheStats()` / `clearAllCaches()` behaviour (file
- * I/O, env-var aliasing, directory resolution) is covered by
- * `tests/cache.test.js`. This file covers the command and CLI layer
- * only.
+ * The underlying `cacheStats()` / `clearAllCaches()` / `pruneCaches()`
+ * behaviour (file I/O, env-var aliasing, directory resolution) is
+ * covered by `tests/cache.test.js`. This file covers the command and
+ * CLI layer only.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -36,7 +42,14 @@ import {
   formatCachePrune,
   formatDoctorCacheSummary,
 } from "../dist/commands/cache.js";
+// Ticket 5: exercise the dispatcher's prune case in-process by
+// injecting a double `pruneCaches` through `HandlerDependencies` (the
+// existing dependency seam the dispatcher carries for every handler).
+// `HandlerDependencies` is a type-only export; the dispatcher's runtime
+// `handleCache` is the callable we exercise.
+import { handleCache } from "../dist/index.js";
 import { runProcess } from "./helpers/run-process.js";
+import { defaultResponseCache } from "../dist/lib/cache.js";
 
 // ---------------------------------------------------------------------------
 // Pure formatting helpers
@@ -322,15 +335,22 @@ async function makePopulatedCacheDir() {
 }
 
 describe("CLI: scoutline cache --help", () => {
-  it("lists both subcommands and exits 0 on stdout", async () => {
+  it("lists every subcommand and exits 0 on stdout", async () => {
     const { stdout, stderr, code } = await runProcess(["cache", "--help"], { env: BASE_ENV });
     assert.strictEqual(code, 0);
     assert.strictEqual(stderr, "");
     assert.ok(stdout.includes("stats"), "help mentions stats");
     assert.ok(stdout.includes("clear"), "help mentions clear");
+    // Ticket 5: prune is part of the cache help surface.
+    assert.ok(stdout.includes("prune"), "help mentions prune");
     assert.ok(stdout.includes("scoutline cache stats"), "help shows stats usage");
     assert.ok(stdout.includes("scoutline cache clear"), "help shows clear usage");
+    assert.ok(stdout.includes("scoutline cache prune"), "help shows prune usage");
     assert.ok(stdout.includes("SCOUTLINE_CACHE_DIR"), "help documents the override env");
+    // Ticket 5: prune-specific selector and exit-code documentation.
+    assert.ok(stdout.includes("--older-than"), "help documents --older-than");
+    assert.ok(stdout.includes("--provider"), "help documents --provider");
+    assert.ok(stdout.includes("--capability"), "help documents --capability");
   });
 
   it("prints help when no subcommand is given (mirrors tools/repo/etc.)", async () => {
@@ -519,6 +539,195 @@ describe("CLI: doctor embeds the one-line cache summary", () => {
         parsed.cache.summary.includes(dir),
         `summary includes the cache dir: ${parsed.cache.summary}`,
       );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ticket 5 — Dispatcher wiring for `cache prune`
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal `HandlerDependencies` stub for in-process dispatcher tests.
+ * Only the dispatcher-needs fields are populated; the rest of the
+ * handler surface (provider resolution, transport, etc.) is irrelevant
+ * to `cache prune`. The injected `pruneCaches` double is the seam the
+ * tests observe through.
+ *
+ * Note: this is a plain JS test file, so the `HandlerDependencies`
+ * type-name is not imported (it is type-only in `dist/index.js`); the
+ * object shape here matches the production dispatcher contract.
+ */
+function makeDispatcherDeps(prune) {
+  const cache = defaultResponseCache;
+  return {
+    invocation: {
+      stdoutIsTTY: false,
+      stdinIsTTY: false,
+      readStdin: async () => "",
+      writeStdout: () => {},
+      writeStderr: () => {},
+      runQuietly: async (operation) => operation(),
+      setExitCode: () => {},
+    },
+    env: { ...process.env },
+    secrets: [],
+    providerDescriptors: [],
+    fallbackEnabled: false,
+    searchCache: cache,
+    searchSleep: async () => {},
+    searchRandom: () => 0,
+    repositoryCache: cache,
+    repositorySleep: async () => {},
+    repositoryRandom: () => 0,
+    readerCache: cache,
+    readerSleep: async () => {},
+    readerRandom: () => 0,
+    crawlCache: cache,
+    crawlSleep: async () => {},
+    crawlRandom: () => 0,
+    mapCache: cache,
+    mapSleep: async () => {},
+    mapRandom: () => 0,
+    researchCache: cache,
+    researchSleep: async () => {},
+    researchRandom: () => 0,
+    pruneCaches: prune,
+  };
+}
+
+describe("cache prune dispatcher — handleCache wiring (Ticket 5)", () => {
+  it("parses --older-than, --provider, and --capability and passes them verbatim to pruneCaches", async () => {
+    let received;
+    const deps = makeDispatcherDeps(async (selectors) => {
+      received = selectors;
+      return { prunedResponses: 0, prunedTools: 0, bytesFreed: 0 };
+    });
+    const code = await handleCache(
+      ["prune", "--older-than", "24h", "--provider", "zai", "--capability", "search"],
+      "data",
+      deps,
+    );
+    assert.strictEqual(code, 0, "successful prune exits 0");
+    assert.deepStrictEqual(received, {
+      olderThanMs: 24 * 60 * 60 * 1000,
+      provider: "zai",
+      capability: "search",
+    });
+  });
+
+  it("converts a bare --older-than integer to seconds", async () => {
+    let received;
+    const deps = makeDispatcherDeps(async (selectors) => {
+      received = selectors;
+      return { prunedResponses: 0, prunedTools: 0, bytesFreed: 0 };
+    });
+    await handleCache(["prune", "--older-than", "600"], "data", deps);
+    assert.deepStrictEqual(received, { olderThanMs: 600_000 });
+  });
+
+  it("accepts an empty selector set (no --older-than / --provider / --capability)", async () => {
+    let received;
+    const deps = makeDispatcherDeps(async (selectors) => {
+      received = selectors;
+      return { prunedResponses: 0, prunedTools: 0, bytesFreed: 0 };
+    });
+    const code = await handleCache(["prune"], "data", deps);
+    assert.strictEqual(code, 0);
+    assert.deepStrictEqual(received, {});
+  });
+
+  it("passes --provider and --capability through without validating them against the registry", async () => {
+    // Unknown provider/capability values are not pre-validated (DESIGN
+    // D2): they filename-match nothing and produce zero-work success.
+    let received;
+    const deps = makeDispatcherDeps(async (selectors) => {
+      received = selectors;
+      return { prunedResponses: 0, prunedTools: 0, bytesFreed: 0 };
+    });
+    const code = await handleCache(
+      ["prune", "--provider", "no-such-provider", "--capability", "no-such-capability"],
+      "data",
+      deps,
+    );
+    assert.strictEqual(code, 0, "unknown selectors are not a validation error");
+    assert.deepStrictEqual(received, {
+      provider: "no-such-provider",
+      capability: "no-such-capability",
+    });
+  });
+
+  it("throws ValidationError on an invalid --older-than value, propagated as exit 1", async () => {
+    // The dispatcher converts a null parsePruneDuration result into a
+    // VALIDATION_ERROR. The command seam is not yet entered, so the
+    // injected double MUST NOT be called. `main()` wraps `handleCache`
+    // in a try/catch that writes the sanitized stderr envelope and
+    // returns the exit code; the test mirrors that boundary so the
+    // assertion sees the envelope, not the raw throw.
+    const deps = makeDispatcherDeps(async () => {
+      throw new Error("pruneCaches should not be called for invalid --older-than");
+    });
+    let captured;
+    const depsWithStderr = {
+      ...deps,
+      invocation: {
+        ...deps.invocation,
+        writeStderr: (value) => {
+          captured = value;
+        },
+      },
+    };
+    let code;
+    try {
+      code = await handleCache(["prune", "--older-than", "bogus"], "data", depsWithStderr);
+    } catch (error) {
+      const statusCode = error && typeof error === "object" && "exitCode" in error
+        ? error.exitCode
+        : undefined;
+      code = statusCode ?? 1;
+      const envelope = JSON.stringify({
+        success: false,
+        code: error && typeof error === "object" && "code" in error ? error.code : "UNKNOWN",
+        error: error && typeof error === "object" && "message" in error ? error.message : String(error),
+      });
+      depsWithStderr.invocation.writeStderr(envelope + "\n");
+    }
+    assert.strictEqual(code, 1, "invalid --older-than exits 1");
+    assert.ok(typeof captured === "string", "a stderr envelope was written");
+    const parsed = JSON.parse(captured);
+    assert.strictEqual(parsed.success, false);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.ok(/--older-than/.test(parsed.error), `error mentions --older-than: ${parsed.error}`);
+  });
+});
+
+describe("CLI: scoutline cache prune (Ticket 5)", () => {
+  it("exits 1 with VALIDATION_ERROR for an invalid --older-than value", async () => {
+    const { stdout, stderr, code } = await runProcess(
+      ["cache", "prune", "--older-than", "bogus"],
+      { env: BASE_ENV },
+    );
+    assert.strictEqual(code, 1);
+    assert.strictEqual(stdout, "");
+    const err = JSON.parse(stderr);
+    assert.strictEqual(err.success, false);
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
+    assert.ok(err.error.includes("--older-than"), `error mentions --older-than: ${err.error}`);
+  });
+
+  it("exits 0 and reports zero counts for an empty cache directory", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-cache-prune-empty-"));
+    try {
+      const { stdout, stderr, code } = await runProcess(
+        ["--output-format", "tty", "cache", "prune"],
+        { env: { ...BASE_ENV, SCOUTLINE_CACHE_DIR: dir } },
+      );
+      assert.strictEqual(code, 0, `unexpected exit code (stderr: ${stderr})`);
+      assert.strictEqual(stderr, "");
+      assert.ok(/Pruned 0 response entries/.test(stdout), `zero summary in: ${stdout}`);
+      assert.ok(/0 B freed/.test(stdout), `zero bytes freed in: ${stdout}`);
     } finally {
       await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
     }

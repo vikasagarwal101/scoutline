@@ -28,10 +28,12 @@ import * as path from "node:path";
 import {
   cacheStatsCommand,
   cacheClearCommand,
+  cachePruneCommand,
   formatBytes,
   formatTtl,
   formatCacheStats,
   formatCacheClear,
+  formatCachePrune,
   formatDoctorCacheSummary,
 } from "../dist/commands/cache.js";
 import { runProcess } from "./helpers/run-process.js";
@@ -155,6 +157,27 @@ describe("cache command — formatCacheClear", () => {
   });
 });
 
+describe("cache command — formatCachePrune", () => {
+  it("renders the shared one-liner in the formatCacheClear voice", () => {
+    const out = formatCachePrune({
+      prunedResponses: 16,
+      prunedTools: 0,
+      bytesFreed: 4.1 * 1024 * 1024,
+    });
+    assert.ok(out.startsWith("Pruned "), `leading verb in: ${out}`);
+    assert.ok(out.includes("16 response entries"), out);
+    assert.ok(out.includes("0 tool entries"), out);
+    assert.ok(out.includes("4.1 MB freed"), out);
+  });
+
+  it("pluralizes entries correctly", () => {
+    const one = formatCachePrune({ prunedResponses: 1, prunedTools: 1, bytesFreed: 100 });
+    assert.ok(one.includes("1 response entry"), one);
+    assert.ok(one.includes("1 tool entry"), one);
+    assert.ok(one.includes("100 B freed"), one);
+  });
+});
+
 describe("cache command — formatDoctorCacheSummary", () => {
   const baseStats = {
     dir: "/home/u/.scoutline",
@@ -235,6 +258,41 @@ describe("cache clear command — handler", () => {
           throw new Error("nope");
         },
       }),
+      /nope/,
+    );
+  });
+});
+
+describe("cache prune command — handler", () => {
+  it("returns a data CommandResult carrying counts and the shared one-liner in every text mode", async () => {
+    const report = { prunedResponses: 16, prunedTools: 0, bytesFreed: 4.1 * 1024 * 1024 };
+    const selectors = { olderThanMs: 3_600_000, provider: "tavily" };
+    let receivedSelectors;
+    const result = await cachePruneCommand({
+      prune: async (s) => {
+        receivedSelectors = s;
+        return report;
+      },
+    }, selectors);
+    assert.strictEqual(result.kind, "data");
+    assert.deepStrictEqual(result.data, report);
+    // The dispatcher passes selectors through verbatim; the injected
+    // double observed them so the production wiring will too.
+    assert.deepStrictEqual(receivedSelectors, selectors);
+    const expected = formatCachePrune(report);
+    assert.strictEqual(result.presentations.tty, expected);
+    assert.strictEqual(result.presentations.compact, expected);
+    assert.strictEqual(result.presentations.markdown, expected);
+    assert.strictEqual(result.presentations.refs, expected);
+  });
+
+  it("propagates prune errors", async () => {
+    await assert.rejects(
+      cachePruneCommand({
+        prune: async () => {
+          throw new Error("nope");
+        },
+      }, {}),
       /nope/,
     );
   });

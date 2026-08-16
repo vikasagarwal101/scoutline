@@ -54,6 +54,28 @@ export interface CacheClearReport {
   readonly bytesFreed: number;
 }
 
+/**
+ * Mirror of {@link PruneCachesResult} in `src/lib/cache.ts`. Counts
+ * reflect actual deletions performed during the prune run.
+ */
+export interface CachePruneReport {
+  readonly prunedResponses: number;
+  readonly prunedTools: number;
+  readonly bytesFreed: number;
+}
+
+/**
+ * Selectors narrowing a prune run. All optional and AND together;
+ * mirrors {@link PruneSelectors} from `src/lib/cache.ts` (DESIGN D2/D3).
+ * The dispatcher parses `--older-than`/`--provider`/`--capability` into
+ * this shape and passes it to the production `pruneCaches`.
+ */
+export interface CachePruneSelectors {
+  readonly olderThanMs?: number;
+  readonly provider?: string;
+  readonly capability?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Pure formatting helpers
 // ---------------------------------------------------------------------------
@@ -142,6 +164,18 @@ export function formatCacheClear(result: CacheClearReport): string {
 }
 
 /**
+ * Format a prune result as a one-line TTY notice. Same voice as
+ * {@link formatCacheClear} (cleared vs pruned is the only swap).
+ */
+export function formatCachePrune(result: CachePruneReport): string {
+  return (
+    `Pruned ${result.prunedResponses} response ${pluralEntry(result.prunedResponses)} ` +
+    `and ${result.prunedTools} tool ${pluralEntry(result.prunedTools)} ` +
+    `(${formatBytes(result.bytesFreed)} freed)`
+  );
+}
+
+/**
  * Format the one-line Doctor cache summary from a `cacheStats()` value.
  * The dispatcher calls this before invoking `buildDiagnosticsReport`;
  * the report builder embeds the result verbatim. Examples:
@@ -174,6 +208,10 @@ export interface CacheClearDependencies {
   readonly clear: () => Promise<CacheClearReport>;
 }
 
+export interface CachePruneDependencies {
+  readonly prune: (selectors: CachePruneSelectors) => Promise<CachePruneReport>;
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -187,6 +225,12 @@ function statsPresentations(stats: CacheStatsReport): Partial<Record<TextOutputM
 /** All text modes share the same one-line clear notice. */
 function clearPresentations(result: CacheClearReport): Partial<Record<TextOutputMode, string>> {
   const text = formatCacheClear(result);
+  return { compact: text, markdown: text, refs: text, tty: text };
+}
+
+/** All text modes share the same one-line prune notice. */
+function prunePresentations(result: CachePruneReport): Partial<Record<TextOutputMode, string>> {
+  const text = formatCachePrune(result);
   return { compact: text, markdown: text, refs: text, tty: text };
 }
 
@@ -219,6 +263,27 @@ export async function cacheClearCommand(
     kind: "data",
     data: result,
     presentations: clearPresentations(result),
+  };
+}
+
+/**
+ * Run the `cache prune` subcommand. Returns the count of pruned
+ * entries and bytes freed as base data with a TTY presentation
+ * override. Selectors are passed through to `deps.prune` verbatim
+ * (the dispatcher parses `--older-than`/`--provider`/`--capability`
+ * into this shape). Lock-timeout errors propagate so the
+ * dispatcher's error boundary emits the sanitized stderr envelope
+ * (DESIGN D5).
+ */
+export async function cachePruneCommand(
+  deps: CachePruneDependencies,
+  selectors: CachePruneSelectors,
+): Promise<CommandResult<CachePruneReport>> {
+  const result = await deps.prune(selectors);
+  return {
+    kind: "data",
+    data: result,
+    presentations: prunePresentations(result),
   };
 }
 

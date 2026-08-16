@@ -60,6 +60,7 @@ import type {
 import { inspectConfig, writeConfig } from "../lib/config-store.js";
 import type { DiagnosticOptions, DiagnosticsCapability } from "../capabilities/diagnostics.js";
 import type { ProviderDescriptor, ProviderId } from "../providers/types.js";
+import { PROVIDER_CAPABILITIES, PROVIDER_IDS } from "../providers/types.js";
 import { AuthError, ApiError, NetworkError } from "../lib/errors.js";
 
 // ---------------------------------------------------------------------------
@@ -83,7 +84,8 @@ The wizard walks you through recording API keys in
   - ABSENT (no config yet): the fresh-onboarding flow runs.
   - VALID + ALREADY-ONBOARDED: a re-config menu runs (edit a key,
     add a Provider, remove a Provider, change the fallback
-    preference, re-run the full wizard, or cancel). Editing a key
+    preference, edit the routing table, re-run the full wizard, or
+    cancel). Editing a key
     resets that Provider's verification to "unverified".
   - VALID + EMPTY: the fresh-onboarding flow runs.
   - CORRUPT: the wizard offers to back up the live file and rewrite
@@ -776,6 +778,7 @@ type ReconfigChoice =
   | "add-provider"
   | "remove-provider"
   | "change-fallback"
+  | "edit-routing"
   | "rerun-full"
   | "cancel";
 
@@ -895,6 +898,11 @@ async function promptReconfigAction(
     description: "Toggle the Provider-fallback flag (currently consulted at runtime)",
   });
   choices.push({
+    value: "edit-routing",
+    name: "Edit routing table",
+    description: "Set per-capability provider preferences (search: tavily,brave)",
+  });
+  choices.push({
     value: "rerun-full",
     name: "Re-run full onboarding",
     description: "Discard the current config and start the wizard from scratch",
@@ -926,6 +934,9 @@ async function applyReconfigAction(
 ): Promise<"written" | "loop" | "cancel" | "write-error"> {
   if (action === "change-fallback") {
     return changeFallback(deps, config);
+  }
+  if (action === "edit-routing") {
+    return editRouting(deps, config);
   }
   if (action === "add-provider") {
     return addProvider(deps, config, configuredIds);
@@ -963,6 +974,89 @@ async function changeFallback(
   } catch {
     return "loop";
   }
+}
+
+/**
+ * Edit the per-capability routing table (routing-table plan). Shows the
+ * current table, then reads `capability: provider1,provider2` lines
+ * until a blank line. Lenient like the config loader: unknown
+ * capabilities/providers warn and drop (valid lines still apply);
+ * `capability:` with an empty value removes that entry; removing the
+ * last entry drops the whole key. Cancel (Ctrl+C/EOF) on any input
+ * loops back to the menu without writing.
+ */
+async function editRouting(
+  deps: InitDependencies,
+  config: ScoutlineConfig,
+): Promise<"written" | "loop" | "cancel" | "write-error"> {
+  const current = Object.entries(config.routing ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  deps.writeStderr(
+    current.length === 0
+      ? "\nCurrent routing table: (empty)\n"
+      : `\nCurrent routing table:\n${current.map(([cap, ids]) => `  ${cap} → ${(ids ?? []).join(", ")}`).join("\n")}\n`,
+  );
+  deps.writeStderr(
+    'Enter routing lines as "capability: provider1,provider2" (e.g. search: tavily,brave).\n' +
+      "An empty value after the colon removes the capability. Blank line to finish.\n\n",
+  );
+
+  const capabilitySet = new Set<string>(PROVIDER_CAPABILITIES);
+  const routing: Record<string, ProviderId[]> = {};
+  for (const [cap, ids] of Object.entries(config.routing ?? {})) {
+    routing[cap] = [...(ids ?? [])];
+  }
+
+  try {
+    for (;;) {
+      const line = (await deps.prompts.input("routing> ")).trim();
+      if (line.length === 0) break;
+      const sep = line.indexOf(":");
+      if (sep <= 0) {
+        deps.writeStderr(`  \u26a0\ufe0f  skipped "${line}" \u2014 expected "capability: provider1,provider2"\n`);
+        continue;
+      }
+      const capability = line.slice(0, sep).trim();
+      const value = line.slice(sep + 1).trim();
+      if (!capabilitySet.has(capability)) {
+        deps.writeStderr(`  \u26a0\ufe0f  unknown capability "${capability}" \u2014 skipped\n`);
+        continue;
+      }
+      if (value.length === 0) {
+        delete routing[capability];
+        deps.writeStderr(`  \u2212 removed routing for ${capability}\n`);
+        continue;
+      }
+      const ids: ProviderId[] = [];
+      const seen = new Set<string>();
+      for (const raw of value.split(",")) {
+        const id = raw.trim().toLowerCase();
+        if (id.length === 0) continue;
+        if (!(PROVIDER_IDS as readonly string[]).includes(id)) {
+          deps.writeStderr(`  \u26a0\ufe0f  unknown provider "${id}" \u2014 dropped\n`);
+          continue;
+        }
+        if (!seen.has(id)) {
+          seen.add(id);
+          ids.push(id as ProviderId);
+        }
+      }
+      if (ids.length === 0) {
+        deps.writeStderr(`  \u26a0\ufe0f  no valid providers on this line \u2014 ignored\n`);
+        continue;
+      }
+      routing[capability] = ids;
+      deps.writeStderr(`  \u2713 ${capability} \u2192 ${ids.join(", ")}\n`);
+    }
+  } catch {
+    // Cancel on any input prompt: no mutation, back to the menu.
+    return "loop";
+  }
+
+  const { routing: _oldRouting, ...rest } = config;
+  void _oldRouting;
+  const updated: ScoutlineConfig =
+    Object.keys(routing).length > 0 ? { ...rest, routing } : rest;
+  return persistConfig(deps, updated);
 }
 
 /**

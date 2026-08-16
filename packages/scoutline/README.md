@@ -189,7 +189,7 @@ Provider selection, and `doctor`.
 | `crawl` | **No** | **No** | Yes | No | No | Yes (async) | No | No | No | Tavily sync; Firecrawl async (resumable after Ctrl-C) |
 | `map` | **No** | **No** | Yes | No | No | Yes | No | No | No | URL-set discovery; no per-page content |
 | `research` | **No** | **No** | Yes | Yes | **No** | **No** | Yes | Yes | Yes | Tavily, Exa, Parallel, Perplexity `sonar-deep-research`, and Jina DeepSearch report synthesis |
-| `repo search` / `repo read` / `repo tree` | Yes | **No** | **No** | **No** | **No** | **No** | **No** | **No** | **No** | Participates in selection; only Z.AI supplies `repository-exploration` |
+| `repo search` / `repo read` / `repo tree` / `repo brief` | Yes | **No** | **No** | **No** | **No** | **No** | **No** | **No** | **No** | Participates in selection; only Z.AI supplies `repository-exploration` |
 | `tools`, `tool`, `call` (Raw tools) | Yes | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
 | `code` (Code Mode) | Yes | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
 
@@ -307,6 +307,8 @@ scoutline repo search vercel/next.js "app router"
 scoutline repo read anthropics/anthropic-sdk-python README.md
 scoutline repo search openai/codex "config" --language en
 scoutline repo tree openai/codex --path codex-rs --depth 2
+scoutline repo brief facebook/react
+scoutline repo brief openai/codex --focus readme,manifest --max-chars 2000
 
 # Quota - effective or all providers
 scoutline quota                       # effective Provider
@@ -368,6 +370,9 @@ one-line cache summary under the `cache` field.
 
 - `repo search` defaults to English results. Use `--language zh` for Chinese.
 - `repo tree` supports `--path` (directory scope) and `--depth` (expand subtrees).
+- `repo brief` composes tree + search + read into one schema-version-1
+  `RepositoryBrief` envelope; `--focus` subsets the sealed set
+  `structure, readme, manifest, files` (default all four).
 - `quota --all-providers` exits 1 if any configured Provider fails; successful
   entries are still reported.
 - `doctor` exits 1 when the effective Provider is unconfigured or any
@@ -379,10 +384,10 @@ one-line cache summary under the `cache` field.
 
 ## Repository Exploration (P6)
 
-`scoutline repo search`, `scoutline repo read`, and `scoutline repo tree`
-participate in `--provider` selection. Z.AI advertises the
-`repository-exploration` Capability and supplies it through the Z.AI
-Repository Adapter. MiniMax and the other built-in Providers do not
+`scoutline repo search`, `scoutline repo read`, `scoutline repo tree`, and
+`scoutline repo brief` participate in `--provider` selection. Z.AI
+advertises the `repository-exploration` Capability and supplies it through
+the Z.AI Repository Adapter. MiniMax and the other built-in Providers do not
 advertise it; by default (0.11.0+) Scoutline emits a stderr notice and
 auto-reroutes to Z.AI. Under `--no-fallback` the preflight surfaces
 `UNSUPPORTED_CAPABILITY` for the selected non-supplier before descriptor
@@ -392,8 +397,8 @@ the previous strict single-provider behavior.
 
 ### Breaking data-mode migration (v0.2 → v1)
 
-The three `repo` successes return **schema-version-1 structured values** in
-every output mode. This is an intentional breaking change from the v0.2 raw
+The `repo search`, `read`, `tree`, and `brief` successes return
+**schema-version-1 structured values** in every output mode. This is an intentional breaking change from the v0.2 raw
 Search/File strings and the depth-dependent raw Tree shape:
 
 | Command | v0.2 (legacy, now obsolete) | v1 (current) |
@@ -401,6 +406,7 @@ Search/File strings and the depth-dependent raw Tree shape:
 | `repo search` | Raw ZRead text with `<excerpt>` blocks | `{schemaVersion, repository, query, language, excerpts:[{text}], truncated, originalTextLength}` |
 | `repo read` | Raw `<file_content>…</file_content>` body | `{schemaVersion, repository, path, content, truncated, originalContentLength}` |
 | `repo tree` | `<structure>` block (depth 1 returned split/deep routes) | `{schemaVersion, repository, path, depth, snapshots:[{repository, path, entries:[{name, path, kind}]}]}` (structured at every depth, including depth 1) |
+| `repo brief` | — (new command) | `{schemaVersion, repository, focus, coverage:{probes}, tree?, docs?, entryPoints?, files?:[{path, content, truncated, originalContentLength}], detected:{hasReadme, hasManifest, manifestKinds}}` (sections gated by `--focus`; `coverage` and `detected` always present) |
 
 `data` mode emits the exact object above. `json` and `pretty` wrap it through
 the standard success envelope. Text-oriented modes (`compact`, `markdown`,
@@ -433,6 +439,8 @@ projection applied to the normalized result after caching.
   Provider order; the final retained excerpt is truncated and later excerpts
   are omitted.
 - `repo tree` → never character-limited.
+- `repo brief` → forwarded verbatim to every search and read call (per-call
+  budget); the tree probe is never character-limited.
 - Metadata, JSON envelopes, and Tree snapshots are not part of the budget.
 
 ### Empty results
@@ -457,6 +465,11 @@ algorithm, and a valid hit is written through to the new key. Old files are
 never rewritten, migrated, or deleted. `--no-cache` performs no reads or
 writes. Injected credentials drive the fingerprint and legacy-key
 construction; ambient `process.env` is never reread.
+
+`repo brief` is never cached as a unit: its probes reuse the per-operation
+entries above, so a warm re-run still invokes the Explorer operations but
+makes no new provider transport calls, and still produces byte-identical
+output.
 
 ### Errors and lifecycle
 

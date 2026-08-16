@@ -581,6 +581,154 @@ export async function clearAllCaches(): Promise<{
 }
 
 /**
+ * Selectors narrowing a {@link pruneCaches} run. All are optional and
+ * AND together. When `olderThanMs` is absent the effective TTL
+ * (`getCacheTtlMs()`) is the age threshold (DESIGN D3); `provider` and
+ * `capability` selectors match v2 filenames only (DESIGN D2) — legacy /
+ * non-v2 entries are selectable by age only.
+ */
+export interface PruneSelectors {
+  readonly olderThanMs?: number;
+  readonly provider?: string;
+  readonly capability?: string;
+}
+
+/**
+ * Optional tuning for {@link pruneCaches}. Production callers pass no
+ * options; the defaults mirror `writeCache`'s lock discipline. Tests use
+ * a short `lockTimeoutMs` so the D5 timeout-rejection path is exercised
+ * without waiting the production 30s.
+ */
+export interface PruneCachesOptions {
+  /** Lock-acquire timeout for the response-dir scan (ms). Default `DEFAULT_LOCK_TIMEOUT_MS`. */
+  readonly lockTimeoutMs?: number;
+  /** Stale-lock threshold (ms). Default `DEFAULT_LOCK_STALE_MS`. */
+  readonly lockStaleMs?: number;
+}
+
+/**
+ * Outcome of a {@link pruneCaches} run. Counts reflect actual deletions;
+ * per-entry failures are skipped best-effort like {@link clearSubdir}.
+ */
+export interface PruneCachesResult {
+  readonly prunedResponses: number;
+  readonly prunedTools: number;
+  readonly bytesFreed: number;
+}
+
+/**
+ * Prune expired entries from both caches (DESIGN D1–D6).
+ *
+ * Age is judged by the stored envelope timestamp, never mtime (D1):
+ * response entries carry `ts`, tool entries carry `timestamp`. The
+ * response scan runs inside the same `cache-write` inter-process lock
+ * `writeCache` serializes on (D4), and a lock timeout THROWS rather than
+ * being swallowed (D5) — prune is an explicit operator command, not a
+ * best-effort cache write. The tool scan is lock-free (no write-lock
+ * convention exists there) and selector-free (tool filenames are
+ * unpartitioned); it applies the same age rule.
+ *
+ * A disabled cache does not stop a prune — deletion is not a cache
+ * read/write (D6). But with NO explicit `olderThanMs`, a disabled cache
+ * (TTL-0) means "no read freshness rule", so the prune is a zero-work
+ * success reporting zeros. An explicit `--older-than` runs regardless.
+ */
+export async function pruneCaches(
+  selectors: PruneSelectors,
+  options: PruneCachesOptions = {},
+): Promise<PruneCachesResult> {
+  const thresholdMs = selectors.olderThanMs ?? getCacheTtlMs();
+  if (selectors.olderThanMs === undefined && (!isCacheEnabled() || thresholdMs <= 0)) {
+    return { prunedResponses: 0, prunedTools: 0, bytesFreed: 0 };
+  }
+
+  const lockTimeoutMs = options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
+  const lockStaleMs = options.lockStaleMs ?? DEFAULT_LOCK_STALE_MS;
+
+  // Response dir: serialize with writers on the same identity so a prune
+  // never races a concurrent evictIfNeeded sweep or atomic rename (D4).
+  const responses = await withAsyncFileLock(
+    responseCacheDir(),
+    "cache-write",
+    async () => pruneSubdirByAge(responseCacheDir(), thresholdMs, selectors),
+    { timeoutMs: lockTimeoutMs, staleMs: lockStaleMs, timeoutLabel: "Cache prune" },
+  );
+
+  // Tool dir: same age rule, lock-free, no selectors (filenames are
+  // unpartitioned — they encode the config hash, not provider/capability).
+  const tools = await pruneSubdirByAge(toolCacheDir(), thresholdMs);
+
+  return {
+    prunedResponses: responses.pruned,
+    prunedTools: tools.pruned,
+    bytesFreed: responses.bytesFreed + tools.bytesFreed,
+  };
+}
+
+/**
+ * Age (ms) of a cache entry from its stored timestamp, or `null` when no
+ * usable numeric age marker exists. Response entries use `ts` (DESIGN
+ * D1); tool entries use the tool envelope's `timestamp` (mirroring
+ * `readToolCache`). Entries without a readable marker are skipped by
+ * prune — deletion is only attempted when the age is determinable.
+ */
+function entryAgeMs(raw: unknown): number | null {
+  if (!raw || typeof raw !== "object") return null;
+  const ts = (raw as { ts?: unknown }).ts;
+  if (typeof ts === "number") return Date.now() - ts;
+  const timestamp = (raw as { timestamp?: unknown }).timestamp;
+  if (typeof timestamp === "number") return Date.now() - timestamp;
+  return null;
+}
+
+/**
+ * Best-effort per-entry prune of one cache subdirectory. Skips `.lock`
+ * files and `.<name>.<pid>.<uuid>.tmp` staging files (mirrors
+ * `evictIfNeeded`'s skip discipline); matches `provider`/`capability`
+ * selectors against v2 filenames only (D2); deletes entries whose stored
+ * age exceeds `thresholdMs`. Individual failures are skipped like
+ * `clearSubdir`; counts reflect actual deletions.
+ */
+async function pruneSubdirByAge(
+  dir: string,
+  thresholdMs: number,
+  selectors: { provider?: string; capability?: string } = {},
+): Promise<{ pruned: number; bytesFreed: number }> {
+  let pruned = 0;
+  let bytesFreed = 0;
+  try {
+    const names = await fs.readdir(dir);
+    for (const name of names) {
+      // Skip atomic-write staging files and lockfiles (D4 skip discipline).
+      if ((name.startsWith(".") && name.endsWith(".tmp")) || name.endsWith(".lock")) continue;
+      // Filename-first selector matching (D2) — zero content reads.
+      if (selectors.provider !== undefined || selectors.capability !== undefined) {
+        const parsed = parseCacheFileName(name);
+        // Non-v2 names are not selectable by provider/capability (D2);
+        // they remain eligible under an age-only prune.
+        if (!parsed) continue;
+        if (selectors.provider !== undefined && parsed.provider !== selectors.provider) continue;
+        if (selectors.capability !== undefined && parsed.capability !== selectors.capability) continue;
+      }
+      const p = path.join(dir, name);
+      try {
+        const s = await fs.stat(p);
+        const ageMs = entryAgeMs(JSON.parse(await fs.readFile(p, "utf8")));
+        if (ageMs === null || ageMs <= thresholdMs) continue;
+        await fs.unlink(p);
+        pruned += 1;
+        bytesFreed += s.size;
+      } catch {
+        // Best-effort per entry, like clearSubdir.
+      }
+    }
+  } catch {
+    // dir doesn't exist yet
+  }
+  return { pruned, bytesFreed };
+}
+
+/**
  * Inventory both caches. The shape extends the v0.4.0 flat shape with
  * nested `responseCache` and `toolCache` sections (H3 fix). The
  * top-level `entries` and `totalBytes` fields are removed — callers

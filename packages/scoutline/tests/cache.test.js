@@ -35,6 +35,7 @@ import {
   defaultResponseCache,
   parsePruneDuration,
   parseCacheFileName,
+  pruneCaches,
 } from "../dist/lib/cache.js";
 
 // P6-08A: install a test-local fake credential so `buildCacheKey()`'s
@@ -1602,5 +1603,262 @@ describe("parseCacheFileName — v2 filename selector parsing (D2)", () => {
 
   it("returns null for empty input", () => {
     assert.strictEqual(parseCacheFileName(""), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pruneCaches — TTL/selector/lock discipline (DESIGN D1–D6)
+// ---------------------------------------------------------------------------
+
+const fileExists = async (p) =>
+  fs.access(p).then(() => true).catch(() => false);
+
+describe("pruneCaches — TTL/selector/lock discipline (D1–D6)", () => {
+  const credHash = crypto.createHash("sha256").update("cred").digest("hex");
+  const reqHash = crypto.createHash("sha256").update("req").digest("hex");
+  const v2Name = (capability, provider) =>
+    `v2.${capability}.${provider}.${credHash}.${reqHash}.json`;
+
+  it("prunes only entries older than the threshold; fresh entries survive", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const now = Date.now();
+        const cacheDir = path.join(dir, "cache");
+        const toolsDir = path.join(dir, "tools");
+        await fs.mkdir(cacheDir, { recursive: true });
+        await fs.mkdir(toolsDir, { recursive: true });
+
+        // Response entries: one expired (v2 search/zai), one fresh (v2 read/tavily).
+        const oldName = v2Name("search", "zai");
+        const freshName = v2Name("read", "tavily");
+        await fs.writeFile(
+          path.join(cacheDir, oldName),
+          JSON.stringify({ ts: now - 100_000, data: { old: true } }),
+        );
+        await fs.writeFile(
+          path.join(cacheDir, freshName),
+          JSON.stringify({ ts: now, data: { fresh: true } }),
+        );
+
+        // Tool entries use the tool envelope's `timestamp` age marker.
+        const oldTool = "tools-old.json";
+        const freshTool = "tools-fresh.json";
+        await fs.writeFile(
+          path.join(toolsDir, oldTool),
+          JSON.stringify({ version: 1, timestamp: now - 100_000, tools: [] }),
+        );
+        await fs.writeFile(
+          path.join(toolsDir, freshTool),
+          JSON.stringify({ version: 1, timestamp: now, tools: [] }),
+        );
+
+        const oldStat = await fs.stat(path.join(cacheDir, oldName));
+        const oldToolStat = await fs.stat(path.join(toolsDir, oldTool));
+
+        const result = await pruneCaches({ olderThanMs: 60_000 });
+
+        assert.deepStrictEqual(result, {
+          prunedResponses: 1,
+          prunedTools: 1,
+          bytesFreed: oldStat.size + oldToolStat.size,
+        });
+        assert.strictEqual(await fileExists(path.join(cacheDir, oldName)), false);
+        assert.strictEqual(await fileExists(path.join(cacheDir, freshName)), true);
+        assert.strictEqual(await fileExists(path.join(toolsDir, oldTool)), false);
+        assert.strictEqual(await fileExists(path.join(toolsDir, freshTool)), true);
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("--older-than overrides the TTL (prunes TTL-fresh, spares TTL-expired)", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      process.env.SCOUTLINE_CACHE_TTL_MS = String(60_000); // 1-minute TTL
+      try {
+        const now = Date.now();
+        const cacheDir = path.join(dir, "cache");
+        await fs.mkdir(cacheDir, { recursive: true });
+        // 30s old → fresh under the 1m TTL; 2m old → expired under the 1m TTL.
+        const ttlFresh = v2Name("search", "zai");
+        const ttlExpired = v2Name("read", "tavily");
+        await fs.writeFile(path.join(cacheDir, ttlFresh), JSON.stringify({ ts: now - 30_000, data: {} }));
+        await fs.writeFile(path.join(cacheDir, ttlExpired), JSON.stringify({ ts: now - 120_000, data: {} }));
+
+        // olderThanMs LARGER than both ages: nothing dies, even the TTL-expired entry.
+        let result = await pruneCaches({ olderThanMs: 5 * 60_000 });
+        assert.strictEqual(result.prunedResponses, 0);
+        assert.strictEqual(await fileExists(path.join(cacheDir, ttlExpired)), true);
+        assert.strictEqual(await fileExists(path.join(cacheDir, ttlFresh)), true);
+
+        // olderThanMs SMALLER than the TTL-fresh entry's age: it gets pruned.
+        result = await pruneCaches({ olderThanMs: 10_000 });
+        assert.strictEqual(result.prunedResponses, 2);
+        assert.strictEqual(await fileExists(path.join(cacheDir, ttlFresh)), false);
+        assert.strictEqual(await fileExists(path.join(cacheDir, ttlExpired)), false);
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+        delete process.env.SCOUTLINE_CACHE_TTL_MS;
+      }
+    });
+  });
+
+  it("provider/capability selectors match v2 filenames only; legacy dies under an age-only prune", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const now = Date.now();
+        const cacheDir = path.join(dir, "cache");
+        await fs.mkdir(cacheDir, { recursive: true });
+
+        const searchZai = v2Name("search", "zai");
+        const searchTavily = v2Name("search", "tavily");
+        const readTavily = v2Name("read", "tavily");
+        const legacy = `search.${reqHash}.json`; // non-v2 read-through candidate
+        for (const name of [searchZai, searchTavily, readTavily, legacy]) {
+          await fs.writeFile(path.join(cacheDir, name), JSON.stringify({ ts: now - 100_000, data: {} }));
+        }
+
+        // Provider-selective prune (zai): only search/zai dies; legacy survives.
+        let result = await pruneCaches({ provider: "zai", olderThanMs: 60_000 });
+        assert.strictEqual(result.prunedResponses, 1);
+        assert.strictEqual(await fileExists(path.join(cacheDir, searchZai)), false);
+        assert.strictEqual(await fileExists(path.join(cacheDir, searchTavily)), true);
+        assert.strictEqual(await fileExists(path.join(cacheDir, readTavily)), true);
+        assert.strictEqual(await fileExists(path.join(cacheDir, legacy)), true);
+
+        // Capability-selective prune (read): read/tavily dies; legacy still survives.
+        result = await pruneCaches({ capability: "read", olderThanMs: 60_000 });
+        assert.strictEqual(result.prunedResponses, 1);
+        assert.strictEqual(await fileExists(path.join(cacheDir, readTavily)), false);
+        assert.strictEqual(await fileExists(path.join(cacheDir, searchTavily)), true);
+        assert.strictEqual(await fileExists(path.join(cacheDir, legacy)), true);
+
+        // Age-only prune (no selectors): everything old dies, including legacy.
+        result = await pruneCaches({ olderThanMs: 60_000 });
+        assert.strictEqual(result.prunedResponses, 2); // searchTavily + legacy
+        assert.strictEqual(await fileExists(path.join(cacheDir, searchTavily)), false);
+        assert.strictEqual(await fileExists(path.join(cacheDir, legacy)), false);
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("never deletes .lock files or .tmp staging files", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const now = Date.now();
+        const cacheDir = path.join(dir, "cache");
+        await fs.mkdir(cacheDir, { recursive: true });
+
+        const expired = v2Name("search", "zai");
+        await fs.writeFile(path.join(cacheDir, expired), JSON.stringify({ ts: now - 100_000, data: {} }));
+        // A non-active lockfile and an atomic-write staging file, both old
+        // (an unprotected age prune would remove them).
+        const lockName = "some-other.lock";
+        const tmpName = `.v2.search.zai.${credHash}.${reqHash}.json.1234.uuid.tmp`;
+        await fs.writeFile(path.join(cacheDir, lockName), "lock sentinel");
+        await fs.writeFile(path.join(cacheDir, tmpName), "tmp sentinel");
+        const old = new Date(now - 100_000);
+        await fs.utimes(path.join(cacheDir, lockName), old, old);
+        await fs.utimes(path.join(cacheDir, tmpName), old, old);
+
+        const result = await pruneCaches({ olderThanMs: 60_000 });
+        assert.strictEqual(result.prunedResponses, 1); // only the expired v2 entry
+        assert.strictEqual(await fileExists(path.join(cacheDir, expired)), false);
+        assert.strictEqual(await fileExists(path.join(cacheDir, lockName)), true);
+        assert.strictEqual(await fileExists(path.join(cacheDir, tmpName)), true);
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("prune blocks while an external cache-write lock is held, then proceeds on release", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const now = Date.now();
+        const cacheDir = path.join(dir, "cache");
+        await fs.mkdir(cacheDir, { recursive: true });
+        const expired = v2Name("search", "zai");
+        await fs.writeFile(path.join(cacheDir, expired), JSON.stringify({ ts: now - 100_000, data: {} }));
+
+        const lockPath = path.join(cacheDir, "cache-write.lock");
+        const handle = await fs.open(lockPath, "wx");
+
+        let completed = false;
+        const prunePromise = pruneCaches({ olderThanMs: 60_000 }).then((r) => {
+          completed = true;
+          return r;
+        });
+
+        await new Promise((r) => setTimeout(r, 200));
+        assert.strictEqual(completed, false, "prune must block while the lock is held");
+
+        await handle.close();
+        await fs.unlink(lockPath);
+        const result = await prunePromise;
+        assert.strictEqual(completed, true, "prune should complete after lock release");
+        assert.strictEqual(result.prunedResponses, 1);
+        assert.strictEqual(await fileExists(path.join(cacheDir, expired)), false);
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("prune rejects when the cache-write lock is held past the timeout (D5)", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const cacheDir = path.join(dir, "cache");
+        await fs.mkdir(cacheDir, { recursive: true });
+        const lockPath = path.join(cacheDir, "cache-write.lock");
+        const handle = await fs.open(lockPath, "wx");
+        try {
+          await assert.rejects(
+            () => pruneCaches({ olderThanMs: 60_000 }, { lockTimeoutMs: 250 }),
+            /create-lock timed out/,
+          );
+        } finally {
+          await handle.close().catch(() => {});
+          await fs.unlink(lockPath).catch(() => {});
+        }
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("no selectors under a disabled cache is a zero-work success; --older-than still runs (D6)", async () => {
+    await withTempDir({}, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      process.env.SCOUTLINE_CACHE = "0";
+      try {
+        const now = Date.now();
+        const cacheDir = path.join(dir, "cache");
+        await fs.mkdir(cacheDir, { recursive: true });
+        const expired = v2Name("search", "zai");
+        await fs.writeFile(path.join(cacheDir, expired), JSON.stringify({ ts: now - 100_000, data: {} }));
+
+        // No explicit threshold + disabled cache → zero-work success, files untouched.
+        const result = await pruneCaches({});
+        assert.deepStrictEqual(result, { prunedResponses: 0, prunedTools: 0, bytesFreed: 0 });
+        assert.strictEqual(await fileExists(path.join(cacheDir, expired)), true);
+
+        // D6: an explicit --older-than works regardless of the disabled cache.
+        const result2 = await pruneCaches({ olderThanMs: 60_000 });
+        assert.strictEqual(result2.prunedResponses, 1);
+        assert.strictEqual(await fileExists(path.join(cacheDir, expired)), false);
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+        delete process.env.SCOUTLINE_CACHE;
+      }
+    });
   });
 });

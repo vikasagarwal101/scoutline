@@ -47,9 +47,12 @@ function buildTree(snapshots) {
     repository: "owner/repo",
     path: "",
     depth: 1,
-    snapshots: snapshots.map((entries, index) => ({
+    // Snapshot `path` is not consumed by `selectBriefFiles` (selection
+    // computes depth from `entry.path`), so the fixture pins it to the
+    // root constant rather than claiming a directory it does not model.
+    snapshots: snapshots.map((entries) => ({
       repository: "owner/repo",
-      path: index === 0 ? "" : snapshots[index - 1]?.path || "",
+      path: "",
       entries: entries.map((e) => ({
         name: e.name,
         path: e.path,
@@ -73,12 +76,6 @@ describe("REPO_BRIEF_FOCUS — sealed v1 focus set", () => {
     ]);
   });
 
-  it("is readonly at the type level (constant identity)", () => {
-    // The literal constant is the source of truth; mutating it would break
-    // every consumer that captures its identity. We assert identity only.
-    assert.equal(typeof REPO_BRIEF_FOCUS, "object");
-    assert.ok(Array.isArray(REPO_BRIEF_FOCUS) || REPO_BRIEF_FOCUS.length !== undefined);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -763,6 +760,12 @@ describe("repoBrief — handler composition (DESIGN D3/D4)", () => {
     ]);
     assert.deepStrictEqual(brief.docs.excerpts, []);
     assert.deepStrictEqual(brief.entryPoints.excerpts, []);
+    // Documented contract (RepoBriefCoverage): read records are one per
+    // attempted Explorer call, so an empty tree-derived selection emits
+    // NO read record (the `read:<files>` placeholder is reserved for a
+    // skipped stage: focus-excluded / dependency-failed). "files
+    // requested but nothing selected" is read from `focus` + `detected`,
+    // never by counting records.
     assert.ok(!("files" in brief), "no files selected → files omitted");
     assert.deepStrictEqual(brief.detected, {
       hasReadme: false,
@@ -955,6 +958,20 @@ describe("repoBrief — handler composition (DESIGN D3/D4)", () => {
       ValidationError,
     );
   });
+
+  it("dedupes duplicate focus values preserving first occurrence (handler parity with parseBriefFocus)", async () => {
+    const { capability } = makeFakeBriefCapability();
+    const { execution } = makeBriefExecution();
+    const result = await repoBrief(
+      "owner/repo",
+      { focus: ["files", "readme", "files"] },
+      { capability, execution },
+    );
+    assert.deepStrictEqual([...result.data.focus], ["files", "readme"]);
+    // Deduplicated focus still gates sections for both retained tokens.
+    assert.ok(result.data.files, "files focus section present");
+    assert.ok(result.data.docs, "readme focus section present");
+  });
 });
 
 describe("repoBrief — probe degradation (DESIGN D6)", () => {
@@ -1002,6 +1019,30 @@ describe("repoBrief — probe degradation (DESIGN D6)", () => {
     assert.strictEqual(treeProbe.status, "failed");
     assert.strictEqual(treeProbe.error.code, "VALIDATION_ERROR");
     assert.strictEqual(treeProbe.error.message, "bad tree");
+  });
+
+  it("failed-probe messages redact invocation-threaded secrets (injected env, absent from ambient process.env)", async () => {
+    // The ambient provider env vars are cleared by this file's root
+    // `before` hook, so only threading `deps.secrets` (resolved from the
+    // invocation's env) can redact this credential — ambient
+    // `configuredSecrets()` alone would leave it in the envelope.
+    const injected = "zai-key-only-in-injected-env";
+    const { capability } = makeFakeBriefCapability({
+      listDirectory: () => {
+        throw new Error(`tree boom ${injected}`);
+      },
+    });
+    const { execution } = makeBriefExecution();
+    const result = await repoBrief(
+      "owner/repo",
+      {},
+      { capability, execution, secrets: [injected] },
+    );
+    assert.strictEqual(result.kind, "data");
+    const treeProbe = result.data.coverage.probes[0];
+    assert.strictEqual(treeProbe.status, "failed");
+    assert.strictEqual(treeProbe.error.message, "tree boom [REDACTED]");
+    assert.ok(!treeProbe.error.message.includes(injected));
   });
 
   it("search:readme throws → docs omitted, everything else intact", async () => {
@@ -1502,6 +1543,62 @@ describe("Ticket 3 — repo brief dispatch through main (DESIGN D5)", () => {
     for (const [key, value] of Object.entries(counts)) {
       assert.strictEqual(value, 0, `capability.${key} must be 0 on parse-level failure`);
     }
+  });
+
+  it("fractional --depth is rejected at parse level (no silent parseInt truncation to 1)", async () => {
+    const m = makeBriefMainDeps(BRIEF_DEFAULT_IMPLS);
+    const { adapter, stderr } = createBriefRecordingAdapter();
+    const status = await main(
+      ["repo", "brief", "owner/repo", "--depth", "1.5"],
+      { ...m.mainDeps, invocation: adapter },
+    );
+
+    assert.strictEqual(status, 1);
+    const jsonLine = stderr.find((line) => line.startsWith("{"));
+    assert.ok(jsonLine, `expected a JSON error envelope, got ${JSON.stringify(stderr)}`);
+    const parsed = JSON.parse(jsonLine);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.match(parsed.error, /--depth must be a positive integer/);
+    // Parse-level: no Adapter construction or capability work.
+    assert.strictEqual(m.zai.stats.createCalls, 0);
+    const counts = briefCapabilityCallCount(m.capability);
+    for (const [key, value] of Object.entries(counts)) {
+      assert.strictEqual(value, 0, `capability.${key} must be 0 on parse-level failure`);
+    }
+  });
+
+  it("trailing-junk --max-chars is rejected at parse level (no silent parseInt truncation to 500)", async () => {
+    const m = makeBriefMainDeps(BRIEF_DEFAULT_IMPLS);
+    const { adapter, stderr } = createBriefRecordingAdapter();
+    const status = await main(
+      ["repo", "brief", "owner/repo", "--max-chars", "500x"],
+      { ...m.mainDeps, invocation: adapter },
+    );
+
+    assert.strictEqual(status, 1);
+    const jsonLine = stderr.find((line) => line.startsWith("{"));
+    assert.ok(jsonLine, `expected a JSON error envelope, got ${JSON.stringify(stderr)}`);
+    const parsed = JSON.parse(jsonLine);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.match(parsed.error, /--max-chars must be a positive integer/);
+    assert.strictEqual(m.zai.stats.createCalls, 0);
+  });
+
+  it("valueless --depth is rejected at parse level like valueless --focus", async () => {
+    const m = makeBriefMainDeps(BRIEF_DEFAULT_IMPLS);
+    const { adapter, stderr } = createBriefRecordingAdapter();
+    const status = await main(
+      ["repo", "brief", "owner/repo", "--depth"],
+      { ...m.mainDeps, invocation: adapter },
+    );
+
+    assert.strictEqual(status, 1);
+    const jsonLine = stderr.find((line) => line.startsWith("{"));
+    assert.ok(jsonLine, `expected a JSON error envelope, got ${JSON.stringify(stderr)}`);
+    const parsed = JSON.parse(jsonLine);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.match(parsed.error, /--depth requires a value/);
+    assert.strictEqual(m.zai.stats.createCalls, 0);
   });
 
   it("missing repo positional → VALIDATION_ERROR with usage hint", async () => {

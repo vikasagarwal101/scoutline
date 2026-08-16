@@ -9,7 +9,16 @@ import { read, READ_HELP } from "./commands/read.js";
 import { crawl, CRAWL_HELP } from "./commands/crawl.js";
 import { map, MAP_HELP } from "./commands/map.js";
 import { research, RESEARCH_HELP } from "./commands/research.js";
-import { repoSearch, repoTree, repoRead, repoBrief, REPO_HELP, parseBriefFocus } from "./commands/repo.js";
+import {
+  repoSearch,
+  repoTree,
+  repoRead,
+  repoBrief,
+  REPO_HELP,
+  parseBriefFocus,
+  parseBriefDepth,
+  parseBriefMaxChars,
+} from "./commands/repo.js";
 import type { RepoBriefFocus } from "./capabilities/repository.js";
 import { listTools, showTool, callTool, TOOLS_HELP, CALL_HELP } from "./commands/tools.js";
 import { doctor, buildDiagnosticsReport, DOCTOR_HELP } from "./commands/doctor.js";
@@ -1418,6 +1427,8 @@ async function handleRepo(
   let searchQuery: string | undefined;
   let readPath: string | undefined;
   let briefFocus: readonly RepoBriefFocus[] | undefined;
+  let briefDepth: number | undefined;
+  let briefMaxChars: number | undefined;
   if (command === "search") {
     searchQuery = positional.slice(2).join(" ");
     if (!repo || !searchQuery) {
@@ -1442,11 +1453,16 @@ async function handleRepo(
     // Brief composes tree + search + read into one envelope; only the
     // `<owner/repo>` positional is required (DESIGN D5). The optional
     // `--focus`/`--path`/`--depth`/`--max-chars`/`--no-cache` flags are
-    // threaded into the options object below. Parse-level validation
-    // for the flag VALUES (sealed focus set, positive integers, etc.)
-    // lives in `commands/repo.ts` so the same rules are reused by direct
-    // handler tests; here we only translate raw CLI strings into the
-    // typed shape.
+    // threaded into the options object below. Parse-level validation for
+    // every brief flag VALUE runs HERE, before Provider resolution and
+    // the capability preflight, so malformed input surfaces
+    // VALIDATION_ERROR uniformly (never UNSUPPORTED_CAPABILITY first):
+    // the sealed focus set via `parseBriefFocus`, and strict
+    // positive-integer `--depth`/`--max-chars` via the same exported
+    // parsers `commands/repo.ts` re-runs for direct handler callers.
+    // The raw flag strings are parsed here — NOT `parseInt`-coerced —
+    // so `--depth 1.5` and `--max-chars 500x` are errors, not silently
+    // truncated to 1 and 500.
     if (!repo) {
       throw new ValidationError(
         "Missing repo",
@@ -1459,6 +1475,20 @@ async function handleRepo(
         throw new ValidationError("--focus requires a value.");
       }
       briefFocus = parseBriefFocus(String(focusRaw));
+    }
+    const depthRaw = flags.depth;
+    if (depthRaw !== undefined) {
+      if (depthRaw === true) {
+        throw new ValidationError("--depth requires a value.");
+      }
+      briefDepth = parseBriefDepth(depthRaw);
+    }
+    const briefMaxCharsRaw = flags["max-chars"];
+    if (briefMaxCharsRaw !== undefined) {
+      if (briefMaxCharsRaw === true) {
+        throw new ValidationError("--max-chars requires a value.");
+      }
+      briefMaxChars = parseBriefMaxChars(briefMaxCharsRaw);
     }
   } else {
     throw new ValidationError(
@@ -1548,11 +1578,11 @@ async function handleRepo(
                 {
                   ...(briefFocus !== undefined ? { focus: briefFocus } : {}),
                   path: treePath,
-                  depth,
-                  maxChars,
+                  depth: briefDepth,
+                  maxChars: briefMaxChars,
                   noCache,
                 },
-                { capability, execution: executionDeps },
+                { capability, execution: executionDeps, secrets: deps.secrets },
                 context,
               );
             default:

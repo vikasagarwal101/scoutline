@@ -418,7 +418,8 @@ bytesFreed}`, and `{prunedResponses, prunedTools, bytesFreed}`
 respectively) and a multi-line / one-line rendering in every
 text-oriented mode. `cache stats` also reports additively:
 `responseCache`/`toolCache` carry `live`/`expired` counts (derived from
-each entry's stored `ts` vs the TTL), and `responseCache` breaks down
+each entry's stored timestamp — `ts` for response entries, `timestamp`
+for tool entries — vs the TTL), and `responseCache` breaks down
 into `byProvider`/`byCapability` buckets (each `{entries, totalBytes,
 live, expired}`; non-v2 filenames group under `legacy`).
 

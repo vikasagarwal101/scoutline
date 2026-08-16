@@ -67,6 +67,64 @@ export function parseProviderId(value: string): ProviderId {
 }
 
 /**
+ * Parse a comma-separated list of Provider IDs for multi-provider fan-out.
+ *
+ * Returns:
+ *   - `"all"` when the input is the literal sentinel (case-insensitive
+ *     after trim, no commas present),
+ *   - a `ProviderId[]` of the validated, deduplicated IDs in input order,
+ *   - `null` when the input is empty, contains only empty fragments, or
+ *     contains any unknown ID. A single bad ID fails the WHOLE parse —
+ *     partial lists with one typo are not silently truncated.
+ *
+ * The `"all"` sentinel is mutually exclusive with the comma-list form:
+ * `"all,tavily"` returns `null` because it is ambiguous (a sentinel
+ * plus a list). The fan-out resolver expands `"all"` against configured
+ * descriptors; this function only recognizes the literal token.
+ *
+ * Validation is performed against `PROVIDER_IDS` (same source of truth
+ * as `parseProviderId`); IDs are lowercased before comparison so
+ * `"TAVILY,Exa"` is accepted as `["tavily", "exa"]`.
+ */
+export function parseProviderIds(raw: string): ProviderId[] | "all" | null {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+
+  // Single-token path: either the `"all"` sentinel or a single
+  // ProviderId. Treated as mutually exclusive with the comma form so
+  // ambiguous inputs like `"all,tavily"` fail loud rather than silently
+  // dropping the trailing token.
+  if (!trimmed.includes(",")) {
+    const lower = trimmed.toLowerCase();
+    if (lower === "all") return "all";
+    if ((PROVIDER_IDS as readonly string[]).includes(lower)) {
+      return [lower as ProviderId];
+    }
+    return null;
+  }
+
+  // Comma-list path: trim, lowercase, validate, dedupe (first
+  // occurrence wins), drop empties. Any unknown ID fails the whole
+  // parse — partial lists with one typo would otherwise be silently
+  // truncated and the fan-out resolver would diverge from the user's
+  // intent.
+  const ids: ProviderId[] = [];
+  const seen = new Set<string>();
+  for (const fragment of trimmed.split(",")) {
+    const candidate = fragment.trim().toLowerCase();
+    if (candidate.length === 0) continue;
+    if (!(PROVIDER_IDS as readonly string[]).includes(candidate)) {
+      return null;
+    }
+    if (!seen.has(candidate)) {
+      seen.add(candidate);
+      ids.push(candidate as ProviderId);
+    }
+  }
+  return ids.length > 0 ? ids : null;
+}
+
+/**
  * Resolve the effective Provider ID with explicit precedence over
  * environment over the compatibility default. An explicitly empty
  * value (including whitespace) is treated as present and invalid; it

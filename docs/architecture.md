@@ -149,6 +149,31 @@ current control matrix:
 - Jina — domain (→ `X-Site`) and location (→ `gl`); recency,
   content-size, and type are rejected; topic via keyword.
 
+**Multi-provider fan-out** (ADR-0004, search only): one query may
+execute in parallel across several providers — arms. Activation, in
+precedence order: an explicit multi-pin (`--provider a,b` or
+`--provider all`, which expands to every configured search provider in
+registry order); an explicit single `--provider id` or
+`SCOUTLINE_PROVIDER` pin (fan-out is ignored, with a stderr notice when
+the switch is on); the `fanout` config key (`config set fanout
+true|false`, default false — its arms are the `routing.search` list when
+set, else every configured search provider); otherwise today's
+single-provider selection. Each arm is pinned to its provider and owns
+its transport (one client per arm; no per-arm fallback chain), reusing
+the same parallel `executeSearch` pattern as `--merge` sub-queries and
+the same provider-partitioned cache keys. Arm results are merged by
+canonical URL identity (scheme/host lowercased, default ports,
+fragments, trailing slashes, `utm_*`/`fbclid` stripped — identity only;
+the emitted URL, title, and summary stay the first arm's originals),
+ranked by occurrence count across all arms with arm-order tiebreak, and
+sliced to `--count` after the merge; each result carries an additive
+`mergedFrom` provenance list. An arm that rejects a search control drops
+with a stderr notice naming the control; as long as one arm succeeds the
+invocation exits 0 with the merged output. N arms = N billable calls,
+stated in `config set fanout` and `--help`; the default is off. The
+single-pin path is byte-identical to the pre-fan-out behavior (pinned by
+golden tests).
+
 ### Vision
 
 General single-image interpretation maps to `vision.interpret-image` on both

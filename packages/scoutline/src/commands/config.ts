@@ -18,6 +18,7 @@ import type { CommandResult, TextOutputMode } from "../command-invocation.js";
 import {
   resolveConfigKey,
   unknownConfigKeyError,
+  type FanoutNoticeContext,
   type ScoutlineConfig,
 } from "../lib/config-store.js";
 import { ValidationError } from "../lib/errors.js";
@@ -37,6 +38,22 @@ export interface ConfigGetDependencies {
 export interface ConfigSetDependencies {
   /** Strict set (production: `setConfigValue`). */
   readonly set: (path: string, value: string) => Promise<ScoutlineConfig>;
+  /**
+   * Success-path notice channel (production: the invocation context's
+   * `notice`, stderr). Used for registry-mandated warnings like the
+   * fan-out cost sentence (search-fanout DESIGN D7) — visible in every
+   * output mode while stdout stays data-only. Optional so presentation
+   * doubles stay minimal.
+   */
+  readonly notify?: (message: string) => void;
+  /**
+   * Eligibility context (env + provider registry) the fan-out cost
+   * notice needs to name only the routed providers that would actually
+   * bill — the same arm set `resolveFanoutPlan` computes (review fix,
+   * PR #36). Optional: without it the notice falls back to the blanket
+   * sentence instead of naming raw routing entries.
+   */
+  readonly noticeContext?: FanoutNoticeContext;
 }
 
 export interface ConfigUnsetDependencies {
@@ -73,6 +90,7 @@ function valueAtPath(config: ScoutlineConfig, path: string): unknown {
   if (trimmed === "routing") return config.routing;
   if (trimmed.startsWith("routing.")) return config.routing?.[trimmed.slice("routing.".length)];
   if (trimmed === "fallbackEnabled") return config.fallbackEnabled;
+  if (trimmed === "fanout") return config.fanout;
   const providerMatch = /^providers\.([a-z0-9-]+)(?:\.[A-Za-z0-9-]+)*$/.exec(trimmed);
   if (providerMatch?.[1]) return config.providers[providerMatch[1] as keyof typeof config.providers];
   return undefined;
@@ -112,7 +130,7 @@ export async function configGetCommand(
       ? unknownConfigKeyError(path)
       : new ValidationError(
           `Unknown config key "${path}".`,
-          'Valid keys: routing, routing.<capability>, fallbackEnabled, providers.<id>. Run "scoutline config --help".',
+          'Valid keys: routing, routing.<capability>, fallbackEnabled, fanout, providers.<id>. Run "scoutline config --help".',
         );
   }
   const raw = valueAtPath(config, path);
@@ -135,6 +153,18 @@ export async function configSetCommand(
 ): Promise<CommandResult<{ path: string; value: unknown }>> {
   const updated = await deps.set(path, value);
   const raw = valueAtPath(updated, path);
+  // Registry-mandated enable-time warning (fan-out cost sentence, D7):
+  // emitted as a stderr notice so it reaches every output mode while
+  // stdout stays data-only. The registry supplies the sentence for the
+  // UPDATED config plus the eligibility context — with `routing.search`
+  // set it names only the routed arms that are ELIGIBLE (configured ∩
+  // search-capable, the same set `resolveFanoutPlan` computes) instead
+  // of claiming ALL configured providers or naming raw routing entries
+  // that would not bill (review fix, PR #36).
+  const key = resolveConfigKey(path);
+  if (key?.setTrueNotice !== undefined && raw === true) {
+    deps.notify?.(key.setTrueNotice(updated, deps.noticeContext));
+  }
   return {
     kind: "data",
     data: { path: path.trim(), value: raw },
@@ -171,6 +201,12 @@ Keys:
   routing.<capability>        Ordered provider list for one capability.
                              Example: scoutline config set routing.search tavily,brave
   fallbackEnabled             true|false — the always-on provider fallback switch.
+  fanout                      true|false — the multi-provider search fan-out
+                             switch (default false; enabling warns about the
+                             billable cost — every configured search provider,
+                             or the routing.search subset when routed).
+                             Remove the standing switch with
+                             \`scoutline config unset fanout\`.
   providers.<id>              Provider configuration (view only; credential
                              values are always masked).
 
@@ -183,7 +219,8 @@ Behaviour:
         provider's environment variable (API keys never belong in command
         arguments).
   unset Removes a routing capability (and the table when the last entry
-        goes), the whole routing table, or the fallbackEnabled switch.
+        goes), the whole routing table, the fallbackEnabled switch, or
+        the fanout switch.
 
 Routing semantics: when no --provider / SCOUTLINE_PROVIDER pin exists,
 the routed list orders provider selection for that capability — the
@@ -200,6 +237,8 @@ Examples:
   scoutline config get routing
   scoutline config set routing.search tavily,brave
   scoutline config set fallbackEnabled false
+  scoutline config set fanout true
   scoutline config unset routing.search
+  scoutline config unset fanout
   scoutline config --help
 `.trim();

@@ -46,8 +46,10 @@ features next; features that reverse a written decision (ADR) last.
   did I spend yesterday?" is answerable. Reports call counts, not credits.
   Touches `state.json` schema.
 - **`compare` command** (`docs/plans/v2/03-compare-command.md`) —
-  *shelved (product decision 2026-08-15)*: superseded by fan-out below;
-  the plan's arm-execution design transfers.
+  *shelved (product decision 2026-08-15)*: superseded by multi-provider
+  fan-out ([ADR-0004](adr/0004-multi-provider-search-fanout.md),
+  accepted and implemented — see `CHANGELOG.md` "Unreleased"); the
+  plan's arm-execution design transferred.
 - **Local context refinement** (`docs/plans/v2/13-local-context-refinement.md`)
   — `--context <file>` / `--context-stdin` refine research/search from a
   local file parsed entirely client-side; only `{path, sha256}` recorded,
@@ -65,15 +67,6 @@ features next; features that reverse a written decision (ADR) last.
 
 ### Studied seeds — ADR-gated (start with a superseding ADR, not code)
 
-- **Multi-provider search fan-out** (`docs/plans/v2/05-multi-provider-fanout.md`)
-  — `--provider tavily,exa` / `--provider all` with cross-provider
-  merge; also a `fanout` config-key toggle (default off) with an
-  explicit multi-credit cost message. Reverses ADR-0002 decision 6 —
-  **[ADR-0004](adr/0004-multi-provider-search-fanout.md) drafted
-  (proposed); plan queued at `docs/plans/search-fanout/`**; the
-  routing table it was sequenced after has shipped (`routing` config key +
-  `config` command family), so the shared `handleSearch` surface is
-  available.
 - **`serve` — MCP server mode** (`docs/plans/v2/12-mcp-server-mode.md`) —
   expose the capability layer as MCP tools served by scoutline itself.
   Reverses the "serving the CLI itself as an MCP server" exclusion below.
@@ -126,8 +119,11 @@ cache clear` after a credential change is the documented recovery path.
   exists; marginal value does not justify new flag surface.
 - **Serving the CLI itself as an MCP server** — reversal candidate: see
   ADR-gated seed 12.
-- **Cross-provider result normalization / automatic multi-provider
-  fan-out** — reversal candidate: see ADR-gated seed 05 (ADR-0002 decision 6).
+- **Cross-provider result normalization / multi-provider fan-out beyond
+  search** — the search-only reversal shipped ([ADR-0004](adr/0004-multi-provider-search-fanout.md)
+  accepted, superseding ADR-0002 decision 6 for search; see
+  `CHANGELOG.md` "Unreleased"). Reader, crawl, map, research, and vision
+  remain strictly single-provider + fallback.
 - **Additional search source-quality controls** beyond the existing
   filtering and merge behavior.
 - **Dynamic provider loading, user-supplied adapter files, or external

@@ -2,7 +2,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { PROVIDER_CAPABILITIES, PROVIDER_IDS, type ProviderId } from "../providers/types.js";
+import {
+  PROVIDER_CAPABILITIES,
+  PROVIDER_IDS,
+  type ProviderDescriptor,
+  type ProviderId,
+} from "../providers/types.js";
 import { ConfigurationError, ValidationError } from "./errors.js";
 import {
   withAsyncFileLock,
@@ -27,6 +32,12 @@ export interface ProviderConfig {
 export interface ScoutlineConfig {
   readonly version: typeof CONFIG_VERSION;
   readonly fallbackEnabled?: boolean;
+  /**
+   * Multi-provider search fan-out switch (search-fanout plan, DESIGN
+   * D7). Absent/false → single-provider search (default, byte-identical
+   * pre-fan-out behavior); true → tier-3 activation per DESIGN D1.
+   */
+  readonly fanout?: boolean;
   readonly providers: Partial<Record<ProviderId, ProviderConfig>>;
   readonly hintShown?: boolean;
   /**
@@ -189,6 +200,7 @@ function parseConfig(contents: string): ParsedConfig {
   }
   if (
     (parsed.fallbackEnabled !== undefined && typeof parsed.fallbackEnabled !== "boolean") ||
+    (parsed.fanout !== undefined && typeof parsed.fanout !== "boolean") ||
     (parsed.hintShown !== undefined && typeof parsed.hintShown !== "boolean") ||
     (parsed.providers !== undefined && !isRecord(parsed.providers))
   ) {
@@ -217,6 +229,7 @@ function parseConfig(contents: string): ParsedConfig {
       ...(parsed.fallbackEnabled !== undefined
         ? { fallbackEnabled: parsed.fallbackEnabled as boolean }
         : {}),
+      ...(parsed.fanout !== undefined ? { fanout: parsed.fanout as boolean } : {}),
       providers,
       ...(parsed.hintShown !== undefined ? { hintShown: parsed.hintShown as boolean } : {}),
       ...(routing !== undefined ? { routing } : {}),
@@ -421,6 +434,20 @@ export async function writeConfig(
 // ---------------------------------------------------------------------------
 
 /**
+ * Eligibility context {@link fanoutCostNotice} uses to compute the
+ * billable arm set: the injected env (file-configured API keys are
+ * layered on top by {@link resolveEnvFromConfig} — the same merge the
+ * search handler's env view uses) and the live provider registry. The
+ * dispatcher threads both from its `HandlerDependencies`; doubles may
+ * omit the context entirely (the notice then falls back to the blanket
+ * sentence rather than naming an eligibility set it cannot verify).
+ */
+export interface FanoutNoticeContext {
+  readonly env: NodeJS.ProcessEnv;
+  readonly descriptors: readonly ProviderDescriptor[];
+}
+
+/**
  * One settable/gettable settings surface. `parseValue` is STRICT: it
  * throws ValidationError on anything it cannot store verbatim-in-meaning
  * (contrast the lenient load-time warn-and-drop of parseConfig — an
@@ -435,6 +462,20 @@ export interface ConfigKeyDescriptor {
   /** true → `config get` redacts the value; `config set` refuses it. */
   readonly credential: boolean;
   readonly describe: string;
+  /**
+   * Sentence the `config set` success path emits (stderr notice) when
+   * this key stores boolean `true` — the cost warning a switch-on must
+   * carry (search-fanout DESIGN D7: `config set fanout true` must state
+   * the billable cost). Receives the UPDATED config plus the
+   * eligibility context (env + provider registry) so the warning can
+   * describe the arms that will actually run: when `routing.search`
+   * narrows tier-3 fan-out, the notice names only the routed providers
+   * that are ELIGIBLE (configured ∩ search-capable — the same arm set
+   * `resolveFanoutPlan` computes), never raw routing entries that would
+   * not bill (review fix, PR #36). Absent on keys whose enablement
+   * carries no such warning.
+   */
+  readonly setTrueNotice?: (config: ScoutlineConfig, context?: FanoutNoticeContext) => string;
 }
 
 const KEY_FALLBACK_ENABLED: ConfigKeyDescriptor = {
@@ -443,6 +484,72 @@ const KEY_FALLBACK_ENABLED: ConfigKeyDescriptor = {
   settable: true,
   credential: false,
   describe: "boolean — always-on provider fallback switch",
+};
+
+/** The mandated fan-out cost warning (search-fanout DESIGN D7, verbatim). */
+export const FANOUT_COST_SENTENCE =
+  "every search will bill ALL configured search providers — N arms = N billable calls";
+
+/**
+ * Enable-time cost warning for `config set fanout true` (D7). With
+ * `routing.search` set, the notice names only the routed providers
+ * that are ELIGIBLE — configured (env OR file key, through the same
+ * `resolveEnvFromConfig` merge the search handler uses) ∩
+ * search-capable, first-encounter dedupe — the identical arm set
+ * tier 3 of `resolveFanoutPlan` (commands/search.ts) computes. Naming
+ * a raw routing entry that lacks credentials or the capability would
+ * falsely claim it bills on every search; zero eligible arms means
+ * fan-out resolves to nothing and NO provider bills, so the notice
+ * says that instead (review fix, PR #36). Without a routing table —
+ * or without the eligibility context (minimal doubles) — the mandated
+ * blanket D7 sentence ships verbatim.
+ */
+export function fanoutCostNotice(config: ScoutlineConfig, context?: FanoutNoticeContext): string {
+  const routed = config.routing?.["search"];
+  if (routed === undefined || routed.length === 0) {
+    return FANOUT_COST_SENTENCE;
+  }
+  if (context === undefined) {
+    // No eligibility context (minimal command doubles): the notice
+    // cannot verify which routed entries would actually bill. Fall
+    // back to the mandated blanket sentence rather than naming raw
+    // routing entries — an unverified claim either way, but the D7
+    // default posture is the one the spec mandates verbatim.
+    return FANOUT_COST_SENTENCE;
+  }
+  const resolvedEnv = resolveEnvFromConfig(context.env, config, context.descriptors);
+  const eligible = new Set(
+    context.descriptors
+      .filter(
+        (descriptor) =>
+          descriptor.isConfigured(resolvedEnv, "search") && descriptor.capabilities().has("search"),
+      )
+      .map((descriptor) => descriptor.id),
+  );
+  // Preserve the routed order, dedupe by first encounter — the same
+  // shaping tier 3 applies to the routing list (user-supplied
+  // preference, first-write wins).
+  const arms: string[] = [];
+  const seen = new Set<string>();
+  for (const id of routed) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (!eligible.has(id)) continue;
+    arms.push(id);
+  }
+  if (arms.length === 0) {
+    return "routing.search names no eligible search providers (none are both configured and search-capable) — fan-out resolves zero arms, so no provider is billed on search";
+  }
+  return `every search will bill the configured search providers in routing.search (${arms.join(", ")}) — N arms = N billable calls`;
+}
+
+const KEY_FANOUT: ConfigKeyDescriptor = {
+  path: "fanout",
+  gettable: true,
+  settable: true,
+  credential: false,
+  describe: "boolean — multi-provider search fan-out switch (default false)",
+  setTrueNotice: fanoutCostNotice,
 };
 
 const KEY_ROUTING_TABLE: ConfigKeyDescriptor = {
@@ -498,6 +605,7 @@ function providerFieldKey(fullPath: string, id: string): ConfigKeyDescriptor {
 export function resolveConfigKey(path: string): ConfigKeyDescriptor | null {
   const trimmed = path.trim();
   if (trimmed === "fallbackEnabled") return KEY_FALLBACK_ENABLED;
+  if (trimmed === "fanout") return KEY_FANOUT;
   if (trimmed === "routing") return KEY_ROUTING_TABLE;
   if (trimmed.startsWith("routing.")) {
     // Capability-validated: `routing.serch` must not resolve — get/set/
@@ -680,7 +788,7 @@ export async function setConfigValue(
   return serializeConfigWrite(options, async () => {
     const current = await readConfig(options);
     let next: ScoutlineConfig;
-    if (key === KEY_FALLBACK_ENABLED) {
+    if (key === KEY_FALLBACK_ENABLED || key === KEY_FANOUT) {
       const lowered = value.trim().toLowerCase();
       if (lowered !== "true" && lowered !== "false") {
         throw new ValidationError(
@@ -688,7 +796,10 @@ export async function setConfigValue(
           "Use one of: true, false.",
         );
       }
-      next = { ...current, fallbackEnabled: lowered === "true" };
+      next =
+        key === KEY_FALLBACK_ENABLED
+          ? { ...current, fallbackEnabled: lowered === "true" }
+          : { ...current, fanout: lowered === "true" };
     } else {
       const { capability, ids } = parseRoutingValue(path, value);
       const routing = { ...current.routing, [capability]: ids };
@@ -759,6 +870,13 @@ export async function unsetConfigValue(
       const { fallbackEnabled: _fb, ...rest } = current;
       void _fb;
       next = rest;
+    } else if (trimmed === "fanout") {
+      if (current.fanout === undefined) {
+        throw new ValidationError('"fanout" is not set.', "Nothing to unset.");
+      }
+      const { fanout: _fo, ...rest } = current;
+      void _fo;
+      next = rest;
     } else {
       throw new ValidationError(
         `"${key.path}" is not unsettable via config.`,
@@ -827,9 +945,19 @@ export function resolveEnvFromConfig(
     const descriptor = byId.get(providerId);
     if (!descriptor) continue;
 
-    // Env wins: if the Provider is already configured through the
-    // injected env (primary OR alias), the file key must not clobber it.
-    if (descriptor.isConfigured(env)) continue;
+    // Env wins: if a credential VALUE already arrives through the
+    // injected env (primary OR alias), the file key must not clobber
+    // it. The check is on the credential VARIABLES, deliberately not
+    // the capability-less isConfigured posture: keyless postures
+    // (Jina's keyless Reader) make that form true WITHOUT any search
+    // key present, which silently suppressed file-configured search
+    // credentials from the resolved env — excluding the provider from
+    // fan-out arms and cost notices (review fix, PR #36).
+    const envSuppliesCredential = (descriptor.credentialEnvVars ?? []).some((name) => {
+      const value = env[name];
+      return typeof value === "string" && value.trim().length > 0;
+    });
+    if (envSuppliesCredential) continue;
 
     const canonical = descriptor.credentialEnvVars?.[0];
     if (typeof canonical !== "string" || canonical.length === 0) continue;

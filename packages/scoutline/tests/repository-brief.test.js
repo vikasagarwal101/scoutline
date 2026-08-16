@@ -1656,6 +1656,25 @@ describe("Ticket 3 — repo brief dispatch through main (DESIGN D5)", () => {
     }
   });
 
+  it("--no-focus is rejected, alone or combined with a valid --focus", async () => {
+    for (const extra of [[], ["--focus", "readme"]]) {
+      const m = makeBriefMainDeps(BRIEF_DEFAULT_IMPLS);
+      const { adapter, stderr } = createBriefRecordingAdapter();
+      const status = await main(
+        ["repo", "brief", "owner/repo", "--no-focus", ...extra],
+        { ...m.mainDeps, invocation: adapter },
+      );
+
+      assert.strictEqual(status, 1, `--no-focus ${extra.length ? "combined" : "alone"}`);
+      const jsonLine = stderr.find((line) => line.startsWith("{"));
+      assert.ok(jsonLine, `expected a JSON error envelope, got ${JSON.stringify(stderr)}`);
+      const parsed = JSON.parse(jsonLine);
+      assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+      assert.match(parsed.error, /--no-focus/);
+      assert.strictEqual(m.zai.stats.createCalls, 0, "parse-level failure: no Adapter construction");
+    }
+  });
+
   it("fractional --depth is rejected at parse level (no silent parseInt truncation to 1)", async () => {
     const m = makeBriefMainDeps(BRIEF_DEFAULT_IMPLS);
     const { adapter, stderr } = createBriefRecordingAdapter();

@@ -186,3 +186,151 @@ describe("config help", () => {
     assert.ok(CONFIG_HELP.includes("never belong in"));
   });
 });
+
+// ===========================================================================
+// Dispatcher wiring (routing-table plan, Ticket 5) — main-driven,
+// hermetic via SCOUTLINE_CONFIG_DIR. Nothing touches the real
+// ~/.scoutline/config.json.
+// ===========================================================================
+
+import { main } from "../dist/index.js";
+import { createInMemoryQuotaStore } from "../dist/lib/quota-store.js";
+import * as fsMod from "node:fs/promises";
+import * as osMod from "node:os";
+import * as pathMod from "node:path";
+
+function makeInvocation() {
+  const stdout = [];
+  const stderr = [];
+  return {
+    invocation: {
+      stdoutIsTTY: false,
+      stdinIsTTY: false,
+      environmentOutputMode: "data",
+      readStdin: async () => "",
+      writeStdout: (text) => stdout.push(text),
+      writeStderr: (text) => stderr.push(text),
+      runQuietly: async (op) => op(),
+      setExitCode: () => {},
+    },
+    stdout: () => stdout.join(""),
+    stderr: () => stderr.join(""),
+  };
+}
+
+async function withTempConfig(t, initialConfig, run) {
+  const dir = await fsMod.mkdtemp(pathMod.join(osMod.tmpdir(), "scoutline-config-cmd-"));
+  t.after(async () => {
+    await fsMod.rm(dir, { recursive: true, force: true });
+  });
+  const { writeConfig } = await import("../dist/lib/config-store.js");
+  await writeConfig(initialConfig, {
+    filePath: pathMod.join(dir, "config.json"),
+    onWarning: () => {},
+  });
+  await run(dir);
+}
+
+function baseDeps(invocation, env) {
+  return {
+    invocation,
+    env,
+    quotaState: createInMemoryQuotaStore().read(),
+  };
+}
+
+describe("config command dispatcher", () => {
+  it("config get end-to-end: redacted routing visible, credential masked", async (t) => {
+    await withTempConfig(
+      t,
+      {
+        version: 1,
+        providers: { zai: { apiKey: "sk-live-zai-key-12345", onboarded: true } },
+        routing: { search: ["tavily", "brave"] },
+      },
+      async (dir) => {
+        const { invocation, stdout, stderr } = makeInvocation();
+        const status = await main(["config", "get"], baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }));
+        assert.strictEqual(status, 0);
+        assert.ok(stdout().includes("tavily"));
+        assert.ok(stdout().includes("brave"));
+        assert.ok(!stdout().includes("sk-live-zai-key-12345"), "credential must be masked");
+        assert.strictEqual(stderr(), "");
+      },
+    );
+  });
+
+  it("config set end-to-end persists and is visible to the next get", async (t) => {
+    await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
+      const env = { SCOUTLINE_CONFIG_DIR: dir };
+      const setIo = makeInvocation();
+      const setStatus = await main(["config", "set", "routing.search", "brave, zai"], baseDeps(setIo.invocation, env));
+      assert.strictEqual(setStatus, 0);
+
+      const { readConfig } = await import("../dist/lib/config-store.js");
+      const stored = await readConfig({
+        filePath: pathMod.join(dir, "config.json"),
+        onWarning: () => {},
+      });
+      assert.deepStrictEqual(stored.routing, { search: ["brave", "zai"] });
+
+      const getIo = makeInvocation();
+      const getStatus = await main(["config", "get", "routing.search"], baseDeps(getIo.invocation, env));
+      assert.strictEqual(getStatus, 0);
+      assert.ok(getIo.stdout().includes("brave"));
+    });
+  });
+
+  it("config set with a typo exits 1 with the JSON error envelope on stderr", async (t) => {
+    await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
+      const { invocation, stdout, stderr } = makeInvocation();
+      const status = await main(["config", "set", "routing.search", "tavlly"], baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }));
+      assert.strictEqual(status, 1);
+      assert.strictEqual(stdout(), "");
+      assert.ok(stderr().includes("VALIDATION_ERROR"));
+      assert.ok(stderr().includes("tavlly"));
+    });
+  });
+
+  it("credential path set is refused end-to-end with the init pointer", async (t) => {
+    await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
+      const { invocation, stderr } = makeInvocation();
+      const status = await main(
+        ["config", "set", "providers.zai.apiKey", "sk-xyz"],
+        baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }),
+      );
+      assert.strictEqual(status, 1);
+      assert.ok(stderr().includes("init"));
+    });
+  });
+
+  it("config unset end-to-end removes the entry", async (t) => {
+    await withTempConfig(
+      t,
+      { version: 1, providers: {}, routing: { search: ["brave"], crawl: ["firecrawl"] } },
+      async (dir) => {
+        const { invocation } = makeInvocation();
+        const status = await main(
+          ["config", "unset", "routing.search"],
+          baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }),
+        );
+        assert.strictEqual(status, 0);
+        const { readConfig } = await import("../dist/lib/config-store.js");
+        const stored = await readConfig({
+          filePath: pathMod.join(dir, "config.json"),
+          onWarning: () => {},
+        });
+        assert.deepStrictEqual(stored.routing, { crawl: ["firecrawl"] });
+      },
+    );
+  });
+
+  it("config --help prints the family help", async (t) => {
+    await withTempConfig(t, { version: 1, providers: {} }, async (dir) => {
+      const { invocation, stdout } = makeInvocation();
+      const status = await main(["config", "--help"], baseDeps(invocation, { SCOUTLINE_CONFIG_DIR: dir }));
+      assert.strictEqual(status, 0);
+      assert.ok(stdout().includes("scoutline config get"));
+    });
+  });
+});

@@ -51,7 +51,9 @@ export interface ConfigUnsetDependencies {
 function formatRoutingLines(routing: Readonly<Record<string, readonly string[]>>): string {
   const capabilities = Object.keys(routing).sort();
   if (capabilities.length === 0) return "(routing table is empty)";
-  return capabilities.map((cap) => `${cap} → ${routing[cap].join(", ")}`).join("\n");
+  return capabilities
+    .map((cap) => `${cap} → ${(routing[cap] ?? []).join(", ")}`)
+    .join("\n");
 }
 
 /** Render one non-routing value: `key → value`. */

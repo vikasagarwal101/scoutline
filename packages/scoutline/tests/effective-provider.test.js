@@ -1002,3 +1002,93 @@ describe("resolveEffectiveProvider: routing preference", () => {
     );
   });
 });
+
+// ===========================================================================
+// Dispatcher routing threading (routing-table plan, Ticket 5) — a
+// routing entry in config.json drives the effective provider for the
+// next command, with no pin present. Quota ranking would pick tavily
+// (95% > 25%); routing says zai.
+// ===========================================================================
+
+describe("routing table drives dispatch selection", () => {
+  it("config.json routing.search picks the routed provider over quota ranking", async (t) => {
+    const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+    const os = await import("node:os");
+    const pathMod = await import("node:path");
+    const dir = await mkdtemp(pathMod.join(os.tmpdir(), "scoutline-routing-dispatch-"));
+    t.after(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+    await writeFile(
+      pathMod.join(dir, "config.json"),
+      JSON.stringify({ version: 1, providers: {}, routing: { search: ["zai"] } }),
+    );
+
+    const snapshot = await stateWith([
+      { provider: "zai", categories: ZAI_CATEGORIES_25 },
+      { provider: "tavily", categories: TAVILY_CATEGORIES_95 },
+    ]);
+    const built = [
+      makeDispatchDescriptor("zai", "Z_AI_API_KEY", "search", () => []),
+      makeDispatchDescriptor("tavily", "TAVILY_API_KEY", "search", () => []),
+    ];
+    const { adapter } = createTestAdapter();
+
+    const { readConfig } = await import("../dist/lib/config-store.js");
+    const status = await main(["search", "hello"], {
+      invocation: adapter,
+      env: {
+        SCOUTLINE_CONFIG_DIR: dir,
+        Z_AI_API_KEY: "z",
+        TAVILY_API_KEY: "t",
+      },
+      loadScoutlineConfig: () =>
+        readConfig({ filePath: pathMod.join(dir, "config.json"), onWarning: () => {} }),
+      providerDescriptors: built.map((b) => b.descriptor),
+      quotaState: snapshot,
+      searchCache: makeInMemoryCache(),
+      searchSleep: async () => {},
+      searchRandom: () => 0.5,
+    });
+    assert.strictEqual(status, 0);
+    const firstInvoked = built.find((b) => b.invokes.length > 0);
+    assert.ok(firstInvoked, "at least one provider must be invoked");
+    assert.strictEqual(firstInvoked.descriptor.id, "zai");
+  });
+
+  it("without a routing table, the same fixture still picks the quota winner", async (t) => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const os = await import("node:os");
+    const pathMod = await import("node:path");
+    const dir = await mkdtemp(pathMod.join(os.tmpdir(), "scoutline-routing-dispatch-"));
+    t.after(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    const snapshot = await stateWith([
+      { provider: "zai", categories: ZAI_CATEGORIES_25 },
+      { provider: "tavily", categories: TAVILY_CATEGORIES_95 },
+    ]);
+    const built = [
+      makeDispatchDescriptor("zai", "Z_AI_API_KEY", "search", () => []),
+      makeDispatchDescriptor("tavily", "TAVILY_API_KEY", "search", () => []),
+    ];
+    const { adapter } = createTestAdapter();
+
+    const { readConfig } = await import("../dist/lib/config-store.js");
+    const status = await main(["search", "hello"], {
+      invocation: adapter,
+      env: { SCOUTLINE_CONFIG_DIR: dir, Z_AI_API_KEY: "z", TAVILY_API_KEY: "t" },
+      loadScoutlineConfig: () =>
+        readConfig({ filePath: pathMod.join(dir, "config.json"), onWarning: () => {} }),
+      providerDescriptors: built.map((b) => b.descriptor),
+      quotaState: snapshot,
+      searchCache: makeInMemoryCache(),
+      searchSleep: async () => {},
+      searchRandom: () => 0.5,
+    });
+    assert.strictEqual(status, 0);
+    const firstInvoked = built.find((b) => b.invokes.length > 0);
+    assert.strictEqual(firstInvoked.descriptor.id, "tavily");
+  });
+});

@@ -149,6 +149,13 @@ export interface DiagnosticsReport {
   readonly schemaVersion: 2;
   readonly effectiveProvider: ProviderId;
   readonly capabilityMatrix: readonly CapabilityProviderEntry[];
+  /**
+   * Effective per-capability routing table (routing-table plan):
+   * the post-validation, post-drop table from config.json, embedded
+   * additively (absent when no routing is configured — older readers
+   * never see the key). Provider-neutral: ids only, no credentials.
+   */
+  readonly routing?: Readonly<Record<string, readonly ProviderId[]>>;
   readonly node: {
     readonly version: string;
     readonly visionMcpCompatible: boolean;

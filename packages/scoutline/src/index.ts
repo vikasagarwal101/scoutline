@@ -1564,6 +1564,7 @@ async function handleDoctor(
             env: deps.env,
             sleep: deps.searchSleep,
             random: deps.searchRandom,
+            routing: deps.routing,
             cacheSummary,
             // T3b: thread the injected promoter + clock through to the
             // report builder so a successful probe can flip the matching

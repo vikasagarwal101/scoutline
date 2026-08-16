@@ -22,6 +22,8 @@ import type {
 import type { ResponseCache } from "../lib/cache.js";
 import type { RetryPolicy } from "../lib/execution.js";
 import { executeSearch } from "../lib/execution.js";
+import { canonicalUrl } from "../lib/url.js";
+import type { ProviderId } from "../providers/types.js";
 import { formatSearchResultsPretty } from "../lib/tty.js";
 
 type RecencyFilter = "oneDay" | "oneWeek" | "oneMonth" | "oneYear" | "noLimit";
@@ -63,6 +65,12 @@ interface FormattedResult {
   date?: string;
   /** Set when merging multiple queries: how many sub-queries surfaced this URL. */
   occurrences?: number;
+  /**
+   * Provenance (fan-out only, DESIGN D3): distinct providers that
+   * surfaced this URL, in first-encounter order. Omitted on the
+   * single-provider path — SCHEMA.md.
+   */
+  mergedFrom?: ProviderId[];
 }
 
 function truncate(text: string | undefined, max?: number): string {
@@ -100,36 +108,89 @@ function buildControls(options: SearchOptions): SearchControls | undefined {
 }
 
 /**
- * Merge results from N parallel sub-queries: dedupe by URL, rank by
- * (occurrence count desc, then best position asc). First sub-query's
- * title/summary wins for each URL (highest-priority query).
+ * One arm of a merge grid: a Provider's results split into sub-queries.
+ * `provider` is absent on the single-provider `--merge` path (no
+ * provenance is tracked there); the fan-out path always sets it.
  */
-function mergeResults(byQuery: FormattedResult[][]): FormattedResult[] {
-  const map = new Map<string, FormattedResult & { occurrences: number; bestPos: number }>();
-  for (const [, results] of byQuery.entries()) {
-    for (const r of results) {
-      const existing = map.get(r.url);
-      if (existing) {
-        existing.occurrences += 1;
-        existing.bestPos = Math.min(existing.bestPos, r.rank);
-      } else {
-        map.set(r.url, {
-          ...r,
-          occurrences: 1,
-          bestPos: r.rank,
-        });
+export interface MergeGridArm {
+  provider?: ProviderId;
+  results: FormattedResult[][];
+}
+
+export interface MergeResultsOptions {
+  /** Emit mergedFrom provenance on every result (fan-out active). */
+  emitMergedFrom?: boolean;
+  /** Post-merge --count cap. Each arm was already asked for this count. */
+  count?: number;
+}
+
+/**
+ * Merge results from an (arm × sub-query) grid (DESIGN D3). Generalizes
+ * the pre-fan-out sub-query merge with exactly one new key: dedupe by
+ * `canonicalUrl(url)` (DESIGN D4) instead of the raw string. Ranking is
+ * unchanged — (occurrence count desc, best position asc) — but
+ * `occurrences` now counts across the whole arms × sub-queries grid.
+ * First-writer-wins: the earlier arm's title/summary/url win a collision
+ * (arm order is the tiebreak priority). Every URL accumulates
+ * `mergedFrom` (distinct providers, first-encounter order) when
+ * `emitMergedFrom` is set, and the merged list is sliced to `count`
+ * post-merge. The single-provider `--merge` path and the fan-out path
+ * share this one implementation.
+ */
+export function mergeResults(
+  grid: MergeGridArm[],
+  options: MergeResultsOptions = {},
+): FormattedResult[] {
+  const { emitMergedFrom = false, count } = options;
+  const map = new Map<
+    string,
+    FormattedResult & { occurrences: number; bestPos: number; mergedFrom: ProviderId[] }
+  >();
+  for (const arm of grid) {
+    for (const results of arm.results) {
+      for (const r of results) {
+        // canonicalUrl is the Map key only; the emitted url stays the
+        // first writer's original string (DESIGN D3 "Identity").
+        const key = canonicalUrl(r.url);
+        const existing = map.get(key);
+        if (existing) {
+          existing.occurrences += 1;
+          existing.bestPos = Math.min(existing.bestPos, r.rank);
+          if (emitMergedFrom && arm.provider && !existing.mergedFrom.includes(arm.provider)) {
+            existing.mergedFrom.push(arm.provider);
+          }
+        } else {
+          map.set(key, {
+            ...r,
+            occurrences: 1,
+            bestPos: r.rank,
+            mergedFrom: emitMergedFrom && arm.provider ? [arm.provider] : [],
+          });
+        }
       }
     }
   }
-  const merged = Array.from(map.values());
+  let merged = Array.from(map.values());
   merged.sort((a, b) => {
     if (b.occurrences !== a.occurrences) return b.occurrences - a.occurrences;
     return a.bestPos - b.bestPos;
   });
+  // Post-merge --count slice (each arm was already asked for this count).
+  if (count !== undefined) {
+    merged = merged.slice(0, Math.max(0, count));
+  }
   return merged.map((r, i) => {
     const { bestPos: _bp, ...rest } = r;
     void _bp;
-    return { ...rest, rank: i + 1 };
+    const rank = i + 1;
+    if (!emitMergedFrom) {
+      // Omit mergedFrom entirely on the single path (SCHEMA.md) so the
+      // emitted objects stay byte-identical to the pre-fan-out merge.
+      const { mergedFrom: _mf, ...restNoProvenance } = rest;
+      void _mf;
+      return { ...restNoProvenance, rank };
+    }
+    return { ...rest, rank };
   });
 }
 
@@ -225,8 +286,12 @@ export async function search(
     formatSources(sources, options.maxSummary),
   );
 
+  // The single-provider --merge path and the fan-out path (Ticket 3)
+  // share one merge implementation. The single path passes no provider
+  // and no count, so its output is byte-identical to the pre-fan-out
+  // merge (no mergedFrom field, no post-merge slice).
   const formattedResults: FormattedResult[] = isMerge
-    ? mergeResults(perQueryFormatted)
+    ? mergeResults([{ results: perQueryFormatted }])
     : perQueryFormatted[0] || [];
 
   if (isMerge && context) {

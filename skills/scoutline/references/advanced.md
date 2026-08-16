@@ -169,6 +169,10 @@ scoutline cache stats
 # Clear both subdirectories (directory shells preserved)
 scoutline cache clear
 
+# Prune expired entries (TTL threshold; --older-than replaces it)
+scoutline cache prune
+scoutline cache prune --older-than 1h --provider zai --capability search
+
 # Override the root directory (legacy aliases ZAI_MCP_CACHE_DIR,
 # ZAI_CACHE_DIR accepted at lower precedence)
 export SCOUTLINE_CACHE_DIR="$HOME/.scoutline"
@@ -231,8 +235,11 @@ lower precedence).
 ### CLI surface
 
 ```bash
-scoutline cache stats   # inventory both subdirectories
+scoutline cache stats   # inventory both subdirectories (live/expired, byProvider, byCapability)
 scoutline cache clear   # delete every file in both subdirectories
+scoutline cache prune [--older-than <D>] [--provider <id>] [--capability <id>]
+                        # delete expired entries by stored ts (never mtime);
+                        # selectors AND together and match v2 filenames only
 ```
 
 `scoutline doctor` embeds a one-line cache summary in its

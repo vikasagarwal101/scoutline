@@ -241,7 +241,7 @@ scoutline vision --help       # Vision commands
 scoutline repo --help         # GitHub repo commands
 scoutline doctor --help       # Provider diagnostics
 scoutline quota --help        # Plan usage
-scoutline cache --help        # Local cache inspection and clearing
+scoutline cache --help        # Local cache inspection, clearing, and pruning
 ```
 
 ### Examples
@@ -278,6 +278,7 @@ scoutline repo search vercel/next.js "app router"
 scoutline doctor                      # full diagnostics
 scoutline quota --all-providers       # every configured provider
 scoutline cache stats                 # cache inventory
+scoutline cache prune --older-than 24h   # delete cache entries older than 24h
 ```
 
 ## Output Format
@@ -336,7 +337,7 @@ When a command fails, Scoutline writes a JSON error envelope to stderr (data-onl
 
 - **Research** is credit-intensive (4-250 credits). Ctrl-C preserves the in-flight task — re-running the same command resumes polling instead of creating a new one. No double charge.
 - **Doctor** output is at `schemaVersion: 2` with a `capabilityMatrix` field listing which providers support each capability.
-- **Cache** lives at `~/.scoutline/` (`cache/` for responses, `tools/` for tool discovery). Research state files live at `~/.scoutline/research/`. Inspect or clear with `scoutline cache stats` / `scoutline cache clear`.
+- **Cache** lives at `~/.scoutline/` (`cache/` for responses, `tools/` for tool discovery). Research state files live at `~/.scoutline/research/`. Inspect, clear, or prune with `scoutline cache stats` / `scoutline cache clear` / `scoutline cache prune`.
 - `repo search` defaults to English. Use `--language zh` for Chinese.
 - **Brave quota** reports a monthly rate-limit window (used/limit/remaining/%/reset) read from response headers, not spend or credits consumed. Brave uses metered billing, so it is **not** a budget signal — a prominent caveat prints to stderr.
 

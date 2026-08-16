@@ -27,13 +27,28 @@
  * `/a/../b` → `/b` — a normalization D4 does not authorize) and
  * userinfo is kept in the key (D4 authorizes dropping no authority
  * component, so `https://user@host/a` and `https://host/a` stay
- * distinct identities).
+ * distinct identities). The re-slice locates the authority under the
+ * WHATWG parser's own boundary rules: special schemes accept any
+ * slash/backslash separator run before the authority (and `\`
+ * terminates it), so parser-equivalent spellings of one URL —
+ * `https:///host/p`, `https:/\host/p`, `https:host/p` — collapse to a
+ * single identity without duplicating host text or inventing userinfo.
  *
  * No other normalization in v1: `www.` and apex hosts are genuinely
  * different origins and stay distinct; `www.example.com` and
  * `example.com` will not dedupe to each other. Adding that is recorded
  * as a gate on the canonicalization table.
  */
+
+/**
+ * WHATWG "special" schemes (URL Standard §special scheme): the parser
+ * tolerates any `/`-`\` separator run before their authority and
+ * treats `\` as an authority terminator. For every other scheme the
+ * authority exists only after exactly `//` and `\` is an ordinary
+ * byte. Kept as protocol strings so it matches `parsed.protocol`
+ * directly.
+ */
+const SPECIAL_PROTOCOLS = new Set(["http:", "https:", "ws:", "wss:", "ftp:", "file:"]);
 
 export function canonicalUrl(input: string): string {
   // Identity must never throw. Non-string and empty inputs round-trip
@@ -73,13 +88,30 @@ export function canonicalUrl(input: string): string {
   // authorized by D4, so the identity keeps the exact bytes the
   // provider emitted. `parsed` remains the source for the lowercased
   // scheme/host and the already-stripped default port.
+  //
+  // The re-slice must locate the authority under the parser's OWN
+  // boundary rules (review fix, PR #36): for SPECIAL schemes (WHATWG
+  // special-authority states) any run of `/` and `\` separators after
+  // the scheme — two, three, mixed, even zero — leads into the
+  // authority, and `\` terminates it there. Scanning for a literal
+  // `//` prefix instead duplicated host text into the path
+  // (`https:///host/p` keyed as `https://host/host/p`) and fabricated
+  // userinfo (`https://host\x@y/p` read the path's `@` as a userinfo
+  // separator). Non-special schemes enter the authority only after
+  // exactly `//`, and `\` is an ordinary path byte for them.
   let userinfo = "";
   let path = parsed.pathname;
   const schemeEnd = input.indexOf(":");
   const afterScheme = schemeEnd >= 0 ? input.slice(schemeEnd + 1) : "";
-  if (afterScheme.startsWith("//")) {
-    const rest = afterScheme.slice(2);
-    const authorityEnd = rest.search(/[/?#]/);
+  const special = SPECIAL_PROTOCOLS.has(parsed.protocol);
+  const authorityStart = special
+    ? afterScheme.search(/[^/\\]/)
+    : afterScheme.startsWith("//")
+      ? 2
+      : -1;
+  if (authorityStart >= 0) {
+    const rest = afterScheme.slice(authorityStart);
+    const authorityEnd = special ? rest.search(/[/\\?#]/) : rest.search(/[/?#]/);
     const rawAuthority = rest.slice(0, authorityEnd === -1 ? rest.length : authorityEnd);
     const atSign = rawAuthority.lastIndexOf("@");
     if (atSign >= 0) {

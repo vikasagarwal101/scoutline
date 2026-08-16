@@ -522,13 +522,20 @@ describe("config fanout key (search-fanout plan, Ticket 4)", () => {
     });
   });
 
-  it("config set fanout true names the routed arms when routing.search narrows them (review fix)", async (t) => {
+  it("config set fanout true names only the eligible routed arms (review fix, round 2)", async (t) => {
     // With a routing table in play, tier-3 fan-out queries only the
-    // routed eligible arms — the blanket "ALL configured providers"
-    // claim would overstate the billable set.
+    // routed ELIGIBLE arms (routing.search ∩ configured ∩ search-capable
+    // — the same set resolveFanoutPlan computes). Naming a routed
+    // provider that lacks credentials would falsely claim it bills on
+    // every search. Here tavily is configured via its FILE key and
+    // brave has no credentials at all.
     await withTempConfig(
       t,
-      { version: 1, providers: {}, routing: { search: ["tavily", "brave"] } },
+      {
+        version: 1,
+        providers: { tavily: { apiKey: "tvly-file-key-not-in-env" } },
+        routing: { search: ["tavily", "brave"] },
+      },
       async (dir) => {
         const io = makeInvocation();
         const status = await main(
@@ -537,12 +544,45 @@ describe("config fanout key (search-fanout plan, Ticket 4)", () => {
         );
         assert.strictEqual(status, 0);
         assert.ok(
-          io.stderr().includes("routing.search (tavily, brave)"),
-          `routed arms named: ${io.stderr()}`,
+          io.stderr().includes("routing.search (tavily)"),
+          `eligible routed arm named: ${io.stderr()}`,
+        );
+        assert.ok(
+          !io.stderr().includes("brave"),
+          `unconfigured routed provider must not be named as billable: ${io.stderr()}`,
         );
         assert.ok(
           !io.stderr().includes("bill ALL configured"),
           "no blanket ALL-providers claim when routing narrows the arms",
+        );
+        assert.strictEqual((await readStored(dir)).fanout, true);
+      },
+    );
+  });
+
+  it("config set fanout true with no eligible routed arm reports zero arms, not a false billable set", async (t) => {
+    // routing.search names brave but nothing is configured: tier 3
+    // resolves ZERO arms (DESIGN D6 — every search then fails with
+    // VALIDATION_ERROR), so no provider bills. The notice must say so
+    // instead of claiming brave will be billed.
+    await withTempConfig(
+      t,
+      { version: 1, providers: {}, routing: { search: ["brave"] } },
+      async (dir) => {
+        const io = makeInvocation();
+        const status = await main(
+          ["config", "set", "fanout", "true"],
+          await baseDeps(io.invocation, { SCOUTLINE_CONFIG_DIR: dir }),
+        );
+        assert.strictEqual(status, 0);
+        assert.ok(io.stderr().includes("zero arms"), `zero-arms wording: ${io.stderr()}`);
+        assert.ok(
+          !io.stderr().includes("billable calls"),
+          `nothing bills at zero arms: ${io.stderr()}`,
+        );
+        assert.ok(
+          !io.stderr().includes("brave"),
+          `ineligible provider must not be named: ${io.stderr()}`,
         );
         assert.strictEqual((await readStored(dir)).fanout, true);
       },

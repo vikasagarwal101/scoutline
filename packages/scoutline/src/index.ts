@@ -1956,8 +1956,14 @@ async function handleConfig(
           configSetCommand(setPath, setValue, {
             set: (path, value) => setConfigValue(path, value, configOptions),
             // Registry-mandated enable-time warnings (e.g. the fan-out
-            // cost sentence, search-fanout DESIGN D7) ride stderr.
+            // cost sentence, search-fanout DESIGN D7) ride stderr. The
+            // eligibility context lets the fan-out notice name only the
+            // routed arms that would actually bill (review fix, PR #36):
+            // the same env + registry the search handler resolves its
+            // fan-out plan with; the notice layers file-configured keys
+            // on top internally via resolveEnvFromConfig.
             notify: context.notice,
+            noticeContext: { env: deps.env, descriptors: deps.providerDescriptors },
           }),
         outputMode,
         deps.now,

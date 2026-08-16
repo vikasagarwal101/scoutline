@@ -2,7 +2,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { PROVIDER_CAPABILITIES, PROVIDER_IDS, type ProviderId } from "../providers/types.js";
+import {
+  PROVIDER_CAPABILITIES,
+  PROVIDER_IDS,
+  type ProviderDescriptor,
+  type ProviderId,
+} from "../providers/types.js";
 import { ConfigurationError, ValidationError } from "./errors.js";
 import {
   withAsyncFileLock,
@@ -429,6 +434,20 @@ export async function writeConfig(
 // ---------------------------------------------------------------------------
 
 /**
+ * Eligibility context {@link fanoutCostNotice} uses to compute the
+ * billable arm set: the injected env (file-configured API keys are
+ * layered on top by {@link resolveEnvFromConfig} — the same merge the
+ * search handler's env view uses) and the live provider registry. The
+ * dispatcher threads both from its `HandlerDependencies`; doubles may
+ * omit the context entirely (the notice then falls back to the blanket
+ * sentence rather than naming an eligibility set it cannot verify).
+ */
+export interface FanoutNoticeContext {
+  readonly env: NodeJS.ProcessEnv;
+  readonly descriptors: readonly ProviderDescriptor[];
+}
+
+/**
  * One settable/gettable settings surface. `parseValue` is STRICT: it
  * throws ValidationError on anything it cannot store verbatim-in-meaning
  * (contrast the lenient load-time warn-and-drop of parseConfig — an
@@ -447,14 +466,16 @@ export interface ConfigKeyDescriptor {
    * Sentence the `config set` success path emits (stderr notice) when
    * this key stores boolean `true` — the cost warning a switch-on must
    * carry (search-fanout DESIGN D7: `config set fanout true` must state
-   * the billable cost). Receives the UPDATED config so the warning can
+   * the billable cost). Receives the UPDATED config plus the
+   * eligibility context (env + provider registry) so the warning can
    * describe the arms that will actually run: when `routing.search`
-   * narrows tier-3 fan-out, the notice names the routed providers
-   * instead of claiming every search bills ALL configured providers
-   * (review fix, PR #36). Absent on keys whose enablement carries no
-   * such warning.
+   * narrows tier-3 fan-out, the notice names only the routed providers
+   * that are ELIGIBLE (configured ∩ search-capable — the same arm set
+   * `resolveFanoutPlan` computes), never raw routing entries that would
+   * not bill (review fix, PR #36). Absent on keys whose enablement
+   * carries no such warning.
    */
-  readonly setTrueNotice?: (config: ScoutlineConfig) => string;
+  readonly setTrueNotice?: (config: ScoutlineConfig, context?: FanoutNoticeContext) => string;
 }
 
 const KEY_FALLBACK_ENABLED: ConfigKeyDescriptor = {
@@ -470,18 +491,56 @@ export const FANOUT_COST_SENTENCE =
   "every search will bill ALL configured search providers — N arms = N billable calls";
 
 /**
- * Enable-time cost warning for `config set fanout true` (D7). When
- * `routing.search` narrows the tier-3 fan-out arms, name THOSE
- * providers — with a routing table in play the blanket "ALL configured
- * providers" claim overstates the billable set (the resolver queries
- * only the routed eligible arms, DESIGN D1.3).
+ * Enable-time cost warning for `config set fanout true` (D7). With
+ * `routing.search` set, the notice names only the routed providers
+ * that are ELIGIBLE — configured (env OR file key, through the same
+ * `resolveEnvFromConfig` merge the search handler uses) ∩
+ * search-capable, first-encounter dedupe — the identical arm set
+ * tier 3 of `resolveFanoutPlan` (commands/search.ts) computes. Naming
+ * a raw routing entry that lacks credentials or the capability would
+ * falsely claim it bills on every search; zero eligible arms means
+ * fan-out resolves to nothing and NO provider bills, so the notice
+ * says that instead (review fix, PR #36). Without a routing table —
+ * or without the eligibility context (minimal doubles) — the mandated
+ * blanket D7 sentence ships verbatim.
  */
-export function fanoutCostNotice(config: ScoutlineConfig): string {
+export function fanoutCostNotice(config: ScoutlineConfig, context?: FanoutNoticeContext): string {
   const routed = config.routing?.["search"];
-  if (routed !== undefined && routed.length > 0) {
-    return `every search will bill the configured search providers in routing.search (${routed.join(", ")}) — N arms = N billable calls`;
+  if (routed === undefined || routed.length === 0) {
+    return FANOUT_COST_SENTENCE;
   }
-  return FANOUT_COST_SENTENCE;
+  if (context === undefined) {
+    // No eligibility context (minimal command doubles): the notice
+    // cannot verify which routed entries would actually bill. Fall
+    // back to the mandated blanket sentence rather than naming raw
+    // routing entries — an unverified claim either way, but the D7
+    // default posture is the one the spec mandates verbatim.
+    return FANOUT_COST_SENTENCE;
+  }
+  const resolvedEnv = resolveEnvFromConfig(context.env, config, context.descriptors);
+  const eligible = new Set(
+    context.descriptors
+      .filter(
+        (descriptor) =>
+          descriptor.isConfigured(resolvedEnv, "search") && descriptor.capabilities().has("search"),
+      )
+      .map((descriptor) => descriptor.id),
+  );
+  // Preserve the routed order, dedupe by first encounter — the same
+  // shaping tier 3 applies to the routing list (user-supplied
+  // preference, first-write wins).
+  const arms: string[] = [];
+  const seen = new Set<string>();
+  for (const id of routed) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (!eligible.has(id)) continue;
+    arms.push(id);
+  }
+  if (arms.length === 0) {
+    return "routing.search names no eligible search providers (none are both configured and search-capable) — fan-out resolves zero arms, so no provider is billed on search";
+  }
+  return `every search will bill the configured search providers in routing.search (${arms.join(", ")}) — N arms = N billable calls`;
 }
 
 const KEY_FANOUT: ConfigKeyDescriptor = {

@@ -18,6 +18,7 @@ import type { CommandResult, TextOutputMode } from "../command-invocation.js";
 import {
   resolveConfigKey,
   unknownConfigKeyError,
+  type FanoutNoticeContext,
   type ScoutlineConfig,
 } from "../lib/config-store.js";
 import { ValidationError } from "../lib/errors.js";
@@ -45,6 +46,14 @@ export interface ConfigSetDependencies {
    * doubles stay minimal.
    */
   readonly notify?: (message: string) => void;
+  /**
+   * Eligibility context (env + provider registry) the fan-out cost
+   * notice needs to name only the routed providers that would actually
+   * bill — the same arm set `resolveFanoutPlan` computes (review fix,
+   * PR #36). Optional: without it the notice falls back to the blanket
+   * sentence instead of naming raw routing entries.
+   */
+  readonly noticeContext?: FanoutNoticeContext;
 }
 
 export interface ConfigUnsetDependencies {
@@ -147,12 +156,14 @@ export async function configSetCommand(
   // Registry-mandated enable-time warning (fan-out cost sentence, D7):
   // emitted as a stderr notice so it reaches every output mode while
   // stdout stays data-only. The registry supplies the sentence for the
-  // UPDATED config — with `routing.search` set it names the routed
-  // arms instead of claiming ALL configured providers (review fix,
-  // PR #36).
+  // UPDATED config plus the eligibility context — with `routing.search`
+  // set it names only the routed arms that are ELIGIBLE (configured ∩
+  // search-capable, the same set `resolveFanoutPlan` computes) instead
+  // of claiming ALL configured providers or naming raw routing entries
+  // that would not bill (review fix, PR #36).
   const key = resolveConfigKey(path);
   if (key?.setTrueNotice !== undefined && raw === true) {
-    deps.notify?.(key.setTrueNotice(updated));
+    deps.notify?.(key.setTrueNotice(updated, deps.noticeContext));
   }
   return {
     kind: "data",

@@ -38,6 +38,7 @@ import os from "node:os";
 import path from "node:path";
 import { getApiKey } from "./config.js";
 import { atomicReplaceFile } from "./config-store.js";
+import { FileError } from "./errors.js";
 import {
   withAsyncFileLock,
   DEFAULT_LOCK_TIMEOUT_MS,
@@ -581,25 +582,252 @@ export async function clearAllCaches(): Promise<{
 }
 
 /**
+ * Selectors narrowing a {@link pruneCaches} run. All are optional and
+ * AND together. When `olderThanMs` is absent the effective TTL
+ * (`getCacheTtlMs()`) is the age threshold (DESIGN D3); `provider` and
+ * `capability` selectors match v2 filenames only (DESIGN D2) — legacy /
+ * non-v2 entries are selectable by age only.
+ */
+export interface PruneSelectors {
+  readonly olderThanMs?: number;
+  readonly provider?: string;
+  readonly capability?: string;
+}
+
+/**
+ * Optional tuning for {@link pruneCaches}. Production callers pass no
+ * options; the defaults mirror `writeCache`'s lock discipline. Tests use
+ * a short `lockTimeoutMs` so the D5 timeout-rejection path is exercised
+ * without waiting the production 30s.
+ */
+export interface PruneCachesOptions {
+  /** Lock-acquire timeout for the response-dir scan (ms). Default `DEFAULT_LOCK_TIMEOUT_MS`. */
+  readonly lockTimeoutMs?: number;
+  /** Stale-lock threshold (ms). Default `DEFAULT_LOCK_STALE_MS`. */
+  readonly lockStaleMs?: number;
+  /**
+   * Instrumentation seam invoked after an entry is judged expired but
+   * before it is unlinked. Production never passes it; tests use it to
+   * interpose a concurrent replacement inside the stat→unlink window
+   * and assert the revalidation guard skips the stale unlink.
+   */
+  readonly beforeUnlink?: (filePath: string) => Promise<void>;
+}
+
+/**
+ * Outcome of a {@link pruneCaches} run. Counts reflect actual deletions;
+ * per-entry failures are skipped best-effort like {@link clearSubdir}.
+ */
+export interface PruneCachesResult {
+  readonly prunedResponses: number;
+  readonly prunedTools: number;
+  readonly bytesFreed: number;
+}
+
+/**
+ * Prune expired entries from both caches (DESIGN D1–D6).
+ *
+ * Age is judged by the stored envelope timestamp, never mtime (D1):
+ * response entries carry `ts`, tool entries carry `timestamp`. The
+ * response scan runs inside the same `cache-write` inter-process lock
+ * `writeCache` serializes on (D4), and a lock timeout THROWS rather than
+ * being swallowed (D5) — prune is an explicit operator command, not a
+ * best-effort cache write. The tool scan is lock-free (no write-lock
+ * convention exists there) and selector-free (tool filenames are
+ * unpartitioned); it applies the same age rule.
+ *
+ * A disabled cache does not stop a prune — deletion is not a cache
+ * read/write (D6). But with NO explicit `olderThanMs`, a disabled cache
+ * (TTL-0) means "no read freshness rule", so the prune is a zero-work
+ * success reporting zeros. An explicit `--older-than` runs regardless.
+ */
+export async function pruneCaches(
+  selectors: PruneSelectors,
+  options: PruneCachesOptions = {},
+): Promise<PruneCachesResult> {
+  const thresholdMs = selectors.olderThanMs ?? getCacheTtlMs();
+  if (selectors.olderThanMs === undefined && (!isCacheEnabled() || thresholdMs <= 0)) {
+    return { prunedResponses: 0, prunedTools: 0, bytesFreed: 0 };
+  }
+
+  const lockTimeoutMs = options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
+  const lockStaleMs = options.lockStaleMs ?? DEFAULT_LOCK_STALE_MS;
+
+  // Response dir: serialize with writers on the same identity so a prune
+  // never races a concurrent evictIfNeeded sweep or atomic rename (D4).
+  // A lock-acquire timeout is a typed FILE_ERROR (D5) so the dispatcher's
+  // error boundary emits a sanitized envelope with the designed code —
+  // `withAsyncFileLock` itself throws a plain Error (no `.code`), which
+  // would otherwise surface as UNKNOWN_ERROR.
+  let responses: { pruned: number; bytesFreed: number };
+  try {
+    responses = await withAsyncFileLock(
+      responseCacheDir(),
+      "cache-write",
+      async () =>
+        pruneSubdirByAge(responseCacheDir(), thresholdMs, selectors, options.beforeUnlink),
+      { timeoutMs: lockTimeoutMs, staleMs: lockStaleMs, timeoutLabel: "Cache prune" },
+    );
+  } catch (error) {
+    // Timeout recognition mirrors `lockFailureToConfigurationError`
+    // (config-store): the message tail is the one stable part of
+    // `${timeoutLabel} create-lock timed out`.
+    if (error instanceof Error && error.message.endsWith("create-lock timed out")) {
+      throw new FileError(
+        error.message,
+        "Another scoutline process holds the cache-write lock; try again once it finishes.",
+      );
+    }
+    throw error;
+  }
+
+  // Tool dir: same age rule, lock-free, no selectors (filenames are
+  // unpartitioned — they encode the config hash, not provider/capability).
+  // Lock-free means a concurrent `writeToolCache` atomic rename CAN land
+  // mid-scan; `pruneSubdirByAge` revalidates each file's identity
+  // (inode/size) before unlinking so a fresh replacement for an expired
+  // name usually survives — best-effort only, see its docstring (D4).
+  const tools = await pruneSubdirByAge(toolCacheDir(), thresholdMs, {}, options.beforeUnlink);
+
+  return {
+    prunedResponses: responses.pruned,
+    prunedTools: tools.pruned,
+    bytesFreed: responses.bytesFreed + tools.bytesFreed,
+  };
+}
+
+/**
+ * Age (ms) of a cache entry from its stored timestamp, or `null` when no
+ * usable numeric age marker exists. Response entries use `ts` (DESIGN
+ * D1); tool entries use the tool envelope's `timestamp` (mirroring
+ * `readToolCache`). Entries without a readable marker are skipped by
+ * prune — deletion is only attempted when the age is determinable.
+ */
+function entryAgeMs(raw: unknown): number | null {
+  if (!raw || typeof raw !== "object") return null;
+  const ts = (raw as { ts?: unknown }).ts;
+  if (typeof ts === "number") return Date.now() - ts;
+  const timestamp = (raw as { timestamp?: unknown }).timestamp;
+  if (typeof timestamp === "number") return Date.now() - timestamp;
+  return null;
+}
+
+/**
+ * Best-effort per-entry prune of one cache subdirectory. Skips `.lock`
+ * files and `.<name>.<pid>.<uuid>.tmp` staging files (mirrors
+ * `evictIfNeeded`'s skip discipline); matches `provider`/`capability`
+ * selectors against v2 filenames only (D2); deletes entries whose stored
+ * age exceeds `thresholdMs`. Before unlinking, the file's identity is
+ * revalidated (inode/size — never mtime, which lock-free LRU reads
+ * touch): the tool dir is scanned lock-free (DESIGN D4), so a concurrent
+ * `writeToolCache` can replace an expired file with a fresh atomic
+ * rename mid-scan — a changed identity means the expiry decision is
+ * stale and the replacement is left alone. This revalidation is
+ * best-effort, not a guarantee: a rename landing inside the residual
+ * stat→unlink window can still be deleted, because the tool cache has
+ * no lock convention to close it (D4).
+ * Individual failures are skipped like `clearSubdir`; counts reflect
+ * actual deletions.
+ */
+async function pruneSubdirByAge(
+  dir: string,
+  thresholdMs: number,
+  selectors: { provider?: string; capability?: string } = {},
+  beforeUnlink?: (filePath: string) => Promise<void>,
+): Promise<{ pruned: number; bytesFreed: number }> {
+  let pruned = 0;
+  let bytesFreed = 0;
+  try {
+    const names = await fs.readdir(dir);
+    for (const name of names) {
+      // Skip atomic-write staging files and lockfiles (D4 skip discipline).
+      if ((name.startsWith(".") && name.endsWith(".tmp")) || name.endsWith(".lock")) continue;
+      // Filename-first selector matching (D2) — zero content reads.
+      if (selectors.provider !== undefined || selectors.capability !== undefined) {
+        const parsed = parseCacheFileName(name);
+        // Non-v2 names are not selectable by provider/capability (D2);
+        // they remain eligible under an age-only prune.
+        if (!parsed) continue;
+        if (selectors.provider !== undefined && parsed.provider !== selectors.provider) continue;
+        if (selectors.capability !== undefined && parsed.capability !== selectors.capability) continue;
+      }
+      const p = path.join(dir, name);
+      try {
+        const s = await fs.stat(p);
+        const ageMs = entryAgeMs(JSON.parse(await fs.readFile(p, "utf8")));
+        if (ageMs === null || ageMs <= thresholdMs) continue;
+        // Instrumentation point: production never passes this; tests use
+        // it to interpose a replacement inside the stat→unlink window.
+        await beforeUnlink?.(p);
+        // Revalidate identity (inode/size) before unlinking. mtime is
+        // deliberately NOT compared: readCache utimes entries for LRU
+        // freshness without holding the write lock (D1), so an mtime-only
+        // drift is a concurrent READ, not a replacement, and must not
+        // rescue an expired entry from prune. `atomicReplaceFile`-style
+        // writes rename a NEW inode into place, so inode/size still
+        // catches a mid-scan replacement. Best-effort only (D4): the tool
+        // dir is scanned lock-free by design, so a rename landing inside
+        // the residual stat→unlink window can still be deleted — that
+        // window cannot be closed without inventing the lock convention
+        // the tool cache explicitly does not have.
+        const current = await fs.stat(p);
+        if (current.ino !== s.ino || current.size !== s.size) {
+          continue;
+        }
+        await fs.unlink(p);
+        pruned += 1;
+        bytesFreed += s.size;
+      } catch {
+        // Best-effort per entry, like clearSubdir.
+      }
+    }
+  } catch {
+    // dir doesn't exist yet
+  }
+  return { pruned, bytesFreed };
+}
+
+/**
+ * Per-bucket cache inventory counts. Every breakdown bucket repeats
+ * `{entries, totalBytes, live, expired}` (DESIGN D7).
+ */
+export interface CacheStatsBucket {
+  readonly entries: number;
+  readonly totalBytes: number;
+  readonly live: number;
+  readonly expired: number;
+}
+
+/**
  * Inventory both caches. The shape extends the v0.4.0 flat shape with
  * nested `responseCache` and `toolCache` sections (H3 fix). The
  * top-level `entries` and `totalBytes` fields are removed — callers
  * must read from the nested sections.
+ *
+ * Enrichment (DESIGN D7) is additive only: the response cache gains
+ * `live`/`expired` counts and per-provider/per-capability breakdown
+ * buckets (with a `legacy` bucket for non-v2 filenames); the tool
+ * cache gains `live`/`expired` but has no `by*` keys (its filenames
+ * are unpartitioned). Existing fields are byte-identical, so the
+ * Doctor one-line summary (`formatDoctorCacheSummary`) is unaffected.
  */
 export async function cacheStats(): Promise<{
   dir: string;
   enabled: boolean;
   ttlMs: number;
   sizeCapBytes: number;
-  responseCache: { entries: number; totalBytes: number };
-  toolCache: { entries: number; totalBytes: number };
+  responseCache: CacheStatsBucket & {
+    byProvider: Readonly<Record<string, CacheStatsBucket>>;
+    byCapability: Readonly<Record<string, CacheStatsBucket>>;
+  };
+  toolCache: CacheStatsBucket;
 }> {
   const dir = resolveCacheRoot();
   const responseDir = responseCacheDir();
   const toolDir = toolCacheDir();
 
   const [responseStats, toolStats] = await Promise.all([
-    inventorySubdir(responseDir),
+    inventorySubdir(responseDir, true),
     inventorySubdir(toolDir),
   ]);
 
@@ -608,29 +836,202 @@ export async function cacheStats(): Promise<{
     enabled: isCacheEnabled(),
     ttlMs: getCacheTtlMs(),
     sizeCapBytes: getCacheSizeCapBytes(),
-    responseCache: responseStats,
-    toolCache: toolStats,
+    responseCache: {
+      entries: responseStats.entries,
+      totalBytes: responseStats.totalBytes,
+      live: responseStats.live,
+      expired: responseStats.expired,
+      byProvider: responseStats.byProvider ?? {},
+      byCapability: responseStats.byCapability ?? {},
+    },
+    toolCache: {
+      entries: toolStats.entries,
+      totalBytes: toolStats.totalBytes,
+      live: toolStats.live,
+      expired: toolStats.expired,
+    },
   };
 }
 
-async function inventorySubdir(dir: string): Promise<{ entries: number; totalBytes: number }> {
+// ---------------------------------------------------------------------------
+// Prune selection helpers (pure — no I/O, no env reads)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a `--older-than` duration into milliseconds (DESIGN D3).
+ *
+ * Accepted forms, mirroring `formatTtl`'s units in reverse:
+ * `<N>h` (hours), `<N>m` (minutes), `<N>s` (seconds), and a bare
+ * `<N>` interpreted as seconds. `N` must be a non-negative integer;
+ * `0` is valid and means "prune everything".
+ *
+ * Returns `null` for any other input (unknown unit, missing number,
+ * negative, fractional, empty). Callers translate `null` into a
+ * `VALIDATION_ERROR` — this helper never throws.
+ */
+export function parsePruneDuration(spec: string): number | null {
+  if (typeof spec !== "string") return null;
+  const trimmed = spec.trim();
+  if (trimmed === "") return null;
+
+  const match = /^(\d+)([hms]?)$/.exec(trimmed);
+  if (!match) return null;
+
+  const amount = Number(match[1]);
+  if (!Number.isSafeInteger(amount) || amount < 0) return null;
+
+  switch (match[2]) {
+    case "h":
+      return amount * 60 * 60 * 1000;
+    case "m":
+      return amount * 60 * 1000;
+    case "s":
+      return amount * 1000;
+    default:
+      // Bare integer is seconds.
+      return amount * 1000;
+  }
+}
+
+/**
+ * Capability/provider pair decoded from a v2 cache filename.
+ */
+export interface ParsedCacheFileName {
+  readonly capability: string;
+  readonly provider: string;
+}
+
+/**
+ * Parse a provider-partitioned cache filename (DESIGN D2).
+ *
+ * v2 keys are `v2.<capability>.<provider>.<credential-hash>.<request-hash>.json`
+ * (see {@link buildProviderCacheKey}), so selector matching is a pure
+ * string operation with zero content reads.
+ *
+ * Returns `null` for every other shape — legacy (non-v2) entries,
+ * `.tmp` staging files, `.lock` files, and malformed names. Those are
+ * selectable by age only and bucket under `legacy` in stats.
+ */
+export function parseCacheFileName(name: string): ParsedCacheFileName | null {
+  if (typeof name !== "string" || name === "") return null;
+  if (!name.startsWith("v2.") || !name.endsWith(".json")) return null;
+
+  const segments = name.split(".");
+  // v2 | capability | provider | credential-hash | request-hash | json
+  if (segments.length !== 6) return null;
+
+  const capability = segments[1];
+  const provider = segments[2];
+  if (!capability || !provider) return null;
+  if (!segments[3] || !segments[4]) return null;
+
+  return { capability, provider };
+}
+
+async function inventorySubdir(
+  dir: string,
+  breakdown?: boolean,
+): Promise<
+  CacheStatsBucket & {
+    byProvider?: Record<string, CacheStatsBucket>;
+    byCapability?: Record<string, CacheStatsBucket>;
+  }
+> {
   let entries = 0;
   let totalBytes = 0;
+  let live = 0;
+  let expired = 0;
+  // Null-prototype accumulators: filename segments are untrusted keys, and
+  // a crafted `v2.<cap>.__proto__.<hash>.<hash>.json` must become an OWN
+  // bucket, not corrupt the accumulator through Object.prototype's
+  // `__proto__` accessor (review P2).
+  const byProvider: Record<string, CacheStatsBucket> = Object.create(null);
+  const byCapability: Record<string, CacheStatsBucket> = Object.create(null);
   try {
     const names = await fs.readdir(dir);
+    // Live-vs-expired uses the same freshness boundary as prune (DESIGN
+    // D3): an entry is expired when its stored age exceeds the TTL. Reading
+    // every entry is the D8 cost note — stats is an explicit invocation.
+    const ttlMs = getCacheTtlMs();
     for (const name of names) {
+      // Skip lockfiles and atomic-write staging files — the same
+      // discipline as `evictIfNeeded`/`pruneSubdirByAge`. They are
+      // coordination artifacts, not cache entries, and must not be
+      // counted as live entries or bucketed as `legacy` (review P2).
+      if ((name.startsWith(".") && name.endsWith(".tmp")) || name.endsWith(".lock")) continue;
+      const p = path.join(dir, name);
       try {
-        const s = await fs.stat(path.join(dir, name));
+        const s = await fs.stat(p);
         entries += 1;
         totalBytes += s.size;
+        let isExpired = false;
+        try {
+          const ageMs = entryAgeMs(JSON.parse(await fs.readFile(p, "utf8")));
+          isExpired = ageMs !== null && ageMs > ttlMs;
+        } catch {
+          // Unreadable / unparseable: age unknown, not proven expired → live.
+        }
+        if (isExpired) expired += 1;
+        else live += 1;
+
+        if (breakdown) {
+          const parsed = parseCacheFileName(name);
+          const providerKey = parsed ? parsed.provider : "legacy";
+          const capabilityKey = parsed ? parsed.capability : "legacy";
+          addToBucket(byProvider, providerKey, s.size, isExpired);
+          addToBucket(byCapability, capabilityKey, s.size, isExpired);
+        }
       } catch {
-        // skip
+        // skip unstat-able entries, like the pre-enrichment inventory
       }
     }
   } catch {
     // dir doesn't exist yet
   }
-  return { entries, totalBytes };
+  const result: CacheStatsBucket & {
+    byProvider?: Record<string, CacheStatsBucket>;
+    byCapability?: Record<string, CacheStatsBucket>;
+  } = { entries, totalBytes, live, expired };
+  if (breakdown) {
+    // Boundary conversion back to a plain-proto record: the null-proto
+    // accumulator is an internal hardening detail, not part of the
+    // public Record shape. Object spread copies own enumerable
+    // properties via CreateDataProperty, so even a literal "__proto__"
+    // bucket key becomes an own data property on the fresh plain object
+    // — JSON output and deepStrictEqual consumers see an ordinary
+    // Record shape either way.
+    result.byProvider = { ...byProvider };
+    result.byCapability = { ...byCapability };
+  }
+  return result;
+}
+
+/** Accumulate one entry into a per-key breakdown bucket (DESIGN D7). */
+function addToBucket(
+  buckets: Record<string, CacheStatsBucket>,
+  key: string,
+  sizeBytes: number,
+  isExpired: boolean,
+): void {
+  // Own-key read only: inherited properties (e.g. `constructor` on a
+  // plain object, anything on a null-prototype accumulator's chain)
+  // must never be mistaken for an existing bucket.
+  const existing = Object.prototype.hasOwnProperty.call(buckets, key)
+    ? buckets[key]
+    : undefined;
+  buckets[key] = existing
+    ? {
+        entries: existing.entries + 1,
+        totalBytes: existing.totalBytes + sizeBytes,
+        live: existing.live + (isExpired ? 0 : 1),
+        expired: existing.expired + (isExpired ? 1 : 0),
+      }
+    : {
+        entries: 1,
+        totalBytes: sizeBytes,
+        live: isExpired ? 0 : 1,
+        expired: isExpired ? 1 : 0,
+      };
 }
 
 // ---------------------------------------------------------------------------

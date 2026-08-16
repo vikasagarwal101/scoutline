@@ -277,7 +277,7 @@ scoutline search --help       # Search options
 scoutline repo --help         # GitHub repo commands
 scoutline doctor --help       # Provider diagnostics
 scoutline quota --help        # Plan usage
-scoutline cache --help        # Local cache inspection and clearing
+scoutline cache --help        # Local cache inspection, clearing, and pruning
 ```
 
 ### Examples
@@ -317,9 +317,11 @@ scoutline doctor                      # full diagnostics
 scoutline doctor --no-tools           # metadata only, no transport
 scoutline doctor --provider minimax   # MiniMax connectivity
 
-# Cache - inspect or clear the local cache
-scoutline cache stats                 # show inventory of both subdirectories
+# Cache - inspect, clear, or prune the local cache
+scoutline cache stats                 # inventory of both subdirectories (live/expired, per provider and capability)
 scoutline cache clear                 # delete every file under cache/ and tools/
+scoutline cache prune                 # delete expired entries (effective TTL threshold)
+scoutline cache prune --older-than 168h --provider zai    # age override + selectors (AND together)
 
 # Config - inspect and change settings (scriptable, always redacted)
 scoutline config get                  # full config dump (credentials masked)
@@ -373,7 +375,7 @@ one-line cache summary under the `cache` field.
 - `read` returns a schema-version-1 envelope (content read or extract read) in every output mode. `--with-images-summary`, `--no-gfm`, and `--keep-img-data-url` are passed through to the Provider request. `--max-chars` is ignored on extract reads; `--full-envelope` is silently deprecated.
 - Vision tool calls automatically retry transient 5xx/network errors (default: 2 retries). Configure with `ZAI_MCP_VISION_RETRY_COUNT` (or `ZAI_MCP_RETRY_COUNT` for all tools).
 - Tool discovery can be cached to speed `tools`/`tool`/`doctor` (default: on, 24h TTL). The cache shares the unified root with the response cache; configure both via `SCOUTLINE_CACHE`, `SCOUTLINE_CACHE_TTL_MS`, `SCOUTLINE_CACHE_SIZE_MB`, and `SCOUTLINE_CACHE_DIR` (legacy aliases `ZAI_MCP_TOOL_CACHE*`, `ZAI_MCP_CACHE_DIR`, and `ZAI_CACHE*` are accepted silently).
-- The local cache lives at `~/.scoutline/` (`cache/` for responses, `tools/` for tool discovery) on every platform. Inspect or clear it with `scoutline cache stats` and `scoutline cache clear`.
+- The local cache lives at `~/.scoutline/` (`cache/` for responses, `tools/` for tool discovery) on every platform. Inspect, clear, or prune it with `scoutline cache stats`, `scoutline cache clear`, and `scoutline cache prune`. Prune deletes expired entries by their stored timestamp (`--older-than <24h|90m|30s|seconds>` replaces the TTL threshold; `--provider`/`--capability` narrow the response scan to v2 filenames — the tool cache is unpartitioned and is always scanned age-only).
 
 ## Repository Exploration (P6)
 

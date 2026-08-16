@@ -16,10 +16,12 @@ import { quota, buildQuotaDashboard, QUOTA_HELP } from "./commands/quota.js";
 import {
   cacheStatsCommand,
   cacheClearCommand,
+  cachePruneCommand,
   formatDoctorCacheSummary,
   CACHE_HELP,
   type CacheStatsReport,
   type CacheClearReport,
+  type CachePruneReport,
 } from "./commands/cache.js";
 import {
   CONFIG_HELP,
@@ -27,7 +29,8 @@ import {
   configSetCommand,
   configUnsetCommand,
 } from "./commands/config.js";
-import { cacheStats, clearAllCaches } from "./lib/cache.js";
+import { cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
+import type { PruneSelectors, PruneCachesResult } from "./lib/cache.js";
 import { isExtractMode, type ExtractMode } from "./lib/extract.js";
 import {
   runCodeFile,
@@ -251,7 +254,22 @@ function extractGlobalOptions(args: string[]): {
       // removed from the rest stream so command-local positional parsing
       // never observes it. Only shared Search resolves/validates it; the
       // Z.AI-only command families carry it but never consult it.
-      provider = args[i + 1];
+      // A valueless `--provider` — trailing, or followed by another
+      // option token — is a VALIDATION_ERROR, not a silent no-op
+      // (review fixup, round 2). Consuming a dash-prefixed follower as
+      // the value made `cache prune --provider --older-than 60s` run a
+      // prune scoped to provider "--older-than" while the selector-free
+      // tool scan still deleted expired tool entries. Provider ids never
+      // start with "-", so a dash-prefixed follower is a missing value;
+      // this mirrors `parseArgs`' refusal to bind dash-prefixed values.
+      const value = args[i + 1];
+      if (value === undefined || value.startsWith("-")) {
+        throw new ValidationError(
+          "--provider requires a value.",
+          "Pass a Provider id after --provider, e.g. --provider zai.",
+        );
+      }
+      provider = value;
       i += 1;
       continue;
     }
@@ -271,20 +289,38 @@ function extractGlobalOptions(args: string[]): {
   return { outputFormat, forcePretty, forceRaw, provider, noFallback, rest };
 }
 
+/**
+ * The single shared output-mode resolver for every path in `main`:
+ * normal pre-dispatch resolution AND the extraction-failure boundary
+ * (via `bestEffortOutputMode`). Precedence: explicit `--output-format`
+ * > `--pretty-output` > `--raw` > env override > TTY detection >
+ * deterministic `data` fallback.
+ *
+ * `options.lenient` swaps the strict invalid-explicit `ValidationError`
+ * for a fall-through so the resolver is total on the error boundary,
+ * where a throw would escape the very catch that formats it. A
+ * well-formed argv always surfaces the invalid mode through the strict
+ * path (review fixup, round 3).
+ */
 function resolveOutputMode(
   explicit: string | undefined,
   forcePretty: boolean,
   forceRaw: boolean,
   adapter: CommandInvocationAdapter,
+  options: { lenient?: boolean } = {},
 ): OutputMode {
   if (explicit !== undefined) {
-    if (!isOutputMode(explicit)) {
+    if (isOutputMode(explicit)) {
+      return explicit;
+    }
+    if (!options.lenient) {
       throw new ValidationError(
         `Invalid output format: ${explicit}`,
         `Use one of: ${OUTPUT_MODES.join(", ")}`,
       );
     }
-    return explicit;
+    // Lenient: treat the invalid explicit mode as absent and fall
+    // through the shared chain below.
   }
   if (forcePretty) return "tty";
   if (forceRaw) return "data";
@@ -294,6 +330,53 @@ function resolveOutputMode(
   }
   if (adapter.stdoutIsTTY) return "tty";
   return "data";
+}
+
+/**
+ * Resolve the output mode for errors that escape `extractGlobalOptions`
+ * itself (a valueless or option-shadowed `--provider`). The partially
+ * parsed result never escapes the throw, so the requested mode is
+ * re-derived from the raw argv. This helper owns ONLY the argv
+ * re-extraction — token consumption mirrors `extractGlobalOptions`
+ * exactly (the follower of `--output-format`/`-O` is its value) — and
+ * delegates every precedence and fallback decision to the one shared
+ * `resolveOutputMode` through its non-throwing `lenient` path, so
+ * normal and extraction-error resolution cannot diverge (review
+ * fixup, round 3). Round 2 context: the extraction catch previously
+ * hardcoded `data`, so `--output-format pretty ... --provider`
+ * reported the extraction failure in compact JSON despite the
+ * requested mode.
+ */
+function bestEffortOutputMode(
+  args: readonly string[],
+  adapter: CommandInvocationAdapter,
+): OutputMode {
+  let outputFormat: string | undefined;
+  let forcePretty = false;
+  let forceRaw = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === undefined) continue;
+    if (arg === "--output-format" || arg === "-O") {
+      const value = args[i + 1];
+      if (value !== undefined) {
+        outputFormat = value;
+        i += 1;
+      }
+      continue;
+    }
+    if (arg === "--pretty-output") {
+      forcePretty = true;
+      continue;
+    }
+    if (arg === "--raw") {
+      forceRaw = true;
+      continue;
+    }
+  }
+  return resolveOutputMode(outputFormat, forcePretty, forceRaw, adapter, {
+    lenient: true,
+  });
 }
 
 /**
@@ -309,8 +392,11 @@ function resolveOutputMode(
  *
  * `provider` is the parsed global `--provider` flag. Shared Search, the
  * P6-07 Repository commands, and the Reader Migration 04 `read` command
- * resolve/validate it; the remaining Z.AI-only command families (tools,
- * tool, call, code) carry it but never consult it. `providerDescriptors`
+ * resolve/validate it; `cache prune` reads it as a PRUNE SELECTOR
+ * (`--provider` is stripped from the rest stream before `handleCache`
+ * sees it, so the dispatcher falls back to this field); the remaining
+ * Z.AI-only command families (tools, tool, call, code) carry it but
+ * never consult it. `providerDescriptors`
  * is the injectable registry (tests pass doubles; production uses the
  * static built-in list).
  *
@@ -337,8 +423,14 @@ function resolveOutputMode(
  * Search and Repository; separate optional MainDependencies so reader
  * tests can inject isolated in-memory doubles. Not a rename of either
  * prior seam.
+ *
+ * `pruneCaches` is the cache-prune dispatcher seam (Cache Prune
+ * Ticket 5). Production wires the on-disk `pruneCaches` from
+ * `src/lib/cache.js`; tests inject a double so the dispatcher can be
+ * exercised in-process without real I/O. Defaults to the production
+ * function when omitted.
  */
-interface HandlerDependencies {
+export interface HandlerDependencies {
   readonly invocation: CommandInvocationAdapter;
   readonly env: NodeJS.ProcessEnv;
   readonly secrets: string[];
@@ -430,6 +522,15 @@ interface HandlerDependencies {
    * the `verification` field is omitted (pre-PB-T5 callers).
    */
   readonly verificationRecords?: Partial<Record<ProviderId, ProviderVerificationSummary>>;
+  /**
+   * Optional injectable `pruneCaches` for the `cache prune` subcommand
+   * (Cache Prune Ticket 5). Production wires the on-disk
+   * `pruneCaches` from `src/lib/cache.js` (see `MainDependencies`);
+   * tests inject a double so the dispatcher's selector-parsing /
+   * error-propagation contract can be exercised without touching disk.
+   * When absent, the dispatcher uses the production function.
+   */
+  readonly pruneCaches?: (selectors: PruneSelectors) => Promise<PruneCachesResult>;
 }
 
 async function handleVision(
@@ -1715,7 +1816,26 @@ async function handleConfig(
   }
 }
 
-async function handleCache(
+/**
+ * `scoutline cache <stats|clear|prune>` — local cache utility. Like
+ * Doctor, it bypasses Provider resolution entirely (no descriptor
+ * lookup, no Adapter, no transport). The command surfaces the inventory
+ * and clear helpers owned by `src/lib/cache.ts` (Ticket 01) through the
+ * presentation-only handlers in `src/commands/cache.ts`. The `prune`
+ * case was added in Cache Prune Ticket 5 and parses `--older-than` /
+ * `--provider` / `--capability` flags into the `PruneSelectors` shape
+ * the lib expects (DESIGN D2/D3); unknown provider/capability values
+ * are intentionally NOT pre-validated against the registry — they
+ * filename-match nothing in the response cache while the selector-free
+ * tool scan still runs (DESIGN D2/D4). `--provider` may appear before
+ * or after the command token: `extractGlobalOptions` strips it either
+ * way and this handler recovers it from `deps.provider`. A valueless
+ * `--older-than`/`--provider`/`--capability` is a VALIDATION_ERROR. A
+ * lock-acquire timeout in the production `pruneCaches` THROWS (DESIGN
+ * D5) so the dispatcher's error boundary emits a sanitized stderr
+ * envelope with exit 1.
+ */
+export async function handleCache(
   args: string[],
   outputMode: OutputMode,
   deps: HandlerDependencies,
@@ -1751,6 +1871,91 @@ async function handleCache(
         deps.now,
         deps.secrets,
       );
+    case "prune": {
+      // Parse `--older-than` into milliseconds. A null result is the
+      // contract for any unparseable spec (DESIGN D3); surface it as a
+      // VALIDATION_ERROR (exit 1) BEFORE entering the command seam so a
+      // bad flag never touches the on-disk cache. The flag may be
+      // absent (undefined) — in which case the lib falls back to the
+      // effective TTL (DESIGN D3) — but if present, it must parse.
+      let olderThanMs: number | undefined;
+      const rawOlderThan = flags["older-than"];
+      if (rawOlderThan !== undefined && rawOlderThan !== true) {
+        const parsed = parsePruneDuration(rawOlderThan as string);
+        if (parsed === null) {
+          throw new ValidationError(
+            `Invalid --older-than value "${rawOlderThan}"`,
+            "Use one of: Nh, Nm, Ns, or N (seconds). Examples: --older-than 24h, --older-than 30m.",
+          );
+        }
+        olderThanMs = parsed;
+      } else if (rawOlderThan === true) {
+        // `--older-than` without a value: same parse-level failure mode
+        // as `--count` (Fixup D — see `parseAndValidateCount`).
+        throw new ValidationError(
+          "--older-than requires a value.",
+          "Use one of: Nh, Nm, Ns, or N (seconds). Examples: --older-than 24h, --older-than 30m.",
+        );
+      }
+      // parseArgs yields `true` for a value flag with no argument, so
+      // the boolean case is real here (bare `--provider`/`--capability`
+      // guard below); the cast must keep it, unlike the old
+      // `as string | undefined`.
+      const provider = flags.provider as string | boolean | undefined;
+      const capability = flags.capability as string | boolean | undefined;
+      // A value flag parsed as `true` means the user passed a bare
+      // `--provider`/`--capability` with no value. Mirror the bare
+      // `--older-than` guard above instead of letting the boolean match
+      // nothing and silently prune/exchange nothing (review fixup).
+      if (provider === true) {
+        throw new ValidationError(
+          "--provider requires a value.",
+          "Pass a Provider id after --provider, e.g. --provider zai.",
+        );
+      }
+      if (capability === true) {
+        throw new ValidationError(
+          "--capability requires a value.",
+          "Pass a capability id after --capability, e.g. --capability search.",
+        );
+      }
+      // `extractGlobalOptions` removes `--provider` (in either position)
+      // from the args before `handleCache` sees them and threads the
+      // value through `deps.provider`; direct/in-process callers still
+      // pass the flag in `args`. Consult both so the selector works via
+      // `main` AND via `handleCache(args, ...)` (review P1).
+      const providerSelector =
+        typeof provider === "string" ? provider : deps.provider;
+      const capabilitySelector = typeof capability === "string" ? capability : undefined;
+      // Build the selector shape the lib expects. Undefined flags are
+      // omitted so the lib's optional-field contract is preserved. The
+      // command seam receives this verbatim; production
+      // `cachePruneCommand` and the in-process test double observe the
+      // exact same object.
+      const selectors: PruneSelectors = {
+        ...(olderThanMs !== undefined ? { olderThanMs } : {}),
+        ...(providerSelector !== undefined ? { provider: providerSelector } : {}),
+        ...(capabilitySelector !== undefined ? { capability: capabilitySelector } : {}),
+      };
+      // The injected seam is the existing dependency seam (Ticket 5);
+      // production wires the on-disk `pruneCaches` from `src/lib/cache.js`
+      // via `MainDependencies.pruneCaches` and a `buildHandlerDeps`
+      // override. When the seam is absent the dispatcher falls back to
+      // the production function so call sites outside `main` continue
+      // to work.
+      const runPrune = deps.pruneCaches ?? pruneCaches;
+      return invokeCommand(
+        deps.invocation,
+        () =>
+          cachePruneCommand(
+            { prune: (s) => runPrune(s) as Promise<CachePruneReport> },
+            selectors,
+          ),
+        outputMode,
+        deps.now,
+        deps.secrets,
+      );
+    }
     default:
       throw new ValidationError(
         `Unknown cache command: ${subcommand}`,
@@ -2088,6 +2293,15 @@ export interface MainDependencies {
    * pre-PB-T4 behaviour).
    */
   readonly quotaState?: QuotaState;
+  /**
+   * Optional injectable `pruneCaches` for the `cache prune` subcommand
+   * (Cache Prune Ticket 5). Production defaults to the on-disk
+   * `pruneCaches` from `src/lib/cache.js`; tests inject a double so the
+   * dispatcher's selector-parsing / error-propagation contract can be
+   * exercised without touching disk. When omitted, the dispatcher
+   * falls back to the production function so the seam stays opt-in.
+   */
+  readonly pruneCaches?: (selectors: PruneSelectors) => Promise<PruneCachesResult>;
 }
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -2176,9 +2390,21 @@ export async function main(
   // is computed below for credentialed paths.
   const envSecrets = configuredSecrets(env);
 
-  const { outputFormat, forcePretty, forceRaw, provider, noFallback, rest } = extractGlobalOptions([
-    ...args,
-  ]);
+  // Extraction can now throw (valueless trailing `--provider`); give it
+  // the same error boundary as `resolveOutputMode` below — a sanitized
+  // envelope in the output mode the argv requested (re-derived from the
+  // raw argv via `bestEffortOutputMode` because the partially parsed
+  // result never escapes the throw) and the error's exit code.
+  let extracted: ReturnType<typeof extractGlobalOptions>;
+  try {
+    extracted = extractGlobalOptions([...args]);
+  } catch (error) {
+    invocation.writeStderr(
+      formatErrorOutput(error, bestEffortOutputMode(args, invocation), envSecrets),
+    );
+    return getErrorExitCode(error);
+  }
+  const { outputFormat, forcePretty, forceRaw, provider, noFallback, rest } = extracted;
 
   // Fixup C — B10: resolve the output mode BEFORE the dispatch try/catch.
   // An invalid explicit mode still surfaces as a typed ValidationError,
@@ -2320,6 +2546,11 @@ export async function main(
     // quota). Tests inject an in-memory double; production wires the
     // singleton constructed in `main`.
     quotaStore: dependencies.quotaStore ?? (quotaRefreshEnabled ? quotaStore : undefined),
+    // Cache Prune Ticket 5: thread the optional injected `pruneCaches`
+    // through to `handleCache`. Production defaults to the on-disk
+    // function from `src/lib/cache.js`; tests inject a double so the
+    // dispatcher contract can be exercised without touching disk.
+    pruneCaches: dependencies.pruneCaches,
     // PB-T5: verification records are NOT threaded here. They are
     // derived from `config` AFTER it is loaded (the credentialed
     // path); `buildHandlerDeps` runs once BEFORE config load (the

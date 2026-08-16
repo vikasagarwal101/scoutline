@@ -54,6 +54,28 @@ export interface CacheClearReport {
   readonly bytesFreed: number;
 }
 
+/**
+ * Mirror of {@link PruneCachesResult} in `src/lib/cache.ts`. Counts
+ * reflect actual deletions performed during the prune run.
+ */
+export interface CachePruneReport {
+  readonly prunedResponses: number;
+  readonly prunedTools: number;
+  readonly bytesFreed: number;
+}
+
+/**
+ * Selectors narrowing a prune run. All optional and AND together;
+ * mirrors {@link PruneSelectors} from `src/lib/cache.ts` (DESIGN D2/D3).
+ * The dispatcher parses `--older-than`/`--provider`/`--capability` into
+ * this shape and passes it to the production `pruneCaches`.
+ */
+export interface CachePruneSelectors {
+  readonly olderThanMs?: number;
+  readonly provider?: string;
+  readonly capability?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Pure formatting helpers
 // ---------------------------------------------------------------------------
@@ -142,6 +164,18 @@ export function formatCacheClear(result: CacheClearReport): string {
 }
 
 /**
+ * Format a prune result as a one-line TTY notice. Same voice as
+ * {@link formatCacheClear} (cleared vs pruned is the only swap).
+ */
+export function formatCachePrune(result: CachePruneReport): string {
+  return (
+    `Pruned ${result.prunedResponses} response ${pluralEntry(result.prunedResponses)} ` +
+    `and ${result.prunedTools} tool ${pluralEntry(result.prunedTools)} ` +
+    `(${formatBytes(result.bytesFreed)} freed)`
+  );
+}
+
+/**
  * Format the one-line Doctor cache summary from a `cacheStats()` value.
  * The dispatcher calls this before invoking `buildDiagnosticsReport`;
  * the report builder embeds the result verbatim. Examples:
@@ -174,6 +208,10 @@ export interface CacheClearDependencies {
   readonly clear: () => Promise<CacheClearReport>;
 }
 
+export interface CachePruneDependencies {
+  readonly prune: (selectors: CachePruneSelectors) => Promise<CachePruneReport>;
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -187,6 +225,12 @@ function statsPresentations(stats: CacheStatsReport): Partial<Record<TextOutputM
 /** All text modes share the same one-line clear notice. */
 function clearPresentations(result: CacheClearReport): Partial<Record<TextOutputMode, string>> {
   const text = formatCacheClear(result);
+  return { compact: text, markdown: text, refs: text, tty: text };
+}
+
+/** All text modes share the same one-line prune notice. */
+function prunePresentations(result: CachePruneReport): Partial<Record<TextOutputMode, string>> {
+  const text = formatCachePrune(result);
   return { compact: text, markdown: text, refs: text, tty: text };
 }
 
@@ -222,12 +266,34 @@ export async function cacheClearCommand(
   };
 }
 
+/**
+ * Run the `cache prune` subcommand. Returns the count of pruned
+ * entries and bytes freed as base data with a TTY presentation
+ * override. Selectors are passed through to `deps.prune` verbatim
+ * (the dispatcher parses `--older-than`/`--provider`/`--capability`
+ * into this shape). Lock-timeout errors propagate so the
+ * dispatcher's error boundary emits the sanitized stderr envelope
+ * (DESIGN D5).
+ */
+export async function cachePruneCommand(
+  deps: CachePruneDependencies,
+  selectors: CachePruneSelectors,
+): Promise<CommandResult<CachePruneReport>> {
+  const result = await deps.prune(selectors);
+  return {
+    kind: "data",
+    data: result,
+    presentations: prunePresentations(result),
+  };
+}
+
 export const CACHE_HELP = `
-Cache - Inspect and clear the local cache
+Cache - Inspect, clear, or prune the local cache
 
 Usage:
-  scoutline cache stats   # show inventory of both cache subdirectories
-  scoutline cache clear   # delete every file in both cache subdirectories
+  scoutline cache stats                       # show inventory of both cache subdirectories
+  scoutline cache clear                       # delete every file in both cache subdirectories
+  scoutline cache prune [--older-than <D>] [--provider <id>] [--capability <id>]
 
 Subcommands:
   stats   Print the cache directory, status (enabled/disabled, TTL, size
@@ -238,18 +304,45 @@ Subcommands:
           directories themselves are preserved so the next invocation
           recreates entries without a directory-creation race. The
           orphaned legacy ~/.cache/zai-cli/ directory is never touched.
+  prune   Delete expired entries from both caches by stored timestamp
+          (DESIGN D1: ts, never mtime). Without flags, prune uses the
+          effective TTL; with --older-than, that duration replaces the
+          TTL. --provider and --capability narrow the response-cache
+          scan to v2 filenames only (DESIGN D2: legacy files are
+          age-selected, never selector-selected). --provider may appear
+          before or after the command token. Unknown
+          --provider/--capability values are NOT pre-validated — they
+          filename-match nothing in the response cache, while the
+          selector-free tool scan still prunes expired tool entries
+          (tool filenames are unpartitioned; DESIGN D4).
+
+Duration syntax for --older-than (DESIGN D3): 24h, 90m, 30s, or a bare
+integer (seconds). The value REPLACES the effective TTL. Example:
+--older-than 1h prunes anything older than 1 hour even when the TTL is
+24h.
 
 The cache root defaults to ~/.scoutline/ on every platform; override it
 with SCOUTLINE_CACHE_DIR (ZAI_MCP_CACHE_DIR and ZAI_CACHE_DIR are
 accepted as lower-precedence legacy aliases). Disable both caches with
-SCOUTLINE_CACHE=0 (legacy alias: ZAI_CACHE=0).
+SCOUTLINE_CACHE=0 (legacy alias: ZAI_CACHE=0). A disabled cache does
+NOT short-circuit prune: deletion is not a cache read/write (D6). With
+no --older-than under a disabled cache, prune reports zeros (TTL of 0
+means "no freshness rule", not "delete everything").
 
 Exit codes:
   0  Success.
-  1  I/O error (reported as a sanitized JSON error envelope).
+  1  Validation error (bad or valueless --older-than / --provider /
+     --capability, unknown subcommand) or I/O error including a
+     cache-write lock timeout (DESIGN D5: the prune scan serializes on
+     the response-dir lock a concurrent write holds; a lock-acquire
+     timeout throws and is reported as a sanitized FILE_ERROR JSON
+     error envelope).
 
 Examples:
   scoutline cache stats
   scoutline cache clear
+  scoutline cache prune
+  scoutline cache prune --older-than 1h
+  scoutline cache prune --older-than 24h --provider zai --capability search
   scoutline cache --help
 `.trim();

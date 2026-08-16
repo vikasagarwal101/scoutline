@@ -138,6 +138,28 @@ previous strict `UNSUPPORTED_CAPABILITY` behavior — the preflight
 still runs capability metadata → configuration → adapter handle in
 order on the effective Provider only.
 
+### Search fan-out (multi-provider search, ADR-0004)
+
+`search` alone can run one query across several providers in parallel
+and merge the results (dedupe by canonical URL identity, occurrence
+ranking, additive `mergedFrom` provenance per result; arms are pinned —
+no per-arm fallback, and an arm that rejects a control drops with a
+stderr notice instead of failing the invocation). Activation tiers:
+
+1. `--provider tavily,exa` (comma list) or `--provider all` — fan-out
+   now, on the listed providers (`all` = every configured search
+   provider, registry order).
+2. A single `--provider <id>` or `SCOUTLINE_PROVIDER` — single
+   provider; fan-out is ignored.
+3. `npx scoutline@latest config set fanout true` (no pin) — standing
+   fan-out on `routing.search` when set, else all configured search
+   providers. Default off; `config set fanout false` disables.
+4. Otherwise the standard single-provider selection.
+
+**Cost is explicit: every fanned-out search bills ALL arms — N arms = N
+billable calls.** Use it when recall across providers matters more than
+spend; use a single `--provider` pin when it does not.
+
 ## Capability Matrix
 
 | Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | Command |

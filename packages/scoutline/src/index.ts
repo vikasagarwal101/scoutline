@@ -903,14 +903,37 @@ async function handleSearch(
   // pattern"). PB-T4: when no pin is present, the effective provider is
   // the highest-scored configured+capable provider for `search` against
   // the injected quota snapshot; pin input still bypasses ranking.
-  const providerId: ProviderId = resolveEffectiveProvider({
-    explicitProvider: deps.provider,
+  //
+  // Ticket 3/5 — Fan-out activation (search-fanout plan, DESIGN D1):
+  // resolve the activation plan BEFORE the single-pin resolver. A
+  // Tier-1 multi-pin raw (`--provider a,b` / `--provider all`) is a
+  // fan-out activation, and `parseProviderId` inside
+  // `resolveEffectiveProvider` rejects the comma form as unknown — the
+  // strict single-path resolution therefore runs only when the plan is
+  // NOT fan-out (preserving its typed VALIDATION_ERROR contract for
+  // unknown single pins, which the resolver deliberately falls through).
+  // When fan-out is active there is no single effective provider: the
+  // plan itself carries the ordered arm list, and `providerId` is never
+  // consulted on the fan-out path.
+  const configFanout = deps.configFanout === true;
+  const fanoutPlan = resolveFanoutPlan({
+    explicitProviderRaw: deps.provider,
     env: deps.env,
-    capabilityId: "search",
-    descriptors: deps.providerDescriptors,
-    quotaSnapshot: deps.quotaState,
+    configFanout,
     routing: deps.routing,
+    descriptors: deps.providerDescriptors,
   });
+  const providerId: ProviderId | undefined =
+    fanoutPlan.mode === "fanout"
+      ? undefined
+      : resolveEffectiveProvider({
+          explicitProvider: deps.provider,
+          env: deps.env,
+          capabilityId: "search",
+          descriptors: deps.providerDescriptors,
+          quotaSnapshot: deps.quotaState,
+          routing: deps.routing,
+        });
 
   const query = positional.join(" ");
 
@@ -945,20 +968,12 @@ async function handleSearch(
   // a single attempt so a fallback switch replaces the entire batch,
   // never individual sub-queries (Tech Plan §"Handler non-uniformity").
   //
-  // Ticket 3 — Fan-out activation (search-fanout plan, DESIGN D1):
-  // resolve the activation plan first. When `mode === "fanout"`, the
-  // call routes through `executeFanoutPlan` (parallel pinned arms,
-  // D2/D5/D6) instead of the single-pin fallback executor. The single
-  // path stays verbatim for byte-identical output (the single-pin
-  // golden test in `tests/search-fanout.test.js` pins this).
-  const configFanout = deps.configFanout === true;
-  const fanoutPlan = resolveFanoutPlan({
-    explicitProviderRaw: deps.provider,
-    env: deps.env,
-    configFanout,
-    routing: deps.routing,
-    descriptors: deps.providerDescriptors,
-  });
+  // Ticket 3 — Fan-out dispatch: the plan is resolved above (before the
+  // single-pin resolver). When `mode === "fanout"`, the call routes
+  // through `executeFanoutPlan` (parallel pinned arms, D2/D5/D6)
+  // instead of the single-pin fallback executor. The single path stays
+  // verbatim for byte-identical output (the single-pin golden test in
+  // `tests/search-fanout.test.js` pins this).
   return invokeCommand(
     deps.invocation,
     async (context) => {
@@ -993,7 +1008,10 @@ async function handleSearch(
         {
           capabilityId: "search",
           commandLabel: "search",
-          effectiveProvider: providerId,
+          // Non-null on this branch: `providerId` is resolved above
+          // exactly when the plan is NOT fan-out, and this single-path
+          // executor runs only in that case.
+          effectiveProvider: providerId!,
           descriptors: deps.providerDescriptors,
           env: deps.env,
           fallbackEnabled: deps.fallbackEnabled,

@@ -200,6 +200,23 @@ SCOUTLINE_PROVIDER=minimax scoutline quota
 
 Selecting a provider that doesn't support a capability auto-reroutes to the next eligible configured provider in registry order and emits a stderr notice (the default since 0.11.0). Pass `--no-fallback` (or set `SCOUTLINE_NO_FALLBACK=1`) to restore the previous strict `UNSUPPORTED_CAPABILITY` behavior for scripting or cost-sensitive workflows.
 
+### Search Fan-Out (multi-provider search)
+
+For `search` only, one query can run across several providers in parallel and merge into a single deduplicated list ([ADR-0004](docs/adr/0004-multi-provider-search-fanout.md)). Activation tiers, highest precedence first:
+
+1. `--provider tavily,exa` (comma list) or `--provider all` — fan-out on the listed providers; `all` expands to every configured search provider in registry order.
+2. A single `--provider <id>` or `SCOUTLINE_PROVIDER` — single provider; an explicit pin, fan-out is ignored.
+3. `scoutline config set fanout true` (no pin) — fan-out on `routing.search` when set, else every configured search provider. Default is **false**.
+4. No pin and fan-out off — single provider via the standard selection order.
+
+```bash
+scoutline --provider tavily,exa search "rust async runtimes"
+scoutline --provider all search "AI policy news"
+scoutline config set fanout true    # standing preference (default off)
+```
+
+**Cost:** every search will bill ALL configured search providers — N arms = N billable calls. Arms run in parallel (one client each, pinned — no per-arm fallback); a provider that rejects a search control drops with a stderr notice and never fails the invocation. Results are deduplicated by canonical URL identity (scheme/host lowercased, default ports, fragments, trailing slashes, and `utm_*`/`fbclid` parameters removed — the original URLs are preserved in output), ranked by cross-provider occurrences, and each result carries `mergedFrom` listing the providers that returned it. Disable the standing switch with `scoutline config set fanout false`.
+
 ### Capability Matrix
 
 | Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | Command |

@@ -62,9 +62,25 @@ Get an Exa key at: https://dashboard.exa.ai
 Run `scoutline init` once to record API keys in
 `~/.scoutline/config.json` (mode 0600) through an interactive wizard.
 The wizard validates each key with a single inline probe, supports
-re-config (edit/add/remove provider, change fallback), and repairs a
+re-config (edit/add/remove provider, change fallback, edit the
+routing table), and repairs a
 corrupt config (backup + rewrite). Non-interactive terminals are
 refused — set environment variables instead.
+
+### Settings via `scoutline config` (scriptable, no TTY)
+
+```bash
+npx scoutline config get                        # full config, credentials always masked
+npx scoutline config set routing.search tavily,brave   # strict: typos FAIL, not drop
+npx scoutline config unset routing.search
+npx scoutline config set fallbackEnabled false
+```
+
+The `routing` key sets a standing per-capability provider preference:
+with no `--provider` / `SCOUTLINE_PROVIDER` pin, the first
+configured-and-capable provider in the list wins (over quota ranking).
+Credential paths (`providers.<id>.apiKey`) refuse `set` — use `init`
+or env vars; API keys never belong in command arguments.
 
 ## Provider Selection
 
@@ -212,6 +228,9 @@ npx scoutline quota --all-providers
 # Local cache inspection and clearing
 npx scoutline cache stats                 # inventory both subdirectories
 npx scoutline cache clear                 # delete every file in cache/ and tools/
+
+# Config (see "Settings via scoutline config" above)
+npx scoutline config get routing
 ```
 
 ## Repository Exploration

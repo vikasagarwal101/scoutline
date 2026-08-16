@@ -113,7 +113,17 @@ Shared commands (`search`, `vision`, `quota`, `doctor`, `repo`) accept a global
 
 1. Explicit `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina>` on the command line
 2. `SCOUTLINE_PROVIDER` environment variable
-3. Compatibility default `zai`
+3. Per-capability **routing table** (`config.json` `routing` key; the first
+   configured, capable provider in the list wins — over quota ranking)
+4. Quota-ranked pick among configured, capable providers (registry-order tiebreak)
+
+Set a standing preference once and skip per-command flags:
+
+```bash
+scoutline config set routing.search tavily,brave   # search prefers Tavily, then Brave
+scoutline config set routing.crawl firecrawl
+scoutline config get routing                       # view the effective table
+```
 
 Examples:
 
@@ -310,6 +320,11 @@ scoutline doctor --provider minimax   # MiniMax connectivity
 # Cache - inspect or clear the local cache
 scoutline cache stats                 # show inventory of both subdirectories
 scoutline cache clear                 # delete every file under cache/ and tools/
+
+# Config - inspect and change settings (scriptable, always redacted)
+scoutline config get                  # full config dump (credentials masked)
+scoutline config set routing.search tavily,brave
+scoutline config unset routing.search
 ```
 
 ## Output Format

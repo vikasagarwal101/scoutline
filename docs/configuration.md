@@ -102,6 +102,63 @@ runtime. Provider fallback is resolved as:
 This makes the wizard's onboarding answer effective at runtime. An absent
 `fallbackEnabled` field defaults to `true`.
 
+## Routing Table
+
+The optional `routing` key in `config.json` sets a standing per-capability
+provider preference:
+
+```json
+{
+  "version": 1,
+  "routing": {
+    "search": ["tavily", "brave"],
+    "crawl": ["firecrawl"]
+  }
+}
+```
+
+When no explicit `--provider` / `SCOUTLINE_PROVIDER` pin exists, the first
+configured-and-capable provider in the routed list is selected for that
+capability — routing is an **instruction, not a hint**: it wins over quota
+ranking. Routing never reduces availability (no eligible routed provider →
+the existing quota-ranked path runs unchanged), and it routes only the
+*first pick*: the runtime fallback chain stays registry-ordered.
+
+**Validation is lenient at load time**: unknown provider ids
+(`UNKNOWN_PROVIDER` warning) and unknown capability keys
+(`UNKNOWN_CAPABILITY` warning) are dropped with a stderr warning; a broken
+routing table never prevents config load. **Known trade-off:** an older
+binary that rewrites the config drops the key entirely (older `parseConfig`
+rebuilds from known fields only) — accepted over a schema-version bump,
+which would hard-fail older binaries.
+
+Set it interactively (`scoutline init` → re-config → "Edit routing table")
+or scriptably:
+
+```bash
+scoutline config set routing.search tavily,brave   # STRICT: typos fail, not drop
+scoutline config unset routing.search
+```
+
+## `config` Command Family
+
+`scoutline config get [key]` / `set <key> <value>` / `unset <key>` is the
+non-TTY settings surface (dotted paths: `routing`, `routing.<capability>`,
+`fallbackEnabled`, read-only `providers.<id>`). Behavior:
+
+- **`get` is always redacted** — credential values are masked by value match
+  and by credential field name, so a file-stored API key is never printable
+  in any output mode.
+- **`set` is strict, deliberately asymmetric with load-time leniency**: an
+  explicit single-value command must not silently store something different
+  than typed, so `config set routing.search tavlly` fails with
+  `VALIDATION_ERROR` (exit 1) naming the accepted provider list.
+- **Credential paths refuse `set` outright** (`providers.<id>.apiKey` →
+  `VALIDATION_ERROR` pointing at `scoutline init` / environment variables);
+  API keys never belong in command arguments.
+- Writes are atomic read-modify-write with a round-trip re-parse guarantee
+  and take effect on the next command invocation.
+
 ## Provider Selection
 
 Shared commands (`search`, `vision`, `quota`, `doctor`), **`repo`**,

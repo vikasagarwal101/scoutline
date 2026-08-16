@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 
 import { canonicalUrl } from "../dist/lib/url.js";
 import { parseProviderIds } from "../dist/providers/selection.js";
+import { mergeResults, search } from "../dist/commands/search.js";
 
 // ---------------------------------------------------------------------------
 // canonicalUrl — identity-only normalization (DESIGN D4, ADR-0004 §5)
@@ -210,5 +211,321 @@ describe("parseProviderIds: unknown id → null (whole parse fails)", () => {
 describe("parseProviderIds: case normalisation", () => {
   it("lowercases valid ids before emitting them", () => {
     assert.deepStrictEqual(parseProviderIds("TAVILY,Exa"), ["tavily", "exa"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ticket 2 — Merge generalization + provenance (DESIGN D3)
+//
+// `mergeResults` generalizes from (sub-query × results) to
+// (arm × sub-query) × results grids keyed by canonicalUrl. The single-
+// provider `--merge` path and the fan-out path share this one exported
+// function. On the single path the output stays byte-identical to the
+// pre-fan-out merge (no `mergedFrom` field, no count slice).
+// ---------------------------------------------------------------------------
+
+// --- helpers (self-contained for this section) --------------------------
+
+/** Shorthand for a single formatted result. */
+function src(title, url, summary, extra = {}) {
+  return { rank: 1, title, url, summary, ...extra };
+}
+
+/** Build a fake SearchCapability returning scripted results per query. */
+function makeFakeCapability(resultsByQuery) {
+  const invokes = [];
+  const capability = {
+    validate() {},
+    cacheIdentity(request) {
+      return {
+        provider: "zai",
+        capability: "search",
+        credentialFingerprint: "fake-fingerprint",
+        request,
+        legacyCandidates: [],
+      };
+    },
+    async invoke(request) {
+      invokes.push(request);
+      return resultsByQuery[request.query] ?? [];
+    },
+  };
+  return { capability, invokes };
+}
+
+function makeExecDeps(capability) {
+  const store = new Map();
+  return {
+    capability,
+    cache: {
+      async get(key) {
+        return store.has(key) ? store.get(key) : null;
+      },
+      async set(key, value) {
+        store.set(key, value);
+      },
+    },
+    sleep: async () => {},
+    random: () => 0.5,
+  };
+}
+
+function makeContext() {
+  const notices = [];
+  return { context: { stdinIsTTY: false, readStdin: async () => "", notice: (m) => notices.push(m) }, notices };
+}
+
+async function runSearch(query, options, resultsByQuery) {
+  const fake = makeFakeCapability(resultsByQuery);
+  const { context, notices } = makeContext();
+  const result = await search(query, options, makeExecDeps(fake.capability), context);
+  return { result, fake, notices };
+}
+
+// --- cross-arm near-duplicate collapse -----------------------------------
+
+describe("mergeResults: cross-arm near-duplicates collapse by canonical identity", () => {
+  it("collapses /a vs /a/ vs ?utm_source=x into one result keyed by canonicalUrl", () => {
+    const grid = [
+      {
+        provider: "tavily",
+        results: [
+          [
+            { rank: 1, title: "Tavily /a", url: "https://e/a/", summary: "tavily a" },
+            { rank: 2, title: "Tavily /b", url: "https://e/b", summary: "tavily b" },
+          ],
+        ],
+      },
+      {
+        provider: "exa",
+        results: [
+          [
+            { rank: 1, title: "Exa /a", url: "https://e/a?utm_source=x", summary: "exa a" },
+            { rank: 2, title: "Exa only-b", url: "https://e/only-b", summary: "exa only-b" },
+          ],
+        ],
+      },
+    ];
+    const merged = mergeResults(grid, { emitMergedFrom: true });
+    assert.deepStrictEqual(merged, [
+      {
+        rank: 1,
+        title: "Tavily /a",
+        url: "https://e/a/",
+        summary: "tavily a",
+        occurrences: 2,
+        mergedFrom: ["tavily", "exa"],
+      },
+      {
+        rank: 2,
+        title: "Tavily /b",
+        url: "https://e/b",
+        summary: "tavily b",
+        occurrences: 1,
+        mergedFrom: ["tavily"],
+      },
+      {
+        rank: 3,
+        title: "Exa only-b",
+        url: "https://e/only-b",
+        summary: "exa only-b",
+        occurrences: 1,
+        mergedFrom: ["exa"],
+      },
+    ]);
+  });
+
+  it("emits the FIRST writer's original url string (canonical key never leaks)", () => {
+    const grid = [
+      { provider: "tavily", results: [[{ rank: 1, title: "T", url: "https://e/page/", summary: "t" }]] },
+      { provider: "exa", results: [[{ rank: 1, title: "E", url: "https://e/page?utm_campaign=c", summary: "e" }]] },
+    ];
+    const merged = mergeResults(grid, { emitMergedFrom: true });
+    assert.strictEqual(merged.length, 1);
+    assert.strictEqual(merged[0].url, "https://e/page/");
+  });
+});
+
+// --- occurrence ranking across the (arm × sub-query) grid ----------------
+
+describe("mergeResults: occurrence ranking across the arms × sub-queries grid", () => {
+  it("counts occurrences across every arm and sub-query, then ranks (occ desc, bestPos asc)", () => {
+    const grid = [
+      {
+        provider: "tavily",
+        results: [
+          [{ rank: 1, title: "Tav A", url: "https://e/shared", summary: "ta" }],
+          [{ rank: 1, title: "Tav C", url: "https://e/shared", summary: "tc" }],
+          [{ rank: 2, title: "Tav B", url: "https://e/only-a", summary: "tb" }],
+        ],
+      },
+      {
+        provider: "exa",
+        results: [[{ rank: 1, title: "Exa D", url: "https://e/shared", summary: "td" }]],
+      },
+    ];
+    const merged = mergeResults(grid, { emitMergedFrom: true });
+    assert.strictEqual(merged[0].url, "https://e/shared");
+    assert.strictEqual(merged[0].occurrences, 3);
+    assert.strictEqual(merged[0].bestPos === undefined, true); // internal field never leaks
+    assert.strictEqual(merged[1].url, "https://e/only-a");
+    assert.strictEqual(merged[1].occurrences, 1);
+  });
+
+  it("best position tie is broken by arm order (earlier arm wins)", () => {
+    const grid = [
+      { provider: "tavily", results: [[{ rank: 1, title: "T1", url: "https://e/a", summary: "t" }]] },
+      { provider: "exa", results: [[{ rank: 1, title: "E1", url: "https://e/b", summary: "e" }]] },
+    ];
+    const merged = mergeResults(grid, { emitMergedFrom: true });
+    assert.strictEqual(merged[0].url, "https://e/a");
+    assert.strictEqual(merged[1].url, "https://e/b");
+  });
+});
+
+// --- arm-order first-writer-wins -----------------------------------------
+
+describe("mergeResults: earlier arm's metadata wins on collision", () => {
+  it("keeps the first arm's title/summary/url for a shared canonical URL", () => {
+    const grid = [
+      { provider: "tavily", results: [[{ rank: 1, title: "First", url: "https://e/page", summary: "first summary" }]] },
+      { provider: "exa", results: [[{ rank: 1, title: "Second", url: "https://e/page", summary: "second summary" }]] },
+    ];
+    const merged = mergeResults(grid, { emitMergedFrom: true });
+    assert.strictEqual(merged.length, 1);
+    assert.strictEqual(merged[0].title, "First");
+    assert.strictEqual(merged[0].summary, "first summary");
+    assert.strictEqual(merged[0].url, "https://e/page");
+  });
+});
+
+// --- mergedFrom provenance ----------------------------------------------
+
+describe("mergeResults: mergedFrom provenance (unique, first-encounter order)", () => {
+  it("accumulates distinct providers in first-encounter order across a three-arm collision", () => {
+    const grid = [
+      { provider: "tavily", results: [[{ rank: 1, title: "T", url: "https://e/collide", summary: "t" }]] },
+      { provider: "exa", results: [[{ rank: 1, title: "E", url: "https://e/collide", summary: "e" }]] },
+      { provider: "brave", results: [[{ rank: 1, title: "B", url: "https://e/collide", summary: "b" }]] },
+    ];
+    const merged = mergeResults(grid, { emitMergedFrom: true });
+    assert.strictEqual(merged.length, 1);
+    assert.deepStrictEqual(merged[0].mergedFrom, ["tavily", "exa", "brave"]);
+    assert.strictEqual(merged[0].occurrences, 3);
+  });
+
+  it("does not duplicate a provider when its sub-queries hit the same URL twice", () => {
+    const grid = [
+      {
+        provider: "tavily",
+        results: [
+          [{ rank: 1, title: "A", url: "https://e/x", summary: "a" }],
+          [{ rank: 1, title: "B", url: "https://e/x", summary: "b" }],
+        ],
+      },
+      { provider: "exa", results: [[{ rank: 1, title: "C", url: "https://e/x", summary: "c" }]] },
+    ];
+    const merged = mergeResults(grid, { emitMergedFrom: true });
+    assert.strictEqual(merged[0].occurrences, 3);
+    assert.deepStrictEqual(merged[0].mergedFrom, ["tavily", "exa"]);
+  });
+
+  it("omits mergedFrom entirely when emitMergedFrom is false (single-provider path)", () => {
+    const grid = [
+      { provider: "tavily", results: [[{ rank: 1, title: "T", url: "https://e/page", summary: "t" }]] },
+      { provider: "exa", results: [[{ rank: 1, title: "E", url: "https://e/page", summary: "e" }]] },
+    ];
+    const merged = mergeResults(grid);
+    assert.strictEqual(merged.length, 1);
+    assert.ok(!Object.hasOwn(merged[0], "mergedFrom"), "no mergedFrom key on the single path");
+  });
+});
+
+// --- post-merge --count slice --------------------------------------------
+
+describe("mergeResults: post-merge --count slice", () => {
+  const grid = [
+    {
+      provider: "tavily",
+      results: [
+        [
+          { rank: 1, title: "A", url: "https://e/a", summary: "s" },
+          { rank: 2, title: "B", url: "https://e/b", summary: "s" },
+          { rank: 3, title: "C", url: "https://e/c", summary: "s" },
+        ],
+      ],
+    },
+  ];
+
+  it("slices the merged list to count after ranking (not before)", () => {
+    const merged = mergeResults(grid, { emitMergedFrom: true, count: 2 });
+    assert.deepStrictEqual(
+      merged.map((r) => r.url),
+      ["https://e/a", "https://e/b"],
+    );
+    assert.deepStrictEqual(
+      merged.map((r) => r.rank),
+      [1, 2],
+    );
+  });
+
+  it("count 0 returns no results", () => {
+    const merged = mergeResults(grid, { emitMergedFrom: true, count: 0 });
+    assert.deepStrictEqual(merged, []);
+  });
+
+  it("an absent count returns everything (slice is a no-op)", () => {
+    const merged = mergeResults(grid, { emitMergedFrom: true });
+    assert.strictEqual(merged.length, 3);
+  });
+});
+
+// --- single-provider --merge golden (byte-identical to pre-fan-out) ------
+
+describe("single-provider --merge path: golden byte-identical output", () => {
+  it("produces today's exact merged data (no mergedFrom, no count slice)", async () => {
+    const { result, notices } = await runSearch(
+      "a|b",
+      { merge: true },
+      {
+        a: [src("A1", "https://e/shared", "shared A"), src("A2", "https://e/only-a", "only A")],
+        b: [src("B1", "https://e/shared", "shared B"), src("B2", "https://e/only-b", "only B")],
+      },
+    );
+    assert.deepStrictEqual(result.data, [
+      { rank: 1, title: "A1", url: "https://e/shared", summary: "shared A", occurrences: 2 },
+      { rank: 2, title: "A2", url: "https://e/only-a", summary: "only A", occurrences: 1 },
+      { rank: 3, title: "B2", url: "https://e/only-b", summary: "only B", occurrences: 1 },
+    ]);
+    // Byte-level pin: key order and value serialization unchanged.
+    assert.strictEqual(
+      JSON.stringify(result.data),
+      '[{"rank":1,"title":"A1","url":"https://e/shared","summary":"shared A","occurrences":2},'
+        + '{"rank":2,"title":"A2","url":"https://e/only-a","summary":"only A","occurrences":1},'
+        + '{"rank":3,"title":"B2","url":"https://e/only-b","summary":"only B","occurrences":1}]',
+    );
+    for (const r of result.data) {
+      assert.ok(!Object.hasOwn(r, "mergedFrom"), "mergedFrom omitted on the single path");
+    }
+    assert.strictEqual(notices.length, 1);
+    assert.match(notices[0], /merged 2 queries/);
+  });
+
+  it("--merge with a canonical near-duplicate across sub-queries collapses (new D3 key)", async () => {
+    // Today's raw-string dedupe would keep these apart; canonical identity
+    // collapses them. This is the one intended behavioral delta on the
+    // single path: URL identity now uses canonicalUrl.
+    const { result } = await runSearch(
+      "a|b",
+      { merge: true },
+      {
+        a: [src("A", "https://e/a/", "slash")],
+        b: [src("B", "https://e/a?utm_source=x", "tracked")],
+      },
+    );
+    assert.strictEqual(result.data.length, 1);
+    assert.strictEqual(result.data[0].url, "https://e/a/");
+    assert.strictEqual(result.data[0].occurrences, 2);
+    assert.strictEqual(result.data[0].title, "A");
   });
 });

@@ -222,7 +222,7 @@ Selecting a provider that doesn't support a capability auto-reroutes to the next
 
 `--type <video>` is Brave-only (mutually exclusive with `--topic`).
 
-`--domain` and `--recency` are honored by Z.AI, Tavily, Exa, Brave, Firecrawl, and Parallel AI (Brave maps `--domain` → `site:`, `--recency` → `freshness`; Parallel forwards both through `advanced_settings`). Jina honors `--domain` (`X-Site`) but not `--recency`. `--location` is honored by Z.AI, Brave (`country`), Parallel AI (`us` only), and Jina (`gl`); MiniMax rejects these controls.
+`--domain` and `--recency` are honored by Z.AI, Tavily, Exa, Brave, Firecrawl, Parallel AI, and Perplexity (Brave maps `--domain` → `site:`, `--recency` → `freshness`; Parallel forwards both through `advanced_settings`; Perplexity forwards both as native search filters). Jina honors `--domain` (`X-Site`) but not `--recency`. `--location` is honored by Z.AI, Brave (`country`), Parallel AI (`us` only), and Jina (`gl`); MiniMax rejects these controls.
 
 `--content-size` is a deliberate per-provider overload: `high` maps to Z.AI `content_size`, Tavily `search_depth=advanced`, Brave's LLM Context endpoint (extracted passages joined into summaries), and Parallel AI's per-result excerpt budget; Exa accepts it; Firecrawl returns scraped markdown summaries (+1 credit/result); MiniMax and Jina reject it (`UNSUPPORTED_OPTION`).
 

@@ -135,7 +135,7 @@ scoutline --provider minimax search "React 19 features"
 export SCOUTLINE_PROVIDER=minimax
 scoutline quota
 
-# 3. Default Z.AI when nothing is supplied
+# 3/4. Routing table, then quota-ranked pick, when nothing is supplied
 scoutline search "TypeScript best practices"
 ```
 
@@ -183,7 +183,7 @@ Provider selection, and `doctor`.
 | `vision.chart` | Yes | Pending | No | No | No | No | No | No | No | Implemented, pending live conformance |
 | `vision.diff` (image diff) | Yes | No | No | No | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
 | `vision.video` | Yes | No | No | No | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
-| `quota` | Yes | Yes | Yes | No | Yes | Yes (credits) | No | No | No | Normalized `QuotaDashboard` (ADR-0001) |
+| `quota` | Yes | Yes | Yes | No | Yes | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | Normalized `QuotaDashboard` (ADR-0001) |
 | `diagnostics` (`doctor`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Lists every Provider; probes configured |
 | `read` (Reader) | Yes | **No** | Yes | Yes | No | Yes | Yes | No | Yes | Parallel (Extract API) & Jina add Reader support |
 | `crawl` | **No** | **No** | Yes | No | No | Yes (async) | No | No | No | Tavily sync; Firecrawl async (resumable after Ctrl-C) |

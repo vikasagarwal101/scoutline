@@ -1493,6 +1493,14 @@ async function handleRepo(
         "Usage: scoutline repo brief <owner/repo>",
       );
     }
+    // `--no-focus` is meaningless for brief (focus is opt-in via
+    // `--focus <list>`) and must fail even when combined with a valid
+    // `--focus` — never silently ignored.
+    if (flags["no-focus"] === true) {
+      throw new ValidationError(
+        "--no-focus is not a valid repo brief flag. Use --focus <list> to subset the focus set.",
+      );
+    }
     // `--focus` is repeatable: parseArgs keeps only the LAST occurrence,
     // so scan argv directly and combine every occurrence in first-seen
     // order — parseBriefFocus dedupes across the combined list. Any
@@ -1503,10 +1511,6 @@ async function handleRepo(
         throw new ValidationError("--focus requires a value.");
       }
       briefFocus = parseBriefFocus(focusOccurrences.join(","));
-    } else if (flags.focus !== undefined) {
-      // Only the `--no-focus` form reaches here (parseArgs maps it to
-      // focus=false); it is not a sealed value and must keep failing.
-      briefFocus = parseBriefFocus(String(flags.focus));
     }
     const depthRaw = flags.depth;
     if (depthRaw !== undefined) {

@@ -24,14 +24,6 @@ features next; features that reverse a written decision (ADR) last.
 
 ### Studied seeds — contract-free (pickup-ready)
 
-- **Cache prune + richer stats** (`docs/plans/v2/01-cache-prune-and-stats.md`)
-  — delete TTL-expired entries (TTL is read-only today; expired files linger
-  until LRU eviction); `cache stats` gains per-provider/per-capability
-  breakdown, derivable from v2 filenames alone. Effort: small.
-- **`repo brief`** (`docs/plans/v2/16-repo-brief.md`) — deterministic
-  repository orientation composing the already-shipped tree/search/read
-  primitives, with evidence links per conclusion; schemaVersion-1 envelope
-  like every other `repo` envelope. Effort: small.
 - **`--save <path>` + `history`** (`docs/plans/v2/14-save-artifacts-and-history.md`)
   — durable explicit artifacts (redacted arguments, overwrite protection)
   outside the response cache, plus a metadata view. stdout, cache-key
@@ -48,7 +40,7 @@ features next; features that reverse a written decision (ADR) last.
 - **`compare` command** (`docs/plans/v2/03-compare-command.md`) —
   *shelved (product decision 2026-08-15)*: superseded by multi-provider
   fan-out ([ADR-0004](adr/0004-multi-provider-search-fanout.md),
-  accepted and implemented — see `CHANGELOG.md` "Unreleased"); the
+  accepted and implemented — see `CHANGELOG.md` "0.16.0"); the
   plan's arm-execution design transferred.
 - **Local context refinement** (`docs/plans/v2/13-local-context-refinement.md`)
   — `--context <file>` / `--context-stdin` refine research/search from a
@@ -122,7 +114,7 @@ cache clear` after a credential change is the documented recovery path.
 - **Cross-provider result normalization / multi-provider fan-out beyond
   search** — the search-only reversal shipped ([ADR-0004](adr/0004-multi-provider-search-fanout.md)
   accepted, superseding ADR-0002 decision 6 for search; see
-  `CHANGELOG.md` "Unreleased"). Reader, crawl, map, research, and vision
+  `CHANGELOG.md` "0.16.0"). Reader, crawl, map, research, and vision
   remain strictly single-provider + fallback.
 - **Additional search source-quality controls** beyond the existing
   filtering and merge behavior.

@@ -317,8 +317,9 @@ Subcommands:
           (tool filenames are unpartitioned; DESIGN D4).
 
 Duration syntax for --older-than (DESIGN D3): 24h, 90m, 30s, or a bare
-integer (seconds). Example: --older-than 1h prunes anything older than
-the effective TTL even when TTL is 24h.
+integer (seconds). The value REPLACES the effective TTL. Example:
+--older-than 1h prunes anything older than 1 hour even when the TTL is
+24h.
 
 The cache root defaults to ~/.scoutline/ on every platform; override it
 with SCOUTLINE_CACHE_DIR (ZAI_MCP_CACHE_DIR and ZAI_CACHE_DIR are

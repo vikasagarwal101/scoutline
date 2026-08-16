@@ -238,7 +238,8 @@ lower precedence).
 scoutline cache stats   # inventory both subdirectories (live/expired, byProvider, byCapability)
 scoutline cache clear   # delete every file in both subdirectories
 scoutline cache prune [--older-than <D>] [--provider <id>] [--capability <id>]
-                        # delete expired entries by stored ts (never mtime);
+                        # delete expired entries by the stored envelope timestamp
+                        # (`ts` or `timestamp`; never mtime);
                         # selectors AND together and match v2 filenames only
 ```
 

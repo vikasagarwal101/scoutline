@@ -154,6 +154,107 @@ export interface RepositoryTreeResult {
 }
 
 // ---------------------------------------------------------------------------
+// Repository Brief — schema-version-1 envelope (Phase 2 repo-brief stream;
+// DESIGN D1/D2/D7, SCHEMA.md). The brief is a NEW schema-version-1 shape:
+// no field of any existing result type was renamed or repurposed.
+// ---------------------------------------------------------------------------
+
+/**
+ * Sealed v1 probe set. Opening the set later is additive.
+ */
+export type RepoBriefFocus = "structure" | "readme" | "manifest" | "files";
+
+/**
+ * Canonical kind set, in canonical priority order (used for cap-4 read
+ * selection; see DESIGN D1, D7). The README is always selected first
+ * when present; the manifests below are selected in this order.
+ */
+export type RepoManifestKind =
+  | "package.json"
+  | "pyproject.toml"
+  | "Cargo.toml"
+  | "go.mod";
+
+/**
+ * One record per Explorer call the brief attempted, in execution
+ * order. The label set is a closed vocabulary for stable consumer
+ * interpretation: `"tree"` for the tree probe; `"search:readme"` and
+ * `"search:manifest"` for the two search probes; `"read:<path>"` for
+ * each read probe (path is the repository-relative POSIX path that
+ * was requested).
+ */
+export interface RepoBriefProbeRecord {
+  readonly kind: "tree" | "search" | "read";
+  readonly label: string;
+  /**
+   * ok      — probe ran and returned a normalized result.
+   * failed  — probe ran and threw; `error` is set.
+   * skipped — probe did not run: focus-excluded or dependency-failed.
+   */
+  readonly status: "ok" | "failed" | "skipped";
+  readonly error?: { readonly code: string; readonly message: string };
+  readonly reason?: "focus-excluded" | "dependency-failed";
+}
+
+/**
+ * Coverage section of the brief envelope. `probes` is total and
+ * ordered: every focus-requested probe appears with a terminal status.
+ */
+export interface RepoBriefCoverage {
+  readonly probes: readonly RepoBriefProbeRecord[];
+}
+
+/**
+ * Evidence entry: a selected key file, content verbatim from the
+ * normalized File result (path + truncation metadata unchanged).
+ */
+export interface RepoBriefFileEntry {
+  readonly path: string;
+  readonly content: string;
+  readonly truncated: boolean;
+  readonly originalContentLength: number;
+}
+
+/**
+ * Tree-derived booleans. `null` means the tree probe failed or was
+ * focus-excluded — never guessed from search excerpts.
+ */
+export interface RepoBriefDetected {
+  readonly hasReadme: boolean | null;
+  readonly hasManifest: boolean | null;
+  readonly manifestKinds: readonly RepoManifestKind[] | null;
+}
+
+/**
+ * The brief envelope. `schemaVersion` is literally `1`; no
+ * timestamp, no randomness, no environment-derived fields
+ * (byte-determinism; see DESIGN D2). Field presence is governed by
+ * the presence matrix in SCHEMA.md.
+ */
+export interface RepositoryBrief {
+  readonly schemaVersion: 1;
+  /** "owner/repo" as validated by `validateRepo`. */
+  readonly repository: string;
+  /** Requested focus, validated against the sealed set, order preserved. */
+  readonly focus: readonly RepoBriefFocus[];
+  readonly coverage: RepoBriefCoverage;
+  /** Present iff `structure` ∈ focus AND the tree probe succeeded. */
+  readonly tree?: RepositoryTreeResult;
+  /** Present iff `readme` ∈ focus AND search:readme succeeded. */
+  readonly docs?: RepositorySearchResult;
+  /** Present iff `manifest` ∈ focus AND search:manifest succeeded. */
+  readonly entryPoints?: RepositorySearchResult;
+  /**
+   * Present iff `files` ∈ focus AND tree `ok` AND ≥1 selected read
+   * succeeded. Order: README first, then manifests in canonical
+   * kind order.
+   */
+  readonly files?: readonly RepoBriefFileEntry[];
+  /** Always present; fields null when their derivation input is missing. */
+  readonly detected: RepoBriefDetected;
+}
+
+// ---------------------------------------------------------------------------
 // Cache identity
 // ---------------------------------------------------------------------------
 

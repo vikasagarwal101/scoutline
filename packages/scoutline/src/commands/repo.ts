@@ -24,7 +24,12 @@
  */
 
 import type { CommandContext, CommandResult } from "../command-invocation.js";
-import type { RepositoryCapability } from "../capabilities/repository.js";
+import type {
+  RepositoryCapability,
+  RepositoryTreeResult,
+  RepoBriefFocus,
+  RepoManifestKind,
+} from "../capabilities/repository.js";
 import type { ExecutionDependencies } from "../lib/execution.js";
 import { OUTPUT_MODES } from "../lib/output.js";
 import { explorerSearch, explorerReadFile, explorerTree } from "./repository-explorer.js";
@@ -46,6 +51,191 @@ function validateRepo(repo: string): void {
       `Invalid repository format: "${repo}". Use "owner/repo" format (e.g., "facebook/react")`,
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// Repository Brief — constants and pure helpers (DESIGN D1, D7; SCHEMA.md)
+//
+// These helpers are exported for unit testing and are pure (no I/O,
+// no Provider, no env). The handler composition in `repoBrief` is a
+// separate ticket that wires them into the Explorer envelope.
+// ---------------------------------------------------------------------------
+
+/**
+ * Sealed v1 probe set. Opening the set later is additive — do NOT
+ * mutate this constant at runtime.
+ */
+export const REPO_BRIEF_FOCUS: readonly RepoBriefFocus[] = [
+  "structure",
+  "readme",
+  "manifest",
+  "files",
+] as const;
+
+/**
+ * Probe query constants per DESIGN D7. These are NOT constructed at
+ * call time — they are literal constants so the brief's evidence
+ * chain (search.query inside the envelope) is reproducible byte-for-
+ * byte across providers and reruns.
+ */
+export const README_QUERY = "README";
+export const MANIFEST_QUERY =
+  "package.json pyproject.toml Cargo.toml go.mod";
+
+/**
+ * Canonical manifest-kind priority order (DESIGN D7 step 8). The
+ * README, when present, is always selected first; manifests follow in
+ * this exact order, capped so total reads ≤ 4.
+ */
+const MANIFEST_KIND_ORDER: readonly RepoManifestKind[] = [
+  "package.json",
+  "pyproject.toml",
+  "Cargo.toml",
+  "go.mod",
+] as const;
+
+/** Hard cap on total read probes (1 README + up to 3 manifests). */
+const BRIEF_READ_CAP = 4;
+
+/** README basename pattern per DESIGN D7 step 6 (case-insensitive). */
+const README_BASENAME_RE = /^readme(?:\.[a-z0-9]+)?$/i;
+
+/**
+ * Compute the depth (number of segments past root) of a
+ * repository-relative POSIX path. Root (`""`) has depth 0; `"a/b"`
+ * has depth 2; `"a"` has depth 1.
+ */
+function pathDepth(path: string): number {
+  if (path.length === 0) return 0;
+  // split("/").length - 1 — root is excluded by the empty-string check
+  // above; an empty string returns 0, otherwise the count of segments.
+  return path.split("/").length;
+}
+
+/** Last segment of a repository-relative POSIX path (basename). */
+function basenameOf(path: string): string {
+  const segments = path.split("/");
+  return segments[segments.length - 1] ?? "";
+}
+
+/**
+ * Pick the winning entry for a given match predicate using D7's
+ * selection rule: minimum depth; ties broken by first occurrence in
+ * (snapshot order, then entry order) — i.e. BFS / provider order,
+ * which is stable for a given Provider response.
+ *
+ * The predicate is invoked with `(path, basename, kind)`; non-file
+ * entries (directories) are filtered out before the predicate runs.
+ */
+function selectWinnerByDepth<T extends { path: string; kind: "file" | "directory" }>(
+  tree: RepositoryTreeResult,
+  predicate: (path: string, basename: string, kind: "file" | "directory") => boolean,
+): { path: string } | undefined {
+  let best: { path: string; depth: number } | undefined;
+  for (const snapshot of tree.snapshots) {
+    for (const entry of snapshot.entries) {
+      if (entry.kind !== "file") continue;
+      if (!predicate(entry.path, basenameOf(entry.path), entry.kind)) continue;
+      const depth = pathDepth(entry.path);
+      if (best === undefined || depth < best.depth) {
+        best = { path: entry.path, depth };
+      }
+    }
+  }
+  return best ? { path: best.path } : undefined;
+}
+
+/**
+ * Pure tree-derived file selection (DESIGN D1 / D7 steps 5–8). The
+ * tree is the path inventory — search excerpts carry no paths, so
+ * file selection MUST be tree-derived. The returned `manifests` array
+ * is in canonical kind order; `readme` is the single shallowest
+ * README match. Non-file entries (directories) are ignored even when
+ * their `name` happens to look like a README/manifest.
+ */
+export function selectBriefFiles(
+  tree: RepositoryTreeResult,
+): { readme?: string; manifests: string[] } {
+  const readme = selectWinnerByDepth(tree, (_path, basename) =>
+    README_BASENAME_RE.test(basename),
+  );
+
+  const manifests: string[] = [];
+  for (const kind of MANIFEST_KIND_ORDER) {
+    if (manifests.length + (readme ? 1 : 0) >= BRIEF_READ_CAP) break;
+    const winner = selectWinnerByDepth(tree, (_path, basename) => basename === kind);
+    if (winner) manifests.push(winner.path);
+  }
+
+  return {
+    ...(readme ? { readme: readme.path } : {}),
+    manifests,
+  };
+}
+
+/**
+ * Parse the `--focus` flag value. Splits on `,`, trims, drops empties,
+ * validates against the sealed `REPO_BRIEF_FOCUS` set, dedupes
+ * preserving first occurrence, and rejects empty-after-processing.
+ *
+ * The error message names the sealed set so a consumer can fix the
+ * value without consulting docs (DESIGN D7 step 3).
+ */
+export function parseBriefFocus(raw: string): readonly RepoBriefFocus[] {
+  const tokens = raw
+    .split(",")
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+
+  if (tokens.length === 0) {
+    throw new ValidationError(
+      "--focus must include at least one of: structure, readme, manifest, files",
+    );
+  }
+
+  const seen = new Set<RepoBriefFocus>();
+  const out: RepoBriefFocus[] = [];
+  for (const token of tokens) {
+    if (!(REPO_BRIEF_FOCUS as readonly string[]).includes(token)) {
+      throw new ValidationError(
+        `Unknown --focus value "${token}". Allowed: ${REPO_BRIEF_FOCUS.join(", ")}`,
+      );
+    }
+    const focus = token as RepoBriefFocus;
+    if (seen.has(focus)) continue;
+    seen.add(focus);
+    out.push(focus);
+  }
+
+  return out;
+}
+
+/**
+ * Parse the `--depth` flag value. Positive integer (≥ 1); `undefined`
+ * means "unset — use the Explorer's default". Coerces numeric strings
+ * to numbers (CLI parses flags as strings).
+ */
+export function parseBriefDepth(raw: unknown): number | undefined {
+  if (raw === undefined) return undefined;
+  const value = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
+    throw new ValidationError("--depth must be a positive integer");
+  }
+  return value;
+}
+
+/**
+ * Parse the `--max-chars` flag value. Positive integer (≥ 1);
+ * `undefined` means "unset — use the Explorer's default upper bound".
+ * Coerces numeric strings to numbers.
+ */
+export function parseBriefMaxChars(raw: unknown): number | undefined {
+  if (raw === undefined) return undefined;
+  const value = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
+    throw new ValidationError("--max-chars must be a positive integer");
+  }
+  return value;
 }
 
 // ---------------------------------------------------------------------------

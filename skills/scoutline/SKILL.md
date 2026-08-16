@@ -151,7 +151,7 @@ stderr notice instead of failing the invocation). Activation tiers:
    provider, registry order).
 2. A single `--provider <id>` or `SCOUTLINE_PROVIDER` — single
    provider; fan-out is ignored.
-3. `npx scoutline@latest config set fanout true` (no pin) — standing
+3. `npx scoutline@0.16.0 config set fanout true` (no pin) — standing
    fan-out on `routing.search` when set, else all configured search
    providers. Default off; `config set fanout false` disables.
 4. Otherwise the standard single-provider selection.

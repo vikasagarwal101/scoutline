@@ -945,9 +945,19 @@ export function resolveEnvFromConfig(
     const descriptor = byId.get(providerId);
     if (!descriptor) continue;
 
-    // Env wins: if the Provider is already configured through the
-    // injected env (primary OR alias), the file key must not clobber it.
-    if (descriptor.isConfigured(env)) continue;
+    // Env wins: if a credential VALUE already arrives through the
+    // injected env (primary OR alias), the file key must not clobber
+    // it. The check is on the credential VARIABLES, deliberately not
+    // the capability-less isConfigured posture: keyless postures
+    // (Jina's keyless Reader) make that form true WITHOUT any search
+    // key present, which silently suppressed file-configured search
+    // credentials from the resolved env — excluding the provider from
+    // fan-out arms and cost notices (review fix, PR #36).
+    const envSuppliesCredential = (descriptor.credentialEnvVars ?? []).some((name) => {
+      const value = env[name];
+      return typeof value === "string" && value.trim().length > 0;
+    });
+    if (envSuppliesCredential) continue;
 
     const canonical = descriptor.credentialEnvVars?.[0];
     if (typeof canonical !== "string" || canonical.length === 0) continue;

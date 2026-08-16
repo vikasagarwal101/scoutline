@@ -1880,3 +1880,28 @@ describe("canonicalUrl: review fixes (decoded tracking names, raw path/userinfo 
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review fix (PR #36): WHATWG-stripped control characters before the
+// authority must not glue onto it.
+// ---------------------------------------------------------------------------
+
+describe("canonicalUrl: control characters before the authority", () => {
+  for (const control of ["\t", "\n", "\r"]) {
+    it(`${JSON.stringify(control)} before the authority keys identically to the cleaned URL`, async () => {
+      const { canonicalUrl } = await import("../dist/lib/url.js");
+      assert.strictEqual(
+        canonicalUrl(`https:${"//"}${control}example.com/p`),
+        canonicalUrl("https://example.com/p"),
+      );
+    });
+  }
+
+  it("a control char before userinfo keeps the userinfo identity of the cleaned URL", async () => {
+    const { canonicalUrl } = await import("../dist/lib/url.js");
+    assert.strictEqual(
+      canonicalUrl("https://\tuser@example.com/p"),
+      canonicalUrl("https://user@example.com/p"),
+    );
+  });
+});

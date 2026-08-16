@@ -228,6 +228,30 @@ function parseArgs(args: string[]): {
   return { flags, positional };
 }
 
+/**
+ * Collect every occurrence of a long `--<name>` flag in argv order,
+ * mirroring parseArgs' value-consumption rule (the next argument is the
+ * value iff it exists, is non-empty, and does not start with "-").
+ * Valueless occurrences are returned as `true`. parseArgs keeps only the
+ * LAST occurrence of a repeated flag; callers whose flag is repeatable
+ * (e.g. the brief's `--focus`) scan argv with this helper instead.
+ */
+function collectLongFlagValues(args: string[], name: string): (string | true)[] {
+  const values: (string | true)[] = [];
+  const flag = `--${name}`;
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] !== flag) continue;
+    const nextArg = args[i + 1];
+    if (nextArg && !nextArg.startsWith("-")) {
+      values.push(nextArg);
+      i += 1;
+    } else {
+      values.push(true);
+    }
+  }
+  return values;
+}
+
 function extractGlobalOptions(args: string[]): {
   outputFormat?: string;
   forcePretty?: boolean;
@@ -1469,12 +1493,20 @@ async function handleRepo(
         "Usage: scoutline repo brief <owner/repo>",
       );
     }
-    const focusRaw = flags.focus;
-    if (focusRaw !== undefined) {
-      if (focusRaw === true) {
+    // `--focus` is repeatable: parseArgs keeps only the LAST occurrence,
+    // so scan argv directly and combine every occurrence in first-seen
+    // order — parseBriefFocus dedupes across the combined list. Any
+    // valueless occurrence is an error, same as a lone valueless flag.
+    const focusOccurrences = collectLongFlagValues(args, "focus");
+    if (focusOccurrences.length > 0) {
+      if (focusOccurrences.some((v) => v === true)) {
         throw new ValidationError("--focus requires a value.");
       }
-      briefFocus = parseBriefFocus(String(focusRaw));
+      briefFocus = parseBriefFocus(focusOccurrences.join(","));
+    } else if (flags.focus !== undefined) {
+      // Only the `--no-focus` form reaches here (parseArgs maps it to
+      // focus=false); it is not a sealed value and must keep failing.
+      briefFocus = parseBriefFocus(String(flags.focus));
     }
     const depthRaw = flags.depth;
     if (depthRaw !== undefined) {

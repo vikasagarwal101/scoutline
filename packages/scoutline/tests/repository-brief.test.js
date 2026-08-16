@@ -159,9 +159,9 @@ describe("selectBriefFiles — D1/D7 deterministic selection", () => {
     assert.equal(out.readme, "ReadMe.txt");
   });
 
-  it("README with multiple extension segments is matched (readme.markdown.something)", () => {
+  it("README with multiple extension segments is NOT matched (readme.md.bak)", () => {
     // DESIGN D7 specifies `/^readme(?:\.[a-z0-9]+)?$/i` — single optional
-    // extension. `readme.markdown` matches; `readme.md.bak` does NOT.
+    // extension. `readme.markdown` matches (next test); `readme.md.bak` does NOT.
     const tree = buildTree([
       [
         { name: "readme.md.bak", path: "readme.md.bak" },
@@ -459,6 +459,21 @@ describe("parseBriefDepth — D7 depth validation", () => {
     );
   });
 
+  it("rejects non-number/non-string runtime types (booleans, null, objects)", () => {
+    // Number(true) === 1 would otherwise pass the integer check.
+    for (const bad of [true, false, null, {}, []]) {
+      assert.throws(
+        () => parseBriefDepth(bad),
+        (err) => {
+          assert.ok(err instanceof ValidationError);
+          assert.match(err.message, /positive integer/);
+          return true;
+        },
+        `parseBriefDepth(${String(bad)})`,
+      );
+    }
+  });
+
   it("undefined input means \"unset\" — returns undefined", () => {
     assert.equal(parseBriefDepth(undefined), undefined);
   });
@@ -483,6 +498,21 @@ describe("parseBriefMaxChars — D7 maxChars validation", () => {
 
   it("rejects non-numeric strings", () => {
     assert.throws(() => parseBriefMaxChars("oops"), ValidationError);
+  });
+
+  it("rejects non-number/non-string runtime types (booleans, null, objects)", () => {
+    // Number(true) === 1 would otherwise pass the integer check.
+    for (const bad of [true, false, null, {}, []]) {
+      assert.throws(
+        () => parseBriefMaxChars(bad),
+        (err) => {
+          assert.ok(err instanceof ValidationError);
+          assert.match(err.message, /positive integer/);
+          return true;
+        },
+        `parseBriefMaxChars(${String(bad)})`,
+      );
+    }
   });
 
   it("undefined input means \"unset\" — returns undefined", () => {
@@ -757,15 +787,15 @@ describe("repoBrief — handler composition (DESIGN D3/D4)", () => {
       { kind: "tree", label: "tree", status: "ok" },
       { kind: "search", label: "search:readme", status: "ok" },
       { kind: "search", label: "search:manifest", status: "ok" },
+      // Documented contract (RepoBriefCoverage): a focus-requested read
+      // stage ALWAYS terminates in a read record — one `read:<path>` per
+      // attempted read, or the `read:<files>` sentinel when the stage ran
+      // no per-path probe. An empty tree-derived selection is
+      // `skipped`/`no-selection`.
+      { kind: "read", label: "read:<files>", status: "skipped", reason: "no-selection" },
     ]);
     assert.deepStrictEqual(brief.docs.excerpts, []);
     assert.deepStrictEqual(brief.entryPoints.excerpts, []);
-    // Documented contract (RepoBriefCoverage): read records are one per
-    // attempted Explorer call, so an empty tree-derived selection emits
-    // NO read record (the `read:<files>` placeholder is reserved for a
-    // skipped stage: focus-excluded / dependency-failed). "files
-    // requested but nothing selected" is read from `focus` + `detected`,
-    // never by counting records.
     assert.ok(!("files" in brief), "no files selected → files omitted");
     assert.deepStrictEqual(brief.detected, {
       hasReadme: false,
@@ -904,6 +934,47 @@ describe("repoBrief — handler composition (DESIGN D3/D4)", () => {
     const result = await repoBrief("owner/repo", { focus: ["structure"], path: "src" }, { capability, execution });
     assert.strictEqual(result.data.tree.path, "src");
     assert.deepStrictEqual(calls, ["tree:src"]);
+  });
+
+  it("coerces string-typed depth/maxChars to numbers before forwarding (validated value === forwarded value)", async () => {
+    // Direct handler callers can pass numeric strings (the CLI parses
+    // flags as strings). repoBrief binds the parsed values, so the
+    // coerced numbers — never the raw strings — reach the Explorer.
+    const { capability } = makeFakeBriefCapability({
+      search: (request) => ({
+        schemaVersion: 1,
+        repository: "owner/repo",
+        query: request.query,
+        language: "en",
+        excerpts: [{ text: "X".repeat(200) }],
+        truncated: false,
+        originalTextLength: 200,
+      }),
+      readFile: (request) => ({
+        schemaVersion: 1,
+        repository: "owner/repo",
+        path: request.path,
+        content: "Y".repeat(200),
+        truncated: false,
+        originalContentLength: 200,
+      }),
+    });
+    const { execution } = makeBriefExecution();
+    const result = await repoBrief(
+      "owner/repo",
+      { focus: REPO_BRIEF_FOCUS, depth: "2", maxChars: "10" },
+      { capability, execution },
+    );
+    assert.strictEqual(result.kind, "data");
+    const brief = result.data;
+    assert.strictEqual(brief.tree.depth, 2);
+    assert.strictEqual(typeof brief.tree.depth, "number");
+    assert.strictEqual(brief.docs.truncated, true);
+    assert.strictEqual(brief.docs.excerpts[0].text, "XXXXXXXXX…");
+    for (const entry of brief.files) {
+      assert.strictEqual(entry.truncated, true);
+      assert.strictEqual(entry.content, "YYYYYYYYY…");
+    }
   });
 
   it("determinism: two invocations over the same fake yield deep-equal envelopes", async () => {
@@ -1477,25 +1548,33 @@ describe("Ticket 3 — repo brief dispatch through main (DESIGN D5)", () => {
   });
 
   it("compact mode: returns the same data payload as data mode (JSON fallback)", async () => {
-    const m = makeBriefMainDeps(BRIEF_DEFAULT_IMPLS);
-    const { adapter, stdout } = createBriefRecordingAdapter();
-    const status = await main(
-      ["repo", "brief", "owner/repo", "--output-format", "compact"],
-      { ...m.mainDeps, now: () => FIXED_NOW, invocation: adapter },
-    );
-
-    assert.strictEqual(status, 0);
-    assert.strictEqual(stdout.length, 1);
-    // Repo never supplies per-mode presentations, so compact is the
-    // raw data payload — same shape as the data mode assertion above.
-    const brief = JSON.parse(stdout[0]);
-    assert.strictEqual(brief.schemaVersion, 1);
-    assert.ok(brief.coverage);
+    const run = async (extraArgs) => {
+      const m = makeBriefMainDeps(BRIEF_DEFAULT_IMPLS);
+      const { adapter, stdout } = createBriefRecordingAdapter();
+      const status = await main(
+        ["repo", "brief", "owner/repo", ...extraArgs],
+        { ...m.mainDeps, now: () => FIXED_NOW, invocation: adapter },
+      );
+      assert.strictEqual(status, 0);
+      assert.strictEqual(stdout.length, 1);
+      return stdout[0];
+    };
+    const dataOut = await run([]);
+    const compactOut = await run(["--output-format", "compact"]);
+    // Repo never supplies per-mode presentations, so compact carries the
+    // SAME payload as data mode — deep-equal parsed values, byte-equal
+    // serialized output.
+    assert.deepStrictEqual(JSON.parse(compactOut), JSON.parse(dataOut));
+    assert.strictEqual(compactOut, dataOut);
   });
 
   it("dispatcher forwards --focus, --depth, --max-chars, --no-cache", async () => {
-    const m = makeBriefMainDeps(BRIEF_DEFAULT_IMPLS);
-    const { adapter, stderr } = createBriefRecordingAdapter();
+    const m = makeBriefMainDeps({
+      search: () => briefCannedSearchResult(),
+      readFile: (request) => briefCannedFileResult(request.path, "Y".repeat(600)),
+      listDirectory: () => briefCannedRootListing(),
+    });
+    const { adapter, stdout, stderr } = createBriefRecordingAdapter();
     const status = await main(
       [
         "repo",
@@ -1513,9 +1592,41 @@ describe("Ticket 3 — repo brief dispatch through main (DESIGN D5)", () => {
     );
 
     assert.strictEqual(status, 0);
+    assert.strictEqual(stderr.length, 0);
     // --no-cache forwards to every probe: zero cache reads.
     assert.strictEqual(m.cacheRec.gets.length, 0, "--no-cache forwards to every probe");
+    // --focus structure,files suppresses BOTH search probes.
+    assert.strictEqual(m.capability.search.calls.invoke.length, 0, "focus suppresses both searches");
+    const brief = JSON.parse(stdout[0]);
+    assert.deepStrictEqual([...brief.focus], ["structure", "files"]);
+    assert.ok(!("docs" in brief) && !("entryPoints" in brief), "search sections omitted");
+    // --depth 2 reaches the tree probe as a positive integer.
+    assert.strictEqual(brief.tree.depth, 2);
+    // --max-chars 500 is a per-call budget on every read request
+    // (600-char canned content truncates to 499 chars + ellipsis).
+    assert.ok(Array.isArray(brief.files) && brief.files.length > 0);
+    for (const entry of brief.files) {
+      assert.strictEqual(entry.truncated, true, "--max-chars 500 reaches read requests");
+      assert.strictEqual(entry.content.length, 500);
+    }
+  });
+
+  it("repeated --focus flags combine in first-seen order (parseArgs keeps only the last occurrence)", async () => {
+    const m = makeBriefMainDeps(BRIEF_DEFAULT_IMPLS);
+    const { adapter, stdout, stderr } = createBriefRecordingAdapter();
+    const status = await main(
+      ["repo", "brief", "owner/repo", "--focus", "readme", "--focus", "files"],
+      { ...m.mainDeps, now: () => FIXED_NOW, invocation: adapter },
+    );
+
+    assert.strictEqual(status, 0);
     assert.strictEqual(stderr.length, 0);
+    const brief = JSON.parse(stdout[0]);
+    assert.deepStrictEqual([...brief.focus], ["readme", "files"]);
+    assert.ok(brief.docs, "readme focus from the first occurrence");
+    assert.ok(!("entryPoints" in brief), "manifest search suppressed");
+    assert.ok(Array.isArray(brief.files), "files focus from the second occurrence");
+    assert.ok(!("tree" in brief), "structure not requested");
   });
 
   it("unknown --focus value surfaces VALIDATION_ERROR (parse-level, before Provider resolution)", async () => {

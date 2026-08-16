@@ -181,7 +181,8 @@ export type RepoManifestKind =
  * interpretation: `"tree"` for the tree probe; `"search:readme"` and
  * `"search:manifest"` for the two search probes; `"read:<path>"` for
  * each read probe (path is the repository-relative POSIX path that
- * was requested).
+ * was requested); and the sentinel `"read:<files>"` for a read stage
+ * that ran no per-path probe (always `skipped` — see `reason`).
  */
 export interface RepoBriefProbeRecord {
   readonly kind: "tree" | "search" | "read";
@@ -189,22 +190,24 @@ export interface RepoBriefProbeRecord {
   /**
    * ok      — probe ran and returned a normalized result.
    * failed  — probe ran and threw; `error` is set.
-   * skipped — probe did not run: focus-excluded or dependency-failed.
+   * skipped — probe did not run: focus-excluded, dependency-failed,
+   *           or no-selection (read stage requested, but the
+   *           tree-derived selection was empty).
    */
   readonly status: "ok" | "failed" | "skipped";
   readonly error?: { readonly code: string; readonly message: string };
-  readonly reason?: "focus-excluded" | "dependency-failed";
+  readonly reason?: "focus-excluded" | "dependency-failed" | "no-selection";
 }
 
 /**
  * Coverage section of the brief envelope. `probes` is total and
  * ordered: one terminal record per Explorer call the brief attempted,
- * plus one placeholder `read:<files>` record when the whole read stage
- * was skipped (focus-excluded / dependency-failed). Read records are
- * per-path, so a `files`-focused brief whose tree-derived selection is
- * empty attempts zero reads and emits no read record — distinguish
- * "requested but nothing selected" from "not requested" via `focus`
- * plus `detected`, never by counting records.
+ * plus one `read:<files>` sentinel record whenever the read stage ran
+ * no per-path probe — the stage was skipped (focus-excluded), its
+ * selection input failed (dependency-failed), or it was requested but
+ * the tree-derived selection was empty (no-selection). Consumers can
+ * therefore always read the read stage's outcome from `coverage`,
+ * never by inferring from missing records.
  */
 export interface RepoBriefCoverage {
   readonly probes: readonly RepoBriefProbeRecord[];

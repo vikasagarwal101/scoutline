@@ -219,11 +219,16 @@ export function parseBriefFocus(raw: string): readonly RepoBriefFocus[] {
 
 /**
  * Parse the `--depth` flag value. Positive integer (≥ 1); `undefined`
- * means "unset — use the Explorer's default". Coerces numeric strings
- * to numbers (CLI parses flags as strings).
+ * means "unset — use the Explorer's default". Accepts only numbers and
+ * numeric strings (CLI parses flags as strings); every other runtime
+ * type — booleans, null, objects — is rejected BEFORE coercion so a
+ * `true` can never ride `Number(true) === 1` past validation.
  */
 export function parseBriefDepth(raw: unknown): number | undefined {
   if (raw === undefined) return undefined;
+  if (typeof raw !== "number" && typeof raw !== "string") {
+    throw new ValidationError("--depth must be a positive integer");
+  }
   const value = typeof raw === "number" ? raw : Number(raw);
   if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
     throw new ValidationError("--depth must be a positive integer");
@@ -234,10 +239,14 @@ export function parseBriefDepth(raw: unknown): number | undefined {
 /**
  * Parse the `--max-chars` flag value. Positive integer (≥ 1);
  * `undefined` means "unset — use the Explorer's default upper bound".
- * Coerces numeric strings to numbers.
+ * Same runtime-type gate as `parseBriefDepth`: only numbers and numeric
+ * strings are coerced.
  */
 export function parseBriefMaxChars(raw: unknown): number | undefined {
   if (raw === undefined) return undefined;
+  if (typeof raw !== "number" && typeof raw !== "string") {
+    throw new ValidationError("--max-chars must be a positive integer");
+  }
   const value = typeof raw === "number" ? raw : Number(raw);
   if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
     throw new ValidationError("--max-chars must be a positive integer");
@@ -500,8 +509,11 @@ export async function repoBrief(
 ): Promise<CommandResult<RepositoryBrief>> {
   validateRepo(repo);
 
-  if (options.depth !== undefined) parseBriefDepth(options.depth);
-  if (options.maxChars !== undefined) parseBriefMaxChars(options.maxChars);
+  // Bind the parsed values: the VALIDATED (coerced) numbers are what
+  // every probe receives — a direct caller's numeric string never leaks
+  // downstream as a string.
+  const depth = parseBriefDepth(options.depth);
+  const maxChars = parseBriefMaxChars(options.maxChars);
 
   const focus =
     options.focus === undefined ? [...REPO_BRIEF_FOCUS] : [...new Set(options.focus)];
@@ -536,7 +548,7 @@ export async function repoBrief(
   const treeProbe = await settleProbe(probes, "tree", "tree", () =>
     explorerTree(
       deps.capability,
-      { repository: repo, path: options.path, depth: options.depth },
+      { repository: repo, path: options.path, depth },
       { noCache: options.noCache },
       deps.execution,
     ),
@@ -551,7 +563,7 @@ export async function repoBrief(
       explorerSearch(
         deps.capability,
         { repository: repo, query: README_QUERY },
-        { noCache: options.noCache, maxChars: options.maxChars },
+        { noCache: options.noCache, maxChars },
         deps.execution,
       ),
       secrets,
@@ -574,7 +586,7 @@ export async function repoBrief(
       explorerSearch(
         deps.capability,
         { repository: repo, query: MANIFEST_QUERY },
-        { noCache: options.noCache, maxChars: options.maxChars },
+        { noCache: options.noCache, maxChars },
         deps.execution,
       ),
       secrets,
@@ -599,12 +611,26 @@ export async function repoBrief(
       const readPaths: string[] = [];
       if (selection.readme !== undefined) readPaths.push(selection.readme);
       readPaths.push(...selection.manifests);
+      if (readPaths.length === 0) {
+        // The stage was requested but the tree-derived selection is
+        // empty (no README, no manifest): record the terminal
+        // `read:<files>` sentinel so a focus-requested read stage ALWAYS
+        // ends in a read record (SCHEMA: probes is total over requested
+        // stages). `no-selection` distinguishes this from focus-excluded
+        // and dependency-failed.
+        probes.push({
+          kind: "read",
+          label: "read:<files>",
+          status: "skipped",
+          reason: "no-selection",
+        });
+      }
       for (const path of readPaths) {
         const probe = await settleProbe(probes, "read", `read:${path}`, () =>
           explorerReadFile(
             deps.capability,
             { repository: repo, path },
-            { noCache: options.noCache, maxChars: options.maxChars },
+            { noCache: options.noCache, maxChars },
             deps.execution,
           ),
           secrets,

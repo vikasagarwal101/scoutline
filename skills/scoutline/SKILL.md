@@ -270,21 +270,27 @@ supplies no per-mode prose presentation override.
 `scoutline repo brief <owner/repo>` composes the three operations — tree,
 search, and read — into one schema-version-1 `RepositoryBrief` envelope.
 `--focus` subsets the sealed set `structure, readme, manifest, files`
-(default all four); focus gates the envelope sections, not the internal
-probes — the tree still runs when `readme`/`manifest`/`files` needs its
-paths. File selection is tree-derived and deterministic: the shallowest
-README first, then one manifest per kind (`package.json`,
-`pyproject.toml`, `Cargo.toml`, `go.mod`) — capped at 4 reads total.
-The cap counts the README, so when a README is present only the first
-three manifest kinds are read (`go.mod` is the one dropped). `--max-chars` is a per-call
-budget forwarded to every search and read; the tree is never
-character-limited. A failed probe is recorded in `coverage.probes`
+(default all four; repeatable — repeated flags combine in first-seen
+order). Focus gates the optional probes and their envelope sections
+together: an excluded README/manifest search or read stage does not run
+and is recorded `skipped`/`focus-excluded` in `coverage.probes`; the tree
+probe is the exception and always runs, because read-path selection and
+`detected` both derive from it. File selection is tree-derived and
+deterministic: the shallowest README first, then one manifest per kind
+(`package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`) — capped at 4
+reads total. The cap counts the README, so when a README is present only
+the first three manifest kinds are read (`go.mod` is the one dropped).
+A focus-requested read stage that selects nothing still records a
+terminal `read:<files>` probe (`skipped`/`no-selection`). `--max-chars`
+is a per-call budget forwarded to every search and read; the tree is
+never character-limited. A failed probe is recorded in `coverage.probes`
 (ok/failed/skipped with a stable code and redacted message) while the
 brief continues — `coverage` and `detected` are always present, so
-consumers distinguish "not requested", "failed", and "dependency
-failed" from the probe records, never from missing keys. The brief is
-never cached as a unit; its probes reuse the per-operation repository
-cache entries, and identical responses yield byte-identical output.
+consumers distinguish "not requested", "failed", "dependency failed",
+and "nothing selected" from the probe records, never from missing keys.
+The brief is never cached as a unit; its probes reuse the per-operation
+repository cache entries, and identical responses yield byte-identical
+output.
 
 ### `--max-chars` is deterministic and local
 

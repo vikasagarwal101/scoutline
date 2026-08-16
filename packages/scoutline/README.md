@@ -467,8 +467,9 @@ writes. Injected credentials drive the fingerprint and legacy-key
 construction; ambient `process.env` is never reread.
 
 `repo brief` is never cached as a unit: its probes reuse the per-operation
-entries above, so a warm re-run makes no new Explorer calls and still
-produces byte-identical output.
+entries above, so a warm re-run still invokes the Explorer operations but
+makes no new provider transport calls, and still produces byte-identical
+output.
 
 ### Errors and lifecycle
 

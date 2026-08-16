@@ -475,15 +475,17 @@ function providerKey(id: string): ConfigKeyDescriptor {
  * Sub-field path (`providers.zai.apiKey`): resolves so `set`/`unset`
  * refuse it as credential-bearing, but `get` reports it as unknown —
  * field paths are not a viewable surface, and returning the whole
- * provider object would misrepresent the request.
+ * provider object would misrepresent the request. The descriptor path
+ * echoes the full typed path so refusal messages name what the user
+ * actually entered, not the truncated base.
  */
-function providerFieldKey(id: string): ConfigKeyDescriptor {
+function providerFieldKey(fullPath: string, id: string): ConfigKeyDescriptor {
   return {
-    path: `providers.${id}`,
+    path: fullPath,
     gettable: false,
     settable: false,
     credential: true,
-    describe: `provider field under ${id} (credential-bearing; not a config surface)`,
+    describe: `credential-bearing field under ${id} (not a config surface)`,
   };
 }
 
@@ -512,7 +514,7 @@ export function resolveConfigKey(path: string): ConfigKeyDescriptor | null {
     // set/unset; get reports unknown rather than dumping the provider).
     const idMatch = /^providers\.([a-z0-9-]+)((?:\.[A-Za-z0-9-]+)+)?$/.exec(trimmed);
     if (idMatch?.[1] && (PROVIDER_IDS as readonly string[]).includes(idMatch[1])) {
-      return idMatch[2] ? providerFieldKey(idMatch[1]) : providerKey(idMatch[1]);
+      return idMatch[2] ? providerFieldKey(trimmed, idMatch[1]) : providerKey(idMatch[1]);
     }
   }
   return null;
@@ -555,11 +557,41 @@ async function serializeConfigWrite<T>(
   run: () => Promise<T>,
 ): Promise<T> {
   const dir = path.dirname(options.filePath ?? configFilePath());
-  return withAsyncFileLock(dir, "config-write", run, {
-    timeoutMs: DEFAULT_LOCK_TIMEOUT_MS,
-    staleMs: DEFAULT_LOCK_STALE_MS,
-    timeoutLabel: "Config write",
-  });
+  // Errors raised by `run` (ValidationError and friends) pass through
+  // untouched. Lock acquisition/timeout failures are raised by
+  // withAsyncFileLock itself; those are rewrapped into the same
+  // ConfigurationError contract `writeConfig` uses for write failures
+  // (exit 3 envelope, actionable help) instead of leaking a raw Error.
+  // `run` throws only class instances, so the WeakSet fully
+  // discriminates the two sources.
+  const raisedByRun = new WeakSet<object>();
+  try {
+    return await withAsyncFileLock(
+      dir,
+      "config-write",
+      async () => {
+        try {
+          return await run();
+        } catch (error) {
+          if (typeof error === "object" && error !== null) raisedByRun.add(error);
+          throw error;
+        }
+      },
+      {
+        timeoutMs: DEFAULT_LOCK_TIMEOUT_MS,
+        staleMs: DEFAULT_LOCK_STALE_MS,
+        timeoutLabel: "Config write",
+      },
+    );
+  } catch (error) {
+    if (typeof error === "object" && error !== null && raisedByRun.has(error)) {
+      throw error;
+    }
+    throw new ConfigurationError(
+      "Unable to write config.json",
+      "The config-write lock could not be acquired; another scoutline process may be writing. Try again.",
+    );
+  }
 }
 
 /** Strict parse of a `routing.<capability>` value: comma-separated ids. */

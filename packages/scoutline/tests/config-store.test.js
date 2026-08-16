@@ -488,6 +488,41 @@ describe("config key registry", () => {
     assert.strictEqual(resolveConfigKey("nope.nope"), null);
   });
 
+  it("credential refusal echoes the full typed field path", async (t) => {
+    await withConfig(t, { version: 1, providers: {} }, async (filePath) => {
+      const { setConfigValue } = await import("../dist/lib/config-store.js");
+      await assert.rejects(
+        () => setConfigValue("providers.zai.apiKey", "x", { filePath }),
+        (error) =>
+          error.name === "ValidationError" && error.message.includes('"providers.zai.apiKey"'),
+      );
+    });
+  });
+
+  it("lock-acquisition failures surface as ConfigurationError; run errors pass through", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const blocker = path.join(dir, "blocker");
+      await fs.writeFile(blocker, "not a directory");
+      const { setConfigValue } = await import("../dist/lib/config-store.js");
+      // dirname(filePath) is a regular file, so the lock create fails
+      // with ENOTDIR (a non-EEXIST open error): a lock-level failure
+      // that must land in the writeConfig ConfigurationError contract.
+      const filePath = path.join(blocker, "config.json");
+      await assert.rejects(
+        () => setConfigValue("fallbackEnabled", "true", { filePath }),
+        (error) => error.name === "ConfigurationError",
+      );
+      // A validation failure inside the locked section stays a
+      // ValidationError, never the lock/ConfigurationError wrap.
+      const good = path.join(dir, "config.json");
+      await fs.writeFile(good, JSON.stringify({ version: 1, providers: {} }));
+      await assert.rejects(
+        () => setConfigValue("fallbackEnabled", "maybe", { filePath: good }),
+        (error) => error.name === "ValidationError",
+      );
+    });
+  });
+
   it("resolveConfigKey validates provider ids and splits field paths", async () => {
     const { resolveConfigKey } = await import("../dist/lib/config-store.js");
     const view = resolveConfigKey("providers.tavily");

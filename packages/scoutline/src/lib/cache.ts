@@ -684,8 +684,9 @@ export async function pruneCaches(
   // Tool dir: same age rule, lock-free, no selectors (filenames are
   // unpartitioned — they encode the config hash, not provider/capability).
   // Lock-free means a concurrent `writeToolCache` atomic rename CAN land
-  // mid-scan; `pruneSubdirByAge` revalidates each file's identity before
-  // unlinking so a fresh replacement for an expired name survives.
+  // mid-scan; `pruneSubdirByAge` revalidates each file's identity
+  // (inode/size) before unlinking so a fresh replacement for an expired
+  // name usually survives — best-effort only, see its docstring (D4).
   const tools = await pruneSubdirByAge(toolCacheDir(), thresholdMs, {}, options.beforeUnlink);
 
   return {
@@ -717,10 +718,14 @@ function entryAgeMs(raw: unknown): number | null {
  * `evictIfNeeded`'s skip discipline); matches `provider`/`capability`
  * selectors against v2 filenames only (D2); deletes entries whose stored
  * age exceeds `thresholdMs`. Before unlinking, the file's identity is
- * revalidated (inode/size/mtime): the tool dir is scanned lock-free
- * (DESIGN D4), so a concurrent `writeToolCache` can replace an expired
- * file with a fresh atomic rename mid-scan — a changed identity means
- * the expiry decision is stale and the replacement is left alone.
+ * revalidated (inode/size — never mtime, which lock-free LRU reads
+ * touch): the tool dir is scanned lock-free (DESIGN D4), so a concurrent
+ * `writeToolCache` can replace an expired file with a fresh atomic
+ * rename mid-scan — a changed identity means the expiry decision is
+ * stale and the replacement is left alone. This revalidation is
+ * best-effort, not a guarantee: a rename landing inside the residual
+ * stat→unlink window can still be deleted, because the tool cache has
+ * no lock convention to close it (D4).
  * Individual failures are skipped like `clearSubdir`; counts reflect
  * actual deletions.
  */
@@ -754,12 +759,19 @@ async function pruneSubdirByAge(
         // Instrumentation point: production never passes this; tests use
         // it to interpose a replacement inside the stat→unlink window.
         await beforeUnlink?.(p);
-        // Revalidate identity before unlinking. `atomicReplaceFile`-style
-        // writes rename a NEW inode into place; in-place rewrites change
-        // size/mtime. Any drift means the content we aged is not the
-        // content on disk now — skip rather than delete a fresh write.
+        // Revalidate identity (inode/size) before unlinking. mtime is
+        // deliberately NOT compared: readCache utimes entries for LRU
+        // freshness without holding the write lock (D1), so an mtime-only
+        // drift is a concurrent READ, not a replacement, and must not
+        // rescue an expired entry from prune. `atomicReplaceFile`-style
+        // writes rename a NEW inode into place, so inode/size still
+        // catches a mid-scan replacement. Best-effort only (D4): the tool
+        // dir is scanned lock-free by design, so a rename landing inside
+        // the residual stat→unlink window can still be deleted — that
+        // window cannot be closed without inventing the lock convention
+        // the tool cache explicitly does not have.
         const current = await fs.stat(p);
-        if (current.ino !== s.ino || current.size !== s.size || current.mtimeMs !== s.mtimeMs) {
+        if (current.ino !== s.ino || current.size !== s.size) {
           continue;
         }
         await fs.unlink(p);

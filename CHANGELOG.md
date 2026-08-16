@@ -2,8 +2,6 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
-
 ## [0.16.0] - 2026-08-16
 
 **Three parallel feature streams, landed as PRs #34/#35/#36:** local cache

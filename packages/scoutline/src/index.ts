@@ -2241,7 +2241,7 @@ export async function handleUsage(
       );
     }
     const str = typeof rawDays === "string" ? rawDays : String(rawDays);
-    // Strict decimal gate (same class as parseAndValidateCount's /^\d+/$):
+    // Strict decimal gate (same class as parseAndValidateCount's /^\d+$/):
     // Number() alone would coerce "1e3", "0x0A", " 7", and "7.0" into
     // integers, accepting spellings the documented contract (USAGE_HELP,
     // DESIGN D8 — a decimal integer 1..MAX) does not include.

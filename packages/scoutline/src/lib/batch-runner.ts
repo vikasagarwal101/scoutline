@@ -1,5 +1,5 @@
 /**
- * Batch Runner module (batch-runner DESIGN D5, D6, D8).
+ * Batch Runner module (batch-runner DESIGN D5, D6, D8, D9).
  *
  * Executes an already-parsed manifest (D2) against an already-computed
  * provider assignment (D4, `batch-assign.ts`): per op it builds
@@ -23,8 +23,17 @@
  * per-op failure whose `stderr` is byte-identical to what
  * `invokeCommand`'s own catch would have produced (`redactSecrets` →
  * `formatErrorOutput` in the op's data mode).
+ *
+ * D9: after a SUCCESSFUL op that declared an `output` target, the
+ * captured stdout is persisted through a write-temp-then-rename seam so
+ * readers never observe a half-written file. A write failure never
+ * flips `ok` or the envelope counters — it is recorded as
+ * `outputWriteError` on the op's record, so `total = ok + failed`
+ * always holds. Ops that failed, and ops never scheduled because of
+ * `--fail-fast`, write nothing.
  */
 
+import { rename as fsRename, writeFile as fsWriteFile } from "node:fs/promises";
 import { ValidationError, getErrorExitCode } from "./errors.js";
 import { formatErrorOutput, formatSuccessOutput } from "./output.js";
 import type { OutputMode } from "./output.js";
@@ -77,6 +86,17 @@ export interface BatchRunnerDeps {
   /** Ambient `--output-format`; the summary is formatted through it. */
   readonly outputMode: OutputMode;
   readonly now?: () => number;
+  /**
+   * D9 per-op output write seam (temp file write). Defaults to the real
+   * `node:fs/promises` `writeFile`; tests inject doubles to observe or
+   * fail the write.
+   */
+  readonly writeOutputFile?: (path: string, data: string) => Promise<void>;
+  /**
+   * D9 per-op output rename seam (atomic land over the target).
+   * Defaults to the real `node:fs/promises` `rename`.
+   */
+  readonly renameOutputFile?: (from: string, to: string) => Promise<void>;
 }
 
 export interface BatchRunOptions {
@@ -97,8 +117,12 @@ export interface BatchRunRecord {
   readonly stdout?: string;
   readonly stderr?: string;
   readonly durationMs: number;
-  /** Per-op output file target; Ticket 5 owns the write (`outputWriteError`). */
+  /**
+   * Per-op output file target, present on every SCHEDULED op that
+   * declared one (the file exists only after a successful write, D9).
+   */
   readonly output?: string;
+  /** D9 write failure message; never flips `ok` or the counters. */
   readonly outputWriteError?: string;
 }
 
@@ -173,6 +197,32 @@ function normalizeConcurrency(raw: number | undefined): number {
     );
   }
   return value;
+}
+
+/**
+ * D9 post-success output write: captured stdout lands at `outputPath`
+ * through write-temp-then-rename so a reader never observes a partial
+ * file. The op index keeps concurrent temp names distinct even if two
+ * ops (degenerately) declare the same target. Returns the failure
+ * message on error — the caller records it as `outputWriteError`; it
+ * NEVER propagates as a per-op failure.
+ */
+async function writeCapturedOutput(
+  outputPath: string,
+  data: string,
+  index: number,
+  deps: BatchRunnerDeps,
+): Promise<string | undefined> {
+  const tempPath = `${outputPath}.tmp-${index}`;
+  try {
+    const writeFile = deps.writeOutputFile ?? fsWriteFile;
+    const renameFile = deps.renameOutputFile ?? fsRename;
+    await writeFile(tempPath, data);
+    await renameFile(tempPath, outputPath);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -252,16 +302,28 @@ export async function runBatch(
     const exitCode = typeof rawExitCode === "number" ? rawExitCode : 0;
     const stdoutText = capture.stdoutText();
     const stderrText = capture.stderrText();
+    const ok = exitCode === 0;
+
+    // D9: persist the captured stdout AFTER a successful op, only when a
+    // target was declared (dirname was validated at manifest parse). A
+    // write failure never flips `ok` or the counters — it is recorded on
+    // the op as `outputWriteError` so `total = ok + failed` always holds.
+    let outputWriteError: string | undefined;
+    if (ok && op.output !== undefined) {
+      outputWriteError = await writeCapturedOutput(op.output, stdoutText, index, deps);
+    }
 
     return {
       name: op.name,
       command: op.command,
-      ok: exitCode === 0,
+      ok,
       exitCode,
       resolvedProvider: assignment.provider,
       ...(stdoutText.length > 0 ? { stdout: stdoutText } : {}),
       ...(stderrText.length > 0 ? { stderr: stderrText } : {}),
       durationMs: now() - startedAt,
+      ...(op.output !== undefined ? { output: op.output } : {}),
+      ...(outputWriteError !== undefined ? { outputWriteError } : {}),
     };
   };
 

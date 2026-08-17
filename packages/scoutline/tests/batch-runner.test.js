@@ -1,5 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import os from "node:os";
+import { join } from "node:path";
 import { ValidationError } from "../dist/lib/errors.js";
 import { formatErrorOutput } from "../dist/lib/output.js";
 import { invokeCommand } from "../dist/command-invocation.js";
@@ -99,8 +102,13 @@ function manifest(...operations) {
   return { schemaVersion: 1, operations };
 }
 
-function searchOp(name, query) {
-  return { name, command: "search", input: { query: query ?? `q ${name}` } };
+function searchOp(name, query, output) {
+  return {
+    name,
+    command: "search",
+    input: { query: query ?? `q ${name}` },
+    ...(output !== undefined ? { output } : {}),
+  };
 }
 
 async function load() {
@@ -114,6 +122,8 @@ async function runBatchUnderTest(
     handlerDeps = baseHandlerDeps({ providerDescriptors: descriptors.map((h) => h.descriptor) }),
     outputMode = "data",
     now,
+    writeOutputFile,
+    renameOutputFile,
     options = {} },
   ...operations
 ) {
@@ -130,6 +140,8 @@ async function runBatchUnderTest(
       invocation: global.adapter,
       outputMode,
       ...(now !== undefined ? { now } : {}),
+      ...(writeOutputFile !== undefined ? { writeOutputFile } : {}),
+      ...(renameOutputFile !== undefined ? { renameOutputFile } : {}),
     },
     options,
   );
@@ -580,5 +592,126 @@ describe("batch runner consumption inheritance", () => {
     assert.strictEqual(events.length, 2);
     assert.deepStrictEqual(events.map((e) => e.attempt), [1, 1]);
     assert.deepStrictEqual(events.map((e) => e.provider).sort(), ["minimax", "zai"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-op output files (D9)
+// ---------------------------------------------------------------------------
+
+describe("batch runner per-op output files", () => {
+  it("writes captured stdout to the declared output file (temp + rename, no residue)", async () => {
+    const tmp = await mkdtemp(join(os.tmpdir(), "scoutline-batch-d9-"));
+    const outputPath = join(tmp, "s1.json");
+    const handler = async (args, outputMode, deps) => {
+      deps.invocation.writeStdout(JSON.stringify({ op: args[0] }));
+      return 0;
+    };
+    // No fs doubles: this run goes through the runner's REAL default
+    // node:fs/promises write + rename seam.
+    const { envelope, exitCode } = await runBatchUnderTest(
+      { handler },
+      searchOp("s1", "hello", outputPath),
+    );
+    assert.strictEqual(exitCode, 0);
+    const record = envelope.results[0];
+    assert.strictEqual(record.ok, true);
+    assert.strictEqual(record.output, outputPath);
+    assert.strictEqual(record.outputWriteError, undefined);
+    const written = await readFile(outputPath, "utf8");
+    assert.strictEqual(written, JSON.stringify({ op: "hello" }));
+    assert.strictEqual(written, record.stdout, "the file matches the captured stdout");
+    // The rename landed atomically: no temp file is left behind.
+    assert.deepStrictEqual(await readdir(tmp), ["s1.json"]);
+  });
+
+  it("keeps ok true, failed at 0, and records outputWriteError when the write fails", async () => {
+    for (const which of ["write", "rename"]) {
+      const files = new Map();
+      const writeOutputFile = async (path, data) => {
+        if (which === "write") throw new Error("disk on fire");
+        files.set(path, data);
+      };
+      const renameOutputFile = async (from, to) => {
+        if (which === "rename") throw new Error("rename denied");
+        files.set(to, files.get(from));
+        files.delete(from);
+      };
+      const handler = async (args, outputMode, deps) => {
+        deps.invocation.writeStdout(JSON.stringify({ op: args[0] }));
+        return 0;
+      };
+      const { envelope, exitCode, global } = await runBatchUnderTest(
+        { handler, writeOutputFile, renameOutputFile },
+        searchOp("s1", "hello", "/tmp/never/s1.json"),
+      );
+      // D9: a write failure never flips ok or the counters —
+      // total = ok + failed keeps holding.
+      assert.strictEqual(exitCode, 0, `[${which}] write failure must not fail the batch`);
+      assert.strictEqual(envelope.ok, 1);
+      assert.strictEqual(envelope.failed, 0);
+      assert.strictEqual(envelope.total, envelope.ok + envelope.failed);
+      const record = envelope.results[0];
+      assert.strictEqual(record.ok, true);
+      assert.strictEqual(record.stdout, JSON.stringify({ op: "hello" }), "capture is unaffected");
+      assert.strictEqual(record.output, "/tmp/never/s1.json");
+      assert.strictEqual(record.outputWriteError, which === "write" ? "disk on fire" : "rename denied");
+      // The final file never appeared behind the failed write.
+      assert.strictEqual(files.has("/tmp/never/s1.json"), false);
+      // The batch still produced its one summary envelope.
+      assert.strictEqual(global.stdoutWrites.length, 1);
+    }
+  });
+
+  it("fail-fast: unscheduled and failed ops write nothing; a drained success still writes", async () => {
+    const files = new Map();
+    const renames = [];
+    const writeOutputFile = async (path, data) => {
+      files.set(path, data);
+    };
+    const renameOutputFile = async (from, to) => {
+      renames.push({ from, to });
+      files.set(to, files.get(from));
+      files.delete(from);
+    };
+    const handler = async (args, outputMode, deps) => {
+      if (args[0] === "fail") {
+        deps.invocation.writeStderr(formatErrorOutput(new ValidationError("nope"), "data"));
+        return 1;
+      }
+      if (args[0] === "slow") {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      deps.invocation.writeStdout(JSON.stringify({ op: args[0] }));
+      return 0;
+    };
+    const { envelope, exitCode } = await runBatchUnderTest(
+      { handler, writeOutputFile, renameOutputFile, options: { concurrency: 2, failFast: true } },
+      searchOp("f", "fail", "/out/f.json"),
+      searchOp("s", "slow", "/out/s.json"),
+      searchOp("n", "queued", "/out/n.json"),
+    );
+    assert.strictEqual(exitCode, 1);
+    const [failedRec, drainedRec, notRunRec] = envelope.results;
+
+    // The drained in-flight success still wrote its file during drain.
+    assert.strictEqual(drainedRec.ok, true);
+    assert.strictEqual(files.get("/out/s.json"), JSON.stringify({ op: "slow" }));
+    assert.strictEqual(drainedRec.output, "/out/s.json");
+    assert.strictEqual(drainedRec.outputWriteError, undefined);
+
+    // The failed op is post-success-only: the declared target stays
+    // visible on the record, but nothing was written or renamed.
+    assert.strictEqual(failedRec.ok, false);
+    assert.strictEqual(failedRec.output, "/out/f.json");
+    assert.strictEqual(files.has("/out/f.json"), false);
+    assert.strictEqual(renames.some((r) => r.to === "/out/f.json"), false);
+
+    // The never-scheduled op wrote nothing and carries only stderr (D6).
+    assert.strictEqual(notRunRec.stderr, "not run (--fail-fast)");
+    assert.strictEqual(notRunRec.output, undefined);
+    assert.strictEqual(notRunRec.outputWriteError, undefined);
+    assert.strictEqual(files.has("/out/n.json"), false);
+    assert.strictEqual(renames.some((r) => r.to === "/out/n.json"), false);
   });
 });

@@ -33,15 +33,17 @@ captured in its own result (never re-emitted live).
   unscheduled ops are recorded as skipped), and `--dry-run` — the full
   assignment preview with pre-dispatch gates (configured +
   capability-advertised), no transport, no cache reads/writes, no output
-  files, and per-handler flag semantics explicitly not validated.
+  files (the post-command quota refresh is skipped as well), and
+  per-handler flag semantics explicitly not validated.
   Boolean-only flags take no value (`--dry-run false` rejects instead of
   silently running providers); an unknown global `--provider` id rejects
   the whole batch before the pool.
 - **Per-op `output`:** optional output paths write the captured stdout via
   temp-file + rename; a write failure is recorded per op (`outputWriteError`)
   without failing the operation. Duplicate output targets reject at
-  manifest parse (naming the earlier owner), and a successful op that
-  emitted no stdout writes no zero-byte file (recorded via
+  manifest parse (naming the earlier owner; path-equivalent spellings
+  like `out/./a.json` vs `out/a.json` count as duplicates), and a
+  successful op that emitted no stdout writes no zero-byte file (recorded via
   `outputWriteError` instead).
 - **`vision batch`:** a single-directory glob (`.jpg/.jpeg/.png/.webp/
   .mp4/.mov/.m4v/.avi/.webm/.wmv`; the extension infers `video` vs

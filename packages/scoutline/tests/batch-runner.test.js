@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import { join } from "node:path";
 import { ValidationError } from "../dist/lib/errors.js";
@@ -671,8 +671,11 @@ describe("batch runner consumption inheritance", () => {
 // ---------------------------------------------------------------------------
 
 describe("batch runner per-op output files", () => {
-  it("writes captured stdout to the declared output file (temp + rename, no residue)", async () => {
+  it("writes captured stdout to the declared output file (temp + rename, no residue)", async (t) => {
     const tmp = await mkdtemp(join(os.tmpdir(), "scoutline-batch-d9-"));
+    // Review fix: remove the tmpdir when this test ends (it previously
+    // leaked a `scoutline-batch-d9-*` dir on every run).
+    t.after(() => rm(tmp, { recursive: true, force: true }));
     const outputPath = join(tmp, "s1.json");
     const handler = async (args, outputMode, deps) => {
       deps.invocation.writeStdout(JSON.stringify({ op: args[0] }));

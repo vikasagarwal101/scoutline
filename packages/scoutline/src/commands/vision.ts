@@ -145,7 +145,7 @@ Examples:
   scoutline vision diagram ./arch.png --type architecture
   scoutline vision diff ./expected.png ./actual.png "Check alignment"
   scoutline vision video ./demo.mp4 "Summarize the key steps"
-  scoutline vision batch ./shots/*.png --out ./out --prompt "Describe {filename}"
+  scoutline vision batch './shots/*.png' --out ./out --prompt "Describe {filename}"
 `.trim();
 }
 

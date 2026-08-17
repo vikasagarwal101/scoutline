@@ -100,6 +100,7 @@ import {
   classifyCredentialState,
   formatEnvOnlyHint,
   isCommandHelpInvocation,
+  isDryRunBatchInvocation,
   OBSERVATIONAL_COMMANDS,
 } from "./lib/trigger-detection.js";
 import { resolveProviderId, resolveEffectiveProvider } from "./providers/selection.js";
@@ -3245,6 +3246,10 @@ export async function main(
   // earlier alongside `buildHandlerDeps` so the sink closes over a
   // defined binding — see PB-T2 above.)
   const isQuotaObservationalCommand = command === "quota" || command === "doctor";
+  // Dry-run batches (`batch --dry-run`, `vision batch --dry-run`) promise
+  // a no-transport preview (batch DESIGN D7/D10) — the due-refresh below
+  // must not live-probe stale providers for them (review fix).
+  const isDryRunBatch = isDryRunBatchInvocation(command, commandArgs);
   const refreshOnError = (_providerId: string, _error: unknown): void => {
     // Silent: quota-refresh failures are best-effort. Writing to stderr
     // would violate the JSON error contract (stderr is reserved for the
@@ -3372,6 +3377,8 @@ export async function main(
   //   - `quota`/`doctor` (already force-refreshed before the handler)
   //   - help invocations (`<cmd> --help` exits 0 but did no real work)
   //   - unrecognized commands (the default case above)
+  //   - dry-run batch invocations — the preview contract promises no
+  //     transport, and this refresh live-probes stale providers
   // Run even when the handler threw (commandRecognized + caught):
   // the refresh is independent of the command's outcome and the
   // snapshot stays live regardless. The staleness check inside
@@ -3382,7 +3389,8 @@ export async function main(
     quotaRefreshEnabled &&
     commandRecognized &&
     !isQuotaObservationalCommand &&
-    !isHelpInvocation
+    !isHelpInvocation &&
+    !isDryRunBatch
   ) {
     await refreshQuotaSnapshots({
       descriptors: providerDescriptors,

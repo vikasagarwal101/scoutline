@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -143,9 +143,19 @@ function vbatchDeps(adapter, entries, extra = {}) {
   };
 }
 
+/** Every mkdtempSync directory this suite creates (review fix: no leaks). */
+const tempDirs = [];
+
+after(() => {
+  for (const dir of tempDirs) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 /** Tmpdir holding the named (empty-content) media files. */
 function makeMediaDir(names) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-vbatch-"));
+  tempDirs.push(dir);
   for (const name of names) {
     fs.writeFileSync(path.join(dir, name), "x", "utf8");
   }
@@ -153,11 +163,14 @@ function makeMediaDir(names) {
 }
 
 function makeOutDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-vbout-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-vbout-"));
+  tempDirs.push(dir);
+  return dir;
 }
 
 function writeManifestFile(manifest) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-vbatchm-"));
+  tempDirs.push(dir);
   const file = path.join(dir, "manifest.json");
   fs.writeFileSync(file, JSON.stringify(manifest), "utf8");
   return file;
@@ -572,6 +585,7 @@ describe("vision batch --out contract", () => {
   it("--out creates the directory when it does not exist (review fix: no pre-existing-dir requirement)", async () => {
     const dir = makeMediaDir(["a.png", "b.png"]);
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-vbout-missing-"));
+    tempDirs.push(root);
     const out = path.join(root, "created", "nested"); // neither exists
     const zai = makeVisionDescriptor("zai");
     const { adapter, stdout } = fakeInvocation();

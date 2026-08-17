@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Local context refinement (`--context` / `--context-stdin`)
+
+- **`scoutline research "<q>" --context <path> [--context-mode organize|bias|both]`** — load a local notes file (max 256 KiB; NUL-byte detection rejects binary input) to steer deep research. The default `organize` mode re-presents the provider's report following the file's headings (exact-slug section re-mapping; unmatched provider sections are appended, never dropped) purely locally: the wire request and cache identity are byte-identical to a no-context run (golden-pinned). `bias` (and `both`) append a capped `(focus: ...)` term segment to the query before the request is built — derived from the file, so it changes what leaves your machine and fragments the cache key (each mode is a separate paid job). The resume command printed on interrupt carries the context flags (shell-quoted `--context <path>`; `--context-stdin` runs must re-pipe the same content unchanged); the research envelope gains an optional `context` field (source, path, sha256, mode, derived counts — metadata only, never content).
+- **`scoutline search "<q>" --context <path>`** — derive up to 8 sub-queries from a local file's headings and questions and join them with the (always-kept, always-first) user query through the merge pipeline (dedupe + occurrence ranking; pipe-only escaping round-trips literal `|` and `\`). `--merge` together with any context flag is a `VALIDATION_ERROR`. JSON data modes wrap the result array as `{ context: { counts, sha256 }, results }`; text modes stay unwrapped; without the flag, output is byte-identical to 0.16.0. Under fan-out every arm runs every sub-query, disclosed once on stderr as `context: N sub-queries × M arms = K billable searches`.
+- **`--context-stdin` for both commands** — the same parsing from standard input through the invocation adapter's `readStdin` seam. The source is drained exactly once per invocation, in the handler and before fallback dispatch, so a provider retry can never silently drop the context; oversize input fails with `VALIDATION_ERROR` rather than truncating; a value-carrying `--context-stdin "<q>"` fails validation before the help gate instead of swallowing the query; `--context` and `--context-stdin` are mutually exclusive (`VALIDATION_ERROR`).
+- **Privacy boundary (test-enforced)** — parsed file content crosses the wire in exactly two shapes: the research `bias`/`both` focus segment and the search-derived sub-query strings. `organize` sends nothing derived; envelopes, wrappers, and stderr notices carry counts, the source path, and a SHA-256 only — never a heading, question, term, or file byte.
+
 ## [0.16.0] - 2026-08-16
 
 **Three parallel feature streams, landed as PRs #34/#35/#36:** local cache

@@ -654,6 +654,25 @@ Options:
   --timeout <s>          Polling timeout in seconds (default: 300)
   --no-cache             Bypass the response cache for this invocation
 
+Local context (steer the report from a local notes file; the two
+source flags are mutually exclusive):
+  --context <path>      Read a text/markdown file (max 256 KiB) as
+                        research context.
+  --context-stdin       Read the same content from standard input
+                        (no value; pipe the file in). Resuming an
+                        interrupted run re-pipes the same content
+                        unchanged (see Ctrl-C safety above).
+  --context-mode <m>    organize (default) | bias | both.
+                        organize re-presents the returned report
+                        following your file's headings — purely local:
+                        the wire request, the cache key, and what leaves
+                        your machine are unchanged.
+                        bias/both append a "(focus: ...)" term segment
+                        to the query. That segment is derived from your
+                        file and is what leaves your machine under these
+                        modes; it also changes the cache key, so a
+                        different mode is a fresh (paid) job.
+
 Common Options:
   --provider <id>            Override the active Provider (zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina)
   --output-format <mode>     One of: ${OUTPUT_MODE_LIST} (default: data)
@@ -668,9 +687,14 @@ Output format (schema-version-1):
     "sources":  [{ "title": "...", "url": "..." }]
   }
 
+  Under --context an optional "context" field records the source,
+  path, sha256, mode, and derived counts — metadata only, never file
+  content.
+
 Examples:
   scoutline research "Compare React vs Svelte for enterprise apps"
   scoutline research "State of carbon capture 2025" --model pro
+  scoutline research "Quokka conservation" --context notes.md
   scoutline research "Quantum computing benchmarks" --citation-format apa
   scoutline --provider tavily research "Rust async runtime comparison"
 `.trim();

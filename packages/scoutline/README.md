@@ -205,6 +205,46 @@ every arm runs every sub-query and occurrences span the arms ×
 sub-queries grid. Disable the standing switch with
 `scoutline config set fanout false`.
 
+### Local Context (`--context` / `--context-stdin`)
+
+Steer `research` and `search` with a local notes file (markdown headings and
+question lines; max 256 KiB, text only — NUL-byte detection rejects binary
+input). `--context <path>` reads a file; `--context-stdin` reads the same
+content from standard input. The two flags are mutually exclusive.
+
+```bash
+scoutline research "quokka conservation" --context notes.md             # organize (default)
+scoutline research "quokka conservation" --context notes.md --context-mode bias
+cat notes.md | scoutline research "quokka conservation" --context-stdin
+scoutline search "rust async" --context notes.md
+```
+
+**Research modes** (`--context-mode organize | bias | both`): `organize`
+(the default) re-presents the provider's report following your file's
+headings — a purely local reordering, so the wire request and the response
+cache key are untouched. `bias` (and `both`) append a capped
+`(focus: ...)` term segment to the query before it is sent: that segment is
+derived from your file and is what leaves your machine under those modes —
+and it changes the cache key, so each mode is a separate (paid) job. The
+resume command printed after an interrupt carries your context flags; with
+`--context-stdin` you must re-pipe the same content unchanged.
+
+**Search derivation**: `search --context` derives up to 8 sub-queries from
+the file's headings and questions, always keeps your original query first,
+and merges and dedupes all results. What leaves your machine under
+`search --context`: the derived sub-query strings themselves become the
+search queries — the file is never sent. Under fan-out this multiplies
+cost (N sub-queries × M arms = N×M billable searches, disclosed once on
+stderr). `--context` is mutually exclusive with `--merge`.
+
+**Privacy boundary**: parsed file content crosses the network in exactly
+two shapes — the research `bias`/`both` focus segment and the
+search-derived sub-query strings. Everything else stays local: `organize`
+sends nothing derived, JSON outputs record only counts, the source path,
+and a SHA-256 of the content, and no heading, question, or file byte
+appears in notices or logs. Without these flags, `research` and `search`
+output is byte-identical to previous releases.
+
 ## Capability Matrix
 
 The matrix below is generated from the production provider registry

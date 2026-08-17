@@ -263,6 +263,43 @@ describe("usage-ledger: pruneExpiredDays", () => {
     assert.deepStrictEqual(pruneExpiredDays(ledger, Number.NaN, T0_DAY_KEY), ledger);
   });
 
+  it("an Infinity retentionDays returns the ledger unchanged", () => {
+    const ledger = ledgerWithDays({ [T0_DAY_KEY]: {} });
+    assert.deepStrictEqual(
+      pruneExpiredDays(ledger, Number.POSITIVE_INFINITY, T0_DAY_KEY),
+      ledger,
+    );
+  });
+
+  it("a fractional retentionDays returns the ledger unchanged (review P2: fractional windows retain the wrong day keys)", () => {
+    const ledger = ledgerWithDays({
+      [T0_DAY_KEY]: {},
+      [dayKeyOffset(1)]: {},
+      [dayKeyOffset(2)]: {},
+      [dayKeyOffset(3)]: {},
+    });
+    // Unguarded, 2.5 computes a mid-day cutoff of T0 - 1.5 days
+    // ("2026-08-15"), keeping the offset-2 day an integer 2-day window
+    // drops while still pruning the offset-3 day — a silently wrong
+    // window instead of a rejected one.
+    assert.deepStrictEqual(pruneExpiredDays(ledger, 2.5, T0_DAY_KEY), ledger);
+  });
+
+  it("a huge integer retentionDays validates the cutoff date instead of throwing (review P2)", () => {
+    const ledger = ledgerWithDays({ [T0_DAY_KEY]: {}, [dayKeyOffset(400)]: {} });
+    // 1e8 days is the largest window whose cutoff instant stays inside
+    // the ~±8.64e15 ms Date range; it prunes normally and keeps both days.
+    assert.deepStrictEqual(pruneExpiredDays(ledger, 1e8, T0_DAY_KEY), ledger);
+    // Beyond that the cutoff is not a representable date: usageDayKey
+    // would throw RangeError and the sink would drop the event. An
+    // unrepresentable cutoff leaves the ledger unchanged.
+    assert.deepStrictEqual(
+      pruneExpiredDays(ledger, Number.MAX_SAFE_INTEGER, T0_DAY_KEY),
+      ledger,
+    );
+    assert.deepStrictEqual(pruneExpiredDays(ledger, 1e300, T0_DAY_KEY), ledger);
+  });
+
   it("an in-window crafted __proto__ day key survives pruning as an own key", () => {
     // parseUsageLedger deliberately keeps such keys as OWN data
     // properties; pruning must preserve them the same way instead of

@@ -307,8 +307,8 @@ exit 0.
 
 Exit codes:
   0  Success (including an empty ledger).
-  1  Validation error (--days not an integer >= 1, unknown or valueless
-     --provider).
+  1  Validation error (--days out of range or not an integer between 1
+     and ${MAX_USAGE_WINDOW_DAYS}, unknown or valueless --provider).
 
 Examples:
   scoutline usage

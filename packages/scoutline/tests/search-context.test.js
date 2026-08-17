@@ -45,6 +45,7 @@ import * as path from "node:path";
 
 import { main } from "../dist/index.js";
 import { withTempDir } from "./helpers/temp-dir.js";
+import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 
 // ---------------------------------------------------------------------------
 // Test doubles (tests/search-fanout.test.js patterns)
@@ -104,30 +105,18 @@ function makeAdapter() {
   return { adapter, stdout, stderr };
 }
 
-const freshCache = () => {
-  const store = new Map();
-  return {
-    async get(key) {
-      return store.has(key) ? store.get(key) : null;
-    },
-    async set(key, value) {
-      store.set(key, value);
-    },
-  };
-};
-
 /** Drive `main()` with fresh doubles; returns captures for assertions. */
 async function runSearch(argv, providers) {
   const io = makeAdapter();
-  const status = await main(argv, {
-    invocation: io.adapter,
-    env: {},
-    providerDescriptors: providers.map((p) => p.descriptor),
-    loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
-    searchCache: freshCache(),
-    searchSleep: async () => {},
-    searchRandom: () => 0.5,
-  });
+  const status = await main(
+    argv,
+    hermeticMainDeps({
+      invocation: io.adapter,
+      env: {},
+      providerDescriptors: providers.map((p) => p.descriptor),
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+    }),
+  );
   return { status, stdout: io.stdout, stderr: io.stderr };
 }
 

@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { main } from "../dist/index.js";
+import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 import { ValidationError } from "../dist/lib/errors.js";
 
 /**
@@ -116,31 +117,15 @@ function fakeInvocation() {
   };
 }
 
-function freshCache() {
-  const store = new Map();
-  return {
-    async get(key) {
-      return store.has(key) ? store.get(key) : null;
-    },
-    async set(key, value) {
-      store.set(key, value);
-    },
-  };
-}
-
 /** Base MainDependencies for a vision batch dispatch run. */
 function vbatchDeps(adapter, entries, extra = {}) {
-  return {
+  return hermeticMainDeps({
     invocation: adapter,
     env: {},
     providerDescriptors: entries.map((entry) => entry.descriptor),
-    configFanout: false,
-    searchCache: freshCache(),
-    searchSleep: async () => {},
-    searchRandom: () => 0.5,
     now: () => 1755400000000,
     ...extra,
-  };
+  });
 }
 
 /** Every mkdtempSync directory this suite creates (review fix: no leaks). */

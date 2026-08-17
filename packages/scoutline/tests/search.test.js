@@ -22,6 +22,7 @@ import { main } from "../dist/index.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { readFixture } from "./helpers/fixtures.js";
+import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 
 // ---------------------------------------------------------------------------
 // Fake SearchCapability + execution dependencies
@@ -901,14 +902,14 @@ function makeRegistryDeps() {
 function makeMainDeps() {
   const reg = makeRegistryDeps();
   return {
-    deps: {
+    deps: hermeticMainDeps({
       invocation: undefined,
       env: { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k" },
       providerDescriptors: reg.descriptors,
       searchCache: reg.searchCache,
       searchSleep: async () => {},
       searchRandom: () => 0.5,
-    },
+    }),
     zaiInvokes: reg.zaiInvokes,
     minimaxInvokes: reg.minimaxInvokes,
   };
@@ -921,14 +922,17 @@ describe("top-level Search composition", () => {
     ]);
     const minimax = makeFakeDescriptor("minimax");
     const { adapter, stdout, stderr } = createTestAdapter();
-    const status = await main(["search", "provider flow"], {
-      invocation: adapter,
-      env: { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k" },
-      providerDescriptors: [zai.descriptor, minimax.descriptor],
-      searchCache: makeExecDeps({}).cache,
-      searchSleep: async () => {},
-      searchRandom: () => 0.5,
-    });
+    const status = await main(
+      ["search", "provider flow"],
+      hermeticMainDeps({
+        invocation: adapter,
+        env: { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k" },
+        providerDescriptors: [zai.descriptor, minimax.descriptor],
+        searchCache: makeExecDeps({}).cache,
+        searchSleep: async () => {},
+        searchRandom: () => 0.5,
+      }),
+    );
     assert.strictEqual(status, 0);
     assert.deepStrictEqual(stderr, []);
     assert.deepStrictEqual(JSON.parse(stdout[0]), [
@@ -949,14 +953,17 @@ describe("top-level Search composition", () => {
       { title: "MiniMax result", url: "https://e/minimax", summary: "normalized" },
     ]);
     const { adapter, stdout, stderr } = createTestAdapter();
-    const status = await main(["--provider", "minimax", "search", "provider flow"], {
-      invocation: adapter,
-      env: { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k" },
-      providerDescriptors: [zai.descriptor, minimax.descriptor],
-      searchCache: makeExecDeps({}).cache,
-      searchSleep: async () => {},
-      searchRandom: () => 0.5,
-    });
+    const status = await main(
+      ["--provider", "minimax", "search", "provider flow"],
+      hermeticMainDeps({
+        invocation: adapter,
+        env: { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k" },
+        providerDescriptors: [zai.descriptor, minimax.descriptor],
+        searchCache: makeExecDeps({}).cache,
+        searchSleep: async () => {},
+        searchRandom: () => 0.5,
+      }),
+    );
     assert.strictEqual(status, 0);
     assert.deepStrictEqual(stderr, []);
     assert.deepStrictEqual(JSON.parse(stdout[0]), [
@@ -1131,16 +1138,19 @@ describe("global --provider parsing and routing", () => {
       },
     };
     const { adapter, stderr } = createTestAdapter();
-    const status = await main(["search", "foo"], {
-      invocation: adapter,
-      // Only a minimax key is present: zai is unconfigured, but it is
-      // still the effective default provider.
-      env: { MINIMAX_API_KEY: "k" },
-      providerDescriptors: [zai.descriptor, minimax.descriptor],
-      searchCache,
-      searchSleep: async () => {},
-      searchRandom: () => 0.5,
-    });
+    const status = await main(
+      ["search", "foo"],
+      hermeticMainDeps({
+        invocation: adapter,
+        // Only a minimax key is present: zai is unconfigured, but it is
+        // still the effective default provider.
+        env: { MINIMAX_API_KEY: "k" },
+        providerDescriptors: [zai.descriptor, minimax.descriptor],
+        searchCache,
+        searchSleep: async () => {},
+        searchRandom: () => 0.5,
+      }),
+    );
     assert.strictEqual(status, 0, "fallback reroute succeeds via minimax");
     assert.ok(
       stderr.some((l) => l.includes("zai is not configured")),
@@ -1199,14 +1209,17 @@ describe("global --provider parsing and routing", () => {
       },
     };
     const { adapter, stderr } = createTestAdapter();
-    const status = await main(["--no-fallback", "search", "foo"], {
-      invocation: adapter,
-      env: { MINIMAX_API_KEY: "k" },
-      providerDescriptors: [zai.descriptor, minimax.descriptor],
-      searchCache,
-      searchSleep: async () => {},
-      searchRandom: () => 0.5,
-    });
+    const status = await main(
+      ["--no-fallback", "search", "foo"],
+      hermeticMainDeps({
+        invocation: adapter,
+        env: { MINIMAX_API_KEY: "k" },
+        providerDescriptors: [zai.descriptor, minimax.descriptor],
+        searchCache,
+        searchSleep: async () => {},
+        searchRandom: () => 0.5,
+      }),
+    );
     assert.strictEqual(status, 3, "missing credentials must exit 3 under --no-fallback");
     const err = JSON.parse(stderr[0]);
     assert.strictEqual(err.code, "CONFIGURATION_ERROR");
@@ -1279,15 +1292,18 @@ describe("main — redaction uses injected env credentials (Fixup B — B3)", ()
       },
     };
     const { adapter, stderr } = createTestAdapter();
-    const status = await main(["search", "foo"], {
-      invocation: adapter,
-      // The secret lives ONLY here — not in process.env.
-      env: { Z_AI_API_KEY: INJECTED_ONLY },
-      providerDescriptors: [zaiDescriptor],
-      searchCache,
-      searchSleep: async () => {},
-      searchRandom: () => 0.5,
-    });
+    const status = await main(
+      ["search", "foo"],
+      hermeticMainDeps({
+        invocation: adapter,
+        // The secret lives ONLY here — not in process.env.
+        env: { Z_AI_API_KEY: INJECTED_ONLY },
+        providerDescriptors: [zaiDescriptor],
+        searchCache,
+        searchSleep: async () => {},
+        searchRandom: () => 0.5,
+      }),
+    );
 
     assert.ok(status > 0, "error path returns nonzero");
     const formatted = stderr[0];

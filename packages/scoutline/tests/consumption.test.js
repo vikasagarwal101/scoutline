@@ -34,6 +34,7 @@ import { createInMemoryQuotaStore } from "../dist/lib/quota-store.js";
 import { executeSearch, executeCachedOperation } from "../dist/lib/execution.js";
 import { getCapabilityMapping } from "../dist/lib/quota-mapping.js";
 import { withTempDir } from "./helpers/temp-dir.js";
+import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 import { main } from "../dist/index.js";
 import { NetworkError } from "../dist/lib/errors.js";
 import {
@@ -698,11 +699,9 @@ describe("consumption: W1 characterization — execution targets real category n
 // ---------------------------------------------------------------------------
 
 /**
- * Build the standard Ticket-4 MainDependencies double: recording
- * invocation adapter, in-memory response cache, deterministic
- * sleep/random, and ALL SIX capability triples wired to the same
- * in-memory execution (search/reader/crawl/map/research/repository) so
- * no drive can silently reach the real on-disk cache.
+ * Build the standard Ticket-4 MainDependencies double. Cache/sleep/random
+ * and `configFanout` come from `hermeticMainDeps` (#42) so an omitted
+ * triple cannot fall through to the on-disk cache.
  */
 function makeMainDeps({ descriptors, consume, cache: providedCache }) {
   const stdout = [];
@@ -724,7 +723,7 @@ function makeMainDeps({ descriptors, consume, cache: providedCache }) {
     stdout,
     stderr,
     cache,
-    mainDeps: {
+    mainDeps: hermeticMainDeps({
       invocation: adapter,
       env: {},
       providerDescriptors: descriptors,
@@ -732,22 +731,7 @@ function makeMainDeps({ descriptors, consume, cache: providedCache }) {
       searchCache: cache,
       searchSleep: sleep,
       searchRandom: random,
-      readerCache: cache,
-      readerSleep: sleep,
-      readerRandom: random,
-      crawlCache: cache,
-      crawlSleep: sleep,
-      crawlRandom: random,
-      mapCache: cache,
-      mapSleep: sleep,
-      mapRandom: random,
-      researchCache: cache,
-      researchSleep: sleep,
-      researchRandom: random,
-      repositoryCache: cache,
-      repositorySleep: sleep,
-      repositoryRandom: random,
-    },
+    }),
   };
 }
 
@@ -1328,13 +1312,16 @@ describe(
             process.env.SCOUTLINE_CONFIG_DIR = processRoot;
             process.env.SCOUTLINE_CACHE_DIR = cacheDir;
             try {
-              await main(["--output-format", "data", "search", "usage ledger env parity"], {
-                invocation: adapter,
-                env: {
-                  SCOUTLINE_CONFIG_DIR: injectedRoot,
-                  ZAI_API_KEY: "dummy-key-production-gate",
-                },
-              });
+              await main(
+                ["--output-format", "data", "search", "usage ledger env parity"],
+                hermeticMainDeps({
+                  invocation: adapter,
+                  env: {
+                    SCOUTLINE_CONFIG_DIR: injectedRoot,
+                    ZAI_API_KEY: "dummy-key-production-gate",
+                  },
+                }),
+              );
             } finally {
               if (priorConfig === undefined) delete process.env.SCOUTLINE_CONFIG_DIR;
               else process.env.SCOUTLINE_CONFIG_DIR = priorConfig;

@@ -39,6 +39,12 @@ import {
   configSetCommand,
   configUnsetCommand,
 } from "./commands/config.js";
+import {
+  usageCommand,
+  USAGE_HELP,
+  DEFAULT_USAGE_WINDOW_DAYS,
+  MAX_USAGE_WINDOW_DAYS,
+} from "./commands/usage.js";
 import { cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
 import type { PruneSelectors, PruneCachesResult } from "./lib/cache.js";
 import { isExtractMode, type ExtractMode } from "./lib/extract.js";
@@ -85,7 +91,12 @@ import {
   type QuotaState,
 } from "./lib/quota-store.js";
 import type { ProviderVerificationSummary } from "./capabilities/diagnostics.js";
-import { createQuotaStoreConsumptionSink, type ConsumptionSink } from "./lib/consumption.js";
+import {
+  createCompositeConsumptionSink,
+  createQuotaStoreConsumptionSink,
+  type ConsumptionSink,
+} from "./lib/consumption.js";
+import { createUsageLedgerSink, readUsageLedger, resolveUsageLedgerPath } from "./lib/usage-ledger.js";
 import {
   classifyCredentialState,
   formatEnvOnlyHint,
@@ -94,6 +105,7 @@ import {
 } from "./lib/trigger-detection.js";
 import { resolveProviderId, resolveEffectiveProvider } from "./providers/selection.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "./providers/registry.js";
+import { PROVIDER_IDS } from "./providers/types.js";
 import type { ProviderDescriptor, ProviderId } from "./providers/types.js";
 import { executeWithFallback, type FallbackOutcome } from "./lib/provider-fallback.js";
 import type { SearchCapability } from "./capabilities/search.js";
@@ -135,6 +147,8 @@ Commands:
   call     Call a tool directly (Z.AI)
   doctor   Provider-aware environment + connectivity checks
   cache    Inspect or clear the local cache (stats / clear)
+  usage    Report local call-usage history (usage.json ledger,
+           credential-free)
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
   init     Interactive onboarding wizard (writes ~/.scoutline/config.json)
 
@@ -176,6 +190,7 @@ Help:
   scoutline call --help
   scoutline code --help
   scoutline cache --help
+  scoutline usage --help
   scoutline init --help
 `.trim();
 
@@ -1033,6 +1048,12 @@ async function handleSearch(
               cache: deps.searchCache,
               sleep: deps.searchSleep,
               random: deps.searchRandom,
+              // PB-T2 parity with the fan-out path above (usage-ledger
+              // DESIGN D7): thread the configured consumption sink +
+              // clock so every billable sub-query on the single-pin path
+              // records through it.
+              ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+              ...(deps.now !== undefined ? { now: deps.now } : {}),
             },
             context,
           );
@@ -1116,6 +1137,10 @@ async function handleRead(
     cache: deps.readerCache,
     sleep: deps.readerSleep,
     random: deps.readerRandom,
+    // PB-T2 (usage-ledger DESIGN D7): thread the configured consumption
+    // sink + clock so every billable reader-fetch attempt records.
+    ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+    ...(deps.now !== undefined ? { now: deps.now } : {}),
   };
 
   // Provider-fallback Ticket 02: route the call through the shared
@@ -1199,6 +1224,10 @@ async function handleCrawl(
     cache: deps.crawlCache,
     sleep: deps.crawlSleep,
     random: deps.crawlRandom,
+    // PB-T2 (usage-ledger DESIGN D7): thread the configured consumption
+    // sink + clock so every billable crawl-fetch attempt records.
+    ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+    ...(deps.now !== undefined ? { now: deps.now } : {}),
   };
 
   // Provider-fallback Ticket 03: route the call through the shared
@@ -1296,6 +1325,10 @@ async function handleMap(
     cache: deps.mapCache,
     sleep: deps.mapSleep,
     random: deps.mapRandom,
+    // PB-T2 (usage-ledger DESIGN D7): thread the configured consumption
+    // sink + clock so every billable map-fetch attempt records.
+    ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+    ...(deps.now !== undefined ? { now: deps.now } : {}),
   };
 
   // Provider-fallback Ticket 03: route the call through the shared
@@ -1395,6 +1428,11 @@ async function handleResearch(
     cache: deps.researchCache,
     sleep: deps.researchSleep,
     random: deps.researchRandom,
+    // PB-T2 (usage-ledger DESIGN D7): thread the configured consumption
+    // sink + clock so every billable research-fetch attempt records
+    // (research is maxRetries 0 by policy — exactly one event per run).
+    ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+    ...(deps.now !== undefined ? { now: deps.now } : {}),
   };
 
   // Provider-fallback Ticket 03: route the call through the shared
@@ -1631,6 +1669,13 @@ async function handleRepo(
     cache: deps.repositoryCache,
     sleep: deps.repositorySleep,
     random: deps.repositoryRandom,
+    // PB-T2 (usage-ledger DESIGN D7): thread the configured consumption
+    // sink + clock so every billable repository operation attempt
+    // records (one deps object per handler is correct across fallback
+    // candidates — each candidate's cache identity supplies its own
+    // provider at emission time).
+    ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+    ...(deps.now !== undefined ? { now: deps.now } : {}),
   };
 
   const language = flags.language as "en" | "zh" | undefined;
@@ -2151,6 +2196,116 @@ export async function handleCache(
   }
 }
 
+/**
+ * `scoutline usage [--days N] [--provider <id>]` — report the local
+ * usage ledger (usage-ledger plan, Ticket 5). Credential-free and
+ * read-only: like `cache` it bypasses Provider resolution entirely, and
+ * like `handleCache` it keeps the injection-free posture — the ledger
+ * path resolves at handler time via
+ * `resolveConfigRootPure(deps.env, ...)` (no new `MainDependencies`
+ * field, no injected reader object). Production reads
+ * `readUsageLedger(resolveUsageLedgerPath(...))` with DEFAULT deps
+ * (real reader, no `onWarning`) so DESIGN D8's silent-on-corrupt
+ * contract holds: a missing, corrupt, or wrong-version ledger yields an
+ * empty window with exit 0 and no stderr noise.
+ *
+ * Flag contract (DESIGN D8): `--days` must be an integer ≥ 1 (unlike
+ * `--count`, 0 is invalid) and defaults to 7; `--provider` must be a
+ * known registry id (unknown ids are a VALIDATION_ERROR listing the
+ * accepted ids; a known-but-unrecorded id is an empty result, exit 0).
+ * `--provider` may appear before or after the command token —
+ * `extractGlobalOptions` strips it either way, so the handler recovers
+ * it from `deps.provider` (same recovery as `cache prune`).
+ */
+export async function handleUsage(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+): Promise<number> {
+  const { flags } = parseArgs(args);
+
+  if (flags.help || flags.h) {
+    deps.invocation.writeStdout(USAGE_HELP);
+    return 0;
+  }
+
+  // `--days`: positive integer >= 1 (DESIGN D8). parseArgs yields `true`
+  // for a valueless flag, so the bare case is guarded separately.
+  let windowDays = DEFAULT_USAGE_WINDOW_DAYS;
+  const rawDays = flags.days;
+  if (rawDays !== undefined) {
+    if (rawDays === true) {
+      throw new ValidationError(
+        "--days requires a value.",
+        "Pass a positive integer, e.g. --days 7.",
+      );
+    }
+    const str = typeof rawDays === "string" ? rawDays : String(rawDays);
+    // Strict decimal gate (same class as parseAndValidateCount's /^\d+$/):
+    // Number() alone would coerce "1e3", "0x0A", " 7", and "7.0" into
+    // integers, accepting spellings the documented contract (USAGE_HELP,
+    // DESIGN D8 — a decimal integer 1..MAX) does not include.
+    if (!/^\d+$/.test(str)) {
+      throw new ValidationError(
+        `Invalid --days value "${rawDays}"`,
+        `--days must be an integer between 1 and ${MAX_USAGE_WINDOW_DAYS}. Examples: --days 7, --days 30.`,
+      );
+    }
+    const parsed = Number(str);
+    // Upper bound (review P2): values far beyond the window the ledger
+    // can ever hold (retention is 90 days) would otherwise pass and
+    // crash the cutoff computation — JS Dates only span ~±100,000,000
+    // days, so e.g. --days 1000000000 throws RangeError in usageDayKey.
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_USAGE_WINDOW_DAYS) {
+      throw new ValidationError(
+        `Invalid --days value "${rawDays}"`,
+        `--days must be an integer between 1 and ${MAX_USAGE_WINDOW_DAYS}. Examples: --days 7, --days 30.`,
+      );
+    }
+    windowDays = parsed;
+  }
+
+  // `--provider` selector: command-local flag wins over the
+  // `deps.provider` fallback (extractGlobalOptions already stripped the
+  // global spelling from the rest stream).
+  const rawProvider = flags.provider;
+  if (rawProvider === true) {
+    throw new ValidationError(
+      "--provider requires a value.",
+      "Pass a Provider id after --provider, e.g. --provider zai.",
+    );
+  }
+  const providerSelector = typeof rawProvider === "string" ? rawProvider : deps.provider;
+  if (
+    providerSelector !== undefined &&
+    !(PROVIDER_IDS as readonly string[]).includes(providerSelector)
+  ) {
+    throw new ValidationError(
+      `Unknown provider "${providerSelector}".`,
+      `Accepted provider IDs: ${PROVIDER_IDS.join(", ")}.`,
+    );
+  }
+
+  // Read the ledger with default deps — real reader, no `onWarning`
+  // (silent-on-corrupt, DESIGN D8).
+  const configRoot = resolveConfigRootPure(deps.env, { homedir: os.homedir() });
+  const ledgerPath = resolveUsageLedgerPath(configRoot);
+  const now = deps.now ?? Date.now;
+  return invokeCommand(
+    deps.invocation,
+    () =>
+      usageCommand({
+        readLedger: () => readUsageLedger(ledgerPath),
+        windowDays,
+        ...(providerSelector !== undefined ? { provider: providerSelector } : {}),
+        now,
+      }),
+    outputMode,
+    deps.now,
+    deps.secrets,
+  );
+}
+
 async function handleQuota(
   args: string[],
   outputMode: OutputMode,
@@ -2450,8 +2605,9 @@ export interface MainDependencies {
   readonly verificationRecords?: Partial<Record<ProviderId, ProviderVerificationSummary>>;
   /**
    * Optional injectable consumption sink (PB-T2 — Plan B). Production
-   * defaults to `createQuotaStoreConsumptionSink({ store: quotaStore })`
-   * (writes through PB-T1's store, advancing `locallyUpdatedAt` and
+   * defaults to `createCompositeConsumptionSink(quotaStoreSink,
+   * usageLedgerSink)` — the PB-T1 snapshot store (advancing
+   * `locallyUpdatedAt` and
    * adjusting the matching category's count set); tests inject an
    * in-memory double so event-sequence assertions stay hermetic.
    *
@@ -2661,10 +2817,31 @@ export async function main(
   const quotaRefreshEnabled =
     !dependencies.loadScoutlineConfig && !dependencies.providerDescriptors;
   const quotaStore = dependencies.quotaStore ?? createDefaultQuotaStore();
+  // Production records consumption through BOTH sinks (usage-ledger
+  // DESIGN D3): the PB-T1 quota-store snapshot store (unchanged,
+  // including its no-op-before-snapshot posture) and the usage ledger
+  // (sibling `usage.json` under the same config root, resolved through
+  // the pure `resolveUsageLedgerPath()`; warnings default to stderr
+  // like the quota sink). The composite isolates each side — one
+  // sink's failure becomes one redacted warning and never blocks or
+  // fails the other.
   const consume: ConsumptionSink | undefined =
     dependencies.consume ??
     (quotaRefreshEnabled
-      ? createQuotaStoreConsumptionSink({ store: quotaStore, now: now ?? Date.now })
+      ? createCompositeConsumptionSink(
+          createQuotaStoreConsumptionSink({ store: quotaStore, now: now ?? Date.now }),
+          // The ledger path resolves from the SAME injected-env config
+          // root `handleUsage` reads through (resolveConfigRootPure over
+          // MainDependencies.env) — not from ambient process.env — so an
+          // embedded caller or hermetic run that injects
+          // SCOUTLINE_CONFIG_DIR sees its recorded usage in the root the
+          // `usage` command reports from (review P2).
+          createUsageLedgerSink({
+            filePath: resolveUsageLedgerPath(
+              resolveConfigRootPure(env, { homedir: os.homedir() }),
+            ),
+          }),
+        )
       : undefined);
   // PB-T4: quota snapshot for selection. Declared here so
   // `buildHandlerDeps` closes over the binding; assigned AFTER the
@@ -2764,6 +2941,21 @@ export async function main(
   if (command === "cache") {
     try {
       return await handleCache(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
+  // `usage` is credential-free (reads only <config-root>/usage.json; no
+  // Provider resolution, no Adapter, no transport — the same
+  // short-circuit class as `cache`). Dispatching before config load
+  // keeps a corrupt config.json from blocking the usage report and
+  // keeps trigger detection unreached. Fail-open ledger reads mean a
+  // missing/corrupt file still exits 0 with an empty window (DESIGN D8).
+  if (command === "usage") {
+    try {
+      return await handleUsage(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
       return getErrorExitCode(error);

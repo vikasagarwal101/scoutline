@@ -47,10 +47,6 @@ features next; features that reverse a written decision (ADR) last.
   local file parsed entirely client-side; only `{path, sha256}` recorded,
   never contents. Additive envelope fields; `--context=bias` fragments the
   cache key via the wire `query` (documented in `--help`). Effort: medium.
-- **`batch` manifest runner** (`docs/plans/v2/15-batch-manifest-runner.md`)
-  — versioned JSON manifest of CLI operations with bounded concurrency,
-  per-operation results, `--fail-fast`, and dry-run; `vision batch` builds
-  on the runner. One new stable v1 summary envelope. Effort: medium.
 - **`--stream` streaming output** (`docs/plans/v2/17-streaming-output.md`)
   — JSONL event stream (start/progress/data/warning/error/complete) on
   stdout; non-streaming contract unchanged when absent. Jina DeepSearch's

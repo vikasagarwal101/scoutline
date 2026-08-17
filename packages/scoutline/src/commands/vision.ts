@@ -112,7 +112,8 @@ Commands:
   batch <manifest|glob> [options]     Run many inputs through the shared
                                       batch runner (one op per media file,
                                       distributed across eligible vision
-                                      providers; concurrency default 1)
+                                      providers, routing preferences
+ignored; concurrency default 1)
 
 Options:
   --language <lang>  Programming language hint (extract-text)

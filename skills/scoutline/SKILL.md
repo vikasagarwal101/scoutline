@@ -207,11 +207,38 @@ Vision results are never cached. Z.AI image limits are JPG/JPEG/PNG ≤5 MiB.
 Search result count is applied locally after normalization and is never sent
 to the active Provider.
 
+## Batch (manifest runner)
+
+Run many operations in one process — one summary envelope on stdout,
+`results[]` in manifest order:
+
+```bash
+scoutline batch manifest.json            # schema v1; allowlist: search, read,
+                                          # research, repo, vision, crawl, map
+scoutline batch manifest.json --dry-run  # assignment preview; no transport,
+                                          # cache reads/writes, or output files
+cat manifest.json | scoutline batch -    # manifest on stdin (ops never read stdin)
+scoutline vision batch './shots/*.png' --prompt 'describe {filename}' --out out/
+```
+
+Provider **distribution is the default**: unpinned ops are assigned
+round-robin across configured, capable providers per capability group in
+registry order. Pin per op (`provider` field) or globally (`--provider`) to
+opt out. `routing.<capability>` is ignored inside batch (all eligible
+providers participate; pin to opt out) and search fan-out is suppressed —
+each op runs on exactly its assigned provider. Ops run in data mode with
+per-op notice/error capture; `--concurrency` 1-8 (default 4; `vision batch`
+default 1); `--fail-fast` stops scheduling after the first failure; optional
+per-op `output` writes captured stdout (temp + rename); `vision batch` adds
+per-input files plus `out/summary.json` (`--out` required for more than one
+input).
+
 ## Commands
 
 | Command | Purpose | Help |
 |---------|---------|------|
-| vision | Analyze images, screenshots, videos | `--help` for 8 subcommands |
+| vision | Analyze images, screenshots, videos (incl. `batch`) | `--help` for 9 subcommands |
+| batch | Manifest of operations run across providers (distribution by default) | `--help` for manifest + flags |
 | search | Real-time web search | `--help` for filtering options (incl. `--topic`) and local context |
 | read | Fetch web pages as markdown (six providers) | `--help` for format options |
 | crawl | Multi-page website traversal (Tavily or Firecrawl) | `--help` for depth/breadth/filters |

@@ -369,7 +369,11 @@ const NO_MATCHING_SECTION_BODY = "(no matching section in the provider report)";
  * Local-context DESIGN D4 (organize mode): re-present the provider's
  * sections following the context file's headings, matching by EXACT
  * slug equality (`slug` from lib/context-file.js — no prefix/fuzzy
- * matching; determinism).
+ * matching; determinism). All-non-Latin headings slug to "" under the
+ * normative ASCII formula; those match by exact RAW heading equality
+ * (lowercased, mirroring slug's first step) instead, so an
+ * identically-headed provider section still maps while unrelated
+ * ""-slug headings never fuse.
  *
  * - Output order: context headings in order. Each takes the bodies of
  *   ALL provider sections whose slug is equal, concatenated in
@@ -390,19 +394,21 @@ function remapSectionsToContext(
   for (const heading of contextHeadings) {
     const key = slug(heading);
     // An all-non-Latin heading slugs to "" under the normative D4 ASCII
-    // formula and would "match" every other ""-slug provider section;
-    // treat the empty slug as never-matching so it deterministically
-    // falls through to the no-match body instead of fusing.
-    if (key === "") {
-      remapped.push({ heading, body: NO_MATCHING_SECTION_BODY });
-      continue;
-    }
+    // formula, and ""-equality would fuse every such heading with every
+    // other one. Fall back to exact raw-heading equality (lowercased,
+    // mirroring slug's first step): an identically-headed provider
+    // section still matches, while unrelated ""-slug headings never do.
+    // Both parsers trim headings, so no re-trim is needed here.
+    const matches: (sectionHeading: string) => boolean =
+      key !== ""
+        ? (sectionHeading) => slug(sectionHeading) === key
+        : (sectionHeading) => sectionHeading.toLowerCase() === heading.toLowerCase();
     const bodies: string[] = [];
     for (let i = 0; i < sections.length; i++) {
       if (consumed[i]) continue;
       const section = sections[i];
       if (section === undefined) continue;
-      if (slug(section.heading) === key) {
+      if (matches(section.heading)) {
         consumed[i] = true;
         bodies.push(section.body);
       }

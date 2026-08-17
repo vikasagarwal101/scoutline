@@ -803,6 +803,154 @@ describe("vision batch dry run", () => {
     assert.strictEqual(zai.createCount(), 0);
   });
 
+  it("--dry-run extension validation is per-operation: video rejects image files (review fix)", async () => {
+    const dir = makeMediaDir(["clip.png"]);
+    const manifest = {
+      schemaVersion: 1,
+      operations: [
+        {
+          name: "not-a-video",
+          command: "vision",
+          input: { subcommand: "video", source: path.join(dir, "clip.png") },
+        },
+      ],
+    };
+    const zai = makeVisionDescriptor("zai", { capabilities: ["vision.video"] });
+    const { adapter, stdout, stderr } = fakeInvocation();
+
+    const status = await main(
+      ["vision", "batch", writeManifestFile(manifest), "--dry-run"],
+      vbatchDeps(adapter, [zai]),
+    );
+
+    // The union check used to pass this as ready; the real handler
+    // (resolveVideoSource) rejects non-video media, so dry run must too.
+    assert.strictEqual(status, 1);
+    assert.strictEqual(stdout.length, 0);
+    const error = parseError(stderr);
+    assert.strictEqual(error.code, "VALIDATION_ERROR");
+    assert.ok(error.error.includes("clip.png"), "the offending source is named");
+    assert.ok(error.error.includes("video"), "the error names the subcommand the extension mismatches");
+    assert.strictEqual(zai.createCount(), 0);
+  });
+
+  it("--dry-run extension validation is per-operation: image ops reject video files (review fix)", async () => {
+    const dir = makeMediaDir(["clip.mp4"]);
+    const manifest = {
+      schemaVersion: 1,
+      operations: [
+        {
+          name: "not-an-image",
+          command: "vision",
+          input: { subcommand: "analyze", source: path.join(dir, "clip.mp4") },
+        },
+      ],
+    };
+    const zai = makeVisionDescriptor("zai");
+    const { adapter, stdout, stderr } = fakeInvocation();
+
+    const status = await main(
+      ["vision", "batch", writeManifestFile(manifest), "--dry-run"],
+      vbatchDeps(adapter, [zai]),
+    );
+
+    assert.strictEqual(status, 1);
+    assert.strictEqual(stdout.length, 0);
+    const error = parseError(stderr);
+    assert.strictEqual(error.code, "VALIDATION_ERROR");
+    assert.ok(error.error.includes("clip.mp4"), "the offending source is named");
+    assert.ok(error.error.includes("analyze"), "the error names the subcommand the extension mismatches");
+    assert.strictEqual(zai.createCount(), 0);
+  });
+
+  it("--dry-run extension validation is per-operation: diff (Z.AI-only) rejects .webp sources (review fix)", async () => {
+    // diff is advertised only by Z.AI, whose image set is jpg/jpeg/png —
+    // MiniMax's .webp never applies to it, so the pre-dispatch truth for
+    // diff is Z.AI's image set.
+    const dir = makeMediaDir(["expected.webp", "actual.webp"]);
+    const manifest = {
+      schemaVersion: 1,
+      operations: [
+        {
+          name: "diff-op",
+          command: "vision",
+          input: {
+            subcommand: "diff",
+            expected: path.join(dir, "expected.webp"),
+            actual: path.join(dir, "actual.webp"),
+          },
+        },
+      ],
+    };
+    const zai = makeVisionDescriptor("zai", { capabilities: ["vision.diff"] });
+    const { adapter, stdout, stderr } = fakeInvocation();
+
+    const status = await main(
+      ["vision", "batch", writeManifestFile(manifest), "--dry-run"],
+      vbatchDeps(adapter, [zai]),
+    );
+
+    assert.strictEqual(status, 1);
+    assert.strictEqual(stdout.length, 0);
+    const error = parseError(stderr);
+    assert.strictEqual(error.code, "VALIDATION_ERROR");
+    assert.ok(error.error.includes("expected.webp"), "the offending diff source is named");
+    assert.strictEqual(zai.createCount(), 0);
+  });
+
+  it("--dry-run accepts the operation-correct extensions: video with .mp4 ready, analyze with .webp ready", async () => {
+    const dir = makeMediaDir(["clip.mp4", "shot.webp"]);
+    const zai = makeVisionDescriptor("zai", {
+      capabilities: ["vision.video", "vision.interpret-image"],
+    });
+    const minimax = makeVisionDescriptor("minimax");
+
+    // Manifest mode holds exactly one op, so each direction is its own
+    // run. .mp4 is the video set; .webp stays valid for image ops
+    // because MiniMax (an eligible analyze provider) accepts it — the
+    // per-op check keeps D10's provider-union rationale at the
+    // operation level.
+    const videoRun = fakeInvocation();
+    const videoStatus = await main(
+      [
+        "vision",
+        "batch",
+        writeManifestFile({
+          schemaVersion: 1,
+          operations: [
+            { name: "vid", command: "vision", input: { subcommand: "video", source: path.join(dir, "clip.mp4") } },
+          ],
+        }),
+        "--dry-run",
+      ],
+      vbatchDeps(videoRun.adapter, [zai, minimax]),
+    );
+    assert.strictEqual(videoStatus, 0);
+    const videoEnvelope = parseEnvelope(videoRun.stdout);
+    assert.strictEqual(videoEnvelope.ok, 1);
+    assert.strictEqual(videoEnvelope.results[0].reason, "ready");
+
+    const imageRun = fakeInvocation();
+    const imageStatus = await main(
+      [
+        "vision",
+        "batch",
+        writeManifestFile({
+          schemaVersion: 1,
+          operations: [
+            { name: "img", command: "vision", input: { subcommand: "analyze", source: path.join(dir, "shot.webp") } },
+          ],
+        }),
+        "--dry-run",
+      ],
+      vbatchDeps(imageRun.adapter, [zai, minimax]),
+    );
+    assert.strictEqual(imageStatus, 0);
+    const imageEnvelope = parseEnvelope(imageRun.stdout);
+    assert.strictEqual(imageEnvelope.ok, 1);
+    assert.strictEqual(imageEnvelope.results[0].reason, "ready");
+  });
+
   it("a ready dry run previews the assignment with zero transport and zero writes", async () => {
     const dir = makeMediaDir(["a.png", "b.png"]);
     const out = makeOutDir();

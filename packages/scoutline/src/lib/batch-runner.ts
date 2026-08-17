@@ -33,6 +33,7 @@
  * `--fail-fast`, write nothing.
  */
 
+import { randomUUID } from "node:crypto";
 import { rename as fsRename, rm as fsRemove, writeFile as fsWriteFile } from "node:fs/promises";
 import { ValidationError, getErrorExitCode } from "./errors.js";
 import { formatErrorOutput, formatSuccessOutput } from "./output.js";
@@ -246,11 +247,16 @@ function normalizeConcurrency(raw: number | undefined): number {
 /**
  * D9 post-success output write: captured stdout lands at `outputPath`
  * through write-temp-then-rename so a reader never observes a partial
- * file. The op index keeps concurrent temp names distinct even if two
- * ops (degenerately) declare the same target. A failed write OR rename
- * removes the temp file best-effort so nothing is left behind. Returns
- * the failure message on error — the caller records it as
- * `outputWriteError`; it NEVER propagates as a per-op failure.
+ * file. The temp name keeps the op index (debuggability) plus a random
+ * UUID suffix (review fix): a predictable `<target>.tmp-<index>` name
+ * could collide with a CONCURRENT batch run holding the same index or
+ * clobber a PRE-EXISTING file at that path — and the failure cleanup
+ * would then remove a file this run never owned. With the unique
+ * suffix the temp is exclusively owned by this attempt, so best-effort
+ * cleanup can only ever remove a file this attempt created. A failed
+ * write OR rename removes the temp file best-effort so nothing is left
+ * behind. Returns the failure message on error — the caller records it
+ * as `outputWriteError`; it NEVER propagates as a per-op failure.
  */
 async function writeCapturedOutput(
   outputPath: string,
@@ -258,7 +264,7 @@ async function writeCapturedOutput(
   index: number,
   deps: BatchRunnerDeps,
 ): Promise<string | undefined> {
-  const tempPath = `${outputPath}.tmp-${index}`;
+  const tempPath = `${outputPath}.tmp-${index}-${randomUUID()}`;
   try {
     const writeFile = deps.writeOutputFile ?? fsWriteFile;
     const renameFile = deps.renameOutputFile ?? fsRename;

@@ -223,6 +223,14 @@ describe("isDryRunBatchInvocation: dry-run batches skip the quota due-refresh", 
     assert.ok(!isDryRunBatchInvocation("vision", ["batch", "shots/*.png", "--out", "o"]));
     assert.ok(!isDryRunBatchInvocation("batch", ["manifest.json", "--help"]));
   });
+  it("is flag-order independent for vision batch (review fix: flags may precede the subcommand)", () => {
+    assert.ok(isDryRunBatchInvocation("vision", ["--out", "o", "batch", "shots/*.png", "--dry-run"]));
+    assert.ok(isDryRunBatchInvocation("vision", ["--prompt", "p", "batch", "g", "--dry-run"]));
+  });
+  it("does not classify valued --dry-run tokens (the wrapper rejects them, so they are not previews)", () => {
+    assert.ok(!isDryRunBatchInvocation("batch", ["--dry-run", "manifest.json"]));
+    assert.ok(!isDryRunBatchInvocation("vision", ["--dry-run", "batch", "g"]));
+  });
   it("returns false outside the batch surfaces even when a --dry-run token is present", () => {
     assert.ok(!isDryRunBatchInvocation("vision", ["analyze", "img.png", "--dry-run"]));
     assert.ok(!isDryRunBatchInvocation("search", ["--dry-run", "query"]));

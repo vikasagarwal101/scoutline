@@ -55,7 +55,12 @@ captured in its own result (never re-emitted live).
   named `summary` rejects when `--out` is used so nothing collides with
   it). `--dry-run` validates existence and extension for BOTH `diff`
   sources (`expected` + `actual`), and a valueless `--prompt` rejects
-  rather than silently using the default.
+  rather than silently using the default. A manifest `promptTemplate`
+  carrying `{filename}`/`{filepath}` rejects for `diff` operations (diff
+  has two sources and no single one to substitute against; token-free
+  templates pass through), `fields` array members must be non-empty
+  (`[""]` would render a flag the handler parses as boolean `true`), and
+  the post-command quota refresh is skipped for dry-run batches too.
 
 ### Documentation
 - README usage plus a Batch Manifest Runner section, `skills/scoutline/SKILL.md`

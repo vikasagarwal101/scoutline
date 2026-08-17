@@ -1,5 +1,5 @@
 /**
- * Batch Runner module (batch-runner DESIGN D5, D6, D8, D9).
+ * Batch Runner module (batch-runner DESIGN D5, D6, D7, D8, D9).
  *
  * Executes an already-parsed manifest (D2) against an already-computed
  * provider assignment (D4, `batch-assign.ts`): per op it builds
@@ -43,7 +43,7 @@ import type { AllowedBatchCommand, BatchManifest, BatchOperation } from "./batch
 import type { BatchProviderAssignment } from "./batch-assign.js";
 import type { CommandInvocationAdapter } from "../command-invocation.js";
 import type { HandlerDependencies } from "../index.js";
-import type { ProviderId } from "../providers/types.js";
+import type { ProviderCapability, ProviderDescriptor, ProviderId } from "../providers/types.js";
 
 // ---------------------------------------------------------------------------
 // D8 — bounded pool constants
@@ -104,6 +104,13 @@ export interface BatchRunOptions {
   readonly concurrency?: number;
   /** Stop scheduling on the first failed completion; drain in-flight ops. */
   readonly failFast?: boolean;
+  /**
+   * D7: preview the assignment and run the pre-dispatch gates WITHOUT
+   * executing anything — no transport (`descriptor.create()`), no cache
+   * reads/writes, no per-op output files. Records become
+   * {@link BatchDryRunRecord}s and the envelope carries `dryRun: true`.
+   */
+  readonly dryRun?: boolean;
 }
 
 /** One manifest operation's outcome. `results[]` stays 1:1 with the manifest. */
@@ -126,6 +133,27 @@ export interface BatchRunRecord {
   readonly outputWriteError?: string;
 }
 
+/** D7 dry-run gate outcome for one resolved provider. */
+export type BatchDryRunReason = "ready" | "provider not configured" | "capability not advertised";
+
+/**
+ * D6 `DryRunRecord` — replaces {@link BatchRunRecord} element-for-element
+ * when `envelope.dryRun === true` (D7): the assignment ran and the
+ * resolved provider passed (or failed) the pre-dispatch gates, but no
+ * transport was built, no handler ran, and nothing was written — hence
+ * no `stdout`/`stderr`/`output`/`outputWriteError` keys at all.
+ */
+export interface BatchDryRunRecord {
+  readonly name: string;
+  readonly command: AllowedBatchCommand;
+  readonly ok: boolean;
+  readonly exitCode: number;
+  /** The assignment preview: pin or round-robin distribution (D4). */
+  readonly resolvedProvider: ProviderId;
+  readonly reason: BatchDryRunReason;
+  readonly durationMs: number;
+}
+
 /** The stable v1 summary envelope (D6, D12). Written to stdout exactly once. */
 export interface BatchRunEnvelope {
   readonly schemaVersion: 1;
@@ -138,7 +166,7 @@ export interface BatchRunEnvelope {
   readonly dryRun?: true;
   /** Present only when `--fail-fast` was set AND triggered (D6). */
   readonly failFast?: true;
-  readonly results: readonly BatchRunRecord[];
+  readonly results: readonly (BatchRunRecord | BatchDryRunRecord)[];
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +254,87 @@ async function writeCapturedOutput(
 }
 
 // ---------------------------------------------------------------------------
+// D7 — dry-run gates
+// ---------------------------------------------------------------------------
+
+/**
+ * Pre-dispatch gate for one RESOLVED provider (pin or assignment):
+ * configured for the capability first, capability advertised second —
+ * credentials are the more fundamental blocker, so a provider that is
+ * both unconfigured and non-advertising reports "provider not
+ * configured". A resolved id absent from the registry is unreachable
+ * (pins are parse-validated against the registry; distributed ids are
+ * drawn from it) but defensively reports the same first reason.
+ */
+function dryRunGate(
+  descriptor: ProviderDescriptor | undefined,
+  env: NodeJS.ProcessEnv,
+  capabilityId: ProviderCapability,
+): BatchDryRunReason {
+  if (descriptor === undefined || !descriptor.isConfigured(env, capabilityId)) {
+    return "provider not configured";
+  }
+  if (!descriptor.capabilities().has(capabilityId)) {
+    return "capability not advertised";
+  }
+  return "ready";
+}
+
+/**
+ * D7 dry run: the assignment already happened (the caller computed it
+ * before the pool — zero-eligible groups threw there exactly as in a
+ * real run); here every op's RESOLVED provider is gated on the
+ * registry descriptors without `descriptor.create()`, without touching
+ * the cache, and without writing any per-op output file. The envelope
+ * carries `dryRun: true` and one `DryRunRecord` per op in manifest
+ * order; the exit rule mirrors the real run — any not-ready op → 1.
+ */
+function runDryRun(
+  manifest: BatchManifest,
+  assignments: readonly BatchProviderAssignment[],
+  concurrency: number,
+  deps: BatchRunnerDeps,
+  now: () => number,
+): { envelope: BatchRunEnvelope; exitCode: number } {
+  const startedAt = now();
+  const records: BatchDryRunRecord[] = manifest.operations.map((op, index) => {
+    // Alignment was proven by the caller's guard; the index is in range.
+    const assignment = assignments[index]!;
+    const descriptor = deps.handlerDeps.providerDescriptors.find(
+      (entry) => entry.id === assignment.provider,
+    );
+    const reason = dryRunGate(descriptor, deps.handlerDeps.env, assignment.capabilityId);
+    const ok = reason === "ready";
+    return {
+      name: op.name,
+      command: op.command,
+      ok,
+      exitCode: ok ? 0 : 1,
+      resolvedProvider: assignment.provider,
+      reason,
+      durationMs: 0,
+    };
+  });
+
+  const okCount = records.reduce((count, record) => count + (record.ok ? 1 : 0), 0);
+  const failed = records.length - okCount;
+  const envelope: BatchRunEnvelope = {
+    schemaVersion: 1,
+    total: records.length,
+    ok: okCount,
+    failed,
+    durationMs: now() - startedAt,
+    concurrency,
+    dryRun: true as const,
+    results: records,
+  };
+
+  // The dry run's ONE stdout write — same contract as a real run (D6).
+  deps.invocation.writeStdout(formatSuccessOutput(envelope, deps.outputMode, now));
+  return { envelope, exitCode: failed > 0 ? 1 : 0 };
+}
+
+// ---------------------------------------------------------------------------
 // Runner core
 // ---------------------------------------------------------------------------
 
@@ -264,6 +373,13 @@ export async function runBatch(
   }
 
   const now = deps.now ?? Date.now;
+
+  // D7: `--dry-run` stops here — assignment preview + pre-dispatch
+  // gates, no pool, no transport, no writes. (`--fail-fast` is
+  // meaningless without execution, so the envelope never carries it.)
+  if (options.dryRun === true) {
+    return runDryRun(manifest, assignments, concurrency, deps, now);
+  }
   const secrets = deps.handlerDeps.secrets ?? [];
   const total = manifest.operations.length;
   const records: BatchRunRecord[] = new Array<BatchRunRecord>(total);

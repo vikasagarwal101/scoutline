@@ -230,7 +230,16 @@ export function createCompositeConsumptionSink(
         try {
           await sink.record(event);
         } catch {
-          onWarning(COMPOSITE_SINK_FAILURE_WARNING);
+          // Warning delivery gets its OWN guard (review P2): a throwing
+          // warning channel is a defective channel, but it must not
+          // rethrow through here — that would reject `record()` itself
+          // and settle Promise.all before the other side's accounting
+          // write is awaited, breaking the isolation guarantee.
+          try {
+            onWarning(COMPOSITE_SINK_FAILURE_WARNING);
+          } catch {
+            // Nothing left to report through — swallow.
+          }
         }
       };
       await Promise.all([recordIsolated(primary), recordIsolated(secondary)]);

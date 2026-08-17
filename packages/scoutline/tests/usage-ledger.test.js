@@ -246,6 +246,40 @@ describe("usage-ledger: pruneExpiredDays", () => {
     const pruned = pruneExpiredDays(ledger, DEFAULT_USAGE_RETENTION_DAYS, "not-a-date");
     assert.deepStrictEqual(pruned, ledger);
   });
+
+  it("retentionDays 0 returns the ledger unchanged (a future cutoff must never wipe history)", () => {
+    const ledger = ledgerWithDays({ [T0_DAY_KEY]: {}, [dayKeyOffset(1)]: {} });
+    // Unguarded, cutoff = reference + 1 day → every key sorts below it.
+    assert.deepStrictEqual(pruneExpiredDays(ledger, 0, T0_DAY_KEY), ledger);
+  });
+
+  it("a negative retentionDays returns the ledger unchanged", () => {
+    const ledger = ledgerWithDays({ [T0_DAY_KEY]: {} });
+    assert.deepStrictEqual(pruneExpiredDays(ledger, -5, T0_DAY_KEY), ledger);
+  });
+
+  it("a non-finite retentionDays returns the ledger unchanged", () => {
+    const ledger = ledgerWithDays({ [T0_DAY_KEY]: {} });
+    assert.deepStrictEqual(pruneExpiredDays(ledger, Number.NaN, T0_DAY_KEY), ledger);
+  });
+
+  it("an in-window crafted __proto__ day key survives pruning as an own key", () => {
+    // parseUsageLedger deliberately keeps such keys as OWN data
+    // properties; pruning must preserve them the same way instead of
+    // dropping them through a plain object's __proto__ setter.
+    const crafted = { attempts: 1, firstTries: 1, exactUnits: 0, estimateUnits: 1, unknownCount: 0 };
+    // Built via JSON.parse: a JS object literal's `__proto__:` sets the
+    // prototype instead of creating an own key, and the point here is
+    // exactly the own-key case.
+    const ledger = JSON.parse(
+      `{"version":1,"days":{"__proto__":{"evil":{"search":${JSON.stringify(crafted)}}},"${dayKeyOffset(400)}":{}}}`,
+    );
+    const pruned = pruneExpiredDays(ledger, DEFAULT_USAGE_RETENTION_DAYS, T0_DAY_KEY);
+    assert.strictEqual(Object.getPrototypeOf(pruned.days), Object.prototype);
+    assert.ok(Object.hasOwn(pruned.days, "__proto__"), 'the crafted key is still an own key');
+    assert.deepStrictEqual(pruned.days["__proto__"], { evil: { search: crafted } });
+    assert.ok(!Object.hasOwn(pruned.days, dayKeyOffset(400)), "the out-of-window day is pruned");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -349,6 +383,75 @@ describe("usage-ledger: readUsageLedger (fail-open)", () => {
       estimateUnits: 3,
       unknownCount: 0,
     });
+  });
+
+  it("normalizes negative finite counters to 0 (persisted counters must be nonnegative)", async () => {
+    const contents = JSON.stringify({
+      version: 1,
+      days: {
+        "2026-08-17": {
+          zai: { search: { attempts: -5, firstTries: 2, exactUnits: -0.5, estimateUnits: -3, unknownCount: -1 } },
+        },
+      },
+    });
+    const ledger = await readUsageLedger("usage.json", {
+      readFile: async () => contents,
+      onWarning: () => {
+        throw new Error("no warning expected — per-field normalization is silent, like missing fields");
+      },
+    });
+    assert.deepStrictEqual(ledger.days["2026-08-17"].zai.search, {
+      attempts: 0,
+      firstTries: 2,
+      exactUnits: 0,
+      estimateUnits: 0,
+      unknownCount: 0,
+    });
+  });
+
+  it("a crafted __proto__ day/provider/capability key becomes an OWN key — no prototype mutation, no silent entry loss", async () => {
+    // Raw JSON string: JSON.parse produces OWN "__proto__" properties
+    // (a JS object literal would instead set the prototype, and the key
+    // would never reach the parser).
+    const contents = [
+      '{"version":1,"days":{',
+      '"__proto__":{"evil":{"search":{"attempts":1,"firstTries":1,"estimateUnits":1}}},',
+      '"2026-08-17":{',
+      '"__proto__":{"search":{"attempts":2,"firstTries":2,"estimateUnits":2}},',
+      '"zai":{"__proto__":{"attempts":3,"firstTries":3,"estimateUnits":3}}',
+      "}}}",
+    ].join("");
+    const ledger = await readUsageLedger("usage.json", {
+      readFile: async () => contents,
+      onWarning: () => {},
+    });
+    // Day level: the "__proto__" day survives as an own day key and the
+    // accumulator's prototype was never replaced.
+    assert.strictEqual(Object.getPrototypeOf(ledger.days), Object.prototype, "days keeps Object.prototype");
+    assert.ok(Object.hasOwn(ledger.days, "__proto__"), 'day key "__proto__" is an own key');
+    assert.deepStrictEqual(ledger.days["__proto__"], {
+      evil: { search: { attempts: 1, firstTries: 1, exactUnits: 0, estimateUnits: 1, unknownCount: 0 } },
+    });
+    // Provider level: same guarantee one level down.
+    const day = ledger.days["2026-08-17"];
+    assert.strictEqual(Object.getPrototypeOf(day), Object.prototype);
+    assert.ok(Object.hasOwn(day, "__proto__"), 'provider key "__proto__" is an own key');
+    assert.deepStrictEqual(day["__proto__"], {
+      search: { attempts: 2, firstTries: 2, exactUnits: 0, estimateUnits: 2, unknownCount: 0 },
+    });
+    // Capability level: same guarantee two levels down.
+    assert.ok(Object.hasOwn(day.zai, "__proto__"), 'capability key "__proto__" is an own key');
+    assert.deepStrictEqual(day.zai["__proto__"], {
+      attempts: 3,
+      firstTries: 3,
+      exactUnits: 0,
+      estimateUnits: 3,
+      unknownCount: 0,
+    });
+    // The parsed ledger is JSON-stable: the crafted keys round-trip.
+    const reparsed = JSON.parse(JSON.stringify(ledger));
+    assert.ok(Object.hasOwn(reparsed.days, "__proto__"));
+    assert.strictEqual(Object.keys(ledger.days).length, 2);
   });
 
   it("default reader reads the real filesystem; default onWarning stays silent on corrupt", async (t) => {
@@ -509,8 +612,43 @@ describe("usage-ledger: createUsageLedgerSink", () => {
       const onDisk = JSON.parse(await fs.readFile(filePath, "utf8"));
       assert.strictEqual(onDisk.version, USAGE_LEDGER_VERSION);
       assert.strictEqual(onDisk.days[T0_DAY_KEY].zai.search.attempts, 1);
-      assert.strictEqual(warnings.length, 1, "the corrupt read surfaced through the sink's channel");
-      assert.match(warnings[0], /not valid JSON/);
+      assert.strictEqual(
+        warnings.length,
+        1,
+        "the corrupt read surfaced through the sink's channel as ONE fixed message",
+      );
+      // Reader warnings are WRAPPED, not forwarded: the reader's own text
+      // ("... is not valid JSON; ...") must never cross the sink's
+      // redaction boundary.
+      assert.strictEqual(
+        warnings[0],
+        "usage ledger read failed; existing usage history was ignored",
+      );
+    });
+  });
+
+  it("a reader failure whose error text embeds a filesystem path surfaces as the fixed message, and the row still lands", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const warnings = [];
+      const filePath = path.join(dir, "usage.json");
+      const sink = createUsageLedgerSink({
+        filePath,
+        readFile: async () => {
+          const error = new Error(`EACCES: permission denied, open '${filePath}'`);
+          error.code = "EACCES";
+          throw error;
+        },
+        now: () => T0,
+        onWarning: (message) => warnings.push(message),
+      });
+      await assert.doesNotReject(sink.record(makeEvent()));
+      assert.strictEqual(warnings.length, 1);
+      assert.strictEqual(warnings[0], "usage ledger read failed; existing usage history was ignored");
+      assert.ok(!warnings[0].includes("EACCES"), "no raw errno text crosses the boundary");
+      assert.ok(!warnings[0].includes(filePath), "no filesystem path crosses the boundary");
+      // Fail-open read → empty ledger → the write still records the event.
+      const onDisk = JSON.parse(await fs.readFile(filePath, "utf8"));
+      assert.strictEqual(onDisk.days[T0_DAY_KEY].zai.search.attempts, 1);
     });
   });
 

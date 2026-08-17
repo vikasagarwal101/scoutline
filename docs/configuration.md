@@ -614,7 +614,8 @@ Retention is 90 days: on the first write of a new UTC day, day keys older
 than 90 days are pruned in the same write. There is no configuration
 surface for retention in v1. Writes are serialized through a lock file
 (`usage.json.lock`) and applied as an atomic temp-file rename; a ledger
-write failure degrades to a warning and never fails the command.
+read or write failure degrades to one fixed, detail-free warning and never
+fails the command.
 
 Read the ledger with `scoutline usage [--days N] [--provider <id>]`
 (default window: 7 days). The command is credential-free and makes no

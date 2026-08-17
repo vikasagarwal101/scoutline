@@ -179,11 +179,15 @@ describe("usage-ledger Ticket 3 — production consume wiring in main", () => {
 
     // D1: the ledger side writes the config-root sibling usage.json
     // through the pure path resolver; warnings default to stderr like
-    // the quota sink, so production passes only the file path.
+    // the quota sink, so production passes only the file path. The root
+    // comes from the INJECTED env (resolveConfigRootPure over
+    // MainDependencies.env — the same root `handleUsage` reads through),
+    // so embedded callers that inject SCOUTLINE_CONFIG_DIR record and
+    // report from one ledger (review P2).
     assert.match(
       indexSource,
-      /createUsageLedgerSink\(\{ filePath: resolveUsageLedgerPath\(\) \}\)/,
-      "ledger sink must sit at resolveUsageLedgerPath() (config-root sibling)",
+      /createUsageLedgerSink\(\{\s*filePath: resolveUsageLedgerPath\(\s*resolveConfigRootPure\(env, \{ homedir: os\.homedir\(\) \}\),\s*\),\s*\}\)/,
+      "ledger sink must sit at resolveUsageLedgerPath(resolveConfigRootPure(env, ...)) — the injected env's config-root sibling",
     );
 
     // Both wrapped sinks are the documented ones.

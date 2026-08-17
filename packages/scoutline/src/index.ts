@@ -43,6 +43,7 @@ import {
   usageCommand,
   USAGE_HELP,
   DEFAULT_USAGE_WINDOW_DAYS,
+  MAX_USAGE_WINDOW_DAYS,
 } from "./commands/usage.js";
 import { cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
 import type { PruneSelectors, PruneCachesResult } from "./lib/cache.js";
@@ -2240,10 +2241,14 @@ export async function handleUsage(
       );
     }
     const parsed = Number(rawDays);
-    if (!Number.isInteger(parsed) || parsed < 1) {
+    // Upper bound (review P2): values far beyond the window the ledger
+    // can ever hold (retention is 90 days) would otherwise pass and
+    // crash the cutoff computation — JS Dates only span ~±100,000,000
+    // days, so e.g. --days 1000000000 throws RangeError in usageDayKey.
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_USAGE_WINDOW_DAYS) {
       throw new ValidationError(
         `Invalid --days value "${rawDays}"`,
-        "--days must be an integer of at least 1. Examples: --days 7, --days 30.",
+        `--days must be an integer between 1 and ${MAX_USAGE_WINDOW_DAYS}. Examples: --days 7, --days 30.`,
       );
     }
     windowDays = parsed;
@@ -2814,7 +2819,17 @@ export async function main(
     (quotaRefreshEnabled
       ? createCompositeConsumptionSink(
           createQuotaStoreConsumptionSink({ store: quotaStore, now: now ?? Date.now }),
-          createUsageLedgerSink({ filePath: resolveUsageLedgerPath() }),
+          // The ledger path resolves from the SAME injected-env config
+          // root `handleUsage` reads through (resolveConfigRootPure over
+          // MainDependencies.env) — not from ambient process.env — so an
+          // embedded caller or hermetic run that injects
+          // SCOUTLINE_CONFIG_DIR sees its recorded usage in the root the
+          // `usage` command reports from (review P2).
+          createUsageLedgerSink({
+            filePath: resolveUsageLedgerPath(
+              resolveConfigRootPure(env, { homedir: os.homedir() }),
+            ),
+          }),
         )
       : undefined);
   // PB-T4: quota snapshot for selection. Declared here so

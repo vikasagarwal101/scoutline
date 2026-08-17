@@ -26,7 +26,7 @@
 
 import type { CommandResult, TextOutputMode } from "../command-invocation.js";
 import type { UsageCounters, UsageLedger } from "../lib/usage-ledger.js";
-import { usageDayKey } from "../lib/usage-ledger.js";
+import { isCanonicalUsageDayKey, usageDayKey } from "../lib/usage-ledger.js";
 
 /** One D8 envelope's unit note — also rendered as the table's caption. */
 export const USAGE_UNIT_NOTE =
@@ -34,6 +34,16 @@ export const USAGE_UNIT_NOTE =
 
 /** Default reporting window in days (DESIGN D8). */
 export const DEFAULT_USAGE_WINDOW_DAYS = 7;
+
+/**
+ * Maximum reporting window in days. Generous far beyond the 90-day
+ * retention horizon (any larger window shows exactly the retained
+ * history), while staying orders of magnitude below the ~±100,000,000
+ * day range JavaScript Dates can represent — an unvalidated `--days
+ * 1000000000` would otherwise pass the integer/≥1 checks and throw a
+ * RangeError computing the cutoff date.
+ */
+export const MAX_USAGE_WINDOW_DAYS = 100000;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -90,6 +100,11 @@ export function buildUsageReport(ledger: UsageLedger, options: UsageReportOption
 
   const providers = new Map<string, Map<string, UsageCounters>>();
   for (const [dayKey, dayProviders] of Object.entries(ledger.days)) {
+    // Data-integrity guard (review P2): a malformed day key must never
+    // be aggregated through the lexicographic bound — any non-date
+    // string sorts above the cutoff and would be counted as current
+    // usage. Non-canonical keys are skipped, not summed.
+    if (!isCanonicalUsageDayKey(dayKey)) continue;
     // Lower bound only: a future-dated day key (clock skew on the
     // writer) is still "within the window" rather than dropped — the
     // window is defined by age, not a two-sided range.
@@ -185,7 +200,17 @@ export function formatUsageReport(report: UsageReport): string {
     lines.push("No usage recorded in this window.");
     return lines.join("\n");
   }
-  lines.push(TABLE_COLUMNS.map((column) => column.header.padEnd(column.width)).join("").trimEnd());
+  // Headers share renderRow's per-column alignment so the right-aligned
+  // numeric columns line up with the data beneath them.
+  lines.push(
+    TABLE_COLUMNS.map((column) =>
+      column.align === "right"
+        ? column.header.padStart(column.width)
+        : column.header.padEnd(column.width),
+    )
+      .join("")
+      .trimEnd(),
+  );
   for (const provider of report.providers) {
     for (const row of provider.capabilities) {
       lines.push(
@@ -265,7 +290,8 @@ not report credit costs.
 
 Options:
   --days N         Window size in UTC days (default 7). Must be an
-                   integer of at least 1; --days 0 or a non-numeric
+                   integer between 1 and ${MAX_USAGE_WINDOW_DAYS};
+                   --days 0, a non-numeric value, or an out-of-range
                    value is a validation error.
   --provider <id>  Narrow the report to one provider. The id must be a
                    known provider id; unknown ids are a validation

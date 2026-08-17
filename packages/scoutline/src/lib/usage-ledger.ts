@@ -33,7 +33,7 @@ import * as path from "node:path";
 
 import type { ProviderId } from "../providers/types.js";
 import { resolveConfigRoot } from "./config-store.js";
-import type { ConsumptionEvent } from "./consumption.js";
+import type { ConsumptionEvent, ConsumptionSink } from "./consumption.js";
 
 // ---------------------------------------------------------------------------
 // Schema v1 (DESIGN D2)
@@ -339,6 +339,124 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+// ---------------------------------------------------------------------------
+// Ledger sink — the fs-writing ConsumptionSink (Ticket 2)
+// ---------------------------------------------------------------------------
+
+export interface UsageLedgerSinkOptions {
+  /**
+   * Absolute path to the ledger file — typically
+   * {@link resolveUsageLedgerPath}.
+   */
+  readonly filePath: string;
+  /**
+   * Injectable reader, shared shape with
+   * {@link UsageLedgerReadDeps.readFile}. Default: the real filesystem.
+   */
+  readonly readFile?: (filePath: string) => Promise<string>;
+  /**
+   * Injectable atomic write (temp-file + rename, DESIGN D4). Default:
+   * config-store's `atomicReplaceFile`, imported lazily so this module
+   * keeps no static fs import.
+   */
+  readonly writeFile?: (filePath: string, contents: string) => Promise<void>;
+  /**
+   * Injectable critical-section serializer for the read-modify-write.
+   * Default: `withAsyncFileLock` over the ledger's directory with lock
+   * identity `usage.json` — lock file `<dir>/usage.json.lock` (DESIGN
+   * D4) — imported lazily.
+   */
+  readonly lock?: <T>(criticalSection: () => Promise<T>) => Promise<T>;
+  /**
+   * Injectable clock. Defensive fallback only: shared execution always
+   * stamps `event.at` before the sink sees the event.
+   */
+  readonly now?: () => number;
+  /**
+   * Best-effort warning channel. Every internal failure — read, lock,
+   * or write — surfaces here as a REDACTED, detail-free message;
+   * `record()` never throws (DESIGN D3). Default: stderr, mirroring
+   * the quota-store sink.
+   */
+  readonly onWarning?: (message: string) => void;
+  /** Retention window in days (DESIGN D5). Default: 90. */
+  readonly retentionDays?: number;
+}
+
+/**
+ * The fixed, redacted failure message for {@link createUsageLedgerSink}.
+ * The raw error text is deliberately NOT interpolated: an underlying
+ * failure can embed provider/capability/timestamp detail that must never
+ * reach a warning (redaction parity with the quota-store sink, one
+ * degree stricter — no reason channel at all).
+ */
+const USAGE_LEDGER_SINK_WARNING = "usage ledger recording failed; the call was not counted";
+
+function defaultUsageLedgerWarning(message: string): void {
+  process.stderr.write(`scoutline: ${message}\n`);
+}
+
+async function defaultUsageLedgerWriteFile(filePath: string, contents: string): Promise<void> {
+  const { atomicReplaceFile } = await import("./config-store.js");
+  await atomicReplaceFile(filePath, contents);
+}
+
+async function defaultUsageLedgerLock<T>(
+  dir: string,
+  criticalSection: () => Promise<T>,
+): Promise<T> {
+  const { DEFAULT_LOCK_STALE_MS, DEFAULT_LOCK_TIMEOUT_MS, withAsyncFileLock } = await import(
+    "./async-file-lock.js"
+  );
+  return withAsyncFileLock(dir, USAGE_LEDGER_FILENAME, criticalSection, {
+    timeoutMs: DEFAULT_LOCK_TIMEOUT_MS,
+    staleMs: DEFAULT_LOCK_STALE_MS,
+    timeoutLabel: "Usage ledger",
+  });
+}
+
+/**
+ * Build the fs-writing {@link ConsumptionSink} for `usage.json` (DESIGN
+ * D3/D4): one {@link ConsumptionEvent} becomes a read-modify-write under
+ * the async file lock (`<dir>/usage.json.lock` — the `wx` lockfile
+ * serializes writers in-process and cross-process), committed via an
+ * atomic temp+rename, with the single day-roll prune pass of D5
+ * (`retentionDays` flowing into {@link mergeEventIntoLedger}).
+ *
+ * Fail-open like the rest of the ledger: `record()` NEVER throws. A
+ * corrupt or unreadable ledger yields an empty ledger (plus a routed
+ * warning) and the write recreates the file; a lock or write failure
+ * becomes one redacted warning and the recorded promise resolves so
+ * shared execution never observes an accounting failure.
+ */
+export function createUsageLedgerSink(options: UsageLedgerSinkOptions): ConsumptionSink {
+  const filePath = options.filePath;
+  const readFile = options.readFile ?? defaultUsageLedgerReadFile;
+  const writeFile = options.writeFile ?? defaultUsageLedgerWriteFile;
+  const now = options.now ?? Date.now;
+  const onWarning = options.onWarning ?? defaultUsageLedgerWarning;
+  const retentionDays = options.retentionDays ?? DEFAULT_USAGE_RETENTION_DAYS;
+  const dir = path.dirname(filePath);
+  const lock: <T>(criticalSection: () => Promise<T>) => Promise<T> =
+    options.lock ?? ((criticalSection) => defaultUsageLedgerLock(dir, criticalSection));
+  return {
+    async record(event: ConsumptionEvent): Promise<void> {
+      try {
+        // Defensive fallback only — shared execution always sets `at`.
+        const at = event.at ?? now();
+        await lock(async () => {
+          const ledger = await readUsageLedger(filePath, { readFile, onWarning });
+          const merged = mergeEventIntoLedger(ledger, { ...event, at }, { retentionDays });
+          await writeFile(filePath, `${JSON.stringify(merged, null, 2)}\n`);
+        });
+      } catch {
+        // Redacted by construction: no error text, no event detail.
+        onWarning(USAGE_LEDGER_SINK_WARNING);
+      }
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

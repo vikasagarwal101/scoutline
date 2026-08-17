@@ -8,7 +8,10 @@
  * warning, never a throw), and the config-root sibling path resolver
  * (resolveUsageLedgerPath). The fs-writing sink (Ticket 2,
  * createUsageLedgerSink) extends this file with lock/atomic-write
- * coverage.
+ * coverage: read-modify-write under the async file lock, atomic
+ * temp+rename, day-roll prune through the sink, temp-file cleanup on
+ * write failure, corrupt-file delete-and-recreate, and redaction of
+ * the sink's warnings.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -18,6 +21,7 @@ import * as path from "node:path";
 import {
   DEFAULT_USAGE_RETENTION_DAYS,
   USAGE_LEDGER_VERSION,
+  createUsageLedgerSink,
   emptyUsageLedger,
   mergeEventIntoLedger,
   pruneExpiredDays,
@@ -25,6 +29,7 @@ import {
   resolveUsageLedgerPath,
   usageDayKey,
 } from "../dist/lib/usage-ledger.js";
+import { atomicReplaceFile } from "../dist/lib/config-store.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
 // Fixed reference instants (UTC). T0 = 2026-08-17T12:00:00.000Z.
@@ -365,6 +370,186 @@ describe("usage-ledger: readUsageLedger (fail-open)", () => {
       await fs.writeFile(filePath, "{ broken");
       const corrupt = await readUsageLedger(filePath);
       assert.deepStrictEqual(corrupt, emptyUsageLedger());
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createUsageLedgerSink — fs-writing ConsumptionSink (Ticket 2)
+// ---------------------------------------------------------------------------
+
+describe("usage-ledger: createUsageLedgerSink", () => {
+  it("records an event into a fresh ledger file (default fs deps: real read + atomic write)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const warnings = [];
+      const filePath = path.join(dir, "usage.json");
+      const sink = createUsageLedgerSink({
+        filePath,
+        now: () => T0,
+        onWarning: (message) => warnings.push(message),
+      });
+      await sink.record(makeEvent());
+      const onDisk = JSON.parse(await fs.readFile(filePath, "utf8"));
+      assert.strictEqual(onDisk.version, USAGE_LEDGER_VERSION);
+      assert.deepStrictEqual(onDisk.days[T0_DAY_KEY].zai.search, {
+        attempts: 1,
+        firstTries: 1,
+        exactUnits: 0,
+        estimateUnits: 1,
+        unknownCount: 0,
+      });
+      assert.strictEqual(warnings.length, 0);
+    });
+  });
+
+  it("read-modify-write merges into the existing ledger (prior days preserved)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "usage.json");
+      await fs.writeFile(
+        filePath,
+        JSON.stringify({
+          version: 1,
+          days: {
+            "2026-08-16": {
+              tavily: { reader: { ...ZERO_COUNTERS, attempts: 4, firstTries: 3, estimateUnits: 4 } },
+            },
+          },
+        }),
+      );
+      const sink = createUsageLedgerSink({ filePath, now: () => T0, onWarning: () => {} });
+      await sink.record(makeEvent());
+      await sink.record(makeEvent({ attempt: 2 }));
+      const onDisk = JSON.parse(await fs.readFile(filePath, "utf8"));
+      assert.deepStrictEqual(onDisk.days["2026-08-16"].tavily.reader, {
+        attempts: 4,
+        firstTries: 3,
+        exactUnits: 0,
+        estimateUnits: 4,
+        unknownCount: 0,
+      });
+      assert.deepStrictEqual(onDisk.days[T0_DAY_KEY].zai.search, {
+        attempts: 2,
+        firstTries: 1,
+        exactUnits: 0,
+        estimateUnits: 2,
+        unknownCount: 0,
+      });
+    });
+  });
+
+  it("the async file lock serializes two concurrent records (final state = both applied, no lock residue)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const warnings = [];
+      const filePath = path.join(dir, "usage.json");
+      // Slow the read so both critical sections would interleave without
+      // the lock — a lock-free race loses one writer's update.
+      const slowRead = async (p) => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return fs.readFile(p, "utf8");
+      };
+      const sink = createUsageLedgerSink({
+        filePath,
+        readFile: slowRead,
+        now: () => T0,
+        onWarning: (message) => warnings.push(message),
+      });
+      await Promise.all([
+        sink.record(makeEvent({ provider: "zai" })),
+        sink.record(makeEvent({ provider: "tavily" })),
+      ]);
+      const onDisk = JSON.parse(await fs.readFile(filePath, "utf8"));
+      assert.strictEqual(onDisk.days[T0_DAY_KEY].zai.search.attempts, 1);
+      assert.strictEqual(onDisk.days[T0_DAY_KEY].tavily.search.attempts, 1);
+      const residue = (await fs.readdir(dir)).filter(
+        (name) => name.endsWith(".lock") || name.endsWith(".tmp"),
+      );
+      assert.deepStrictEqual(residue, [], "no lock or temp files remain after both records");
+      assert.strictEqual(warnings.length, 0);
+    });
+  });
+
+  it("write failure → warning only, never throws; the atomic-write temp file is cleaned up", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const warnings = [];
+      const filePath = path.join(dir, "usage.json");
+      const failingRename = async () => {
+        throw new Error("EIO: rename failed (simulated)");
+      };
+      const sink = createUsageLedgerSink({
+        filePath,
+        // The REAL atomic replace with a failing rename: its temp file must
+        // be unlinked in the failure path, not left behind.
+        writeFile: (p, contents) => atomicReplaceFile(p, contents, { rename: failingRename }),
+        now: () => T0,
+        onWarning: (message) => warnings.push(message),
+      });
+      await assert.doesNotReject(sink.record(makeEvent()));
+      assert.strictEqual(warnings.length, 1);
+      const entries = await fs.readdir(dir);
+      assert.ok(!entries.includes("usage.json"), "no ledger file was produced");
+      assert.deepStrictEqual(
+        entries.filter((name) => name.endsWith(".tmp")),
+        [],
+        "no temp-file litter on write failure",
+      );
+    });
+  });
+
+  it("corrupt existing file → replaced with a fresh valid ledger (delete-and-recreate), never throws", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "usage.json");
+      await fs.writeFile(filePath, "{ this is not json");
+      const warnings = [];
+      const sink = createUsageLedgerSink({
+        filePath,
+        now: () => T0,
+        onWarning: (message) => warnings.push(message),
+      });
+      await assert.doesNotReject(sink.record(makeEvent()));
+      const onDisk = JSON.parse(await fs.readFile(filePath, "utf8"));
+      assert.strictEqual(onDisk.version, USAGE_LEDGER_VERSION);
+      assert.strictEqual(onDisk.days[T0_DAY_KEY].zai.search.attempts, 1);
+      assert.strictEqual(warnings.length, 1, "the corrupt read surfaced through the sink's channel");
+      assert.match(warnings[0], /not valid JSON/);
+    });
+  });
+
+  it("sink warning is redacted (no provider/capability/timestamp) even when the error embeds them", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const warnings = [];
+      const sink = createUsageLedgerSink({
+        filePath: path.join(dir, "usage.json"),
+        writeFile: async () => {
+          throw new Error("ENOSPC: write failed for zai vision.chart at 12345");
+        },
+        now: () => T0,
+        onWarning: (message) => warnings.push(message),
+      });
+      await sink.record(
+        makeEvent({ provider: "zai", capabilityId: "vision.chart", at: 12345 }),
+      );
+      assert.strictEqual(warnings.length, 1);
+      // Mirrors the quota-sink redaction test in tests/consumption.test.js.
+      assert.ok(!warnings[0].includes("zai"), "no provider in warning");
+      assert.ok(!warnings[0].includes("vision.chart"), "no capability in warning");
+      assert.ok(!warnings[0].includes("12345"), "no timestamp in warning");
+    });
+  });
+
+  it("prunes expired days on day-roll through the sink (default retention = 90)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "usage.json");
+      const days = {
+        [dayKeyOffset(91)]: { zai: { search: { ...ZERO_COUNTERS, attempts: 1 } } },
+        [dayKeyOffset(1)]: { zai: { search: { ...ZERO_COUNTERS, attempts: 2 } } },
+      };
+      await fs.writeFile(filePath, JSON.stringify({ version: 1, days }));
+      const sink = createUsageLedgerSink({ filePath, now: () => T0, onWarning: () => {} });
+      // T0's day key is absent → day-roll → the single prune pass (D5).
+      await sink.record(makeEvent());
+      const onDisk = JSON.parse(await fs.readFile(filePath, "utf8"));
+      assert.deepStrictEqual(Object.keys(onDisk.days).sort(), [dayKeyOffset(1), T0_DAY_KEY]);
+      assert.strictEqual(onDisk.days[T0_DAY_KEY].zai.search.attempts, 1);
     });
   });
 });

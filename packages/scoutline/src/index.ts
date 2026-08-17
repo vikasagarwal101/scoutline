@@ -1760,8 +1760,16 @@ Manifest (schema v1, strict parse - unknown fields reject):
 Options:
   --concurrency <n>  Parallel operations (integer 1-8; default 4)
   --fail-fast        Stop scheduling after the first failed operation
-  --dry-run          Validate the manifest and preview the assignment
+  --dry-run          Validate the manifest and preview the full
+                     assignment without contacting any provider
   --help             Show this help
+
+Dry run boundary (--dry-run): every operation still gets its resolved
+provider (pin or distribution) and its pre-dispatch gates — configured
+AND capability-advertised, reason: ready | provider not configured |
+capability not advertised — but nothing executes: no transport, no
+cache reads or writes, no per-op output files. Per-handler flag
+semantics (post-compiler) are not validated in a dry run.
 
 Examples:
   scoutline batch manifest.json
@@ -1915,6 +1923,7 @@ async function handleBatch(
     {
       ...(concurrency !== undefined ? { concurrency } : {}),
       failFast: flags["fail-fast"] === true,
+      dryRun: flags["dry-run"] === true,
     },
   );
   return exitCode;

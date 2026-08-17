@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { main } from "../dist/index.js";
+import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 
 /**
  * Ticket 4 — `handleBatch` + dispatch + stdin manifest (DESIGN D1, D8).
@@ -129,19 +130,6 @@ function fakeInvocation(readStdin) {
   };
 }
 
-/** Fresh in-memory response cache (search-fanout.test.js pattern). */
-function freshCache() {
-  const store = new Map();
-  return {
-    async get(key) {
-      return store.has(key) ? store.get(key) : null;
-    },
-    async set(key, value) {
-      store.set(key, value);
-    },
-  };
-}
-
 /** Fixed clock so envelope durations are deterministic (0ms) and the
  * stdin run can be compared byte-for-byte with the file run. */
 const FIXED_NOW = () => 1755400000000;
@@ -165,21 +153,13 @@ function writeManifest(manifest) {
 
 /** Base MainDependencies for a batch dispatch run. */
 function batchDeps(adapter, descriptors, extra = {}) {
-  return {
+  return hermeticMainDeps({
     invocation: adapter,
     env: {},
     providerDescriptors: descriptors.map((entry) => entry.descriptor),
-    // Hermeticity: never let the machine's real config.json fan-out
-    // switch leak into these runs (with ambient fanout=true, every
-    // pinned op additionally captures the "explicit pin" suppress
-    // notice — legitimate per D6, but not what these tests pin).
-    configFanout: false,
-    searchCache: freshCache(),
-    searchSleep: async () => {},
-    searchRandom: () => 0.5,
     now: FIXED_NOW,
     ...extra,
-  };
+  });
 }
 
 const twoProviderManifest = {

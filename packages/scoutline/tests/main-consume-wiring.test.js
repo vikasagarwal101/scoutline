@@ -47,6 +47,7 @@ import {
 import { createUsageLedgerSink, resolveUsageLedgerPath } from "../dist/lib/usage-ledger.js";
 import { createDefaultQuotaStore } from "../dist/lib/quota-store.js";
 import { withTempDir } from "./helpers/temp-dir.js";
+import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC_DIR = path.resolve(__dirname, "..", "src");
@@ -208,15 +209,18 @@ describe("usage-ledger Ticket 3 — production consume wiring in main", () => {
         const sink = createInMemoryConsumptionSink();
         let status;
         await withRedirectedRoots(configDir, cacheDir, async () => {
-          status = await main(["--provider", "tavily,exa", "search", "q"], {
-            invocation: drive.adapter,
-            env: {},
-            providerDescriptors: drive.descriptors,
-            searchCache: drive.cache,
-            searchSleep: async () => {},
-            searchRandom: () => 0.5,
-            consume: sink,
-          });
+          status = await main(
+            ["--provider", "tavily,exa", "search", "q"],
+            hermeticMainDeps({
+              invocation: drive.adapter,
+              env: {},
+              providerDescriptors: drive.descriptors,
+              searchCache: drive.cache,
+              searchSleep: async () => {},
+              searchRandom: () => 0.5,
+              consume: sink,
+            }),
+          );
         });
         assert.strictEqual(status, 0, `exit 0 expected, stderr: ${JSON.stringify(drive.stderr)}`);
 
@@ -258,14 +262,17 @@ describe("usage-ledger Ticket 3 — production consume wiring in main", () => {
         const drive = makeFanoutDrive();
         let status;
         await withRedirectedRoots(configDir, cacheDir, async () => {
-          status = await main(["--provider", "tavily,exa", "search", "q"], {
-            invocation: drive.adapter,
-            env: {},
-            providerDescriptors: drive.descriptors,
-            searchCache: drive.cache,
-            searchSleep: async () => {},
-            searchRandom: () => 0.5,
-          });
+          status = await main(
+            ["--provider", "tavily,exa", "search", "q"],
+            hermeticMainDeps({
+              invocation: drive.adapter,
+              env: {},
+              providerDescriptors: drive.descriptors,
+              searchCache: drive.cache,
+              searchSleep: async () => {},
+              searchRandom: () => 0.5,
+            }),
+          );
         });
         assert.strictEqual(status, 0, `exit 0 expected, stderr: ${JSON.stringify(drive.stderr)}`);
         assert.strictEqual(drive.state.invokes, 2, "both fan-out arms still invoked");

@@ -43,6 +43,7 @@ import * as path from "node:path";
 import { main } from "../dist/index.js";
 import { MAX_CONTEXT_BYTES } from "../dist/lib/context-file.js";
 import { withTempDir } from "./helpers/temp-dir.js";
+import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 
 // ---------------------------------------------------------------------------
 // Test doubles (tests/search-context.test.js / research-context.test.js
@@ -136,18 +137,6 @@ function makeAdapter({ stdin = "" } = {}) {
   return { adapter, stdout, stderr, stdinCalls: () => stdinCalls };
 }
 
-const freshCache = () => {
-  const store = new Map();
-  return {
-    async get(key) {
-      return store.has(key) ? store.get(key) : null;
-    },
-    async set(key, value) {
-      store.set(key, value);
-    },
-  };
-};
-
 const researchOk = (report) => (request) => ({
   schemaVersion: 1,
   query: request.query,
@@ -160,26 +149,28 @@ const SRC = (title, url) => ({ title, url, summary: `about ${title}` });
 
 async function runSearch(argv, { providers, stdin = "" } = {}) {
   const io = makeAdapter({ stdin });
-  const status = await main(argv, {
-    invocation: io.adapter,
-    env: {},
-    providerDescriptors: providers.map((p) => p.descriptor),
-    loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
-    searchCache: freshCache(),
-    searchSleep: async () => {},
-    searchRandom: () => 0.5,
-  });
+  const status = await main(
+    argv,
+    hermeticMainDeps({
+      invocation: io.adapter,
+      env: {},
+      providerDescriptors: providers.map((p) => p.descriptor),
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+    }),
+  );
   return { status, stdout: io.stdout, stderr: io.stderr, stdinCalls: io.stdinCalls };
 }
 
 async function runResearch(argv, { providers, stdin = "" } = {}) {
   const io = makeAdapter({ stdin });
-  const status = await main(argv, {
-    invocation: io.adapter,
-    env: { TAVILY_API_KEY: "tv", EXA_API_KEY: "exa" },
-    providerDescriptors: providers.map((p) => p.descriptor),
-    researchCache: freshCache(),
-  });
+  const status = await main(
+    argv,
+    hermeticMainDeps({
+      invocation: io.adapter,
+      env: { TAVILY_API_KEY: "tv", EXA_API_KEY: "exa" },
+      providerDescriptors: providers.map((p) => p.descriptor),
+    }),
+  );
   return { status, stdout: io.stdout, stderr: io.stderr, stdinCalls: io.stdinCalls };
 }
 

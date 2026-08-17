@@ -53,6 +53,7 @@ import { TimeoutError } from "../dist/lib/errors.js";
 import { RESEARCH_HELP } from "../dist/commands/research.js";
 import { computeAsyncJobStateHash } from "../dist/lib/async-job-state.js";
 import { withTempDir } from "./helpers/temp-dir.js";
+import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -159,12 +160,12 @@ async function runResearch(argv, { providers, stdin, env, captureResume = false 
   // command assertions run against exactly what the SIGINT handler
   // would print (the `tests/async-fallback.test.js` injection shape).
   const resumes = [];
-  const deps = {
+  const deps = hermeticMainDeps({
     invocation: io.adapter,
     env: env ?? { TAVILY_API_KEY: "tv", EXA_API_KEY: "exa" },
     providerDescriptors: providers.map((p) => p.descriptor),
     researchCache: cache,
-  };
+  });
   if (captureResume) {
     deps.researchRegisterInterrupt = (stateFilePath, resumeCommand) => {
       resumes.push({ stateFilePath, resumeCommand });

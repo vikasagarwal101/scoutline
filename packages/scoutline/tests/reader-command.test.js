@@ -66,6 +66,7 @@ import { read, READ_HELP } from "../dist/commands/read.js";
 import { OUTPUT_MODES } from "../dist/lib/output.js";
 import { UnsupportedCapabilityError } from "../dist/lib/errors.js";
 import { configuredSecrets } from "../dist/lib/redact.js";
+import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 
 // ---------------------------------------------------------------------------
 // Offline hermeticity: clear ambient Provider credentials for this file
@@ -306,22 +307,13 @@ function makeMainDeps({ fetch, zaiConfigured = true } = {}) {
     minimax,
     cacheRec,
     sleepRandom,
-    mainDeps: {
+    mainDeps: hermeticMainDeps({
       env: { Z_AI_API_KEY: "zai-key", MINIMAX_API_KEY: "minimax-key" },
       providerDescriptors: [zai.descriptor, minimax.descriptor],
       readerCache: cacheRec.cache,
       readerSleep: sleepRandom.sleep,
       readerRandom: sleepRandom.random,
-      // Search and Repository seams are unused by read but main() accepts
-      // them; pass through the same in-memory execution so the deps
-      // object stays hermetic.
-      searchCache: cacheRec.cache,
-      searchSleep: sleepRandom.sleep,
-      searchRandom: sleepRandom.random,
-      repositoryCache: cacheRec.cache,
-      repositorySleep: sleepRandom.sleep,
-      repositoryRandom: sleepRandom.random,
-    },
+    }),
   };
 }
 

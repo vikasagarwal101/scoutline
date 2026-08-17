@@ -253,8 +253,8 @@ single-directory glob (`.jpg .jpeg .png .webp .mp4 .mov .m4v .avi .webm
 .wmv`; the extension infers `video` vs `analyze`) or a one-vision-op
 manifest, `{filename}`/`{filepath}` prompt substitution, sanitized per-input
 result files plus `summary.json` under `--out` (required for more than one
-input), and distribution across eligible vision providers (`--concurrency`
-default 1).
+input; the directory is created if missing), and distribution across
+eligible vision providers (`--concurrency` default 1).
 
 ### Capability Matrix
 

@@ -24,21 +24,36 @@ captured in its own result (never re-emitted live).
 - **Allowlist (capability operations only):** `search`, `read`, `research`,
   `repo`, `vision`, `crawl`, `map` — anything else rejects with one stable
   message. Manifests come from a file or `-` on stdin (the operations
-  themselves can never read stdin).
+  themselves can never read stdin). Input fields are scoped to the
+  subcommands whose handlers consume them (repo `language` → `search`;
+  repo `maxChars` → `search`/`read`/`brief`), so a manifest can never
+  request an option that would be silently ignored.
 - **Flags:** `--concurrency <n>` (integer 1-8, default 4; `vision batch`
   default 1), `--fail-fast` (stop scheduling after the first failure;
   unscheduled ops are recorded as skipped), and `--dry-run` — the full
   assignment preview with pre-dispatch gates (configured +
   capability-advertised), no transport, no cache reads/writes, no output
   files, and per-handler flag semantics explicitly not validated.
+  Boolean-only flags take no value (`--dry-run false` rejects instead of
+  silently running providers); an unknown global `--provider` id rejects
+  the whole batch before the pool.
 - **Per-op `output`:** optional output paths write the captured stdout via
   temp-file + rename; a write failure is recorded per op (`outputWriteError`)
-  without failing the operation.
+  without failing the operation. Duplicate output targets reject at
+  manifest parse (naming the earlier owner), and a successful op that
+  emitted no stdout writes no zero-byte file (recorded via
+  `outputWriteError` instead).
 - **`vision batch`:** a single-directory glob (`.jpg/.jpeg/.png/.webp/
   .mp4/.mov/.m4v/.avi/.webm/.wmv`; the extension infers `video` vs
   `analyze`) or a one-vision-op manifest, `{filename}`/`{filepath}` prompt
-  substitution, sanitized per-input result files under `--out` (required for
-  more than one input) plus `<out>/summary.json`.
+  substitution (inserted literally — `$&` in a filename is never a
+  replacement token), sanitized per-input result files under `--out`
+  (required for more than one input; the directory is created if missing)
+  plus `<out>/summary.json` (written via temp-file + rename; an operation
+  named `summary` rejects when `--out` is used so nothing collides with
+  it). `--dry-run` validates existence and extension for BOTH `diff`
+  sources (`expected` + `actual`), and a valueless `--prompt` rejects
+  rather than silently using the default.
 
 ### Documentation
 - README usage plus a Batch Manifest Runner section, `skills/scoutline/SKILL.md`

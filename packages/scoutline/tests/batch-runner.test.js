@@ -124,6 +124,7 @@ async function runBatchUnderTest(
     now,
     writeOutputFile,
     renameOutputFile,
+    removeOutputFile,
     options = {} },
   ...operations
 ) {
@@ -142,6 +143,7 @@ async function runBatchUnderTest(
       ...(now !== undefined ? { now } : {}),
       ...(writeOutputFile !== undefined ? { writeOutputFile } : {}),
       ...(renameOutputFile !== undefined ? { renameOutputFile } : {}),
+      ...(removeOutputFile !== undefined ? { removeOutputFile } : {}),
     },
     options,
   );
@@ -389,6 +391,75 @@ describe("batch runner result ordering and per-op capture", () => {
     );
     for (const record of envelope.results) {
       assert.strictEqual(JSON.parse(record.stdout).provider, record.resolvedProvider);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Console suppression (P1 review fix: per-op runQuietly coordinates the
+// same console quieting the production Node adapter performs, so library
+// console output during an op can never escape to the process streams)
+// ---------------------------------------------------------------------------
+
+describe("batch runner console suppression", () => {
+  it("suppresses console.log/warn/error during operations and restores them after (single summary write intact)", async () => {
+    const realLog = console.log;
+    const realWarn = console.warn;
+    const realError = console.error;
+    const logCalls = [];
+    const warnCalls = [];
+    const errorCalls = [];
+    // The spies play the "originals" the suppression captures: if the
+    // per-op runQuietly quieted nothing, the handler's console calls
+    // would land in them and the test fails.
+    const logSpy = (...values) => logCalls.push(values);
+    const warnSpy = (...values) => warnCalls.push(values);
+    const errorSpy = (...values) => errorCalls.push(values);
+    console.log = logSpy;
+    console.warn = warnSpy;
+    console.error = errorSpy;
+    try {
+      // A real handler funnels its work through invokeCommand, whose
+      // runQuietly wraps the behavior — that is where a provider or
+      // dependency library's console output originates and where the
+      // per-op adapter's quieting must hold.
+      const handler = (args, outputMode, deps) =>
+        invokeCommand(
+          deps.invocation,
+          async () => {
+            await new Promise((resolve) => setImmediate(resolve));
+            console.log("library noise", args[0]);
+            console.warn("dependency warning");
+            console.error("dependency error");
+            return { kind: "data", data: { op: args[0] } };
+          },
+          outputMode,
+        );
+      const { envelope, exitCode, global } = await runBatchUnderTest(
+        { handler, options: { concurrency: 2 } },
+        searchOp("s1"),
+        searchOp("s2"),
+      );
+      assert.strictEqual(exitCode, 0);
+      assert.strictEqual(envelope.ok, 2);
+      assert.strictEqual(logCalls.length, 0, "console.log during ops must be suppressed");
+      assert.strictEqual(warnCalls.length, 0, "console.warn during ops must be suppressed");
+      assert.strictEqual(errorCalls.length, 0, "console.error during ops must be suppressed");
+      // The ops still captured their own stdout; the batch still wrote
+      // exactly one summary envelope.
+      assert.strictEqual(global.stdoutWrites.length, 1);
+      for (const record of envelope.results) {
+        assert.strictEqual(record.ok, true);
+        assert.strictEqual(typeof record.stdout, "string");
+      }
+      // Restored: the outermost quiet run put the spies back in place.
+      assert.strictEqual(console.log, logSpy, "console.log restored after the batch");
+      assert.strictEqual(console.warn, warnSpy, "console.warn restored after the batch");
+      assert.strictEqual(console.error, errorSpy, "console.error restored after the batch");
+    } finally {
+      console.log = realLog;
+      console.warn = realWarn;
+      console.error = realError;
     }
   });
 });
@@ -661,6 +732,64 @@ describe("batch runner per-op output files", () => {
       // The batch still produced its one summary envelope.
       assert.strictEqual(global.stdoutWrites.length, 1);
     }
+  });
+
+  it("removes the temp file when the rename fails (no residue behind a failed write)", async () => {
+    const written = [];
+    const removed = [];
+    const writeOutputFile = async (path, data) => {
+      written.push({ path, data });
+    };
+    const renameOutputFile = async () => {
+      throw new Error("rename denied");
+    };
+    const removeOutputFile = async (path) => {
+      removed.push(path);
+    };
+    const handler = async (args, outputMode, deps) => {
+      deps.invocation.writeStdout(JSON.stringify({ op: args[0] }));
+      return 0;
+    };
+    const { envelope, exitCode, global } = await runBatchUnderTest(
+      { handler, writeOutputFile, renameOutputFile, removeOutputFile },
+      searchOp("s1", "hello", "/tmp/never/s1.json"),
+    );
+    assert.strictEqual(exitCode, 0, "a rename failure must not fail the batch (D9)");
+    const record = envelope.results[0];
+    assert.strictEqual(record.ok, true);
+    assert.strictEqual(record.outputWriteError, "rename denied");
+    // The temp file the write produced was removed after the rename
+    // failed — the failed write leaves nothing behind.
+    assert.deepStrictEqual(written.map((entry) => entry.path), ["/tmp/never/s1.json.tmp-0"]);
+    assert.deepStrictEqual(removed, ["/tmp/never/s1.json.tmp-0"]);
+    assert.strictEqual(global.stdoutWrites.length, 1);
+  });
+
+  it("a successful op with an output target but NO stdout writes no file and records the anomaly", async () => {
+    const writeOutputFile = async () => {
+      throw new Error("must not be called");
+    };
+    const renameOutputFile = async () => {
+      throw new Error("must not be called");
+    };
+    // Exit 0 with zero captured stdout: a consumer must never read a
+    // zero-byte output file marked ok — no write happens and the anomaly
+    // is surfaced as outputWriteError (ok stays true: ok === exit 0).
+    const handler = async () => 0;
+    const { envelope, exitCode } = await runBatchUnderTest(
+      { handler, writeOutputFile, renameOutputFile },
+      searchOp("s1", "silent", "/tmp/never/s1.json"),
+    );
+    assert.strictEqual(exitCode, 0);
+    assert.strictEqual(envelope.ok, 1);
+    const record = envelope.results[0];
+    assert.strictEqual(record.ok, true);
+    assert.strictEqual(record.output, "/tmp/never/s1.json", "the declared target stays visible");
+    assert.strictEqual(record.stdout, undefined);
+    assert.ok(
+      typeof record.outputWriteError === "string" && record.outputWriteError.includes("no stdout"),
+      `outputWriteError must explain the missing stdout, got ${JSON.stringify(record.outputWriteError)}`,
+    );
   });
 
   it("fail-fast: unscheduled and failed ops write nothing; a drained success still writes", async () => {

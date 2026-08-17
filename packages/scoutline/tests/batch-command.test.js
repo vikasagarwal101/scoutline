@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -146,8 +146,18 @@ function freshCache() {
  * stdin run can be compared byte-for-byte with the file run. */
 const FIXED_NOW = () => 1755400000000;
 
+/** Every mkdtempSync directory this suite creates (review fix: no leaks). */
+const tempDirs = [];
+
+after(() => {
+  for (const dir of tempDirs) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function writeManifest(manifest) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-batch-"));
+  tempDirs.push(dir);
   const file = path.join(dir, "manifest.json");
   fs.writeFileSync(file, JSON.stringify(manifest), "utf8");
   return { dir, file, text: JSON.stringify(manifest) };
@@ -450,6 +460,70 @@ describe("batch flag validation", () => {
     assert.strictEqual(envelope.ok, 2);
     assert.strictEqual(envelope.concurrency, 2);
   });
+
+  it("rejects a value on the boolean-only --dry-run flag (`--dry-run false` must not run providers)", async () => {
+    const tav = makeSearchDescriptor("tavily", [
+      { title: "Tav", url: "https://example.com/tav", summary: "s" },
+    ]);
+    const { file } = writeManifest(twoProviderManifest);
+    const { adapter, stdout, stderr } = fakeInvocation();
+
+    const status = await main(
+      ["batch", file, "--dry-run", "false"],
+      batchDeps(adapter, [tav]),
+    );
+
+    // The safety boundary must not be silently disabled: a valued
+    // --dry-run rejects with VALIDATION_ERROR and NEVER dispatches.
+    assert.strictEqual(status, 1);
+    assert.strictEqual(stdout.length, 0);
+    const parsed = JSON.parse(stderr[0]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.ok(parsed.error.includes("--dry-run"));
+    assert.strictEqual(tav.invokes.length, 0, "a rejected --dry-run value must not run providers");
+  });
+
+  it("rejects a value on the boolean-only --fail-fast flag", async () => {
+    const { file } = writeManifest(twoProviderManifest);
+    const { adapter, stdout, stderr } = fakeInvocation();
+
+    const status = await main(
+      ["batch", file, "--fail-fast", "no"],
+      batchDeps(adapter, [
+        makeSearchDescriptor("tavily", [
+          { title: "Tav", url: "https://example.com/tav", summary: "s" },
+        ]),
+      ]),
+    );
+
+    assert.strictEqual(status, 1);
+    assert.strictEqual(stdout.length, 0);
+    const parsed = JSON.parse(stderr[0]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.ok(parsed.error.includes("--fail-fast"));
+  });
+
+  it("rejects an unknown global --provider id as a whole-batch VALIDATION_ERROR (no per-op dispatch)", async () => {
+    const tav = makeSearchDescriptor("tavily", [
+      { title: "Tav", url: "https://example.com/tav", summary: "s" },
+    ]);
+    const { file } = writeManifest(twoProviderManifest);
+    const { adapter, stdout, stderr } = fakeInvocation();
+
+    const status = await main(
+      ["--provider", "not-a-provider", "batch", file],
+      batchDeps(adapter, [tav]),
+    );
+
+    // The global pin is validated at assignment, BEFORE the pool: the
+    // failure is a whole-batch error envelope, never N per-op failures.
+    assert.strictEqual(status, 1);
+    assert.strictEqual(stdout.length, 0);
+    const parsed = JSON.parse(stderr[0]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.ok(parsed.error.includes('unknown provider "not-a-provider"'));
+    assert.strictEqual(tav.invokes.length, 0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -466,6 +540,17 @@ describe("batch help", () => {
     assert.strictEqual(stdout.length, 1);
     assert.ok(stdout[0].includes("scoutline batch"));
     assert.ok(stdout[0].includes("--concurrency"));
+  });
+
+  it("MAIN_HELP lists the batch command (primary CLI discoverability)", async () => {
+    const { adapter, stdout } = fakeInvocation();
+
+    const status = await main(["--help"], batchDeps(adapter, []));
+
+    assert.strictEqual(status, 0);
+    assert.strictEqual(stdout.length, 1);
+    assert.ok(stdout[0].includes("batch"), "MAIN_HELP must mention batch");
+    assert.ok(stdout[0].includes("scoutline batch --help"), "MAIN_HELP help list must include batch");
   });
 
   it("bare `batch` renders BATCH_HELP too (no manifest argument)", async () => {
@@ -719,6 +804,7 @@ describe("batch --dry-run gates and assignment preview (D7)", () => {
     ]);
     const { cache, counters } = countingCache();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-batch-"));
+    tempDirs.push(dir);
     const outputPath = path.join(dir, "out.json");
     const file = path.join(dir, "manifest.json");
     fs.writeFileSync(

@@ -243,8 +243,13 @@ const INPUT_FIELD_TABLES: Readonly<Record<AllowedBatchCommand, readonly FieldEnt
       "path",
       { kind: "string", requiredFor: ["read"], allowedFor: ["tree", "read", "brief"] },
     ],
-    ["language", { kind: "string", enumValues: REPO_LANGUAGE_VALUES }],
-    ["maxChars", { kind: "number" }],
+    // Scoped to the subcommands whose handlers consume the compiled
+    // flag: the repo handler threads `language` only into `search`, and
+    // `maxChars` into `search`/`read`/`brief` (`tree` ignores both) —
+    // a manifest must never request an option the handler silently
+    // discards.
+    ["language", { kind: "string", enumValues: REPO_LANGUAGE_VALUES, allowedFor: ["search"] }],
+    ["maxChars", { kind: "number", allowedFor: ["search", "read", "brief"] }],
     ["focus", { kind: "string", allowedFor: ["brief"] }],
     ["depth", { kind: "number", allowedFor: ["tree", "brief"] }],
     ["noCache", { kind: "boolean" }],
@@ -583,6 +588,10 @@ export function parseBatchManifest(raw: unknown, deps: BatchManifestDeps): Batch
   }
 
   const seenNames = new Set<string>();
+  // Declared output targets, path -> owning op name: two ops writing the
+  // same target would silently overwrite each other at the D9 rename, so
+  // duplicates reject at parse naming the earlier owner.
+  const seenOutputs = new Map<string, string>();
   const operations: BatchOperation[] = [];
   for (let index = 0; index < rawOperations.length; index++) {
     const where = `operations[${index}]`;
@@ -666,6 +675,13 @@ export function parseBatchManifest(raw: unknown, deps: BatchManifestDeps): Batch
       if (!deps.dirExists(dir)) {
         throw new ValidationError(`${where}: output directory "${dir}" does not exist`);
       }
+      const priorOwner = seenOutputs.get(rawOutput);
+      if (priorOwner !== undefined) {
+        throw new ValidationError(
+          `${where}: duplicate output target "${rawOutput}" (already declared by operation "${priorOwner}")`,
+        );
+      }
+      seenOutputs.set(rawOutput, name);
       output = rawOutput;
     }
 

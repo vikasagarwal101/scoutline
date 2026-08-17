@@ -24,6 +24,7 @@
  */
 
 import { ValidationError } from "./errors.js";
+import { PROVIDER_IDS } from "../providers/types.js";
 import { batchCommandCapabilityId } from "./batch-manifest.js";
 import type { AllowedBatchCommand, BatchManifest } from "./batch-manifest.js";
 import type { ProviderCapability, ProviderDescriptor, ProviderId } from "../providers/types.js";
@@ -103,6 +104,21 @@ export function assignBatchProviders(
   manifest: BatchManifest,
   deps: BatchAssignmentDeps,
 ): readonly BatchProviderAssignment[] {
+  // The global `--provider` pin arrives from argv without runtime
+  // validation (direct handlers validate it inside provider selection);
+  // assignment must reject an unknown id HERE — as a whole-batch
+  // VALIDATION_ERROR before the pool — instead of letting every op
+  // fail downstream on the provider parse/lookup error.
+  if (
+    deps.globalProvider !== undefined &&
+    !(PROVIDER_IDS as readonly string[]).includes(deps.globalProvider)
+  ) {
+    throw new ValidationError(
+      `unknown provider "${deps.globalProvider}". Built-in providers: ${PROVIDER_IDS.join(", ")}.`,
+      "Pass a known provider id via --provider, or omit --provider to use distribution.",
+    );
+  }
+
   const eligibleByCapability = new Map<ProviderCapability, readonly ProviderDescriptor[]>();
   const cursors = new Map<ProviderCapability, number>();
 

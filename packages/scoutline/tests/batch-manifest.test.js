@@ -558,16 +558,50 @@ describe("batch manifest repo input validation", () => {
 
   it("rejects a bad language enum", async () => {
     await assertRejects(
-      manifest(op("repo", "repo", { subcommand: "tree", repository: "o/n", language: "fr" })),
+      manifest(op("repo", "repo", { subcommand: "search", repository: "o/n", query: "x", language: "fr" })),
       'operations[0].input: field "language" must be one of: en, zh',
     );
   });
 
   it("rejects a wrong type on a number field", async () => {
     await assertRejects(
-      manifest(op("repo", "repo", { subcommand: "tree", repository: "o/n", maxChars: "500" })),
+      manifest(op("repo", "repo", { subcommand: "read", repository: "o/n", path: "README.md", maxChars: "500" })),
       'operations[0].input: field "maxChars" must be a number',
     );
+  });
+
+  it("rejects language on tree/read/brief (the repo handler honors it for search only)", async () => {
+    for (const subcommand of ["tree", "read", "brief"]) {
+      const input = { subcommand, repository: "o/n" };
+      if (subcommand === "read") input.path = "README.md";
+      await assertRejects(
+        manifest(op("repo", "repo", { ...input, language: "en" })),
+        `operations[0].input: field "language" is not valid for repo subcommand "${subcommand}"`,
+      );
+    }
+  });
+
+  it("rejects maxChars on tree (the tree handler ignores it)", async () => {
+    await assertRejects(
+      manifest(op("repo", "repo", { subcommand: "tree", repository: "o/n", maxChars: 500 })),
+      'operations[0].input: field "maxChars" is not valid for repo subcommand "tree"',
+    );
+  });
+
+  it("accepts maxChars on search, read, and brief repo subcommands", async () => {
+    const m = await load();
+    const parsed = m.parseBatchManifest(
+      manifest(
+        op("rs", "repo", { subcommand: "search", repository: "o/n", query: "x", maxChars: 100, language: "en" }),
+        op("rr", "repo", { subcommand: "read", repository: "o/n", path: "README.md", maxChars: 100 }),
+        op("rb", "repo", { subcommand: "brief", repository: "o/n", maxChars: 100 }),
+      ),
+      DEPS,
+    );
+    assert.strictEqual(parsed.operations.length, 3);
+    for (const operation of parsed.operations) {
+      assert.strictEqual(operation.input.maxChars, 100);
+    }
   });
 });
 
@@ -749,6 +783,31 @@ describe("batch manifest output validation", () => {
         schemaVersion: 1,
         operations: [{ name: "s", command: "search", input: { query: "q" }, output: "/out/s.json" }],
       },
+    );
+  });
+
+  it("rejects duplicate output targets naming the earlier owner (review fix: no silent overwrite)", async () => {
+    await assertRejects(
+      manifest(
+        op("first", "search", { query: "a" }, { output: "/out/same.json" }),
+        op("second", "search", { query: "b" }, { output: "/out/same.json" }),
+      ),
+      'operations[1]: duplicate output target "/out/same.json" (already declared by operation "first")',
+    );
+  });
+
+  it("accepts distinct output targets across operations", async () => {
+    const m = await load();
+    const parsed = m.parseBatchManifest(
+      manifest(
+        op("first", "search", { query: "a" }, { output: "/out/a.json" }),
+        op("second", "search", { query: "b" }, { output: "/out/b.json" }),
+      ),
+      DEPS,
+    );
+    assert.deepStrictEqual(
+      parsed.operations.map((operation) => operation.output),
+      ["/out/a.json", "/out/b.json"],
     );
   });
 });

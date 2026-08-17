@@ -675,13 +675,19 @@ export function parseBatchManifest(raw: unknown, deps: BatchManifestDeps): Batch
       if (!deps.dirExists(dir)) {
         throw new ValidationError(`${where}: output directory "${dir}" does not exist`);
       }
-      const priorOwner = seenOutputs.get(rawOutput);
+      // Review fix: key duplicate detection on the RESOLVED path —
+      // `out/a.json`, `out/./a.json`, `out//a.json`, and `./out/a.json`
+      // are string-distinct but name the same file; the D9 temp+rename
+      // write would let the later op silently overwrite the earlier
+      // op's result. The operation record keeps the raw declared string.
+      const outputKey = path.resolve(rawOutput);
+      const priorOwner = seenOutputs.get(outputKey);
       if (priorOwner !== undefined) {
         throw new ValidationError(
           `${where}: duplicate output target "${rawOutput}" (already declared by operation "${priorOwner}")`,
         );
       }
-      seenOutputs.set(rawOutput, name);
+      seenOutputs.set(outputKey, name);
       output = rawOutput;
     }
 

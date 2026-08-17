@@ -796,6 +796,40 @@ describe("batch manifest output validation", () => {
     );
   });
 
+  it("rejects equivalent-but-distinct output target strings (review fix: resolve before duplicate detection)", async () => {
+    // `out/a.json` vs `out/./a.json`: string-distinct, same file. The
+    // D9 temp+rename write would silently let the later op overwrite
+    // the earlier op's result.
+    await assertRejects(
+      manifest(
+        op("first", "search", { query: "a" }, { output: "out/a.json" }),
+        op("second", "search", { query: "b" }, { output: "out/./a.json" }),
+      ),
+      'operations[1]: duplicate output target "out/./a.json" (already declared by operation "first")',
+      { descriptors: DEPS.descriptors, dirExists: () => true },
+    );
+  });
+
+  it("rejects separator-variant output targets (out//a.json, ./out/a.json)", async () => {
+    const deps = { descriptors: DEPS.descriptors, dirExists: () => true };
+    await assertRejects(
+      manifest(
+        op("first", "search", { query: "a" }, { output: "out/a.json" }),
+        op("second", "search", { query: "b" }, { output: "out//a.json" }),
+      ),
+      'operations[1]: duplicate output target "out//a.json" (already declared by operation "first")',
+      deps,
+    );
+    await assertRejects(
+      manifest(
+        op("first", "search", { query: "a" }, { output: "out/a.json" }),
+        op("second", "search", { query: "b" }, { output: "./out/a.json" }),
+      ),
+      'operations[1]: duplicate output target "./out/a.json" (already declared by operation "first")',
+      deps,
+    );
+  });
+
   it("accepts distinct output targets across operations", async () => {
     const m = await load();
     const parsed = m.parseBatchManifest(

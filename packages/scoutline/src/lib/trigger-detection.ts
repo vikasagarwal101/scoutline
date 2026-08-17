@@ -208,3 +208,26 @@ export function missingCredentialError(
 export function isCommandHelpInvocation(commandArgs: readonly string[]): boolean {
   return commandArgs.includes("--help") || commandArgs.includes("-h");
 }
+
+/**
+ * Batch dry-run invocations (`batch <manifest> --dry-run` and the
+ * `vision batch <input> --dry-run` wrapper) promise a NO-TRANSPORT
+ * preview: no descriptor.create(), no cache reads/writes, no
+ * consumption (batch-runner DESIGN D7/D10). The after-command quota
+ * due-refresh in `main` is cadence-gated but live-probes stale
+ * providers, so it must be skipped for these invocations (review fix).
+ *
+ * Same shallow-peek contract as isCommandHelpInvocation: this only
+ * classifies, it does not consume the args — the handler still parses
+ * them itself. Both batch flag surfaces reject a valued `--dry-run`
+ * (`--dry-run false` fails validation inside the handler), so the bare
+ * token unambiguously identifies a genuine dry-run preview.
+ */
+export function isDryRunBatchInvocation(
+  command: string,
+  commandArgs: readonly string[],
+): boolean {
+  const isBatchSurface =
+    command === "batch" || (command === "vision" && commandArgs[0] === "batch");
+  return isBatchSurface && commandArgs.includes("--dry-run");
+}

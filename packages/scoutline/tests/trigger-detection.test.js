@@ -25,6 +25,7 @@ import {
   formatEnvOnlyHint,
   missingCredentialError,
   isCommandHelpInvocation,
+  isDryRunBatchInvocation,
   OBSERVATIONAL_COMMANDS,
   ZAI_ONLY_COMMANDS,
 } from "../dist/lib/trigger-detection.js";
@@ -205,6 +206,27 @@ describe("isCommandHelpInvocation: shallow peek at --help/-h", () => {
   it("returns false when no help flag is present", () => {
     assert.ok(!isCommandHelpInvocation([]));
     assert.ok(!isCommandHelpInvocation(["analyze", "img.png"]));
+  });
+});
+
+describe("isDryRunBatchInvocation: dry-run batches skip the quota due-refresh", () => {
+  it("detects batch --dry-run with a file manifest, a stdin manifest, and any flag order", () => {
+    assert.ok(isDryRunBatchInvocation("batch", ["manifest.json", "--dry-run"]));
+    assert.ok(isDryRunBatchInvocation("batch", ["--dry-run", "-"]));
+    assert.ok(isDryRunBatchInvocation("batch", ["manifest.json", "--concurrency", "2", "--dry-run"]));
+  });
+  it("detects the vision batch wrapper's --dry-run", () => {
+    assert.ok(isDryRunBatchInvocation("vision", ["batch", "shots/*.png", "--out", "o", "--dry-run"]));
+  });
+  it("returns false for non-dry-run batches", () => {
+    assert.ok(!isDryRunBatchInvocation("batch", ["manifest.json"]));
+    assert.ok(!isDryRunBatchInvocation("vision", ["batch", "shots/*.png", "--out", "o"]));
+    assert.ok(!isDryRunBatchInvocation("batch", ["manifest.json", "--help"]));
+  });
+  it("returns false outside the batch surfaces even when a --dry-run token is present", () => {
+    assert.ok(!isDryRunBatchInvocation("vision", ["analyze", "img.png", "--dry-run"]));
+    assert.ok(!isDryRunBatchInvocation("search", ["--dry-run", "query"]));
+    assert.ok(!isDryRunBatchInvocation("quota", ["--dry-run"]));
   });
 });
 

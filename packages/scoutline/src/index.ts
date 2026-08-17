@@ -39,6 +39,11 @@ import {
   configSetCommand,
   configUnsetCommand,
 } from "./commands/config.js";
+import {
+  usageCommand,
+  USAGE_HELP,
+  DEFAULT_USAGE_WINDOW_DAYS,
+} from "./commands/usage.js";
 import { cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
 import type { PruneSelectors, PruneCachesResult } from "./lib/cache.js";
 import { isExtractMode, type ExtractMode } from "./lib/extract.js";
@@ -90,7 +95,7 @@ import {
   createQuotaStoreConsumptionSink,
   type ConsumptionSink,
 } from "./lib/consumption.js";
-import { createUsageLedgerSink, resolveUsageLedgerPath } from "./lib/usage-ledger.js";
+import { createUsageLedgerSink, readUsageLedger, resolveUsageLedgerPath } from "./lib/usage-ledger.js";
 import {
   classifyCredentialState,
   formatEnvOnlyHint,
@@ -99,6 +104,7 @@ import {
 } from "./lib/trigger-detection.js";
 import { resolveProviderId, resolveEffectiveProvider } from "./providers/selection.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "./providers/registry.js";
+import { PROVIDER_IDS } from "./providers/types.js";
 import type { ProviderDescriptor, ProviderId } from "./providers/types.js";
 import { executeWithFallback, type FallbackOutcome } from "./lib/provider-fallback.js";
 import type { SearchCapability } from "./capabilities/search.js";
@@ -2186,6 +2192,101 @@ export async function handleCache(
   }
 }
 
+/**
+ * `scoutline usage [--days N] [--provider <id>]` — report the local
+ * usage ledger (usage-ledger plan, Ticket 5). Credential-free and
+ * read-only: like `cache` it bypasses Provider resolution entirely, and
+ * like `handleCache` it keeps the injection-free posture — the ledger
+ * path resolves at handler time via
+ * `resolveConfigRootPure(deps.env, ...)` (no new `MainDependencies`
+ * field, no injected reader object). Production reads
+ * `readUsageLedger(resolveUsageLedgerPath(...))` with DEFAULT deps
+ * (real reader, no `onWarning`) so DESIGN D8's silent-on-corrupt
+ * contract holds: a missing, corrupt, or wrong-version ledger yields an
+ * empty window with exit 0 and no stderr noise.
+ *
+ * Flag contract (DESIGN D8): `--days` must be an integer ≥ 1 (unlike
+ * `--count`, 0 is invalid) and defaults to 7; `--provider` must be a
+ * known registry id (unknown ids are a VALIDATION_ERROR listing the
+ * accepted ids; a known-but-unrecorded id is an empty result, exit 0).
+ * `--provider` may appear before or after the command token —
+ * `extractGlobalOptions` strips it either way, so the handler recovers
+ * it from `deps.provider` (same recovery as `cache prune`).
+ */
+export async function handleUsage(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+): Promise<number> {
+  const { flags } = parseArgs(args);
+
+  if (flags.help || flags.h) {
+    deps.invocation.writeStdout(USAGE_HELP);
+    return 0;
+  }
+
+  // `--days`: positive integer >= 1 (DESIGN D8). parseArgs yields `true`
+  // for a valueless flag, so the bare case is guarded separately.
+  let windowDays = DEFAULT_USAGE_WINDOW_DAYS;
+  const rawDays = flags.days;
+  if (rawDays !== undefined) {
+    if (rawDays === true) {
+      throw new ValidationError(
+        "--days requires a value.",
+        "Pass a positive integer, e.g. --days 7.",
+      );
+    }
+    const parsed = Number(rawDays);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      throw new ValidationError(
+        `Invalid --days value "${rawDays}"`,
+        "--days must be an integer of at least 1. Examples: --days 7, --days 30.",
+      );
+    }
+    windowDays = parsed;
+  }
+
+  // `--provider` selector: command-local flag wins over the
+  // `deps.provider` fallback (extractGlobalOptions already stripped the
+  // global spelling from the rest stream).
+  const rawProvider = flags.provider;
+  if (rawProvider === true) {
+    throw new ValidationError(
+      "--provider requires a value.",
+      "Pass a Provider id after --provider, e.g. --provider zai.",
+    );
+  }
+  const providerSelector = typeof rawProvider === "string" ? rawProvider : deps.provider;
+  if (
+    providerSelector !== undefined &&
+    !(PROVIDER_IDS as readonly string[]).includes(providerSelector)
+  ) {
+    throw new ValidationError(
+      `Unknown provider "${providerSelector}".`,
+      `Accepted provider IDs: ${PROVIDER_IDS.join(", ")}.`,
+    );
+  }
+
+  // Read the ledger with default deps — real reader, no `onWarning`
+  // (silent-on-corrupt, DESIGN D8).
+  const configRoot = resolveConfigRootPure(deps.env, { homedir: os.homedir() });
+  const ledgerPath = resolveUsageLedgerPath(configRoot);
+  const now = deps.now ?? Date.now;
+  return invokeCommand(
+    deps.invocation,
+    () =>
+      usageCommand({
+        readLedger: () => readUsageLedger(ledgerPath),
+        windowDays,
+        ...(providerSelector !== undefined ? { provider: providerSelector } : {}),
+        now,
+      }),
+    outputMode,
+    deps.now,
+    deps.secrets,
+  );
+}
+
 async function handleQuota(
   args: string[],
   outputMode: OutputMode,
@@ -2811,6 +2912,21 @@ export async function main(
   if (command === "cache") {
     try {
       return await handleCache(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
+  // `usage` is credential-free (reads only <config-root>/usage.json; no
+  // Provider resolution, no Adapter, no transport — the same
+  // short-circuit class as `cache`). Dispatching before config load
+  // keeps a corrupt config.json from blocking the usage report and
+  // keeps trigger detection unreached. Fail-open ledger reads mean a
+  // missing/corrupt file still exits 0 with an empty window (DESIGN D8).
+  if (command === "usage") {
+    try {
+      return await handleUsage(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
       return getErrorExitCode(error);

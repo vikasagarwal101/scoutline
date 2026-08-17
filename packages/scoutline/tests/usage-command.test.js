@@ -395,6 +395,21 @@ describe("usage command — --days validation", () => {
     });
   });
 
+  it("rejects --days forms Number() coerces but the decimal-integer contract excludes", async (t) => {
+    await withTempDir(t, async (dir) => {
+      // Number() silently coerces all of these to 1000/10/7/7/7; the
+      // documented contract (USAGE_HELP, DESIGN D8) is a decimal integer
+      // between 1 and the cap, and parseAndValidateCount applies the same
+      // /^\d+$/ gate to --count.
+      for (const raw of ["1e3", "0x0A", " 7", "7.0", "+7"]) {
+        await assertValidationRejects(
+          runUsage(["usage", "--days", raw], { dir }),
+          /--days/,
+        );
+      }
+    });
+  });
+
   it("rejects a bare --days with VALIDATION_ERROR", async (t) => {
     await withTempDir(t, async (dir) => {
       await assertValidationRejects(

@@ -15,6 +15,7 @@
  * response cache (FR-022).
  */
 
+import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -433,17 +434,21 @@ export type VisionBatchHandlers = Readonly<Record<AllowedBatchCommand, BatchOper
  * at expansion — a provider that cannot accept a given op's file
  * rejects it inside the handler as a per-op failure.
  */
-const VISION_BATCH_MEDIA_EXTENSIONS: ReadonlySet<string> = new Set([
+const VISION_BATCH_ZAI_IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
   ".jpg",
   ".jpeg",
   ".png",
+]);
+
+/**
+ * Image extensions any ELIGIBLE provider accepts for an image
+ * operation: Z.AI's `.jpg/.jpeg/.png` plus MiniMax's `.webp`. Kept as a
+ * per-operation union (not the full media union) so dry-run extension
+ * validation can be operation-aware (review fix).
+ */
+const VISION_BATCH_IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
+  ...VISION_BATCH_ZAI_IMAGE_EXTENSIONS,
   ".webp",
-  ".mp4",
-  ".mov",
-  ".m4v",
-  ".avi",
-  ".webm",
-  ".wmv",
 ]);
 
 /** Video extensions (D10): these infer the `video` subcommand. */
@@ -455,6 +460,33 @@ const VISION_BATCH_VIDEO_EXTENSIONS: ReadonlySet<string> = new Set([
   ".webm",
   ".wmv",
 ]);
+
+/**
+ * D10 media-extension filter: the UNION of the enrolled vision
+ * providers' image and video sets so no file any eligible provider
+ * accepts is silently dropped at expansion — a provider that cannot
+ * accept a given op's file rejects it inside the handler as a per-op
+ * failure.
+ */
+const VISION_BATCH_MEDIA_EXTENSIONS: ReadonlySet<string> = new Set([
+  ...VISION_BATCH_IMAGE_EXTENSIONS,
+  ...VISION_BATCH_VIDEO_EXTENSIONS,
+]);
+
+/**
+ * Per-operation dry-run extension set (review fix): `video` sources are
+ * video files, `diff` is advertised only by Z.AI (its image set —
+ * MiniMax's `.webp` never applies), and every other vision operation is
+ * an image operation served by the image union. Keeps `--dry-run` from
+ * reporting ready for media the real handler will reject, while
+ * provider-specific acceptance WITHIN an operation class (e.g. `.webp`
+ * on Z.AI analyze) still defers to the handler per D10's rationale.
+ */
+function visionBatchAcceptedExtensions(subcommand: string): ReadonlySet<string> {
+  if (subcommand === "video") return VISION_BATCH_VIDEO_EXTENSIONS;
+  if (subcommand === "diff") return VISION_BATCH_ZAI_IMAGE_EXTENSIONS;
+  return VISION_BATCH_IMAGE_EXTENSIONS;
+}
 
 /** Flags `vision batch` itself accepts (the D1 surface; strict). */
 const VISION_BATCH_FLAGS: ReadonlySet<string> = new Set([
@@ -829,10 +861,11 @@ export async function handleVisionBatch(
           );
         }
         const ext = path.extname(source).toLowerCase();
-        if (!VISION_BATCH_MEDIA_EXTENSIONS.has(ext)) {
+        const accepted = visionBatchAcceptedExtensions(input.subcommand);
+        if (!accepted.has(ext)) {
           throw new ValidationError(
-            `vision batch dry run: unsupported media extension "${ext || "(none)"}" for "${source}"`,
-            `Accepted extensions: ${[...VISION_BATCH_MEDIA_EXTENSIONS].sort().join(" ")}.`,
+            `vision batch dry run: extension "${ext || "(none)"}" is not accepted for vision subcommand "${input.subcommand}" (source "${source}")`,
+            `Accepted extensions for ${input.subcommand}: ${[...accepted].sort().join(" ")}.`,
           );
         }
       }
@@ -867,7 +900,11 @@ export async function handleVisionBatch(
   // summary file appears only in real runs.
   if (outDir !== undefined && !dryRun) {
     const summaryPath = path.join(outDir, "summary.json");
-    const tempPath = `${summaryPath}.tmp`;
+    // Unique temp name (review fix, mirroring the runner's per-op
+    // temps): a fixed "<summary>.tmp" is predictable — a concurrent
+    // vision batch run against the same --out would clobber it, and a
+    // failed write's cleanup could then remove the other run's temp.
+    const tempPath = `${summaryPath}.tmp-${randomUUID()}`;
     try {
       await writeFile(tempPath, `${JSON.stringify(envelope, null, 2)}\n`, "utf8");
       await rename(tempPath, summaryPath);

@@ -170,6 +170,55 @@ describe("batch assignment round-robin", () => {
     );
   });
 
+  it("normalizes the global pin like parseProviderId: trims and lowercases before the registry check (review fix)", async () => {
+    const m = await load();
+    const descriptors = [
+      alwaysConfigured("zai", ["search"]),
+      alwaysConfigured("tavily", ["search"]),
+    ];
+    // `--provider TAVILY` / `--provider " tavily "` must behave exactly
+    // like the direct commands (selection.ts parseProviderId): accepted,
+    // and the canonical lowercase id flows into the assignment so
+    // resolvedProvider, the dry-run descriptor lookup, and the handler
+    // pin all see the registry id.
+    const upper = m.assignBatchProviders(manifest([searchOp("s1"), searchOp("s2")]), {
+      descriptors,
+      env: {},
+      globalProvider: "TAVILY",
+    });
+    assert.deepStrictEqual(upper.map((r) => r.provider), ["tavily", "tavily"]);
+
+    const padded = m.assignBatchProviders(manifest([searchOp("s1")]), {
+      descriptors,
+      env: {},
+      globalProvider: " tavily ",
+    });
+    assert.deepStrictEqual(padded.map((r) => r.provider), ["tavily"]);
+  });
+
+  it("an unknown global pin still rejects the whole batch, echoing the normalized id (review fix)", async () => {
+    const m = await load();
+    const descriptors = [alwaysConfigured("zai", ["search"])];
+    assert.throws(
+      () =>
+        m.assignBatchProviders(manifest([searchOp("s1")]), {
+          descriptors,
+          env: {},
+          globalProvider: "NOT-A-PROVIDER",
+        }),
+      (err) => {
+        assert.ok(err instanceof ValidationError, `expected ValidationError, got ${err?.name}`);
+        assert.strictEqual(err.code, "VALIDATION_ERROR");
+        assert.ok(
+          err.message.includes('unknown provider "not-a-provider"'),
+          `the normalized id is echoed, got: ${err.message}`,
+        );
+        assert.ok(err.message.includes("Built-in providers"));
+        return true;
+      },
+    );
+  });
+
   it("per-op pin outranks the global pin", async () => {
     const m = await load();
     const descriptors = [

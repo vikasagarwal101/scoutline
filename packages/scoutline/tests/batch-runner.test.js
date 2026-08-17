@@ -759,10 +759,48 @@ describe("batch runner per-op output files", () => {
     assert.strictEqual(record.ok, true);
     assert.strictEqual(record.outputWriteError, "rename denied");
     // The temp file the write produced was removed after the rename
-    // failed — the failed write leaves nothing behind.
-    assert.deepStrictEqual(written.map((entry) => entry.path), ["/tmp/never/s1.json.tmp-0"]);
-    assert.deepStrictEqual(removed, ["/tmp/never/s1.json.tmp-0"]);
+    // failed — the failed write leaves nothing behind. The temp name is
+    // unique per attempt (review fix): it keeps the op index prefix but
+    // carries an unpredictable suffix, so cleanup can only ever remove
+    // a file THIS attempt created — never a pre-existing file or a
+    // concurrent run's temp at the same predictable path.
+    const tempPath = written[0].path;
+    assert.ok(
+      /^\/tmp\/never\/s1\.json\.tmp-0-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(tempPath),
+      `temp path carries a unique suffix beyond the predictable index name, got ${tempPath}`,
+    );
+    assert.deepStrictEqual(removed, [tempPath], "cleanup removes exactly the temp this attempt created");
     assert.strictEqual(global.stdoutWrites.length, 1);
+  });
+
+  it("temp paths are unique per attempt, so two same-target ops never share one (review fix)", async () => {
+    const written = [];
+    const renames = [];
+    const writeOutputFile = async (path, data) => {
+      written.push(path);
+    };
+    const renameOutputFile = async (from, to) => {
+      renames.push(from);
+    };
+    const handler = async (args, outputMode, deps) => {
+      deps.invocation.writeStdout(JSON.stringify({ op: args[0] }));
+      return 0;
+    };
+    // Two ops degenerately declaring the SAME output target: within one
+    // run the index keeps them apart, but a predictable name would also
+    // collide with a concurrent run holding the same index (or clobber
+    // a pre-existing `<target>.tmp-<n>` file). The unique suffix makes
+    // the temp exclusively owned by this attempt.
+    const { envelope, exitCode } = await runBatchUnderTest(
+      { handler, writeOutputFile, renameOutputFile, options: { concurrency: 2 } },
+      searchOp("a", "qa", "/shared/out.json"),
+      searchOp("b", "qb", "/shared/out.json"),
+    );
+    assert.strictEqual(exitCode, 0);
+    assert.strictEqual(envelope.ok, 2);
+    assert.strictEqual(written.length, 2);
+    assert.notStrictEqual(written[0], written[1], "same-target writes must not share a temp path");
+    assert.deepStrictEqual(renames, written, "each rename consumes exactly the temp its write created");
   });
 
   it("a successful op with an output target but NO stdout writes no file and records the anomaly", async () => {

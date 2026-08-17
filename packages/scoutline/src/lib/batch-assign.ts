@@ -108,15 +108,30 @@ export function assignBatchProviders(
   // validation (direct handlers validate it inside provider selection);
   // assignment must reject an unknown id HERE — as a whole-batch
   // VALIDATION_ERROR before the pool — instead of letting every op
-  // fail downstream on the provider parse/lookup error.
-  if (
-    deps.globalProvider !== undefined &&
-    !(PROVIDER_IDS as readonly string[]).includes(deps.globalProvider)
-  ) {
-    throw new ValidationError(
-      `unknown provider "${deps.globalProvider}". Built-in providers: ${PROVIDER_IDS.join(", ")}.`,
-      "Pass a known provider id via --provider, or omit --provider to use distribution.",
-    );
+  // fail downstream on the provider parse/lookup error. The check
+  // normalizes exactly like `parseProviderId` (`providers/selection.ts`:
+  // trim + lowercase before the registry membership check) so the batch
+  // path matches the CLI's case-insensitive provider handling —
+  // `--provider TAVILY` pins tavily instead of failing the whole batch.
+  // The CANONICAL id flows into the assignment so `resolvedProvider`,
+  // the dry-run descriptor lookup, and the handler pin all see the
+  // registry id (review fix).
+  let globalProvider = deps.globalProvider;
+  if (globalProvider !== undefined) {
+    const normalized = globalProvider.trim().toLowerCase();
+    if (normalized === "") {
+      throw new ValidationError(
+        `--provider must not be empty. Built-in providers: ${PROVIDER_IDS.join(", ")}.`,
+        "Pass a known provider id via --provider, or omit --provider to use distribution.",
+      );
+    }
+    globalProvider = normalized as ProviderId;
+    if (!(PROVIDER_IDS as readonly string[]).includes(globalProvider)) {
+      throw new ValidationError(
+        `unknown provider "${globalProvider}". Built-in providers: ${PROVIDER_IDS.join(", ")}.`,
+        "Pass a known provider id via --provider, or omit --provider to use distribution.",
+      );
+    }
   }
 
   const eligibleByCapability = new Map<ProviderCapability, readonly ProviderDescriptor[]>();
@@ -134,12 +149,12 @@ export function assignBatchProviders(
     if (op.provider !== undefined) {
       return { name: op.name, command: op.command, capabilityId, provider: op.provider };
     }
-    if (deps.globalProvider !== undefined) {
+    if (globalProvider !== undefined) {
       return {
         name: op.name,
         command: op.command,
         capabilityId,
-        provider: deps.globalProvider,
+        provider: globalProvider,
       };
     }
 

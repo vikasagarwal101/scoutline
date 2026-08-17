@@ -593,10 +593,11 @@ slices it on the way out).
 ## Usage Ledger
 
 Every billable invoke also appends counters to a local usage ledger at
-`~/.scoutline/usage.json` — a sibling of `config.json` and the response
-caches under the same root. `SCOUTLINE_CONFIG_DIR` moves the ledger with
-the config root; the cache-directory variables (`SCOUTLINE_CACHE_DIR` and
-aliases) do not affect its location.
+`~/.scoutline/usage.json` — a sibling of `config.json` under the config
+root. `SCOUTLINE_CONFIG_DIR` moves the ledger with the config root. The
+cache-directory variables (`SCOUTLINE_CACHE_DIR` and aliases) relocate
+only the response caches, which otherwise default to the same
+`~/.scoutline/` root; they never affect the ledger's location.
 
 What records a row: `search` (fan-out arms and `--merge` sub-queries each
 record their own invoke), `read`, `crawl`, `map`, `research`, `repo`, and

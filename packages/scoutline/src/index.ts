@@ -2240,7 +2240,18 @@ export async function handleUsage(
         "Pass a positive integer, e.g. --days 7.",
       );
     }
-    const parsed = Number(rawDays);
+    const str = typeof rawDays === "string" ? rawDays : String(rawDays);
+    // Strict decimal gate (same class as parseAndValidateCount's /^\d+/$):
+    // Number() alone would coerce "1e3", "0x0A", " 7", and "7.0" into
+    // integers, accepting spellings the documented contract (USAGE_HELP,
+    // DESIGN D8 — a decimal integer 1..MAX) does not include.
+    if (!/^\d+$/.test(str)) {
+      throw new ValidationError(
+        `Invalid --days value "${rawDays}"`,
+        `--days must be an integer between 1 and ${MAX_USAGE_WINDOW_DAYS}. Examples: --days 7, --days 30.`,
+      );
+    }
+    const parsed = Number(str);
     // Upper bound (review P2): values far beyond the window the ledger
     // can ever hold (retention is 90 days) would otherwise pass and
     // crash the cutoff computation — JS Dates only span ~±100,000,000

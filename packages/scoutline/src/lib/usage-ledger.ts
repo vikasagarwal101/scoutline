@@ -112,6 +112,21 @@ export function usageDayKey(at: number): string {
   return new Date(at).toISOString().slice(0, 10);
 }
 
+/**
+ * Whether `key` is a CANONICAL UTC calendar-date key: `"YYYY-MM-DD"`,
+ * zero-padded, naming a real date. Round-trips through the millisecond
+ * instant so impossible-but-parseable dates (`"2026-02-30"`, which
+ * `Date.parse` normalizes to March 2) and non-padded forms (`"2026-8-6"`)
+ * are rejected. Consumers that compare day keys lexicographically
+ * (window filters, pruning) must skip keys that fail this check — a
+ * malformed key's sort position is meaningless.
+ */
+export function isCanonicalUsageDayKey(key: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return false;
+  const ms = Date.parse(`${key}T00:00:00.000Z`);
+  return Number.isFinite(ms) && usageDayKey(ms) === key;
+}
+
 // ---------------------------------------------------------------------------
 // Pure merge — ledger × ConsumptionEvent → ledger
 // ---------------------------------------------------------------------------
@@ -142,7 +157,11 @@ export function mergeEventIntoLedger(
   options: MergeEventOptions = {},
 ): UsageLedger {
   const dayKey = usageDayKey(event.at);
-  const isNewDay = !(dayKey in ledger.days);
+  // Own-key probe, not `in` (review P2): `in` also walks the prototype
+  // chain, where every plain object carries a "__proto__" accessor —
+  // for ledger records built from untrusted keys the day-roll decision
+  // must test OWN keys only.
+  const isNewDay = !Object.hasOwn(ledger.days, dayKey);
   const base =
     isNewDay && options.retentionDays !== undefined
       ? pruneExpiredDays(ledger, options.retentionDays, dayKey)
@@ -151,11 +170,15 @@ export function mergeEventIntoLedger(
 }
 
 function mergeIntoDay(ledger: UsageLedger, dayKey: string, event: ConsumptionEvent): UsageLedger {
+  // Own-key reads throughout (review P2): a plain-proto record's
+  // inherited properties ("constructor", "__proto__") must never be
+  // mistaken for recorded history.
   const priorDay: Partial<Record<ProviderId, Record<string, UsageCounters>>> =
-    ledger.days[dayKey] ?? {};
-  const priorCapabilities: Record<string, UsageCounters> = priorDay[event.provider] ?? {};
+    ownValue(ledger.days, dayKey) ?? {};
+  const priorCapabilities: Record<string, UsageCounters> =
+    ownValue(priorDay, event.provider) ?? {};
   const counters = applyEventToCounters(
-    priorCapabilities[event.capabilityId] ?? emptyUsageCounters(),
+    ownValue(priorCapabilities, event.capabilityId) ?? emptyUsageCounters(),
     event,
   );
   const capabilities: Record<string, UsageCounters> = { ...priorCapabilities };
@@ -208,12 +231,22 @@ export function pruneExpiredDays(
 ): UsageLedger {
   const referenceMs = Date.parse(`${referenceDayKey}T00:00:00.000Z`);
   if (!Number.isFinite(referenceMs)) return ledger;
+  // Retention guard (review P2): a 0 or negative window would land the
+  // cutoff in the FUTURE and silently wipe the ledger's whole history on
+  // the next day-roll. Invalid windows leave the ledger unchanged, like
+  // a malformed reference key — pruning must never destroy history on a
+  // nonsensical input.
+  if (!Number.isFinite(retentionDays) || retentionDays < 1) return ledger;
   const cutoffKey = usageDayKey(referenceMs - (retentionDays - 1) * DAY_MS);
-  const days: UsageLedger["days"] = {};
+  // Null-prototype accumulator with a CreateDataProperty boundary (the
+  // parseUsageLedger discipline): ledger day keys are untrusted, and an
+  // in-window "__proto__" key must survive pruning as an own key, not
+  // hit Object.prototype's `__proto__` setter on a plain `{}`.
+  const kept: UsageLedger["days"] = Object.create(null);
   for (const [key, value] of Object.entries(ledger.days)) {
-    if (key >= cutoffKey) days[key] = value;
+    if (key >= cutoffKey) kept[key] = value;
   }
-  return { version: USAGE_LEDGER_VERSION, days };
+  return { version: USAGE_LEDGER_VERSION, days: Object.fromEntries(Object.entries(kept)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -303,15 +336,23 @@ function parseUsageLedger(
   }
   // Shallow-normalize: non-record day/provider/capability entries are
   // silently skipped (defensive, mirroring quota-store's per-entry
-  // drops); missing or non-finite counter fields default to 0 so a
-  // later merge can never produce NaN.
-  const days: UsageLedger["days"] = {};
+  // drops); missing, non-finite, or NEGATIVE counter fields default to 0
+  // so a later merge can never produce NaN or sub-zero totals.
+  //
+  // The three accumulators are NULL-PROTOTYPE objects (review P2 — the
+  // same hardening as cache.ts's stats accumulators): `usage.json` keys
+  // are untrusted, and on a plain `{}` a crafted "__proto__" key would
+  // hit Object.prototype's `__proto__` SETTER — mutating the
+  // accumulator's [[Prototype]] and silently losing the entry instead of
+  // recording an own key.
+  const days: UsageLedger["days"] = Object.create(null);
   for (const [dayKey, providers] of Object.entries(raw.days)) {
     if (!isRecord(providers)) continue;
-    const dayProviders: Partial<Record<ProviderId, Record<string, UsageCounters>>> = {};
+    const dayProviders: Partial<Record<ProviderId, Record<string, UsageCounters>>> =
+      Object.create(null);
     for (const [providerId, capabilities] of Object.entries(providers)) {
       if (!isRecord(capabilities)) continue;
-      const parsedCapabilities: Record<string, UsageCounters> = {};
+      const parsedCapabilities: Record<string, UsageCounters> = Object.create(null);
       for (const [capabilityId, counters] of Object.entries(capabilities)) {
         if (!isRecord(counters)) continue;
         parsedCapabilities[capabilityId] = {
@@ -326,11 +367,40 @@ function parseUsageLedger(
     }
     days[dayKey] = dayProviders;
   }
-  return { version: USAGE_LEDGER_VERSION, days };
+  // Boundary conversion back to plain-proto records — the public
+  // `UsageLedger` shape. Object.entries + Object.fromEntries copy OWN
+  // enumerable properties via CreateDataProperty, so even a literal
+  // "__proto__" key survives as an own data property on the fresh plain
+  // objects (same discipline as cache.ts's stats boundary); the
+  // null-prototype accumulators remain an internal hardening detail.
+  const plainDays: UsageLedger["days"] = Object.fromEntries(
+    Object.entries(days).map(([dayKey, dayProviders]) => [
+      dayKey,
+      Object.fromEntries(
+        Object.entries(dayProviders).map(([providerId, capabilities]) => [
+          providerId,
+          { ...capabilities },
+        ]),
+      ),
+    ]),
+  );
+  return { version: USAGE_LEDGER_VERSION, days: plainDays };
 }
 
 function counterField(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+  // Nonnegative guard (review P2): a negative finite counter is invalid
+  // persisted state — surfaced attempts/units must never be sub-zero.
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+/**
+ * Own-property read from a record keyed by untrusted strings: inherited
+ * properties ("constructor", the "__proto__" accessor) are never
+ * mistaken for recorded entries. Returns `undefined` both for absent
+ * keys and for keys the record only carries on its prototype chain.
+ */
+function ownValue<T>(record: Record<string, T>, key: string): T | undefined {
+  return Object.prototype.hasOwnProperty.call(record, key) ? record[key] : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -394,6 +464,16 @@ export interface UsageLedgerSinkOptions {
  */
 const USAGE_LEDGER_SINK_WARNING = "usage ledger recording failed; the call was not counted";
 
+/**
+ * The fixed, redacted read-failure message for
+ * {@link createUsageLedgerSink}. Like {@link USAGE_LEDGER_SINK_WARNING}
+ * it interpolates nothing: the reader's own warnings carry raw error
+ * text (an unreadable file's message can embed filesystem paths), which
+ * must never cross the sink's redaction boundary.
+ */
+const USAGE_LEDGER_SINK_READ_WARNING =
+  "usage ledger read failed; existing usage history was ignored";
+
 function defaultUsageLedgerWarning(message: string): void {
   process.stderr.write(`scoutline: ${message}\n`);
 }
@@ -447,7 +527,14 @@ export function createUsageLedgerSink(options: UsageLedgerSinkOptions): Consumpt
         // Defensive fallback only — shared execution always sets `at`.
         const at = event.at ?? now();
         await lock(async () => {
-          const ledger = await readUsageLedger(filePath, { readFile, onWarning });
+          const ledger = await readUsageLedger(filePath, {
+            readFile,
+            // WRAP, never forward (review P2): readUsageLedger's own
+            // warnings interpolate raw error text; the sink's warning
+            // channel is a redaction boundary, so every reader warning
+            // becomes the one fixed, detail-free message above.
+            onWarning: () => onWarning(USAGE_LEDGER_SINK_READ_WARNING),
+          });
           const merged = mergeEventIntoLedger(ledger, { ...event, at }, { retentionDays });
           await writeFile(filePath, `${JSON.stringify(merged, null, 2)}\n`);
         });

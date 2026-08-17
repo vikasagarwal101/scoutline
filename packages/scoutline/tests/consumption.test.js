@@ -446,6 +446,39 @@ describe("consumption: createCompositeConsumptionSink", () => {
     await assert.doesNotReject(composite.record(makeCompositeEvent()));
     assert.strictEqual(warnings.length, 2);
   });
+
+  it("a THROWING onWarning channel never breaks isolation: record() still resolves and the other sink still records", async () => {
+    const secondary = createInMemoryConsumptionSink();
+    const throwingPrimary = {
+      async record() {
+        throw new Error("primary exploded");
+      },
+    };
+    const composite = createCompositeConsumptionSink(throwingPrimary, secondary, {
+      onWarning: () => {
+        throw new Error("the warning channel itself is defective");
+      },
+    });
+    // Before the fix, the throwing onWarning escaped the catch handler,
+    // recordIsolated rejected, and Promise.all rejected before the other
+    // side's accounting write was awaited.
+    await assert.doesNotReject(composite.record(makeCompositeEvent()));
+    assert.strictEqual(secondary.events.length, 1, "the secondary write still landed");
+  });
+
+  it("both sides rejecting through a throwing onWarning still resolves", async () => {
+    const throwing = () => ({
+      async record() {
+        throw new Error("boom");
+      },
+    });
+    const composite = createCompositeConsumptionSink(throwing(), throwing(), {
+      onWarning: () => {
+        throw new Error("nope");
+      },
+    });
+    await assert.doesNotReject(composite.record(makeCompositeEvent()));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1265,6 +1298,62 @@ describe(
             searchRow.attempts >= 1,
             `attempts recorded (${JSON.stringify(searchRow)})`,
           );
+        });
+      });
+    });
+
+    it("in-process main resolves the ledger sink from the INJECTED env config root (embedded-caller parity)", async (t) => {
+      await withTempDir(t, async (injectedRoot) => {
+        await withTempDir(t, async (processRoot) => {
+          await withTempDir(t, async (cacheDir) => {
+            const stdout = [];
+            const stderr = [];
+            const adapter = {
+              stdoutIsTTY: false,
+              stdinIsTTY: false,
+              environmentOutputMode: "data",
+              readStdin: async () => "",
+              writeStdout: (v) => stdout.push(v),
+              writeStderr: (v) => stderr.push(v),
+              runQuietly: async (op) => op(),
+              setExitCode: () => {},
+            };
+            // Decoy: process.env points elsewhere, so the config loader
+            // (which reads process.env) uses processRoot while the
+            // INJECTED env carries its own SCOUTLINE_CONFIG_DIR. The
+            // ledger sink must follow the injected root — the same root
+            // `handleUsage` reports from — not process.env.
+            const priorConfig = process.env.SCOUTLINE_CONFIG_DIR;
+            const priorCache = process.env.SCOUTLINE_CACHE_DIR;
+            process.env.SCOUTLINE_CONFIG_DIR = processRoot;
+            process.env.SCOUTLINE_CACHE_DIR = cacheDir;
+            try {
+              await main(["--output-format", "data", "search", "usage ledger env parity"], {
+                invocation: adapter,
+                env: {
+                  SCOUTLINE_CONFIG_DIR: injectedRoot,
+                  ZAI_API_KEY: "dummy-key-production-gate",
+                },
+              });
+            } finally {
+              if (priorConfig === undefined) delete process.env.SCOUTLINE_CONFIG_DIR;
+              else process.env.SCOUTLINE_CONFIG_DIR = priorConfig;
+              if (priorCache === undefined) delete process.env.SCOUTLINE_CACHE_DIR;
+              else process.env.SCOUTLINE_CACHE_DIR = priorCache;
+            }
+            // The row landed in the INJECTED root…
+            const usagePath = path.join(injectedRoot, "usage.json");
+            const ledger = JSON.parse(await fs.readFile(usagePath, "utf8"));
+            assert.strictEqual(ledger.version, 1);
+            const dayKeys = Object.keys(ledger.days ?? {});
+            assert.ok(dayKeys.length >= 1, "at least one UTC day key exists");
+            // …and never in the process.env decoy root.
+            const decoyEntries = await fs.readdir(processRoot);
+            assert.ok(
+              !decoyEntries.includes("usage.json"),
+              "the ledger never follows process.env when deps.env carries its own config root",
+            );
+          });
         });
       });
     });

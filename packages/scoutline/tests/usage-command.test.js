@@ -197,8 +197,8 @@ async function assertValidationRejects(promise, pattern) {
 // ---------------------------------------------------------------------------
 
 describe("usage command — envelope (DESIGN D8)", () => {
-  it("emits the full envelope with sorted providers, summed totals, and capability rows", async () => {
-    await withTempDir({}, async (dir) => {
+  it("emits the full envelope with sorted providers, summed totals, and capability rows", async (t) => {
+    await withTempDir(t, async (dir) => {
       await writeLedger(dir, ledgerTwoProviders());
       const { code, stdout, stderr } = await runUsage(["usage"], { dir });
       assert.strictEqual(code, 0, `exit 0 (stderr: ${stderr})`);
@@ -227,8 +227,8 @@ describe("usage command — envelope (DESIGN D8)", () => {
     });
   });
 
-  it("carries every counter axis including exactUnits and unknownCount", async () => {
-    await withTempDir({}, async (dir) => {
+  it("carries every counter axis including exactUnits and unknownCount", async (t) => {
+    await withTempDir(t, async (dir) => {
       await writeLedger(dir, {
         version: 1,
         days: {
@@ -241,8 +241,35 @@ describe("usage command — envelope (DESIGN D8)", () => {
     });
   });
 
-  it("renders a fixed-order table in tty mode", async () => {
-    await withTempDir({}, async (dir) => {
+  it("ignores malformed day keys instead of aggregating them through the lexicographic bound", async (t) => {
+    await withTempDir(t, async (dir) => {
+      await writeLedger(dir, {
+        version: 1,
+        days: {
+          // Malformed day keys: every one of these sorts ABOVE the cutoff
+          // lexicographically, so the unguarded lower-bound check would
+          // aggregate their counters as current-window usage.
+          "not-a-date": { ghost: { search: c(50, 50, 50) } },
+          "2026-13-01": { ghost: { search: c(60, 60, 60) } },
+          // Impossible but parseable date — Date.parse normalizes it to
+          // 2026-03-02; only a canonical round-trip rejects it.
+          "2026-02-30": { ghost: { search: c(70, 70, 70) } },
+          "2026-08-16": { zai: { search: c(2, 2, 2) } },
+        },
+      });
+      const { stdout } = await runUsage(["usage"], { dir });
+      const report = JSON.parse(stdout);
+      assert.deepStrictEqual(
+        report.providers.map((p) => p.provider),
+        ["zai"],
+        "malformed day keys are never aggregated as usage",
+      );
+      assert.strictEqual(report.providers[0].totals.attempts, 2);
+    });
+  });
+
+  it("renders a fixed-order table in tty mode", async (t) => {
+    await withTempDir(t, async (dir) => {
       await writeLedger(dir, ledgerTwoProviders());
       const { code, stdout } = await runUsage(["usage"], { dir, outputMode: "tty" });
       assert.strictEqual(code, 0);
@@ -254,6 +281,46 @@ describe("usage command — envelope (DESIGN D8)", () => {
       assert.ok(stdout.indexOf("tavily") < stdout.indexOf("zai"), `provider order asc: ${stdout}`);
     });
   });
+
+  it("right-aligns the numeric headers so they line up with the data beneath", async (t) => {
+    await withTempDir(t, async (dir) => {
+      await writeLedger(dir, {
+        version: 1,
+        days: { "2026-08-16": { zai: { search: c(123456789, 1, 1) } } },
+      });
+      const { stdout } = await runUsage(["usage"], { dir, outputMode: "tty" });
+      const lines = stdout.split("\n");
+      // "first-tries" appears only in the header row (the caption above
+      // it says "call attempts" but never "first-tries").
+      const header = lines.find((line) => line.includes("first-tries"));
+      const dataRow = lines.find((line) => line.includes("123456789"));
+      assert.ok(header, `header row present: ${stdout}`);
+      assert.ok(dataRow, `data row present: ${stdout}`);
+      // Exact header shape: left-aligned text columns, padStart-aligned
+      // numeric columns — same alignment renderRow applies to data.
+      assert.strictEqual(
+        header,
+        [
+          "provider".padEnd(10),
+          "capability".padEnd(24),
+          "attempts".padStart(9),
+          "first-tries".padStart(12),
+          "est-units".padStart(10),
+          "exact-units".padStart(12),
+          "unknown".padStart(8),
+        ]
+          .join("")
+          .trimEnd(),
+      );
+      // And the numeric column headers END at the same offset as the
+      // right-aligned data cells beneath them.
+      assert.strictEqual(
+        header.indexOf("attempts") + "attempts".length,
+        dataRow.indexOf("123456789") + "123456789".length,
+        "attempts header right-aligns with its data",
+      );
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -261,8 +328,8 @@ describe("usage command — envelope (DESIGN D8)", () => {
 // ---------------------------------------------------------------------------
 
 describe("usage command — --days window filter", () => {
-  it("default --days 7 keeps the edge day and drops one day older", async () => {
-    await withTempDir({}, async (dir) => {
+  it("default --days 7 keeps the edge day and drops one day older", async (t) => {
+    await withTempDir(t, async (dir) => {
       await writeLedger(dir, ledgerWindowed());
       const { stdout } = await runUsage(["usage"], { dir });
       const report = JSON.parse(stdout);
@@ -275,8 +342,8 @@ describe("usage command — --days window filter", () => {
     });
   });
 
-  it("--days 1 narrows the window to today only", async () => {
-    await withTempDir({}, async (dir) => {
+  it("--days 1 narrows the window to today only", async (t) => {
+    await withTempDir(t, async (dir) => {
       await writeLedger(dir, ledgerWindowed());
       const { stdout } = await runUsage(["usage", "--days", "1"], { dir });
       const report = JSON.parse(stdout);
@@ -286,8 +353,8 @@ describe("usage command — --days window filter", () => {
     });
   });
 
-  it("--days 30 widens the window past the ledger's oldest day", async () => {
-    await withTempDir({}, async (dir) => {
+  it("--days 30 widens the window past the ledger's oldest day", async (t) => {
+    await withTempDir(t, async (dir) => {
       await writeLedger(dir, ledgerWindowed());
       const { stdout } = await runUsage(["usage", "--days", "30"], { dir });
       const zai = JSON.parse(stdout).providers[0];
@@ -301,8 +368,8 @@ describe("usage command — --days window filter", () => {
 // ---------------------------------------------------------------------------
 
 describe("usage command — --days validation", () => {
-  it("rejects --days 0 with VALIDATION_ERROR", async () => {
-    await withTempDir({}, async (dir) => {
+  it("rejects --days 0 with VALIDATION_ERROR", async (t) => {
+    await withTempDir(t, async (dir) => {
       await assertValidationRejects(
         runUsage(["usage", "--days", "0"], { dir }),
         /--days/,
@@ -310,8 +377,8 @@ describe("usage command — --days validation", () => {
     });
   });
 
-  it("rejects non-numeric --days with VALIDATION_ERROR", async () => {
-    await withTempDir({}, async (dir) => {
+  it("rejects non-numeric --days with VALIDATION_ERROR", async (t) => {
+    await withTempDir(t, async (dir) => {
       await assertValidationRejects(
         runUsage(["usage", "--days", "fortnight"], { dir }),
         /--days/,
@@ -319,8 +386,8 @@ describe("usage command — --days validation", () => {
     });
   });
 
-  it("rejects a non-integer --days with VALIDATION_ERROR", async () => {
-    await withTempDir({}, async (dir) => {
+  it("rejects a non-integer --days with VALIDATION_ERROR", async (t) => {
+    await withTempDir(t, async (dir) => {
       await assertValidationRejects(
         runUsage(["usage", "--days", "2.5"], { dir }),
         /--days/,
@@ -328,12 +395,39 @@ describe("usage command — --days validation", () => {
     });
   });
 
-  it("rejects a bare --days with VALIDATION_ERROR", async () => {
-    await withTempDir({}, async (dir) => {
+  it("rejects a bare --days with VALIDATION_ERROR", async (t) => {
+    await withTempDir(t, async (dir) => {
       await assertValidationRejects(
         runUsage(["usage", "--days"], { dir }),
         /--days/,
       );
+    });
+  });
+
+  it("rejects a --days above the maximum window with VALIDATION_ERROR", async (t) => {
+    await withTempDir(t, async (dir) => {
+      // 1e9 days passes Number.isInteger/>=1 and would crash the cutoff
+      // computation (Date range is ~+/-100,000,000 days).
+      await assertValidationRejects(
+        runUsage(["usage", "--days", "1000000000"], { dir }),
+        /--days/,
+      );
+      // One past the cap is rejected too…
+      await assertValidationRejects(
+        runUsage(["usage", "--days", "100001"], { dir }),
+        /--days/,
+      );
+    });
+  });
+
+  it("accepts --days at the maximum window and still computes the cutoff", async (t) => {
+    await withTempDir(t, async (dir) => {
+      await writeLedger(dir, ledgerWindowed());
+      const { code, stdout, stderr } = await runUsage(["usage", "--days", "100000"], { dir });
+      assert.strictEqual(code, 0, `stderr: ${stderr}`);
+      const report = JSON.parse(stdout);
+      assert.strictEqual(report.windowDays, 100000);
+      assert.strictEqual(report.providers[0].totals.attempts, 117, "the whole ledger is in window");
     });
   });
 });
@@ -343,8 +437,8 @@ describe("usage command — --days validation", () => {
 // ---------------------------------------------------------------------------
 
 describe("usage command — --provider filter", () => {
-  it("keeps only the selected provider's rows", async () => {
-    await withTempDir({}, async (dir) => {
+  it("keeps only the selected provider's rows", async (t) => {
+    await withTempDir(t, async (dir) => {
       await writeLedger(dir, ledgerTwoProviders());
       const { code, stdout } = await runUsage(["usage", "--provider", "zai"], { dir });
       assert.strictEqual(code, 0);
@@ -357,8 +451,8 @@ describe("usage command — --provider filter", () => {
     });
   });
 
-  it("a known-but-unrecorded provider yields empty providers and exit 0", async () => {
-    await withTempDir({}, async (dir) => {
+  it("a known-but-unrecorded provider yields empty providers and exit 0", async (t) => {
+    await withTempDir(t, async (dir) => {
       await writeLedger(dir, ledgerTwoProviders());
       const { code, stdout, stderr } = await runUsage(["usage", "--provider", "minimax"], { dir });
       assert.strictEqual(code, 0);
@@ -368,8 +462,8 @@ describe("usage command — --provider filter", () => {
     });
   });
 
-  it("an unknown provider id is rejected with the accepted ids listed", async () => {
-    await withTempDir({}, async (dir) => {
+  it("an unknown provider id is rejected with the accepted ids listed", async (t) => {
+    await withTempDir(t, async (dir) => {
       await assertValidationRejects(
         runUsage(["usage", "--provider", "nope"], { dir }),
         /nope/,
@@ -383,8 +477,8 @@ describe("usage command — --provider filter", () => {
 // ---------------------------------------------------------------------------
 
 describe("usage command — fail-open reads", () => {
-  it("missing ledger → empty providers, exit 0, silent stderr", async () => {
-    await withTempDir({}, async (dir) => {
+  it("missing ledger → empty providers, exit 0, silent stderr", async (t) => {
+    await withTempDir(t, async (dir) => {
       const { code, stdout, stderr } = await runUsage(["usage"], { dir });
       assert.strictEqual(code, 0);
       assert.strictEqual(stderr, "", "missing ledger never warns");
@@ -394,8 +488,8 @@ describe("usage command — fail-open reads", () => {
     });
   });
 
-  it("corrupt JSON → empty providers, exit 0, silent stderr", async () => {
-    await withTempDir({}, async (dir) => {
+  it("corrupt JSON → empty providers, exit 0, silent stderr", async (t) => {
+    await withTempDir(t, async (dir) => {
       await fs.writeFile(path.join(dir, "usage.json"), "{definitely not json");
       const { code, stdout, stderr } = await runUsage(["usage"], { dir });
       assert.strictEqual(code, 0);
@@ -404,8 +498,8 @@ describe("usage command — fail-open reads", () => {
     });
   });
 
-  it("wrong ledger version → empty providers, exit 0, silent stderr", async () => {
-    await withTempDir({}, async (dir) => {
+  it("wrong ledger version → empty providers, exit 0, silent stderr", async (t) => {
+    await withTempDir(t, async (dir) => {
       await writeLedger(dir, { version: 99, days: { "2026-08-16": { zai: { search: c(1, 1, 1) } } } });
       const { code, stdout, stderr } = await runUsage(["usage"], { dir });
       assert.strictEqual(code, 0);
@@ -420,8 +514,8 @@ describe("usage command — fail-open reads", () => {
 // ---------------------------------------------------------------------------
 
 describe("usage command — deterministic ordering", () => {
-  it("sorts providers ascending and capabilities ascending regardless of insertion order", async () => {
-    await withTempDir({}, async (dir) => {
+  it("sorts providers ascending and capabilities ascending regardless of insertion order", async (t) => {
+    await withTempDir(t, async (dir) => {
       await writeLedger(dir, ledgerUnsorted());
       const { stdout } = await runUsage(["usage"], { dir });
       const report = JSON.parse(stdout);
@@ -456,8 +550,8 @@ describe("usage command — deterministic ordering", () => {
 // ---------------------------------------------------------------------------
 
 describe("usage command — --help", () => {
-  it("prints USAGE_HELP and exits 0", async () => {
-    await withTempDir({}, async (dir) => {
+  it("prints USAGE_HELP and exits 0", async (t) => {
+    await withTempDir(t, async (dir) => {
       const { code, stdout } = await runUsage(["usage", "--help"], { dir });
       assert.strictEqual(code, 0);
       assert.strictEqual(stdout, USAGE_HELP);
@@ -478,8 +572,8 @@ describe("usage command — --help", () => {
 // ---------------------------------------------------------------------------
 
 describe("usage command — dispatch through main", () => {
-  it("main(['usage']) returns the envelope with exit 0", async () => {
-    await withTempDir({}, async (dir) => {
+  it("main(['usage']) returns the envelope with exit 0", async (t) => {
+    await withTempDir(t, async (dir) => {
       await writeLedger(dir, ledgerTwoProviders());
       const { code, stdout, stderr } = await runMain(["usage"], { dir });
       assert.strictEqual(code, 0, `stderr: ${stderr}`);
@@ -492,10 +586,10 @@ describe("usage command — dispatch through main", () => {
     });
   });
 
-  it("a pre-command-token --provider is recovered from deps.provider", async () => {
+  it("a pre-command-token --provider is recovered from deps.provider", async (t) => {
     // extractGlobalOptions strips --provider wherever it appears; the
     // handler must consult deps.provider (same recovery as cache prune).
-    await withTempDir({}, async (dir) => {
+    await withTempDir(t, async (dir) => {
       await writeLedger(dir, ledgerTwoProviders());
       const { code, stdout } = await runMain(["--provider", "tavily", "usage"], { dir });
       assert.strictEqual(code, 0);
@@ -507,8 +601,8 @@ describe("usage command — dispatch through main", () => {
     });
   });
 
-  it("main(['usage', '--days', '3']) threads the window through", async () => {
-    await withTempDir({}, async (dir) => {
+  it("main(['usage', '--days', '3']) threads the window through", async (t) => {
+    await withTempDir(t, async (dir) => {
       await writeLedger(dir, ledgerWindowed());
       const { code, stdout } = await runMain(["usage", "--days", "3"], { dir });
       assert.strictEqual(code, 0);
@@ -519,8 +613,8 @@ describe("usage command — dispatch through main", () => {
     });
   });
 
-  it("an unknown --provider exits 1 with a VALIDATION_ERROR stderr envelope", async () => {
-    await withTempDir({}, async (dir) => {
+  it("an unknown --provider exits 1 with a VALIDATION_ERROR stderr envelope", async (t) => {
+    await withTempDir(t, async (dir) => {
       const { code, stdout, stderr } = await runMain(["usage", "--provider", "nope"], { dir });
       assert.strictEqual(code, 1);
       assert.strictEqual(stdout, "");
@@ -531,8 +625,8 @@ describe("usage command — dispatch through main", () => {
     });
   });
 
-  it("main(['usage', '--help']) prints USAGE_HELP with exit 0", async () => {
-    await withTempDir({}, async (dir) => {
+  it("main(['usage', '--help']) prints USAGE_HELP with exit 0", async (t) => {
+    await withTempDir(t, async (dir) => {
       const { code, stdout } = await runMain(["usage", "--help"], { dir });
       assert.strictEqual(code, 0);
       assert.strictEqual(stdout, USAGE_HELP);
@@ -545,8 +639,8 @@ describe("usage command — dispatch through main", () => {
 // ---------------------------------------------------------------------------
 
 describe("CLI: scoutline usage", () => {
-  it("prints the envelope from the prepared ledger and exits 0", async () => {
-    await withTempDir({}, async (dir) => {
+  it("prints the envelope from the prepared ledger and exits 0", async (t) => {
+    await withTempDir(t, async (dir) => {
       await writeLedger(dir, ledgerTwoProviders());
       const { stdout, stderr, code } = await runProcess(
         ["--output-format", "data", "usage"],
@@ -562,8 +656,8 @@ describe("CLI: scoutline usage", () => {
     });
   });
 
-  it("exits 1 with VALIDATION_ERROR for an unknown --provider", async () => {
-    await withTempDir({}, async (dir) => {
+  it("exits 1 with VALIDATION_ERROR for an unknown --provider", async (t) => {
+    await withTempDir(t, async (dir) => {
       const { stdout, stderr, code } = await runProcess(
         ["usage", "--provider", "nope"],
         { configDir: dir, env: {} },
@@ -577,8 +671,8 @@ describe("CLI: scoutline usage", () => {
     });
   });
 
-  it("reports an empty window with exit 0 when no ledger exists", async () => {
-    await withTempDir({}, async (dir) => {
+  it("reports an empty window with exit 0 when no ledger exists", async (t) => {
+    await withTempDir(t, async (dir) => {
       const { stdout, stderr, code } = await runProcess(
         ["--output-format", "data", "usage"],
         { configDir: dir, env: {} },

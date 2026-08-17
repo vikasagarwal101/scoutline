@@ -67,12 +67,8 @@ export function createNodeCommandInvocationAdapter(): CommandInvocationAdapter {
       return typeof value === "string" && value.length > 0 ? value : undefined;
     },
 
-    async readStdin(): Promise<string> {
-      const chunks: Buffer[] = [];
-      for await (const chunk of process.stdin) {
-        chunks.push(chunk instanceof Buffer ? chunk : Buffer.from(chunk));
-      }
-      return Buffer.concat(chunks).toString("utf8");
+    async readStdin(maxBytes?: number): Promise<string> {
+      return (await readBytesBounded(process.stdin, maxBytes)).toString("utf8");
     },
 
     writeStdout(value: string): void {
@@ -125,4 +121,30 @@ export function createNodeCommandInvocationAdapter(): CommandInvocationAdapter {
       process.exitCode = value;
     },
   };
+}
+
+
+/**
+ * Collects an async byte stream into one buffer, stopping as soon as the
+ * running total exceeds `maxBytes` (when given): the crossing chunk is
+ * kept — its over-cap length is the caller's rejection evidence — and
+ * breaking the for-await destroys the stream so an oversized pipe is cut
+ * off at the producer instead of drained into memory. Exported for
+ * bounded-read tests.
+ */
+export async function readBytesBounded(
+  input: AsyncIterable<Buffer | string>,
+  maxBytes?: number,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of input) {
+    const buffer = chunk instanceof Buffer ? chunk : Buffer.from(chunk);
+    chunks.push(buffer);
+    total += buffer.length;
+    if (maxBytes !== undefined && total > maxBytes) {
+      break;
+    }
+  }
+  return Buffer.concat(chunks);
 }

@@ -16,6 +16,7 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { invokeCommand } from "../dist/command-invocation.js";
 import { ScoutlineError, ValidationError, ConfigurationError } from "../dist/lib/errors.js";
+import { readBytesBounded } from "../dist/node-command-invocation-adapter.js";
 
 // ---------------------------------------------------------------------------
 // Fixup C — B8 (NFR-001): clear Provider credentials for the entire file.
@@ -1429,5 +1430,30 @@ describe("invokeCommand — quota routed through the seam (P4-03)", () => {
       "data",
     );
     assert.strictEqual(status, 1);
+  });
+});
+
+describe("node adapter readBytesBounded — bounded stdin read", () => {
+  it("stops consuming at the chunk that crosses maxBytes", async () => {
+    let yielded = 0;
+    async function* source() {
+      for (let i = 0; i < 8; i++) {
+        yielded += 1;
+        yield Buffer.alloc(1024, 97);
+      }
+    }
+    const buffer = await readBytesBounded(source(), 2048);
+    assert.strictEqual(yielded, 3);
+    assert.strictEqual(buffer.length, 3072);
+  });
+
+  it("drains the whole stream when maxBytes is omitted", async () => {
+    async function* source() {
+      for (let i = 0; i < 4; i++) {
+        yield Buffer.alloc(512, 98);
+      }
+    }
+    const buffer = await readBytesBounded(source());
+    assert.strictEqual(buffer.length, 2048);
   });
 });

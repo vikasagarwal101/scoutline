@@ -310,7 +310,104 @@ describe("research --context — flag surface (Ticket 2)", () => {
 // Cache-identity golden (DESIGN D5)
 // ---------------------------------------------------------------------------
 
-describe("research --context organize — non-Latin headings (empty slug guard)", () => {
+describe("research --context organize — non-Latin headings (empty-slug raw-equality fallback)", () => {
+  it("maps a non-Latin context heading onto an identically-headed provider section", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const report = [
+        "## 概要",
+        "",
+        "Provider overview body.",
+        "",
+        "## デプロイ手順",
+        "",
+        "Deployment body.",
+        "",
+        "## Sources",
+        "",
+        "1. [S](https://s.example.com/x)",
+      ].join("\n");
+      const notesPath = path.join(dir, "notes.md");
+      const notesText = "# デプロイ手順\n";
+      await fs.writeFile(notesPath, notesText, "utf8");
+
+      const tavily = makeResearchProvider({
+        id: "tavily",
+        envVar: "TAVILY_API_KEY",
+        ok: researchOk(report),
+      });
+      const r = await runResearch(
+        ["--provider", "tavily", "research", "identical non latin", "--context", notesPath],
+        { providers: [tavily] },
+      );
+
+      assert.strictEqual(r.status, 0);
+      const parsed = JSON.parse(r.stdout[0]);
+      assert.deepStrictEqual(parsed.sections, [
+        { heading: "デプロイ手順", body: "Deployment body." },
+        { heading: "概要", body: "Provider overview body." },
+      ]);
+    });
+  });
+
+  it("concatenates multiple identically-headed non-Latin sections in provider order", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const report = [
+        "## 方法論",
+        "",
+        "First body.",
+        "",
+        "## 方法論",
+        "",
+        "Second body.",
+      ].join("\n");
+      const notesPath = path.join(dir, "notes.md");
+      const notesText = "# 方法論\n# 結論\n";
+      await fs.writeFile(notesPath, notesText, "utf8");
+
+      const tavily = makeResearchProvider({
+        id: "tavily",
+        envVar: "TAVILY_API_KEY",
+        ok: researchOk(report),
+      });
+      const r = await runResearch(
+        ["--provider", "tavily", "research", "multi non latin", "--context", notesPath],
+        { providers: [tavily] },
+      );
+
+      assert.strictEqual(r.status, 0);
+      const parsed = JSON.parse(r.stdout[0]);
+      assert.deepStrictEqual(parsed.sections, [
+        { heading: "方法論", body: "First body.\n\nSecond body." },
+        { heading: "結論", body: "(no matching section in the provider report)" },
+      ]);
+    });
+  });
+
+  it("matches all-non-Latin headings case-insensitively (fallback mirrors slug lowercasing)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const report = ["## обзор", "", "Cyrillic body."].join("\n");
+      const notesPath = path.join(dir, "notes.md");
+      const notesText = "# Обзор\n";
+      await fs.writeFile(notesPath, notesText, "utf8");
+
+      const tavily = makeResearchProvider({
+        id: "tavily",
+        envVar: "TAVILY_API_KEY",
+        ok: researchOk(report),
+      });
+      const r = await runResearch(
+        ["--provider", "tavily", "research", "cyrillic case", "--context", notesPath],
+        { providers: [tavily] },
+      );
+
+      assert.strictEqual(r.status, 0);
+      const parsed = JSON.parse(r.stdout[0]);
+      assert.deepStrictEqual(parsed.sections, [
+        { heading: "Обзор", body: "Cyrillic body." },
+      ]);
+    });
+  });
+
   it("does not fuse non-Latin headings with unrelated non-Latin sections", async (t) => {
     await withTempDir(t, async (dir) => {
       const report = [

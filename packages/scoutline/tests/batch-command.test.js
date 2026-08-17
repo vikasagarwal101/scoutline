@@ -773,3 +773,22 @@ describe("batch --dry-run gates and assignment preview (D7)", () => {
     assert.ok(help.includes("not validated in a dry run"));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Ticket 8 — docs pass: DESIGN D4's distribution semantics must be
+// discoverable in `batch --help`: routing preferences are ignored inside
+// batch (all eligible providers participate; pin to opt out) and search
+// fan-out is suppressed — each op runs on exactly its assigned provider.
+// ---------------------------------------------------------------------------
+
+describe("batch help distribution semantics", () => {
+  it("help documents routing-ignored and fan-out suppression", async () => {
+    const { adapter, stdout } = fakeInvocation();
+    const status = await main(["batch", "--help"], batchDeps(adapter, []));
+    assert.strictEqual(status, 0);
+    const help = stdout[0];
+    assert.ok(help.includes("routing.<capability> preferences are ignored inside batch"));
+    assert.ok(help.includes("(all eligible providers participate; pin to opt out)"));
+    assert.ok(help.includes("fan-out is suppressed"));
+  });
+});

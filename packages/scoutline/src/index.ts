@@ -1756,10 +1756,12 @@ distribution is the DEFAULT (DESIGN D4): unpinned operations are
 assigned round-robin across configured, capable Providers per
 capability group, in registry order. Pin an operation with its manifest
 "provider" field, or the whole batch with the global --provider flag,
-to opt out. routing.<capability> preferences are ignored inside batch.
-Results[] keeps manifest order; per-op notices and errors are captured
-per operation, never re-emitted live. Process stdout carries exactly
-ONE write: the summary envelope.
+to opt out. routing.<capability> preferences are ignored inside batch
+(all eligible providers participate; pin to opt out), and search
+fan-out is suppressed: every operation runs on exactly its assigned
+Provider. Results[] keeps manifest order; per-op notices and errors
+are captured per operation, never re-emitted live. Process stdout
+carries exactly ONE write: the summary envelope.
 
 Manifest (schema v1, strict parse - unknown fields reject):
   {

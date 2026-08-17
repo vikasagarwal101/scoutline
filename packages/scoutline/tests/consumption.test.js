@@ -7,19 +7,29 @@
  * contract — cache hits, retries, observational-handler silence — is
  * exercised in tests/execution.test.js (and provider-fallback.test.js
  * for the fallback seam).
+ *
+ * The composite sink (usage-ledger plan, DESIGN D3) pairs the quota
+ * sink with the usage-ledger sink: both failure directions are proven
+ * here — ledger write failure leaves the primary recorded, primary
+ * rejection leaves the ledger written.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 
 import {
+  createCompositeConsumptionSink,
   createInMemoryConsumptionSink,
   createQuotaStoreConsumptionSink,
   defaultAmountForCapability,
   emitConsumption,
 } from "../dist/lib/consumption.js";
+import { createUsageLedgerSink } from "../dist/lib/usage-ledger.js";
 import { createInMemoryQuotaStore } from "../dist/lib/quota-store.js";
 import { executeSearch, executeCachedOperation } from "../dist/lib/execution.js";
 import { getCapabilityMapping } from "../dist/lib/quota-mapping.js";
+import { withTempDir } from "./helpers/temp-dir.js";
 
 // ---------------------------------------------------------------------------
 // defaultAmountForCapability — honest cost model
@@ -297,6 +307,127 @@ describe("consumption: emitConsumption helper", () => {
     assert.strictEqual(inMem.events[0].provider, "tavily");
     assert.strictEqual(inMem.events[0].attempt, 2);
     assert.strictEqual(inMem.events[0].at, 4242);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Composite sink — quota sink + usage-ledger sink (usage-ledger plan D3)
+//
+// createCompositeConsumptionSink records to both sinks, awaits both, and
+// isolates either: one side's rejection becomes a warning and never
+// blocks or fails the other. The two failure directions are proven one
+// test each: ledger write failure (internal to the ledger sink) and
+// primary rejection (defective sink that throws outright).
+// ---------------------------------------------------------------------------
+
+const COMPOSITE_AT = Date.UTC(2026, 7, 17, 12, 0, 0);
+const COMPOSITE_DAY_KEY = "2026-08-17";
+
+function makeCompositeEvent(overrides = {}) {
+  return {
+    provider: "zai",
+    capabilityId: "search",
+    amount: { kind: "estimate", value: 1 },
+    attempt: 1,
+    at: COMPOSITE_AT,
+    ...overrides,
+  };
+}
+
+describe("consumption: createCompositeConsumptionSink", () => {
+  it("records the event to both sinks and resolves with no warning", async () => {
+    const primary = createInMemoryConsumptionSink();
+    const secondary = createInMemoryConsumptionSink();
+    const warnings = [];
+    const composite = createCompositeConsumptionSink(primary, secondary, {
+      onWarning: (m) => warnings.push(m),
+    });
+    await composite.record(makeCompositeEvent());
+    assert.strictEqual(primary.events.length, 1);
+    assert.strictEqual(secondary.events.length, 1);
+    assert.strictEqual(secondary.events[0].provider, "zai");
+    assert.strictEqual(secondary.events[0].attempt, 1);
+    assert.strictEqual(warnings.length, 0);
+  });
+
+  it("ledger write failure → warning only, the primary sink still records", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const compositeWarnings = [];
+      const ledgerWarnings = [];
+      const primary = createInMemoryConsumptionSink();
+      const ledgerSink = createUsageLedgerSink({
+        filePath: path.join(dir, "usage.json"),
+        writeFile: async () => {
+          throw new Error("EACCES: permission denied");
+        },
+        now: () => COMPOSITE_AT,
+        onWarning: (m) => ledgerWarnings.push(m),
+      });
+      const composite = createCompositeConsumptionSink(primary, ledgerSink, {
+        onWarning: (m) => compositeWarnings.push(m),
+      });
+      await assert.doesNotReject(composite.record(makeCompositeEvent()));
+      assert.strictEqual(primary.events.length, 1, "primary still recorded");
+      assert.strictEqual(
+        ledgerWarnings.length,
+        1,
+        "ledger failure surfaced as the ledger sink's own warning",
+      );
+      assert.strictEqual(
+        compositeWarnings.length,
+        0,
+        "the ledger sink isolated its failure — the composite saw no rejection",
+      );
+    });
+  });
+
+  it("primary failure → warning only, the ledger is still written", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const warnings = [];
+      const filePath = path.join(dir, "usage.json");
+      const throwingPrimary = {
+        async record() {
+          throw new Error("primary exploded for zai search at 1771234560000");
+        },
+      };
+      const ledgerSink = createUsageLedgerSink({
+        filePath,
+        now: () => COMPOSITE_AT,
+        onWarning: () => {
+          throw new Error("no ledger warning expected — its write must succeed");
+        },
+      });
+      const composite = createCompositeConsumptionSink(throwingPrimary, ledgerSink, {
+        onWarning: (m) => warnings.push(m),
+      });
+      await assert.doesNotReject(composite.record(makeCompositeEvent()));
+      assert.strictEqual(warnings.length, 1, "the primary rejection became a warning");
+      const onDisk = JSON.parse(await fs.readFile(filePath, "utf8"));
+      assert.strictEqual(
+        onDisk.days[COMPOSITE_DAY_KEY].zai.search.attempts,
+        1,
+        "the ledger row still landed",
+      );
+      // Redaction parity: the composite warning carries no event detail
+      // even though the primary's rejection embedded it.
+      assert.ok(!warnings[0].includes("zai"), "no provider in warning");
+      assert.ok(!warnings[0].includes("search"), "no capability in warning");
+      assert.ok(!warnings[0].includes("1771234560000"), "no timestamp in warning");
+    });
+  });
+
+  it("both sides failing still resolves — each rejection isolated to its own warning", async () => {
+    const warnings = [];
+    const throwing = () => ({
+      async record() {
+        throw new Error("boom");
+      },
+    });
+    const composite = createCompositeConsumptionSink(throwing(), throwing(), {
+      onWarning: (m) => warnings.push(m),
+    });
+    await assert.doesNotReject(composite.record(makeCompositeEvent()));
+    assert.strictEqual(warnings.length, 2);
   });
 });
 

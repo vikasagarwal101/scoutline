@@ -190,6 +190,55 @@ export function createQuotaStoreConsumptionSink(options: ConsumptionSinkOptions)
 }
 
 // ---------------------------------------------------------------------------
+// Composite sink — record to both, isolate either (usage-ledger D3)
+// ---------------------------------------------------------------------------
+
+export interface CompositeConsumptionSinkOptions {
+  /**
+   * Best-effort warning sink for the case where one side's `record`
+   * REJECTS outright — a defective sink. The production sinks convert
+   * their own internal failures to warnings and never reject, so in
+   * practice this channel fires only on a sink bug or a test double.
+   * Default: stderr, like the quota-store sink.
+   */
+  readonly onWarning?: (message: string) => void;
+}
+
+/**
+ * The fixed, redacted composite warning. The raw rejection text is
+ * deliberately NOT interpolated (never log event detail) and no side is
+ * named, so the message stays true when the composite is nested.
+ */
+const COMPOSITE_SINK_FAILURE_WARNING =
+  "consumption recording failed in one sink; the failure was isolated";
+
+/**
+ * Combine two sinks so a single `record` reaches both (DESIGN D3:
+ * production wires `composite(quotaStoreSink, usageLedgerSink)`). Awaits
+ * both sides; each side's rejection is isolated to one warning and never
+ * blocks or fails the other. The composite itself never throws.
+ */
+export function createCompositeConsumptionSink(
+  primary: ConsumptionSink,
+  secondary: ConsumptionSink,
+  options: CompositeConsumptionSinkOptions = {},
+): ConsumptionSink {
+  const onWarning = options.onWarning ?? defaultConsumptionWarning;
+  return {
+    async record(event: ConsumptionEvent): Promise<void> {
+      const recordIsolated = async (sink: ConsumptionSink): Promise<void> => {
+        try {
+          await sink.record(event);
+        } catch {
+          onWarning(COMPOSITE_SINK_FAILURE_WARNING);
+        }
+      };
+      await Promise.all([recordIsolated(primary), recordIsolated(secondary)]);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // In-memory sink double (tests)
 // ---------------------------------------------------------------------------
 

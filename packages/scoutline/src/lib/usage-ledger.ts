@@ -102,6 +102,13 @@ function emptyUsageCounters(): UsageCounters {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * The ECMAScript time-value bound: a finite `t` with `|t| <= 8.64e15`
+ * is a representable Date; anything wider is clipped to NaN, and
+ * `toISOString()` throws a RangeError on it.
+ */
+const MAX_UTC_TIME_MS = 8.64e15;
+
+/**
  * The UTC calendar-date bucket key (`"YYYY-MM-DD"`) for a millisecond
  * instant. Deterministic and timezone-independent (DESIGN D2: UTC day
  * bucketing keyed off `event.at` — local-time bucketing would need a
@@ -222,7 +229,10 @@ function finiteNonNegative(value: number): number {
  *
  * A reference key that is not a parsable UTC date leaves the ledger
  * unchanged (defensive — pruning must never destroy history on a
- * malformed input).
+ * malformed input). So does a window that is not a positive integer, or
+ * one whose computed cutoff instant is outside the ~±8.64e15 ms range
+ * ECMAScript Dates can represent (review P2 — the cutoff date is
+ * validated, never thrown on).
  */
 export function pruneExpiredDays(
   ledger: UsageLedger,
@@ -231,13 +241,23 @@ export function pruneExpiredDays(
 ): UsageLedger {
   const referenceMs = Date.parse(`${referenceDayKey}T00:00:00.000Z`);
   if (!Number.isFinite(referenceMs)) return ledger;
-  // Retention guard (review P2): a 0 or negative window would land the
-  // cutoff in the FUTURE and silently wipe the ledger's whole history on
-  // the next day-roll. Invalid windows leave the ledger unchanged, like
-  // a malformed reference key — pruning must never destroy history on a
-  // nonsensical input.
-  if (!Number.isFinite(retentionDays) || retentionDays < 1) return ledger;
-  const cutoffKey = usageDayKey(referenceMs - (retentionDays - 1) * DAY_MS);
+  // Retention guard (review P2): the window must be a positive INTEGER.
+  // A 0 or negative window would land the cutoff in the FUTURE and
+  // silently wipe the ledger's whole history on the next day-roll; a
+  // fractional one computes a mid-day cutoff that retains the wrong
+  // number of day keys. Invalid windows leave the ledger unchanged,
+  // like a malformed reference key — pruning must never destroy history
+  // on a nonsensical input.
+  if (!Number.isInteger(retentionDays) || retentionDays < 1) return ledger;
+  const cutoffMs = referenceMs - (retentionDays - 1) * DAY_MS;
+  // Cutoff validation (review P2): a huge window can push the cutoff
+  // past the ~±8.64e15 ms range ECMAScript Dates can represent (or to
+  // ±Infinity), where `usageDayKey` throws a RangeError and the sink
+  // would drop the event. An unrepresentable cutoff is a nonsensical
+  // window: leave the ledger unchanged — which, for an over-large
+  // window, is exactly the intended "keep everything".
+  if (!Number.isFinite(cutoffMs) || Math.abs(cutoffMs) > MAX_UTC_TIME_MS) return ledger;
+  const cutoffKey = usageDayKey(cutoffMs);
   // Null-prototype accumulator with a CreateDataProperty boundary (the
   // parseUsageLedger discipline): ledger day keys are untrusted, and an
   // in-window "__proto__" key must survive pruning as an own key, not

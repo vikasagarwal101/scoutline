@@ -13,10 +13,14 @@
  * here — ledger write failure leaves the primary recorded, primary
  * rejection leaves the ledger written.
  */
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 import {
   createCompositeConsumptionSink,
@@ -30,6 +34,19 @@ import { createInMemoryQuotaStore } from "../dist/lib/quota-store.js";
 import { executeSearch, executeCachedOperation } from "../dist/lib/execution.js";
 import { getCapabilityMapping } from "../dist/lib/quota-mapping.js";
 import { withTempDir } from "./helpers/temp-dir.js";
+import { main } from "../dist/index.js";
+import { NetworkError } from "../dist/lib/errors.js";
+import {
+  createFakeCrawlDescriptor,
+  createFakeMapDescriptor,
+  createFakeReaderDescriptor,
+  createFakeRepositoryDescriptor,
+  createFakeResearchDescriptor,
+  createFakeSearchDescriptor,
+} from "./helpers/fake-adapter.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // defaultAmountForCapability — honest cost model
@@ -623,3 +640,633 @@ describe("consumption: W1 characterization — execution targets real category n
     assert.strictEqual(mapping, undefined, "quota is unmapped by design");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Usage-ledger Ticket 4 — handler wiring ×6 (the PB-T2 gap closure).
+//
+// DESIGN D7: every dispatch path threads the configured consumption sink
+// + clock down to the shared execution seam. Before this ticket only
+// vision and the fan-out arms forwarded `consume`, so a plain
+// `scoutline search/read/...` run recorded nothing in the ledger. Each
+// case drives `main` (the dispatch seam, `../dist/index.js`) with an
+// injected `consume` double + fake provider descriptors + ALL SIX
+// capability cache/sleep/random triples (the reader-command makeMainDeps
+// pattern; an omitted triple silently falls back to the real on-disk
+// cache). Wrapper-level executeSearch/executeCachedOperation calls
+// cannot prove the handler threading — only the full dispatch path can.
+//
+// Lenses per DESIGN D7 + the defaultRetryPolicy table:
+//   - invoke: exactly one event, provider = the fake descriptor's id.
+//   - cache hit: a second identical run emits NOTHING.
+//   - retryable handlers (search/reader/repo, maxRetries 1): one event
+//     per attempt — a retryable failure bills twice before failing.
+//   - no-retry handlers (crawl/map/research, maxRetries 0 — double-
+//     charge risk): exactly ONE event even on a failed invoke.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the standard Ticket-4 MainDependencies double: recording
+ * invocation adapter, in-memory response cache, deterministic
+ * sleep/random, and ALL SIX capability triples wired to the same
+ * in-memory execution (search/reader/crawl/map/research/repository) so
+ * no drive can silently reach the real on-disk cache.
+ */
+function makeMainDeps({ descriptors, consume, cache: providedCache }) {
+  const stdout = [];
+  const stderr = [];
+  const adapter = {
+    stdoutIsTTY: false,
+    stdinIsTTY: false,
+    environmentOutputMode: "data",
+    readStdin: async () => "",
+    writeStdout: (v) => stdout.push(v),
+    writeStderr: (v) => stderr.push(v),
+    runQuietly: async (op) => op(),
+    setExitCode: () => {},
+  };
+  const cache = providedCache ?? makeInMemoryCache();
+  const sleep = () => Promise.resolve();
+  const random = () => 0;
+  return {
+    stdout,
+    stderr,
+    cache,
+    mainDeps: {
+      invocation: adapter,
+      env: {},
+      providerDescriptors: descriptors,
+      consume,
+      searchCache: cache,
+      searchSleep: sleep,
+      searchRandom: random,
+      readerCache: cache,
+      readerSleep: sleep,
+      readerRandom: random,
+      crawlCache: cache,
+      crawlSleep: sleep,
+      crawlRandom: random,
+      mapCache: cache,
+      mapSleep: sleep,
+      mapRandom: random,
+      researchCache: cache,
+      researchSleep: sleep,
+      researchRandom: random,
+      repositoryCache: cache,
+      repositorySleep: sleep,
+      repositoryRandom: random,
+    },
+  };
+}
+
+/** Canned normalized results (schema-version-1) per capability. */
+const T4_RESULTS = {
+  search: [{ title: "Fake result", url: "https://example.com/fake", summary: "fake" }],
+  read: {
+    schemaVersion: 1,
+    url: "https://example.com/",
+    finalUrl: "https://example.com/",
+    title: "Example Domain",
+    content: "# Example\n\nBody.",
+    contentFormat: "markdown",
+  },
+  repoSearch: {
+    schemaVersion: 1,
+    repository: "octo/example",
+    query: "find the seam",
+    language: "en",
+    excerpts: [{ text: "the seam" }],
+    truncated: false,
+    originalTextLength: 9,
+  },
+  crawl: (request) => ({
+    schemaVersion: 1,
+    baseUrl: request.url,
+    pages: [{ url: request.url, content: "crawled page", contentFormat: "markdown" }],
+    totalPages: 1,
+  }),
+  map: (request) => ({
+    schemaVersion: 1,
+    baseUrl: request.url,
+    urls: [`${request.url}a`, `${request.url}b`],
+    totalUrls: 2,
+  }),
+  research: (request) => ({
+    schemaVersion: 1,
+    query: request.query,
+    model: request.model ?? "auto",
+    report: `Report on "${request.query}"`,
+    sources: [{ title: "Source", url: "https://example.com/source" }],
+  }),
+};
+
+describe("consumption: handler wiring through main (usage-ledger Ticket 4)", () => {
+  let savedRoots;
+  let redirectRoots;
+
+  // Belt-and-braces hermeticity (Ticket 3 pattern): redirect BOTH real-fs
+  // roots at temp dirs for the whole describe. The providerDescriptors
+  // injection already gates the production sinks/refresh/trigger-detection
+  // off; the redirect additionally pins the config load (a developer's
+  // real config.json — e.g. fanout=true — must not change which dispatch
+  // path a drive takes) and keeps the research state dir off the real
+  // cache root.
+  before(async () => {
+    savedRoots = {
+      SCOUTLINE_CONFIG_DIR: process.env.SCOUTLINE_CONFIG_DIR,
+      SCOUTLINE_CACHE_DIR: process.env.SCOUTLINE_CACHE_DIR,
+    };
+    redirectRoots = {
+      config: await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-t4-config-")),
+      cache: await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-t4-cache-")),
+    };
+    process.env.SCOUTLINE_CONFIG_DIR = redirectRoots.config;
+    process.env.SCOUTLINE_CACHE_DIR = redirectRoots.cache;
+  });
+
+  after(async () => {
+    for (const [key, value] of Object.entries(savedRoots)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await Promise.all(
+      Object.values(redirectRoots).map((dir) => fs.rm(dir, { recursive: true, force: true })),
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Invoke + cache-hit lens — all six handlers
+  // -------------------------------------------------------------------------
+
+  it("search (single-pin path): one event on invoke, none on a cache hit", async () => {
+    const invokes = [];
+    const sink = createInMemoryConsumptionSink();
+    const search = createFakeSearchDescriptor({
+      id: "zai",
+      capabilityOptions: {
+        search: {
+          result: (request, attempt) => {
+            invokes.push(attempt);
+            return T4_RESULTS.search;
+          },
+        },
+      },
+    });
+    const drive = makeMainDeps({ descriptors: [search.descriptor], consume: sink });
+    const status = await main(["search", "usage ledger"], drive.mainDeps);
+    assert.strictEqual(status, 0, `stderr: ${JSON.stringify(drive.stderr)}`);
+    assert.deepStrictEqual(invokes, [1], "exactly one billable invoke");
+    assert.strictEqual(sink.events.length, 1, "exactly one event on invoke");
+    assert.strictEqual(sink.events[0].provider, "zai", "provider = the fake descriptor's id");
+    assert.strictEqual(sink.events[0].capabilityId, "search");
+    assert.strictEqual(sink.events[0].attempt, 1);
+
+    // Cache hit: a fresh drive (fresh descriptors + sink) sharing the SAME
+    // in-memory cache re-runs the identical request — the cached
+    // normalized result returns and NOTHING is emitted.
+    const invokes2 = [];
+    const sink2 = createInMemoryConsumptionSink();
+    const search2 = createFakeSearchDescriptor({
+      id: "zai",
+      capabilityOptions: {
+        search: {
+          result: (request, attempt) => {
+            invokes2.push(attempt);
+            return T4_RESULTS.search;
+          },
+        },
+      },
+    });
+    const drive2 = makeMainDeps({ descriptors: [search2.descriptor], consume: sink2, cache: drive.cache });
+    const status2 = await main(["search", "usage ledger"], drive2.mainDeps);
+    assert.strictEqual(status2, 0, `stderr: ${JSON.stringify(drive2.stderr)}`);
+    assert.deepStrictEqual(invokes2, [], "cache hit must not invoke");
+    assert.strictEqual(sink2.events.length, 0, "cache hit must not emit");
+  });
+
+  it("read: one event on invoke, none on a cache hit", async () => {
+    const invokes = [];
+    const sink = createInMemoryConsumptionSink();
+    const reader = createFakeReaderDescriptor({
+      id: "zai",
+      capabilityOptions: { fetch: { result: T4_RESULTS.read } },
+    });
+    const drive = makeMainDeps({ descriptors: [reader.descriptor], consume: sink });
+    const status = await main(["read", "https://example.com/"], drive.mainDeps);
+    assert.strictEqual(status, 0, `stderr: ${JSON.stringify(drive.stderr)}`);
+    assert.strictEqual(sink.events.length, 1);
+    assert.strictEqual(sink.events[0].provider, "zai");
+    assert.strictEqual(sink.events[0].capabilityId, "reader");
+    assert.strictEqual(sink.events[0].attempt, 1);
+
+    const sink2 = createInMemoryConsumptionSink();
+    const reader2 = createFakeReaderDescriptor({
+      id: "zai",
+      capabilityOptions: {
+        fetch: {
+          result: () => {
+            invokes.push("hit-invoke");
+            return T4_RESULTS.read;
+          },
+        },
+      },
+    });
+    const drive2 = makeMainDeps({ descriptors: [reader2.descriptor], consume: sink2, cache: drive.cache });
+    const status2 = await main(["read", "https://example.com/"], drive2.mainDeps);
+    assert.strictEqual(status2, 0, `stderr: ${JSON.stringify(drive2.stderr)}`);
+    assert.deepStrictEqual(invokes, [], "cache hit must not invoke");
+    assert.strictEqual(sink2.events.length, 0, "cache hit must not emit");
+  });
+
+  it("repo search: one event on invoke, none on a cache hit", async () => {
+    const invokes = [];
+    const sink = createInMemoryConsumptionSink();
+    const repo = createFakeRepositoryDescriptor({
+      id: "zai",
+      capabilityOptions: {
+        search: {
+          result: (request) => ({
+            ...T4_RESULTS.repoSearch,
+            repository: request.repository,
+            query: request.query,
+          }),
+        },
+      },
+    });
+    const drive = makeMainDeps({ descriptors: [repo.descriptor], consume: sink });
+    const status = await main(
+      ["repo", "search", "octo/example", "find the seam"],
+      drive.mainDeps,
+    );
+    assert.strictEqual(status, 0, `stderr: ${JSON.stringify(drive.stderr)}`);
+    assert.strictEqual(sink.events.length, 1);
+    assert.strictEqual(sink.events[0].provider, "zai");
+    assert.strictEqual(sink.events[0].capabilityId, "repository-exploration");
+    assert.strictEqual(sink.events[0].attempt, 1);
+
+    const sink2 = createInMemoryConsumptionSink();
+    const repo2 = createFakeRepositoryDescriptor({
+      id: "zai",
+      capabilityOptions: {
+        search: {
+          result: (request) => {
+            invokes.push(request);
+            return { ...T4_RESULTS.repoSearch, repository: request.repository, query: request.query };
+          },
+        },
+      },
+    });
+    const drive2 = makeMainDeps({ descriptors: [repo2.descriptor], consume: sink2, cache: drive.cache });
+    const status2 = await main(
+      ["repo", "search", "octo/example", "find the seam"],
+      drive2.mainDeps,
+    );
+    assert.strictEqual(status2, 0, `stderr: ${JSON.stringify(drive2.stderr)}`);
+    assert.deepStrictEqual(invokes, [], "cache hit must not invoke");
+    assert.strictEqual(sink2.events.length, 0, "cache hit must not emit");
+  });
+
+  it("crawl: one event on invoke, none on a cache hit", async () => {
+    const invokes = [];
+    const sink = createInMemoryConsumptionSink();
+    const crawl = createFakeCrawlDescriptor({
+      id: "zai",
+      capabilityOptions: { fetch: { result: T4_RESULTS.crawl } },
+    });
+    const drive = makeMainDeps({ descriptors: [crawl.descriptor], consume: sink });
+    const status = await main(["crawl", "https://example.com/"], drive.mainDeps);
+    assert.strictEqual(status, 0, `stderr: ${JSON.stringify(drive.stderr)}`);
+    assert.strictEqual(sink.events.length, 1);
+    assert.strictEqual(sink.events[0].provider, "zai");
+    assert.strictEqual(sink.events[0].capabilityId, "crawl");
+    assert.strictEqual(sink.events[0].attempt, 1);
+    assert.strictEqual(sink.events[0].unit, "credits", "crawl bills credits");
+    assert.strictEqual(sink.events[0].amount.kind, "unknown", "crawl cost is variable");
+
+    const sink2 = createInMemoryConsumptionSink();
+    const crawl2 = createFakeCrawlDescriptor({
+      id: "zai",
+      capabilityOptions: {
+        fetch: {
+          result: (request) => {
+            invokes.push(request);
+            return T4_RESULTS.crawl(request);
+          },
+        },
+      },
+    });
+    const drive2 = makeMainDeps({ descriptors: [crawl2.descriptor], consume: sink2, cache: drive.cache });
+    const status2 = await main(["crawl", "https://example.com/"], drive2.mainDeps);
+    assert.strictEqual(status2, 0, `stderr: ${JSON.stringify(drive2.stderr)}`);
+    assert.deepStrictEqual(invokes, [], "cache hit must not invoke");
+    assert.strictEqual(sink2.events.length, 0, "cache hit must not emit");
+  });
+
+  it("map: one event on invoke, none on a cache hit", async () => {
+    const invokes = [];
+    const sink = createInMemoryConsumptionSink();
+    const map = createFakeMapDescriptor({
+      id: "zai",
+      capabilityOptions: { fetch: { result: T4_RESULTS.map } },
+    });
+    const drive = makeMainDeps({ descriptors: [map.descriptor], consume: sink });
+    const status = await main(["map", "https://example.com/"], drive.mainDeps);
+    assert.strictEqual(status, 0, `stderr: ${JSON.stringify(drive.stderr)}`);
+    assert.strictEqual(sink.events.length, 1);
+    assert.strictEqual(sink.events[0].provider, "zai");
+    assert.strictEqual(sink.events[0].capabilityId, "map");
+    assert.strictEqual(sink.events[0].attempt, 1);
+    assert.strictEqual(sink.events[0].unit, "credits", "map bills credits");
+    assert.deepStrictEqual(
+      sink.events[0].amount,
+      { kind: "estimate", value: 1 },
+      "map is a single-batch estimate",
+    );
+
+    const sink2 = createInMemoryConsumptionSink();
+    const map2 = createFakeMapDescriptor({
+      id: "zai",
+      capabilityOptions: {
+        fetch: {
+          result: (request) => {
+            invokes.push(request);
+            return T4_RESULTS.map(request);
+          },
+        },
+      },
+    });
+    const drive2 = makeMainDeps({ descriptors: [map2.descriptor], consume: sink2, cache: drive.cache });
+    const status2 = await main(["map", "https://example.com/"], drive2.mainDeps);
+    assert.strictEqual(status2, 0, `stderr: ${JSON.stringify(drive2.stderr)}`);
+    assert.deepStrictEqual(invokes, [], "cache hit must not invoke");
+    assert.strictEqual(sink2.events.length, 0, "cache hit must not emit");
+  });
+
+  it("research: one event on invoke, none on a cache hit", async () => {
+    const invokes = [];
+    const sink = createInMemoryConsumptionSink();
+    const research = createFakeResearchDescriptor({
+      id: "zai",
+      capabilityOptions: { run: { result: T4_RESULTS.research } },
+    });
+    const drive = makeMainDeps({ descriptors: [research.descriptor], consume: sink });
+    const status = await main(["research", "deep research query"], drive.mainDeps);
+    assert.strictEqual(status, 0, `stderr: ${JSON.stringify(drive.stderr)}`);
+    assert.strictEqual(sink.events.length, 1);
+    assert.strictEqual(sink.events[0].provider, "zai");
+    assert.strictEqual(sink.events[0].capabilityId, "research");
+    assert.strictEqual(sink.events[0].attempt, 1);
+    assert.strictEqual(sink.events[0].unit, "credits", "research bills credits");
+    assert.strictEqual(sink.events[0].amount.kind, "unknown", "research cost is variable");
+
+    const sink2 = createInMemoryConsumptionSink();
+    const research2 = createFakeResearchDescriptor({
+      id: "zai",
+      capabilityOptions: {
+        run: {
+          result: (request) => {
+            invokes.push(request);
+            return T4_RESULTS.research(request);
+          },
+        },
+      },
+    });
+    const drive2 = makeMainDeps({ descriptors: [research2.descriptor], consume: sink2, cache: drive.cache });
+    const status2 = await main(["research", "deep research query"], drive2.mainDeps);
+    assert.strictEqual(status2, 0, `stderr: ${JSON.stringify(drive2.stderr)}`);
+    assert.deepStrictEqual(invokes, [], "cache hit must not invoke");
+    assert.strictEqual(sink2.events.length, 0, "cache hit must not emit");
+  });
+
+  // -------------------------------------------------------------------------
+  // Retry lens — the retryable handlers (defaultRetryPolicy maxRetries 1)
+  // -------------------------------------------------------------------------
+
+  it("search: a retryable failure bills one event PER ATTEMPT (2 events) before failing", async () => {
+    const invokes = [];
+    const sink = createInMemoryConsumptionSink();
+    const search = createFakeSearchDescriptor({
+      id: "zai",
+      capabilityOptions: {
+        search: {
+          error: (attempt) => {
+            invokes.push(attempt);
+            return new NetworkError("flaky transport");
+          },
+        },
+      },
+    });
+    const drive = makeMainDeps({ descriptors: [search.descriptor], consume: sink });
+    const status = await main(["search", "usage ledger"], drive.mainDeps);
+    assert.notStrictEqual(status, 0, "single candidate exhausted → non-zero exit");
+    assert.deepStrictEqual(invokes, [1, 2], "search retries once (maxRetries 1)");
+    assert.strictEqual(sink.events.length, 2, "one event per attempt");
+    assert.deepStrictEqual(
+      sink.events.map((e) => e.attempt),
+      [1, 2],
+      "events emitted BEFORE each invoke, attempt numbers ascending",
+    );
+    assert.ok(sink.events.every((e) => e.provider === "zai"));
+  });
+
+  it("read: a retryable failure bills one event PER ATTEMPT (2 events) before failing", async () => {
+    const invokes = [];
+    const sink = createInMemoryConsumptionSink();
+    const reader = createFakeReaderDescriptor({
+      id: "zai",
+      capabilityOptions: {
+        fetch: {
+          error: (attempt) => {
+            invokes.push(attempt);
+            return new NetworkError("flaky transport");
+          },
+        },
+      },
+    });
+    const drive = makeMainDeps({ descriptors: [reader.descriptor], consume: sink });
+    const status = await main(["read", "https://example.com/"], drive.mainDeps);
+    assert.notStrictEqual(status, 0, "single candidate exhausted → non-zero exit");
+    assert.deepStrictEqual(invokes, [1, 2], "reader-fetch retries once (maxRetries 1)");
+    assert.strictEqual(sink.events.length, 2);
+    assert.deepStrictEqual(
+      sink.events.map((e) => e.attempt),
+      [1, 2],
+    );
+    assert.ok(sink.events.every((e) => e.capabilityId === "reader"));
+  });
+
+  it("repo search: a retryable failure bills one event PER ATTEMPT (2 events) before failing", async () => {
+    const invokes = [];
+    const sink = createInMemoryConsumptionSink();
+    const repo = createFakeRepositoryDescriptor({
+      id: "zai",
+      capabilityOptions: {
+        search: {
+          error: (attempt) => {
+            invokes.push(attempt);
+            return new NetworkError("flaky transport");
+          },
+        },
+      },
+    });
+    const drive = makeMainDeps({ descriptors: [repo.descriptor], consume: sink });
+    const status = await main(
+      ["repo", "search", "octo/example", "find the seam"],
+      drive.mainDeps,
+    );
+    assert.notStrictEqual(status, 0, "single candidate exhausted → non-zero exit");
+    assert.deepStrictEqual(invokes, [1, 2], "repository-search retries once (maxRetries 1)");
+    assert.strictEqual(sink.events.length, 2);
+    assert.deepStrictEqual(
+      sink.events.map((e) => e.attempt),
+      [1, 2],
+    );
+    assert.ok(sink.events.every((e) => e.capabilityId === "repository-exploration"));
+  });
+
+  // -------------------------------------------------------------------------
+  // No-retry lens — crawl/map/research (maxRetries 0, double-charge risk):
+  // exactly ONE event even on a failed (retryable-classified) invoke.
+  // -------------------------------------------------------------------------
+
+  it("crawl: a retryable failure still bills exactly ONE event (maxRetries 0)", async () => {
+    const invokes = [];
+    const sink = createInMemoryConsumptionSink();
+    const crawl = createFakeCrawlDescriptor({
+      id: "zai",
+      capabilityOptions: {
+        fetch: {
+          error: (attempt) => {
+            invokes.push(attempt);
+            return new NetworkError("flaky transport");
+          },
+        },
+      },
+    });
+    const drive = makeMainDeps({ descriptors: [crawl.descriptor], consume: sink });
+    const status = await main(["crawl", "https://example.com/"], drive.mainDeps);
+    assert.notStrictEqual(status, 0, "failed crawl → non-zero exit");
+    assert.deepStrictEqual(invokes, [1], "crawl never retries (double-charge risk)");
+    assert.strictEqual(sink.events.length, 1, "exactly one event even on failure");
+    assert.strictEqual(sink.events[0].attempt, 1);
+    assert.strictEqual(sink.events[0].capabilityId, "crawl");
+  });
+
+  it("map: a retryable failure still bills exactly ONE event (maxRetries 0)", async () => {
+    const invokes = [];
+    const sink = createInMemoryConsumptionSink();
+    const map = createFakeMapDescriptor({
+      id: "zai",
+      capabilityOptions: {
+        fetch: {
+          error: (attempt) => {
+            invokes.push(attempt);
+            return new NetworkError("flaky transport");
+          },
+        },
+      },
+    });
+    const drive = makeMainDeps({ descriptors: [map.descriptor], consume: sink });
+    const status = await main(["map", "https://example.com/"], drive.mainDeps);
+    assert.notStrictEqual(status, 0, "failed map → non-zero exit");
+    assert.deepStrictEqual(invokes, [1], "map never retries (double-charge risk)");
+    assert.strictEqual(sink.events.length, 1);
+    assert.strictEqual(sink.events[0].attempt, 1);
+    assert.strictEqual(sink.events[0].capabilityId, "map");
+  });
+
+  it("research: a retryable failure still bills exactly ONE event (maxRetries 0)", async () => {
+    const invokes = [];
+    const sink = createInMemoryConsumptionSink();
+    const research = createFakeResearchDescriptor({
+      id: "zai",
+      capabilityOptions: {
+        run: {
+          error: (attempt) => {
+            invokes.push(attempt);
+            return new NetworkError("flaky transport");
+          },
+        },
+      },
+    });
+    const drive = makeMainDeps({ descriptors: [research.descriptor], consume: sink });
+    const status = await main(["research", "deep research query"], drive.mainDeps);
+    assert.notStrictEqual(status, 0, "failed research → non-zero exit");
+    assert.deepStrictEqual(invokes, [1], "research never retries (double-charge risk)");
+    assert.strictEqual(sink.events.length, 1);
+    assert.strictEqual(sink.events[0].attempt, 1);
+    assert.strictEqual(sink.events[0].capabilityId, "research");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Usage-ledger Ticket 4 — production gate (main-as-subprocess).
+//
+// Network-making, so opt-in per the repo's ZAI_LIVE_TESTS convention
+// (default suite stays offline). Moved here from Ticket 3: until the D7
+// handler threading merged, no plain-dispatch command emitted, so the
+// subprocess could not have written a row. Now it must: run the real
+// `bin/scoutline.js search` against a redirected config root with a
+// dummy key — online the invoke fails API_ERROR (401, non-retryable);
+// offline it fails NETWORK_ERROR (retryable, one extra attempt + backoff).
+// EITHER way the row lands because `executeProviderOperation` emits the
+// event BEFORE the invoke attempt, and the production composite sink
+// (constructed in full production mode) writes usage.json. Nothing is
+// asserted about the error class.
+// ---------------------------------------------------------------------------
+
+describe(
+  "consumption: production gate — real binary writes usage.json (ZAI_LIVE_TESTS=1)",
+  { skip: process.env.ZAI_LIVE_TESTS !== "1" },
+  () => {
+    it("bin/scoutline.js search (dummy key) exits non-zero and lands a usage.json row", async (t) => {
+      await withTempDir(t, async (configDir) => {
+        await withTempDir(t, async (cacheDir) => {
+          let exitError = null;
+          let stderrText = "";
+          try {
+            await execFileAsync(
+              process.execPath,
+              [path.resolve(__dirname, "..", "bin", "scoutline.js"), "search", "usage ledger gate"],
+              {
+                cwd: path.resolve(__dirname, ".."),
+                timeout: 60_000,
+                env: {
+                  // Minimal env: the dummy ZAI_API_KEY alias satisfies
+                  // trigger-detection/credential resolution with a key
+                  // that cannot succeed; nothing real leaks in or out.
+                  SCOUTLINE_CONFIG_DIR: configDir,
+                  SCOUTLINE_CACHE_DIR: cacheDir,
+                  ZAI_API_KEY: "dummy-key-production-gate",
+                },
+              },
+            );
+          } catch (error) {
+            // Non-zero exit is EXPECTED (the dummy key cannot work).
+            exitError = error;
+            stderrText = Buffer.isBuffer(error.stderr) ? error.stderr.toString("utf8") : "";
+          }
+          assert.ok(exitError !== null, "dummy-key search must exit non-zero");
+          assert.notStrictEqual(exitError.code, 0, `stderr: ${stderrText.slice(0, 2000)}`);
+
+          // The row landed BEFORE the failing invoke — the emit-BEFORE-
+          // invoke contract plus the production composite sink.
+          const usagePath = path.join(configDir, "usage.json");
+          const raw = await fs.readFile(usagePath, "utf8");
+          const ledger = JSON.parse(raw);
+          assert.strictEqual(ledger.version, 1);
+          const dayKeys = Object.keys(ledger.days ?? {});
+          assert.ok(dayKeys.length >= 1, "at least one UTC day key exists");
+          const day = ledger.days[dayKeys[0]];
+          const providerRow = day.zai;
+          assert.ok(providerRow, "row exists for the default-pinned provider (zai)");
+          const searchRow = providerRow.search;
+          assert.ok(searchRow, "row exists for the search capability");
+          assert.ok(
+            searchRow.attempts >= 1,
+            `attempts recorded (${JSON.stringify(searchRow)})`,
+          );
+        });
+      });
+    });
+  },
+);

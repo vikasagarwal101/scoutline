@@ -257,6 +257,12 @@ Usage - Report call-usage history from the local usage ledger
 Usage:
   scoutline usage [--days N] [--provider <id>]
 
+Every billable invoke - search (fan-out arms and --merge sub-queries
+included), read, crawl, map, research, repo, and vision - appends
+counters to the ledger; retries each count as an attempt, and cache
+hits record nothing. Counts are billable call attempts; providers do
+not report credit costs.
+
 Options:
   --days N         Window size in UTC days (default 7). Must be an
                    integer of at least 1; --days 0 or a non-numeric
@@ -268,8 +274,10 @@ Options:
 
 Reads <config-root>/usage.json (SCOUTLINE_CONFIG_DIR overrides the
 default ~/.scoutline/). Days are UTC calendar dates; history is kept for
-90 days. The command is credential-free and performs no network calls;
-a missing or corrupt ledger reports an empty window with exit 0.
+90 days. Only counters are stored - never queries, URLs, prompts,
+results, or credentials. The command is credential-free and performs no
+network calls; a missing or corrupt ledger reports an empty window with
+exit 0.
 
 Exit codes:
   0  Success (including an empty ledger).

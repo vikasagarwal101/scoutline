@@ -146,6 +146,8 @@ Commands:
   call     Call a tool directly (Z.AI)
   doctor   Provider-aware environment + connectivity checks
   cache    Inspect or clear the local cache (stats / clear)
+  usage    Report local call-usage history (usage.json ledger,
+           credential-free)
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
   init     Interactive onboarding wizard (writes ~/.scoutline/config.json)
 
@@ -187,6 +189,7 @@ Help:
   scoutline call --help
   scoutline code --help
   scoutline cache --help
+  scoutline usage --help
   scoutline init --help
 `.trim();
 

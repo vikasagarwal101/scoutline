@@ -389,6 +389,14 @@ function remapSectionsToContext(
   const remapped: { heading: string; body: string }[] = [];
   for (const heading of contextHeadings) {
     const key = slug(heading);
+    // An all-non-Latin heading slugs to "" under the normative D4 ASCII
+    // formula and would "match" every other ""-slug provider section;
+    // treat the empty slug as never-matching so it deterministically
+    // falls through to the no-match body instead of fusing.
+    if (key === "") {
+      remapped.push({ heading, body: NO_MATCHING_SECTION_BODY });
+      continue;
+    }
     const bodies: string[] = [];
     for (let i = 0; i < sections.length; i++) {
       if (consumed[i]) continue;

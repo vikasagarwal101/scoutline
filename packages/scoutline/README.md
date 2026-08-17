@@ -235,13 +235,13 @@ and merges and dedupes all results. What leaves your machine under
 `search --context`: the derived sub-query strings themselves become the
 search queries — the file is never sent. Under fan-out this multiplies
 cost (N sub-queries × M arms = N×M billable searches, disclosed once on
-stderr). `--context` is mutually exclusive with `--merge`.
+stderr). `--context` and `--context-stdin` are mutually exclusive with `--merge`.
 
 **Privacy boundary**: parsed file content crosses the network in exactly
 two shapes — the research `bias`/`both` focus segment and the
 search-derived sub-query strings. Everything else stays local: `organize`
 sends nothing derived, JSON outputs record only counts, the source path,
-and a SHA-256 of the content, and no heading, question, or file byte
+and a SHA-256 of the content, and no heading, question, term, or file byte
 appears in notices or logs. Without these flags, `research` and `search`
 output is byte-identical to previous releases.
 

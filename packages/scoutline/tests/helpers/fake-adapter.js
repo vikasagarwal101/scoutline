@@ -32,6 +32,9 @@ import {
   decodeRepositorySearch,
 } from "../../dist/capabilities/repository.js";
 import { decodeReaderFetchResult } from "../../dist/capabilities/reader.js";
+import { decodeCrawlResult } from "../../dist/capabilities/crawl.js";
+import { decodeMapResult } from "../../dist/capabilities/map.js";
+import { decodeResearchResult } from "../../dist/capabilities/research.js";
 import { ValidationError } from "../../dist/lib/errors.js";
 
 export function createFakeAdapter(overrides = {}) {
@@ -586,5 +589,413 @@ export function createFakeReaderDescriptor({
       return adapter;
     },
   };
+  return { descriptor, stats };
+}
+
+// ---------------------------------------------------------------------------
+// Usage-ledger Ticket 4: fake Crawl / Map / Research / Search Capabilities
+// and Descriptors.
+//
+// Crawl, map, and research had no shared doubles (the async-fallback and
+// Tavily suites hand-build theirs inline); the usage-ledger handler
+// threading needs one reusable double per capability mirroring the
+// reader/repository pattern in this file: a structured normalized result
+// (NO raw parsing), per-operation stats, a scripted result/error pair,
+// and a matching Provider Descriptor whose created Adapter exposes the
+// capability under its dispatch slot (`adapter.crawl`, `adapter.map`,
+// `adapter.research`, `adapter.search`).
+//
+// The three async capabilities ride the simplified `CachedOperation`
+// surface (`validate` / `cacheIdentity` / `decodeCached` / `invoke`, NO
+// legacy candidates) consumed by `executeCachedOperation`; the identity's
+// `capability` field MUST be the bare capability id ("crawl" / "map" /
+// "research") because `executeCachedOperation` uses it BOTH as the
+// consumption event's `capabilityId` AND as the `ProviderOperation` that
+// drives the default retry policy. Search is NOT a CachedOperation
+// (shared execution caches the raw normalized array directly), so the
+// search fake has no `decodeCached`.
+//
+// Scripting superset over the reader/repository fakes: an `error`
+// function may return `null`/`undefined` to fall through to `result` on
+// that attempt, so "fail once (retryable), then succeed" is scriptable
+// without adapter-level state. A constant Error throws on every attempt.
+// ---------------------------------------------------------------------------
+
+/**
+ * Shared operation body for the three async fakes. `decoder` is the
+ * capability's total normalized cache decoder; `validateRequest` mirrors
+ * the structural checks the real Adapter performs.
+ */
+function makeCachedOperation({ kind, providerId, capabilityId, fingerprint, scripted, decoder, stats, validateRequest }) {
+  return {
+    kind,
+    validate(request) {
+      stats.validate += 1;
+      validateRequest(request);
+    },
+    cacheIdentity(request) {
+      stats.cacheIdentity += 1;
+      stats.lastRequest = request;
+      return {
+        provider: providerId,
+        capability: capabilityId,
+        credentialFingerprint: fingerprint,
+        request,
+      };
+    },
+    decodeCached(value) {
+      stats.decodeCached += 1;
+      return decoder(value);
+    },
+    async invoke(request) {
+      stats.invoke += 1;
+      stats.lastRequest = request;
+      if (typeof scripted.error === "function") {
+        const error = scripted.error(stats.invoke);
+        if (error !== null && error !== undefined) throw error;
+      } else if (scripted.error instanceof Error) {
+        throw scripted.error;
+      }
+      if (typeof scripted.result === "function") {
+        return scripted.result(request, stats.invoke);
+      }
+      if (scripted.result !== undefined) {
+        return scripted.result;
+      }
+      throw new Error(
+        `fake ${capabilityId} operation "${kind}" invoke called without a scripted result/error`,
+      );
+    },
+  };
+}
+
+/**
+ * Shared descriptor body for the async + search fakes. Mirrors
+ * `createFakeReaderDescriptor` / `createFakeRepositoryDescriptor`: the
+ * base capability is always advertised, `extraCapabilities` is additive,
+ * and `omitXOnAdapter` builds the descriptor/Adapter mismatch case
+ * (advertised but absent on the created Adapter) for fail-closed
+ * dispatch proofs. `makeCapability` returns the FULL capability object
+ * the Adapter exposes under `adapter[slot]`.
+ */
+function makeCapabilityDescriptor({
+  id,
+  configured,
+  capabilityId,
+  extraCapabilities,
+  omitOnAdapter,
+  slot,
+  makeCapability,
+  stats,
+}) {
+  const descriptor = {
+    id,
+    isConfigured(env) {
+      stats.isConfiguredCalls += 1;
+      if (typeof configured === "function") return configured(env);
+      return configured;
+    },
+    capabilities() {
+      stats.capabilitiesCalls += 1;
+      return new Set([capabilityId, ...extraCapabilities]);
+    },
+    create() {
+      stats.createCalls += 1;
+      const adapter = { id };
+      if (!omitOnAdapter) {
+        adapter[slot] = makeCapability();
+        adapter._fakeStats = stats;
+      }
+      return adapter;
+    },
+  };
+  return descriptor;
+}
+
+/**
+ * Build a fake Crawl Capability. The single `fetch` operation returns a
+ * scripted normalized `CrawlResult`.
+ *
+ * @param {object} [options]
+ * @param {string} [options.apiKey="fake-adapter-key"]
+ * @param {string} [options.provider="fake"]
+ * @param {object} [options.fetch]
+ *   Script: `{ result?, error? }`. `result` is a `CrawlResult` or
+ *   `(request, attempt) => CrawlResult`; `error` is an `Error` or
+ *   `(attempt) => Error | null` (null falls through to `result` so
+ *   fail-once-then-succeed is scriptable).
+ * @returns {{capability: object, stats: object, fingerprint: string}}
+ *   `stats` exposes `{ validate, cacheIdentity, decodeCached, invoke,
+ *   lastRequest }` for the fetch operation.
+ */
+export function createFakeCrawlCapability(options = {}) {
+  const apiKey = options.apiKey || "fake-adapter-key";
+  const providerId = options.provider || "fake";
+  const fingerprint = crypto.createHash("sha256").update(apiKey).digest("hex");
+  const stats = { validate: 0, cacheIdentity: 0, decodeCached: 0, invoke: 0, lastRequest: null };
+  const capability = {
+    fetch: makeCachedOperation({
+      kind: "crawl-fetch",
+      providerId,
+      capabilityId: "crawl",
+      fingerprint,
+      scripted: options.fetch || {},
+      decoder: decodeCrawlResult,
+      stats,
+      validateRequest(request) {
+        if (typeof request.url !== "string" || !/^https?:\/\//.test(request.url)) {
+          throw new ValidationError("fake crawl URL must start with http:// or https://");
+        }
+      },
+    }),
+  };
+  return { capability, stats, fingerprint };
+}
+
+/**
+ * Fake Crawl Provider Descriptor. Always advertises `crawl`; the created
+ * Adapter exposes `adapter.crawl.fetch`.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.id="fake"]
+ * @param {string} [opts.apiKey="fake-adapter-key"]
+ * @param {boolean|((env) => boolean)} [opts.configured=true]
+ * @param {object} [opts.capabilityOptions={}]
+ *   Forwarded to `createFakeCrawlCapability` (`fetch`).
+ * @param {string[]} [opts.extraCapabilities=[]]
+ * @param {boolean} [opts.omitCrawlOnAdapter=false]
+ * @returns {{descriptor: object, stats: object}}
+ *   `stats` exposes `{ isConfiguredCalls, capabilitiesCalls, createCalls }`.
+ */
+export function createFakeCrawlDescriptor({
+  id = "fake",
+  apiKey = "fake-adapter-key",
+  configured = true,
+  capabilityOptions = {},
+  extraCapabilities = [],
+  omitCrawlOnAdapter = false,
+} = {}) {
+  const stats = { isConfiguredCalls: 0, capabilitiesCalls: 0, createCalls: 0 };
+  const descriptor = makeCapabilityDescriptor({
+    id,
+    configured,
+    capabilityId: "crawl",
+    extraCapabilities,
+    omitOnAdapter: omitCrawlOnAdapter,
+    slot: "crawl",
+    makeCapability: () => createFakeCrawlCapability({ apiKey, provider: id, ...capabilityOptions }).capability,
+    stats,
+  });
+  return { descriptor, stats };
+}
+
+/**
+ * Build a fake Map Capability. The single `fetch` operation returns a
+ * scripted normalized `MapResult`. Same script contract as
+ * {@link createFakeCrawlCapability}.
+ *
+ * @returns {{capability: object, stats: object, fingerprint: string}}
+ */
+export function createFakeMapCapability(options = {}) {
+  const apiKey = options.apiKey || "fake-adapter-key";
+  const providerId = options.provider || "fake";
+  const fingerprint = crypto.createHash("sha256").update(apiKey).digest("hex");
+  const stats = { validate: 0, cacheIdentity: 0, decodeCached: 0, invoke: 0, lastRequest: null };
+  const capability = {
+    fetch: makeCachedOperation({
+      kind: "map-fetch",
+      providerId,
+      capabilityId: "map",
+      fingerprint,
+      scripted: options.fetch || {},
+      decoder: decodeMapResult,
+      stats,
+      validateRequest(request) {
+        if (typeof request.url !== "string" || !/^https?:\/\//.test(request.url)) {
+          throw new ValidationError("fake map URL must start with http:// or https://");
+        }
+      },
+    }),
+  };
+  return { capability, stats, fingerprint };
+}
+
+/**
+ * Fake Map Provider Descriptor. Always advertises `map`; the created
+ * Adapter exposes `adapter.map.fetch`.
+ *
+ * @returns {{descriptor: object, stats: object}}
+ */
+export function createFakeMapDescriptor({
+  id = "fake",
+  apiKey = "fake-adapter-key",
+  configured = true,
+  capabilityOptions = {},
+  extraCapabilities = [],
+  omitMapOnAdapter = false,
+} = {}) {
+  const stats = { isConfiguredCalls: 0, capabilitiesCalls: 0, createCalls: 0 };
+  const descriptor = makeCapabilityDescriptor({
+    id,
+    configured,
+    capabilityId: "map",
+    extraCapabilities,
+    omitOnAdapter: omitMapOnAdapter,
+    slot: "map",
+    makeCapability: () => createFakeMapCapability({ apiKey, provider: id, ...capabilityOptions }).capability,
+    stats,
+  });
+  return { descriptor, stats };
+}
+
+/**
+ * Build a fake Research Capability. The single `run` operation returns a
+ * scripted normalized `ResearchResult`. The fake's `invoke` resolves
+ * immediately — it does NOT model the real create→poll lifecycle or the
+ * on-disk state file; the handler still computes a state-file path and
+ * registers its SIGINT teardown around the fake.
+ *
+ * @param {object} [options.run]
+ *   Script: `{ result?, error? }` (same contract as the crawl fake).
+ * @returns {{capability: object, stats: object, fingerprint: string}}
+ */
+export function createFakeResearchCapability(options = {}) {
+  const apiKey = options.apiKey || "fake-adapter-key";
+  const providerId = options.provider || "fake";
+  const fingerprint = crypto.createHash("sha256").update(apiKey).digest("hex");
+  const stats = { validate: 0, cacheIdentity: 0, decodeCached: 0, invoke: 0, lastRequest: null };
+  const capability = {
+    run: makeCachedOperation({
+      kind: "research-fetch",
+      providerId,
+      capabilityId: "research",
+      fingerprint,
+      scripted: options.run || {},
+      decoder: decodeResearchResult,
+      stats,
+      validateRequest(request) {
+        if (typeof request.query !== "string" || request.query.trim().length === 0) {
+          throw new ValidationError("fake research query must contain non-whitespace text");
+        }
+      },
+    }),
+  };
+  return { capability, stats, fingerprint };
+}
+
+/**
+ * Fake Research Provider Descriptor. Always advertises `research`; the
+ * created Adapter exposes `adapter.research.run`.
+ *
+ * @returns {{descriptor: object, stats: object}}
+ */
+export function createFakeResearchDescriptor({
+  id = "fake",
+  apiKey = "fake-adapter-key",
+  configured = true,
+  capabilityOptions = {},
+  extraCapabilities = [],
+  omitResearchOnAdapter = false,
+} = {}) {
+  const stats = { isConfiguredCalls: 0, capabilitiesCalls: 0, createCalls: 0 };
+  const descriptor = makeCapabilityDescriptor({
+    id,
+    configured,
+    capabilityId: "research",
+    extraCapabilities,
+    omitOnAdapter: omitResearchOnAdapter,
+    slot: "research",
+    makeCapability: () => createFakeResearchCapability({ apiKey, provider: id, ...capabilityOptions }).capability,
+    stats,
+  });
+  return { descriptor, stats };
+}
+
+/**
+ * Build a fake Search Capability usable through dispatch. `validate`
+ * rejects an empty query, `cacheIdentity` embeds the Provider id +
+ * credential fingerprint, and `invoke` returns a scripted
+ * `SearchSource[]`. Search is NOT a `CachedOperation` (shared execution
+ * caches the raw normalized array), so there is no `decodeCached`.
+ *
+ * @param {object} [options]
+ * @param {string} [options.apiKey="fake-adapter-key"]
+ * @param {string} [options.provider="fake"]
+ * @param {object} [options.search]
+ *   Script: `{ result?, error? }` (same contract as the crawl fake).
+ * @returns {{capability: object, stats: object, fingerprint: string}}
+ */
+export function createFakeSearchCapability(options = {}) {
+  const apiKey = options.apiKey || "fake-adapter-key";
+  const providerId = options.provider || "fake";
+  const fingerprint = crypto.createHash("sha256").update(apiKey).digest("hex");
+  const scripted = options.search || {};
+  const stats = { validate: 0, cacheIdentity: 0, invoke: 0, lastRequest: null };
+  const capability = {
+    validate(request) {
+      stats.validate += 1;
+      if (typeof request.query !== "string" || request.query.trim().length === 0) {
+        throw new ValidationError("fake search query must contain non-whitespace text");
+      }
+    },
+    cacheIdentity(request) {
+      stats.cacheIdentity += 1;
+      stats.lastRequest = request;
+      return {
+        provider: providerId,
+        capability: "search",
+        credentialFingerprint: fingerprint,
+        request,
+        legacyCandidates: [],
+      };
+    },
+    async invoke(request) {
+      stats.invoke += 1;
+      stats.lastRequest = request;
+      if (typeof scripted.error === "function") {
+        const error = scripted.error(stats.invoke);
+        if (error !== null && error !== undefined) throw error;
+      } else if (scripted.error instanceof Error) {
+        throw scripted.error;
+      }
+      if (typeof scripted.result === "function") {
+        return scripted.result(request, stats.invoke);
+      }
+      if (scripted.result !== undefined) {
+        return scripted.result;
+      }
+      throw new Error("fake search invoke called without a scripted result/error");
+    },
+  };
+  return { capability, stats, fingerprint };
+}
+
+/**
+ * Fake Search Provider Descriptor. Always advertises `search`; the
+ * created Adapter exposes `adapter.search` — the capability itself
+ * (shared execution calls `validate` / `cacheIdentity` / `invoke`
+ * directly on it, unlike the nested `{ fetch }` / `{ run }` slots).
+ *
+ * @returns {{descriptor: object, stats: object}}
+ */
+export function createFakeSearchDescriptor({
+  id = "fake",
+  apiKey = "fake-adapter-key",
+  configured = true,
+  capabilityOptions = {},
+  extraCapabilities = [],
+  omitSearchOnAdapter = false,
+} = {}) {
+  const stats = { isConfiguredCalls: 0, capabilitiesCalls: 0, createCalls: 0 };
+  const descriptor = makeCapabilityDescriptor({
+    id,
+    configured,
+    capabilityId: "search",
+    extraCapabilities,
+    omitOnAdapter: omitSearchOnAdapter,
+    slot: "search",
+    makeCapability: () => createFakeSearchCapability({ apiKey, provider: id, ...capabilityOptions }).capability,
+    stats,
+  });
   return { descriptor, stats };
 }

@@ -1038,6 +1038,12 @@ async function handleSearch(
               cache: deps.searchCache,
               sleep: deps.searchSleep,
               random: deps.searchRandom,
+              // PB-T2 parity with the fan-out path above (usage-ledger
+              // DESIGN D7): thread the configured consumption sink +
+              // clock so every billable sub-query on the single-pin path
+              // records through it.
+              ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+              ...(deps.now !== undefined ? { now: deps.now } : {}),
             },
             context,
           );
@@ -1121,6 +1127,10 @@ async function handleRead(
     cache: deps.readerCache,
     sleep: deps.readerSleep,
     random: deps.readerRandom,
+    // PB-T2 (usage-ledger DESIGN D7): thread the configured consumption
+    // sink + clock so every billable reader-fetch attempt records.
+    ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+    ...(deps.now !== undefined ? { now: deps.now } : {}),
   };
 
   // Provider-fallback Ticket 02: route the call through the shared
@@ -1204,6 +1214,10 @@ async function handleCrawl(
     cache: deps.crawlCache,
     sleep: deps.crawlSleep,
     random: deps.crawlRandom,
+    // PB-T2 (usage-ledger DESIGN D7): thread the configured consumption
+    // sink + clock so every billable crawl-fetch attempt records.
+    ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+    ...(deps.now !== undefined ? { now: deps.now } : {}),
   };
 
   // Provider-fallback Ticket 03: route the call through the shared
@@ -1301,6 +1315,10 @@ async function handleMap(
     cache: deps.mapCache,
     sleep: deps.mapSleep,
     random: deps.mapRandom,
+    // PB-T2 (usage-ledger DESIGN D7): thread the configured consumption
+    // sink + clock so every billable map-fetch attempt records.
+    ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+    ...(deps.now !== undefined ? { now: deps.now } : {}),
   };
 
   // Provider-fallback Ticket 03: route the call through the shared
@@ -1400,6 +1418,11 @@ async function handleResearch(
     cache: deps.researchCache,
     sleep: deps.researchSleep,
     random: deps.researchRandom,
+    // PB-T2 (usage-ledger DESIGN D7): thread the configured consumption
+    // sink + clock so every billable research-fetch attempt records
+    // (research is maxRetries 0 by policy — exactly one event per run).
+    ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+    ...(deps.now !== undefined ? { now: deps.now } : {}),
   };
 
   // Provider-fallback Ticket 03: route the call through the shared
@@ -1636,6 +1659,13 @@ async function handleRepo(
     cache: deps.repositoryCache,
     sleep: deps.repositorySleep,
     random: deps.repositoryRandom,
+    // PB-T2 (usage-ledger DESIGN D7): thread the configured consumption
+    // sink + clock so every billable repository operation attempt
+    // records (one deps object per handler is correct across fallback
+    // candidates — each candidate's cache identity supplies its own
+    // provider at emission time).
+    ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+    ...(deps.now !== undefined ? { now: deps.now } : {}),
   };
 
   const language = flags.language as "en" | "zh" | undefined;

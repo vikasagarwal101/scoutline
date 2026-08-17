@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Quota snapshot accounting
+
+- **Pre-harvest consumption lands:** `QuotaStore.writeConsumption` no longer no-ops when no snapshot exists. It scaffolds `observedAt: 0` and records finite decrements on `decrementedSinceObserved` so usage before the first `quota`/`doctor` harvest is not dropped (`state.json` v1, additive field).
+- **Refresh no longer clobbers local estimates:** `writeObserved` reconciles pending decrements against provider `used` growth. Usage the harvest already includes is not applied twice; leftover is re-applied onto the fresh categories so a lagging usage endpoint cannot reset the between-refresh estimate.
+
 ## [0.17.0] - 2026-08-18
 
 ### Local usage ledger + `scoutline usage`

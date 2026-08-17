@@ -316,15 +316,77 @@ describe("quota-store: writeConsumption (PB-T2)", () => {
     assert.strictEqual(store.state.quota.zai.locallyUpdatedAt, 7777);
   });
 
-  it("no snapshot for provider → silent no-op (idempotent)", async () => {
+  it("no snapshot for provider → scaffold so pre-harvest decrements land (#41)", async () => {
     const store = createInMemoryQuotaStore();
-    // No prior writeObserved.
     await store.writeConsumption(
       "tavily",
-      { category: "credits", amount: { kind: "exact", value: 1 } },
+      { category: "search", amount: { kind: "exact", value: 1 } },
       42,
     );
-    assert.strictEqual(store.state.quota.tavily, undefined);
+    const snap = store.state.quota.tavily;
+    assert.ok(snap, "scaffold snapshot is created");
+    assert.strictEqual(snap.observedAt, 0, "observedAt stays 0 until first harvest");
+    assert.strictEqual(snap.locallyUpdatedAt, 42);
+    assert.deepStrictEqual(snap.categories, []);
+    assert.strictEqual(snap.decrementedSinceObserved?.search, 1);
+  });
+
+  it("writeObserved re-applies unacknowledged decrements when provider used is unchanged (#41)", async () => {
+    const store = createInMemoryQuotaStore();
+    await store.writeObserved("zai", { observedAt: 1000, categories: ZAI_CATEGORIES });
+    await store.writeConsumption(
+      "zai",
+      { category: "requests", amount: { kind: "estimate", value: 3 } },
+      2000,
+    );
+    assert.strictEqual(store.state.quota.zai.categories[0].current.used, 753);
+
+    await store.writeObserved("zai", { observedAt: 3000, categories: ZAI_CATEGORIES });
+
+    const snap = store.state.quota.zai;
+    assert.strictEqual(snap.observedAt, 3000);
+    assert.strictEqual(snap.locallyUpdatedAt, 2000, "locallyUpdatedAt preserved across harvest");
+    assert.strictEqual(snap.categories[0].current.used, 753, "local estimate survives a lagging harvest");
+    assert.strictEqual(snap.categories[0].current.remaining, 247);
+    assert.strictEqual(snap.decrementedSinceObserved?.requests, 3);
+  });
+
+  it("writeObserved does not double-count when provider used already includes the calls (#41)", async () => {
+    const store = createInMemoryQuotaStore();
+    await store.writeObserved("zai", { observedAt: 1000, categories: ZAI_CATEGORIES });
+    await store.writeConsumption(
+      "zai",
+      { category: "requests", amount: { kind: "estimate", value: 3 } },
+      2000,
+    );
+    const caughtUp = [
+      {
+        ...ZAI_CATEGORIES[0],
+        current: { ...ZAI_CATEGORIES[0].current, used: 753, remaining: 247, remainingPercent: 24.7 },
+      },
+      ZAI_CATEGORIES[1],
+    ];
+    await store.writeObserved("zai", { observedAt: 3000, categories: caughtUp });
+
+    const snap = store.state.quota.zai;
+    assert.strictEqual(snap.categories[0].current.used, 753);
+    assert.strictEqual(snap.decrementedSinceObserved, undefined);
+  });
+
+  it("first harvest after a scaffold absorbs provider used so pending is not added twice (#41)", async () => {
+    const store = createInMemoryQuotaStore();
+    await store.writeConsumption(
+      "zai",
+      { category: "requests", amount: { kind: "estimate", value: 3 } },
+      50,
+    );
+    await store.writeObserved("zai", { observedAt: 1000, categories: ZAI_CATEGORIES });
+
+    const snap = store.state.quota.zai;
+    assert.strictEqual(snap.observedAt, 1000);
+    assert.strictEqual(snap.locallyUpdatedAt, 50);
+    assert.strictEqual(snap.categories[0].current.used, 750, "harvest used already includes pre-harvest calls");
+    assert.strictEqual(snap.decrementedSinceObserved, undefined);
   });
 
   it("observedAt is NEVER moved by a consumption write", async () => {

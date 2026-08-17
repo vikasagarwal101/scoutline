@@ -202,19 +202,23 @@ describe("consumption: createQuotaStoreConsumptionSink", () => {
     assert.strictEqual(snap.categories[0].current.used, 5);
   });
 
-  it("no snapshot for provider → silent no-op (idempotent)", async () => {
+  it("no snapshot for provider → scaffold so pre-harvest decrements land (#41)", async () => {
     const store = createInMemoryQuotaStore();
     const sink = createQuotaStoreConsumptionSink({ store, now: () => 9000 });
-    // No writeObserved yet.
     await sink.record({
       provider: "zai",
       capabilityId: "search",
+      category: "requests",
       amount: { kind: "exact", value: 1 },
       attempt: 1,
       at: 9000,
     });
     const state = await store.read();
-    assert.strictEqual(state.quota.zai, undefined, "no snapshot created");
+    const snap = state.quota.zai;
+    assert.ok(snap, "scaffold snapshot is created");
+    assert.strictEqual(snap.observedAt, 0);
+    assert.strictEqual(snap.locallyUpdatedAt, 9000);
+    assert.strictEqual(snap.decrementedSinceObserved?.requests, 1);
   });
 
   it("sink failure is converted to a warning and never rejects", async () => {

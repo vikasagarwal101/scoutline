@@ -682,6 +682,13 @@ adjusts the matching category's `current` window (subtracting from
 clamped at zero) when a finite amount is supplied and the category
 exposes a count set; an absent matching category advances
 `locallyUpdatedAt` only. `observedAt` (ground truth) is never moved.
+A missing snapshot is scaffolded (`observedAt: 0`) so consumption
+before the first harvest is not dropped. On the next
+`writeObserved`, unacknowledged local decrements
+(`decrementedSinceObserved`) are reconciled against provider `used`
+growth: absorbed usage is not applied twice, and leftover is
+re-applied so a lagging usage endpoint cannot clobber the local
+estimate.
 Production wires `createQuotaStoreConsumptionSink({ store: quotaStore,
 now, onWarning })`; tests inject `createInMemoryConsumptionSink()`.
 The sink is awaited before the billable invoke returns outward — so

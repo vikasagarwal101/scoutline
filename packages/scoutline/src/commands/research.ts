@@ -34,6 +34,8 @@ import { asyncJobStateDir } from "../lib/cache.js";
 import { computeAsyncJobStateHash } from "../lib/async-job-state.js";
 import { OUTPUT_MODES } from "../lib/output.js";
 import { TimeoutError, ValidationError } from "../lib/errors.js";
+import { slug } from "../lib/context-file.js";
+import type { ContextSourceContent, ParsedContextText } from "../lib/context-file.js";
 
 // ---------------------------------------------------------------------------
 // Option and dependency types
@@ -48,6 +50,26 @@ export interface ResearchOptions {
   /** Polling timeout in seconds. Default 300. */
   readonly timeout?: number;
   readonly noCache?: boolean;
+}
+
+/** Local-context plan, DESIGN D1: `--context-mode` values (research only). */
+export type ResearchContextMode = "organize" | "bias" | "both";
+
+/**
+ * Local-context plan, Ticket 2: what the handler threads into
+ * `research()` for `--context` / `--context-stdin`. The source is read
+ * (`readContextSource`) and parsed (`parseContextText`) exactly ONCE
+ * in `handleResearch`, BEFORE `executeWithFallback` — stdin drains on
+ * the first read, so a per-fallback-attempt read would hand the retry
+ * an empty string, silently mutate the request, and hash to a
+ * different async-job state file (DESIGN D5's second-paid-job trap).
+ * `research()` consumes this field only (D4 remap + D5 envelope field)
+ * and never re-reads the source.
+ */
+export interface ResearchContextInput {
+  readonly mode: ResearchContextMode;
+  readonly content: ContextSourceContent;
+  readonly parsed: ParsedContextText;
 }
 
 /**
@@ -76,6 +98,13 @@ export interface ResearchHandlerDependencies {
     stateFilePath: string,
     resumeCommand: string,
   ) => (print: () => void) => () => void;
+  /**
+   * Local-context plan, Ticket 2 (DESIGN D3/D5): parsed local context
+   * from `--context` / `--context-stdin`, read + parsed once in the
+   * handler before the fallback executor runs. Absent → byte-identical
+   * pre-context behavior (no remap, no envelope field).
+   */
+  readonly context?: ResearchContextInput;
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +323,57 @@ function parseReportSections(report: string): readonly { heading: string; body: 
   return sections.filter((s) => !/^(sources?|references?|citations?)$/i.test(s.heading));
 }
 
+/** Local-context DESIGN D4: body for a context heading no provider section matched. */
+const NO_MATCHING_SECTION_BODY = "(no matching section in the provider report)";
+
+/**
+ * Local-context DESIGN D4 (organize mode): re-present the provider's
+ * sections following the context file's headings, matching by EXACT
+ * slug equality (`slug` from lib/context-file.js — no prefix/fuzzy
+ * matching; determinism).
+ *
+ * - Output order: context headings in order. Each takes the bodies of
+ *   ALL provider sections whose slug is equal, concatenated in
+ *   provider order. A provider section is consumed by at most ONE
+ *   context heading — the first in document order whose slug matches
+ *   it — so a later context heading sharing that slug gets no match.
+ * - An unmatched context heading is kept with a placeholder body.
+ * - Unmatched provider sections are appended after the mapped block in
+ *   their original order — never dropped (data-loss rule). With zero
+ *   context headings the function is a structural no-op.
+ */
+function remapSectionsToContext(
+  sections: readonly { heading: string; body: string }[],
+  contextHeadings: readonly string[],
+): { heading: string; body: string }[] {
+  const consumed: boolean[] = new Array<boolean>(sections.length).fill(false);
+  const remapped: { heading: string; body: string }[] = [];
+  for (const heading of contextHeadings) {
+    const key = slug(heading);
+    const bodies: string[] = [];
+    for (let i = 0; i < sections.length; i++) {
+      if (consumed[i]) continue;
+      const section = sections[i];
+      if (section === undefined) continue;
+      if (slug(section.heading) === key) {
+        consumed[i] = true;
+        bodies.push(section.body);
+      }
+    }
+    remapped.push({
+      heading,
+      body: bodies.length > 0 ? bodies.join("\n\n") : NO_MATCHING_SECTION_BODY,
+    });
+  }
+  for (let i = 0; i < sections.length; i++) {
+    const section = sections[i];
+    if (!consumed[i] && section !== undefined) {
+      remapped.push(section);
+    }
+  }
+  return remapped;
+}
+
 function buildResearchPresentations(
   sections: readonly { heading: string; body: string }[],
   sources: readonly { title?: string; url?: string }[],
@@ -413,22 +493,53 @@ export async function research(
 
     const sections = parseReportSections(reportText);
 
+    // Local-context plan, Ticket 2 (DESIGN D4): under organize (and
+    // both, which includes it) re-present the provider's sections
+    // following the context file's headings. Purely local — the wire
+    // request and the cache entry are untouched (pinned by the
+    // cache-identity golden test). `bias` alone does not reorganize.
+    const contextInput = deps.context;
+    const effectiveSections =
+      contextInput !== undefined && contextInput.mode !== "bias"
+        ? remapSectionsToContext(sections, contextInput.parsed.headings)
+        : sections;
+
     const envelope: Record<string, unknown> = {
       schemaVersion: result.schemaVersion,
       query: result.query,
       model: result.model,
-      sections,
+      sections: effectiveSections,
       sources: result.sources,
     };
     if (options.maxChars && options.maxChars > 0 && result.report.length > options.maxChars) {
       envelope.reportTruncated = true;
       envelope.originalReportLength = result.report.length;
     }
+    // Local-context plan, Ticket 2 (DESIGN D5): one optional envelope
+    // field recording what was parsed locally — counts, hashes, and
+    // the path only, never content (D6 privacy boundary). schemaVersion
+    // stays 1.
+    if (contextInput !== undefined) {
+      const contextField: Record<string, unknown> = {
+        source: contextInput.content.source,
+        sha256: contextInput.content.sha256,
+        mode: contextInput.mode,
+        derived: {
+          headings: contextInput.parsed.headings.length,
+          questions: contextInput.parsed.questions.length,
+          terms: contextInput.parsed.terms.length,
+        },
+      };
+      if (contextInput.content.path !== undefined) {
+        contextField.path = contextInput.content.path;
+      }
+      envelope.context = contextField;
+    }
 
     return {
       kind: "data",
       data: envelope,
-      presentations: buildResearchPresentations(sections, result.sources),
+      presentations: buildResearchPresentations(effectiveSections, result.sources),
     };
   } finally {
     cleanup();

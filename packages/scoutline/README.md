@@ -22,6 +22,7 @@
 - **Tools** - MCP tool discovery, schemas, and raw calls
 - **Code Mode** - TypeScript tool chaining for agent automation
 - **Provider selection** - Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, or Jina AI
+- **Usage ledger** - Local 90-day call-usage history per provider and capability (`scoutline usage`), counters only
 
 ## Quick Start
 
@@ -320,6 +321,7 @@ scoutline repo --help         # GitHub repo commands
 scoutline doctor --help       # Provider diagnostics
 scoutline quota --help        # Plan usage
 scoutline cache --help        # Local cache inspection, clearing, and pruning
+scoutline usage --help        # Local call-usage history (usage.json ledger)
 ```
 
 ### Examples
@@ -366,6 +368,11 @@ scoutline cache stats                 # inventory of both subdirectories (live/e
 scoutline cache clear                 # delete every file under cache/ and tools/
 scoutline cache prune                 # delete expired entries (effective TTL threshold)
 scoutline cache prune --older-than 168h --provider zai    # age override + selectors (AND together)
+
+# Usage - local call-usage history (billable attempts, not credits)
+scoutline usage                       # last 7 days, every provider (usage.json ledger)
+scoutline usage --days 30             # wider UTC-day window
+scoutline usage --provider zai        # one provider's rows only
 
 # Config - inspect and change settings (scriptable, always redacted)
 scoutline config get                  # full config dump (credentials masked)

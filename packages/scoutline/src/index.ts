@@ -603,6 +603,22 @@ async function handleVision(
   const source = positional[1] ?? "";
   const prompt = positional[2];
 
+  // batch-runner Ticket 7 (DESIGN D10): `vision batch` is a WRAPPER over
+  // the shared manifest runner. The branch sits BEFORE
+  // `visionOperationForCommand` (which raises VALIDATION_ERROR for
+  // "batch") and before ANY provider resolution or `descriptor.create()`
+  // — per-op provider assignment happens inside the runner (D1, D4),
+  // never at this seam.
+  if (command === "batch") {
+    return vision.handleVisionBatch(
+      positional.slice(1),
+      flags,
+      outputMode,
+      deps,
+      BATCH_HANDLERS,
+    );
+  }
+
   // Map the subcommand to its Vision operation. Unknown subcommands are
   // a parse-time VALIDATION_ERROR and are rejected before any Provider
   // resolution, support check, or media access.

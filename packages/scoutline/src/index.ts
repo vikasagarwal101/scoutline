@@ -9,7 +9,11 @@ import { read, READ_HELP } from "./commands/read.js";
 import { crawl, CRAWL_HELP } from "./commands/crawl.js";
 import { map, MAP_HELP } from "./commands/map.js";
 import { research, RESEARCH_HELP } from "./commands/research.js";
-import type { ResearchContextInput, ResearchContextMode } from "./commands/research.js";
+import type {
+  ResearchContextInput,
+  ResearchContextMode,
+  ResearchResumeContext,
+} from "./commands/research.js";
 import {
   repoSearch,
   repoTree,
@@ -1440,6 +1444,18 @@ async function handleResearch(
   return invokeCommand(
     deps.invocation,
     async (context) => {
+      // Local-context plan, Ticket 3 (DESIGN D5): resume-bearing view
+      // of the context flags, threaded through ResearchOptions into
+      // `buildResearchResumeCommand`. `mode` records ONLY an
+      // explicitly-set --context-mode (undefined stays omitted — the
+      // function's set-values-only convention), so an organize-default
+      // resume command carries `--context <path>` alone.
+      const resumeContext: ResearchResumeContext | undefined =
+        typeof flags.context === "string"
+          ? { source: "file", path: flags.context, mode: contextMode }
+          : flags["context-stdin"] !== undefined
+            ? { source: "stdin", mode: contextMode }
+            : undefined;
       const options = {
         model,
         outputLength,
@@ -1448,6 +1464,7 @@ async function handleResearch(
         maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
         timeout: flags.timeout ? parseInt(flags.timeout as string, 10) : undefined,
         noCache: flags["no-cache"] === true,
+        context: resumeContext,
       };
 
       // Local-context plan, Ticket 2 (DESIGN D3/D5): read + parse the

@@ -150,6 +150,26 @@ describe("batch assignment round-robin", () => {
     );
   });
 
+  it("rejects an unknown global provider id before any assignment (review fix: no downstream provider parse error)", async () => {
+    const m = await load();
+    const descriptors = [alwaysConfigured("zai", ["search"])];
+    assert.throws(
+      () =>
+        m.assignBatchProviders(manifest([searchOp("s1")]), {
+          descriptors,
+          env: {},
+          globalProvider: "not-a-provider",
+        }),
+      (err) => {
+        assert.ok(err instanceof ValidationError, `expected ValidationError, got ${err?.name}`);
+        assert.strictEqual(err.code, "VALIDATION_ERROR");
+        assert.ok(err.message.includes('unknown provider "not-a-provider"'));
+        assert.ok(err.message.includes("Built-in providers"));
+        return true;
+      },
+    );
+  });
+
   it("per-op pin outranks the global pin", async () => {
     const m = await load();
     const descriptors = [

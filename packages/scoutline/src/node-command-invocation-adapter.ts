@@ -32,6 +32,54 @@ let quietOriginals: {
 } | null = null;
 
 /**
+ * Reentrant, process-global console suppression: `console.*` are
+ * replaced with no-ops for the duration of `operation` and restored on
+ * exit (including on throw). Overlapping runs coordinate through
+ * `quietDepth`, so only the outermost run captures and restores the
+ * originals — inner runs (a per-op adapter inside an outer quiet run,
+ * or several concurrent batch ops) neither double-capture nor
+ * prematurely restore.
+ *
+ * Shared by the Node adapter's `runQuietly` and the batch runner's
+ * per-op capture adapters, so a handler or provider library that logs
+ * through `console.*` during a batch operation is quieted exactly like
+ * a direct command invocation — it can never escape to the process
+ * streams and corrupt the batch's single summary write.
+ */
+export async function runQuietlyWithSuppressedConsole<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (quietDepth === 0) {
+    quietOriginals = {
+      log: console.log,
+      warn: console.warn,
+      info: console.info,
+      debug: console.debug,
+      error: console.error,
+    };
+    console.log = () => {};
+    console.warn = () => {};
+    console.info = () => {};
+    console.debug = () => {};
+    console.error = () => {};
+  }
+  quietDepth++;
+  try {
+    return await operation();
+  } finally {
+    quietDepth--;
+    if (quietDepth === 0 && quietOriginals) {
+      console.log = quietOriginals.log;
+      console.warn = quietOriginals.warn;
+      console.info = quietOriginals.info;
+      console.debug = quietOriginals.debug;
+      console.error = quietOriginals.error;
+      quietOriginals = null;
+    }
+  }
+}
+
+/**
  * Format a fatal load-failure message for the executable entrypoint.
  *
  * `bin/scoutline.js` calls this from its dynamic-import `.catch` handler
@@ -88,37 +136,10 @@ export function createNodeCommandInvocationAdapter(): CommandInvocationAdapter {
     },
 
     async runQuietly<T>(operation: () => Promise<T>): Promise<T> {
-      // Reentrancy: capture originals only on the outermost call (depth 0→1).
-      // Restore them only when the outermost call exits (depth 1→0).
-      // Inner calls increment/decrement depth without touching the originals.
-      if (quietDepth === 0) {
-        quietOriginals = {
-          log: console.log,
-          warn: console.warn,
-          info: console.info,
-          debug: console.debug,
-          error: console.error,
-        };
-        console.log = () => {};
-        console.warn = () => {};
-        console.info = () => {};
-        console.debug = () => {};
-        console.error = () => {};
-      }
-      quietDepth++;
-      try {
-        return await operation();
-      } finally {
-        quietDepth--;
-        if (quietDepth === 0 && quietOriginals) {
-          console.log = quietOriginals.log;
-          console.warn = quietOriginals.warn;
-          console.info = quietOriginals.info;
-          console.debug = quietOriginals.debug;
-          console.error = quietOriginals.error;
-          quietOriginals = null;
-        }
-      }
+      // Reentrancy, capture/restore, and coordination with every other
+      // quiet run (including the batch runner's per-op adapters) live in
+      // the shared suppression helper.
+      return runQuietlyWithSuppressedConsole(operation);
     },
 
     setExitCode(value: number): void {

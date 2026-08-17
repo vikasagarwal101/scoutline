@@ -33,11 +33,12 @@
  * `--fail-fast`, write nothing.
  */
 
-import { rename as fsRename, writeFile as fsWriteFile } from "node:fs/promises";
+import { rename as fsRename, rm as fsRemove, writeFile as fsWriteFile } from "node:fs/promises";
 import { ValidationError, getErrorExitCode } from "./errors.js";
 import { formatErrorOutput, formatSuccessOutput } from "./output.js";
 import type { OutputMode } from "./output.js";
 import { redactSecrets } from "./redact.js";
+import { runQuietlyWithSuppressedConsole } from "../node-command-invocation-adapter.js";
 import { compileInput } from "./batch-manifest.js";
 import type { AllowedBatchCommand, BatchManifest, BatchOperation } from "./batch-manifest.js";
 import type { BatchProviderAssignment } from "./batch-assign.js";
@@ -97,6 +98,12 @@ export interface BatchRunnerDeps {
    * Defaults to the real `node:fs/promises` `rename`.
    */
   readonly renameOutputFile?: (from: string, to: string) => Promise<void>;
+  /**
+   * D9 temp-file cleanup seam (best-effort removal after a failed
+   * write or rename). Defaults to the real `node:fs/promises` `rm`
+   * with `force: true`.
+   */
+  readonly removeOutputFile?: (path: string) => Promise<void>;
 }
 
 export interface BatchRunOptions {
@@ -129,7 +136,11 @@ export interface BatchRunRecord {
    * declared one (the file exists only after a successful write, D9).
    */
   readonly output?: string;
-  /** D9 write failure message; never flips `ok` or the counters. */
+  /**
+   * D9 write-path failure message (a failed write/rename, or a
+   * successful op that emitted no stdout so nothing was written);
+   * never flips `ok` or the counters.
+   */
   readonly outputWriteError?: string;
 }
 
@@ -183,8 +194,12 @@ interface PerOpCapture {
  * Buffering `CommandInvocationAdapter` for one operation: stdout/stderr
  * append to per-op buffers, `setExitCode` records (the record's exit
  * code comes from the handler's return value, identical to the main
- * switch), `readStdin` throws (D1 — the manifest owns stdin), and TTY
- * flags read `false`.
+ * switch), `readStdin` throws (D1 — the manifest owns stdin), TTY
+ * flags read `false`, and `runQuietly` routes through the SAME
+ * reentrant console suppression the production Node adapter uses — so
+ * a handler or provider library logging through `console.*` during an
+ * op is quieted, never escaping to the process streams and corrupting
+ * the runner's single summary write.
  */
 function createPerOpCapture(): PerOpCapture {
   const stdoutChunks: string[] = [];
@@ -204,7 +219,8 @@ function createPerOpCapture(): PerOpCapture {
       writeStderr: (value: string): void => {
         stderrChunks.push(value);
       },
-      runQuietly: <T>(operation: () => Promise<T>): Promise<T> => operation(),
+      runQuietly: <T>(operation: () => Promise<T>): Promise<T> =>
+        runQuietlyWithSuppressedConsole(operation),
       setExitCode: (_value: number): void => {},
     },
     stdoutText: (): string => stdoutChunks.join(""),
@@ -231,9 +247,10 @@ function normalizeConcurrency(raw: number | undefined): number {
  * D9 post-success output write: captured stdout lands at `outputPath`
  * through write-temp-then-rename so a reader never observes a partial
  * file. The op index keeps concurrent temp names distinct even if two
- * ops (degenerately) declare the same target. Returns the failure
- * message on error — the caller records it as `outputWriteError`; it
- * NEVER propagates as a per-op failure.
+ * ops (degenerately) declare the same target. A failed write OR rename
+ * removes the temp file best-effort so nothing is left behind. Returns
+ * the failure message on error — the caller records it as
+ * `outputWriteError`; it NEVER propagates as a per-op failure.
  */
 async function writeCapturedOutput(
   outputPath: string,
@@ -249,6 +266,15 @@ async function writeCapturedOutput(
     await renameFile(tempPath, outputPath);
     return undefined;
   } catch (error) {
+    // Best-effort cleanup: a failed write or rename must never leave
+    // the temp file behind.
+    const removeFile = deps.removeOutputFile ?? ((p: string) => fsRemove(p, { force: true }));
+    try {
+      await removeFile(tempPath);
+    } catch {
+      // The recorded write error is the actionable signal; a failed
+      // cleanup of an already-failed write stays silent.
+    }
     return error instanceof Error ? error.message : String(error);
   }
 }
@@ -424,9 +450,18 @@ export async function runBatch(
     // target was declared (dirname was validated at manifest parse). A
     // write failure never flips `ok` or the counters — it is recorded on
     // the op as `outputWriteError` so `total = ok + failed` always holds.
+    // A successful op that emitted NO stdout never writes a zero-byte
+    // file: the anomaly is surfaced as `outputWriteError` instead (every
+    // success path writes stdout, so silence means something went wrong
+    // upstream of the write — a consumer must not read an empty file
+    // marked ok).
     let outputWriteError: string | undefined;
     if (ok && op.output !== undefined) {
-      outputWriteError = await writeCapturedOutput(op.output, stdoutText, index, deps);
+      if (stdoutText.length === 0) {
+        outputWriteError = "operation emitted no stdout; no output file written";
+      } else {
+        outputWriteError = await writeCapturedOutput(op.output, stdoutText, index, deps);
+      }
     }
 
     return {

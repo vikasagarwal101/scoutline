@@ -140,6 +140,8 @@ Commands:
            MiniMax and Tavily return UNSUPPORTED_CAPABILITY)
   quota    Provider-aware plan usage (calls remaining, reset time; default
            reports every configured Provider)
+  batch    Run a manifest of capability operations across Providers
+           (distribution is the default; pin per op or globally to opt out)
   tools    List available MCP tools (Z.AI)
   tool     Show a tool schema (Z.AI)
   call     Call a tool directly (Z.AI)
@@ -182,6 +184,7 @@ Help:
   scoutline map --help
   scoutline research --help
   scoutline repo --help
+  scoutline batch --help
   scoutline tools --help
   scoutline call --help
   scoutline code --help
@@ -1853,6 +1856,19 @@ async function handleBatch(
       throw new ValidationError(
         `unknown batch flag "--${key}"`,
         'Run "scoutline batch --help" for the accepted flags.',
+      );
+    }
+  }
+
+  // Boolean-only flags never take a value: `--dry-run false` would
+  // otherwise silently disable the safety boundary and RUN providers,
+  // because the flag value never equals `true`. Same for --fail-fast.
+  for (const key of ["fail-fast", "dry-run"]) {
+    const value = flags[key];
+    if (value !== undefined && value !== true) {
+      throw new ValidationError(
+        `--${key} is a boolean flag and takes no value`,
+        `Pass the bare --${key} to enable it, or omit it.`,
       );
     }
   }

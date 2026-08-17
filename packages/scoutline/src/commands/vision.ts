@@ -17,7 +17,7 @@
 
 import * as path from "node:path";
 import { existsSync } from "node:fs";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import type { CommandContext, CommandResult } from "../command-invocation.js";
 import type { VisionCapability, VisionRequest, VisionOperation } from "../capabilities/vision.js";
 import { executeProviderOperation } from "../lib/execution.js";
@@ -113,7 +113,7 @@ Commands:
                                       batch runner (one op per media file,
                                       distributed across eligible vision
                                       providers, routing preferences
-ignored; concurrency default 1)
+                                      ignored; concurrency default 1)
 
 Options:
   --language <lang>  Programming language hint (extract-text)
@@ -124,7 +124,8 @@ Options:
 
 Vision batch options (batch subcommand only):
   --out <dir>        Output directory (required for more than one input;
-                     writes one JSON file per input plus <dir>/summary.json)
+                     created if missing; writes one JSON file per input
+                     plus <dir>/summary.json)
   --prompt <tpl>     Glob-mode prompt template ({filename}/{filepath});
                      manifest mode uses the manifest's promptTemplate
   --concurrency <n>  Parallel operations (integer 1-8; default 1)
@@ -567,10 +568,14 @@ async function expandVisionBatchGlob(glob: string): Promise<readonly VisionBatch
 /**
  * `{filename}` → basename, `{filepath}` → the op's source path (an
  * absolute path in glob mode; the manifest's own `source` verbatim in
- * manifest mode).
+ * manifest mode). Callback replacements insert the source text
+ * LITERALLY — a replacement string would treat `$&`, `$\``, or `$'` in
+ * a filename as replacement tokens and corrupt the prompt.
  */
 function substituteVisionBatchPrompt(template: string, source: string): string {
-  return template.replaceAll("{filename}", path.basename(source)).replaceAll("{filepath}", source);
+  return template
+    .replaceAll("{filename}", () => path.basename(source))
+    .replaceAll("{filepath}", () => source);
 }
 
 /**
@@ -627,6 +632,23 @@ export async function handleVisionBatch(
     }
   }
 
+  // Boolean-only flags never take a value: `--dry-run false` would
+  // otherwise silently disable the safety boundary and RUN providers.
+  if (flags["dry-run"] !== undefined && flags["dry-run"] !== true) {
+    throw new ValidationError(
+      "--dry-run is a boolean flag and takes no value",
+      "Pass the bare --dry-run to enable it, or omit it.",
+    );
+  }
+  // A valueless `--prompt` must reject rather than silently fall back
+  // to the default prompt (the template is the user's whole intent).
+  if (flags.prompt === true) {
+    throw new ValidationError(
+      "--prompt requires a template",
+      'Pass e.g. --prompt "Describe {filename} in detail."',
+    );
+  }
+
   if (flags.help || flags.h || positional.length === 0) {
     deps.invocation.writeStdout(VISION_HELP);
     return 0;
@@ -645,6 +667,36 @@ export async function handleVisionBatch(
   const outDir = typeof flags.out === "string" ? flags.out : undefined;
   const concurrency = parseVisionBatchConcurrency(flags.concurrency);
   const input = positional[0] ?? "";
+
+  // `--out <dir>` creates its directory (recursively) so the strict D2
+  // dirname-existence check passes for the wrapper-generated targets —
+  // the user is never required to pre-create the output directory.
+  if (outDir !== undefined) {
+    try {
+      await mkdir(outDir, { recursive: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new ValidationError(
+        `failed to create vision batch --out directory "${outDir}": ${message}`,
+      );
+    }
+  }
+
+  /**
+   * The wrapper's own `<out>/summary.json` write reserves the name: an
+   * op whose per-input target would land on `summary.json` would be
+   * silently overwritten by (or silently overwrite) the summary, losing
+   * one captured result.
+   */
+  const assertNotReservedOpName = (opName: string, detail: string): void => {
+    if (outDir !== undefined && opName === "summary") {
+      throw new ValidationError(
+        `vision batch operation name "summary" is reserved when --out is used ` +
+          `(the wrapper writes ${path.join(outDir, "summary.json")}); ${detail}`,
+        "Rename the input or manifest operation so per-input results do not collide with summary.json.",
+      );
+    }
+  };
 
   let manifest: BatchManifest;
   let manifestPromptTemplate: string | undefined;
@@ -695,6 +747,11 @@ export async function handleVisionBatch(
     if (!isPlainRecord(rawOp) || rawOp.command !== "vision") {
       throw new ValidationError('vision batch manifest operation must have "command": "vision"');
     }
+    // Reserved-name gate runs BEFORE the strict parse: a manifest op
+    // named "summary" with --out would collide with summary.json.
+    if (typeof rawOp.name === "string") {
+      assertNotReservedOpName(rawOp.name, `manifest operation "${rawOp.name}"`);
+    }
     // `--out` overrides the op's own output target (never rejected),
     // set BEFORE the strict parse so the D2 dirname-existence check
     // covers it.
@@ -720,6 +777,9 @@ export async function handleVisionBatch(
     }
   } else {
     const inputs = await expandVisionBatchGlob(input);
+    for (const entry of inputs) {
+      assertNotReservedOpName(entry.opName, `input file "${entry.file}"`);
+    }
     if (inputs.length > 1 && outDir === undefined) {
       throw new ValidationError(
         `--out is required when the vision batch input matches more than one file (matched ${inputs.length})`,
@@ -752,23 +812,29 @@ export async function handleVisionBatch(
 
   // Dry-run boundary (D10): existence + extension validation ONLY —
   // media SIZE validation stays inside the handler. Local paths only;
-  // URL sources are the provider's to validate.
+  // URL sources are the provider's to validate. A `diff` op validates
+  // BOTH of its sources (`expected` + `actual`), not `input.source`,
+  // which diff ops do not carry.
   if (dryRun) {
     for (const op of manifest.operations) {
-      const source = (op as VisionBatchOperation).input.source;
-      if (typeof source !== "string" || /^https?:\/\//i.test(source)) continue;
-      if (!existsSync(source)) {
-        throw new ValidationError(
-          `vision batch dry run: input file not found: "${source}"`,
-          "Fix the source path, or drop --dry-run to let the handler report it per op.",
-        );
-      }
-      const ext = path.extname(source).toLowerCase();
-      if (!VISION_BATCH_MEDIA_EXTENSIONS.has(ext)) {
-        throw new ValidationError(
-          `vision batch dry run: unsupported media extension "${ext || "(none)"}" for "${source}"`,
-          `Accepted extensions: ${[...VISION_BATCH_MEDIA_EXTENSIONS].sort().join(" ")}.`,
-        );
+      const input = (op as VisionBatchOperation).input;
+      const sources =
+        input.subcommand === "diff" ? [input.expected, input.actual] : [input.source];
+      for (const source of sources) {
+        if (typeof source !== "string" || /^https?:\/\//i.test(source)) continue;
+        if (!existsSync(source)) {
+          throw new ValidationError(
+            `vision batch dry run: input file not found: "${source}"`,
+            "Fix the source path, or drop --dry-run to let the handler report it per op.",
+          );
+        }
+        const ext = path.extname(source).toLowerCase();
+        if (!VISION_BATCH_MEDIA_EXTENSIONS.has(ext)) {
+          throw new ValidationError(
+            `vision batch dry run: unsupported media extension "${ext || "(none)"}" for "${source}"`,
+            `Accepted extensions: ${[...VISION_BATCH_MEDIA_EXTENSIONS].sort().join(" ")}.`,
+          );
+        }
       }
     }
   }
@@ -795,13 +861,22 @@ export async function handleVisionBatch(
   );
 
   // The wrapper's one extra write path: `<out>/summary.json` after the
-  // runner returns. Dry runs write nothing (D7), so the summary file
-  // appears only in real runs.
+  // runner returns, through the SAME write-temp-then-rename seam the
+  // runner uses for per-op outputs so a concurrent reader never
+  // observes a truncated summary. Dry runs write nothing (D7), so the
+  // summary file appears only in real runs.
   if (outDir !== undefined && !dryRun) {
     const summaryPath = path.join(outDir, "summary.json");
+    const tempPath = `${summaryPath}.tmp`;
     try {
-      await writeFile(summaryPath, `${JSON.stringify(envelope, null, 2)}\n`, "utf8");
+      await writeFile(tempPath, `${JSON.stringify(envelope, null, 2)}\n`, "utf8");
+      await rename(tempPath, summaryPath);
     } catch (error) {
+      try {
+        await rm(tempPath, { force: true });
+      } catch {
+        // Best-effort cleanup of an already-failing write.
+      }
       const message = error instanceof Error ? error.message : String(error);
       throw new ValidationError(
         `failed to write vision batch summary "${summaryPath}": ${message}`,

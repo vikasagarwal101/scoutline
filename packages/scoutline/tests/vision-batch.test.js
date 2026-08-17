@@ -304,6 +304,42 @@ describe("vision batch prompt templates", () => {
     // The handler's analyze default (commands/vision.ts DEFAULT_PROMPTS).
     assert.strictEqual(zai2.invokes[0].instruction, "Describe this image in detail.");
   });
+
+  it("rejects a valueless --prompt instead of silently using the default (review fix)", async () => {
+    const dir = makeMediaDir(["shot.png"]);
+    const zai = makeVisionDescriptor("zai");
+    const { adapter, stdout, stderr } = fakeInvocation();
+
+    const status = await main(
+      ["vision", "batch", path.join(dir, "*"), "--prompt"],
+      vbatchDeps(adapter, [zai]),
+    );
+
+    assert.strictEqual(status, 1);
+    assert.strictEqual(stdout.length, 0);
+    const error = parseError(stderr);
+    assert.strictEqual(error.code, "VALIDATION_ERROR");
+    assert.ok(error.error.includes("--prompt"));
+    assert.strictEqual(zai.invokes.length, 0, "a valueless --prompt must never dispatch");
+  });
+
+  it("substitutes source text literally: `$&` in a filename is never a replacement token (review fix)", async () => {
+    const dir = makeMediaDir(["weird$&name.png"]);
+    const zai = makeVisionDescriptor("zai");
+    const { adapter, stdout } = fakeInvocation();
+
+    const status = await main(
+      ["vision", "batch", path.join(dir, "*"), "--prompt", "Describe {filename}"],
+      vbatchDeps(adapter, [zai]),
+    );
+
+    assert.strictEqual(status, 0);
+    assert.strictEqual(zai.invokes.length, 1);
+    // A `String.replaceAll` replacement STRING would treat `$&` as "the
+    // matched substring" and corrupt the prompt; the substitution must
+    // insert the basename literally.
+    assert.strictEqual(zai.invokes[0].instruction, "Describe weird$&name.png");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -392,6 +428,38 @@ describe("vision batch manifest input mode", () => {
     assert.strictEqual(badError.code, "VALIDATION_ERROR");
     assert.ok(badError.error.includes("vision"));
     assert.strictEqual(zai.createCount(), 0);
+  });
+
+  it("rejects an operation named `summary` when --out is used (reserved <out>/summary.json collision, review fix)", async () => {
+    const dir = makeMediaDir(["shot.png"]);
+    const out = makeOutDir();
+    const manifest = {
+      schemaVersion: 1,
+      operations: [
+        {
+          name: "summary",
+          command: "vision",
+          input: { subcommand: "analyze", source: path.join(dir, "shot.png") },
+        },
+      ],
+    };
+    const zai = makeVisionDescriptor("zai");
+    const { adapter, stdout, stderr } = fakeInvocation();
+
+    const status = await main(
+      ["vision", "batch", writeManifestFile(manifest), "--out", out],
+      vbatchDeps(adapter, [zai]),
+    );
+
+    // --out would route the op to <out>/summary.json, colliding with the
+    // wrapper's own summary write — reject up front, never overwrite.
+    assert.strictEqual(status, 1);
+    assert.strictEqual(stdout.length, 0);
+    const error = parseError(stderr);
+    assert.strictEqual(error.code, "VALIDATION_ERROR");
+    assert.ok(error.error.includes("summary"));
+    assert.ok(error.error.includes("reserved"));
+    assert.strictEqual(zai.invokes.length, 0);
   });
 
   it("a missing source fails only that op (envelope on stdout, failure inside results[])", async () => {
@@ -496,6 +564,59 @@ describe("vision batch --out contract", () => {
     const summaryPath = path.join(out, "summary.json");
     assert.ok(fs.existsSync(summaryPath), "summary.json exists");
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(summaryPath, "utf8")), envelope);
+    // Atomic writes leave no temp residue (review fix: summary.json uses
+    // the same write-temp-then-rename seam as per-op outputs).
+    assert.deepStrictEqual(fs.readdirSync(out).sort(), ["a.png.json", "b.png.json", "summary.json"]);
+  });
+
+  it("--out creates the directory when it does not exist (review fix: no pre-existing-dir requirement)", async () => {
+    const dir = makeMediaDir(["a.png", "b.png"]);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-vbout-missing-"));
+    const out = path.join(root, "created", "nested"); // neither exists
+    const zai = makeVisionDescriptor("zai");
+    const { adapter, stdout } = fakeInvocation();
+
+    const status = await main(
+      ["vision", "batch", path.join(dir, "*"), "--out", out],
+      vbatchDeps(adapter, [zai]),
+    );
+
+    assert.strictEqual(status, 0);
+    assert.ok(fs.existsSync(out), "--out directory is created (recursive)");
+    const envelope = parseEnvelope(stdout);
+    for (const record of envelope.results) {
+      assert.ok(fs.existsSync(path.join(out, `${record.name}.json`)));
+    }
+    assert.ok(fs.existsSync(path.join(out, "summary.json")));
+    // Glob op names carry their media extension (summary.png -> summary.png.json),
+    // so a media file named summary.* never collides with summary.json —
+    // and the summary survives alongside it untouched.
+    assert.deepStrictEqual(
+      fs.readdirSync(out).sort(),
+      ["a.png.json", "b.png.json", "summary.json"],
+    );
+  });
+
+  it("a glob input named summary.png with --out runs fine (glob op names carry the extension: no summary.json collision)", async () => {
+    const dir = makeMediaDir(["summary.png", "other.png"]);
+    const out = makeOutDir();
+    const zai = makeVisionDescriptor("zai");
+    const { adapter, stdout } = fakeInvocation();
+
+    const status = await main(
+      ["vision", "batch", path.join(dir, "*"), "--out", out],
+      vbatchDeps(adapter, [zai]),
+    );
+
+    assert.strictEqual(status, 0);
+    const envelope = parseEnvelope(stdout);
+    assert.strictEqual(envelope.ok, 2);
+    assert.deepStrictEqual(
+      fs.readdirSync(out).sort(),
+      ["other.png.json", "summary.json", "summary.png.json"],
+    );
+    // The wrapper's summary is the envelope — not clobbered by any op.
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(out, "summary.json"), "utf8")), envelope);
   });
 });
 
@@ -550,6 +671,82 @@ describe("vision batch concurrency and distribution", () => {
 // ---------------------------------------------------------------------------
 
 describe("vision batch dry run", () => {
+  it("rejects a value on the boolean-only --dry-run flag (never silently runs providers)", async () => {
+    const dir = makeMediaDir(["a.png"]);
+    const zai = makeVisionDescriptor("zai");
+    const { adapter, stdout, stderr } = fakeInvocation();
+
+    const status = await main(
+      ["vision", "batch", path.join(dir, "*"), "--dry-run", "false"],
+      vbatchDeps(adapter, [zai]),
+    );
+
+    assert.strictEqual(status, 1);
+    assert.strictEqual(stdout.length, 0);
+    const error = parseError(stderr);
+    assert.strictEqual(error.code, "VALIDATION_ERROR");
+    assert.ok(error.error.includes("--dry-run"));
+    assert.strictEqual(zai.invokes.length, 0, "a valued --dry-run must never dispatch");
+  });
+
+  it("--dry-run validates BOTH diff sources (expected + actual), not input.source (review fix)", async () => {
+    const dir = makeMediaDir(["expected.png", "actual.png"]);
+    const zai = makeVisionDescriptor("zai", { capabilities: ["vision.diff"] });
+
+    // A missing `actual` must reject the dry run exactly like a missing
+    // `source` does for non-diff ops.
+    const missingActual = {
+      schemaVersion: 1,
+      operations: [
+        {
+          name: "diff-op",
+          command: "vision",
+          input: {
+            subcommand: "diff",
+            expected: path.join(dir, "expected.png"),
+            actual: "/nonexistent/actual.png",
+          },
+        },
+      ],
+    };
+    const bad = fakeInvocation();
+    const statusBad = await main(
+      ["vision", "batch", writeManifestFile(missingActual), "--dry-run"],
+      vbatchDeps(bad.adapter, [zai]),
+    );
+    assert.strictEqual(statusBad, 1);
+    assert.strictEqual(bad.stdout.length, 0);
+    const badError = parseError(bad.stderr);
+    assert.strictEqual(badError.code, "VALIDATION_ERROR");
+    assert.ok(badError.error.includes("actual.png"), "the missing diff source is named");
+    assert.strictEqual(zai.createCount(), 0);
+
+    // Both sources present and readable -> the ready preview succeeds.
+    const ready = {
+      schemaVersion: 1,
+      operations: [
+        {
+          name: "diff-op",
+          command: "vision",
+          input: {
+            subcommand: "diff",
+            expected: path.join(dir, "expected.png"),
+            actual: path.join(dir, "actual.png"),
+          },
+        },
+      ],
+    };
+    const good = fakeInvocation();
+    const statusGood = await main(
+      ["vision", "batch", writeManifestFile(ready), "--dry-run"],
+      vbatchDeps(good.adapter, [zai]),
+    );
+    assert.strictEqual(statusGood, 0);
+    const envelope = parseEnvelope(good.stdout);
+    assert.strictEqual(envelope.dryRun, true);
+    assert.strictEqual(envelope.results[0].reason, "ready");
+  });
+
   it("--dry-run validates existence only: a missing source fails the whole batch before any transport", async () => {
     const manifest = {
       schemaVersion: 1,
@@ -701,5 +898,13 @@ describe("vision batch wrapper seam and help", () => {
     assert.strictEqual(stdout.length, 1);
     assert.ok(stdout[0].includes("batch"), "help lists the batch subcommand");
     assert.ok(stdout[0].includes("--out"), "help mentions the --out flag");
+    // Continuation alignment (review fix): no help line may start at
+    // column zero mid-block — the batch line's last continuation is the
+    // known offender ("ignored; concurrency default 1)").
+    assert.ok(
+      !/^ignored;/m.test(stdout[0]),
+      "batch help continuation lines must be indented, not at column zero",
+    );
+    assert.ok(stdout[0].includes("ignored; concurrency default 1)"));
   });
 });

@@ -895,6 +895,19 @@ async function handleSearch(
     );
   }
 
+  // Local-context plan, Ticket 5 (DESIGN D1): `--context-stdin` accepts
+  // no value — parseArgs greedily consumes the next non-dash token as a
+  // flag's value, so `search --context-stdin "<q>"` yields a string flag
+  // value and an empty positional. A string value is a VALIDATION_ERROR
+  // (never a silent drop through a `=== true` identity test), placed
+  // BEFORE the help-gate for the same reason as `--context` above.
+  if (typeof flags["context-stdin"] === "string") {
+    throw new ValidationError(
+      "--context-stdin does not take a value.",
+      'Pipe the context on standard input: cat notes.md | scoutline search "<query>" --context-stdin.',
+    );
+  }
+
   if (flags.help || flags.h || positional.length === 0) {
     deps.invocation.writeStdout(SEARCH_HELP);
     return 0;
@@ -920,13 +933,32 @@ async function handleSearch(
     );
   }
 
+  // Local-context plan, Ticket 5 (DESIGN D1): the two context-source
+  // spellings are mutually exclusive — a file path and a pipe cannot
+  // both be the source. Parse-level gate beside the Ticket 4 mutex
+  // below. `contextKind` resolves the active source for the D7 block
+  // (Ticket 5 extends it beyond the file source to `--context-stdin`).
+  const contextKind: ContextSourceKind | undefined =
+    typeof flags.context === "string"
+      ? { file: flags.context }
+      : flags["context-stdin"] === true
+        ? { stdin: true }
+        : undefined;
+  if (typeof flags.context === "string" && flags["context-stdin"] === true) {
+    throw new ValidationError(
+      "--context and --context-stdin are mutually exclusive.",
+      "Pass one context source: --context <path> or --context-stdin, not both.",
+    );
+  }
+
   // Local-context plan, Ticket 4 (DESIGN D7): an explicit `--merge`
-  // together with `--context` is an ambiguous combination — the user's
-  // manual `|` sub-queries and the derived stream would fight over the
-  // same query string. Parse-level gate, same shape as the type/topic
-  // mutex above (before Provider resolution).
-  const contextPath = typeof flags.context === "string" ? flags.context : undefined;
-  if (contextPath !== undefined && flags.merge === true) {
+  // together with a context source is an ambiguous combination — the
+  // user's manual `|` sub-queries and the derived stream would fight
+  // over the same query string. Parse-level gate, same shape as the
+  // type/topic mutex above (before Provider resolution); Ticket 5
+  // extends it to the `--context-stdin` spelling (same feature, other
+  // source).
+  if (contextKind !== undefined && flags.merge === true) {
     throw new ValidationError(
       "--merge and --context are mutually exclusive.",
       "--context derives and joins sub-queries itself; pass one of the two, not both.",
@@ -1034,8 +1066,11 @@ async function handleSearch(
       // handler-side join reaches both the single-pin path and the
       // fan-out grid. The user's query is kept FIRST; every stream
       // member is trim-then-escaped with pipe-only escaping so the
-      // join/split round-trip is lossless. (--context-stdin lands in
-      // Ticket 5; this block is file-source only.)
+      // join/split round-trip is lossless. Ticket 5 routes the
+      // `--context-stdin` spelling through the same block: stdin is
+      // read once via the injected io seam (`context.readStdin()`,
+      // drained by the Node adapter on first read), so the join and
+      // the D6 wrapper below are source-agnostic.
       let dispatchQuery = query;
       let contextInfo:
         | {
@@ -1050,8 +1085,8 @@ async function handleSearch(
             };
           }
         | undefined;
-      if (contextPath !== undefined) {
-        const content = await readContextSource({ file: contextPath }, {
+      if (contextKind !== undefined) {
+        const content = await readContextSource(contextKind, {
           readFile: (filePath) => fs.promises.readFile(filePath),
           readStdin: () => context.readStdin(),
         });
@@ -1507,6 +1542,20 @@ async function handleResearch(
     );
   }
 
+  // Local-context plan, Ticket 5 (DESIGN D1): `--context-stdin` accepts
+  // no value — parseArgs greedily consumes the next non-dash token as a
+  // flag's value, so `research --context-stdin "<q>"` yields a string
+  // flag value and an empty positional. A string value is a
+  // VALIDATION_ERROR (never a silent drop through a `=== true` identity
+  // test), placed BEFORE the help-gate for the same reason as
+  // `--context` above.
+  if (typeof flags["context-stdin"] === "string") {
+    throw new ValidationError(
+      "--context-stdin does not take a value.",
+      'Pipe the context on standard input: cat notes.md | scoutline research "<query>" --context-stdin.',
+    );
+  }
+
   if (flags.help || flags.h || positional.length === 0) {
     deps.invocation.writeStdout(RESEARCH_HELP);
     return 0;
@@ -1532,6 +1581,16 @@ async function handleResearch(
     ["numbered", "mla", "apa", "chicago"],
     "--citation-format",
   ) as "numbered" | "mla" | "apa" | "chicago" | undefined;
+  // Local-context plan, Ticket 5 (DESIGN D1): the two context-source
+  // spellings are mutually exclusive — a file path and a pipe cannot
+  // both be the source. Parse-level gate before Provider resolution,
+  // same region as the enum validators.
+  if (typeof flags.context === "string" && flags["context-stdin"] === true) {
+    throw new ValidationError(
+      "--context and --context-stdin are mutually exclusive.",
+      "Pass one context source: --context <path> or --context-stdin, not both.",
+    );
+  }
   // Local-context plan, Ticket 2 (DESIGN D1): research-only mode enum,
   // defaulting to `organize` at the read site below. Same parse-level
   // gate shape as the research enums above.
@@ -1586,7 +1645,7 @@ async function handleResearch(
       const resumeContext: ResearchResumeContext | undefined =
         typeof flags.context === "string"
           ? { source: "file", path: flags.context, mode: contextMode }
-          : flags["context-stdin"] !== undefined
+          : flags["context-stdin"] === true
             ? { source: "stdin", mode: contextMode }
             : undefined;
       const options = {
@@ -1612,7 +1671,7 @@ async function handleResearch(
       const contextKind: ContextSourceKind | undefined =
         typeof flags.context === "string"
           ? { file: flags.context }
-          : flags["context-stdin"] !== undefined
+          : flags["context-stdin"] === true
             ? { stdin: true }
             : undefined;
       let researchContext: ResearchContextInput | undefined;

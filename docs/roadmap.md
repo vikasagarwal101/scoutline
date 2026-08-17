@@ -32,21 +32,13 @@ features next; features that reverse a written decision (ADR) last.
 
 ### Studied seeds — contract-extending
 
-- **Consumption sink wiring + `usage` ledger**
-  (`docs/plans/v2/02-consumption-wiring-and-usage.md`) — finish threading the
-  consumption sink beyond vision-only, then add a retained ledger so "what
-  did I spend yesterday?" is answerable. Reports call counts, not credits.
-  Touches `state.json` schema.
+
 - **`compare` command** (`docs/plans/v2/03-compare-command.md`) —
   *shelved (product decision 2026-08-15)*: superseded by multi-provider
   fan-out ([ADR-0004](adr/0004-multi-provider-search-fanout.md),
   accepted and implemented — see `CHANGELOG.md` "0.16.0"); the
   plan's arm-execution design transferred.
-- **Local context refinement** (`docs/plans/v2/13-local-context-refinement.md`)
-  — `--context <file>` / `--context-stdin` refine research/search from a
-  local file parsed entirely client-side; only `{path, sha256}` recorded,
-  never contents. Additive envelope fields; `--context=bias` fragments the
-  cache key via the wire `query` (documented in `--help`). Effort: medium.
+
 - **`--stream` streaming output** (`docs/plans/v2/17-streaming-output.md`)
   — JSONL event stream (start/progress/data/warning/error/complete) on
   stdout; non-streaming contract unchanged when absent. Jina DeepSearch's

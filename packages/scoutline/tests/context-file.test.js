@@ -119,9 +119,22 @@ describe("parseContextText questions", () => {
     assert.deepEqual(parsed.questions, ["Why"]);
   });
 
-  it("strips surrounding whitespace and trailing ? runs, dropping empties", () => {
+  it("strips leading whitespace and trailing ? runs; lines not ending in ? are skipped", () => {
     const text = "  Why now?\nReally??\nTrailing space? \n???";
     assert.deepEqual(parseContextText(text).questions, ["Why now", "Really"]);
+  });
+  it("treats CRLF lines as questions (Windows-authored notes)", () => {
+    const text = "# Heading\r\nWhat about CRLF?\r\nPlain line\r\nAnother?\r";
+    const parsed = parseContextText(text);
+    assert.deepEqual(parsed.headings, ["Heading"]);
+    assert.deepEqual(parsed.questions, ["What about CRLF", "Another"]);
+    assert.deepEqual(parsed.subQueries, ["Heading", "What about CRLF", "Another"]);
+  });
+  it("emits a heading and a question that reduce to the same string once", () => {
+    const parsed = parseContextText("# Alpha\nAlpha?\nBeta?");
+    assert.deepEqual(parsed.headings, ["Alpha"]);
+    assert.deepEqual(parsed.questions, ["Alpha", "Beta"]);
+    assert.deepEqual(parsed.subQueries, ["Alpha", "Beta"]);
   });
 
   it("extracts questions at exactly 200 chars and ignores 201", () => {
@@ -316,6 +329,22 @@ describe("readContextSource size cap", () => {
         return true;
       },
     );
+  });
+  it("passes MAX_CONTEXT_BYTES to the stdin read (bounded before decode)", async () => {
+    const seenMaxBytes = [];
+    const io = {
+      readFile: async () => {
+        throw new Error("readFile must not be called for stdin sources");
+      },
+      readStdin: async (maxBytes) => {
+        seenMaxBytes.push(maxBytes);
+        return "ok";
+      },
+    };
+    const result = await readContextSource({ stdin: true }, io);
+    assert.deepStrictEqual(seenMaxBytes, [MAX_CONTEXT_BYTES]);
+    assert.strictEqual(result.text, "ok");
+    assert.strictEqual(result.source, "stdin");
   });
 });
 

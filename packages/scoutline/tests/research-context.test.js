@@ -310,6 +310,43 @@ describe("research --context — flag surface (Ticket 2)", () => {
 // Cache-identity golden (DESIGN D5)
 // ---------------------------------------------------------------------------
 
+describe("research --context organize — non-Latin headings (empty slug guard)", () => {
+  it("does not fuse non-Latin headings with unrelated non-Latin sections", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const report = [
+        "## 概要",
+        "",
+        "Provider overview body.",
+        "",
+        "## Sources",
+        "",
+        "1. [S](https://s.example.com/x)",
+      ].join("\n");
+      const notesPath = path.join(dir, "notes.md");
+      const notesText = "# デプロイ手順\n";
+      await fs.writeFile(notesPath, notesText, "utf8");
+
+      const tavily = makeResearchProvider({
+        id: "tavily",
+        envVar: "TAVILY_API_KEY",
+        ok: researchOk(report),
+      });
+      const r = await runResearch(
+        ["--provider", "tavily", "research", "non latin query", "--context", notesPath],
+        { providers: [tavily] },
+      );
+
+      assert.strictEqual(r.status, 0);
+      const parsed = JSON.parse(r.stdout[0]);
+      assert.deepStrictEqual(parsed.sections, [
+        { heading: "デプロイ手順", body: "(no matching section in the provider report)" },
+        { heading: "概要", body: "Provider overview body." },
+      ]);
+    });
+  });
+});
+
+
 describe("research --context organize — cache-identity golden (Ticket 2)", () => {
   it("organize leaves the request deep-equal to the no-context request", async (t) => {
     await withTempDir(t, async (dir) => {

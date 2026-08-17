@@ -1088,7 +1088,7 @@ async function handleSearch(
       if (contextKind !== undefined) {
         const content = await readContextSource(contextKind, {
           readFile: (filePath) => fs.promises.readFile(filePath),
-          readStdin: () => context.readStdin(),
+          readStdin: (maxBytes) => context.readStdin(maxBytes),
         });
         const parsed = parseContextText(content.text);
         const derived = parsed.subQueries;
@@ -1097,11 +1097,15 @@ async function handleSearch(
         // same qualification rules (headings within the 60-char bound,
         // backslash-trimmed non-empty) purely for the notice — the
         // capped stream itself is authoritative for the join.
-        const uncapped =
-          parsed.headings.filter(
-            (h) => h.length <= 60 && h.replace(/\\+$/, "").length > 0,
-          ).length +
-          parsed.questions.filter((q) => q.replace(/\\+$/, "").length > 0).length;
+        const uncappedSet = new Set(
+          [
+            ...parsed.headings.filter((h) => h.length <= 60),
+            ...parsed.questions,
+          ]
+            .map((value) => value.replace(/\\+$/, ""))
+            .filter((value) => value.length > 0),
+        );
+        const uncapped = uncappedSet.size;
         if (uncapped > MAX_SUBQUERIES) {
           context.notice(
             `context: derived ${uncapped} sub-queries; dropped ${uncapped - derived.length} (cap ${MAX_SUBQUERIES})`,
@@ -1678,7 +1682,7 @@ async function handleResearch(
       if (contextKind !== undefined) {
         const content = await readContextSource(contextKind, {
           readFile: (filePath) => fs.promises.readFile(filePath),
-          readStdin: () => context.readStdin(),
+          readStdin: (maxBytes) => context.readStdin(maxBytes),
         });
         researchContext = {
           mode: contextMode ?? "organize",

@@ -102,7 +102,10 @@ export function parseContextText(text: string): ParsedContextText {
   const seenHeadings = new Set<string>();
   const seenQuestions = new Set<string>();
 
-  for (const line of text.split("\n")) {
+  for (const rawLine of text.split("\n")) {
+    // CRLF sources keep a trailing "\r" after the split; strip it so the
+    // question checks below see the same lines on every platform.
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
     const headingMatch = line.match(HEADING_PATTERN);
     if (headingMatch) {
       const heading = headingMatch[2]!.trim();
@@ -157,10 +160,12 @@ function deriveTerms(stream: readonly StreamItem[]): string[] {
  * D2.4: the document-order interleaved sub-query stream. Headings over
  * 60 chars are dropped (not truncated); trailing backslashes are
  * trimmed during derivation so no stream member fuses with the D7 join
- * separator; items that trim to empty are dropped.
+ * separator; items that trim to empty are dropped; a heading and a
+ * question that reduce to the same string emit once (first occurrence).
  */
 function deriveSubQueriesFromStream(stream: readonly StreamItem[]): string[] {
   const subQueries: string[] = [];
+  const seen = new Set<string>();
   for (const item of stream) {
     if (item.kind === "heading" && item.value.length > MAX_SUBQUERY_HEADING_CHARS) {
       continue;
@@ -169,6 +174,10 @@ function deriveSubQueriesFromStream(stream: readonly StreamItem[]): string[] {
     if (subQuery.length === 0) {
       continue;
     }
+    if (seen.has(subQuery)) {
+      continue;
+    }
+    seen.add(subQuery);
     subQueries.push(subQuery);
     if (subQueries.length === MAX_SUBQUERIES) {
       break;
@@ -225,7 +234,12 @@ export type ContextSourceKind =
 /** Injected io so the module stays test-offline and adapter-owned. */
 export interface ContextSourceIo {
   readFile(filePath: string): Promise<Buffer>;
-  readStdin(): Promise<string>;
+  /**
+   * Reads at most `maxBytes` (plus the one chunk that crosses the bound):
+   * the caller rejects any over-cap result, so implementations stop early
+   * instead of draining an unbounded pipe into memory.
+   */
+  readStdin(maxBytes: number): Promise<string>;
 }
 
 export interface ContextSourceContent {
@@ -248,7 +262,10 @@ export async function readContextSource(
   // Stdin arrives already decoded by the invocation adapter; re-encode
   // so the byte cap and binary heuristic see the same units as file
   // sources (a UTF-8 round-trip is byte-exact).
-  const buffer = Buffer.from(await io.readStdin(), "utf8");
+  // Bounded at MAX_CONTEXT_BYTES (+ one chunk): an oversized pipe rejects
+  // here with the same VALIDATION_ERROR as an oversized file, instead of
+  // being fully buffered first.
+  const buffer = Buffer.from(await io.readStdin(MAX_CONTEXT_BYTES), "utf8");
   validateBuffer(buffer, "standard input");
   return toContent(buffer, { source: "stdin" });
 }

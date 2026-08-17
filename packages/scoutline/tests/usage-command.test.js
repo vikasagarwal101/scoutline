@@ -464,6 +464,11 @@ describe("usage command — --help", () => {
       assert.ok(stdout.includes("scoutline usage"), "help shows the usage line");
       assert.ok(stdout.includes("--days"), "help documents --days");
       assert.ok(stdout.includes("--provider"), "help documents --provider");
+      // Ticket 6 wording contract — the docs-pass polish must keep these.
+      assert.ok(stdout.includes("usage.json"), "help names the ledger file");
+      assert.ok(stdout.includes("SCOUTLINE_CONFIG_DIR"), "help documents the config-dir override");
+      assert.ok(stdout.includes("UTC"), "help documents UTC day bucketing");
+      assert.ok(stdout.includes("90 days"), "help documents retention");
     });
   });
 });
@@ -582,5 +587,18 @@ describe("CLI: scoutline usage", () => {
       assert.strictEqual(stderr, "");
       assert.deepStrictEqual(JSON.parse(stdout).providers, []);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MAIN_HELP lists the usage command (Ticket 6 docs pass)
+// ---------------------------------------------------------------------------
+
+describe("CLI: main help lists usage", () => {
+  it("scoutline --help mentions usage and points at 'usage --help'", async () => {
+    const { stdout, code } = await runProcess(["--help"], { env: {} });
+    assert.strictEqual(code, 0);
+    assert.ok(/^\s*usage\s+/m.test(stdout), "main help lists the usage command");
+    assert.ok(stdout.includes("scoutline usage --help"), "main help points at usage --help");
   });
 });

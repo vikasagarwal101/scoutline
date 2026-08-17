@@ -174,6 +174,23 @@ stated in `config set fanout` and `--help`; the default is off. The
 single-pin path is byte-identical to the pre-fan-out behavior (pinned by
 golden tests).
 
+**Local context derivation** (`--context <path>` / `--context-stdin`,
+search only): the handler reads a local notes file (max 256 KiB,
+NUL-byte binary detection) before dispatch and derives up to 8
+sub-queries from its headings and questions (deterministic parser in
+`lib/context-file.ts`). The user's positional query is always kept and
+runs first; the joined stream is pipe-escaped and auto-enables the
+`--merge` path, so the single-pin and fan-out plans both see one merged
+query (`--merge` + a context flag is a `VALIDATION_ERROR` — both fight
+over the same query string). Boundary: the derived sub-query strings are
+what leaves the machine (they become the search queries); the file
+itself never transmits. JSON data modes wrap the result array in a
+`context` object of derived counts plus a SHA-256 — metadata only, never
+content — while text modes stay unwrapped, and without the flag output
+is byte-identical. Under fan-out every arm runs every sub-query; one
+stderr notice states the N sub-queries × M arms billable math before
+dispatch.
+
 ### Vision
 
 General single-image interpretation maps to `vision.interpret-image` on both
@@ -523,6 +540,23 @@ Key boundaries:
   and `--domain` natively; Exa Agent create accepts only `query` +
   `effort`, so those three options are warn-and-stripped before
   transport (so Provider fallback can still succeed via Exa).
+- **Local context steering is handler-local by default.**
+  `research --context <path> | --context-stdin
+  [--context-mode organize|bias|both]` reads the source exactly once in
+  the handler — before fallback dispatch, so a provider retry can never
+  re-read a drained stdin — and parses it deterministically
+  (`lib/context-file.ts`). The default `organize` mode re-presents the
+  returned sections following the file's headings (exact-slug matching,
+  provider order preserved, unmatched sections appended — never dropped)
+  purely locally: the wire request and the provider-partitioned cache
+  key are byte-identical to a no-context run (pinned by a golden).
+  `bias`/`both` append a capped `(focus: ...)` term segment to the query
+  before the request is built — the only context bytes that leave the
+  machine — which intentionally fragments the cache key (a mode change
+  is a new paid job) and is carried by the printed resume command
+  (`--context-stdin` runs must re-pipe the same content unchanged).
+  The envelope gains an optional `context` field (source, path, sha256,
+  mode, derived counts) — metadata only, never content.
 
 ### Research state file
 

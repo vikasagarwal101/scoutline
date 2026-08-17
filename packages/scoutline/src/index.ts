@@ -9,6 +9,11 @@ import { read, READ_HELP } from "./commands/read.js";
 import { crawl, CRAWL_HELP } from "./commands/crawl.js";
 import { map, MAP_HELP } from "./commands/map.js";
 import { research, RESEARCH_HELP } from "./commands/research.js";
+import type {
+  ResearchContextInput,
+  ResearchContextMode,
+  ResearchResumeContext,
+} from "./commands/research.js";
 import {
   repoSearch,
   repoTree,
@@ -64,8 +69,15 @@ import {
   getErrorExitCode,
 } from "./lib/errors.js";
 import * as os from "node:os";
-import { invokeCommand, type CommandInvocationAdapter } from "./command-invocation.js";
+import * as fs from "node:fs";
+import {
+  invokeCommand,
+  type CommandInvocationAdapter,
+  type CommandResult,
+} from "./command-invocation.js";
 import { defaultResponseCache, type ResponseCache } from "./lib/cache.js";
+import { MAX_SUBQUERIES, parseContextText, readContextSource } from "./lib/context-file.js";
+import type { ContextSourceKind } from "./lib/context-file.js";
 import { configuredSecrets } from "./lib/redact.js";
 import {
   configFilePath,
@@ -883,6 +895,34 @@ async function handleSearch(
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
+  // Local-context plan, Ticket 4 (DESIGN D1 placement pin): the
+  // `--context` value-shape check runs BEFORE the help-gate below —
+  // parseArgs records `true` for a valueless flag and leaves positional
+  // empty, so without this check `search --context` would short-circuit
+  // to HELP + exit 0 with the malformed flag silently swallowed.
+  // Mirrors the `validateModel` shape (`commands/research.ts`) and the
+  // identical pre-gate check in `handleResearch`. The post-gate enum
+  // validators below do NOT move.
+  if (flags.context === true) {
+    throw new ValidationError(
+      "--context requires a value.",
+      "Pass a file path: --context <path>, or pipe the context with --context-stdin.",
+    );
+  }
+
+  // Local-context plan, Ticket 5 (DESIGN D1): `--context-stdin` accepts
+  // no value — parseArgs greedily consumes the next non-dash token as a
+  // flag's value, so `search --context-stdin "<q>"` yields a string flag
+  // value and an empty positional. A string value is a VALIDATION_ERROR
+  // (never a silent drop through a `=== true` identity test), placed
+  // BEFORE the help-gate for the same reason as `--context` above.
+  if (typeof flags["context-stdin"] === "string") {
+    throw new ValidationError(
+      "--context-stdin does not take a value.",
+      'Pipe the context on standard input: cat notes.md | scoutline search "<query>" --context-stdin.',
+    );
+  }
+
   if (flags.help || flags.h || positional.length === 0) {
     deps.invocation.writeStdout(SEARCH_HELP);
     return 0;
@@ -905,6 +945,38 @@ async function handleSearch(
     throw new ValidationError(
       "--type and --topic are mutually exclusive (--type has no editorial topic axis).",
       "Pass either --type or --topic, not both.",
+    );
+  }
+
+  // Local-context plan, Ticket 5 (DESIGN D1): the two context-source
+  // spellings are mutually exclusive — a file path and a pipe cannot
+  // both be the source. Parse-level gate beside the Ticket 4 mutex
+  // below. `contextKind` resolves the active source for the D7 block
+  // (Ticket 5 extends it beyond the file source to `--context-stdin`).
+  const contextKind: ContextSourceKind | undefined =
+    typeof flags.context === "string"
+      ? { file: flags.context }
+      : flags["context-stdin"] === true
+        ? { stdin: true }
+        : undefined;
+  if (typeof flags.context === "string" && flags["context-stdin"] === true) {
+    throw new ValidationError(
+      "--context and --context-stdin are mutually exclusive.",
+      "Pass one context source: --context <path> or --context-stdin, not both.",
+    );
+  }
+
+  // Local-context plan, Ticket 4 (DESIGN D7): an explicit `--merge`
+  // together with a context source is an ambiguous combination — the
+  // user's manual `|` sub-queries and the derived stream would fight
+  // over the same query string. Parse-level gate, same shape as the
+  // type/topic mutex above (before Provider resolution); Ticket 5
+  // extends it to the `--context-stdin` spelling (same feature, other
+  // source).
+  if (contextKind !== undefined && flags.merge === true) {
+    throw new ValidationError(
+      "--merge and --context are mutually exclusive.",
+      "--context derives and joins sub-queries itself; pass one of the two, not both.",
     );
   }
 
@@ -1000,28 +1072,136 @@ async function handleSearch(
       if (fanoutPlan.suppress) {
         context.notice(fanoutPlan.suppress);
       }
-      if (fanoutPlan.mode === "fanout") {
-        return executeFanoutPlan(
-          fanoutPlan,
-          {
-            descriptors: deps.providerDescriptors,
-            env: deps.env,
-            query,
-            searchOptions,
-            dependencies: {
-              cache: deps.searchCache,
-              sleep: deps.searchSleep,
-              random: deps.searchRandom,
-              retryPolicy: undefined,
-              // PB-T2 parity (review fix, PR #36): thread the configured
-              // consumption sink + clock so each arm's executeSearch
-              // bills the arm's provider through local quota accounting.
-              ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
-              ...(deps.now !== undefined ? { now: deps.now } : {}),
-            },
-            secrets: deps.secrets,
+
+      // Local-context plan, Ticket 4 (DESIGN D7): read the context
+      // source ONCE here in the handler, derive the sub-query stream
+      // (D2.4), and build the dispatch query BEFORE either dispatch
+      // path — the executors split sub-queries from the raw query
+      // string themselves (`splitMergeSubQueries`), so only this
+      // handler-side join reaches both the single-pin path and the
+      // fan-out grid. The user's query is kept FIRST; every stream
+      // member is trim-then-escaped with pipe-only escaping so the
+      // join/split round-trip is lossless. Ticket 5 routes the
+      // `--context-stdin` spelling through the same block: stdin is
+      // read once via the injected io seam (`context.readStdin()`,
+      // drained by the Node adapter on first read), so the join and
+      // the D6 wrapper below are source-agnostic.
+      let dispatchQuery = query;
+      let contextInfo:
+        | {
+            source: "file" | "stdin";
+            path?: string;
+            sha256: string;
+            derived: {
+              headings: number;
+              questions: number;
+              terms: number;
+              subQueries: number;
+            };
+          }
+        | undefined;
+      if (contextKind !== undefined) {
+        const content = await readContextSource(contextKind, {
+          readFile: (filePath) => fs.promises.readFile(filePath),
+          readStdin: (maxBytes) => context.readStdin(maxBytes),
+        });
+        const parsed = parseContextText(content.text);
+        const derived = parsed.subQueries;
+        // Drop notice (D2.4/D7): the parser caps the stream at
+        // MAX_SUBQUERIES; the pre-cap count is recomputed here with the
+        // same qualification rules (headings within the 60-char bound,
+        // backslash-trimmed non-empty) purely for the notice — the
+        // capped stream itself is authoritative for the join.
+        const uncappedSet = new Set(
+          [
+            ...parsed.headings.filter((h) => h.length <= 60),
+            ...parsed.questions,
+          ]
+            .map((value) => value.replace(/\\+$/, ""))
+            .filter((value) => value.length > 0),
+        );
+        const uncapped = uncappedSet.size;
+        if (uncapped > MAX_SUBQUERIES) {
+          context.notice(
+            `context: derived ${uncapped} sub-queries; dropped ${uncapped - derived.length} (cap ${MAX_SUBQUERIES})`,
+          );
+        }
+        if (derived.length === 0) {
+          // Zero-derivation fallback (D7): the original query runs
+          // alone, merge NOT engaged — a literal `|` in the user's
+          // query must not split. The context wrapper below still
+          // applies.
+          context.notice("context: derived 0 sub-queries; using original query");
+        } else {
+          // Join site (D7): the user query gets the D2.4
+          // trailing-backslash trim here (derived members are already
+          // trimmed by the parser), then EVERY member is escaped
+          // pipe-only — no backslash doubling, `splitMergeSubQueries`
+          // never unescapes `\\`.
+          dispatchQuery = [query.replace(/\\+$/, ""), ...derived]
+            .map((s) => s.replace(/\|/g, "\\|"))
+            .join("|");
+          searchOptions.merge = true;
+          // Fan-out cost disclosure (D7): when the resolved plan is
+          // fan-out AND the joined stream holds more than one
+          // sub-query, the (arm × sub-query) grid is a cost
+          // multiplication the user must see. N counts the whole
+          // joined stream, user query included.
+          if (fanoutPlan.mode === "fanout") {
+            const n = derived.length + 1;
+            const m = fanoutPlan.arms.length;
+            context.notice(`context: ${n} sub-queries × ${m} arms = ${n * m} billable searches`);
+          }
+        }
+        // D6 privacy boundary: counts, hashes, and the path only —
+        // never content. `subQueries` is the post-cap stream length.
+        contextInfo = {
+          source: content.source,
+          ...(content.path !== undefined ? { path: content.path } : {}),
+          sha256: content.sha256,
+          derived: {
+            headings: parsed.headings.length,
+            questions: parsed.questions.length,
+            terms: parsed.terms.length,
+            subQueries: derived.length,
           },
-          context,
+        };
+      }
+      // Flags-gated wrapper (D7): under `--context` (only then) the
+      // dispatch result's DATA payload is wrapped as
+      // `{context: {...}, results: [...]}`; text-mode presentations
+      // stay unwrapped (they are built inside dispatch from the bare
+      // results). Without the flag the result passes through
+      // byte-identically.
+      const applyContextWrapper = (result: CommandResult): CommandResult =>
+        contextInfo === undefined || result.kind !== "data"
+          ? result
+          : { ...result, data: { context: contextInfo, results: result.data } };
+
+      if (fanoutPlan.mode === "fanout") {
+        return applyContextWrapper(
+          await executeFanoutPlan(
+            fanoutPlan,
+            {
+              descriptors: deps.providerDescriptors,
+              env: deps.env,
+              query: dispatchQuery,
+              searchOptions,
+              dependencies: {
+                cache: deps.searchCache,
+                sleep: deps.searchSleep,
+                random: deps.searchRandom,
+                retryPolicy: undefined,
+                // PB-T2 parity (review fix, PR #36): thread the configured
+                // consumption sink + clock so each arm's executeSearch
+                // bills the arm's provider through local quota accounting.
+                ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+                ...(deps.now !== undefined ? { now: deps.now } : {}),
+              },
+              secrets: deps.secrets,
+            },
+            context,
+          ),
         );
       }
       const outcome = await executeWithFallback(
@@ -1041,7 +1221,7 @@ async function handleSearch(
           const adapter = descriptor.create({ env: deps.env });
           const capability: SearchCapability = adapter.search as SearchCapability;
           return search(
-            query,
+            dispatchQuery,
             searchOptions,
             {
               capability,
@@ -1059,7 +1239,7 @@ async function handleSearch(
           );
         },
       );
-      return outcome.result;
+      return applyContextWrapper(outcome.result);
     },
     outputMode,
     deps.now,
@@ -1385,6 +1565,34 @@ async function handleResearch(
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
+  // Local-context plan, Ticket 2 (DESIGN D1 placement pin): the
+  // `--context` value-shape check runs BEFORE the help-gate below —
+  // parseArgs records `true` for a valueless flag and leaves positional
+  // empty, so without this check `research --context` would
+  // short-circuit to HELP + exit 0 with the malformed flag silently
+  // swallowed. Mirrors the `validateModel` shape (commands/research.ts).
+  // The post-gate enum validators below do NOT move.
+  if (flags.context === true) {
+    throw new ValidationError(
+      "--context requires a value.",
+      "Pass a file path: --context <path>, or pipe the context with --context-stdin.",
+    );
+  }
+
+  // Local-context plan, Ticket 5 (DESIGN D1): `--context-stdin` accepts
+  // no value — parseArgs greedily consumes the next non-dash token as a
+  // flag's value, so `research --context-stdin "<q>"` yields a string
+  // flag value and an empty positional. A string value is a
+  // VALIDATION_ERROR (never a silent drop through a `=== true` identity
+  // test), placed BEFORE the help-gate for the same reason as
+  // `--context` above.
+  if (typeof flags["context-stdin"] === "string") {
+    throw new ValidationError(
+      "--context-stdin does not take a value.",
+      'Pipe the context on standard input: cat notes.md | scoutline research "<query>" --context-stdin.',
+    );
+  }
+
   if (flags.help || flags.h || positional.length === 0) {
     deps.invocation.writeStdout(RESEARCH_HELP);
     return 0;
@@ -1410,6 +1618,24 @@ async function handleResearch(
     ["numbered", "mla", "apa", "chicago"],
     "--citation-format",
   ) as "numbered" | "mla" | "apa" | "chicago" | undefined;
+  // Local-context plan, Ticket 5 (DESIGN D1): the two context-source
+  // spellings are mutually exclusive — a file path and a pipe cannot
+  // both be the source. Parse-level gate before Provider resolution,
+  // same region as the enum validators.
+  if (typeof flags.context === "string" && flags["context-stdin"] === true) {
+    throw new ValidationError(
+      "--context and --context-stdin are mutually exclusive.",
+      "Pass one context source: --context <path> or --context-stdin, not both.",
+    );
+  }
+  // Local-context plan, Ticket 2 (DESIGN D1): research-only mode enum,
+  // defaulting to `organize` at the read site below. Same parse-level
+  // gate shape as the research enums above.
+  const contextMode = validateResearchEnum(
+    flags["context-mode"],
+    ["organize", "bias", "both"],
+    "--context-mode",
+  ) as ResearchContextMode | undefined;
 
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
   // explicit --provider > SCOUTLINE_PROVIDER > quota-ranked pick.
@@ -1452,6 +1678,18 @@ async function handleResearch(
   return invokeCommand(
     deps.invocation,
     async (context) => {
+      // Local-context plan, Ticket 3 (DESIGN D5): resume-bearing view
+      // of the context flags, threaded through ResearchOptions into
+      // `buildResearchResumeCommand`. `mode` records ONLY an
+      // explicitly-set --context-mode (undefined stays omitted — the
+      // function's set-values-only convention), so an organize-default
+      // resume command carries `--context <path>` alone.
+      const resumeContext: ResearchResumeContext | undefined =
+        typeof flags.context === "string"
+          ? { source: "file", path: flags.context, mode: contextMode }
+          : flags["context-stdin"] === true
+            ? { source: "stdin", mode: contextMode }
+            : undefined;
       const options = {
         model,
         outputLength,
@@ -1460,7 +1698,36 @@ async function handleResearch(
         maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
         timeout: flags.timeout ? parseInt(flags.timeout as string, 10) : undefined,
         noCache: flags["no-cache"] === true,
+        context: resumeContext,
       };
+
+      // Local-context plan, Ticket 2 (DESIGN D3/D5): read + parse the
+      // context source exactly ONCE, here in the handler and BEFORE
+      // `executeWithFallback`. The Node invocation adapter drains
+      // process.stdin on the first `readStdin()`, so a per-attempt read
+      // inside `research()` would hand a fallback retry an empty
+      // string, silently mutate the request, and hash to a different
+      // async-job state file (D5's second-paid-job trap). `research()`
+      // consumes the threaded result only (D4 remap + envelope field) —
+      // it never re-reads the source.
+      const contextKind: ContextSourceKind | undefined =
+        typeof flags.context === "string"
+          ? { file: flags.context }
+          : flags["context-stdin"] === true
+            ? { stdin: true }
+            : undefined;
+      let researchContext: ResearchContextInput | undefined;
+      if (contextKind !== undefined) {
+        const content = await readContextSource(contextKind, {
+          readFile: (filePath) => fs.promises.readFile(filePath),
+          readStdin: (maxBytes) => context.readStdin(maxBytes),
+        });
+        researchContext = {
+          mode: contextMode ?? "organize",
+          content,
+          parsed: parseContextText(content.text),
+        };
+      }
 
       // Closure-guarded one-time credit warning (Review Fix 7). The
       // flag is captured INSIDE the attempt closure, so the line is
@@ -1500,6 +1767,7 @@ async function handleResearch(
               capability: adapter.research as Parameters<typeof research>[2]["capability"],
               execution: executionDeps,
               registerInterrupt: deps.researchRegisterInterrupt,
+              context: researchContext,
             },
             context,
           );

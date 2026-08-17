@@ -85,7 +85,12 @@ import {
   type QuotaState,
 } from "./lib/quota-store.js";
 import type { ProviderVerificationSummary } from "./capabilities/diagnostics.js";
-import { createQuotaStoreConsumptionSink, type ConsumptionSink } from "./lib/consumption.js";
+import {
+  createCompositeConsumptionSink,
+  createQuotaStoreConsumptionSink,
+  type ConsumptionSink,
+} from "./lib/consumption.js";
+import { createUsageLedgerSink, resolveUsageLedgerPath } from "./lib/usage-ledger.js";
 import {
   classifyCredentialState,
   formatEnvOnlyHint,
@@ -2450,8 +2455,9 @@ export interface MainDependencies {
   readonly verificationRecords?: Partial<Record<ProviderId, ProviderVerificationSummary>>;
   /**
    * Optional injectable consumption sink (PB-T2 — Plan B). Production
-   * defaults to `createQuotaStoreConsumptionSink({ store: quotaStore })`
-   * (writes through PB-T1's store, advancing `locallyUpdatedAt` and
+   * defaults to `createCompositeConsumptionSink(quotaStoreSink,
+   * usageLedgerSink)` — the PB-T1 snapshot store (advancing
+   * `locallyUpdatedAt` and
    * adjusting the matching category's count set); tests inject an
    * in-memory double so event-sequence assertions stay hermetic.
    *
@@ -2661,10 +2667,21 @@ export async function main(
   const quotaRefreshEnabled =
     !dependencies.loadScoutlineConfig && !dependencies.providerDescriptors;
   const quotaStore = dependencies.quotaStore ?? createDefaultQuotaStore();
+  // Production records consumption through BOTH sinks (usage-ledger
+  // DESIGN D3): the PB-T1 quota-store snapshot store (unchanged,
+  // including its no-op-before-snapshot posture) and the usage ledger
+  // (sibling `usage.json` under the same config root, resolved through
+  // the pure `resolveUsageLedgerPath()`; warnings default to stderr
+  // like the quota sink). The composite isolates each side — one
+  // sink's failure becomes one redacted warning and never blocks or
+  // fails the other.
   const consume: ConsumptionSink | undefined =
     dependencies.consume ??
     (quotaRefreshEnabled
-      ? createQuotaStoreConsumptionSink({ store: quotaStore, now: now ?? Date.now })
+      ? createCompositeConsumptionSink(
+          createQuotaStoreConsumptionSink({ store: quotaStore, now: now ?? Date.now }),
+          createUsageLedgerSink({ filePath: resolveUsageLedgerPath() }),
+        )
       : undefined);
   // PB-T4: quota snapshot for selection. Declared here so
   // `buildHandlerDeps` closes over the binding; assigned AFTER the

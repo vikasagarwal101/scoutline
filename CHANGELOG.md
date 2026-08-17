@@ -18,6 +18,71 @@ All notable changes to this project will be documented in this file.
 - **Privacy boundary (test-enforced)** — parsed file content crosses the wire in exactly two shapes: the research `bias`/`both` focus segment and the search-derived sub-query strings. `organize` sends nothing derived; envelopes, wrappers, and stderr notices carry counts, the source path, and a SHA-256 only — never a heading, question, term, or file byte.
 - **Review-hardened parsing** — CRLF-authored notes keep their questions; `--context-stdin` is bounded at the 256 KiB cap before decoding; a heading and a question reducing to the same string emit one sub-query; organize-mode headings with an all-non-Latin (empty) slug never cross-match unrelated provider sections.
 
+### `batch` manifest runner + `vision batch` (provider distribution by default)
+
+**One manifest, many operations, one summary envelope.** `scoutline batch`
+executes a strict schema-v1 JSON manifest of capability operations through a
+bounded worker pool, and `scoutline vision batch` runs a directory of media
+through the same runner. Stdout carries exactly one write — the stable v1
+summary envelope; `results[]` keeps manifest order regardless of completion
+order, and every operation runs in data mode with per-op notices and errors
+captured in its own result (never re-emitted live).
+
+- **Distribution is the default:** unpinned operations are assigned
+  round-robin across configured, capable providers per capability group, in
+  registry order. `routing.<capability>` preferences are ignored inside
+  batch (all eligible providers participate) and search fan-out is
+  suppressed — each operation runs on exactly its assigned provider, with
+  the runtime fallback chain still rescuing a failing one. Pin per op
+  (manifest `provider` field) or globally (`--provider`) to opt out.
+- **Allowlist (capability operations only):** `search`, `read`, `research`,
+  `repo`, `vision`, `crawl`, `map` — anything else rejects with one stable
+  message. Manifests come from a file or `-` on stdin (the operations
+  themselves can never read stdin). Input fields are scoped to the
+  subcommands whose handlers consume them (repo `language` → `search`;
+  repo `maxChars` → `search`/`read`/`brief`), so a manifest can never
+  request an option that would be silently ignored.
+- **Flags:** `--concurrency <n>` (integer 1-8, default 4; `vision batch`
+  default 1), `--fail-fast` (stop scheduling after the first failure;
+  unscheduled ops are recorded as skipped), and `--dry-run` — the full
+  assignment preview with pre-dispatch gates (configured +
+  capability-advertised), no transport, no cache reads/writes, no output
+  files (the post-command quota refresh is skipped as well), and
+  per-handler flag semantics explicitly not validated.
+  Boolean-only flags take no value (`--dry-run false` rejects instead of
+  silently running providers); an unknown global `--provider` id rejects
+  the whole batch before the pool.
+- **Per-op `output`:** optional output paths write the captured stdout via
+  temp-file + rename; a write failure is recorded per op (`outputWriteError`)
+  without failing the operation. Duplicate output targets reject at
+  manifest parse (naming the earlier owner; path-equivalent spellings
+  like `out/./a.json` vs `out/a.json` count as duplicates), and a
+  successful op that emitted no stdout writes no zero-byte file (recorded via
+  `outputWriteError` instead).
+- **`vision batch`:** a single-directory glob (`.jpg/.jpeg/.png/.webp/
+  .mp4/.mov/.m4v/.avi/.webm/.wmv`; the extension infers `video` vs
+  `analyze`) or a one-vision-op manifest, `{filename}`/`{filepath}` prompt
+  substitution (inserted literally — `$&` in a filename is never a
+  replacement token), sanitized per-input result files under `--out`
+  (required for more than one input; the directory is created if missing)
+  plus `<out>/summary.json` (written via temp-file + rename; an operation
+  named `summary` rejects when `--out` is used so nothing collides with
+  it). `--dry-run` validates existence and extension for BOTH `diff`
+  sources (`expected` + `actual`), and a valueless `--prompt` rejects
+  rather than silently using the default. A manifest `promptTemplate`
+  carrying `{filename}`/`{filepath}` rejects for `diff` operations (diff
+  has two sources and no single one to substitute against; token-free
+  templates pass through), `fields` array members must be non-empty
+  (`[""]` would render a flag the handler parses as boolean `true`), and
+  the post-command quota refresh is skipped for dry-run batches too.
+
+### Documentation
+- README usage plus a Batch Manifest Runner section, `skills/scoutline/SKILL.md`
+  (commands table + batch section), `scoutline batch --help` / `scoutline
+  vision --help` (routing-ignored and fan-out-suppressed semantics), and
+  `docs/roadmap.md` (batch candidate retired; shipped work lives in this
+  changelog).
+
 ## [0.16.0] - 2026-08-16
 
 **Three parallel feature streams, landed as PRs #34/#35/#36:** local cache

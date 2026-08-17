@@ -217,6 +217,45 @@ scoutline config set fanout true    # standing preference (default off)
 
 **Cost:** every search will bill ALL configured search providers — N arms = N billable calls (when `routing.search` is set, only the eligible routed providers — configured and search-capable — are billed; `config set fanout true` names exactly those). Arms run in parallel (one client each, pinned — no per-arm fallback); a provider that rejects a search control drops with a stderr notice and never fails the invocation. Results are deduplicated by canonical URL identity (scheme/host lowercased, default ports, fragments, trailing slashes, and `utm_*`/`fbclid` parameters removed — tracking names are matched after percent-decoding, the raw path and userinfo are preserved verbatim, and the original URLs are kept in output), ranked by cross-provider occurrences, and each result carries `mergedFrom` listing the providers that returned it. `--merge` composes with fan-out: every arm runs every sub-query and occurrences span the arms × sub-queries grid. Disable the standing switch with `scoutline config set fanout false`.
 
+### Batch Manifest Runner (distribution by default)
+
+`scoutline batch` executes a strict schema-v1 JSON manifest of capability
+operations (`search`, `read`, `research`, `repo`, `vision`, `crawl`, `map`)
+through a bounded worker pool — the same handlers a direct call uses, forced
+to data mode, with per-operation notices and errors captured per result.
+Stdout carries exactly one write: the summary envelope. `results[]` keeps
+manifest order regardless of completion order.
+
+**Provider distribution is the default.** Unpinned operations are assigned
+round-robin across configured, capable providers per capability group, in
+registry order. `routing.<capability>` preferences are ignored inside batch —
+all eligible providers participate; pin an operation (manifest `provider`
+field) or the whole batch (`--provider`) to opt out. Search fan-out is
+suppressed inside batch: each operation runs on exactly its assigned
+provider, and the runtime fallback chain still rescues a failing one.
+
+```bash
+scoutline batch manifest.json                        # distribute across providers
+scoutline batch manifest.json --concurrency 2 --fail-fast
+scoutline batch manifest.json --dry-run              # preview assignment; no transport
+scoutline --provider tavily batch manifest.json      # pin the whole batch
+cat manifest.json | scoutline batch -                # manifest on stdin
+```
+
+`--dry-run` resolves every assignment and runs the pre-dispatch gates
+(configured + capability-advertised) without contacting any provider,
+touching the cache, or writing per-op output files. Optional per-op `output`
+paths write captured stdout via temp-file + rename; `--fail-fast` stops
+scheduling after the first failure (unscheduled operations are recorded).
+
+`scoutline vision batch` runs many media inputs through the same runner: a
+single-directory glob (`.jpg .jpeg .png .webp .mp4 .mov .m4v .avi .webm
+.wmv`; the extension infers `video` vs `analyze`) or a one-vision-op
+manifest, `{filename}`/`{filepath}` prompt substitution, sanitized per-input
+result files plus `summary.json` under `--out` (required for more than one
+input; the directory is created if missing), and distribution across
+eligible vision providers (`--concurrency` default 1).
+
 ### Capability Matrix
 
 | Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | Command |
@@ -255,6 +294,7 @@ scoutline crawl --help        # Crawl options
 scoutline map --help          # Map options
 scoutline research --help     # Research options
 scoutline vision --help       # Vision commands
+scoutline batch --help        # Batch manifest runner (distribution by default)
 scoutline repo --help         # GitHub repo commands
 scoutline doctor --help       # Provider diagnostics
 scoutline quota --help        # Plan usage

@@ -52,6 +52,14 @@ import {
 } from "./commands/usage.js";
 import { cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
 import type { PruneSelectors, PruneCachesResult } from "./lib/cache.js";
+import { parseBatchManifest } from "./lib/batch-manifest.js";
+import type { AllowedBatchCommand } from "./lib/batch-manifest.js";
+import { assignBatchProviders } from "./lib/batch-assign.js";
+import {
+  BATCH_MAX_CONCURRENCY,
+  runBatch,
+  type BatchOperationHandler,
+} from "./lib/batch-runner.js";
 import { isExtractMode, type ExtractMode } from "./lib/extract.js";
 import {
   runCodeFile,
@@ -69,7 +77,8 @@ import {
   getErrorExitCode,
 } from "./lib/errors.js";
 import * as os from "node:os";
-import * as fs from "node:fs";
+import * as fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import {
   invokeCommand,
   type CommandInvocationAdapter,
@@ -113,6 +122,7 @@ import {
   classifyCredentialState,
   formatEnvOnlyHint,
   isCommandHelpInvocation,
+  isDryRunBatchInvocation,
   OBSERVATIONAL_COMMANDS,
 } from "./lib/trigger-detection.js";
 import { resolveProviderId, resolveEffectiveProvider } from "./providers/selection.js";
@@ -154,6 +164,8 @@ Commands:
            MiniMax and Tavily return UNSUPPORTED_CAPABILITY)
   quota    Provider-aware plan usage (calls remaining, reset time; default
            reports every configured Provider)
+  batch    Run a manifest of capability operations across Providers
+           (distribution is the default; pin per op or globally to opt out)
   tools    List available MCP tools (Z.AI)
   tool     Show a tool schema (Z.AI)
   call     Call a tool directly (Z.AI)
@@ -198,6 +210,7 @@ Help:
   scoutline map --help
   scoutline research --help
   scoutline repo --help
+  scoutline batch --help
   scoutline tools --help
   scoutline call --help
   scoutline code --help
@@ -619,6 +632,22 @@ async function handleVision(
   const command = positional[0] ?? "";
   const source = positional[1] ?? "";
   const prompt = positional[2];
+
+  // batch-runner Ticket 7 (DESIGN D10): `vision batch` is a WRAPPER over
+  // the shared manifest runner. The branch sits BEFORE
+  // `visionOperationForCommand` (which raises VALIDATION_ERROR for
+  // "batch") and before ANY provider resolution or `descriptor.create()`
+  // — per-op provider assignment happens inside the runner (D1, D4),
+  // never at this seam.
+  if (command === "batch") {
+    return vision.handleVisionBatch(
+      positional.slice(1),
+      flags,
+      outputMode,
+      deps,
+      BATCH_HANDLERS,
+    );
+  }
 
   // Map the subcommand to its Vision operation. Unknown subcommands are
   // a parse-time VALIDATION_ERROR and are rejected before any Provider
@@ -1102,7 +1131,7 @@ async function handleSearch(
         | undefined;
       if (contextKind !== undefined) {
         const content = await readContextSource(contextKind, {
-          readFile: (filePath) => fs.promises.readFile(filePath),
+          readFile: (filePath) => fs.readFile(filePath),
           readStdin: (maxBytes) => context.readStdin(maxBytes),
         });
         const parsed = parseContextText(content.text);
@@ -1719,7 +1748,7 @@ async function handleResearch(
       let researchContext: ResearchContextInput | undefined;
       if (contextKind !== undefined) {
         const content = await readContextSource(contextKind, {
-          readFile: (filePath) => fs.promises.readFile(filePath),
+          readFile: (filePath) => fs.readFile(filePath),
           readStdin: (maxBytes) => context.readStdin(maxBytes),
         });
         researchContext = {
@@ -2026,6 +2055,225 @@ async function handleRepo(
     deps.now,
     deps.secrets,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Batch manifest runner (batch-runner DESIGN D1, D8)
+// ---------------------------------------------------------------------------
+
+const BATCH_HELP = `
+Batch - Run a manifest of capability operations across Providers
+
+Usage: scoutline batch <manifest.json|-> [options]
+
+Executes every manifest operation through the SAME handlers a direct
+call uses, forced to data mode, through a bounded worker pool. Provider
+distribution is the DEFAULT (DESIGN D4): unpinned operations are
+assigned round-robin across configured, capable Providers per
+capability group, in registry order. Pin an operation with its manifest
+"provider" field, or the whole batch with the global --provider flag,
+to opt out. routing.<capability> preferences are ignored inside batch
+(all eligible providers participate; pin to opt out), and search
+fan-out is suppressed: every operation runs on exactly its assigned
+Provider. Results[] keeps manifest order; per-op notices and errors
+are captured per operation, never re-emitted live. Process stdout
+carries exactly ONE write: the summary envelope.
+
+Manifest (schema v1, strict parse - unknown fields reject):
+  {
+    "schemaVersion": 1,
+    "operations": [
+      { "name": "op-1", "command": "search", "input": { "query": "..." } }
+    ]
+  }
+
+  commands: search, read, research, repo, vision, crawl, map
+  op fields: name (unique), command, input, provider? (pin), output?
+  - reads the manifest JSON from stdin (the ops themselves never can)
+
+Options:
+  --concurrency <n>  Parallel operations (integer 1-8; default 4)
+  --fail-fast        Stop scheduling after the first failed operation
+  --dry-run          Validate the manifest and preview the full
+                     assignment without contacting any provider
+  --help             Show this help
+
+Dry run boundary (--dry-run): every operation still gets its resolved
+provider (pin or distribution) and its pre-dispatch gates — configured
+AND capability-advertised, reason: ready | provider not configured |
+capability not advertised — but nothing executes: no transport, no
+cache reads or writes, no per-op output files. Per-handler flag
+semantics (post-compiler) are not validated in a dry run.
+
+Examples:
+  scoutline batch manifest.json
+  scoutline batch manifest.json --concurrency 2 --fail-fast
+  cat manifest.json | scoutline batch -
+`.trim();
+
+/** Flags `scoutline batch` itself accepts (strict surface; D1). */
+const BATCH_FLAGS: ReadonlySet<string> = new Set([
+  "help",
+  "h",
+  "concurrency",
+  "fail-fast",
+  "dry-run",
+]);
+
+/**
+ * The real 7-entry handler map (D5): each allowed batch command runs
+ * the same handler the main dispatch switch calls, with the runner's
+ * per-op spread overriding `provider` (the assignment pin) and
+ * `invocation` (the capture adapter).
+ */
+const BATCH_HANDLERS: Readonly<Record<AllowedBatchCommand, BatchOperationHandler>> = {
+  search: handleSearch,
+  read: handleRead,
+  research: handleResearch,
+  repo: handleRepo,
+  vision: handleVision,
+  crawl: handleCrawl,
+  map: handleMap,
+};
+
+/**
+ * `scoutline batch` handler (batch-runner plan Ticket 4, DESIGN D1).
+ *
+ * Order of operations: strict flag surface -> help short-circuit ->
+ * `--concurrency` gate (D8: integer 1..8, validation never clamping;
+ * the runner re-validates the number before the pool) -> manifest read
+ * (file, or `-` via the GLOBAL invocation's readStdin, exactly once,
+ * before the pool starts - the per-op adapters throw on readStdin so
+ * the manifest can never be consulted from an op) -> strict D2 parse
+ * -> D4 assignment -> shared runner.
+ *
+ * Every whole-batch failure (unknown flag, bad concurrency, unreadable
+ * manifest, parse/assignment rejection) throws ValidationError BEFORE
+ * any stdout write, so the main dispatch catch owns the process-level
+ * error envelope (AC1: stderr JSON contract, no summary envelope).
+ */
+async function handleBatch(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+): Promise<number> {
+  const { flags, positional } = parseArgs(args);
+
+  // Unknown flags reject BEFORE the help short-circuit: parseArgs
+  // assigns the next non-dash argument as a flag's value, so
+  // `batch --frobnicate manifest.json` would otherwise swallow the
+  // manifest into the unknown flag, leave `positional` empty, and
+  // render help instead of naming the offender.
+  for (const key of Object.keys(flags)) {
+    if (!BATCH_FLAGS.has(key)) {
+      throw new ValidationError(
+        `unknown batch flag "--${key}"`,
+        'Run "scoutline batch --help" for the accepted flags.',
+      );
+    }
+  }
+
+  // Boolean-only flags never take a value: `--dry-run false` would
+  // otherwise silently disable the safety boundary and RUN providers,
+  // because the flag value never equals `true`. Same for --fail-fast.
+  for (const key of ["fail-fast", "dry-run"]) {
+    const value = flags[key];
+    if (value !== undefined && value !== true) {
+      throw new ValidationError(
+        `--${key} is a boolean flag and takes no value`,
+        `Pass the bare --${key} to enable it, or omit it.`,
+      );
+    }
+  }
+
+  if (flags.help || flags.h || positional.length === 0) {
+    deps.invocation.writeStdout(BATCH_HELP);
+    return 0;
+  }
+
+  if (positional.length > 1) {
+    throw new ValidationError(
+      "batch takes exactly one manifest argument (a file path or '-')",
+      "Pass the manifest path, or '-' to read it from stdin.",
+    );
+  }
+
+  // D8 gate at the command seam: the flag arrives as a string (or
+  // `true` when valueless); convert and let the runner's own
+  // normalizeConcurrency own the integer/range VALIDATION_ERROR, which
+  // fires before the pool and before any stdout write.
+  let concurrency: number | undefined;
+  if (flags.concurrency !== undefined) {
+    if (typeof flags.concurrency !== "string") {
+      throw new ValidationError(
+        `batch concurrency must be an integer between 1 and ${BATCH_MAX_CONCURRENCY}`,
+        "Omit --concurrency for the default of 4, or pass an integer in 1..8.",
+      );
+    }
+    concurrency = Number(flags.concurrency);
+  }
+
+  // Manifest source (D1): a file path, or `-` for stdin through the
+  // GLOBAL invocation adapter (the tools.ts `context.readStdin()`
+  // precedent) — read exactly once, before the pool starts. The read
+  // happens outside invokeCommand (the runner owns its process
+  // effects), directly on the adapter the switch handed in.
+  const manifestArg = positional[0] ?? "";
+  let manifestText: string;
+  if (manifestArg === "-") {
+    try {
+      manifestText = await deps.invocation.readStdin();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new ValidationError(`failed to read batch manifest from stdin: ${message}`);
+    }
+  } else {
+    try {
+      manifestText = await fs.readFile(manifestArg, "utf8");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new ValidationError(`failed to read batch manifest file "${manifestArg}": ${message}`);
+    }
+  }
+
+  let rawManifest: unknown;
+  try {
+    rawManifest = JSON.parse(manifestText);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ValidationError(`batch manifest is not valid JSON: ${message}`);
+  }
+
+  const manifest = parseBatchManifest(rawManifest, {
+    descriptors: deps.providerDescriptors,
+    dirExists: (dir) => existsSync(dir),
+  });
+
+  // D4 precedence: per-op pin > global --provider > distribution. The
+  // global pin was already extracted from argv by the switch layer.
+  const assignments = assignBatchProviders(manifest, {
+    descriptors: deps.providerDescriptors,
+    env: deps.env,
+    globalProvider: deps.provider as ProviderId | undefined,
+  });
+
+  const { exitCode } = await runBatch(
+    manifest,
+    assignments,
+    {
+      handlerDeps: deps,
+      handlers: BATCH_HANDLERS,
+      invocation: deps.invocation,
+      outputMode,
+      now: deps.now,
+    },
+    {
+      ...(concurrency !== undefined ? { concurrency } : {}),
+      failFast: flags["fail-fast"] === true,
+      dryRun: flags["dry-run"] === true,
+    },
+  );
+  return exitCode;
 }
 
 async function handleTools(
@@ -3457,6 +3705,10 @@ export async function main(
   // earlier alongside `buildHandlerDeps` so the sink closes over a
   // defined binding — see PB-T2 above.)
   const isQuotaObservationalCommand = command === "quota" || command === "doctor";
+  // Dry-run batches (`batch --dry-run`, `vision batch --dry-run`) promise
+  // a no-transport preview (batch DESIGN D7/D10) — the due-refresh below
+  // must not live-probe stale providers for them (review fix).
+  const isDryRunBatch = isDryRunBatchInvocation(command, commandArgs);
   const refreshOnError = (_providerId: string, _error: unknown): void => {
     // Silent: quota-refresh failures are best-effort. Writing to stderr
     // would violate the JSON error contract (stderr is reserved for the
@@ -3528,6 +3780,10 @@ export async function main(
         commandRecognized = true;
         exitCode = await handleRepo(commandArgs, outputMode, handlerDepsWithSelection);
         break;
+      case "batch":
+        commandRecognized = true;
+        exitCode = await handleBatch(commandArgs, outputMode, handlerDepsWithSelection);
+        break;
       case "tools":
         commandRecognized = true;
         exitCode = await handleTools(commandArgs, outputMode, handlerDepsWithSelection);
@@ -3580,6 +3836,8 @@ export async function main(
   //   - `quota`/`doctor` (already force-refreshed before the handler)
   //   - help invocations (`<cmd> --help` exits 0 but did no real work)
   //   - unrecognized commands (the default case above)
+  //   - dry-run batch invocations — the preview contract promises no
+  //     transport, and this refresh live-probes stale providers
   // Run even when the handler threw (commandRecognized + caught):
   // the refresh is independent of the command's outcome and the
   // snapshot stays live regardless. The staleness check inside
@@ -3590,7 +3848,8 @@ export async function main(
     quotaRefreshEnabled &&
     commandRecognized &&
     !isQuotaObservationalCommand &&
-    !isHelpInvocation
+    !isHelpInvocation &&
+    !isDryRunBatch
   ) {
     await refreshQuotaSnapshots({
       descriptors: providerDescriptors,

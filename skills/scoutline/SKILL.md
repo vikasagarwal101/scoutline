@@ -224,6 +224,7 @@ to the active Provider.
 | call | Raw MCP tool invocation | |
 | doctor | Provider-aware diagnostics (schema v2) | `--help` for `--no-tools` |
 | cache | Inspect or clear the local cache | `--help` for stats/clear |
+| usage | Local call-usage report (90-day `usage.json` ledger) | `--help` for `--days`/`--provider` |
 | code | TypeScript tool chaining (Z.AI) | |
 | init | Interactive onboarding wizard (writes ~/.scoutline/config.json) | `--help` for the four lifecycle states |
 
@@ -522,6 +523,21 @@ Legacy aliases (`ZAI_CACHE*`, `ZAI_MCP_TOOL_CACHE*`, `ZAI_MCP_CACHE_DIR`)
 are accepted silently at lower precedence. `XDG_CACHE_HOME` is no longer
 consulted; the orphaned `~/.cache/zai-cli/` directory is never read,
 migrated, or deleted.
+
+## Usage Ledger
+
+Every billable invoke (search — fan-out arms and `--merge` sub-queries
+each count — read, crawl, map, research, repo, vision) appends counters
+to `~/.scoutline/usage.json`, bucketed by UTC calendar day, then
+provider, then capability. Retries each count as an attempt; cache hits
+record nothing. Retention is 90 days (pruned on day-roll; no config
+knob). `SCOUTLINE_CONFIG_DIR` moves the ledger with the config root.
+
+Report it with `scoutline usage [--days N] [--provider <id>]` (default
+window 7 days; credential-free, no network). Counts are billable call
+attempts — providers do not report credit costs. The ledger stores
+counters only: no queries, URLs, prompts, results, or credentials; a
+corrupt or missing ledger reports an empty window with exit 0.
 
 ## Advanced
 

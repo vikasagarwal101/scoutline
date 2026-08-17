@@ -590,6 +590,44 @@ projection applies on every read. Extract reads share the same cache entries
 as content reads (the cache stores the normalized content; `--extract`
 slices it on the way out).
 
+## Usage Ledger
+
+Every billable invoke also appends counters to a local usage ledger at
+`~/.scoutline/usage.json` — a sibling of `config.json` under the config
+root. `SCOUTLINE_CONFIG_DIR` moves the ledger with the config root. The
+cache-directory variables (`SCOUTLINE_CACHE_DIR` and aliases) relocate
+only the response caches, which otherwise default to the same
+`~/.scoutline/` root; they never affect the ledger's location.
+
+What records a row: `search` (fan-out arms and `--merge` sub-queries each
+record their own invoke), `read`, `crawl`, `map`, `research`, `repo`, and
+`vision`. Each transport attempt counts — a retry adds a second attempt —
+and cache hits record nothing. Rows are keyed by UTC calendar date (taken
+from the event timestamp, so bucketing is deterministic across time zones),
+then by provider, then by capability id (`search`, `reader`, `crawl`, `map`,
+`research`, `repository-exploration`, `vision.*`, …), each holding counters:
+`attempts` (every event), `firstTries` (first attempts only), `exactUnits`
+(reserved; 0 today), `estimateUnits` (single-call-cost capabilities:
+search/reader/repository-exploration/map = 1 per call), and `unknownCount`
+(variable-cost capabilities: vision, crawl, research).
+
+Retention is 90 days: on the first write of a new UTC day, day keys older
+than 90 days are pruned in the same write. There is no configuration
+surface for retention in v1. Writes are serialized through a lock file
+(`usage.json.lock`) and applied as an atomic temp-file rename; a ledger
+read or write failure degrades to one fixed, detail-free warning and never
+fails the command.
+
+Read the ledger with `scoutline usage [--days N] [--provider <id>]`
+(default window: 7 days). The command is credential-free and makes no
+network calls.
+
+**Privacy:** the ledger stores counters only. Queries, URLs, prompts,
+results, credentials, and API keys are never written to it. A corrupt or
+version-mismatched ledger is treated as empty (fail-open) rather than
+blocking any command; the `usage` command reports an empty window with
+exit 0 in that case.
+
 ## MiniMax Unsupported Reader
 
 MiniMax does not advertise the `reader` Capability in the current release.

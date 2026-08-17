@@ -34,7 +34,7 @@ import { asyncJobStateDir } from "../lib/cache.js";
 import { computeAsyncJobStateHash } from "../lib/async-job-state.js";
 import { OUTPUT_MODES } from "../lib/output.js";
 import { TimeoutError, ValidationError } from "../lib/errors.js";
-import { slug } from "../lib/context-file.js";
+import { buildBiasAppend, slug } from "../lib/context-file.js";
 import type { ContextSourceContent, ParsedContextText } from "../lib/context-file.js";
 
 // ---------------------------------------------------------------------------
@@ -50,10 +50,30 @@ export interface ResearchOptions {
   /** Polling timeout in seconds. Default 300. */
   readonly timeout?: number;
   readonly noCache?: boolean;
+  /**
+   * Local-context plan, Ticket 3 (DESIGN D5): resume-bearing context
+   * flags consumed by `buildResearchResumeCommand` only — the wire
+   * request builder ignores this field (the D2.5 mutation derives
+   * from `ResearchHandlerDependencies.context`, not from here).
+   */
+  readonly context?: ResearchResumeContext;
 }
 
 /** Local-context plan, DESIGN D1: `--context-mode` values (research only). */
 export type ResearchContextMode = "organize" | "bias" | "both";
+
+/**
+ * Local-context plan, Ticket 3 (DESIGN D5): the resume-command view of
+ * the context flags. `path` is the original `--context` value (file
+ * sources only); `mode` records ONLY an explicitly-set
+ * `--context-mode` — undefined (the organize default) stays omitted,
+ * matching `buildResearchResumeCommand`'s set-values-only convention.
+ */
+export interface ResearchResumeContext {
+  readonly source: "file" | "stdin";
+  readonly path?: string;
+  readonly mode?: ResearchContextMode;
+}
 
 /**
  * Local-context plan, Ticket 2: what the handler threads into
@@ -259,6 +279,25 @@ export function buildResearchResumeCommand(
   if (options.citationFormat !== undefined)
     parts.push(`--citation-format ${options.citationFormat}`);
   if (options.domain !== undefined) parts.push(`--domain ${shellQuote(options.domain)}`);
+  // Local-context plan, Ticket 3 (DESIGN D5): the resume command must
+  // carry the context source. Under bias/both, `--context` alone would
+  // revert to the organize default, compute the un-mutated query, and
+  // hash to a different state file — silently starting a second paid
+  // job; under organize it is output-bearing (the resumed run re-maps
+  // sections and re-emits the envelope `context` field). Any file
+  // source appends `--context <path>` (shell-quoted); stdin sources
+  // carry `--context-stdin` — piped bytes cannot be embedded in a
+  // shell command, so help notes the user must re-pipe the same
+  // content unchanged. `--context-mode` appears only when the original
+  // invocation set it explicitly (unset values stay omitted).
+  if (options.context?.source === "file" && options.context.path !== undefined) {
+    parts.push(`--context ${shellQuote(options.context.path)}`);
+  } else if (options.context?.source === "stdin") {
+    parts.push("--context-stdin");
+  }
+  if (options.context?.mode !== undefined) {
+    parts.push(`--context-mode ${options.context.mode}`);
+  }
   return parts.join(" ");
 }
 
@@ -413,7 +452,21 @@ export async function research(
     throw new ValidationError("Research query must contain at least one non-whitespace character");
   }
 
-  const request = buildResearchRequest(query, options);
+  const contextInput = deps.context;
+  // Local-context plan, Ticket 3 (DESIGN D2.5/D5): under bias/both the
+  // parsed focus terms are appended to a LOCAL query copy that feeds
+  // ONLY `buildResearchRequest` — the resume command below still
+  // receives the ORIGINAL query, so re-running it re-derives the
+  // identical mutation (deterministic from query + source bytes; an
+  // unchanged source hashes to the same state file). organize is pure
+  // local re-presentation and leaves the request untouched (pinned by
+  // the Ticket 2 cache-identity golden).
+  const wireQuery =
+    contextInput !== undefined && contextInput.mode !== "organize"
+      ? buildBiasAppend(query, contextInput.parsed.terms)
+      : query;
+
+  const request = buildResearchRequest(wireQuery, options);
 
   // Compute the state-file path AND the canonical resume command for
   // the SIGINT handler. Both are derived from this attempt's
@@ -498,7 +551,6 @@ export async function research(
     // following the context file's headings. Purely local — the wire
     // request and the cache entry are untouched (pinned by the
     // cache-identity golden test). `bias` alone does not reorganize.
-    const contextInput = deps.context;
     const effectiveSections =
       contextInput !== undefined && contextInput.mode !== "bias"
         ? remapSectionsToContext(sections, contextInput.parsed.headings)
@@ -564,7 +616,9 @@ and synthesizes a cited report. This is a CREDIT-INTENSIVE operation
 Ctrl-C safety: interrupting a research task does NOT lose credits. The
 task keeps running server-side and its request_id is persisted to a state
 file. Re-running the SAME command resumes polling instead of creating a
-second task (no double charge).
+second task (no double charge). If the original run used --context-stdin,
+re-pipe the same content unchanged when resuming — piped bytes cannot be
+embedded in the printed resume command.
 
 Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER,
 then the configured default):

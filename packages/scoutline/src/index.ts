@@ -9,6 +9,7 @@ import { read, READ_HELP } from "./commands/read.js";
 import { crawl, CRAWL_HELP } from "./commands/crawl.js";
 import { map, MAP_HELP } from "./commands/map.js";
 import { research, RESEARCH_HELP } from "./commands/research.js";
+import type { ResearchContextInput, ResearchContextMode } from "./commands/research.js";
 import {
   repoSearch,
   repoTree,
@@ -58,8 +59,11 @@ import {
   getErrorExitCode,
 } from "./lib/errors.js";
 import * as os from "node:os";
+import * as fs from "node:fs";
 import { invokeCommand, type CommandInvocationAdapter } from "./command-invocation.js";
 import { defaultResponseCache, type ResponseCache } from "./lib/cache.js";
+import { parseContextText, readContextSource } from "./lib/context-file.js";
+import type { ContextSourceKind } from "./lib/context-file.js";
 import { configuredSecrets } from "./lib/redact.js";
 import {
   configFilePath,
@@ -1352,6 +1356,20 @@ async function handleResearch(
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
+  // Local-context plan, Ticket 2 (DESIGN D1 placement pin): the
+  // `--context` value-shape check runs BEFORE the help-gate below —
+  // parseArgs records `true` for a valueless flag and leaves positional
+  // empty, so without this check `research --context` would
+  // short-circuit to HELP + exit 0 with the malformed flag silently
+  // swallowed. Mirrors the `validateModel` shape (commands/research.ts).
+  // The post-gate enum validators below do NOT move.
+  if (flags.context === true) {
+    throw new ValidationError(
+      "--context requires a value.",
+      "Pass a file path: --context <path>, or pipe the context with --context-stdin.",
+    );
+  }
+
   if (flags.help || flags.h || positional.length === 0) {
     deps.invocation.writeStdout(RESEARCH_HELP);
     return 0;
@@ -1377,6 +1395,14 @@ async function handleResearch(
     ["numbered", "mla", "apa", "chicago"],
     "--citation-format",
   ) as "numbered" | "mla" | "apa" | "chicago" | undefined;
+  // Local-context plan, Ticket 2 (DESIGN D1): research-only mode enum,
+  // defaulting to `organize` at the read site below. Same parse-level
+  // gate shape as the research enums above.
+  const contextMode = validateResearchEnum(
+    flags["context-mode"],
+    ["organize", "bias", "both"],
+    "--context-mode",
+  ) as ResearchContextMode | undefined;
 
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
   // explicit --provider > SCOUTLINE_PROVIDER > quota-ranked pick.
@@ -1424,6 +1450,34 @@ async function handleResearch(
         noCache: flags["no-cache"] === true,
       };
 
+      // Local-context plan, Ticket 2 (DESIGN D3/D5): read + parse the
+      // context source exactly ONCE, here in the handler and BEFORE
+      // `executeWithFallback`. The Node invocation adapter drains
+      // process.stdin on the first `readStdin()`, so a per-attempt read
+      // inside `research()` would hand a fallback retry an empty
+      // string, silently mutate the request, and hash to a different
+      // async-job state file (D5's second-paid-job trap). `research()`
+      // consumes the threaded result only (D4 remap + envelope field) —
+      // it never re-reads the source.
+      const contextKind: ContextSourceKind | undefined =
+        typeof flags.context === "string"
+          ? { file: flags.context }
+          : flags["context-stdin"] !== undefined
+            ? { stdin: true }
+            : undefined;
+      let researchContext: ResearchContextInput | undefined;
+      if (contextKind !== undefined) {
+        const content = await readContextSource(contextKind, {
+          readFile: (filePath) => fs.promises.readFile(filePath),
+          readStdin: () => context.readStdin(),
+        });
+        researchContext = {
+          mode: contextMode ?? "organize",
+          content,
+          parsed: parseContextText(content.text),
+        };
+      }
+
       // Closure-guarded one-time credit warning (Review Fix 7). The
       // flag is captured INSIDE the attempt closure, so the line is
       // written exactly once — the first time the executor actually
@@ -1462,6 +1516,7 @@ async function handleResearch(
               capability: adapter.research as Parameters<typeof research>[2]["capability"],
               execution: executionDeps,
               registerInterrupt: deps.researchRegisterInterrupt,
+              context: researchContext,
             },
             context,
           );

@@ -326,6 +326,20 @@ describe("batch manifest search input validation", () => {
     );
   });
 
+  it("rejects empty-string entries in fields (review fix: an empty join makes the handler's flag boolean)", async () => {
+    // `fields: [""]` renders `--fields ""`; parseArgs treats the falsy
+    // next token as NO value, so the handler would call .split on `true`.
+    await assertRejects(
+      manifest(op("s", "search", { ...base, fields: [""] })),
+      'operations[0].input: field "fields" must not contain empty entries',
+    );
+    await assertRejects(
+      manifest(op("s", "search", { ...base, fields: ["title", ""] })),
+      'operations[0].input: field "fields" must not contain empty entries',
+    );
+
+  });
+
   it("rejects a missing query", async () => {
     await assertRejects(manifest(op("s", "search", {})), 'operations[0].input: missing required field "query"');
   });

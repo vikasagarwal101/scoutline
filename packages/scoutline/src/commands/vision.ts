@@ -798,6 +798,21 @@ export async function handleVisionBatch(
     // the op's own `source`.
     if (manifestPromptTemplate !== undefined) {
       const op = manifest.operations[0] as VisionBatchOperation;
+      if (
+        typeof op.input.source !== "string" &&
+        (manifestPromptTemplate.includes("{filename}") ||
+          manifestPromptTemplate.includes("{filepath}"))
+      ) {
+        // Review fix: {filename}/{filepath} substitute against the op's
+        // own single `input.source` (D10); diff carries expected/actual
+        // instead — leaving tokens unsubstituted would send them to the
+        // provider verbatim. Token-free templates need no substitution
+        // and pass through untouched.
+        throw new ValidationError(
+          `vision batch promptTemplate {filename}/{filepath} need a single input.source, but subcommand "${op.input.subcommand}" uses expected/actual`,
+          "Use the literal file names in the template, or drop {filename}/{filepath}.",
+        );
+      }
       const substituted =
         typeof op.input.source === "string"
           ? substituteVisionBatchPrompt(manifestPromptTemplate, op.input.source)

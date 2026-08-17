@@ -543,6 +543,15 @@ function validateInputObject(
         if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
           throw new ValidationError(`${where}.input: field "${field}" must be an array of strings`);
         }
+        // Review fix: `fields: [""]` would render `--fields ""` — the
+        // handler's parseArgs treats a falsy next token as NO value
+        // (`flags.fields === true`) and its .split then crashes on the
+        // boolean. Reject empty members at parse (strict-parse posture).
+        if (!value.every((entry) => entry.length > 0)) {
+          throw new ValidationError(
+            `${where}.input: field "${field}" must not contain empty entries`,
+          );
+        }
         break;
       }
     }
@@ -740,6 +749,11 @@ function emitFlag(argv: string[], field: string, value: unknown): void {
   let rendered: string;
   if (Array.isArray(value)) {
     if (value.length === 0) return;
+    // Defensive twin of the parse-layer check (review fix): a joined
+    // empty member renders a falsy flag value parseArgs turns boolean.
+    if (value.some((entry) => String(entry).length === 0)) {
+      throw new ValidationError(`input field "${field}" must not contain empty entries`);
+    }
     rendered = value.map((entry) => String(entry)).join(",");
   } else if (typeof value === "number") {
     rendered = String(value);

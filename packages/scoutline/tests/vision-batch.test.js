@@ -396,6 +396,75 @@ describe("vision batch manifest input mode", () => {
     assert.ok(!minimax.invokes[0].instruction.includes("IGNORED"));
   });
 
+  it("rejects promptTemplate {filename}/{filepath} tokens for diff (no single source to substitute; review fix)", async () => {
+    const dir = makeMediaDir(["expected.png", "actual.png"]);
+    const manifest = {
+      schemaVersion: 1,
+      promptTemplate: "Compare {filename} and its twin",
+      operations: [
+        {
+          name: "cmp",
+          command: "vision",
+          input: {
+            subcommand: "diff",
+            expected: path.join(dir, "expected.png"),
+            actual: path.join(dir, "actual.png"),
+            prompt: "template",
+          },
+        },
+      ],
+    };
+    const zai = makeVisionDescriptor("zai", { capabilities: ["vision.diff"] });
+    const { adapter, stdout, stderr } = fakeInvocation();
+
+    const status = await main(
+      ["vision", "batch", writeManifestFile(manifest)],
+      vbatchDeps(adapter, [zai]),
+    );
+
+    // Unsubstituted {filename}/{filepath} would reach the provider
+    // verbatim — reject up front instead.
+    assert.strictEqual(status, 1);
+    assert.strictEqual(stdout.length, 0);
+    const err = parseError(stderr);
+    assert.strictEqual(err.code, "VALIDATION_ERROR");
+    assert.ok(err.error.includes("promptTemplate"));
+    assert.strictEqual(zai.createCount(), 0, "template rejection never builds transport");
+  });
+
+  it("passes a token-free promptTemplate through for diff (no substitution needed)", async () => {
+    const dir = makeMediaDir(["expected.png", "actual.png"]);
+    const manifest = {
+      schemaVersion: 1,
+      promptTemplate: "Compare the two screenshots pixel by pixel",
+      operations: [
+        {
+          name: "cmp",
+          command: "vision",
+          input: {
+            subcommand: "diff",
+            expected: path.join(dir, "expected.png"),
+            actual: path.join(dir, "actual.png"),
+            prompt: "overridden",
+          },
+        },
+      ],
+    };
+    const zai = makeVisionDescriptor("zai", { capabilities: ["vision.diff"] });
+    const { adapter, stdout } = fakeInvocation();
+
+    const status = await main(
+      ["vision", "batch", writeManifestFile(manifest)],
+      vbatchDeps(adapter, [zai]),
+    );
+
+    assert.strictEqual(status, 0);
+    const envelope = parseEnvelope(stdout);
+    assert.strictEqual(envelope.results[0].ok, true);
+    assert.strictEqual(zai.invokes.length, 1);
+    assert.strictEqual(zai.invokes[0].instruction, "Compare the two screenshots pixel by pixel");
+  });
+
   it("rejects a 2-op manifest and a non-vision manifest at the wrapper", async () => {
     const dir = makeMediaDir(["a.png", "b.png"]);
     const twoOps = {

@@ -217,17 +217,53 @@ export function isCommandHelpInvocation(commandArgs: readonly string[]): boolean
  * due-refresh in `main` is cadence-gated but live-probes stale
  * providers, so it must be skipped for these invocations (review fix).
  *
- * Same shallow-peek contract as isCommandHelpInvocation: this only
- * classifies, it does not consume the args — the handler still parses
- * them itself. Both batch flag surfaces reject a valued `--dry-run`
- * (`--dry-run false` fails validation inside the handler), so the bare
- * token unambiguously identifies a genuine dry-run preview.
+ * Same classification-only contract as isCommandHelpInvocation: this
+ * never consumes the args — the handler still parses them itself. The
+ * token walk mirrors the private parseArgs in index.ts (dash-prefixed
+ * keys consume the next non-empty, non-dash token as their value;
+ * `--no-x` consumes nothing) so detection is flag-order independent:
+ * `vision --out o batch 'shots/*.png' --dry-run` is detected exactly
+ * like `vision batch 'shots/*.png' --dry-run` (review fix: a
+ * first-token-only check missed flags-first invocations). A valued
+ * `--dry-run` consumes its value here AND fails the wrapper's
+ * boolean-only guard, so it is never classified as a preview. The walk
+ * must stay in sync with parseArgs.
  */
 export function isDryRunBatchInvocation(
   command: string,
   commandArgs: readonly string[],
 ): boolean {
-  const isBatchSurface =
-    command === "batch" || (command === "vision" && commandArgs[0] === "batch");
-  return isBatchSurface && commandArgs.includes("--dry-run");
+  if (command !== "batch" && command !== "vision") return false;
+  let firstPositional: string | undefined;
+  let dryRun = false;
+  let i = 0;
+  while (i < commandArgs.length) {
+    const arg = commandArgs[i];
+    if (arg === undefined) break;
+    if (arg.startsWith("--")) {
+      const key = arg.slice(2);
+      if (key.startsWith("no-")) {
+        i += 1;
+        continue;
+      }
+      const next = commandArgs[i + 1];
+      if (next !== undefined && next !== "" && !next.startsWith("-")) {
+        if (key === "dry-run") dryRun = false;
+        i += 2;
+      } else {
+        if (key === "dry-run") dryRun = true;
+        i += 1;
+      }
+    } else if (arg.length === 2 && arg.startsWith("-")) {
+      // Short-flag form consumes a value the same way; --dry-run has
+      // no short form.
+      const next = commandArgs[i + 1];
+      i += next !== undefined && next !== "" && !next.startsWith("-") ? 2 : 1;
+    } else {
+      if (firstPositional === undefined) firstPositional = arg;
+      i += 1;
+    }
+  }
+  const isBatchSurface = command === "batch" || firstPositional === "batch";
+  return isBatchSurface && dryRun;
 }

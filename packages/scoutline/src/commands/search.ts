@@ -62,6 +62,17 @@ export interface SearchExecutionDependencies {
   readonly sleep: (ms: number) => Promise<void>;
   readonly random: () => number;
   readonly retryPolicy?: RetryPolicy;
+  /**
+   * Optional consumption sink (usage-ledger DESIGN D7 — PB-T2 parity
+   * with the fan-out executor and the other billable handlers). When
+   * present, every sub-query's `executeSearch` emits one consumption
+   * event per billable invoke attempt through it. When absent (the
+   * default), no event is emitted and behavior is byte-for-byte
+   * identical to before.
+   */
+  readonly consume?: ConsumptionSink;
+  /** Timestamp source for consumption events; defaults to `Date.now`. */
+  readonly now?: () => number;
 }
 
 interface FormattedResult {
@@ -272,7 +283,7 @@ export async function search(
   deps: SearchExecutionDependencies,
   context?: CommandContext,
 ): Promise<CommandResult> {
-  const { capability, cache, sleep, random, retryPolicy } = deps;
+  const { capability, cache, sleep, random, retryPolicy, consume, now } = deps;
 
   // Split query on `|` if --merge is set. Empty fragments are dropped.
   // A literal pipe in a single query can be escaped as `\|` (won't split).
@@ -283,7 +294,16 @@ export async function search(
 
   const isMerge = subQueries.length > 1;
   const controls = buildControls(options);
-  const executionDeps = { cache, sleep, random };
+  // DESIGN D7: thread the optional consumption sink + clock through the
+  // same conditional-spread shape the fan-out executor uses, so the
+  // single-pin path bills exactly like a fan-out arm.
+  const executionDeps = {
+    cache,
+    sleep,
+    random,
+    ...(consume !== undefined ? { consume } : {}),
+    ...(now !== undefined ? { now } : {}),
+  };
   // One executeSearch per sub-query. Each Adapter isolates its own
   // transport per invocation, so the command does not manage client
   // counts or close transports.
@@ -821,6 +841,25 @@ Options:
   --merge             Treat the query as multiple sub-queries split on '|'.
                       Runs them in parallel, dedupes by URL, ranks by how many
                       sub-queries surfaced each result. Escapes: '\\|' for literal pipe.
+  --context <path>    Read a local notes file (max 256 KiB) and derive up
+                      to 8 sub-queries from its headings and questions.
+                      Your query always runs first; the derived
+                      sub-queries are joined with it through the --merge
+                      pipeline (deduped, occurrence-ranked).
+                      What leaves your machine: the derived sub-query
+                      strings become the search queries — the file
+                      itself is never sent.
+                      Mutually exclusive with \`--merge\` and
+                      \`--context-stdin\`.
+  --context-stdin     Same as \`--context\`, reading the notes from
+                      standard input (no value; pipe the file in).
+
+  Under fan-out every arm runs every sub-query — one stderr notice
+  states the math: N sub-queries × M arms = N×M billable searches. In
+  JSON data modes \`--context\` wraps the payload as
+  { "context": { counts, sha256 }, "results": [...] } — counts and a
+  SHA-256 of the source only, never file content; text modes render the
+  results unchanged.
 
 Output formats (--output-format / -O):
   data       JSON array (default, token-efficient)
@@ -840,6 +879,7 @@ Examples:
   scoutline search "x" -O markdown --max-summary 80  # chat-ready
   scoutline search "x" --fields title,url            # field-filtered JSON
   scoutline search --merge "rust async|rust tokio|rust runtime"  # multi-query merge
+  scoutline search "rust async" --context notes.md              # local-context sub-queries
 
 Default JSON shape:
   [

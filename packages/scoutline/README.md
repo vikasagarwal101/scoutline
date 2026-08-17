@@ -22,6 +22,7 @@
 - **Tools** - MCP tool discovery, schemas, and raw calls
 - **Code Mode** - TypeScript tool chaining for agent automation
 - **Provider selection** - Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, or Jina AI
+- **Usage ledger** - Local 90-day call-usage history per provider and capability (`scoutline usage`), counters only
 
 ## Quick Start
 
@@ -205,6 +206,46 @@ every arm runs every sub-query and occurrences span the arms ×
 sub-queries grid. Disable the standing switch with
 `scoutline config set fanout false`.
 
+### Local Context (`--context` / `--context-stdin`)
+
+Steer `research` and `search` with a local notes file (markdown headings and
+question lines; max 256 KiB, text only — NUL-byte detection rejects binary
+input). `--context <path>` reads a file; `--context-stdin` reads the same
+content from standard input. The two flags are mutually exclusive.
+
+```bash
+scoutline research "quokka conservation" --context notes.md             # organize (default)
+scoutline research "quokka conservation" --context notes.md --context-mode bias
+cat notes.md | scoutline research "quokka conservation" --context-stdin
+scoutline search "rust async" --context notes.md
+```
+
+**Research modes** (`--context-mode organize | bias | both`): `organize`
+(the default) re-presents the provider's report following your file's
+headings — a purely local reordering, so the wire request and the response
+cache key are untouched. `bias` (and `both`) append a capped
+`(focus: ...)` term segment to the query before it is sent: that segment is
+derived from your file and is what leaves your machine under those modes —
+and it changes the cache key, so each mode is a separate (paid) job. The
+resume command printed after an interrupt carries your context flags; with
+`--context-stdin` you must re-pipe the same content unchanged.
+
+**Search derivation**: `search --context` derives up to 8 sub-queries from
+the file's headings and questions, always keeps your original query first,
+and merges and dedupes all results. What leaves your machine under
+`search --context`: the derived sub-query strings themselves become the
+search queries — the file is never sent. Under fan-out this multiplies
+cost (N sub-queries × M arms = N×M billable searches, disclosed once on
+stderr). `--context` and `--context-stdin` are mutually exclusive with `--merge`.
+
+**Privacy boundary**: parsed file content crosses the network in exactly
+two shapes — the research `bias`/`both` focus segment and the
+search-derived sub-query strings. Everything else stays local: `organize`
+sends nothing derived, JSON outputs record only counts, the source path,
+and a SHA-256 of the content, and no heading, question, term, or file byte
+appears in notices or logs. Without these flags, `research` and `search`
+output is byte-identical to previous releases.
+
 ## Capability Matrix
 
 The matrix below is generated from the production provider registry
@@ -320,6 +361,7 @@ scoutline repo --help         # GitHub repo commands
 scoutline doctor --help       # Provider diagnostics
 scoutline quota --help        # Plan usage
 scoutline cache --help        # Local cache inspection, clearing, and pruning
+scoutline usage --help        # Local call-usage history (usage.json ledger)
 ```
 
 ### Examples
@@ -366,6 +408,11 @@ scoutline cache stats                 # inventory of both subdirectories (live/e
 scoutline cache clear                 # delete every file under cache/ and tools/
 scoutline cache prune                 # delete expired entries (effective TTL threshold)
 scoutline cache prune --older-than 168h --provider zai    # age override + selectors (AND together)
+
+# Usage - local call-usage history (billable attempts, not credits)
+scoutline usage                       # last 7 days, every provider (usage.json ledger)
+scoutline usage --days 30             # wider UTC-day window
+scoutline usage --provider zai        # one provider's rows only
 
 # Config - inspect and change settings (scriptable, always redacted)
 scoutline config get                  # full config dump (credentials masked)

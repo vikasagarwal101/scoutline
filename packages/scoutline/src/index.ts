@@ -9,6 +9,11 @@ import { read, READ_HELP } from "./commands/read.js";
 import { crawl, CRAWL_HELP } from "./commands/crawl.js";
 import { map, MAP_HELP } from "./commands/map.js";
 import { research, RESEARCH_HELP } from "./commands/research.js";
+import type {
+  ResearchContextInput,
+  ResearchContextMode,
+  ResearchResumeContext,
+} from "./commands/research.js";
 import {
   repoSearch,
   repoTree,
@@ -39,6 +44,12 @@ import {
   configSetCommand,
   configUnsetCommand,
 } from "./commands/config.js";
+import {
+  usageCommand,
+  USAGE_HELP,
+  DEFAULT_USAGE_WINDOW_DAYS,
+  MAX_USAGE_WINDOW_DAYS,
+} from "./commands/usage.js";
 import { cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
 import type { PruneSelectors, PruneCachesResult } from "./lib/cache.js";
 import { parseBatchManifest } from "./lib/batch-manifest.js";
@@ -68,8 +79,14 @@ import {
 import * as os from "node:os";
 import * as fs from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { invokeCommand, type CommandInvocationAdapter } from "./command-invocation.js";
+import {
+  invokeCommand,
+  type CommandInvocationAdapter,
+  type CommandResult,
+} from "./command-invocation.js";
 import { defaultResponseCache, type ResponseCache } from "./lib/cache.js";
+import { MAX_SUBQUERIES, parseContextText, readContextSource } from "./lib/context-file.js";
+import type { ContextSourceKind } from "./lib/context-file.js";
 import { configuredSecrets } from "./lib/redact.js";
 import {
   configFilePath,
@@ -95,7 +112,12 @@ import {
   type QuotaState,
 } from "./lib/quota-store.js";
 import type { ProviderVerificationSummary } from "./capabilities/diagnostics.js";
-import { createQuotaStoreConsumptionSink, type ConsumptionSink } from "./lib/consumption.js";
+import {
+  createCompositeConsumptionSink,
+  createQuotaStoreConsumptionSink,
+  type ConsumptionSink,
+} from "./lib/consumption.js";
+import { createUsageLedgerSink, readUsageLedger, resolveUsageLedgerPath } from "./lib/usage-ledger.js";
 import {
   classifyCredentialState,
   formatEnvOnlyHint,
@@ -105,6 +127,7 @@ import {
 } from "./lib/trigger-detection.js";
 import { resolveProviderId, resolveEffectiveProvider } from "./providers/selection.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "./providers/registry.js";
+import { PROVIDER_IDS } from "./providers/types.js";
 import type { ProviderDescriptor, ProviderId } from "./providers/types.js";
 import { executeWithFallback, type FallbackOutcome } from "./lib/provider-fallback.js";
 import type { SearchCapability } from "./capabilities/search.js";
@@ -148,6 +171,8 @@ Commands:
   call     Call a tool directly (Z.AI)
   doctor   Provider-aware environment + connectivity checks
   cache    Inspect or clear the local cache (stats / clear)
+  usage    Report local call-usage history (usage.json ledger,
+           credential-free)
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
   init     Interactive onboarding wizard (writes ~/.scoutline/config.json)
 
@@ -190,6 +215,7 @@ Help:
   scoutline call --help
   scoutline code --help
   scoutline cache --help
+  scoutline usage --help
   scoutline init --help
 `.trim();
 
@@ -898,6 +924,34 @@ async function handleSearch(
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
+  // Local-context plan, Ticket 4 (DESIGN D1 placement pin): the
+  // `--context` value-shape check runs BEFORE the help-gate below —
+  // parseArgs records `true` for a valueless flag and leaves positional
+  // empty, so without this check `search --context` would short-circuit
+  // to HELP + exit 0 with the malformed flag silently swallowed.
+  // Mirrors the `validateModel` shape (`commands/research.ts`) and the
+  // identical pre-gate check in `handleResearch`. The post-gate enum
+  // validators below do NOT move.
+  if (flags.context === true) {
+    throw new ValidationError(
+      "--context requires a value.",
+      "Pass a file path: --context <path>, or pipe the context with --context-stdin.",
+    );
+  }
+
+  // Local-context plan, Ticket 5 (DESIGN D1): `--context-stdin` accepts
+  // no value — parseArgs greedily consumes the next non-dash token as a
+  // flag's value, so `search --context-stdin "<q>"` yields a string flag
+  // value and an empty positional. A string value is a VALIDATION_ERROR
+  // (never a silent drop through a `=== true` identity test), placed
+  // BEFORE the help-gate for the same reason as `--context` above.
+  if (typeof flags["context-stdin"] === "string") {
+    throw new ValidationError(
+      "--context-stdin does not take a value.",
+      'Pipe the context on standard input: cat notes.md | scoutline search "<query>" --context-stdin.',
+    );
+  }
+
   if (flags.help || flags.h || positional.length === 0) {
     deps.invocation.writeStdout(SEARCH_HELP);
     return 0;
@@ -920,6 +974,38 @@ async function handleSearch(
     throw new ValidationError(
       "--type and --topic are mutually exclusive (--type has no editorial topic axis).",
       "Pass either --type or --topic, not both.",
+    );
+  }
+
+  // Local-context plan, Ticket 5 (DESIGN D1): the two context-source
+  // spellings are mutually exclusive — a file path and a pipe cannot
+  // both be the source. Parse-level gate beside the Ticket 4 mutex
+  // below. `contextKind` resolves the active source for the D7 block
+  // (Ticket 5 extends it beyond the file source to `--context-stdin`).
+  const contextKind: ContextSourceKind | undefined =
+    typeof flags.context === "string"
+      ? { file: flags.context }
+      : flags["context-stdin"] === true
+        ? { stdin: true }
+        : undefined;
+  if (typeof flags.context === "string" && flags["context-stdin"] === true) {
+    throw new ValidationError(
+      "--context and --context-stdin are mutually exclusive.",
+      "Pass one context source: --context <path> or --context-stdin, not both.",
+    );
+  }
+
+  // Local-context plan, Ticket 4 (DESIGN D7): an explicit `--merge`
+  // together with a context source is an ambiguous combination — the
+  // user's manual `|` sub-queries and the derived stream would fight
+  // over the same query string. Parse-level gate, same shape as the
+  // type/topic mutex above (before Provider resolution); Ticket 5
+  // extends it to the `--context-stdin` spelling (same feature, other
+  // source).
+  if (contextKind !== undefined && flags.merge === true) {
+    throw new ValidationError(
+      "--merge and --context are mutually exclusive.",
+      "--context derives and joins sub-queries itself; pass one of the two, not both.",
     );
   }
 
@@ -1015,28 +1101,136 @@ async function handleSearch(
       if (fanoutPlan.suppress) {
         context.notice(fanoutPlan.suppress);
       }
-      if (fanoutPlan.mode === "fanout") {
-        return executeFanoutPlan(
-          fanoutPlan,
-          {
-            descriptors: deps.providerDescriptors,
-            env: deps.env,
-            query,
-            searchOptions,
-            dependencies: {
-              cache: deps.searchCache,
-              sleep: deps.searchSleep,
-              random: deps.searchRandom,
-              retryPolicy: undefined,
-              // PB-T2 parity (review fix, PR #36): thread the configured
-              // consumption sink + clock so each arm's executeSearch
-              // bills the arm's provider through local quota accounting.
-              ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
-              ...(deps.now !== undefined ? { now: deps.now } : {}),
-            },
-            secrets: deps.secrets,
+
+      // Local-context plan, Ticket 4 (DESIGN D7): read the context
+      // source ONCE here in the handler, derive the sub-query stream
+      // (D2.4), and build the dispatch query BEFORE either dispatch
+      // path — the executors split sub-queries from the raw query
+      // string themselves (`splitMergeSubQueries`), so only this
+      // handler-side join reaches both the single-pin path and the
+      // fan-out grid. The user's query is kept FIRST; every stream
+      // member is trim-then-escaped with pipe-only escaping so the
+      // join/split round-trip is lossless. Ticket 5 routes the
+      // `--context-stdin` spelling through the same block: stdin is
+      // read once via the injected io seam (`context.readStdin()`,
+      // drained by the Node adapter on first read), so the join and
+      // the D6 wrapper below are source-agnostic.
+      let dispatchQuery = query;
+      let contextInfo:
+        | {
+            source: "file" | "stdin";
+            path?: string;
+            sha256: string;
+            derived: {
+              headings: number;
+              questions: number;
+              terms: number;
+              subQueries: number;
+            };
+          }
+        | undefined;
+      if (contextKind !== undefined) {
+        const content = await readContextSource(contextKind, {
+          readFile: (filePath) => fs.readFile(filePath),
+          readStdin: (maxBytes) => context.readStdin(maxBytes),
+        });
+        const parsed = parseContextText(content.text);
+        const derived = parsed.subQueries;
+        // Drop notice (D2.4/D7): the parser caps the stream at
+        // MAX_SUBQUERIES; the pre-cap count is recomputed here with the
+        // same qualification rules (headings within the 60-char bound,
+        // backslash-trimmed non-empty) purely for the notice — the
+        // capped stream itself is authoritative for the join.
+        const uncappedSet = new Set(
+          [
+            ...parsed.headings.filter((h) => h.length <= 60),
+            ...parsed.questions,
+          ]
+            .map((value) => value.replace(/\\+$/, ""))
+            .filter((value) => value.length > 0),
+        );
+        const uncapped = uncappedSet.size;
+        if (uncapped > MAX_SUBQUERIES) {
+          context.notice(
+            `context: derived ${uncapped} sub-queries; dropped ${uncapped - derived.length} (cap ${MAX_SUBQUERIES})`,
+          );
+        }
+        if (derived.length === 0) {
+          // Zero-derivation fallback (D7): the original query runs
+          // alone, merge NOT engaged — a literal `|` in the user's
+          // query must not split. The context wrapper below still
+          // applies.
+          context.notice("context: derived 0 sub-queries; using original query");
+        } else {
+          // Join site (D7): the user query gets the D2.4
+          // trailing-backslash trim here (derived members are already
+          // trimmed by the parser), then EVERY member is escaped
+          // pipe-only — no backslash doubling, `splitMergeSubQueries`
+          // never unescapes `\\`.
+          dispatchQuery = [query.replace(/\\+$/, ""), ...derived]
+            .map((s) => s.replace(/\|/g, "\\|"))
+            .join("|");
+          searchOptions.merge = true;
+          // Fan-out cost disclosure (D7): when the resolved plan is
+          // fan-out AND the joined stream holds more than one
+          // sub-query, the (arm × sub-query) grid is a cost
+          // multiplication the user must see. N counts the whole
+          // joined stream, user query included.
+          if (fanoutPlan.mode === "fanout") {
+            const n = derived.length + 1;
+            const m = fanoutPlan.arms.length;
+            context.notice(`context: ${n} sub-queries × ${m} arms = ${n * m} billable searches`);
+          }
+        }
+        // D6 privacy boundary: counts, hashes, and the path only —
+        // never content. `subQueries` is the post-cap stream length.
+        contextInfo = {
+          source: content.source,
+          ...(content.path !== undefined ? { path: content.path } : {}),
+          sha256: content.sha256,
+          derived: {
+            headings: parsed.headings.length,
+            questions: parsed.questions.length,
+            terms: parsed.terms.length,
+            subQueries: derived.length,
           },
-          context,
+        };
+      }
+      // Flags-gated wrapper (D7): under `--context` (only then) the
+      // dispatch result's DATA payload is wrapped as
+      // `{context: {...}, results: [...]}`; text-mode presentations
+      // stay unwrapped (they are built inside dispatch from the bare
+      // results). Without the flag the result passes through
+      // byte-identically.
+      const applyContextWrapper = (result: CommandResult): CommandResult =>
+        contextInfo === undefined || result.kind !== "data"
+          ? result
+          : { ...result, data: { context: contextInfo, results: result.data } };
+
+      if (fanoutPlan.mode === "fanout") {
+        return applyContextWrapper(
+          await executeFanoutPlan(
+            fanoutPlan,
+            {
+              descriptors: deps.providerDescriptors,
+              env: deps.env,
+              query: dispatchQuery,
+              searchOptions,
+              dependencies: {
+                cache: deps.searchCache,
+                sleep: deps.searchSleep,
+                random: deps.searchRandom,
+                retryPolicy: undefined,
+                // PB-T2 parity (review fix, PR #36): thread the configured
+                // consumption sink + clock so each arm's executeSearch
+                // bills the arm's provider through local quota accounting.
+                ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+                ...(deps.now !== undefined ? { now: deps.now } : {}),
+              },
+              secrets: deps.secrets,
+            },
+            context,
+          ),
         );
       }
       const outcome = await executeWithFallback(
@@ -1056,19 +1250,25 @@ async function handleSearch(
           const adapter = descriptor.create({ env: deps.env });
           const capability: SearchCapability = adapter.search as SearchCapability;
           return search(
-            query,
+            dispatchQuery,
             searchOptions,
             {
               capability,
               cache: deps.searchCache,
               sleep: deps.searchSleep,
               random: deps.searchRandom,
+              // PB-T2 parity with the fan-out path above (usage-ledger
+              // DESIGN D7): thread the configured consumption sink +
+              // clock so every billable sub-query on the single-pin path
+              // records through it.
+              ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+              ...(deps.now !== undefined ? { now: deps.now } : {}),
             },
             context,
           );
         },
       );
-      return outcome.result;
+      return applyContextWrapper(outcome.result);
     },
     outputMode,
     deps.now,
@@ -1146,6 +1346,10 @@ async function handleRead(
     cache: deps.readerCache,
     sleep: deps.readerSleep,
     random: deps.readerRandom,
+    // PB-T2 (usage-ledger DESIGN D7): thread the configured consumption
+    // sink + clock so every billable reader-fetch attempt records.
+    ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+    ...(deps.now !== undefined ? { now: deps.now } : {}),
   };
 
   // Provider-fallback Ticket 02: route the call through the shared
@@ -1229,6 +1433,10 @@ async function handleCrawl(
     cache: deps.crawlCache,
     sleep: deps.crawlSleep,
     random: deps.crawlRandom,
+    // PB-T2 (usage-ledger DESIGN D7): thread the configured consumption
+    // sink + clock so every billable crawl-fetch attempt records.
+    ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+    ...(deps.now !== undefined ? { now: deps.now } : {}),
   };
 
   // Provider-fallback Ticket 03: route the call through the shared
@@ -1326,6 +1534,10 @@ async function handleMap(
     cache: deps.mapCache,
     sleep: deps.mapSleep,
     random: deps.mapRandom,
+    // PB-T2 (usage-ledger DESIGN D7): thread the configured consumption
+    // sink + clock so every billable map-fetch attempt records.
+    ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+    ...(deps.now !== undefined ? { now: deps.now } : {}),
   };
 
   // Provider-fallback Ticket 03: route the call through the shared
@@ -1382,6 +1594,34 @@ async function handleResearch(
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
+  // Local-context plan, Ticket 2 (DESIGN D1 placement pin): the
+  // `--context` value-shape check runs BEFORE the help-gate below —
+  // parseArgs records `true` for a valueless flag and leaves positional
+  // empty, so without this check `research --context` would
+  // short-circuit to HELP + exit 0 with the malformed flag silently
+  // swallowed. Mirrors the `validateModel` shape (commands/research.ts).
+  // The post-gate enum validators below do NOT move.
+  if (flags.context === true) {
+    throw new ValidationError(
+      "--context requires a value.",
+      "Pass a file path: --context <path>, or pipe the context with --context-stdin.",
+    );
+  }
+
+  // Local-context plan, Ticket 5 (DESIGN D1): `--context-stdin` accepts
+  // no value — parseArgs greedily consumes the next non-dash token as a
+  // flag's value, so `research --context-stdin "<q>"` yields a string
+  // flag value and an empty positional. A string value is a
+  // VALIDATION_ERROR (never a silent drop through a `=== true` identity
+  // test), placed BEFORE the help-gate for the same reason as
+  // `--context` above.
+  if (typeof flags["context-stdin"] === "string") {
+    throw new ValidationError(
+      "--context-stdin does not take a value.",
+      'Pipe the context on standard input: cat notes.md | scoutline research "<query>" --context-stdin.',
+    );
+  }
+
   if (flags.help || flags.h || positional.length === 0) {
     deps.invocation.writeStdout(RESEARCH_HELP);
     return 0;
@@ -1407,6 +1647,24 @@ async function handleResearch(
     ["numbered", "mla", "apa", "chicago"],
     "--citation-format",
   ) as "numbered" | "mla" | "apa" | "chicago" | undefined;
+  // Local-context plan, Ticket 5 (DESIGN D1): the two context-source
+  // spellings are mutually exclusive — a file path and a pipe cannot
+  // both be the source. Parse-level gate before Provider resolution,
+  // same region as the enum validators.
+  if (typeof flags.context === "string" && flags["context-stdin"] === true) {
+    throw new ValidationError(
+      "--context and --context-stdin are mutually exclusive.",
+      "Pass one context source: --context <path> or --context-stdin, not both.",
+    );
+  }
+  // Local-context plan, Ticket 2 (DESIGN D1): research-only mode enum,
+  // defaulting to `organize` at the read site below. Same parse-level
+  // gate shape as the research enums above.
+  const contextMode = validateResearchEnum(
+    flags["context-mode"],
+    ["organize", "bias", "both"],
+    "--context-mode",
+  ) as ResearchContextMode | undefined;
 
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
   // explicit --provider > SCOUTLINE_PROVIDER > quota-ranked pick.
@@ -1425,6 +1683,11 @@ async function handleResearch(
     cache: deps.researchCache,
     sleep: deps.researchSleep,
     random: deps.researchRandom,
+    // PB-T2 (usage-ledger DESIGN D7): thread the configured consumption
+    // sink + clock so every billable research-fetch attempt records
+    // (research is maxRetries 0 by policy — exactly one event per run).
+    ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+    ...(deps.now !== undefined ? { now: deps.now } : {}),
   };
 
   // Provider-fallback Ticket 03: route the call through the shared
@@ -1444,6 +1707,18 @@ async function handleResearch(
   return invokeCommand(
     deps.invocation,
     async (context) => {
+      // Local-context plan, Ticket 3 (DESIGN D5): resume-bearing view
+      // of the context flags, threaded through ResearchOptions into
+      // `buildResearchResumeCommand`. `mode` records ONLY an
+      // explicitly-set --context-mode (undefined stays omitted — the
+      // function's set-values-only convention), so an organize-default
+      // resume command carries `--context <path>` alone.
+      const resumeContext: ResearchResumeContext | undefined =
+        typeof flags.context === "string"
+          ? { source: "file", path: flags.context, mode: contextMode }
+          : flags["context-stdin"] === true
+            ? { source: "stdin", mode: contextMode }
+            : undefined;
       const options = {
         model,
         outputLength,
@@ -1452,7 +1727,36 @@ async function handleResearch(
         maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
         timeout: flags.timeout ? parseInt(flags.timeout as string, 10) : undefined,
         noCache: flags["no-cache"] === true,
+        context: resumeContext,
       };
+
+      // Local-context plan, Ticket 2 (DESIGN D3/D5): read + parse the
+      // context source exactly ONCE, here in the handler and BEFORE
+      // `executeWithFallback`. The Node invocation adapter drains
+      // process.stdin on the first `readStdin()`, so a per-attempt read
+      // inside `research()` would hand a fallback retry an empty
+      // string, silently mutate the request, and hash to a different
+      // async-job state file (D5's second-paid-job trap). `research()`
+      // consumes the threaded result only (D4 remap + envelope field) —
+      // it never re-reads the source.
+      const contextKind: ContextSourceKind | undefined =
+        typeof flags.context === "string"
+          ? { file: flags.context }
+          : flags["context-stdin"] === true
+            ? { stdin: true }
+            : undefined;
+      let researchContext: ResearchContextInput | undefined;
+      if (contextKind !== undefined) {
+        const content = await readContextSource(contextKind, {
+          readFile: (filePath) => fs.readFile(filePath),
+          readStdin: (maxBytes) => context.readStdin(maxBytes),
+        });
+        researchContext = {
+          mode: contextMode ?? "organize",
+          content,
+          parsed: parseContextText(content.text),
+        };
+      }
 
       // Closure-guarded one-time credit warning (Review Fix 7). The
       // flag is captured INSIDE the attempt closure, so the line is
@@ -1492,6 +1796,7 @@ async function handleResearch(
               capability: adapter.research as Parameters<typeof research>[2]["capability"],
               execution: executionDeps,
               registerInterrupt: deps.researchRegisterInterrupt,
+              context: researchContext,
             },
             context,
           );
@@ -1661,6 +1966,13 @@ async function handleRepo(
     cache: deps.repositoryCache,
     sleep: deps.repositorySleep,
     random: deps.repositoryRandom,
+    // PB-T2 (usage-ledger DESIGN D7): thread the configured consumption
+    // sink + clock so every billable repository operation attempt
+    // records (one deps object per handler is correct across fallback
+    // candidates — each candidate's cache identity supplies its own
+    // provider at emission time).
+    ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+    ...(deps.now !== undefined ? { now: deps.now } : {}),
   };
 
   const language = flags.language as "en" | "zh" | undefined;
@@ -2400,6 +2712,116 @@ export async function handleCache(
   }
 }
 
+/**
+ * `scoutline usage [--days N] [--provider <id>]` — report the local
+ * usage ledger (usage-ledger plan, Ticket 5). Credential-free and
+ * read-only: like `cache` it bypasses Provider resolution entirely, and
+ * like `handleCache` it keeps the injection-free posture — the ledger
+ * path resolves at handler time via
+ * `resolveConfigRootPure(deps.env, ...)` (no new `MainDependencies`
+ * field, no injected reader object). Production reads
+ * `readUsageLedger(resolveUsageLedgerPath(...))` with DEFAULT deps
+ * (real reader, no `onWarning`) so DESIGN D8's silent-on-corrupt
+ * contract holds: a missing, corrupt, or wrong-version ledger yields an
+ * empty window with exit 0 and no stderr noise.
+ *
+ * Flag contract (DESIGN D8): `--days` must be an integer ≥ 1 (unlike
+ * `--count`, 0 is invalid) and defaults to 7; `--provider` must be a
+ * known registry id (unknown ids are a VALIDATION_ERROR listing the
+ * accepted ids; a known-but-unrecorded id is an empty result, exit 0).
+ * `--provider` may appear before or after the command token —
+ * `extractGlobalOptions` strips it either way, so the handler recovers
+ * it from `deps.provider` (same recovery as `cache prune`).
+ */
+export async function handleUsage(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+): Promise<number> {
+  const { flags } = parseArgs(args);
+
+  if (flags.help || flags.h) {
+    deps.invocation.writeStdout(USAGE_HELP);
+    return 0;
+  }
+
+  // `--days`: positive integer >= 1 (DESIGN D8). parseArgs yields `true`
+  // for a valueless flag, so the bare case is guarded separately.
+  let windowDays = DEFAULT_USAGE_WINDOW_DAYS;
+  const rawDays = flags.days;
+  if (rawDays !== undefined) {
+    if (rawDays === true) {
+      throw new ValidationError(
+        "--days requires a value.",
+        "Pass a positive integer, e.g. --days 7.",
+      );
+    }
+    const str = typeof rawDays === "string" ? rawDays : String(rawDays);
+    // Strict decimal gate (same class as parseAndValidateCount's /^\d+$/):
+    // Number() alone would coerce "1e3", "0x0A", " 7", and "7.0" into
+    // integers, accepting spellings the documented contract (USAGE_HELP,
+    // DESIGN D8 — a decimal integer 1..MAX) does not include.
+    if (!/^\d+$/.test(str)) {
+      throw new ValidationError(
+        `Invalid --days value "${rawDays}"`,
+        `--days must be an integer between 1 and ${MAX_USAGE_WINDOW_DAYS}. Examples: --days 7, --days 30.`,
+      );
+    }
+    const parsed = Number(str);
+    // Upper bound (review P2): values far beyond the window the ledger
+    // can ever hold (retention is 90 days) would otherwise pass and
+    // crash the cutoff computation — JS Dates only span ~±100,000,000
+    // days, so e.g. --days 1000000000 throws RangeError in usageDayKey.
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_USAGE_WINDOW_DAYS) {
+      throw new ValidationError(
+        `Invalid --days value "${rawDays}"`,
+        `--days must be an integer between 1 and ${MAX_USAGE_WINDOW_DAYS}. Examples: --days 7, --days 30.`,
+      );
+    }
+    windowDays = parsed;
+  }
+
+  // `--provider` selector: command-local flag wins over the
+  // `deps.provider` fallback (extractGlobalOptions already stripped the
+  // global spelling from the rest stream).
+  const rawProvider = flags.provider;
+  if (rawProvider === true) {
+    throw new ValidationError(
+      "--provider requires a value.",
+      "Pass a Provider id after --provider, e.g. --provider zai.",
+    );
+  }
+  const providerSelector = typeof rawProvider === "string" ? rawProvider : deps.provider;
+  if (
+    providerSelector !== undefined &&
+    !(PROVIDER_IDS as readonly string[]).includes(providerSelector)
+  ) {
+    throw new ValidationError(
+      `Unknown provider "${providerSelector}".`,
+      `Accepted provider IDs: ${PROVIDER_IDS.join(", ")}.`,
+    );
+  }
+
+  // Read the ledger with default deps — real reader, no `onWarning`
+  // (silent-on-corrupt, DESIGN D8).
+  const configRoot = resolveConfigRootPure(deps.env, { homedir: os.homedir() });
+  const ledgerPath = resolveUsageLedgerPath(configRoot);
+  const now = deps.now ?? Date.now;
+  return invokeCommand(
+    deps.invocation,
+    () =>
+      usageCommand({
+        readLedger: () => readUsageLedger(ledgerPath),
+        windowDays,
+        ...(providerSelector !== undefined ? { provider: providerSelector } : {}),
+        now,
+      }),
+    outputMode,
+    deps.now,
+    deps.secrets,
+  );
+}
+
 async function handleQuota(
   args: string[],
   outputMode: OutputMode,
@@ -2699,8 +3121,9 @@ export interface MainDependencies {
   readonly verificationRecords?: Partial<Record<ProviderId, ProviderVerificationSummary>>;
   /**
    * Optional injectable consumption sink (PB-T2 — Plan B). Production
-   * defaults to `createQuotaStoreConsumptionSink({ store: quotaStore })`
-   * (writes through PB-T1's store, advancing `locallyUpdatedAt` and
+   * defaults to `createCompositeConsumptionSink(quotaStoreSink,
+   * usageLedgerSink)` — the PB-T1 snapshot store (advancing
+   * `locallyUpdatedAt` and
    * adjusting the matching category's count set); tests inject an
    * in-memory double so event-sequence assertions stay hermetic.
    *
@@ -2910,10 +3333,31 @@ export async function main(
   const quotaRefreshEnabled =
     !dependencies.loadScoutlineConfig && !dependencies.providerDescriptors;
   const quotaStore = dependencies.quotaStore ?? createDefaultQuotaStore();
+  // Production records consumption through BOTH sinks (usage-ledger
+  // DESIGN D3): the PB-T1 quota-store snapshot store (unchanged,
+  // including its no-op-before-snapshot posture) and the usage ledger
+  // (sibling `usage.json` under the same config root, resolved through
+  // the pure `resolveUsageLedgerPath()`; warnings default to stderr
+  // like the quota sink). The composite isolates each side — one
+  // sink's failure becomes one redacted warning and never blocks or
+  // fails the other.
   const consume: ConsumptionSink | undefined =
     dependencies.consume ??
     (quotaRefreshEnabled
-      ? createQuotaStoreConsumptionSink({ store: quotaStore, now: now ?? Date.now })
+      ? createCompositeConsumptionSink(
+          createQuotaStoreConsumptionSink({ store: quotaStore, now: now ?? Date.now }),
+          // The ledger path resolves from the SAME injected-env config
+          // root `handleUsage` reads through (resolveConfigRootPure over
+          // MainDependencies.env) — not from ambient process.env — so an
+          // embedded caller or hermetic run that injects
+          // SCOUTLINE_CONFIG_DIR sees its recorded usage in the root the
+          // `usage` command reports from (review P2).
+          createUsageLedgerSink({
+            filePath: resolveUsageLedgerPath(
+              resolveConfigRootPure(env, { homedir: os.homedir() }),
+            ),
+          }),
+        )
       : undefined);
   // PB-T4: quota snapshot for selection. Declared here so
   // `buildHandlerDeps` closes over the binding; assigned AFTER the
@@ -3013,6 +3457,21 @@ export async function main(
   if (command === "cache") {
     try {
       return await handleCache(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
+  // `usage` is credential-free (reads only <config-root>/usage.json; no
+  // Provider resolution, no Adapter, no transport — the same
+  // short-circuit class as `cache`). Dispatching before config load
+  // keeps a corrupt config.json from blocking the usage report and
+  // keeps trigger detection unreached. Fail-open ledger reads mean a
+  // missing/corrupt file still exits 0 with an empty window (DESIGN D8).
+  if (command === "usage") {
+    try {
+      return await handleUsage(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
       return getErrorExitCode(error);

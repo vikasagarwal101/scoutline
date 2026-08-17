@@ -160,6 +160,30 @@ stderr notice instead of failing the invocation). Activation tiers:
 billable calls.** Use it when recall across providers matters more than
 spend; use a single `--provider` pin when it does not.
 
+### Local context (`--context` / `--context-stdin`)
+
+`research` and `search` accept a local notes file (markdown headings +
+question lines, max 256 KiB) to steer the run. Sources: `--context
+<path>` or `--context-stdin` (pipe; the flags are mutually exclusive).
+
+- `research ... --context notes.md` defaults to `--context-mode
+  organize`: the returned report is re-presented following the file's
+  headings, purely locally — the wire request and the cache key are
+  unchanged. `bias`/`both` append a `(focus: ...)` term segment to the
+  query; that segment is derived from the file and is what leaves your
+  machine, and it changes the cache key (each mode is a separate paid
+  job). The resume command carries the context flags; `--context-stdin`
+  runs must re-pipe the same content unchanged.
+- `search ... --context notes.md` derives up to 8 sub-queries from the
+  file's headings and questions, keeps the original query first, and
+  merges + dedupes the results. The derived sub-query strings become the
+  search queries (the file itself never leaves the machine); under
+  fan-out, N sub-queries × M arms = N×M billable searches. Mutually
+  exclusive with `--merge`.
+- Privacy: only the research focus segment and the search sub-query
+  strings ever transmit. Outputs record counts, the source path, and a
+  SHA-256 — never file content.
+
 ## Capability Matrix
 
 | Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | Command |
@@ -215,11 +239,11 @@ input).
 |---------|---------|------|
 | vision | Analyze images, screenshots, videos (incl. `batch`) | `--help` for 9 subcommands |
 | batch | Manifest of operations run across providers (distribution by default) | `--help` for manifest + flags |
-| search | Real-time web search | `--help` for filtering options (incl. `--topic`) |
+| search | Real-time web search | `--help` for filtering options (incl. `--topic`) and local context |
 | read | Fetch web pages as markdown (six providers) | `--help` for format options |
 | crawl | Multi-page website traversal (Tavily or Firecrawl) | `--help` for depth/breadth/filters |
 | map | URL-set discovery without fetching pages (Tavily or Firecrawl) | `--help` for depth/breadth/filters |
-| research | Deep research with citations (five providers; 4-250 credits) | `--help` for model/citation/timeout |
+| research | Deep research with citations (five providers; 4-250 credits) | `--help` for model/citation/timeout and local context |
 | repo | GitHub code search and reading (Z.AI) | `--help` for tree/search/read/brief |
 | quota | Provider-normalized plan usage dashboard | `--help` for `--all-providers` |
 | tools | List available MCP tools (Z.AI) | |
@@ -227,6 +251,7 @@ input).
 | call | Raw MCP tool invocation | |
 | doctor | Provider-aware diagnostics (schema v2) | `--help` for `--no-tools` |
 | cache | Inspect or clear the local cache | `--help` for stats/clear |
+| usage | Local call-usage report (90-day `usage.json` ledger) | `--help` for `--days`/`--provider` |
 | code | TypeScript tool chaining (Z.AI) | |
 | init | Interactive onboarding wizard (writes ~/.scoutline/config.json) | `--help` for the four lifecycle states |
 
@@ -525,6 +550,21 @@ Legacy aliases (`ZAI_CACHE*`, `ZAI_MCP_TOOL_CACHE*`, `ZAI_MCP_CACHE_DIR`)
 are accepted silently at lower precedence. `XDG_CACHE_HOME` is no longer
 consulted; the orphaned `~/.cache/zai-cli/` directory is never read,
 migrated, or deleted.
+
+## Usage Ledger
+
+Every billable invoke (search — fan-out arms and `--merge` sub-queries
+each count — read, crawl, map, research, repo, vision) appends counters
+to `~/.scoutline/usage.json`, bucketed by UTC calendar day, then
+provider, then capability. Retries each count as an attempt; cache hits
+record nothing. Retention is 90 days (pruned on day-roll; no config
+knob). `SCOUTLINE_CONFIG_DIR` moves the ledger with the config root.
+
+Report it with `scoutline usage [--days N] [--provider <id>]` (default
+window 7 days; credential-free, no network). Counts are billable call
+attempts — providers do not report credit costs. The ledger stores
+counters only: no queries, URLs, prompts, results, or credentials; a
+corrupt or missing ledger reports an empty window with exit 0.
 
 ## Advanced
 

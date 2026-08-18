@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.17.1] - 2026-08-18
 
 ### Quota snapshot accounting
 

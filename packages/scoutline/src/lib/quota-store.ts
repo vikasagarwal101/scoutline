@@ -305,18 +305,18 @@ export function applyWriteObserved(
       const priorCat = prior ? categoryByName(prior.categories, name) : undefined;
       let absorbed = 0;
       const freshUsed = freshCat?.current.used;
-      if (priorCat && freshUsed !== undefined && Number.isFinite(freshUsed)) {
+      if (
+        prior !== undefined &&
+        prior.observedAt > 0 &&
+        priorCat !== undefined &&
+        freshUsed !== undefined &&
+        Number.isFinite(freshUsed)
+      ) {
         const priorDisplayed = priorCat.current.used;
         if (priorDisplayed !== undefined && Number.isFinite(priorDisplayed)) {
           const priorProviderUsed = priorDisplayed - amount;
           absorbed = Math.max(0, freshUsed - priorProviderUsed);
         }
-      } else if (
-        freshUsed !== undefined &&
-        Number.isFinite(freshUsed) &&
-        (prior === undefined || prior.observedAt === 0 || priorCat === undefined)
-      ) {
-        absorbed = Math.max(0, freshUsed);
       }
       const leftover = Math.max(0, amount - absorbed);
       if (leftover > 0) remaining[name] = leftover;

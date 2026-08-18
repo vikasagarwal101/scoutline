@@ -853,7 +853,9 @@ Freshness is judged solely from `observedAt` — the snapshot's
 ground-truth clock. `locallyUpdatedAt` (PB-T2's local decrement)
 **never** resets the staleness clock; a snapshot with a stale
 `observedAt` and a fresh `locallyUpdatedAt` is still
-non-authoritative.
+non-authoritative. Local decrements between harvests are tracked as
+`decrementedSinceObserved` and re-applied on refresh only for the
+portion the provider `used` count has not yet absorbed.
 
 ## Security
 

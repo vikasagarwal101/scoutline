@@ -59,10 +59,19 @@ export const QUOTA_STATE_VERSION = 1 as const;
  * non-authoritative — local estimates never reset the ground-truth
  * clock.
  */
+/**
+ * Local finite decrements not yet absorbed into provider `used`
+ * (GitHub #41). Keys are category names; values are accumulated
+ * exact/estimate amounts since the last harvest. Absent or empty
+ * means the displayed `categories` match the last provider payload.
+ */
+export type PendingDecrements = Readonly<Record<string, number>>;
+
 export interface ProviderQuotaSnapshot {
   readonly observedAt: number;
   readonly locallyUpdatedAt?: number;
   readonly categories: readonly QuotaCategory[];
+  readonly decrementedSinceObserved?: PendingDecrements;
 }
 
 /**
@@ -188,6 +197,151 @@ function findCategoryIndex(
   return -1;
 }
 
+function numericDecrement(adjustment: ConsumptionAdjustment): number | undefined {
+  const amount = adjustment.amount;
+  if (amount.kind === "unknown") return undefined;
+  const value = amount.value;
+  if (!Number.isFinite(value) || value < 0) return undefined;
+  return value;
+}
+
+function withPending(
+  pending: PendingDecrements | undefined,
+  category: string | undefined,
+  delta: number | undefined,
+): PendingDecrements | undefined {
+  if (category === undefined || delta === undefined || delta === 0) return pending;
+  return { ...(pending ?? {}), [category]: (pending?.[category] ?? 0) + delta };
+}
+
+function omitEmptyPending(pending: PendingDecrements | undefined): PendingDecrements | undefined {
+  if (pending === undefined) return undefined;
+  const kept: Record<string, number> = {};
+  for (const [name, amount] of Object.entries(pending)) {
+    if (Number.isFinite(amount) && amount > 0) kept[name] = amount;
+  }
+  return Object.keys(kept).length > 0 ? kept : undefined;
+}
+
+function applyPendingToCategories(
+  categories: readonly QuotaCategory[],
+  pending: PendingDecrements | undefined,
+): readonly QuotaCategory[] {
+  const overlay = omitEmptyPending(pending);
+  if (overlay === undefined) return categories;
+  return categories.map((cat) => {
+    const delta = overlay[cat.name];
+    if (delta === undefined) return cat;
+    return {
+      ...cat,
+      current: applyConsumptionToWindow(cat.current, {
+        category: cat.name,
+        amount: { kind: "estimate", value: delta },
+      }),
+    };
+  });
+}
+
+function categoryByName(
+  categories: readonly QuotaCategory[],
+  name: string,
+): QuotaCategory | undefined {
+  return categories.find((cat) => cat.name === name);
+}
+
+/**
+ * Apply a consumption write. Missing snapshots become an `observedAt: 0`
+ * scaffold so pre-harvest decrements persist until the first harvest.
+ */
+export function applyWriteConsumption(
+  prior: ProviderQuotaSnapshot | undefined,
+  adjustment: ConsumptionAdjustment,
+  at: number,
+): ProviderQuotaSnapshot {
+  const delta = numericDecrement(adjustment);
+  if (!prior) {
+    const pending = omitEmptyPending(withPending(undefined, adjustment.category, delta));
+    return {
+      observedAt: 0,
+      locallyUpdatedAt: at,
+      categories: [],
+      ...(pending !== undefined ? { decrementedSinceObserved: pending } : {}),
+    };
+  }
+  const pending = omitEmptyPending(
+    withPending(prior.decrementedSinceObserved, adjustment.category, delta),
+  );
+  const categories = prior.categories;
+  const idx = findCategoryIndex(categories, adjustment);
+  const newCategories =
+    idx >= 0
+      ? categories.map((c, i) =>
+          i === idx ? { ...c, current: applyConsumptionToWindow(c.current, adjustment) } : c,
+        )
+      : categories;
+  return {
+    observedAt: prior.observedAt,
+    locallyUpdatedAt: at,
+    categories: newCategories,
+    ...(pending !== undefined ? { decrementedSinceObserved: pending } : {}),
+  };
+}
+
+/**
+ * Merge a fresh provider harvest with unacknowledged local decrements.
+ * Provider `used` growth since the last harvest absorbs pending amounts
+ * (no double-count). Leftover pending is re-applied onto the fresh
+ * categories so a lagging usage endpoint does not clobber local estimates.
+ */
+export function applyWriteObserved(
+  prior: ProviderQuotaSnapshot | undefined,
+  snapshot: ProviderQuotaSnapshot,
+): ProviderQuotaSnapshot {
+  const pending = omitEmptyPending(prior?.decrementedSinceObserved);
+  const remaining: Record<string, number> = {};
+  if (pending !== undefined) {
+    for (const [name, amount] of Object.entries(pending)) {
+      const freshCat = categoryByName(snapshot.categories, name);
+      const priorCat = prior ? categoryByName(prior.categories, name) : undefined;
+      let absorbed = 0;
+      const freshUsed = freshCat?.current.used;
+      if (
+        prior !== undefined &&
+        prior.observedAt > 0 &&
+        priorCat !== undefined &&
+        freshUsed !== undefined &&
+        Number.isFinite(freshUsed)
+      ) {
+        const priorDisplayed = priorCat.current.used;
+        if (priorDisplayed !== undefined && Number.isFinite(priorDisplayed)) {
+          const priorProviderUsed = priorDisplayed - amount;
+          absorbed = Math.max(0, freshUsed - priorProviderUsed);
+        }
+      }
+      const leftover = Math.max(0, amount - absorbed);
+      if (leftover > 0) remaining[name] = leftover;
+    }
+  }
+  const leftoverPending = omitEmptyPending(remaining);
+  return {
+    observedAt: snapshot.observedAt,
+    ...(prior?.locallyUpdatedAt !== undefined ? { locallyUpdatedAt: prior.locallyUpdatedAt } : {}),
+    categories: applyPendingToCategories(snapshot.categories, leftoverPending),
+    ...(leftoverPending !== undefined ? { decrementedSinceObserved: leftoverPending } : {}),
+  };
+}
+
+function parsePendingDecrements(raw: unknown): PendingDecrements | undefined {
+  if (!isRecord(raw)) return undefined;
+  const pending: Record<string, number> = {};
+  for (const [name, amount] of Object.entries(raw)) {
+    if (typeof amount === "number" && Number.isFinite(amount) && amount > 0) {
+      pending[name] = amount;
+    }
+  }
+  return Object.keys(pending).length > 0 ? pending : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Parsing — fail-open, never throws
 // ---------------------------------------------------------------------------
@@ -242,12 +396,14 @@ function parseQuotaState(
       if (typeof observedAt !== "number" || !Number.isFinite(observedAt)) continue;
       const categories = entry.categories;
       if (!Array.isArray(categories)) continue;
+      const pending = parsePendingDecrements(entry.decrementedSinceObserved);
       const snapshot: ProviderQuotaSnapshot = {
         observedAt,
         ...(typeof entry.locallyUpdatedAt === "number" && Number.isFinite(entry.locallyUpdatedAt)
           ? { locallyUpdatedAt: entry.locallyUpdatedAt }
           : {}),
         categories: categories as readonly QuotaCategory[],
+        ...(pending !== undefined ? { decrementedSinceObserved: pending } : {}),
       };
       // Trust the key — a stale entry for a removed provider is
       // harmless (PB-T3 ignores unknown IDs); dropping it here would
@@ -310,15 +466,18 @@ export interface ConsumptionAdjustment {
  *   - {@link read} is fail-open: absent/corrupt/version-mismatched
  *     files yield an empty state + warning, never a throw.
  *   - {@link writeObserved} performs an atomic read-merge-write: other
- *     providers' snapshots are preserved. Only `observedAt` is
- *     advanced; `locallyUpdatedAt` is preserved from the existing
+ *     providers' snapshots are preserved. `observedAt` advances to the
+ *     harvest clock. Unacknowledged local decrements
+ *     (`decrementedSinceObserved`) are reconciled against provider
+ *     `used` growth and any leftover is re-applied onto the fresh
+ *     categories. `locallyUpdatedAt` is preserved from the existing
  *     snapshot (PB-T2 advances it, not PB-T1).
  *   - {@link writeConsumption} (PB-T2) advances `locallyUpdatedAt` and
  *     adjusts the matching category's `current` count set when a
  *     finite decrement is supplied. `observedAt` is preserved (ground
- *     truth never moves on a local estimate). The adjustment is
- *     idempotent over a missing snapshot (no-op) and a missing
- *     category (only `locallyUpdatedAt` advances).
+ *     truth never moves on a local estimate). A missing snapshot is
+ *     scaffolded (`observedAt: 0`) so pre-harvest decrements persist;
+ *     a missing category still only advances `locallyUpdatedAt`.
  *   - {@link clear} removes a single provider's snapshot (or all when
  *     no ID is given). Used by future reset/diagnostic commands.
  */
@@ -441,16 +600,7 @@ export function createDefaultQuotaStore(options: QuotaStoreOptions = {}): QuotaS
     async writeObserved(providerId: ProviderId, snapshot: ProviderQuotaSnapshot): Promise<void> {
       await withFileLock(filePath, async () => {
         const existing = await readStateFile();
-        const prior = existing.quota[providerId];
-        const merged: ProviderQuotaSnapshot = {
-          observedAt: snapshot.observedAt,
-          // Preserve locallyUpdatedAt from the existing snapshot —
-          // PB-T1 does NOT advance it; PB-T2 (local decrement) does.
-          ...(prior?.locallyUpdatedAt !== undefined
-            ? { locallyUpdatedAt: prior.locallyUpdatedAt }
-            : {}),
-          categories: snapshot.categories,
-        };
+        const merged = applyWriteObserved(existing.quota[providerId], snapshot);
         const updated: QuotaState = {
           version: QUOTA_STATE_VERSION,
           quota: { ...existing.quota, [providerId]: merged },
@@ -466,24 +616,7 @@ export function createDefaultQuotaStore(options: QuotaStoreOptions = {}): QuotaS
     ): Promise<void> {
       await withFileLock(filePath, async () => {
         const existing = await readStateFile();
-        const prior = existing.quota[providerId];
-        // No snapshot → nothing to decrement against. Advance only
-        // when there's something to advance on. (A future harvest will
-        // establish the snapshot; PB-T2 only adjusts existing ones.)
-        if (!prior) return;
-        const categories = prior.categories;
-        const idx = findCategoryIndex(categories, adjustment);
-        const newCategories =
-          idx >= 0
-            ? categories.map((c, i) =>
-                i === idx ? { ...c, current: applyConsumptionToWindow(c.current, adjustment) } : c,
-              )
-            : categories;
-        const merged: ProviderQuotaSnapshot = {
-          observedAt: prior.observedAt,
-          locallyUpdatedAt: at,
-          categories: newCategories,
-        };
+        const merged = applyWriteConsumption(existing.quota[providerId], adjustment, at);
         const updated: QuotaState = {
           version: QUOTA_STATE_VERSION,
           quota: { ...existing.quota, [providerId]: merged },
@@ -531,35 +664,14 @@ export function createInMemoryQuotaStore(
       return JSON.parse(JSON.stringify(state)) as QuotaState;
     },
     async writeObserved(providerId, snapshot) {
-      const prior = state.quota[providerId];
-      const merged: ProviderQuotaSnapshot = {
-        observedAt: snapshot.observedAt,
-        ...(prior?.locallyUpdatedAt !== undefined
-          ? { locallyUpdatedAt: prior.locallyUpdatedAt }
-          : {}),
-        categories: snapshot.categories,
-      };
+      const merged = applyWriteObserved(state.quota[providerId], snapshot);
       state = {
         version: QUOTA_STATE_VERSION,
         quota: { ...state.quota, [providerId]: merged },
       };
     },
     async writeConsumption(providerId, adjustment, at) {
-      const prior = state.quota[providerId];
-      if (!prior) return;
-      const categories = prior.categories;
-      const idx = findCategoryIndex(categories, adjustment);
-      const newCategories =
-        idx >= 0
-          ? categories.map((c, i) =>
-              i === idx ? { ...c, current: applyConsumptionToWindow(c.current, adjustment) } : c,
-            )
-          : categories;
-      const merged: ProviderQuotaSnapshot = {
-        observedAt: prior.observedAt,
-        locallyUpdatedAt: at,
-        categories: newCategories,
-      };
+      const merged = applyWriteConsumption(state.quota[providerId], adjustment, at);
       state = {
         version: QUOTA_STATE_VERSION,
         quota: { ...state.quota, [providerId]: merged },

@@ -118,20 +118,15 @@ describe("Ticket 6 — docs files", () => {
     );
   });
 
-  it("CHANGELOG's newest section carries the local-context entry", async () => {
+  it("CHANGELOG's 0.17.0 section carries the local-context entry", async () => {
     const text = await changelog;
-    // Writing-time lock: the entry lives in the NEWEST "## [" section —
-    // [Unreleased] while iterating, the retitled release heading after the
-    // release retitle (cf. 0.16.0 fixup e8de8cd).
-    const heading = /^## \[([^\]]+)\]/m.exec(text);
-    assert.ok(heading, "CHANGELOG must have a section heading");
-    const unreleased = text.slice(
-      heading.index,
-      text.indexOf("## [", heading.index + 1) === -1 ? text.length : text.indexOf("## [", heading.index + 1),
-    );
+    const start = text.indexOf("## [0.17.0]");
+    assert.ok(start >= 0, "CHANGELOG must have a 0.17.0 section");
+    const next = text.indexOf("## [", start + 1);
+    const section = text.slice(start, next === -1 ? text.length : next);
     assert.ok(
-      unreleased.includes("--context"),
-      "the newest CHANGELOG section must document the --context flags",
+      section.includes("--context"),
+      "the 0.17.0 CHANGELOG section must document the --context flags",
     );
   });
 });

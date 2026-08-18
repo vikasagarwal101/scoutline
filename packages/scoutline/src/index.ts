@@ -3335,7 +3335,7 @@ export async function main(
   const quotaStore = dependencies.quotaStore ?? createDefaultQuotaStore();
   // Production records consumption through BOTH sinks (usage-ledger
   // DESIGN D3): the PB-T1 quota-store snapshot store (unchanged,
-  // including its no-op-before-snapshot posture) and the usage ledger
+  // including scaffold-before-snapshot + harvest reconcile) and the usage ledger
   // (sibling `usage.json` under the same config root, resolved through
   // the pure `resolveUsageLedgerPath()`; warnings default to stderr
   // like the quota sink). The composite isolates each side — one

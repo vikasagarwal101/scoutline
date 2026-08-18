@@ -329,11 +329,11 @@ describe("usage-ledger Ticket 3 — production consume wiring in main", () => {
         assert.strictEqual(row.firstTries, 1);
         assert.strictEqual(row.estimateUnits, 1);
 
-        // Exactly the ledger file: the quota side no-ops before its
-        // first snapshot (documented posture, unchanged by DESIGN D3),
-        // and the ledger lock releases (unlink on exit).
+        // Ledger row plus the quota-store scaffold (#41): writeConsumption
+        // no longer no-ops before the first harvest, so state.json appears
+        // alongside usage.json. The ledger lock still unlinks on exit.
         const entries = (await fs.readdir(configDir)).sort();
-        assert.deepStrictEqual(entries, ["usage.json"]);
+        assert.deepStrictEqual(entries, ["state.json", "usage.json"]);
       });
     });
   });

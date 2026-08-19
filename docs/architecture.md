@@ -713,3 +713,12 @@ retained ledger remain open follow-ups.
 - The disk cache stores the normalized result of each operation (Search sources, File content, Directory listing, Reader content-read envelope, Crawl pages, Map URLs, Research report, Quota dashboard, etc.). Repository, Reader, Crawl, Map, and Research entries are normalized before the cache write; raw upstream responses never cross the Adapter boundary. Presentation flags therefore do not produce separate response-cache entries.
 - Code Mode is an explicit advanced execution path. Normal commands should remain predictable wrappers around named operations.
 - Provider field names never appear in public output. Raw quota fields do not cross the normalized Interface; raw Search fields are mapped to `SearchSource` before any command code observes them.
+
+## Error & Data Conventions
+
+Durable rules distilled from the 2026-08 review-comment audit fixes:
+
+- **Typed errors across layers.** Error normalizers must not classify foreign-layer errors by message substrings — prose heuristics misroute (lock-contention errors matching "timed out" surfaced `Z_AI_TIMEOUT` guidance; body-read aborts became `ApiError(500)`). Errors crossing a layer boundary carry type/class; normalizers preserve classification signals (abort/timeout class) and context (URL, error_type) rather than re-wrapping generically.
+- **Defensive guards must be reachable.** A throw inside a synchronous `.map()` escapes before `Promise.allSettled` exists — make pipeline callbacks `async` so failures settle per-item. And verify the guarded divergence is constructible; a guard for an impossible input is dead code wearing a seatbelt.
+- **No fabricated values.** When a source (provider, header, config) does not state a fact, publish the exact observation with an explicit unknown representation and omit what would have to be inferred (per ADR-0001: inference changes shared meaning). `QuotaWindow`'s remaining-only shape is the worked example.
+- **Validate-accepts is not wire-carries.** An option a provider's validate() accepts must be observable in the outgoing request (body, params, headers) or in the normalized result — or rejected. `tests/controls-conformance.test.js` enforces this per provider x control; extend it with every capability addition.

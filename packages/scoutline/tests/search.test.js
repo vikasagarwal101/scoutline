@@ -593,6 +593,9 @@ describe("--count validation ordering vs credential check (Fixup D — B11-remai
     const status = await main(["search", "q", "--count", "nope"], {
       invocation: adapter,
       env: {},
+      // #73: hermetic config - never read the ambient config file.
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+      configFanout: false,
     });
     assert.strictEqual(status, 1, "invalid count must exit 1 even with no credentials");
     const parsed = JSON.parse(stderr[stderr.length - 1]);
@@ -720,6 +723,8 @@ describe("--topic flag validation (T03)", () => {
     const status = await main(["search", "q", "--topic", "sports"], {
       invocation: adapter,
       env: {},
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+      configFanout: false,
     });
     assert.strictEqual(status, 1);
     const parsed = JSON.parse(stderr[stderr.length - 1]);

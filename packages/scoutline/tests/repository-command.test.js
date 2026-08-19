@@ -1011,6 +1011,9 @@ describe("P6-07A descriptor advertises repository-exploration but Adapter omits 
       const { adapter, stderr } = createRecordingAdapter();
       const status = await main(sub.defaultArgs, {
         env: { Z_AI_API_KEY: "zai-key" },
+        // #73: hermetic config - never read the ambient config file.
+        loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+        configFanout: false,
         providerDescriptors: [zai.descriptor, minimax.descriptor],
         repositoryCache: cacheRec.cache,
         repositorySleep: sleepRandom.sleep,
@@ -1902,7 +1905,11 @@ describe("P6-07A help text — repo participates in Provider selection; canonica
       runQuietly: async (op) => op(),
       setExitCode: () => {},
     };
-    await main(["--help"], { invocation: adapter, env: {} });
+    await main(["--help"], {
+      invocation: adapter,
+      env: {},
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+    });
     const help = captured.join("\n");
     assert.match(help, /repo\s+GitHub repository exploration.*Provider Capability/s);
     assert.match(help, /MiniMax and Tavily return UNSUPPORTED_CAPABILITY/);
@@ -1928,6 +1935,7 @@ describe("P6-07A help text — repo participates in Provider selection; canonica
     const status = await main(["repo", "--help"], {
       invocation: adapter,
       env: {},
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
       providerDescriptors: [],
     });
     assert.strictEqual(status, 0);

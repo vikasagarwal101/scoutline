@@ -48,11 +48,32 @@ export interface AsyncFileLockOptions {
   /**
    * Cooperative-cancellation signal (issue #47). When aborted — before
    * the call or during the lock wait — the pending wait rejects promptly
-   * instead of sleeping through to the acquire deadline. A live critical
-   * section is NOT interrupted: the holder's `fn` owns its own signal
-   * handling.
+   * with a {@link LockTimeoutError} instead of sleeping through to the
+   * acquire deadline. A live critical section is NOT interrupted: the
+   * holder's `fn` owns its own signal handling.
    */
   readonly signal?: AbortSignal;
+}
+
+/**
+ * Lock-acquire failure: the acquire deadline passed, or the caller's
+ * signal aborted the wait (issue #47). Deliberately NOT a `TimeoutError`
+ * and deliberately free of the substrings "timeout"/"timed out"/
+ * "etimedout": provider error normalizers (`normalizeFirecrawlError`,
+ * `normalizeTavilyError`, ...) classify unknown errors whose message
+ * contains "timed out" as request `TimeoutError`s and attach
+ * request-timeout guidance (`Z_AI_TIMEOUT` & co.) that cannot influence
+ * this fixed lock deadline (issue #48). Consumers that need a
+ * provider-specific envelope detect this class via `instanceof`.
+ */
+export class LockTimeoutError extends Error {
+  /** The lock's `timeoutLabel` ("Firecrawl crawl", "Cache prune", ...). */
+  readonly label: string;
+  constructor(label: string, detail: string) {
+    super(`${label} ${detail}`);
+    this.name = "LockTimeoutError";
+    this.label = label;
+  }
 }
 
 /**
@@ -104,8 +125,23 @@ export async function withAsyncFileLock<T>(
 
   const setT = options.setTimeout ?? setTimeout;
   const signal = options.signal;
-  const lockAborted = (): Error =>
-    new Error(`${options.timeoutLabel} create-lock wait aborted by signal`);
+  await fs.mkdir(stateDir, { recursive: true }).catch(() => {});
+  const lockPath = path.join(stateDir, `${identityHash}.lock`);
+  const deadline = Date.now() + options.timeoutMs;
+  // Mtime-refresh cadence for the critical section (issue #46/#48a): half
+  // the stale window, so the worst-case mtime age a contender can observe
+  // is strictly below `staleMs`. Floored at 10ms for degenerate tiny
+  // staleMs values, capped at 5s so production holds (10-min staleMs)
+  // do not touch the file in a tight loop.
+  const refreshIntervalMs = Math.min(Math.max(10, Math.floor(options.staleMs / 2)), 5000);
+  const lockAborted = (): LockTimeoutError =>
+    new LockTimeoutError(options.timeoutLabel, "create-lock wait aborted by signal");
+  const lockDeadline = (): LockTimeoutError =>
+    new LockTimeoutError(
+      options.timeoutLabel,
+      `create-lock deadline exceeded after ${options.timeoutMs}ms`,
+    );
+
   // Contention sleep, raced against the caller's signal (issue #47): an
   // abort rejects the pending wait immediately instead of sleeping
   // through to the acquire deadline.
@@ -129,15 +165,6 @@ export async function withAsyncFileLock<T>(
       }, ms);
       signal.addEventListener("abort", onAbort, { once: true });
     });
-  await fs.mkdir(stateDir, { recursive: true }).catch(() => {});
-  const lockPath = path.join(stateDir, `${identityHash}.lock`);
-  const deadline = Date.now() + options.timeoutMs;
-  // Mtime-refresh cadence for the critical section (issue #46/#48a): half
-  // the stale window, so the worst-case mtime age a contender can observe
-  // is strictly below `staleMs`. Floored at 10ms for degenerate tiny
-  // staleMs values, capped at 5s so production holds (10-min staleMs)
-  // do not touch the file in a tight loop.
-  const refreshIntervalMs = Math.min(Math.max(10, Math.floor(options.staleMs / 2)), 5000);
 
   for (;;) {
     if (signal?.aborted) throw lockAborted();
@@ -149,7 +176,7 @@ export async function withAsyncFileLock<T>(
       // Errors from fn() (below) propagate directly without retry.
       if (!isEexistError(err)) throw err;
       if (Date.now() > deadline) {
-        throw new Error(`${options.timeoutLabel} create-lock timed out`);
+        throw lockDeadline();
       }
       // Break a stale lock (the holder died without releasing). Only
       // ENOENT counts as "no lock / fresh start" — the file vanished
@@ -175,7 +202,7 @@ export async function withAsyncFileLock<T>(
       // Re-check deadline after sleeping — the 500ms sleep may have
       // crossed it, and the next open attempt bypasses the check above.
       if (Date.now() > deadline) {
-        throw new Error(`${options.timeoutLabel} create-lock timed out`);
+        throw lockDeadline();
       }
       continue;
     }

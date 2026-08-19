@@ -205,10 +205,9 @@ function exceedsCodePointLimit(str: string, limit: number): boolean {
  */
 function recencyToAfterDate(
   recency: import("../../capabilities/search.js").SearchRecency,
-  now: Date = new Date(),
 ): string | undefined {
   if (recency === "noLimit") return undefined;
-  const d = new Date(now.getTime());
+  const d = new Date();
   switch (recency) {
     case "oneDay":
       d.setUTCDate(d.getUTCDate() - 1);
@@ -241,7 +240,6 @@ function contentSizeToExcerptBudget(contentSize: "medium" | "high"): number {
  */
 function mapSearchControlsToParams(
   controls: import("../../capabilities/search.js").SearchControls | undefined,
-  now: Date = new Date(),
 ): ParallelSearchParams | undefined {
   if (!controls) return undefined;
   if (!controls.domain && !controls.recency && !controls.location && !controls.contentSize)
@@ -252,7 +250,7 @@ function mapSearchControlsToParams(
     sourcePolicy.include_domains = [controls.domain];
   }
   if (controls.recency) {
-    const afterDate = recencyToAfterDate(controls.recency, now);
+    const afterDate = recencyToAfterDate(controls.recency);
     if (afterDate) {
       sourcePolicy.after_date = afterDate;
     }

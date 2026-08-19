@@ -20,7 +20,8 @@ import type { ProviderCapability } from "../types.js";
 
 function pickNonBlank(raw: unknown): string | undefined {
   if (typeof raw !== "string") return undefined;
-  return raw.trim().length > 0 ? raw : undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 export function resolveJinaApiKey(env: NodeJS.ProcessEnv): string | undefined {

@@ -16,6 +16,7 @@ import crypto from "node:crypto";
 
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { getMcpToolName } from "../dist/lib/mcp-config.js";
+import { ZaiMcpClient } from "../dist/lib/mcp-client.js";
 import { FakeUtcpClient } from "./helpers/fake-utcp-client.js";
 import { readFixture } from "./helpers/fixtures.js";
 import { executeProviderOperation } from "../dist/lib/execution.js";
@@ -967,6 +968,19 @@ describe("Z.AI Adapter — missing credentials throw ConfigurationError (Fixup A
       () => whitespaceAdapter.search.cacheIdentity({ query: "q" }),
       (err) => err instanceof ConfigurationError && err.exitCode === 3,
     );
+  });
+});
+
+describe("Z.AI default client factory path (#58c pin)", () => {
+  it("omitting utcpFactory still constructs a working client", async () => {
+    const client = new ZaiMcpClient({
+      enableVision: false,
+      noCache: true,
+      disableRetry: true,
+      env: {},
+    });
+    assert.equal(typeof client.callToolRaw, "function");
+    await client.close();
   });
 });
 

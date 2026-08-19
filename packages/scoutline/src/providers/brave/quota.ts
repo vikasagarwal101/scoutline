@@ -188,8 +188,8 @@ export function normalizeBraveQuota(
   // next-largest window that carries a real cap (do NOT hardcode 2592000).
   let selectedIndex = -1;
   for (let i = 0; i < windows.length; i++) {
-    const win = windows[i];
-    if (!win || win.limit <= 0) continue;
+    const win = windows[i]!;
+    if (win.limit <= 0) continue;
     if (selectedIndex === -1 || win.windowSeconds > (windows[selectedIndex]?.windowSeconds ?? 0)) {
       selectedIndex = i;
     }

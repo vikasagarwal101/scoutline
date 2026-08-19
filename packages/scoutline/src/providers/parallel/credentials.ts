@@ -10,7 +10,8 @@ const MISSING_KEY_HELP = 'export PARALLEL_API_KEY="your-parallel-api-key"';
 
 function pickNonBlank(raw: unknown): string | undefined {
   if (typeof raw !== "string") return undefined;
-  return raw.trim().length > 0 ? raw : undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 export function resolveParallelApiKey(env: NodeJS.ProcessEnv): string | undefined {

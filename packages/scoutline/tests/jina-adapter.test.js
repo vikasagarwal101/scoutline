@@ -733,6 +733,84 @@ describe("Jina DeepSearch Streaming (8J.6)", () => {
       (err) => err instanceof ApiError,
     );
   });
+
+
+  it("rejects wrong-shape url_citation annotations with ApiError 502 (#53)", async () => {
+    // url_citation present but wrong shape (string instead of object) —
+    // the parser must fail closed, not silently drop or retain the entry.
+    const sseBody = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "<think>skip</think>\n\n", type: "think" }, finish_reason: "thinking_end" }] })}\n`,
+      `data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            content: "Answer with a malformed citation.",
+            type: "text",
+            annotations: [
+              { type: "url_citation", url_citation: "https://malformed.example.com" },
+            ],
+          },
+          finish_reason: "stop",
+        }],
+      })}\n`,
+    ].join("\n");
+
+    const fakeFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => sseBody,
+    });
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "test" }),
+      (err) => err instanceof ApiError && err.statusCode === 502,
+    );
+  });
+
+  it("retains well-formed url_citation annotations (#53 guard)", async () => {
+    const sseBody = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "<think>skip</think>\n\n", type: "think" }, finish_reason: "thinking_end" }] })}\n`,
+      `data: ${JSON.stringify({
+        choices: [{
+          delta: {
+            content: "Answer.",
+            type: "text",
+            annotations: [
+              {
+                type: "url_citation",
+                url_citation: {
+                  title: "Well-formed Source",
+                  url: "https://valid.example.com",
+                  exactQuote: "quoted text",
+                },
+              },
+            ],
+          },
+          finish_reason: "stop",
+        }],
+      })}\n`,
+    ].join("\n");
+
+    const fakeFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => sseBody,
+    });
+
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const res = await adapter.research.run.invoke({ query: "test" });
+    assert.equal(res.sources.length, 1);
+    assert.equal(res.sources[0].title, "Well-formed Source");
+    assert.equal(res.sources[0].url, "https://valid.example.com");
+  });
 });
 
 describe("Jina AI Error Handling", () => {

@@ -74,9 +74,47 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   //   - Basic: base64 credentials can be short, so no length floor.
   //   - Digest: comma-separated key=value params — the full param list
   //     is consumed so sensitive fields (response, nonce) don't leak.
-  result = result.replace(/(?:Bearer|Token|ApiKey)\s+[^\s]{8,}/gi, REDACTED);
-  result = result.replace(/Basic\s+\S+/gi, REDACTED);
-  result = result.replace(/Digest\s+[^\s,]+(?:,\s*[^\s,]+)*/gi, REDACTED);
+  // Two-pass approach for Bearer / Token / ApiKey so prose like
+  // "Token subscription and Basic understanding are ordinary prose"
+  // is preserved while real credentials (mid-string, in error messages)
+  // are still redacted:
+  //   1. In an `Authorization:` header context the existing 8-char floor
+  //      is trusted — `Authorization: Token abcdefgh` must redact. The
+  //      prefix is captured and preserved; only the scheme + value is
+  //      replaced with REDACTED.
+  //   2. Outside that context, ALSO require at least one credential-like
+  //      character (digit, hyphen, underscore, uppercase letter). Pure
+  //      lowercase 8+ char runs like "subscription" / "understanding" are
+  //      too common in English prose to redact blindly. The character
+  //      class is wrapped in `(?-i:...)` so it stays case-SENSITIVE even
+  //      though the keyword alternation is matched case-insensitively
+  //      via the `/i` flag.
+  result = result.replace(
+    /(Authorization\s*:\s*)(?:Bearer|Token|ApiKey)\s+[^\s]{8,}/gi,
+    (_match, prefix: string) => prefix + REDACTED,
+  );
+  result = result.replace(
+    /(?:Bearer|Token|ApiKey)\s+(?=[^\s]*(?-i:[^a-z\s]))[^\s]{8,}/gi,
+    REDACTED,
+  );
+  // Same two-pass approach for Basic. The Authorization-context pass
+  // covers `Authorization: Basic …` regardless of value composition; the
+  // outside-context pass requires a credential-like character to keep
+  // prose like `Basic understanding` untouched.
+  result = result.replace(
+    /(Authorization\s*:\s*)Basic\s+\S+/gi,
+    (_match, prefix: string) => prefix + REDACTED,
+  );
+  result = result.replace(/Basic\s+(?=\S*(?-i:[^a-z\s]))\S{8,}/gi, REDACTED);
+  // Honor RFC 7235 quoted-string values in Digest parameters. The value
+  // span may be either a bare token `[^\s,]+` or a quoted string
+  // `"[^"]*"`, and the comma-separated param list must consume every
+  // parameter (including `nonce=` and `response=`) so they don't leak
+  // when a quoted realm contains an internal space, e.g. `realm="My App"`.
+  result = result.replace(
+    /Digest\s+(?:[^\s,=]+=(?:"[^"]*"|[^\s,]+)|[^\s,]+)(?:,\s*(?:[^\s,=]+=(?:"[^"]*"|[^\s,]+)|[^\s,]+))*/gi,
+    REDACTED,
+  );
   // Tavily API keys carry the `tvly-` prefix; redact the full token
   // wherever it appears (logs, URLs, error bodies).
   result = result.replace(/tvly-[A-Za-z0-9_-]+/gi, REDACTED);

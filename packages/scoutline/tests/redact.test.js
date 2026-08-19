@@ -747,3 +747,33 @@ describe("tools list/show — file-only key redaction via configuredSecrets (1.1
     );
   });
 });
+
+
+describe("audit 2026-08 #44", () => {
+  it("redacts Digest parameters after a quoted realm containing an internal space", () => {
+    const header =
+      'Authorization: Digest username="admin", realm="My App", nonce="abc123", response="def456"';
+    const redacted = redactCredentialString(header);
+
+    assert.ok(!redacted.includes('nonce='), `nonce residue leaked: ${redacted}`);
+    assert.ok(!redacted.includes('response='), `response residue leaked: ${redacted}`);
+  });
+
+  it("does not redact ordinary prose after Token or Basic schemes", () => {
+    const prose = "Token subscription and Basic understanding are ordinary prose";
+    const redacted = redactCredentialString(prose);
+
+    assert.strictEqual(redacted, prose);
+  });
+
+  it("still redacts true credentials with eight or more characters", () => {
+    assert.strictEqual(
+      redactCredentialString("Authorization: Token abcdefgh"),
+      "Authorization: [REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("Authorization: Basic dXNlcjpwYXNzMTIz"),
+      "Authorization: [REDACTED]",
+    );
+  });
+});

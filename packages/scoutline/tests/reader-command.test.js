@@ -793,6 +793,9 @@ describe("Reader Migration 04 descriptor advertises reader but Adapter omits rea
     const { adapter, stderr } = createRecordingAdapter();
     const status = await main(DEFAULT_READ_ARGS, {
       env: { Z_AI_API_KEY: "zai-key" },
+      // #73: hermetic config - never read the ambient config file.
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+      configFanout: false,
       providerDescriptors: [zai.descriptor, minimax.descriptor],
       readerCache: cacheRec.cache,
       readerSleep: sleepRandom.sleep,
@@ -1432,7 +1435,11 @@ describe("Reader Migration 04 help text — read participates in Provider select
       runQuietly: async (op) => op(),
       setExitCode: () => {},
     };
-    await main(["--help"], { invocation: adapter, env: {} });
+    await main(["--help"], {
+      invocation: adapter,
+      env: {},
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+    });
     const help = captured.join("\n");
     assert.match(help, /read\s+Fetch and parse web pages.*Provider Capability/s);
     assert.match(help, /Parallel, and Jina supply it/);
@@ -1453,6 +1460,7 @@ describe("Reader Migration 04 help text — read participates in Provider select
     const status = await main(["read", "--help"], {
       invocation: adapter,
       env: {},
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
       providerDescriptors: [],
     });
     assert.strictEqual(status, 0);

@@ -144,6 +144,7 @@ describe("--type / --topic mutual exclusivity (parse-time, T3a)", () => {
     const status = await main(["search", "q", "--type", "video", "--topic", "news"], {
       invocation: adapter,
       env: {},
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
     });
     assert.strictEqual(status, 1, "invalid combo must exit 1 even with no credentials");
     const parsed = JSON.parse(stderr[stderr.length - 1]);

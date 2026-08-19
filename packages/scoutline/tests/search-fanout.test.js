@@ -1229,6 +1229,7 @@ describe("executeFanoutPlan: single-pin golden via main() (byte-identical stdout
     const statusA = await main(["--provider", "tavily", "search", "q"], {
       invocation: adapter,
       env: {},
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
       providerDescriptors: [tav.descriptor, exa.descriptor],
       configFanout: true,
       searchCache: freshCache(),

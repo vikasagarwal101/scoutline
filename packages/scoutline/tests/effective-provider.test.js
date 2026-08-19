@@ -756,6 +756,8 @@ describe("resolveEffectiveProvider: 7-handler dispatch wiring", () => {
         // #63: pin fanout-off so the ambient config's fanout:true cannot
         // divert search to fan-out mode (which bypasses quota-ranked selection).
         configFanout: false,
+        // #73: hermetic config — no ambient read at all.
+        loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
         [tc.cacheKey]: makeInMemoryCache(),
         searchSleep: async () => {},
         searchRandom: () => 0.5,
@@ -806,6 +808,8 @@ describe("resolveEffectiveProvider: observational + raw handlers bypass ranking"
     const status = await main(["doctor", "--help"], {
       invocation: adapter,
       env: {},
+      // #73: hermetic config - never read the ambient config file.
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
       providerDescriptors: [makeDescriptor("zai", { configured: true, capabilities: ["search"] })],
       quotaState: snapshot,
     });
@@ -819,6 +823,7 @@ describe("resolveEffectiveProvider: observational + raw handlers bypass ranking"
     const status = await main(["quota", "--help"], {
       invocation: adapter,
       env: {},
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
       providerDescriptors: [makeDescriptor("zai", { configured: true })],
       quotaState: snapshot,
     });
@@ -832,6 +837,7 @@ describe("resolveEffectiveProvider: observational + raw handlers bypass ranking"
     const status = await main(["tools", "--help"], {
       invocation: adapter,
       env: {},
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
       providerDescriptors: [makeDescriptor("zai", { configured: true })],
       quotaState: snapshot,
     });

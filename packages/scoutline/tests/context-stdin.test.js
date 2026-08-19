@@ -169,6 +169,7 @@ async function runResearch(argv, { providers, stdin = "" } = {}) {
       invocation: io.adapter,
       env: { TAVILY_API_KEY: "tv", EXA_API_KEY: "exa" },
       providerDescriptors: providers.map((p) => p.descriptor),
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
     }),
   );
   return { status, stdout: io.stdout, stderr: io.stderr, stdinCalls: io.stdinCalls };

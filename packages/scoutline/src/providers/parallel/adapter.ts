@@ -14,6 +14,7 @@
  *   results[].title         -> title
  *   results[].url           -> finalUrl
  *   Request: advanced_settings.full_content = true (8P.2)
+ *   retainImages:false      -> strip ![alt](url) tokens locally (no server-side toggle; #52)
  *
  * Research (Task / Deep Research API — 8P.1):
  *   POST /v1/tasks/runs      → create async task run (pro/ultra processor)
@@ -426,6 +427,24 @@ async function withResearchLock<T>(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Reader image stripping (retainImages:false — #52)
+// ---------------------------------------------------------------------------
+
+/**
+ * Strip markdown image syntax (`![alt](url)`) from extracted content.
+ *
+ * Parallel's Extract API has no server-side image toggle (unlike
+ * Firecrawl's `removeBase64Images` param or Jina's `X-Retain-Images`
+ * header), so `retainImages: false` is honored locally: the whole image
+ * token, alt text included, is removed — mirroring what those
+ * server-side toggles return. Adapter-local, like Exa's `stripMarkdown`
+ * (no shared stripper exists).
+ */
+function stripImageMarkdown(content: string): string {
+  return content.replace(/!\[[^\]]*\]\([^)]*\)/g, "");
+}
+
 export class ParallelAdapter implements ProviderAdapter {
   readonly id: ProviderId = "parallel";
   readonly search: SearchCapability;
@@ -730,7 +749,13 @@ export class ParallelAdapter implements ProviderAdapter {
             }
 
             const result = response.results?.[0];
-            const content = result?.full_content || result?.excerpts?.join("\n\n") || "";
+            const rawContent = result?.full_content || result?.excerpts?.join("\n\n") || "";
+            // `retainImages === false` is exactly the "strip images" case
+            // (read.ts sends it only for --no-images); `true` never gets
+            // here — validate rejects it as unsupported. Parallel Extract
+            // has no server-side image toggle, so honor it locally (#52).
+            const content =
+              request.retainImages === false ? stripImageMarkdown(rawContent) : rawContent;
 
             if (content.length === 0) {
               throw new ApiError("Parallel AI extract returned no content", 422);

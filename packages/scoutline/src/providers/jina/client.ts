@@ -79,7 +79,7 @@ export interface JinaResponse {
  *   format         -> X-Return-Format ("markdown" | "text")
  *   retainImages   -> X-Retain-Images ("true" | "false")
  *   withLinksSummary -> X-With-Links-Summary ("true" | "false")
- *   noGfm          -> not forwarded (Jina has no GFM toggle; no-op)
+ *   noGfm          -> X-No-Gfm ("true" | "false"; GFM is on by default)
  *   keepImgDataUrl -> X-Keep-Img-Data-Url ("true" | "false")
  *   withImagesSummary -> X-With-Images-Summary ("true" | "false")
  *   timeout        -> X-Timeout (seconds; clamped to Jina's 180s ceiling)
@@ -204,8 +204,6 @@ export async function fetchJinaReader(
   }
 
   // Forward normalized Reader options to Jina's documented headers (8J.2).
-  // noGfm is intentionally NOT forwarded: Jina Reader has no GFM toggle
-  // header, so the option has no faithful mapping and is a no-op.
   if (options) {
     if (options.format) {
       headers["X-Return-Format"] = options.format;
@@ -215,6 +213,11 @@ export async function fetchJinaReader(
     }
     if (options.withLinksSummary !== undefined) {
       headers["X-With-Links-Summary"] = options.withLinksSummary ? "true" : "false";
+    }
+    if (options.noGfm !== undefined) {
+      // CC-5 (#69): Jina documents X-No-Gfm ("true" disables GFM
+      // features; GFM is enabled by default).
+      headers["X-No-Gfm"] = options.noGfm ? "true" : "false";
     }
     if (options.keepImgDataUrl !== undefined) {
       headers["X-Keep-Img-Data-Url"] = options.keepImgDataUrl ? "true" : "false";

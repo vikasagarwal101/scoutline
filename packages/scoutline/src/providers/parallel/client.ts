@@ -211,24 +211,45 @@ export async function fetchParallelExtract(
   apiKey: string,
   targetUrl: string,
   deps: ParallelTransportDeps = {},
+  options?: {
+    /**
+     * Caller's per-request timeout budget in seconds (CC-6, #70).
+     * Forwarded as the documented Extract `advanced_settings.
+     * fetch_policy.timeout_seconds` knob and used to raise the
+     * client-side abort budget.
+     */
+    readonly timeoutSeconds?: number;
+  },
 ): Promise<ParallelExtractResponse> {
   const fetchFn = deps.fetch || globalThis.fetch;
   const setTimer = deps.setTimeout || globalThis.setTimeout;
   const clearTimer = deps.clearTimeout || globalThis.clearTimeout;
   const env = deps.env || process.env;
   const timeoutMs = resolveTimeoutMs(env);
+  // CC-6 (#70): when the caller sets a timeout budget, the client abort
+  // must outlast it (Jina 0.14.5 precedent) so the server can respond
+  // before the AbortController fires.
+  const clientTimeoutMs =
+    options?.timeoutSeconds !== undefined
+      ? Math.max(timeoutMs, options.timeoutSeconds * 1000 + 5000)
+      : timeoutMs;
 
   const url = `${BASE_URL}/v1/extract`;
   // Request guaranteed full-page content (8P.2). Without
   // `advanced_settings.full_content`, Parallel returns bounded excerpts
   // by default, which the adapter would then present as the complete page.
-  const body = {
+  const body: Record<string, unknown> = {
     urls: [targetUrl],
-    advanced_settings: { full_content: true },
+    advanced_settings: {
+      full_content: true,
+      ...(options?.timeoutSeconds !== undefined
+        ? { fetch_policy: { timeout_seconds: options.timeoutSeconds } }
+        : {}),
+    },
   };
 
   const controller = new AbortController();
-  const timer = setTimer(() => controller.abort(), timeoutMs);
+  const timer = setTimer(() => controller.abort(), clientTimeoutMs);
 
   try {
     const response = await fetchFn(url, {
@@ -246,13 +267,13 @@ export async function fetchParallelExtract(
       // Drain the error body so the socket is released for connection
       // reuse instead of being held under repeated failures (#56).
       await response.text().catch(() => {});
-      throw mapStatusError(response.status, timeoutMs);
+      throw mapStatusError(response.status, clientTimeoutMs);
     }
 
     const text = await response.text();
     return JSON.parse(text) as ParallelExtractResponse;
   } catch (err: unknown) {
-    throw mapTransportError(err, timeoutMs, "Parallel AI extract failed");
+    throw mapTransportError(err, clientTimeoutMs, "Parallel AI extract failed");
   } finally {
     clearTimer(timer);
   }

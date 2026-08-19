@@ -233,6 +233,17 @@ function normalizeTavilySearchResults(raw: unknown): readonly SearchSource[] {
 }
 
 /**
+ * Strip markdown image syntax (`![alt](url)`) from extract content.
+ * Tavily /extract has no content-image toggle (its only image param,
+ * `include_images`, enriches the response payload which normalization
+ * drops), so `retainImages: false` is honored locally (#66 CC-1,
+ * mirroring Parallel #52).
+ */
+function stripImageMarkdown(content: string): string {
+  return content.replace(/!\[[^\]]*\]\([^)]*\)/g, "");
+}
+
+/**
  * Normalize a raw Tavily extract response into a `ReaderFetchResult`.
  *
  *   results[0].raw_content -> content
@@ -274,6 +285,11 @@ function normalizeTavilyExtractResult(
   if (typeof content !== "string" || content.length === 0) {
     throw new ApiError("Tavily extract returned a malformed response", 500);
   }
+  // CC-1 (#66): honor --no-images locally (no Tavily content-image toggle).
+  const content0 = request.retainImages === false ? stripImageMarkdown(content) : content;
+  if (content0.length === 0) {
+    throw new ApiError("Tavily extract returned no content after image stripping", 422);
+  }
   const finalUrl = typeof first.url === "string" && first.url.length > 0 ? first.url : request.url;
   const contentFormat: "markdown" | "text" = request.format ?? "markdown";
 
@@ -282,7 +298,7 @@ function normalizeTavilyExtractResult(
     url: request.url,
     finalUrl,
     title: null,
-    content,
+    content: content0,
     contentFormat,
   };
 }
@@ -542,8 +558,12 @@ function createTavilyReaderCapability(options: TavilyReaderCapabilityOptions): R
 
       const apiKey = resolveApiKey(env);
       try {
-        const params: TavilyExtractParams =
-          request.format !== undefined ? { format: request.format } : {};
+        // CC-2 (#66): forward --timeout (seconds) to the documented /extract
+        // body `timeout` knob.
+        const params: TavilyExtractParams = {
+          ...(request.format !== undefined ? { format: request.format } : {}),
+          ...(request.timeout !== undefined ? { timeout: request.timeout } : {}),
+        };
         const raw = await fetchTavilyExtract(apiKey, request.url, params, transport);
         return normalizeTavilyExtractResult(raw, request);
       } catch (error) {

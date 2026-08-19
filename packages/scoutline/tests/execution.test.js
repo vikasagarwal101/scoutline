@@ -999,18 +999,19 @@ describe("executeSearch — AbortSignal forwarding (5.6)", () => {
     );
   });
 
-  it("a pre-aborted signal is forwarded so a cooperating invoke can reject", async () => {
+  it("a pre-aborted signal rejects before invoke runs (issue #47)", async () => {
     const sleep = makeSleep();
     const random = makeRandom();
     const cache = makeCache();
 
-    // The fake invoke checks the signal and throws if already aborted,
-    // simulating a cooperating Adapter.
+    // The retry loop checks signal.aborted BEFORE invoking, so a caller
+    // that is already gone performs no Provider work. (Pre-#47 the
+    // signal was forwarded and a cooperating invoke rejected itself;
+    // the shared loop now owns the pre-abort rejection.)
     const cap = makeCapability();
-    cap.invoke = async (request, signal) => {
-      if (signal?.aborted) {
-        throw new Error("aborted before invoke completed");
-      }
+    let invoked = false;
+    cap.invoke = async () => {
+      invoked = true;
       return [{ title: "T", url: "https://x", summary: "S" }];
     };
 
@@ -1024,8 +1025,9 @@ describe("executeSearch — AbortSignal forwarding (5.6)", () => {
         { ...baseOptions(), signal: controller.signal },
         baseDeps(cache, sleep, random),
       ),
-      /aborted before invoke completed/,
+      (error) => error instanceof TimeoutError,
     );
+    assert.equal(invoked, false, "invoke must not run when the signal is pre-aborted");
   });
 
   it("an in-flight abort propagates so a cooperating invoke rejects mid-call", async () => {

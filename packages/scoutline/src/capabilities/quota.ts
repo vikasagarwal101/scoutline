@@ -12,9 +12,13 @@
  *   - A valid explicit remaining percentage wins; otherwise derive
  *     `(remaining / limit) * 100` from finite nonnegative counts where
  *     used is not greater than limit.
+ *   - A Provider that publishes an exact `remaining` without a limit
+ *     (unknown-limit window — GitHub #49) reports that value verbatim;
+ *     `used`, `limit`, and `remainingPercent` are omitted rather than
+ *     inferred or fabricated.
  *   - Invalid optional counts are omitted together (not set to zero).
- *   - A category that has neither a valid percentage nor valid counts
- *     is rejected with `QUOTA_ERROR`.
+ *   - A category that has neither a valid percentage, nor valid counts,
+ *     nor an explicit remaining is rejected with `QUOTA_ERROR`.
  *   - Nonempty names, finite values, and ISO dates are mandatory.
  *
  * This module imports only Provider identity types and shared errors;
@@ -33,7 +37,13 @@ export interface QuotaWindow {
   used?: number;
   limit?: number;
   remaining?: number;
-  remainingPercent: number;
+  /**
+   * Remaining share of the window, 0..100. OPTIONAL since #49: a
+   * Provider that reports an exact `remaining` but no limit (Jina's
+   * `X-RateLimit-Remaining-*` headers) has no honest percentage — the
+   * field is omitted rather than fabricated against an inferred tier.
+   */
+  remainingPercent?: number;
   resetsAt?: string;
 }
 
@@ -149,9 +159,10 @@ export interface QuotaCapability {
 
 /**
  * Inputs to {@link buildQuotaWindow}. Every field is optional except
- * that at least one of `explicitRemainingPercent` or a valid count set
- * (`used` + `limit`) must be present, otherwise the window is
- * unrecoverable and `QUOTA_ERROR` is thrown.
+ * that at least one of `explicitRemainingPercent`, a valid count set
+ * (`used` + `limit`), or an explicit finite nonnegative `remaining`
+ * must be present, otherwise the window is unrecoverable and
+ * `QUOTA_ERROR` is thrown.
  */
 export interface QuotaWindowInputs {
   durationSeconds?: number;
@@ -164,6 +175,15 @@ export interface QuotaWindowInputs {
    * derivation and is then clamped to 0..100.
    */
   explicitRemainingPercent?: number;
+  /**
+   * A Provider-supplied EXACT remaining count for a window whose limit
+   * is unknown (GitHub #49). Used only when neither an explicit
+   * percentage nor a valid count set is present: the built window
+   * carries `remaining` verbatim and omits `used`, `limit`, and
+   * `remainingPercent` — nothing is inferred from tier tables or
+   * fabricated as a percentage.
+   */
+  remaining?: number;
 }
 
 function isFiniteNonnegative(value: unknown): value is number {
@@ -217,10 +237,15 @@ function epochMsToIso(epochMs: unknown): string | undefined {
 /**
  * Build a normalized {@link QuotaWindow} from Provider inputs.
  *
- * Resolution order for `remainingPercent`:
+ * Resolution order:
  *   1. A finite explicit remaining percentage wins (then clamped).
- *   2. Otherwise derive from valid counts.
- *   3. Otherwise throw `QUOTA_ERROR` — the category is unrecoverable.
+ *   2. Otherwise derive the percentage from valid counts.
+ *   3. Otherwise, when neither is available but an explicit finite
+ *      nonnegative `remaining` is supplied (unknown-limit window,
+ *      GitHub #49), publish that value verbatim with `used`, `limit`,
+ *      and `remainingPercent` omitted — never inferred, never
+ *      fabricated.
+ *   4. Otherwise throw `QUOTA_ERROR` — the category is unrecoverable.
  *
  * Invalid optional counts are omitted together; valid counts populate
  * `used`, `limit`, and a derived `remaining`. `durationSeconds` and
@@ -235,7 +260,15 @@ export function buildQuotaWindow(inputs: QuotaWindowInputs): QuotaWindow {
     if (derived !== null) remainingPercent = derived;
   }
 
-  if (remainingPercent === undefined) {
+  const counts = validCountSet(inputs.used, inputs.limit);
+  // Unknown-limit window (#49): the ONLY new accepting path is an
+  // explicit remaining with no count set. A count set whose percentage
+  // cannot be derived (e.g. `limit <= 0`) still throws exactly as
+  // before, so every pre-#49 input keeps its previous outcome.
+  const remainingOnly =
+    counts === null && remainingPercent === undefined && isFiniteNonnegative(inputs.remaining);
+
+  if (remainingPercent === undefined && !remainingOnly) {
     throw new ScoutlineError(
       "quota category has neither a valid remaining percentage nor valid counts",
       "QUOTA_ERROR",
@@ -243,13 +276,17 @@ export function buildQuotaWindow(inputs: QuotaWindowInputs): QuotaWindow {
     );
   }
 
-  const window: QuotaWindow = { remainingPercent: clampPercent(remainingPercent) };
+  const window: QuotaWindow = {};
+  if (remainingPercent !== undefined) {
+    window.remainingPercent = clampPercent(remainingPercent);
+  }
 
-  const counts = validCountSet(inputs.used, inputs.limit);
   if (counts !== null) {
     window.used = counts.used;
     window.limit = counts.limit;
     window.remaining = counts.limit - counts.used;
+  } else if (remainingOnly) {
+    window.remaining = inputs.remaining;
   }
 
   if (isFinitePositive(inputs.durationSeconds)) {

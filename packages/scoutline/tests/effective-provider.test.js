@@ -753,6 +753,9 @@ describe("resolveEffectiveProvider: 7-handler dispatch wiring", () => {
         env: tc.env,
         providerDescriptors: built.map((b) => b.descriptor),
         quotaState: snapshot,
+        // #63: pin fanout-off so the ambient config's fanout:true cannot
+        // divert search to fan-out mode (which bypasses quota-ranked selection).
+        configFanout: false,
         [tc.cacheKey]: makeInMemoryCache(),
         searchSleep: async () => {},
         searchRandom: () => 0.5,

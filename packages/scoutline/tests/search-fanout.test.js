@@ -25,7 +25,7 @@ import {
   SEARCH_HELP,
 } from "../dist/commands/search.js";
 import { main } from "../dist/index.js";
-import { ValidationError } from "../dist/lib/errors.js";
+import { ValidationError, UnsupportedOptionError } from "../dist/lib/errors.js";
 
 // ---------------------------------------------------------------------------
 // canonicalUrl — identity-only normalization (DESIGN D4, ADR-0004 §5)
@@ -1244,6 +1244,10 @@ describe("executeFanoutPlan: single-pin golden via main() (byte-identical stdout
       env: {},
       providerDescriptors: [tav.descriptor, exa.descriptor],
       searchCache: freshCache(),
+      // #64: hermetic config — without this, main() reads the real
+      // ~/.scoutline/config.json and a fanout:true there emits the
+      // pin-override notice on this fanout-OFF run.
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
       searchSleep: async () => {},
       searchRandom: () => 0.5,
     });
@@ -1271,6 +1275,110 @@ describe("executeFanoutPlan: single-pin golden via main() (byte-identical stdout
       "no fan-out summary on the single-pin path",
     );
   });
+
+    // #65 companion: partial option support under fan-out — the documented
+    // philosophy (ADR-0004 D5/D6). An arm that rejects the option drops with
+    // an UNSUPPORTED_OPTION disclosure while a supporting arm serves it;
+    // only ALL-arms-reject fails the invocation.
+    it("fan-out partial option support: rejecting arm drops with notice, supporting arm serves (exit 0)", async () => {
+      const supportingInvokes = [];
+      const supporting = {
+        descriptor: {
+          id: "brave",
+          isConfigured: () => true,
+          capabilities: () => new Set(["search"]),
+          create: () => ({
+            id: "brave",
+            search: {
+              validate() {},
+              cacheIdentity(r) {
+                return {
+                  provider: "brave",
+                  capability: "search",
+                  credentialFingerprint: "fp-brave",
+                  request: r,
+                  legacyCandidates: [],
+                };
+              },
+              async invoke(r) {
+                supportingInvokes.push(r);
+                return [{ title: "Vid", url: "https://b/v", summary: "video result" }];
+              },
+            },
+          }),
+        },
+      };
+      const rejectingInvokes = [];
+      const rejecting = {
+        descriptor: {
+          id: "zai",
+          isConfigured: () => true,
+          capabilities: () => new Set(["search"]),
+          create: () => ({
+            id: "zai",
+            search: {
+              validate(request) {
+                if (request.controls?.type !== undefined) {
+                  throw new UnsupportedOptionError("zai", "search", "type");
+                }
+              },
+              cacheIdentity(r) {
+                return {
+                  provider: "zai",
+                  capability: "search",
+                  credentialFingerprint: "fp-zai",
+                  request: r,
+                  legacyCandidates: [],
+                };
+              },
+              async invoke(r) {
+                rejectingInvokes.push(r);
+                return [];
+              },
+            },
+          }),
+        },
+      };
+      const out2 = [];
+      const err2 = [];
+      const adapter2 = {
+        stdoutIsTTY: false,
+        stdinIsTTY: false,
+        environmentOutputMode: "data",
+        readStdin: async () => "",
+        writeStdout: (v) => out2.push(v),
+        writeStderr: (v) => err2.push(v),
+        runQuietly: async (op) => op(),
+        setExitCode: () => {},
+      };
+      const freshCache2 = () => {
+        const m = new Map();
+        return {
+          async get(k) { return m.has(k) ? m.get(k) : null; },
+          async set(k, v) { m.set(k, v); },
+        };
+      };
+      const status2 = await main(["search", "q", "--type", "video"], {
+        invocation: adapter2,
+        env: {},
+        providerDescriptors: [supporting.descriptor, rejecting.descriptor],
+        configFanout: true,
+        searchCache: freshCache2(),
+        loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+        searchSleep: async () => {},
+        searchRandom: () => 0.5,
+      });
+      assert.strictEqual(status2, 0, `partial support must succeed; stderr=${JSON.stringify(err2)}`);
+      assert.ok(
+        supportingInvokes.some((r) => r.controls?.type === "video"),
+        "supporting arm must receive the type control",
+      );
+      assert.strictEqual(rejectingInvokes.length, 0, "rejecting arm never invokes");
+      assert.ok(
+        err2.some((l) => /dropped: UNSUPPORTED_OPTION \(type\)/.test(l)),
+        `expected a per-arm drop disclosure, got ${JSON.stringify(err2)}`,
+      );
+    });
 });
 
 // =============================================================================

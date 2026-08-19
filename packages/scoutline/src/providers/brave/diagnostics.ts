@@ -22,14 +22,7 @@
  */
 
 import type { DiagnosticsCapability, DiagnosticOptions } from "../../capabilities/diagnostics.js";
-import {
-  ApiError,
-  AuthError,
-  ConfigurationError,
-  NetworkError,
-  QuotaError,
-  TimeoutError,
-} from "../../lib/errors.js";
+import { createProbeErrorNormalizer, STANDARD_PROBE_PASS_THROUGH } from "../../lib/probe-errors.js";
 import { requireBraveApiKey } from "./credentials.js";
 import { fetchBraveSearch, type BraveTransportDeps } from "./client.js";
 
@@ -45,19 +38,10 @@ import { fetchBraveSearch, type BraveTransportDeps } from "./client.js";
  * bodies, and these typed errors carry only curated messages, so no
  * raw Brave body ever crosses this boundary.
  */
-function normalizeProbeError(error: unknown): Error {
-  if (
-    error instanceof AuthError ||
-    error instanceof ApiError ||
-    error instanceof NetworkError ||
-    error instanceof QuotaError ||
-    error instanceof TimeoutError ||
-    error instanceof ConfigurationError
-  ) {
-    return error;
-  }
-  return new ApiError("Brave diagnostics probe failed", 500);
-}
+const normalizeProbeError = createProbeErrorNormalizer({
+  passThrough: STANDARD_PROBE_PASS_THROUGH,
+  fallbackMessage: "Brave diagnostics probe failed",
+});
 
 // ---------------------------------------------------------------------------
 // Capability factory

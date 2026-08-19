@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.7] - 2026-08-19
+
+### Class-guard findings resolved: every control honored or honestly disclosed (#66-#71)
+
+- **Six dropped reader controls wired (#66, #68, #69, #70), API-documented:** Tavily `retainImages` (local image-markdown strip — the API has no content-image toggle) and `timeout` (forwarded to the /extract body, client abort budget raised so the server ceiling governs); Firecrawl `timeout` (per-request client abort budget); Jina `noGfm` (the documented `X-No-Gfm` header — the stale "no GFM toggle" comment corrected); Parallel `timeout` (forwarded to `advanced_settings.fetch_policy.timeout_seconds`); Exa `retainImages` (local strip — /contents has no retention knob). Empty-after-strip surfaces a terminal 422, mirroring Parallel's guard.
+- **Exa research strip-and-warn is now a pinned contract (#67):** `outputLength`/`citationFormat`/`domain` remain accepted-then-stripped with the stderr disclosure (documented OD1 fallback, owner-endorsed); the controls-conformance guard gained a `documented-strip` outcome asserting all three legs (accepted, stripped from the wire, disclosure fired). The findings registry is empty.
+- **Extraction-error detail passes through (#71):** a Parallel extract failure from the response's `errors[]` surfaces its adapter-authored message verbatim — the failing URL and the provider's error_type — instead of the generic wrap. Every other ApiError path keeps the sanitized constant message byte-identically (#56 contract).
+
+Full suite: **3767/3767 (glob) · 3764/3764 (offline gate) — zero failures.** With this release every open issue in the tracker is closed.
+
 ## [0.17.6] - 2026-08-19
 
 ### Hermetic `main()` by construction (#73, #72)

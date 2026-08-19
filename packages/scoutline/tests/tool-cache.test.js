@@ -552,3 +552,81 @@ describe("tool-cache: file modes are restrictive (1.3)", () => {
     }
   });
 });
+
+describe("tool-cache: audit 2026-08 #45 (legacy v1 envelope deletion)", () => {
+  // The v1 envelope shape (pre-redaction) stored tools with raw plaintext
+  // credentials embedded in their descriptions. Rejecting one on a
+  // version mismatch is necessary — but if the file is left on disk it
+  // remains readable by anyone with FS access until manual cleanup. The
+  // fix must unlink the file as part of the version-miss path so the
+  // secret is removed from disk at the moment we discover it is unsafe.
+
+  it("v1 envelope is unlinked on read-miss (no lingering plaintext secrets on disk)", async () => {
+    clearCacheEnv();
+    const dir = await redirectCacheRoot();
+    try {
+      const config = baseConfig();
+      const filePath = buildToolCachePath(config);
+
+      // Plant a synthetic v1 envelope whose description field carries a
+      // plaintext-looking credential. The shape (version: 1, timestamp,
+      // tools: [...]) is the pre-redaction format that writes prior to
+      // the B2 fix landed.
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      const v1Envelope = {
+        version: 1,
+        timestamp: Date.now(),
+        tools: [
+          {
+            name: "scoutline_zai.search.web_search_prime",
+            description: "Search the web. Auth: Bearer RAW_TEST_SECRET_DO_NOT_LEAK_12345",
+            inputs: { type: "object" },
+          },
+        ],
+      };
+      await fs.writeFile(filePath, JSON.stringify(v1Envelope));
+
+      // Sanity: the planted file must exist before the read.
+      assert.ok(fsSync.existsSync(filePath), "planted v1 envelope must exist before read");
+
+      // Trigger the version-miss path.
+      const readBack = await readToolCache(config);
+      assert.strictEqual(readBack, null, "v1 envelope must miss");
+
+      // The fix: the v1 envelope must be unlinked from disk so a
+      // legacy plaintext credential does not linger after the version
+      // mismatch is detected.
+      assert.strictEqual(
+        fsSync.existsSync(filePath),
+        false,
+        "v1 envelope must be deleted from disk on version mismatch (legacy secrets must not linger)",
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it("v2 envelope is read normally and left on disk (no spurious deletion)", async () => {
+    clearCacheEnv();
+    const dir = await redirectCacheRoot();
+    try {
+      const config = baseConfig();
+      await writeToolCache(config, sampleTools());
+
+      const filePath = buildToolCachePath(config);
+      const readBack = await readToolCache(config);
+      assert.ok(readBack !== null, "v2 envelope must hit");
+      assert.strictEqual(readBack.length, sampleTools().length);
+
+      // Companion guard: the healthy v2 envelope must remain on disk
+      // after a successful read. The fix MUST NOT delete files that
+      // match the current version.
+      assert.ok(
+        fsSync.existsSync(filePath),
+        "v2 envelope must remain on disk after a successful read",
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+});

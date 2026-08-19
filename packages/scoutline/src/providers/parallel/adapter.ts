@@ -103,10 +103,21 @@ function credentialFingerprint(apiKey: string): string {
 }
 
 /**
+ * Prefix of the adapter-authored errors[]-path extraction failure
+ * message (#71). `normalizeParallelError` surfaces an ApiError whose
+ * message starts with this prefix verbatim — the message is curated at
+ * the adapter's own throw site (requested URL + the provider's short
+ * error_type token), never a raw Provider response body.
+ */
+const PARALLEL_EXTRACT_FAILED_PREFIX = "Parallel AI extract failed for URL";
+
+/**
  * Normalize a Provider failure with sanitized messages. Raw response
  * bodies never cross the adapter boundary. Same pattern as the Tavily
  * adapter's `normalizeTavilyError` — curated constant messages only,
- * never interpolate `error.message`.
+ * never interpolate `error.message`. The single exception (#71): the
+ * errors[]-path extraction ApiError is adapter-authored with curated
+ * URL/error_type detail, so it passes through verbatim.
  */
 function normalizeParallelError(error: unknown): Error {
   // QuotaError pass-through — terminal retry guarantee preserved.
@@ -138,6 +149,10 @@ function normalizeParallelError(error: unknown): Error {
   }
   if (error instanceof ApiError) {
     const statusCode = error.statusCode || 500;
+    // #71 — errors[]-path passthrough: adapter-authored curated detail.
+    if (error.message.startsWith(PARALLEL_EXTRACT_FAILED_PREFIX)) {
+      return new ApiError(error.message, statusCode);
+    }
     if (statusCode === 429) {
       return new ApiError("Parallel AI rate limit exceeded", 429);
     }
@@ -746,7 +761,7 @@ export class ParallelAdapter implements ProviderAdapter {
               for (const err of response.errors) {
                 if (err.url === request.url) {
                   throw new ApiError(
-                    `Parallel AI extract failed for URL (${err.error_type || "unknown"})`,
+                    `Parallel AI extract failed for URL ${request.url} (${err.error_type || "unknown"})`,
                     err.http_status_code || 422,
                   );
                 }

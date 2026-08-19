@@ -403,14 +403,13 @@ describe("Parallel AI Descriptor & Adapter", () => {
         // The surfaced status must be the entry matching the REQUESTED url
         // (404), not the decoy entry's 503 (#60).
         err.statusCode === 404 &&
-        // Pin the error-normalization contract for the errors[] path: at
-        // HEAD normalizeParallelError replaces the inner
-        // "Parallel AI extract failed for URL (fetch_failed)" message
-        // (which names url/error_type) with this generic one while keeping
-        // the mapped status. If normalization changes — e.g. starts
-        // passing the error_type/URL detail through — update this pin
-        // (#60).
-        err.message === "Parallel AI request failed",
+        // Pin the #71 passthrough contract for the errors[] path:
+        // normalizeParallelError surfaces the adapter-authored extraction
+        // detail verbatim — the message names the REQUESTED url and its
+        // error_type (never the decoy entry's, which this equality pin
+        // and the 404 status pin above both prove).
+        err.message ===
+          "Parallel AI extract failed for URL https://broken.page (fetch_failed)",
     );
   });
 

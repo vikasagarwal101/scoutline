@@ -68,6 +68,14 @@ const withAmbientConfigDir = async (fn) => {
   }
 };
 
+const EMPTY_CAT = { used: 0, limit: 100, remaining: 100, remainingPercent: 100 };
+function emptyQuotaSnapshot() {
+  // Present snapshot (required for the resolver to consult routing);
+  // identical tiers so routing — an instruction — decides the order.
+  const entry = { observedAt: 1, categories: [{ name: 'requests', unit: 'requests', current: EMPTY_CAT }] };
+  return { quota: { zai: entry, tavily: { observedAt: 1, categories: [{ name: 'requests', unit: 'requests', current: EMPTY_CAT }] } } };
+}
+
 describe("main() config hermeticity (#73)", () => {
   it("hermeticMainDeps defaults an empty config loader (caller values win)", async () => {
     const { adapter } = makeAdapter();
@@ -129,6 +137,7 @@ describe("main() config hermeticity (#73)", () => {
       searchCache: createInMemoryResponseCache(),
       searchSleep: async () => {},
       searchRandom: () => 0.5,
+      quotaState: emptyQuotaSnapshot(),
       ...extra,
     });
 

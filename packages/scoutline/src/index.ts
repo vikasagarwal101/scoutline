@@ -2992,6 +2992,13 @@ export interface MainDependencies {
    */
   readonly configFanout?: boolean;
   /**
+   * Injectable routing preference override (#72). When provided, this
+   * wins over the config file's routing table — the injectable-wins
+   * twin of configFanout, closing the last ambient-config leak into
+   * main()-driven tests.
+   */
+  readonly routing?: HandlerDependencies["routing"];
+  /**
    * Injectable shared-Search execution dependencies. Production defaults
    * to the on-disk cache and real sleep/random; tests inject in-memory
    * doubles for deterministic, offline behaviour.
@@ -3661,7 +3668,8 @@ export async function main(
     resolvedEnv,
     secrets,
     fallbackEnabled,
-    config.routing,
+    // #72: injectable-wins, mirroring configFanout above.
+    dependencies.routing ?? config.routing,
     configFanout,
   );
 

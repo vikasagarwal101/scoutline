@@ -5,30 +5,14 @@
  */
 
 import type { DiagnosticsCapability, DiagnosticOptions } from "../../capabilities/diagnostics.js";
-import {
-  ApiError,
-  AuthError,
-  ConfigurationError,
-  NetworkError,
-  QuotaError,
-  TimeoutError,
-} from "../../lib/errors.js";
+import { createProbeErrorNormalizer, STANDARD_PROBE_PASS_THROUGH } from "../../lib/probe-errors.js";
 import { requirePerplexityApiKey } from "./credentials.js";
 import { fetchPerplexitySearch, type PerplexityTransportDeps } from "./client.js";
 
-function normalizeProbeError(error: unknown): Error {
-  if (
-    error instanceof AuthError ||
-    error instanceof QuotaError ||
-    error instanceof ApiError ||
-    error instanceof NetworkError ||
-    error instanceof TimeoutError ||
-    error instanceof ConfigurationError
-  ) {
-    return error;
-  }
-  return new ApiError("Perplexity diagnostics probe failed", 500);
-}
+const normalizeProbeError = createProbeErrorNormalizer({
+  passThrough: STANDARD_PROBE_PASS_THROUGH,
+  fallbackMessage: "Perplexity diagnostics probe failed",
+});
 
 export interface PerplexityDiagnosticsCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;

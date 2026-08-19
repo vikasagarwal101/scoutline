@@ -17,14 +17,7 @@
  */
 
 import type { DiagnosticsCapability, DiagnosticOptions } from "../../capabilities/diagnostics.js";
-import {
-  ApiError,
-  AuthError,
-  ConfigurationError,
-  NetworkError,
-  QuotaError,
-  TimeoutError,
-} from "../../lib/errors.js";
+import { createProbeErrorNormalizer, STANDARD_PROBE_PASS_THROUGH } from "../../lib/probe-errors.js";
 import { requireFirecrawlApiKey } from "./credentials.js";
 import { fetchFirecrawlScrape, type FirecrawlTransportDeps } from "./client.js";
 
@@ -34,19 +27,10 @@ import { fetchFirecrawlScrape, type FirecrawlTransportDeps } from "./client.js";
  * failure; the doctor command catches the throw and records a redacted
  * error entry. We never embed raw Provider bodies.
  */
-function normalizeProbeError(error: unknown): Error {
-  if (
-    error instanceof AuthError ||
-    error instanceof ApiError ||
-    error instanceof NetworkError ||
-    error instanceof QuotaError ||
-    error instanceof TimeoutError ||
-    error instanceof ConfigurationError
-  ) {
-    return error;
-  }
-  return new ApiError("Firecrawl diagnostics probe failed", 500);
-}
+const normalizeProbeError = createProbeErrorNormalizer({
+  passThrough: STANDARD_PROBE_PASS_THROUGH,
+  fallbackMessage: "Firecrawl diagnostics probe failed",
+});
 
 export interface FirecrawlDiagnosticsCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;

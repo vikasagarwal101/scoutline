@@ -24,12 +24,13 @@ import type {
   DiagnosticOptions,
 } from "../../capabilities/diagnostics.js";
 import {
-  ApiError,
   AuthError,
-  ConfigurationError,
+  ApiError,
   NetworkError,
   TimeoutError,
+  ConfigurationError,
 } from "../../lib/errors.js";
+import { createProbeErrorNormalizer } from "../../lib/probe-errors.js";
 import { requireTavilyApiKey } from "./credentials.js";
 import {
   fetchTavilySearch,
@@ -46,18 +47,13 @@ import {
  * failure; the doctor command catches the throw and records a redacted
  * error entry. We never embed raw Provider bodies.
  */
-function normalizeProbeError(error: unknown): Error {
-  if (
-    error instanceof AuthError ||
-    error instanceof ApiError ||
-    error instanceof NetworkError ||
-    error instanceof TimeoutError ||
-    error instanceof ConfigurationError
-  ) {
-    return error;
-  }
-  return new ApiError("Tavily diagnostics probe failed", 500);
-}
+// Tavily deliberately omits QuotaError from its pass-through list
+// (mirroring the Adapter search-path mapping): a thrown QuotaError
+// surfaces as the fallback ApiError instead.
+const normalizeProbeError = createProbeErrorNormalizer({
+  passThrough: [AuthError, ApiError, NetworkError, TimeoutError, ConfigurationError],
+  fallbackMessage: "Tavily diagnostics probe failed",
+});
 
 // ---------------------------------------------------------------------------
 // Capability factory

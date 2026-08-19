@@ -50,66 +50,11 @@ import { UnsupportedOptionError } from "../dist/lib/errors.js";
 // ---------------------------------------------------------------------------
 // Findings registry — every `dropped` row must point here. These are the
 // rows that CANNOT pass as rejected/consumed at HEAD; they encode the
-// option-drop bug class as executable evidence.
+// option-drop bug class as executable evidence. CC-1..CC-6 were fixed
+// (issues #66–#70) and their rows upgraded to consumed.
 // ---------------------------------------------------------------------------
 
 const FINDINGS = [
-  {
-    id: "CC-1",
-    provider: "tavily",
-    capability: "reader",
-    control: "retainImages",
-    problem:
-      "validate() accepts retainImages (not in UNSUPPORTED_READER_OPTIONS) but invoke() " +
-      "maps only format into the /extract body — the control is silently dropped.",
-  },
-  {
-    id: "CC-2",
-    provider: "tavily",
-    capability: "reader",
-    control: "timeout",
-    problem:
-      "validate() accepts timeout but invoke() never forwards it; the /extract body " +
-      "carries only urls/format. Silently dropped.",
-  },
-  {
-    id: "CC-3",
-    provider: "exa",
-    capability: "reader",
-    control: "retainImages",
-    problem:
-      "Accepted but ignored by design (in-source comment: 'Exa has no equivalent param'); " +
-      "documented accept-and-ignore, but per this guard's binary it is neither rejected " +
-      "nor consumed.",
-  },
-  {
-    id: "CC-4",
-    provider: "firecrawl",
-    capability: "reader",
-    control: "timeout",
-    problem:
-      "validate() accepts timeout but invoke() builds only formats/proxy/" +
-      "removeBase64Images — timeout never reaches the /v2/scrape body.",
-  },
-  {
-    id: "CC-5",
-    provider: "jina",
-    capability: "reader",
-    control: "noGfm",
-    problem:
-      "Adapter validate() only checks the URL and invoke() forwards noGfm to the client, " +
-      "but the client intentionally never sends it ('Jina Reader has no GFM toggle header') " +
-      "— dropped at the transport layer, not rejected at the adapter boundary.",
-  },
-  {
-    id: "CC-6",
-    provider: "parallel",
-    capability: "reader",
-    control: "timeout",
-    problem:
-      "validate() accepts timeout but invoke() calls fetchParallelExtract without it — " +
-      "silently dropped.",
-  },
   {
     id: "CC-7",
     provider: "exa",
@@ -217,7 +162,7 @@ const TAVILY_SEARCH_RAW = {
   results: [{ title: "Result", url: "https://example.test/one", content: "Summary." }],
 };
 const TAVILY_EXTRACT_RAW = {
-  results: [{ url: PAGE_URL, raw_content: "# Page body" }],
+  results: [{ url: PAGE_URL, raw_content: "![alt](https://img.example.test/i.png) # Page body" }],
 };
 
 const EXA_SEARCH_RAW = {
@@ -226,7 +171,12 @@ const EXA_SEARCH_RAW = {
 const EXA_CONTENTS_RAW = {
   statuses: [{ id: PAGE_URL, status: "success" }],
   results: [
-    { id: PAGE_URL, url: PAGE_URL, title: "Page", text: "Hello [world](https://example.com) !" },
+    {
+      id: PAGE_URL,
+      url: PAGE_URL,
+      title: "Page",
+      text: "![alt](https://img.example.test/i.png) Hello [world](https://example.com) !",
+    },
   ],
 };
 
@@ -431,10 +381,21 @@ function makeHarness(provider, capability) {
   }
 
   const { fetch, calls } = makeCaptureFetch(RESPONDERS[provider]);
+  const timerDelays = [];
   const transport = { fetch };
   if (capability === "research") {
     transport.env = transportEnv(provider);
     Object.assign(transport, NO_OP_TIMERS);
+  } else {
+    // Hermetic reader/search rows: record-and-swallow the abort timer so a
+    // wired client abort budget is observable (on: "timer") without arming
+    // real timers. The capture fetch ignores init.signal, so never firing
+    // the abort callback is safe.
+    transport.setTimeout = (cb, ms) => {
+      timerDelays.push(ms);
+      return 0;
+    };
+    transport.clearTimeout = () => {};
   }
 
   const stateFile = createInMemoryAsyncJobStateFile();
@@ -443,6 +404,7 @@ function makeHarness(provider, capability) {
       return {
         adapter: createMiniMaxDescriptor({ transport }).create(context),
         calls,
+        timerDelays,
       };
     case "tavily":
       return {
@@ -452,6 +414,7 @@ function makeHarness(provider, capability) {
           researchStateDir: capability === "research" ? tmpStateDir() : undefined,
         }).create(context),
         calls,
+        timerDelays,
       };
     case "exa":
       return {
@@ -459,11 +422,16 @@ function makeHarness(provider, capability) {
           context,
         ),
         calls,
+        timerDelays,
       };
     case "brave":
-      return { adapter: createBraveDescriptor({ transport }).create(context), calls };
+      return { adapter: createBraveDescriptor({ transport }).create(context), calls, timerDelays };
     case "firecrawl":
-      return { adapter: createFirecrawlDescriptor({ transport }).create(context), calls };
+      return {
+        adapter: createFirecrawlDescriptor({ transport }).create(context),
+        calls,
+        timerDelays,
+      };
     case "parallel":
       return {
         adapter: new ParallelAdapter(context, {
@@ -472,11 +440,12 @@ function makeHarness(provider, capability) {
           researchStateDir: capability === "research" ? tmpStateDir() : undefined,
         }),
         calls,
+        timerDelays,
       };
     case "perplexity":
-      return { adapter: new PerplexityAdapter(context, { transport }), calls };
+      return { adapter: new PerplexityAdapter(context, { transport }), calls, timerDelays };
     case "jina":
-      return { adapter: new JinaAdapter(context, { transport }), calls };
+      return { adapter: new JinaAdapter(context, { transport }), calls, timerDelays };
     default:
       throw new Error(`unknown provider ${provider}`);
   }
@@ -586,6 +555,17 @@ async function runRow(row) {
     const result = await capability.invoke(request);
     if (row.on === "result") {
       applyCheck(getPath(result, row.path), row);
+      return;
+    }
+    if (row.on === "timer") {
+      // Wire-observable for controls wired to the client abort budget:
+      // the delay the transport armed its abort timer with.
+      const delays = harness.timerDelays ?? [];
+      assert.ok(
+        delays.length > 0,
+        `${row.provider} ${row.capability} ${row.control}: expected an armed client-side timer`,
+      );
+      applyCheck(delays[delays.length - 1], row);
       return;
     }
     const capture = pickCapture(harness, row.pick);
@@ -899,9 +879,10 @@ const ROWS = [
     capability: "reader",
     control: "retainImages",
     input: { retainImages: false },
-    expect: "dropped",
-    finding: "CC-1",
-    absentToken: "retain",
+    expect: "consumed",
+    on: "result",
+    path: "content",
+    excludes: "![",
   },
   {
     provider: "tavily",
@@ -936,9 +917,10 @@ const ROWS = [
     capability: "reader",
     control: "timeout",
     input: { timeout: 20 },
-    expect: "dropped",
-    finding: "CC-2",
-    absentToken: "timeout",
+    expect: "consumed",
+    on: "body",
+    path: "timeout",
+    equals: 20,
   },
 
   // ----- tavily / research — all four controls ride the create POST --------
@@ -1062,9 +1044,10 @@ const ROWS = [
     capability: "reader",
     control: "retainImages",
     input: { retainImages: false },
-    expect: "dropped",
-    finding: "CC-3",
-    absentToken: "retain",
+    expect: "consumed",
+    on: "result",
+    path: "content",
+    excludes: "![",
   },
   {
     provider: "exa",
@@ -1325,9 +1308,9 @@ const ROWS = [
     capability: "reader",
     control: "timeout",
     input: { timeout: 20 },
-    expect: "dropped",
-    finding: "CC-4",
-    absentToken: "timeout",
+    expect: "consumed",
+    on: "timer",
+    equals: 20000,
   },
 
   // ----- jina / search -----------------------------------------------------
@@ -1418,9 +1401,10 @@ const ROWS = [
     capability: "reader",
     control: "noGfm",
     input: { noGfm: true },
-    expect: "dropped",
-    finding: "CC-5",
-    absentToken: "gfm",
+    expect: "consumed",
+    on: "header",
+    path: "X-No-Gfm",
+    equals: "true",
   },
   {
     provider: "jina",
@@ -1700,9 +1684,10 @@ const ROWS = [
     capability: "reader",
     control: "timeout",
     input: { timeout: 20 },
-    expect: "dropped",
-    finding: "CC-6",
-    absentToken: "timeout",
+    expect: "consumed",
+    on: "body",
+    path: "advanced_settings.fetch_policy.timeout_seconds",
+    equals: 20,
   },
 
   // ----- parallel / research — steering via task_spec -----------------------

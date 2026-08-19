@@ -572,7 +572,17 @@ function createFirecrawlReaderCapability(
           proxy: "basic",
           ...(request.retainImages === false ? { removeBase64Images: true } : {}),
         };
-        const raw = await fetchFirecrawlScrape(apiKey, request.url, params, transport);
+        // CC-4 (#68): wire --timeout to the client abort budget via a
+        // per-request FIRECRAWL_TIMEOUT override (the /v2/scrape body
+        // `timeout` param would require a client change).
+        const requestDeps: FirecrawlTransportDeps | undefined =
+          request.timeout !== undefined
+            ? {
+                ...transport,
+                env: { FIRECRAWL_TIMEOUT: String(Math.round(request.timeout * 1000)) },
+              }
+            : transport;
+        const raw = await fetchFirecrawlScrape(apiKey, request.url, params, requestDeps);
         return normalizeFirecrawlScrapeResult(raw, request);
       } catch (error) {
         throw normalizeFirecrawlError(error);

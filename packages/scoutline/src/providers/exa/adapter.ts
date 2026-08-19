@@ -440,8 +440,8 @@ function createExaSearchCapability(options: ExaSearchCapabilityOptions): SearchC
 // ---------------------------------------------------------------------------
 
 /** Options the Exa Reader does NOT accept (Z.AI-only). `retainImages`
- * is accepted but silently ignored (Exa has no equivalent param); the
- * read command handler sends it as `true` by default. */
+ * has no Exa-native param and is honored locally — see
+ * {@link stripImageMarkdown}. */
 const UNSUPPORTED_READER_OPTIONS = [
   "withLinksSummary",
   "noGfm",
@@ -506,6 +506,16 @@ function stripMarkdown(input: string): string {
   result = result.replace(/^[\s]*[-*+]\s+/gm, "");
   result = result.replace(/^[\s]*\d+\.\s+/gm, "");
   return result.trim();
+}
+
+/**
+ * Strip markdown image syntax (`![alt](url)`) from contents text. Exa
+ * /contents has no image-retention param (`extras` only ADDS image
+ * lists to the response), so `retainImages: false` is honored locally
+ * (#67 CC-3, mirroring Parallel #52).
+ */
+function stripImageMarkdown(content: string): string {
+  return content.replace(/!\[[^\]]*\]\([^)]*\)/g, "");
 }
 
 // ---------------------------------------------------------------------------
@@ -607,6 +617,11 @@ function normalizeExaContentsResult(raw: unknown, request: ReaderFetchRequest): 
   if (typeof content !== "string" || content.length === 0) {
     throw new ApiError("Exa contents returned a malformed response", 500);
   }
+  // CC-3 (#67): honor --no-images locally (no Exa content-image toggle).
+  const content0 = request.retainImages === false ? stripImageMarkdown(content) : content;
+  if (content0.length === 0) {
+    throw new ApiError("Exa contents returned no content after image stripping", 422);
+  }
   const finalUrl = typeof entry.url === "string" && entry.url.length > 0 ? entry.url : request.url;
   const rawTitle = typeof entry.title === "string" ? entry.title.trim() : "";
   const title: string | null = rawTitle.length > 0 ? rawTitle : null;
@@ -618,7 +633,7 @@ function normalizeExaContentsResult(raw: unknown, request: ReaderFetchRequest): 
       url: request.url,
       finalUrl,
       title,
-      content: stripMarkdown(content),
+      content: stripMarkdown(content0),
       contentFormat: "text",
     };
   }
@@ -627,7 +642,7 @@ function normalizeExaContentsResult(raw: unknown, request: ReaderFetchRequest): 
     url: request.url,
     finalUrl,
     title,
-    content,
+    content: content0,
     contentFormat: "markdown",
   };
 }

@@ -76,6 +76,12 @@ export interface TavilyExtractParams {
    * whether the API returns markdown or plain text in `raw_content`.
    */
   readonly format?: "markdown" | "text";
+  /**
+   * Seconds the server may spend on the extraction (CC-2, #66). The
+   * /extract API documents `timeout` as a float in [1.0, 60.0] with
+   * depth-dependent defaults (10s basic / 30s advanced).
+   */
+  readonly timeout?: number;
 }
 
 /**
@@ -356,7 +362,18 @@ export async function fetchTavilyExtract(
   if (params?.format !== undefined) {
     body.format = params.format;
   }
-  return postTavilyJson(apiKey, EXTRACT_PATH, body, deps, "extract");
+  if (params?.timeout !== undefined) {
+    body.timeout = params.timeout;
+  }
+  // CC-2 (#66): the client abort must outlast the server-side ceiling so
+  // an explicit extract timeout is not aborted client-side first (mirrors
+  // the crawl/map pattern).
+  const serverCeilingSeconds = params?.timeout ?? 30;
+  const clientTimeoutMs = Math.max(
+    resolveTimeoutMs(deps.env ?? process.env),
+    serverCeilingSeconds * 1000 + 5000,
+  );
+  return postTavilyJson(apiKey, EXTRACT_PATH, body, deps, "extract", clientTimeoutMs);
 }
 
 /**

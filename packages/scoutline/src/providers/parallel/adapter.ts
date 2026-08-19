@@ -732,7 +732,14 @@ export class ParallelAdapter implements ProviderAdapter {
           const apiKey = requireParallelApiKey(env);
 
           try {
-            const response = await fetchParallelExtract(apiKey, request.url, transport);
+            // CC-6 (#70): forward --timeout as the documented Extract
+            // fetch_policy timeout (seconds) plus the client abort budget.
+            const response = await fetchParallelExtract(
+              apiKey,
+              request.url,
+              transport,
+              request.timeout !== undefined ? { timeoutSeconds: request.timeout } : undefined,
+            );
 
             // Check for extraction errors for the requested URL
             if (response.errors && response.errors.length > 0) {

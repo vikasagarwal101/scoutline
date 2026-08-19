@@ -60,9 +60,17 @@ function mockDeepSearchSSE(answerContent, opts = {}) {
 
 describe("Jina AI Credentials", () => {
   it("resolves valid API key from environment", () => {
-    assert.equal(resolveJinaApiKey({ JINA_API_KEY: "  key789  " }), "  key789  ");
+    assert.equal(resolveJinaApiKey({ JINA_API_KEY: "  key789  " }), "key789");
     assert.equal(resolveJinaApiKey({}), undefined);
     assert.equal(resolveJinaApiKey({ JINA_API_KEY: "   " }), undefined);
+  });
+
+  it("returns a whitespace-padded key trimmed (#58d)", () => {
+    assert.equal(resolveJinaApiKey({ JINA_API_KEY: "  key789  " }), "key789");
+  });
+
+  it("returns undefined for a fully blank key (#58d guard)", () => {
+    assert.equal(resolveJinaApiKey({ JINA_API_KEY: " \t " }), undefined);
   });
 
   it("checks capability-aware configuration (8J.1)", () => {

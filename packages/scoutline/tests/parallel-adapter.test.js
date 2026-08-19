@@ -167,9 +167,17 @@ const FAILED_RESULT = {
 
 describe("Parallel AI Credentials", () => {
   it("resolves valid API key from environment", () => {
-    assert.equal(resolveParallelApiKey({ PARALLEL_API_KEY: "  key123  " }), "  key123  ");
+    assert.equal(resolveParallelApiKey({ PARALLEL_API_KEY: "  key123  " }), "key123");
     assert.equal(resolveParallelApiKey({}), undefined);
     assert.equal(resolveParallelApiKey({ PARALLEL_API_KEY: "   " }), undefined);
+  });
+
+  it("returns a whitespace-padded key trimmed (#58d)", () => {
+    assert.equal(resolveParallelApiKey({ PARALLEL_API_KEY: "  key123  " }), "key123");
+  });
+
+  it("returns undefined for a fully blank key (#58d guard)", () => {
+    assert.equal(resolveParallelApiKey({ PARALLEL_API_KEY: " \t " }), undefined);
   });
 
   it("requireParallelApiKey throws ConfigurationError when missing", () => {
@@ -1028,6 +1036,33 @@ describe("Parallel AI Error Handling", () => {
     const afterDate = capturedBody.advanced_settings.source_policy.after_date;
     assert.ok(afterDate, "after_date must be present");
     assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(afterDate), "after_date must be an RFC 3339 date");
+  });
+
+  it("maps recency oneDay to the UTC date one day before the mapping instant (#58a pin)", async () => {
+    let capturedBody = null;
+    const fakeFetch = async (url, init) => {
+      capturedBody = JSON.parse(init.body);
+      return { ok: true, status: 200, text: async () => JSON.stringify({ results: [] }) };
+    };
+
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const utcDateMinusOneDay = (instant) => {
+      const d = new Date(instant.getTime());
+      d.setUTCDate(d.getUTCDate() - 1);
+      return d.toISOString().split("T")[0];
+    };
+    const before = new Date();
+    await adapter.search.invoke({ query: "test", controls: { recency: "oneDay" } });
+    const after = new Date();
+    const afterDate = capturedBody.advanced_settings.source_policy.after_date;
+    assert.ok(
+      afterDate === utcDateMinusOneDay(before) || afterDate === utcDateMinusOneDay(after),
+      `after_date ${afterDate} must equal the UTC calendar date one day before the mapping instant`,
+    );
   });
 
   it("omits after_date for recency noLimit (8P.3)", async () => {

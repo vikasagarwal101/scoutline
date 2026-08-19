@@ -1455,6 +1455,19 @@ describe("Brave quota normalizer (normalizeBraveQuota)", () => {
     assert.ok(out.warnings.includes(BRAVE_QUOTA_CAVEAT));
   });
 
+  it("selects the largest window by duration regardless of policy order (#58b pin)", () => {
+    const out = normalizeBraveQuota({
+      policy: "15000;w=2592000, 1;w=1",
+      limit: "15000, 1",
+      remaining: "14523, 0",
+      reset: "1419704, 1",
+    });
+    assert.strictEqual(out.categories[0].name, "monthly");
+    assert.strictEqual(out.categories[0].current.limit, 15000);
+    assert.strictEqual(out.categories[0].current.remaining, 14523);
+    assert.strictEqual(out.categories[0].current.durationSeconds, 2592000);
+  });
+
   it("throws QUOTA_ERROR for a missing policy", () => {
     assert.throws(
       () => normalizeBraveQuota({ policy: null, limit: "1", remaining: "0", reset: "1" }),

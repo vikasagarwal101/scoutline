@@ -326,172 +326,25 @@ describe("Search Adapter conformance — shared normalized output", () => {
   it("all configured Adapters normalize to fixtures/normalized/search.json", async () => {
     const expected = await readFixture("normalized", "search.json");
 
-    // Z.AI raw response (title/link/content; no media/publish_date so the
-    // normalized form carries no source/date — matching MiniMax's shape).
-    const zaiRaw = [
-      {
-        title: "Conformance result one",
-        link: "https://example.test/one",
-        content: "Shared normalized summary one.",
-      },
-      {
-        title: "Conformance result two",
-        link: "https://example.test/two",
-        content: "Shared normalized summary two.",
-      },
-    ];
-    const zaiNormalized = await runSearchConformance(makeZaiCapability, zaiRaw);
-    assert.deepStrictEqual(zaiNormalized, expected);
-
-    // MiniMax raw response (organic title/link/snippet).
-    const minimaxRaw = {
-      organic: [
-        {
-          title: "Conformance result one",
-          link: "https://example.test/one",
-          snippet: "Shared normalized summary one.",
-        },
-        {
-          title: "Conformance result two",
-          link: "https://example.test/two",
-          snippet: "Shared normalized summary two.",
-        },
-      ],
-    };
-    const minimaxNormalized = await runSearchConformance(makeMiniMaxCapability, minimaxRaw);
-    assert.deepStrictEqual(minimaxNormalized, expected);
-
-    // Brave raw web response (web.results[] with title/url/description;
-    // no meta_url/page_age so source/date are absent — matching the
-    // shared normalized form).
-    const braveRaw = {
-      web: {
-        results: [
-          {
-            title: "Conformance result one",
-            url: "https://example.test/one",
-            description: "Shared normalized summary one.",
-          },
-          {
-            title: "Conformance result two",
-            url: "https://example.test/two",
-            description: "Shared normalized summary two.",
-          },
-        ],
-      },
-    };
-    const braveNormalized = await runSearchConformance(makeBraveCapability, braveRaw);
-    assert.deepStrictEqual(braveNormalized, expected);
-
-    // Tavily raw response (results[].title/url/content).
-    const tavilyRaw = {
-      results: [
-        {
-          title: "Conformance result one",
-          url: "https://example.test/one",
-          content: "Shared normalized summary one.",
-        },
-        {
-          title: "Conformance result two",
-          url: "https://example.test/two",
-          content: "Shared normalized summary two.",
-        },
-      ],
-    };
-    const tavilyNormalized = await runSearchConformance(makeTavilyCapability, tavilyRaw);
-    assert.deepStrictEqual(tavilyNormalized, expected);
-
-    // Exa raw response (results[].title/url/highlights[]).
-    const exaRaw = {
-      results: [
-        {
-          title: "Conformance result one",
-          url: "https://example.test/one",
-          highlights: ["Shared normalized summary one."],
-        },
-        {
-          title: "Conformance result two",
-          url: "https://example.test/two",
-          highlights: ["Shared normalized summary two."],
-        },
-      ],
-    };
-    const exaNormalized = await runSearchConformance(makeExaCapability, exaRaw);
-    assert.deepStrictEqual(exaNormalized, expected);
-
-    // Firecrawl raw response (data.web[].title/url/description).
-    const firecrawlRaw = {
-      data: {
-        web: [
-          {
-            title: "Conformance result one",
-            url: "https://example.test/one",
-            description: "Shared normalized summary one.",
-          },
-          {
-            title: "Conformance result two",
-            url: "https://example.test/two",
-            description: "Shared normalized summary two.",
-          },
-        ],
-      },
-    };
-    const firecrawlNormalized = await runSearchConformance(makeFirecrawlCapability, firecrawlRaw);
-    assert.deepStrictEqual(firecrawlNormalized, expected);
-
-    // Parallel raw response (results[].title/url/excerpts[]).
-    const parallelRaw = {
-      results: [
-        {
-          title: "Conformance result one",
-          url: "https://example.test/one",
-          excerpts: ["Shared normalized summary one."],
-        },
-        {
-          title: "Conformance result two",
-          url: "https://example.test/two",
-          excerpts: ["Shared normalized summary two."],
-        },
-      ],
-    };
-    const parallelNormalized = await runSearchConformance(makeParallelCapability, parallelRaw);
-    assert.deepStrictEqual(parallelNormalized, expected);
-
-    // Perplexity raw response (results[].title/url/snippet).
-    const perplexityRaw = {
-      results: [
-        {
-          title: "Conformance result one",
-          url: "https://example.test/one",
-          snippet: "Shared normalized summary one.",
-        },
-        {
-          title: "Conformance result two",
-          url: "https://example.test/two",
-          snippet: "Shared normalized summary two.",
-        },
-      ],
-    };
-    const perplexityNormalized = await runSearchConformance(makePerplexityCapability, perplexityRaw);
-    assert.deepStrictEqual(perplexityNormalized, expected);
-
-    // Jina raw response (data[].title/url/description).
-    const jinaRaw = {
-      data: [
-        {
-          title: "Conformance result one",
-          url: "https://example.test/one",
-          description: "Shared normalized summary one.",
-        },
-        {
-          title: "Conformance result two",
-          url: "https://example.test/two",
-          description: "Shared normalized summary two.",
-        },
-      ],
-    };
-    const jinaNormalized = await runSearchConformance(makeJinaCapability, jinaRaw);
-    assert.deepStrictEqual(jinaNormalized, expected);
+    // Factories and raw fixtures are registered in the CI completeness
+    // gate section below (SEARCH_CONFORMANCE_FACTORIES and
+    // SEARCH_CONFORMANCE_RAW). `it` callbacks run after module
+    // evaluation, so the forward reference is safe. Iterating the
+    // registration means a newly registered Provider is exercised here
+    // without hand-writing another per-Provider block.
+    for (const [id, factory] of SEARCH_CONFORMANCE_FACTORIES) {
+      const raw = SEARCH_CONFORMANCE_RAW.get(id);
+      assert.ok(
+        raw !== undefined,
+        `Provider "${id}" has a conformance factory but no raw fixture in SEARCH_CONFORMANCE_RAW.`,
+      );
+      const normalized = await runSearchConformance(factory, raw);
+      assert.deepStrictEqual(
+        normalized,
+        expected,
+        `Provider "${id}" must normalize its raw fixture to the shared normalized form`,
+      );
+    }
   });
 
   it("normalized output drops Provider-only fields (refer, icon, media, publish_date)", async () => {
@@ -526,10 +379,13 @@ describe("Search Adapter conformance — shared normalized output", () => {
 /**
  * Map of Provider ID → factory function for search conformance. Each
  * entry MUST be a real callable factory that accepts a provider-shaped
- * raw fixture and returns a SearchCapability. When a new Provider is
- * added to the registry, its factory must be added here. This guard
- * prevents silent onboarding gaps — adding just the ID without a
- * working factory will fail.
+ * raw fixture (see SEARCH_CONFORMANCE_RAW) and returns a
+ * SearchCapability. When a new Provider is added to the registry, its
+ * factory and raw fixture must be added here. This guard prevents
+ * silent onboarding gaps — the gate below checks registration AND
+ * executes every factory through runSearchConformance, so adding just
+ * the ID, or a factory whose suite does not actually run, will fail
+ * (#59).
  */
 const SEARCH_CONFORMANCE_FACTORIES = new Map([
   ["zai", makeZaiCapability],
@@ -543,6 +399,182 @@ const SEARCH_CONFORMANCE_FACTORIES = new Map([
   ["jina", makeJinaCapability],
 ]);
 
+/**
+ * Map of Provider ID → Provider-shaped raw fixture for search
+ * conformance. Each raw shape MUST normalize — through the matching
+ * factory in SEARCH_CONFORMANCE_FACTORIES — to the SAME shared
+ * fixtures/normalized/search.json form. The expected normalized shape
+ * does NOT branch by Provider.
+ */
+const SEARCH_CONFORMANCE_RAW = new Map([
+  // Z.AI raw response (title/link/content; no media/publish_date so the
+  // normalized form carries no source/date — matching MiniMax's shape).
+  [
+    "zai",
+    [
+      {
+        title: "Conformance result one",
+        link: "https://example.test/one",
+        content: "Shared normalized summary one.",
+      },
+      {
+        title: "Conformance result two",
+        link: "https://example.test/two",
+        content: "Shared normalized summary two.",
+      },
+    ],
+  ],
+  // MiniMax raw response (organic title/link/snippet).
+  [
+    "minimax",
+    {
+      organic: [
+        {
+          title: "Conformance result one",
+          link: "https://example.test/one",
+          snippet: "Shared normalized summary one.",
+        },
+        {
+          title: "Conformance result two",
+          link: "https://example.test/two",
+          snippet: "Shared normalized summary two.",
+        },
+      ],
+    },
+  ],
+  // Brave raw web response (web.results[] with title/url/description;
+  // no meta_url/page_age so source/date are absent — matching the
+  // shared normalized form).
+  [
+    "brave",
+    {
+      web: {
+        results: [
+          {
+            title: "Conformance result one",
+            url: "https://example.test/one",
+            description: "Shared normalized summary one.",
+          },
+          {
+            title: "Conformance result two",
+            url: "https://example.test/two",
+            description: "Shared normalized summary two.",
+          },
+        ],
+      },
+    },
+  ],
+  // Tavily raw response (results[].title/url/content).
+  [
+    "tavily",
+    {
+      results: [
+        {
+          title: "Conformance result one",
+          url: "https://example.test/one",
+          content: "Shared normalized summary one.",
+        },
+        {
+          title: "Conformance result two",
+          url: "https://example.test/two",
+          content: "Shared normalized summary two.",
+        },
+      ],
+    },
+  ],
+  // Exa raw response (results[].title/url/highlights[]).
+  [
+    "exa",
+    {
+      results: [
+        {
+          title: "Conformance result one",
+          url: "https://example.test/one",
+          highlights: ["Shared normalized summary one."],
+        },
+        {
+          title: "Conformance result two",
+          url: "https://example.test/two",
+          highlights: ["Shared normalized summary two."],
+        },
+      ],
+    },
+  ],
+  // Firecrawl raw response (data.web[].title/url/description).
+  [
+    "firecrawl",
+    {
+      data: {
+        web: [
+          {
+            title: "Conformance result one",
+            url: "https://example.test/one",
+            description: "Shared normalized summary one.",
+          },
+          {
+            title: "Conformance result two",
+            url: "https://example.test/two",
+            description: "Shared normalized summary two.",
+          },
+        ],
+      },
+    },
+  ],
+  // Parallel raw response (results[].title/url/excerpts[]).
+  [
+    "parallel",
+    {
+      results: [
+        {
+          title: "Conformance result one",
+          url: "https://example.test/one",
+          excerpts: ["Shared normalized summary one."],
+        },
+        {
+          title: "Conformance result two",
+          url: "https://example.test/two",
+          excerpts: ["Shared normalized summary two."],
+        },
+      ],
+    },
+  ],
+  // Perplexity raw response (results[].title/url/snippet).
+  [
+    "perplexity",
+    {
+      results: [
+        {
+          title: "Conformance result one",
+          url: "https://example.test/one",
+          snippet: "Shared normalized summary one.",
+        },
+        {
+          title: "Conformance result two",
+          url: "https://example.test/two",
+          snippet: "Shared normalized summary two.",
+        },
+      ],
+    },
+  ],
+  // Jina raw response (data[].title/url/description).
+  [
+    "jina",
+    {
+      data: [
+        {
+          title: "Conformance result one",
+          url: "https://example.test/one",
+          description: "Shared normalized summary one.",
+        },
+        {
+          title: "Conformance result two",
+          url: "https://example.test/two",
+          description: "Shared normalized summary two.",
+        },
+      ],
+    },
+  ],
+]);
 describe("CI completeness gate — every search Provider has a conformance factory (6.2)", () => {
   it("all registry providers advertising 'search' have a conformance factory", () => {
     const searchProviders = BUILT_IN_PROVIDER_DESCRIPTORS.filter((d) =>
@@ -555,6 +587,54 @@ describe("CI completeness gate — every search Provider has a conformance facto
         `Provider "${descriptor.id}" advertises search but has no conformance factory. ` +
           `Add a make${descriptor.id.charAt(0).toUpperCase() + descriptor.id.slice(1)}Capability ` +
           `factory and register it in SEARCH_CONFORMANCE_FACTORIES.`,
+      );
+    }
+  });
+
+  it("every registered conformance factory EXECUTES a running suite (#59)", async () => {
+    // `typeof factory === "function"` alone proves nothing about
+    // execution (#59): a registered factory whose suite never runs — or
+    // runs but diverges — must fail this gate instead of passing
+    // silently. The loop below drives each Provider's full conformance
+    // path (factory → capability → invoke(CONFORMANCE_REQUEST) →
+    // normalization) and compares the result against the shared fixture.
+    const expected = await readFixture("normalized", "search.json");
+    assert.ok(
+      SEARCH_CONFORMANCE_FACTORIES.size > 0,
+      "SEARCH_CONFORMANCE_FACTORIES is empty — no provider conformance is wired",
+    );
+    for (const [id, factory] of SEARCH_CONFORMANCE_FACTORIES) {
+      const raw = SEARCH_CONFORMANCE_RAW.get(id);
+      assert.ok(
+        raw !== undefined,
+        `Provider "${id}" registered a conformance factory but no raw fixture in ` +
+          `SEARCH_CONFORMANCE_RAW — its suite cannot execute.`,
+      );
+      let normalized;
+      try {
+        normalized = await runSearchConformance(factory, raw);
+      } catch (err) {
+        assert.fail(`Provider "${id}" conformance suite did not run: ${err?.message ?? err}`);
+      }
+      assert.ok(
+        Array.isArray(normalized) && normalized.length > 0,
+        `Provider "${id}" conformance suite produced no normalized results — ` +
+          `invoke() did not execute a real path.`,
+      );
+      assert.deepStrictEqual(
+        normalized,
+        expected,
+        `Provider "${id}" executed conformance diverges from fixtures/normalized/search.json.`,
+      );
+    }
+    // The executed set must cover every registry Provider advertising
+    // search — the class guard for future onboarding gaps.
+    for (const descriptor of BUILT_IN_PROVIDER_DESCRIPTORS) {
+      if (!descriptor.capabilities().has("search")) continue;
+      assert.ok(
+        SEARCH_CONFORMANCE_FACTORIES.has(descriptor.id),
+        `Provider "${descriptor.id}" advertises search but the gate executed no ` +
+          `conformance suite for it — add a factory and a raw fixture.`,
       );
     }
   });

@@ -98,12 +98,12 @@ function resolveResearchTimeoutMs(env: NodeJS.ProcessEnv): number {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_DEEPSEARCH_TIMEOUT_MS;
 }
 
-function mapStatusError(status: number, timeoutMs: number): Error {
+function mapStatusError(status: number, timeoutMs: number, timeoutHelp: string = TIMEOUT_HELP_TEXT): Error {
   if (status === 401 || status === 403) {
     return new AuthError("Perplexity authentication failed", "PERPLEXITY_API_KEY");
   }
   if (status === 408 || status === 504) {
-    return new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
+    return new TimeoutError(timeoutMs, timeoutHelp);
   }
   if (status === 429) {
     return new ApiError("Perplexity rate limit exceeded", 429);
@@ -228,7 +228,11 @@ export async function fetchPerplexityChat(
     });
 
     if (!response.ok) {
-      throw mapStatusError(response.status, timeoutMs);
+      throw mapStatusError(
+        response.status,
+        timeoutMs,
+        isResearch ? RESEARCH_TIMEOUT_HELP_TEXT : TIMEOUT_HELP_TEXT,
+      );
     }
 
     const text = await response.text();

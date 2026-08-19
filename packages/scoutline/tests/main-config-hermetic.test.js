@@ -102,6 +102,49 @@ describe("main() config hermeticity (#73)", () => {
     assert.ok(Array.isArray(data) && data.length === 1, "single-provider run, not fan-out");
   });
 
+  it("deps.routing wins over config.routing (#72: routing is injectable)", async () => {
+    // Order observable via which descriptor the invocation adapter records
+    // first — the descriptors' invoke pushes into a shared log.
+    const invokeLog = [];
+    const trackingDescriptor = (id) => {
+      const d = makeSearchDescriptor(id);
+      const inner = d.create().search;
+      d.create = () => ({
+        id,
+        search: {
+          ...inner,
+          async invoke(r) {
+            invokeLog.push(id);
+            return inner.invoke(r);
+          },
+        },
+      });
+      return d;
+    };
+    const baseDeps = (extra) => ({
+      invocation: makeAdapter().adapter,
+      env: {},
+      providerDescriptors: [trackingDescriptor("zai"), trackingDescriptor("tavily")],
+      config: { version: 1, providers: {}, routing: { search: ["zai", "tavily"] } },
+      searchCache: createInMemoryResponseCache(),
+      searchSleep: async () => {},
+      searchRandom: () => 0.5,
+      ...extra,
+    });
+
+    // Control: config.routing says zai-first
+    invokeLog.length = 0;
+    const control = await main(["search", "q"], baseDeps({}));
+    assert.strictEqual(control, 0);
+    assert.strictEqual(invokeLog[0], "zai", `config.routing should order zai first; got ${invokeLog[0]}`);
+
+    // Injected deps.routing says tavily-first and must WIN over config.routing
+    invokeLog.length = 0;
+    const injected = await main(["search", "q"], baseDeps({ routing: { search: ["tavily", "zai"] } }));
+    assert.strictEqual(injected, 0);
+    assert.strictEqual(invokeLog[0], "tavily", `deps.routing must beat config.routing; got ${invokeLog[0]}`);
+  });
+
   it("control: without deps.config the ambient file does engage fanout", async () => {
     const { adapter, stderr } = makeAdapter();
     const status = await withAmbientConfigDir(() =>

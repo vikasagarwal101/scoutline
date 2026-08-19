@@ -795,6 +795,72 @@ describe("Firecrawl Crawl Adapter", () => {
     assert.ok(calls.some((c) => c.method === "POST" && c.url.endsWith("/v2/crawl")));
   });
 
+  // #50: a default-depth invocation (no --depth) must not reclaim a same-URL
+  // job created with an explicit maxDiscoveryDepth — the echoed depth marks
+  // the active job as differently-scoped, so options are incompatible.
+  it("creates fresh when a depth-less request meets an active job with explicit maxDiscoveryDepth", async () => {
+    const { adapter, calls } = makeCrawlAdapter({
+      onActive: () => [
+        {
+          id: "job-deep",
+          url: "https://dep.example",
+          createdAt: new Date().toISOString(),
+          options: { maxDiscoveryDepth: 4, scrapeOptions: { formats: ["markdown"] } },
+        },
+      ],
+      onPoll: () => ({ success: true, status: "completed", data: [] }),
+    });
+    await adapter.crawl.fetch.invoke({ url: "https://dep.example" });
+    assert.ok(
+      calls.some((c) => c.method === "POST" && c.url.endsWith("/v2/crawl")),
+      "differently-scoped job must not be adopted — a fresh create POST is required",
+    );
+    assert.ok(
+      !calls.some((c) => c.url.includes("/v2/crawl/job-deep")),
+      "the explicit-depth job must not be polled",
+    );
+  });
+
+  it("still reclaims when both the request and the echoed options omit maxDiscoveryDepth", async () => {
+    const { adapter, calls } = makeCrawlAdapter({
+      onActive: () => [
+        {
+          id: "job-plain",
+          url: "https://plain.example",
+          createdAt: new Date().toISOString(),
+          options: { scrapeOptions: { formats: ["markdown"] } },
+        },
+      ],
+      onPoll: () => ({ success: true, status: "completed", data: [] }),
+    });
+    await adapter.crawl.fetch.invoke({ url: "https://plain.example" });
+    assert.ok(
+      !calls.some((c) => c.method === "POST" && c.url.endsWith("/v2/crawl")),
+      "matching default-depth options must still reclaim",
+    );
+    assert.ok(calls.some((c) => c.url.includes("/v2/crawl/job-plain")));
+  });
+
+  it("still reclaims when explicit maxDiscoveryDepth values match", async () => {
+    const { adapter, calls } = makeCrawlAdapter({
+      onActive: () => [
+        {
+          id: "job-match",
+          url: "https://match.example",
+          createdAt: new Date().toISOString(),
+          options: { maxDiscoveryDepth: 2, scrapeOptions: { formats: ["markdown"] } },
+        },
+      ],
+      onPoll: () => ({ success: true, status: "completed", data: [] }),
+    });
+    await adapter.crawl.fetch.invoke({ url: "https://match.example", depth: 3 });
+    assert.ok(
+      !calls.some((c) => c.method === "POST" && c.url.endsWith("/v2/crawl")),
+      "equal explicit depths must still reclaim",
+    );
+    assert.ok(calls.some((c) => c.url.includes("/v2/crawl/job-match")));
+  });
+
   it("reads active jobs from the live `crawls` key", async () => {
     const fn = async (url, init) => {
       const u = String(url);

@@ -847,17 +847,20 @@ function stringArrayEqualUnordered(a: unknown, expected: readonly string[] | und
  * filters, scrapeOptions.formats) is a strong signal it is the same job.
  * Missing or differently-shaped options → not compatible (safer to create
  * fresh than to mis-adopt a different crawl and return the wrong pages).
+ * Depth equality is exact and symmetric (#50): a request without --depth
+ * must NOT adopt a job whose echoed options carry an explicit
+ * maxDiscoveryDepth — the server's default discovery depth differs from
+ * the explicit one, so the two jobs are differently-scoped.
  */
 function crawlOptionsCompatible(options: unknown, params: FirecrawlCrawlParams): boolean {
   if (!isPlainObject(options)) return false;
   // Check the v2 field name (maxDiscoveryDepth). The server echoes the
   // request body, so after the F-1 fix it echoes maxDiscoveryDepth.
-  if (
-    params.maxDiscoveryDepth !== undefined &&
-    options.maxDiscoveryDepth !== params.maxDiscoveryDepth
-  ) {
-    return false;
-  }
+  // Strict equality covers every direction (#50): mismatched explicit
+  // depths, an echoed depth against a depth-less request, and a missing
+  // echoed depth against an explicit-depth request are all incompatible;
+  // only equal values (including both absent) are compatible.
+  if (options.maxDiscoveryDepth !== params.maxDiscoveryDepth) return false;
   if (params.limit !== undefined && options.limit !== params.limit) return false;
   const expectedFormats = params.scrapeOptions?.formats;
   const so = options.scrapeOptions;

@@ -11,7 +11,9 @@
  *
  * The lock uses an exclusive `wx`-create lockfile sibling to the state
  * file. A stale lock (holder crashed without releasing) is broken after
- * `staleMs`.
+ * `staleMs`. While the critical section runs, the lock mtime is refreshed
+ * periodically (issue #46/#48a) so a slow-but-live holder is never
+ * displaced by the staleMs check.
  *
  * When `stateDir` is undefined (in-memory test mode), the lock is a no-op —
  * tests are single-process and need no cross-process serialization.
@@ -54,11 +56,23 @@ function isEexistError(err: unknown): boolean {
 }
 
 /**
+ * Check if an error is an ENOENT (no such file or directory) error. The
+ * only `fs.stat` failure that means "no lock / fresh start" — every other
+ * stat error is a real I/O failure and must propagate (issue #46).
+ */
+function isEnoentError(err: unknown): boolean {
+  return err instanceof Error && "code" in err && (err as { code: unknown }).code === "ENOENT";
+}
+
+/**
  * Serialize a critical section via an exclusive lockfile.
  *
  * Creates `{stateDir}/{identityHash}.lock` with `wx` (exclusive create).
  * If the lock is held, polls every 500ms until acquired or `timeoutMs`
- * elapses. A lock older than `staleMs` is broken (unlinked) and retried.
+ * elapses. A lock older than `staleMs` is broken (unlinked) and retried —
+ * but only when its mtime is genuinely stale: while `fn()` runs, the
+ * holder refreshes the lock mtime (issue #46/#48a), so a live holder is
+ * never displaced no matter how long the critical section takes.
  *
  * When `stateDir` is undefined, the lock is a no-op — `fn()` runs directly.
  *
@@ -85,6 +99,12 @@ export async function withAsyncFileLock<T>(
   await fs.mkdir(stateDir, { recursive: true }).catch(() => {});
   const lockPath = path.join(stateDir, `${identityHash}.lock`);
   const deadline = Date.now() + options.timeoutMs;
+  // Mtime-refresh cadence for the critical section (issue #46/#48a): half
+  // the stale window, so the worst-case mtime age a contender can observe
+  // is strictly below `staleMs`. Floored at 10ms for degenerate tiny
+  // staleMs values, capped at 5s so production holds (10-min staleMs)
+  // do not touch the file in a tight loop.
+  const refreshIntervalMs = Math.min(Math.max(10, Math.floor(options.staleMs / 2)), 5000);
 
   for (;;) {
     let handle;
@@ -97,9 +117,20 @@ export async function withAsyncFileLock<T>(
       if (Date.now() > deadline) {
         throw new Error(`${options.timeoutLabel} create-lock timed out`);
       }
-      // Break a stale lock (the holder died without releasing).
-      const stat = await fs.stat(lockPath).catch(() => null);
-      if (stat && Date.now() - stat.mtimeMs > options.staleMs) {
+      // Break a stale lock (the holder died without releasing). Only
+      // ENOENT counts as "no lock / fresh start" — the file vanished
+      // between the failed open and this stat (another holder released),
+      // so retry the open. Any other stat failure is a real I/O error
+      // and propagates verbatim (issue #46) instead of masquerading as
+      // contention.
+      let stat: Awaited<ReturnType<typeof fs.stat>>;
+      try {
+        stat = await fs.stat(lockPath);
+      } catch (statErr) {
+        if (isEnoentError(statErr)) continue;
+        throw statErr;
+      }
+      if (Date.now() - stat.mtimeMs > options.staleMs) {
         await fs.unlink(lockPath).catch(() => {});
         // Back off after stale-break attempt to avoid a tight loop if
         // the unlink failed or another waiter re-acquired immediately.
@@ -114,10 +145,22 @@ export async function withAsyncFileLock<T>(
       }
       continue;
     }
-    // Lock acquired — run fn() and always clean up.
+    // Lock acquired — run fn() and always clean up. While fn() runs, a
+    // self-re-arming timer keeps the lock mtime fresh so contenders
+    // never observe a live holder as stale (issue #46/#48a).
+    let refreshAlive = true;
+    let refreshTimer: ReturnType<typeof setT> | undefined;
+    const refresh = (): void => {
+      if (!refreshAlive) return;
+      fs.utimes(lockPath, new Date(), new Date()).catch(() => {});
+      refreshTimer = setT(refresh, refreshIntervalMs);
+    };
     try {
+      refreshTimer = setT(refresh, refreshIntervalMs);
       return await fn();
     } finally {
+      refreshAlive = false;
+      if (refreshTimer !== undefined) clearTimeout(refreshTimer);
       await handle.close().catch(() => {});
       await fs.unlink(lockPath).catch(() => {});
     }

@@ -49,6 +49,7 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 
+import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 import { main } from "../dist/index.js";
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
@@ -536,7 +537,8 @@ describe("05 cross-Adapter dispatcher through main() (Read content × extract ×
     const cache = makeRecordingCacheMain();
     const recorder = makeRecordingAdapter({ environmentOutputMode: undefined });
     const sleepCalls = [];
-    const status = await main([...(mode === "data" ? [] : ["-O", mode]), ...argv], {
+    // #73: hermetic config
+    const status = await main([...(mode === "data" ? [] : ["-O", mode]), ...argv], hermeticMainDeps({
       env: { Z_AI_API_KEY: TEST_API_KEY },
       providerDescriptors: [descriptor],
       readerCache: cache,
@@ -562,7 +564,7 @@ describe("05 cross-Adapter dispatcher through main() (Read content × extract ×
       repositoryRandom: () => 0,
       invocation: recorder.adapter,
       now: () => FIXED_NOW,
-    });
+    }));
     return {
       status,
       stderr: recorder.stderr,
@@ -1913,14 +1915,14 @@ describe("05 real dispatcher selection-order (main → read)", () => {
     const minimax = createMiniMaxDescriptor();
     const cache = makeRecordingCacheMain();
     const { adapter, stdout, stderr } = makeRecordingAdapter();
-    const status = await main(["read", "https://example.com/"], {
+    const status = await main(["read", "https://example.com/"], hermeticMainDeps({
       env: { Z_AI_API_KEY: TEST_API_KEY },
       providerDescriptors: [zai, minimax],
       readerCache: cache,
       searchCache: cache,
       repositoryCache: cache,
       invocation: adapter,
-    });
+    }));
     assert.strictEqual(status, 0);
     assert.deepStrictEqual(stderr, []);
     const parsed = JSON.parse(stdout[0]);
@@ -1933,14 +1935,14 @@ describe("05 real dispatcher selection-order (main → read)", () => {
     const minimax = createMiniMaxDescriptor();
     const cache = makeRecordingCacheMain();
     const { adapter, stdout, stderr } = makeRecordingAdapter();
-    const status = await main(["--provider", "zai", "read", "https://example.com/"], {
+    const status = await main(["--provider", "zai", "read", "https://example.com/"], hermeticMainDeps({
       env: { Z_AI_API_KEY: TEST_API_KEY, SCOUTLINE_PROVIDER: "minimax" },
       providerDescriptors: [zai, minimax],
       readerCache: cache,
       searchCache: cache,
       repositoryCache: cache,
       invocation: adapter,
-    });
+    }));
     assert.strictEqual(status, 0);
     assert.deepStrictEqual(stderr, []);
     assert.strictEqual(JSON.parse(stdout[0]).title, "Example Domain");
@@ -1960,14 +1962,14 @@ describe("05 real dispatcher selection-order (main → read)", () => {
     const { adapter, stderr } = makeRecordingAdapter();
     const status = await main(
       ["--no-fallback", "--provider", "minimax", "read", "https://example.com/"],
-      {
+      hermeticMainDeps({
         env: { Z_AI_API_KEY: TEST_API_KEY, MINIMAX_API_KEY: "mm-key" },
         providerDescriptors: [zai, minimax],
         readerCache: cache,
         searchCache: cache,
         repositoryCache: cache,
         invocation: adapter,
-      },
+      }),
     );
     assert.strictEqual(status, 1);
     assert.strictEqual(stderr.length, 1, "no executor notices under --no-fallback");
@@ -1986,7 +1988,7 @@ describe("05 real dispatcher selection-order (main → read)", () => {
     const minimax = createMiniMaxDescriptor();
     const cache = makeRecordingCacheMain();
     const { adapter, stderr } = makeRecordingAdapter();
-    const status = await main(["--no-fallback", "read", "https://example.com/"], {
+    const status = await main(["--no-fallback", "read", "https://example.com/"], hermeticMainDeps({
       env: {
         Z_AI_API_KEY: TEST_API_KEY,
         MINIMAX_API_KEY: "mm-key",
@@ -1997,7 +1999,7 @@ describe("05 real dispatcher selection-order (main → read)", () => {
       searchCache: cache,
       repositoryCache: cache,
       invocation: adapter,
-    });
+    }));
     assert.strictEqual(status, 1);
     assert.strictEqual(stderr.length, 1, "no executor notices under --no-fallback");
     assert.strictEqual(JSON.parse(stderr[0]).code, "UNSUPPORTED_CAPABILITY");
@@ -2018,14 +2020,14 @@ describe("05 real dispatcher selection-order (main → read)", () => {
     const minimax = createMiniMaxDescriptor();
     const cache = makeRecordingCacheMain();
     const { adapter, stderr } = makeRecordingAdapter();
-    const status = await main(["--provider", "minimax", "read", "https://example.com/"], {
+    const status = await main(["--provider", "minimax", "read", "https://example.com/"], hermeticMainDeps({
       env: { Z_AI_API_KEY: TEST_API_KEY, MINIMAX_API_KEY: "mm-key" },
       providerDescriptors: [zai, minimax],
       readerCache: cache,
       searchCache: cache,
       repositoryCache: cache,
       invocation: adapter,
-    });
+    }));
     assert.strictEqual(status, 0);
     assert.ok(
       stderr.some((l) => l.includes("minimax does not support 'reader'")),
@@ -2053,14 +2055,14 @@ describe("05 real dispatcher selection-order (main → read)", () => {
     const minimax = createMiniMaxDescriptor();
     const cache = makeRecordingCacheMain();
     const { adapter, stderr } = makeRecordingAdapter();
-    const status = await main(["--no-fallback", "read", "https://example.com/"], {
+    const status = await main(["--no-fallback", "read", "https://example.com/"], hermeticMainDeps({
       env: { Z_AI_API_KEY: TEST_API_KEY },
       providerDescriptors: [descriptor, minimax],
       readerCache: cache,
       searchCache: cache,
       repositoryCache: cache,
       invocation: adapter,
-    });
+    }));
     assert.strictEqual(status, 1);
     assert.strictEqual(stderr.length, 1, "no executor notices under --no-fallback");
     assert.strictEqual(JSON.parse(stderr[0]).code, "UNSUPPORTED_CAPABILITY");
@@ -2125,7 +2127,7 @@ describe("05 Z.AI malformed WebReader response remains malformed through main()"
     const cache = makeRecordingCacheMain();
     const recorder = makeRecordingAdapter({ environmentOutputMode: undefined });
     const sleepCalls = [];
-    const status = await main([...(mode === "data" ? [] : ["-O", mode]), ...argv], {
+    const status = await main([...(mode === "data" ? [] : ["-O", mode]), ...argv], hermeticMainDeps({
       env: { Z_AI_API_KEY: TEST_API_KEY },
       providerDescriptors: [descriptor],
       readerCache: cache,
@@ -2148,7 +2150,7 @@ describe("05 Z.AI malformed WebReader response remains malformed through main()"
       repositoryRandom: () => 0,
       invocation: recorder.adapter,
       now: () => FIXED_NOW,
-    });
+    }));
     return {
       status,
       stderr: recorder.stderr,

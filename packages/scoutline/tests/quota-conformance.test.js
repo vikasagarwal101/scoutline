@@ -991,6 +991,7 @@ describe("quota command — warnings rendered to stderr", () => {
 // an explicit --provider pin (or SCOUTLINE_PROVIDER) selects single mode.
 // ===========================================================================
 
+import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 import { main } from "../dist/index.js";
 
 function makeMainAdapter() {
@@ -1033,11 +1034,12 @@ describe("quota dispatch through main() — multi-Provider default", () => {
     const zai = makeQuotaProviderDescriptor("zai", { result: ZAI_SUCCESS });
     const minimax = makeQuotaProviderDescriptor("minimax", { result: MINIMAX_SUCCESS });
     const { adapter, stdout } = makeMainAdapter();
-    const code = await main(["quota"], {
+    // #73: hermetic config
+    const code = await main(["quota"], hermeticMainDeps({
       invocation: adapter,
       env: { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k" },
       providerDescriptors: [zai, minimax],
-    });
+    }));
     assert.strictEqual(code, 0);
     const dashboard = JSON.parse(stdout.join(""));
     assert.deepStrictEqual(
@@ -1053,11 +1055,11 @@ describe("quota dispatch through main() — multi-Provider default", () => {
     const zai = makeQuotaProviderDescriptor("zai", { result: ZAI_SUCCESS });
     const minimax = makeQuotaProviderDescriptor("minimax", { result: MINIMAX_SUCCESS });
     const { adapter, stdout } = makeMainAdapter();
-    const code = await main(["--provider", "zai", "quota"], {
+    const code = await main(["--provider", "zai", "quota"], hermeticMainDeps({
       invocation: adapter,
       env: { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k" },
       providerDescriptors: [zai, minimax],
-    });
+    }));
     assert.strictEqual(code, 0);
     const dashboard = JSON.parse(stdout.join(""));
     assert.deepStrictEqual(
@@ -1071,11 +1073,11 @@ describe("quota dispatch through main() — multi-Provider default", () => {
     const zai = makeQuotaProviderDescriptor("zai", { result: ZAI_SUCCESS });
     const minimax = makeQuotaProviderDescriptor("minimax", { result: MINIMAX_SUCCESS });
     const { adapter, stdout } = makeMainAdapter();
-    const code = await main(["quota"], {
+    const code = await main(["quota"], hermeticMainDeps({
       invocation: adapter,
       env: { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k", SCOUTLINE_PROVIDER: "minimax" },
       providerDescriptors: [zai, minimax],
-    });
+    }));
     assert.strictEqual(code, 0);
     const dashboard = JSON.parse(stdout.join(""));
     assert.deepStrictEqual(
@@ -1089,11 +1091,11 @@ describe("quota dispatch through main() — multi-Provider default", () => {
     const zai = makeQuotaProviderDescriptor("zai", { result: ZAI_SUCCESS });
     const minimax = makeQuotaProviderDescriptor("minimax", { result: MINIMAX_SUCCESS });
     const { adapter, stdout } = makeMainAdapter();
-    const code = await main(["--provider", "zai", "quota", "--all-providers"], {
+    const code = await main(["--provider", "zai", "quota", "--all-providers"], hermeticMainDeps({
       invocation: adapter,
       env: { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k" },
       providerDescriptors: [zai, minimax],
-    });
+    }));
     assert.strictEqual(code, 0);
     const dashboard = JSON.parse(stdout.join(""));
     assert.deepStrictEqual(

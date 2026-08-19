@@ -26,6 +26,7 @@ import {
   MANIFEST_QUERY,
   repoBrief,
 } from "../dist/commands/repo.js";
+import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 import { main } from "../dist/index.js";
 import { ValidationError } from "../dist/lib/errors.js";
 import { createFakeRepositoryCapability } from "./helpers/fake-adapter.js";
@@ -1469,7 +1470,8 @@ function makeBriefMainDeps({ search, readFile, listDirectory, zaiConfigured = tr
     minimax,
     cacheRec,
     sleepRandom,
-    mainDeps: {
+    // #73: hermetic config
+    mainDeps: hermeticMainDeps({
       env: { Z_AI_API_KEY: "zai-key", MINIMAX_API_KEY: "minimax-key" },
       providerDescriptors: [zai.descriptor, minimax.descriptor],
       repositoryCache: cacheRec.cache,
@@ -1478,7 +1480,7 @@ function makeBriefMainDeps({ search, readFile, listDirectory, zaiConfigured = tr
       searchCache: cacheRec.cache,
       searchSleep: sleepRandom.sleep,
       searchRandom: sleepRandom.random,
-    },
+    }),
   };
 }
 

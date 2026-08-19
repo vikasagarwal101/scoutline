@@ -381,6 +381,11 @@ describe("Parallel AI Descriptor & Adapter", () => {
         JSON.stringify({
           results: [],
           errors: [
+            // Decoy entry for a DIFFERENT url with a DIFFERENT status: an
+            // adapter that surfaces an errors[] entry without matching by
+            // url would surface this one and must fail the statusCode pin
+            // below (#60 — a wrong-URL throw used to pass the checks).
+            { url: "https://unrelated.page", error_type: "timeout", http_status_code: 503 },
             { url: "https://broken.page", error_type: "fetch_failed", http_status_code: 404 },
           ],
         }),
@@ -393,7 +398,19 @@ describe("Parallel AI Descriptor & Adapter", () => {
 
     await assert.rejects(
       () => adapter.reader.fetch.invoke({ url: "https://broken.page" }),
-      (err) => err instanceof ApiError && err.statusCode === 404,
+      (err) =>
+        err instanceof ApiError &&
+        // The surfaced status must be the entry matching the REQUESTED url
+        // (404), not the decoy entry's 503 (#60).
+        err.statusCode === 404 &&
+        // Pin the error-normalization contract for the errors[] path: at
+        // HEAD normalizeParallelError replaces the inner
+        // "Parallel AI extract failed for URL (fetch_failed)" message
+        // (which names url/error_type) with this generic one while keeping
+        // the mapped status. If normalization changes — e.g. starts
+        // passing the error_type/URL detail through — update this pin
+        // (#60).
+        err.message === "Parallel AI request failed",
     );
   });
 

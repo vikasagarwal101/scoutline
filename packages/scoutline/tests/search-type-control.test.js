@@ -165,8 +165,21 @@ describe("--type / --topic mutual exclusivity (parse-time, T3a)", () => {
       invocation: adapter,
       env: {},
     });
-    assert.ok(status !== 0, "valid --type alone must not succeed with no supporting provider");
+    // Deterministic contract (#60): pin exit 1 exactly — not merely
+    // "nonzero" — for the provider-level rejection.
+    assert.strictEqual(
+      status,
+      1,
+      "valid --type alone must not succeed with no supporting provider",
+    );
     const parsed = JSON.parse(stderr[stderr.length - 1]);
+    // ... and pin the UNSUPPORTED_OPTION error code the comment above
+    // describes, not just any error (#60).
+    assert.strictEqual(
+      parsed.code,
+      "UNSUPPORTED_OPTION",
+      `expected UNSUPPORTED_OPTION from the provider rejecting --type, got ${parsed.code}`,
+    );
     // Must NOT be a parse-time mutual-exclusivity error
     assert.ok(
       !/mutually exclusive/i.test(parsed.error || ""),

@@ -106,15 +106,26 @@ export function buildToolCachePath(config: ToolCacheConfig): string {
  * mismatch, TTL expiry, corruption (invalid JSON, missing file), or when
  * the tool cache is disabled. NEVER throws — a miss degrades cleanly to
  * discovery.
+ *
+ * On a version mismatch the legacy envelope is unlinked best-effort
+ * (B1-U2 / #45): pre-redaction v1 entries may carry plaintext Provider
+ * credentials, so leaving them on disk after we detect they are unsafe
+ * would let the secret linger until manual cleanup. `fs.unlink` is
+ * wrapped — a failure to remove the file (race, permissions) degrades to
+ * a clean miss; it never surfaces as an error from the read path.
  */
 export async function readToolCache(config: ToolCacheConfig): Promise<Tool[] | null> {
   if (!isToolCacheEnabled()) return null;
   const ttlMs = getCacheTtlMs();
   if (ttlMs <= 0) return null;
+  const filePath = buildToolCachePath(config);
   try {
-    const raw = await fs.readFile(buildToolCachePath(config), "utf8");
+    const raw = await fs.readFile(filePath, "utf8");
     const entry = JSON.parse(raw) as Partial<ToolCachePayload>;
     if (!entry || entry.version !== TOOL_CACHE_VERSION || !Array.isArray(entry.tools)) {
+      // Legacy envelope: drop the file so un-redacted secrets do not
+      // linger. Best-effort — a failed unlink still returns null.
+      await fs.unlink(filePath).catch(() => {});
       return null;
     }
     if (Date.now() - (entry.timestamp ?? 0) > ttlMs) return null;

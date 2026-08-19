@@ -165,7 +165,7 @@ describe("usage-ledger Ticket 3 — production consume wiring in main", () => {
     // loadScoutlineConfig AND no injected providerDescriptors).
     assert.match(
       indexSource,
-      /const quotaRefreshEnabled =\s*!dependencies\.loadScoutlineConfig && !dependencies\.providerDescriptors;/,
+      /const quotaRefreshEnabled =\s*!loadScoutlineConfig && !dependencies\.providerDescriptors;/,
       "hermeticity gate must keep its documented shape",
     );
 

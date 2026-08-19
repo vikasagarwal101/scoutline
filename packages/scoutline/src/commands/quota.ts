@@ -245,6 +245,14 @@ async function resolveQuotaRow(
  * explicitly asked for one Provider's quota — a no-signal row would
  * hide the user error). Failures propagate through the ordinary error
  * path.
+ *
+ * The gate stays on GLOBAL configuration (deliberate — GitHub #49): a
+ * pin is an explicit per-Provider request, so a keyless Jina pin is
+ * allowed through this gate and fails inside the capability with its
+ * own ConfigurationError ("Jina AI quota requires JINA_API_KEY... Set
+ * JINA_API_KEY to enable Jina quota reporting.") — actionable help the
+ * generic gate message cannot offer, at the same exit 3. Making this
+ * gate capability-aware would only swap that help for a blander error.
  */
 async function buildDefaultDashboard(deps: QuotaDashboardDependencies): Promise<QuotaDashboard> {
   const descriptor = getProviderDescriptor(deps.effectiveProvider, deps.descriptors);
@@ -265,20 +273,31 @@ async function buildDefaultDashboard(deps: QuotaDashboardDependencies): Promise<
 }
 
 /**
- * All-provider dashboard. For every configured Provider in static
- * registry order: resolve its row via {@link resolveQuotaRow}, which
- * honors the snapshot path, emits a `ProviderQuotaNone` row for
+ * All-provider dashboard. For every Provider configured FOR QUOTA in
+ * static registry order: resolve its row via {@link resolveQuotaRow},
+ * which honors the snapshot path, emits a `ProviderQuotaNone` row for
  * descriptors without `quota` (Exa), and falls back to a live probe
  * when the snapshot is stale/missing/corrupt. Settled collection is
  * preserved: a configured Provider's failure is normalized and
  * recursively redacted before joining the dashboard, and the command
  * exits 1 when any configured Provider fails. No configured Provider
  * is a configuration failure, not an empty success.
+ *
+ * The filter is CAPABILITY-AWARE (GitHub #49): `isConfigured(env,
+ * "quota")` excludes a Provider that can serve some capabilities
+ * keylessly but requires a key for quota (Jina — Reader is keyless,
+ * the quota probe uses Search). Filtering on global configuration
+ * alone dragged keyless Jina into every dashboard and periodic
+ * refresh, where its quota capability can only throw
+ * ConfigurationError. Providers whose `isConfigured` ignores the
+ * capability argument (Z.AI, MiniMax, Tavily, Brave, Exa) are
+ * unaffected; Exa's no-signal row is driven by `capabilities()`, not
+ * by this filter, and keeps appearing.
  */
 async function buildAllProvidersDashboard(
   deps: QuotaDashboardDependencies,
 ): Promise<QuotaDashboard> {
-  const configured = deps.descriptors.filter((d) => d.isConfigured(deps.env));
+  const configured = deps.descriptors.filter((d) => d.isConfigured(deps.env, "quota"));
   if (configured.length === 0) {
     throw new ConfigurationError(
       "No provider is configured. Set at least one API key (Z_AI_API_KEY, MINIMAX_API_KEY, TAVILY_API_KEY, or BRAVE_SEARCH_API_KEY).",
@@ -430,7 +449,9 @@ Examples:
 
 Notes:
   - Quota is never cached by the local response cache.
-  - Multi-Provider mode never invokes an unconfigured Provider.
+  - Multi-Provider mode never invokes a Provider that is not
+    configured for quota (capability-aware: keyless Jina Reader does
+    not drag the key-required quota probe into the dashboard).
   - Single-Provider mode (under a pin) propagates failures as ordinary
     errors (exit 3 for an unconfigured pinned Provider).
   - Under default (multi-Provider) mode, a Provider without a quota

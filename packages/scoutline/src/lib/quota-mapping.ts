@@ -397,8 +397,12 @@ export interface ProviderAuthorityPolicy {
  *   authority axis deliberately ignores it.
  * - **Exa**: advertises no `quota` capability at all. There is nothing
  *   to map or synthesize.
- * - **Parallel AI, Perplexity, Jina AI**: none advertise a quota
+ * - **Parallel AI, Perplexity**: neither advertises a quota
  *   capability; there is no signal to map.
+ * - **Jina AI**: DOES advertise a `quota` capability
+ *   (`createJinaQuotaCapability`), but its signal is a per-minute
+ *   rate-limit window (exact remaining RPM/TPM with an explicitly
+ *   unknown limit — GitHub #49), not spend or plan usage.
  *
  * All five providers stay **eligible** for PB-T4 fallback (their
  * `authority:"unknown"` score sorts after every known provider), so
@@ -445,7 +449,8 @@ export const PROVIDER_AUTHORITY_POLICIES: readonly ProviderAuthorityPolicy[] = [
   {
     provider: "jina",
     kind: "always-unknown",
-    reason: "Jina AI does not advertise a quota capability; no signal to map.",
+    reason:
+      "Jina AI quota is a per-minute rate-limit window (exact remaining RPM/TPM, limit unknown); not a spend or plan signal.",
   },
 ];
 

@@ -10,6 +10,7 @@ import {
   ApiError,
   AuthError,
   ConfigurationError,
+  NetworkError,
   QuotaError,
   ScoutlineError,
   TimeoutError,
@@ -1085,10 +1086,13 @@ describe("Jina Capability Gating (8J.1)", () => {
 // `x-usage-tokens` — these do NOT exist. The actual headers are the
 // Remaining-* variants above (lesson 0.14.8: a finding's premise can be inverted).
 //
-// Documented rate-limit tiers (OpenAPI schema):
+// Documented rate-limit tiers (OpenAPI schema) — CONTEXT ONLY since #49:
 //   Free:   500 RPM,   1M TPM
 //   Tier 1: 500 RPM,  10M TPM
 //   Tier 2: 5,000 RPM, 100M TPM
+// Jina exposes remaining but never a limit, so the tiers are NOT used to
+// infer one (#49): windows publish the exact remaining with the limit
+// explicitly unknown and omit `used` and `remainingPercent`.
 describe("Jina AI Quota (8J.5 telemetry)", () => {
   /**
    * Build a fake fetch that returns rate-limit headers matching Jina's
@@ -1125,28 +1129,35 @@ describe("Jina AI Quota (8J.5 telemetry)", () => {
     assert.equal(result.status, "ok");
     assert.ok(result.categories.length >= 1, "must have at least one category");
 
-    // Requests category
+    // Requests category — exact remaining, explicitly unknown limit (#49).
     const reqCat = result.categories.find((c) => c.unit === "requests");
     assert.ok(reqCat, "must have a requests category");
     assert.equal(reqCat.name, "rate_limit_requests");
-    assert.equal(reqCat.current.used, 1, "500 - 499 = 1 used");
-    assert.equal(reqCat.current.limit, 500, "inferred Free-tier RPM limit");
-    assert.equal(reqCat.current.remaining, 499);
+    assert.equal(reqCat.current.remaining, 499, "exact provider remaining");
+    assert.equal(reqCat.current.used, undefined, "used omitted (would be inferred)");
+    assert.equal(reqCat.current.limit, undefined, "limit explicitly unknown");
+    assert.equal(
+      reqCat.current.remainingPercent,
+      undefined,
+      "no remainingPercent without a limit (#49)",
+    );
     assert.equal(reqCat.current.durationSeconds, 60, "per-minute window");
 
-    // Tokens category
+    // Tokens category — exact remaining, explicitly unknown limit (#49).
     const tokCat = result.categories.find((c) => c.unit === "tokens");
     assert.ok(tokCat, "must have a tokens category");
     assert.equal(tokCat.name, "rate_limit_tokens");
-    assert.equal(tokCat.current.limit, 1_000_000, "inferred Free-tier TPM limit");
-    assert.equal(tokCat.current.used, 1000, "1M - 999000 = 1000 used");
+    assert.equal(tokCat.current.remaining, 999000, "exact provider remaining");
+    assert.equal(tokCat.current.used, undefined, "used omitted (would be inferred)");
+    assert.equal(tokCat.current.limit, undefined, "limit explicitly unknown");
 
     // Caveat warning
     assert.ok(result.warnings && result.warnings.length > 0, "must include rate-limit caveat");
   });
 
-  it("infers Tier 2 limits when remaining RPM exceeds 500", async () => {
-    // Tier 2: 5000 RPM, 100M TPM. Remaining: 4500 RPM, 95M TPM.
+  it("publishes exact remaining with an unknown limit when remaining RPM exceeds the Free ceiling (#49)", async () => {
+    // Remaining 4500 RPM / 95M TPM proves the account is above the Free
+    // tier, but no single tier is proven — the limit stays unknown (#49).
     const fakeFetch = mockQuotaFetch({ remainingRequests: "4500", remainingTokens: "95000000" });
     const adapter = new JinaAdapter(
       { env: { JINA_API_KEY: TEST_KEY } },
@@ -1155,19 +1166,20 @@ describe("Jina AI Quota (8J.5 telemetry)", () => {
 
     const result = await adapter.quota.invoke();
     const reqCat = result.categories.find((c) => c.unit === "requests");
-    assert.equal(reqCat.current.limit, 5000, "inferred Tier 2 RPM limit");
-    assert.equal(reqCat.current.used, 500);
+    assert.equal(reqCat.current.remaining, 4500, "exact provider remaining");
+    assert.equal(reqCat.current.limit, undefined, "limit explicitly unknown (#49)");
+    assert.equal(reqCat.current.used, undefined, "used omitted (would be inferred)");
 
     const tokCat = result.categories.find((c) => c.unit === "tokens");
-    assert.equal(tokCat.current.limit, 100_000_000, "inferred Tier 2 TPM limit");
+    assert.equal(tokCat.current.remaining, 95_000_000, "exact provider remaining");
+    assert.equal(tokCat.current.limit, undefined, "limit explicitly unknown (#49)");
   });
 
-  it("infers lower-tier limit when Tier 2 account has low remaining RPM", async () => {
-    // Edge case (CodeRabbit): a Tier 2 account that has used most of its
-    // 5000 RPM window would show remaining < 500. The inference correctly
-    // maps to 500 (the smallest documented limit ≥ remaining) — it cannot
-    // distinguish this from a Free/Tier 1 account at the same remaining.
-    // This is an inherent limitation of the remaining-only header model.
+  it("does not misreport a high-tier account's low remaining against a smaller tier (#49)", async () => {
+    // A Tier 2 account that has used most of its 5000 RPM window shows
+    // remaining < 500. The old inference reported it against the Free
+    // 500 limit (and 95M TPM against 100M) — overstating capacity. The
+    // #49 contract keeps the limit unknown instead of guessing.
     const fakeFetch = mockQuotaFetch({ remainingRequests: "400", remainingTokens: "95000000" });
     const adapter = new JinaAdapter(
       { env: { JINA_API_KEY: TEST_KEY } },
@@ -1175,18 +1187,21 @@ describe("Jina AI Quota (8J.5 telemetry)", () => {
     );
 
     const result = await adapter.quota.invoke();
-    // RPM: 400 ≤ 500, so inferred limit = 500 (Free/Tier 1)
+    // RPM: limit unknown — never pinned to the Free 500 ceiling.
     const reqCat = result.categories.find((c) => c.unit === "requests");
-    assert.equal(reqCat.current.limit, 500, "inferred Free/Tier 1 RPM limit");
-    assert.equal(reqCat.current.remaining, 400);
+    assert.equal(reqCat.current.remaining, 400, "exact provider remaining");
+    assert.equal(reqCat.current.limit, undefined, "limit explicitly unknown (#49)");
+    assert.equal(reqCat.current.used, undefined, "used omitted (would be inferred)");
 
-    // TPM: 95M > 10M, so inferred limit = 100M (Tier 2)
+    // TPM: limit unknown — the two headers no longer infer independently.
     const tokCat = result.categories.find((c) => c.unit === "tokens");
-    assert.equal(tokCat.current.limit, 100_000_000, "inferred Tier 2 TPM limit");
+    assert.equal(tokCat.current.remaining, 95_000_000, "exact provider remaining");
+    assert.equal(tokCat.current.limit, undefined, "limit explicitly unknown (#49)");
   });
 
-  it("infers Tier 1 TPM when remaining tokens between 1M and 10M", async () => {
-    // Tier 1: 500 RPM, 10M TPM. Remaining: 200 RPM, 8M TPM.
+  it("publishes exact TPM remaining between tier ceilings without picking a tier (#49)", async () => {
+    // Remaining 8M TPM sits between the Free 1M and Tier 1 10M ceilings;
+    // no tier is proven, so the limit stays unknown (#49).
     const fakeFetch = mockQuotaFetch({ remainingRequests: "200", remainingTokens: "8000000" });
     const adapter = new JinaAdapter(
       { env: { JINA_API_KEY: TEST_KEY } },
@@ -1195,7 +1210,9 @@ describe("Jina AI Quota (8J.5 telemetry)", () => {
 
     const result = await adapter.quota.invoke();
     const tokCat = result.categories.find((c) => c.unit === "tokens");
-    assert.equal(tokCat.current.limit, 10_000_000, "inferred Tier 1 TPM limit");
+    assert.equal(tokCat.current.remaining, 8_000_000, "exact provider remaining");
+    assert.equal(tokCat.current.limit, undefined, "limit explicitly unknown (#49)");
+    assert.equal(tokCat.current.used, undefined, "used omitted (would be inferred)");
   });
 
   it("fails with QUOTA_ERROR when no rate-limit headers present", async () => {
@@ -1242,5 +1259,92 @@ describe("Jina AI Quota (8J.5 telemetry)", () => {
 
     await adapter.quota.invoke();
     assert.equal(sentHeaders.Authorization, `Bearer ${TEST_KEY}`);
+  });
+
+  it("publishes an explicitly unknown RPM limit for a Tier-2-shaped remaining below the Free boundary (#49)", async () => {
+    const fakeFetch = mockQuotaFetch({ remainingRequests: "499", remainingTokens: null });
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const result = await adapter.quota.invoke();
+    const reqCat = result.categories.find((c) => c.name === "rate_limit_requests");
+    assert.ok(reqCat, "requests category present");
+    assert.ok(
+      reqCat.current.limit === null || reqCat.current.limit === undefined,
+      `limit must be explicitly unknown, got ${reqCat.current.limit}`,
+    );
+    assert.equal(reqCat.current.remaining, 499, "exact provider remaining");
+    assert.equal(reqCat.current.used, undefined, "used omitted when it would be inferred");
+  });
+
+  it("publishes an explicitly unknown TPM limit for a Tier-2-shaped remaining below the Free boundary (#49)", async () => {
+    const fakeFetch = mockQuotaFetch({ remainingRequests: null, remainingTokens: "950000" });
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const result = await adapter.quota.invoke();
+    const tokCat = result.categories.find((c) => c.name === "rate_limit_tokens");
+    assert.ok(tokCat, "tokens category present");
+    assert.ok(
+      tokCat.current.limit === null || tokCat.current.limit === undefined,
+      `limit must be explicitly unknown, got ${tokCat.current.limit}`,
+    );
+    assert.equal(tokCat.current.remaining, 950000, "exact provider remaining");
+    assert.equal(tokCat.current.used, undefined, "used omitted when it would be inferred");
+  });
+
+  it("does not report TPM against the Free-tier limit when the RPM header proves Tier 2 (#49)", async () => {
+    const fakeFetch = mockQuotaFetch({ remainingRequests: "4500", remainingTokens: "950000" });
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const result = await adapter.quota.invoke();
+    const tokCat = result.categories.find((c) => c.name === "rate_limit_tokens");
+    assert.ok(tokCat, "tokens category present");
+    assert.ok(
+      tokCat.current.limit === null || tokCat.current.limit === undefined,
+      `limit must be explicitly unknown, got ${tokCat.current.limit}`,
+    );
+    assert.equal(tokCat.current.remaining, 950000, "exact provider remaining");
+  });
+
+  it("passes a typed transport error through quota invocation verbatim (#49 pin)", async () => {
+    const authError = new AuthError("jina transport rejected credentials");
+    const fakeFetch = async () => {
+      throw authError;
+    };
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.quota.invoke(),
+      (err) => err === authError,
+    );
+  });
+
+  it("surfaces an untyped transport failure from quota as NetworkError with the probe message (#49 pin)", async () => {
+    const fakeFetch = async () => {
+      throw new Error("socket exploded");
+    };
+    const adapter = new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.quota.invoke(),
+      (err) =>
+        err instanceof NetworkError &&
+        err.message.includes("Jina AI rate-limit probe failed") &&
+        err.message.includes("socket exploded"),
+    );
   });
 });

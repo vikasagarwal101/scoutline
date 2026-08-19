@@ -10,16 +10,16 @@
  *   `X-RateLimit-Remaining-Tokens` — remaining tokens in the current
  *   per-minute window.
  *
- * The documented rate-limit tiers (per OpenAPI schema) are used to infer
- * the limit (since Jina exposes only remaining, not limit):
- *
- *   Free:   500 RPM,   1M TPM
- *   Tier 1: 500 RPM,  10M TPM
- *   Tier 2: 5,000 RPM, 100M TPM
- *
- * The tier is inferred from the remaining values: if remaining RPM > 500,
- * the user must be on Tier 2 (limit 5000). Similarly for tokens: if
- * remaining TPM > 10M, must be Tier 2; if > 1M, must be Tier 1 or above.
+ * Jina exposes ONLY remaining, never a limit. The limit is therefore
+ * published as EXPLICITLY UNKNOWN (GitHub #49): the shared interface
+ * carries the exact `remaining` value and omits `used`, `limit`, and
+ * `remainingPercent`. The documented rate-limit tiers (Free 500 RPM /
+ * 1M TPM, Tier 1 500 RPM / 10M TPM, Tier 2 5,000 RPM / 100M TPM) are
+ * deliberately NOT used to infer the limit — a paid Tier-2 account
+ * whose remaining has fallen below a smaller tier's ceiling would be
+ * misreported against that smaller tier, and two independently
+ * inferred headers can even disagree. No authoritative plan/limit
+ * signal exists to consult, so none is fabricated.
  *
  * **Header-name correction (lesson 0.14.8):** finding 8J.5 claimed
  * `x-ratelimit-limit`, `x-ratelimit-remaining`, `x-usage-tokens`. The
@@ -37,14 +37,7 @@ import type {
   QuotaCategory,
 } from "../../capabilities/quota.js";
 import { buildQuotaWindow } from "../../capabilities/quota.js";
-import {
-  ApiError,
-  AuthError,
-  ConfigurationError,
-  NetworkError,
-  ScoutlineError,
-  TimeoutError,
-} from "../../lib/errors.js";
+import { ApiError, ConfigurationError, ScoutlineError } from "../../lib/errors.js";
 import { resolveJinaApiKey } from "./credentials.js";
 import { fetchJinaRateLimit, type JinaTransportDeps } from "./client.js";
 
@@ -69,39 +62,6 @@ function jinaQuotaParseError(): ScoutlineError {
 }
 
 // ---------------------------------------------------------------------------
-// Rate-limit tier inference
-// ---------------------------------------------------------------------------
-
-/**
- * Documented RPM limits per tier (OpenAPI schema).
- * Free: 500, Tier 1: 500, Tier 2: 5,000.
- */
-const TIER_RPM_LIMITS = [500, 5000] as const;
-
-/**
- * Documented TPM limits per tier (OpenAPI schema).
- * Free: 1M, Tier 1: 10M, Tier 2: 100M.
- */
-const TIER_TPM_LIMITS = [1_000_000, 10_000_000, 100_000_000] as const;
-
-/**
- * Infer the smallest documented limit that is >= the remaining value.
- * Since remaining ≤ limit, the user's actual limit must be at least
- * `remaining`. Among the documented tiers, the smallest limit ≥ remaining
- * is the best inference.
- *
- * Returns null when remaining exceeds all documented limits (shouldn't
- * happen for valid API responses, but handled defensively).
- */
-function inferLimit(remaining: number, documentedLimits: readonly number[]): number | null {
-  // Find the smallest documented limit >= remaining.
-  for (const limit of documentedLimits) {
-    if (remaining <= limit) return limit;
-  }
-  return null;
-}
-
-// ---------------------------------------------------------------------------
 // Normalizer
 // ---------------------------------------------------------------------------
 
@@ -115,15 +75,13 @@ function inferLimit(remaining: number, documentedLimits: readonly number[]): num
  *   - "rate_limit_tokens" (unit: tokens) — from
  *     `X-RateLimit-Remaining-Tokens`.
  *
- * Each category infers the tier limit from the remaining value, computes
- * `used = limit - remaining`, and sets `durationSeconds = 60` (per-minute
- * window). Throws `QUOTA_ERROR` when both headers are absent or when the
- * inferred limit is null (remaining exceeds all documented tiers).
- *
- * **Limitation:** tier inference from remaining alone is inherently
- * imprecise — a high-tier account that has consumed most of its window
- * is indistinguishable from a lower-tier account. This is a fundamental
- * constraint of Jina's remaining-only header model (no limit header).
+ * Each category publishes the exact `remaining` value with the limit
+ * explicitly UNKNOWN (GitHub #49): `used` (which could only be
+ * `limit - remaining` against an inferred tier), `limit`, and
+ * `remainingPercent` are omitted, and `durationSeconds = 60` (the
+ * per-minute window). Throws `QUOTA_ERROR` when both headers are
+ * absent — Jina's headers are the only quota signal, so there is
+ * nothing else to report.
  */
 export function normalizeJinaQuota(
   headers: { readonly remainingRequests: number | null; readonly remainingTokens: number | null },
@@ -131,30 +89,22 @@ export function normalizeJinaQuota(
   const categories: QuotaCategory[] = [];
 
   if (headers.remainingRequests !== null) {
-    const limit = inferLimit(headers.remainingRequests, TIER_RPM_LIMITS);
-    if (limit === null) throw jinaQuotaParseError();
-    const used = limit - headers.remainingRequests;
     categories.push({
       name: "rate_limit_requests",
       unit: "requests",
       current: buildQuotaWindow({
-        used,
-        limit,
+        remaining: headers.remainingRequests,
         durationSeconds: 60,
       }),
     });
   }
 
   if (headers.remainingTokens !== null) {
-    const limit = inferLimit(headers.remainingTokens, TIER_TPM_LIMITS);
-    if (limit === null) throw jinaQuotaParseError();
-    const used = limit - headers.remainingTokens;
     categories.push({
       name: "rate_limit_tokens",
       unit: "tokens",
       current: buildQuotaWindow({
-        used,
-        limit,
+        remaining: headers.remainingTokens,
         durationSeconds: 60,
       }),
     });
@@ -177,18 +127,14 @@ export function normalizeJinaQuota(
 // ---------------------------------------------------------------------------
 
 /**
- * Map a thrown error into a normalized Jina quota failure. Typed transport
- * errors pass through verbatim, as does any {@link ScoutlineError}.
+ * Map a thrown error into a normalized Jina quota failure. Every typed
+ * transport error (AuthError, ApiError, NetworkError, TimeoutError,
+ * ConfigurationError, ...) extends {@link ScoutlineError}, so the single
+ * guard passes them all through verbatim (GitHub #49); anything else is
+ * wrapped as a generic `ApiError`.
  */
 function normalizeJinaQuotaError(error: unknown): Error {
-  if (
-    error instanceof ScoutlineError ||
-    error instanceof AuthError ||
-    error instanceof ApiError ||
-    error instanceof NetworkError ||
-    error instanceof TimeoutError ||
-    error instanceof ConfigurationError
-  ) {
+  if (error instanceof ScoutlineError) {
     return error;
   }
   return new ApiError("Jina AI quota request failed", 500);

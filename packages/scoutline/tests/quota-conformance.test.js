@@ -40,6 +40,7 @@ import { ScoutlineError, ConfigurationError } from "../dist/lib/errors.js";
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
 import { createBraveDescriptor } from "../dist/providers/brave/adapter.js";
+import { createJinaDescriptor } from "../dist/providers/jina/adapter.js";
 import { normalizeBraveQuota, BRAVE_QUOTA_CAVEAT } from "../dist/providers/brave/quota.js";
 import { buildQuotaDashboard, quota } from "../dist/commands/quota.js";
 
@@ -781,6 +782,23 @@ describe("quota dashboard — all-provider mode", () => {
     assert.deepStrictEqual(
       dashboard.providers.map((p) => p.provider),
       ["zai", "minimax"],
+    );
+  });
+
+  it("keyless Jina is excluded by the quota-capability filter instead of yielding a ConfigurationError row (#49)", async () => {
+    const zai = makeQuotaDescriptor("zai", { result: ZAI_SUCCESS });
+    const dashboard = await buildQuotaDashboard({
+      allProviders: true,
+      effectiveProvider: "zai",
+      descriptors: [zai, createJinaDescriptor()],
+      env: { Z_AI_API_KEY: "k" },
+      sleep,
+      random,
+    });
+    assert.strictEqual(
+      dashboard.providers.filter((p) => p.provider === "jina").length,
+      0,
+      "keyless Jina must not be probed for quota",
     );
   });
 });

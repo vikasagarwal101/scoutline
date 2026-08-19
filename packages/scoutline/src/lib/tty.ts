@@ -71,11 +71,11 @@ interface QuotaCategoryLike {
     used?: number;
     limit?: number;
     remaining?: number;
-    remainingPercent: number;
+    remainingPercent?: number;
     resetsAt?: string;
   };
   weekly?: {
-    remainingPercent: number;
+    remainingPercent?: number;
   };
 }
 
@@ -126,7 +126,11 @@ function renderCategory(category: QuotaCategoryLike, lines: string[]): void {
   const current = category.current;
   const pct = current.remainingPercent;
   const resetTxt = formatResetLabel(current.resetsAt);
-  lines.push(`    ${color.bold(category.name)}  ${remainingBar(pct)}  ${pct}% remaining`);
+  if (typeof pct === "number") {
+    lines.push(`    ${color.bold(category.name)}  ${remainingBar(pct)}  ${pct}% remaining`);
+  } else {
+    lines.push(`    ${color.bold(category.name)}`);
+  }
   const counts: string[] = [];
   if (typeof current.used === "number" && typeof current.limit === "number") {
     counts.push(`${current.used}/${current.limit}`);
@@ -137,8 +141,8 @@ function renderCategory(category: QuotaCategoryLike, lines: string[]): void {
   if (counts.length > 0 || resetTxt) {
     lines.push(`      ${[...counts, resetTxt].filter(Boolean).join("  ·  ")}`);
   }
-  if (category.weekly) {
-    const w = category.weekly;
+  const w = category.weekly;
+  if (w && typeof w.remainingPercent === "number") {
     lines.push(
       `      ${color.gray("weekly")} ${remainingBar(w.remainingPercent)} ${w.remainingPercent}%`,
     );

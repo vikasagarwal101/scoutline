@@ -260,6 +260,16 @@ describe("quota-mapping: authority policy", () => {
       assert.ok(p.reason.length > 0, `${p.provider} policy needs a reason`);
     }
   });
+
+  it("jina policy reason no longer claims Jina lacks a quota capability (#49)", () => {
+    const jina = PROVIDER_AUTHORITY_POLICIES.find((p) => p.provider === "jina");
+    assert.ok(jina, "jina policy row exists");
+    assert.doesNotMatch(
+      jina.reason,
+      /does not advertise a quota capability/i,
+      "reason must reflect createJinaQuotaCapability (providers/jina/quota.ts)",
+    );
+  });
 });
 
 // ===========================================================================

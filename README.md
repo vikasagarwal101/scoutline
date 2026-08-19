@@ -31,16 +31,16 @@
 ```bash
 export Z_AI_API_KEY="your-api-key"
 
-npx scoutline --help
-npx scoutline search "React 19 new features" --count 5
-npx scoutline vision analyze ./screenshot.png "What errors do you see?"
+npx scoutline@0.17.4 --help
+npx scoutline@0.17.4 search "React 19 new features" --count 5
+npx scoutline@0.17.4 vision analyze ./screenshot.png "What errors do you see?"
 ```
 
 Get your Z.AI API key at: https://z.ai/manage-apikey/apikey-list
 
 ### Interactive setup (`scoutline init`)
 
-Run `npx scoutline init` once to record API keys in
+Run `npx scoutline@0.17.4 init` once to record API keys in
 `~/.scoutline/config.json` (mode 0600). The wizard:
 
 - offers to import a key already present in your environment;
@@ -63,17 +63,17 @@ a successful probe.
 
 ```bash
 export MINIMAX_API_KEY="your-minimax-key"
-npx scoutline --provider minimax search "latest LLM benchmarks"
+npx scoutline@0.17.4 --provider minimax search "latest LLM benchmarks"
 ```
 
 ### Using Tavily (Search, Reader, Crawl, Map, Research)
 
 ```bash
 export TAVILY_API_KEY="your-tavily-key"
-npx scoutline --provider tavily search "AI funding rounds" --topic news
-npx scoutline --provider tavily read https://example.com/
-npx scoutline --provider tavily crawl https://docs.example.com --depth 2
-npx scoutline --provider tavily research "Compare React vs Svelte for production"
+npx scoutline@0.17.4 --provider tavily search "AI funding rounds" --topic news
+npx scoutline@0.17.4 --provider tavily read https://example.com/
+npx scoutline@0.17.4 --provider tavily crawl https://docs.example.com --depth 2
+npx scoutline@0.17.4 --provider tavily research "Compare React vs Svelte for production"
 ```
 
 Get your Tavily API key at: https://app.tavily.com
@@ -82,9 +82,9 @@ Get your Tavily API key at: https://app.tavily.com
 
 ```bash
 export EXA_API_KEY="your-exa-key"
-npx scoutline --provider exa search "latest AI research" --topic news
-npx scoutline --provider exa read https://example.com/
-npx scoutline --provider exa research "Compare Rust async runtimes"
+npx scoutline@0.17.4 --provider exa search "latest AI research" --topic news
+npx scoutline@0.17.4 --provider exa read https://example.com/
+npx scoutline@0.17.4 --provider exa research "Compare Rust async runtimes"
 ```
 
 Get your Exa API key at: https://dashboard.exa.ai
@@ -93,9 +93,9 @@ Get your Exa API key at: https://dashboard.exa.ai
 
 ```bash
 export BRAVE_SEARCH_API_KEY="your-brave-key"
-npx scoutline --provider brave search "AI policy news" --topic news
-npx scoutline --provider brave search "rust async" --type video
-npx scoutline --provider brave search "large context topic" --content-size high
+npx scoutline@0.17.4 --provider brave search "AI policy news" --topic news
+npx scoutline@0.17.4 --provider brave search "rust async" --type video
+npx scoutline@0.17.4 --provider brave search "large context topic" --content-size high
 ```
 
 Brave is the only Provider that supports `--type video`. `--content-size high`
@@ -107,10 +107,10 @@ a pure free tier to $5 monthly metered credits.
 
 ```bash
 export FIRECRAWL_API_KEY="your-firecrawl-key"
-npx scoutline --provider firecrawl search "AI funding rounds" --content-size high
-npx scoutline --provider firecrawl read https://example.com/
-npx scoutline --provider firecrawl crawl https://docs.example.com --limit 10
-npx scoutline --provider firecrawl map https://example.com/
+npx scoutline@0.17.4 --provider firecrawl search "AI funding rounds" --content-size high
+npx scoutline@0.17.4 --provider firecrawl read https://example.com/
+npx scoutline@0.17.4 --provider firecrawl crawl https://docs.example.com --limit 10
+npx scoutline@0.17.4 --provider firecrawl map https://example.com/
 ```
 
 Get your Firecrawl API key at: https://www.firecrawl.dev/signin
@@ -124,9 +124,9 @@ after Ctrl-C with no double-charge (state-file resume + reclaim-on-miss).
 
 ```bash
 export PARALLEL_API_KEY="your-parallel-key"
-npx scoutline --provider parallel search "AI funding rounds" --topic news
-npx scoutline --provider parallel read https://example.com/
-npx scoutline --provider parallel research "Compare React vs Svelte for production"
+npx scoutline@0.17.4 --provider parallel search "AI funding rounds" --topic news
+npx scoutline@0.17.4 --provider parallel read https://example.com/
+npx scoutline@0.17.4 --provider parallel research "Compare React vs Svelte for production"
 ```
 
 Get your Parallel AI API key at: https://api.parallel.ai
@@ -135,8 +135,8 @@ Get your Parallel AI API key at: https://api.parallel.ai
 
 ```bash
 export PERPLEXITY_API_KEY="your-perplexity-key"
-npx scoutline --provider perplexity search "latest AI research" --topic news
-npx scoutline --provider perplexity research "Compare Rust async runtimes"
+npx scoutline@0.17.4 --provider perplexity search "latest AI research" --topic news
+npx scoutline@0.17.4 --provider perplexity research "Compare Rust async runtimes"
 ```
 
 Get your Perplexity API key at: https://www.perplexity.ai/settings/api
@@ -145,9 +145,9 @@ Get your Perplexity API key at: https://www.perplexity.ai/settings/api
 
 ```bash
 export JINA_API_KEY="your-jina-key"  # optional — keyless supported
-npx scoutline --provider jina search "AI policy news" --topic news
-npx scoutline --provider jina read https://example.com/
-npx scoutline --provider jina research "State of carbon capture 2025"
+npx scoutline@0.17.4 --provider jina search "AI policy news" --topic news
+npx scoutline@0.17.4 --provider jina read https://example.com/
+npx scoutline@0.17.4 --provider jina research "State of carbon capture 2025"
 ```
 
 Get your Jina AI API key at: https://jina.ai/api-dashboard/
@@ -186,7 +186,7 @@ scoutline --help
 Or use directly with npx:
 
 ```bash
-npx scoutline --help
+npx scoutline@0.17.4 --help
 ```
 
 ## Provider Selection

@@ -207,15 +207,19 @@ export class JinaAdapter implements ProviderAdapter {
             location: request.controls?.location,
           });
 
-          return results.map((item) => {
-            const result: SearchSource = {
-              title: item.title || "Untitled",
-              url: item.url || "",
-              summary: item.description || item.content || "",
-            };
-            if (item.publishedTime) result.date = item.publishedTime;
-            return result;
-          });
+          // Skip entries without a URL — a SearchSource must never
+          // carry an empty url (#51).
+          return results
+            .filter((item) => item.url)
+            .map((item) => {
+              const result: SearchSource = {
+                title: item.title || "Untitled",
+                url: item.url!,
+                summary: item.description || item.content || "",
+              };
+              if (item.publishedTime) result.date = item.publishedTime;
+              return result;
+            });
         } catch (error) {
           throw normalizeJinaError(error);
         }

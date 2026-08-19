@@ -10,7 +10,8 @@ import {
   requirePerplexityApiKey,
   isPerplexityConfigured,
 } from "../dist/providers/perplexity/credentials.js";
-import { ApiError, AuthError, ConfigurationError, UnsupportedOptionError } from "../dist/lib/errors.js";
+import { ApiError, AuthError, ConfigurationError, TimeoutError, UnsupportedOptionError } from "../dist/lib/errors.js";
+import { fetchPerplexityChat } from "../dist/providers/perplexity/client.js";
 
 const TEST_KEY = "perplexity-test-api-key";
 
@@ -85,6 +86,32 @@ describe("Perplexity Descriptor & Adapter", () => {
     assert.equal(results[0].source, undefined);
     // null date maps to undefined
     assert.equal(results[1].date, undefined);
+  });
+
+  it("skips search results without a URL (no empty-url SearchSource)", async () => {
+    const fakeFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        results: [
+          { title: "Has URL", url: "https://example.com/a", snippet: "with url" },
+          { title: "No URL", snippet: "no url field" },
+        ],
+      }),
+    });
+
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const results = await adapter.search.invoke({ query: "test" });
+    assert.ok(
+      results.every((r) => typeof r.url === "string" && r.url.length > 0),
+      "no SearchSource may carry an empty url",
+    );
+    assert.equal(results.length, 1);
+    assert.equal(results[0].url, "https://example.com/a");
   });
 
   it("maps search controls to API params", async () => {
@@ -300,6 +327,22 @@ describe("Perplexity Error Handling", () => {
       UnsupportedOptionError,
     );
   });
+
+  it("rejects research model as UnsupportedOptionError", () => {
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: TEST_KEY } },
+      { transport: { fetch: async () => ({}) } },
+    );
+
+    assert.throws(
+      () => adapter.research.run.validate({ query: "test", model: "pro" }),
+      (err) =>
+        err instanceof UnsupportedOptionError &&
+        err.provider === "perplexity" &&
+        err.capability === "research" &&
+        err.option === "model",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -373,6 +416,61 @@ describe("Perplexity Diagnostics — probe (6.7.a)", () => {
     await assert.rejects(
       () => adapter.diagnostics.invoke({ probe: true }),
       (e) => e instanceof ConfigurationError,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Transport — research status-timeout help (#51)
+// ---------------------------------------------------------------------------
+
+describe("Perplexity Transport — research status-timeout help (#51)", () => {
+  it("maps 504 on a research chat call to TimeoutError with research timeout help", async () => {
+    const fakeFetch = async () => ({
+      ok: false,
+      status: 504,
+      text: async () => JSON.stringify({ message: "Gateway Timeout" }),
+    });
+
+    await assert.rejects(
+      () => fetchPerplexityChat(TEST_KEY, "q", "sonar-deep-research", { fetch: fakeFetch }),
+      (err) =>
+        err instanceof TimeoutError &&
+        typeof err.help === "string" &&
+        err.help.includes("PERPLEXITY_RESEARCH_TIMEOUT"),
+    );
+  });
+
+  it("maps 408 on a research chat call to TimeoutError with research timeout help", async () => {
+    const fakeFetch = async () => ({
+      ok: false,
+      status: 408,
+      text: async () => JSON.stringify({ message: "Request Timeout" }),
+    });
+
+    await assert.rejects(
+      () => fetchPerplexityChat(TEST_KEY, "q", "sonar-deep-research", { fetch: fakeFetch }),
+      (err) =>
+        err instanceof TimeoutError &&
+        typeof err.help === "string" &&
+        err.help.includes("PERPLEXITY_RESEARCH_TIMEOUT"),
+    );
+  });
+
+  it("keeps plain timeout help for 504 on a non-research chat call (guard)", async () => {
+    const fakeFetch = async () => ({
+      ok: false,
+      status: 504,
+      text: async () => JSON.stringify({ message: "Gateway Timeout" }),
+    });
+
+    await assert.rejects(
+      () => fetchPerplexityChat(TEST_KEY, "q", "sonar", { fetch: fakeFetch }),
+      (err) =>
+        err instanceof TimeoutError &&
+        typeof err.help === "string" &&
+        err.help.includes("PERPLEXITY_TIMEOUT") &&
+        !err.help.includes("PERPLEXITY_RESEARCH_TIMEOUT"),
     );
   });
 });

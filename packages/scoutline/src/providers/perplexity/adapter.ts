@@ -112,6 +112,15 @@ function normalizePerplexityError(error: unknown): Error {
     return new NetworkError("Perplexity network error");
   }
   if (error instanceof TimeoutError) {
+    // Forward the transport-specific help text only if it's a known,
+    // curated Perplexity constant (Search → PERPLEXITY_TIMEOUT;
+    // research → PERPLEXITY_RESEARCH_TIMEOUT). This preserves
+    // endpoint-specific guidance without exposing arbitrary upstream
+    // text through the normalizer.
+    const help = error.help;
+    if (help && help.includes("PERPLEXITY_")) {
+      return new TimeoutError(error.durationMs, help);
+    }
     return new TimeoutError(
       error.durationMs,
       "Try again or increase timeout with PERPLEXITY_TIMEOUT env var",
@@ -242,7 +251,11 @@ export class PerplexityAdapter implements ProviderAdapter {
           if (!request.query || request.query.trim().length === 0) {
             throw new ValidationError("Research query must not be empty");
           }
+          // Perplexity research always runs the sonar-deep-research
+          // model; model, outputLength, citationFormat, and domain have
+          // no faithful mapping.
           for (const option of [
+            "model",
             "outputLength",
             "citationFormat",
             "domain",

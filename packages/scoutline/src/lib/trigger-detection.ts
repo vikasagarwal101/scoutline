@@ -73,12 +73,16 @@ export const ZAI_ONLY_COMMANDS: ReadonlySet<string> = new Set(["tools", "tool", 
  * ALL descriptors (not just the effective Provider) so that Provider
  * fallback can route to a configured candidate even when the effective
  * is unconfigured — "missing" only fires when NO provider can serve
- * the request.
+ * the request. A keyless provider (isConfigured with no credential
+ * recorded anywhere) counts as serviceable, so a registry whose only
+ * serviceable provider is keyless classifies as "keyless", not
+ * "missing".
  */
 export type CredentialState =
   | { readonly kind: "env-only" }
   | { readonly kind: "file-configured" }
   | { readonly kind: "env-and-file" }
+  | { readonly kind: "keyless" }
   | { readonly kind: "missing" };
 
 /**
@@ -116,10 +120,17 @@ export interface CredentialClassificationInput {
  *     (the user has been through onboarding).
  *   - **file-configured**: keys exist ONLY in the file (the normal
  *     post-onboarding steady state). No hint needed.
+ *   - **keyless**: some descriptor reports `isConfigured` with NO
+ *     credential recorded anywhere — a keyless provider (e.g. Jina's
+ *     Reader) can serve the request without one. This is NOT "missing"
+ *     (a provider CAN serve, so no refusal) and NOT "file-configured"
+ *     (no keys exist anywhere, so nothing came from the file); the
+ *     command proceeds normally with no hint (there is no credential
+ *     to record via `init`).
  *
  * The "env-only" classification is the trigger for the one-time hint;
- * "missing" is the trigger for remediation + exit 3. The other two
- * states proceed normally.
+ * "missing" is the trigger for remediation + exit 3. The other states
+ * proceed normally.
  */
 export function classifyCredentialState(input: CredentialClassificationInput): CredentialState {
   const { descriptors, env, resolvedEnv, config } = input;
@@ -149,9 +160,18 @@ export function classifyCredentialState(input: CredentialClassificationInput): C
   if (anyEnvConfigured && anyFileConfigured) {
     return { kind: "env-and-file" };
   }
-  // !anyEnvConfigured && anyFileConfigured — the resolved env picked up
-  // the file key; this is the normal post-onboarding steady state.
-  return { kind: "file-configured" };
+  if (anyFileConfigured) {
+    // !anyEnvConfigured && anyFileConfigured — the resolved env picked up
+    // the file key; this is the normal post-onboarding steady state.
+    return { kind: "file-configured" };
+  }
+  // anyResolvedConfigured && !anyEnvConfigured && !anyFileConfigured —
+  // a descriptor serves WITHOUT any credential (a keyless provider such
+  // as Jina's Reader reports isConfigured with none of its credential
+  // env vars set and no file key stored). There is no credential to
+  // hint about or migrate into config.json, but the request CAN be
+  // served, so this is neither "missing" nor "file-configured".
+  return { kind: "keyless" };
 }
 
 /**

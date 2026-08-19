@@ -143,6 +143,31 @@ describe("classifyCredentialState: pure classification across the registry", () 
     // count as a file configuration).
     assert.strictEqual(state.kind, "env-only");
   });
+
+  it("keyless-only: only keyless Jina configured (no env/file key) is not file-configured", () => {
+    // Jina semantics: global isConfigured() is true (keyless Reader) even
+    // when JINA_API_KEY is unset — there is no credential to record.
+    const keylessJina = {
+      id: "jina",
+      credentialEnvVars: ["JINA_API_KEY"],
+      isConfigured: () => true,
+      capabilities: () => new Set(["reader"]),
+      create: () => {
+        throw new Error("create() must not be called by the classifier");
+      },
+    };
+    const state = classifyCredentialState({
+      descriptors: [zai, minimax, keylessJina],
+      env: {},
+      resolvedEnv: {},
+      config: { version: 1, providers: {} },
+    });
+    assert.notStrictEqual(
+      state.kind,
+      "file-configured",
+      "file-configured documents 'keys exist ONLY in the file'; keyless-only has no keys anywhere",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -2976,6 +2976,14 @@ export interface MainDependencies {
    */
   readonly loadScoutlineConfig?: () => Promise<ScoutlineConfig>;
   /**
+   * Injectable config short-circuit (#73). When provided, main() uses
+   * this config verbatim and never reads the operator's config file —
+   * the deps-level twin of loadScoutlineConfig for tests that want to
+   * pin exact config values without building a loader. An explicit
+   * loadScoutlineConfig still wins over this.
+   */
+  readonly config?: ScoutlineConfig;
+  /**
    * Injectable fan-out activation override (search-fanout plan,
    * Ticket 3). When provided, this wins over the file-configured
    * `fanout` value so activation-tier tests stay hermetic (no real
@@ -3211,6 +3219,13 @@ export async function main(
   dependencies: MainDependencies,
 ): Promise<number> {
   const { invocation, env, now } = dependencies;
+  // #73: one normalized config-loader seam — an explicit loader wins,
+  // then an injected deps.config, else production ambient loading. All
+  // hermeticity gates below read this local, never the raw field.
+  const depsConfig = dependencies.config;
+  const loadScoutlineConfig =
+    dependencies.loadScoutlineConfig ??
+    (depsConfig !== undefined ? async () => depsConfig : undefined);
   const providerDescriptors = dependencies.providerDescriptors ?? BUILT_IN_PROVIDER_DESCRIPTORS;
   const searchCache = dependencies.searchCache ?? defaultResponseCache;
   const searchSleep = dependencies.searchSleep ?? realSleep;
@@ -3331,7 +3346,7 @@ export async function main(
   // is on the critical path before the result returns outward —
   // surviving the bin's immediate `process.exit(status)`.
   const quotaRefreshEnabled =
-    !dependencies.loadScoutlineConfig && !dependencies.providerDescriptors;
+    !loadScoutlineConfig && !dependencies.providerDescriptors;
   const quotaStore = dependencies.quotaStore ?? createDefaultQuotaStore();
   // Production records consumption through BOTH sinks (usage-ledger
   // DESIGN D3): the PB-T1 quota-store snapshot store (unchanged,
@@ -3418,7 +3433,7 @@ export async function main(
     // ~/.scoutline/config.json during a test run.
     verificationPromoter:
       dependencies.verificationPromoter ??
-      (dependencies.loadScoutlineConfig ? undefined : createDefaultVerificationPromoter()),
+      (loadScoutlineConfig ? undefined : createDefaultVerificationPromoter()),
     // PB-T2: thread the production consumption sink through. `consume`
     // is constructed once in `main` (below) and shared by every
     // handler; tests inject their own through `MainDependencies.consume`.
@@ -3541,9 +3556,9 @@ export async function main(
   const isObservational = OBSERVATIONAL_COMMANDS.has(command);
 
   let config: ScoutlineConfig;
-  if (dependencies.loadScoutlineConfig) {
+  if (loadScoutlineConfig) {
     try {
-      config = await dependencies.loadScoutlineConfig();
+      config = await loadScoutlineConfig();
     } catch (error) {
       if (isHelpInvocation) {
         config = { version: 1, providers: {} };
@@ -3601,7 +3616,7 @@ export async function main(
   // binary) or via `main()` without injecting either, optionally
   // pointed at a temp `SCOUTLINE_CONFIG_DIR`.
   const triggerDetectionEnabled =
-    !dependencies.loadScoutlineConfig && !dependencies.providerDescriptors;
+    !loadScoutlineConfig && !dependencies.providerDescriptors;
   if (triggerDetectionEnabled && !isHelpInvocation && !isObservational) {
     const state = classifyCredentialState({
       descriptors: providerDescriptors,

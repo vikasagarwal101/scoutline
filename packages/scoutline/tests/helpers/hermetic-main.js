@@ -66,6 +66,9 @@ export function hermeticMainDeps(partial = {}) {
   const deps = {
     env: {},
     configFanout: false,
+    // #73: config isolation default — env:{} is NOT isolation; main()
+    // falls back to the real config file without this.
+    loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
     ...partial,
   };
   if (deps.configFanout === undefined) deps.configFanout = false;

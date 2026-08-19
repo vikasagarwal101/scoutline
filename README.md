@@ -153,7 +153,12 @@ npx scoutline --provider jina research "State of carbon capture 2025"
 Get your Jina AI API key at: https://jina.ai/api-dashboard/
 
 Jina AI supports keyless access (no API key required). Setting `JINA_API_KEY`
-enables higher rate limits.
+enables higher rate limits. The init wizard omits Jina when no key is
+entered — keyless still works without any wizard configuration.
+
+Deep-search streams can legitimately run for minutes; the client budget
+defaults to 120 seconds. Raise it with `JINA_DEEPSEARCH_TIMEOUT`
+(milliseconds) for long `jina research` runs.
 
 ## Installation
 

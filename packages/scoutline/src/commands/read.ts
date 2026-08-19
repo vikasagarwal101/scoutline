@@ -325,8 +325,8 @@ then zai):
     Jina supports keyless access (no API key required).
   - MiniMax, Brave, and Perplexity do NOT advertise reader. By default (0.11.0+)
     Provider fallback emits a stderr notice and silently reroutes to
-    the next eligible configured supplier (zai, tavily, exa, or
-    firecrawl). Under --no-fallback (or SCOUTLINE_NO_FALLBACK=1) the
+    the next eligible configured supplier (zai, tavily, exa,
+    firecrawl, parallel, or jina). Under --no-fallback (or SCOUTLINE_NO_FALLBACK=1) the
     preflight surfaces UNSUPPORTED_CAPABILITY for the selected
     non-supplier.
 

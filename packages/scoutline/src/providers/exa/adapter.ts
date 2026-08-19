@@ -28,7 +28,7 @@
  *   contentSize -> type (medium/omitted→"auto", high→"deep")
  *   topic       -> category (general→omit, news→"news",
  *                  finance→"financial report")
- *   location    -> REJECTED (UnsupportedOptionError)
+ *   location    -> userLocation
  */
 
 import crypto from "node:crypto";

@@ -300,7 +300,9 @@ async function probeEntries(
     .filter((index) => index >= 0);
 
   const settled = await Promise.allSettled(
-    configuredIndexes.map((index) => {
+    // async: a missing descriptor must SETTLE as this provider's rejection,
+    // not escape the map synchronously and fail the whole probe (audit #61).
+    configuredIndexes.map(async (index) => {
       const descriptor = deps.descriptors[index];
       if (!descriptor) throw new Error(`Missing descriptor at index ${index}`);
       return probeProvider(descriptor, deps.env, deps.sleep, deps.random);
@@ -416,15 +418,15 @@ capabilityMatrix field reflects that descriptor state
 (repository-exploration currently lists only Z.AI while MiniMax and
 Tavily lack it).
 
-Reader is a Provider Capability. Z.AI, Tavily, and Exa descriptor
-metadata all advertise reader; MiniMax advertises and supplies
-neither. The capabilityMatrix field lists Z.AI, Tavily, and Exa for
-reader.
+Reader is a Provider Capability. Z.AI, Tavily, Exa, Parallel, and
+Jina descriptor metadata all advertise reader; MiniMax, Brave, and
+Perplexity advertise and supply neither. The capabilityMatrix field
+lists Z.AI, Tavily, Exa, Parallel, and Jina for reader.
 
 Crawl and Map are Provider Capabilities owned by Tavily and Firecrawl.
 Z.AI, MiniMax, Exa, and Brave do not advertise either; the
 capabilityMatrix lists Tavily and Firecrawl for each. Research is
-supplied by Tavily and Exa. By default (0.11.0+) Provider fallback
+supplied by Tavily, Exa, Parallel, Perplexity, and Jina. By default (0.11.0+) Provider fallback
 emits a stderr notice and silently reroutes to the next eligible
 configured supplier when a non-supplier is selected; under
 --no-fallback (or SCOUTLINE_NO_FALLBACK=1) the preflight surfaces

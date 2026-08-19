@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.4] - 2026-08-19
+
+### Review-audit hardening (wave 3: test gates + docs)
+
+- **Conformance gate executes (#59):** the adapter-conformance gate no longer stops at `typeof factory === 'function'` — it runs every registered provider's conformance suite end-to-end against the shared fixtures and asserts registry coverage (every provider advertising `search` must have an executed factory). Teeth proven by scratch-mutation: a dropped-summary adapter bug that passed the old gate now fails.
+- **Assertion pins (#60):** the Parallel extraction-error test now pins the exact surfaced message and a decoy-errors entry (wrong-URL throws fail the status pin); the search type-control test pins exit 1 + `UNSUPPORTED_OPTION` exactly as its comment always claimed. The follow-through for literal error-detail passthrough is tracked as #71 (discovered during work).
+- **Doctor settlement + docs drift (#61):** a provider's failing probe settles as its own error entry while other probes still run (the missing-descriptor guard now settles instead of escaping synchronously); doctor's reader/research narratives, read's fallback supplier list, the README search note (Sonar is research-only), and the Exa header comment match current behavior; the init wizard's keyless behavior and `JINA_DEEPSEARCH_TIMEOUT` (default 120s, milliseconds) are now documented.
+- **Supply-chain pins (#62):** all documented `npx` invocations (README quick-starts and the agent skill) pin `scoutline@0.17.4`; the skill's stale `@0.14.11` pin is gone.
+
 ## [0.17.3] - 2026-08-19
 
 ### Review-audit hardening (wave 2: provider correctness + cleanup)

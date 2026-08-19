@@ -92,6 +92,38 @@ function mapStatusError(status: number, timeoutMs: number): Error {
   return new ApiError(`Parallel AI request failed (${status})`, status);
 }
 
+/**
+ * Shared catch-block error mapping for the synchronous transport functions
+ * ({@link fetchParallelSearch} and {@link fetchParallelExtract}).
+ *
+ * Typed transport errors (Auth/Api/Quota/Timeout/Validation) are rethrown
+ * as-is; a JSON.parse SyntaxError maps to ApiError(500) ("malformed JSON
+ * response"); an AbortError (timeout abort) maps to TimeoutError. Anything
+ * else — including a future typed error that escapes the five-type guard —
+ * rewraps to NetworkError with the caller's failure prefix, exactly as the
+ * previously duplicated inlined catch blocks did.
+ */
+function mapTransportError(err: unknown, timeoutMs: number, failurePrefix: string): Error {
+  if (
+    err instanceof AuthError ||
+    err instanceof ApiError ||
+    err instanceof QuotaError ||
+    err instanceof TimeoutError ||
+    err instanceof ValidationError
+  ) {
+    return err;
+  }
+  if (err instanceof SyntaxError) {
+    return new ApiError("Parallel AI returned a malformed JSON response", 500);
+  }
+  if (err instanceof Error && err.name === "AbortError") {
+    return new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
+  }
+  return new NetworkError(
+    `${failurePrefix}: ${err instanceof Error ? err.message : String(err)}`,
+  );
+}
+
 export async function fetchParallelSearch(
   apiKey: string,
   query: string,
@@ -136,24 +168,16 @@ export async function fetchParallelSearch(
     });
 
     if (!response.ok) {
+      // Drain the error body so the socket is released for connection
+      // reuse instead of being held under repeated failures (#56).
+      await response.text().catch(() => {});
       throw mapStatusError(response.status, timeoutMs);
     }
 
     const text = await response.text();
     return JSON.parse(text) as ParallelSearchResponse;
   } catch (err: unknown) {
-    if (err instanceof AuthError || err instanceof ApiError || err instanceof QuotaError || err instanceof TimeoutError || err instanceof ValidationError) {
-      throw err;
-    }
-    if (err instanceof SyntaxError) {
-      throw new ApiError("Parallel AI returned a malformed JSON response", 500);
-    }
-    if (err instanceof Error && err.name === "AbortError") {
-      throw new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
-    }
-    throw new NetworkError(
-      `Parallel AI request failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    throw mapTransportError(err, timeoutMs, "Parallel AI request failed");
   } finally {
     externalSignal?.removeEventListener("abort", onExternalAbort);
     clearTimer(timer);
@@ -219,24 +243,16 @@ export async function fetchParallelExtract(
     });
 
     if (!response.ok) {
+      // Drain the error body so the socket is released for connection
+      // reuse instead of being held under repeated failures (#56).
+      await response.text().catch(() => {});
       throw mapStatusError(response.status, timeoutMs);
     }
 
     const text = await response.text();
     return JSON.parse(text) as ParallelExtractResponse;
   } catch (err: unknown) {
-    if (err instanceof AuthError || err instanceof ApiError || err instanceof QuotaError || err instanceof TimeoutError || err instanceof ValidationError) {
-      throw err;
-    }
-    if (err instanceof SyntaxError) {
-      throw new ApiError("Parallel AI returned a malformed JSON response", 500);
-    }
-    if (err instanceof Error && err.name === "AbortError") {
-      throw new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
-    }
-    throw new NetworkError(
-      `Parallel AI extract failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    throw mapTransportError(err, timeoutMs, "Parallel AI extract failed");
   } finally {
     clearTimer(timer);
   }

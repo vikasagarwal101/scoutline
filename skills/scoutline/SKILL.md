@@ -19,7 +19,7 @@ description: |
 
 # Scoutline
 
-Access Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and Jina AI capabilities via `npx scoutline@0.14.11`. The
+Access Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and Jina AI capabilities via `npx scoutline@0.17.4`. The
 CLI is self-documenting — use `--help` at any level.
 
 ## Setup
@@ -70,10 +70,10 @@ refused — set environment variables instead.
 ### Settings via `scoutline config` (scriptable, no TTY)
 
 ```bash
-npx scoutline@0.14.11 config get                        # full config, credentials always masked
-npx scoutline@0.14.11 config set routing.search tavily,brave   # strict: typos FAIL, not drop
-npx scoutline@0.14.11 config unset routing.search
-npx scoutline@0.14.11 config set fallbackEnabled false
+npx scoutline@0.17.4 config get                        # full config, credentials always masked
+npx scoutline@0.17.4 config set routing.search tavily,brave   # strict: typos FAIL, not drop
+npx scoutline@0.17.4 config unset routing.search
+npx scoutline@0.17.4 config set fallbackEnabled false
 ```
 
 The `routing` key sets a standing per-capability provider preference:
@@ -259,53 +259,53 @@ input).
 
 ```bash
 # Z.AI (default)
-npx scoutline@0.14.11 vision analyze ./screenshot.png "What errors do you see?"
-npx scoutline@0.14.11 search "React 19 new features" --count 5
-npx scoutline@0.14.11 read https://docs.example.com/api
-npx scoutline@0.14.11 read https://docs.example.com/api --with-images-summary --no-gfm
-npx scoutline@0.14.11 repo search facebook/react "server components"
-npx scoutline@0.14.11 repo search openai/codex "config" --language en
-npx scoutline@0.14.11 repo tree openai/codex --path codex-rs --depth 2
-npx scoutline@0.14.11 quota
-npx scoutline@0.14.11 doctor
+npx scoutline@0.17.4 vision analyze ./screenshot.png "What errors do you see?"
+npx scoutline@0.17.4 search "React 19 new features" --count 5
+npx scoutline@0.17.4 read https://docs.example.com/api
+npx scoutline@0.17.4 read https://docs.example.com/api --with-images-summary --no-gfm
+npx scoutline@0.17.4 repo search facebook/react "server components"
+npx scoutline@0.17.4 repo search openai/codex "config" --language en
+npx scoutline@0.17.4 repo tree openai/codex --path codex-rs --depth 2
+npx scoutline@0.17.4 quota
+npx scoutline@0.17.4 doctor
 
 # MiniMax Token Plan
-npx scoutline@0.14.11 --provider minimax search "AI policy news"
-npx scoutline@0.14.11 --provider minimax vision analyze ./diagram.png "Explain this"
-npx scoutline@0.14.11 --provider minimax quota
-npx scoutline@0.14.11 doctor --provider minimax
+npx scoutline@0.17.4 --provider minimax search "AI policy news"
+npx scoutline@0.17.4 --provider minimax vision analyze ./diagram.png "Explain this"
+npx scoutline@0.17.4 --provider minimax quota
+npx scoutline@0.17.4 doctor --provider minimax
 
 # Tavily (Search, Reader, Crawl, Map, Research)
-npx scoutline@0.14.11 --provider tavily search "AI funding rounds" --topic news
-npx scoutline@0.14.11 --provider tavily read https://example.com/
-npx scoutline@0.14.11 --provider tavily crawl https://docs.example.com --depth 2
-npx scoutline@0.14.11 --provider tavily map https://docs.example.com
-npx scoutline@0.14.11 --provider tavily research "Rust async runtime comparison"
-npx scoutline@0.14.11 doctor --provider tavily
+npx scoutline@0.17.4 --provider tavily search "AI funding rounds" --topic news
+npx scoutline@0.17.4 --provider tavily read https://example.com/
+npx scoutline@0.17.4 --provider tavily crawl https://docs.example.com --depth 2
+npx scoutline@0.17.4 --provider tavily map https://docs.example.com
+npx scoutline@0.17.4 --provider tavily research "Rust async runtime comparison"
+npx scoutline@0.17.4 doctor --provider tavily
 
 # Exa (Search, Reader, Research)
-npx scoutline@0.14.11 --provider exa search "latest AI research" --topic news
-npx scoutline@0.14.11 --provider exa read https://example.com/
-npx scoutline@0.14.11 --provider exa research "Compare Rust async runtimes"
-npx scoutline@0.14.11 doctor --provider exa
+npx scoutline@0.17.4 --provider exa search "latest AI research" --topic news
+npx scoutline@0.17.4 --provider exa read https://example.com/
+npx scoutline@0.17.4 --provider exa research "Compare Rust async runtimes"
+npx scoutline@0.17.4 doctor --provider exa
 
 # Brave (Search: web, news, video)
-npx scoutline@0.14.11 --provider brave search "AI policy news" --topic news
-npx scoutline@0.14.11 --provider brave search "rust async" --type video
-npx scoutline@0.14.11 --provider brave search "large context topic" --content-size high
-npx scoutline@0.14.11 --provider brave quota
-npx scoutline@0.14.11 doctor --provider brave
+npx scoutline@0.17.4 --provider brave search "AI policy news" --topic news
+npx scoutline@0.17.4 --provider brave search "rust async" --type video
+npx scoutline@0.17.4 --provider brave search "large context topic" --content-size high
+npx scoutline@0.17.4 --provider brave quota
+npx scoutline@0.17.4 doctor --provider brave
 
 # All-Provider quota
-npx scoutline@0.14.11 quota --all-providers
+npx scoutline@0.17.4 quota --all-providers
 
 # Local cache inspection, clearing, and pruning
-npx scoutline@0.14.11 cache stats                 # inventory both subdirectories
-npx scoutline@0.14.11 cache clear                 # delete every file in cache/ and tools/
-npx scoutline@0.14.11 cache prune --older-than 24h   # delete entries older than 24h (Nh|Nm|Ns|seconds)
+npx scoutline@0.17.4 cache stats                 # inventory both subdirectories
+npx scoutline@0.17.4 cache clear                 # delete every file in cache/ and tools/
+npx scoutline@0.17.4 cache prune --older-than 24h   # delete entries older than 24h (Nh|Nm|Ns|seconds)
 
 # Config (see "Settings via scoutline config" above)
-npx scoutline@0.14.11 config get routing
+npx scoutline@0.17.4 config get routing
 ```
 
 ## Repository Exploration

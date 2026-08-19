@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.6] - 2026-08-19
+
+### Hermetic `main()` by construction (#73, #72)
+
+The ambient-config test-failure class (the #63-#65 fence trio's root cause) is now structurally impossible:
+
+- **`deps.config` short-circuit (#73):** `MainDependencies.config` provides the loaded config verbatim — `main()` never reads the operator's config file when it is present. One normalized loader seam now feeds all four hermeticity gates (config load, quota-refresh, verification promoter, trigger detection).
+- **Hermetic-by-default tests (#73):** `hermeticMainDeps()` defaults an empty config loader — 178 existing sites became hermetic in one edit; 54 ambient sites and 15 strays were converted individually. Every `main()` test in the repo now isolates config; `provider-live` remains intentionally ambient.
+- **Injectable routing (#72):** `MainDependencies.routing` wins over the config file's routing table (`dependencies.routing ?? config.routing`), mirroring `configFanout` — the last ambient-config leak into dispatch is closed.
+
+Full suite: **3767/3767 (glob) · 3764/3764 (offline gate) — zero failures.**
+
 ## [0.17.5] - 2026-08-19
 
 ### Fence trio resolved: hermetic config isolation (#63-#65)

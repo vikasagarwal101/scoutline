@@ -257,7 +257,7 @@ Provider selection, and `doctor`.
 
 | Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `search` | Yes | Yes | Yes | Yes | Yes (incl. `type: "video"`) | Yes | Yes | Yes | Yes | Parallel (declarative semantic), Perplexity (Sonar citations), Jina (neural web search) |
+| `search` | Yes | Yes | Yes | Yes | Yes (incl. `type: "video"`) | Yes | Yes | Yes | Yes | Parallel (declarative semantic), Jina (neural web search) |
 | `vision.interpret-image` (analyze) | Yes | Yes | No | No | No | No | No | No | No | Provider-specific media limits; uncached |
 | `vision.ui-artifact` (ui-to-code) | Yes | Available | No | No | No | No | No | No | No | Live-attested; conformance-gated |
 | `vision.extract-text` | Yes | Pending | No | No | No | No | No | No | No | Implemented, pending live conformance |

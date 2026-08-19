@@ -220,6 +220,33 @@ describe("doctor diagnostics — report metadata (P4-04)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Missing-descriptor settlement (audit 2026-08 #61)
+// ---------------------------------------------------------------------------
+
+describe("doctor diagnostics — per-provider probe settlement (#61)", () => {
+  it("one provider's failing probe settles as its own error; other probes still run", async () => {
+    const env = { Z_AI_API_KEY: ZAI_KEY, MINIMAX_API_KEY: MINIMAX_KEY };
+    const descriptors = [
+      makeZaiDescriptor({ listToolsImpl: () => [] }),
+      makeMiniMaxDescriptor({
+        fetchImpl: () => Promise.reject(new Error("probe exploded")),
+      }),
+    ];
+
+    const report = await buildDiagnosticsReport(
+      baseDeps({ descriptors, env, effectiveProvider: "zai" }),
+    );
+
+    const zai = report.providers.find((p) => p.provider === "zai");
+    const minimax = report.providers.find((p) => p.provider === "minimax");
+    assert.strictEqual(zai?.status, "ok", "healthy provider still probed");
+    assert.strictEqual(minimax?.status, "error", "failing probe settles per-provider");
+    assert.match(String(minimax?.error?.message), /MiniMax request failed/, "normalized probe error surfaces");
+    assert.strictEqual(doctorExitCode(report), 1, "error surfaces in the exit code");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Configuration combinations
 // ---------------------------------------------------------------------------
 

@@ -401,6 +401,67 @@ describe("Parallel AI Descriptor & Adapter", () => {
     );
   });
 
+  it("reader strips image markdown when retainImages:false (#52)", async () => {
+    const fakeFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          results: [
+            {
+              url: "https://example.com",
+              title: "Example Page",
+              full_content:
+                "Intro paragraph.\n\n![chart](https://example.com/chart.png)\n\nClosing paragraph.",
+            },
+          ],
+        }),
+    });
+
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const res = await adapter.reader.fetch.invoke({
+      url: "https://example.com",
+      retainImages: false,
+    });
+    assert.doesNotMatch(res.content, /!\[[^\]]*\]\([^)]*\)/);
+  });
+
+  it("reader keeps default image passthrough when retainImages omitted (#52)", async () => {
+    const page = "Intro paragraph.\n\n![chart](https://example.com/chart.png)\n\nClosing paragraph.";
+    const fakeFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          results: [{ url: "https://example.com", title: "Example Page", full_content: page }],
+        }),
+    });
+
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    const res = await adapter.reader.fetch.invoke({ url: "https://example.com" });
+    assert.equal(res.content, page);
+  });
+
+  it("reader rejects retainImages:true as UnsupportedOptionError (#52)", () => {
+    const adapter = new ParallelAdapter(
+      { env: { PARALLEL_API_KEY: TEST_KEY } },
+      { transport: { fetch: async () => ({}) } },
+    );
+
+    assert.throws(
+      () => adapter.reader.fetch.validate({ url: "https://example.com", retainImages: true }),
+      (e) => e instanceof UnsupportedOptionError && e.option === "retainImages",
+    );
+  });
+
   it("invokes research via the Task/Deep Research API (create→poll→retrieve) (8P.1)", async () => {
     const stateFile = createInMemoryAsyncJobStateFile();
     const { fetch: taskFetch, calls } = makeTaskFetch({

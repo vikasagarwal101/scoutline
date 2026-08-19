@@ -51,6 +51,7 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 
+import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 import { main } from "../dist/index.js";
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
@@ -2093,13 +2094,14 @@ describe("P6-08 real dispatcher selection-order (main → repo)", () => {
     const minimax = createMiniMaxDescriptor();
     const cache = makeRecordingCacheMain();
     const { adapter, stdout, stderr } = makeRecordingAdapter();
-    const status = await main(["repo", "search", "facebook/react", "useState"], {
+    // #73: hermetic config
+    const status = await main(["repo", "search", "facebook/react", "useState"], hermeticMainDeps({
       env: { Z_AI_API_KEY: TEST_API_KEY },
       providerDescriptors: [zai, minimax],
       repositoryCache: cache,
       searchCache: cache,
       invocation: adapter,
-    });
+    }));
     assert.strictEqual(status, 0);
     assert.deepStrictEqual(stderr, []);
     const parsed = JSON.parse(stdout[0]);
@@ -2114,13 +2116,13 @@ describe("P6-08 real dispatcher selection-order (main → repo)", () => {
     const { adapter, stdout, stderr } = makeRecordingAdapter();
     const status = await main(
       ["--provider", "zai", "repo", "search", "facebook/react", "useState"],
-      {
+      hermeticMainDeps({
         env: { Z_AI_API_KEY: TEST_API_KEY, SCOUTLINE_PROVIDER: "minimax" },
         providerDescriptors: [zai, minimax],
         repositoryCache: cache,
         searchCache: cache,
         invocation: adapter,
-      },
+      }),
     );
     assert.strictEqual(status, 0);
     assert.deepStrictEqual(stderr, []);
@@ -2149,13 +2151,13 @@ describe("P6-08 real dispatcher selection-order (main → repo)", () => {
         "facebook/react",
         "useState",
       ],
-      {
+      hermeticMainDeps({
         env: { Z_AI_API_KEY: TEST_API_KEY, MINIMAX_API_KEY: "mm-key" },
         providerDescriptors: [zai, minimax],
         repositoryCache: cache,
         searchCache: cache,
         invocation: adapter,
-      },
+      }),
     );
     assert.strictEqual(status, 1);
     assert.strictEqual(stderr.length, 1, "no executor notices under --no-fallback");
@@ -2176,7 +2178,7 @@ describe("P6-08 real dispatcher selection-order (main → repo)", () => {
     const { adapter, stderr } = makeRecordingAdapter();
     const status = await main(
       ["--no-fallback", "repo", "search", "facebook/react", "useState"],
-      {
+      hermeticMainDeps({
         env: {
           Z_AI_API_KEY: TEST_API_KEY,
           MINIMAX_API_KEY: "mm-key",
@@ -2186,7 +2188,7 @@ describe("P6-08 real dispatcher selection-order (main → repo)", () => {
         repositoryCache: cache,
         searchCache: cache,
         invocation: adapter,
-      },
+      }),
     );
     assert.strictEqual(status, 1);
     assert.strictEqual(stderr.length, 1, "no executor notices under --no-fallback");
@@ -2209,13 +2211,13 @@ describe("P6-08 real dispatcher selection-order (main → repo)", () => {
     const { adapter, stderr } = makeRecordingAdapter();
     const status = await main(
       ["--provider", "minimax", "repo", "search", "facebook/react", "useState"],
-      {
+      hermeticMainDeps({
         env: { Z_AI_API_KEY: TEST_API_KEY, MINIMAX_API_KEY: "mm-key" },
         providerDescriptors: [zai, minimax],
         repositoryCache: cache,
         searchCache: cache,
         invocation: adapter,
-      },
+      }),
     );
     assert.strictEqual(status, 0);
     assert.ok(
@@ -2248,13 +2250,13 @@ describe("P6-08 real dispatcher selection-order (main → repo)", () => {
     const { adapter, stderr } = makeRecordingAdapter();
     const status = await main(
       ["--no-fallback", "repo", "search", "facebook/react", "useState"],
-      {
+      hermeticMainDeps({
         env: { Z_AI_API_KEY: TEST_API_KEY },
       providerDescriptors: [descriptor, minimax],
       repositoryCache: cache,
       searchCache: cache,
       invocation: adapter,
-    });
+    }));
     assert.strictEqual(status, 1);
     assert.strictEqual(JSON.parse(stderr[0]).code, "UNSUPPORTED_CAPABILITY");
   });
@@ -2466,7 +2468,7 @@ describe("P6-08 cross-Adapter dispatcher through main() (Search/Read/Tree × Z.A
       environmentOutputMode: undefined,
     });
     const sleepCalls = [];
-    const status = await main([...(mode === "data" ? [] : ["-O", mode]), ...argv], {
+    const status = await main([...(mode === "data" ? [] : ["-O", mode]), ...argv], hermeticMainDeps({
       env: { Z_AI_API_KEY: TEST_API_KEY },
       providerDescriptors: [descriptor],
       repositoryCache: cache,
@@ -2488,7 +2490,7 @@ describe("P6-08 cross-Adapter dispatcher through main() (Search/Read/Tree × Z.A
       searchRandom: () => 0,
       invocation: recorder.adapter,
       now: () => FIXED_NOW,
-    });
+    }));
     return {
       status,
       stderr: recorder.stderr,

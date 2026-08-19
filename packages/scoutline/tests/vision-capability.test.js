@@ -33,6 +33,7 @@ import {
 import { createZaiDescriptor as createRealZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { UnsupportedCapabilityError, getErrorExitCode } from "../dist/lib/errors.js";
 import { executeProviderOperation } from "../dist/lib/execution.js";
+import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 import { main } from "../dist/index.js";
 import { VISION_HELP } from "../dist/commands/vision.js";
 import { getMcpToolName } from "../dist/lib/mcp-config.js";
@@ -692,14 +693,15 @@ function runVisionMain(args, { env = {}, providerDescriptors } = {}) {
     runQuietly: async (op) => op(),
     setExitCode() {},
   };
-  return main(args, {
+  // #73: hermetic config
+  return main(args, hermeticMainDeps({
     invocation,
     env,
     now: () => 1_700_000_000_000,
     providerDescriptors,
     searchSleep: async () => {},
     searchRandom: () => 0.5,
-  }).then((code) => {
+  })).then((code) => {
     const stdout = writes
       .filter((w) => w[0] === "out")
       .map((w) => w[1])

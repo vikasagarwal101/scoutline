@@ -41,6 +41,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 
+import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 import { main } from "../dist/index.js";
 import {
   ApiError,
@@ -259,12 +260,13 @@ describe("async fallback — capability-mismatch auto-reroute (Ticket 03)", () =
     });
     const crawlCache = makeInMemoryCache();
     const { adapter, stdout, stderr } = makeAdapter();
-    const status = await main(["--provider", "minimax", "crawl", "https://example.com"], {
+    // #73: hermetic config
+    const status = await main(["--provider", "minimax", "crawl", "https://example.com"], hermeticMainDeps({
       env: { MINIMAX_API_KEY: "mm", TAVILY_API_KEY: "tv" },
       providerDescriptors: [minimax.descriptor, tavily.descriptor],
       crawlCache,
       invocation: adapter,
-    });
+    }));
     assert.strictEqual(status, 0, "fallback reroute succeeds via tavily");
     assert.strictEqual(minimax.invokes.length, 0, "minimax adapter must not be invoked");
     assert.strictEqual(tavily.invokes.length, 1, "tavily serves the request via fallback");
@@ -290,12 +292,12 @@ describe("async fallback — capability-mismatch auto-reroute (Ticket 03)", () =
     });
     const mapCache = makeInMemoryCache();
     const { adapter, stdout, stderr } = makeAdapter();
-    const status = await main(["--provider", "minimax", "map", "https://example.com"], {
+    const status = await main(["--provider", "minimax", "map", "https://example.com"], hermeticMainDeps({
       env: { MINIMAX_API_KEY: "mm", TAVILY_API_KEY: "tv" },
       providerDescriptors: [minimax.descriptor, tavily.descriptor],
       mapCache,
       invocation: adapter,
-    });
+    }));
     assert.strictEqual(status, 0);
     assert.strictEqual(tavily.invokes.length, 1);
     assert.ok(
@@ -319,12 +321,12 @@ describe("async fallback — capability-mismatch auto-reroute (Ticket 03)", () =
     });
     const researchCache = makeInMemoryCache();
     const { adapter, stdout, stderr } = makeAdapter();
-    const status = await main(["--provider", "minimax", "research", "scoutline state"], {
+    const status = await main(["--provider", "minimax", "research", "scoutline state"], hermeticMainDeps({
       env: { MINIMAX_API_KEY: "mm", TAVILY_API_KEY: "tv" },
       providerDescriptors: [minimax.descriptor, tavily.descriptor],
       researchCache,
       invocation: adapter,
-    });
+    }));
     assert.strictEqual(status, 0);
     assert.strictEqual(tavily.invokes.length, 1);
     assert.ok(
@@ -362,12 +364,12 @@ describe("async fallback — runtime failure → next candidate (Ticket 03)", ()
     const crawlCache = makeInMemoryCache();
     const zai = makeZaiSearchOnlyProvider();
     const { adapter, stdout, stderr } = makeAdapter();
-    const status = await main(["crawl", "https://example.com"], {
+    const status = await main(["crawl", "https://example.com"], hermeticMainDeps({
       invocation: adapter,
       env: { TAVILY_API_KEY: "tv", FIRECRAWL_API_KEY: "fc" },
       providerDescriptors: [zai.descriptor, tavily.descriptor, firecrawl.descriptor],
       crawlCache,
-    });
+    }));
     assert.strictEqual(status, 0);
     assert.strictEqual(tavily.invokes.length, 1, "tavily must be attempted");
     assert.strictEqual(firecrawl.invokes.length, 1, "firecrawl serves the request via fallback");
@@ -400,12 +402,12 @@ describe("async fallback — runtime failure → next candidate (Ticket 03)", ()
     const mapCache = makeInMemoryCache();
     const zai = makeZaiSearchOnlyProvider();
     const { adapter, stderr } = makeAdapter();
-    const status = await main(["map", "https://example.com"], {
+    const status = await main(["map", "https://example.com"], hermeticMainDeps({
       invocation: adapter,
       env: { TAVILY_API_KEY: "tv", FIRECRAWL_API_KEY: "fc" },
       providerDescriptors: [zai.descriptor, tavily.descriptor, firecrawl.descriptor],
       mapCache,
-    });
+    }));
     assert.strictEqual(status, 0);
     assert.strictEqual(firecrawl.invokes.length, 1);
     assert.ok(
@@ -433,12 +435,12 @@ describe("async fallback — runtime failure → next candidate (Ticket 03)", ()
     const researchCache = makeInMemoryCache();
     const zai = makeZaiSearchOnlyProvider();
     const { adapter, stderr } = makeAdapter();
-    const status = await main(["research", "scoutline adapter"], {
+    const status = await main(["research", "scoutline adapter"], hermeticMainDeps({
       invocation: adapter,
       env: { TAVILY_API_KEY: "tv", EXA_API_KEY: "exa" },
       providerDescriptors: [zai.descriptor, tavily.descriptor, exa.descriptor],
       researchCache,
-    });
+    }));
     assert.strictEqual(status, 0);
     assert.strictEqual(exa.invokes.length, 1);
     assert.ok(
@@ -483,12 +485,12 @@ describe("async fallback — research SIGINT/state re-binds to the winner (Ticke
     const zai = makeZaiSearchOnlyProvider();
     const researchCache = makeInMemoryCache();
     const { adapter, stderr } = makeAdapter();
-    const status = await main(["research", "scoutline binding"], {
+    const status = await main(["research", "scoutline binding"], hermeticMainDeps({
       invocation: adapter,
       env: { TAVILY_API_KEY: "tv", EXA_API_KEY: "exa" },
       providerDescriptors: [zai.descriptor, tavily.descriptor, exa.descriptor],
       researchCache,
-    });
+    }));
     assert.strictEqual(status, 0);
     // Both Providers' capabilities were attempted; the winner is exa.
     assert.strictEqual(tavily.invokes.length, 1);
@@ -529,12 +531,12 @@ describe("async fallback — research credit warning fires exactly once (Fix 7)"
     const zai = makeZaiSearchOnlyProvider();
     const researchCache = makeInMemoryCache();
     const { adapter, stderr } = makeAdapter();
-    const status = await main(["research", "scoutline async"], {
+    const status = await main(["research", "scoutline async"], hermeticMainDeps({
       invocation: adapter,
       env: { TAVILY_API_KEY: "tv", EXA_API_KEY: "exa" },
       providerDescriptors: [zai.descriptor, tavily.descriptor, exa.descriptor],
       researchCache,
-    });
+    }));
     assert.strictEqual(status, 0);
     const creditWarnings = stderr.filter((l) => l.includes("credit-intensive"));
     assert.strictEqual(
@@ -563,12 +565,12 @@ describe("async fallback — research credit warning fires exactly once (Fix 7)"
     const { adapter, stderr } = makeAdapter();
     const status = await main(
       ["--provider", "minimax", "research", "scoutline silent-on-preflight"],
-      {
+      hermeticMainDeps({
         invocation: adapter,
         env: { MINIMAX_API_KEY: "mm", TAVILY_API_KEY: "tv" },
         providerDescriptors: [minimax.descriptor, tavily.descriptor],
         researchCache,
-      },
+      }),
     );
     assert.strictEqual(status, 1, "all-preflight-rejected plan surfaces UNSUPPORTED_CAPABILITY");
     const creditWarnings = stderr.filter((l) => l.includes("credit-intensive"));
@@ -601,12 +603,12 @@ describe("async fallback — --no-fallback restores strict (Ticket 03)", () => {
     const { adapter, stderr } = makeAdapter();
     const status = await main(
       ["--no-fallback", "--provider", "minimax", "crawl", "https://example.com"],
-      {
+      hermeticMainDeps({
         invocation: adapter,
         env: { MINIMAX_API_KEY: "mm", TAVILY_API_KEY: "tv" },
         providerDescriptors: [minimax.descriptor, tavily.descriptor],
         crawlCache,
-      },
+      }),
     );
     assert.strictEqual(status, 1);
     assert.strictEqual(stderr.length, 1, "no executor notices under --no-fallback");
@@ -627,12 +629,12 @@ describe("async fallback — --no-fallback restores strict (Ticket 03)", () => {
     const { adapter, stderr } = makeAdapter();
     const status = await main(
       ["--no-fallback", "--provider", "minimax", "map", "https://example.com"],
-      {
+      hermeticMainDeps({
         invocation: adapter,
         env: { MINIMAX_API_KEY: "mm", TAVILY_API_KEY: "tv" },
         providerDescriptors: [minimax.descriptor, tavily.descriptor],
         mapCache,
-      },
+      }),
     );
     assert.strictEqual(status, 1);
     assert.strictEqual(JSON.parse(stderr[0]).code, "UNSUPPORTED_CAPABILITY");
@@ -651,12 +653,12 @@ describe("async fallback — --no-fallback restores strict (Ticket 03)", () => {
     const { adapter, stderr } = makeAdapter();
     const status = await main(
       ["--no-fallback", "--provider", "minimax", "research", "scoutline kill-switch"],
-      {
+      hermeticMainDeps({
         invocation: adapter,
         env: { MINIMAX_API_KEY: "mm", TAVILY_API_KEY: "tv" },
         providerDescriptors: [minimax.descriptor, tavily.descriptor],
         researchCache,
-      },
+      }),
     );
     assert.strictEqual(status, 1);
     // Review Fix 7: minimax is incapable at preflight; the executor
@@ -692,12 +694,12 @@ describe("async fallback — --no-fallback restores strict (Ticket 03)", () => {
     const { adapter, stderr } = makeAdapter();
     const status = await main(
       ["--no-fallback", "--provider", "tavily", "crawl", "https://example.com"],
-      {
+      hermeticMainDeps({
         invocation: adapter,
         env: { TAVILY_API_KEY: "tv" },
         providerDescriptors: [tavily.descriptor],
         crawlCache,
-      },
+      }),
     );
     assert.strictEqual(status, 1);
     assert.strictEqual(stderr.length, 1, "no executor notices under --no-fallback");
@@ -726,7 +728,7 @@ describe("async fallback — SCOUTLINE_NO_FALLBACK=1 env restores strict (6.6)",
     const { adapter, stderr } = makeAdapter();
     const status = await main(
       ["--provider", "minimax", "crawl", "https://example.com"],
-      {
+      hermeticMainDeps({
         invocation: adapter,
         env: {
           MINIMAX_API_KEY: "mm",
@@ -735,7 +737,7 @@ describe("async fallback — SCOUTLINE_NO_FALLBACK=1 env restores strict (6.6)",
         },
         providerDescriptors: [minimax.descriptor, tavily.descriptor],
         crawlCache,
-      },
+      }),
     );
     assert.strictEqual(status, 1);
     assert.strictEqual(stderr.length, 1, "no executor notices under SCOUTLINE_NO_FALLBACK=1");
@@ -758,12 +760,12 @@ describe("async fallback — SCOUTLINE_NO_FALLBACK=1 env restores strict (6.6)",
     const { adapter, stdout, stderr } = makeAdapter();
     const status = await main(
       ["--provider", "minimax", "crawl", "https://example.com"],
-      {
+      hermeticMainDeps({
         invocation: adapter,
         env: { MINIMAX_API_KEY: "mm", TAVILY_API_KEY: "tv" },
         providerDescriptors: [minimax.descriptor, tavily.descriptor],
         crawlCache,
-      },
+      }),
     );
     assert.strictEqual(status, 0, "fallback reroute succeeds via tavily");
     assert.strictEqual(tavily.invokes.length, 1, "tavily serves the request via fallback");
@@ -808,12 +810,12 @@ describe("async fallback — cache partitioning across candidates (Ticket 03)", 
     });
     const zai = makeZaiSearchOnlyProvider();
     const { adapter } = makeAdapter();
-    await main(["crawl", "https://example.com"], {
+    await main(["crawl", "https://example.com"], hermeticMainDeps({
       invocation: adapter,
       env: { TAVILY_API_KEY: "tv", FIRECRAWL_API_KEY: "fc" },
       providerDescriptors: [zai.descriptor, tavily.descriptor, firecrawl.descriptor],
       crawlCache,
-    });
+    }));
     // Every write key embeds the provider id. Failed candidate
     // writes nothing; successful candidate writes under its own
     // key. The exact cache key format is owned by

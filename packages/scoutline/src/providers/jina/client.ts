@@ -501,13 +501,30 @@ function parseDeepSearchSSE(text: string): JinaDeepSearchResponse {
       content += delta.content;
     }
 
-    // Annotations (citations) arrive on the terminal chunk. Filter to
-    // entries with a valid url_citation.url, de-duplicate by URL.
+    // Annotations (citations) arrive on the terminal chunk. Validate the
+    // annotation shape recursively (#53): an entry that is not an object,
+    // or whose url_citation is present but not an object carrying a
+    // string url, is malformed SSE payload — fail closed with ApiError
+    // 502 instead of silently dropping or retaining the entry. Entries
+    // without a url_citation are non-citation annotations and are
+    // skipped. Well-formed citations are de-duplicated by URL.
     if (Array.isArray(delta.annotations) && delta.annotations.length > 0) {
       for (const ann of delta.annotations) {
-        const url = ann?.url_citation?.url;
-        if (typeof url !== "string" || seenCitationUrls.has(url)) continue;
-        seenCitationUrls.add(url);
+        if (typeof ann !== "object" || ann === null || Array.isArray(ann)) {
+          throw new ApiError("Jina AI returned a malformed SSE response", 502);
+        }
+        const citation = ann.url_citation;
+        if (citation === undefined) continue;
+        if (
+          typeof citation !== "object" ||
+          citation === null ||
+          Array.isArray(citation) ||
+          typeof citation.url !== "string"
+        ) {
+          throw new ApiError("Jina AI returned a malformed SSE response", 502);
+        }
+        if (seenCitationUrls.has(citation.url)) continue;
+        seenCitationUrls.add(citation.url);
         annotations.push(ann);
       }
     }

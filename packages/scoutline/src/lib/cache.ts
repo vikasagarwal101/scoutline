@@ -41,6 +41,7 @@ import { atomicReplaceFile } from "./config-store.js";
 import { FileError } from "./errors.js";
 import {
   withAsyncFileLock,
+  LockTimeoutError,
   DEFAULT_LOCK_TIMEOUT_MS,
   DEFAULT_LOCK_STALE_MS,
 } from "./async-file-lock.js";
@@ -670,11 +671,16 @@ export async function pruneCaches(
     );
   } catch (error) {
     // Timeout recognition mirrors `lockFailureToConfigurationError`
-    // (config-store): the message tail is the one stable part of
-    // `${timeoutLabel} create-lock timed out`.
-    if (error instanceof Error && error.message.endsWith("create-lock timed out")) {
+    // (config-store): the typed `LockTimeoutError` is the primary signal
+    // (its message no longer carries the legacy tail — see #48); the
+    // legacy plain-Error message tail is kept for callers that still
+    // raise one.
+    if (
+      error instanceof LockTimeoutError ||
+      (error instanceof Error && error.message.endsWith("create-lock timed out"))
+    ) {
       throw new FileError(
-        error.message,
+        error instanceof LockTimeoutError ? `${error.label} create-lock timed out` : error.message,
         "Another scoutline process holds the cache-write lock; try again once it finishes.",
       );
     }

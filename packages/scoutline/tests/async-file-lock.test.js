@@ -176,6 +176,44 @@ describe("audit 2026-08 #47 — AbortSignal threading", () => {
   });
 });
 
+describe("audit 2026-08 #48 — Firecrawl crawl lock", () => {
+  it("#48a: withCrawlLock uses refreshed-mtime semantics (via wrapper timeoutLabel)", async (t) => {
+    const maxConcurrent = await displacementRace(t, "lock48a", "Firecrawl crawl");
+    assert.strictEqual(
+      maxConcurrent,
+      1,
+      `live crawl lock must not be displaced; observed maxConcurrent=${maxConcurrent} (expected 1 — at HEAD the wrapper inherits withAsyncFileLock's unrefreshed-mtime race)`,
+    );
+  });
+
+  it("#48b: lock-timeout error does not surface Z_AI_TIMEOUT guidance (lock contention is not a request timeout)", async (t) => {
+    const dir = await mkTmp(t, "48b");
+    await fs.writeFile(path.join(dir, "lock48b.lock"), "x"); // force contention -> deadline timeout
+    const result = await capture(() =>
+      withAsyncFileLock(dir, "lock48b", async () => "done", {
+        timeoutMs: 200, staleMs: 600000, timeoutLabel: "Firecrawl crawl",
+      }),
+    );
+    assert.ok(result.err, "expected withAsyncFileLock to time out");
+
+    // Mirror of normalizeFirecrawlError's "timed out" branch (file-local,
+    // unexported; the real path needs a 30s lock timeout — impractical here).
+    const message = (result.err && result.err.message) || "";
+    const lower = message.toLowerCase();
+    const surfaced =
+      result.err instanceof TimeoutError ||
+      lower.includes("timeout") || lower.includes("timed out") || lower.includes("etimedout")
+        ? new TimeoutError(30000)
+        : result.err;
+    const help = (surfaced && surfaced.help) || "";
+
+    assert.ok(
+      !help.includes("Z_AI_TIMEOUT"),
+      `lock-timeout error must not surface Z_AI_TIMEOUT guidance; got help="${help}" (raw message="${message}")`,
+    );
+  });
+});
+
 describe("async-file-lock — sanity checks (must pass at HEAD)", () => {
   it("withAsyncFileLock is a no-op when stateDir is undefined", async () => {
     const sentinel = Symbol("fn-ran");

@@ -11,6 +11,7 @@ import {
 import { ConfigurationError, ValidationError } from "./errors.js";
 import {
   withAsyncFileLock,
+  LockTimeoutError,
   DEFAULT_LOCK_TIMEOUT_MS,
   DEFAULT_LOCK_STALE_MS,
 } from "./async-file-lock.js";
@@ -707,11 +708,15 @@ async function serializeConfigWrite<T>(
  * an acquire-deadline timeout (genuine contention — retrying later
  * can succeed) and raw non-EEXIST `fs.open` errors such as ENOTDIR or
  * EACCES (environment problems — retrying cannot fix them). The
- * timeout is recognized by its message tail, the one stable part of
- * `${timeoutLabel} create-lock timed out`.
+ * timeout is recognized by the typed `LockTimeoutError` (primary — its
+ * message no longer carries the legacy tail, see #48), with the legacy
+ * plain-Error message tail kept as a fallback.
  */
 export function lockFailureToConfigurationError(error: unknown): ConfigurationError {
-  if (error instanceof Error && error.message.endsWith("create-lock timed out")) {
+  if (
+    error instanceof LockTimeoutError ||
+    (error instanceof Error && error.message.endsWith("create-lock timed out"))
+  ) {
     return new ConfigurationError(
       "Unable to write config.json",
       "Another scoutline process holds the config-write lock; try again once it finishes.",

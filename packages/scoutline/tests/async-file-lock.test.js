@@ -96,6 +96,86 @@ describe("audit 2026-08 #46 — async-file-lock mtime + stat-error semantics", (
   });
 });
 
+describe("audit 2026-08 #47 — AbortSignal threading", () => {
+  it("#47a: lock-wait sleep is aborted by signal (via { signal } option on withAsyncFileLock)", async (t) => {
+    const dir = await mkTmp(t, "47a");
+    await fs.writeFile(path.join(dir, "lock47a.lock"), "x"); // force contention
+    const controller = new AbortController();
+    controller.abort(); // pre-aborted; `signal` option does not exist at HEAD
+
+    const result = await capture(() =>
+      withAsyncFileLock(dir, "lock47a", async () => "done", {
+        timeoutMs: 10000, staleMs: 600000, signal: controller.signal, timeoutLabel: "test-47a",
+      }),
+    );
+
+    assert.ok(result.err, "expected withAsyncFileLock to reject (either via abort or via timeout)");
+    const message = (result.err && result.err.message) || "";
+    assert.ok(
+      !message.includes("create-lock timed out"),
+      `aborted signal must abort the lock-wait, not sleep through to a create-lock timeout; got message="${message}"`,
+    );
+  });
+
+  it("#47b: retry loop checks signal.aborted BEFORE invoking (no invoke when pre-aborted)", async (t) => {
+    const controller = new AbortController();
+    controller.abort();
+    let invokeCount = 0;
+    const sleepCalls = [];
+    const invoke = async () => {
+      invokeCount += 1;
+      throw new TimeoutError(5000); // retryable — would force the backoff path
+    };
+    const result = await capture(() =>
+      executeProviderOperation(
+        "search", invoke,
+        { sleep: (ms) => { sleepCalls.push(ms); return Promise.resolve(); }, random: () => 0 },
+        { maxRetries: 1, baseDelayMs: 100, maxDelayMs: 100, jitterMs: 0 },
+        undefined, controller.signal,
+      ),
+    );
+    assert.ok(result.err, "expected retry loop to reject when aborted");
+    assert.strictEqual(
+      invokeCount, 0,
+      `pre-aborted signal must skip invoke() entirely; observed invokeCount=${invokeCount} (at HEAD the retry loop consults signal only inside the catch, so the first invoke runs even when the caller is already aborted)`,
+    );
+    assert.strictEqual(sleepCalls.length, 0, `pre-aborted signal must not trigger backoff; observed sleepCalls=${JSON.stringify(sleepCalls)}`);
+  });
+
+  it("#47c: backoff sleep is abortable (abort during backoff -> rejects promptly)", async (t) => {
+    let sleepResolved = false;
+    const sleep = (ms) => new Promise((resolve) => {
+      setTimeout(() => { sleepResolved = true; resolve(); }, ms);
+    });
+    const controller = new AbortController();
+    let firstInvoke = true;
+    const invoke = async () => {
+      if (firstInvoke) {
+        firstInvoke = false;
+        setTimeout(() => controller.abort(), 80); // abort mid-backoff (baseDelayMs 500)
+        throw new TimeoutError(5000); // retryable — forces the backoff path
+      }
+      return "ok";
+    };
+    const start = Date.now();
+    const result = await capture(() =>
+      executeProviderOperation(
+        "search", invoke,
+        { sleep, random: () => 0 },
+        { maxRetries: 1, baseDelayMs: 500, maxDelayMs: 500, jitterMs: 0 },
+        undefined, controller.signal,
+      ),
+    );
+    const elapsed = Date.now() - start;
+    assert.ok(result.err, "expected operation to reject after abort");
+    assert.ok(
+      elapsed < 300,
+      `backoff must be aborted promptly when signal fires; elapsed=${elapsed}ms (at HEAD the plain 500ms sleep runs to completion regardless of abort)`,
+    );
+    assert.ok(!sleepResolved, "sleep must NOT run to completion when aborted");
+  });
+});
+
 describe("async-file-lock — sanity checks (must pass at HEAD)", () => {
   it("withAsyncFileLock is a no-op when stateDir is undefined", async () => {
     const sentinel = Symbol("fn-ran");

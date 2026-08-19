@@ -45,6 +45,14 @@ export interface AsyncFileLockOptions {
   readonly setTimeout?: typeof setTimeout;
   /** Label used in the timeout error message (e.g. "Firecrawl crawl"). */
   readonly timeoutLabel: string;
+  /**
+   * Cooperative-cancellation signal (issue #47). When aborted — before
+   * the call or during the lock wait — the pending wait rejects promptly
+   * instead of sleeping through to the acquire deadline. A live critical
+   * section is NOT interrupted: the holder's `fn` owns its own signal
+   * handling.
+   */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -95,7 +103,32 @@ export async function withAsyncFileLock<T>(
   if (stateDir === undefined) return fn();
 
   const setT = options.setTimeout ?? setTimeout;
-  const sleep = (ms: number): Promise<void> => new Promise((r) => setT(() => r(), ms));
+  const signal = options.signal;
+  const lockAborted = (): Error =>
+    new Error(`${options.timeoutLabel} create-lock wait aborted by signal`);
+  // Contention sleep, raced against the caller's signal (issue #47): an
+  // abort rejects the pending wait immediately instead of sleeping
+  // through to the acquire deadline.
+  const sleep = (ms: number): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(lockAborted());
+        return;
+      }
+      if (signal === undefined) {
+        setT(() => resolve(), ms);
+        return;
+      }
+      const onAbort = (): void => {
+        clearTimeout(id);
+        reject(lockAborted());
+      };
+      const id = setT(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
   await fs.mkdir(stateDir, { recursive: true }).catch(() => {});
   const lockPath = path.join(stateDir, `${identityHash}.lock`);
   const deadline = Date.now() + options.timeoutMs;
@@ -107,6 +140,7 @@ export async function withAsyncFileLock<T>(
   const refreshIntervalMs = Math.min(Math.max(10, Math.floor(options.staleMs / 2)), 5000);
 
   for (;;) {
+    if (signal?.aborted) throw lockAborted();
     let handle;
     try {
       handle = await fs.open(lockPath, "wx");

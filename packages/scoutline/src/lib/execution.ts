@@ -32,7 +32,7 @@ import type {
   ReaderOperation,
   ReaderOperationKind,
 } from "../capabilities/reader.js";
-import { ScoutlineError } from "./errors.js";
+import { ScoutlineError, TimeoutError } from "./errors.js";
 import { buildProviderCacheKey, type ResponseCache } from "./cache.js";
 import type { ProviderCapability, ProviderId } from "../providers/types.js";
 import type { ConsumptionSink, ConsumptionContext } from "./consumption.js";
@@ -219,6 +219,57 @@ function isOperationRetryableError(error: unknown): boolean {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Abortable backoff sleep (issue #47)
+// ---------------------------------------------------------------------------
+
+/**
+ * Backoff sleep raced against the caller's `AbortSignal` (issue #47).
+ *
+ * When `signal` is undefined — or never aborts — behavior is byte-for-byte
+ * `sleep(ms)`: the injected sleep drives the wait, tests stay
+ * deterministic. When the signal aborts mid-sleep, the returned promise
+ * rejects immediately with an abort-classified `TimeoutError` (matching
+ * the repo convention: adapters and the retry loop classify caller
+ * cancellation as `TimeoutError`), instead of letting a multi-second
+ * backoff run to completion after the caller is gone.
+ *
+ * If the sleep wins the race (resolves before the abort lands), the
+ * promise resolves normally and the caller's existing post-sleep
+ * `signal.aborted` re-check decides — the original invoke error is
+ * rethrown there, preserving pre-existing semantics for that ordering.
+ */
+function abortableSleep(
+  sleep: (ms: number) => Promise<void>,
+  ms: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (signal === undefined) return sleep(ms);
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const abort = (): void => {
+      if (settled) return;
+      settled = true;
+      reject(new TimeoutError(0, "Provider operation was aborted during backoff"));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    sleep(ms).then(
+      () => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", abort);
+        resolve();
+      },
+      (err: unknown) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", abort);
+        reject(err);
+      },
+    );
+  });
+}
+
 /**
  * Generic uncached retry wrapper. Performs no I/O of its own; the
  * caller supplies the invoke thunk and the cache strategy. Each
@@ -241,6 +292,12 @@ function isOperationRetryableError(error: unknown): boolean {
  * The 5th parameter is additive and optional; existing 4-arg callers
  * (Quota, Doctor, and every pre-PB-T2 test) compile and behave
  * unchanged.
+ *
+ * Cancellation (issue #47): a pre-aborted `signal` rejects BEFORE the
+ * consumption emission and the invoke — a caller that is already gone
+ * performs no Provider work, no consumption event, and no backoff. An
+ * abort that lands mid-backoff unwinds the sleep immediately
+ * (`abortableSleep`) instead of running it to completion.
  */
 export async function executeProviderOperation<T>(
   operation: ProviderOperation,
@@ -255,6 +312,12 @@ export async function executeProviderOperation<T>(
   const now = dependencies.now ?? Date.now;
   let attempt = 0;
   for (;;) {
+    // Caller-initiated cancellation is terminal — never invoke (issue
+    // #47). Aborts are classified as TimeoutError, matching how the
+    // adapters classify caller cancellation.
+    if (signal?.aborted) {
+      throw new TimeoutError(0, "Provider operation was aborted before invoke");
+    }
     // PB-T2: emit BEFORE invoke. One event per loop iteration = one
     // event per invoke() call. Cache hits never reach here (wrappers
     // return before invoking). A retrying failure emits once per
@@ -271,7 +334,9 @@ export async function executeProviderOperation<T>(
       if (!isOperationRetryableError(error)) throw error;
       const backoff = Math.min(policy.maxDelayMs, policy.baseDelayMs * Math.pow(2, attempt));
       const jitter = Math.floor(dependencies.random() * policy.jitterMs);
-      await dependencies.sleep(backoff + jitter);
+      // Abortable backoff (issue #47): an abort mid-sleep rejects
+      // immediately instead of outliving the caller.
+      await abortableSleep(dependencies.sleep, backoff + jitter, signal);
       // Re-check after backoff: signal may have aborted during sleep.
       if (signal?.aborted) throw error;
       attempt += 1;

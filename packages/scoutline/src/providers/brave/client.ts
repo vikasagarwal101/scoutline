@@ -236,8 +236,16 @@ export async function getBraveJson(
     let parsed: unknown;
     try {
       parsed = await res.json();
-    } catch {
-      throw new ApiError("Brave returned a malformed response", 500);
+    } catch (err) {
+      // Only a genuine parse failure (non-JSON body → SyntaxError) is
+      // the malformed-response case. Anything else — notably the
+      // AbortError thrown when the transport timeout fires mid-read —
+      // must flow to the outer catch so normalizeTransportError keeps
+      // its AbortError → TimeoutError classification (#54).
+      if (err instanceof SyntaxError) {
+        throw new ApiError("Brave returned a malformed response", 500);
+      }
+      throw err;
     }
     return parsed;
   } catch (err) {

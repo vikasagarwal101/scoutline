@@ -226,6 +226,44 @@ describe("Brave client getBraveJson", () => {
     assert.strictEqual(err.durationMs, 5000);
   });
 
+  it("maps a timeout during res.json() body read to TimeoutError (#54)", async () => {
+    // Abort during the body read must keep TimeoutError classification (#54).
+    const abortError = Object.assign(new Error("aborted"), { name: "AbortError" });
+    const { fn } = makeRecordingFetch(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => "",
+      json: async () => {
+        throw abortError;
+      },
+      headers: { get: () => null },
+    }));
+    const err = await getBraveJson(
+      TEST_API_KEY,
+      "/res/v1/web/search",
+      { q: "hi" },
+      { fetch: fn, env: { BRAVE_TIMEOUT: "7000" } },
+    ).then(
+      () => null,
+      (e) => e,
+    );
+    assert.ok(
+      err instanceof TimeoutError,
+      `must be TimeoutError, got ${err && err.constructor.name}: ${err && err.message}`,
+    );
+    assert.strictEqual(err.durationMs, 7000);
+  });
+
+  it("guard (#54): a genuine HTTP 500 status error still maps to ApiError with the real status", async () => {
+    const { fn } = makeRecordingFetch(makeErrorFetch(500));
+    const err = await getBraveJson(TEST_API_KEY, "/res/v1/x", { q: "hi" }, { fetch: fn }).then(
+      () => null,
+      (e) => e,
+    );
+    assert.ok(err instanceof ApiError && err.statusCode === 500);
+    assert.ok(!(err instanceof TimeoutError), "a real 500 status must not classify as TimeoutError");
+  });
+
   it("maps 401 to AuthError with the BRAVE_SEARCH_API_KEY help hint", async () => {
     const { fn } = makeRecordingFetch(makeErrorFetch(401));
     const err = await getBraveJson(TEST_API_KEY, "/res/v1/x", { q: "hi" }, { fetch: fn }).then(

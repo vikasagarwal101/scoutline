@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.3] - 2026-08-19
+
+### Review-audit hardening (wave 2: provider correctness + cleanup)
+
+- **Jina quota honesty (#49):** tier inference removed — quota windows publish the exact remaining value with an explicitly unknown limit (used/limit/remainingPercent omitted rather than fabricated, per ADR-0001's no-meaning-change rule); the all-provider dashboard filters capability-aware so keyless Jina is excluded instead of yielding a ConfigurationError row; `buildQuotaWindow` accepts remaining-only windows; the stale "Jina advertises no quota capability" policy reason corrected; TTY renders percent-less windows without bars.
+- **Firecrawl reclaim safety (#50):** crawl-option compatibility now checks depth symmetrically — a default-depth invocation can no longer reclaim a same-URL job created with an explicit deeper crawl.
+- **Perplexity + Jina controls (#51):** research `model` is rejected as an unsupported option (was silently ignored — invoke hardcoded sonar-deep-research); 408/504 on research calls surface research-appropriate timeout guidance end-to-end (the adapter no longer re-wraps it with the plain hint); Jina search skips results without a URL instead of emitting empty-URL sources.
+- **Parallel reader (#52):** `retainImages: false` is honored (image markdown stripped client-side; the API has no server toggle); omitted keeps byte-identical passthrough, `true` still rejected.
+- **Jina SSE validation (#53):** wrong-shape deepsearch annotations now reject with ApiError 502 instead of being silently dropped.
+- **Brave timeouts (#54):** abort/timeout errors during JSON body reads keep their TimeoutError classification (only genuine parse failures map to the malformed-response wrap).
+- **Credential-state honesty (#55):** a keyless-only configuration classifies as the new explicit `keyless` state instead of mislabeling as `file-configured`.
+- **Parallel transport (#56):** error bodies are drained before throwing (no socket pinning under repeated failures); the duplicated catch-block mapping is one shared helper with byte-identical semantics.
+- **Probe-error factory (#57):** seven near-identical `normalizeProbeError` implementations replaced by a config-driven factory (net −20 lines); every provider divergence (Tavily's quota omission, Perplexity's client pre-wrap, Parallel's reachable fallback) preserved under 50 characterization pins.
+- **Controls-conformance class-guard:** a 119-row table-driven test now pins, for every provider, that each documented search/reader/research control is either explicitly rejected at validation or observably consumed on the wire — the recurring option-drop class is now structurally un-reintroducible (its first sweep surfaced #66-#70, tracked separately).
+- **Cleanups (#58):** credential keys are returned trimmed (whitespace-padded keys were sent verbatim); dead seams removed (unreachable `now` injection params, unreachable `!win` guard, the never-threaded providers-boundary `utcpFactory` field — the live lib-level seam is untouched).
+
 ## [0.17.2] - 2026-08-19
 
 ### Review-audit hardening (wave 1)

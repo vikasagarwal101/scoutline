@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.5] - 2026-08-19
+
+### Fence trio resolved: hermetic config isolation (#63-#65)
+
+All three long-standing local suite failures shared one root cause: non-hermetic `main()` tests reading the operator's real `~/.scoutline/config.json` — where `fanout: true` and stored provider keys made the fan-out path engage inside tests that modeled fan-out-off or nothing-configured scenarios. The code was correct in all three cases (quota ranking verified by direct probe; the pin-override notice matches ADR-0004; Brave genuinely serving video results across arms is the documented partial-support philosophy).
+
+- **#63 (effective-provider ranking):** the dispatch test pins `configFanout: false`, so the ambient config can no longer divert search to fan-out mode (which bypasses quota-ranked selection by design).
+- **#64 (fanout byte-identity):** run B injects an empty config loader — the "explicit pin: fan-out ignored" notice now appears only on runs that actually enable fan-out.
+- **#65 (`--type video` with no credentials):** hermeticized with an empty config loader (deterministic `CONFIGURATION_ERROR`) and the stale "keyless Jina" premise corrected (Jina search has been keyed since 0.14.6); a new companion test pins the documented partial-support outcome — a type-rejecting arm drops with an `UNSUPPORTED_OPTION` disclosure while a supporting arm serves, exit 0 — and the test no longer performs ~23s of real billable network fanout on configured machines.
+- Follow-ups filed for the systemic findings: #72 (`dependencies.routing` not injectable — same hermeticity class) and #73 (make `main()` config loading hermetic by default, completing what #42 started).
+
+The full suite is now green on both gates (glob and `npm run test:offline`) on config-bearing machines.
+
 ## [0.17.4] - 2026-08-19
 
 ### Review-audit hardening (wave 3: test gates + docs)

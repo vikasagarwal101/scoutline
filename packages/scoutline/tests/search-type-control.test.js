@@ -156,14 +156,18 @@ describe("--type / --topic mutual exclusivity (parse-time, T3a)", () => {
   });
 
   it("--type video alone with NO credentials yields error (parse passes, provider rejects type)", async () => {
-    // Sanity: --type video by itself is a VALID parse. With no credentials,
-    // keyless Jina is the only configured provider; it rejects --type as
-    // UnsupportedOptionError. This proves the parse-time gate only
-    // rejects the COMBO (--type + --topic), not --type alone.
+    // Sanity: --type video by itself is a VALID parse. With nothing
+    // configured anywhere (hermetic config: env:{} AND no file config —
+    // #65: without the injection, main() reads the real ~/.scoutline/
+    // config.json, where stored keys + fanout:true make Brave genuinely
+    // serve video results across fan-out arms, exit 0), the run fails
+    // with a typed error. This proves the parse-time gate only rejects
+    // the COMBO (--type + --topic), not --type alone.
     const { adapter, stderr } = createTestAdapter();
     const status = await main(["search", "q", "--type", "video"], {
       invocation: adapter,
       env: {},
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
     });
     // Deterministic contract (#60, env-honest fixup): the run must FAIL
     // with a typed error — never exit 0. With credentials present the

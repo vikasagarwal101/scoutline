@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.2] - 2026-08-19
+
+### Review-audit hardening (wave 1)
+
+- **Redaction:** Digest parameter redaction honors quoted-string realm values (RFC 7235), so `realm="My App"` no longer terminates parsing early and leaks `nonce=`/`response=`; the 8-char whitespace guard no longer over-redacts ordinary prose while true ≥8-char credentials stay redacted (#44).
+- **tool-cache:** legacy v1 cache envelopes — which may contain un-redacted provider credentials — are unlinked (best-effort) the moment the version mismatch is detected, instead of lingering on disk until manual cleanup (#45).
+- **async-file-lock:** lock mtime is refreshed while critical sections run, so a live holder is no longer displaced as stale after `staleMs`; non-ENOENT `fs.stat` failures propagate as real errors instead of masquerading as contention (#46).
+- **Cancellation:** `withAsyncFileLock` accepts an `AbortSignal` (pre-aborted or mid-wait callers reject promptly; running critical sections are not interrupted); the `executeProviderOperation` retry loop checks `signal.aborted` before invoking and aborts backoff sleeps mid-wait (#47).
+- **Lock-timeout classification:** lock-acquire timeouts raise a typed `LockTimeoutError` whose message no longer matches provider "timed out" heuristics, so Firecrawl/Tavily normalizers stop misrouting lock contention to request-timeout guidance (`Z_AI_TIMEOUT`); `cache.ts`/`config-store.ts` detection uses the typed error with the legacy message-tail fallback preserved (#48).
+
 ## [0.17.1] - 2026-08-18
 
 ### Quota snapshot accounting

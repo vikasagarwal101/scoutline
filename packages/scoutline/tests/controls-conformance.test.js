@@ -17,6 +17,11 @@
  * `model`, Parallel reader `retainImages`, Jina/Perplexity empty-URL
  * sources (all fixed this wave and now pinned here).
  *
+ * A fourth state, `documented-strip`, pins an INTENTIONAL contract: the
+ * control is accepted, stripped before the wire, AND disclosed by a stderr
+ * warning (Exa research OD1 semantics — owner decision 2026-08-19). Unlike
+ * `dropped`, it is a pass: the disclosure is the product behavior.
+ *
  * A third state, `dropped`, is a CHARACTERIZED FINDING, not a pass: the
  * row asserts the control is accepted yet provably absent from the wire
  * (the bug class itself). If a fix lands, the dropped characterization
@@ -54,33 +59,11 @@ import { UnsupportedOptionError } from "../dist/lib/errors.js";
 // (issues #66–#70) and their rows upgraded to consumed.
 // ---------------------------------------------------------------------------
 
-const FINDINGS = [
-  {
-    id: "CC-7",
-    provider: "exa",
-    capability: "research",
-    control: "outputLength",
-    problem:
-      "Stripped (not rejected) with a stderr warning by normalizeExaResearchRequest " +
-      "(documented OD1 fallback semantics) — never reaches the /agent/runs body.",
-  },
-  {
-    id: "CC-8",
-    provider: "exa",
-    capability: "research",
-    control: "citationFormat",
-    problem: "Same documented strip-and-warn path as CC-7 — not rejected, not consumed.",
-  },
-  {
-    id: "CC-9",
-    provider: "exa",
-    capability: "research",
-    control: "domain",
-    problem:
-      "Same documented strip-and-warn path as CC-7 (domain stripped pending a public " +
-      "includeDomains field on Agent create) — not rejected, not consumed.",
-  },
-];
+// Findings registry: EMPTY — all nine CC findings resolved 2026-08-19.
+// CC-1..CC-6 fixed (wired, see the provider commits); CC-7..CC-9 resolved as
+// the owner-endorsed documented-strip contract below (kept + warned, not
+// rejected — Exa research OD1 fallback semantics).
+const FINDINGS = [];
 
 const FINDINGS_BY_ID = new Map(FINDINGS.map((f) => [f.id, f]));
 
@@ -588,6 +571,39 @@ async function runRow(row) {
       default:
         assert.fail(`unknown consume target ${row.on}`);
     }
+    return;
+  }
+
+  if (row.expect === "documented-strip") {
+    // Intentional contract: accepted, completed, stripped from the wire,
+    // AND disclosed by a stderr warning. All four legs asserted.
+    capability.validate(request); // must NOT throw
+    const writes = [];
+    const realWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => { writes.push(String(chunk)); return true; };
+    try {
+      // Production sequence: the shared executor computes the cache
+      // identity (where the disclosure fires) before invoking.
+      capability.cacheIdentity(request);
+      await capability.invoke(request); // must resolve
+    } finally {
+      process.stderr.write = realWrite;
+    }
+    const capture = pickCapture(harness, row.pick);
+    const serialized = JSON.stringify([
+      capture.url,
+      capture.headers,
+      capture.body ?? capture.bodyText,
+      capture.args,
+    ]).toLowerCase();
+    assert.ok(
+      !serialized.includes(row.absentToken.toLowerCase()),
+      `${row.provider} ${row.capability} ${row.control}: documented-strip requires the control to stay off the wire`,
+    );
+    assert.ok(
+      writes.some((w) => /ignoring unsupported option/i.test(w) && w.toLowerCase().includes(row.absentToken.toLowerCase())),
+      `${row.provider} ${row.capability} ${row.control}: documented-strip requires the stderr disclosure naming the stripped option; got ${JSON.stringify(writes)}`,
+    );
     return;
   }
 
@@ -1105,8 +1121,7 @@ const ROWS = [
     capability: "research",
     control: "outputLength",
     input: { outputLength: "long" },
-    expect: "dropped",
-    finding: "CC-7",
+    expect: "documented-strip",
     absentToken: "outputlength",
     pick: { method: "POST", urlIncludes: "/agent/runs" },
   },
@@ -1115,8 +1130,7 @@ const ROWS = [
     capability: "research",
     control: "citationFormat",
     input: { citationFormat: "apa" },
-    expect: "dropped",
-    finding: "CC-8",
+    expect: "documented-strip",
     absentToken: "citationformat",
     pick: { method: "POST", urlIncludes: "/agent/runs" },
   },
@@ -1125,8 +1139,7 @@ const ROWS = [
     capability: "research",
     control: "domain",
     input: { domain: "example.com" },
-    expect: "dropped",
-    finding: "CC-9",
+    expect: "documented-strip",
     absentToken: "domain",
     pick: { method: "POST", urlIncludes: "/agent/runs" },
   },

@@ -5,6 +5,9 @@
  *   - Credentials: LINKUP_API_KEY trimming, presence, ConfigurationError
  *   - Search: `type` rejection before fetch, domain -> includeDomains,
  *     contentSize -> depth, Bearer auth, name/url/content normalization
+ *   - Research: async submit/poll lifecycle — single POST /research,
+ *     poll GET /research/:id to completion, model -> reasoningDepth
+ *     mapping, failed-poll ApiError (no raw body), state-file resume
  *
  * Tests inject a fake `fetch` through descriptor transport deps; no real
  * network is touched.
@@ -18,7 +21,11 @@ import {
   requireLinkupApiKey,
 } from "../dist/providers/linkup/credentials.js";
 import { createLinkupDescriptor } from "../dist/providers/linkup/adapter.js";
-import { ConfigurationError, UnsupportedOptionError } from "../dist/lib/errors.js";
+import {
+  computeAsyncJobStateHash,
+  createInMemoryAsyncJobStateFile,
+} from "../dist/lib/async-job-state.js";
+import { ApiError, ConfigurationError, UnsupportedOptionError } from "../dist/lib/errors.js";
 
 describe("Linkup credentials", () => {
   it("trims LINKUP_API_KEY and throws ConfigurationError when missing", () => {
@@ -103,5 +110,136 @@ describe("Linkup Reader Adapter — renderJs control", () => {
     assert.equal(result.schemaVersion, 1);
     assert.ok(result.content.length > 0);
     assert.equal(adapter.reader.fetch.kind, "reader-fetch");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Research — async submit/poll lifecycle
+// ---------------------------------------------------------------------------
+
+/** Response double for the injected transport `fetch`. */
+function jsonRes(payload, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => payload,
+    text: async () => JSON.stringify(payload),
+    headers: { get: () => null },
+  };
+}
+
+describe("Linkup Research Adapter — async polling lifecycle", () => {
+  it("research.run submits once then polls to completion", async () => {
+    const calls = [];
+    const adapter = createLinkupDescriptor({
+      transport: {
+        fetch: async (url, init) => {
+          calls.push({ url: String(url), method: init?.method ?? "GET" });
+          if (String(url).endsWith("/research") && (init?.method ?? "GET") === "POST") {
+            return jsonRes({ id: "job-1", status: "pending" });
+          }
+          if (String(url).includes("/research/job-1")) {
+            return jsonRes({ status: "completed", markdown: "## Report", output: "## Report", sources: [{ name: "S", url: "https://example.test/s", snippet: "x" }] });
+          }
+          throw new Error(String(url));
+        },
+        setTimeout: (cb) => { setImmediate(cb); return 0; },
+        clearTimeout: () => {},
+      },
+      researchStateFile: createInMemoryAsyncJobStateFile(),
+    }).create({ env: { LINKUP_API_KEY: "k" } });
+    const result = await adapter.research.run.invoke({ query: "q", model: "auto" });
+    assert.equal(calls.filter((c) => c.method === "POST").length, 1);
+    assert.ok(calls.some((c) => c.url.includes("/research/job-1")));
+    assert.equal(result.schemaVersion, 1);
+    assert.ok(result.report.includes("Report"));
+    assert.equal(adapter.research.run.kind, "research-fetch");
+  });
+
+  it("research submit maps model to reasoningDepth (mini S, auto L, pro XL)", async () => {
+    const bodies = [];
+    const makeAdapter = () => createLinkupDescriptor({
+      transport: {
+        fetch: async (url, init) => {
+          if ((init?.method ?? "GET") === "POST" && String(url).endsWith("/research")) {
+            bodies.push(JSON.parse(init.body));
+            return jsonRes({ id: "job-depth", status: "pending" });
+          }
+          return jsonRes({ status: "completed", output: { answer: "R", sources: [] } });
+        },
+        setTimeout: (cb) => { setImmediate(cb); return 0; },
+        clearTimeout: () => {},
+      },
+      researchStateFile: createInMemoryAsyncJobStateFile(),
+    }).create({ env: { LINKUP_API_KEY: "k" } });
+
+    await makeAdapter().research.run.invoke({ query: "q", model: "mini" });
+    await makeAdapter().research.run.invoke({ query: "q", model: "auto" });
+    await makeAdapter().research.run.invoke({ query: "q", model: "pro" });
+
+    assert.deepEqual(
+      bodies.map((b) => b.reasoningDepth),
+      ["S", "L", "XL"],
+    );
+    assert.equal(bodies[1].mode, "research");
+    assert.equal(bodies[1].q, "q");
+  });
+
+  it("failed poll throws ApiError without raw body in message", async () => {
+    const adapter = createLinkupDescriptor({
+      transport: {
+        fetch: async (url, init) => {
+          if ((init?.method ?? "GET") === "POST" && String(url).endsWith("/research")) {
+            return jsonRes({ id: "job-fail", status: "pending" });
+          }
+          return jsonRes({ status: "failed", error: "RAW_SECRET_BODY_DETAIL" });
+        },
+        setTimeout: (cb) => { setImmediate(cb); return 0; },
+        clearTimeout: () => {},
+      },
+      researchStateFile: createInMemoryAsyncJobStateFile(),
+    }).create({ env: { LINKUP_API_KEY: "k" } });
+    await assert.rejects(
+      adapter.research.run.invoke({ query: "q" }),
+      (e) => e instanceof ApiError && !e.message.includes("RAW_SECRET_BODY_DETAIL"),
+    );
+  });
+
+  it("research.run resumes a persisted job without a second POST", async () => {
+    const calls = [];
+    const stateFile = createInMemoryAsyncJobStateFile();
+    const adapter = createLinkupDescriptor({
+      transport: {
+        fetch: async (url, init) => {
+          calls.push({ url: String(url), method: init?.method ?? "GET" });
+          if (String(url).includes("/research/job-existing")) {
+            return jsonRes({ status: "completed", output: { answer: "Resumed report", sources: [] } });
+          }
+          return jsonRes({ id: "job-new", status: "pending" });
+        },
+        setTimeout: (cb) => { setImmediate(cb); return 0; },
+        clearTimeout: () => {},
+      },
+      researchStateFile: stateFile,
+    }).create({ env: { LINKUP_API_KEY: "k" } });
+
+    const identity = adapter.research.run.cacheIdentity({ query: "resume q", model: "auto" });
+    const identityHash = computeAsyncJobStateHash({
+      provider: identity.provider,
+      capability: identity.capability,
+      credentialFingerprint: identity.credentialFingerprint,
+      request: identity.request,
+    });
+    await stateFile.write(identityHash, {
+      requestId: "job-existing",
+      identityHash,
+      createdAt: new Date().toISOString(),
+      status: "pending",
+    });
+
+    const result = await adapter.research.run.invoke({ query: "resume q", model: "auto" });
+    assert.equal(calls.filter((c) => c.method === "POST").length, 0);
+    assert.equal(result.report, "Resumed report");
+    assert.equal(stateFile.store.size, 0);
   });
 });

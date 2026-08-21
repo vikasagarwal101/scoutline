@@ -48,6 +48,7 @@ const { version: VERSION } = pkg;
 
 const BASE_URL = "https://api.linkup.so/v1";
 const SEARCH_PATH = "/search";
+const FETCH_PATH = "/fetch";
 const DEFAULT_TIMEOUT_MS = 30000;
 
 const USER_AGENT = `scoutline/${VERSION}`;
@@ -76,6 +77,17 @@ export interface LinkupSearchWireRequest {
   readonly fromDate?: string;
   /** YYYY-MM-DD upper bound of the recency window. */
   readonly toDate?: string;
+}
+
+/**
+ * Provider-native reader fetch request body fields (Linkup API field
+ * names). `renderJs` executes client-side JavaScript in a headless
+ * browser before extraction; the Adapter always requests it (default
+ * `true`) so SPAs render.
+ */
+export interface LinkupFetchWireRequest {
+  readonly url: string;
+  readonly renderJs?: boolean;
 }
 
 function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
@@ -213,4 +225,21 @@ export async function fetchLinkupSearch(
     body.toDate = request.toDate;
   }
   return postLinkupJson(apiKey, SEARCH_PATH, body, deps, "search");
+}
+
+/**
+ * Perform ONE POST against the Linkup /fetch endpoint (reader). No
+ * retry; no response body in public errors. Returns the parsed JSON
+ * body (raw; the Adapter normalizes into a `ReaderFetchResult`).
+ */
+export async function fetchLinkupFetch(
+  apiKey: string,
+  request: LinkupFetchWireRequest,
+  deps: LinkupTransportDeps = {},
+): Promise<unknown> {
+  const body: Record<string, unknown> = {
+    url: request.url,
+    renderJs: request.renderJs ?? true,
+  };
+  return postLinkupJson(apiKey, FETCH_PATH, body, deps, "fetch");
 }

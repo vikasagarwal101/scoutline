@@ -30,6 +30,12 @@
  *   topic       -> keyword appended to q
  *   location    -> locale keyword appended to q
  *   type        -> REJECTED (UnsupportedOptionError)
+ *
+ * Field mapping (Linkup wire → normalized, reader /fetch):
+ *   url      -> finalUrl (falls back to the requested url)
+ *   markdown -> content (empty → ApiError; never cache an empty fetch)
+ *   rawHtml / images -> (dropped)
+ *   renderJs is always requested true (SPA compatibility)
  */
 
 import type {
@@ -46,10 +52,20 @@ import type {
   SearchRequest,
   SearchSource,
 } from "../../capabilities/search.js";
+import type {
+  ReaderCacheIdentity,
+  ReaderCapability,
+  ReaderFetchRequest,
+  ReaderFetchResult,
+  ReaderOperation,
+} from "../../capabilities/reader.js";
+import { decodeReaderFetchResult } from "../../capabilities/reader.js";
 import { ApiError, UnsupportedOptionError, ValidationError } from "../../lib/errors.js";
 import { hashLinkupApiKey, isLinkupConfigured, requireLinkupApiKey } from "./credentials.js";
 import {
+  fetchLinkupFetch,
   fetchLinkupSearch,
+  type LinkupFetchWireRequest,
   type LinkupSearchWireRequest,
   type LinkupTransportDeps,
 } from "./client.js";
@@ -275,13 +291,116 @@ function createLinkupSearchCapability(
 }
 
 // ---------------------------------------------------------------------------
+// Reader Capability
+// ---------------------------------------------------------------------------
+
+/**
+ * Reader URL guard (Linkup SPEC: invalid URL → `ValidationError` before
+ * any credential resolution or transport call). Mirrors the Tavily
+ * reader guard.
+ */
+function assertHttpUrl(url: unknown): asserts url is string {
+  if (typeof url !== "string" || url.length === 0) {
+    throw new ValidationError("Linkup reader URL must be a non-empty string");
+  }
+  if (!/^https?:\/\//.test(url)) {
+    throw new ValidationError("URL must start with http:// or https://");
+  }
+}
+
+/**
+ * Normalize a raw Linkup /fetch response into a `ReaderFetchResult`.
+ *
+ *   url      -> finalUrl (falls back to the requested url)
+ *   markdown -> content (non-string or empty → ApiError; the Reader
+ *               contract requires non-empty content — never cache an
+ *               empty fetch)
+ *   rawHtml  -> (dropped)
+ *   images   -> (dropped)
+ *
+ * Linkup's wire shape carries no page title, so `title` is `null`.
+ */
+function normalizeLinkupFetchResult(url: string, raw: unknown): ReaderFetchResult {
+  if (!isPlainObject(raw)) {
+    throw new ApiError("Linkup fetch returned a malformed response", 500);
+  }
+  const markdown = raw.markdown;
+  if (typeof markdown !== "string" || markdown.length === 0) {
+    throw new ApiError("Linkup fetch returned a malformed response", 500);
+  }
+  const finalUrl = typeof raw.url === "string" && raw.url.length > 0 ? raw.url : url;
+  return {
+    schemaVersion: 1,
+    url,
+    finalUrl,
+    title: null,
+    content: markdown,
+    contentFormat: "markdown",
+  };
+}
+
+interface LinkupReaderCapabilityOptions {
+  readonly env: NodeJS.ProcessEnv;
+  readonly transport?: LinkupTransportDeps;
+}
+
+function createLinkupReaderCapability(
+  options: LinkupReaderCapabilityOptions,
+): ReaderCapability {
+  const { env, transport } = options;
+
+  const fetch: ReaderOperation<ReaderFetchRequest, ReaderFetchResult> = {
+    kind: "reader-fetch",
+
+    validate(request: ReaderFetchRequest): void {
+      assertHttpUrl(request.url);
+    },
+
+    cacheIdentity(
+      request: ReaderFetchRequest,
+    ): ReaderCacheIdentity<ReaderFetchRequest, ReaderFetchResult> {
+      const apiKey = resolveApiKey(env);
+      return {
+        provider: "linkup",
+        capability: "reader",
+        operation: "reader-fetch",
+        credentialFingerprint: credentialFingerprint(apiKey),
+        request,
+        // Linkup never probes legacy keys — no legacyCandidates.
+        legacyCandidates: [],
+      };
+    },
+
+    decodeCached(value: unknown): ReaderFetchResult | null {
+      return decodeReaderFetchResult(value);
+    },
+
+    async invoke(request: ReaderFetchRequest): Promise<ReaderFetchResult> {
+      fetch.validate(request);
+
+      const apiKey = resolveApiKey(env);
+      // renderJs is always true (Linkup SPEC): headless-browser render so
+      // dynamic SPAs extract like static pages.
+      const wireRequest: LinkupFetchWireRequest = {
+        url: request.url,
+        renderJs: true,
+      };
+      const raw = await fetchLinkupFetch(apiKey, wireRequest, transport);
+      return normalizeLinkupFetchResult(request.url, raw);
+    },
+  };
+
+  return { fetch };
+}
+
+// ---------------------------------------------------------------------------
 // Descriptor factory
 // ---------------------------------------------------------------------------
 
 /**
  * Build the Linkup Provider Descriptor. The descriptor advertises the
  * capabilities the constructed Adapter supplies and constructs an
- * Adapter whose Search Capability owns credentials, transport,
+ * Adapter whose Search and Reader Capabilities own credentials, transport,
  * Provider field mapping, and failure normalization. Construction is
  * side-effect-free; the transport is invoked per Capability call.
  * Tests pass `transport` (typically a fake-fetch wrapper); production
@@ -300,7 +419,7 @@ export function createLinkupDescriptor(
       return isLinkupConfigured(env);
     },
     capabilities(): ReadonlySet<ProviderCapability> {
-      return new Set<ProviderCapability>(["search"]);
+      return new Set<ProviderCapability>(["search", "reader"]);
     },
     create(context: ProviderContext): ProviderAdapter {
       const search = createLinkupSearchCapability({
@@ -308,7 +427,11 @@ export function createLinkupDescriptor(
         transport,
         now,
       });
-      return { id: "linkup", search };
+      const reader = createLinkupReaderCapability({
+        env: context.env,
+        transport,
+      });
+      return { id: "linkup", search, reader };
     },
     credentialEnvVars: ["LINKUP_API_KEY"],
   };

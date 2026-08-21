@@ -21,7 +21,7 @@
 - **Repo** - Search and read GitHub repository code via ZRead
 - **Tools** - MCP tool discovery, schemas, and raw calls
 - **Code Mode** - TypeScript tool chaining for agent automation
-- **Provider selection** - Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, or Jina AI
+- **Provider selection** - Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, or You.com
 - **Usage ledger** - Local 90-day call-usage history per provider and capability (`scoutline usage`), counters only
 
 ## Quick Start
@@ -61,7 +61,8 @@ scoutline init
 ```
 
 The wizard walks you through a provider checklist (Z.AI, MiniMax, Tavily,
-Exa, Brave, Firecrawl — equal weight, none pre-checked), takes each key via
+Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com — equal
+weight, none pre-checked), takes each key via
 hidden input, and performs a single inline validation probe against an
 ephemeral in-memory environment (the candidate key is never persisted or
 written to `process.env` until the final atomic write). It also asks your
@@ -110,9 +111,9 @@ npx scoutline --help
 ## Provider Selection
 
 Shared commands (`search`, `vision`, `quota`, `doctor`, `repo`) accept a global
-`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina>` flag. Resolution precedence:
+`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you>` flag. Resolution precedence:
 
-1. Explicit `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina>` on the command line
+1. Explicit `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you>` on the command line
 2. `SCOUTLINE_PROVIDER` environment variable
 3. Per-capability **routing table** (`config.json` `routing` key; the first
    configured, capable provider in the list wins — over quota ranking)
@@ -155,7 +156,7 @@ selected provider does not advertise the capability (for example,
 MiniMax does not advertise `repository-exploration` or `reader`) or
 fails at runtime, Scoutline emits a stderr notice and silently
 reroutes to the next eligible configured provider in registry order
-`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina]`. Pass `--no-fallback`
+`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you]`. Pass `--no-fallback`
 (or set `SCOUTLINE_NO_FALLBACK=1`) to restore the previous strict
 single-provider, fail-loud behavior for scripting or cost-sensitive
 workflows. See
@@ -251,30 +252,30 @@ output is byte-identical to previous releases.
 The matrix below is generated from the production provider registry
 (`packages/scoutline/src/providers/registry.ts`) and reflects the
 release-shipped capability advertisements for every built-in provider
-in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina]`. The
+in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you]`. The
 exact same `descriptor.capabilities()` set drives executor preflight,
 Provider selection, and `doctor`.
 
-| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `search` | Yes | Yes | Yes | Yes | Yes (incl. `type: "video"`) | Yes | Yes | Yes | Yes | Parallel (declarative semantic), Jina (neural web search) |
-| `vision.interpret-image` (analyze) | Yes | Yes | No | No | No | No | No | No | No | Provider-specific media limits; uncached |
-| `vision.ui-artifact` (ui-to-code) | Yes | Available | No | No | No | No | No | No | No | Live-attested; conformance-gated |
-| `vision.extract-text` | Yes | Pending | No | No | No | No | No | No | No | Implemented, pending live conformance |
-| `vision.diagnose-error` | Yes | Available | No | No | No | No | No | No | No | Live-attested; conformance-gated |
-| `vision.diagram` | Yes | Pending | No | No | No | No | No | No | No | Implemented, pending live conformance |
-| `vision.chart` | Yes | Pending | No | No | No | No | No | No | No | Implemented, pending live conformance |
-| `vision.diff` (image diff) | Yes | No | No | No | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
-| `vision.video` | Yes | No | No | No | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
-| `quota` | Yes | Yes | Yes | No | Yes | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | Normalized `QuotaDashboard` (ADR-0001) |
-| `diagnostics` (`doctor`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Lists every Provider; probes configured |
-| `read` (Reader) | Yes | **No** | Yes | Yes | No | Yes | Yes | No | Yes | Parallel (Extract API) & Jina add Reader support |
-| `crawl` | **No** | **No** | Yes | No | No | Yes (async) | No | No | No | Tavily sync; Firecrawl async (resumable after Ctrl-C) |
-| `map` | **No** | **No** | Yes | No | No | Yes | No | No | No | URL-set discovery; no per-page content |
-| `research` | **No** | **No** | Yes | Yes | **No** | **No** | Yes | Yes | Yes | Tavily, Exa, Parallel, Perplexity `sonar-deep-research`, and Jina DeepSearch report synthesis |
-| `repo search` / `repo read` / `repo tree` / `repo brief` | Yes | **No** | **No** | **No** | **No** | **No** | **No** | **No** | **No** | Participates in selection; only Z.AI supplies `repository-exploration` |
-| `tools`, `tool`, `call` (Raw tools) | Yes | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
-| `code` (Code Mode) | Yes | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina | You.com | Notes |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `search` | Yes | Yes | Yes | Yes | Yes (incl. `type: "video"`) | Yes | Yes | Yes | Yes | Yes | Parallel (declarative semantic), Jina (neural web search) |
+| `vision.interpret-image` (analyze) | Yes | Yes | No | No | No | No | No | No | No | No | Provider-specific media limits; uncached |
+| `vision.ui-artifact` (ui-to-code) | Yes | Available | No | No | No | No | No | No | No | No | Live-attested; conformance-gated |
+| `vision.extract-text` | Yes | Pending | No | No | No | No | No | No | No | No | Implemented, pending live conformance |
+| `vision.diagnose-error` | Yes | Available | No | No | No | No | No | No | No | No | Live-attested; conformance-gated |
+| `vision.diagram` | Yes | Pending | No | No | No | No | No | No | No | No | Implemented, pending live conformance |
+| `vision.chart` | Yes | Pending | No | No | No | No | No | No | No | No | Implemented, pending live conformance |
+| `vision.diff` (image diff) | Yes | No | No | No | No | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
+| `vision.video` | Yes | No | No | No | No | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
+| `quota` | Yes | Yes | Yes | No | Yes | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | No | Normalized `QuotaDashboard` (ADR-0001) |
+| `diagnostics` (`doctor`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Lists every Provider; probes configured |
+| `read` (Reader) | Yes | **No** | Yes | Yes | No | Yes | Yes | No | Yes | Yes | Parallel (Extract API) & Jina add Reader support |
+| `crawl` | **No** | **No** | Yes | No | No | Yes (async) | No | No | No | No | Tavily sync; Firecrawl async (resumable after Ctrl-C) |
+| `map` | **No** | **No** | Yes | No | No | Yes | No | No | No | No | URL-set discovery; no per-page content |
+| `research` | **No** | **No** | Yes | Yes | **No** | **No** | Yes | Yes | Yes | Yes | Tavily, Exa, Parallel, Perplexity `sonar-deep-research`, and Jina DeepSearch report synthesis |
+| `repo search` / `repo read` / `repo tree` / `repo brief` | Yes | **No** | **No** | **No** | **No** | **No** | **No** | **No** | **No** | No | Participates in selection; only Z.AI supplies `repository-exploration` |
+| `tools`, `tool`, `call` (Raw tools) | Yes | No | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
+| `code` (Code Mode) | Yes | No | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
 
 Media limits for general single-image interpretation:
 

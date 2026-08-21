@@ -38,7 +38,7 @@ The version-1 shape is:
 ```
 
 Supported provider IDs are `zai`, `minimax`, `tavily`, `exa`, `brave`,
-`firecrawl`, `parallel`, `perplexity`, and `jina`. Unknown IDs are ignored
+`firecrawl`, `parallel`, `perplexity`, `jina`, and `you`. Unknown IDs are ignored
 with a warning, and blank API keys are
 treated as absent. Malformed files fail as corrupt configuration; unsupported
 versions require a Scoutline upgrade. Writes use a private (`0600`) temporary
@@ -163,14 +163,14 @@ non-TTY settings surface (dotted paths: `routing`, `routing.<capability>`,
 
 Shared commands (`search`, `vision`, `quota`, `doctor`), **`repo`**,
 **`read`**, **`crawl`**, **`map`**, and **`research`** accept the global
-`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina>` flag. When the flag
+`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you>` flag. When the flag
 is omitted the value of the `SCOUTLINE_PROVIDER` environment variable is
 consulted; when neither is supplied Scoutline falls back to the compatibility
 default `zai`.
 
 Resolution precedence (highest first):
 
-1. `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina>` on the command line
+1. `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you>` on the command line
 2. `SCOUTLINE_PROVIDER`
 3. `zai` (default)
 
@@ -186,7 +186,7 @@ Provider fallback is **always-on** (0.11.0+). When the selected provider
 does not supply the capability (for example, MiniMax does not advertise
 `repository-exploration` or `reader`) or fails at runtime, scoutline
 emits a stderr notice and silently tries the next eligible provider in
-registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina]`. The
+registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you]`. The
 selected provider is still the *first* one tried, so the user-visible
 behavior is the same when the pin works; the fallback only changes
 what happens when it does not. See
@@ -241,7 +241,7 @@ scoutline --no-fallback --provider minimax read https://example.com
 | `Z_AI_TEMPERATURE` | `0.8` | Vision generation temperature. |
 | `Z_AI_TOP_P` | `0.6` | Vision generation top-p value. |
 | `Z_AI_MAX_TOKENS` | `32768` | Vision response token limit. |
-| `SCOUTLINE_PROVIDER` | (none) | Selects the effective Provider (`zai`, `minimax`, `tavily`, `exa`, `brave`, `firecrawl`, `parallel`, `perplexity`, or `jina`) for shared capabilities. |
+| `SCOUTLINE_PROVIDER` | (none) | Selects the effective Provider (`zai`, `minimax`, `tavily`, `exa`, `brave`, `firecrawl`, `parallel`, `perplexity`, `jina`, or `you`) for shared capabilities. |
 | `SCOUTLINE_NO_FALLBACK` | (unset) | When set to a non-empty value, restores the strict single-provider, fail-loud behavior for shared capabilities — `--no-fallback` on the CLI is the per-invocation equivalent. |
 
 ## MiniMax Token Plan Settings
@@ -362,6 +362,34 @@ scoutline --provider firecrawl search "AI news" --content-size high
 scoutline --provider firecrawl crawl https://docs.example.com --limit 10
 scoutline quota --provider firecrawl
 scoutline doctor --provider firecrawl
+```
+
+## You.com Settings
+
+The You.com Adapter is configured through one canonical environment
+variable plus a legacy alias. Every request authenticates with the
+`X-API-Key` header.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `YDC_API_KEY` | (none) | Required for You.com. You.com API key. |
+| `YOU_API_KEY` | (none) | Compatibility alias; accepted but lower priority than `YDC_API_KEY`. |
+
+- `YDC_API_KEY` (or `YOU_API_KEY`) is required and non-empty. Whitespace-only
+  values are treated as absent.
+- The key is redacted in all output, exactly like every other provider
+  credential.
+- Search and reader requests hit `https://ydc-index.io`; research requests
+  hit `https://api.you.com`.
+- You.com advertises no `quota` capability: quota ranking treats it as
+  always-unknown and `scoutline quota` reports no signal for it.
+
+```bash
+export YDC_API_KEY="your-you-key"
+
+scoutline --provider you search "AI policy news" --topic news
+scoutline --provider you read https://example.com/
+scoutline --provider you research "State of carbon capture 2025"
 ```
 
 ## Output Modes
@@ -634,7 +662,7 @@ MiniMax does not advertise the `reader` Capability in the current release.
 By default (0.11.0+) provider fallback handles this automatically:
 selecting MiniMax (explicitly or via `SCOUTLINE_PROVIDER`) for `read`
 emits a stderr notice and reroutes to the next eligible provider
-(Z.AI, Tavily, Exa, Firecrawl, Parallel, or Jina) that supplies the `reader` Capability.
+(Z.AI, Tavily, Exa, Firecrawl, Parallel, Jina, or You.com) that supplies the `reader` Capability.
 To restore the previous strict single-provider behavior, opt out with
 `--no-fallback` (or `SCOUTLINE_NO_FALLBACK=1`) — under the kill-switch
 the preflight surfaces `UNSUPPORTED_CAPABILITY` for MiniMax before
@@ -683,6 +711,7 @@ Authority and score are kept on separate axes. A provider is either:
 | `brave` | always-unknown | Reports a rate-limit window, not spend or credits. Brave uses metered billing; the numeric window is displayed for telemetry but is not a budget signal. |
 | `jina` | always-unknown | Rate-limit telemetry (`X-RateLimit-Remaining-*` headers), not spend; not a budget signal. |
 | `exa`, `parallel`, `perplexity` | always-unknown | Advertise no `quota` capability; nothing to map. |
+| `you` | always-unknown | Advertises no `quota` capability; You.com exposes no spend endpoint. Nothing to map. |
 
 ### Capability → category table
 
@@ -749,7 +778,7 @@ ordered list:
 1. **Known tier** first, sorted by score descending.
 2. **Unknown tier** after every known entry, in registry order.
 3. Ties within a tier break by registry order
-   (`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina]` by default;
+   (`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you]` by default;
    overridable via the `registryOrder` option).
 
 The ranking is deterministic for identical inputs — same `state` +

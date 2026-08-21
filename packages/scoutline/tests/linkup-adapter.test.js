@@ -86,3 +86,22 @@ describe("Linkup Search Adapter — validation and control mapping", () => {
     assert.equal(rows[0].summary, "Linkup provides deep search APIs.");
   });
 });
+
+describe("Linkup Reader Adapter — renderJs control", () => {
+  it("reader.fetch POSTs /fetch with renderJs true", async () => {
+    const raw = { markdown: "# Page", url: "https://example.test/page" };
+    const calls = [];
+    const adapter = createLinkupDescriptor({
+      transport: { fetch: async (url, init) => {
+        calls.push({ url: String(url), body: JSON.parse(init.body) });
+        return { ok: true, status: 200, json: async () => raw, text: async () => JSON.stringify(raw), headers: { get: () => null } };
+      } },
+    }).create({ env: { LINKUP_API_KEY: "k" } });
+    const result = await adapter.reader.fetch.invoke({ url: "https://example.test/page" });
+    assert.match(calls[0].url, /\/v1\/fetch$/);
+    assert.equal(calls[0].body.renderJs, true);
+    assert.equal(result.schemaVersion, 1);
+    assert.ok(result.content.length > 0);
+    assert.equal(adapter.reader.fetch.kind, "reader-fetch");
+  });
+});

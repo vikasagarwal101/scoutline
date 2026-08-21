@@ -22,3 +22,24 @@ describe("you credentials", () => {
     });
   });
 });
+
+import { createYouDescriptor } from "../dist/providers/you/adapter.js";
+import { UnsupportedOptionError } from "../dist/lib/errors.js";
+
+it("search validate rejects type before fetch", async () => {
+  let calls = 0;
+  const descriptor = createYouDescriptor({
+    transport: { fetch: async () => { calls += 1; throw new Error("no fetch"); } },
+  });
+  const adapter = descriptor.create({ env: { YDC_API_KEY: "k" } });
+  assert.ok(adapter.search);
+  assert.throws(
+    () => adapter.search.validate({ query: "q", controls: { type: "video" } }),
+    (err) => err instanceof UnsupportedOptionError && err.option === "type" && err.provider === "you",
+  );
+  await assert.rejects(
+    () => adapter.search.invoke({ query: "q", controls: { type: "video" } }),
+    UnsupportedOptionError,
+  );
+  assert.equal(calls, 0);
+});

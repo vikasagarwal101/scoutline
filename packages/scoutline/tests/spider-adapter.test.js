@@ -281,6 +281,21 @@ describe("spider crawl and map", () => {
     );
   });
 
+  it("map.fetch rejects a non-array links value as malformed", async () => {
+    // A present `links` that is not an array (e.g. a bare URL string) is not
+    // the documented row shape and not the flat row shape either — it must be
+    // rejected, not silently re-parsed as a flat { url } row that drops the
+    // discovered links.
+    const raw = [{ url: "https://example.test/root", status: 200, links: "https://example.test/about" }];
+    const adapter = createSpiderDescriptor({
+      transport: { fetch: async () => ({ ok: true, status: 200, json: async () => raw, text: async () => JSON.stringify(raw), headers: { get: () => null } }) },
+    }).create({ env: { SPIDER_API_KEY: "k" } });
+    await assert.rejects(
+      adapter.map.fetch.invoke({ url: "https://example.test/root" }),
+      (e) => e instanceof ApiError,
+    );
+  });
+
   it("crawl and map validate name their capability in URL errors", () => {
     const adapter = createSpiderDescriptor().create({ env: { SPIDER_API_KEY: "k" } });
     assert.throws(

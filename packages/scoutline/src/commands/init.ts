@@ -139,6 +139,7 @@ Exit codes:
 interface ProviderPromptMeta {
   readonly label: string;
   readonly envVar: string;
+  readonly envAliases?: readonly string[];
   readonly registrationUrl: string;
   /**
    * True when the probe is billable (~1 credit). Z.AI and MiniMax probe
@@ -207,6 +208,7 @@ const PROVIDER_PROMPT_META: Record<ProviderId, ProviderPromptMeta> = {
   you: {
     label: "You.com",
     envVar: "YDC_API_KEY",
+    envAliases: ["YOU_API_KEY"],
     registrationUrl: "https://you.com/api",
     probeCostsCredit: true,
   },
@@ -384,8 +386,14 @@ function buildEphemeralProbeEnv(
   env: NodeJS.ProcessEnv,
   canonicalVar: string,
   candidateKey: string,
+  envAliases?: readonly string[],
 ): NodeJS.ProcessEnv {
   const ephemeral: NodeJS.ProcessEnv = { ...env };
+  if (envAliases) {
+    for (const alias of envAliases) {
+      delete ephemeral[alias];
+    }
+  }
   ephemeral[canonicalVar] = candidateKey;
   return ephemeral;
 }
@@ -485,9 +493,27 @@ function isAlreadyOnboarded(config: ScoutlineConfig): boolean {
 }
 
 /**
- * Return the providers from `descriptors` whose canonical env-var holds a
- * non-blank key in `env`. Used to offer env-import at the start of the
- * fresh flow.
+ * Return the first non-blank env var name configured for `meta` (canonical
+ * envVar preferred, followed by any envAliases in declaration order).
+ */
+function getDetectedEnvVar(
+  meta: ProviderPromptMeta,
+  env: NodeJS.ProcessEnv,
+): string | undefined {
+  const vars = [meta.envVar, ...(meta.envAliases ?? [])];
+  for (const name of vars) {
+    const value = env[name];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return name;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Return the providers from `descriptors` whose canonical env-var (or
+ * supported alias) holds a non-blank key in `env`. Used to offer
+ * env-import at the start of the fresh flow.
  */
 function detectEnvKeyProviders(
   descriptors: readonly ProviderDescriptor[],
@@ -495,9 +521,8 @@ function detectEnvKeyProviders(
 ): ProviderId[] {
   const out: ProviderId[] = [];
   for (const descriptor of descriptors) {
-    const canonical = providerMeta(descriptor.id).envVar;
-    const value = env[canonical];
-    if (typeof value === "string" && value.trim().length > 0) {
+    const activeVar = getDetectedEnvVar(providerMeta(descriptor.id), env);
+    if (activeVar !== undefined) {
       out.push(descriptor.id);
     }
   }
@@ -521,13 +546,15 @@ function formatNonTTYRefuse(
 ): string {
   const example = descriptors[0];
   const exampleVar = example ? providerMeta(example.id).envVar : "Z_AI_API_KEY";
-  const detected = descriptors.filter((d) => {
-    const v = env[providerMeta(d.id).envVar];
-    return typeof v === "string" && v.trim().length > 0;
-  });
+  const detected = descriptors
+    .map((d) => {
+      const activeVar = getDetectedEnvVar(providerMeta(d.id), env);
+      return activeVar ? `$${activeVar}` : null;
+    })
+    .filter((v): v is string => v !== null);
   const detectedLine =
     detected.length > 0
-      ? `\nDetected env keys: ${detected.map((d) => `$${providerMeta(d.id).envVar}`).join(", ")}. The CLI will use them at runtime.`
+      ? `\nDetected env keys: ${detected.join(", ")}. The CLI will use them at runtime.`
       : "";
   return (
     "scoutline init requires an interactive terminal.\n" +
@@ -1392,13 +1419,14 @@ async function onboardSingleProvider(
   // Env-import offer takes precedence over ask-key-first. The wizard
   // does NOT auto-import; it asks once per env-key provider.
   if (envKeyProviders.includes(providerId)) {
+    const activeVar = getDetectedEnvVar(meta, deps.env) ?? meta.envVar;
     try {
       const importFromEnv = await deps.prompts.confirm(
-        `Import ${meta.label} key from $${meta.envVar}? [Y/n]`,
+        `Import ${meta.label} key from $${activeVar}? [Y/n]`,
         true,
       );
       if (importFromEnv) {
-        const candidate = deps.env[meta.envVar];
+        const candidate = deps.env[activeVar];
         if (typeof candidate === "string" && candidate.trim().length > 0) {
           // Stale-env-after-import warning (T3b edge case). The runtime
           // precedence rule is env > file: an env value still set at
@@ -1408,7 +1436,7 @@ async function onboardSingleProvider(
           // later. The env value still wins at runtime by design; the
           // wizard cannot unset it for the user.
           deps.writeStderr(
-            `Note: env precedence means $${meta.envVar} will keep overriding the saved key at runtime. ` +
+            `Note: env precedence means $${activeVar} will keep overriding the saved key at runtime. ` +
               `Unset it (or remove it from your shell profile) to make the saved key authoritative.\n`,
           );
           return validateAndCollect(deps, descriptor, candidate);
@@ -1416,7 +1444,7 @@ async function onboardSingleProvider(
         // The env value was blank/removed between detection and read;
         // fall through to ask-key-first so the user can still supply one.
         deps.writeStderr(
-          `Env value for $${meta.envVar} is blank or missing; falling back to manual input.\n`,
+          `Env value for $${activeVar} is blank or missing; falling back to manual input.\n`,
         );
       }
     } catch {
@@ -1480,7 +1508,12 @@ async function validateAndCollect(
       deps.writeStderr(`${meta.label}: blank key — skipping this provider.\n`);
       return "skip";
     }
-    const ephemeralEnv = buildEphemeralProbeEnv(deps.env, meta.envVar, candidate);
+    const ephemeralEnv = buildEphemeralProbeEnv(
+      deps.env,
+      meta.envVar,
+      candidate,
+      meta.envAliases,
+    );
     const outcome = await probeProviderOnce(descriptor, ephemeralEnv);
 
     if (outcome.status === "verified") {

@@ -5,8 +5,7 @@
  * Implements the You.com Provider Descriptor. The Adapter owns
  * credentials, transport lifecycle, Provider field mapping, and failure
  * normalization; shared execution owns cache and retry policy. This
- * module wires the wire-level Search capability; the Reader, Research,
- * and Diagnostics capabilities land in follow-up commits.
+ * module wires the Search, Reader, Research, and Diagnostics capabilities.
  *
  * Boundary rules (same as the Exa adapter):
  *   - May import capability types, normalized errors, Provider identity
@@ -320,6 +319,11 @@ function assertNoUnsupportedReaderOptions(request: ReaderFetchRequest): void {
       throw new UnsupportedOptionError("you", "reader", key);
     }
   }
+  // You.com /contents has no image-retention param; reject retainImages: false
+  // so option-level provider fallback can continue to an image-capable Provider.
+  if (request.retainImages === false) {
+    throw new UnsupportedOptionError("you", "reader", "retainImages");
+  }
   // You.com /contents speaks markdown only; a text projection has no
   // native field and is not silently downgraded (SPEC §4 — reject
   // reader options this adapter cannot map; fallback reaches a
@@ -514,7 +518,12 @@ function normalizeYouResearchResult(raw: unknown, request: ResearchRequest): Res
   if (Array.isArray(wireSources)) {
     for (const entry of wireSources) {
       if (!isPlainObject(entry)) continue;
-      if (typeof entry.title === "string" && typeof entry.url === "string") {
+      if (
+        typeof entry.title === "string" &&
+        entry.title.length > 0 &&
+        typeof entry.url === "string" &&
+        entry.url.length > 0
+      ) {
         sources.push({ title: entry.title, url: entry.url });
       }
     }

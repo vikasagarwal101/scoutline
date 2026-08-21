@@ -104,6 +104,14 @@ it("search cacheIdentity fingerprints the key and does not fetch", () => {
   assert.equal(id.provider, "you");
   assert.equal(id.capability, "search");
   assert.equal(id.credentialFingerprint.length, 64);
+  assert.ok(!id.credentialFingerprint.includes("k"));
+  const other = createYouDescriptor({
+    transport: { fetch: async () => { calls += 1; throw new Error("no"); } },
+  }).create({ env: { YDC_API_KEY: "k2" } });
+  assert.notEqual(
+    other.search.cacheIdentity({ query: "q" }).credentialFingerprint,
+    id.credentialFingerprint,
+  );
   assert.equal(calls, 0);
 });
 
@@ -118,6 +126,22 @@ const YOU_CONTENTS_RAW = [
     status: 200,
   },
 ];
+
+it("reader.fetch rejects retainImages: false before fetch", async () => {
+  let calls = 0;
+  const adapter = createYouDescriptor({
+    transport: { fetch: async () => { calls += 1; throw new Error("no"); } },
+  }).create({ env: { YDC_API_KEY: "k" } });
+  assert.throws(
+    () => adapter.reader.fetch.validate({ url: "https://example.test", retainImages: false }),
+    (err) => err instanceof UnsupportedOptionError && err.option === "retainImages" && err.provider === "you",
+  );
+  await assert.rejects(
+    () => adapter.reader.fetch.invoke({ url: "https://example.test", retainImages: false }),
+    UnsupportedOptionError,
+  );
+  assert.equal(calls, 0);
+});
 
 it("reader.fetch POSTs contents and returns ReaderFetchResult", async () => {
   const calls = [];
@@ -161,8 +185,8 @@ it("reader.fetch throws ApiError when markdown is null without extra semantics",
       fetch: async () => ({
         ok: true,
         status: 200,
-        json: async () => ({ markdown: null, html: null }),
-        text: async () => "{}",
+        json: async () => [{ url: "https://example.test/x", title: null, markdown: null, html: null, status: 200 }],
+        text: async () => JSON.stringify([{ url: "https://example.test/x", markdown: null }]),
         headers: { get: () => null },
       }),
     },
@@ -171,6 +195,35 @@ it("reader.fetch throws ApiError when markdown is null without extra semantics",
     () => adapter.reader.fetch.invoke({ url: "https://example.test/x" }),
     ApiError,
   );
+});
+
+it("fetchYouContents propagates crawl_timeout into body and raises client timeout", async () => {
+  let capturedTimeoutMs;
+  const raw = [{ url: "https://example.test/page", title: "Page", markdown: "# Hi", status: 200 }];
+  const { fetchYouContents } = await import("../dist/providers/you/client.js");
+  await fetchYouContents(
+    "k",
+    { urls: ["https://example.test/page"], crawl_timeout: 45 },
+    {
+      fetch: async (url, init) => {
+        const body = JSON.parse(init.body);
+        assert.equal(body.crawl_timeout, 45);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => raw,
+          text: async () => JSON.stringify(raw),
+          headers: { get: () => null },
+        };
+      },
+      setTimeout: (fn, ms) => {
+        capturedTimeoutMs = ms;
+        return 123;
+      },
+      clearTimeout: () => {},
+    },
+  );
+  assert.equal(capturedTimeoutMs, 50000); // 45 * 1000 + 5000
 });
 
 const YOU_RESEARCH_RAW = {
@@ -251,6 +304,34 @@ import {
   PROVIDER_AUTHORITY_POLICIES,
   CAPABILITY_MAPPINGS,
 } from "../dist/lib/quota-mapping.js";
+
+it("research.run filters out sources with empty title or url", async () => {
+  const rawWithEmpty = {
+    output: {
+      content: "Report content",
+      sources: [
+        { title: "", url: "https://example.test/empty-title" },
+        { title: "No URL", url: "" },
+        { title: "Valid", url: "https://example.test/valid" },
+      ],
+    },
+  };
+  const adapter = createYouDescriptor({
+    transport: {
+      fetch: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => rawWithEmpty,
+        text: async () => JSON.stringify(rawWithEmpty),
+        headers: { get: () => null },
+      }),
+    },
+  }).create({ env: { YDC_API_KEY: "k" } });
+  const result = await adapter.research.run.invoke({ query: "q" });
+  assert.equal(result.sources.length, 1);
+  assert.deepEqual(result.sources[0], { title: "Valid", url: "https://example.test/valid" });
+  assert.ok(adapter.research.run.decodeCached(result) !== null);
+});
 
 describe("you registry wiring", () => {
   it("registers you in PROVIDER_IDS and the static registry", () => {

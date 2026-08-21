@@ -164,9 +164,9 @@ defaults to 120 seconds. Raise it with `JINA_DEEPSEARCH_TIMEOUT`
 
 ```bash
 export YDC_API_KEY="your-you-key"  # YOU_API_KEY also accepted
-npx scoutline@0.17.4 --provider you search "AI policy news" --topic news
-npx scoutline@0.17.4 --provider you read https://example.com/
-npx scoutline@0.17.4 --provider you research "State of carbon capture 2025"
+npx scoutline@0.17.7 --provider you search "AI policy news" --topic news
+npx scoutline@0.17.7 --provider you read https://example.com/
+npx scoutline@0.17.7 --provider you research "State of carbon capture 2025"
 ```
 
 Get your You.com API key at: https://you.com/api

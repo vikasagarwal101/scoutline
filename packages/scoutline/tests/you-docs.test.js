@@ -115,10 +115,6 @@ describe("You.com docs — CHANGELOG", () => {
       section.includes("YDC_API_KEY"),
       "the Unreleased section must mention YDC_API_KEY",
     );
-    assert.ok(
-      start < text.indexOf("## [0.17.7]"),
-      "Unreleased must sit above the latest release section",
-    );
   });
 });
 

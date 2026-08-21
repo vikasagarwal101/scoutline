@@ -86,6 +86,7 @@ import type {
   ResearchSource,
 } from "../../capabilities/research.js";
 import { decodeResearchResult } from "../../capabilities/research.js";
+import type { DiagnosticsCapability } from "../../capabilities/diagnostics.js";
 import type { AsyncJobState, AsyncJobStateFile } from "../../lib/async-job-state.js";
 import {
   computeAsyncJobStateHash,
@@ -106,6 +107,8 @@ import {
   type LinkupSearchWireRequest,
   type LinkupTransportDeps,
 } from "./client.js";
+import { createLinkupQuotaCapability } from "./quota.js";
+import { createLinkupDiagnosticsCapability } from "./diagnostics.js";
 
 /**
  * Dependencies the Linkup Adapter accepts. The unified `transport`
@@ -778,7 +781,8 @@ function createLinkupResearchCapability(
 /**
  * Build the Linkup Provider Descriptor. The descriptor advertises the
  * capabilities the constructed Adapter supplies and constructs an
- * Adapter whose Search and Reader Capabilities own credentials, transport,
+ * Adapter whose Search, Reader, Research, Quota, and Diagnostics
+ * Capabilities own credentials, transport,
  * Provider field mapping, and failure normalization. Construction is
  * side-effect-free; the transport is invoked per Capability call.
  * Tests pass `transport` (typically a fake-fetch wrapper); production
@@ -800,7 +804,13 @@ export function createLinkupDescriptor(
       return isLinkupConfigured(env);
     },
     capabilities(): ReadonlySet<ProviderCapability> {
-      return new Set<ProviderCapability>(["search", "reader", "research"]);
+      return new Set<ProviderCapability>([
+        "search",
+        "reader",
+        "research",
+        "quota",
+        "diagnostics",
+      ]);
     },
     create(context: ProviderContext): ProviderAdapter {
       const search = createLinkupSearchCapability({
@@ -817,7 +827,15 @@ export function createLinkupDescriptor(
         transport,
         researchStateFile,
       });
-      return { id: "linkup", search, reader, research };
+      const quota = createLinkupQuotaCapability({
+        env: context.env,
+        transport,
+      });
+      const diagnostics: DiagnosticsCapability = createLinkupDiagnosticsCapability({
+        env: context.env,
+        transport,
+      });
+      return { id: "linkup", search, reader, research, quota, diagnostics };
     },
     credentialEnvVars: ["LINKUP_API_KEY"],
   };

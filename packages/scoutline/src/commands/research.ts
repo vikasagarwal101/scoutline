@@ -639,8 +639,8 @@ then the configured default):
   - Tavily and Exa advertise the research Capability and supply the Adapter.
   - Parallel AI (objective=deep-research), Perplexity (sonar-deep-research),
     and Jina AI (deepsearch.jina.ai) also advertise research.
-  - Z.AI, MiniMax, and Firecrawl do NOT advertise research (Firecrawl
-    /deep-research is deprecated). By default (0.11.0+) Provider
+  - Z.AI, MiniMax, Firecrawl, and Spider.cloud do NOT advertise
+    research (Firecrawl /deep-research is deprecated). By default (0.11.0+) Provider
     fallback emits a stderr notice and silently reroutes to the next
     eligible configured supplier (Tavily, Exa, Parallel, Perplexity, or
     Jina). Under --no-fallback
@@ -688,7 +688,7 @@ source flags are mutually exclusive):
                         different mode is a fresh (paid) job.
 
 Common Options:
-  --provider <id>            Override the active Provider (zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina)
+  --provider <id>            Override the active Provider (zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | spider)
   --output-format <mode>     One of: ${OUTPUT_MODE_LIST} (default: data)
   -O <mode>                  Alias for --output-format
 

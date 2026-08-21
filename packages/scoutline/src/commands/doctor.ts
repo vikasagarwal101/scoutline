@@ -393,7 +393,7 @@ Doctor - Provider-aware environment and connectivity diagnostics
 Usage: scoutline doctor [options]
 
 Reports a schema-version-2 diagnostics report listing every built-in
-Provider (zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina) with its configured state, declared
+Provider (zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, spider) with its configured state, declared
 Capabilities, and connectivity status. The effective Provider (resolved
 from --provider, SCOUTLINE_PROVIDER, or a per-capability routing table
 in config.json, or the quota-ranked default) is the

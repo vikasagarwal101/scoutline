@@ -269,10 +269,10 @@ Provider selection, and `doctor`.
 | `vision.video` | Yes | No | No | No | No | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
 | `quota` | Yes | Yes | Yes | No | Yes | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | No | Normalized `QuotaDashboard` (ADR-0001) |
 | `diagnostics` (`doctor`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Lists every Provider; probes configured |
-| `read` (Reader) | Yes | **No** | Yes | Yes | No | Yes | Yes | No | Yes | Yes | Parallel (Extract API) & Jina add Reader support |
+| `read` (Reader) | Yes | **No** | Yes | Yes | No | Yes | Yes | No | Yes | Yes | Parallel (Extract API), Jina, and You.com add Reader support |
 | `crawl` | **No** | **No** | Yes | No | No | Yes (async) | No | No | No | No | Tavily sync; Firecrawl async (resumable after Ctrl-C) |
 | `map` | **No** | **No** | Yes | No | No | Yes | No | No | No | No | URL-set discovery; no per-page content |
-| `research` | **No** | **No** | Yes | Yes | **No** | **No** | Yes | Yes | Yes | Yes | Tavily, Exa, Parallel, Perplexity `sonar-deep-research`, and Jina DeepSearch report synthesis |
+| `research` | **No** | **No** | Yes | Yes | **No** | **No** | Yes | Yes | Yes | Yes | Tavily, Exa, Parallel, Perplexity `sonar-deep-research`, Jina DeepSearch, and You.com research report synthesis |
 | `repo search` / `repo read` / `repo tree` / `repo brief` | Yes | **No** | **No** | **No** | **No** | **No** | **No** | **No** | **No** | No | Participates in selection; only Z.AI supplies `repository-exploration` |
 | `tools`, `tool`, `call` (Raw tools) | Yes | No | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
 | `code` (Code Mode) | Yes | No | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |

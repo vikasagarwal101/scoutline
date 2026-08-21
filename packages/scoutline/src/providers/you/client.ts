@@ -189,13 +189,15 @@ async function postYouJson(
   body: Record<string, unknown>,
   deps: YouTransportDeps,
   endpointLabel: string,
+  timeoutMsOverride?: number,
 ): Promise<unknown> {
   const f = deps.fetch ?? getGlobalFetch<typeof fetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
   const url = `${baseUrl}${path}`;
+  const timeoutMs = timeoutMsOverride ?? DEFAULT_TIMEOUT_MS;
   const controller = new AbortController();
-  const timeoutId = setT(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  const timeoutId = setT(() => controller.abort(), timeoutMs);
   try {
     const headers: Record<string, string> = {
       "X-API-Key": apiKey,
@@ -208,7 +210,6 @@ async function postYouJson(
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-    clearT(timeoutId);
     if (!res.ok) {
       await res.text().catch(() => {});
       throw mapStatusError(res.status);
@@ -219,10 +220,11 @@ async function postYouJson(
     } catch {
       throw new ApiError(`You.com ${endpointLabel} returned a malformed response`, 500);
     }
+    clearT(timeoutId);
     return parsed;
   } catch (err) {
     clearT(timeoutId);
-    throw normalizeTransportError(err, DEFAULT_TIMEOUT_MS);
+    throw normalizeTransportError(err, timeoutMs);
   } finally {
     controller.abort();
   }
@@ -284,7 +286,11 @@ export async function fetchYouContents(
   if (request.max_age !== undefined) {
     body.max_age = request.max_age;
   }
-  return postYouJson(apiKey, INDEX_BASE_URL, CONTENTS_PATH, body, deps, "contents");
+  const timeoutMs =
+    request.crawl_timeout !== undefined
+      ? Math.max(DEFAULT_TIMEOUT_MS, request.crawl_timeout * 1000 + 5000)
+      : undefined;
+  return postYouJson(apiKey, INDEX_BASE_URL, CONTENTS_PATH, body, deps, "contents", timeoutMs);
 }
 
 /**

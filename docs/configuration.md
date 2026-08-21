@@ -383,6 +383,8 @@ variable plus a legacy alias. Every request authenticates with the
   hit `https://api.you.com`.
 - You.com advertises no `quota` capability: quota ranking treats it as
   always-unknown and `scoutline quota` reports no signal for it.
+- `scoutline doctor --provider you` sends one live `/v1/search` request with
+  `count: 1`. The probe is billable. `init` discloses the cost before it runs.
 
 ```bash
 export YDC_API_KEY="your-you-key"

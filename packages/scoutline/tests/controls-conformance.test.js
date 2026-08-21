@@ -1836,6 +1836,96 @@ const ROWS = [
     input: { type: "video" },
     expect: "rejected",
   },
+
+  // ----- you / reader ------------------------------------------------------
+  {
+    provider: "you",
+    capability: "reader",
+    control: "format",
+    input: { format: "text" },
+    expect: "rejected",
+  },
+  {
+    provider: "you",
+    capability: "reader",
+    control: "retainImages",
+    input: { retainImages: false },
+    expect: "rejected",
+  },
+  {
+    provider: "you",
+    capability: "reader",
+    control: "withLinksSummary",
+    input: { withLinksSummary: true },
+    expect: "rejected",
+  },
+  {
+    provider: "you",
+    capability: "reader",
+    control: "noGfm",
+    input: { noGfm: true },
+    expect: "rejected",
+  },
+  {
+    provider: "you",
+    capability: "reader",
+    control: "keepImgDataUrl",
+    input: { keepImgDataUrl: true },
+    expect: "rejected",
+  },
+  {
+    provider: "you",
+    capability: "reader",
+    control: "withImagesSummary",
+    input: { withImagesSummary: true },
+    expect: "rejected",
+  },
+  {
+    provider: "you",
+    capability: "reader",
+    control: "timeout",
+    input: { timeout: 20 },
+    expect: "consumed",
+    on: "body",
+    path: "crawl_timeout",
+    equals: 20,
+  },
+
+  // ----- you / research — model and domain mapped; format/length rejected ---
+  {
+    provider: "you",
+    capability: "research",
+    control: "model",
+    input: { model: "pro" },
+    expect: "consumed",
+    on: "body",
+    path: "research_effort",
+    equals: "deep",
+  },
+  {
+    provider: "you",
+    capability: "research",
+    control: "outputLength",
+    input: { outputLength: "short" },
+    expect: "rejected",
+  },
+  {
+    provider: "you",
+    capability: "research",
+    control: "citationFormat",
+    input: { citationFormat: "numeric" },
+    expect: "rejected",
+  },
+  {
+    provider: "you",
+    capability: "research",
+    control: "domain",
+    input: { domain: "example.com" },
+    expect: "consumed",
+    on: "body",
+    path: "source_control.include_domains",
+    deepEqual: ["example.com"],
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1882,7 +1972,7 @@ describe("controls class-guard — table integrity", () => {
       jina: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
       perplexity: { search: SEARCH_CONTROLS, research: RESEARCH_CONTROLS },
       parallel: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
-      you: { search: SEARCH_CONTROLS },
+      you: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
     };
     for (const [provider, capabilities] of Object.entries(COVERAGE)) {
       for (const [capability, controls] of Object.entries(capabilities)) {

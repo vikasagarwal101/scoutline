@@ -46,14 +46,18 @@ const SEARCH_PATH = "/search";
 const CONTENTS_PATH = "/contents";
 const RESEARCH_PATH = "/research";
 const DEFAULT_TIMEOUT_MS = 30000;
+const DEFAULT_RESEARCH_TIMEOUT_MS = 300000;
 const USER_AGENT = `scoutline/${VERSION}`;
 const TIMEOUT_HELP_TEXT = "Try again later.";
+const RESEARCH_TIMEOUT_HELP_TEXT =
+  "Try again later or raise timeout with YOU_RESEARCH_TIMEOUT env var.";
 
-/** Injectable transport dependencies (fetch, timers). */
+/** Injectable transport dependencies (fetch, timers, env). */
 export interface YouTransportDeps {
   readonly fetch?: typeof fetch;
   readonly setTimeout?: typeof setTimeout;
   readonly clearTimeout?: typeof clearTimeout;
+  readonly env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -153,7 +157,15 @@ function mapStatusError(status: number): Error {
   return new ApiError("You.com request failed", status);
 }
 
-function normalizeTransportError(err: unknown, timeoutMs: number): Error {
+/**
+ * Normalize an underlying fetch/network/abort error into a typed
+ * Scoutline error hierarchy instance.
+ */
+function normalizeTransportError(
+  err: unknown,
+  timeoutMs: number,
+  timeoutHelpText: string = TIMEOUT_HELP_TEXT,
+): Error {
   if (
     err instanceof ConfigurationError ||
     err instanceof QuotaError ||
@@ -166,7 +178,7 @@ function normalizeTransportError(err: unknown, timeoutMs: number): Error {
   }
   if (err instanceof Error) {
     if (err.name === "AbortError") {
-      return new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
+      return new TimeoutError(timeoutMs, timeoutHelpText);
     }
     const lower = err.message.toLowerCase();
     if (
@@ -182,6 +194,9 @@ function normalizeTransportError(err: unknown, timeoutMs: number): Error {
   return new ApiError("You.com request failed", 500);
 }
 
+/**
+ * Execute a single POST request against You.com with authentication and timeout management.
+ */
 async function postYouJson(
   apiKey: string,
   baseUrl: string,
@@ -190,6 +205,7 @@ async function postYouJson(
   deps: YouTransportDeps,
   endpointLabel: string,
   timeoutMsOverride?: number,
+  timeoutHelpText: string = TIMEOUT_HELP_TEXT,
 ): Promise<unknown> {
   const f = deps.fetch ?? getGlobalFetch<typeof fetch>();
   const setT = deps.setTimeout ?? setTimeout;
@@ -224,7 +240,7 @@ async function postYouJson(
     return parsed;
   } catch (err) {
     clearT(timeoutId);
-    throw normalizeTransportError(err, timeoutMs);
+    throw normalizeTransportError(err, timeoutMs, timeoutHelpText);
   } finally {
     controller.abort();
   }
@@ -294,6 +310,18 @@ export async function fetchYouContents(
 }
 
 /**
+ * Resolve effective timeout for You.com research requests from environment or default.
+ */
+function resolveResearchTimeoutMs(env?: NodeJS.ProcessEnv): number {
+  const envVal = env?.YOU_RESEARCH_TIMEOUT || env?.YDC_RESEARCH_TIMEOUT;
+  if (envVal) {
+    const parsed = parseInt(envVal, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_RESEARCH_TIMEOUT_MS;
+}
+
+/**
  * Perform ONE POST against the You.com /v1/research endpoint (api.you.com
  * host). No retry; no response body in public errors. Returns the parsed
  * JSON body (raw; the Adapter normalizes it into a `ResearchResult`).
@@ -306,6 +334,7 @@ export async function fetchYouResearch(
   apiKey: string,
   request: YouResearchWireRequest,
   deps: YouTransportDeps = {},
+  timeoutMsOverride?: number,
 ): Promise<unknown> {
   const body: Record<string, unknown> = { input: request.input };
   if (request.research_effort !== undefined) {
@@ -327,5 +356,15 @@ export async function fetchYouResearch(
     }
     body.source_control = sc;
   }
-  return postYouJson(apiKey, RESEARCH_BASE_URL, RESEARCH_PATH, body, deps, "research");
+  const timeoutMs = timeoutMsOverride ?? resolveResearchTimeoutMs(deps.env);
+  return postYouJson(
+    apiKey,
+    RESEARCH_BASE_URL,
+    RESEARCH_PATH,
+    body,
+    deps,
+    "research",
+    timeoutMs,
+    RESEARCH_TIMEOUT_HELP_TEXT,
+  );
 }

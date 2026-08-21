@@ -83,12 +83,8 @@ export interface YouAdapterDependencies {
 }
 
 /**
- * `PROVIDER_IDS` widens with `"you"` when the registry wires this
- * descriptor; until then these local intersections keep the factory's
- * return types assignable to the contract types (`ProviderDescriptor` /
- * `ProviderAdapter`) without widening the public Provider ID union from
- * inside the Adapter. Once `"you"` joins `ProviderId`, every local type
- * here collapses into the shared contract type unchanged.
+ * You.com capability and cache identity types implementing the shared
+ * `ProviderDescriptor` and `ProviderAdapter` contracts.
  */
 export type YouSearchCacheIdentity = Omit<SearchCacheIdentity, "provider"> & {
   readonly provider: "you";
@@ -124,22 +120,24 @@ export type YouResearchOperation = Omit<ResearchOperation, "cacheIdentity"> & {
 export type YouResearchCapability = { readonly run: YouResearchOperation };
 export type YouAdapter = Omit<
   ProviderAdapter,
-  "id" | "search" | "reader" | "research" | "diagnostics"
+  "search" | "reader" | "research" | "diagnostics"
 > & {
-  readonly id: "you";
   readonly search: YouSearchCapability;
   readonly reader: YouReaderCapability;
   readonly research: YouResearchCapability;
   readonly diagnostics: DiagnosticsCapability;
 };
-export type YouDescriptor = Omit<ProviderDescriptor, "id" | "create"> & {
-  readonly id: "you";
+export type YouDescriptor = Omit<ProviderDescriptor, "create"> & {
   create(context: ProviderContext): YouAdapter;
 };
 
 // ---------------------------------------------------------------------------
 // Field mapping (SearchControls → You.com-native request fields)
 // ---------------------------------------------------------------------------
+
+/**
+ * Determine whether a value is a non-null, non-array object record.
+ */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -304,6 +302,9 @@ const UNSUPPORTED_READER_OPTIONS = [
   "withImagesSummary",
 ] as const;
 
+/**
+ * Validate that the input is a valid HTTP or HTTPS URL string.
+ */
 function assertHttpUrl(url: unknown): asserts url is string {
   if (typeof url !== "string" || url.length === 0) {
     throw new ValidationError("You.com reader URL must be a non-empty string");
@@ -313,6 +314,9 @@ function assertHttpUrl(url: unknown): asserts url is string {
   }
 }
 
+/**
+ * Validate that reader fetch request does not contain unsupported options for You.com.
+ */
 function assertNoUnsupportedReaderOptions(request: ReaderFetchRequest): void {
   for (const key of UNSUPPORTED_READER_OPTIONS) {
     if (request[key] === true) {

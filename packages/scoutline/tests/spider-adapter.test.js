@@ -16,7 +16,7 @@ import {
   requireSpiderApiKey,
 } from "../dist/providers/spider/credentials.js";
 import { createSpiderDescriptor } from "../dist/providers/spider/adapter.js";
-import { ConfigurationError, UnsupportedOptionError } from "../dist/lib/errors.js";
+import { ApiError, ConfigurationError, UnsupportedOptionError } from "../dist/lib/errors.js";
 
 describe("spider credentials", () => {
   it("requires trimmed SPIDER_API_KEY", () => {
@@ -58,5 +58,51 @@ describe("spider search", () => {
     assert.deepEqual(calls[0].body.whitelist, ["github.com"]);
     assert.equal(rows[0].url, "https://example.test/a");
     assert.equal(rows[0].title, "T");
+  });
+});
+
+
+describe("spider reader", () => {
+  it("reader.fetch POSTs /scrape and returns markdown content", async () => {
+    const raw = [{ url: "https://example.test/doc", status: 200, content: "# Scraped Doc" }];
+    const calls = [];
+    const adapter = createSpiderDescriptor({
+      transport: {
+        fetch: async (url, init) => {
+          calls.push({ url: String(url), body: JSON.parse(init.body) });
+          return { ok: true, status: 200, json: async () => raw, text: async () => JSON.stringify(raw), headers: { get: () => null } };
+        },
+      },
+    }).create({ env: { SPIDER_API_KEY: "k" } });
+    assert.ok(adapter.reader);
+    const result = await adapter.reader.fetch.invoke({ url: "https://example.test/doc" });
+    assert.match(calls[0].url, /\/scrape$/);
+    assert.equal(result.schemaVersion, 1);
+    assert.equal(result.contentFormat, "markdown");
+    assert.equal(result.content, "# Scraped Doc");
+    assert.equal(adapter.reader.fetch.kind, "reader-fetch");
+  });
+  it("reader.fetch canonical body and empty content becomes ApiError", async () => {
+    const calls = [];
+    const adapter = createSpiderDescriptor({
+      transport: {
+        fetch: async (url, init) => {
+          calls.push({ url: String(url), body: JSON.parse(init.body) });
+          const raw = [{ url: "https://example.test/doc", status: 200, content: "" }];
+          return { ok: true, status: 200, json: async () => raw, text: async () => JSON.stringify(raw), headers: { get: () => null } };
+        },
+      },
+    }).create({ env: { SPIDER_API_KEY: "k" } });
+    assert.ok(adapter.reader);
+    await assert.rejects(
+      adapter.reader.fetch.invoke({ url: "https://example.test/doc" }),
+      (e) => e instanceof ApiError,
+    );
+    assert.match(calls[0].url, /\/scrape$/);
+    assert.equal(calls[0].body.url, "https://example.test/doc");
+    assert.equal(calls[0].body.return_format, "markdown");
+    assert.equal(calls[0].body.filter_output_main_only, true);
+    assert.equal(calls[0].body.stealth, true);
+    assert.equal(adapter.reader.fetch.decodeCached({ bogus: true }), null);
   });
 });

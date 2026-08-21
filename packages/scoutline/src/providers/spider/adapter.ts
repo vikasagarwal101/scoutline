@@ -1,5 +1,5 @@
 /**
- * Spider.cloud Adapter — Search Capability.
+ * Spider.cloud Adapter — Search + Reader Capabilities.
  *
  * Owns credentials, transport lifecycle, Provider field mapping, and
  * failure normalization. Clones the Firecrawl adapter's capability
@@ -9,7 +9,9 @@
  * `country_code`, and a non-general `topic` is a query keyword (Z.AI /
  * MiniMax precedent). `type` is Brave-only and rejected in `validate`
  * before any transport call so the option-level fallback contract can
- * continue past Spider to a capable Provider.
+ * continue past Spider to a capable Provider. The Reader POSTs the
+ * locked four-field `/scrape` body and rejects every request control
+ * with no Spider-native wire equivalent instead of accept-and-drop.
  *
  * The descriptor and capability interfaces below are declared locally
  * with the `"spider"` literal; they become assignable to the shared
@@ -24,6 +26,12 @@ import type {
   SearchRecency,
   SearchSource,
 } from "../../capabilities/search.js";
+import type {
+  ReaderFetchRequest,
+  ReaderFetchResult,
+  LegacyReaderCacheCandidate,
+} from "../../capabilities/reader.js";
+import { decodeReaderFetchResult } from "../../capabilities/reader.js";
 import {
   ApiError,
   AuthError,
@@ -36,7 +44,13 @@ import {
 } from "../../lib/errors.js";
 import { applySearchTopic } from "../../lib/search-topic.js";
 import type { ProviderCapability, ProviderContext } from "../types.js";
-import { fetchSpiderSearch, type SpiderSearchParams, type SpiderTransportDeps } from "./client.js";
+import {
+  fetchSpiderScrape,
+  fetchSpiderSearch,
+  type SpiderScrapeParams,
+  type SpiderSearchParams,
+  type SpiderTransportDeps,
+} from "./client.js";
 import { getSpiderApiKey, requireSpiderApiKey } from "./credentials.js";
 
 // ---------------------------------------------------------------------------
@@ -53,6 +67,15 @@ function credentialFingerprint(apiKey: string): string {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function assertHttpUrl(url: unknown): asserts url is string {
+  if (typeof url !== "string" || url.length === 0) {
+    throw new ValidationError("Spider reader URL must be a non-empty string");
+  }
+  if (!/^https?:\/\//.test(url)) {
+    throw new ValidationError("URL must start with http:// or https://");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +185,56 @@ function normalizeSpiderSearchResults(raw: unknown): readonly SearchSource[] {
     out.push(result);
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Reader response normalization
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize a raw Spider.cloud /scrape response into a
+ * `ReaderFetchResult`.
+ *
+ * The endpoint returns an array of page objects (one for the requested
+ * URL); a documented wrapper (`{ content: [...] }`) is also accepted.
+ * Per-item mapping: `content` -> content (non-empty, else `ApiError` —
+ * an empty fetch is an error, not a degenerate result), `url` ->
+ * finalUrl (request URL fallback), `metadata.title` -> title (null when
+ * absent/blank). Any malformed shape is a retryable `ApiError` 500.
+ */
+function normalizeSpiderScrapeResult(
+  raw: unknown,
+  request: ReaderFetchRequest,
+): ReaderFetchResult {
+  const results = Array.isArray(raw)
+    ? raw
+    : isPlainObject(raw) && Array.isArray(raw.content)
+      ? raw.content
+      : undefined;
+  if (results === undefined || results.length === 0) {
+    throw new ApiError("Spider scrape returned a malformed response", 500);
+  }
+  const page = results[0];
+  if (!isPlainObject(page)) {
+    throw new ApiError("Spider scrape returned a malformed response", 500);
+  }
+  const content = typeof page.content === "string" ? page.content : undefined;
+  if (content === undefined || content.length === 0) {
+    throw new ApiError("Spider scrape returned no content", 500);
+  }
+  const finalUrl = typeof page.url === "string" && page.url.length > 0 ? page.url : request.url;
+  const metadata = isPlainObject(page.metadata) ? page.metadata : undefined;
+  const rawTitle = typeof metadata?.title === "string" ? metadata.title : undefined;
+  const title = rawTitle !== undefined && rawTitle.trim().length > 0 ? rawTitle : null;
+
+  return {
+    schemaVersion: 1,
+    url: request.url,
+    finalUrl,
+    title,
+    content,
+    contentFormat: request.format ?? "markdown",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +393,127 @@ function createSpiderSearchCapability(
 }
 
 // ---------------------------------------------------------------------------
+// Reader Capability
+// ---------------------------------------------------------------------------
+
+/** Z.AI-only reader options that Spider.cloud has no native equivalent for. */
+const UNSUPPORTED_READER_OPTIONS = [
+  "withLinksSummary",
+  "noGfm",
+  "keepImgDataUrl",
+  "withImagesSummary",
+] as const;
+
+/**
+ * Reject reader request controls the locked Spider `/scrape` body does
+ * not document. Accept-and-drop is banned: a control is either
+ * wire-consumed or rejected here, before any transport call.
+ */
+function assertNoUnsupportedReaderOptions(request: ReaderFetchRequest): void {
+  for (const key of UNSUPPORTED_READER_OPTIONS) {
+    // Only reject when the user explicitly enabled the option (`true`);
+    // the read command handler sets `false` when the flag is absent.
+    if (request[key] === true) {
+      throw new UnsupportedOptionError("spider", "reader", key);
+    }
+  }
+  // No native Spider `/scrape` image or timeout field exists — reject
+  // rather than silently discard the intent. `retainImages` is set only
+  // when an images flag is passed, so `!== undefined` is exact.
+  if (request.retainImages !== undefined) {
+    throw new UnsupportedOptionError("spider", "reader", "retainImages");
+  }
+  if (request.timeout !== undefined) {
+    throw new UnsupportedOptionError("spider", "reader", "timeout");
+  }
+}
+
+interface SpiderReaderCapabilityOptions {
+  readonly env: NodeJS.ProcessEnv;
+  readonly transport?: SpiderTransportDeps;
+}
+
+/**
+ * Local cache-identity type: identical to the shared
+ * `ReaderCacheIdentity` except `provider` is the `"spider"` literal.
+ * Assignable to the shared contract once `"spider"` joins `PROVIDER_IDS`.
+ */
+interface SpiderReaderCacheIdentity {
+  readonly provider: "spider";
+  readonly capability: "reader";
+  readonly operation: "reader-fetch";
+  readonly credentialFingerprint: string;
+  readonly request: Readonly<ReaderFetchRequest>;
+  readonly legacyCandidates: readonly LegacyReaderCacheCandidate<ReaderFetchResult>[];
+}
+
+/** Local Reader operation contract — see the module header. */
+interface SpiderReaderOperation {
+  readonly kind: "reader-fetch";
+  validate(request: ReaderFetchRequest): void;
+  cacheIdentity(request: ReaderFetchRequest): SpiderReaderCacheIdentity;
+  decodeCached(value: unknown): ReaderFetchResult | null;
+  invoke(request: ReaderFetchRequest, signal?: AbortSignal): Promise<ReaderFetchResult>;
+}
+
+/** Local Reader contract — see the module header. */
+interface SpiderReaderCapability {
+  readonly fetch: SpiderReaderOperation;
+}
+
+function createSpiderReaderCapability(
+  options: SpiderReaderCapabilityOptions,
+): SpiderReaderCapability {
+  const { env, transport } = options;
+
+  const fetch: SpiderReaderOperation = {
+    kind: "reader-fetch",
+
+    validate(request: ReaderFetchRequest): void {
+      assertHttpUrl(request.url);
+      assertNoUnsupportedReaderOptions(request);
+    },
+
+    cacheIdentity(request: ReaderFetchRequest): SpiderReaderCacheIdentity {
+      const apiKey = getSpiderApiKey(env) ?? "";
+      return {
+        provider: "spider",
+        capability: "reader",
+        operation: "reader-fetch",
+        credentialFingerprint: credentialFingerprint(apiKey),
+        request,
+        legacyCandidates: [],
+      };
+    },
+
+    decodeCached(value: unknown): ReaderFetchResult | null {
+      return decodeReaderFetchResult(value);
+    },
+
+    async invoke(request: ReaderFetchRequest): Promise<ReaderFetchResult> {
+      fetch.validate(request);
+
+      const apiKey = requireSpiderApiKey(env);
+      try {
+        const contentFormat: "markdown" | "text" = request.format ?? "markdown";
+        const params: SpiderScrapeParams = {
+          url: request.url,
+          return_format: contentFormat,
+          filter_output_main_only: true,
+          stealth: true,
+        };
+        const raw = await fetchSpiderScrape(apiKey, params, transport);
+        return normalizeSpiderScrapeResult(raw, request);
+      } catch (error) {
+        throw normalizeSpiderError(error);
+      }
+    },
+  };
+
+  return { fetch };
+}
+
+// ---------------------------------------------------------------------------
 // Descriptor
 // ---------------------------------------------------------------------------
 
@@ -335,6 +529,7 @@ export interface SpiderAdapterDependencies {
 interface SpiderAdapter {
   readonly id: "spider";
   readonly search: SpiderSearchCapability;
+  readonly reader: SpiderReaderCapability;
 }
 
 /** Local Descriptor contract — see the module header. */
@@ -348,7 +543,7 @@ interface SpiderDescriptor {
 
 /**
  * Build the Spider.cloud Provider Descriptor. Advertises the capabilities
- * the Adapter currently supplies (Search; reader/crawl/map/quota/
+ * the Adapter currently supplies (Search, Reader; crawl/map/quota/
  * diagnostics land with their own tickets). `create()` is
  * side-effect-free; the transport is invoked per Capability call.
  */
@@ -362,11 +557,12 @@ export function createSpiderDescriptor(
       return getSpiderApiKey(env) !== undefined;
     },
     capabilities(): ReadonlySet<ProviderCapability> {
-      return new Set<ProviderCapability>(["search"]);
+      return new Set<ProviderCapability>(["search", "reader"]);
     },
     create(context: ProviderContext): SpiderAdapter {
       const search = createSpiderSearchCapability({ env: context.env, transport });
-      return { id: "spider", search };
+      const reader = createSpiderReaderCapability({ env: context.env, transport });
+      return { id: "spider", search, reader };
     },
     credentialEnvVars: ["SPIDER_API_KEY"],
   };

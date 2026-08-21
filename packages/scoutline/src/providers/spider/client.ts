@@ -30,6 +30,7 @@ const { version: VERSION } = pkg;
 
 const BASE_URL = "https://api.spider.cloud";
 const SEARCH_PATH = "/search";
+const SCRAPE_PATH = "/scrape";
 const DEFAULT_TIMEOUT_MS = 30000;
 const USER_AGENT = `scoutline/${VERSION}`;
 
@@ -176,4 +177,45 @@ export async function fetchSpiderSearch(
     body.whitelist = [...params.whitelist];
   }
   return postSpiderJson(apiKey, SEARCH_PATH, body, deps, "search");
+}
+
+/**
+ * Provider-native scrape request body fields (Spider.cloud API field
+ * names). The Adapter maps the Provider-neutral `ReaderFetchRequest`
+ * into these before calling {@link fetchSpiderScrape}; the transport
+ * never imports a capability contract. The locked canonical body is
+ * exactly `url` + `return_format` + `filter_output_main_only` +
+ * `stealth` (SPEC §Reader) — no undocumented field is ever sent.
+ */
+export interface SpiderScrapeParams {
+  /** Page URL to scrape. */
+  readonly url: string;
+  /** `markdown` (canonical default) or `text`, mapped from `format`. */
+  readonly return_format: "markdown" | "text";
+  /** Spider's main-content filter (locked body field). */
+  readonly filter_output_main_only: true;
+  /** Spider's stealth proxy flag (locked body field). */
+  readonly stealth: true;
+}
+
+/**
+ * Perform ONE POST against the Spider.cloud /scrape endpoint. No retry;
+ * no response body in public errors. Returns the parsed JSON value (raw;
+ * the Adapter post-processes into a normalized `ReaderFetchResult`).
+ *
+ * `params` carries Spider-native API fields already mapped from the
+ * Provider-neutral `ReaderFetchRequest` by the Adapter.
+ */
+export async function fetchSpiderScrape(
+  apiKey: string,
+  params: SpiderScrapeParams,
+  deps: SpiderTransportDeps = {},
+): Promise<unknown> {
+  const body: Record<string, unknown> = {
+    url: params.url,
+    return_format: params.return_format,
+    filter_output_main_only: params.filter_output_main_only,
+    stealth: params.stealth,
+  };
+  return postSpiderJson(apiKey, SCRAPE_PATH, body, deps, "scrape");
 }

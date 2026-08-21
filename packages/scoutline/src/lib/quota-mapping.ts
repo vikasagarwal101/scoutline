@@ -469,6 +469,11 @@ export const PROVIDER_AUTHORITY_POLICIES: readonly ProviderAuthorityPolicy[] = [
       "Jina AI quota is a per-minute rate-limit window (exact remaining RPM/TPM, limit unknown); not a spend or plan signal.",
   },
   {
+    provider: "you",
+    kind: "always-unknown",
+    reason: "You.com does not advertise a quota capability; no spend endpoint.",
+  },
+  {
     provider: "linkup",
     kind: "always-unknown",
     reason:

@@ -3,6 +3,14 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+
+### You.com provider (`you`)
+
+- **New built-in `you` provider (You.com):** search, reader, research, and diagnostics behind `--provider you`, wired into the static registry, the init wizard, and the controls-conformance table. Dual-host client — `ydc-index.io` for search/contents, `api.you.com` for research — with the key sent as an `X-API-Key` header.
+- **Credential resolution:** `YDC_API_KEY` (preferred) with `YOU_API_KEY` as a lower-priority alias; a missing key fails closed with `CONFIGURATION_ERROR` (exit 3). The init wizard offers You.com with a billable validation probe; the cache identity fingerprints the resolved key (SHA-256, never the raw value).
+- **Search controls:** `--domain`, `--recency`, `--location`, `--content-size`, and `--topic` are consumed and mapped (`domain` → `include_domains`, `recency` → `freshness`, `location` → `country`, `content-size` → extraction mode, `topic` → keyword append); `--type` is rejected before any I/O with `UNSUPPORTED_OPTION` — no accept-and-drop.
+- **Quota policy:** always-unknown — You.com advertises no `quota` capability and exposes no spend endpoint, so quota ranking never fabricates remaining/limit numbers for it.
+
 ### Added
 - **Linkup provider (`--provider linkup`)** — Search, Reader, Research, Quota, and Diagnostics against the Linkup API (`LINKUP_API_KEY`): search controls map to `includeDomains`, a `fromDate` recency window, `q` keyword appends for topic/location, and a `depth` parameter for content size (`type` is rejected as unsupported); the reader fetches rendered markdown (`renderJs`); research runs the async submit/poll lifecycle with crash-safe job state and `model` mapping to Linkup's reasoning depth; quota and diagnostics report credit balance from `GET /v1/credits/balance` (credits-remaining window, no invented limits). The controls-conformance guard now covers every documented Linkup control and a responder pins the wire endpoints.
 
@@ -12,7 +20,6 @@ All notable changes to this project will be documented in this file.
 - **Linkup research no longer orphans a paid task on a state-write failure:** a non-EEXIST state-file write error no longer discards the just-created (billable) task id — persistence is best-effort resumability, so the invocation polls the task it created instead of failing and double-paying on retry.
 - **Linkup quota authority is pinned to always-unknown:** the credit balance is an exact-remaining signal with an unknown limit, so Linkup never fabricates `remainingPercent`, emits no `PERCENT_CORRUPT` warnings, and ranks in the unknown tier with a credits rationale.
 - **Linkup capability docs synchronized across surfaces:** CLI help (read, top-level capability list), `docs/architecture.md` (registry order, provider table, capability matrix, control matrix, reader prose), and the packaged scoutline skill now all list Linkup.
-
 ## [0.17.7] - 2026-08-19
 
 ### Class-guard findings resolved: every control honored or honestly disclosed (#66-#71)

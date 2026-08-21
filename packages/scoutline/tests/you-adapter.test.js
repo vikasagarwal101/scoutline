@@ -244,3 +244,34 @@ it("diagnostics.invoke probes with a single search and create() does not fetch",
   await adapter.diagnostics.invoke({ probe: true });
   assert.equal(calls, 1);
 });
+
+import { PROVIDER_IDS } from "../dist/providers/types.js";
+import { BUILT_IN_PROVIDER_DESCRIPTORS } from "../dist/providers/registry.js";
+import {
+  PROVIDER_AUTHORITY_POLICIES,
+  CAPABILITY_MAPPINGS,
+} from "../dist/lib/quota-mapping.js";
+
+describe("you registry wiring", () => {
+  it("registers you in PROVIDER_IDS and the static registry", () => {
+    assert.ok(PROVIDER_IDS.includes("you"));
+    const ids = BUILT_IN_PROVIDER_DESCRIPTORS.map((d) => d.id);
+    assert.ok(ids.includes("you"));
+    // Appended after jina, preserving canonical registry order.
+    assert.deepEqual(ids.slice(-2), ["jina", "you"]);
+    const you = BUILT_IN_PROVIDER_DESCRIPTORS.find((d) => d.id === "you");
+    assert.deepEqual(you.credentialEnvVars, ["YDC_API_KEY", "YOU_API_KEY"]);
+  });
+
+  it("you quota authority is always-unknown with no capability mappings", () => {
+    const policy = PROVIDER_AUTHORITY_POLICIES.find((p) => p.provider === "you");
+    assert.ok(policy, "you must have a PROVIDER_AUTHORITY_POLICIES row");
+    assert.equal(policy.kind, "always-unknown");
+    assert.ok(policy.reason.length > 0);
+    assert.equal(
+      CAPABILITY_MAPPINGS.filter((m) => m.provider === "you").length,
+      0,
+      "always-unknown providers must not have CAPABILITY_MAPPINGS rows",
+    );
+  });
+});

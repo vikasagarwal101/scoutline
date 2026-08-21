@@ -777,7 +777,7 @@ export async function executeFanoutPlan(
 
 // Help text
 export const SEARCH_HELP = `
-Search Command - Real-time web search (Z.AI, MiniMax, Tavily, Exa, or Brave)
+Search Command - Real-time web search (all 10 Providers)
 
 Usage: scoutline search <query> [options]
 

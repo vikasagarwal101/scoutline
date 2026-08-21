@@ -84,9 +84,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function assertHttpUrl(url: unknown): asserts url is string {
+function assertHttpUrl(
+  url: unknown,
+  capability: "reader" | "crawl" | "map",
+): asserts url is string {
   if (typeof url !== "string" || url.length === 0) {
-    throw new ValidationError("Spider reader URL must be a non-empty string");
+    throw new ValidationError(`Spider ${capability} URL must be a non-empty string`);
   }
   if (!/^https?:\/\//.test(url)) {
     throw new ValidationError("URL must start with http:// or https://");
@@ -314,9 +317,12 @@ function normalizeSpiderCrawlResult(raw: unknown, request: CrawlRequest): CrawlR
  *
  * Two accepted item shapes: the documented `{ url, status, links: [...] }`
  * row (SCHEMA §4 — each `links[]` string is a discovered URL) and the
- * flat `{ url }` row the API also returns for single-page maps. All
- * URLs are deduplicated through a `Set` (insertion order preserved);
- * `totalUrls` is the deduplicated count. Any non-object entry or
+ * flat `{ url }` row the API also returns for single-page maps. Every
+ * row carries its own `url`, and that URL is part of the map — a
+ * links row must not drop the mapped page itself (a site map that
+ * omits its root URL is wrong). All URLs are deduplicated through a
+ * `Set` (insertion order preserved); `totalUrls` is the deduplicated
+ * count. Any non-object entry, missing/invalid row `url`, or
  * non-string link is a retryable `ApiError` 500.
  */
 function normalizeSpiderLinksResult(raw: unknown, request: MapRequest): MapResult {
@@ -329,6 +335,13 @@ function normalizeSpiderLinksResult(raw: unknown, request: MapRequest): MapResul
     if (!isPlainObject(entry)) {
       throw new ApiError("Spider links returned a malformed response", 500);
     }
+    // The row's own URL first: the mapped page belongs in the map even
+    // when its links array is present (the documented row shape carries
+    // both). Deduplication absorbs a url that also appears in links.
+    if (typeof entry.url !== "string" || entry.url.length === 0) {
+      throw new ApiError("Spider links returned a malformed response", 500);
+    }
+    urls.add(entry.url);
     if (Array.isArray(entry.links)) {
       for (const link of entry.links) {
         if (typeof link !== "string" || link.length === 0) {
@@ -336,12 +349,7 @@ function normalizeSpiderLinksResult(raw: unknown, request: MapRequest): MapResul
         }
         urls.add(link);
       }
-      continue;
     }
-    if (typeof entry.url !== "string" || entry.url.length === 0) {
-      throw new ApiError("Spider links returned a malformed response", 500);
-    }
-    urls.add(entry.url);
   }
   const unique = [...urls];
   return {
@@ -585,7 +593,7 @@ function createSpiderReaderCapability(
     kind: "reader-fetch",
 
     validate(request: ReaderFetchRequest): void {
-      assertHttpUrl(request.url);
+      assertHttpUrl(request.url, "reader");
       assertNoUnsupportedReaderOptions(request);
     },
 
@@ -605,7 +613,10 @@ function createSpiderReaderCapability(
       return decodeReaderFetchResult(value);
     },
 
-    async invoke(request: ReaderFetchRequest): Promise<ReaderFetchResult> {
+    async invoke(
+      request: ReaderFetchRequest,
+      signal?: AbortSignal,
+    ): Promise<ReaderFetchResult> {
       fetch.validate(request);
 
       const apiKey = requireSpiderApiKey(env);
@@ -617,7 +628,7 @@ function createSpiderReaderCapability(
           filter_output_main_only: true,
           stealth: true,
         };
-        const raw = await fetchSpiderScrape(apiKey, params, transport);
+        const raw = await fetchSpiderScrape(apiKey, params, transport, signal);
         return normalizeSpiderScrapeResult(raw, request);
       } catch (error) {
         throw normalizeSpiderError(error);
@@ -691,7 +702,7 @@ function createSpiderCrawlCapability(
     kind: "crawl-fetch",
 
     validate(request: CrawlRequest): void {
-      assertHttpUrl(request.url);
+      assertHttpUrl(request.url, "crawl");
       // The crawl endpoint is synchronous: no async-job state file, no
       // poll loop, no request-scoped timeout field on the wire.
       if (request.depth !== undefined) {
@@ -699,8 +710,10 @@ function createSpiderCrawlCapability(
           throw new ValidationError("Crawl depth must be an integer between 1 and 5");
         }
       }
-      if (request.limit !== undefined && request.limit <= 0) {
-        throw new ValidationError("Crawl limit must be greater than 0");
+      if (request.limit !== undefined) {
+        if (!Number.isInteger(request.limit) || request.limit < 1) {
+          throw new ValidationError("Crawl limit must be a positive integer");
+        }
       }
       for (const key of UNSUPPORTED_CRAWL_OPTIONS) {
         if (request[key] !== undefined) {
@@ -814,9 +827,11 @@ function createSpiderMapCapability(options: SpiderMapCapabilityOptions): SpiderM
     kind: "map-fetch",
 
     validate(request: MapRequest): void {
-      assertHttpUrl(request.url);
-      if (request.limit !== undefined && request.limit <= 0) {
-        throw new ValidationError("Map limit must be greater than 0");
+      assertHttpUrl(request.url, "map");
+      if (request.limit !== undefined) {
+        if (!Number.isInteger(request.limit) || request.limit < 1) {
+          throw new ValidationError("Map limit must be a positive integer");
+        }
       }
       for (const key of UNSUPPORTED_MAP_OPTIONS) {
         if (request[key] !== undefined) {

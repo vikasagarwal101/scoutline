@@ -333,6 +333,52 @@ it("research.run filters out sources with empty title or url", async () => {
   assert.ok(adapter.research.run.decodeCached(result) !== null);
 });
 
+it("fetchYouResearch applies 300s timeout by default and respects env override", async () => {
+  const { fetchYouResearch } = await import("../dist/providers/you/client.js");
+  let capturedTimeoutMs;
+  await fetchYouResearch(
+    "k",
+    { input: "q" },
+    {
+      fetch: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => YOU_RESEARCH_RAW,
+        text: async () => JSON.stringify(YOU_RESEARCH_RAW),
+        headers: { get: () => null },
+      }),
+      setTimeout: (fn, ms) => {
+        capturedTimeoutMs = ms;
+        return 123;
+      },
+      clearTimeout: () => {},
+    },
+  );
+  assert.equal(capturedTimeoutMs, 300000);
+
+  // With YOU_RESEARCH_TIMEOUT override
+  await fetchYouResearch(
+    "k",
+    { input: "q" },
+    {
+      fetch: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => YOU_RESEARCH_RAW,
+        text: async () => JSON.stringify(YOU_RESEARCH_RAW),
+        headers: { get: () => null },
+      }),
+      setTimeout: (fn, ms) => {
+        capturedTimeoutMs = ms;
+        return 123;
+      },
+      clearTimeout: () => {},
+      env: { YOU_RESEARCH_TIMEOUT: "450000" },
+    },
+  );
+  assert.equal(capturedTimeoutMs, 450000);
+});
+
 describe("you registry wiring", () => {
   it("registers you in PROVIDER_IDS and the static registry", () => {
     assert.ok(PROVIDER_IDS.includes("you"));
@@ -354,5 +400,22 @@ describe("you registry wiring", () => {
       0,
       "always-unknown providers must not have CAPABILITY_MAPPINGS rows",
     );
+  });
+
+  it("init wizard formats $YOU_API_KEY in non-TTY refusal when only alias is set", async () => {
+    const { runFreshOnboarding } = await import("../dist/commands/init.js");
+    let stderr = "";
+    const code = await runFreshOnboarding({
+      isTTY: () => false,
+      writeStderr: (msg) => { stderr += msg; },
+      env: { YOU_API_KEY: "test-key" },
+      descriptors: BUILT_IN_PROVIDER_DESCRIPTORS,
+      prompts: {},
+      loadConfig: async () => ({ status: "ok", config: { version: 1, providers: {} } }),
+      saveConfig: async () => {},
+    });
+    assert.equal(code, 1);
+    assert.ok(stderr.includes("$YOU_API_KEY"));
+    assert.ok(!stderr.includes("$YDC_API_KEY"));
   });
 });

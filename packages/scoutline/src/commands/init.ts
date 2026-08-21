@@ -626,9 +626,11 @@ async function runFreshFlow(deps: InitDependencies): Promise<number> {
   // Detect ambient env keys for the import offer.
   const envKeyProviders = detectEnvKeyProviders(deps.descriptors, deps.env);
   if (envKeyProviders.length > 0) {
-    const labels = envKeyProviders.map(
-      (id) => `${providerMeta(id).label} ($${providerMeta(id).envVar})`,
-    );
+    const labels = envKeyProviders.map((id) => {
+      const meta = providerMeta(id);
+      const activeVar = getDetectedEnvVar(meta, deps.env) ?? meta.envVar;
+      return `${meta.label} ($${activeVar})`;
+    });
     deps.writeStderr(
       `Detected env key${envKeyProviders.length === 1 ? "" : "s"}: ${labels.join(", ")}.\n` +
         "Each will be offered as an import candidate in the per-provider flow.\n",
@@ -1337,7 +1339,8 @@ async function collectProviderOnboardings(
       const meta = providerMeta(descriptor.id);
       const hints: string[] = [];
       if (envKeyProviders.includes(descriptor.id)) {
-        hints.push(`env $${meta.envVar} present (importable)`);
+        const activeVar = getDetectedEnvVar(meta, deps.env) ?? meta.envVar;
+        hints.push(`env $${activeVar} present (importable)`);
       }
       if (meta.probeCostsCredit) {
         hints.push("validation probe costs ~1 credit");

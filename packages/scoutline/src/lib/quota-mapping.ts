@@ -290,6 +290,18 @@ export const FIRECRAWL_CREDIT_CAPABILITIES: readonly ProviderCapability[] = [
 ];
 
 /**
+ * Linkup capabilities. Search, reader, and research all bill against
+ * the shared `credits` pool reported by GET /v1/credits/balance; the
+ * quota category is exposed with an unknown limit (#49), so only the
+ * alias name is static here.
+ */
+export const LINKUP_CREDIT_CAPABILITIES: readonly ProviderCapability[] = [
+  "search",
+  "reader",
+  "research",
+];
+
+/**
  * The static capability→category mapping table. Built once at module
  * load from the per-provider capability lists so a future capability
  * addition only edits one constant, not 8 rows.
@@ -386,7 +398,7 @@ export interface ProviderAuthorityPolicy {
 }
 
 /**
- * The static authority-policy table. Five providers are explicitly
+ * The static authority-policy table. Six providers are explicitly
  * non-authoritative:
  *
  * - **Brave**: reports a rate-limit window via `X-RateLimit-*` headers,
@@ -403,8 +415,12 @@ export interface ProviderAuthorityPolicy {
  *   (`createJinaQuotaCapability`), but its signal is a per-minute
  *   rate-limit window (exact remaining RPM/TPM with an explicitly
  *   unknown limit — GitHub #49), not spend or plan usage.
+ * - **Linkup**: DOES advertise a `quota` capability
+ *   (`createLinkupQuotaCapability`), but its signal is an exact remaining
+ *   credit balance with an unknown limit (GitHub #49), not a
+ *   percentage-bounded plan signal.
  *
- * All five providers stay **eligible** for PB-T4 fallback (their
+ * All six providers stay **eligible** for PB-T4 fallback (their
  * `authority:"unknown"` score sorts after every known provider), so
  * they can still be picked when no known provider remains.
  */
@@ -456,6 +472,12 @@ export const PROVIDER_AUTHORITY_POLICIES: readonly ProviderAuthorityPolicy[] = [
     provider: "you",
     kind: "always-unknown",
     reason: "You.com does not advertise a quota capability; no spend endpoint.",
+  },
+  {
+    provider: "linkup",
+    kind: "always-unknown",
+    reason:
+      "Linkup exposes GET /v1/credits/balance as an exact credit remaining balance (limit unknown); not a percentage-bounded plan signal.",
   },
 ];
 

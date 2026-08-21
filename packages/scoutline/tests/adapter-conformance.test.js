@@ -27,6 +27,7 @@ import { createParallelDescriptor, ParallelAdapter } from "../dist/providers/par
 import { createPerplexityDescriptor, PerplexityAdapter } from "../dist/providers/perplexity/adapter.js";
 import { createJinaDescriptor, JinaAdapter } from "../dist/providers/jina/adapter.js";
 import { createYouDescriptor } from "../dist/providers/you/adapter.js";
+import { createLinkupDescriptor } from "../dist/providers/linkup/adapter.js";
 import {
   BUILT_IN_PROVIDER_DESCRIPTORS,
   getProviderDescriptor,
@@ -264,6 +265,24 @@ function makeYouCapability(rawResult) {
   return adapter.search;
 }
 
+/**
+ * Linkup Adapter factory: accepts a raw Linkup-shaped response
+ * (`results[].name/url/content`), builds a fake fetch, and returns the
+ * descriptor's Search Capability.
+ */
+function makeLinkupCapability(rawResult) {
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => rawResult,
+    text: async () => JSON.stringify(rawResult),
+    headers: { get: () => null },
+  });
+  const descriptor = createLinkupDescriptor({ transport: { fetch: fetchFn } });
+  const adapter = descriptor.create({ env: { LINKUP_API_KEY: "k" } });
+  return adapter.search;
+}
+
 // ---------------------------------------------------------------------------
 // Vision conformance: same interpret-image request, same normalized text (P3-03)
 // ---------------------------------------------------------------------------
@@ -417,6 +436,7 @@ const SEARCH_CONFORMANCE_FACTORIES = new Map([
   ["perplexity", makePerplexityCapability],
   ["jina", makeJinaCapability],
   ["you", makeYouCapability],
+  ["linkup", makeLinkupCapability],
 ]);
 
 /**
@@ -613,6 +633,24 @@ const SEARCH_CONFORMANCE_RAW = new Map([
           },
         ],
       },
+    },
+  ],
+  // Linkup raw response (results[].name/url/content).
+  [
+    "linkup",
+    {
+      results: [
+        {
+          name: "Conformance result one",
+          url: "https://example.test/one",
+          content: "Shared normalized summary one.",
+        },
+        {
+          name: "Conformance result two",
+          url: "https://example.test/two",
+          content: "Shared normalized summary two.",
+        },
+      ],
     },
   ],
 ]);
@@ -896,7 +934,7 @@ describe("AbortSignal — new research invokes honour pre-aborted signal (2.6)",
 // ---------------------------------------------------------------------------
 
 describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
-  it("contains exactly [zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you] in that order", () => {
+  it("contains exactly [zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup] in that order", () => {
     assert.deepStrictEqual(
       BUILT_IN_PROVIDER_DESCRIPTORS.map((d) => d.id),
       [
@@ -910,6 +948,7 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
         "perplexity",
         "jina",
         "you",
+        "linkup",
       ],
     );
   });

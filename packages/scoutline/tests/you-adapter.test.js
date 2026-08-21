@@ -384,8 +384,9 @@ describe("you registry wiring", () => {
     assert.ok(PROVIDER_IDS.includes("you"));
     const ids = BUILT_IN_PROVIDER_DESCRIPTORS.map((d) => d.id);
     assert.ok(ids.includes("you"));
-    // Appended after jina, preserving canonical registry order.
-    assert.deepEqual(ids.slice(-2), ["jina", "you"]);
+    // Appended after jina, preserving canonical registry order (linkup
+    // integrates after you in the merge train).
+    assert.deepEqual(ids.slice(-3), ["jina", "you", "linkup"]);
     const you = BUILT_IN_PROVIDER_DESCRIPTORS.find((d) => d.id === "you");
     assert.deepEqual(you.credentialEnvVars, ["YDC_API_KEY", "YOU_API_KEY"]);
   });

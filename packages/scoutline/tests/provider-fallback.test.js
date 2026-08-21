@@ -1363,6 +1363,7 @@ describe("executeWithFallback — production registry carries credential hint en
       perplexity: ["PERPLEXITY_API_KEY"],
       jina: ["JINA_API_KEY"],
       you: ["YDC_API_KEY", "YOU_API_KEY"],
+      linkup: ["LINKUP_API_KEY"],
     };
     for (const descriptor of BUILT_IN_PROVIDER_DESCRIPTORS) {
       const vars = descriptor.credentialEnvVars;

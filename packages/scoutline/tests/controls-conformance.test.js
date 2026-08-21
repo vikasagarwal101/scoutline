@@ -50,6 +50,7 @@ import { ParallelAdapter } from "../dist/providers/parallel/adapter.js";
 import { PerplexityAdapter } from "../dist/providers/perplexity/adapter.js";
 import { JinaAdapter } from "../dist/providers/jina/adapter.js";
 import { createYouDescriptor } from "../dist/providers/you/adapter.js";
+import { createLinkupDescriptor } from "../dist/providers/linkup/adapter.js";
 import { createInMemoryAsyncJobStateFile } from "../dist/lib/async-job-state.js";
 import { UnsupportedOptionError } from "../dist/lib/errors.js";
 
@@ -250,6 +251,26 @@ const YOU_RESEARCH_RAW = {
   metadata: { research_uuid: "research-fixture-001", latency: 3.45 },
 };
 
+const LINKUP_SEARCH_RAW = {
+  results: [
+    {
+      name: "Result",
+      url: "https://example.test/one",
+      content: "Summary.",
+      favicon: "https://example.test/favicon.ico",
+      type: "text",
+    },
+  ],
+};
+const LINKUP_READER_RAW = { url: PAGE_URL, markdown: "# Page body" };
+const LINKUP_RESEARCH_POLL_RAW = {
+  id: "t1",
+  status: "completed",
+  output: {
+    answer: "## Report",
+    sources: [{ name: "Source", url: "https://example.test/s", snippet: "x" }],
+  },
+};
 const RESPONDERS = {
   zai: null, // MCP seam, not fetch
   minimax(url, method) {
@@ -339,6 +360,20 @@ const RESPONDERS = {
     if (method === "POST" && url.endsWith("/v1/research")) return jsonResponse(YOU_RESEARCH_RAW);
     return jsonResponse({});
   },
+  linkup(url, method) {
+    if (method === "POST" && url.endsWith("/search")) return jsonResponse(LINKUP_SEARCH_RAW);
+    if (method === "POST" && url.endsWith("/fetch")) return jsonResponse(LINKUP_READER_RAW);
+    if (method === "POST" && url.endsWith("/research")) {
+      return jsonResponse({ id: "t1", status: "pending" });
+    }
+    if (method === "GET" && url.includes("/research/")) {
+      return jsonResponse(LINKUP_RESEARCH_POLL_RAW);
+    }
+    if (method === "GET" && url.endsWith("/credits/balance")) {
+      return jsonResponse({ balance: 182.45 });
+    }
+    return jsonResponse({});
+  },
 };
 
 const ENV_BY_PROVIDER = {
@@ -352,6 +387,7 @@ const ENV_BY_PROVIDER = {
   perplexity: { PERPLEXITY_API_KEY: "k" },
   jina: {},
   you: { YDC_API_KEY: "k" },
+  linkup: { LINKUP_API_KEY: "k" },
 };
 
 /** Research transports need a zero poll interval + no-op lock timers. */
@@ -458,6 +494,16 @@ function makeHarness(provider, capability) {
       return { adapter: new JinaAdapter(context, { transport }), calls, timerDelays };
     case "you":
       return { adapter: createYouDescriptor({ transport }).create(context), calls, timerDelays };
+    case "linkup":
+      return {
+        adapter: createLinkupDescriptor({
+          transport,
+          researchStateFile: stateFile,
+          researchStateDir: capability === "research" ? tmpStateDir() : undefined,
+        }).create(context),
+        calls,
+        timerDelays,
+      };
     default:
       throw new Error(`unknown provider ${provider}`);
   }
@@ -1926,6 +1972,161 @@ const ROWS = [
     path: "source_control.include_domains",
     deepEqual: ["example.com"],
   },
+
+  // ----- linkup / search - includeDomains, date window, q-appends, depth
+  {
+    provider: "linkup",
+    capability: "search",
+    control: "domain",
+    input: { domain: "example.com" },
+    expect: "consumed",
+    on: "body",
+    path: "includeDomains",
+    deepEqual: ["example.com"],
+  },
+  {
+    provider: "linkup",
+    capability: "search",
+    control: "recency",
+    input: { recency: "oneWeek" },
+    expect: "consumed",
+    on: "body",
+    path: "fromDate",
+    recentDateDays: 7,
+  },
+  {
+    provider: "linkup",
+    capability: "search",
+    control: "contentSize",
+    input: { contentSize: "high" },
+    expect: "consumed",
+    on: "body",
+    path: "depth",
+    equals: "deep",
+  },
+  {
+    provider: "linkup",
+    capability: "search",
+    control: "location",
+    input: { location: "us" },
+    expect: "consumed",
+    on: "body",
+    path: "q",
+    includes: "us",
+  },
+  {
+    provider: "linkup",
+    capability: "search",
+    control: "topic",
+    input: { topic: "news" },
+    expect: "consumed",
+    on: "body",
+    path: "q",
+    includes: "news",
+  },
+  {
+    provider: "linkup",
+    capability: "search",
+    control: "type",
+    input: { type: "video" },
+    expect: "rejected",
+  },
+  // ----- linkup / reader - renderJs wired to /fetch; no-wire-equivalent
+  // controls rejected (no accept-and-drop)
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "renderJs",
+    input: { renderJs: false },
+    expect: "consumed",
+    on: "body",
+    path: "renderJs",
+    equals: false,
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "format",
+    input: { format: "text" },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "retainImages",
+    input: { retainImages: false },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "withLinksSummary",
+    input: { withLinksSummary: true },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "noGfm",
+    input: { noGfm: true },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "keepImgDataUrl",
+    input: { keepImgDataUrl: true },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "withImagesSummary",
+    input: { withImagesSummary: true },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "timeout",
+    input: { timeout: 20 },
+    expect: "consumed",
+    on: "timer",
+    equals: 20000,
+  },
+  // ----- linkup / research - model maps to reasoningDepth, others rejected
+  {
+    provider: "linkup",
+    capability: "research",
+    control: "model",
+    input: { model: "pro" },
+    expect: "consumed",
+    on: "body",
+    path: "reasoningDepth",
+    equals: "XL",
+    pick: { method: "POST", urlIncludes: "/research" },
+  },
+  {
+    provider: "linkup",
+    capability: "research",
+    control: "outputLength",
+    input: { outputLength: "long" },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "research",
+    control: "citationFormat",
+    input: { citationFormat: "apa" },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "research",
+    control: "domain",
+    input: { domain: "example.com" },
+    expect: "rejected",
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1973,6 +2174,7 @@ describe("controls class-guard — table integrity", () => {
       perplexity: { search: SEARCH_CONTROLS, research: RESEARCH_CONTROLS },
       parallel: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
       you: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
+      linkup: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
     };
     for (const [provider, capabilities] of Object.entries(COVERAGE)) {
       for (const [capability, controls] of Object.entries(capabilities)) {

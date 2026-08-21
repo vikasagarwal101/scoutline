@@ -1,17 +1,19 @@
 ---
 name: scoutline
 description: |
-  Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and Jina AI CLI providing:
+  Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, and Linkup CLI
+  providing:
   - Vision: image/video analysis, OCR, UI-to-code, error diagnosis (GLM-5V-Turbo)
   - Search: real-time web search with domain/recency/topic filtering
-  - Reader: web page to markdown extraction (Z.AI, Tavily, Exa, Firecrawl, Parallel, or Jina)
+  - Reader: web page to markdown extraction (Z.AI, Tavily, Exa, Firecrawl, Parallel, Jina, or Linkup)
   - Crawl: multi-page website traversal (Tavily or Firecrawl)
   - Map: URL-set discovery without fetching pages (Tavily or Firecrawl)
-  - Research: asynchronous deep research with citations (Tavily, Exa, Parallel, Perplexity, or Jina)
+  - Research: asynchronous deep research with citations (Tavily, Exa, Parallel, Perplexity, Jina,
+    or Linkup)
   - Repo: GitHub code search and reading via ZRead (Z.AI)
   - Tools: MCP tool discovery, schemas, and raw calls (Z.AI)
   - Code: TypeScript tool chaining (Z.AI)
-  - Provider selection: --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina> for shared
+  - Provider selection: --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|linkup> for shared
     capabilities, repo, read, crawl, map, and research
   Use for visual content analysis, web search, page reading, multi-page
   site traversal, deep research, or GitHub exploration.
@@ -19,7 +21,8 @@ description: |
 
 # Scoutline
 
-Access Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and Jina AI capabilities via `npx scoutline@0.17.4`. The
+Access Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, and Linkup
+capabilities via `npx scoutline@0.17.4`. The
 CLI is self-documenting — use `--help` at any level.
 
 ## Setup
@@ -51,6 +54,9 @@ export PERPLEXITY_API_KEY="your-perplexity-key"
 
 # OR Jina AI (Search, Reader, Research)
 export JINA_API_KEY="your-jina-key"
+
+# OR Linkup (Search, Reader, Research)
+export LINKUP_API_KEY="your-linkup-key"
 ```
 
 Get a Z.AI key at: https://z.ai/manage-apikey/apikey-list
@@ -86,7 +92,7 @@ or env vars; API keys never belong in command arguments.
 
 Shared commands (`search`, `vision analyze`, `quota`, `doctor`),
 **`repo`**, **`read`**, **`crawl`**, **`map`**, and **`research`**
-accept the global `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina>` flag. Precedence
+accept the global `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|linkup>` flag. Precedence
 is the flag, then the `SCOUTLINE_PROVIDER` environment variable, then
 the default `zai`. Provider selection is never inferred from
 credentials. Unknown values fail fast with `VALIDATION_ERROR`.
@@ -95,10 +101,10 @@ credentials. Unknown values fail fast with `VALIDATION_ERROR`.
 remain Z.AI-only.
 
 Capability coverage at launch (generated from the production registry
-in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina]`):
+in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, linkup]`):
 
 - `search` — Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI,
-  Perplexity, Jina AI. The only search control honored by every Provider
+  Perplexity, Jina AI, Linkup. The only search control honored by every Provider
   is `--topic <general|news|finance>`.
   Brave is the only Provider that accepts `--type video`; every other
   Provider rejects `controls.type` as `UnsupportedOptionError` so
@@ -108,18 +114,22 @@ in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perpl
   follow the same registry and are mediated by MiniMax's compiled
   conformance registry.
 - `quota` — Z.AI, MiniMax, Tavily, Firecrawl (credits), Brave
-  (rate-limit window), Jina AI (rate-limit telemetry). Exa, Parallel AI,
-  and Perplexity do not advertise quota.
+  (rate-limit window), Jina AI (rate-limit telemetry), Linkup (credits
+  balance, limit unknown). Exa, Parallel AI, and Perplexity do not
+  advertise quota.
 - `diagnostics` — every built-in Provider (Z.AI, MiniMax, Tavily, Exa,
-  Brave, Firecrawl, Parallel AI, Perplexity, Jina AI).
-- `read` — Z.AI, Tavily, Exa, Firecrawl, Parallel AI, Jina AI (MiniMax,
-  Brave, and Perplexity do not advertise it; Tavily/Exa/Firecrawl/Parallel
-  reject Z.AI-only reader options: `--with-links`, `--no-gfm`,
-  `--keep-img-data-url`, `--with-images-summary`; Jina maps them natively).
+  Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, Linkup).
+- `read` — Z.AI, Tavily, Exa, Firecrawl, Parallel AI, Jina AI, Linkup
+  (MiniMax, Brave, and Perplexity do not advertise it;
+  Tavily/Exa/Firecrawl/Parallel reject Z.AI-only reader options:
+  `--with-links`, `--no-gfm`, `--keep-img-data-url`,
+  `--with-images-summary`; Jina maps them natively; Linkup renders
+  JavaScript by default and also rejects `--format text` and
+  `--no-images`).
 - `repo` — Z.AI only (repository-exploration is Z.AI-supplied).
 - `crawl` — Tavily (sync), Firecrawl (async, resumable after Ctrl-C).
 - `map` — Tavily, Firecrawl.
-- `research` — Tavily, Exa, Parallel AI, Perplexity, Jina AI.
+- `research` — Tavily, Exa, Parallel AI, Perplexity, Jina AI, Linkup.
   Credit-intensive (4-250 credits). `--output-length`, `--citation-format`,
   and `--domain` are honored by Tavily; Exa warn-and-strips them (Agent
   create has no native fields).

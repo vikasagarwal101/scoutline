@@ -1852,6 +1852,69 @@ const ROWS = [
     input: { type: "video" },
     expect: "rejected",
   },
+  // ----- linkup / reader - renderJs wired to /fetch; no-wire-equivalent
+  // controls rejected (no accept-and-drop)
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "renderJs",
+    input: { renderJs: false },
+    expect: "consumed",
+    on: "body",
+    path: "renderJs",
+    equals: false,
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "format",
+    input: { format: "text" },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "retainImages",
+    input: { retainImages: false },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "withLinksSummary",
+    input: { withLinksSummary: true },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "noGfm",
+    input: { noGfm: true },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "keepImgDataUrl",
+    input: { keepImgDataUrl: true },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "withImagesSummary",
+    input: { withImagesSummary: true },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "timeout",
+    input: { timeout: 20 },
+    expect: "consumed",
+    on: "timer",
+    equals: 20000,
+  },
   // ----- linkup / research - model maps to reasoningDepth, others rejected
   {
     provider: "linkup",
@@ -1931,7 +1994,7 @@ describe("controls class-guard — table integrity", () => {
       jina: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
       perplexity: { search: SEARCH_CONTROLS, research: RESEARCH_CONTROLS },
       parallel: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
-      linkup: { search: SEARCH_CONTROLS, research: RESEARCH_CONTROLS },
+      linkup: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
     };
     for (const [provider, capabilities] of Object.entries(COVERAGE)) {
       for (const [capability, controls] of Object.entries(capabilities)) {

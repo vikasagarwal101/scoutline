@@ -324,6 +324,10 @@ then zai):
     linkup routes Read through their Adapters; some Z.AI-only options
     are rejected with UNSUPPORTED_OPTION.
     Jina supports keyless access (no API key required).
+    Linkup renders page JavaScript by default and honors --timeout;
+    --format text, --no-images, --with-links, --no-gfm,
+    --keep-img-data-url, and --with-images-summary are rejected with
+    UNSUPPORTED_OPTION (the Linkup /fetch endpoint has no equivalent).
   - MiniMax, Brave, and Perplexity do NOT advertise reader. By default (0.11.0+)
     Provider fallback emits a stderr notice and silently reroutes to
     the next eligible configured supplier (zai, tavily, exa,

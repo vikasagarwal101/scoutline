@@ -220,6 +220,51 @@ describe("Linkup Search Adapter — validation and control mapping", () => {
     assert.equal(sentBody.fromDate, "2023-02-28");
     assert.equal(sentBody.toDate, "2024-02-29");
   });
+
+  it("search recency oneMonth uses UTC dates when local day differs from UTC day", async () => {
+    let sentBody = null;
+    // 2026-03-30T20:30Z is already 2026-03-31 locally in UTC+ zones: the
+    // local-date overflow guard must reason on the same UTC timeline the
+    // window is serialized with (fromDate 2026-02-28, not 2026-02-27).
+    const epoch = Date.parse("2026-03-30T20:30:00.000Z");
+    const adapter = createLinkupDescriptor({
+      now: () => epoch,
+      transport: {
+        fetch: async (_url, init) => {
+          sentBody = JSON.parse(init?.body ?? "{}");
+          return jsonRes({ results: [] });
+        },
+      },
+    }).create({ env: { LINKUP_API_KEY: "k" } });
+
+    await adapter.search.invoke({ query: "utc window", controls: { recency: "oneMonth" } });
+
+    assert.ok(sentBody);
+    assert.equal(sentBody.fromDate, "2026-02-28");
+    assert.equal(sentBody.toDate, "2026-03-30");
+  });
+
+  it("search recency oneYear uses UTC dates across leap-day boundaries", async () => {
+    let sentBody = null;
+    // 2028-02-28T20:30Z is 2028-02-29 locally in UTC+ zones: a local-time
+    // year clamp would land on 2027-02-27 when serialized as UTC.
+    const epoch = Date.parse("2028-02-28T20:30:00.000Z");
+    const adapter = createLinkupDescriptor({
+      now: () => epoch,
+      transport: {
+        fetch: async (_url, init) => {
+          sentBody = JSON.parse(init?.body ?? "{}");
+          return jsonRes({ results: [] });
+        },
+      },
+    }).create({ env: { LINKUP_API_KEY: "k" } });
+
+    await adapter.search.invoke({ query: "utc window", controls: { recency: "oneYear" } });
+
+    assert.ok(sentBody);
+    assert.equal(sentBody.fromDate, "2027-02-28");
+    assert.equal(sentBody.toDate, "2028-02-28");
+  });
 });
 
 describe("Linkup Reader Adapter — renderJs control", () => {
@@ -238,6 +283,99 @@ describe("Linkup Reader Adapter — renderJs control", () => {
     assert.equal(result.schemaVersion, 1);
     assert.ok(result.content.length > 0);
     assert.equal(adapter.reader.fetch.kind, "reader-fetch");
+  });
+
+  it("reader.validate rejects controls Linkup cannot wire before transport access", () => {
+    const adapter = createLinkupDescriptor().create({ env: { LINKUP_API_KEY: "k" } });
+    const cases = [
+      [{ url: "https://example.test/page", format: "text" }, "format"],
+      [{ url: "https://example.test/page", retainImages: false }, "retainImages"],
+      [{ url: "https://example.test/page", withLinksSummary: true }, "withLinksSummary"],
+      [{ url: "https://example.test/page", noGfm: true }, "noGfm"],
+      [{ url: "https://example.test/page", keepImgDataUrl: true }, "keepImgDataUrl"],
+      [{ url: "https://example.test/page", withImagesSummary: true }, "withImagesSummary"],
+    ];
+    for (const [request, option] of cases) {
+      assert.throws(
+        () => adapter.reader.fetch.validate(request),
+        (e) =>
+          e instanceof UnsupportedOptionError &&
+          e.provider === "linkup" &&
+          e.capability === "reader" &&
+          e.option === option,
+        `expected validate() to reject ${option}`,
+      );
+    }
+  });
+
+  it("reader.invoke re-throws the control rejection before any transport access", async () => {
+    let fetchCalls = 0;
+    const adapter = createLinkupDescriptor({
+      transport: {
+        fetch: async () => {
+          fetchCalls += 1;
+          throw new Error("must not be reached");
+        },
+      },
+    }).create({ env: { LINKUP_API_KEY: "k" } });
+    await assert.rejects(
+      () => adapter.reader.fetch.invoke({ url: "https://example.test/page", format: "text" }),
+      (e) => e instanceof UnsupportedOptionError && e.option === "format",
+    );
+    assert.equal(fetchCalls, 0);
+  });
+
+  it("reader accepts control values that match its native output (markdown, retained images)", async () => {
+    const raw = { markdown: "# Page", url: "https://example.test/page" };
+    const calls = [];
+    const adapter = createLinkupDescriptor({
+      transport: {
+        fetch: async (url, init) => {
+          calls.push({ url: String(url), body: JSON.parse(init.body) });
+          return jsonRes(raw);
+        },
+      },
+    }).create({ env: { LINKUP_API_KEY: "k" } });
+    const result = await adapter.reader.fetch.invoke({
+      url: "https://example.test/page",
+      format: "markdown",
+      retainImages: true,
+    });
+    assert.equal(result.contentFormat, "markdown");
+    assert.equal(calls.length, 1);
+  });
+
+  it("reader.fetch maps an explicit renderJs control onto the wire body", async () => {
+    const raw = { markdown: "# Page", url: "https://example.test/page" };
+    const calls = [];
+    const adapter = createLinkupDescriptor({
+      transport: {
+        fetch: async (url, init) => {
+          calls.push({ url: String(url), body: JSON.parse(init.body) });
+          return jsonRes(raw);
+        },
+      },
+    }).create({ env: { LINKUP_API_KEY: "k" } });
+    await adapter.reader.fetch.invoke({ url: "https://example.test/page", renderJs: false });
+    assert.equal(calls[0].body.renderJs, false);
+  });
+
+  it("reader.fetch wires --timeout to the client abort budget", async () => {
+    const raw = { markdown: "# Page", url: "https://example.test/page" };
+    const delays = [];
+    const adapter = createLinkupDescriptor({
+      transport: {
+        fetch: async () => jsonRes(raw),
+        setTimeout: (cb, ms) => {
+          delays.push(ms);
+          return 0;
+        },
+        clearTimeout: () => {},
+      },
+    }).create({ env: { LINKUP_API_KEY: "k" } });
+    await adapter.reader.fetch.invoke({ url: "https://example.test/page", timeout: 17 });
+    assert.ok(delays.length > 0, "expected the client to arm an abort timer");
+    assert.equal(delays[delays.length - 1], 17000);
   });
 });
 
@@ -412,6 +550,46 @@ describe("Linkup Research Adapter — async polling lifecycle", () => {
     assert.equal(calls.filter((c) => c.method === "POST").length, 0);
     assert.equal(result.report, "Resumed report");
     assert.equal(stateFile.store.size, 0);
+  });
+
+  it("research.run still polls the created task when state persistence fails (non-EEXIST)", async () => {
+    const calls = [];
+    const memory = createInMemoryAsyncJobStateFile();
+    const failingWrite = {
+      read: (h) => memory.read(h),
+      write: async (h) => {
+        const err = new Error(`EACCES: permission denied, open '${h}.json'`);
+        err.code = "EACCES";
+        throw err;
+      },
+      remove: (h) => memory.remove(h),
+    };
+    const adapter = createLinkupDescriptor({
+      transport: {
+        fetch: async (url, init) => {
+          calls.push({ url: String(url), method: init?.method ?? "GET" });
+          if (String(url).endsWith("/research") && (init?.method ?? "GET") === "POST") {
+            return jsonRes({ id: "job-paid", status: "pending" });
+          }
+          if (String(url).includes("/research/job-paid")) {
+            return jsonRes({
+              status: "completed",
+              output: { answer: "Paid report", sources: [] },
+            });
+          }
+          throw new Error(String(url));
+        },
+        setTimeout: (cb) => { setImmediate(cb); return 0; },
+        clearTimeout: () => {},
+      },
+      researchStateFile: failingWrite,
+    }).create({ env: { LINKUP_API_KEY: "k" } });
+
+    // The POST already succeeded (the task is paid for); losing its id on a
+    // state-write failure would force a duplicate paid task on retry.
+    const result = await adapter.research.run.invoke({ query: "paid task", model: "auto" });
+    assert.equal(calls.filter((c) => c.method === "POST").length, 1);
+    assert.equal(result.report, "Paid report");
   });
 });
 

@@ -266,7 +266,7 @@ function normalizeLinkupSearchResults(raw: unknown): readonly SearchSource[] {
         : typeof entry.snippet === "string"
           ? entry.snippet
           : "";
-    out.push({ title, url, summary, source: "linkup" });
+    out.push({ title, url, summary });
   }
   return out;
 }

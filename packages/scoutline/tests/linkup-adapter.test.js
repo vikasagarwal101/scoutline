@@ -26,6 +26,12 @@ import {
   createInMemoryAsyncJobStateFile,
 } from "../dist/lib/async-job-state.js";
 import { ApiError, ConfigurationError, UnsupportedOptionError } from "../dist/lib/errors.js";
+import { PROVIDER_IDS } from "../dist/providers/types.js";
+import { getProviderDescriptor } from "../dist/providers/registry.js";
+import {
+  getCapabilityMapping,
+  getProviderAuthorityPolicy,
+} from "../dist/lib/quota-mapping.js";
 
 describe("Linkup credentials", () => {
   it("trims LINKUP_API_KEY and throws ConfigurationError when missing", () => {
@@ -299,5 +305,45 @@ describe("Linkup Quota + Diagnostics Adapters — credits balance", () => {
     }).create({ env: { LINKUP_API_KEY: "k" } });
     await adapter.diagnostics.invoke({ probe: false });
     assert.equal(calls, 0);
+  });
+});
+
+describe("Linkup registry and quota mapping", () => {
+  it("PROVIDER_IDS includes linkup", () => {
+    assert.ok(
+      PROVIDER_IDS.includes("linkup"),
+      "PROVIDER_IDS must include the linkup provider id",
+    );
+  });
+
+  it("production registry resolves the linkup descriptor with all five capabilities", () => {
+    const descriptor = getProviderDescriptor("linkup");
+    assert.equal(descriptor.id, "linkup");
+    const caps = descriptor.capabilities();
+    assert.equal(caps.size, 5, "search/reader/research/quota/diagnostics — nothing more");
+    for (const capability of ["search", "reader", "research", "quota", "diagnostics"]) {
+      assert.ok(caps.has(capability), `linkup must advertise ${capability}`);
+    }
+    assert.ok(descriptor.isConfigured({ LINKUP_API_KEY: "k" }));
+    assert.equal(descriptor.isConfigured({}), false);
+  });
+
+  it("linkup authority policy is mapped with a reason", () => {
+    const policy = getProviderAuthorityPolicy("linkup");
+    assert.ok(policy, "linkup must have an authority-policy row");
+    assert.equal(policy.kind, "mapped");
+    assert.ok(policy.reason.length > 0);
+  });
+
+  it("search/reader/research map to the credits category matching quota categories[0].name", () => {
+    for (const capability of ["search", "reader", "research"]) {
+      const mapping = getCapabilityMapping("linkup", capability);
+      assert.ok(mapping, `(linkup, ${capability}) must have a mapping row`);
+      assert.deepEqual(
+        mapping.categoryAliases,
+        ["credits"],
+        `${capability} must consume the shared credits pool`,
+      );
+    }
   });
 });

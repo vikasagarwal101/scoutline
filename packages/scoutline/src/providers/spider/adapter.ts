@@ -322,7 +322,8 @@ function normalizeSpiderCrawlResult(raw: unknown, request: CrawlRequest): CrawlR
  * links row must not drop the mapped page itself (a site map that
  * omits its root URL is wrong). All URLs are deduplicated through a
  * `Set` (insertion order preserved); `totalUrls` is the deduplicated
- * count. Any non-object entry, missing/invalid row `url`, or
+ * count. Any non-object entry, missing/invalid row `url`,
+ * present-but-non-array `links` (neither accepted shape), or
  * non-string link is a retryable `ApiError` 500.
  */
 function normalizeSpiderLinksResult(raw: unknown, request: MapRequest): MapResult {
@@ -342,6 +343,9 @@ function normalizeSpiderLinksResult(raw: unknown, request: MapRequest): MapResul
       throw new ApiError("Spider links returned a malformed response", 500);
     }
     urls.add(entry.url);
+    if (entry.links !== undefined && !Array.isArray(entry.links)) {
+      throw new ApiError("Spider links returned a malformed response", 500);
+    }
     if (Array.isArray(entry.links)) {
       for (const link of entry.links) {
         if (typeof link !== "string" || link.length === 0) {

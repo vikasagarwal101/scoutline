@@ -106,3 +106,141 @@ it("search cacheIdentity fingerprints the key and does not fetch", () => {
   assert.equal(id.credentialFingerprint.length, 64);
   assert.equal(calls, 0);
 });
+
+import { ApiError } from "../dist/lib/errors.js";
+
+const YOU_CONTENTS_RAW = [
+  {
+    url: "https://example.test/page",
+    title: "Example Page",
+    markdown: "# Hi",
+    html: "<h1>Hi</h1>",
+    status: 200,
+  },
+];
+
+it("reader.fetch POSTs contents and returns ReaderFetchResult", async () => {
+  const calls = [];
+  const adapter = createYouDescriptor({
+    transport: {
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), body: init?.body });
+        return {
+          ok: true,
+          status: 200,
+          json: async () => YOU_CONTENTS_RAW,
+          text: async () => JSON.stringify(YOU_CONTENTS_RAW),
+          headers: { get: () => null },
+        };
+      },
+    },
+  }).create({ env: { YDC_API_KEY: "k" } });
+  assert.ok(adapter.reader);
+  const result = await adapter.reader.fetch.invoke({ url: "https://example.test/page" });
+  assert.equal(calls[0].url, "https://ydc-index.io/v1/contents");
+  assert.equal(result.schemaVersion, 1);
+  assert.equal(result.contentFormat, "markdown");
+  assert.ok(result.content.length > 0);
+  assert.equal(adapter.reader.fetch.kind, "reader-fetch");
+  assert.equal(
+    adapter.reader.fetch.decodeCached({
+      schemaVersion: 1,
+      url: "https://example.test/page",
+      finalUrl: "https://example.test/page",
+      title: null,
+      content: "# Hi",
+      contentFormat: "markdown",
+    }).content,
+    "# Hi",
+  );
+});
+
+it("reader.fetch throws ApiError when markdown is null without extra semantics", async () => {
+  const adapter = createYouDescriptor({
+    transport: {
+      fetch: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ markdown: null, html: null }),
+        text: async () => "{}",
+        headers: { get: () => null },
+      }),
+    },
+  }).create({ env: { YDC_API_KEY: "k" } });
+  await assert.rejects(
+    () => adapter.reader.fetch.invoke({ url: "https://example.test/x" }),
+    ApiError,
+  );
+});
+
+const YOU_RESEARCH_RAW = {
+  output: {
+    content: "RocksDB and LMDB represent two distinct database engine architectures [[1]]:\n\n### 1. Write Throughput\nRocksDB utilizes a Log-Structured Merge (LSM) tree architecture [[1]]...",
+    content_type: "text",
+    sources: [
+      {
+        title: "RocksDB Architecture Guide",
+        url: "https://github.com/facebook/rocksdb/wiki/RocksDB-Basics",
+        snippets: ["RocksDB is an LSM-tree database engine optimized for fast storage..."],
+      },
+      {
+        title: "LMDB Design Documentation",
+        url: "http://www.lmdb.tech/doc/",
+        snippets: ["LMDB is an extraordinarily fast, compact key-value embedded data store..."],
+      },
+    ],
+  },
+  metadata: {
+    research_uuid: "research-fixture-001",
+    latency: 3.45,
+  },
+};
+
+it("research.run POSTs api.you.com with lite for mini", async () => {
+  const calls = [];
+  const adapter = createYouDescriptor({
+    transport: {
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), body: JSON.parse(init.body) });
+        return {
+          ok: true,
+          status: 200,
+          json: async () => YOU_RESEARCH_RAW,
+          text: async () => JSON.stringify(YOU_RESEARCH_RAW),
+          headers: { get: () => null },
+        };
+      },
+    },
+  }).create({ env: { YDC_API_KEY: "k" } });
+  const result = await adapter.research.run.invoke({ query: "q", model: "mini" });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.you.com/v1/research");
+  assert.equal(calls[0].body.research_effort, "lite");
+  assert.equal(result.schemaVersion, 1);
+  assert.equal(result.model, "mini");
+  assert.ok(result.report.length > 0);
+  assert.equal(adapter.research.run.kind, "research-fetch");
+});
+
+it("diagnostics.invoke probes with a single search and create() does not fetch", async () => {
+  let calls = 0;
+  const descriptor = createYouDescriptor({
+    transport: {
+      fetch: async () => {
+        calls += 1;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => YOU_SEARCH_RAW,
+          text: async () => "{}",
+          headers: { get: () => null },
+        };
+      },
+    },
+  });
+  descriptor.create({ env: { YDC_API_KEY: "k" } });
+  assert.equal(calls, 0);
+  const adapter = descriptor.create({ env: { YDC_API_KEY: "k" } });
+  await adapter.diagnostics.invoke({ probe: true });
+  assert.equal(calls, 1);
+});

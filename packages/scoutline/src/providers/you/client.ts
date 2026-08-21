@@ -41,7 +41,10 @@ import { getGlobalFetch } from "../types.js";
 const { version: VERSION } = pkg;
 
 const INDEX_BASE_URL = "https://ydc-index.io/v1";
+const RESEARCH_BASE_URL = "https://api.you.com/v1";
 const SEARCH_PATH = "/search";
+const CONTENTS_PATH = "/contents";
+const RESEARCH_PATH = "/research";
 const DEFAULT_TIMEOUT_MS = 30000;
 const USER_AGENT = `scoutline/${VERSION}`;
 const TIMEOUT_HELP_TEXT = "Try again later.";
@@ -67,6 +70,52 @@ export interface YouSearchWireRequest {
   readonly include_domains?: readonly string[];
   readonly exclude_domains?: readonly string[];
   readonly extraction?: { readonly extraction_mode?: "highlights" | "full_page" };
+}
+
+/**
+ * Provider-native contents request body fields (You.com API field
+ * names, snake_case). The Adapter wraps the Reader request URL into
+ * `urls: [url]` and always requests the `markdown` format before
+ * calling {@link fetchYouContents}; the transport never imports a
+ * capability contract.
+ */
+export interface YouContentsWireRequest {
+  readonly urls: readonly string[];
+  readonly formats?: readonly ("markdown" | "html" | "metadata")[];
+  readonly crawl_timeout?: number;
+  readonly max_age?: number;
+}
+
+/**
+ * One page entry from a `/contents` response. The Adapter normalizes
+ * the matching entry into a `ReaderFetchResult`; a null `markdown`
+ * means the page failed to scrape (anti-bot, paywall, 404) and is a
+ * terminal `ApiError`, never an empty-content success.
+ */
+export interface YouContentsPageResult {
+  readonly url?: string;
+  readonly title?: string | null;
+  readonly markdown?: string | null;
+  readonly html?: string | null;
+  readonly status?: number;
+}
+
+/**
+ * Provider-native research request body fields (You.com API field
+ * names, snake_case). The Adapter maps the Provider-neutral
+ * `ResearchRequest` into these before calling {@link fetchYouResearch};
+ * `research_effort` is the You.com-native model tier (`mini` →
+ * `lite`, `auto` → `standard`, `pro` → `deep`).
+ */
+export interface YouResearchWireRequest {
+  readonly input: string;
+  readonly research_effort?: "lite" | "standard" | "deep" | "exhaustive" | "frontier";
+  readonly background?: boolean;
+  readonly source_control?: {
+    readonly include_domains?: readonly string[];
+    readonly exclude_domains?: readonly string[];
+    readonly freshness?: string;
+  };
 }
 
 /**
@@ -135,6 +184,7 @@ function normalizeTransportError(err: unknown, timeoutMs: number): Error {
 
 async function postYouJson(
   apiKey: string,
+  baseUrl: string,
   path: string,
   body: Record<string, unknown>,
   deps: YouTransportDeps,
@@ -143,7 +193,7 @@ async function postYouJson(
   const f = deps.fetch ?? getGlobalFetch<typeof fetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
-  const url = `${INDEX_BASE_URL}${path}`;
+  const url = `${baseUrl}${path}`;
   const controller = new AbortController();
   const timeoutId = setT(() => controller.abort(), DEFAULT_TIMEOUT_MS);
   try {
@@ -210,5 +260,66 @@ export async function fetchYouSearch(
   if (request.extraction !== undefined) {
     body.extraction = { extraction_mode: request.extraction.extraction_mode };
   }
-  return postYouJson(apiKey, SEARCH_PATH, body, deps, "search");
+  return postYouJson(apiKey, INDEX_BASE_URL, SEARCH_PATH, body, deps, "search");
+}
+
+/**
+ * Perform ONE POST against the You.com /v1/contents endpoint (index
+ * host). No retry; no response body in public errors. Returns the
+ * parsed JSON body (raw; the Adapter normalizes the matching entry
+ * into a `ReaderFetchResult`).
+ */
+export async function fetchYouContents(
+  apiKey: string,
+  request: YouContentsWireRequest,
+  deps: YouTransportDeps = {},
+): Promise<unknown> {
+  const body: Record<string, unknown> = { urls: [...request.urls] };
+  if (request.formats !== undefined) {
+    body.formats = [...request.formats];
+  }
+  if (request.crawl_timeout !== undefined) {
+    body.crawl_timeout = request.crawl_timeout;
+  }
+  if (request.max_age !== undefined) {
+    body.max_age = request.max_age;
+  }
+  return postYouJson(apiKey, INDEX_BASE_URL, CONTENTS_PATH, body, deps, "contents");
+}
+
+/**
+ * Perform ONE POST against the You.com /v1/research endpoint (api.you.com
+ * host). No retry; no response body in public errors. Returns the parsed
+ * JSON body (raw; the Adapter normalizes it into a `ResearchResult`).
+ *
+ * Shared execution wraps research invocations with `maxRetries: 0`
+ * (double-charge prevention on a usage-based endpoint), so a transient
+ * POST failure is terminal; the transport performs exactly one attempt.
+ */
+export async function fetchYouResearch(
+  apiKey: string,
+  request: YouResearchWireRequest,
+  deps: YouTransportDeps = {},
+): Promise<unknown> {
+  const body: Record<string, unknown> = { input: request.input };
+  if (request.research_effort !== undefined) {
+    body.research_effort = request.research_effort;
+  }
+  if (request.background !== undefined) {
+    body.background = request.background;
+  }
+  if (request.source_control !== undefined) {
+    const sc: Record<string, unknown> = {};
+    if (request.source_control.include_domains !== undefined) {
+      sc.include_domains = [...request.source_control.include_domains];
+    }
+    if (request.source_control.exclude_domains !== undefined) {
+      sc.exclude_domains = [...request.source_control.exclude_domains];
+    }
+    if (request.source_control.freshness !== undefined) {
+      sc.freshness = request.source_control.freshness;
+    }
+    body.source_control = sc;
+  }
+  return postYouJson(apiKey, RESEARCH_BASE_URL, RESEARCH_PATH, body, deps, "research");
 }

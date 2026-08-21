@@ -161,12 +161,14 @@ defaults to 120 seconds. Raise it with `JINA_DEEPSEARCH_TIMEOUT`
 (milliseconds) for long `jina research` runs.
 
 ### Using Linkup (Search, Reader, Research)
+
 ```bash
 export LINKUP_API_KEY="your-linkup-key"
 npx scoutline --provider linkup search "AI funding rounds" --topic news
 npx scoutline --provider linkup read https://example.com/
 npx scoutline --provider linkup research "Compare React vs Svelte for production"
 ```
+
 Get your Linkup API key at: https://app.linkup.so
 
 ## Installation

@@ -716,6 +716,7 @@ function createLinkupResearchCapability(
         timeoutMs: DEFAULT_LOCK_TIMEOUT_MS,
         staleMs: DEFAULT_LOCK_STALE_MS,
         setTimeout: transport?.setTimeout,
+        signal,
         timeoutLabel: "Linkup research",
       };
 
@@ -763,7 +764,7 @@ function createLinkupResearchCapability(
         }
         let poll: LinkupResearchPollResult;
         try {
-          poll = await pollLinkupResearch(apiKey, taskId, transport);
+          poll = await pollLinkupResearch(apiKey, taskId, transport, signal);
           consecutivePollFailures = 0;
         } catch (pollErr) {
           if (isTransientPollError(pollErr) && consecutivePollFailures < MAX_POLL_RETRIES) {

@@ -415,6 +415,7 @@ export async function pollLinkupResearch(
   apiKey: string,
   taskId: string,
   deps: LinkupTransportDeps = {},
+  externalSignal?: AbortSignal,
 ): Promise<LinkupResearchPollResult> {
   const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;
@@ -424,6 +425,9 @@ export async function pollLinkupResearch(
 
   const url = `${BASE_URL}${RESEARCH_PATH}/${encodeURIComponent(taskId)}`;
   const controller = new AbortController();
+  const onExternalAbort = (): void => controller.abort();
+  if (externalSignal?.aborted) controller.abort();
+  externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
   const timeoutId = setT(() => controller.abort(), timeoutMs);
   try {
     let res;
@@ -469,6 +473,7 @@ export async function pollLinkupResearch(
     throw normalizeTransportError(err, timeoutMs);
   } finally {
     clearT(timeoutId);
+    externalSignal?.removeEventListener("abort", onExternalAbort);
     controller.abort();
   }
 }

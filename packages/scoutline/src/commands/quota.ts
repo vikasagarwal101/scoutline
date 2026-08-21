@@ -438,7 +438,7 @@ Options:
                     and failed entries both appear; the command exits 1
                     when any Provider fails.
   --provider <id>   Pin a single Provider (zai | minimax | tavily | exa |
-                    brave | firecrawl | parallel | perplexity | jina) instead of the multi-Provider default.
+                    brave | firecrawl | parallel | perplexity | jina | linkup) instead of the multi-Provider default.
 
 Examples:
   scoutline quota                  # every configured Provider

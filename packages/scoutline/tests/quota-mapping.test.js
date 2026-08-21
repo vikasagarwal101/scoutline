@@ -101,6 +101,16 @@ const FIRECRAWL_CATEGORIES = [
   },
 ];
 
+// Spider — single `credits` pool from GET /data/credits (remaining-only
+// signal on the wire; the fixture carries a percent for scoring tests).
+const SPIDER_CATEGORIES = [
+  {
+    name: "credits",
+    unit: "credits",
+    current: { used: 400, limit: 1000, remaining: 600, remainingPercent: 60 },
+  },
+];
+
 const MINIMAX_CATEGORIES = [
   {
     name: "zorla-x",
@@ -231,6 +241,15 @@ describe("quota-mapping: static mapping coverage", () => {
       assert.deepStrictEqual(m.categoryAliases, ["Credits"]);
     }
   });
+
+  it("every spider capability maps to 'credits'", () => {
+    for (const cap of ["search", "reader", "crawl", "map"]) {
+      const m = getCapabilityMapping("spider", cap);
+      assert.ok(m, `(spider, ${cap}) must have a mapping row`);
+      assert.deepStrictEqual(m.categoryAliases, ["credits"]);
+      assert.strictEqual(m.providerFallbackCategory, undefined);
+    }
+  });
 });
 
 // ===========================================================================
@@ -243,6 +262,13 @@ describe("quota-mapping: authority policy", () => {
       const p = getProviderAuthorityPolicy(id);
       assert.strictEqual(p.kind, "mapped", `${id} should be mapped`);
     }
+  });
+
+  it("spider is mapped with the /data/credits reason", () => {
+    const p = getProviderAuthorityPolicy("spider");
+    assert.ok(p, "spider policy row exists");
+    assert.strictEqual(p.kind, "mapped");
+    assert.match(p.reason, /data\/credits/);
   });
 
   it("brave and exa are always-unknown with documented reasons", () => {
@@ -339,6 +365,16 @@ describe("quota-mapping: scoreCapability — known providers", () => {
       assert.strictEqual(result.authority, "known");
       assert.strictEqual(result.score, 30);
       assert.strictEqual(result.category, "Credits");
+    }
+  });
+
+  it("spider capabilities share the credits category", async () => {
+    const state = await stateWith([{ provider: "spider", categories: SPIDER_CATEGORIES }]);
+    for (const cap of ["search", "reader", "crawl", "map"]) {
+      const result = scoreCapability(state, "spider", cap);
+      assert.strictEqual(result.authority, "known");
+      assert.strictEqual(result.score, 60);
+      assert.strictEqual(result.category, "credits");
     }
   });
 

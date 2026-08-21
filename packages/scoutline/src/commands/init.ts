@@ -204,6 +204,12 @@ const PROVIDER_PROMPT_META: Record<ProviderId, ProviderPromptMeta> = {
     registrationUrl: "https://jina.ai",
     probeCostsCredit: false,
   },
+  you: {
+    label: "You.com",
+    envVar: "YDC_API_KEY",
+    registrationUrl: "https://you.com/api",
+    probeCostsCredit: true,
+  },
 };
 
 /**

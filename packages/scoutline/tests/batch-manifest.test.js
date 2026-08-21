@@ -730,7 +730,7 @@ describe("batch manifest provider pin validation", () => {
   it("rejects a provider outside the registry", async () => {
     await assertRejects(
       manifest(op("s", "search", { query: "q" }, { provider: "notaprovider" })),
-      'operations[0]: unknown provider "notaprovider". Built-in providers: zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina.',
+      'operations[0]: unknown provider "notaprovider". Built-in providers: zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you.',
     );
   });
 

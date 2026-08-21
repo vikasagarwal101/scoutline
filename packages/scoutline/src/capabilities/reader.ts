@@ -73,6 +73,14 @@ export interface ReaderFetchRequest {
   readonly keepImgDataUrl?: boolean;
   readonly withImagesSummary?: boolean;
   readonly timeout?: number;
+  /**
+   * Whether the Provider should render client-side JavaScript before
+   * extraction. Honored only by Adapters whose wire protocol exposes a
+   * render toggle (Linkup `/fetch` `renderJs`); when absent, the
+   * Adapter's own default applies. Browser-rendering Adapters without a
+   * toggle treat their fixed behavior as native and do not consult it.
+   */
+  readonly renderJs?: boolean;
 }
 
 // ---------------------------------------------------------------------------

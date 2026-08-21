@@ -19,9 +19,9 @@ import { SEARCH_HELP } from "../dist/commands/search.js";
 import { runProcess } from "./helpers/run-process.js";
 
 const PROVIDER_ENUM =
-  "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you>";
+  "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup>";
 const PROVIDER_LIST_TAIL =
-  "Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, or You.com";
+  "Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, or Linkup";
 
 const packageReadme = fs.readFile(new URL("../README.md", import.meta.url), "utf8");
 const rootReadme = fs.readFile(new URL("../../../README.md", import.meta.url), "utf8");
@@ -132,11 +132,11 @@ describe("You.com docs — CLI help enumerations", () => {
     });
     assert.equal(result.code, 0);
     assert.ok(
-      result.stdout.includes("all 10 Providers"),
-      "main help must count 10 providers",
+      result.stdout.includes("all 11 Providers"),
+      "main help must count 11 providers",
     );
     assert.ok(
-      result.stdout.includes("perplexity|jina|you>"),
+      result.stdout.includes("perplexity|jina|you|linkup>"),
       "main help must list you in --provider",
     );
     assert.ok(

@@ -212,6 +212,12 @@ const PROVIDER_PROMPT_META: Record<ProviderId, ProviderPromptMeta> = {
     registrationUrl: "https://you.com/api",
     probeCostsCredit: true,
   },
+  linkup: {
+    label: "Linkup",
+    envVar: "LINKUP_API_KEY",
+    registrationUrl: "https://app.linkup.so",
+    probeCostsCredit: false,
+  },
 };
 
 /**

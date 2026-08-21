@@ -15,6 +15,9 @@
  * Crawl and Map are SYNCHRONOUS one-shot POSTs (`/crawl`, `/links`)
  * returning the final JSON array — no async job file, no poll loop —
  * with the locked 200-status crawl filter and link deduplication.
+ * Quota reads GET /data/credits into a single unknown-limit "credits"
+ * category (remaining only — no fabricated percent/limit), and the
+ * Diagnostics probe rides the same free credits endpoint.
  *
  * The descriptor and capability interfaces below are declared locally
  * with the `"spider"` literal; they become assignable to the shared
@@ -38,6 +41,7 @@ import { decodeReaderFetchResult } from "../../capabilities/reader.js";
 import type { CrawlPage, CrawlRequest, CrawlResult } from "../../capabilities/crawl.js";
 import { decodeCrawlResult } from "../../capabilities/crawl.js";
 import type { MapRequest, MapResult } from "../../capabilities/map.js";
+import type { DiagnosticsCapability } from "../../capabilities/diagnostics.js";
 import { decodeMapResult } from "../../capabilities/map.js";
 import {
   ApiError,
@@ -61,6 +65,8 @@ import {
   type SpiderTransportDeps,
 } from "./client.js";
 import { getSpiderApiKey, requireSpiderApiKey } from "./credentials.js";
+import { createSpiderQuotaCapability, type SpiderQuotaCapability } from "./quota.js";
+import { createSpiderDiagnosticsCapability } from "./diagnostics.js";
 
 // ---------------------------------------------------------------------------
 // Credential + shape helpers
@@ -868,6 +874,8 @@ interface SpiderAdapter {
   readonly reader: SpiderReaderCapability;
   readonly crawl: SpiderCrawlCapability;
   readonly map: SpiderMapCapability;
+  readonly quota: SpiderQuotaCapability;
+  readonly diagnostics: DiagnosticsCapability;
 }
 
 /** Local Descriptor contract — see the module header. */
@@ -880,10 +888,10 @@ interface SpiderDescriptor {
 }
 
 /**
- * Build the Spider.cloud Provider Descriptor. Advertises the capabilities
- * the Adapter currently supplies (Search, Reader, Crawl, Map; quota/
- * diagnostics land with their own tickets). `create()` is
- * side-effect-free; the transport is invoked per Capability call.
+ * Build the Spider.cloud Provider Descriptor. Advertises the full
+ * Spider.cloud capability set (Search, Reader, Crawl, Map, Quota,
+ * Diagnostics). `create()` is side-effect-free; the transport is
+ * invoked per Capability call.
  */
 export function createSpiderDescriptor(
   dependencies?: SpiderAdapterDependencies,
@@ -895,14 +903,23 @@ export function createSpiderDescriptor(
       return getSpiderApiKey(env) !== undefined;
     },
     capabilities(): ReadonlySet<ProviderCapability> {
-      return new Set<ProviderCapability>(["search", "reader", "crawl", "map"]);
+      return new Set<ProviderCapability>([
+        "search",
+        "reader",
+        "crawl",
+        "map",
+        "quota",
+        "diagnostics",
+      ]);
     },
     create(context: ProviderContext): SpiderAdapter {
       const search = createSpiderSearchCapability({ env: context.env, transport });
       const reader = createSpiderReaderCapability({ env: context.env, transport });
       const crawl = createSpiderCrawlCapability({ env: context.env, transport });
       const map = createSpiderMapCapability({ env: context.env, transport });
-      return { id: "spider", search, reader, crawl, map };
+      const quota = createSpiderQuotaCapability({ env: context.env, transport });
+      const diagnostics = createSpiderDiagnosticsCapability({ env: context.env, transport });
+      return { id: "spider", search, reader, crawl, map, quota, diagnostics };
     },
     credentialEnvVars: ["SPIDER_API_KEY"],
   };

@@ -33,6 +33,7 @@ const SEARCH_PATH = "/search";
 const SCRAPE_PATH = "/scrape";
 const CRAWL_PATH = "/crawl";
 const LINKS_PATH = "/links";
+const CREDITS_PATH = "/data/credits";
 const DEFAULT_TIMEOUT_MS = 30000;
 const USER_AGENT = `scoutline/${VERSION}`;
 
@@ -296,4 +297,65 @@ export async function fetchSpiderLinks(
     body.limit = params.limit;
   }
   return postSpiderJson(apiKey, LINKS_PATH, body, deps, "links");
+}
+
+/**
+ * Core GET (mirrors {@link postSpiderJson} for GET verbs). Applies the
+ * same HTTP-status layer-1 mapping and transport-error normalization;
+ * like the POST core there is no Firecrawl-style `{ success: false }`
+ * dual-check (the Spider.cloud API returns a bare JSON value, not an
+ * error envelope). No retry; no response body in public errors.
+ */
+async function getSpiderJson(
+  apiKey: string,
+  path: string,
+  deps: SpiderTransportDeps,
+  endpointLabel: string,
+): Promise<unknown> {
+  const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
+  const setT = deps.setTimeout ?? setTimeout;
+  const clearT = deps.clearTimeout ?? clearTimeout;
+  const url = `${BASE_URL}${path}`;
+  const controller = new AbortController();
+  const timeoutId = setT(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  try {
+    const res = await f(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "User-Agent": USER_AGENT,
+      },
+      signal: controller.signal,
+    });
+    clearT(timeoutId);
+    if (!res.ok) {
+      await res.text().catch(() => {});
+      throw mapStatusError(res.status, DEFAULT_TIMEOUT_MS);
+    }
+    try {
+      return await res.json();
+    } catch {
+      throw new ApiError(`Spider ${endpointLabel} returned a malformed response`, 500);
+    }
+  } catch (err) {
+    clearT(timeoutId);
+    throw normalizeTransportError(err, DEFAULT_TIMEOUT_MS);
+  } finally {
+    controller.abort();
+  }
+}
+
+/**
+ * Perform ONE GET against the Spider.cloud /data/credits endpoint. No
+ * retry; no response body in public errors. Returns the parsed JSON
+ * value (raw; the quota Adapter post-processes into a normalized
+ * `ProviderQuotaSuccess`). This is the cheapest credible probe — it
+ * costs no credit — so both the Quota capability and the Diagnostics
+ * probe ride this same transport.
+ */
+export async function fetchSpiderCredits(
+  apiKey: string,
+  deps: SpiderTransportDeps = {},
+): Promise<unknown> {
+  return getSpiderJson(apiKey, CREDITS_PATH, deps, "credits");
 }

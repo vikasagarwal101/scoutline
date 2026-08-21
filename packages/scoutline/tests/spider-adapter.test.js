@@ -141,3 +141,36 @@ describe("spider crawl and map", () => {
     assert.deepEqual(result.urls, ["https://example.test/a", "https://example.test/b"]);
   });
 });
+
+describe("spider quota and diagnostics", () => {
+  it("quota.invoke maps credits remaining and diagnostics probes /data/credits", async () => {
+    let calls = 0;
+    const jsonRes = (body) => ({
+      ok: true,
+      status: 200,
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+      headers: { get: () => null },
+    });
+    const descriptor = createSpiderDescriptor({
+      transport: { fetch: async (url) => {
+        calls += 1;
+        assert.match(String(url), /\/data\/credits$/);
+        return jsonRes({ credits: 84520 });
+      } },
+    });
+    const env = { SPIDER_API_KEY: "k" };
+    descriptor.create({ env });
+    assert.equal(calls, 0);
+
+    const adapter = descriptor.create({ env });
+    const quota = await adapter.quota.invoke();
+    assert.equal(quota.provider, "spider");
+    assert.equal(quota.status, "ok");
+    assert.equal(quota.categories[0].name, "credits");
+    assert.equal(quota.categories[0].current.remaining, 84520);
+
+    await adapter.diagnostics.invoke({ probe: true });
+    assert.equal(calls, 2);
+  });
+});

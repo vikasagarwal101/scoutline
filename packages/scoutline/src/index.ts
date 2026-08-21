@@ -150,16 +150,16 @@ Usage: scoutline <command> [args] [options]
 
 Commands:
   vision   Image and video analysis (Z.AI; MiniMax for interpret-image)
-  search   Real-time web search (shared: all 9 Providers; --topic
+  search   Real-time web search (shared: all 10 Providers; --topic
            honored by every Provider)
   read     Fetch and parse web pages (Provider Capability; Z.AI, Tavily,
-           Exa, Firecrawl, Parallel, and Jina supply it)
+           Exa, Firecrawl, Parallel, Jina, and You.com supply it)
   crawl    Crawl a website from a starting URL (Provider Capability;
            Tavily and Firecrawl support it)
   map      Discover the URL structure of a website (Provider Capability;
            Tavily and Firecrawl support it)
   research Deep research with citations (Provider Capability; Tavily,
-           Exa, Parallel, Perplexity, and Jina support it)
+           Exa, Parallel, Perplexity, Jina, and You.com support it)
   repo     GitHub repository exploration (Provider Capability; Z.AI supports it,
            MiniMax and Tavily return UNSUPPORTED_CAPABILITY)
   quota    Provider-aware plan usage (calls remaining, reset time; default
@@ -177,7 +177,7 @@ Commands:
   init     Interactive onboarding wizard (writes ~/.scoutline/config.json)
 
 Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER, then zai):
-  --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina>   Select the active Provider for shared capabilities
+  --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you>   Select the active Provider for shared capabilities
   SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
 
 Shared capabilities accept --provider. The 'repo', 'read', 'crawl', 'map',
@@ -187,8 +187,8 @@ advertises and supplies reader plus crawl, map, and research; Exa
 advertises and supplies search, reader, and research; Parallel AI
 advertises search, research, and reader; Perplexity advertises search
 and research; Jina AI advertises search, reader, and research (keyless
-supported); MiniMax advertises and supplies none of those Provider-only
-Capabilities.
+supported); You.com advertises search, reader, and research; MiniMax
+advertises and supplies none of those Provider-only Capabilities.
 Provider fallback is always-on by default (0.11.0+): selecting a
 non-supplier emits a stderr notice and silently reroutes to the next
 eligible configured Provider in registry order. Use --no-fallback (or

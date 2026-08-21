@@ -49,6 +49,7 @@ import { createFirecrawlDescriptor } from "../dist/providers/firecrawl/adapter.j
 import { ParallelAdapter } from "../dist/providers/parallel/adapter.js";
 import { PerplexityAdapter } from "../dist/providers/perplexity/adapter.js";
 import { JinaAdapter } from "../dist/providers/jina/adapter.js";
+import { createYouDescriptor } from "../dist/providers/you/adapter.js";
 import { createInMemoryAsyncJobStateFile } from "../dist/lib/async-job-state.js";
 import { UnsupportedOptionError } from "../dist/lib/errors.js";
 
@@ -231,6 +232,24 @@ const JINA_DEEPSEARCH_SSE = [
   "",
 ].join("\n\n");
 
+const YOU_SEARCH_RAW = {
+  results: {
+    web: [{ title: "Result", url: "https://example.test/one", snippets: ["Summary."] }],
+    news: [],
+  },
+};
+const YOU_CONTENTS_RAW = [
+  { url: PAGE_URL, title: "Page", markdown: "# Page body", html: "<h1>Page body</h1>", status: 200 },
+];
+const YOU_RESEARCH_RAW = {
+  output: {
+    content: "## Report",
+    content_type: "text",
+    sources: [{ title: "Source", url: "https://example.test/s", snippets: ["Basis."] }],
+  },
+  metadata: { research_uuid: "research-fixture-001", latency: 3.45 },
+};
+
 const RESPONDERS = {
   zai: null, // MCP seam, not fetch
   minimax(url, method) {
@@ -313,6 +332,13 @@ const RESPONDERS = {
     if (url.includes("r.jina.ai")) return jsonResponse(JINA_READER_RAW);
     return jsonResponse(JINA_SEARCH_RAW); // s.jina.ai GET and POST
   },
+  you(url, method) {
+    // Dual host: ydc-index.io serves /search + /contents, api.you.com /research.
+    if (method === "POST" && url.endsWith("/v1/search")) return jsonResponse(YOU_SEARCH_RAW);
+    if (method === "POST" && url.endsWith("/v1/contents")) return jsonResponse(YOU_CONTENTS_RAW);
+    if (method === "POST" && url.endsWith("/v1/research")) return jsonResponse(YOU_RESEARCH_RAW);
+    return jsonResponse({});
+  },
 };
 
 const ENV_BY_PROVIDER = {
@@ -325,6 +351,7 @@ const ENV_BY_PROVIDER = {
   parallel: { PARALLEL_API_KEY: "k" },
   perplexity: { PERPLEXITY_API_KEY: "k" },
   jina: {},
+  you: { YDC_API_KEY: "k" },
 };
 
 /** Research transports need a zero poll interval + no-op lock timers. */
@@ -429,6 +456,8 @@ function makeHarness(provider, capability) {
       return { adapter: new PerplexityAdapter(context, { transport }), calls, timerDelays };
     case "jina":
       return { adapter: new JinaAdapter(context, { transport }), calls, timerDelays };
+    case "you":
+      return { adapter: createYouDescriptor({ transport }).create(context), calls, timerDelays };
     default:
       throw new Error(`unknown provider ${provider}`);
   }
@@ -1748,6 +1777,65 @@ const ROWS = [
     deepEqual: ["example.com"],
     pick: { method: "POST", urlIncludes: "/v1/tasks/runs" },
   },
+
+  // ----- you / search — every control rides the /v1/search POST body ------
+  {
+    provider: "you",
+    capability: "search",
+    control: "domain",
+    input: { domain: "example.com" },
+    expect: "consumed",
+    on: "body",
+    path: "include_domains",
+    deepEqual: ["example.com"],
+  },
+  {
+    provider: "you",
+    capability: "search",
+    control: "recency",
+    input: { recency: "oneWeek" },
+    expect: "consumed",
+    on: "body",
+    path: "freshness",
+    equals: "week",
+  },
+  {
+    provider: "you",
+    capability: "search",
+    control: "contentSize",
+    input: { contentSize: "high" },
+    expect: "consumed",
+    on: "body",
+    path: "extraction.extraction_mode",
+    equals: "full_page",
+  },
+  {
+    provider: "you",
+    capability: "search",
+    control: "location",
+    input: { location: "us" },
+    expect: "consumed",
+    on: "body",
+    path: "country",
+    equals: "US",
+  },
+  {
+    provider: "you",
+    capability: "search",
+    control: "topic",
+    input: { topic: "news" },
+    expect: "consumed",
+    on: "body",
+    path: "query",
+    includes: "latest news",
+  },
+  {
+    provider: "you",
+    capability: "search",
+    control: "type",
+    input: { type: "video" },
+    expect: "rejected",
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1794,6 +1882,7 @@ describe("controls class-guard — table integrity", () => {
       jina: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
       perplexity: { search: SEARCH_CONTROLS, research: RESEARCH_CONTROLS },
       parallel: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
+      you: { search: SEARCH_CONTROLS },
     };
     for (const [provider, capabilities] of Object.entries(COVERAGE)) {
       for (const [capability, controls] of Object.entries(capabilities)) {

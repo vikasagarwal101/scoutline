@@ -290,6 +290,18 @@ export const FIRECRAWL_CREDIT_CAPABILITIES: readonly ProviderCapability[] = [
 ];
 
 /**
+ * Linkup capabilities. Search, reader, and research all bill against
+ * the shared `credits` pool reported by GET /v1/credits/balance; the
+ * quota category is exposed with an unknown limit (#49), so only the
+ * alias name is static here.
+ */
+export const LINKUP_CREDIT_CAPABILITIES: readonly ProviderCapability[] = [
+  "search",
+  "reader",
+  "research",
+];
+
+/**
  * The static capability→category mapping table. Built once at module
  * load from the per-provider capability lists so a future capability
  * addition only edits one constant, not 8 rows.
@@ -355,6 +367,16 @@ export const CAPABILITY_MAPPINGS: readonly CapabilityMappingEntry[] = [
       provider: "firecrawl",
       capability,
       categoryAliases: ["Credits"],
+    }),
+  ),
+
+  // Linkup — search/reader/research consume the shared `credits` pool
+  // (the quota capability's categories[0].name).
+  ...LINKUP_CREDIT_CAPABILITIES.map(
+    (capability): CapabilityMappingEntry => ({
+      provider: "linkup",
+      capability,
+      categoryAliases: ["credits"],
     }),
   ),
 ];
@@ -424,6 +446,11 @@ export const PROVIDER_AUTHORITY_POLICIES: readonly ProviderAuthorityPolicy[] = [
     provider: "firecrawl",
     kind: "mapped",
     reason: "Firecrawl exposes a credit-usage pool.",
+  },
+  {
+    provider: "linkup",
+    kind: "mapped",
+    reason: "Linkup exposes GET /v1/credits/balance as a credit remaining signal.",
   },
   {
     provider: "brave",

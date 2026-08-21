@@ -1851,7 +1851,7 @@ const ROWS = [
     input: { type: "video" },
     expect: "rejected",
   },
-  // ----- linkup / research - model maps to the reasoningDepth field
+  // ----- linkup / research - model maps to reasoningDepth, others rejected
   {
     provider: "linkup",
     capability: "research",
@@ -1862,6 +1862,27 @@ const ROWS = [
     path: "reasoningDepth",
     equals: "XL",
     pick: { method: "POST", urlIncludes: "/research" },
+  },
+  {
+    provider: "linkup",
+    capability: "research",
+    control: "outputLength",
+    input: { outputLength: "long" },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "research",
+    control: "citationFormat",
+    input: { citationFormat: "numeric" },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "research",
+    control: "domain",
+    input: { domain: "example.com" },
+    expect: "rejected",
   },
 ];
 
@@ -1909,7 +1930,7 @@ describe("controls class-guard — table integrity", () => {
       jina: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
       perplexity: { search: SEARCH_CONTROLS, research: RESEARCH_CONTROLS },
       parallel: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
-      linkup: { search: SEARCH_CONTROLS, research: ["model"] },
+      linkup: { search: SEARCH_CONTROLS, research: RESEARCH_CONTROLS },
     };
     for (const [provider, capabilities] of Object.entries(COVERAGE)) {
       for (const [capability, controls] of Object.entries(capabilities)) {

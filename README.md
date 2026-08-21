@@ -163,9 +163,9 @@ defaults to 120 seconds. Raise it with `JINA_DEEPSEARCH_TIMEOUT`
 ### Using Linkup (Search, Reader, Research)
 ```bash
 export LINKUP_API_KEY="your-linkup-key"
-npx scoutline@0.17.4 --provider linkup search "AI funding rounds" --topic news
-npx scoutline@0.17.4 --provider linkup read https://example.com/
-npx scoutline@0.17.4 --provider linkup research "Compare React vs Svelte for production"
+npx scoutline --provider linkup search "AI funding rounds" --topic news
+npx scoutline --provider linkup read https://example.com/
+npx scoutline --provider linkup research "Compare React vs Svelte for production"
 ```
 Get your Linkup API key at: https://app.linkup.so
 
@@ -179,12 +179,6 @@ Get your Linkup API key at: https://app.linkup.so
 npx openskills install vikasagarwal101/scoutline
 ```
 
-**Claude Code** (native skill marketplace):
-
-```bash
-claude skill install vikasagarwal101/scoutline --skill scoutline
-```
-
 ### As a CLI Tool
 
 ```bash
@@ -195,7 +189,7 @@ scoutline --help
 Or use directly with npx:
 
 ```bash
-npx scoutline@0.17.4 --help
+npx scoutline --help
 ```
 
 ## Provider Selection
@@ -274,17 +268,17 @@ eligible vision providers (`--concurrency` default 1).
 
 | Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | Linkup | Command |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| Search | Yes | Yes | Yes | Yes | Yes (web/news/video) | Yes | Yes | Yes | Yes Yes | `scoutline search` |
-| Reader | Yes | No | Yes | Yes | No | Yes | Yes | No | Yes Yes | `scoutline read` |
-| Crawl | No | No | Yes | No | No | Yes (async) | No | No | No No | `scoutline crawl` |
-| Map | No | No | Yes | No | No | Yes | No | No | No No | `scoutline map` |
-| Research | No | No | Yes | Yes | No | No | Yes | Yes | Yes Yes | `scoutline research` |
-| Vision (interpret-image) | Yes | Yes | No | No | No | No | No | No | No No | `scoutline vision analyze` |
-| Quota | Yes | Yes | Yes | No | Yes (rate-limit window) | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) Yes (credits) | `scoutline quota` |
-| Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes Yes | `scoutline doctor` |
-| Repo exploration | Yes | No | No | No | No | No | No | No | No No | `scoutline repo` |
-| Raw tools | Yes | No | No | No | No | No | No | No | No No | `scoutline tools` |
-| Code Mode | Yes | No | No | No | No | No | No | No | No No | `scoutline code` |
+| Search | Yes | Yes | Yes | Yes | Yes (web/news/video) | Yes | Yes | Yes | Yes | Yes | `scoutline search` |
+| Reader | Yes | No | Yes | Yes | No | Yes | Yes | No | Yes | Yes | `scoutline read` |
+| Crawl | No | No | Yes | No | No | Yes (async) | No | No | No | No | `scoutline crawl` |
+| Map | No | No | Yes | No | No | Yes | No | No | No | No | `scoutline map` |
+| Research | No | No | Yes | Yes | No | No | Yes | Yes | Yes | Yes | `scoutline research` |
+| Vision (interpret-image) | Yes | Yes | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
+| Quota | Yes | Yes | Yes | No | Yes (rate-limit window) | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | Yes (credits) | `scoutline quota` |
+| Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
+| Repo exploration | Yes | No | No | No | No | No | No | No | No | No | `scoutline repo` |
+| Raw tools | Yes | No | No | No | No | No | No | No | No | No | `scoutline tools` |
+| Code Mode | Yes | No | No | No | No | No | No | No | No | No | `scoutline code` |
 
 ### Search Controls
 

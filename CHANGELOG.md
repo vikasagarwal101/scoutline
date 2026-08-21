@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+### Added
+- **Linkup provider (`--provider linkup`)** — Search, Reader, Research, Quota, and Diagnostics against the Linkup API (`LINKUP_API_KEY`): search controls map to `includeDomains`, a `fromDate` recency window, `q` keyword appends for topic/location, and a `depth` parameter for content size (`type` is rejected as unsupported); the reader fetches rendered markdown (`renderJs`); research runs the async submit/poll lifecycle with crash-safe job state and `model` mapping to Linkup's reasoning depth; quota and diagnostics report credit balance from `GET /v1/credits/balance` (credits-remaining window, no invented limits). The controls-conformance guard now covers every documented Linkup control and a responder pins the wire endpoints.
+
 ## [0.17.7] - 2026-08-19
 
 ### Class-guard findings resolved: every control honored or honestly disclosed (#66-#71)

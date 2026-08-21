@@ -102,7 +102,7 @@ export interface LinkupFetchWireRequest {
 
 function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = parseInt(env.LINKUP_TIMEOUT || String(DEFAULT_TIMEOUT_MS), 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
+  return Number.isFinite(raw) && raw > 0 ? Math.min(raw, 2147483647) : DEFAULT_TIMEOUT_MS;
 }
 
 /**
@@ -185,7 +185,6 @@ async function postLinkupJson(
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-    clearT(timeoutId);
     if (!res.ok) {
       await res.text().catch(() => {});
       throw mapStatusError(res.status);
@@ -198,9 +197,9 @@ async function postLinkupJson(
     }
     return parsed;
   } catch (err) {
-    clearT(timeoutId);
     throw normalizeTransportError(err, timeoutMs);
   } finally {
+    clearT(timeoutId);
     controller.abort();
   }
 }
@@ -289,7 +288,6 @@ async function getLinkupJson(
       },
       signal: controller.signal,
     });
-    clearT(timeoutId);
     if (!res.ok) {
       await res.text().catch(() => {});
       throw mapStatusError(res.status);
@@ -302,9 +300,9 @@ async function getLinkupJson(
     }
     return parsed;
   } catch (err) {
-    clearT(timeoutId);
     throw normalizeTransportError(err, timeoutMs);
   } finally {
+    clearT(timeoutId);
     controller.abort();
   }
 }
@@ -385,12 +383,10 @@ export async function createLinkupResearch(
   const body: Record<string, unknown> = {
     q: request.q,
     mode: request.mode ?? "research",
+    outputType: request.outputType ?? "sourcedAnswer",
   };
   if (request.reasoningDepth !== undefined) {
     body.reasoningDepth = request.reasoningDepth;
-  }
-  if (request.outputType !== undefined) {
-    body.outputType = request.outputType;
   }
   const raw = (await postLinkupJson(apiKey, RESEARCH_PATH, body, deps, "research")) as unknown;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -440,9 +436,7 @@ export async function pollLinkupResearch(
         },
         signal: controller.signal,
       });
-      clearT(timeoutId);
     } catch (err) {
-      clearT(timeoutId);
       throw normalizeTransportError(err, timeoutMs);
     }
 
@@ -461,7 +455,20 @@ export async function pollLinkupResearch(
       throw new ApiError("Linkup research returned a malformed response", 500);
     }
     return normalizeResearchPollResult(parsed);
+  } catch (err) {
+    if (
+      err instanceof ConfigurationError ||
+      err instanceof QuotaError ||
+      err instanceof ValidationError ||
+      err instanceof ApiError ||
+      err instanceof TimeoutError ||
+      err instanceof NetworkError
+    ) {
+      throw err;
+    }
+    throw normalizeTransportError(err, timeoutMs);
   } finally {
+    clearT(timeoutId);
     controller.abort();
   }
 }

@@ -22,6 +22,11 @@ import {
 } from "../dist/providers/linkup/credentials.js";
 import { createLinkupDescriptor } from "../dist/providers/linkup/adapter.js";
 import {
+  createLinkupResearch,
+  fetchLinkupSearch,
+} from "../dist/providers/linkup/client.js";
+import { normalizeLinkupQuota } from "../dist/providers/linkup/quota.js";
+import {
   computeAsyncJobStateHash,
   createInMemoryAsyncJobStateFile,
 } from "../dist/lib/async-job-state.js";
@@ -33,11 +38,64 @@ import {
   getProviderAuthorityPolicy,
 } from "../dist/lib/quota-mapping.js";
 
-describe("Linkup credentials", () => {
+describe("Linkup credentials & transport timeout", () => {
   it("trims LINKUP_API_KEY and throws ConfigurationError when missing", () => {
     assert.equal(getLinkupApiKey({ LINKUP_API_KEY: " abc " }), "abc");
     assert.equal(isLinkupConfigured({}), false);
     assert.throws(() => requireLinkupApiKey({}), ConfigurationError);
+  });
+
+  it("caps oversized LINKUP_TIMEOUT to Node 32-bit integer maximum", async () => {
+    const timerDelays = [];
+    const customSetTimeout = (cb, ms) => {
+      timerDelays.push(ms);
+      return setTimeout(cb, 0);
+    };
+
+    await fetchLinkupSearch(
+      "k",
+      { q: "test" },
+      {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({ results: [] }),
+          text: async () => JSON.stringify({ results: [] }),
+          headers: { get: () => null },
+        }),
+        setTimeout: customSetTimeout,
+        clearTimeout: () => {},
+        env: { LINKUP_TIMEOUT: "999999999999" },
+      },
+    );
+
+    assert.equal(timerDelays.length, 1);
+    assert.equal(timerDelays[0], 2147483647);
+  });
+
+  it("createLinkupResearch defaults outputType to sourcedAnswer", async () => {
+    let sentBody = null;
+    await createLinkupResearch(
+      "k",
+      { q: "research query" },
+      {
+        fetch: async (_url, init) => {
+          sentBody = JSON.parse(init.body);
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ id: "job-1", status: "pending" }),
+            text: async () => JSON.stringify({ id: "job-1", status: "pending" }),
+            headers: { get: () => null },
+          };
+        },
+      },
+    );
+
+    assert.ok(sentBody);
+    assert.equal(sentBody.q, "research query");
+    assert.equal(sentBody.mode, "research");
+    assert.equal(sentBody.outputType, "sourcedAnswer");
   });
 });
 
@@ -98,6 +156,64 @@ describe("Linkup Search Adapter — validation and control mapping", () => {
     assert.equal(rows[0].url, "https://docs.linkup.so");
     assert.equal(rows[0].summary, "Linkup provides deep search APIs.");
   });
+
+  it("search recency clamps month-end dates to valid target month end", async () => {
+    let sentBody = null;
+    const march31Epoch = Date.parse("2026-03-31T12:00:00.000Z");
+    const adapter = createLinkupDescriptor({
+      now: () => march31Epoch,
+      transport: {
+        fetch: async (_url, init) => {
+          sentBody = JSON.parse(init?.body ?? "{}");
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ results: [] }),
+            text: async () => JSON.stringify({ results: [] }),
+            headers: { get: () => null },
+          };
+        },
+      },
+    }).create({ env: { LINKUP_API_KEY: "k" } });
+
+    await adapter.search.invoke({
+      query: "recency test",
+      controls: { recency: "oneMonth" },
+    });
+
+    assert.ok(sentBody);
+    assert.equal(sentBody.fromDate, "2026-02-28");
+    assert.equal(sentBody.toDate, "2026-03-31");
+  });
+
+  it("search recency clamps leap-year Feb 29 to Feb 28 for oneYear", async () => {
+    let sentBody = null;
+    const leapYearEpoch = Date.parse("2024-02-29T12:00:00.000Z");
+    const adapter = createLinkupDescriptor({
+      now: () => leapYearEpoch,
+      transport: {
+        fetch: async (_url, init) => {
+          sentBody = JSON.parse(init?.body ?? "{}");
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ results: [] }),
+            text: async () => JSON.stringify({ results: [] }),
+            headers: { get: () => null },
+          };
+        },
+      },
+    }).create({ env: { LINKUP_API_KEY: "k" } });
+
+    await adapter.search.invoke({
+      query: "leap recency test",
+      controls: { recency: "oneYear" },
+    });
+
+    assert.ok(sentBody);
+    assert.equal(sentBody.fromDate, "2023-02-28");
+    assert.equal(sentBody.toDate, "2024-02-29");
+  });
 });
 
 describe("Linkup Reader Adapter — renderJs control", () => {
@@ -135,6 +251,24 @@ function jsonRes(payload, status = 200) {
 }
 
 describe("Linkup Research Adapter — async polling lifecycle", () => {
+  it("research.run.validate rejects unsupported options", () => {
+    const adapter = createLinkupDescriptor().create({ env: { LINKUP_API_KEY: "k" } });
+    assert.ok(adapter.research);
+
+    assert.throws(
+      () => adapter.research.run.validate({ query: "q", outputLength: "long" }),
+      (e) => e instanceof UnsupportedOptionError && e.provider === "linkup" && e.option === "outputLength",
+    );
+    assert.throws(
+      () => adapter.research.run.validate({ query: "q", citationFormat: "numeric" }),
+      (e) => e instanceof UnsupportedOptionError && e.provider === "linkup" && e.option === "citationFormat",
+    );
+    assert.throws(
+      () => adapter.research.run.validate({ query: "q", domain: "example.com" }),
+      (e) => e instanceof UnsupportedOptionError && e.provider === "linkup" && e.option === "domain",
+    );
+  });
+
   it("research.run submits once then polls to completion", async () => {
     const calls = [];
     const adapter = createLinkupDescriptor({
@@ -188,6 +322,7 @@ describe("Linkup Research Adapter — async polling lifecycle", () => {
       ["S", "L", "XL"],
     );
     assert.equal(bodies[1].mode, "research");
+    assert.equal(bodies[1].outputType, "sourcedAnswer");
     assert.equal(bodies[1].q, "q");
   });
 
@@ -271,6 +406,15 @@ describe("Linkup Quota + Diagnostics Adapters — credits balance", () => {
     assert.equal(dash.categories[0].current.remainingPercent, undefined);
   });
 
+  it("normalizeLinkupQuota preserves negative balances without throwing QUOTA_ERROR", () => {
+    const dash = normalizeLinkupQuota({ balance: -15.5 });
+    assert.equal(dash.provider, "linkup");
+    assert.equal(dash.status, "ok");
+    assert.equal(dash.categories[0].name, "credits");
+    assert.equal(dash.categories[0].current.remaining, -15.5);
+    assert.equal(dash.categories[0].current.remainingPercent, undefined);
+  });
+
   it("create() does not fetch and advertises quota + diagnostics capabilities", async () => {
     let calls = 0;
     const descriptor = createLinkupDescriptor({
@@ -328,22 +472,17 @@ describe("Linkup registry and quota mapping", () => {
     assert.equal(descriptor.isConfigured({}), false);
   });
 
-  it("linkup authority policy is mapped with a reason", () => {
+  it("linkup authority policy is always-unknown with a reason", () => {
     const policy = getProviderAuthorityPolicy("linkup");
     assert.ok(policy, "linkup must have an authority-policy row");
-    assert.equal(policy.kind, "mapped");
-    assert.ok(policy.reason.length > 0);
+    assert.equal(policy.kind, "always-unknown");
+    assert.match(policy.reason, /credit remaining balance/i);
   });
 
-  it("search/reader/research map to the credits category matching quota categories[0].name", () => {
+  it("linkup is not in CAPABILITY_MAPPINGS (always-unknown tier)", () => {
     for (const capability of ["search", "reader", "research"]) {
       const mapping = getCapabilityMapping("linkup", capability);
-      assert.ok(mapping, `(linkup, ${capability}) must have a mapping row`);
-      assert.deepEqual(
-        mapping.categoryAliases,
-        ["credits"],
-        `${capability} must consume the shared credits pool`,
-      );
+      assert.equal(mapping, undefined);
     }
   });
 });

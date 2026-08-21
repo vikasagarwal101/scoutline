@@ -92,6 +92,11 @@ import {
   computeAsyncJobStateHash,
   createProductionAsyncJobStateFile,
 } from "../../lib/async-job-state.js";
+import {
+  withAsyncFileLock,
+  DEFAULT_LOCK_TIMEOUT_MS,
+  DEFAULT_LOCK_STALE_MS,
+} from "../../lib/async-file-lock.js";
 import { asyncJobStateDir } from "../../lib/cache.js";
 import type { CacheIdentity } from "../../lib/execution.js";
 import { ApiError, NetworkError, TimeoutError, UnsupportedOptionError, ValidationError } from "../../lib/errors.js";
@@ -125,6 +130,8 @@ export interface LinkupAdapterDependencies {
   readonly now?: () => number;
   /** Optional Research state-file port (double-charge prevention). */
   readonly researchStateFile?: AsyncJobStateFile;
+  /** Optional directory containing research state files (for locking). */
+  readonly researchStateDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -169,12 +176,22 @@ function mapRecencyToDateWindow(
     case "oneWeek":
       from.setDate(from.getDate() - 7);
       break;
-    case "oneMonth":
-      from.setMonth(from.getMonth() - 1);
+    case "oneMonth": {
+      const targetMonth = from.getMonth() - 1;
+      from.setMonth(targetMonth);
+      if (from.getMonth() !== ((targetMonth % 12) + 12) % 12) {
+        from.setDate(0);
+      }
       break;
-    case "oneYear":
-      from.setFullYear(from.getFullYear() - 1);
+    }
+    case "oneYear": {
+      const originalMonth = current.getMonth();
+      from.setFullYear(current.getFullYear() - 1);
+      if (from.getMonth() !== originalMonth) {
+        from.setDate(0);
+      }
       break;
+    }
     default:
       return undefined;
   }
@@ -638,12 +655,13 @@ interface LinkupResearchCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly transport?: LinkupTransportDeps;
   readonly researchStateFile: AsyncJobStateFile;
+  readonly researchStateDir?: string;
 }
 
 function createLinkupResearchCapability(
   options: LinkupResearchCapabilityOptions,
 ): ResearchCapability {
-  const { env, transport, researchStateFile } = options;
+  const { env, transport, researchStateFile, researchStateDir } = options;
 
   const run: ResearchOperation = {
     kind: "research-fetch",
@@ -653,6 +671,15 @@ function createLinkupResearchCapability(
         throw new ValidationError(
           "Research query must contain at least one non-whitespace character",
         );
+      }
+      if (request.outputLength !== undefined) {
+        throw new UnsupportedOptionError("linkup", "research", "outputLength");
+      }
+      if (request.citationFormat !== undefined) {
+        throw new UnsupportedOptionError("linkup", "research", "citationFormat");
+      }
+      if (request.domain !== undefined) {
+        throw new UnsupportedOptionError("linkup", "research", "domain");
       }
     },
 
@@ -685,29 +712,44 @@ function createLinkupResearchCapability(
       const pollIntervalMs = resolvePollIntervalMs(transport?.env);
       const sleep = makeSleep(transport, signal);
 
-      // 1. Check for an in-flight task (resume after Ctrl-C / crash).
-      //    A valid state file with a pending/in_progress status means a
-      //    task was already created server-side — poll it instead of
-      //    creating a second one (double-charge prevention).
-      const existingState = await researchStateFile.read(identityHash);
+      const lockOpts = {
+        timeoutMs: DEFAULT_LOCK_TIMEOUT_MS,
+        staleMs: DEFAULT_LOCK_STALE_MS,
+        setTimeout: transport?.setTimeout,
+        timeoutLabel: "Linkup research",
+      };
+
+      // 1. Check for an in-flight task (resume after Ctrl-C / crash) or
+      //    create a fresh task under the concurrent-create lock.
       let taskId: string;
+      const existingState = await researchStateFile.read(identityHash);
 
       if (existingState !== null) {
         taskId = existingState.requestId;
       } else {
-        // 2. No in-flight task: POST to create one. NO retry — a
-        //    transient POST failure is terminal (double-charge
-        //    prevention on a usage-based endpoint).
-        taskId = await createResearchTask(
-          apiKey,
-          request,
+        // Under the lock, re-check state before POSTing to ensure concurrent
+        // invocations don't duplicate paid POST requests.
+        taskId = await withAsyncFileLock(
+          researchStateDir,
           identityHash,
-          researchStateFile,
-          transport,
+          async () => {
+            const state = await researchStateFile.read(identityHash);
+            if (state !== null) {
+              return state.requestId;
+            }
+            return createResearchTask(
+              apiKey,
+              request,
+              identityHash,
+              researchStateFile,
+              transport,
+            );
+          },
+          lockOpts,
         );
       }
 
-      // 3. Poll loop until terminal status. The GET (poll) is
+      // 2. Poll loop until terminal status. The GET (poll) is
       //    idempotent and safe to retry — transient 429/5xx/network
       //    errors on poll MUST NOT terminate a paid research run that
       //    is still active server-side. Transient poll failures are
@@ -733,8 +775,9 @@ function createLinkupResearchCapability(
         }
 
         if (poll.status === "completed") {
+          const result = normalizeLinkupResearchResult(poll, request);
           await researchStateFile.remove(identityHash);
-          return normalizeLinkupResearchResult(poll, request);
+          return result;
         }
 
         if (poll.status === "failed") {
@@ -754,13 +797,24 @@ function createLinkupResearchCapability(
             );
           }
           recreatedAfterNotFound = true;
-          await researchStateFile.remove(identityHash);
-          taskId = await createResearchTask(
-            apiKey,
-            request,
+          taskId = await withAsyncFileLock(
+            researchStateDir,
             identityHash,
-            researchStateFile,
-            transport,
+            async () => {
+              const state = await researchStateFile.read(identityHash);
+              if (state !== null && state.requestId !== taskId) {
+                return state.requestId;
+              }
+              await researchStateFile.remove(identityHash);
+              return createResearchTask(
+                apiKey,
+                request,
+                identityHash,
+                researchStateFile,
+                transport,
+              );
+            },
+            lockOpts,
           );
           continue;
         }
@@ -794,9 +848,11 @@ export function createLinkupDescriptor(
 ): ProviderDescriptor {
   const transport = dependencies?.transport;
   const now = dependencies?.now ?? (() => Date.now());
+  const researchStateDir =
+    dependencies?.researchStateDir ?? asyncJobStateDir("research");
   const researchStateFile =
     dependencies?.researchStateFile ??
-    createProductionAsyncJobStateFile(asyncJobStateDir("research"));
+    createProductionAsyncJobStateFile(researchStateDir);
 
   return {
     id: "linkup",
@@ -826,6 +882,7 @@ export function createLinkupDescriptor(
         env: context.env,
         transport,
         researchStateFile,
+        researchStateDir,
       });
       const quota = createLinkupQuotaCapability({
         env: context.env,

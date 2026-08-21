@@ -188,10 +188,12 @@ describe("quota-mapping: static mapping coverage", () => {
     }
   });
 
-  it("does not emit mapping rows for always-unknown providers (Brave, Exa)", () => {
+  it("does not emit mapping rows for always-unknown providers (Brave, Exa, Jina, Linkup)", () => {
     for (const m of CAPABILITY_MAPPINGS) {
       assert.notStrictEqual(m.provider, "brave");
       assert.notStrictEqual(m.provider, "exa");
+      assert.notStrictEqual(m.provider, "jina");
+      assert.notStrictEqual(m.provider, "linkup");
     }
   });
 
@@ -269,6 +271,13 @@ describe("quota-mapping: authority policy", () => {
       /does not advertise a quota capability/i,
       "reason must reflect createJinaQuotaCapability (providers/jina/quota.ts)",
     );
+  });
+
+  it("linkup is always-unknown with credit balance reason", () => {
+    const linkup = getProviderAuthorityPolicy("linkup");
+    assert.ok(linkup, "linkup policy row exists");
+    assert.strictEqual(linkup.kind, "always-unknown");
+    assert.match(linkup.reason, /credit remaining balance/i);
   });
 });
 

@@ -266,7 +266,10 @@ export function buildQuotaWindow(inputs: QuotaWindowInputs): QuotaWindow {
   // cannot be derived (e.g. `limit <= 0`) still throws exactly as
   // before, so every pre-#49 input keeps its previous outcome.
   const remainingOnly =
-    counts === null && remainingPercent === undefined && isFiniteNonnegative(inputs.remaining);
+    counts === null &&
+    remainingPercent === undefined &&
+    typeof inputs.remaining === "number" &&
+    Number.isFinite(inputs.remaining);
 
   if (remainingPercent === undefined && !remainingOnly) {
     throw new ScoutlineError(

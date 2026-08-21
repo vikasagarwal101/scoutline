@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+### Added
+- **Spider.cloud provider (`--provider spider`)** — Search, Reader, Crawl, Map, Quota, and Diagnostics against the Spider.cloud API (`SPIDER_API_KEY`): search controls map to a domain `whitelist`, Google-style `tbs` recency filters, `country_code` for `--location`, and a topic keyword appended to the query (`--type` is rejected as unsupported; content size observes the markdown return format); the reader POSTs the locked four-field `/scrape` body and rejects every Z.AI-only reader option instead of accept-and-drop; crawl is a synchronous one-shot POST (`/crawl`) keeping only `status === 200` pages with non-empty content — no job file, no polling; map (`/links`) deduplicates discovered URLs; quota and diagnostics report credit remaining from `GET /data/credits` (credits-remaining window, no invented limits; the diagnostics probe costs no credit). The controls-conformance guard now covers every documented Spider.cloud control and a responder pins the wire endpoints.
+
 ## [0.17.7] - 2026-08-19
 
 ### Class-guard findings resolved: every control honored or honestly disclosed (#66-#71)

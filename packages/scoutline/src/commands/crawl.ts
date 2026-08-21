@@ -192,10 +192,10 @@ depth and breadth. Returns a structured result with an array of pages.
 
 Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER,
 then the configured default):
-  - Tavily and Firecrawl advertise the crawl Capability and supply the Adapter.
+  - Tavily, Firecrawl, and Spider.cloud advertise the crawl Capability and supply the Adapter.
   - Z.AI and MiniMax do NOT advertise crawl. By default (0.11.0+) Provider
     fallback emits a stderr notice and silently reroutes to the next
-    eligible configured supplier (Tavily or Firecrawl). Under
+    eligible configured supplier (Tavily, Firecrawl, or Spider.cloud). Under
     --no-fallback (or SCOUTLINE_NO_FALLBACK=1) the preflight surfaces
     UNSUPPORTED_CAPABILITY for the selected non-supplier.
 
@@ -222,7 +222,7 @@ Options:
   --no-cache           Bypass the response cache for this invocation
 
 Common Options:
-  --provider <id>            Override the active Provider (zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina)
+  --provider <id>            Override the active Provider (zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | spider)
   --output-format <mode>     One of: ${OUTPUT_MODE_LIST} (default: data)
   -O <mode>                  Alias for --output-format
 

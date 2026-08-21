@@ -17,7 +17,7 @@ import {
 } from "../dist/providers/spider/credentials.js";
 import { createSpiderDescriptor } from "../dist/providers/spider/adapter.js";
 import { fetchSpiderCredits } from "../dist/providers/spider/client.js";
-import { ApiError, ConfigurationError, TimeoutError, UnsupportedOptionError } from "../dist/lib/errors.js";
+import { ApiError, ConfigurationError, TimeoutError, UnsupportedOptionError, ValidationError } from "../dist/lib/errors.js";
 
 describe("spider credentials", () => {
   it("requires trimmed SPIDER_API_KEY", () => {
@@ -136,6 +136,41 @@ describe("spider reader", () => {
     assert.equal(result.metadata, undefined);
     assert.equal(result.external, undefined);
   });
+
+  it("reader.fetch invoke honours an external AbortSignal (mid-flight cancel)", async () => {
+    const adapter = createSpiderDescriptor({
+      transport: {
+        // Disarm the internal 30s timeout: rejection must come from the
+        // external signal, never from a timer firing.
+        setTimeout: () => 0,
+        clearTimeout: () => {},
+        fetch: (url, init) =>
+          new Promise((_resolve, reject) => {
+            init.signal.addEventListener("abort", () => {
+              const err = new Error("The operation was aborted");
+              err.name = "AbortError";
+              reject(err);
+            });
+          }),
+      },
+    }).create({ env: { SPIDER_API_KEY: "k" } });
+    assert.ok(adapter.reader);
+    const controller = new AbortController();
+    const pending = adapter.reader.fetch.invoke(
+      { url: "https://example.test/doc" },
+      controller.signal,
+    );
+    controller.abort();
+    const settled = await Promise.race([
+      pending.then(
+        () => "resolved",
+        () => "rejected",
+      ),
+      new Promise((resolve) => setTimeout(() => resolve("hung"), 250)),
+    ]);
+    assert.equal(settled, "rejected");
+    await assert.rejects(pending, (e) => e instanceof TimeoutError);
+  });
 });
 
 describe("spider transport timeout", () => {
@@ -213,6 +248,70 @@ describe("spider crawl and map", () => {
     assert.equal(result.baseUrl, "https://example.test");
     assert.equal(result.totalUrls, 2);
     assert.deepEqual(result.urls, ["https://example.test/a", "https://example.test/b"]);
+  });
+
+  it("map.fetch includes a links row's own url alongside its discovered links", async () => {
+    const raw = [
+      {
+        url: "https://example.test/root",
+        status: 200,
+        links: ["https://example.test/about", "https://example.test/pricing"],
+      },
+    ];
+    const adapter = createSpiderDescriptor({
+      transport: { fetch: async () => ({ ok: true, status: 200, json: async () => raw, text: async () => JSON.stringify(raw), headers: { get: () => null } }) },
+    }).create({ env: { SPIDER_API_KEY: "k" } });
+    const result = await adapter.map.fetch.invoke({ url: "https://example.test/root" });
+    assert.equal(result.totalUrls, 3);
+    assert.deepEqual(result.urls, [
+      "https://example.test/root",
+      "https://example.test/about",
+      "https://example.test/pricing",
+    ]);
+  });
+
+  it("map.fetch treats a links row without its own url as malformed", async () => {
+    const raw = [{ status: 200, links: ["https://example.test/about"] }];
+    const adapter = createSpiderDescriptor({
+      transport: { fetch: async () => ({ ok: true, status: 200, json: async () => raw, text: async () => JSON.stringify(raw), headers: { get: () => null } }) },
+    }).create({ env: { SPIDER_API_KEY: "k" } });
+    await assert.rejects(
+      adapter.map.fetch.invoke({ url: "https://example.test/root" }),
+      (e) => e instanceof ApiError,
+    );
+  });
+
+  it("crawl and map validate name their capability in URL errors", () => {
+    const adapter = createSpiderDescriptor().create({ env: { SPIDER_API_KEY: "k" } });
+    assert.throws(
+      () => adapter.crawl.fetch.validate({ url: "" }),
+      /Spider crawl URL must be a non-empty string/,
+    );
+    assert.throws(
+      () => adapter.map.fetch.validate({ url: 42 }),
+      /Spider map URL must be a non-empty string/,
+    );
+    assert.throws(
+      () => adapter.reader.fetch.validate({ url: "" }),
+      /Spider reader URL must be a non-empty string/,
+    );
+  });
+
+  it("crawl and map reject non-integer limits at validation", () => {
+    const adapter = createSpiderDescriptor().create({ env: { SPIDER_API_KEY: "k" } });
+    for (const limit of [2.5, Infinity, NaN, 0]) {
+      assert.throws(
+        () => adapter.crawl.fetch.validate({ url: "https://example.test", limit }),
+        ValidationError,
+      );
+      assert.throws(
+        () => adapter.map.fetch.validate({ url: "https://example.test", limit }),
+        ValidationError,
+      );
+    }
+    // Integer limits still pass validation.
+    adapter.crawl.fetch.validate({ url: "https://example.test", limit: 3, depth: 2 });
+    adapter.map.fetch.validate({ url: "https://example.test", limit: 50 });
   });
 });
 

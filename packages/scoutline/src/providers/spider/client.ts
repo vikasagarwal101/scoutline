@@ -107,6 +107,12 @@ function normalizeTransportError(error: unknown, timeoutMs: number): Error {
  * response. Returns the parsed JSON value (raw; the Adapter
  * post-processes into normalized results). No retry; no response body
  * in public errors.
+ *
+ * An external `signal` (cooperative cancellation, issue #47) chains
+ * into the timeout controller: when the shared execution layer aborts,
+ * the in-flight fetch rejects immediately instead of outliving its
+ * caller. External aborts classify as `TimeoutError`, matching how
+ * the shared executor classifies caller cancellation.
  */
 async function postSpiderJson(
   apiKey: string,
@@ -114,6 +120,7 @@ async function postSpiderJson(
   body: Record<string, unknown>,
   deps: SpiderTransportDeps,
   endpointLabel: string,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;
@@ -121,6 +128,14 @@ async function postSpiderJson(
   const url = `${BASE_URL}${path}`;
   const controller = new AbortController();
   const timeoutId = setT(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  const abortWithExternal = () => controller.abort();
+  if (signal !== undefined) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener("abort", abortWithExternal, { once: true });
+    }
+  }
   try {
     const res = await f(url, {
       method: "POST",
@@ -148,6 +163,9 @@ async function postSpiderJson(
   } catch (err) {
     throw normalizeTransportError(err, DEFAULT_TIMEOUT_MS);
   } finally {
+    if (signal !== undefined) {
+      signal.removeEventListener("abort", abortWithExternal);
+    }
     clearT(timeoutId);
     controller.abort();
   }
@@ -216,6 +234,7 @@ export async function fetchSpiderScrape(
   apiKey: string,
   params: SpiderScrapeParams,
   deps: SpiderTransportDeps = {},
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const body: Record<string, unknown> = {
     url: params.url,
@@ -223,7 +242,7 @@ export async function fetchSpiderScrape(
     filter_output_main_only: params.filter_output_main_only,
     stealth: params.stealth,
   };
-  return postSpiderJson(apiKey, SCRAPE_PATH, body, deps, "scrape");
+  return postSpiderJson(apiKey, SCRAPE_PATH, body, deps, "scrape", signal);
 }
 
 /**

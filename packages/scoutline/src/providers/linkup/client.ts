@@ -29,6 +29,13 @@
  *   - Must NOT perform response field normalization — the Adapter owns
  *     that. This module declares Provider-native request-body types
  *     only (Linkup API field names).
+ *
+ * Research lifecycle (locked Linkup SPEC):
+ *   POST /research              — create async task (one POST per task)
+ *   GET  /research/{taskId}     — poll until terminal status
+ *   status ∈ {pending, processing, completed, failed}; 404 -> not_found
+ *   The Adapter owns the poll loop and state-file resume; the transport
+ *   performs ONE request per call.
  */
 
 import pkg from "../../../package.json" with { type: "json" };
@@ -49,6 +56,7 @@ const { version: VERSION } = pkg;
 const BASE_URL = "https://api.linkup.so/v1";
 const SEARCH_PATH = "/search";
 const FETCH_PATH = "/fetch";
+const RESEARCH_PATH = "/research";
 const DEFAULT_TIMEOUT_MS = 30000;
 
 const USER_AGENT = `scoutline/${VERSION}`;
@@ -242,4 +250,177 @@ export async function fetchLinkupFetch(
     renderJs: request.renderJs ?? true,
   };
   return postLinkupJson(apiKey, FETCH_PATH, body, deps, "fetch");
+}
+
+
+// ---------------------------------------------------------------------------
+// Research — async submit/poll transport (Linkup SPEC §Research)
+// ---------------------------------------------------------------------------
+
+/**
+ * Provider-native research submit request body fields (Linkup API field
+ * names). The Adapter maps `ResearchRequest` into these before calling
+ * {@link createLinkupResearch}; the transport never imports a capability
+ * contract.
+ */
+export interface LinkupResearchWireRequest {
+  readonly q: string;
+  readonly mode?: "answer" | "investigate" | "research";
+  readonly reasoningDepth?: "S" | "M" | "L" | "XL";
+  readonly outputType?: "sourcedAnswer" | "structured";
+}
+
+/**
+ * Structured create result for `POST /research`. `id` is the task id
+ * subsequent poll GETs use; `status` is the server's initial status
+ * (typically `"pending"`).
+ */
+export interface LinkupResearchCreateResult {
+  readonly id: string;
+  readonly status: string;
+}
+
+/**
+ * Structured poll result for `GET /research/:id`. The completed shape
+ * is intentionally permissive — the Adapter normalizes `output`,
+ * `markdown`, and `sources` into a `ResearchResult`. `not_found` is
+ * the load-bearing signal that the server-side task has expired and
+ * the Adapter should recreate (Tavily/Parallel guard).
+ */
+export interface LinkupResearchPollResult {
+  readonly status: "pending" | "processing" | "completed" | "failed" | "not_found";
+  /** Raw completed output — object (`{answer, sources}`) or string. */
+  readonly output?: unknown;
+  /** Markdown fallback (flat completed shape). */
+  readonly markdown?: string;
+  /** Raw top-level sources fallback (flat completed shape). */
+  readonly sources?: unknown;
+}
+
+/**
+ * Perform ONE POST against the Linkup `/research` endpoint. No retry;
+ * no response body in public errors. Returns the structured create
+ * result `{ id, status }`. The shared Adapter lifecycle sets
+ * `maxRetries: 0` for research so a transient POST failure is terminal
+ * (double-charge prevention on a usage-based endpoint).
+ */
+export async function createLinkupResearch(
+  apiKey: string,
+  request: LinkupResearchWireRequest,
+  deps: LinkupTransportDeps = {},
+): Promise<LinkupResearchCreateResult> {
+  const body: Record<string, unknown> = {
+    q: request.q,
+    mode: request.mode ?? "research",
+  };
+  if (request.reasoningDepth !== undefined) {
+    body.reasoningDepth = request.reasoningDepth;
+  }
+  if (request.outputType !== undefined) {
+    body.outputType = request.outputType;
+  }
+  const raw = (await postLinkupJson(apiKey, RESEARCH_PATH, body, deps, "research")) as unknown;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ApiError("Linkup research returned a malformed response", 500);
+  }
+  const obj = raw as Record<string, unknown>;
+  const id = obj.id;
+  const status = obj.status;
+  if (typeof id !== "string" || id.length === 0) {
+    throw new ApiError("Linkup research returned a malformed response", 500);
+  }
+  return { id, status: typeof status === "string" ? status : "pending" };
+}
+
+/**
+ * Perform ONE GET against the Linkup `/research/{taskId}` endpoint. No
+ * retry. Returns a structured poll result.
+ *
+ * Unlike other GETs, a 404 is NOT a terminal transport error here: it
+ * means the server-side task has expired/disappeared, so the Adapter
+ * can delete the stale state file and create a fresh task. The poll
+ * result carries `status: "not_found"` for that case. All other non-2xx
+ * statuses throw the standard mapped error (auth, rate limit, 5xx).
+ */
+export async function pollLinkupResearch(
+  apiKey: string,
+  taskId: string,
+  deps: LinkupTransportDeps = {},
+): Promise<LinkupResearchPollResult> {
+  const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
+  const setT = deps.setTimeout ?? setTimeout;
+  const clearT = deps.clearTimeout ?? clearTimeout;
+  const env = deps.env ?? process.env;
+  const timeoutMs = resolveTimeoutMs(env);
+
+  const url = `${BASE_URL}${RESEARCH_PATH}/${encodeURIComponent(taskId)}`;
+  const controller = new AbortController();
+  const timeoutId = setT(() => controller.abort(), timeoutMs);
+  try {
+    let res;
+    try {
+      res = await f(url, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "User-Agent": USER_AGENT,
+        },
+        signal: controller.signal,
+      });
+      clearT(timeoutId);
+    } catch (err) {
+      clearT(timeoutId);
+      throw normalizeTransportError(err, timeoutMs);
+    }
+
+    if (res.status === 404) {
+      await res.text().catch(() => {});
+      return { status: "not_found" };
+    }
+    if (!res.ok) {
+      await res.text().catch(() => {});
+      throw mapStatusError(res.status);
+    }
+    let parsed: unknown;
+    try {
+      parsed = await res.json();
+    } catch {
+      throw new ApiError("Linkup research returned a malformed response", 500);
+    }
+    return normalizeResearchPollResult(parsed);
+  } finally {
+    controller.abort();
+  }
+}
+
+/**
+ * Normalize a parsed poll body into a {@link LinkupResearchPollResult}.
+ * Accepts `{ status, output?, markdown?, sources? }`. Unknown/missing
+ * status maps to a malformed-response error so the Adapter never
+ * silently advances on garbage. The completed shape is passed through
+ * unmodified (Adapter normalizes report/sources).
+ */
+function normalizeResearchPollResult(value: unknown): LinkupResearchPollResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ApiError("Linkup research returned a malformed response", 500);
+  }
+  const obj = value as Record<string, unknown>;
+  const status = obj.status;
+  if (
+    status !== "pending" &&
+    status !== "processing" &&
+    status !== "completed" &&
+    status !== "failed"
+  ) {
+    throw new ApiError("Linkup research returned a malformed response", 500);
+  }
+  if (status !== "completed") {
+    return { status };
+  }
+  return {
+    status,
+    ...(obj.output !== undefined ? { output: obj.output } : {}),
+    ...(typeof obj.markdown === "string" ? { markdown: obj.markdown } : {}),
+    ...(obj.sources !== undefined ? { sources: obj.sources } : {}),
+  };
 }

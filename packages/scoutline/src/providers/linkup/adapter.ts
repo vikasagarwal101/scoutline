@@ -36,6 +36,24 @@
  *   markdown -> content (empty → ApiError; never cache an empty fetch)
  *   rawHtml / images -> (dropped)
  *   renderJs is always requested true (SPA compatibility)
+ *
+ * Research lifecycle (mirrors createExaDescriptor, Linkup SPEC §Research):
+ *   POST /research              — submit task once (no retry, double-charge
+ *                                 prevention on a usage-based endpoint)
+ *   GET  /research/:id          — poll every LINKUP_RESEARCH_POLL_INTERVAL_MS
+ *                                 (default 5000) until completed/failed/not_found
+ *   updatedAt / output.answer   -> report (canonical object output)
+ *   output (string)             -> report (flat output fallback)
+ *   markdown                    -> report (flat markdown fallback)
+ *   output.sources[].name       -> sources[].title (fallback url)
+ *   output.sources[].url        -> sources[].url
+ *   `model` mapping: mini→"S", auto→"L", pro→"XL" (reasoningDepth)
+ *   transient poll errors (429/5xx/network/timeout) are retried up to
+ *   MAX_POLL_RETRIES=3 before propagating; failed poll -> ApiError 500
+ *   with no raw body in the message.
+ *   `not_found` triggers at most ONE recreation (Tavily/Parallel guard).
+ *   State-file persistence via createAsyncJobStateFile + computeAsyncJobStateHash
+ *   double-charge prevention; resume on Ctrl-C / crash.
  */
 
 import type {
@@ -60,12 +78,31 @@ import type {
   ReaderOperation,
 } from "../../capabilities/reader.js";
 import { decodeReaderFetchResult } from "../../capabilities/reader.js";
-import { ApiError, UnsupportedOptionError, ValidationError } from "../../lib/errors.js";
+import type {
+  ResearchCapability,
+  ResearchOperation,
+  ResearchRequest,
+  ResearchResult,
+  ResearchSource,
+} from "../../capabilities/research.js";
+import { decodeResearchResult } from "../../capabilities/research.js";
+import type { AsyncJobState, AsyncJobStateFile } from "../../lib/async-job-state.js";
+import {
+  computeAsyncJobStateHash,
+  createProductionAsyncJobStateFile,
+} from "../../lib/async-job-state.js";
+import { asyncJobStateDir } from "../../lib/cache.js";
+import type { CacheIdentity } from "../../lib/execution.js";
+import { ApiError, NetworkError, TimeoutError, UnsupportedOptionError, ValidationError } from "../../lib/errors.js";
 import { hashLinkupApiKey, isLinkupConfigured, requireLinkupApiKey } from "./credentials.js";
 import {
+  createLinkupResearch,
   fetchLinkupFetch,
   fetchLinkupSearch,
+  pollLinkupResearch,
   type LinkupFetchWireRequest,
+  type LinkupResearchPollResult,
+  type LinkupResearchWireRequest,
   type LinkupSearchWireRequest,
   type LinkupTransportDeps,
 } from "./client.js";
@@ -83,6 +120,8 @@ export interface LinkupAdapterDependencies {
    * `Date.now`; tests pass a fixed epoch.
    */
   readonly now?: () => number;
+  /** Optional Research state-file port (double-charge prevention). */
+  readonly researchStateFile?: AsyncJobStateFile;
 }
 
 // ---------------------------------------------------------------------------
@@ -393,6 +432,345 @@ function createLinkupReaderCapability(
   return { fetch };
 }
 
+
+// ---------------------------------------------------------------------------
+// Research Capability (async submit/poll lifecycle — Linkup SPEC §Research)
+// ---------------------------------------------------------------------------
+
+/**
+ * Default polling interval between `GET /research/:id` calls. Overridable
+ * via `LINKUP_RESEARCH_POLL_INTERVAL_MS` in the transport env so tests
+ * can poll instantly.
+ */
+const DEFAULT_RESEARCH_POLL_INTERVAL_MS = 5000;
+
+function resolvePollIntervalMs(env: NodeJS.ProcessEnv | undefined): number {
+  const raw = env?.LINKUP_RESEARCH_POLL_INTERVAL_MS;
+  const parsed = parseInt(raw ?? "", 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_RESEARCH_POLL_INTERVAL_MS;
+}
+
+/**
+ * Build an abortable `sleep(ms)` from the injected timers. Cloned from
+ * the Tavily/Exa adapters — same mechanism, different transport type.
+ * A non-positive interval resolves via `setImmediate`; an aborted
+ * signal rejects with `TimeoutError` so the poll loop unwinds promptly.
+ */
+function makeSleep(
+  deps: LinkupTransportDeps | undefined,
+  signal?: AbortSignal,
+): (ms: number) => Promise<void> {
+  const setT = deps?.setTimeout ?? setTimeout;
+  const clearT = deps?.clearTimeout ?? clearTimeout;
+  return (ms: number) =>
+    new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new TimeoutError(0, "Research polling aborted"));
+        return;
+      }
+      if (ms <= 0) {
+        setImmediate(() => {
+          if (signal?.aborted) {
+            reject(new TimeoutError(0, "Research polling aborted"));
+            return;
+          }
+          resolve();
+        });
+        return;
+      }
+      const onAbort = (): void => {
+        clearT(id);
+        reject(new TimeoutError(0, "Research polling aborted"));
+      };
+      const id = setT(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      signal?.addEventListener("abort", onAbort);
+    });
+}
+
+function isEexistError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as NodeJS.ErrnoException).code === "EEXIST"
+  );
+}
+
+/**
+ * Map `ResearchRequest.model` -> Linkup `reasoningDepth` (SPEC §Research):
+ *   mini -> "S"
+ *   auto -> "L" (default)
+ *   pro  -> "XL"
+ */
+function mapModelToReasoningDepth(
+  model: ResearchRequest["model"],
+): LinkupResearchWireRequest["reasoningDepth"] {
+  switch (model) {
+    case "mini":
+      return "S";
+    case "pro":
+      return "XL";
+    case "auto":
+    default:
+      return "L";
+  }
+}
+
+/**
+ * Normalize a completed Linkup research poll into a `ResearchResult`.
+ *
+ *   output.answer     -> report (canonical object output)
+ *   output (string)   -> report (flat output fallback)
+ *   markdown          -> report (flat markdown fallback)
+ *   output.sources[]  -> sources[] ({name, url, snippet} -> {title, url})
+ *   sources[]         -> sources[] (top-level fallback)
+ *   model             -> echoed from the request (default "auto")
+ */
+function normalizeLinkupResearchResult(
+  poll: LinkupResearchPollResult,
+  request: ResearchRequest,
+): ResearchResult {
+  let report: string | undefined;
+  if (isPlainObject(poll.output)) {
+    const answer = poll.output.answer;
+    if (typeof answer === "string") report = answer;
+  } else if (typeof poll.output === "string") {
+    report = poll.output;
+  }
+  if (report === undefined && typeof poll.markdown === "string") {
+    report = poll.markdown;
+  }
+  if (report === undefined) {
+    throw new ApiError("Linkup research returned a malformed response", 500);
+  }
+
+  let rawSources: unknown = undefined;
+  if (isPlainObject(poll.output) && poll.output.sources !== undefined) {
+    rawSources = poll.output.sources;
+  } else if (poll.sources !== undefined) {
+    rawSources = poll.sources;
+  }
+  const sources: ResearchSource[] = [];
+  if (Array.isArray(rawSources)) {
+    for (const entry of rawSources) {
+      if (!isPlainObject(entry)) continue;
+      const url = entry.url;
+      if (typeof url !== "string" || url.length === 0) continue;
+      const title =
+        typeof entry.name === "string" && entry.name.length > 0 ? entry.name : url;
+      sources.push({ title, url });
+    }
+  }
+
+  return {
+    schemaVersion: 1,
+    query: request.query,
+    model: request.model ?? "auto",
+    report,
+    sources,
+  };
+}
+
+/**
+ * True when a poll GET error is safe to retry. The poll is idempotent
+ * — retrying never creates a new run or charges the account. Only
+ * transient failures (429, 5xx, network, timeout) qualify; auth/quota/
+ * validation errors are terminal and propagate immediately.
+ */
+function isTransientPollError(err: unknown): boolean {
+  if (err instanceof ApiError && typeof err.statusCode === "number") {
+    return err.statusCode === 429 || (err.statusCode >= 500 && err.statusCode <= 599);
+  }
+  if (err instanceof NetworkError || err instanceof TimeoutError) return true;
+  return false;
+}
+
+/**
+ * POST /research to create a task, then persist its task id in the
+ * state file atomically. On EEXIST (a concurrent invocation already
+ * created a task for this request), read the existing state file and
+ * return its task id instead — the concurrent task is polled, not
+ * duplicated.
+ */
+async function createResearchTask(
+  apiKey: string,
+  request: ResearchRequest,
+  identityHash: string,
+  stateFile: AsyncJobStateFile,
+  transport: LinkupTransportDeps | undefined,
+): Promise<string> {
+  const wireRequest: LinkupResearchWireRequest = {
+    q: request.query,
+    mode: "research",
+    reasoningDepth: mapModelToReasoningDepth(request.model),
+  };
+  const created = await createLinkupResearch(apiKey, wireRequest, transport);
+  const taskId = created.id;
+
+  const state: AsyncJobState = {
+    requestId: taskId,
+    identityHash,
+    createdAt: new Date().toISOString(),
+    status: "pending",
+  };
+  try {
+    await stateFile.write(identityHash, state);
+  } catch (err) {
+    if (isEexistError(err)) {
+      const existing = await stateFile.read(identityHash);
+      if (existing !== null) {
+        return existing.requestId;
+      }
+    } else {
+      throw err;
+    }
+  }
+  return taskId;
+}
+
+interface LinkupResearchCapabilityOptions {
+  readonly env: NodeJS.ProcessEnv;
+  readonly transport?: LinkupTransportDeps;
+  readonly researchStateFile: AsyncJobStateFile;
+}
+
+function createLinkupResearchCapability(
+  options: LinkupResearchCapabilityOptions,
+): ResearchCapability {
+  const { env, transport, researchStateFile } = options;
+
+  const run: ResearchOperation = {
+    kind: "research-fetch",
+
+    validate(request: ResearchRequest): void {
+      if (!request || typeof request.query !== "string" || request.query.trim() === "") {
+        throw new ValidationError(
+          "Research query must contain at least one non-whitespace character",
+        );
+      }
+    },
+
+    cacheIdentity(request: ResearchRequest): CacheIdentity<ResearchRequest, ResearchResult> {
+      const apiKey = resolveApiKey(env);
+      return {
+        provider: "linkup",
+        capability: "research",
+        credentialFingerprint: credentialFingerprint(apiKey),
+        request,
+      };
+    },
+
+    decodeCached(value: unknown): ResearchResult | null {
+      return decodeResearchResult(value);
+    },
+
+    async invoke(request: ResearchRequest, signal?: AbortSignal): Promise<ResearchResult> {
+      run.validate(request);
+
+      const apiKey = resolveApiKey(env);
+      const credFingerprint = credentialFingerprint(apiKey);
+      const identityHash = computeAsyncJobStateHash({
+        provider: "linkup",
+        capability: "research",
+        credentialFingerprint: credFingerprint,
+        request,
+      });
+
+      const pollIntervalMs = resolvePollIntervalMs(transport?.env);
+      const sleep = makeSleep(transport, signal);
+
+      // 1. Check for an in-flight task (resume after Ctrl-C / crash).
+      //    A valid state file with a pending/in_progress status means a
+      //    task was already created server-side — poll it instead of
+      //    creating a second one (double-charge prevention).
+      const existingState = await researchStateFile.read(identityHash);
+      let taskId: string;
+
+      if (existingState !== null) {
+        taskId = existingState.requestId;
+      } else {
+        // 2. No in-flight task: POST to create one. NO retry — a
+        //    transient POST failure is terminal (double-charge
+        //    prevention on a usage-based endpoint).
+        taskId = await createResearchTask(
+          apiKey,
+          request,
+          identityHash,
+          researchStateFile,
+          transport,
+        );
+      }
+
+      // 3. Poll loop until terminal status. The GET (poll) is
+      //    idempotent and safe to retry — transient 429/5xx/network
+      //    errors on poll MUST NOT terminate a paid research run that
+      //    is still active server-side. Transient poll failures are
+      //    retried (bounded by MAX_POLL_RETRIES) before propagating.
+      const MAX_POLL_RETRIES = 3;
+      let consecutivePollFailures = 0;
+      let recreatedAfterNotFound = false;
+      for (;;) {
+        if (signal?.aborted) {
+          throw new TimeoutError(0, "Research polling aborted");
+        }
+        let poll: LinkupResearchPollResult;
+        try {
+          poll = await pollLinkupResearch(apiKey, taskId, transport);
+          consecutivePollFailures = 0;
+        } catch (pollErr) {
+          if (isTransientPollError(pollErr) && consecutivePollFailures < MAX_POLL_RETRIES) {
+            consecutivePollFailures++;
+            await sleep(pollIntervalMs);
+            continue;
+          }
+          throw pollErr;
+        }
+
+        if (poll.status === "completed") {
+          await researchStateFile.remove(identityHash);
+          return normalizeLinkupResearchResult(poll, request);
+        }
+
+        if (poll.status === "failed") {
+          await researchStateFile.remove(identityHash);
+          throw new ApiError("Linkup research task failed", 500);
+        }
+
+        if (poll.status === "not_found") {
+          // 404 — server-side task expired/disappeared. Allow at most ONE
+          // recreation; a second 404 terminates rather than risk unbounded
+          // paid creations (Tavily/Parallel guard).
+          if (recreatedAfterNotFound) {
+            await researchStateFile.remove(identityHash);
+            throw new ApiError(
+              "Linkup research task not found after recreation",
+              500,
+            );
+          }
+          recreatedAfterNotFound = true;
+          await researchStateFile.remove(identityHash);
+          taskId = await createResearchTask(
+            apiKey,
+            request,
+            identityHash,
+            researchStateFile,
+            transport,
+          );
+          continue;
+        }
+
+        // pending or processing: sleep and poll again.
+        await sleep(pollIntervalMs);
+      }
+    },
+  };
+
+  return { run };
+}
+
 // ---------------------------------------------------------------------------
 // Descriptor factory
 // ---------------------------------------------------------------------------
@@ -412,6 +790,9 @@ export function createLinkupDescriptor(
 ): ProviderDescriptor {
   const transport = dependencies?.transport;
   const now = dependencies?.now ?? (() => Date.now());
+  const researchStateFile =
+    dependencies?.researchStateFile ??
+    createProductionAsyncJobStateFile(asyncJobStateDir("research"));
 
   return {
     id: "linkup",
@@ -419,7 +800,7 @@ export function createLinkupDescriptor(
       return isLinkupConfigured(env);
     },
     capabilities(): ReadonlySet<ProviderCapability> {
-      return new Set<ProviderCapability>(["search", "reader"]);
+      return new Set<ProviderCapability>(["search", "reader", "research"]);
     },
     create(context: ProviderContext): ProviderAdapter {
       const search = createLinkupSearchCapability({
@@ -431,7 +812,12 @@ export function createLinkupDescriptor(
         env: context.env,
         transport,
       });
-      return { id: "linkup", search, reader };
+      const research = createLinkupResearchCapability({
+        env: context.env,
+        transport,
+        researchStateFile,
+      });
+      return { id: "linkup", search, reader, research };
     },
     credentialEnvVars: ["LINKUP_API_KEY"],
   };

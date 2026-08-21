@@ -469,7 +469,8 @@ function makeHarness(provider, capability) {
       return {
         adapter: createLinkupDescriptor({
           transport,
-          researchStateFile: createInMemoryAsyncJobStateFile(),
+          researchStateFile: stateFile,
+          researchStateDir: capability === "research" ? tmpStateDir() : undefined,
         }).create(context),
         calls,
         timerDelays,
@@ -1874,7 +1875,7 @@ const ROWS = [
     provider: "linkup",
     capability: "research",
     control: "citationFormat",
-    input: { citationFormat: "numeric" },
+    input: { citationFormat: "apa" },
     expect: "rejected",
   },
   {

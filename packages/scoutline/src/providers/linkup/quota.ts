@@ -61,7 +61,7 @@ export function normalizeLinkupQuota(raw: unknown): ProviderQuotaSuccess {
       {
         name: "credits",
         unit: "credits",
-        current: buildQuotaWindow({ remaining: balance }),
+        current: { remaining: balance },
       },
     ],
   };

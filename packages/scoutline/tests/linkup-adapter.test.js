@@ -24,13 +24,19 @@ import { createLinkupDescriptor } from "../dist/providers/linkup/adapter.js";
 import {
   createLinkupResearch,
   fetchLinkupSearch,
+  pollLinkupResearch,
 } from "../dist/providers/linkup/client.js";
 import { normalizeLinkupQuota } from "../dist/providers/linkup/quota.js";
 import {
   computeAsyncJobStateHash,
   createInMemoryAsyncJobStateFile,
 } from "../dist/lib/async-job-state.js";
-import { ApiError, ConfigurationError, UnsupportedOptionError } from "../dist/lib/errors.js";
+import {
+  ApiError,
+  ConfigurationError,
+  TimeoutError,
+  UnsupportedOptionError,
+} from "../dist/lib/errors.js";
 import { PROVIDER_IDS } from "../dist/providers/types.js";
 import { getProviderDescriptor } from "../dist/providers/registry.js";
 import {
@@ -260,7 +266,7 @@ describe("Linkup Research Adapter — async polling lifecycle", () => {
       (e) => e instanceof UnsupportedOptionError && e.provider === "linkup" && e.option === "outputLength",
     );
     assert.throws(
-      () => adapter.research.run.validate({ query: "q", citationFormat: "numeric" }),
+      () => adapter.research.run.validate({ query: "q", citationFormat: "apa" }),
       (e) => e instanceof UnsupportedOptionError && e.provider === "linkup" && e.option === "citationFormat",
     );
     assert.throws(
@@ -343,6 +349,30 @@ describe("Linkup Research Adapter — async polling lifecycle", () => {
     await assert.rejects(
       adapter.research.run.invoke({ query: "q" }),
       (e) => e instanceof ApiError && !e.message.includes("RAW_SECRET_BODY_DETAIL"),
+    );
+  });
+
+  it("pollLinkupResearch aborts in-flight fetch when externalSignal is aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await assert.rejects(
+      pollLinkupResearch(
+        "k",
+        "task-123",
+        {
+          fetch: async (_url, init) => {
+            if (init?.signal?.aborted) {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              throw err;
+            }
+            return jsonRes({ status: "pending" });
+          },
+        },
+        controller.signal,
+      ),
+      (e) => e instanceof TimeoutError,
     );
   });
 

@@ -215,7 +215,9 @@ function normalizeSpiderSearchResults(raw: unknown): readonly SearchSource[] {
  * Per-item mapping: `content` -> content (non-empty, else `ApiError` —
  * an empty fetch is an error, not a degenerate result), `url` ->
  * finalUrl (request URL fallback), `metadata.title` -> title (null when
- * absent/blank). Any malformed shape is a retryable `ApiError` 500.
+ * absent/blank). The provider-derived `metadata` and `external` blobs
+ * are preserved verbatim on the `ReaderFetchResult` when the page
+ * carries them. Any malformed shape is a retryable `ApiError` 500.
  */
 function normalizeSpiderScrapeResult(
   raw: unknown,
@@ -249,6 +251,8 @@ function normalizeSpiderScrapeResult(
     title,
     content,
     contentFormat: request.format ?? "markdown",
+    ...(metadata !== undefined ? { metadata } : {}),
+    ...(page.external !== undefined ? { external: page.external } : {}),
   };
 }
 

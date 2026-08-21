@@ -132,20 +132,23 @@ async function postSpiderJson(
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-    clearT(timeoutId);
     if (!res.ok) {
       await res.text().catch(() => {});
       throw mapStatusError(res.status, DEFAULT_TIMEOUT_MS);
     }
     try {
       return await res.json();
-    } catch {
+    } catch (err) {
+      // The timeout stays armed through body parsing; an abort here is
+      // the injected timeout firing, not a malformed payload. Rethrow
+      // so normalizeTransportError maps it to TimeoutError.
+      if (controller.signal.aborted) throw err;
       throw new ApiError(`Spider ${endpointLabel} returned a malformed response`, 500);
     }
   } catch (err) {
-    clearT(timeoutId);
     throw normalizeTransportError(err, DEFAULT_TIMEOUT_MS);
   } finally {
+    clearT(timeoutId);
     controller.abort();
   }
 }
@@ -327,20 +330,23 @@ async function getSpiderJson(
       },
       signal: controller.signal,
     });
-    clearT(timeoutId);
     if (!res.ok) {
       await res.text().catch(() => {});
       throw mapStatusError(res.status, DEFAULT_TIMEOUT_MS);
     }
     try {
       return await res.json();
-    } catch {
+    } catch (err) {
+      // The timeout stays armed through body parsing; an abort here is
+      // the injected timeout firing, not a malformed payload. Rethrow
+      // so normalizeTransportError maps it to TimeoutError.
+      if (controller.signal.aborted) throw err;
       throw new ApiError(`Spider ${endpointLabel} returned a malformed response`, 500);
     }
   } catch (err) {
-    clearT(timeoutId);
     throw normalizeTransportError(err, DEFAULT_TIMEOUT_MS);
   } finally {
+    clearT(timeoutId);
     controller.abort();
   }
 }

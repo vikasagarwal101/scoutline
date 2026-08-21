@@ -2,9 +2,11 @@
  * Spider.cloud Quota Capability.
  *
  * Maps the Spider.cloud GET /data/credits response into one normalized
- * `QuotaCategory` with `unit:"credits"` and `name:"credits"` — the name
- * matches the first `CAPABILITY_MAPPINGS` alias the quota-mapping layer
- * will use for Spider (mapped-credits policy). The normalizer is pure;
+ * `QuotaCategory` with `unit:"credits"` and `name:"credits"` for
+ * dashboard display. The authority policy is always-unknown: the
+ * balance is absolute with an unknown limit, not a percentage plan
+ * signal, so the quota-mapping scorer treats Spider as
+ * non-authoritative (no CAPABILITY_MAPPINGS row). The normalizer is pure;
  * the capability factory owns configuration resolution, the single
  * direct transport attempt, and failure normalization. Shared execution
  * owns retry policy.

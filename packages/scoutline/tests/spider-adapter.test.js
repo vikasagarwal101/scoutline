@@ -16,7 +16,8 @@ import {
   requireSpiderApiKey,
 } from "../dist/providers/spider/credentials.js";
 import { createSpiderDescriptor } from "../dist/providers/spider/adapter.js";
-import { ApiError, ConfigurationError, UnsupportedOptionError } from "../dist/lib/errors.js";
+import { fetchSpiderCredits } from "../dist/providers/spider/client.js";
+import { ApiError, ConfigurationError, TimeoutError, UnsupportedOptionError } from "../dist/lib/errors.js";
 
 describe("spider credentials", () => {
   it("requires trimmed SPIDER_API_KEY", () => {
@@ -104,6 +105,79 @@ describe("spider reader", () => {
     assert.equal(calls[0].body.filter_output_main_only, true);
     assert.equal(calls[0].body.stealth, true);
     assert.equal(adapter.reader.fetch.decodeCached({ bogus: true }), null);
+  });
+  it("reader.fetch preserves provider metadata and external blobs verbatim", async () => {
+    const raw = [{
+      url: "https://example.test/doc",
+      status: 200,
+      content: "# Doc",
+      metadata: { title: "Doc Title", description: "d", word_count: 7 },
+      external: { costs: { total_cost: 0.00004 } },
+    }];
+    const adapter = createSpiderDescriptor({
+      transport: {
+        fetch: async () => ({ ok: true, status: 200, json: async () => raw, text: async () => JSON.stringify(raw), headers: { get: () => null } }),
+      },
+    }).create({ env: { SPIDER_API_KEY: "k" } });
+    assert.ok(adapter.reader);
+    const result = await adapter.reader.fetch.invoke({ url: "https://example.test/doc" });
+    assert.deepEqual(result.metadata, { title: "Doc Title", description: "d", word_count: 7 });
+    assert.deepEqual(result.external, { costs: { total_cost: 0.00004 } });
+  });
+  it("reader.fetch omits metadata and external when the page carries none", async () => {
+    const raw = [{ url: "https://example.test/doc", status: 200, content: "# Doc" }];
+    const adapter = createSpiderDescriptor({
+      transport: {
+        fetch: async () => ({ ok: true, status: 200, json: async () => raw, text: async () => JSON.stringify(raw), headers: { get: () => null } }),
+      },
+    }).create({ env: { SPIDER_API_KEY: "k" } });
+    assert.ok(adapter.reader);
+    const result = await adapter.reader.fetch.invoke({ url: "https://example.test/doc" });
+    assert.equal(result.metadata, undefined);
+    assert.equal(result.external, undefined);
+  });
+});
+
+describe("spider transport timeout", () => {
+  it("keeps the timeout timer armed until the credits body finishes parsing", async () => {
+    let releaseBody;
+    const body = new Promise((resolve) => { releaseBody = resolve; });
+    let onTimer;
+    const clears = [];
+    const pending = fetchSpiderCredits("k", {
+      fetch: async () => ({ ok: true, status: 200, json: () => body, text: async () => "{}", headers: { get: () => null } }),
+      setTimeout: (fn) => { onTimer = fn; return 1; },
+      clearTimeout: () => { clears.push(1); },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(onTimer instanceof Function, true, "timeout timer is armed");
+    assert.equal(clears.length, 0, "clearTimeout must not run while the body is still pending");
+    releaseBody({ credits: 5 });
+    assert.deepEqual(await pending, { credits: 5 });
+    assert.equal(clears.length, 1, "clearTimeout runs exactly once after settle");
+  });
+
+  it("timeout firing during the credits body read surfaces TimeoutError", async () => {
+    let fire;
+    const pending = fetchSpiderCredits("k", {
+      fetch: async (_url, init) => ({
+        ok: true,
+        status: 200,
+        json: () => new Promise((_, reject) => {
+          init.signal.addEventListener("abort", () => {
+            reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError" }));
+          });
+        }),
+        text: async () => "{}",
+        headers: { get: () => null },
+      }),
+      setTimeout: (fn) => { fire = fn; return 1; },
+      clearTimeout: () => {},
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(fire instanceof Function, true, "timeout timer is armed");
+    fire();
+    await assert.rejects(pending, (e) => e instanceof TimeoutError);
   });
 });
 

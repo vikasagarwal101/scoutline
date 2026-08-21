@@ -40,7 +40,7 @@ Get your Z.AI API key at: https://z.ai/manage-apikey/apikey-list
 
 ### Interactive setup (`scoutline init`)
 
-Run `npx scoutline@0.17.4 init` once to record API keys in
+Run `npx scoutline init` once to record API keys in
 `~/.scoutline/config.json` (mode 0600). The wizard:
 
 - offers to import a key already present in your environment;
@@ -163,10 +163,10 @@ defaults to 120 seconds. Raise it with `JINA_DEEPSEARCH_TIMEOUT`
 ### Using Spider.cloud (Search, Reader, Crawl, Map)
 ```bash
 export SPIDER_API_KEY="your-spider-key"
-npx scoutline@0.17.4 --provider spider search "AI funding rounds" --topic news
-npx scoutline@0.17.4 --provider spider read https://example.com/
-npx scoutline@0.17.4 --provider spider crawl https://example.com --limit 10
-npx scoutline@0.17.4 --provider spider map https://example.com
+npx scoutline --provider spider search "AI funding rounds" --topic news
+npx scoutline --provider spider read https://example.com/
+npx scoutline --provider spider crawl https://example.com --limit 10
+npx scoutline --provider spider map https://example.com
 ```
 Get your Spider.cloud API key at: https://spider.cloud
 
@@ -196,7 +196,7 @@ scoutline --help
 Or use directly with npx:
 
 ```bash
-npx scoutline@0.17.4 --help
+npx scoutline --help
 ```
 
 ## Provider Selection

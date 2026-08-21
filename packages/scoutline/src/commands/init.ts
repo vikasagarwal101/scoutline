@@ -204,6 +204,12 @@ const PROVIDER_PROMPT_META: Record<ProviderId, ProviderPromptMeta> = {
     registrationUrl: "https://jina.ai",
     probeCostsCredit: false,
   },
+  linkup: {
+    label: "Linkup",
+    envVar: "LINKUP_API_KEY",
+    registrationUrl: "https://app.linkup.so",
+    probeCostsCredit: false,
+  },
 };
 
 /**

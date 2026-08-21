@@ -49,6 +49,7 @@ export const PROVIDER_IDS = [
   "parallel",
   "perplexity",
   "jina",
+  "linkup",
 ] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 

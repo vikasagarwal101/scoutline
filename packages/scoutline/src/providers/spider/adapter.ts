@@ -1,5 +1,5 @@
 /**
- * Spider.cloud Adapter — Search + Reader Capabilities.
+ * Spider.cloud Adapter — Search, Reader, Crawl, and Map Capabilities.
  *
  * Owns credentials, transport lifecycle, Provider field mapping, and
  * failure normalization. Clones the Firecrawl adapter's capability
@@ -12,6 +12,9 @@
  * continue past Spider to a capable Provider. The Reader POSTs the
  * locked four-field `/scrape` body and rejects every request control
  * with no Spider-native wire equivalent instead of accept-and-drop.
+ * Crawl and Map are SYNCHRONOUS one-shot POSTs (`/crawl`, `/links`)
+ * returning the final JSON array — no async job file, no poll loop —
+ * with the locked 200-status crawl filter and link deduplication.
  *
  * The descriptor and capability interfaces below are declared locally
  * with the `"spider"` literal; they become assignable to the shared
@@ -32,6 +35,10 @@ import type {
   LegacyReaderCacheCandidate,
 } from "../../capabilities/reader.js";
 import { decodeReaderFetchResult } from "../../capabilities/reader.js";
+import type { CrawlPage, CrawlRequest, CrawlResult } from "../../capabilities/crawl.js";
+import { decodeCrawlResult } from "../../capabilities/crawl.js";
+import type { MapRequest, MapResult } from "../../capabilities/map.js";
+import { decodeMapResult } from "../../capabilities/map.js";
 import {
   ApiError,
   AuthError,
@@ -45,6 +52,8 @@ import {
 import { applySearchTopic } from "../../lib/search-topic.js";
 import type { ProviderCapability, ProviderContext } from "../types.js";
 import {
+  fetchSpiderCrawl,
+  fetchSpiderLinks,
   fetchSpiderScrape,
   fetchSpiderSearch,
   type SpiderScrapeParams,
@@ -234,6 +243,102 @@ function normalizeSpiderScrapeResult(
     title,
     content,
     contentFormat: request.format ?? "markdown",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Crawl / map response normalization
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the Spider response envelope: a bare JSON array, or the
+ * documented `{ content: [...] }` wrapper. `undefined` means the payload
+ * is neither — a malformed response.
+ */
+function resolveSpiderEnvelope(raw: unknown): readonly unknown[] | undefined {
+  if (Array.isArray(raw)) return raw;
+  if (isPlainObject(raw) && Array.isArray(raw.content)) return raw.content;
+  return undefined;
+}
+
+/**
+ * Normalize a raw Spider.cloud /crawl response into a `CrawlResult`.
+ *
+ * The endpoint is synchronous (locked contract): the response IS the
+ * final array of crawled pages — no job id, no poll. The locked filter
+ * keeps only pages with `status === 200` AND a non-empty `content`
+ * (SCHEMA §3); everything else (404s, error rows, empty bodies) is
+ * dropped, not an error. Per-page mapping: `url` -> url, `content` ->
+ * content, `contentFormat` defaults to `"markdown"` (Firecrawl
+ * precedent). Any non-object entry is a retryable `ApiError` 500.
+ */
+function normalizeSpiderCrawlResult(raw: unknown, request: CrawlRequest): CrawlResult {
+  const results = resolveSpiderEnvelope(raw);
+  if (results === undefined) {
+    throw new ApiError("Spider crawl returned a malformed response", 500);
+  }
+  const contentFormat: "markdown" | "text" = request.format ?? "markdown";
+  const pages: CrawlPage[] = [];
+  for (const entry of results) {
+    if (!isPlainObject(entry)) {
+      throw new ApiError("Spider crawl returned a malformed response", 500);
+    }
+    if (entry.status !== 200) continue;
+    const content = typeof entry.content === "string" ? entry.content : undefined;
+    if (content === undefined || content.length === 0) continue;
+    if (typeof entry.url !== "string" || entry.url.length === 0) {
+      throw new ApiError("Spider crawl returned a malformed response", 500);
+    }
+    pages.push({ url: entry.url, content, contentFormat });
+  }
+  return {
+    schemaVersion: 1,
+    baseUrl: request.url,
+    pages,
+    totalPages: pages.length,
+  };
+}
+
+/**
+ * Normalize a raw Spider.cloud /links response into a `MapResult`.
+ *
+ * Two accepted item shapes: the documented `{ url, status, links: [...] }`
+ * row (SCHEMA §4 — each `links[]` string is a discovered URL) and the
+ * flat `{ url }` row the API also returns for single-page maps. All
+ * URLs are deduplicated through a `Set` (insertion order preserved);
+ * `totalUrls` is the deduplicated count. Any non-object entry or
+ * non-string link is a retryable `ApiError` 500.
+ */
+function normalizeSpiderLinksResult(raw: unknown, request: MapRequest): MapResult {
+  const results = resolveSpiderEnvelope(raw);
+  if (results === undefined) {
+    throw new ApiError("Spider links returned a malformed response", 500);
+  }
+  const urls = new Set<string>();
+  for (const entry of results) {
+    if (!isPlainObject(entry)) {
+      throw new ApiError("Spider links returned a malformed response", 500);
+    }
+    if (Array.isArray(entry.links)) {
+      for (const link of entry.links) {
+        if (typeof link !== "string" || link.length === 0) {
+          throw new ApiError("Spider links returned a malformed response", 500);
+        }
+        urls.add(link);
+      }
+      continue;
+    }
+    if (typeof entry.url !== "string" || entry.url.length === 0) {
+      throw new ApiError("Spider links returned a malformed response", 500);
+    }
+    urls.add(entry.url);
+  }
+  const unique = [...urls];
+  return {
+    schemaVersion: 1,
+    baseUrl: request.url,
+    urls: unique,
+    totalUrls: unique.length,
   };
 }
 
@@ -514,6 +619,237 @@ function createSpiderReaderCapability(
 }
 
 // ---------------------------------------------------------------------------
+// Crawl Capability
+// ---------------------------------------------------------------------------
+
+/**
+ * Crawl request controls the locked Spider `/crawl` body does not
+ * document. Accept-and-drop is banned: a control is either
+ * wire-consumed (`limit`, `depth`, `format`) or rejected here, before
+ * any transport call. `breadth`/`selectPaths`/`excludePaths`/
+ * `instructions`/`contentSize`/`timeout` have no Spider-native wire
+ * equivalent (SCHEMA §3 documents `url`, `limit`, `depth`,
+ * `return_format` — plus provider-side fields the neutral request
+ * cannot express).
+ */
+const UNSUPPORTED_CRAWL_OPTIONS = [
+  "breadth",
+  "selectPaths",
+  "excludePaths",
+  "instructions",
+  "contentSize",
+  "timeout",
+] as const;
+
+interface SpiderCrawlCapabilityOptions {
+  readonly env: NodeJS.ProcessEnv;
+  readonly transport?: SpiderTransportDeps;
+}
+
+/**
+ * Local cache-identity type: identical to the shared `CacheIdentity`
+ * for crawl except `provider` is the `"spider"` literal. Assignable to
+ * the shared contract once `"spider"` joins `PROVIDER_IDS`.
+ */
+interface SpiderCrawlCacheIdentity {
+  readonly provider: "spider";
+  readonly capability: "crawl";
+  readonly credentialFingerprint: string;
+  readonly request: Readonly<CrawlRequest>;
+}
+
+/** Local Crawl operation contract — see the module header. */
+interface SpiderCrawlOperation {
+  readonly kind: "crawl-fetch";
+  validate(request: CrawlRequest): void;
+  cacheIdentity(request: CrawlRequest): SpiderCrawlCacheIdentity;
+  decodeCached(value: unknown): CrawlResult | null;
+  invoke(request: CrawlRequest): Promise<CrawlResult>;
+}
+
+/** Local Crawl contract — see the module header. */
+interface SpiderCrawlCapability {
+  readonly fetch: SpiderCrawlOperation;
+}
+
+function createSpiderCrawlCapability(
+  options: SpiderCrawlCapabilityOptions,
+): SpiderCrawlCapability {
+  const { env, transport } = options;
+
+  const fetch: SpiderCrawlOperation = {
+    kind: "crawl-fetch",
+
+    validate(request: CrawlRequest): void {
+      assertHttpUrl(request.url);
+      // The crawl endpoint is synchronous: no async-job state file, no
+      // poll loop, no request-scoped timeout field on the wire.
+      if (request.depth !== undefined) {
+        if (!Number.isInteger(request.depth) || request.depth < 1 || request.depth > 5) {
+          throw new ValidationError("Crawl depth must be an integer between 1 and 5");
+        }
+      }
+      if (request.limit !== undefined && request.limit <= 0) {
+        throw new ValidationError("Crawl limit must be greater than 0");
+      }
+      for (const key of UNSUPPORTED_CRAWL_OPTIONS) {
+        if (request[key] !== undefined) {
+          throw new UnsupportedOptionError("spider", "crawl", key);
+        }
+      }
+    },
+
+    cacheIdentity(request: CrawlRequest): SpiderCrawlCacheIdentity {
+      const apiKey = getSpiderApiKey(env) ?? "";
+      return {
+        provider: "spider",
+        capability: "crawl",
+        credentialFingerprint: credentialFingerprint(apiKey),
+        request,
+      };
+    },
+
+    decodeCached(value: unknown): CrawlResult | null {
+      return decodeCrawlResult(value);
+    },
+
+    async invoke(request: CrawlRequest): Promise<CrawlResult> {
+      fetch.validate(request);
+
+      const apiKey = requireSpiderApiKey(env);
+      try {
+        const params: {
+          url: string;
+          return_format: "markdown" | "text";
+          limit?: number;
+          depth?: number;
+        } = {
+          url: request.url,
+          return_format: request.format ?? "markdown",
+        };
+        if (request.limit !== undefined) {
+          params.limit = request.limit;
+        }
+        if (request.depth !== undefined) {
+          params.depth = request.depth;
+        }
+        // One-shot synchronous POST — the response is the final page
+        // array (locked contract; never a job id to poll).
+        const raw = await fetchSpiderCrawl(apiKey, params, transport);
+        return normalizeSpiderCrawlResult(raw, request);
+      } catch (error) {
+        throw normalizeSpiderError(error);
+      }
+    },
+  };
+
+  return { fetch };
+}
+
+// ---------------------------------------------------------------------------
+// Map Capability
+// ---------------------------------------------------------------------------
+
+/**
+ * Map request controls the locked Spider `/links` body does not
+ * document. Accept-and-drop is banned: a control is either
+ * wire-consumed (`limit`) or rejected here, before any transport call.
+ * SCHEMA §4 documents exactly `url` + `limit`; `depth`, `breadth`,
+ * `selectPaths`, `excludePaths`, and `instructions` have no
+ * Spider-native wire equivalent.
+ */
+const UNSUPPORTED_MAP_OPTIONS = [
+  "depth",
+  "breadth",
+  "selectPaths",
+  "excludePaths",
+  "instructions",
+] as const;
+
+interface SpiderMapCapabilityOptions {
+  readonly env: NodeJS.ProcessEnv;
+  readonly transport?: SpiderTransportDeps;
+}
+
+/**
+ * Local cache-identity type: identical to the shared `CacheIdentity`
+ * for map except `provider` is the `"spider"` literal. Assignable to
+ * the shared contract once `"spider"` joins `PROVIDER_IDS`.
+ */
+interface SpiderMapCacheIdentity {
+  readonly provider: "spider";
+  readonly capability: "map";
+  readonly credentialFingerprint: string;
+  readonly request: Readonly<MapRequest>;
+}
+
+/** Local Map operation contract — see the module header. */
+interface SpiderMapOperation {
+  readonly kind: "map-fetch";
+  validate(request: MapRequest): void;
+  cacheIdentity(request: MapRequest): SpiderMapCacheIdentity;
+  decodeCached(value: unknown): MapResult | null;
+  invoke(request: MapRequest): Promise<MapResult>;
+}
+
+/** Local Map contract — see the module header. */
+interface SpiderMapCapability {
+  readonly fetch: SpiderMapOperation;
+}
+
+function createSpiderMapCapability(options: SpiderMapCapabilityOptions): SpiderMapCapability {
+  const { env, transport } = options;
+
+  const fetch: SpiderMapOperation = {
+    kind: "map-fetch",
+
+    validate(request: MapRequest): void {
+      assertHttpUrl(request.url);
+      if (request.limit !== undefined && request.limit <= 0) {
+        throw new ValidationError("Map limit must be greater than 0");
+      }
+      for (const key of UNSUPPORTED_MAP_OPTIONS) {
+        if (request[key] !== undefined) {
+          throw new UnsupportedOptionError("spider", "map", key);
+        }
+      }
+    },
+
+    cacheIdentity(request: MapRequest): SpiderMapCacheIdentity {
+      const apiKey = getSpiderApiKey(env) ?? "";
+      return {
+        provider: "spider",
+        capability: "map",
+        credentialFingerprint: credentialFingerprint(apiKey),
+        request,
+      };
+    },
+
+    decodeCached(value: unknown): MapResult | null {
+      return decodeMapResult(value);
+    },
+
+    async invoke(request: MapRequest): Promise<MapResult> {
+      fetch.validate(request);
+
+      const apiKey = requireSpiderApiKey(env);
+      try {
+        const params: { url: string; limit?: number } = { url: request.url };
+        if (request.limit !== undefined) {
+          params.limit = request.limit;
+        }
+        const raw = await fetchSpiderLinks(apiKey, params, transport);
+        return normalizeSpiderLinksResult(raw, request);
+      } catch (error) {
+        throw normalizeSpiderError(error);
+      }
+    },
+  };
+
+  return { fetch };
+}
+
+// ---------------------------------------------------------------------------
 // Descriptor
 // ---------------------------------------------------------------------------
 
@@ -530,6 +866,8 @@ interface SpiderAdapter {
   readonly id: "spider";
   readonly search: SpiderSearchCapability;
   readonly reader: SpiderReaderCapability;
+  readonly crawl: SpiderCrawlCapability;
+  readonly map: SpiderMapCapability;
 }
 
 /** Local Descriptor contract — see the module header. */
@@ -543,7 +881,7 @@ interface SpiderDescriptor {
 
 /**
  * Build the Spider.cloud Provider Descriptor. Advertises the capabilities
- * the Adapter currently supplies (Search, Reader; crawl/map/quota/
+ * the Adapter currently supplies (Search, Reader, Crawl, Map; quota/
  * diagnostics land with their own tickets). `create()` is
  * side-effect-free; the transport is invoked per Capability call.
  */
@@ -557,12 +895,14 @@ export function createSpiderDescriptor(
       return getSpiderApiKey(env) !== undefined;
     },
     capabilities(): ReadonlySet<ProviderCapability> {
-      return new Set<ProviderCapability>(["search", "reader"]);
+      return new Set<ProviderCapability>(["search", "reader", "crawl", "map"]);
     },
     create(context: ProviderContext): SpiderAdapter {
       const search = createSpiderSearchCapability({ env: context.env, transport });
       const reader = createSpiderReaderCapability({ env: context.env, transport });
-      return { id: "spider", search, reader };
+      const crawl = createSpiderCrawlCapability({ env: context.env, transport });
+      const map = createSpiderMapCapability({ env: context.env, transport });
+      return { id: "spider", search, reader, crawl, map };
     },
     credentialEnvVars: ["SPIDER_API_KEY"],
   };

@@ -106,3 +106,38 @@ describe("spider reader", () => {
     assert.equal(adapter.reader.fetch.decodeCached({ bogus: true }), null);
   });
 });
+
+describe("spider crawl and map", () => {
+  it("crawl.fetch drops non-200 pages", async () => {
+    const raw = [
+      { url: "https://example.test/ok", status: 200, content: "# Ok" },
+      { url: "https://example.test/no", status: 404, content: "missing" },
+    ];
+    const adapter = createSpiderDescriptor({
+      transport: { fetch: async () => ({ ok: true, status: 200, json: async () => raw, text: async () => JSON.stringify(raw), headers: { get: () => null } }) },
+    }).create({ env: { SPIDER_API_KEY: "k" } });
+    const result = await adapter.crawl.fetch.invoke({ url: "https://example.test" });
+    assert.equal(adapter.crawl.fetch.kind, "crawl-fetch");
+    assert.equal(result.schemaVersion, 1);
+    assert.equal(result.baseUrl, "https://example.test");
+    assert.equal(result.totalPages, 1);
+    assert.equal(result.pages.length, 1);
+    assert.equal(result.pages[0].url, "https://example.test/ok");
+    assert.equal(result.pages[0].contentFormat, "markdown");
+  });
+
+  it("map.fetch dedupes links", async () => {
+    const raw = [{ url: "https://example.test/a" }, { url: "https://example.test/a" }, { url: "https://example.test/b" }];
+    const adapter = createSpiderDescriptor({
+      transport: { fetch: async (url) => {
+        assert.match(String(url), /\/links$/);
+        return { ok: true, status: 200, json: async () => raw, text: async () => JSON.stringify(raw), headers: { get: () => null } };
+      } },
+    }).create({ env: { SPIDER_API_KEY: "k" } });
+    const result = await adapter.map.fetch.invoke({ url: "https://example.test" });
+    assert.equal(result.schemaVersion, 1);
+    assert.equal(result.baseUrl, "https://example.test");
+    assert.equal(result.totalUrls, 2);
+    assert.deepEqual(result.urls, ["https://example.test/a", "https://example.test/b"]);
+  });
+});

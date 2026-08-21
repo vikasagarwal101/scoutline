@@ -31,6 +31,8 @@ const { version: VERSION } = pkg;
 const BASE_URL = "https://api.spider.cloud";
 const SEARCH_PATH = "/search";
 const SCRAPE_PATH = "/scrape";
+const CRAWL_PATH = "/crawl";
+const LINKS_PATH = "/links";
 const DEFAULT_TIMEOUT_MS = 30000;
 const USER_AGENT = `scoutline/${VERSION}`;
 
@@ -218,4 +220,80 @@ export async function fetchSpiderScrape(
     stealth: params.stealth,
   };
   return postSpiderJson(apiKey, SCRAPE_PATH, body, deps, "scrape");
+}
+
+/**
+ * Provider-native crawl request body fields (Spider.cloud API field
+ * names). The Adapter maps the Provider-neutral `CrawlRequest` into
+ * these before calling {@link fetchSpiderCrawl}; the transport never
+ * imports a capability contract.
+ *
+ * The crawl endpoint is SYNCHRONOUS (locked contract): the response is
+ * the final JSON array of crawled pages — there is no job id to poll
+ * and no async-job state file.
+ */
+export interface SpiderCrawlParams {
+  /** Root URL to crawl. */
+  readonly url: string;
+  /** Total pages to process, mapped from `limit`. */
+  readonly limit?: number;
+  /** Crawl depth, mapped from `depth`. */
+  readonly depth?: number;
+  /** `markdown` (canonical default) or `text`, mapped from `format`. */
+  readonly return_format: "markdown" | "text";
+}
+
+/**
+ * Perform ONE POST against the Spider.cloud /crawl endpoint. No retry,
+ * no poll loop; no response body in public errors. Returns the parsed
+ * JSON value (raw; the Adapter post-processes into a normalized
+ * `CrawlResult`).
+ */
+export async function fetchSpiderCrawl(
+  apiKey: string,
+  params: SpiderCrawlParams,
+  deps: SpiderTransportDeps = {},
+): Promise<unknown> {
+  const body: Record<string, unknown> = {
+    url: params.url,
+    return_format: params.return_format,
+  };
+  if (params.limit !== undefined) {
+    body.limit = params.limit;
+  }
+  if (params.depth !== undefined) {
+    body.depth = params.depth;
+  }
+  return postSpiderJson(apiKey, CRAWL_PATH, body, deps, "crawl");
+}
+
+/**
+ * Provider-native links (map) request body fields (Spider.cloud API
+ * field names). The Adapter maps the Provider-neutral `MapRequest` into
+ * these before calling {@link fetchSpiderLinks}; the transport never
+ * imports a capability contract. The documented /links wire body is
+ * exactly `url` + `limit`.
+ */
+export interface SpiderLinksParams {
+  /** Root URL to map. */
+  readonly url: string;
+  /** Total URLs to discover, mapped from `limit`. */
+  readonly limit?: number;
+}
+
+/**
+ * Perform ONE POST against the Spider.cloud /links endpoint. No retry;
+ * no response body in public errors. Returns the parsed JSON value
+ * (raw; the Adapter post-processes into a normalized `MapResult`).
+ */
+export async function fetchSpiderLinks(
+  apiKey: string,
+  params: SpiderLinksParams,
+  deps: SpiderTransportDeps = {},
+): Promise<unknown> {
+  const body: Record<string, unknown> = { url: params.url };
+  if (params.limit !== undefined) {
+    body.limit = params.limit;
+  }
+  return postSpiderJson(apiKey, LINKS_PATH, body, deps, "links");
 }

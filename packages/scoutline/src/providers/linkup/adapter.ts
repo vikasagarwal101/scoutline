@@ -35,7 +35,8 @@
  *   url      -> finalUrl (falls back to the requested url)
  *   markdown -> content (empty → ApiError; never cache an empty fetch)
  *   rawHtml / images -> (dropped)
- *   renderJs is always requested true (SPA compatibility)
+ *   renderJs -> renderJs wire field (control honored; defaults true
+ *               when absent for SPA compatibility)
  *
  * Research lifecycle (mirrors createExaDescriptor, Linkup SPEC §Research):
  *   POST /research              — submit task once (no retry, double-charge
@@ -167,28 +168,32 @@ function mapRecencyToDateWindow(
   recency: SearchRecency,
   now: () => number,
 ): { fromDate: string; toDate: string } | undefined {
+  // All arithmetic uses UTC accessors so the month-end overflow guards
+  // reason on the same UTC timeline the window is serialized with
+  // (toISOString). Local-time accessors would skew the window by the
+  // zone offset whenever the local and UTC calendar days differ.
   const current = new Date(now());
   const from = new Date(now());
   switch (recency) {
     case "oneDay":
-      from.setDate(from.getDate() - 1);
+      from.setUTCDate(from.getUTCDate() - 1);
       break;
     case "oneWeek":
-      from.setDate(from.getDate() - 7);
+      from.setUTCDate(from.getUTCDate() - 7);
       break;
     case "oneMonth": {
-      const targetMonth = from.getMonth() - 1;
-      from.setMonth(targetMonth);
-      if (from.getMonth() !== ((targetMonth % 12) + 12) % 12) {
-        from.setDate(0);
+      const targetMonth = from.getUTCMonth() - 1;
+      from.setUTCMonth(targetMonth);
+      if (from.getUTCMonth() !== ((targetMonth % 12) + 12) % 12) {
+        from.setUTCDate(0);
       }
       break;
     }
     case "oneYear": {
-      const originalMonth = current.getMonth();
-      from.setFullYear(current.getFullYear() - 1);
-      if (from.getMonth() !== originalMonth) {
-        from.setDate(0);
+      const originalMonth = current.getUTCMonth();
+      from.setUTCFullYear(current.getUTCFullYear() - 1);
+      if (from.getUTCMonth() !== originalMonth) {
+        from.setUTCDate(0);
       }
       break;
     }
@@ -403,6 +408,41 @@ interface LinkupReaderCapabilityOptions {
   readonly transport?: LinkupTransportDeps;
 }
 
+/**
+ * Reader controls with no Linkup `/fetch` wire equivalent. The wire body
+ * is `{ url, renderJs }` only; anything the user explicitly asks for
+ * that Linkup cannot honor is rejected at validation with the 3-arg
+ * `UnsupportedOptionError` — never silently accepted and dropped.
+ *
+ * Boolean semantics follow the shared reader convention: the read
+ * handler materializes `false` for absent flags, so `false` means "not
+ * requested" for the `true`-activated flags, while `retainImages` is
+ * the inverse (the handler sets `true` by default; only `false`
+ * carries user intent, and Linkup has no image-stripping knob).
+ * `format: "markdown"` is the adapter's native output and passes.
+ */
+const UNSUPPORTED_READER_CONDITIONS: ReadonlyArray<{
+  readonly key: keyof ReaderFetchRequest;
+  readonly active: unknown;
+}> = [
+  { key: "retainImages", active: false },
+  { key: "withLinksSummary", active: true },
+  { key: "noGfm", active: true },
+  { key: "keepImgDataUrl", active: true },
+  { key: "withImagesSummary", active: true },
+];
+
+function assertNoUnsupportedReaderControls(request: ReaderFetchRequest): void {
+  if (request.format === "text") {
+    throw new UnsupportedOptionError("linkup", "reader", "format");
+  }
+  for (const { key, active } of UNSUPPORTED_READER_CONDITIONS) {
+    if (request[key] === active) {
+      throw new UnsupportedOptionError("linkup", "reader", key);
+    }
+  }
+}
+
 function createLinkupReaderCapability(
   options: LinkupReaderCapabilityOptions,
 ): ReaderCapability {
@@ -413,6 +453,7 @@ function createLinkupReaderCapability(
 
     validate(request: ReaderFetchRequest): void {
       assertHttpUrl(request.url);
+      assertNoUnsupportedReaderControls(request);
     },
 
     cacheIdentity(
@@ -438,13 +479,24 @@ function createLinkupReaderCapability(
       fetch.validate(request);
 
       const apiKey = resolveApiKey(env);
-      // renderJs is always true (Linkup SPEC): headless-browser render so
+      // renderJs is a Linkup /fetch wire field: honor the control, with
+      // headless-browser render (true) as the default when absent so
       // dynamic SPAs extract like static pages.
       const wireRequest: LinkupFetchWireRequest = {
         url: request.url,
-        renderJs: true,
+        renderJs: request.renderJs ?? true,
       };
-      const raw = await fetchLinkupFetch(apiKey, wireRequest, transport);
+      // --timeout wires to the client abort budget via a per-request
+      // LINKUP_TIMEOUT override (same seam Firecrawl uses; /fetch has no
+      // wire timeout field).
+      const requestDeps: LinkupTransportDeps | undefined =
+        request.timeout !== undefined
+          ? {
+              ...transport,
+              env: { LINKUP_TIMEOUT: String(Math.round(request.timeout * 1000)) },
+            }
+          : transport;
+      const raw = await fetchLinkupFetch(apiKey, wireRequest, requestDeps);
       return normalizeLinkupFetchResult(request.url, raw);
     },
   };
@@ -613,7 +665,9 @@ function isTransientPollError(err: unknown): boolean {
  * state file atomically. On EEXIST (a concurrent invocation already
  * created a task for this request), read the existing state file and
  * return its task id instead — the concurrent task is polled, not
- * duplicated.
+ * duplicated. Any other state-write failure never discards the created
+ * task id: the just-created (billable) task is polled in memory, since
+ * persistence is resumability best-effort, not a precondition.
  */
 async function createResearchTask(
   apiKey: string,
@@ -640,12 +694,19 @@ async function createResearchTask(
     await stateFile.write(identityHash, state);
   } catch (err) {
     if (isEexistError(err)) {
+      // Concurrent invocation won the race — poll its task instead.
       const existing = await stateFile.read(identityHash);
       if (existing !== null) {
         return existing.requestId;
       }
+      // Fall through: poll the task we just created (same as below).
     } else {
-      throw err;
+      // The task already exists server-side and is billable; losing its
+      // id to a state-write failure would orphan the paid task and a
+      // retry would create (and pay for) a duplicate. Persistence is
+      // best-effort: poll the created task and complete the invocation.
+      // (The same shape Tavily documents for its corrupt-file path; the
+      // state write failure surfaces only if polling also fails.)
     }
   }
   return taskId;

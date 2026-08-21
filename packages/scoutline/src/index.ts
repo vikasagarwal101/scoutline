@@ -187,8 +187,8 @@ advertises and supplies reader plus crawl, map, and research; Exa
 advertises and supplies search, reader, and research; Parallel AI
 advertises search, research, and reader; Perplexity advertises search
 and research; Jina AI advertises search, reader, and research (keyless
-supported); MiniMax advertises and supplies none of those Provider-only
-Capabilities.
+supported); Linkup advertises search, reader, and research; MiniMax
+advertises and supplies none of those Provider-only Capabilities.
 Provider fallback is always-on by default (0.11.0+): selecting a
 non-supplier emits a stderr notice and silently reroutes to the next
 eligible configured Provider in registry order. Use --no-fallback (or

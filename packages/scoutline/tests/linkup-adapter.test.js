@@ -243,3 +243,61 @@ describe("Linkup Research Adapter — async polling lifecycle", () => {
     assert.equal(stateFile.store.size, 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Quota + Diagnostics (GET /credits/balance)
+// ---------------------------------------------------------------------------
+
+describe("Linkup Quota + Diagnostics Adapters — credits balance", () => {
+  it("quota.invoke maps balance to credits remaining without inventing a limit", async () => {
+    const adapter = createLinkupDescriptor({
+      transport: { fetch: async (url) => {
+        assert.match(String(url), /\/credits\/balance$/);
+        return jsonRes({ balance: 42 });
+      } },
+    }).create({ env: { LINKUP_API_KEY: "k" } });
+    const dash = await adapter.quota.invoke();
+    assert.equal(dash.provider, "linkup");
+    assert.equal(dash.status, "ok");
+    assert.equal(dash.categories[0].name, "credits");
+    assert.equal(dash.categories[0].unit, "credits");
+    assert.equal(dash.categories[0].current.remaining, 42);
+    assert.equal(dash.categories[0].current.remainingPercent, undefined);
+  });
+
+  it("create() does not fetch and advertises quota + diagnostics capabilities", async () => {
+    let calls = 0;
+    const descriptor = createLinkupDescriptor({
+      transport: { fetch: async () => { calls += 1; return jsonRes({ balance: 1 }); } },
+    });
+    const adapter = descriptor.create({ env: { LINKUP_API_KEY: "k" } });
+    assert.equal(calls, 0);
+    assert.ok(adapter.quota);
+    assert.ok(adapter.diagnostics);
+    assert.ok(descriptor.capabilities().has("quota"));
+    assert.ok(descriptor.capabilities().has("diagnostics"));
+  });
+
+  it("diagnostics.invoke probes GET /credits/balance and never POSTs", async () => {
+    const calls = [];
+    const adapter = createLinkupDescriptor({
+      transport: { fetch: async (url, init) => {
+        calls.push({ url: String(url), method: init?.method ?? "GET" });
+        return jsonRes({ balance: 42 });
+      } },
+    }).create({ env: { LINKUP_API_KEY: "k" } });
+    await adapter.diagnostics.invoke({ probe: true });
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/credits\/balance$/);
+    assert.equal(calls[0].method, "GET");
+  });
+
+  it("diagnostics.invoke skips the transport when probe is false", async () => {
+    let calls = 0;
+    const adapter = createLinkupDescriptor({
+      transport: { fetch: async () => { calls += 1; return jsonRes({ balance: 1 }); } },
+    }).create({ env: { LINKUP_API_KEY: "k" } });
+    await adapter.diagnostics.invoke({ probe: false });
+    assert.equal(calls, 0);
+  });
+});

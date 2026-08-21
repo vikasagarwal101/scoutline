@@ -1,10 +1,11 @@
 /**
  * Linkup direct HTTP transport.
  *
- * Performs POSTs against the Linkup REST endpoints
- * (`https://api.linkup.so/v1`) with an `Authorization: Bearer <apiKey>`
- * header. There is NO internal retry — shared execution owns retry
- * policy. Fetch and timers are injectable for tests.
+ * Performs POSTs (and quota/diagnostics GETs) against the Linkup REST
+ * endpoints (`https://api.linkup.so/v1`) with an
+ * `Authorization: Bearer <apiKey>` header. There is NO internal
+ * retry — shared execution owns retry policy. Fetch and timers are
+ * injectable for tests.
  *
  * Structurally cloned from `providers/tavily/client.ts` (Tavily/Parallel
  * analog, IMPLEMENTATION-CONTRACT analog-adapter table), simplified to
@@ -57,6 +58,7 @@ const BASE_URL = "https://api.linkup.so/v1";
 const SEARCH_PATH = "/search";
 const FETCH_PATH = "/fetch";
 const RESEARCH_PATH = "/research";
+const CREDITS_BALANCE_PATH = "/credits/balance";
 const DEFAULT_TIMEOUT_MS = 30000;
 
 const USER_AGENT = `scoutline/${VERSION}`;
@@ -252,6 +254,77 @@ export async function fetchLinkupFetch(
   return postLinkupJson(apiKey, FETCH_PATH, body, deps, "fetch");
 }
 
+
+// ---------------------------------------------------------------------------
+// Quota / diagnostics — non-destructive GET transport
+// ---------------------------------------------------------------------------
+
+/**
+ * Layer 1 — HTTP-status mapping for GET requests. Same semantics as
+ * `postLinkupJson`'s `mapStatusError`; separated so the
+ * quota/diagnostics seam (which only ever issues GETs) does not route
+ * through the POST-only path.
+ */
+async function getLinkupJson(
+  apiKey: string,
+  path: string,
+  deps: LinkupTransportDeps,
+  endpointLabel: string,
+): Promise<unknown> {
+  const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
+  const setT = deps.setTimeout ?? setTimeout;
+  const clearT = deps.clearTimeout ?? clearTimeout;
+  const env = deps.env ?? process.env;
+  const timeoutMs = resolveTimeoutMs(env);
+
+  const url = `${BASE_URL}${path}`;
+  const controller = new AbortController();
+  const timeoutId = setT(() => controller.abort(), timeoutMs);
+  try {
+    const res = await f(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "User-Agent": USER_AGENT,
+      },
+      signal: controller.signal,
+    });
+    clearT(timeoutId);
+    if (!res.ok) {
+      await res.text().catch(() => {});
+      throw mapStatusError(res.status);
+    }
+    let parsed: unknown;
+    try {
+      parsed = await res.json();
+    } catch {
+      throw new ApiError(`Linkup ${endpointLabel} returned a malformed response`, 500);
+    }
+    return parsed;
+  } catch (err) {
+    clearT(timeoutId);
+    throw normalizeTransportError(err, timeoutMs);
+  } finally {
+    controller.abort();
+  }
+}
+
+/**
+ * Perform ONE GET against the Linkup `/credits/balance` endpoint. No
+ * retry; no response body in public errors. Returns the parsed JSON
+ * body (raw; the Adapter post-processes into normalized quota
+ * categories).
+ *
+ * This is the shared quota/diagnostics signal: a non-destructive read
+ * that authenticates the key without spending credits. The Diagnostics
+ * Capability reuses this same GET — a probe must never POST a search.
+ */
+export async function fetchLinkupCreditBalance(
+  apiKey: string,
+  deps: LinkupTransportDeps = {},
+): Promise<unknown> {
+  return getLinkupJson(apiKey, CREDITS_BALANCE_PATH, deps, "quota");
+}
 
 // ---------------------------------------------------------------------------
 // Research — async submit/poll transport (Linkup SPEC §Research)

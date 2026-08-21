@@ -174,3 +174,28 @@ describe("spider quota and diagnostics", () => {
     assert.equal(calls, 2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Registry wiring — "spider" joins PROVIDER_IDS and the built-in registry
+// ---------------------------------------------------------------------------
+
+describe("spider registry wiring", () => {
+  it("spider is on PROVIDER_IDS", async () => {
+    const { PROVIDER_IDS } = await import("../dist/providers/types.js");
+    assert.ok(PROVIDER_IDS.includes("spider"));
+  });
+
+  it("built-in registry exposes the spider descriptor with all six capabilities", async () => {
+    const { BUILT_IN_PROVIDER_DESCRIPTORS } = await import("../dist/providers/registry.js");
+    const descriptor = BUILT_IN_PROVIDER_DESCRIPTORS.find((d) => d.id === "spider");
+    assert.ok(descriptor, "spider descriptor must be in BUILT_IN_PROVIDER_DESCRIPTORS");
+    assert.deepEqual(
+      [...descriptor.capabilities()].sort(),
+      ["crawl", "diagnostics", "map", "quota", "reader", "search"],
+    );
+    assert.deepEqual(descriptor.credentialEnvVars, ["SPIDER_API_KEY"]);
+    assert.equal(descriptor.isConfigured({ SPIDER_API_KEY: "k" }), true);
+    assert.equal(descriptor.isConfigured({ SPIDER_API_KEY: "  " }), false);
+    assert.equal(descriptor.isConfigured({}), false);
+  });
+});

@@ -290,6 +290,17 @@ export const FIRECRAWL_CREDIT_CAPABILITIES: readonly ProviderCapability[] = [
 ];
 
 /**
+ * Spider.cloud capabilities. All four consume the shared `credits`
+ * pool reported by GET /data/credits (remaining-only signal).
+ */
+export const SPIDER_CREDIT_CAPABILITIES: readonly ProviderCapability[] = [
+  "search",
+  "reader",
+  "crawl",
+  "map",
+];
+
+/**
  * The static capability→category mapping table. Built once at module
  * load from the per-provider capability lists so a future capability
  * addition only edits one constant, not 8 rows.
@@ -355,6 +366,15 @@ export const CAPABILITY_MAPPINGS: readonly CapabilityMappingEntry[] = [
       provider: "firecrawl",
       capability,
       categoryAliases: ["Credits"],
+    }),
+  ),
+
+  // Spider — every capability consumes the shared `credits` pool.
+  ...SPIDER_CREDIT_CAPABILITIES.map(
+    (capability): CapabilityMappingEntry => ({
+      provider: "spider",
+      capability,
+      categoryAliases: ["credits"],
     }),
   ),
 ];
@@ -424,6 +444,11 @@ export const PROVIDER_AUTHORITY_POLICIES: readonly ProviderAuthorityPolicy[] = [
     provider: "firecrawl",
     kind: "mapped",
     reason: "Firecrawl exposes a credit-usage pool.",
+  },
+  {
+    provider: "spider",
+    kind: "mapped",
+    reason: "Spider.cloud exposes GET /data/credits as a credit remaining signal.",
   },
   {
     provider: "brave",

@@ -290,8 +290,10 @@ export const FIRECRAWL_CREDIT_CAPABILITIES: readonly ProviderCapability[] = [
 ];
 
 /**
- * Spider.cloud capabilities. All four consume the shared `credits`
- * pool reported by GET /data/credits (remaining-only signal).
+ * Spider.cloud capabilities. All four bill against the shared `credits`
+ * pool reported by GET /data/credits (remaining-only signal). Not in
+ * {@link CAPABILITY_MAPPINGS}: the authority policy is always-unknown,
+ * so there is no alias for the scorer to resolve.
  */
 export const SPIDER_CREDIT_CAPABILITIES: readonly ProviderCapability[] = [
   "search",
@@ -369,14 +371,6 @@ export const CAPABILITY_MAPPINGS: readonly CapabilityMappingEntry[] = [
     }),
   ),
 
-  // Spider — every capability consumes the shared `credits` pool.
-  ...SPIDER_CREDIT_CAPABILITIES.map(
-    (capability): CapabilityMappingEntry => ({
-      provider: "spider",
-      capability,
-      categoryAliases: ["credits"],
-    }),
-  ),
 ];
 
 // ---------------------------------------------------------------------------
@@ -406,7 +400,7 @@ export interface ProviderAuthorityPolicy {
 }
 
 /**
- * The static authority-policy table. Five providers are explicitly
+ * The static authority-policy table. Six providers are explicitly
  * non-authoritative:
  *
  * - **Brave**: reports a rate-limit window via `X-RateLimit-*` headers,
@@ -423,8 +417,12 @@ export interface ProviderAuthorityPolicy {
  *   (`createJinaQuotaCapability`), but its signal is a per-minute
  *   rate-limit window (exact remaining RPM/TPM with an explicitly
  *   unknown limit — GitHub #49), not spend or plan usage.
+ * - **Spider.cloud**: DOES advertise a `quota` capability
+ *   (`createSpiderQuotaCapability`), but its signal is an exact
+ *   remaining credit balance with an unknown limit, not a
+ *   percentage-bounded plan signal.
  *
- * All five providers stay **eligible** for PB-T4 fallback (their
+ * All six providers stay **eligible** for PB-T4 fallback (their
  * `authority:"unknown"` score sorts after every known provider), so
  * they can still be picked when no known provider remains.
  */
@@ -444,11 +442,6 @@ export const PROVIDER_AUTHORITY_POLICIES: readonly ProviderAuthorityPolicy[] = [
     provider: "firecrawl",
     kind: "mapped",
     reason: "Firecrawl exposes a credit-usage pool.",
-  },
-  {
-    provider: "spider",
-    kind: "mapped",
-    reason: "Spider.cloud exposes GET /data/credits as a credit remaining signal.",
   },
   {
     provider: "brave",
@@ -476,6 +469,12 @@ export const PROVIDER_AUTHORITY_POLICIES: readonly ProviderAuthorityPolicy[] = [
     kind: "always-unknown",
     reason:
       "Jina AI quota is a per-minute rate-limit window (exact remaining RPM/TPM, limit unknown); not a spend or plan signal.",
+  },
+  {
+    provider: "spider",
+    kind: "always-unknown",
+    reason:
+      "Spider.cloud exposes GET /data/credits as an exact credit remaining balance (limit unknown); not a percentage-bounded plan signal.",
   },
 ];
 

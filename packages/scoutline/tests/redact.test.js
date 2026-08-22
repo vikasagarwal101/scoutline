@@ -803,6 +803,31 @@ describe("v3 provider keys (2026-08 #78)", () => {
     );
   });
 
+  it("redacts whitespace-separated v3 key assignments (x-api-key separator convention)", () => {
+    assert.strictEqual(
+      redactCredentialString("SPIDER_API_KEY sk-abc123xyz"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("LINKUP_API_KEY lk_9f8e7d6c5b"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("YDC_API_KEY ydc-AA11bb22cc"),
+      "[REDACTED]",
+    );
+  });
+
+  it("leaves ordinary prose naming the v3 variables intact (#44 bar)", () => {
+    for (const prose of [
+      "LINKUP_API_KEY is not set",
+      "SPIDER_API_KEY environment variable",
+      "configure YDC_API_KEY before use",
+    ]) {
+      assert.strictEqual(redactCredentialString(prose), prose);
+    }
+  });
+
   it("redacts the v3 keys case-insensitively like the incumbents", () => {
     assert.strictEqual(
       redactCredentialString("ydc_api_key = mixed-case-secret"),

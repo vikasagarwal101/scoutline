@@ -218,6 +218,13 @@ const PROVIDER_PROMPT_META: Record<ProviderId, ProviderPromptMeta> = {
     registrationUrl: "https://app.linkup.so",
     probeCostsCredit: false,
   },
+  spider: {
+    label: "Spider.cloud",
+    envVar: "SPIDER_API_KEY",
+    registrationUrl: "https://spider.cloud",
+    // The validation probe rides GET /data/credits, a free read.
+    probeCostsCredit: false,
+  },
 };
 
 /**

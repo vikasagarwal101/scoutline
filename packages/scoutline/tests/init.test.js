@@ -1176,6 +1176,28 @@ describe("init provider checklist: registry-derived, equal weight", () => {
       assert.strictEqual(choice.checked, false, `provider ${choice.value} must not be pre-checked`);
     }
   });
+
+  it("spider choice renders Spider.cloud label with a free validation probe", async () => {
+    // Same shape as the registry-order test above: cancel at the
+    // checkbox and inspect only the spider choice. Building the
+    // checklist calls providerMeta() for every registry provider, so a
+    // missing PROVIDER_PROMPT_META row fails closed here.
+    const { BUILT_IN_PROVIDER_DESCRIPTORS } = await import("../dist/providers/registry.js");
+    const script = createScriptedPrompts();
+    script.queueCheckboxCancel();
+    const store = createFakeConfigStore();
+    const { deps } = createInitDeps({ descriptors: BUILT_IN_PROVIDER_DESCRIPTORS, prompts: script.prompts, configStore: store });
+
+    await handleInitWithHelp([], deps);
+
+    const call = script.calls.checkbox[0];
+    assert.ok(call, "checkbox was invoked");
+    const spider = call.choices.find((c) => c.value === "spider");
+    assert.ok(spider, "spider must be offered in the init checklist");
+    assert.strictEqual(spider.name, "Spider.cloud");
+    assert.match(spider.description, /validation probe is free/);
+    assert.strictEqual(spider.checked, false);
+  });
 });
 
 // ---------------------------------------------------------------------------

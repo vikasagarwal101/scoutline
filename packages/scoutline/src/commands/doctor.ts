@@ -393,8 +393,7 @@ Doctor - Provider-aware environment and connectivity diagnostics
 Usage: scoutline doctor [options]
 
 Reports a schema-version-2 diagnostics report listing every built-in
-Provider (zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, linkup) with its configured state, declared
-Capabilities, and connectivity status. The effective Provider (resolved
+Provider (zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, linkup, spider) with its configured state, declaredCapabilities, and connectivity status. The effective Provider (resolved
 from --provider, SCOUTLINE_PROVIDER, or a per-capability routing table
 in config.json, or the quota-ranked default) is the
 Provider that serves a requested capability. The routing field embeds
@@ -418,14 +417,16 @@ capabilityMatrix field reflects that descriptor state
 (repository-exploration currently lists only Z.AI while MiniMax and
 Tavily lack it).
 
-Reader is a Provider Capability. Z.AI, Tavily, Exa, Parallel, and
-Jina descriptor metadata all advertise reader; MiniMax, Brave, and
-Perplexity advertise and supply neither. The capabilityMatrix field
-lists Z.AI, Tavily, Exa, Parallel, and Jina for reader.
+Reader is a Provider Capability. Z.AI, Tavily, Exa, Parallel, Jina,
+and Spider.cloud descriptor metadata all advertise reader; MiniMax,
+Brave, and Perplexity advertise and supply neither. The
+capabilityMatrix field lists Z.AI, Tavily, Exa, Parallel, Jina, and
+Spider.cloud for reader.
 
-Crawl and Map are Provider Capabilities owned by Tavily and Firecrawl.
-Z.AI, MiniMax, Exa, and Brave do not advertise either; the
-capabilityMatrix lists Tavily and Firecrawl for each. Research is
+Crawl and Map are Provider Capabilities owned by Tavily, Firecrawl,
+and Spider.cloud. Z.AI, MiniMax, Exa, and Brave do not advertise
+either; the capabilityMatrix lists Tavily, Firecrawl, and Spider.cloud
+for each. Research is
 supplied by Tavily, Exa, Parallel, Perplexity, and Jina. By default (0.11.0+) Provider fallback
 emits a stderr notice and silently reroutes to the next eligible
 configured supplier when a non-supplier is selected; under

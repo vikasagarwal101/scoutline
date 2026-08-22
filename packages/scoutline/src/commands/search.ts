@@ -777,13 +777,12 @@ export async function executeFanoutPlan(
 
 // Help text
 export const SEARCH_HELP = `
-Search Command - Real-time web search (Z.AI, MiniMax, Tavily, Exa, or Brave)
+Search Command - Real-time web search (all 10 Providers)
 
 Usage: scoutline search <query> [options]
 
 Provider selection (precedence: explicit flag, then SCOUTLINE_PROVIDER, then zai):
-  --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup>   Select the search provider (default: zai)
-  SCOUTLINE_PROVIDER=<id>                 Fallback when --provider is not passed
+  --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>   Select the search provider (default: zai)  SCOUTLINE_PROVIDER=<id>                 Fallback when --provider is not passed
 
 Multi-provider fan-out — activation tiers (highest precedence first):
   1. --provider <tavily,exa,...> or --provider all

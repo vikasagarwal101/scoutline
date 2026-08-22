@@ -16,6 +16,7 @@ import { CRAWL_HELP } from "../dist/commands/crawl.js";
 import { MAP_HELP } from "../dist/commands/map.js";
 import { QUOTA_HELP } from "../dist/commands/quota.js";
 import { DOCTOR_HELP } from "../dist/commands/doctor.js";
+import { SEARCH_HELP } from "../dist/commands/search.js";
 
 const PIPE_ENUM = `(zai | ${PROVIDER_IDS.slice(1).join(" | ")})`;
 const COMMA_ENUM = `(${PROVIDER_IDS.join(", ")})`;
@@ -63,5 +64,14 @@ describe("command help provider enumerations match the registry (#82)", () => {
         `${name}: the --provider entry must not run into the next option`,
       );
     }
+  });
+});
+
+describe("provider-count strings match the registry (#83)", () => {
+  it("SEARCH_HELP counts the full registry", () => {
+    assert.ok(
+      SEARCH_HELP.includes(`all ${PROVIDER_IDS.length} Providers`),
+      `SEARCH_HELP must say "all ${PROVIDER_IDS.length} Providers" — the count string drifted from the registry`,
+    );
   });
 });

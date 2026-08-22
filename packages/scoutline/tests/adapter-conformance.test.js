@@ -28,6 +28,7 @@ import { createPerplexityDescriptor, PerplexityAdapter } from "../dist/providers
 import { createJinaDescriptor, JinaAdapter } from "../dist/providers/jina/adapter.js";
 import { createYouDescriptor } from "../dist/providers/you/adapter.js";
 import { createLinkupDescriptor } from "../dist/providers/linkup/adapter.js";
+import { createSpiderDescriptor } from "../dist/providers/spider/adapter.js";
 import {
   BUILT_IN_PROVIDER_DESCRIPTORS,
   getProviderDescriptor,
@@ -61,6 +62,34 @@ async function runSearchConformance(createCapability, rawFixture) {
   const capability = createCapability(rawFixture);
   const normalized = await capability.invoke(CONFORMANCE_REQUEST);
   return [...normalized].map((s) => ({ ...s }));
+}
+
+/**
+ * Compare a Provider's normalized search output to the shared fixture.
+ *
+ * The fixture pins the core fields (title/url/summary) every Provider
+ * must converge on. The OPTIONAL `source`/`date` fields of
+ * SearchSource are provider-variable — e.g. Spider.cloud attributes
+ * every row to "spider.cloud" — so they are constrained to the
+ * documented optional-key set instead of being required absent. For
+ * every Provider whose fixture produces no optional fields this is
+ * exactly the previous deepStrictEqual against the fixture.
+ */
+function assertMatchesSharedSearchFixture(normalized, expected, id) {
+  const core = normalized.map(({ title, url, summary }) => ({ title, url, summary }));
+  assert.deepStrictEqual(
+    core,
+    expected,
+    `Provider "${id}" must normalize its raw fixture to the shared normalized form`,
+  );
+  for (const entry of normalized) {
+    for (const key of Object.keys(entry)) {
+      assert.ok(
+        key === "title" || key === "url" || key === "summary" || key === "source" || key === "date",
+        `Provider "${id}" normalized entry carries non-contract field "${key}"`,
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +219,24 @@ function makeFirecrawlCapability(rawResult) {
   });
   const descriptor = createFirecrawlDescriptor({ transport: { fetch: fetchFn } });
   const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: "k" } });
+  return adapter.search;
+}
+
+/**
+ * Spider Adapter factory: accepts a raw Spider-shaped response (flat
+ * page array with url + metadata.title/description), builds a fake
+ * fetch, and returns the adapter's Search Capability.
+ */
+function makeSpiderCapability(rawResult) {
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rawResult),
+    json: async () => rawResult,
+    headers: { get: () => null },
+  });
+  const descriptor = createSpiderDescriptor({ transport: { fetch: fetchFn } });
+  const adapter = descriptor.create({ env: { SPIDER_API_KEY: "k" } });
   return adapter.search;
 }
 
@@ -377,11 +424,7 @@ describe("Search Adapter conformance — shared normalized output", () => {
         `Provider "${id}" has a conformance factory but no raw fixture in SEARCH_CONFORMANCE_RAW.`,
       );
       const normalized = await runSearchConformance(factory, raw);
-      assert.deepStrictEqual(
-        normalized,
-        expected,
-        `Provider "${id}" must normalize its raw fixture to the shared normalized form`,
-      );
+      assertMatchesSharedSearchFixture(normalized, expected, id);
     }
   });
 
@@ -437,6 +480,7 @@ const SEARCH_CONFORMANCE_FACTORIES = new Map([
   ["jina", makeJinaCapability],
   ["you", makeYouCapability],
   ["linkup", makeLinkupCapability],
+  ["spider", makeSpiderCapability],
 ]);
 
 /**
@@ -653,6 +697,28 @@ const SEARCH_CONFORMANCE_RAW = new Map([
       ],
     },
   ],
+  // Spider raw response (flat page array; url + metadata.title and
+  // metadata.description feed title/summary; rows are attributed to
+  // "spider.cloud" via the optional `source` field).
+  [
+    "spider",
+    [
+      {
+        url: "https://example.test/one",
+        metadata: {
+          title: "Conformance result one",
+          description: "Shared normalized summary one.",
+        },
+      },
+      {
+        url: "https://example.test/two",
+        metadata: {
+          title: "Conformance result two",
+          description: "Shared normalized summary two.",
+        },
+      },
+    ],
+  ],
 ]);
 describe("CI completeness gate — every search Provider has a conformance factory (6.2)", () => {
   it("all registry providers advertising 'search' have a conformance factory", () => {
@@ -700,10 +766,10 @@ describe("CI completeness gate — every search Provider has a conformance facto
         `Provider "${id}" conformance suite produced no normalized results — ` +
           `invoke() did not execute a real path.`,
       );
-      assert.deepStrictEqual(
+      assertMatchesSharedSearchFixture(
         normalized,
         expected,
-        `Provider "${id}" executed conformance diverges from fixtures/normalized/search.json.`,
+        `${id} (executed)`,
       );
     }
     // The executed set must cover every registry Provider advertising
@@ -934,7 +1000,7 @@ describe("AbortSignal — new research invokes honour pre-aborted signal (2.6)",
 // ---------------------------------------------------------------------------
 
 describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
-  it("contains exactly [zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup] in that order", () => {
+  it("contains exactly [zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider] in that order", () => {
     assert.deepStrictEqual(
       BUILT_IN_PROVIDER_DESCRIPTORS.map((d) => d.id),
       [
@@ -949,6 +1015,7 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
         "jina",
         "you",
         "linkup",
+        "spider",
       ],
     );
   });

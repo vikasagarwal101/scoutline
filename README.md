@@ -24,7 +24,7 @@
 - **Repo** — Search and read GitHub repository code
 - **Tools** — MCP tool discovery, schemas, and raw calls
 - **Code Mode** — TypeScript tool chaining for agent automation
-- **Provider selection** — Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, or Linkup
+- **Provider selection** — Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, or Spider.cloud
 
 ## Quick Start
 
@@ -40,12 +40,12 @@ Get your Z.AI API key at: https://z.ai/manage-apikey/apikey-list
 
 ### Interactive setup (`scoutline init`)
 
-Run `npx scoutline@0.17.4 init` once to record API keys in
+Run `npx scoutline init` once to record API keys in
 `~/.scoutline/config.json` (mode 0600). The wizard:
 
 - offers to import a key already present in your environment;
 - walks a provider checklist (Z.AI, MiniMax, Tavily, Exa, Brave,
-  Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup — none pre-checked);
+  Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, and Spider.cloud — none pre-checked);
 - validates each key with a single inline probe against an ephemeral
   environment (the candidate never touches disk until the final
   atomic write);
@@ -189,6 +189,16 @@ npx scoutline --provider linkup research "Compare React vs Svelte for production
 
 Get your Linkup API key at: https://app.linkup.so
 
+### Using Spider.cloud (Search, Reader, Crawl, Map)
+```bash
+export SPIDER_API_KEY="your-spider-key"
+npx scoutline --provider spider search "AI funding rounds" --topic news
+npx scoutline --provider spider read https://example.com/
+npx scoutline --provider spider crawl https://example.com --limit 10
+npx scoutline --provider spider map https://example.com
+```
+Get your Spider.cloud API key at: https://spider.cloud
+
 ## Installation
 
 ### As an Agent Skill
@@ -214,7 +224,7 @@ npx scoutline --help
 
 ## Provider Selection
 
-Shared commands accept `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup>`. Resolution precedence:
+Shared commands accept `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>`. Resolution precedence:
 
 1. Explicit `--provider` flag
 2. `SCOUTLINE_PROVIDER` environment variable
@@ -286,29 +296,29 @@ eligible vision providers (`--concurrency` default 1).
 
 ### Capability Matrix
 
-| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Command |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Search | Yes | Yes | Yes | Yes | Yes (web/news/video) | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline search` |
-| Reader | Yes | No | Yes | Yes | No | Yes | Yes | No | Yes | Yes | Yes | `scoutline read` |
-| Crawl | No | No | Yes | No | No | Yes (async) | No | No | No | No | No | `scoutline crawl` |
-| Map | No | No | Yes | No | No | Yes | No | No | No | No | No | `scoutline map` |
-| Research | No | No | Yes | Yes | No | No | Yes | Yes | Yes | Yes | Yes | `scoutline research` |
-| Vision (interpret-image) | Yes | Yes | No | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
-| Quota | Yes | Yes | Yes | No | Yes (rate-limit window) | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | No | Yes (credits) | `scoutline quota` |
-| Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
-| Repo exploration | Yes | No | No | No | No | No | No | No | No | No | No | `scoutline repo` |
-| Raw tools | Yes | No | No | No | No | No | No | No | No | No | No | `scoutline tools` |
-| Code Mode | Yes | No | No | No | No | No | No | No | No | No | No | `scoutline code` |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Spider.cloud | Command |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Search | Yes | Yes | Yes | Yes | Yes (web/news/video) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline search` |
+| Reader | Yes | No | Yes | Yes | No | Yes | Yes | No | Yes | Yes | Yes | Yes | `scoutline read` |
+| Crawl | No | No | Yes | No | No | Yes (async) | No | No | No | No | No | Yes (sync) | `scoutline crawl` |
+| Map | No | No | Yes | No | No | Yes | No | No | No | No | No | Yes | `scoutline map` |
+| Research | No | No | Yes | Yes | No | No | Yes | Yes | Yes | Yes | Yes | No | `scoutline research` |
+| Vision (interpret-image) | Yes | Yes | No | No | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
+| Quota | Yes | Yes | Yes | No | Yes (rate-limit window) | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | No | Yes (credits) | Yes (credits) | `scoutline quota` |
+| Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
+| Repo exploration | Yes | No | No | No | No | No | No | No | No | No | No | No | `scoutline repo` |
+| Raw tools | Yes | No | No | No | No | No | No | No | No | No | No | No | `scoutline tools` |
+| Code Mode | Yes | No | No | No | No | No | No | No | No | No | No | No | `scoutline code` |
 
 ### Search Controls
 
-`--topic <general|news|finance>` is accepted by all providers. Tavily passes it natively; Z.AI, MiniMax, Parallel AI, Perplexity, Jina AI, You.com, and Linkup append a keyword to the query; Exa maps it to a category; Firecrawl maps `news` to a news source type; Brave routes `news` to a dedicated news endpoint.
+`--topic <general|news|finance>` is accepted by all providers. Tavily passes it natively; Z.AI, MiniMax, Parallel AI, Perplexity, Jina AI, You.com, Linkup, and Spider.cloud append a keyword to the query; Exa maps it to a category; Firecrawl maps `news` to a news source type; Brave routes `news` to a dedicated news endpoint.
 
 `--type <video>` is Brave-only (mutually exclusive with `--topic`).
 
-`--domain` and `--recency` are honored by Z.AI, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and You.com (Brave maps `--domain` → `site:`, `--recency` → `freshness`; Parallel forwards both through `advanced_settings`; Perplexity forwards both as native search filters). Jina honors `--domain` (`X-Site`) but not `--recency`; Linkup honors both (`includeDomains`, `fromDate` date window). `--location` is honored by Z.AI, Brave (`country`), Parallel AI (`us` only), Jina (`gl`), You.com (`country`), and Linkup (locale keyword appended to the query); MiniMax rejects these controls.
+`--domain` and `--recency` are honored by Z.AI, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and You.com (Brave maps `--domain` → `site:`, `--recency` → `freshness`; Parallel forwards both through `advanced_settings`; Perplexity forwards both as native search filters). Jina honors `--domain` (`X-Site`) but not `--recency`; Linkup honors both (`includeDomains`, `fromDate` date window); Spider.cloud honors both (`whitelist`, Google-style `tbs` filter). `--location` is honored by Z.AI, Brave (`country`), Parallel AI (`us` only), Jina (`gl`), You.com (`country`), Linkup (locale keyword appended to the query), and Spider.cloud (`country_code`); MiniMax rejects these controls.
 
-`--content-size` is a deliberate per-provider overload: `high` maps to Z.AI `content_size`, Tavily `search_depth=advanced`, Brave's LLM Context endpoint (extracted passages joined into summaries), and Parallel AI's per-result excerpt budget; Exa accepts it; You.com maps it to an extraction mode (`full_page`/`highlights`); Firecrawl returns scraped markdown summaries (+1 credit/result); MiniMax and Jina reject it (`UNSUPPORTED_OPTION`); Linkup maps it to a `depth` search parameter (`high` -> `deep`).
+`--content-size` is a deliberate per-provider overload: `high` maps to Z.AI `content_size`, Tavily `search_depth=advanced`, Brave's LLM Context endpoint (extracted passages joined into summaries), and Parallel AI's per-result excerpt budget; Exa accepts it; You.com maps it to an extraction mode (`full_page`/`highlights`); Firecrawl returns scraped markdown summaries (+1 credit/result); MiniMax and Jina reject it (`UNSUPPORTED_OPTION`); Linkup maps it to a `depth` search parameter (`high` -> `deep`); Spider.cloud pins the markdown `return_format` (the canonical payload is the observation).
 
 ## Usage
 

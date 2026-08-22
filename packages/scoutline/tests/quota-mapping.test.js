@@ -101,6 +101,16 @@ const FIRECRAWL_CATEGORIES = [
   },
 ];
 
+// Spider — single `credits` pool from GET /data/credits (remaining-only
+// signal on the wire; the fixture carries a percent for scoring tests).
+const SPIDER_CATEGORIES = [
+  {
+    name: "credits",
+    unit: "credits",
+    current: { remaining: 600 },
+  },
+];
+
 const MINIMAX_CATEGORIES = [
   {
     name: "zorla-x",
@@ -188,13 +198,13 @@ describe("quota-mapping: static mapping coverage", () => {
     }
   });
 
-  it("does not emit mapping rows for always-unknown providers (Brave, Exa, Jina, Linkup)", () => {
+  it("does not emit mapping rows for always-unknown providers (Brave, Exa, Jina, Linkup, Spider)", () => {
     for (const m of CAPABILITY_MAPPINGS) {
       assert.notStrictEqual(m.provider, "brave");
       assert.notStrictEqual(m.provider, "exa");
       assert.notStrictEqual(m.provider, "jina");
       assert.notStrictEqual(m.provider, "linkup");
-    }
+      assert.notStrictEqual(m.provider, "spider");    }
   });
 
   it("zai search/reader/repository-exploration all map to requests", () => {
@@ -233,6 +243,16 @@ describe("quota-mapping: static mapping coverage", () => {
       assert.deepStrictEqual(m.categoryAliases, ["Credits"]);
     }
   });
+
+  it("spider emits no mapping rows (always-unknown authority tier)", () => {
+    for (const cap of ["search", "reader", "crawl", "map"]) {
+      assert.strictEqual(
+        getCapabilityMapping("spider", cap),
+        undefined,
+        `(spider, ${cap}) must not have a mapping row`,
+      );
+    }
+  });
 });
 
 // ===========================================================================
@@ -245,6 +265,13 @@ describe("quota-mapping: authority policy", () => {
       const p = getProviderAuthorityPolicy(id);
       assert.strictEqual(p.kind, "mapped", `${id} should be mapped`);
     }
+  });
+
+  it("spider is always-unknown with the credit-balance reason", () => {
+    const p = getProviderAuthorityPolicy("spider");
+    assert.ok(p, "spider policy row exists");
+    assert.strictEqual(p.kind, "always-unknown");
+    assert.match(p.reason, /credit remaining balance/i);
   });
 
   it("brave and exa are always-unknown with documented reasons", () => {
@@ -348,6 +375,23 @@ describe("quota-mapping: scoreCapability — known providers", () => {
       assert.strictEqual(result.authority, "known");
       assert.strictEqual(result.score, 30);
       assert.strictEqual(result.category, "Credits");
+    }
+  });
+
+  it("spider scores non-authoritative without a PERCENT_CORRUPT warning", async () => {
+    const state = await stateWith([{ provider: "spider", categories: SPIDER_CATEGORIES }]);
+    for (const cap of ["search", "reader", "crawl", "map"]) {
+      const codes = [];
+      const result = scoreCapability(state, "spider", cap, {
+        onWarning: (w) => codes.push(w.code),
+      });
+      assert.strictEqual(result.authority, "unknown");
+      assert.strictEqual(result.reason, "PROVIDER_NON_AUTHORITATIVE");
+      assert.ok(codes.includes("PROVIDER_NON_AUTHORITATIVE"));
+      assert.ok(
+        !codes.includes("PERCENT_CORRUPT"),
+        "a valid remaining-credits snapshot must not be scored PERCENT_CORRUPT",
+      );
     }
   });
 

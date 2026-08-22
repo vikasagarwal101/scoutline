@@ -19,9 +19,9 @@ import { SEARCH_HELP } from "../dist/commands/search.js";
 import { runProcess } from "./helpers/run-process.js";
 
 const PROVIDER_ENUM =
-  "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup>";
+  "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>";
 const PROVIDER_LIST_TAIL =
-  "Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, or Linkup";
+  "Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, or Spider.cloud";
 
 const packageReadme = fs.readFile(new URL("../README.md", import.meta.url), "utf8");
 const rootReadme = fs.readFile(new URL("../../../README.md", import.meta.url), "utf8");
@@ -132,11 +132,11 @@ describe("You.com docs — CLI help enumerations", () => {
     });
     assert.equal(result.code, 0);
     assert.ok(
-      result.stdout.includes("all 11 Providers"),
-      "main help must count 11 providers",
+      result.stdout.includes("all 12 Providers"),
+      "main help must count 12 providers",
     );
     assert.ok(
-      result.stdout.includes("perplexity|jina|you|linkup>"),
+      result.stdout.includes("perplexity|jina|you|linkup|spider>"),
       "main help must list you in --provider",
     );
     assert.ok(
@@ -144,7 +144,7 @@ describe("You.com docs — CLI help enumerations", () => {
       "main help must advertise You.com capabilities",
     );
     assert.ok(
-      result.stdout.includes("Parallel, Jina, and You.com supply it"),
+      result.stdout.includes("Exa, Firecrawl, Parallel, Jina, You.com, Linkup, and Spider.cloud supply it"),
       "main help must list You.com among the read suppliers",
     );
     assert.ok(

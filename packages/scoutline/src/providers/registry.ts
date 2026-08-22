@@ -26,7 +26,7 @@ import { createPerplexityDescriptor } from "./perplexity/adapter.js";
 import { createJinaDescriptor } from "./jina/adapter.js";
 import { createLinkupDescriptor } from "./linkup/adapter.js";
 import { createYouDescriptor } from "./you/adapter.js";
-import type { ProviderDescriptor, ProviderId } from "./types.js";
+import { createSpiderDescriptor } from "./spider/adapter.js";import type { ProviderDescriptor, ProviderId } from "./types.js";
 import {
   getProviderDescriptor as lookupProviderDescriptor,
   getConfiguredProviderDescriptors as lookupConfigured,
@@ -50,6 +50,7 @@ export const BUILT_IN_PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [
   createJinaDescriptor(),
   createYouDescriptor(),
   createLinkupDescriptor(),
+  createSpiderDescriptor(),
 ];
 
 /**

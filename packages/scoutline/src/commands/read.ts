@@ -319,19 +319,22 @@ then zai):
   - Exa and Firecrawl also advertise the reader Capability. Selecting
     exa or firecrawl routes Read through their Adapters; some Z.AI-only
     options are rejected with UNSUPPORTED_OPTION.
-  - Parallel AI (Extract API), Jina AI (r.jina.ai), and Linkup
-    (api.linkup.so) also advertise reader. Selecting parallel, jina, or
-    linkup routes Read through their Adapters; some Z.AI-only options
+  - Parallel AI (Extract API), Jina AI (r.jina.ai), Linkup
+    (api.linkup.so), and Spider.cloud (api.spider.cloud) also
+    advertise reader. Selecting parallel, jina, linkup, or spider
+    routes Read through their Adapters; some Z.AI-only options
     are rejected with UNSUPPORTED_OPTION.
     Jina supports keyless access (no API key required).
     Linkup renders page JavaScript by default and honors --timeout;
     --format text, --no-images, --with-links, --no-gfm,
     --keep-img-data-url, and --with-images-summary are rejected with
     UNSUPPORTED_OPTION (the Linkup /fetch endpoint has no equivalent).
+    Spider.cloud sends the locked four-field /scrape body and rejects
+    every Z.AI-only reader option.
   - MiniMax, Brave, and Perplexity do NOT advertise reader. By default (0.11.0+)
     Provider fallback emits a stderr notice and silently reroutes to
     the next eligible configured supplier (zai, tavily, exa,
-    firecrawl, parallel, jina, or linkup). Under --no-fallback (or SCOUTLINE_NO_FALLBACK=1) the
+    firecrawl, parallel, jina, linkup, or spider). Under --no-fallback (or SCOUTLINE_NO_FALLBACK=1) the
     preflight surfaces UNSUPPORTED_CAPABILITY for the selected
     non-supplier.
 
@@ -352,8 +355,7 @@ Options:
                   code | links | tables | headings
 
 Common Options:
-  --provider <id>            Override the active Provider (zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | linkup)
-  --output-format <mode>     One of: ${OUTPUT_MODE_LIST} (default: data)
+  --provider <id>            Override the active Provider (zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | linkup, spider)  --output-format <mode>     One of: ${OUTPUT_MODE_LIST} (default: data)
   -O <mode>                  Alias for --output-format
 
 Output format (schema-version-1 migration):

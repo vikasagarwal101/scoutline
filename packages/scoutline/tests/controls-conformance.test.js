@@ -46,6 +46,7 @@ import { createTavilyDescriptor } from "../dist/providers/tavily/adapter.js";
 import { createExaDescriptor } from "../dist/providers/exa/adapter.js";
 import { createBraveDescriptor } from "../dist/providers/brave/adapter.js";
 import { createFirecrawlDescriptor } from "../dist/providers/firecrawl/adapter.js";
+import { createSpiderDescriptor } from "../dist/providers/spider/adapter.js";
 import { ParallelAdapter } from "../dist/providers/parallel/adapter.js";
 import { PerplexityAdapter } from "../dist/providers/perplexity/adapter.js";
 import { JinaAdapter } from "../dist/providers/jina/adapter.js";
@@ -271,6 +272,18 @@ const LINKUP_RESEARCH_POLL_RAW = {
     sources: [{ name: "Source", url: "https://example.test/s", snippet: "x" }],
   },
 };
+
+const SPIDER_SEARCH_RAW = [
+  {
+    url: "https://example.test/one",
+    status: 200,
+    metadata: { title: "Result", description: "Sum." },
+    content: "Page body.",
+  },
+];
+const SPIDER_SCRAPE_RAW = [
+  { url: PAGE_URL, status: 200, content: "# Page body", metadata: { title: "Page" } },
+];
 const RESPONDERS = {
   zai: null, // MCP seam, not fetch
   minimax(url, method) {
@@ -374,6 +387,11 @@ const RESPONDERS = {
     }
     return jsonResponse({});
   },
+  spider(url) {
+    if (url.endsWith("/search")) return jsonResponse(SPIDER_SEARCH_RAW);
+    if (url.endsWith("/scrape")) return jsonResponse(SPIDER_SCRAPE_RAW);
+    return jsonResponse({});
+  },
 };
 
 const ENV_BY_PROVIDER = {
@@ -388,6 +406,7 @@ const ENV_BY_PROVIDER = {
   jina: {},
   you: { YDC_API_KEY: "k" },
   linkup: { LINKUP_API_KEY: "k" },
+  spider: { SPIDER_API_KEY: "k" },
 };
 
 /** Research transports need a zero poll interval + no-op lock timers. */
@@ -504,6 +523,8 @@ function makeHarness(provider, capability) {
         calls,
         timerDelays,
       };
+    case "spider":
+      return { adapter: createSpiderDescriptor({ transport }).create(context), calls, timerDelays };
     default:
       throw new Error(`unknown provider ${provider}`);
   }
@@ -2127,6 +2148,119 @@ const ROWS = [
     input: { domain: "example.com" },
     expect: "rejected",
   },
+  // ----- spider / search — Google-style tbs, whitelist, keyword topic ------
+  {
+    provider: "spider",
+    capability: "search",
+    control: "domain",
+    input: { domain: "example.com" },
+    expect: "consumed",
+    on: "body",
+    path: "whitelist",
+    deepEqual: ["example.com"],
+  },
+  {
+    provider: "spider",
+    capability: "search",
+    control: "recency",
+    input: { recency: "oneWeek" },
+    expect: "consumed",
+    on: "body",
+    path: "tbs",
+    equals: "qdr:w",
+  },
+  {
+    provider: "spider",
+    capability: "search",
+    control: "contentSize",
+    input: { contentSize: "high" },
+    expect: "consumed",
+    on: "body",
+    path: "return_format",
+    equals: "markdown",
+  },
+  {
+    provider: "spider",
+    capability: "search",
+    control: "location",
+    input: { location: "us" },
+    expect: "consumed",
+    on: "body",
+    path: "country_code",
+    equals: "us",
+  },
+  {
+    provider: "spider",
+    capability: "search",
+    control: "topic",
+    input: { topic: "news" },
+    expect: "consumed",
+    on: "body",
+    path: "search",
+    includes: "latest news",
+  },
+  {
+    provider: "spider",
+    capability: "search",
+    control: "type",
+    input: { type: "video" },
+    expect: "rejected",
+  },
+
+  // ----- spider / reader — locked /scrape body; every extra control is
+  // rejected rather than accept-and-dropped -------------------------------
+  {
+    provider: "spider",
+    capability: "reader",
+    control: "format",
+    input: { format: "text" },
+    expect: "consumed",
+    on: "body",
+    path: "return_format",
+    equals: "text",
+  },
+  {
+    provider: "spider",
+    capability: "reader",
+    control: "retainImages",
+    input: { retainImages: false },
+    expect: "rejected",
+  },
+  {
+    provider: "spider",
+    capability: "reader",
+    control: "withLinksSummary",
+    input: { withLinksSummary: true },
+    expect: "rejected",
+  },
+  {
+    provider: "spider",
+    capability: "reader",
+    control: "noGfm",
+    input: { noGfm: true },
+    expect: "rejected",
+  },
+  {
+    provider: "spider",
+    capability: "reader",
+    control: "keepImgDataUrl",
+    input: { keepImgDataUrl: true },
+    expect: "rejected",
+  },
+  {
+    provider: "spider",
+    capability: "reader",
+    control: "withImagesSummary",
+    input: { withImagesSummary: true },
+    expect: "rejected",
+  },
+  {
+    provider: "spider",
+    capability: "reader",
+    control: "timeout",
+    input: { timeout: 20 },
+    expect: "rejected",
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2175,6 +2309,7 @@ describe("controls class-guard — table integrity", () => {
       parallel: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
       you: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
       linkup: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
+      spider: { search: SEARCH_CONTROLS, reader: READER_CONTROLS },
     };
     for (const [provider, capabilities] of Object.entries(COVERAGE)) {
       for (const [capability, controls] of Object.entries(capabilities)) {

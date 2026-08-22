@@ -302,6 +302,19 @@ export const LINKUP_CREDIT_CAPABILITIES: readonly ProviderCapability[] = [
 ];
 
 /**
+ * Spider.cloud capabilities. All four bill against the shared `credits`
+ * pool reported by GET /data/credits (remaining-only signal). Not in
+ * {@link CAPABILITY_MAPPINGS}: the authority policy is always-unknown,
+ * so there is no alias for the scorer to resolve.
+ */
+export const SPIDER_CREDIT_CAPABILITIES: readonly ProviderCapability[] = [
+  "search",
+  "reader",
+  "crawl",
+  "map",
+];
+
+/**
  * The static capability→category mapping table. Built once at module
  * load from the per-provider capability lists so a future capability
  * addition only edits one constant, not 8 rows.
@@ -369,6 +382,7 @@ export const CAPABILITY_MAPPINGS: readonly CapabilityMappingEntry[] = [
       categoryAliases: ["Credits"],
     }),
   ),
+
 ];
 
 // ---------------------------------------------------------------------------
@@ -418,6 +432,9 @@ export interface ProviderAuthorityPolicy {
  * - **Linkup**: DOES advertise a `quota` capability
  *   (`createLinkupQuotaCapability`), but its signal is an exact remaining
  *   credit balance with an unknown limit (GitHub #49), not a
+ * - **Spider.cloud**: DOES advertise a `quota` capability
+ *   (`createSpiderQuotaCapability`), but its signal is an exact
+ *   remaining credit balance with an unknown limit, not a
  *   percentage-bounded plan signal.
  *
  * All six providers stay **eligible** for PB-T4 fallback (their
@@ -478,6 +495,12 @@ export const PROVIDER_AUTHORITY_POLICIES: readonly ProviderAuthorityPolicy[] = [
     kind: "always-unknown",
     reason:
       "Linkup exposes GET /v1/credits/balance as an exact credit remaining balance (limit unknown); not a percentage-bounded plan signal.",
+  },
+  {
+    provider: "spider",
+    kind: "always-unknown",
+    reason:
+      "Spider.cloud exposes GET /data/credits as an exact credit remaining balance (limit unknown); not a percentage-bounded plan signal.",
   },
 ];
 

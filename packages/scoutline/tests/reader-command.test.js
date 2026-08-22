@@ -1442,7 +1442,10 @@ describe("Reader Migration 04 help text — read participates in Provider select
     });
     const help = captured.join("\n");
     assert.match(help, /read\s+Fetch and parse web pages.*Provider Capability/s);
-    assert.match(help, /Jina, and Spider\.cloud supply it/);
+    assert.match(
+      help,
+      /Exa, Firecrawl, Parallel, Jina, You\.com, Linkup, and Spider\.cloud supply it/,
+    );
   });
 
   it("read --help bypasses provider resolution and resolves cleanly with no creds", async () => {

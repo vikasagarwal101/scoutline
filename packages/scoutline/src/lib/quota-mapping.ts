@@ -290,6 +290,18 @@ export const FIRECRAWL_CREDIT_CAPABILITIES: readonly ProviderCapability[] = [
 ];
 
 /**
+ * Linkup capabilities. Search, reader, and research all bill against
+ * the shared `credits` pool reported by GET /v1/credits/balance; the
+ * quota category is exposed with an unknown limit (#49), so only the
+ * alias name is static here.
+ */
+export const LINKUP_CREDIT_CAPABILITIES: readonly ProviderCapability[] = [
+  "search",
+  "reader",
+  "research",
+];
+
+/**
  * Spider.cloud capabilities. All four bill against the shared `credits`
  * pool reported by GET /data/credits (remaining-only signal). Not in
  * {@link CAPABILITY_MAPPINGS}: the authority policy is always-unknown,
@@ -417,6 +429,9 @@ export interface ProviderAuthorityPolicy {
  *   (`createJinaQuotaCapability`), but its signal is a per-minute
  *   rate-limit window (exact remaining RPM/TPM with an explicitly
  *   unknown limit — GitHub #49), not spend or plan usage.
+ * - **Linkup**: DOES advertise a `quota` capability
+ *   (`createLinkupQuotaCapability`), but its signal is an exact remaining
+ *   credit balance with an unknown limit (GitHub #49), not a
  * - **Spider.cloud**: DOES advertise a `quota` capability
  *   (`createSpiderQuotaCapability`), but its signal is an exact
  *   remaining credit balance with an unknown limit, not a
@@ -469,6 +484,17 @@ export const PROVIDER_AUTHORITY_POLICIES: readonly ProviderAuthorityPolicy[] = [
     kind: "always-unknown",
     reason:
       "Jina AI quota is a per-minute rate-limit window (exact remaining RPM/TPM, limit unknown); not a spend or plan signal.",
+  },
+  {
+    provider: "you",
+    kind: "always-unknown",
+    reason: "You.com does not advertise a quota capability; no spend endpoint.",
+  },
+  {
+    provider: "linkup",
+    kind: "always-unknown",
+    reason:
+      "Linkup exposes GET /v1/credits/balance as an exact credit remaining balance (limit unknown); not a percentage-bounded plan signal.",
   },
   {
     provider: "spider",

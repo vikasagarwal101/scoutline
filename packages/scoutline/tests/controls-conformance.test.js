@@ -50,6 +50,8 @@ import { createSpiderDescriptor } from "../dist/providers/spider/adapter.js";
 import { ParallelAdapter } from "../dist/providers/parallel/adapter.js";
 import { PerplexityAdapter } from "../dist/providers/perplexity/adapter.js";
 import { JinaAdapter } from "../dist/providers/jina/adapter.js";
+import { createYouDescriptor } from "../dist/providers/you/adapter.js";
+import { createLinkupDescriptor } from "../dist/providers/linkup/adapter.js";
 import { createInMemoryAsyncJobStateFile } from "../dist/lib/async-job-state.js";
 import { UnsupportedOptionError } from "../dist/lib/errors.js";
 
@@ -232,6 +234,45 @@ const JINA_DEEPSEARCH_SSE = [
   "",
 ].join("\n\n");
 
+const YOU_SEARCH_RAW = {
+  results: {
+    web: [{ title: "Result", url: "https://example.test/one", snippets: ["Summary."] }],
+    news: [],
+  },
+};
+const YOU_CONTENTS_RAW = [
+  { url: PAGE_URL, title: "Page", markdown: "# Page body", html: "<h1>Page body</h1>", status: 200 },
+];
+const YOU_RESEARCH_RAW = {
+  output: {
+    content: "## Report",
+    content_type: "text",
+    sources: [{ title: "Source", url: "https://example.test/s", snippets: ["Basis."] }],
+  },
+  metadata: { research_uuid: "research-fixture-001", latency: 3.45 },
+};
+
+const LINKUP_SEARCH_RAW = {
+  results: [
+    {
+      name: "Result",
+      url: "https://example.test/one",
+      content: "Summary.",
+      favicon: "https://example.test/favicon.ico",
+      type: "text",
+    },
+  ],
+};
+const LINKUP_READER_RAW = { url: PAGE_URL, markdown: "# Page body" };
+const LINKUP_RESEARCH_POLL_RAW = {
+  id: "t1",
+  status: "completed",
+  output: {
+    answer: "## Report",
+    sources: [{ name: "Source", url: "https://example.test/s", snippet: "x" }],
+  },
+};
+
 const SPIDER_SEARCH_RAW = [
   {
     url: "https://example.test/one",
@@ -243,7 +284,6 @@ const SPIDER_SEARCH_RAW = [
 const SPIDER_SCRAPE_RAW = [
   { url: PAGE_URL, status: 200, content: "# Page body", metadata: { title: "Page" } },
 ];
-
 const RESPONDERS = {
   zai: null, // MCP seam, not fetch
   minimax(url, method) {
@@ -326,6 +366,27 @@ const RESPONDERS = {
     if (url.includes("r.jina.ai")) return jsonResponse(JINA_READER_RAW);
     return jsonResponse(JINA_SEARCH_RAW); // s.jina.ai GET and POST
   },
+  you(url, method) {
+    // Dual host: ydc-index.io serves /search + /contents, api.you.com /research.
+    if (method === "POST" && url.endsWith("/v1/search")) return jsonResponse(YOU_SEARCH_RAW);
+    if (method === "POST" && url.endsWith("/v1/contents")) return jsonResponse(YOU_CONTENTS_RAW);
+    if (method === "POST" && url.endsWith("/v1/research")) return jsonResponse(YOU_RESEARCH_RAW);
+    return jsonResponse({});
+  },
+  linkup(url, method) {
+    if (method === "POST" && url.endsWith("/search")) return jsonResponse(LINKUP_SEARCH_RAW);
+    if (method === "POST" && url.endsWith("/fetch")) return jsonResponse(LINKUP_READER_RAW);
+    if (method === "POST" && url.endsWith("/research")) {
+      return jsonResponse({ id: "t1", status: "pending" });
+    }
+    if (method === "GET" && url.includes("/research/")) {
+      return jsonResponse(LINKUP_RESEARCH_POLL_RAW);
+    }
+    if (method === "GET" && url.endsWith("/credits/balance")) {
+      return jsonResponse({ balance: 182.45 });
+    }
+    return jsonResponse({});
+  },
   spider(url) {
     if (url.endsWith("/search")) return jsonResponse(SPIDER_SEARCH_RAW);
     if (url.endsWith("/scrape")) return jsonResponse(SPIDER_SCRAPE_RAW);
@@ -343,6 +404,8 @@ const ENV_BY_PROVIDER = {
   parallel: { PARALLEL_API_KEY: "k" },
   perplexity: { PERPLEXITY_API_KEY: "k" },
   jina: {},
+  you: { YDC_API_KEY: "k" },
+  linkup: { LINKUP_API_KEY: "k" },
   spider: { SPIDER_API_KEY: "k" },
 };
 
@@ -448,6 +511,18 @@ function makeHarness(provider, capability) {
       return { adapter: new PerplexityAdapter(context, { transport }), calls, timerDelays };
     case "jina":
       return { adapter: new JinaAdapter(context, { transport }), calls, timerDelays };
+    case "you":
+      return { adapter: createYouDescriptor({ transport }).create(context), calls, timerDelays };
+    case "linkup":
+      return {
+        adapter: createLinkupDescriptor({
+          transport,
+          researchStateFile: stateFile,
+          researchStateDir: capability === "research" ? tmpStateDir() : undefined,
+        }).create(context),
+        calls,
+        timerDelays,
+      };
     case "spider":
       return { adapter: createSpiderDescriptor({ transport }).create(context), calls, timerDelays };
     default:
@@ -1770,6 +1845,309 @@ const ROWS = [
     pick: { method: "POST", urlIncludes: "/v1/tasks/runs" },
   },
 
+  // ----- you / search — every control rides the /v1/search POST body ------
+  {
+    provider: "you",
+    capability: "search",
+    control: "domain",
+    input: { domain: "example.com" },
+    expect: "consumed",
+    on: "body",
+    path: "include_domains",
+    deepEqual: ["example.com"],
+  },
+  {
+    provider: "you",
+    capability: "search",
+    control: "recency",
+    input: { recency: "oneWeek" },
+    expect: "consumed",
+    on: "body",
+    path: "freshness",
+    equals: "week",
+  },
+  {
+    provider: "you",
+    capability: "search",
+    control: "contentSize",
+    input: { contentSize: "high" },
+    expect: "consumed",
+    on: "body",
+    path: "extraction.extraction_mode",
+    equals: "full_page",
+  },
+  {
+    provider: "you",
+    capability: "search",
+    control: "location",
+    input: { location: "us" },
+    expect: "consumed",
+    on: "body",
+    path: "country",
+    equals: "US",
+  },
+  {
+    provider: "you",
+    capability: "search",
+    control: "topic",
+    input: { topic: "news" },
+    expect: "consumed",
+    on: "body",
+    path: "query",
+    includes: "latest news",
+  },
+  {
+    provider: "you",
+    capability: "search",
+    control: "type",
+    input: { type: "video" },
+    expect: "rejected",
+  },
+
+  // ----- you / reader ------------------------------------------------------
+  {
+    provider: "you",
+    capability: "reader",
+    control: "format",
+    input: { format: "text" },
+    expect: "rejected",
+  },
+  {
+    provider: "you",
+    capability: "reader",
+    control: "retainImages",
+    input: { retainImages: false },
+    expect: "rejected",
+  },
+  {
+    provider: "you",
+    capability: "reader",
+    control: "withLinksSummary",
+    input: { withLinksSummary: true },
+    expect: "rejected",
+  },
+  {
+    provider: "you",
+    capability: "reader",
+    control: "noGfm",
+    input: { noGfm: true },
+    expect: "rejected",
+  },
+  {
+    provider: "you",
+    capability: "reader",
+    control: "keepImgDataUrl",
+    input: { keepImgDataUrl: true },
+    expect: "rejected",
+  },
+  {
+    provider: "you",
+    capability: "reader",
+    control: "withImagesSummary",
+    input: { withImagesSummary: true },
+    expect: "rejected",
+  },
+  {
+    provider: "you",
+    capability: "reader",
+    control: "timeout",
+    input: { timeout: 20 },
+    expect: "consumed",
+    on: "body",
+    path: "crawl_timeout",
+    equals: 20,
+  },
+
+  // ----- you / research — model and domain mapped; format/length rejected ---
+  {
+    provider: "you",
+    capability: "research",
+    control: "model",
+    input: { model: "pro" },
+    expect: "consumed",
+    on: "body",
+    path: "research_effort",
+    equals: "deep",
+  },
+  {
+    provider: "you",
+    capability: "research",
+    control: "outputLength",
+    input: { outputLength: "short" },
+    expect: "rejected",
+  },
+  {
+    provider: "you",
+    capability: "research",
+    control: "citationFormat",
+    input: { citationFormat: "numeric" },
+    expect: "rejected",
+  },
+  {
+    provider: "you",
+    capability: "research",
+    control: "domain",
+    input: { domain: "example.com" },
+    expect: "consumed",
+    on: "body",
+    path: "source_control.include_domains",
+    deepEqual: ["example.com"],
+  },
+
+  // ----- linkup / search - includeDomains, date window, q-appends, depth
+  {
+    provider: "linkup",
+    capability: "search",
+    control: "domain",
+    input: { domain: "example.com" },
+    expect: "consumed",
+    on: "body",
+    path: "includeDomains",
+    deepEqual: ["example.com"],
+  },
+  {
+    provider: "linkup",
+    capability: "search",
+    control: "recency",
+    input: { recency: "oneWeek" },
+    expect: "consumed",
+    on: "body",
+    path: "fromDate",
+    recentDateDays: 7,
+  },
+  {
+    provider: "linkup",
+    capability: "search",
+    control: "contentSize",
+    input: { contentSize: "high" },
+    expect: "consumed",
+    on: "body",
+    path: "depth",
+    equals: "deep",
+  },
+  {
+    provider: "linkup",
+    capability: "search",
+    control: "location",
+    input: { location: "us" },
+    expect: "consumed",
+    on: "body",
+    path: "q",
+    includes: "us",
+  },
+  {
+    provider: "linkup",
+    capability: "search",
+    control: "topic",
+    input: { topic: "news" },
+    expect: "consumed",
+    on: "body",
+    path: "q",
+    includes: "news",
+  },
+  {
+    provider: "linkup",
+    capability: "search",
+    control: "type",
+    input: { type: "video" },
+    expect: "rejected",
+  },
+  // ----- linkup / reader - renderJs wired to /fetch; no-wire-equivalent
+  // controls rejected (no accept-and-drop)
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "renderJs",
+    input: { renderJs: false },
+    expect: "consumed",
+    on: "body",
+    path: "renderJs",
+    equals: false,
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "format",
+    input: { format: "text" },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "retainImages",
+    input: { retainImages: false },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "withLinksSummary",
+    input: { withLinksSummary: true },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "noGfm",
+    input: { noGfm: true },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "keepImgDataUrl",
+    input: { keepImgDataUrl: true },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "withImagesSummary",
+    input: { withImagesSummary: true },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "reader",
+    control: "timeout",
+    input: { timeout: 20 },
+    expect: "consumed",
+    on: "timer",
+    equals: 20000,
+  },
+  // ----- linkup / research - model maps to reasoningDepth, others rejected
+  {
+    provider: "linkup",
+    capability: "research",
+    control: "model",
+    input: { model: "pro" },
+    expect: "consumed",
+    on: "body",
+    path: "reasoningDepth",
+    equals: "XL",
+    pick: { method: "POST", urlIncludes: "/research" },
+  },
+  {
+    provider: "linkup",
+    capability: "research",
+    control: "outputLength",
+    input: { outputLength: "long" },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "research",
+    control: "citationFormat",
+    input: { citationFormat: "apa" },
+    expect: "rejected",
+  },
+  {
+    provider: "linkup",
+    capability: "research",
+    control: "domain",
+    input: { domain: "example.com" },
+    expect: "rejected",
+  },
   // ----- spider / search — Google-style tbs, whitelist, keyword topic ------
   {
     provider: "spider",
@@ -1885,7 +2263,6 @@ const ROWS = [
   },
 ];
 
-
 // ---------------------------------------------------------------------------
 // Table integrity: the findings registry and the dropped rows must agree,
 // and every dropped row must reference a real finding (no silent skips).
@@ -1930,6 +2307,8 @@ describe("controls class-guard — table integrity", () => {
       jina: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
       perplexity: { search: SEARCH_CONTROLS, research: RESEARCH_CONTROLS },
       parallel: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
+      you: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
+      linkup: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
       spider: { search: SEARCH_CONTROLS, reader: READER_CONTROLS },
     };
     for (const [provider, capabilities] of Object.entries(COVERAGE)) {

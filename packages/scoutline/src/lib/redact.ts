@@ -49,22 +49,15 @@ const CREDENTIAL_KEYS: ReadonlySet<string> = new Set([
 const REDACTED = "[REDACTED]";
 
 /**
- * Replace credential-shaped substrings inside a single string. Useful
- * for error messages and load-failure texts where the value is a flat
- * string rather than a structured object.
+ * Redacts credential-like values from a flat string.
  *
- * Replaces:
- *   - Authorization header values under common schemes: `Bearer`,
- *     `Basic`, `Digest`, `Token`, and `ApiKey` (any case).
- *   - x-api-key assignments (any case; `=`, `:`, or whitespace as the
- *     key/value separator — covers both `x-api-key=value` and
- *     `x-api-key value`).
- *   - Z_AI_API_KEY, ZAI_API_KEY, MINIMAX_API_KEY, TAVILY_API_KEY,
- *     EXA_API_KEY, BRAVE_SEARCH_API_KEY, FIRECRAWL_API_KEY,
- *     YDC_API_KEY, YOU_API_KEY, LINKUP_API_KEY, SPIDER_API_KEY
- *     assignments.
- *   - The literal credentials passed in `extraSecrets` (each value is
- *     replaced wherever it appears; empty strings are skipped).
+ * Handles authorization credentials, API-key assignments, provider-specific
+ * key prefixes, credentials embedded in HTTP basic-auth URLs, and configured
+ * extra secrets.
+ *
+ * @param input - The string from which credential-like values are redacted
+ * @param extraSecrets - An optional secret or list of secrets to redact
+ * @returns The input string with detected credentials replaced by `[REDACTED]`
  */
 export function redactCredentialString(input: string, extraSecrets?: string | string[]): string {
   if (typeof input !== "string") return input;

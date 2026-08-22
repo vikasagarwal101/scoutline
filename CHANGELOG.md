@@ -2,7 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.18.0] - 2026-08-22
+
+### Three new built-in providers: You.com, Linkup, and Spider.cloud
+
+The provider registry grows from nine to twelve. All three are key-header HTTP adapters cloned from their documented analogs (Exa+Jina, Tavily+Jina, Firecrawl), landed through the full class-guard pipeline: every documented control is wire-consumed or rejected at validation — never accept-and-drop — and the controls-conformance table pins all three.
 
 ### You.com provider (`you`)
 
@@ -21,7 +25,13 @@ All notable changes to this project will be documented in this file.
 - **Linkup recency window uses UTC arithmetic:** the month-end and leap-year clamps now reason on the same UTC timeline the window is serialized with; local-time accessors previously skewed `fromDate` by one day whenever the local and UTC calendar days differed.
 - **Linkup research no longer orphans a paid task on a state-write failure:** a non-EEXIST state-file write error no longer discards the just-created (billable) task id — persistence is best-effort resumability, so the invocation polls the task it created instead of failing and double-paying on retry.
 - **Linkup quota authority is pinned to always-unknown:** the credit balance is an exact-remaining signal with an unknown limit, so Linkup never fabricates `remainingPercent`, emits no `PERCENT_CORRUPT` warnings, and ranks in the unknown tier with a credits rationale.
-- **Linkup capability docs synchronized across surfaces:** CLI help (read, top-level capability list), `docs/architecture.md` (registry order, provider table, capability matrix, control matrix, reader prose), and the packaged scoutline skill now all list Linkup.## [0.17.7] - 2026-08-19
+- **Linkup capability docs synchronized across surfaces:** CLI help (read, top-level capability list), `docs/architecture.md` (registry order, provider table, capability matrix, control matrix, reader prose), and the packaged scoutline skill now all list Linkup.
+- **v3 provider keys are redacted (#78):** `redactCredentialString` now covers `YDC_API_KEY`, `YOU_API_KEY`, `LINKUP_API_KEY`, and `SPIDER_API_KEY` assignments — both `[=:]` and the x-api-key whitespace-separator form, the latter guarded by the true-credential bar (8+ chars with a letter and a digit) so prose naming the variable stays intact.
+- **Command-help provider enumerations repaired and pinned (#82, #83):** the read/crawl/map/quota/doctor `--provider` lists were malformed after the integration train (comma separators, a missing `you`, a joined option line) and `search --help` counted 10 providers at 12 — all five enumerations now list the full registry, and new pins derive the expected enumeration and count straight from `PROVIDER_IDS` so a provider landing without its help strings fails the gate.
+
+Full suite: **3902/3902 (glob) · 3899/3899 (offline gate) — zero failures.**
+
+## [0.17.7] - 2026-08-19
 
 ### Class-guard findings resolved: every control honored or honestly disclosed (#66-#71)
 

@@ -102,18 +102,20 @@ describe("You.com docs — configuration", () => {
 });
 
 describe("You.com docs — CHANGELOG", () => {
-  it("root CHANGELOG carries the You.com entry under a single Unreleased heading", async () => {
+  it("root CHANGELOG carries the You.com entry in the newest release section", async () => {
     const text = await changelog;
-    const headings = text.match(/^## \[Unreleased\]$/gm) ?? [];
-    assert.equal(headings.length, 1, "CHANGELOG must have exactly one ## [Unreleased] heading");
-    const start = text.indexOf("## [Unreleased]");
+    // Shipped in 0.18.0: the entry moved from Unreleased to the newest
+    // version section. Before that release it lived under a single
+    // ## [Unreleased] heading (the pin's original form).
+    const start = text.indexOf("## [0.18.0]");
+    assert.ok(start > 0, "CHANGELOG must have a ## [0.18.0] section");
     const next = text.indexOf("## [", start + 1);
-    assert.ok(next > start, "Unreleased must be followed by a version section");
+    assert.ok(next > start, "0.18.0 must be followed by a prior version section");
     const section = text.slice(start, next);
-    assert.ok(section.includes("You.com"), "the Unreleased section must mention You.com");
+    assert.ok(section.includes("You.com"), "the 0.18.0 section must mention You.com");
     assert.ok(
       section.includes("YDC_API_KEY"),
-      "the Unreleased section must mention YDC_API_KEY",
+      "the 0.18.0 section must mention YDC_API_KEY",
     );
   });
 });

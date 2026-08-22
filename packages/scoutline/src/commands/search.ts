@@ -777,7 +777,7 @@ export async function executeFanoutPlan(
 
 // Help text
 export const SEARCH_HELP = `
-Search Command - Real-time web search (all 10 Providers)
+Search Command - Real-time web search (all 12 Providers)
 
 Usage: scoutline search <query> [options]
 

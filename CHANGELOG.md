@@ -3,10 +3,25 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+
+### You.com provider (`you`)
+
+- **New built-in `you` provider (You.com):** search, reader, research, and diagnostics behind `--provider you`, wired into the static registry, the init wizard, and the controls-conformance table. Dual-host client — `ydc-index.io` for search/contents, `api.you.com` for research — with the key sent as an `X-API-Key` header.
+- **Credential resolution:** `YDC_API_KEY` (preferred) with `YOU_API_KEY` as a lower-priority alias; a missing key fails closed with `CONFIGURATION_ERROR` (exit 3). The init wizard offers You.com with a billable validation probe; the cache identity fingerprints the resolved key (SHA-256, never the raw value).
+- **Search controls:** `--domain`, `--recency`, `--location`, `--content-size`, and `--topic` are consumed and mapped (`domain` → `include_domains`, `recency` → `freshness`, `location` → `country`, `content-size` → extraction mode, `topic` → keyword append); `--type` is rejected before any I/O with `UNSUPPORTED_OPTION` — no accept-and-drop.
+- **Quota policy:** always-unknown — You.com advertises no `quota` capability and exposes no spend endpoint, so quota ranking never fabricates remaining/limit numbers for it.
+
 ### Added
+- **Linkup provider (`--provider linkup`)** — Search, Reader, Research, Quota, and Diagnostics against the Linkup API (`LINKUP_API_KEY`): search controls map to `includeDomains`, a `fromDate` recency window, `q` keyword appends for topic/location, and a `depth` parameter for content size (`type` is rejected as unsupported); the reader fetches rendered markdown (`renderJs`); research runs the async submit/poll lifecycle with crash-safe job state and `model` mapping to Linkup's reasoning depth; quota and diagnostics report credit balance from `GET /v1/credits/balance` (credits-remaining window, no invented limits). The controls-conformance guard now covers every documented Linkup control and a responder pins the wire endpoints.
+
 - **Spider.cloud provider (`--provider spider`)** — Search, Reader, Crawl, Map, Quota, and Diagnostics against the Spider.cloud API (`SPIDER_API_KEY`): search controls map to a domain `whitelist`, Google-style `tbs` recency filters, `country_code` for `--location`, and a topic keyword appended to the query (`--type` is rejected as unsupported; content size observes the markdown return format); the reader POSTs the locked four-field `/scrape` body and rejects every Z.AI-only reader option instead of accept-and-drop; crawl is a synchronous one-shot POST (`/crawl`) keeping only `status === 200` pages with non-empty content — no job file, no polling; map (`/links`) deduplicates discovered URLs; quota and diagnostics report credit remaining from `GET /data/credits` (credits-remaining window, no invented limits; the diagnostics probe costs no credit). The controls-conformance guard now covers every documented Spider.cloud control and a responder pins the wire endpoints.
 
-## [0.17.7] - 2026-08-19
+### Fixed
+- **Linkup reader controls are wired or rejected, never dropped:** `renderJs` is honored as a wire control (defaults to `true` for SPA rendering when absent), `--timeout` wires to the client abort budget via a per-request `LINKUP_TIMEOUT` override, and every reader control with no Linkup `/fetch` wire equivalent (`--format text`, `--no-images`, `--with-links`, `--no-gfm`, `--keep-img-data-url`, `--with-images-summary`) is rejected with `UNSUPPORTED_OPTION` at validation before any transport access. Conformance reader rows cover the full documented matrix.
+- **Linkup recency window uses UTC arithmetic:** the month-end and leap-year clamps now reason on the same UTC timeline the window is serialized with; local-time accessors previously skewed `fromDate` by one day whenever the local and UTC calendar days differed.
+- **Linkup research no longer orphans a paid task on a state-write failure:** a non-EEXIST state-file write error no longer discards the just-created (billable) task id — persistence is best-effort resumability, so the invocation polls the task it created instead of failing and double-paying on retry.
+- **Linkup quota authority is pinned to always-unknown:** the credit balance is an exact-remaining signal with an unknown limit, so Linkup never fabricates `remainingPercent`, emits no `PERCENT_CORRUPT` warnings, and ranks in the unknown tier with a credits rationale.
+- **Linkup capability docs synchronized across surfaces:** CLI help (read, top-level capability list), `docs/architecture.md` (registry order, provider table, capability matrix, control matrix, reader prose), and the packaged scoutline skill now all list Linkup.## [0.17.7] - 2026-08-19
 
 ### Class-guard findings resolved: every control honored or honestly disclosed (#66-#71)
 

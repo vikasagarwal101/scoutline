@@ -60,7 +60,9 @@ const REDACTED = "[REDACTED]";
  *     key/value separator — covers both `x-api-key=value` and
  *     `x-api-key value`).
  *   - Z_AI_API_KEY, ZAI_API_KEY, MINIMAX_API_KEY, TAVILY_API_KEY,
- *     EXA_API_KEY, BRAVE_SEARCH_API_KEY, FIRECRAWL_API_KEY assignments.
+ *     EXA_API_KEY, BRAVE_SEARCH_API_KEY, FIRECRAWL_API_KEY,
+ *     YDC_API_KEY, YOU_API_KEY, LINKUP_API_KEY, SPIDER_API_KEY
+ *     assignments.
  *   - The literal credentials passed in `extraSecrets` (each value is
  *     replaced wherever it appears; empty strings are skipped).
  */
@@ -144,6 +146,10 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   result = result.replace(/PARALLEL_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
   result = result.replace(/PERPLEXITY_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
   result = result.replace(/JINA_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
+  result = result.replace(/YDC_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
+  result = result.replace(/YOU_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
+  result = result.replace(/LINKUP_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
+  result = result.replace(/SPIDER_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
   // Embedded credential substrings inside URLs, e.g.
   // `https://user:secret@host/path`. Catches both `https://` and
   // `http://` schemes and replaces the entire URL with the marker so

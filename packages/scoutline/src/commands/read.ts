@@ -355,7 +355,8 @@ Options:
                   code | links | tables | headings
 
 Common Options:
-  --provider <id>            Override the active Provider (zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | linkup, spider)  --output-format <mode>     One of: ${OUTPUT_MODE_LIST} (default: data)
+  --provider <id>            Override the active Provider (zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | you | linkup | spider)
+  --output-format <mode>     One of: ${OUTPUT_MODE_LIST} (default: data)
   -O <mode>                  Alias for --output-format
 
 Output format (schema-version-1 migration):

@@ -65,6 +65,12 @@ const REDACTED = "[REDACTED]";
  *     assignments.
  *   - The literal credentials passed in `extraSecrets` (each value is
  *     replaced wherever it appears; empty strings are skipped).
+ *
+ * @param input - The string from which credential-like values are redacted
+ * @param extraSecrets - Optional secret(s) additionally replaced wherever
+ *   their values appear
+ * @returns The input with every detected credential replaced by
+ *   `[REDACTED]`
  */
 export function redactCredentialString(input: string, extraSecrets?: string | string[]): string {
   if (typeof input !== "string") return input;

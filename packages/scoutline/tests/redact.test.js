@@ -777,3 +777,65 @@ describe("audit 2026-08 #44", () => {
     );
   });
 });
+
+describe("v3 provider keys (2026-08 #78)", () => {
+  // Incumbent convention (see the Z_AI_API_KEY pins above): the whole
+  // VAR=value token is replaced, not just the value.
+  it("redacts YDC_API_KEY and YOU_API_KEY assignments", () => {
+    assert.strictEqual(
+      redactCredentialString("YDC_API_KEY=ydc-secret-123"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("YOU_API_KEY: you-secret-456"),
+      "[REDACTED]",
+    );
+  });
+
+  it("redacts LINKUP_API_KEY and SPIDER_API_KEY assignments", () => {
+    assert.strictEqual(
+      redactCredentialString("LINKUP_API_KEY=linkup-secret-789"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("SPIDER_API_KEY: spider-secret-012"),
+      "[REDACTED]",
+    );
+  });
+
+  it("redacts whitespace-separated v3 key assignments (x-api-key separator convention)", () => {
+    assert.strictEqual(
+      redactCredentialString("SPIDER_API_KEY sk-abc123xyz"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("LINKUP_API_KEY lk_9f8e7d6c5b"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("YDC_API_KEY ydc-AA11bb22cc"),
+      "[REDACTED]",
+    );
+  });
+
+  it("leaves ordinary prose naming the v3 variables intact (#44 bar)", () => {
+    for (const prose of [
+      "LINKUP_API_KEY is not set",
+      "SPIDER_API_KEY environment variable",
+      "configure YDC_API_KEY before use",
+    ]) {
+      assert.strictEqual(redactCredentialString(prose), prose);
+    }
+  });
+
+  it("redacts the v3 keys case-insensitively like the incumbents", () => {
+    assert.strictEqual(
+      redactCredentialString("ydc_api_key = mixed-case-secret"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("spider_api_key=another-secret"),
+      "[REDACTED]",
+    );
+  });
+});

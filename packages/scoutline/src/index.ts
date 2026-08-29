@@ -1274,6 +1274,7 @@ async function handleSearch(
       ...(type !== undefined ? { type } : {}),
       ...(topic !== undefined ? { topic } : {}),
       ...(flags.merge === true ? { merge: true } : {}),
+      ...(flags["no-cache"] === true ? { "no-cache": true } : {}),
       ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
     },
     provider:
@@ -3441,6 +3442,34 @@ interface SaveHookInput {
  * executor preflight, cache identity, and retry behavior are
  * byte-identical to the unwrapped descriptors.
  */
+/** Wrap one operation object so the first resolving invoke records its provider. */
+function withCaptureInvoke(
+  slot: Record<string, unknown>,
+  id: ProviderId,
+  capture: ServingCapture,
+): Record<string, unknown> {
+  const invoke = slot.invoke as (...args: unknown[]) => Promise<unknown>;
+  return {
+    ...slot,
+    invoke: async (...args: unknown[]) => {
+      const outcome = await invoke(...args);
+      capture.servedProvider = id;
+      return outcome;
+    },
+  };
+}
+
+/**
+ * Wrap every capability slot's operations so the first resolving invoke
+ * records its provider id. Two adapter shapes exist (cold-review round 1
+ * finding 1): direct-invoke slots (`search`, `vision`) and nested
+ * operation slots — `reader`/`crawl`/`map` expose `{ fetch: Operation }`,
+ * `research` exposes `{ run: Operation }`, `repository` exposes one
+ * operation per name — so the wrap recurses exactly one level. Transparent
+ * pass-through: validate, cacheIdentity, decodeCached (and everything else
+ * on the slot) are untouched, so executor preflight, cache identity, and
+ * retry behavior are byte-identical to the unwrapped descriptors.
+ */
 function captureAdapterInvoke(
   adapter: ProviderAdapter,
   id: ProviderId,
@@ -3449,17 +3478,32 @@ function captureAdapterInvoke(
   const wrapped: Record<string, unknown> = { ...adapter };
   for (const key of Object.keys(adapter)) {
     const slot: unknown = (adapter as unknown as Record<string, unknown>)[key];
-    if (slot !== null && typeof slot === "object" && typeof (slot as { invoke?: unknown }).invoke === "function") {
-      const capability = slot as { invoke: (...args: unknown[]) => Promise<unknown> };
-      wrapped[key] = {
-        ...slot,
-        invoke: async (...args: unknown[]) => {
-          const outcome = await capability.invoke(...args);
-          capture.servedProvider = id;
-          return outcome;
-        },
-      };
+    if (slot === null || typeof slot !== "object") continue;
+    const record = slot as Record<string, unknown>;
+    if (typeof record.invoke === "function") {
+      wrapped[key] = withCaptureInvoke(record, id, capture);
+      continue;
     }
+    // Nested operation shapes: wrap each own property that is itself an
+    // operation (has invoke). Slots with no operations pass through.
+    const nested: Record<string, unknown> = { ...record };
+    let nestedTouched = false;
+    for (const nestedKey of Object.keys(record)) {
+      const operation = record[nestedKey];
+      if (
+        operation !== null &&
+        typeof operation === "object" &&
+        typeof (operation as Record<string, unknown>).invoke === "function"
+      ) {
+        nested[nestedKey] = withCaptureInvoke(
+          operation as Record<string, unknown>,
+          id,
+          capture,
+        );
+        nestedTouched = true;
+      }
+    }
+    if (nestedTouched) wrapped[key] = nested;
   }
   return wrapped as unknown as ProviderAdapter;
 }

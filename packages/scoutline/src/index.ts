@@ -217,6 +217,9 @@ per-Provider; --provider picks the effective Provider for metadata.
 Global Options:
   --output-format <data|json|pretty|compact|markdown|refs|tty>  Output mode (default: data)
   -O <mode>                                                     Alias for --output-format
+  --save [<path>]      Save the result as a clean report (content + requestId) after a successful shared-capability run (search/read/crawl/map/research/repo/vision). Master copy in the artifact store; <path> also receives an export copy. Refuses an existing export target without --save-force.
+  --save-format <json|markdown>  Report format (default: json)
+  --save-force         Overwrite an existing export target
 
 Help:
   scoutline --help
@@ -233,6 +236,7 @@ Help:
   scoutline code --help
   scoutline cache --help
   scoutline usage --help
+  scoutline history --help
   scoutline init --help
 `.trim();
 

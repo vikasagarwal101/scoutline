@@ -618,6 +618,7 @@ the report builder only embeds it (L1 fix).
 | `SCOUTLINE_CACHE_TTL_MS` | `86400000` (24h) | TTL for both response and tool entries. |
 | `SCOUTLINE_CACHE_SIZE_MB` | `100` | Size cap (MB) for the response cache; LRU eviction. |
 | `SCOUTLINE_CACHE_DIR` | `~/.scoutline/` | Overrides the root directory; `cache/` and `tools/` are created underneath. |
+| `SCOUTLINE_ARTIFACTS_DIR` | `~/.scoutline/artifacts/` | Root for saved `--save` reports and the `index.json` metadata log that `scoutline history` reads. Never touched by cache operations; no legacy alias. |
 
 ### Legacy aliases
 

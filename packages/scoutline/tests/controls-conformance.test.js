@@ -284,6 +284,19 @@ const SPIDER_SEARCH_RAW = [
 const SPIDER_SCRAPE_RAW = [
   { url: PAGE_URL, status: 200, content: "# Page body", metadata: { title: "Page" } },
 ];
+const SPIDER_CRAWL_RAW = [
+  { url: "https://example.test/root", status: 200, content: "# Root" },
+  // Locked filter drops non-200 and empty-content rows (SCHEMA §3).
+  { url: "https://example.test/missing", status: 404, content: "Not found" },
+  { url: "https://example.test/empty", status: 200, content: "" },
+];
+const SPIDER_LINKS_RAW = [
+  {
+    url: PAGE_URL,
+    status: 200,
+    links: ["https://example.test/one", PAGE_URL, "https://example.test/two"],
+  },
+];
 const RESPONDERS = {
   zai: null, // MCP seam, not fetch
   minimax(url, method) {
@@ -390,6 +403,8 @@ const RESPONDERS = {
   spider(url) {
     if (url.endsWith("/search")) return jsonResponse(SPIDER_SEARCH_RAW);
     if (url.endsWith("/scrape")) return jsonResponse(SPIDER_SCRAPE_RAW);
+    if (url.endsWith("/crawl")) return jsonResponse(SPIDER_CRAWL_RAW);
+    if (url.endsWith("/links")) return jsonResponse(SPIDER_LINKS_RAW);
     return jsonResponse({});
   },
 };
@@ -539,6 +554,8 @@ function getCapability(adapter, capability) {
   if (capability === "search") return adapter.search;
   if (capability === "reader") return adapter.reader.fetch;
   if (capability === "research") return adapter.research.run;
+  if (capability === "crawl") return adapter.crawl.fetch;
+  if (capability === "map") return adapter.map.fetch;
   throw new Error(`unknown capability ${capability}`);
 }
 
@@ -547,6 +564,9 @@ function buildRequest(row) {
     return { query: SEARCH_QUERY, controls: row.input };
   }
   if (row.capability === "reader") {
+    return { url: PAGE_URL, ...row.input };
+  }
+  if (row.capability === "crawl" || row.capability === "map") {
     return { url: PAGE_URL, ...row.input };
   }
   return { query: RESEARCH_QUERY, ...row.input };
@@ -2261,6 +2281,129 @@ const ROWS = [
     input: { timeout: 20 },
     expect: "rejected",
   },
+
+  // ----- spider / crawl — synchronous /crawl POST; format/limit/depth are
+  // wire-consumed, every non-native crawl control is rejected -------------
+  {
+    provider: "spider",
+    capability: "crawl",
+    control: "format",
+    input: { format: "text" },
+    expect: "consumed",
+    on: "body",
+    path: "return_format",
+    equals: "text",
+  },
+  {
+    provider: "spider",
+    capability: "crawl",
+    control: "limit",
+    input: { limit: 5 },
+    expect: "consumed",
+    on: "body",
+    path: "limit",
+    equals: 5,
+  },
+  {
+    provider: "spider",
+    capability: "crawl",
+    control: "depth",
+    input: { depth: 2 },
+    expect: "consumed",
+    on: "body",
+    path: "depth",
+    equals: 2,
+  },
+  {
+    provider: "spider",
+    capability: "crawl",
+    control: "breadth",
+    input: { breadth: 2 },
+    expect: "rejected",
+  },
+  {
+    provider: "spider",
+    capability: "crawl",
+    control: "selectPaths",
+    input: { selectPaths: ["/*"] },
+    expect: "rejected",
+  },
+  {
+    provider: "spider",
+    capability: "crawl",
+    control: "excludePaths",
+    input: { excludePaths: ["/private/*"] },
+    expect: "rejected",
+  },
+  {
+    provider: "spider",
+    capability: "crawl",
+    control: "instructions",
+    input: { instructions: "skip forms" },
+    expect: "rejected",
+  },
+  {
+    provider: "spider",
+    capability: "crawl",
+    control: "contentSize",
+    input: { contentSize: "high" },
+    expect: "rejected",
+  },
+  {
+    provider: "spider",
+    capability: "crawl",
+    control: "timeout",
+    input: { timeout: 5000 },
+    expect: "rejected",
+  },
+
+  // ----- spider / map — /links POST; limit is wire-consumed, every other
+  // documented map control is rejected ------------------------------------
+  {
+    provider: "spider",
+    capability: "map",
+    control: "limit",
+    input: { limit: 10 },
+    expect: "consumed",
+    on: "body",
+    path: "limit",
+    equals: 10,
+  },
+  {
+    provider: "spider",
+    capability: "map",
+    control: "depth",
+    input: { depth: 1 },
+    expect: "rejected",
+  },
+  {
+    provider: "spider",
+    capability: "map",
+    control: "breadth",
+    input: { breadth: 2 },
+    expect: "rejected",
+  },
+  {
+    provider: "spider",
+    capability: "map",
+    control: "selectPaths",
+    input: { selectPaths: ["/*"] },
+    expect: "rejected",
+  },
+  {
+    provider: "spider",
+    capability: "map",
+    control: "excludePaths",
+    input: { excludePaths: ["/private/*"] },
+    expect: "rejected",
+  },
+  {
+    provider: "spider",
+    capability: "map",
+    control: "instructions",
+    input: { instructions: "skip forms" },
+    expect: "rejected",
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2297,6 +2440,18 @@ describe("controls class-guard — table integrity", () => {
       "timeout",
     ];
     const RESEARCH_CONTROLS = ["model", "outputLength", "citationFormat", "domain"];
+    const CRAWL_CONTROLS = [
+      "format",
+      "limit",
+      "depth",
+      "breadth",
+      "selectPaths",
+      "excludePaths",
+      "instructions",
+      "contentSize",
+      "timeout",
+    ];
+    const MAP_CONTROLS = ["limit", "depth", "breadth", "selectPaths", "excludePaths", "instructions"];
     const COVERAGE = {
       zai: { search: SEARCH_CONTROLS, reader: READER_CONTROLS },
       minimax: { search: SEARCH_CONTROLS },
@@ -2309,7 +2464,12 @@ describe("controls class-guard — table integrity", () => {
       parallel: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
       you: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
       linkup: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
-      spider: { search: SEARCH_CONTROLS, reader: READER_CONTROLS },
+      spider: {
+        search: SEARCH_CONTROLS,
+        reader: READER_CONTROLS,
+        crawl: CRAWL_CONTROLS,
+        map: MAP_CONTROLS,
+      },
     };
     for (const [provider, capabilities] of Object.entries(COVERAGE)) {
       for (const [capability, controls] of Object.entries(capabilities)) {

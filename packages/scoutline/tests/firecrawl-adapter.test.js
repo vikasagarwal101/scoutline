@@ -55,6 +55,25 @@ function makeResponse({ ok = true, status = 200, json, body = "" } = {}) {
   };
 }
 
+/**
+ * Load fixtures/providers/firecrawl/active.json with every crawl's
+ * `createdAt` stamped to now. The fixture file ships a fixed historical
+ * date that is already past CRAWL_RECLAIM_STALE_MS (24h), so reading it
+ * as-shipped yields a pre-detonated stale job — the load seam, not each
+ * test, owns freshness (2026-08-29 time-bomb audit). The staleness guard
+ * gives this teeth: a stale `createdAt` means no reclaim, and F-5 fails.
+ */
+async function loadActiveCrawlFixture() {
+  const fixture = JSON.parse(
+    await fs.readFile(path.join(__dirname, "fixtures/providers/firecrawl/active.json"), "utf8"),
+  );
+  const createdAt = new Date().toISOString();
+  for (const crawl of fixture.crawls ?? []) {
+    crawl.createdAt = createdAt;
+  }
+  return fixture;
+}
+
 function makeAdapter(fakeFetch) {
   const calls = [];
   const fn = async (url, init) => {
@@ -493,11 +512,7 @@ describe("Firecrawl Crawl Adapter", () => {
   // deterministic wire-shape verification — uses the fixture's real
   // { success, crawls } envelope so the `crawls` key path is exercised.
   it("reclaims using createdAt from the active fixture (F-5)", async () => {
-    const activeFixture = JSON.parse(
-      await fs.readFile(path.join(__dirname, "fixtures/providers/firecrawl/active.json"), "utf8"),
-    );
-    // Refresh the timestamp so the staleness guard passes at test time.
-    activeFixture.crawls[0].createdAt = new Date().toISOString();
+    const activeFixture = await loadActiveCrawlFixture();
     const calls = [];
     const fn = async (url, init) => {
       const u = String(url);

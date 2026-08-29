@@ -206,6 +206,8 @@ export async function atomicPlaceNoClobber(
   try {
     await handle.writeFile(contents);
     await handle.sync();
+    // Our temp file's identity, captured while the fd is still open.
+    const mine = await handle.stat();
     await handle.close();
     closed = true;
     try {
@@ -213,6 +215,19 @@ export async function atomicPlaceNoClobber(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
       throw error;
+    }
+    // Swap guard (review r6): fs.link resolves the PATH, so in a writable,
+    // non-sticky directory another local user can replace tempPath between
+    // our close and the link — Node has no linkat(AT_EMPTY_PATH) to pin the
+    // fd. Verify the placed entry IS our inode; never export swapped-in
+    // content.
+    const placed = await fs.stat(filePath);
+    if (placed.dev !== mine.dev || placed.ino !== mine.ino) {
+      await fs.unlink(filePath).catch(() => {});
+      throw new FileError(
+        "Refusing to export: the staged temp file was replaced while placing the artifact.",
+        "Retry the save; if this recurs, export into a directory other users cannot write.",
+      );
     }
     // Durability (review r4): fsync the directory so the new entry itself
     // survives power loss — file-data fsync alone can lose the link-in

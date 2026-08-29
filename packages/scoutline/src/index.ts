@@ -69,7 +69,17 @@ import {
   CODE_HELP,
 } from "./commands/code.js";
 import { isOutputMode, OUTPUT_MODES, type OutputMode } from "./lib/output.js";
-import { formatErrorOutput } from "./lib/output.js";
+import { formatErrorOutput, formatSuccessOutput } from "./lib/output.js";
+import {
+  appendLogEntry,
+  CLI_VERSION,
+  newRequestId,
+  resolveArtifactsDir,
+  writeArtifact,
+  type ArtifactFormat,
+  type ProviderRouting,
+  type SaveLogEntry,
+} from "./lib/artifacts.js";
 import {
   ConfigurationError,
   FileError,
@@ -83,15 +93,17 @@ import * as fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import {
   invokeCommand,
+  type SaveHook,
   type CommandInvocationAdapter,
   type CommandResult,
 } from "./command-invocation.js";
 import { defaultResponseCache, type ResponseCache } from "./lib/cache.js";
 import { MAX_SUBQUERIES, parseContextText, readContextSource } from "./lib/context-file.js";
 import type { ContextSourceKind } from "./lib/context-file.js";
-import { configuredSecrets } from "./lib/redact.js";
+import { configuredSecrets, redactSecrets } from "./lib/redact.js";
 import {
   configFilePath,
+  atomicReplaceFile,
   readConfig,
   resolveConfigRootPure,
   resolveEnvFromConfig,
@@ -130,7 +142,7 @@ import {
 import { resolveProviderId, resolveEffectiveProvider } from "./providers/selection.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "./providers/registry.js";
 import { PROVIDER_IDS } from "./providers/types.js";
-import type { ProviderDescriptor, ProviderId } from "./providers/types.js";
+import type { ProviderAdapter, ProviderContext, ProviderDescriptor, ProviderId } from "./providers/types.js";
 import { executeWithFallback, type FallbackOutcome } from "./lib/provider-fallback.js";
 import type { SearchCapability } from "./capabilities/search.js";
 import type { ExecutionDependencies } from "./lib/execution.js";
@@ -692,6 +704,13 @@ export interface HandlerDependencies {
    * pre-fan-out behavior).
    */
   readonly configFanout?: boolean;
+  /**
+   * save-artifacts T4: present only when this run will actually save
+   * (save-capable command + --save + not a help invocation). Handlers
+   * turn it into an invokeCommand save hook via createSaveArtifactHook;
+   * every other run is byte-identical to pre-T4.
+   */
+  readonly save?: SaveHookInput;
   readonly searchCache: ResponseCache;
   readonly searchSleep: (ms: number) => Promise<void>;
   readonly searchRandom: () => number;
@@ -853,6 +872,23 @@ async function handleVision(
     random: deps.searchRandom,
   };
 
+  // save-artifacts T4: one save hook for this run (inert unless main wired
+  // a save). args = the provider-influencing allow-list only. The batch
+  // subcommand returns before this point (per-op providers live in the
+  // runner), so batch stays accept-and-drop in v1.
+  const save = createSaveArtifactHook(deps, {
+    command: "vision",
+    outputMode,
+    args: {
+      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+    },
+    provider: {
+      mode: "single",
+      ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+      effective: providerId,
+    },
+  });
   // Provider-fallback Ticket 02: route every vision operation through
   // the shared executor. The existing vision URL→temp-file fallback
   // stays inside the Z.AI adapter's invoke, layered beneath provider
@@ -954,6 +990,7 @@ async function handleVision(
     outputMode,
     deps.now,
     deps.secrets,
+    save,
   );
 }
 
@@ -1215,6 +1252,36 @@ async function handleSearch(
           routing: deps.routing,
         });
 
+  // save-artifacts T4: one save hook for this run (inert unless main wired
+  // a save). The provider routing mirrors the in-code vocabulary (DESIGN
+  // D5): fan-out records the arm list with no single effective; single
+  // records requested + effective (the hook overrides effective with the
+  // executor's actual server when runtime fallback switched providers).
+  const save = createSaveArtifactHook(deps, {
+    command: "search",
+    outputMode,
+    args: {
+      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+      ...(count !== undefined ? { count } : {}),
+      ...(type !== undefined ? { type } : {}),
+      ...(topic !== undefined ? { topic } : {}),
+      ...(flags.merge === true ? { merge: true } : {}),
+      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+    },
+    provider:
+      fanoutPlan.mode === "fanout"
+        ? {
+            mode: "fanout",
+            ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+            arms: fanoutPlan.arms,
+          }
+        : {
+            mode: "single",
+            ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+            // Single mode always resolved a provider above (the ternary).
+            effective: providerId as ProviderId,
+          },
+  });
   const query = positional.join(" ");
 
   const fieldsRaw = flags.fields as string | undefined;
@@ -1437,6 +1504,7 @@ async function handleSearch(
     outputMode,
     deps.now,
     deps.secrets,
+    save,
   );
 }
 
@@ -1488,6 +1556,22 @@ async function handleRead(
     routing: deps.routing,
   });
 
+  // save-artifacts T4: one save hook for this run (inert unless main wired
+  // a save). args = the provider-influencing allow-list only.
+  const save = createSaveArtifactHook(deps, {
+    command: "read",
+    outputMode,
+    args: {
+      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+      ...(flags["no-cache"] === true ? { "no-cache": true } : {}),
+    },
+    provider: {
+      mode: "single",
+      ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+      effective: providerId,
+    },
+  });
   const readOptions = {
     format: flags.format as "markdown" | "text",
     noImages: flags["no-images"] === true,
@@ -1552,6 +1636,7 @@ async function handleRead(
     outputMode,
     deps.now,
     deps.secrets,
+    save,
   );
 }
 
@@ -1593,6 +1678,22 @@ async function handleCrawl(
   // to the same production values as Search/Repository/Reader but are
   // kept as separate optional MainDependencies so crawl tests can inject
   // isolated in-memory doubles.
+  // save-artifacts T4: one save hook for this run (inert unless main wired
+  // a save). args = the provider-influencing allow-list only.
+  const save = createSaveArtifactHook(deps, {
+    command: "crawl",
+    outputMode,
+    args: {
+      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+      ...(typeof flags.limit === "string" ? { limit: flags.limit } : {}),
+    },
+    provider: {
+      mode: "single",
+      ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+      effective: providerId,
+    },
+  });
   const executionDeps: ExecutionDependencies = {
     cache: deps.crawlCache,
     sleep: deps.crawlSleep,
@@ -1653,6 +1754,7 @@ async function handleCrawl(
     outputMode,
     deps.now,
     deps.secrets,
+    save,
   );
 }
 
@@ -1694,6 +1796,22 @@ async function handleMap(
   // to the same production values as Search/Repository/Reader/Crawl but
   // are kept as separate optional MainDependencies so map tests can
   // inject isolated in-memory doubles.
+  // save-artifacts T4: one save hook for this run (inert unless main wired
+  // a save). args = the provider-influencing allow-list only.
+  const save = createSaveArtifactHook(deps, {
+    command: "map",
+    outputMode,
+    args: {
+      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+      ...(typeof flags.limit === "string" ? { limit: flags.limit } : {}),
+    },
+    provider: {
+      mode: "single",
+      ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+      effective: providerId,
+    },
+  });
   const executionDeps: ExecutionDependencies = {
     cache: deps.mapCache,
     sleep: deps.mapSleep,
@@ -1748,6 +1866,7 @@ async function handleMap(
     outputMode,
     deps.now,
     deps.secrets,
+    save,
   );
 }
 
@@ -1843,6 +1962,21 @@ async function handleResearch(
   });
 
   // Shared Research execution dependencies.
+  // save-artifacts T4: one save hook for this run (inert unless main wired
+  // a save). args = the provider-influencing allow-list only.
+  const save = createSaveArtifactHook(deps, {
+    command: "research",
+    outputMode,
+    args: {
+      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+    },
+    provider: {
+      mode: "single",
+      ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+      effective: providerId,
+    },
+  });
   const executionDeps: ExecutionDependencies = {
     cache: deps.researchCache,
     sleep: deps.researchSleep,
@@ -1971,6 +2105,7 @@ async function handleResearch(
     outputMode,
     deps.now,
     deps.secrets,
+    save,
   );
 }
 
@@ -2144,6 +2279,23 @@ async function handleRepo(
   const noCache = flags["no-cache"] === true;
   const treePath = flags.path as string | undefined;
   const depth = flags.depth ? parseInt(flags.depth as string, 10) : undefined;
+  // save-artifacts T4: one save hook for this run (inert unless main wired
+  // a save). args = the provider-influencing allow-list only.
+  const save = createSaveArtifactHook(deps, {
+    command: "repo",
+    outputMode,
+    args: {
+      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+      ...(noCache ? { "no-cache": true } : {}),
+      ...(depth !== undefined ? { depth } : {}),
+    },
+    provider: {
+      mode: "single",
+      ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+      effective: providerId,
+    },
+  });
 
   // Provider-fallback Ticket 02: route every subcommand through the
   // shared executor. All three projections (search/tree/read) share
@@ -2218,6 +2370,7 @@ async function handleRepo(
     outputMode,
     deps.now,
     deps.secrets,
+    save,
   );
 }
 
@@ -3115,6 +3268,214 @@ async function handleCode(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Save-artifacts T4 - the hook at the invocation seam. T3's inert
+// saveRequest is consumed here: main wraps the injected provider
+// descriptors once (so the log can record the provider that ACTUALLY
+// served the run - runtime fallback is invisible to the pre-run
+// resolver), and each save-capable handler turns deps.save into a
+// SaveHook via createSaveArtifactHook. Write order (DESIGN D6): master,
+// log append, export copy - the export re-checks target existence so the
+// T3 pre-dispatch race window closes at write time. Any hook throw rides
+// invokeCommand's existing catch: notices flushed, one FILE_ERROR
+// envelope, stdout suppressed.
+// ---------------------------------------------------------------------------
+
+/** The report file's own schema version (DESIGN D4 namespace, log-agnostic). */
+const REPORT_SCHEMA_VERSION = 1;
+
+/** Observation cell: the provider whose invoke() actually resolved. */
+interface ServingCapture {
+  servedProvider?: ProviderId;
+}
+
+/** What main hands the save-capable handlers when a save will happen. */
+interface SaveHookInput {
+  readonly request: SaveRequest;
+  readonly capture: ServingCapture;
+}
+
+/**
+ * Wrap every capability slot's invoke() so the first resolving invoke
+ * records its provider id. Transparent pass-through: validate and
+ * cacheIdentity (and everything else on the handle) are untouched, so
+ * executor preflight, cache identity, and retry behavior are
+ * byte-identical to the unwrapped descriptors.
+ */
+function captureAdapterInvoke(
+  adapter: ProviderAdapter,
+  id: ProviderId,
+  capture: ServingCapture,
+): ProviderAdapter {
+  const wrapped: Record<string, unknown> = { ...adapter };
+  for (const key of Object.keys(adapter)) {
+    const slot: unknown = (adapter as unknown as Record<string, unknown>)[key];
+    if (slot !== null && typeof slot === "object" && typeof (slot as { invoke?: unknown }).invoke === "function") {
+      const capability = slot as { invoke: (...args: unknown[]) => Promise<unknown> };
+      wrapped[key] = {
+        ...slot,
+        invoke: async (...args: unknown[]) => {
+          const outcome = await capability.invoke(...args);
+          capture.servedProvider = id;
+          return outcome;
+        },
+      };
+    }
+  }
+  return wrapped as unknown as ProviderAdapter;
+}
+
+function captureServingDescriptors(
+  descriptors: readonly ProviderDescriptor[],
+  capture: ServingCapture,
+): readonly ProviderDescriptor[] {
+  return descriptors.map((descriptor) => ({
+    ...descriptor,
+    create: (context: ProviderContext): ProviderAdapter =>
+      captureAdapterInvoke(descriptor.create(context), descriptor.id, capture),
+  }));
+}
+
+/** Wiring built in main only when a save will actually happen. */
+interface SaveWiring {
+  readonly descriptors: readonly ProviderDescriptor[];
+  readonly input: SaveHookInput;
+}
+
+function buildSaveWiring(
+  request: SaveRequest | undefined,
+  descriptors: readonly ProviderDescriptor[],
+): SaveWiring | undefined {
+  if (request === undefined) return undefined;
+  const capture: ServingCapture = {};
+  return {
+    descriptors: captureServingDescriptors(descriptors, capture),
+    input: { request, capture },
+  };
+}
+
+function artifactHeaderComment(requestId: string): string {
+  return `<!-- scoutline artifact requestId=${requestId} schemaVersion=${REPORT_SCHEMA_VERSION} -->`;
+}
+
+/**
+ * The markdown artifact body: what stdout's markdown mode would print -
+ * the redacted presentation override when the command supplies one,
+ * otherwise formatSuccessOutput over the redacted data (DESIGN D4).
+ */
+function renderMarkdownArtifactBody(
+  result: CommandResult,
+  redactedData: unknown,
+  resolvedSecrets: string[],
+  now: () => number,
+): string {
+  const override = result.kind === "data" ? result.presentations?.markdown : undefined;
+  return typeof override === "string"
+    ? (redactSecrets(override, resolvedSecrets) as string)
+    : formatSuccessOutput(redactedData, "markdown", now);
+}
+
+async function exportTargetExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.stat(filePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+/**
+ * Build one run's SaveHook. Returns undefined unless main wired a save
+ * (deps.save) - the accept-and-drop posture of every non-saving command
+ * is preserved by construction. The report is the clean envelope
+ * {schemaVersion, requestId, result} with result =
+ * redactSecrets(result.data, resolvedSecrets) - the exact value the
+ * data-mode stdout path serializes (DESIGN D4). Log args carry only the
+ * handler-supplied provider-influencing allow-list. Failures: known
+ * artifact refusals pass through as FileError; unexpected I/O faults are
+ * wrapped into FileError so every artifact-path failure keeps the D8
+ * FILE_ERROR contract.
+ */
+function createSaveArtifactHook(
+  deps: HandlerDependencies,
+  meta: {
+    readonly command: string;
+    readonly args: Readonly<Record<string, unknown>>;
+    readonly provider: ProviderRouting;
+    readonly outputMode: OutputMode;
+  },
+): SaveHook | undefined {
+  const save = deps.save;
+  if (save === undefined) return undefined;
+  const { request, capture } = save;
+  return async ({ result, resolvedSecrets, now, notice }) => {
+    try {
+      const dir = resolveArtifactsDir(deps.env);
+      const requestId = newRequestId(now());
+      const data = result.kind === "data" ? result.data : result.text;
+      const redactedData = redactSecrets(data, resolvedSecrets);
+      const content =
+        request.format === "markdown"
+          ? `${artifactHeaderComment(requestId)}\n${renderMarkdownArtifactBody(result, redactedData, resolvedSecrets, now)}\n`
+          : `${JSON.stringify(
+              { schemaVersion: REPORT_SCHEMA_VERSION, requestId, result: redactedData },
+              null,
+              2,
+            )}\n`;
+      const masterPath = await writeArtifact(dir, requestId, content, { format: request.format });
+      const provider: ProviderRouting =
+        meta.provider.mode === "fanout"
+          ? meta.provider
+          : {
+              ...meta.provider,
+              // The executor's actual server wins over the pre-run
+              // resolution when runtime fallback switched providers (D5).
+              effective: capture.servedProvider ?? meta.provider.effective,
+            };
+      const entry: SaveLogEntry = {
+        kind: "save",
+        requestId,
+        timestamp: now(),
+        command: meta.command,
+        args: meta.args,
+        provider,
+        outputFormat: meta.outputMode,
+        artifactFormat: request.format,
+        cliVersion: CLI_VERSION,
+        masterPath: path.basename(masterPath),
+        ...(request.exportPath !== undefined ? { exportPath: request.exportPath } : {}),
+      };
+      const logNotice = await appendLogEntry(dir, entry);
+      if (logNotice !== undefined) notice(logNotice);
+      if (request.exportPath !== undefined) {
+        // Write-time exists-recheck: closes the T3 pre-dispatch race
+        // window (DESIGN D6). Without --save-force a target that appeared
+        // mid-run is refused, byte-identical.
+        if (!request.force && (await exportTargetExists(request.exportPath))) {
+          throw new FileError(
+            `artifact exists: ${request.exportPath}`,
+            "Pass --save-force to overwrite the existing export target.",
+          );
+        }
+        await atomicReplaceFile(request.exportPath, content);
+        notice(
+          `ℹ️  saved artifact ${requestId} (master: ${masterPath}; export: ${request.exportPath})`,
+        );
+      } else {
+        notice(`ℹ️  saved artifact ${requestId} (master: ${masterPath})`);
+      }
+    } catch (error) {
+      if (error instanceof FileError) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      throw new FileError(
+        `Failed to save artifact: ${message}`,
+        "Check the artifacts directory and export path, then retry.",
+      );
+    }
+  };
+}
+
 export interface MainDependencies {
   readonly invocation: CommandInvocationAdapter;
   readonly env: NodeJS.ProcessEnv;
@@ -3963,37 +4324,55 @@ export async function main(
       ? handlerDepsWithVerification
       : { ...handlerDepsWithVerification, quotaState };
 
+  // save-artifacts T4 - build the save wiring once, only when a save will
+  // actually happen (save-capable command + --save, never a help
+  // invocation: help is documentation, not a run). The wrapped descriptors
+  // flow ONLY into handler execution; quota refresh and every other
+  // consumer keep the original list. Without a save this is the identical
+  // deps object and the whole path is byte-identical to pre-T4.
+  const saveWiring =
+    saveRequest === undefined || isHelpInvocation
+      ? undefined
+      : buildSaveWiring(saveRequest, providerDescriptors);
+  const handlerDepsWithSave: HandlerDependencies =
+    saveWiring === undefined
+      ? handlerDepsWithSelection
+      : {
+          ...handlerDepsWithSelection,
+          providerDescriptors: saveWiring.descriptors,
+          save: saveWiring.input,
+        };
   let exitCode: number;
   let commandRecognized = false;
   try {
     switch (command) {
       case "vision":
         commandRecognized = true;
-        exitCode = await handleVision(commandArgs, outputMode, handlerDepsWithSelection);
+        exitCode = await handleVision(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "search":
         commandRecognized = true;
-        exitCode = await handleSearch(commandArgs, outputMode, handlerDepsWithSelection);
+        exitCode = await handleSearch(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "read":
         commandRecognized = true;
-        exitCode = await handleRead(commandArgs, outputMode, handlerDepsWithSelection);
+        exitCode = await handleRead(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "crawl":
         commandRecognized = true;
-        exitCode = await handleCrawl(commandArgs, outputMode, handlerDepsWithSelection);
+        exitCode = await handleCrawl(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "map":
         commandRecognized = true;
-        exitCode = await handleMap(commandArgs, outputMode, handlerDepsWithSelection);
+        exitCode = await handleMap(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "research":
         commandRecognized = true;
-        exitCode = await handleResearch(commandArgs, outputMode, handlerDepsWithSelection);
+        exitCode = await handleResearch(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "repo":
         commandRecognized = true;
-        exitCode = await handleRepo(commandArgs, outputMode, handlerDepsWithSelection);
+        exitCode = await handleRepo(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "batch":
         commandRecognized = true;

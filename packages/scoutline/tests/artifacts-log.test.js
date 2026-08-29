@@ -344,6 +344,7 @@ describe("readLog", () => {
         { ...saveEntry(), masterPath: "../escape.json" }, // path escape
         { ...saveEntry(), masterPath: "sub/dir.json" }, // path separator
         { ...saveEntry(), masterPath: "/abs/master.json" }, // absolute masterPath
+        { ...saveEntry(), masterPath: "report\0.json" }, // NUL byte — passes separator/dot/basename checks but ERRs the read path (greptile P1)
         { ...saveEntry(), exportPath: 42 }, // non-string exportPath
         "not-even-an-object", // entry is not an object
       ];

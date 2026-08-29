@@ -194,18 +194,35 @@ export async function atomicPlaceNoClobber(
   if (process.platform !== "win32") await fs.chmod(root, 0o700);
   const tempPath = path.join(root, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
   const handle = await fs.open(tempPath, "wx", 0o600);
+  let closed = false;
   try {
     await handle.writeFile(contents);
     await handle.sync();
     await handle.close();
+    closed = true;
     try {
       await fs.link(tempPath, filePath);
-      return true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
       throw error;
     }
+    // Durability (review r4): fsync the directory so the new entry itself
+    // survives power loss — file-data fsync alone can lose the link-in
+    // (POSIX only; Windows has no directory-sync primitive).
+    if (process.platform !== "win32") {
+      const dirHandle = await fs.open(root, "r");
+      try {
+        await dirHandle.sync();
+      } finally {
+        await dirHandle.close().catch(() => {});
+      }
+    }
+    return true;
   } finally {
+    // Leak guard (review r4): close the temp handle even when writeFile or
+    // sync rejected — open handles block the unlink below on platforms
+    // that forbid unlinking open files.
+    if (!closed) await handle.close().catch(() => {});
     await fs.unlink(tempPath).catch(() => {});
   }
 }
@@ -340,6 +357,7 @@ function asSaveLogEntry(value: unknown): SaveLogEntry | undefined {
     bare.length === 0 ||
     bare.includes("/") ||
     bare.includes("\\") ||
+    bare.includes("\0") || // NUL passes the checks below yet ERRs the read path (greptile P1)
     bare.startsWith(".") ||
     bare !== path.basename(bare)
   ) {

@@ -224,8 +224,11 @@ describe("writeArtifact", () => {
       const error = rejected[0].reason;
       assert.ok(error instanceof FileError && error.code === "FILE_ERROR");
       assert.match(error.message, /Refusing to overwrite existing artifact/);
-      // The winner's content is intact — no interleaved overwrite.
-      assert.strictEqual(await fs.readFile(path.join(dir, `${RID}.json`), "utf8"), "first");
+      // The winner's content is intact — no interleaved overwrite. Either
+      // writer may take the lock first (allSettled ordering is not a pin);
+      // the file must hold one writer's full content, never a mixture.
+      const content = await fs.readFile(path.join(dir, `${RID}.json`), "utf8");
+      assert.ok(content === "first" || content === "second", `winner content intact, got: ${content}`);
     });
   });
 

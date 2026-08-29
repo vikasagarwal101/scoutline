@@ -176,8 +176,9 @@ export async function writeArtifact(
 
 /**
  * Atomic check-and-place for the export copy: creates the target's
- * directory as needed (0700, matching {@link atomicReplaceFile}), writes
- * the content to a unique 0600 temp file in that directory (fsync'd),
+ * directory as needed (0700 when newly created; pre-existing directories
+ * keep their permissions), writes the content to a unique 0600 temp file
+ * in that directory (fsync'd),
  * then makes the target via {@link fs.link} — an atomic exclusive create
  * that fails with EEXIST when the target appeared meanwhile. Resolves
  * `true` when placed, `false` when the target already existed (which is
@@ -190,8 +191,15 @@ export async function atomicPlaceNoClobber(
   contents: string,
 ): Promise<boolean> {
   const root = path.dirname(filePath);
+  const existed = await fs.stat(root).then(
+    () => true,
+    () => false,
+  );
   await fs.mkdir(root, { recursive: true, mode: 0o700 });
-  if (process.platform !== "win32") await fs.chmod(root, 0o700);
+  // Harden only directories WE created (review r5): chmod-ing a
+  // pre-existing dir to 0700 would lock other users out of shared
+  // checkouts — a relative `--save report.json` must not touch the CWD.
+  if (!existed && process.platform !== "win32") await fs.chmod(root, 0o700);
   const tempPath = path.join(root, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
   const handle = await fs.open(tempPath, "wx", 0o600);
   let closed = false;

@@ -287,5 +287,21 @@ describe("writeArtifact", () => {
         assert.strictEqual((await fs.stat(created)).mode & 0o777, 0o700);
       });
     });
+
+    // Review r5 (macroscope HIGH): a pre-existing target directory — e.g.
+    // the caller's CWD for a relative --save — must keep its permissions;
+    // chmod-ing it to 0700 locks other users out of shared checkouts.
+    it("leaves a pre-existing target directory's permissions untouched", async (t) => {
+      await withTempDir(t, async (dir) => {
+        const { atomicPlaceNoClobber } = await import("../dist/lib/artifacts.js");
+
+        const sub = path.join(dir, "shared");
+        await fs.mkdir(sub, { mode: 0o755 });
+        const before = (await fs.stat(sub)).mode & 0o777;
+
+        assert.strictEqual(await atomicPlaceNoClobber(path.join(sub, "report.json"), "placed"), true);
+        assert.strictEqual((await fs.stat(sub)).mode & 0o777, before);
+      });
+    });
   });
 });

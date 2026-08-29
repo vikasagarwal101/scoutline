@@ -23,6 +23,7 @@
 - **Code Mode** - TypeScript tool chaining for agent automation
 - **Provider selection** - Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, or Spider.cloud
 - **Usage ledger** - Local 90-day call-usage history per provider and capability (`scoutline usage`), counters only
+- **Saved artifacts** - Durable clean reports from any provider-backed run (`--save`), content + request id only, plus a credential-free `scoutline history` inventory (list/show/stats)
 
 ## Quick Start
 
@@ -247,6 +248,10 @@ and a SHA-256 of the content, and no heading, question, term, or file byte
 appears in notices or logs. Without these flags, `research` and `search`
 output is byte-identical to previous releases.
 
+### Saved Artifacts (`--save` + `history`)
+
+Any provider-backed command (`search`, `read`, `crawl`, `map`, `research`, `repo`, `vision`) accepts `--save [<path>]`: after a successful run it writes a durable **clean report** — content plus a request id, nothing else — while stdout stays byte-identical. The master copy always lands in the artifact store (`~/.scoutline/artifacts/`, override `SCOUTLINE_ARTIFACTS_DIR`); `--save <path>` additionally writes an export copy (refused on an existing target unless `--save-force`). Reports are redacted through the same seam as stdout and never touched by `cache clear` or TTLs. `scoutline history list/show/stats` is the credential-free, fail-open inventory over the store's `index.json` metadata log, joined to reports by request id.
+
 ## Capability Matrix
 
 The matrix below is generated from the production provider registry
@@ -363,6 +368,7 @@ scoutline doctor --help       # Provider diagnostics
 scoutline quota --help        # Plan usage
 scoutline cache --help        # Local cache inspection, clearing, and pruning
 scoutline usage --help        # Local call-usage history (usage.json ledger)
+scoutline history --help      # Saved-artifact inventory (list/show/stats)
 ```
 
 ### Examples
@@ -414,6 +420,12 @@ scoutline cache prune --older-than 168h --provider zai    # age override + selec
 scoutline usage                       # last 7 days, every provider (usage.json ledger)
 scoutline usage --days 30             # wider UTC-day window
 scoutline usage --provider zai        # one provider's rows only
+
+# Saved artifacts - clean reports (content + requestId), metadata joined by id
+scoutline search "rust vs go" --save report.json   # master copy + export copy
+scoutline search "rust vs go" --save --save-format markdown  # master only
+scoutline history list --limit 5                   # newest saves, from the log
+scoutline history show 20260829T142233Z-7f3a       # metadata + report, joined
 
 # Config - inspect and change settings (scriptable, always redacted)
 scoutline config get                  # full config dump (credentials masked)

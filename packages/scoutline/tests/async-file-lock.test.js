@@ -10,7 +10,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { withAsyncFileLock } from "../dist/lib/async-file-lock.js";
+import { breakStaleLock, withAsyncFileLock } from "../dist/lib/async-file-lock.js";
 import { executeProviderOperation } from "../dist/lib/execution.js";
 import { TimeoutError } from "../dist/lib/errors.js";
 
@@ -211,6 +211,57 @@ describe("audit 2026-08 #48 — Firecrawl crawl lock", () => {
       !help.includes("Z_AI_TIMEOUT"),
       `lock-timeout error must not surface Z_AI_TIMEOUT guidance; got help="${help}" (raw message="${message}")`,
     );
+  });
+});
+
+// Review fixup (macroscope HIGH, artifacts.ts:291): the stale-lock break
+// must be ownership-safe — unlink only when the path still holds the exact
+// inode that was statted as stale, so a second waiter that already broke
+// the same stale lock and re-acquired never loses its fresh lock to a
+// slow first breaker's naked unlink.
+describe("async-file-lock — ownership-safe stale break (breakStaleLock)", () => {
+  it("unlinks when the path still holds the statted inode", async (t) => {
+    const dir = await mkTmp(t, "stale-owned");
+    const lockPath = path.join(dir, "owned.lock");
+    await fs.writeFile(lockPath, "stale", { flag: "wx" });
+    const statted = await fs.stat(lockPath);
+
+    await breakStaleLock(lockPath, statted);
+
+    await assert.rejects(fs.stat(lockPath), (e) => e.code === "ENOENT");
+  });
+
+  it("refuses to unlink when the path was replaced by a DIFFERENT inode (a successor's live lock)", async (t) => {
+    const dir = await mkTmp(t, "stale-replaced");
+    const lockPath = path.join(dir, "replaced.lock");
+    await fs.writeFile(lockPath, "stale", { flag: "wx" });
+    const statted = await fs.stat(lockPath);
+
+    // Between the stat and the break attempt, another waiter broke the
+    // stale lock and re-acquired: the path now holds a NEW inode.
+    await fs.unlink(lockPath);
+    await fs.writeFile(lockPath, "fresh-successor-lock", { flag: "wx" });
+
+    await breakStaleLock(lockPath, statted);
+
+    const survived = await fs.readFile(lockPath, "utf8");
+    assert.strictEqual(
+      survived,
+      "fresh-successor-lock",
+      "the successor's lock must survive a stale-break that no longer owns the inode",
+    );
+  });
+
+  it("is a no-op when the lock vanished between stat and break", async (t) => {
+    const dir = await mkTmp(t, "stale-vanished");
+    const lockPath = path.join(dir, "vanished.lock");
+    await fs.writeFile(lockPath, "stale", { flag: "wx" });
+    const statted = await fs.stat(lockPath);
+    await fs.unlink(lockPath);
+
+    await breakStaleLock(lockPath, statted); // must not throw
+
+    assert.ok(true, "ENOENT during re-stat resolves, never rejects");
   });
 });
 

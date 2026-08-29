@@ -318,6 +318,51 @@ describe("readLog", () => {
       ]);
     });
   });
+
+  // Review fixup (macroscope HIGH history.ts:163 + coderabbit minor
+  // artifacts.ts:234): every entry is validated against the COMPLETE
+  // SaveLogEntry shape before the cast — including masterPath being a bare
+  // filename — so a malformed or hostile persisted entry can never drive
+  // `history show`'s read path (path.join(dir, masterPath)) outside the
+  // artifacts dir. One invalid entry makes the whole log fail open.
+  it("a log with any entry failing the full SaveLogEntry shape fails open: empty log + notice", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const { readLog } = await import("../dist/lib/artifacts.js");
+
+      const badEntries = [
+        { ...saveEntry(), kind: "journal" }, // unknown kind
+        { ...saveEntry(), requestId: "" }, // empty requestId
+        { ...saveEntry(), timestamp: "2026-08-29" }, // non-epoch timestamp
+        { ...saveEntry(), command: 7 }, // non-string command
+        { ...saveEntry(), args: "not-an-object" }, // non-object args
+        { ...saveEntry(), provider: { mode: "single" } }, // missing effective
+        { ...saveEntry(), provider: { mode: "fanout", arms: [] } }, // empty arms
+        { ...saveEntry(), provider: { mode: "sideways", arms: ["zai"] } }, // unknown mode
+        { ...saveEntry(), artifactFormat: "yaml" }, // invalid format
+        { ...saveEntry(), cliVersion: 1 }, // non-string version
+        { ...saveEntry(), masterPath: "../escape.json" }, // path escape
+        { ...saveEntry(), masterPath: "sub/dir.json" }, // path separator
+        { ...saveEntry(), masterPath: "/abs/master.json" }, // absolute masterPath
+        { ...saveEntry(), exportPath: 42 }, // non-string exportPath
+        "not-even-an-object", // entry is not an object
+      ];
+      for (const bad of badEntries) {
+        const body = JSON.stringify({ version: 1, entries: [saveEntry(), bad] });
+        await fs.writeFile(path.join(dir, "index.json"), body);
+        const { log, notice } = await readLog(dir);
+        assert.deepStrictEqual(
+          log,
+          { version: 1, entries: [] },
+          `one bad entry (${JSON.stringify(bad)}) must fail the WHOLE log open`,
+        );
+        assert.match(
+          String(notice),
+          /does not match the log schema/,
+          `body: ${body}`,
+        );
+      }
+    });
+  });
 });
 
 describe("orphan rule", () => {

@@ -229,21 +229,28 @@ function formatTimestamp(ms: number): string {
 }
 
 function formatHistoryList(report: HistoryListReport): string {
+  // Review fixup: header and data rows share one column-width table, and
+  // every non-final column pads to width+1 so an exactly-full value (the
+  // 21-char requestId) still leaves a one-space separator — columns can
+  // no longer run together under a wide timestamp or id.
+  const pad = (cell: string, width: number): string => cell.padEnd(width + 1);
+  const columns = ([id, saved, command, format]: [string, string, string, string]): string =>
+    pad(id, 21) + pad(saved, 24) + pad(command, 10) + pad(format, 10);
+  const header = columns(["requestId", "saved (UTC)", "command", "format"]) + "provider";
   const lines = [
     `history: ${report.entries.length} of ${report.total} saved artifact(s)`,
-    "requestId             saved (UTC)           command   format    provider",
+    header,
   ];
   for (const row of report.entries) {
     const provider =
       row.provider.mode === "fanout" ? `fanout(${row.provider.arms.join("+")})` : row.provider.effective;
     lines.push(
-      [
-        row.requestId.padEnd(21),
-        formatTimestamp(row.timestamp).padEnd(21),
-        row.command.padEnd(10),
-        row.artifactFormat.padEnd(10),
-        provider,
-      ].join(""),
+      columns([
+        row.requestId,
+        formatTimestamp(row.timestamp),
+        row.command,
+        row.artifactFormat,
+      ]) + provider,
     );
   }
   return lines.join("\n");

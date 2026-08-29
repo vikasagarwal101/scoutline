@@ -221,7 +221,7 @@ operations. `history list|show|stats` is the credential-free, fail-open
 inventory over that log.
 
 ```bash
-scoutline search "x" --save report.json --save-format markdown
+scoutline search "x" --save report.md --save-format markdown
 scoutline history list --since 7 --command search
 scoutline history show 20260829T142233Z-7f3a
 ```

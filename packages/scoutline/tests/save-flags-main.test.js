@@ -29,7 +29,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -241,18 +241,41 @@ describe("save-artifacts T3: --save/--save-format/--save-force global flags", ()
   });
 
   it("treats a trailing valueless --save as a master-only save: no export guard, behavior runs", async () => {
+    // save-artifacts T4 update: T3's original pin asserted the run wrote
+    // nothing, but that encoded T3's inert scope, not an eternal contract.
+    // T4 owns the write; this row now pins the master-only write shape
+    // (store master + log entry, no export copy, stdout preserved).
+    const dir = makeTempDir("scoutline-save-t3-mastersonly-");
     const log = [];
     const { adapter, stdout, stderr } = makeAdapter();
-    const status = await main(["search", "q", "--save"], baseDeps(adapter, log));
-    assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
-    assert.deepStrictEqual(log, ["zai"], "the search behavior must run");
-    assert.strictEqual(stdout.length, 1, "data stdout is preserved");
-    const data = JSON.parse(stdout[0]);
-    assert.ok(Array.isArray(data) && data.length === 1, `unexpected stdout: ${stdout[0]}`);
+    try {
+      const status = await main(
+        ["search", "q", "--save"],
+        baseDeps(adapter, log, { env: { SCOUTLINE_ARTIFACTS_DIR: dir } }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      assert.deepStrictEqual(log, ["zai"], "the search behavior must run");
+      assert.strictEqual(stdout.length, 1, "data stdout is preserved");
+      const data = JSON.parse(stdout[0]);
+      assert.ok(Array.isArray(data) && data.length === 1, `unexpected stdout: ${stdout[0]}`);
+      const files = readdirSync(dir).sort();
+      assert.strictEqual(files.length, 2, `expected master + index.json, got ${files.join(",")}`);
+      const masterName = files.find((f) => f !== "index.json");
+      const report = JSON.parse(readFileSync(join(dir, masterName), "utf8"));
+      assert.deepStrictEqual([...Object.keys(report)].sort(), ["requestId", "result", "schemaVersion"]);
+      assert.strictEqual(report.result.length, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  it("lets --save-force bypass the exists guard; the run stays inert (no writes)", async () => {
+  it("lets --save-force bypass the exists guard; T4 overwrites the export with the clean report", async () => {
+    // save-artifacts T4 update: T3's original pin asserted the run stayed
+    // write-inert, but that encoded T3's scope. T4's write-time recheck
+    // honors --save-force: the stale export is atomically replaced with
+    // the clean report and the store gains the master + log entry.
     const dir = makeTempDir("scoutline-save-t3-force-");
+    const artifactsDir = makeTempDir("scoutline-save-t3-force-artifacts-");
     const target = join(dir, "report.json");
     writeFileSync(target, "keep");
     const log = [];
@@ -260,18 +283,27 @@ describe("save-artifacts T3: --save/--save-format/--save-force global flags", ()
     try {
       const status = await main(
         ["search", "q", "--save", target, "--save-force"],
-        baseDeps(adapter, log),
+        baseDeps(adapter, log, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
       );
       assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
       assert.deepStrictEqual(log, ["zai"], "the search behavior must run");
       assert.strictEqual(stdout.length, 1, "data stdout is preserved");
-      assert.strictEqual(
-        readFileSync(target, "utf8"),
-        "keep",
-        "T3 must not write artifacts (T4 owns the write)",
+      const exported = JSON.parse(readFileSync(target, "utf8"));
+      assert.deepStrictEqual([...Object.keys(exported)].sort(), ["requestId", "result", "schemaVersion"]);
+      const files = readdirSync(artifactsDir).sort();
+      const masters = files.filter((f) => f !== "index.json");
+      assert.strictEqual(masters.length, 1);
+      assert.deepStrictEqual(
+        JSON.parse(readFileSync(join(artifactsDir, masters[0]), "utf8")),
+        exported,
+        "master and export must be byte-identical in content",
       );
+      const store = JSON.parse(readFileSync(join(artifactsDir, "index.json"), "utf8"));
+      assert.strictEqual(store.entries.length, 1);
+      assert.strictEqual(store.entries[0].exportPath, target);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+      rmSync(artifactsDir, { recursive: true, force: true });
     }
   });
 

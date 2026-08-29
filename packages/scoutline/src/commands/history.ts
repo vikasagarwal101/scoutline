@@ -98,16 +98,29 @@ function toSummary(entry: SaveLogEntry): HistoryEntrySummary {
   };
 }
 
+/** UTC-midnight floor of an instant — the `usage --days` window unit (whole days, today inclusive). */
+function utcDayFloor(ms: number): number {
+  const day = new Date(ms);
+  day.setUTCHours(0, 0, 0, 0);
+  return day.getTime();
+}
+
 /**
  * Fold the log into the list report: optional `--command` filter, a
  * `--since N` UTC-day window inclusive of today (the `usage --days`
- * semantics: the entry exactly `N-1` days back is the oldest kept),
- * newest-first ordering (timestamp desc, requestId desc on ties), then
- * `--limit` slicing. `total` counts post-filter, pre-slice. Pure.
+ * semantics: the window's lower edge is UTC midnight `N-1` whole days
+ * back, so every entry of today and the previous `N-1` days is kept —
+ * a rolling `now - N*DAY` cutoff would silently drop same-day entries
+ * and make `--since 1` effectively empty; cold-review round 1
+ * finding 2), newest-first ordering (timestamp desc, requestId desc on
+ * ties), then `--limit` slicing. `total` counts post-filter, pre-slice.
+ * Pure.
  */
 export function buildHistoryListReport(log: ArtifactsLog, options: HistoryListOptions): HistoryListReport {
   const cutoff =
-    options.sinceDays !== undefined ? options.now() - (options.sinceDays - 1) * DAY_MS : undefined;
+    options.sinceDays !== undefined
+      ? utcDayFloor(options.now()) - (options.sinceDays - 1) * DAY_MS
+      : undefined;
   const kept = log.entries.filter((entry) => {
     if (options.command !== undefined && entry.command !== options.command) return false;
     if (cutoff !== undefined && entry.timestamp < cutoff) return false;

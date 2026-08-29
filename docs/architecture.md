@@ -665,6 +665,20 @@ the env policy (`SCOUTLINE_CACHE*` with silent `ZAI_CACHE*`,
 Legacy `zai-cli` cache keys remain readable for Z.AI as Adapter-owned
 candidates; old entries are never migrated or deleted.
 
+The saved-artifacts store (`--save` + `history`) is a third local surface
+beside `cache/` and `tools/`: `~/.scoutline/artifacts/` (override:
+`SCOUTLINE_ARTIFACTS_DIR`) holds clean report files (`<requestId>.json|.md`,
+envelope `{schemaVersion, requestId, result}` only) plus the `index.json`
+metadata log that `scoutline history` reads. Reports never carry provider
+metadata — the log owns the "which provider did what" record (mode-aware
+provider routing: single runs record requested+effective; fan-out runs
+record mode+arms), joined to reports by request id. Writes are atomic and
+overwrite-guarded (`atomicReplaceFile` plus a force-gated pre-check caught
+before any provider call); the listing comes from the log only, so a
+crash-window orphan master is invisible. `cache clear`, TTLs, and LRU
+eviction never touch it; `history` is credential-free and fail-open (the
+`usage` precedent).
+
 `src/lib/tool-cache.ts` owns the tool-discovery cache I/O against the
 `tools/` sibling. It is consumed by `ZaiMcpClient`; the response cache
 never touches it. The LRU eviction loop in `src/lib/cache.ts` scans

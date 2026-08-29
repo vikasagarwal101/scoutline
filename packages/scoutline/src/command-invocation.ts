@@ -51,6 +51,28 @@ export interface CommandInvocationAdapter {
   setExitCode(value: number): void;
 }
 
+/**
+ * Input handed to the optional save hook (save-artifacts T4). The seam
+ * passes the successful CommandResult, the SAME resolved secrets the
+ * output boundary redacts with, the invocation clock, and the notice
+ * channel - a hook notice rides the existing stderr flush ahead of the
+ * stdout write, so saving never reorders documented output.
+ */
+export interface SaveHookContext {
+  readonly result: CommandResult;
+  readonly resolvedSecrets: string[];
+  readonly now: () => number;
+  readonly notice: (message: string) => void;
+}
+
+/**
+ * Optional post-behavior save hook (save-artifacts T4). Present only for
+ * a save-capable command run with --save; every existing call site omits
+ * it and is byte-identical to the pre-T4 seam. A hook throw rides the
+ * existing catch: notices flush, one error envelope, no stdout.
+ */
+export type SaveHook = (context: SaveHookContext) => Promise<void>;
+
 const TEXT_OUTPUT_MODES: readonly TextOutputMode[] = ["compact", "markdown", "refs", "tty"];
 
 function isTextOutputMode(mode: OutputMode): mode is TextOutputMode {
@@ -118,6 +140,7 @@ export async function invokeCommand(
   outputMode: OutputMode,
   now: () => number = Date.now,
   secrets?: string[],
+  save?: SaveHook,
 ): Promise<number> {
   const notices: string[] = [];
 
@@ -139,6 +162,13 @@ export async function invokeCommand(
   let result: CommandResult;
   try {
     result = await adapter.runQuietly(() => behavior(context));
+    // save-artifacts T4: the hook runs INSIDE the try, after the behavior
+    // produced its result and before any stdout write. A failure rides the
+    // existing catch below (notices flushed, one error envelope, stdout
+    // suppressed). With no hook this is a no-op.
+    if (save !== undefined) {
+      await save({ result, resolvedSecrets, now, notice: context.notice });
+    }
   } catch (error) {
     for (const notice of notices) {
       adapter.writeStderr(notice);

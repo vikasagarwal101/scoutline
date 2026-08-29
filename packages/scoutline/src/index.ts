@@ -50,6 +50,7 @@ import {
   DEFAULT_USAGE_WINDOW_DAYS,
   MAX_USAGE_WINDOW_DAYS,
 } from "./commands/usage.js";
+import { historyCommand, HISTORY_HELP } from "./commands/history.js";
 import { cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
 import type { PruneSelectors, PruneCachesResult } from "./lib/cache.js";
 import { parseBatchManifest } from "./lib/batch-manifest.js";
@@ -69,27 +70,43 @@ import {
   CODE_HELP,
 } from "./commands/code.js";
 import { isOutputMode, OUTPUT_MODES, type OutputMode } from "./lib/output.js";
-import { formatErrorOutput } from "./lib/output.js";
+import { formatErrorOutput, formatSuccessOutput } from "./lib/output.js";
+import {
+  appendLogEntry,
+  atomicPlaceNoClobber,
+  CLI_VERSION,
+  newRequestId,
+  readLog,
+  resolveArtifactsDir,
+  writeArtifact,
+  type ArtifactFormat,
+  type ProviderRouting,
+  type SaveLogEntry,
+} from "./lib/artifacts.js";
 import {
   ConfigurationError,
+  FileError,
   ValidationError,
   UnsupportedCapabilityError,
   getErrorExitCode,
 } from "./lib/errors.js";
 import * as os from "node:os";
+import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import {
   invokeCommand,
+  type SaveHook,
   type CommandInvocationAdapter,
   type CommandResult,
 } from "./command-invocation.js";
 import { defaultResponseCache, type ResponseCache } from "./lib/cache.js";
 import { MAX_SUBQUERIES, parseContextText, readContextSource } from "./lib/context-file.js";
 import type { ContextSourceKind } from "./lib/context-file.js";
-import { configuredSecrets } from "./lib/redact.js";
+import { configuredSecrets, redactSecrets } from "./lib/redact.js";
 import {
   configFilePath,
+  atomicReplaceFile,
   readConfig,
   resolveConfigRootPure,
   resolveEnvFromConfig,
@@ -128,7 +145,7 @@ import {
 import { resolveProviderId, resolveEffectiveProvider } from "./providers/selection.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "./providers/registry.js";
 import { PROVIDER_IDS } from "./providers/types.js";
-import type { ProviderDescriptor, ProviderId } from "./providers/types.js";
+import type { ProviderAdapter, ProviderContext, ProviderDescriptor, ProviderId } from "./providers/types.js";
 import { executeWithFallback, type FallbackOutcome } from "./lib/provider-fallback.js";
 import type { SearchCapability } from "./capabilities/search.js";
 import type { ExecutionDependencies } from "./lib/execution.js";
@@ -172,6 +189,8 @@ Commands:
   cache    Inspect or clear the local cache (stats / clear)
   usage    Report local call-usage history (usage.json ledger,
            credential-free)
+  history  Inventory of saved --save artifacts (list / show / stats,
+           credential-free)
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
   init     Interactive onboarding wizard (writes ~/.scoutline/config.json)
 
@@ -199,6 +218,9 @@ per-Provider; --provider picks the effective Provider for metadata.
 Global Options:
   --output-format <data|json|pretty|compact|markdown|refs|tty>  Output mode (default: data)
   -O <mode>                                                     Alias for --output-format
+  --save [<path>]      Save the result as a clean report (content + requestId) after a successful shared-capability run (search/read/crawl/map/research/repo/vision). Master copy in the artifact store; <path> also receives an export copy. A valueless --save (trailing, or followed by another option, e.g. --save --save-format markdown) writes the master only. Refuses an existing export target without --save-force.
+  --save-format <json|markdown>  Report format (default: json)
+  --save-force         Overwrite an existing export target
 
 Help:
   scoutline --help
@@ -215,6 +237,7 @@ Help:
   scoutline code --help
   scoutline cache --help
   scoutline usage --help
+  scoutline history --help
   scoutline init --help
 `.trim();
 
@@ -291,12 +314,57 @@ function collectLongFlagValues(args: string[], name: string): (string | true)[] 
   return values;
 }
 
+// ---------------------------------------------------------------------------
+// Save-artifacts flag surface (batch ticket T3). `--save [<path>]`,
+// `--save-format <json|markdown>`, and `--save-force` are global options:
+// extracted for every command, removed from the rest stream, and consumed
+// only by the save-capable families (search / read / crawl / map /
+// research / repo / vision). Non-capable commands accept and silently drop
+// them — the same posture as `--no-fallback`. T3 wires extraction plus the
+// pre-dispatch guards; the actual artifact writes are ticket T4's.
+// ---------------------------------------------------------------------------
+
+/** Artifact serialization formats (spec ruling: json | markdown, default json). */
+const SAVE_FORMATS = ["json", "markdown"] as const;
+type SaveFormat = (typeof SAVE_FORMATS)[number];
+
+function isSaveFormat(value: string): value is SaveFormat {
+  return (SAVE_FORMATS as readonly string[]).includes(value);
+}
+
+/**
+ * A parsed `--save` request. `exportPath === undefined` is the
+ * valueless-trailing-`--save` form: a master-only save with no export copy
+ * (DESIGN D1). The flags only configure a save when `--save` itself is
+ * present; `--save-format` / `--save-force` alone are validated and dropped.
+ */
+interface SaveRequest {
+  exportPath?: string;
+  format: SaveFormat;
+  force: boolean;
+}
+
+/**
+ * Commands whose successful results can be saved as artifacts (spec
+ * coverage ruling). Every other command ignores the `--save*` flags.
+ */
+const SAVE_CAPABLE_COMMANDS: ReadonlySet<string> = new Set([
+  "search",
+  "read",
+  "crawl",
+  "map",
+  "research",
+  "repo",
+  "vision",
+]);
+
 function extractGlobalOptions(args: string[]): {
   outputFormat?: string;
   forcePretty?: boolean;
   forceRaw?: boolean;
   provider?: string;
   noFallback?: boolean;
+  save?: SaveRequest;
   rest: string[];
 } {
   const rest: string[] = [];
@@ -305,6 +373,10 @@ function extractGlobalOptions(args: string[]): {
   let forceRaw = false;
   let provider: string | undefined;
   let noFallback = false;
+  let savePath: string | undefined;
+  let saveSeen = false;
+  let saveFormat: SaveFormat = "json";
+  let saveForce = false;
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
@@ -356,10 +428,127 @@ function extractGlobalOptions(args: string[]): {
       noFallback = true;
       continue;
     }
+    if (arg === "--save") {
+      // save-artifacts T3. Optional-value global flag with parseArgs'
+      // binding rule: the next token is the export path iff it exists,
+      // is non-empty, and does not start with "-". Anything else (trailing
+      // end-of-argv, an empty string, another option token) leaves `--save`
+      // valueless = the MASTER-ONLY save, and the token stays in the rest
+      // stream for its own parser (review fixup: `--save --save-format
+      // markdown` is the README-documented master-only markdown form and
+      // must run the provider, not exit VALIDATION_ERROR; the same rule
+      // makes `--save --limit 5` a master-only save with the limit still
+      // applied — the binding rule never binds a dash-prefixed token as a
+      // path, because paths never start with "-").
+      const value = args[i + 1];
+      saveSeen = true;
+      if (value === undefined) continue;
+      if (value.startsWith("-")) continue; // another option: stays in the rest stream
+      // A non-dash follower is consumed either way; an empty string cannot
+      // be an export path (and an empty argv token must not leak into the
+      // command's positionals and change the request), so it consumes as
+      // the valueless master-only form (review fixup).
+      if (value.length > 0) savePath = value;
+      i += 1;
+      continue;
+    }
+    if (arg === "--save-format") {
+      // save-artifacts T3. Required-value flag; validated at the global
+      // surface (before the command is even known) so a malformed value
+      // fails identically on capable and drop-the-flags commands.
+      const value = args[i + 1];
+      if (value === undefined || value.length === 0 || value.startsWith("-")) {
+        throw new ValidationError(
+          "--save-format requires a value.",
+          `Use one of: ${SAVE_FORMATS.join(", ")}`,
+        );
+      }
+      if (!isSaveFormat(value)) {
+        throw new ValidationError(
+          `Invalid save format: ${value}`,
+          `Use one of: ${SAVE_FORMATS.join(", ")}`,
+        );
+      }
+      saveFormat = value;
+      i += 1;
+      continue;
+    }
+    if (arg === "--save-force") {
+      // save-artifacts T3. Boolean switch: bypasses the pre-dispatch
+      // exists guard for the export target (the write itself is T4's).
+      saveForce = true;
+      continue;
+    }
     rest.push(arg);
   }
 
-  return { outputFormat, forcePretty, forceRaw, provider, noFallback, rest };
+  return {
+    outputFormat,
+    forcePretty,
+    forceRaw,
+    provider,
+    noFallback,
+    save: saveSeen ? { exportPath: savePath, format: saveFormat, force: saveForce } : undefined,
+    rest,
+  };
+}
+
+/**
+ * T3 pre-dispatch export guard (DESIGN D6 step 2): cheap, read-only
+ * filesystem checks that run in `main` before any provider/network work so
+ * the common save failures cost nothing.
+ *
+ *   - Export target exists and `--save-force` is absent -> FileError
+ *     ("artifact exists", the D8-greppable wording; the help names
+ *     --save-force).
+ *   - Export parent missing, not a directory, or not writable -> FileError
+ *     (T3 does not mkdir -p; the parent must already accept writes).
+ *
+ * A master-only save (`--save` with no path) skips the guard entirely:
+ * there is no export target to conflict with, and no filesystem access.
+ * The pre-check race (target created between this check and T4's write)
+ * is closed at write time by T4's exists-recheck, not here.
+ */
+async function assertExportTargetAcceptable(request: SaveRequest): Promise<void> {
+  const exportPath = request.exportPath;
+  if (exportPath === undefined) return;
+  let targetExists = false;
+  try {
+    // lstat, not stat: a dangling symlink at the target is an existing
+    // entry and must be refused without --save-force (review fixup) —
+    // stat would miss it (ENOENT through the dangling link).
+    await fs.lstat(exportPath);
+    targetExists = true;
+  } catch {
+    targetExists = false;
+  }
+  if (targetExists && !request.force) {
+    throw new FileError(
+      `artifact exists: ${exportPath}`,
+      "Pass --save-force to overwrite the existing export target.",
+    );
+  }
+  const parent = path.dirname(exportPath);
+  let parentStat: Awaited<ReturnType<typeof fs.stat>> | undefined;
+  try {
+    parentStat = await fs.stat(parent);
+  } catch {
+    parentStat = undefined;
+  }
+  if (parentStat === undefined || !parentStat.isDirectory()) {
+    throw new FileError(
+      `export parent directory does not exist: ${parent}`,
+      "Create the parent directory first or choose an export path inside an existing directory.",
+    );
+  }
+  try {
+    await fs.access(parent, fs.constants.W_OK);
+  } catch {
+    throw new FileError(
+      `export parent directory is not writable: ${parent}`,
+      "Choose an export path in a writable directory or fix the directory's permissions.",
+    );
+  }
 }
 
 /**
@@ -527,6 +716,13 @@ export interface HandlerDependencies {
    * pre-fan-out behavior).
    */
   readonly configFanout?: boolean;
+  /**
+   * save-artifacts T4: present only when this run will actually save
+   * (save-capable command + --save + not a help invocation). Handlers
+   * turn it into an invokeCommand save hook via createSaveArtifactHook;
+   * every other run is byte-identical to pre-T4.
+   */
+  readonly save?: SaveHookInput;
   readonly searchCache: ResponseCache;
   readonly searchSleep: (ms: number) => Promise<void>;
   readonly searchRandom: () => number;
@@ -688,6 +884,23 @@ async function handleVision(
     random: deps.searchRandom,
   };
 
+  // save-artifacts T4: one save hook for this run (inert unless main wired
+  // a save). args = the provider-influencing allow-list only. The batch
+  // subcommand returns before this point (per-op providers live in the
+  // runner), so batch stays accept-and-drop in v1.
+  const save = createSaveArtifactHook(deps, {
+    command: "vision",
+    outputMode,
+    args: {
+      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+    },
+    provider: {
+      mode: "single",
+      ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+      effective: providerId,
+    },
+  });
   // Provider-fallback Ticket 02: route every vision operation through
   // the shared executor. The existing vision URL→temp-file fallback
   // stays inside the Z.AI adapter's invoke, layered beneath provider
@@ -789,6 +1002,7 @@ async function handleVision(
     outputMode,
     deps.now,
     deps.secrets,
+    save,
   );
 }
 
@@ -1050,6 +1264,37 @@ async function handleSearch(
           routing: deps.routing,
         });
 
+  // save-artifacts T4: one save hook for this run (inert unless main wired
+  // a save). The provider routing mirrors the in-code vocabulary (DESIGN
+  // D5): fan-out records the arm list with no single effective; single
+  // records requested + effective (the hook overrides effective with the
+  // executor's actual server when runtime fallback switched providers).
+  const save = createSaveArtifactHook(deps, {
+    command: "search",
+    outputMode,
+    args: {
+      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+      ...(count !== undefined ? { count } : {}),
+      ...(type !== undefined ? { type } : {}),
+      ...(topic !== undefined ? { topic } : {}),
+      ...(flags.merge === true ? { merge: true } : {}),
+      ...(flags["no-cache"] === true ? { "no-cache": true } : {}),
+      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+    },
+    provider:
+      fanoutPlan.mode === "fanout"
+        ? {
+            mode: "fanout",
+            ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+            arms: fanoutPlan.arms,
+          }
+        : {
+            mode: "single",
+            ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+            // Single mode always resolved a provider above (the ternary).
+            effective: providerId as ProviderId,
+          },
+  });
   const query = positional.join(" ");
 
   const fieldsRaw = flags.fields as string | undefined;
@@ -1272,6 +1517,7 @@ async function handleSearch(
     outputMode,
     deps.now,
     deps.secrets,
+    save,
   );
 }
 
@@ -1323,6 +1569,22 @@ async function handleRead(
     routing: deps.routing,
   });
 
+  // save-artifacts T4: one save hook for this run (inert unless main wired
+  // a save). args = the provider-influencing allow-list only.
+  const save = createSaveArtifactHook(deps, {
+    command: "read",
+    outputMode,
+    args: {
+      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+      ...(flags["no-cache"] === true ? { "no-cache": true } : {}),
+    },
+    provider: {
+      mode: "single",
+      ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+      effective: providerId,
+    },
+  });
   const readOptions = {
     format: flags.format as "markdown" | "text",
     noImages: flags["no-images"] === true,
@@ -1387,6 +1649,7 @@ async function handleRead(
     outputMode,
     deps.now,
     deps.secrets,
+    save,
   );
 }
 
@@ -1428,6 +1691,22 @@ async function handleCrawl(
   // to the same production values as Search/Repository/Reader but are
   // kept as separate optional MainDependencies so crawl tests can inject
   // isolated in-memory doubles.
+  // save-artifacts T4: one save hook for this run (inert unless main wired
+  // a save). args = the provider-influencing allow-list only.
+  const save = createSaveArtifactHook(deps, {
+    command: "crawl",
+    outputMode,
+    args: {
+      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+      ...(typeof flags.limit === "string" ? { limit: flags.limit } : {}),
+    },
+    provider: {
+      mode: "single",
+      ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+      effective: providerId,
+    },
+  });
   const executionDeps: ExecutionDependencies = {
     cache: deps.crawlCache,
     sleep: deps.crawlSleep,
@@ -1488,6 +1767,7 @@ async function handleCrawl(
     outputMode,
     deps.now,
     deps.secrets,
+    save,
   );
 }
 
@@ -1529,6 +1809,22 @@ async function handleMap(
   // to the same production values as Search/Repository/Reader/Crawl but
   // are kept as separate optional MainDependencies so map tests can
   // inject isolated in-memory doubles.
+  // save-artifacts T4: one save hook for this run (inert unless main wired
+  // a save). args = the provider-influencing allow-list only.
+  const save = createSaveArtifactHook(deps, {
+    command: "map",
+    outputMode,
+    args: {
+      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+      ...(typeof flags.limit === "string" ? { limit: flags.limit } : {}),
+    },
+    provider: {
+      mode: "single",
+      ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+      effective: providerId,
+    },
+  });
   const executionDeps: ExecutionDependencies = {
     cache: deps.mapCache,
     sleep: deps.mapSleep,
@@ -1583,6 +1879,7 @@ async function handleMap(
     outputMode,
     deps.now,
     deps.secrets,
+    save,
   );
 }
 
@@ -1678,6 +1975,29 @@ async function handleResearch(
   });
 
   // Shared Research execution dependencies.
+  // save-artifacts T4: one save hook for this run (inert unless main wired
+  // a save). args = the provider-influencing allow-list only.
+  const save = createSaveArtifactHook(deps, {
+    command: "research",
+    outputMode,
+    args: {
+      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+      // Request-affecting controls (DESIGN D6/G6 allow-list: provider-
+      // influencing options, "capability controls"; review round 2):
+      // recorded set-only-when-given, the search --no-cache convention.
+      ...(model !== undefined ? { model } : {}),
+      ...(outputLength !== undefined ? { "output-length": outputLength } : {}),
+      ...(citationFormat !== undefined ? { "citation-format": citationFormat } : {}),
+      ...(typeof flags.domain === "string" ? { domain: flags.domain } : {}),
+      ...(flags["no-cache"] === true ? { "no-cache": true } : {}),
+    },
+    provider: {
+      mode: "single",
+      ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+      effective: providerId,
+    },
+  });
   const executionDeps: ExecutionDependencies = {
     cache: deps.researchCache,
     sleep: deps.researchSleep,
@@ -1806,6 +2126,7 @@ async function handleResearch(
     outputMode,
     deps.now,
     deps.secrets,
+    save,
   );
 }
 
@@ -1979,6 +2300,23 @@ async function handleRepo(
   const noCache = flags["no-cache"] === true;
   const treePath = flags.path as string | undefined;
   const depth = flags.depth ? parseInt(flags.depth as string, 10) : undefined;
+  // save-artifacts T4: one save hook for this run (inert unless main wired
+  // a save). args = the provider-influencing allow-list only.
+  const save = createSaveArtifactHook(deps, {
+    command: "repo",
+    outputMode,
+    args: {
+      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+      ...(noCache ? { "no-cache": true } : {}),
+      ...(depth !== undefined ? { depth } : {}),
+    },
+    provider: {
+      mode: "single",
+      ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+      effective: providerId,
+    },
+  });
 
   // Provider-fallback Ticket 02: route every subcommand through the
   // shared executor. All three projections (search/tree/read) share
@@ -2053,6 +2391,7 @@ async function handleRepo(
     outputMode,
     deps.now,
     deps.secrets,
+    save,
   );
 }
 
@@ -2821,6 +3160,137 @@ export async function handleUsage(
   );
 }
 
+/**
+ * `history` dispatcher (save-artifacts T5): flag/subcommand validation
+ * up front, then the pure `historyCommand` through the invocation seam
+ * with the artifacts store as the only I/O. The store path resolves
+ * against `SCOUTLINE_ARTIFACTS_DIR` / the config root; reads are
+ * fail-open (`readLog` never throws) so a missing or corrupt store is
+ * an empty inventory, exit 0. FILE_ERROR paths (unknown id, missing
+ * master) ride the seam's existing error boundary.
+ */
+export async function handleHistory(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+): Promise<number> {
+  const { flags, positional } = parseArgs(args);
+
+  if (flags.help || flags.h) {
+    deps.invocation.writeStdout(HISTORY_HELP);
+    return 0;
+  }
+
+  const subcommand = positional[0];
+  if (subcommand === undefined) {
+    // Bare `scoutline history` is a discovery affordance, not an error.
+    deps.invocation.writeStdout(HISTORY_HELP);
+    return 0;
+  }
+  if (subcommand !== "list" && subcommand !== "show" && subcommand !== "stats") {
+    throw new ValidationError(
+      `Unknown history subcommand "${subcommand}".`,
+      "Valid subcommands: list, show, stats.",
+    );
+  }
+
+  // `--since N` / `--limit N`: strict decimal integers >= 1 (the same
+  // gate class as usage `--days` — Number() alone would admit "1e3",
+  // " 7", and "7.0" spellings the documented contract excludes).
+  let sinceDays: number | undefined;
+  const rawSince = flags.since;
+  if (rawSince !== undefined) {
+    if (rawSince === true) {
+      throw new ValidationError(
+        "--since requires a value.",
+        "Pass a positive integer, e.g. --since 7.",
+      );
+    }
+    const str = String(rawSince);
+    if (!/^\d+$/.test(str) || Number(str) < 1) {
+      throw new ValidationError(
+        `Invalid --since value "${str}".`,
+        "--since must be a positive integer, e.g. --since 7.",
+      );
+    }
+    sinceDays = Number(str);
+  }
+
+  let limit: number | undefined;
+  const rawLimit = flags.limit;
+  if (rawLimit !== undefined) {
+    if (rawLimit === true) {
+      throw new ValidationError(
+        "--limit requires a value.",
+        "Pass a positive integer, e.g. --limit 20.",
+      );
+    }
+    const str = String(rawLimit);
+    if (!/^\d+$/.test(str) || Number(str) < 1) {
+      throw new ValidationError(
+        `Invalid --limit value "${str}".`,
+        "--limit must be a positive integer, e.g. --limit 20.",
+      );
+    }
+    limit = Number(str);
+  }
+
+  const rawCommand = flags.command;
+  if (rawCommand === true) {
+    throw new ValidationError(
+      "--command requires a value.",
+      "Pass a command name, e.g. --command search.",
+    );
+  }
+  const commandFilter = typeof rawCommand === "string" ? rawCommand : undefined;
+
+  let requestId: string | undefined;
+  if (subcommand === "show") {
+    requestId = positional[1];
+    if (requestId === undefined) {
+      throw new ValidationError(
+        "history show requires a requestId.",
+        "Run history list to see saved request ids.",
+      );
+    }
+  }
+
+  const dir = resolveArtifactsDir(deps.env);
+  const now = deps.now ?? Date.now;
+  return invokeCommand(
+    deps.invocation,
+    (context) =>
+      historyCommand({
+        subcommand,
+        readLog: () => readLog(dir),
+        readMaster: async (entry) => {
+          try {
+            return await fs.readFile(path.join(dir, entry.masterPath), "utf8");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+            throw error;
+          }
+        },
+        masterSizeOf: async (entry) => {
+          try {
+            return (await fs.stat(path.join(dir, entry.masterPath))).size;
+          } catch {
+            return 0;
+          }
+        },
+        notice: context.notice,
+        now,
+        ...(sinceDays !== undefined ? { sinceDays } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+        ...(commandFilter !== undefined ? { command: commandFilter } : {}),
+        ...(requestId !== undefined ? { requestId } : {}),
+      }),
+    outputMode,
+    deps.now,
+    deps.secrets,
+  );
+}
+
 async function handleQuota(
   args: string[],
   outputMode: OutputMode,
@@ -2948,6 +3418,289 @@ async function handleCode(
         'Run "scoutline code --help" for available commands',
       );
   }
+}
+
+// ---------------------------------------------------------------------------
+// Save-artifacts T4 - the hook at the invocation seam. T3's inert
+// saveRequest is consumed here: main wraps the injected provider
+// descriptors once (so the log can record the provider that ACTUALLY
+// served the run - runtime fallback is invisible to the pre-run
+// resolver), and each save-capable handler turns deps.save into a
+// SaveHook via createSaveArtifactHook. Write order (DESIGN D6): master,
+// log append, export copy - the export re-checks target existence so the
+// T3 pre-dispatch race window closes at write time. Any hook throw rides
+// invokeCommand's existing catch: notices flushed, one FILE_ERROR
+// envelope, stdout suppressed.
+// ---------------------------------------------------------------------------
+
+/** The report file's own schema version (DESIGN D4 namespace, log-agnostic). */
+const REPORT_SCHEMA_VERSION = 1;
+
+/** Observation cell: the provider whose invoke() actually resolved. */
+interface ServingCapture {
+  servedProvider?: ProviderId;
+}
+
+/** What main hands the save-capable handlers when a save will happen. */
+interface SaveHookInput {
+  readonly request: SaveRequest;
+  readonly capture: ServingCapture;
+}
+
+/**
+ * Wrap every capability slot's invoke() so the first resolving invoke
+ * records its provider id. Transparent pass-through: validate and
+ * cacheIdentity (and everything else on the handle) are untouched, so
+ * executor preflight, cache identity, and retry behavior are
+ * byte-identical to the unwrapped descriptors.
+ */
+/** Wrap one operation object so the serving provider records into the capture. */
+function withCaptureInvoke(
+  slot: Record<string, unknown>,
+  id: ProviderId,
+  capture: ServingCapture,
+): Record<string, unknown> {
+  const invoke = slot.invoke as (...args: unknown[]) => Promise<unknown>;
+  const wrapped: Record<string, unknown> = {
+    ...slot,
+    invoke: async (...args: unknown[]) => {
+      const outcome = await invoke(...args);
+      capture.servedProvider = id;
+      return outcome;
+    },
+  };
+  // Review fixup: a CACHE-HIT attempt never reaches invoke() — the shared
+  // executors return straight after the cache lookup (src/lib/execution.ts
+  // steps 2-3), so a fallback candidate that serves from cache left the
+  // capture unset and the log recorded the pre-run effective instead of
+  // the provider whose cache actually served. cacheIdentity runs on EVERY
+  // attempt immediately before the cache consult, and it is the last
+  // per-attempt hook of the attempt that serves, so capturing here names
+  // the serving provider in both the live and cache-hit paths.
+  const cacheIdentity = slot.cacheIdentity;
+  if (typeof cacheIdentity === "function") {
+    wrapped.cacheIdentity = (...args: unknown[]) => {
+      capture.servedProvider = id;
+      return (cacheIdentity as (...a: unknown[]) => unknown).apply(slot, args);
+    };
+  }
+  return wrapped;
+}
+
+/**
+ * Wrap every capability slot's operations so the first resolving invoke
+ * records its provider id. Two adapter shapes exist (cold-review round 1
+ * finding 1): direct-invoke slots (`search`, `vision`) and nested
+ * operation slots — `reader`/`crawl`/`map` expose `{ fetch: Operation }`,
+ * `research` exposes `{ run: Operation }`, `repository` exposes one
+ * operation per name — so the wrap recurses exactly one level. Transparent
+ * pass-through: validate, cacheIdentity, decodeCached (and everything else
+ * on the slot) are untouched, so executor preflight, cache identity, and
+ * retry behavior are byte-identical to the unwrapped descriptors.
+ */
+function captureAdapterInvoke(
+  adapter: ProviderAdapter,
+  id: ProviderId,
+  capture: ServingCapture,
+): ProviderAdapter {
+  const wrapped: Record<string, unknown> = { ...adapter };
+  for (const key of Object.keys(adapter)) {
+    const slot: unknown = (adapter as unknown as Record<string, unknown>)[key];
+    if (slot === null || typeof slot !== "object") continue;
+    const record = slot as Record<string, unknown>;
+    if (typeof record.invoke === "function") {
+      wrapped[key] = withCaptureInvoke(record, id, capture);
+      continue;
+    }
+    // Nested operation shapes: wrap each own property that is itself an
+    // operation (has invoke). Slots with no operations pass through.
+    const nested: Record<string, unknown> = { ...record };
+    let nestedTouched = false;
+    for (const nestedKey of Object.keys(record)) {
+      const operation = record[nestedKey];
+      if (
+        operation !== null &&
+        typeof operation === "object" &&
+        typeof (operation as Record<string, unknown>).invoke === "function"
+      ) {
+        nested[nestedKey] = withCaptureInvoke(
+          operation as Record<string, unknown>,
+          id,
+          capture,
+        );
+        nestedTouched = true;
+      }
+    }
+    if (nestedTouched) wrapped[key] = nested;
+  }
+  return wrapped as unknown as ProviderAdapter;
+}
+
+function captureServingDescriptors(
+  descriptors: readonly ProviderDescriptor[],
+  capture: ServingCapture,
+): readonly ProviderDescriptor[] {
+  return descriptors.map((descriptor) => ({
+    ...descriptor,
+    create: (context: ProviderContext): ProviderAdapter =>
+      captureAdapterInvoke(descriptor.create(context), descriptor.id, capture),
+  }));
+}
+
+/** Wiring built in main only when a save will actually happen. */
+interface SaveWiring {
+  readonly descriptors: readonly ProviderDescriptor[];
+  readonly input: SaveHookInput;
+}
+
+function buildSaveWiring(
+  request: SaveRequest | undefined,
+  descriptors: readonly ProviderDescriptor[],
+): SaveWiring | undefined {
+  if (request === undefined) return undefined;
+  const capture: ServingCapture = {};
+  return {
+    descriptors: captureServingDescriptors(descriptors, capture),
+    input: { request, capture },
+  };
+}
+
+function artifactHeaderComment(requestId: string): string {
+  return `<!-- scoutline artifact requestId=${requestId} schemaVersion=${REPORT_SCHEMA_VERSION} -->`;
+}
+
+/**
+ * The markdown artifact body: what stdout's markdown mode would print -
+ * the redacted presentation override when the command supplies one,
+ * otherwise formatSuccessOutput over the redacted data (DESIGN D4).
+ */
+function renderMarkdownArtifactBody(
+  result: CommandResult,
+  redactedData: unknown,
+  resolvedSecrets: string[],
+  now: () => number,
+): string {
+  const override = result.kind === "data" ? result.presentations?.markdown : undefined;
+  return typeof override === "string"
+    ? (redactSecrets(override, resolvedSecrets) as string)
+    : formatSuccessOutput(redactedData, "markdown", now);
+}
+
+async function exportTargetExists(filePath: string): Promise<boolean> {
+  try {
+    // lstat so a dangling symlink counts as existing (review fixup; see
+    // assertExportTargetAcceptable).
+    await fs.lstat(filePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+/**
+ * Build one run's SaveHook. Returns undefined unless main wired a save
+ * (deps.save) - the accept-and-drop posture of every non-saving command
+ * is preserved by construction. The report is the clean envelope
+ * {schemaVersion, requestId, result} with result =
+ * redactSecrets(result.data, resolvedSecrets) - the exact value the
+ * data-mode stdout path serializes (DESIGN D4). Log args carry only the
+ * handler-supplied provider-influencing allow-list. Failures: known
+ * artifact refusals pass through as FileError; unexpected I/O faults are
+ * wrapped into FileError so every artifact-path failure keeps the D8
+ * FILE_ERROR contract.
+ */
+function createSaveArtifactHook(
+  deps: HandlerDependencies,
+  meta: {
+    readonly command: string;
+    readonly args: Readonly<Record<string, unknown>>;
+    readonly provider: ProviderRouting;
+    readonly outputMode: OutputMode;
+  },
+): SaveHook | undefined {
+  const save = deps.save;
+  if (save === undefined) return undefined;
+  const { request, capture } = save;
+  return async ({ result, resolvedSecrets, now, notice }) => {
+    try {
+      const dir = resolveArtifactsDir(deps.env);
+      const requestId = newRequestId(now());
+      const data = result.kind === "data" ? result.data : result.text;
+      const redactedData = redactSecrets(data, resolvedSecrets);
+      const content =
+        request.format === "markdown"
+          ? `${artifactHeaderComment(requestId)}\n${renderMarkdownArtifactBody(result, redactedData, resolvedSecrets, now)}\n`
+          : `${JSON.stringify(
+              { schemaVersion: REPORT_SCHEMA_VERSION, requestId, result: redactedData },
+              null,
+              2,
+            )}\n`;
+      const masterPath = await writeArtifact(dir, requestId, content, { format: request.format });
+      const provider: ProviderRouting =
+        meta.provider.mode === "fanout"
+          ? meta.provider
+          : {
+              ...meta.provider,
+              // The executor's actual server wins over the pre-run
+              // resolution when runtime fallback switched providers (D5).
+              effective: capture.servedProvider ?? meta.provider.effective,
+            };
+      const entry: SaveLogEntry = {
+        kind: "save",
+        requestId,
+        timestamp: now(),
+        command: meta.command,
+        args: meta.args,
+        provider,
+        outputFormat: meta.outputMode,
+        artifactFormat: request.format,
+        cliVersion: CLI_VERSION,
+        masterPath: path.basename(masterPath),
+        ...(request.exportPath !== undefined ? { exportPath: request.exportPath } : {}),
+      };
+      const logNotice = await appendLogEntry(dir, entry);
+      if (logNotice !== undefined) notice(logNotice);
+      if (request.exportPath !== undefined) {
+        // Write-time exists-recheck: closes the T3 pre-dispatch race
+        // window (DESIGN D6). Without --save-force a target that appeared
+        // mid-run is refused, byte-identical.
+        if (!request.force && (await exportTargetExists(request.exportPath))) {
+          throw new FileError(
+            `artifact exists: ${request.exportPath}`,
+            "Pass --save-force to overwrite the existing export target.",
+          );
+        }
+        if (request.force) {
+          await atomicReplaceFile(request.exportPath, content);
+        } else {
+          // Atomic check-and-place (review fixup): fs.link fails EEXIST
+          // when a target appeared between the recheck and the write, so
+          // the no-overwrite refusal is one atomic step, byte-identical
+          // for the target, never a mid-run overwrite.
+          const placed = await atomicPlaceNoClobber(request.exportPath, content);
+          if (!placed) {
+            throw new FileError(
+              `artifact exists: ${request.exportPath}`,
+              "Pass --save-force to overwrite the existing export target.",
+            );
+          }
+        }
+        notice(
+          `ℹ️  saved artifact ${requestId} (master: ${masterPath}; export: ${request.exportPath})`,
+        );
+      } else {
+        notice(`ℹ️  saved artifact ${requestId} (master: ${masterPath})`);
+      }
+    } catch (error) {
+      if (error instanceof FileError) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      throw new FileError(
+        `Failed to save artifact: ${message}`,
+        "Check the artifacts directory and export path, then retry.",
+      );
+    }
+  };
 }
 
 export interface MainDependencies {
@@ -3331,6 +4084,12 @@ export async function main(
 
   const command = rest[0] ?? "";
   const commandArgs = rest.slice(1);
+  // Hoisted above the save guards and the credential-free short-circuits:
+  // a command-help invocation (`<cmd> --help`) is documentation, not a
+  // run, so the pre-dispatch save guards must not refuse it even when the
+  // `--save` export target already exists. The credentialed section below
+  // reuses this binding.
+  const isHelpInvocation = isCommandHelpInvocation(commandArgs);
 
   // PB-T1/PB-T2 — Quota snapshot store + consumption sink.
   //
@@ -3499,6 +4258,21 @@ export async function main(
     }
   }
 
+  // `history` is credential-free (reads only the artifacts store; no
+  // Provider resolution, no Adapter, no transport — the same
+  // short-circuit class as `usage`/`cache`). Dispatching before config
+  // load keeps a corrupt config.json from blocking the inventory.
+  // Fail-open log reads mean a missing/corrupt store still exits 0 with
+  // an empty inventory (save-artifacts T5, DESIGN D7).
+  if (command === "history") {
+    try {
+      return await handleHistory(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
   // `init` manages config itself (it inspects + writes via the T1
   // primitives, never reads the resolvedEnv the credentialed path
   // produces). Short-circuit before the credentialed config load so a
@@ -3542,6 +4316,29 @@ export async function main(
     }
   }
 
+  // save-artifacts T3 — pre-dispatch guards (DESIGN D6 step 2). The save
+  // request only exists for a save-capable command with `--save` present;
+  // every other command (capable-but-no-save, non-capable) already had the
+  // `--save*` flags stripped in extraction and proceeds untouched. The
+  // guards run BEFORE the credentialed config load and any provider or
+  // network work: a refused overwrite must not spend the run. Empty stdout
+  // is preserved by construction — nothing has written stdout at this
+  // point, and the guard surfaces a FILE_ERROR envelope via stderr only.
+  // `saveRequest` is the typed seam ticket T4 consumes to perform the
+  // actual write; in T3 it stays inert (nothing on this path writes).
+  const saveRequest =
+    extracted.save !== undefined && SAVE_CAPABLE_COMMANDS.has(command)
+      ? extracted.save
+      : undefined;
+  if (saveRequest !== undefined && !isHelpInvocation) {
+    try {
+      await assertExportTargetAcceptable(saveRequest);
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
   // Credentialed path: load the config file (T2a — Plan A). T3b makes
   // the load TOLERANT so command help remains usable under a corrupt
   // config (review item 9: "do not force a credential check merely to
@@ -3558,7 +4355,6 @@ export async function main(
   //     error's help points at `init` as the recovery path.
   // Observational commands do NOT bypass the corrupt refuse — they
   // still need `resolvedEnv` (which needs config) to probe/report.
-  const isHelpInvocation = isCommandHelpInvocation(commandArgs);
   const isObservational = OBSERVATIONAL_COMMANDS.has(command);
 
   let config: ScoutlineConfig;
@@ -3770,37 +4566,55 @@ export async function main(
       ? handlerDepsWithVerification
       : { ...handlerDepsWithVerification, quotaState };
 
+  // save-artifacts T4 - build the save wiring once, only when a save will
+  // actually happen (save-capable command + --save, never a help
+  // invocation: help is documentation, not a run). The wrapped descriptors
+  // flow ONLY into handler execution; quota refresh and every other
+  // consumer keep the original list. Without a save this is the identical
+  // deps object and the whole path is byte-identical to pre-T4.
+  const saveWiring =
+    saveRequest === undefined || isHelpInvocation
+      ? undefined
+      : buildSaveWiring(saveRequest, providerDescriptors);
+  const handlerDepsWithSave: HandlerDependencies =
+    saveWiring === undefined
+      ? handlerDepsWithSelection
+      : {
+          ...handlerDepsWithSelection,
+          providerDescriptors: saveWiring.descriptors,
+          save: saveWiring.input,
+        };
   let exitCode: number;
   let commandRecognized = false;
   try {
     switch (command) {
       case "vision":
         commandRecognized = true;
-        exitCode = await handleVision(commandArgs, outputMode, handlerDepsWithSelection);
+        exitCode = await handleVision(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "search":
         commandRecognized = true;
-        exitCode = await handleSearch(commandArgs, outputMode, handlerDepsWithSelection);
+        exitCode = await handleSearch(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "read":
         commandRecognized = true;
-        exitCode = await handleRead(commandArgs, outputMode, handlerDepsWithSelection);
+        exitCode = await handleRead(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "crawl":
         commandRecognized = true;
-        exitCode = await handleCrawl(commandArgs, outputMode, handlerDepsWithSelection);
+        exitCode = await handleCrawl(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "map":
         commandRecognized = true;
-        exitCode = await handleMap(commandArgs, outputMode, handlerDepsWithSelection);
+        exitCode = await handleMap(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "research":
         commandRecognized = true;
-        exitCode = await handleResearch(commandArgs, outputMode, handlerDepsWithSelection);
+        exitCode = await handleResearch(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "repo":
         commandRecognized = true;
-        exitCode = await handleRepo(commandArgs, outputMode, handlerDepsWithSelection);
+        exitCode = await handleRepo(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "batch":
         commandRecognized = true;

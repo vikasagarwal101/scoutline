@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.18.1] - 2026-08-29
+
+### Post-release debt closed: #79, #80, #81, #84
+
+- **Consolidated doc sweep (#79):** `docs/architecture.md`, `docs/configuration.md`, and the packaged skill now all enumerate the full twelve-provider registry — provider tables, capability matrices (11→14 columns), control matrices, new Linkup/Spider.cloud settings sections, quota-authority rows, and every `--provider` enumeration. The you-docs enumeration pin is strengthened to derive `PROVIDER_ENUM` (the file's full-registry constant), so a provider landing without its doc strings fails the gate — the #82/#83 lesson applied to docs.
+- **Spider crawl/map conformance rows (#81):** fifteen rows pin that every documented crawl/map control is either wire-consumed (`format` → `return_format`, `limit`, `depth`; map `limit`) or rejected at validation before any transport access — and the coverage-guard map, the hole that let these capabilities ship unpinned, now enumerates them. Teeth evidenced by dist mutation in both directions (dropped wire mapping, dropped rejection).
+- **Error-sanitization leak pins (#84):** you, linkup, and spider search are pinned to strip credential-bearing transport errors, mirroring the Parallel/Perplexity/Jina pins. Spider's defense is layered — client transport wrap plus adapter re-wrap — and the mutation evidence records that breaking either layer alone stays green.
+- **Dead quota constants removed (#80):** the post-flip `LINKUP_CREDIT_CAPABILITIES` / `SPIDER_CREDIT_CAPABILITIES` leftovers are deleted (GitNexus impact: zero upstream dependents; quota display already runs through each provider's own quota capability).
+- **Subprocess usage time-bomb defused:** the CLI-surface usage test's ledger fixture was pinned to 2026-08-16 and aged out of the rolling 7-day window on 2026-08-24 — two days after passing the 0.18.0 release gate. It now writes today's UTC day key.
+
+Full suite: **3921/3921 (glob) · 3918/3918 (offline gate) — zero failures.**
+
 ## [0.18.0] - 2026-08-22
 
 ### Three new built-in providers: You.com, Linkup, and Spider.cloud

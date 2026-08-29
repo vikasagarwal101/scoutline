@@ -835,6 +835,36 @@ describe("Error sanitization — new adapters strip raw upstream messages (2.1)"
       (err) => !err.message.includes(SECRET),
     );
   });
+
+  it("You.com search does not leak raw error messages", async () => {
+    const adapter = createYouDescriptor({ transport: { fetch: leakingFetch() } }).create({
+      env: { YDC_API_KEY: "k" },
+    });
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "test" }),
+      (err) => !err.message.includes(SECRET),
+    );
+  });
+
+  it("Linkup search does not leak raw error messages", async () => {
+    const adapter = createLinkupDescriptor({ transport: { fetch: leakingFetch() } }).create({
+      env: { LINKUP_API_KEY: "k" },
+    });
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "test" }),
+      (err) => !err.message.includes(SECRET),
+    );
+  });
+
+  it("Spider search does not leak raw error messages", async () => {
+    const adapter = createSpiderDescriptor({ transport: { fetch: leakingFetch() } }).create({
+      env: { SPIDER_API_KEY: "k" },
+    });
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "test" }),
+      (err) => !err.message.includes(SECRET),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

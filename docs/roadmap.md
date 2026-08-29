@@ -24,12 +24,6 @@ features next; features that reverse a written decision (ADR) last.
 
 ### Studied seeds — contract-free (pickup-ready)
 
-- **`--save <path>` + `history`** (`docs/plans/v2/14-save-artifacts-and-history.md`)
-  — durable explicit artifacts (redacted arguments, overwrite protection)
-  outside the response cache, plus a metadata view. stdout, cache-key
-  identity, and `config.json` schema all unaffected. Seeds the superset-vs-
-  seed-07 (journal) decision gate. Effort: medium.
-
 ### Studied seeds — contract-extending
 
 

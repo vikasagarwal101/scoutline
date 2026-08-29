@@ -238,6 +238,23 @@ SCOUTLINE_PROVIDER=minimax scoutline quota
 
 Selecting a provider that doesn't support a capability auto-reroutes to the next eligible configured provider in registry order and emits a stderr notice (the default since 0.11.0). Pass `--no-fallback` (or set `SCOUTLINE_NO_FALLBACK=1`) to restore the previous strict `UNSUPPORTED_CAPABILITY` behavior for scripting or cost-sensitive workflows.
 
+## Saved Artifacts (`--save` + `history`)
+
+Any provider-backed command (`search`, `read`, `crawl`, `map`, `research`, `repo`, `vision`) can save its result as a durable, clean report — content plus a request id, nothing else — while stdout stays exactly what it would be without the flag:
+
+```bash
+scoutline search "rust vs go" --save ~/report.json          # master copy + export copy
+scoutline search "rust vs go" --save --save-format markdown # master only, human-readable
+```
+
+Reports live in the artifact store (`~/.scoutline/artifacts/`, override with `SCOUTLINE_ARTIFACTS_DIR`) and are joined to their run metadata (provider routing, redacted flags, versions) by request id in `index.json`. Saving to an existing path is refused unless `--save-force` is passed (`FILE_ERROR`, detected before any provider call). `cache clear` and cache TTLs never touch saved artifacts.
+
+```bash
+scoutline history list --limit 5                    # newest saves, from the metadata log
+scoutline history show 20260829T142233Z-7f3a        # metadata + report, joined
+scoutline history stats                             # counts, bytes, span
+```
+
 ### Search Fan-Out (multi-provider search)
 
 For `search` only, one query can run across several providers in parallel and merge into a single deduplicated list ([ADR-0004](docs/adr/0004-multi-provider-search-fanout.md)). Activation tiers, highest precedence first:

@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- `--save [<path>]`, `--save-format <json|markdown>`, and `--save-force` global flags: after a successful provider-backed run (`search`, `read`, `crawl`, `map`, `research`, `repo`, `vision`), save a durable **clean report** — content plus a request id, nothing else — with stdout unchanged. The master copy always lands in the artifact store (default `~/.scoutline/artifacts/`, override `SCOUTLINE_ARTIFACTS_DIR`); `--save <path>` additionally writes an export copy, refused on an existing target unless `--save-force` (`FILE_ERROR`, and the pre-dispatch check catches it before any provider call). Reports are redacted through the same seam as stdout and never touched by `cache clear` or TTLs.
+- `history list [--since N] [--limit N] [--command C]`, `history show <requestId>`, and `history stats`: credential-free, fail-open inventory over the artifact store's `index.json` metadata log (mode-aware provider routing incl. fan-out arms, redacted provider-influencing args, versions), joined to reports by request id.
+
+### Compatibility
+
+- stdout, the stderr JSON error contract, `config.json` schema, and cache-key identity are unchanged; no new stable error code — overwrite refusals and missing artifacts reuse `FILE_ERROR`, flag-shape errors reuse `VALIDATION_ERROR`.
+
 ## [0.18.1] - 2026-08-29
 
 ### Post-release debt closed: #79, #80, #81, #84

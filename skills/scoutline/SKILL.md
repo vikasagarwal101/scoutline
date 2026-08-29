@@ -207,6 +207,25 @@ question lines, max 256 KiB) to steer the run. Sources: `--context
   strings ever transmit. Outputs record counts, the source path, and a
   SHA-256 — never file content.
 
+### Saved artifacts (`--save` + `history`)
+
+Provider-backed commands accept `--save [<path>]` to keep a durable clean
+report — content plus a request id, no provider/argv metadata inside — with
+stdout unchanged. Masters live under `SCOUTLINE_ARTIFACTS_DIR` (default
+`~/.scoutline/artifacts/`) beside an `index.json` metadata log; report
+metadata (provider routing, redacted flags, versions) joins by request id.
+`--save-format markdown` renders human-readable; overwriting an existing
+export target requires `--save-force` (`FILE_ERROR` otherwise). Reports are
+redacted through the same seam as stdout and never touched by cache
+operations. `history list|show|stats` is the credential-free, fail-open
+inventory over that log.
+
+```bash
+scoutline search "x" --save report.json --save-format markdown
+scoutline history list --since 7 --command search
+scoutline history show 20260829T142233Z-7f3a
+```
+
 ## Capability Matrix
 
 | Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Spider.cloud | Command |
@@ -275,6 +294,7 @@ input).
 | doctor | Provider-aware diagnostics (schema v2) | `--help` for `--no-tools` |
 | cache | Inspect or clear the local cache | `--help` for stats/clear |
 | usage | Local call-usage report (90-day `usage.json` ledger) | `--help` for `--days`/`--provider` |
+| history | Read-only inventory of `--save` artifacts (list/show/stats) | `--help` for `--since`/`--limit`/`--command` |
 | code | TypeScript tool chaining (Z.AI) | |
 | init | Interactive onboarding wizard (writes ~/.scoutline/config.json) | `--help` for the four lifecycle states |
 

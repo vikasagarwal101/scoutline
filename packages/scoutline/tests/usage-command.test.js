@@ -34,6 +34,7 @@ import { buildUsageReport, formatUsageReport, USAGE_HELP } from "../dist/command
 import { handleUsage, main } from "../dist/index.js";
 import { ValidationError } from "../dist/lib/errors.js";
 import { defaultResponseCache } from "../dist/lib/cache.js";
+import { usageDayKey } from "../dist/lib/usage-ledger.js";
 import { runProcess } from "./helpers/run-process.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
@@ -656,7 +657,20 @@ describe("usage command — dispatch through main", () => {
 describe("CLI: scoutline usage", () => {
   it("prints the envelope from the prepared ledger and exits 0", async (t) => {
     await withTempDir(t, async (dir) => {
-      await writeLedger(dir, ledgerTwoProviders());
+      // The subprocess cannot inject `now` (the in-process suite's
+      // fixedNow seam), so the ledger must carry TODAY's UTC day key —
+      // a fixed historical date ages out of the rolling 7-day window
+      // and turns this into an empty-window time bomb.
+      const todayKey = usageDayKey(Date.now());
+      await writeLedger(dir, {
+        version: 1,
+        days: {
+          [todayKey]: {
+            zai: { search: c(2, 2, 2), reader: c(1, 1, 1) },
+            tavily: { read: c(3, 3, 3) },
+          },
+        },
+      });
       const { stdout, stderr, code } = await runProcess(
         ["--output-format", "data", "usage"],
         { configDir: dir, env: {} },

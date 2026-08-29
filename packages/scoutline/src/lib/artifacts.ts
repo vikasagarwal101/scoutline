@@ -191,15 +191,19 @@ export async function atomicPlaceNoClobber(
   contents: string,
 ): Promise<boolean> {
   const root = path.dirname(filePath);
-  const existed = await fs.stat(root).then(
-    () => true,
-    () => false,
-  );
-  await fs.mkdir(root, { recursive: true, mode: 0o700 });
-  // Harden only directories WE created (review r5): chmod-ing a
-  // pre-existing dir to 0700 would lock other users out of shared
-  // checkouts — a relative `--save report.json` must not touch the CWD.
-  if (!existed && process.platform !== "win32") await fs.chmod(root, 0o700);
+  // Harden only directories WE created (review r5, race-closed r7): a
+  // pre-mkdir stat goes stale if a concurrent creator makes `root` first,
+  // so decide "ours" from the non-recursive mkdir itself — EEXIST means
+  // someone else made it and its permissions are not ours to change.
+  await fs.mkdir(path.dirname(root), { recursive: true, mode: 0o700 });
+  let created = false;
+  try {
+    await fs.mkdir(root, { mode: 0o700 });
+    created = true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  if (created && process.platform !== "win32") await fs.chmod(root, 0o700);
   const tempPath = path.join(root, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
   const handle = await fs.open(tempPath, "wx", 0o600);
   let closed = false;

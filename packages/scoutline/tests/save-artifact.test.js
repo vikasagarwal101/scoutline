@@ -86,6 +86,40 @@ function makeSaveSearchDescriptor(id, log, options = {}) {
   };
 }
 
+/** Reader-shaped descriptor double: nested `{ fetch: operation }` — the cold-review finding-1 shape. */
+function makeSaveReaderDescriptor(id, log, options = {}) {
+  const { fail = false } = options;
+  return {
+    id,
+    isConfigured: () => true,
+    capabilities: () => new Set(["reader"]),
+    create: () => ({
+      id,
+      reader: {
+        fetch: {
+          kind: "reader-fetch",
+          validate() {},
+          cacheIdentity(request) {
+            return {
+              provider: id,
+              capability: "reader",
+              credentialFingerprint: `fp-${id}`,
+              request,
+              legacyCandidates: [],
+            };
+          },
+          decodeCached: () => null,
+          async invoke() {
+            log.push(id);
+            if (fail) throw new TimeoutError(`simulated outage on ${id}`);
+            return { content: `read by ${id}`, format: "markdown" };
+          },
+        },
+      },
+    }),
+  };
+}
+
 function baseDeps(adapter, log, extra = {}) {
   return hermeticMainDeps({
     invocation: adapter,
@@ -371,6 +405,52 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
         store.entries[0].provider.requested,
         store.entries[0].provider.effective,
       );
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("cold-review f1: nested operation capture — read fallback records the provider that actually served", async () => {
+    const artifactsDir = makeTempDir("scoutline-save-t4-readfallback-");
+    const log = [];
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      const status = await main(
+        ["read", "https://example.com/a", "--provider", "tavily", "--save"],
+        baseDeps(adapter, log, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          providerDescriptors: [
+            makeSaveReaderDescriptor("tavily", log, { fail: true }),
+            makeSaveReaderDescriptor("zai", log),
+          ],
+        }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      assert.ok(log.includes("tavily"), "tavily was attempted");
+      assert.strictEqual(log.at(-1), "zai", "zai served after tavily failed");
+      const { store } = readStore(artifactsDir);
+      assert.deepStrictEqual(store.entries[0].provider, {
+        mode: "single",
+        requested: "tavily",
+        effective: "zai",
+      }, "nested {fetch:{invoke}} operations must be captured, not just direct-invoke slots");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("cold-review f3: search records --no-cache in its args allow-list (sibling parity)", async () => {
+    const artifactsDir = makeTempDir("scoutline-save-t4-nocache-");
+    const log = [];
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      const status = await main(
+        ["search", "q", "--no-cache", "--save"],
+        baseDeps(adapter, log, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const { store } = readStore(artifactsDir);
+      assert.deepStrictEqual(store.entries[0].args, { "no-cache": true });
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
     }

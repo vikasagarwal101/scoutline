@@ -269,5 +269,20 @@ describe("writeArtifact", () => {
         assert.strictEqual((await fs.lstat(target)).isSymbolicLink(), true);
       });
     });
+
+    // Review nitpick (coderabbit, artifacts.ts): the temp file opens in
+    // path.dirname(filePath), so a missing target directory must be
+    // created first — atomicReplaceFile parity (0700 dir).
+    it("creates a missing target directory (0700) before placing", async (t) => {
+      await withTempDir(t, async (dir) => {
+        const { atomicPlaceNoClobber } = await import("../dist/lib/artifacts.js");
+
+        const target = path.join(dir, "missing", "nested", "report.json");
+        assert.strictEqual(await atomicPlaceNoClobber(target, "placed"), true);
+        assert.strictEqual(await fs.readFile(target, "utf8"), "placed");
+        const created = path.dirname(target);
+        assert.strictEqual((await fs.stat(created)).mode & 0o777, 0o700);
+      });
+    });
   });
 });

@@ -25,6 +25,7 @@ import {
   buildHistoryListReport,
   buildHistoryStatsReport,
   buildHistoryShowReport,
+  historyCommand,
   HISTORY_HELP,
 } from "../dist/commands/history.js";
 import { main } from "../dist/index.js";
@@ -209,6 +210,41 @@ describe("history: buildHistoryListReport (pure)", () => {
       buildHistoryListReport(log, { now: fixedNow, sinceDays: 2 }).entries.map((e) => e.requestId),
       ["20260829T120000Z-now", "20260829T010000Z-today", "20260829T180000Z-early"],
     );
+  });
+});
+
+// Review fixup (coderabbit minor): text-mode list columns share one
+// width table with explicit one-space separators — a value that exactly
+// fills its column (the 21-char requestId, the 21-char UTC timestamp)
+// must still leave a visible separator instead of butting against the
+// next column, and data rows must align with the header.
+describe("history: text-mode list rendering (column separators)", () => {
+  it("keeps a one-space separator when a column value exactly fills its width", async () => {
+    const requestId = "20260829T120000Z-0001"; // 21 chars — exactly the column width
+    const result = await historyCommand({
+      subcommand: "list",
+      readLog: async () => ({ log: { version: 1, entries: [entry({ requestId })] } }),
+      readMaster: async () => undefined,
+      masterSizeOf: async () => 0,
+      notice: () => {},
+      now: fixedNow,
+    });
+    const lines = result.presentations.compact.split("\n");
+    const header = lines[1];
+    const row = lines[2];
+    assert.ok(header, "header line must exist");
+    assert.ok(row, "data row must exist");
+    // Data row aligns with the header: requestId column, then separator.
+    assert.strictEqual(row.slice(0, 21), requestId);
+    assert.strictEqual(row[21], " ", "the exactly-full requestId must still be followed by a space");
+    assert.strictEqual(header.slice(0, 21), "requestId".padEnd(21));
+    assert.strictEqual(header[21], " ");
+    assert.ok(header.startsWith("requestId".padEnd(21) + " "), "header aligned with data rows");
+    // The timestamp column (ISO width 24, starts at 22) also ends in a space.
+    const timestamp = new Date(NOW).toISOString();
+    assert.strictEqual(timestamp.length, 24);
+    assert.ok(row.slice(22).startsWith(timestamp), `timestamp column misaligned: ${row}`);
+    assert.strictEqual(row[22 + 24], " ", "the exactly-full timestamp must still be followed by a space");
   });
 });
 

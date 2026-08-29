@@ -183,4 +183,91 @@ describe("writeArtifact", () => {
       assert.deepStrictEqual((await fs.readdir(dir)).sort(), [`${RID}.json`]);
     });
   });
+
+  // Review fixup (coderabbit minor, lstat): a DANGLING symlink at the
+  // master target is an existing entry — fs.stat misses it (ENOENT through
+  // the link) and a force=false write would silently replace it.
+  it("refuses a dangling symlink at the master target without force (lstat, not stat)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const { writeArtifact } = await import("../dist/lib/artifacts.js");
+
+      const target = path.join(dir, `${RID}.json`);
+      await fs.symlink(path.join(dir, "vanished-target.json"), target);
+
+      await assert.rejects(
+        writeArtifact(dir, RID, "replacement"),
+        (error) => error instanceof FileError && error.code === "FILE_ERROR",
+      );
+      // The symlink itself survives untouched.
+      assert.strictEqual((await fs.lstat(target)).isSymbolicLink(), true);
+    });
+  });
+
+  // Review fixup (macroscope HIGH + coderabbit Major, artifacts.ts:139):
+  // concurrent same-requestId saves must not both pass the existence check
+  // and let the second overwrite the first — the check re-runs INSIDE the
+  // artifacts-write lock, so the loser is refused, never a silent clobber.
+  it("concurrent writes with the same requestId: exactly one wins, the loser gets FILE_ERROR", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const { writeArtifact } = await import("../dist/lib/artifacts.js");
+
+      const fastTimer = (callback, ms) => setTimeout(callback, Math.min(ms, 5));
+      const results = await Promise.allSettled([
+        writeArtifact(dir, RID, "first", { lock: { setTimeout: fastTimer } }),
+        writeArtifact(dir, RID, "second", { lock: { setTimeout: fastTimer } }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === "fulfilled");
+      const rejected = results.filter((r) => r.status === "rejected");
+      assert.strictEqual(fulfilled.length, 1, "exactly one write may win");
+      assert.strictEqual(rejected.length, 1, "the other must be refused");
+      const error = rejected[0].reason;
+      assert.ok(error instanceof FileError && error.code === "FILE_ERROR");
+      assert.match(error.message, /Refusing to overwrite existing artifact/);
+      // The winner's content is intact — no interleaved overwrite.
+      assert.strictEqual(await fs.readFile(path.join(dir, `${RID}.json`), "utf8"), "first");
+    });
+  });
+
+  // Review fixup (macroscope HIGH, index.ts export TOCTOU): the export
+  // copy's no-overwrite path is now atomic check-and-place.
+  describe("atomicPlaceNoClobber", () => {
+    it("places content when the target is absent", async (t) => {
+      await withTempDir(t, async (dir) => {
+        const { atomicPlaceNoClobber } = await import("../dist/lib/artifacts.js");
+
+        const target = path.join(dir, "report.json");
+        assert.strictEqual(await atomicPlaceNoClobber(target, "placed"), true);
+        assert.strictEqual(await fs.readFile(target, "utf8"), "placed");
+        assert.strictEqual((await fs.stat(target)).mode & 0o777, 0o600);
+        // No temp residue.
+        assert.deepStrictEqual(await fs.readdir(dir), ["report.json"]);
+      });
+    });
+
+    it("refuses an existing target: false, byte-identical, no temp residue", async (t) => {
+      await withTempDir(t, async (dir) => {
+        const { atomicPlaceNoClobber } = await import("../dist/lib/artifacts.js");
+
+        const target = path.join(dir, "report.json");
+        await fs.writeFile(target, "original", { mode: 0o600 });
+
+        assert.strictEqual(await atomicPlaceNoClobber(target, "replacement"), false);
+        assert.strictEqual(await fs.readFile(target, "utf8"), "original");
+        assert.deepStrictEqual(await fs.readdir(dir), ["report.json"]);
+      });
+    });
+
+    it("sees a dangling symlink at the target as existing (EEXIST through link)", async (t) => {
+      await withTempDir(t, async (dir) => {
+        const { atomicPlaceNoClobber } = await import("../dist/lib/artifacts.js");
+
+        const target = path.join(dir, "report.json");
+        await fs.symlink(path.join(dir, "vanished.json"), target);
+
+        assert.strictEqual(await atomicPlaceNoClobber(target, "replacement"), false);
+        assert.strictEqual((await fs.lstat(target)).isSymbolicLink(), true);
+      });
+    });
+  });
 });

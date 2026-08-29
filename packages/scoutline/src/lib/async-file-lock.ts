@@ -94,6 +94,35 @@ function isEnoentError(err: unknown): boolean {
 }
 
 /**
+ * Ownership-safe stale-lock break (review fixup): unlink the lock at
+ * `lockPath` ONLY if it still refers to the exact file that was statted
+ * as stale — the statted `ino`/`dev` pair. A naked `fs.unlink(lockPath)`
+ * can race a second waiter that already broke the same stale lock and
+ * re-acquired it: the newcomer's fresh lock would be destroyed and two
+ * holders end up inside the critical section. The re-stat narrows the
+ * race to the unavoidable unlink-by-name window (Node has no
+ * unlink-by-inode); the statted-inode verification is what keeps the
+ * common crash-recovery path from destroying a live successor's lock.
+ *
+ * Exported for tests (they must be able to pin the not-ours-don't-touch
+ * branch without staging a real multi-process race).
+ */
+export async function breakStaleLock(
+  lockPath: string,
+  statted: { readonly ino: number; readonly dev: number },
+): Promise<void> {
+  let current: Awaited<ReturnType<typeof fs.stat>>;
+  try {
+    current = await fs.stat(lockPath);
+  } catch (error) {
+    if (isEnoentError(error)) return; // already gone — nothing to break
+    throw error;
+  }
+  if (current.ino !== statted.ino || current.dev !== statted.dev) return;
+  await fs.unlink(lockPath).catch(() => {});
+}
+
+/**
  * Serialize a critical section via an exclusive lockfile.
  *
  * Creates `{stateDir}/{identityHash}.lock` with `wx` (exclusive create).
@@ -192,7 +221,9 @@ export async function withAsyncFileLock<T>(
         throw statErr;
       }
       if (Date.now() - stat.mtimeMs > options.staleMs) {
-        await fs.unlink(lockPath).catch(() => {});
+        // Ownership-safe break: only unlink while the path still holds
+        // the exact inode we deemed stale (see breakStaleLock).
+        await breakStaleLock(lockPath, stat);
         // Back off after stale-break attempt to avoid a tight loop if
         // the unlink failed or another waiter re-acquired immediately.
         await sleep(500);

@@ -73,6 +73,7 @@ import { isOutputMode, OUTPUT_MODES, type OutputMode } from "./lib/output.js";
 import { formatErrorOutput, formatSuccessOutput } from "./lib/output.js";
 import {
   appendLogEntry,
+  atomicPlaceNoClobber,
   CLI_VERSION,
   newRequestId,
   readLog,
@@ -217,7 +218,7 @@ per-Provider; --provider picks the effective Provider for metadata.
 Global Options:
   --output-format <data|json|pretty|compact|markdown|refs|tty>  Output mode (default: data)
   -O <mode>                                                     Alias for --output-format
-  --save [<path>]      Save the result as a clean report (content + requestId) after a successful shared-capability run (search/read/crawl/map/research/repo/vision). Master copy in the artifact store; <path> also receives an export copy. Refuses an existing export target without --save-force.
+  --save [<path>]      Save the result as a clean report (content + requestId) after a successful shared-capability run (search/read/crawl/map/research/repo/vision). Master copy in the artifact store; <path> also receives an export copy. A valueless --save (trailing, or followed by another option, e.g. --save --save-format markdown) writes the master only. Refuses an existing export target without --save-force.
   --save-format <json|markdown>  Report format (default: json)
   --save-force         Overwrite an existing export target
 
@@ -428,24 +429,20 @@ function extractGlobalOptions(args: string[]): {
       continue;
     }
     if (arg === "--save") {
-      // save-artifacts T3. Optional-value global flag: the next token is
-      // the export path iff it exists, is non-empty, and does not start
-      // with "-" (mirroring parseArgs' binding rule). A trailing `--save`
-      // is the master-only save (no export copy). A follower that cannot
-      // serve as a path — empty, or dash-prefixed — is a VALIDATION_ERROR,
-      // not a silent no-op: binding it would make
-      // `search q --save --limit 5` save to "--limit" while mangling the
-      // command line. Copy of the `--provider` guard above, minus its
-      // valueless case (undefined = the legal master-only form here).
+      // save-artifacts T3. Optional-value global flag with parseArgs'
+      // binding rule: the next token is the export path iff it exists,
+      // is non-empty, and does not start with "-". Anything else (trailing
+      // end-of-argv, an empty string, another option token) leaves `--save`
+      // valueless = the MASTER-ONLY save, and the token stays in the rest
+      // stream for its own parser (review fixup: `--save --save-format
+      // markdown` is the README-documented master-only markdown form and
+      // must run the provider, not exit VALIDATION_ERROR; the same rule
+      // makes `--save --limit 5` a master-only save with the limit still
+      // applied — the binding rule never binds a dash-prefixed token as a
+      // path, because paths never start with "-").
       const value = args[i + 1];
-      if (value !== undefined && (value.length === 0 || value.startsWith("-"))) {
-        throw new ValidationError(
-          "--save requires a path when a value follows it.",
-          "Pass an export path after --save (e.g. --save report.json), or leave --save valueless for a master-only save.",
-        );
-      }
       saveSeen = true;
-      if (value !== undefined) {
+      if (value !== undefined && value.length > 0 && !value.startsWith("-")) {
         savePath = value;
         i += 1;
       }
@@ -513,7 +510,10 @@ async function assertExportTargetAcceptable(request: SaveRequest): Promise<void>
   if (exportPath === undefined) return;
   let targetExists = false;
   try {
-    await fs.stat(exportPath);
+    // lstat, not stat: a dangling symlink at the target is an existing
+    // entry and must be refused without --save-force (review fixup) —
+    // stat would miss it (ENOENT through the dangling link).
+    await fs.lstat(exportPath);
     targetExists = true;
   } catch {
     targetExists = false;
@@ -3560,7 +3560,9 @@ function renderMarkdownArtifactBody(
 
 async function exportTargetExists(filePath: string): Promise<boolean> {
   try {
-    await fs.stat(filePath);
+    // lstat so a dangling symlink counts as existing (review fixup; see
+    // assertExportTargetAcceptable).
+    await fs.lstat(filePath);
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
@@ -3641,7 +3643,21 @@ function createSaveArtifactHook(
             "Pass --save-force to overwrite the existing export target.",
           );
         }
-        await atomicReplaceFile(request.exportPath, content);
+        if (request.force) {
+          await atomicReplaceFile(request.exportPath, content);
+        } else {
+          // Atomic check-and-place (review fixup): fs.link fails EEXIST
+          // when a target appeared between the recheck and the write, so
+          // the no-overwrite refusal is one atomic step, byte-identical
+          // for the target, never a mid-run overwrite.
+          const placed = await atomicPlaceNoClobber(request.exportPath, content);
+          if (!placed) {
+            throw new FileError(
+              `artifact exists: ${request.exportPath}`,
+              "Pass --save-force to overwrite the existing export target.",
+            );
+          }
+        }
         notice(
           `ℹ️  saved artifact ${requestId} (master: ${masterPath}; export: ${request.exportPath})`,
         );

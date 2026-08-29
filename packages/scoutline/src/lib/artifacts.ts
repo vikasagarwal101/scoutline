@@ -26,7 +26,7 @@
  *     `{version:1, entries:[]}`; a corrupt or unrecognized file reads the
  *     same plus a notice for stderr. Never throws.
  */
-import { randomBytes as cryptoRandomBytes } from "node:crypto";
+import { randomBytes as cryptoRandomBytes, randomUUID } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
@@ -101,11 +101,23 @@ export interface WriteArtifactOptions {
   readonly format?: ArtifactFormat;
   /** true → replace an existing target via the atomic path; false → refuse. */
   readonly force?: boolean;
+  /** Lock-timing overrides for the master-write critical section (tests use small values). */
+  readonly lock?: {
+    readonly timeoutMs?: number;
+    readonly staleMs?: number;
+    readonly setTimeout?: typeof setTimeout;
+  };
 }
 
-async function fileExists(filePath: string): Promise<boolean> {
+/**
+ * Existence check that sees through NOTHING: {@link fs.lstat}, not
+ * {@link fs.stat}, so a dangling symlink (stat: ENOENT) still counts as
+ * an existing entry and is never silently replaced by a force=false
+ * write (review fixup: the dangling-symlink hole).
+ */
+async function entryExists(filePath: string): Promise<boolean> {
   try {
-    await fs.stat(filePath);
+    await fs.lstat(filePath);
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
@@ -121,6 +133,16 @@ async function fileExists(filePath: string): Promise<boolean> {
  * {@link FileError} (`FILE_ERROR`, exit 1 — owner ruling, no new code)
  * BEFORE any write, leaving the file byte-identical. Resolves with the
  * target path (the later log's `masterPath`).
+ *
+ * Review fixup (atomic no-overwrite): the existence check and the write
+ * are serialized through the shared `artifacts-write` lock (the same
+ * identity {@link appendLogEntry} uses), and the check is re-run INSIDE
+ * the critical section. Two concurrent saves racing on the same
+ * requestId (or a same-path export) can no longer both pass the
+ * pre-check and have the second silently overwrite the first — the
+ * loser gets the FileError. `force` writes ride the same lock so a
+ * forced replace cannot interleave with a concurrent no-force refusal
+ * window; atomicReplaceFile keeps the replacement itself atomic.
  */
 export async function writeArtifact(
   dir: string,
@@ -130,14 +152,59 @@ export async function writeArtifact(
 ): Promise<string> {
   const extension = options.format === "markdown" ? "md" : "json";
   const target = path.join(dir, `${requestId}.${extension}`);
-  if (!options.force && (await fileExists(target))) {
-    throw new FileError(
+  const refuse = (): FileError =>
+    new FileError(
       `Refusing to overwrite existing artifact: ${target}`,
       "Pass --save-force to overwrite the existing artifact.",
     );
-  }
-  await atomicReplaceFile(target, content);
+  await withAsyncFileLock(
+    dir,
+    ARTIFACTS_LOG_LOCK_IDENTITY,
+    async () => {
+      if (!options.force && (await entryExists(target))) throw refuse();
+      await atomicReplaceFile(target, content);
+    },
+    {
+      timeoutMs: options.lock?.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
+      staleMs: options.lock?.staleMs ?? DEFAULT_LOCK_STALE_MS,
+      setTimeout: options.lock?.setTimeout,
+      timeoutLabel: "Artifacts master write",
+    },
+  );
   return target;
+}
+
+/**
+ * Atomic check-and-place for the export copy: writes the content to a
+ * unique 0600 temp file in the target's directory (fsync'd), then makes
+ * the target via {@link fs.link} — an atomic exclusive create that fails
+ * with EEXIST when the target appeared meanwhile. Resolves `true` when
+ * placed, `false` when the target already existed (which is left
+ * byte-identical — the link never touched it). Review fixup: closes the
+ * export TOCTOU the exists-recheck could only narrow (check and place
+ * are one atomic step now).
+ */
+export async function atomicPlaceNoClobber(
+  filePath: string,
+  contents: string,
+): Promise<boolean> {
+  const root = path.dirname(filePath);
+  const tempPath = path.join(root, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
+  const handle = await fs.open(tempPath, "wx", 0o600);
+  try {
+    await handle.writeFile(contents);
+    await handle.sync();
+    await handle.close();
+    try {
+      await fs.link(tempPath, filePath);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw error;
+    }
+  } finally {
+    await fs.unlink(tempPath).catch(() => {});
+  }
 }
 // ---------------------------------------------------------------------------
 // Metadata log (`index.json`) — ticket T2. The log is the metadata half of
@@ -224,14 +291,74 @@ function emptyLog(): ArtifactsLog {
   return { version: ARTIFACTS_LOG_VERSION, entries: [] };
 }
 
-/** Structural guard: exactly `{version:1, entries:[...]}` — anything else is fail-open fodder. */
-function asArtifactsLog(value: unknown): ArtifactsLog | undefined {
+/**
+ * Structural guard for one entry: every field of the {@link SaveLogEntry}
+ * shape is type-checked BEFORE the cast, and `masterPath` must be a bare
+ * filename (no path separators, no dot segments) so a hostile persisted
+ * entry cannot steer `history show`'s `path.join(dir, masterPath)` read
+ * outside the artifacts dir (review fixup: the unvalidated-entry hole).
+ */
+function asSaveLogEntry(value: unknown): SaveLogEntry | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const e = value as Record<string, unknown>;
+  if (e.kind !== "save") return undefined;
+  if (typeof e.requestId !== "string" || e.requestId.length === 0) return undefined;
+  if (typeof e.timestamp !== "number" || !Number.isFinite(e.timestamp)) return undefined;
+  if (typeof e.command !== "string" || e.command.length === 0) return undefined;
+  if (typeof e.args !== "object" || e.args === null || Array.isArray(e.args)) return undefined;
+  const provider = e.provider as Record<string, unknown> | undefined;
+  if (typeof provider !== "object" || provider === null) return undefined;
+  if (provider.mode === "single") {
+    if (typeof provider.effective !== "string" || provider.effective.length === 0) return undefined;
+    if (provider.requested !== undefined && typeof provider.requested !== "string") return undefined;
+  } else if (provider.mode === "fanout") {
+    if (
+      !Array.isArray(provider.arms) ||
+      provider.arms.length === 0 ||
+      !provider.arms.every((arm) => typeof arm === "string" && arm.length > 0)
+    ) {
+      return undefined;
+    }
+    if (provider.requested !== undefined && typeof provider.requested !== "string") return undefined;
+  } else {
+    return undefined;
+  }
+  if (typeof e.outputFormat !== "string") return undefined;
+  if (e.artifactFormat !== "json" && e.artifactFormat !== "markdown") return undefined;
+  if (typeof e.cliVersion !== "string" || e.cliVersion.length === 0) return undefined;
+  if (typeof e.masterPath !== "string") return undefined;
+  const bare = e.masterPath;
+  if (
+    bare.length === 0 ||
+    bare.includes("/") ||
+    bare.includes("\\") ||
+    bare.startsWith(".") ||
+    bare !== path.basename(bare)
+  ) {
+    return undefined;
+  }
+  if (e.exportPath !== undefined && typeof e.exportPath !== "string") return undefined;
+  return value as SaveLogEntry;
+}
+
+/** Structural guard: exactly `{version:1, entries:[...]}` with EVERY entry a valid {@link SaveLogEntry} — anything else is fail-open fodder. */
+function asArtifactsLog(value: unknown): { log: ArtifactsLog; corruptEntry: boolean } | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const candidate = value as Record<string, unknown>;
   if (candidate.version !== ARTIFACTS_LOG_VERSION || !Array.isArray(candidate.entries)) {
     return undefined;
   }
-  return { version: ARTIFACTS_LOG_VERSION, entries: candidate.entries as SaveLogEntry[] };
+  const entries: SaveLogEntry[] = [];
+  let corruptEntry = false;
+  for (const raw of candidate.entries) {
+    const entry = asSaveLogEntry(raw);
+    if (entry === undefined) {
+      corruptEntry = true;
+      continue;
+    }
+    entries.push(entry);
+  }
+  return { log: { version: ARTIFACTS_LOG_VERSION, entries }, corruptEntry };
 }
 
 /**
@@ -269,7 +396,16 @@ export async function readLog(dir: string): Promise<ReadLogResult> {
       notice: `Artifacts log ${file} has an unrecognized shape (expected {"version":1,"entries":[...]}); ignoring existing entries.`,
     };
   }
-  return { log };
+  if (log.corruptEntry) {
+    // Review fixup: one entry failing the full SaveLogEntry shape makes
+    // the whole log untrustworthy — fail open with the kept valid
+    // entries dropped: an empty log plus a notice, never a throw.
+    return {
+      log: emptyLog(),
+      notice: `Artifacts log ${file} contains an entry that does not match the log schema; ignoring existing entries.`,
+    };
+  }
+  return { log: log.log };
 }
 
 /**

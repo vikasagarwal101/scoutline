@@ -29,7 +29,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -169,29 +169,98 @@ describe("save-artifacts T3: --save/--save-format/--save-force global flags", ()
     }
   });
 
-  it("rejects a dash-prefixed --save follower with VALIDATION_ERROR (never bound as the path)", async () => {
+  // Review fixup (greptile P1): the old pins here encoded a defect this PR's
+  // own README documents away — `--save --save-format markdown` is the
+  // documented MASTER-ONLY markdown form, so a follower that cannot serve as
+  // a path (option token, empty string) must leave `--save` valueless under
+  // parseArgs' binding rule, never exit VALIDATION_ERROR. The token stays in
+  // the rest stream for its own flag.
+  it("treats an option-token --save follower as master-only: the run happens and the follower keeps its own meaning", async () => {
     const log = [];
     const { adapter, stdout, stderr } = makeAdapter();
-    const status = await main(
-      ["search", "q", "--save", "--limit", "5"],
-      baseDeps(adapter, log),
-    );
-    assert.strictEqual(status, 1);
-    assert.deepStrictEqual(stdout, []);
-    const envelope = assertValidationErrorEnvelope(stderr);
-    assert.match(envelope.error, /--save requires a path/);
-    assert.deepStrictEqual(log, [], "behavior must never run behind the guard");
+    const dir = makeTempDir("scoutline-save-follower-opt-");
+    try {
+      const status = await main(
+        ["search", "q", "--save", "--limit", "5"],
+        baseDeps(adapter, log, { env: { SCOUTLINE_ARTIFACTS_DIR: dir } }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      assert.deepStrictEqual(log, ["zai"], "the search behavior must run");
+      assert.strictEqual(stdout.length, 1, "data stdout is preserved");
+      const masters = readdirSync(dir).filter((f) => f !== "index.json");
+      assert.deepStrictEqual(masters.length, 1, "a master-only save wrote exactly one master");
+      assert.match(stderr.join(""), /saved artifact/, "the save notice must reach stderr");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  it("rejects an empty --save follower with VALIDATION_ERROR", async () => {
+  it("runs the documented master-only markdown form: --save --save-format markdown", async () => {
     const log = [];
     const { adapter, stdout, stderr } = makeAdapter();
-    const status = await main(["search", "q", "--save", ""], baseDeps(adapter, log));
-    assert.strictEqual(status, 1);
-    assert.deepStrictEqual(stdout, []);
-    const envelope = assertValidationErrorEnvelope(stderr);
-    assert.match(envelope.error, /--save requires a path/);
-    assert.deepStrictEqual(log, [], "behavior must never run behind the guard");
+    const dir = makeTempDir("scoutline-save-doc-md-");
+    try {
+      const status = await main(
+        ["search", "q", "--save", "--save-format", "markdown"],
+        baseDeps(adapter, log, { env: { SCOUTLINE_ARTIFACTS_DIR: dir } }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      assert.deepStrictEqual(log, ["zai"], "the search behavior must run");
+      const masters = readdirSync(dir);
+      assert.deepStrictEqual(
+        masters.filter((f) => f.endsWith(".md")).length,
+        1,
+        `exactly one markdown master expected, got ${JSON.stringify(masters)}`,
+      );
+      assert.deepStrictEqual(
+        masters.filter((f) => f.endsWith(".json") && f !== "index.json").length,
+        0,
+        "no json master",
+      );
+      const notice = stderr.join("");
+      assert.match(notice, /saved artifact/, "the save notice must reach stderr");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats an empty --save follower as valueless (master-only), the parseArgs empty-string rule", async () => {
+    const log = [];
+    const { adapter, stdout, stderr } = makeAdapter();
+    const dir = makeTempDir("scoutline-save-follower-empty-");
+    try {
+      const status = await main(
+        ["search", "q", "--save", ""],
+        baseDeps(adapter, log, { env: { SCOUTLINE_ARTIFACTS_DIR: dir } }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      assert.deepStrictEqual(log, ["zai"], "the search behavior must run");
+      const files = readdirSync(dir).filter((f) => f !== "index.json");
+      assert.deepStrictEqual(files.length, 1, "exactly one master, no export");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Review fixup (coderabbit minor, lstat): a dangling symlink at the
+  // export target is an EXISTING entry — stat's ENOENT through the link
+  // would let the guard pass and the write silently replace the link.
+  it("refuses a dangling symlink at the export target without --save-force (lstat guard)", async () => {
+    const dir = makeTempDir("scoutline-save-t3-dangling-");
+    const target = join(dir, "report.json");
+    const log = [];
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      symlinkSync(join(dir, "vanished-target.json"), target);
+      const status = await main(["search", "q", "--save", target], baseDeps(adapter, log));
+      assert.strictEqual(status, 1);
+      assert.deepStrictEqual(stdout, [], "stdout must stay empty on the refused save");
+      const envelope = assertFileErrorEnvelope(stderr);
+      assert.match(envelope.error, /artifact exists/);
+      assert.deepStrictEqual(log, [], "behavior must never run behind the guard");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("rejects a --save-format value outside {json, markdown}, naming both valid values", async () => {
@@ -223,7 +292,7 @@ describe("save-artifacts T3: --save/--save-format/--save-force global flags", ()
     assert.deepStrictEqual(log, [], "behavior must never run behind the guard");
   });
 
-  it("rejects malformed --save on a non-capable command too (extraction is a global surface)", async () => {
+  it("drops --save on a non-capable command even with an option-token follower (accept-and-drop)", async () => {
     const cacheDir = makeTempDir("scoutline-save-t3-cache-");
     const { adapter, stdout, stderr } = makeAdapter();
     try {
@@ -231,10 +300,8 @@ describe("save-artifacts T3: --save/--save-format/--save-force global flags", ()
         ["cache", "stats", "--save", "--older-than", "60s"],
         baseDeps(adapter, [], { env: { SCOUTLINE_CACHE_DIR: cacheDir } }),
       );
-      assert.strictEqual(status, 1);
-      assert.deepStrictEqual(stdout, []);
-      const envelope = assertValidationErrorEnvelope(stderr);
-      assert.match(envelope.error, /--save requires a path/);
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      assert.deepStrictEqual(stderr, [], "flags silently dropped");
     } finally {
       rmSync(cacheDir, { recursive: true, force: true });
     }

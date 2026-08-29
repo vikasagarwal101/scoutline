@@ -333,6 +333,7 @@ describe("readLog", () => {
         { ...saveEntry(), kind: "journal" }, // unknown kind
         { ...saveEntry(), requestId: "" }, // empty requestId
         { ...saveEntry(), timestamp: "2026-08-29" }, // non-epoch timestamp
+        { ...saveEntry(), timestamp: 1e21 }, // finite but outside the Date range — toISOString would throw RangeError later
         { ...saveEntry(), command: 7 }, // non-string command
         { ...saveEntry(), args: "not-an-object" }, // non-object args
         { ...saveEntry(), provider: { mode: "single" } }, // missing effective

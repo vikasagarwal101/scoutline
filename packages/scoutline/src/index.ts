@@ -442,10 +442,14 @@ function extractGlobalOptions(args: string[]): {
       // path, because paths never start with "-").
       const value = args[i + 1];
       saveSeen = true;
-      if (value !== undefined && value.length > 0 && !value.startsWith("-")) {
-        savePath = value;
-        i += 1;
-      }
+      if (value === undefined) continue;
+      if (value.startsWith("-")) continue; // another option: stays in the rest stream
+      // A non-dash follower is consumed either way; an empty string cannot
+      // be an export path (and an empty argv token must not leak into the
+      // command's positionals and change the request), so it consumes as
+      // the valueless master-only form (review fixup).
+      if (value.length > 0) savePath = value;
+      i += 1;
       continue;
     }
     if (arg === "--save-format") {
@@ -3442,14 +3446,14 @@ interface SaveHookInput {
  * executor preflight, cache identity, and retry behavior are
  * byte-identical to the unwrapped descriptors.
  */
-/** Wrap one operation object so the first resolving invoke records its provider. */
+/** Wrap one operation object so the serving provider records into the capture. */
 function withCaptureInvoke(
   slot: Record<string, unknown>,
   id: ProviderId,
   capture: ServingCapture,
 ): Record<string, unknown> {
   const invoke = slot.invoke as (...args: unknown[]) => Promise<unknown>;
-  return {
+  const wrapped: Record<string, unknown> = {
     ...slot,
     invoke: async (...args: unknown[]) => {
       const outcome = await invoke(...args);
@@ -3457,6 +3461,22 @@ function withCaptureInvoke(
       return outcome;
     },
   };
+  // Review fixup: a CACHE-HIT attempt never reaches invoke() — the shared
+  // executors return straight after the cache lookup (src/lib/execution.ts
+  // steps 2-3), so a fallback candidate that serves from cache left the
+  // capture unset and the log recorded the pre-run effective instead of
+  // the provider whose cache actually served. cacheIdentity runs on EVERY
+  // attempt immediately before the cache consult, and it is the last
+  // per-attempt hook of the attempt that serves, so capturing here names
+  // the serving provider in both the live and cache-hit paths.
+  const cacheIdentity = slot.cacheIdentity;
+  if (typeof cacheIdentity === "function") {
+    wrapped.cacheIdentity = (...args: unknown[]) => {
+      capture.servedProvider = id;
+      return (cacheIdentity as (...a: unknown[]) => unknown).apply(slot, args);
+    };
+  }
+  return wrapped;
 }
 
 /**

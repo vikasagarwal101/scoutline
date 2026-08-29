@@ -33,7 +33,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../dist/index.js";
 import { TimeoutError } from "../dist/lib/errors.js";
-import { hermeticMainDeps } from "./helpers/hermetic-main.js";
+import { createInMemoryResponseCache, hermeticMainDeps } from "./helpers/hermetic-main.js";
 
 function makeTempDir(prefix) {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -434,6 +434,58 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
         requested: "tavily",
         effective: "zai",
       }, "nested {fetch:{invoke}} operations must be captured, not just direct-invoke slots");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  // Review round 2 (macroscope, index.ts capture): a fallback candidate
+  // that serves from CACHE never reaches invoke() — the shared executors
+  // return straight after the cache lookup — so the invoke-only capture
+  // stayed unset and the log recorded the pre-run effective (the FAILED
+  // provider) instead of the provider whose cache served.
+  it("review r2: a cache-hit fallback records the provider whose cache served, not the pre-run effective", async () => {
+    const artifactsDir = makeTempDir("scoutline-save-r2-cachehit-");
+    const invokeLog = [];
+    const cache = createInMemoryResponseCache();
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      const descriptors = [
+        makeSaveSearchDescriptor("tavily", invokeLog, { fail: true }),
+        makeSaveSearchDescriptor("zai", invokeLog),
+      ];
+      const depsFor = () =>
+        baseDeps(adapter, invokeLog, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          searchCache: cache,
+          providerDescriptors: descriptors,
+        });
+      const argv = ["search", "q", "--provider", "tavily", "--save"];
+
+      // Run 1: tavily fails live, zai serves live (warms zai's cache entry).
+      const status1 = await main(argv, depsFor());
+      assert.strictEqual(status1, 0, `stderr=${JSON.stringify(stderr)}`);
+      const zaiLive = invokeLog.filter((id) => id === "zai").length;
+      assert.ok(zaiLive > 0, "run 1: zai served live");
+
+      // Run 2: identical request — zai now serves from cache (no invoke).
+      const zaiBefore = invokeLog.filter((id) => id === "zai").length;
+      const status2 = await main(argv, depsFor());
+      assert.strictEqual(status2, 0, `stderr=${JSON.stringify(stderr)}`);
+      assert.strictEqual(
+        invokeLog.filter((id) => id === "zai").length,
+        zaiBefore,
+        "run 2: zai must serve from cache — invoke must not run",
+      );
+
+      const store = JSON.parse(readFileSync(join(artifactsDir, "index.json"), "utf8"));
+      assert.ok(store.entries.length >= 2, "both runs logged");
+      const run2 = store.entries.at(-1);
+      assert.deepStrictEqual(run2.provider, {
+        mode: "single",
+        requested: "tavily",
+        effective: "zai",
+      }, "the cache-served provider must be recorded as effective");
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
     }

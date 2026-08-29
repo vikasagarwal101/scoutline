@@ -184,6 +184,32 @@ describe("history: buildHistoryListReport (pure)", () => {
       ["20260829T110000Z-new", "20260829T100000Z-edge"],
     );
   });
+
+  it("cold-review f2: --since windows are whole UTC days — early-yesterday survives --since 2, and --since 1 keeps all of today", () => {
+    const midnight = new Date(NOW);
+    midnight.setUTCHours(0, 0, 0, 0);
+    const earlyYesterday = midnight.getTime() - 6 * 3600 * 1000; // 18:00 UTC yesterday
+    const midToday = midnight.getTime() + 3600 * 1000; // 01:00 UTC today
+    const log = {
+      version: 1,
+      entries: [
+        entry({ requestId: "20260829T180000Z-early", timestamp: earlyYesterday }),
+        entry({ requestId: "20260829T010000Z-today", timestamp: midToday }),
+        entry({ requestId: "20260829T120000Z-now", timestamp: NOW }),
+      ],
+    };
+    // --since 1 = the whole of today, not just entries after `now` (a
+    // rolling cutoff would drop early-today entries; day-aligned keeps them).
+    assert.deepStrictEqual(
+      buildHistoryListReport(log, { now: fixedNow, sinceDays: 1 }).entries.map((e) => e.requestId),
+      ["20260829T120000Z-now", "20260829T010000Z-today"],
+    );
+    // --since 2 = all of yesterday plus today — including yesterday-early.
+    assert.deepStrictEqual(
+      buildHistoryListReport(log, { now: fixedNow, sinceDays: 2 }).entries.map((e) => e.requestId),
+      ["20260829T120000Z-now", "20260829T010000Z-today", "20260829T180000Z-early"],
+    );
+  });
 });
 
 describe("history: buildHistoryShowReport (pure)", () => {

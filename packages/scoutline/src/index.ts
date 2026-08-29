@@ -1983,6 +1983,14 @@ async function handleResearch(
     args: {
       ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
       ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+      // Request-affecting controls (DESIGN D6/G6 allow-list: provider-
+      // influencing options, "capability controls"; review round 2):
+      // recorded set-only-when-given, the search --no-cache convention.
+      ...(model !== undefined ? { model } : {}),
+      ...(outputLength !== undefined ? { "output-length": outputLength } : {}),
+      ...(citationFormat !== undefined ? { "citation-format": citationFormat } : {}),
+      ...(typeof flags.domain === "string" ? { domain: flags.domain } : {}),
+      ...(flags["no-cache"] === true ? { "no-cache": true } : {}),
     },
     provider: {
       mode: "single",

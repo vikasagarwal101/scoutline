@@ -491,6 +491,78 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
     }
   });
 
+  // Review round 2, amended thread (macroscope, index.ts:1979): DESIGN D6/G6
+  // scopes the log args allow-list to provider-influencing options —
+  // "capability controls" — with the exact list locked at T4. Research's
+  // request-affecting controls were never locked OUT; record them with the
+  // same set-only-when-given convention as search --no-cache / crawl --limit.
+  it("review r2: research records its request-affecting controls in the args allow-list", async () => {
+    const artifactsDir = makeTempDir("scoutline-save-r2-research-args-");
+    const invokes = [];
+    // Research-shaped descriptor double (mirrors async-fallback.test.js).
+    const researchDescriptor = {
+      id: "tavily",
+      isConfigured: (env) => typeof env.TAVILY_API_KEY === "string" && env.TAVILY_API_KEY.length > 0,
+      capabilities: () => new Set(["research"]),
+      create: () => ({
+        id: "tavily",
+        research: {
+          run: {
+            kind: "research-run",
+            validate() {},
+            cacheIdentity(request) {
+              return {
+                provider: "tavily",
+                capability: "research",
+                credentialFingerprint: "fp-tavily",
+                request,
+                legacyCandidates: [],
+              };
+            },
+            async invoke(request) {
+              invokes.push(request);
+              return {
+                schemaVersion: 1,
+                query: request.query,
+                model: request.model ?? "auto",
+                report: `Report from tavily for "${request.query}"`,
+                sources: [{ title: "tavily source", url: "https://example.com/tavily-source" }],
+              };
+            },
+          },
+        },
+      }),
+    };
+    const { adapter, stdout, stderr } = makeAdapter();
+    const deps = hermeticMainDeps({
+      invocation: adapter,
+      env: { TAVILY_API_KEY: "tv", SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+      providerDescriptors: [researchDescriptor],
+    });
+    try {
+      const status = await main(
+        [
+          "research", "scoutline state", "--provider", "tavily", "--save",
+          "--model", "pro", "--output-length", "long",
+          "--citation-format", "mla", "--domain", "example.com", "--no-cache",
+        ],
+        deps,
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const store = JSON.parse(readFileSync(join(artifactsDir, "index.json"), "utf8"));
+      assert.deepStrictEqual(store.entries.at(-1).args, {
+        provider: "tavily",
+        "no-cache": true,
+        model: "pro",
+        "output-length": "long",
+        "citation-format": "mla",
+        domain: "example.com",
+      });
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
   it("cold-review f3: search records --no-cache in its args allow-list (sibling parity)", async () => {
     const artifactsDir = makeTempDir("scoutline-save-t4-nocache-");
     const log = [];

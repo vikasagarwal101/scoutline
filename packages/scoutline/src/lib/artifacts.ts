@@ -14,6 +14,17 @@
  *     `atomicReplaceFile` primitive deliberately lacks. The refusal leaves
  *     an existing target byte-identical (checked before any write); with
  *     `force` the replacement rides the same atomic rename.
+ *
+ * Ticket T2 adds the metadata side of the clean-report split — the
+ * `index.json` log under the artifacts dir:
+ *   - `appendLogEntry(dir, entry, options?)` — one versioned save entry
+ *     appended under the `artifacts-write` file lock (the cache-write
+ *     precedent), so concurrent CLI invocations never lose or tear
+ *     entries. Resolves with a stderr notice when a corrupt pre-existing
+ *     log was reset by the append.
+ *   - `readLog(dir)` — lock-free, fail-open: a missing store reads as
+ *     `{version:1, entries:[]}`; a corrupt or unrecognized file reads the
+ *     same plus a notice for stderr. Never throws.
  */
 import { randomBytes as cryptoRandomBytes } from "node:crypto";
 import * as os from "node:os";
@@ -26,6 +37,12 @@ import {
   type ConfigRootPlatform,
 } from "./config-store.js";
 import { FileError } from "./errors.js";
+import {
+  DEFAULT_LOCK_STALE_MS,
+  DEFAULT_LOCK_TIMEOUT_MS,
+  withAsyncFileLock,
+} from "./async-file-lock.js";
+import pkg from "../../package.json" with { type: "json" };
 
 /** Report format of a saved artifact (spec: `--save-format json|markdown`). */
 export type ArtifactFormat = "json" | "markdown";
@@ -121,4 +138,177 @@ export async function writeArtifact(
   }
   await atomicReplaceFile(target, content);
   return target;
+}
+// ---------------------------------------------------------------------------
+// Metadata log (`index.json`) — ticket T2. The log is the metadata half of
+// the clean-report split: reports carry content + requestId only, the log
+// carries the "which provider did what and why" story joined by requestId.
+// ---------------------------------------------------------------------------
+
+/** Log filename under the artifacts dir (DESIGN.md D5). */
+export const ARTIFACTS_LOG_FILENAME = "index.json";
+
+/** The log's own version namespace — independent of the report schemaVersion. */
+export const ARTIFACTS_LOG_VERSION = 1;
+
+/** Fixed lock identity serializing every index.json append (cache-write precedent). */
+const ARTIFACTS_LOG_LOCK_IDENTITY = "artifacts-write";
+
+/** CLI version stamped into each entry (the src/index.ts pkg-import idiom). */
+export const CLI_VERSION: string = pkg.version;
+
+/** Entry kind discriminator — "save" now; seed-07 journaling adds "journal" later. */
+export type LogEntryKind = "save";
+
+/** Single-provider routing: what was requested and what actually served. */
+export interface SingleProviderRouting {
+  readonly mode: "single";
+  readonly requested?: string;
+  readonly effective: string;
+}
+
+/** Fan-out routing (ADR-0004): ordered arms; no single effective exists. */
+export interface FanoutProviderRouting {
+  readonly mode: "fanout";
+  readonly requested?: string;
+  readonly arms: readonly string[];
+}
+
+/** `provider` field of a log entry (the search.ts FanoutPlan vocabulary). */
+export type ProviderRouting = SingleProviderRouting | FanoutProviderRouting;
+
+/**
+ * One save record in `index.json` — the field set is pinned exactly by
+ * tests/artifacts-log.test.js so unknown additions fail loudly. `args` is
+ * the redacted allow-list of provider-influencing options (exact list
+ * locked at ticket T4; no positionals, no presentation flags, no --save*).
+ */
+export interface SaveLogEntry {
+  readonly kind: LogEntryKind;
+  readonly requestId: string;
+  /** ms epoch — the CALLER's injected instant; never Date.now() in here. */
+  readonly timestamp: number;
+  readonly command: string;
+  readonly args: Readonly<Record<string, unknown>>;
+  readonly provider: ProviderRouting;
+  readonly outputFormat: string;
+  readonly artifactFormat: ArtifactFormat;
+  readonly cliVersion: string;
+  /** Master filename relative to the artifacts dir (basename of writeArtifact's return). */
+  readonly masterPath: string;
+  /** Absolute export-copy path when `--save <path>` was given. */
+  readonly exportPath?: string;
+}
+
+/** `index.json` shape: own version field, entries in append order. */
+export interface ArtifactsLog {
+  readonly version: typeof ARTIFACTS_LOG_VERSION;
+  readonly entries: readonly SaveLogEntry[];
+}
+
+/** readLog result: the (possibly empty) log plus an optional stderr notice. */
+export interface ReadLogResult {
+  readonly log: ArtifactsLog;
+  readonly notice?: string;
+}
+
+/** Lock-timing overrides for {@link appendLogEntry} (tests use small values). */
+export interface AppendLogEntryOptions {
+  readonly timeoutMs?: number;
+  readonly staleMs?: number;
+  /** Injectable timer so lock retries resolve faster than the 500ms sleep. */
+  readonly setTimeout?: typeof setTimeout;
+}
+
+function emptyLog(): ArtifactsLog {
+  return { version: ARTIFACTS_LOG_VERSION, entries: [] };
+}
+
+/** Structural guard: exactly `{version:1, entries:[...]}` — anything else is fail-open fodder. */
+function asArtifactsLog(value: unknown): ArtifactsLog | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.version !== ARTIFACTS_LOG_VERSION || !Array.isArray(candidate.entries)) {
+    return undefined;
+  }
+  return { version: ARTIFACTS_LOG_VERSION, entries: candidate.entries as SaveLogEntry[] };
+}
+
+/**
+ * Lock-free, fail-open read of `<dir>/index.json`. A missing store is the
+ * normal empty case (no notice); a corrupt or unrecognized file degrades to
+ * an empty log plus a notice the caller flushes on stderr. NEVER throws —
+ * `history` is a read-only inventory (D7), not a failure surface.
+ */
+export async function readLog(dir: string): Promise<ReadLogResult> {
+  const file = path.join(dir, ARTIFACTS_LOG_FILENAME);
+  let raw: string;
+  try {
+    raw = await fs.readFile(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { log: emptyLog() };
+    const code = (error as NodeJS.ErrnoException).code ?? "unknown";
+    return {
+      log: emptyLog(),
+      notice: `Artifacts log ${file} is unreadable (${code}); continuing with an empty log.`,
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {
+      log: emptyLog(),
+      notice: `Artifacts log ${file} is corrupt (invalid JSON); ignoring existing entries.`,
+    };
+  }
+  const log = asArtifactsLog(parsed);
+  if (!log) {
+    return {
+      log: emptyLog(),
+      notice: `Artifacts log ${file} has an unrecognized shape (expected {"version":1,"entries":[...]}); ignoring existing entries.`,
+    };
+  }
+  return { log };
+}
+
+/**
+ * Append one entry to `<dir>/index.json`, serialized through the
+ * `artifacts-write` file lock — the cache-write precedent (src/lib/cache.ts):
+ * concurrent CLI invocations read-modify-write under one lockfile, so a
+ * Promise.all of appends persists every entry intact (no lost update, no
+ * torn entry). The write itself rides atomicReplaceFile (0700 dir / 0600
+ * temp / fsync / rename). Resolves with a stderr notice when a corrupt
+ * pre-existing log was reset by this append; write and lock-acquire
+ * failures propagate — the save hook (T3) wraps them into FileError.
+ */
+export async function appendLogEntry(
+  dir: string,
+  entry: SaveLogEntry,
+  options: AppendLogEntryOptions = {},
+): Promise<string | undefined> {
+  let notice: string | undefined;
+  await withAsyncFileLock(
+    dir,
+    ARTIFACTS_LOG_LOCK_IDENTITY,
+    async () => {
+      const current = await readLog(dir);
+      notice = current.notice;
+      const next: ArtifactsLog = {
+        version: ARTIFACTS_LOG_VERSION,
+        entries: [...current.log.entries, entry],
+      };
+      await atomicReplaceFile(
+        path.join(dir, ARTIFACTS_LOG_FILENAME),
+        `${JSON.stringify(next, null, 2)}\n`,
+      );
+    },
+    {
+      timeoutMs: options.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
+      staleMs: options.staleMs ?? DEFAULT_LOCK_STALE_MS,
+      setTimeout: options.setTimeout,
+      timeoutLabel: "Artifacts log write",
+    },
+  );
+  return notice;
 }

@@ -50,6 +50,7 @@ import {
   DEFAULT_USAGE_WINDOW_DAYS,
   MAX_USAGE_WINDOW_DAYS,
 } from "./commands/usage.js";
+import { historyCommand, HISTORY_HELP } from "./commands/history.js";
 import { cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
 import type { PruneSelectors, PruneCachesResult } from "./lib/cache.js";
 import { parseBatchManifest } from "./lib/batch-manifest.js";
@@ -74,6 +75,7 @@ import {
   appendLogEntry,
   CLI_VERSION,
   newRequestId,
+  readLog,
   resolveArtifactsDir,
   writeArtifact,
   type ArtifactFormat,
@@ -185,6 +187,8 @@ Commands:
   doctor   Provider-aware environment + connectivity checks
   cache    Inspect or clear the local cache (stats / clear)
   usage    Report local call-usage history (usage.json ledger,
+           credential-free)
+  history  Inventory of saved --save artifacts (list / show / stats,
            credential-free)
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
   init     Interactive onboarding wizard (writes ~/.scoutline/config.json)
@@ -3139,6 +3143,137 @@ export async function handleUsage(
   );
 }
 
+/**
+ * `history` dispatcher (save-artifacts T5): flag/subcommand validation
+ * up front, then the pure `historyCommand` through the invocation seam
+ * with the artifacts store as the only I/O. The store path resolves
+ * against `SCOUTLINE_ARTIFACTS_DIR` / the config root; reads are
+ * fail-open (`readLog` never throws) so a missing or corrupt store is
+ * an empty inventory, exit 0. FILE_ERROR paths (unknown id, missing
+ * master) ride the seam's existing error boundary.
+ */
+export async function handleHistory(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+): Promise<number> {
+  const { flags, positional } = parseArgs(args);
+
+  if (flags.help || flags.h) {
+    deps.invocation.writeStdout(HISTORY_HELP);
+    return 0;
+  }
+
+  const subcommand = positional[0];
+  if (subcommand === undefined) {
+    // Bare `scoutline history` is a discovery affordance, not an error.
+    deps.invocation.writeStdout(HISTORY_HELP);
+    return 0;
+  }
+  if (subcommand !== "list" && subcommand !== "show" && subcommand !== "stats") {
+    throw new ValidationError(
+      `Unknown history subcommand "${subcommand}".`,
+      "Valid subcommands: list, show, stats.",
+    );
+  }
+
+  // `--since N` / `--limit N`: strict decimal integers >= 1 (the same
+  // gate class as usage `--days` — Number() alone would admit "1e3",
+  // " 7", and "7.0" spellings the documented contract excludes).
+  let sinceDays: number | undefined;
+  const rawSince = flags.since;
+  if (rawSince !== undefined) {
+    if (rawSince === true) {
+      throw new ValidationError(
+        "--since requires a value.",
+        "Pass a positive integer, e.g. --since 7.",
+      );
+    }
+    const str = String(rawSince);
+    if (!/^\d+$/.test(str) || Number(str) < 1) {
+      throw new ValidationError(
+        `Invalid --since value "${str}".`,
+        "--since must be a positive integer, e.g. --since 7.",
+      );
+    }
+    sinceDays = Number(str);
+  }
+
+  let limit: number | undefined;
+  const rawLimit = flags.limit;
+  if (rawLimit !== undefined) {
+    if (rawLimit === true) {
+      throw new ValidationError(
+        "--limit requires a value.",
+        "Pass a positive integer, e.g. --limit 20.",
+      );
+    }
+    const str = String(rawLimit);
+    if (!/^\d+$/.test(str) || Number(str) < 1) {
+      throw new ValidationError(
+        `Invalid --limit value "${str}".`,
+        "--limit must be a positive integer, e.g. --limit 20.",
+      );
+    }
+    limit = Number(str);
+  }
+
+  const rawCommand = flags.command;
+  if (rawCommand === true) {
+    throw new ValidationError(
+      "--command requires a value.",
+      "Pass a command name, e.g. --command search.",
+    );
+  }
+  const commandFilter = typeof rawCommand === "string" ? rawCommand : undefined;
+
+  let requestId: string | undefined;
+  if (subcommand === "show") {
+    requestId = positional[1];
+    if (requestId === undefined) {
+      throw new ValidationError(
+        "history show requires a requestId.",
+        "Run history list to see saved request ids.",
+      );
+    }
+  }
+
+  const dir = resolveArtifactsDir(deps.env);
+  const now = deps.now ?? Date.now;
+  return invokeCommand(
+    deps.invocation,
+    (context) =>
+      historyCommand({
+        subcommand,
+        readLog: () => readLog(dir),
+        readMaster: async (entry) => {
+          try {
+            return await fs.readFile(path.join(dir, entry.masterPath), "utf8");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+            throw error;
+          }
+        },
+        masterSizeOf: async (entry) => {
+          try {
+            return (await fs.stat(path.join(dir, entry.masterPath))).size;
+          } catch {
+            return 0;
+          }
+        },
+        notice: context.notice,
+        now,
+        ...(sinceDays !== undefined ? { sinceDays } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+        ...(commandFilter !== undefined ? { command: commandFilter } : {}),
+        ...(requestId !== undefined ? { requestId } : {}),
+      }),
+    outputMode,
+    deps.now,
+    deps.secrets,
+  );
+}
+
 async function handleQuota(
   args: string[],
   outputMode: OutputMode,
@@ -4025,6 +4160,21 @@ export async function main(
   if (command === "usage") {
     try {
       return await handleUsage(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
+  // `history` is credential-free (reads only the artifacts store; no
+  // Provider resolution, no Adapter, no transport — the same
+  // short-circuit class as `usage`/`cache`). Dispatching before config
+  // load keeps a corrupt config.json from blocking the inventory.
+  // Fail-open log reads mean a missing/corrupt store still exits 0 with
+  // an empty inventory (save-artifacts T5, DESIGN D7).
+  if (command === "history") {
+    try {
+      return await handleHistory(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
       return getErrorExitCode(error);

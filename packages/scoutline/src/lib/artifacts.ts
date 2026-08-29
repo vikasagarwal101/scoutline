@@ -304,6 +304,11 @@ function asSaveLogEntry(value: unknown): SaveLogEntry | undefined {
   if (e.kind !== "save") return undefined;
   if (typeof e.requestId !== "string" || e.requestId.length === 0) return undefined;
   if (typeof e.timestamp !== "number" || !Number.isFinite(e.timestamp)) return undefined;
+  // Reject finite-but-out-of-Date-range values: history list/stats render
+  // via new Date(ms).toISOString(), which throws RangeError on them — the
+  // entry must fail validation here so the log fails open instead (review
+  // fixup).
+  if (!Number.isFinite(new Date(e.timestamp).getTime())) return undefined;
   if (typeof e.command !== "string" || e.command.length === 0) return undefined;
   if (typeof e.args !== "object" || e.args === null || Array.isArray(e.args)) return undefined;
   const provider = e.provider as Record<string, unknown> | undefined;

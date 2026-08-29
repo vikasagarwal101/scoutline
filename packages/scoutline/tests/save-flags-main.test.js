@@ -224,19 +224,56 @@ describe("save-artifacts T3: --save/--save-format/--save-force global flags", ()
     }
   });
 
-  it("treats an empty --save follower as valueless (master-only), the parseArgs empty-string rule", async () => {
+  it("treats an empty --save follower as valueless (master-only) and never leaks the empty token into positionals", async () => {
     const log = [];
+    const requests = [];
     const { adapter, stdout, stderr } = makeAdapter();
     const dir = makeTempDir("scoutline-save-follower-empty-");
+    // Descriptor double that also records the exact request each invoke saw.
+    const recordingDescriptor = {
+      id: "zai",
+      isConfigured: () => true,
+      capabilities: () => new Set(["search"]),
+      create: () => ({
+        id: "zai",
+        search: {
+          validate() {},
+          cacheIdentity(r) {
+            requests.push(r);
+            return {
+              provider: "zai",
+              capability: "search",
+              credentialFingerprint: "fp-zai",
+              request: r,
+              legacyCandidates: [],
+            };
+          },
+          async invoke() {
+            log.push("zai");
+            return [{ title: "zai", url: "https://zai/r", summary: "s" }];
+          },
+        },
+      }),
+    };
     try {
-      const status = await main(
-        ["search", "q", "--save", ""],
-        baseDeps(adapter, log, { env: { SCOUTLINE_ARTIFACTS_DIR: dir } }),
-      );
+      const deps = hermeticMainDeps({
+        invocation: adapter,
+        env: { SCOUTLINE_ARTIFACTS_DIR: dir },
+        providerDescriptors: [recordingDescriptor],
+      });
+      const status = await main(["search", "q", "--save", ""], deps);
       assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
       assert.deepStrictEqual(log, ["zai"], "the search behavior must run");
       const files = readdirSync(dir).filter((f) => f !== "index.json");
       assert.deepStrictEqual(files.length, 1, "exactly one master, no export");
+      // Review round 2: the consumed empty token must not reach the
+      // command as an extra positional — the request must be identical to
+      // the same invocation without the empty token.
+      const baseline = requests.at(-1);
+      requests.length = 0;
+      const status2 = await main(["search", "q", "--save"], deps);
+      assert.strictEqual(status2, 0, `stderr=${JSON.stringify(stderr)}`);
+      assert.deepStrictEqual(requests.at(-1), baseline, "request must not change with a consumed empty --save follower");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

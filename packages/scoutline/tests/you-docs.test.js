@@ -90,8 +90,8 @@ describe("You.com docs — configuration", () => {
       "configuration.md must document the YOU_API_KEY alias",
     );
     assert.ok(
-      text.includes("|jina|you>"),
-      "configuration.md --provider enumeration must include you",
+      text.includes(PROVIDER_ENUM),
+      "configuration.md --provider enumeration must list the full registry (incl. you)",
     );
     assert.match(
       text,

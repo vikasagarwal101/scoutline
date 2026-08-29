@@ -38,7 +38,8 @@ The version-1 shape is:
 ```
 
 Supported provider IDs are `zai`, `minimax`, `tavily`, `exa`, `brave`,
-`firecrawl`, `parallel`, `perplexity`, `jina`, and `you`. Unknown IDs are ignored
+`firecrawl`, `parallel`, `perplexity`, `jina`, `you`, `linkup`, and
+`spider`. Unknown IDs are ignored
 with a warning, and blank API keys are
 treated as absent. Malformed files fail as corrupt configuration; unsupported
 versions require a Scoutline upgrade. Writes use a private (`0600`) temporary
@@ -163,14 +164,14 @@ non-TTY settings surface (dotted paths: `routing`, `routing.<capability>`,
 
 Shared commands (`search`, `vision`, `quota`, `doctor`), **`repo`**,
 **`read`**, **`crawl`**, **`map`**, and **`research`** accept the global
-`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you>` flag. When the flag
+`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>` flag. When the flag
 is omitted the value of the `SCOUTLINE_PROVIDER` environment variable is
 consulted; when neither is supplied Scoutline falls back to the compatibility
 default `zai`.
 
 Resolution precedence (highest first):
 
-1. `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you>` on the command line
+1. `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>` on the command line
 2. `SCOUTLINE_PROVIDER`
 3. `zai` (default)
 
@@ -186,7 +187,7 @@ Provider fallback is **always-on** (0.11.0+). When the selected provider
 does not supply the capability (for example, MiniMax does not advertise
 `repository-exploration` or `reader`) or fails at runtime, scoutline
 emits a stderr notice and silently tries the next eligible provider in
-registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you]`. The
+registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider]`. The
 selected provider is still the *first* one tried, so the user-visible
 behavior is the same when the pin works; the fallback only changes
 what happens when it does not. See
@@ -241,7 +242,7 @@ scoutline --no-fallback --provider minimax read https://example.com
 | `Z_AI_TEMPERATURE` | `0.8` | Vision generation temperature. |
 | `Z_AI_TOP_P` | `0.6` | Vision generation top-p value. |
 | `Z_AI_MAX_TOKENS` | `32768` | Vision response token limit. |
-| `SCOUTLINE_PROVIDER` | (none) | Selects the effective Provider (`zai`, `minimax`, `tavily`, `exa`, `brave`, `firecrawl`, `parallel`, `perplexity`, `jina`, or `you`) for shared capabilities. |
+| `SCOUTLINE_PROVIDER` | (none) | Selects the effective Provider (`zai`, `minimax`, `tavily`, `exa`, `brave`, `firecrawl`, `parallel`, `perplexity`, `jina`, `you`, `linkup`, or `spider`) for shared capabilities. |
 | `SCOUTLINE_NO_FALLBACK` | (unset) | When set to a non-empty value, restores the strict single-provider, fail-loud behavior for shared capabilities — `--no-fallback` on the CLI is the per-invocation equivalent. |
 
 ## MiniMax Token Plan Settings
@@ -392,6 +393,81 @@ export YDC_API_KEY="your-you-key"
 scoutline --provider you search "AI policy news" --topic news
 scoutline --provider you read https://example.com/
 scoutline --provider you research "State of carbon capture 2025"
+```
+
+## Linkup Settings
+
+The Linkup Adapter is configured through one environment variable. Every
+request authenticates against `https://api.linkup.so` with an
+`Authorization: Bearer` header.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `LINKUP_API_KEY` | (none) | Required for Linkup. Linkup API key. |
+
+- `LINKUP_API_KEY` is required and non-empty. Whitespace-only values are
+  treated as absent.
+- The key is redacted in all output, exactly like every other provider
+  credential.
+- Linkup supplies Search, Reader, Research, Quota, and Diagnostics. Search
+  controls map to `includeDomains`, a `fromDate`/`toDate` UTC recency
+  window, a `depth` parameter for content size, and query-keyword appends
+  for topic/location; `--type` is rejected before any I/O.
+- Reader fetches rendered markdown (`renderJs` defaults to on) and rejects
+  every reader control with no Linkup wire equivalent (`--format text`,
+  `--no-images`, and the Z.AI-only options) with `UNSUPPORTED_OPTION`.
+- Research runs the async submit/poll lifecycle with crash-safe job state,
+  so an interrupted run resumes the paid task instead of double-charging.
+- Quota reports the credit balance from `GET /v1/credits/balance`. The
+  authority is always-unknown: credits remaining with an unknown limit, so
+  no percentage is ever fabricated.
+
+```bash
+export LINKUP_API_KEY="your-linkup-key"
+
+scoutline --provider linkup search "AI policy news"
+scoutline --provider linkup read https://example.com/
+scoutline --provider linkup research "State of carbon capture 2025"
+scoutline --provider linkup quota
+scoutline doctor --provider linkup
+```
+
+## Spider.cloud Settings
+
+The Spider.cloud Adapter is configured through one environment variable.
+Every request authenticates against `https://api.spider.cloud` with an
+`Authorization: Bearer` header.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SPIDER_API_KEY` | (none) | Required for Spider.cloud. Spider.cloud API key. |
+
+- `SPIDER_API_KEY` is required and non-empty. Whitespace-only values are
+  treated as absent.
+- The key is redacted in all output, exactly like every other provider
+  credential.
+- Spider.cloud supplies Search, Reader, Crawl, Map, Quota, and Diagnostics.
+  Search controls map to a domain `whitelist`, Google-style `tbs` recency
+  filters, `country_code` for location, and a topic keyword appended to
+  the query; `--type` is rejected before any I/O.
+- Reader POSTs the `/scrape` endpoint and rejects the Z.AI-only reader
+  options with `UNSUPPORTED_OPTION` instead of silently dropping them.
+- Crawl is a synchronous one-shot `POST /crawl` (no job file, no polling)
+  that keeps only `status === 200` pages with non-empty content. Map uses
+  `POST /links` and deduplicates discovered URLs.
+- Quota reports credit remaining from `GET /data/credits`. The authority
+  is always-unknown: credits remaining with an unknown limit, so no
+  percentage is ever fabricated. The diagnostics probe costs no credit.
+
+```bash
+export SPIDER_API_KEY="your-spider-key"
+
+scoutline --provider spider search "AI policy news"
+scoutline --provider spider read https://example.com/
+scoutline --provider spider crawl https://docs.example.com --limit 10
+scoutline --provider spider map https://docs.example.com
+scoutline --provider spider quota
+scoutline doctor --provider spider
 ```
 
 ## Output Modes
@@ -664,7 +740,8 @@ MiniMax does not advertise the `reader` Capability in the current release.
 By default (0.11.0+) provider fallback handles this automatically:
 selecting MiniMax (explicitly or via `SCOUTLINE_PROVIDER`) for `read`
 emits a stderr notice and reroutes to the next eligible provider
-(Z.AI, Tavily, Exa, Firecrawl, Parallel, Jina, or You.com) that supplies the `reader` Capability.
+(Z.AI, Tavily, Exa, Firecrawl, Parallel, Jina, You.com, Linkup, or
+Spider.cloud) that supplies the `reader` Capability.
 To restore the previous strict single-provider behavior, opt out with
 `--no-fallback` (or `SCOUTLINE_NO_FALLBACK=1`) — under the kill-switch
 the preflight surfaces `UNSUPPORTED_CAPABILITY` for MiniMax before
@@ -713,6 +790,7 @@ Authority and score are kept on separate axes. A provider is either:
 | `brave` | always-unknown | Reports a rate-limit window, not spend or credits. Brave uses metered billing; the numeric window is displayed for telemetry but is not a budget signal. |
 | `jina` | always-unknown | Rate-limit telemetry (`X-RateLimit-Remaining-*` headers), not spend; not a budget signal. |
 | `linkup` | always-unknown | Credit remaining balance (limit unknown); not a percentage-bounded plan signal. |
+| `spider` | always-unknown | Credit remaining balance (limit unknown); not a percentage-bounded plan signal. |
 | `exa`, `parallel`, `perplexity` | always-unknown | Advertise no `quota` capability; nothing to map. |
 | `you` | always-unknown | Advertises no `quota` capability; You.com exposes no spend endpoint. Nothing to map. |
 
@@ -762,7 +840,7 @@ production wires a stderr writer, tests inject a recorder):
 
 | Reason / warning code | Trigger |
 | --- | --- |
-| `PROVIDER_NON_AUTHORITATIVE` | Brave/Exa — by policy, regardless of snapshot. |
+| `PROVIDER_NON_AUTHORITATIVE` | Brave, Exa, Parallel, Perplexity, Jina, You.com, Linkup, and Spider.cloud — always-unknown by policy, regardless of snapshot. |
 | `MAPPING_MISSING` | `(provider, capability)` has no row in the table (e.g. `quota`, `diagnostics`). |
 | `SNAPSHOT_MISSING` | Provider has no snapshot in `~/.scoutline/state.json`. |
 | `SNAPSHOT_EMPTY` | Snapshot exists but its `categories` array is empty. |
@@ -781,7 +859,7 @@ ordered list:
 1. **Known tier** first, sorted by score descending.
 2. **Unknown tier** after every known entry, in registry order.
 3. Ties within a tier break by registry order
-   (`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you]` by default;
+   (`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider]` by default;
    overridable via the `registryOrder` option).
 
 The ranking is deterministic for identical inputs — same `state` +
@@ -832,7 +910,8 @@ notice.
 ### Exa no-signal row
 
 In default (multi-provider) mode, a configured provider without a
-`quota` capability (today: Exa) now appears as:
+`quota` capability (today: Exa, Parallel, Perplexity, and You.com) now
+appears as:
 
 ```json
 { "provider": "exa", "status": "none", "reason": "no-capability" }
@@ -895,6 +974,7 @@ Keep credentials in your shell profile, secret manager, or CI secret store.
 Do not put them in command arguments, committed files, generated reports, or
 bug reports. Scoutline applies recursive, case-insensitive redaction of every
 configured credential (`Z_AI_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`,
+`YDC_API_KEY`, `YOU_API_KEY`, `LINKUP_API_KEY`, `SPIDER_API_KEY`,
 Bearer / `x-api-key` values, embedded credential strings) at every outward
 boundary: output, errors, diagnostics, quota failures, cached metadata, and
 fatal shell errors.

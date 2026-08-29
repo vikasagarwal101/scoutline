@@ -1,9 +1,9 @@
 # Architecture
 
 Scoutline is a Node.js command-line client that presents several shared
-Capabilities through one consistent interface. It supports nine Providers —
-Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and
-Jina AI — through a common Adapter boundary.
+Capabilities through one consistent interface. It supports twelve Providers —
+Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity,
+Jina AI, You.com, Linkup, and Spider.cloud — through a common Adapter boundary.
 
 ## Runtime Flow
 
@@ -12,10 +12,10 @@ scoutline executable
   -> dist/index.js command dispatcher
   -> command handler
   -> Provider selection (--provider / SCOUTLINE_PROVIDER / default "zai")
-  -> Provider Adapter (zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, or linkup)
+  -> Provider Adapter (zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, or spider)
   -> shared execution (cache + retry)
-  -> Provider transport (Z.AI MCP / MiniMax direct HTTP / Tavily direct HTTP / Exa direct HTTP / Brave direct HTTP / Firecrawl direct HTTP / Parallel direct HTTP / Perplexity direct HTTP / Jina direct HTTP / Linkup direct HTTP)
-  -> Provider service (Z.AI, ZRead, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, or Linkup)
+  -> Provider transport (Z.AI MCP / MiniMax direct HTTP / Tavily direct HTTP / Exa direct HTTP / Brave direct HTTP / Firecrawl direct HTTP / Parallel direct HTTP / Perplexity direct HTTP / Jina direct HTTP / You.com direct HTTP / Linkup direct HTTP / Spider.cloud direct HTTP)
+  -> Provider service (Z.AI, ZRead, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, or Spider.cloud)
 ```
 
 `packages/scoutline/bin/scoutline.js` is the published executable. It dynamically loads the compiled `dist/index.js` entry point and emits a structured load error if the package was not built.
@@ -35,8 +35,9 @@ normalization. It never imports command presentation, output mode, or another
 Provider's Adapter.
 
 The production registry at `src/providers/registry.ts` is a static,
-ten-entry list `[zai, minimax, tavily, exa, brave, firecrawl, parallel,
-perplexity, jina, linkup]`. There is no dynamic loading, no package-name lookup,
+twelve-entry list `[zai, minimax, tavily, exa, brave, firecrawl, parallel,
+perplexity, jina, you, linkup, spider]`. There is no dynamic loading, no
+package-name lookup,
 no Adapter file paths, and no externally supplied factories. Tests
 inject descriptor lists explicitly through optional parameters.
 
@@ -53,7 +54,9 @@ inject descriptor lists explicitly through optional parameters.
 | `parallel` | `PARALLEL_API_KEY` | `https://api.parallel.ai` | Direct-HTTP transport; Search, Research, Reader, Diagnostics |
 | `perplexity` | `PERPLEXITY_API_KEY` | `https://api.perplexity.ai` | Direct-HTTP transport; Search (`/search`), Research (`/chat/completions` sonar-deep-research), Diagnostics |
 | `jina` | `JINA_API_KEY` (optional, keyless supported) | `https://r.jina.ai`, `https://s.jina.ai`, `https://deepsearch.jina.ai` | Direct-HTTP transport; Search, Reader, Research, Quota (rate-limit telemetry), Diagnostics |
+| `you` | `YDC_API_KEY` (alias `YOU_API_KEY`) | `https://ydc-index.io`, `https://api.you.com` | Direct-HTTP transport (`X-API-Key`); Search, Reader, Research, Diagnostics. Dual host: search/reader on ydc-index.io, research on api.you.com; no quota capability |
 | `linkup` | `LINKUP_API_KEY` | `https://api.linkup.so` | Direct-HTTP transport; Search, Reader, Research, Quota (credits balance, limit unknown), Diagnostics |
+| `spider` | `SPIDER_API_KEY` | `https://api.spider.cloud` | Direct-HTTP transport (Bearer); Search, Reader, Crawl (synchronous one-shot), Map, Quota (credits remaining, limit unknown), Diagnostics |
 
 Each Adapter exposes only the Capabilities the base release actually supports.
 The Descriptor advertises the same Capability set so support can be checked
@@ -84,21 +87,21 @@ single-provider behavior; see
 [`docs/adr/0002-provider-fallback.md`](adr/0002-provider-fallback.md)
 for the rationale and the accepted async double-charge risk.
 
-| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | Linkup | Command |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `search` | Yes | Yes | Yes | Yes | Yes (web/news/video; `--content-size high` → LLM Context) | Yes | Yes | Yes | Yes | Yes | `scoutline search` |
-| `vision.interpret-image` | Yes | Yes | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
-| Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
-| Image diff / video | Yes | No | No | No | No | No | No | No | No | No | `scoutline vision diff`, `vision video` |
-| `quota` | Yes | Yes | Yes | No (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | Yes (credit balance, not spend) | `scoutline quota` |
-| `diagnostics` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
-| Reader | Yes | Falls back (zai/tavily/exa/firecrawl/parallel/jina/linkup) | Yes (Z.AI-only options are rejected) | Yes (rejects Z.AI-only options) | Falls back (zai/tavily/exa/firecrawl/parallel/jina/linkup) | Yes (returns page titles) | Yes | Falls back (zai/tavily/exa/firecrawl/parallel/jina/linkup) | Yes | Yes (renders JavaScript; rejects Z.AI-only options plus `--format text` and `--no-images`) | `scoutline read` |
-| Repository exploration | Yes | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | `scoutline repo ...` |
-| Crawl | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes (async; resumable after Ctrl-C) | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | `scoutline crawl` |
-| Map | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Yes | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | Falls back (tavily/firecrawl) | `scoutline map` |
-| Research | Falls back (tavily/exa/parallel/perplexity/jina/linkup) | Falls back (tavily/exa/parallel/perplexity/jina/linkup) | Yes (4-250 credits per request) | Yes | Falls back (tavily/exa/parallel/perplexity/jina/linkup) | Falls back (tavily/exa/parallel/perplexity/jina/linkup) (`/deep-research` deprecated) | Yes | Yes | Yes | Yes | `scoutline research` |
-| Raw tools | Yes | No | No | No | No | No | No | No | No | No | `scoutline tools`, `tool`, `call` |
-| Code Mode | Yes | No | No | No | No | No | No | No | No | No | `scoutline code ...` |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Spider.cloud | Command |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `search` | Yes | Yes | Yes | Yes | Yes (web/news/video; `--content-size high` → LLM Context) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline search` |
+| `vision.interpret-image` | Yes | Yes | No | No | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
+| Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | No | No | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
+| Image diff / video | Yes | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision diff`, `vision video` |
+| `quota` | Yes | Yes | Yes | No (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | No | Yes (credit balance, not spend) | Yes (credit balance, not spend) | `scoutline quota` |
+| `diagnostics` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
+| Reader | Yes | Falls back (zai/tavily/exa/firecrawl/parallel/jina/you/linkup/spider) | Yes (Z.AI-only options are rejected) | Yes (rejects Z.AI-only options) | Falls back (zai/tavily/exa/firecrawl/parallel/jina/you/linkup/spider) | Yes (returns page titles) | Yes | Falls back (zai/tavily/exa/firecrawl/parallel/jina/you/linkup/spider) | Yes | Yes (rejects Z.AI-only options plus `--format text`) | Yes (renders JavaScript; rejects Z.AI-only options plus `--format text` and `--no-images`) | Yes (rejects Z.AI-only options) | `scoutline read` |
+| Repository exploration | Yes | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | `scoutline repo ...` |
+| Crawl | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes (async; resumable after Ctrl-C) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes (sync) | `scoutline crawl` |
+| Map | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes | `scoutline map` |
+| Research | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) | Yes (4-250 credits per request) | Yes | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) (`/deep-research` deprecated) | Yes | Yes | Yes | Yes | Yes | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) | `scoutline research` |
+| Raw tools | Yes | No | No | No | No | No | No | No | No | No | No | No | `scoutline tools`, `tool`, `call` |
+| Code Mode | Yes | No | No | No | No | No | No | No | No | No | No | No | `scoutline code ...` |
 
 Specialized MiniMax Vision mappings remain conformance-gated and only move
 into the shared matrix once their offline and live attestation passes.
@@ -152,6 +155,12 @@ current control matrix:
 - Linkup — domain (→ `includeDomains`), recency (→ `fromDate`/`toDate`
   UTC window), content-size (`high` → `depth: "deep"`), location and
   topic via keyword; `type` is rejected.
+- You.com — domain (→ `include_domains`), recency (→ `freshness`),
+  location (→ `country`), content-size (→ extraction mode), topic via
+  keyword; `type` is rejected.
+- Spider.cloud — domain (→ `whitelist`), recency (→ Google-style `tbs`
+  filters), location (→ `country_code`), content-size (observes the
+  markdown return format), topic via keyword; `type` is rejected.
 
 **Multi-provider fan-out** (ADR-0004, search only): one query may
 execute in parallel across several providers — arms. Activation, in
@@ -355,9 +364,9 @@ one Provider. `deriveCapabilityMatrix` is the single inventory function;
 its output is always strictly more informative than the previous
 two-array view. Doctor help derives its unsupported-provider lists from
 the same descriptor metadata (today: every Provider except Z.AI for
-`repo`; every Provider except Tavily and Firecrawl for `crawl` and
-`map`; Z.AI, MiniMax, Brave, and Firecrawl for `research`; MiniMax,
-Brave, and Perplexity for `read`) — it reports
+`repo`; every Provider except Tavily, Firecrawl, and Spider.cloud for
+`crawl` and `map`; Z.AI, MiniMax, Brave, Firecrawl, and Spider.cloud
+for `research`; MiniMax, Brave, and Perplexity for `read`) — it reports
 the effective Provider for shared capabilities and never widens to M3
 transport.
 
@@ -389,8 +398,9 @@ read argv + global flags
 Key boundaries:
 
 - **Selection happens before configuration.** Descriptor metadata is the
-  support truth. Seven Providers advertise `reader` (Z.AI, Tavily, Exa,
-  Firecrawl, Parallel, Jina, Linkup); MiniMax, Brave, and Perplexity do not, and
+  support truth. Nine Providers advertise `reader` (Z.AI, Tavily, Exa,
+  Firecrawl, Parallel, Jina, You.com, Linkup, Spider.cloud); MiniMax,
+  Brave, and Perplexity do not, and
   an explicit or environment-selected non-supplier returns
   `UNSUPPORTED_CAPABILITY` before
   `descriptor.isConfigured`, `descriptor.create`, credential resolution
@@ -403,7 +413,10 @@ Key boundaries:
   Linkup Adapter renders JavaScript by default (wired to `/fetch`
   `renderJs`), honors `--timeout` via the client abort budget, and
   additionally rejects `--format text` and `--no-images` (no Linkup
-  wire equivalent).
+  wire equivalent); the You.com Adapter mirrors the Exa rejection list
+  and additionally rejects `--format text`; the Spider.cloud Adapter
+  rejects the Z.AI-only options plus any explicit image-retention or
+  timeout intent (the locked `/scrape` body has no native fields).
 - **Descriptor/Adapter agreement is mandatory.** Every descriptor that
   advertises `reader` has an Adapter supplying `adapter.reader`; the
   MiniMax, Brave, and Perplexity descriptors advertise neither and
@@ -477,17 +490,18 @@ public Interface.
 ### Diagnostics inventory
 
 `capabilityMatrix` is derived purely from descriptor metadata. The
-matrix lists the six `reader` suppliers (Z.AI, Tavily, Exa, Firecrawl,
-Parallel, Jina); MiniMax, Brave, and Perplexity are absent because
-their descriptors do not advertise it.
+matrix lists the nine `reader` suppliers (Z.AI, Tavily, Exa, Firecrawl,
+Parallel, Jina, You.com, Linkup, Spider.cloud); MiniMax, Brave, and
+Perplexity are absent because their descriptors do not advertise it.
 
 ## Crawl, Map, Research Capabilities
 
 `scoutline crawl`, `scoutline map`, and `scoutline research` participate
-in Provider selection. Crawl and Map are supplied by Tavily and Firecrawl;
-Research is supplied by Tavily, Exa, Parallel, Perplexity, and Jina
-(Firecrawl's `/deep-research` is deprecated and Firecrawl does not
-advertise Research). Provider fallback is **always-on** (0.11.0+):
+in Provider selection. Crawl and Map are supplied by Tavily, Firecrawl,
+and Spider.cloud; Research is supplied by Tavily, Exa, Parallel,
+Perplexity, Jina, You.com, and Linkup (Firecrawl's `/deep-research` is
+deprecated; Firecrawl and Spider.cloud do not advertise Research).
+Provider fallback is **always-on** (0.11.0+):
 selecting any non-supplier (explicitly or via `SCOUTLINE_PROVIDER`) for
 any of the three emits a stderr notice and reroutes to the next
 eligible provider in registry order. The descriptor's
@@ -526,13 +540,15 @@ crawl argv + global flags
 
 Key boundaries:
 
-- **Capability ownership.** Crawl and Map are advertised by the Tavily
-  and Firecrawl descriptors; Research is advertised by Tavily, Exa,
-  Parallel, Perplexity, and Jina (Firecrawl `/deep-research` is
-  deprecated and Firecrawl does not advertise Research). The matching
+- **Capability ownership.** Crawl and Map are advertised by the Tavily,
+  Firecrawl, and Spider.cloud descriptors; Research is advertised by
+  Tavily, Exa, Parallel, Perplexity, Jina, You.com, and Linkup
+  (Firecrawl `/deep-research` is deprecated; Firecrawl and Spider.cloud
+  do not advertise Research). The matching
   Adapter supplies the Capability implementation. The remaining
-  descriptors (Z.AI, MiniMax, Brave — and Firecrawl for Research) do
-  not advertise the capability; their Adapters supply nothing.
+  descriptors (Z.AI, MiniMax, Brave — and Firecrawl and Spider.cloud
+  for Research) do not advertise the capability; their Adapters supply
+  nothing.
 - **Map is the simplest of the three.** The Tavily `/map` endpoint
   returns a URL set with no per-page content, so the handler has no
   `--max-chars` projection. Crawl and Research are richer; the

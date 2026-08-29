@@ -72,11 +72,13 @@ import { isOutputMode, OUTPUT_MODES, type OutputMode } from "./lib/output.js";
 import { formatErrorOutput } from "./lib/output.js";
 import {
   ConfigurationError,
+  FileError,
   ValidationError,
   UnsupportedCapabilityError,
   getErrorExitCode,
 } from "./lib/errors.js";
 import * as os from "node:os";
+import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import {
@@ -291,12 +293,57 @@ function collectLongFlagValues(args: string[], name: string): (string | true)[] 
   return values;
 }
 
+// ---------------------------------------------------------------------------
+// Save-artifacts flag surface (batch ticket T3). `--save [<path>]`,
+// `--save-format <json|markdown>`, and `--save-force` are global options:
+// extracted for every command, removed from the rest stream, and consumed
+// only by the save-capable families (search / read / crawl / map /
+// research / repo / vision). Non-capable commands accept and silently drop
+// them — the same posture as `--no-fallback`. T3 wires extraction plus the
+// pre-dispatch guards; the actual artifact writes are ticket T4's.
+// ---------------------------------------------------------------------------
+
+/** Artifact serialization formats (spec ruling: json | markdown, default json). */
+const SAVE_FORMATS = ["json", "markdown"] as const;
+type SaveFormat = (typeof SAVE_FORMATS)[number];
+
+function isSaveFormat(value: string): value is SaveFormat {
+  return (SAVE_FORMATS as readonly string[]).includes(value);
+}
+
+/**
+ * A parsed `--save` request. `exportPath === undefined` is the
+ * valueless-trailing-`--save` form: a master-only save with no export copy
+ * (DESIGN D1). The flags only configure a save when `--save` itself is
+ * present; `--save-format` / `--save-force` alone are validated and dropped.
+ */
+interface SaveRequest {
+  exportPath?: string;
+  format: SaveFormat;
+  force: boolean;
+}
+
+/**
+ * Commands whose successful results can be saved as artifacts (spec
+ * coverage ruling). Every other command ignores the `--save*` flags.
+ */
+const SAVE_CAPABLE_COMMANDS: ReadonlySet<string> = new Set([
+  "search",
+  "read",
+  "crawl",
+  "map",
+  "research",
+  "repo",
+  "vision",
+]);
+
 function extractGlobalOptions(args: string[]): {
   outputFormat?: string;
   forcePretty?: boolean;
   forceRaw?: boolean;
   provider?: string;
   noFallback?: boolean;
+  save?: SaveRequest;
   rest: string[];
 } {
   const rest: string[] = [];
@@ -305,6 +352,10 @@ function extractGlobalOptions(args: string[]): {
   let forceRaw = false;
   let provider: string | undefined;
   let noFallback = false;
+  let savePath: string | undefined;
+  let saveSeen = false;
+  let saveFormat: SaveFormat = "json";
+  let saveForce = false;
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
@@ -356,10 +407,124 @@ function extractGlobalOptions(args: string[]): {
       noFallback = true;
       continue;
     }
+    if (arg === "--save") {
+      // save-artifacts T3. Optional-value global flag: the next token is
+      // the export path iff it exists, is non-empty, and does not start
+      // with "-" (mirroring parseArgs' binding rule). A trailing `--save`
+      // is the master-only save (no export copy). A follower that cannot
+      // serve as a path — empty, or dash-prefixed — is a VALIDATION_ERROR,
+      // not a silent no-op: binding it would make
+      // `search q --save --limit 5` save to "--limit" while mangling the
+      // command line. Copy of the `--provider` guard above, minus its
+      // valueless case (undefined = the legal master-only form here).
+      const value = args[i + 1];
+      if (value !== undefined && (value.length === 0 || value.startsWith("-"))) {
+        throw new ValidationError(
+          "--save requires a path when a value follows it.",
+          "Pass an export path after --save (e.g. --save report.json), or leave --save valueless for a master-only save.",
+        );
+      }
+      saveSeen = true;
+      if (value !== undefined) {
+        savePath = value;
+        i += 1;
+      }
+      continue;
+    }
+    if (arg === "--save-format") {
+      // save-artifacts T3. Required-value flag; validated at the global
+      // surface (before the command is even known) so a malformed value
+      // fails identically on capable and drop-the-flags commands.
+      const value = args[i + 1];
+      if (value === undefined || value.length === 0 || value.startsWith("-")) {
+        throw new ValidationError(
+          "--save-format requires a value.",
+          `Use one of: ${SAVE_FORMATS.join(", ")}`,
+        );
+      }
+      if (!isSaveFormat(value)) {
+        throw new ValidationError(
+          `Invalid save format: ${value}`,
+          `Use one of: ${SAVE_FORMATS.join(", ")}`,
+        );
+      }
+      saveFormat = value;
+      i += 1;
+      continue;
+    }
+    if (arg === "--save-force") {
+      // save-artifacts T3. Boolean switch: bypasses the pre-dispatch
+      // exists guard for the export target (the write itself is T4's).
+      saveForce = true;
+      continue;
+    }
     rest.push(arg);
   }
 
-  return { outputFormat, forcePretty, forceRaw, provider, noFallback, rest };
+  return {
+    outputFormat,
+    forcePretty,
+    forceRaw,
+    provider,
+    noFallback,
+    save: saveSeen ? { exportPath: savePath, format: saveFormat, force: saveForce } : undefined,
+    rest,
+  };
+}
+
+/**
+ * T3 pre-dispatch export guard (DESIGN D6 step 2): cheap, read-only
+ * filesystem checks that run in `main` before any provider/network work so
+ * the common save failures cost nothing.
+ *
+ *   - Export target exists and `--save-force` is absent -> FileError
+ *     ("artifact exists", the D8-greppable wording; the help names
+ *     --save-force).
+ *   - Export parent missing, not a directory, or not writable -> FileError
+ *     (T3 does not mkdir -p; the parent must already accept writes).
+ *
+ * A master-only save (`--save` with no path) skips the guard entirely:
+ * there is no export target to conflict with, and no filesystem access.
+ * The pre-check race (target created between this check and T4's write)
+ * is closed at write time by T4's exists-recheck, not here.
+ */
+async function assertExportTargetAcceptable(request: SaveRequest): Promise<void> {
+  const exportPath = request.exportPath;
+  if (exportPath === undefined) return;
+  let targetExists = false;
+  try {
+    await fs.stat(exportPath);
+    targetExists = true;
+  } catch {
+    targetExists = false;
+  }
+  if (targetExists && !request.force) {
+    throw new FileError(
+      `artifact exists: ${exportPath}`,
+      "Pass --save-force to overwrite the existing export target.",
+    );
+  }
+  const parent = path.dirname(exportPath);
+  let parentStat: Awaited<ReturnType<typeof fs.stat>> | undefined;
+  try {
+    parentStat = await fs.stat(parent);
+  } catch {
+    parentStat = undefined;
+  }
+  if (parentStat === undefined || !parentStat.isDirectory()) {
+    throw new FileError(
+      `export parent directory does not exist: ${parent}`,
+      "Create the parent directory first or choose an export path inside an existing directory.",
+    );
+  }
+  try {
+    await fs.access(parent, fs.constants.W_OK);
+  } catch {
+    throw new FileError(
+      `export parent directory is not writable: ${parent}`,
+      "Choose an export path in a writable directory or fix the directory's permissions.",
+    );
+  }
 }
 
 /**
@@ -3331,6 +3496,12 @@ export async function main(
 
   const command = rest[0] ?? "";
   const commandArgs = rest.slice(1);
+  // Hoisted above the save guards and the credential-free short-circuits:
+  // a command-help invocation (`<cmd> --help`) is documentation, not a
+  // run, so the pre-dispatch save guards must not refuse it even when the
+  // `--save` export target already exists. The credentialed section below
+  // reuses this binding.
+  const isHelpInvocation = isCommandHelpInvocation(commandArgs);
 
   // PB-T1/PB-T2 — Quota snapshot store + consumption sink.
   //
@@ -3542,6 +3713,29 @@ export async function main(
     }
   }
 
+  // save-artifacts T3 — pre-dispatch guards (DESIGN D6 step 2). The save
+  // request only exists for a save-capable command with `--save` present;
+  // every other command (capable-but-no-save, non-capable) already had the
+  // `--save*` flags stripped in extraction and proceeds untouched. The
+  // guards run BEFORE the credentialed config load and any provider or
+  // network work: a refused overwrite must not spend the run. Empty stdout
+  // is preserved by construction — nothing has written stdout at this
+  // point, and the guard surfaces a FILE_ERROR envelope via stderr only.
+  // `saveRequest` is the typed seam ticket T4 consumes to perform the
+  // actual write; in T3 it stays inert (nothing on this path writes).
+  const saveRequest =
+    extracted.save !== undefined && SAVE_CAPABLE_COMMANDS.has(command)
+      ? extracted.save
+      : undefined;
+  if (saveRequest !== undefined && !isHelpInvocation) {
+    try {
+      await assertExportTargetAcceptable(saveRequest);
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
   // Credentialed path: load the config file (T2a — Plan A). T3b makes
   // the load TOLERANT so command help remains usable under a corrupt
   // config (review item 9: "do not force a credential check merely to
@@ -3558,7 +3752,6 @@ export async function main(
   //     error's help points at `init` as the recovery path.
   // Observational commands do NOT bypass the corrupt refuse — they
   // still need `resolvedEnv` (which needs config) to probe/report.
-  const isHelpInvocation = isCommandHelpInvocation(commandArgs);
   const isObservational = OBSERVATIONAL_COMMANDS.has(command);
 
   let config: ScoutlineConfig;

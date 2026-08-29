@@ -290,31 +290,6 @@ export const FIRECRAWL_CREDIT_CAPABILITIES: readonly ProviderCapability[] = [
 ];
 
 /**
- * Linkup capabilities. Search, reader, and research all bill against
- * the shared `credits` pool reported by GET /v1/credits/balance; the
- * quota category is exposed with an unknown limit (#49), so only the
- * alias name is static here.
- */
-export const LINKUP_CREDIT_CAPABILITIES: readonly ProviderCapability[] = [
-  "search",
-  "reader",
-  "research",
-];
-
-/**
- * Spider.cloud capabilities. All four bill against the shared `credits`
- * pool reported by GET /data/credits (remaining-only signal). Not in
- * {@link CAPABILITY_MAPPINGS}: the authority policy is always-unknown,
- * so there is no alias for the scorer to resolve.
- */
-export const SPIDER_CREDIT_CAPABILITIES: readonly ProviderCapability[] = [
-  "search",
-  "reader",
-  "crawl",
-  "map",
-];
-
-/**
  * The static capability→category mapping table. Built once at module
  * load from the per-provider capability lists so a future capability
  * addition only edits one constant, not 8 rows.

@@ -1026,6 +1026,16 @@ function createFirecrawlCrawlCapability(options: FirecrawlCrawlCapabilityOptions
       if (request.breadth !== undefined) {
         throw new UnsupportedOptionError("firecrawl", "crawl", "breadth");
       }
+      // No Firecrawl /v2/crawl equivalent — reject rather than accept-and-drop (#87).
+      if (request.instructions !== undefined) {
+        throw new UnsupportedOptionError("firecrawl", "crawl", "instructions");
+      }
+      if (request.contentSize !== undefined) {
+        throw new UnsupportedOptionError("firecrawl", "crawl", "contentSize");
+      }
+      if (request.timeout !== undefined) {
+        throw new UnsupportedOptionError("firecrawl", "crawl", "timeout");
+      }
       if (request.depth !== undefined) {
         // F-7: Firecrawl's v2 docs document maxDiscoveryDepth as an integer
         // with no upper bound, but this adapter caps at 5 as a deliberate

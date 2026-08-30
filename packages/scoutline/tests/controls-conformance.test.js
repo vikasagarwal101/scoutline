@@ -150,6 +150,10 @@ const TAVILY_SEARCH_RAW = {
 const TAVILY_EXTRACT_RAW = {
   results: [{ url: PAGE_URL, raw_content: "![alt](https://img.example.test/i.png) # Page body" }],
 };
+const TAVILY_CRAWL_RAW = {
+  results: [{ url: PAGE_URL, raw_content: "# Page body" }],
+};
+const TAVILY_MAP_RAW = { results: [PAGE_URL, "https://example.test/one"] };
 
 const EXA_SEARCH_RAW = {
   results: [{ title: "Result", url: "https://example.test/one", highlights: ["Summary."] }],
@@ -187,6 +191,23 @@ const FIRECRAWL_SCRAPE_RAW = {
     text: "Page body",
     metadata: { title: "Page", sourceURL: PAGE_URL },
   },
+};
+const FIRECRAWL_MAP_RAW = {
+  success: true,
+  links: [{ url: PAGE_URL }, { url: "https://example.test/one" }],
+};
+const FIRECRAWL_CRAWL_CREATE_RAW = { success: true, id: "job-conformance" };
+const FIRECRAWL_CRAWL_ACTIVE_RAW = { success: true, data: [] };
+const FIRECRAWL_CRAWL_POLL_RAW = {
+  success: true,
+  status: "completed",
+  data: [
+    {
+      markdown: "# Page body",
+      text: "Page body",
+      metadata: { sourceURL: PAGE_URL },
+    },
+  ],
 };
 
 const MINIMAX_SEARCH_RAW = {
@@ -307,6 +328,8 @@ const RESPONDERS = {
   tavily(url, method) {
     if (method === "POST" && url.endsWith("/search")) return jsonResponse(TAVILY_SEARCH_RAW);
     if (method === "POST" && url.endsWith("/extract")) return jsonResponse(TAVILY_EXTRACT_RAW);
+    if (method === "POST" && url.endsWith("/crawl")) return jsonResponse(TAVILY_CRAWL_RAW);
+    if (method === "POST" && url.endsWith("/map")) return jsonResponse(TAVILY_MAP_RAW);
     if (method === "POST" && url.endsWith("/research")) {
       return jsonResponse({ request_id: "req-1", status: "pending" }, 201);
     }
@@ -340,9 +363,19 @@ const RESPONDERS = {
     if (url.includes("/llm/")) return jsonResponse(BRAVE_LLM_RAW);
     return jsonResponse(BRAVE_WEB_RAW);
   },
-  firecrawl(url) {
+  firecrawl(url, method) {
     if (url.endsWith("/v2/search")) return jsonResponse(FIRECRAWL_SEARCH_RAW);
     if (url.endsWith("/v2/scrape")) return jsonResponse(FIRECRAWL_SCRAPE_RAW);
+    if (url.endsWith("/v2/map")) return jsonResponse(FIRECRAWL_MAP_RAW);
+    if (method === "POST" && url.endsWith("/v2/crawl")) {
+      return jsonResponse(FIRECRAWL_CRAWL_CREATE_RAW);
+    }
+    if (method === "GET" && url.endsWith("/v2/crawl/active")) {
+      return jsonResponse(FIRECRAWL_CRAWL_ACTIVE_RAW);
+    }
+    if (method === "GET" && url.includes("/v2/crawl/")) {
+      return jsonResponse(FIRECRAWL_CRAWL_POLL_RAW);
+    }
     return jsonResponse({});
   },
   parallel(url, method) {
@@ -415,7 +448,7 @@ const ENV_BY_PROVIDER = {
   tavily: { TAVILY_API_KEY: "k" },
   exa: { EXA_API_KEY: "k" },
   brave: { BRAVE_SEARCH_API_KEY: "k" },
-  firecrawl: { FIRECRAWL_API_KEY: "k" },
+  firecrawl: { FIRECRAWL_API_KEY: "k", FIRECRAWL_CRAWL_POLL_INTERVAL_MS: "0" },
   parallel: { PARALLEL_API_KEY: "k" },
   perplexity: { PERPLEXITY_API_KEY: "k" },
   jina: {},
@@ -508,7 +541,11 @@ function makeHarness(provider, capability) {
       return { adapter: createBraveDescriptor({ transport }).create(context), calls, timerDelays };
     case "firecrawl":
       return {
-        adapter: createFirecrawlDescriptor({ transport }).create(context),
+        adapter: createFirecrawlDescriptor({
+          transport,
+          crawlStateFile: stateFile,
+          crawlStateDir: capability === "crawl" ? tmpStateDir() : undefined,
+        }).create(context),
         calls,
         timerDelays,
       };
@@ -1101,6 +1138,162 @@ const ROWS = [
     pick: { method: "POST", urlIncludes: "/research" },
   },
 
+  // ----- tavily / crawl — synchronous /crawl POST; every documented
+  // crawl control is wire-consumed ---------------------------------------
+  {
+    provider: "tavily",
+    capability: "crawl",
+    control: "format",
+    input: { format: "text" },
+    expect: "consumed",
+    on: "body",
+    path: "format",
+    equals: "text",
+  },
+  {
+    provider: "tavily",
+    capability: "crawl",
+    control: "limit",
+    input: { limit: 5 },
+    expect: "consumed",
+    on: "body",
+    path: "limit",
+    equals: 5,
+  },
+  {
+    provider: "tavily",
+    capability: "crawl",
+    control: "depth",
+    input: { depth: 2 },
+    expect: "consumed",
+    on: "body",
+    path: "max_depth",
+    equals: 2,
+  },
+  {
+    provider: "tavily",
+    capability: "crawl",
+    control: "breadth",
+    input: { breadth: 10 },
+    expect: "consumed",
+    on: "body",
+    path: "max_breadth",
+    equals: 10,
+  },
+  {
+    provider: "tavily",
+    capability: "crawl",
+    control: "selectPaths",
+    input: { selectPaths: "/docs/.*" },
+    expect: "consumed",
+    on: "body",
+    path: "select_paths",
+    deepEqual: ["/docs/.*"],
+  },
+  {
+    provider: "tavily",
+    capability: "crawl",
+    control: "excludePaths",
+    input: { excludePaths: "/private/.*" },
+    expect: "consumed",
+    on: "body",
+    path: "exclude_paths",
+    deepEqual: ["/private/.*"],
+  },
+  {
+    provider: "tavily",
+    capability: "crawl",
+    control: "instructions",
+    input: { instructions: "skip forms" },
+    expect: "consumed",
+    on: "body",
+    path: "instructions",
+    equals: "skip forms",
+  },
+  {
+    provider: "tavily",
+    capability: "crawl",
+    control: "contentSize",
+    input: { contentSize: "high" },
+    expect: "consumed",
+    on: "body",
+    path: "extract_depth",
+    equals: "advanced",
+  },
+  {
+    provider: "tavily",
+    capability: "crawl",
+    control: "timeout",
+    input: { timeout: 20 },
+    expect: "consumed",
+    on: "body",
+    path: "timeout",
+    equals: 20,
+  },
+
+  // ----- tavily / map — /map POST; every documented map control is
+  // wire-consumed --------------------------------------------------------
+  {
+    provider: "tavily",
+    capability: "map",
+    control: "limit",
+    input: { limit: 10 },
+    expect: "consumed",
+    on: "body",
+    path: "limit",
+    equals: 10,
+  },
+  {
+    provider: "tavily",
+    capability: "map",
+    control: "depth",
+    input: { depth: 2 },
+    expect: "consumed",
+    on: "body",
+    path: "max_depth",
+    equals: 2,
+  },
+  {
+    provider: "tavily",
+    capability: "map",
+    control: "breadth",
+    input: { breadth: 10 },
+    expect: "consumed",
+    on: "body",
+    path: "max_breadth",
+    equals: 10,
+  },
+  {
+    provider: "tavily",
+    capability: "map",
+    control: "selectPaths",
+    input: { selectPaths: "/docs/.*" },
+    expect: "consumed",
+    on: "body",
+    path: "select_paths",
+    deepEqual: ["/docs/.*"],
+  },
+  {
+    provider: "tavily",
+    capability: "map",
+    control: "excludePaths",
+    input: { excludePaths: "/private/.*" },
+    expect: "consumed",
+    on: "body",
+    path: "exclude_paths",
+    deepEqual: ["/private/.*"],
+  },
+  {
+    provider: "tavily",
+    capability: "map",
+    control: "instructions",
+    input: { instructions: "skip forms" },
+    expect: "consumed",
+    on: "body",
+    path: "instructions",
+    equals: "skip forms",
+  },
+
   // ----- exa / search ------------------------------------------------------
   {
     provider: "exa",
@@ -1440,6 +1633,144 @@ const ROWS = [
     expect: "consumed",
     on: "timer",
     equals: 20000,
+  },
+
+  // ----- firecrawl / crawl — async /v2/crawl create POST; pin the create
+  // body. breadth/instructions/contentSize/timeout have no wire field and
+  // must reject (#87) ----------------------------------------------------
+  {
+    provider: "firecrawl",
+    capability: "crawl",
+    control: "format",
+    input: { format: "text" },
+    expect: "consumed",
+    on: "body",
+    path: "scrapeOptions.formats",
+    deepEqual: ["text"],
+    pick: { method: "POST", urlIncludes: "/v2/crawl" },
+  },
+  {
+    provider: "firecrawl",
+    capability: "crawl",
+    control: "limit",
+    input: { limit: 5 },
+    expect: "consumed",
+    on: "body",
+    path: "limit",
+    equals: 5,
+    pick: { method: "POST", urlIncludes: "/v2/crawl" },
+  },
+  {
+    provider: "firecrawl",
+    capability: "crawl",
+    control: "depth",
+    input: { depth: 2 },
+    expect: "consumed",
+    on: "body",
+    path: "maxDiscoveryDepth",
+    equals: 1,
+    pick: { method: "POST", urlIncludes: "/v2/crawl" },
+  },
+  {
+    provider: "firecrawl",
+    capability: "crawl",
+    control: "breadth",
+    input: { breadth: 2 },
+    expect: "rejected",
+  },
+  {
+    provider: "firecrawl",
+    capability: "crawl",
+    control: "selectPaths",
+    input: { selectPaths: "/docs/*" },
+    expect: "consumed",
+    on: "body",
+    path: "includePaths",
+    deepEqual: ["/docs/*"],
+    pick: { method: "POST", urlIncludes: "/v2/crawl" },
+  },
+  {
+    provider: "firecrawl",
+    capability: "crawl",
+    control: "excludePaths",
+    input: { excludePaths: "/private/*" },
+    expect: "consumed",
+    on: "body",
+    path: "excludePaths",
+    deepEqual: ["/private/*"],
+    pick: { method: "POST", urlIncludes: "/v2/crawl" },
+  },
+  {
+    provider: "firecrawl",
+    capability: "crawl",
+    control: "instructions",
+    input: { instructions: "skip forms" },
+    expect: "rejected",
+  },
+  {
+    provider: "firecrawl",
+    capability: "crawl",
+    control: "contentSize",
+    input: { contentSize: "high" },
+    expect: "rejected",
+  },
+  {
+    provider: "firecrawl",
+    capability: "crawl",
+    control: "timeout",
+    input: { timeout: 20 },
+    expect: "rejected",
+  },
+
+  // ----- firecrawl / map — /v2/map POST; limit and instructions are
+  // consumed, every other documented map control is rejected (#87) ------
+  {
+    provider: "firecrawl",
+    capability: "map",
+    control: "limit",
+    input: { limit: 10 },
+    expect: "consumed",
+    on: "body",
+    path: "limit",
+    equals: 10,
+  },
+  {
+    provider: "firecrawl",
+    capability: "map",
+    control: "depth",
+    input: { depth: 1 },
+    expect: "rejected",
+  },
+  {
+    provider: "firecrawl",
+    capability: "map",
+    control: "breadth",
+    input: { breadth: 2 },
+    expect: "rejected",
+  },
+  {
+    provider: "firecrawl",
+    capability: "map",
+    control: "selectPaths",
+    input: { selectPaths: "/*" },
+    expect: "rejected",
+  },
+  {
+    provider: "firecrawl",
+    capability: "map",
+    control: "excludePaths",
+    input: { excludePaths: "/private/*" },
+    expect: "rejected",
+  },
+  {
+    provider: "firecrawl",
+    capability: "map",
+    control: "instructions",
+    input: { instructions: "skip forms" },
+    expect: "consumed",
+    on: "body",
+    path: "search",
+    equals: "skip forms",
   },
 
   // ----- jina / search -----------------------------------------------------
@@ -2455,10 +2786,21 @@ describe("controls class-guard — table integrity", () => {
     const COVERAGE = {
       zai: { search: SEARCH_CONTROLS, reader: READER_CONTROLS },
       minimax: { search: SEARCH_CONTROLS },
-      tavily: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
+      tavily: {
+        search: SEARCH_CONTROLS,
+        reader: READER_CONTROLS,
+        research: RESEARCH_CONTROLS,
+        crawl: CRAWL_CONTROLS,
+        map: MAP_CONTROLS,
+      },
       exa: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
       brave: { search: SEARCH_CONTROLS },
-      firecrawl: { search: SEARCH_CONTROLS, reader: READER_CONTROLS },
+      firecrawl: {
+        search: SEARCH_CONTROLS,
+        reader: READER_CONTROLS,
+        crawl: CRAWL_CONTROLS,
+        map: MAP_CONTROLS,
+      },
       jina: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },
       perplexity: { search: SEARCH_CONTROLS, research: RESEARCH_CONTROLS },
       parallel: { search: SEARCH_CONTROLS, reader: READER_CONTROLS, research: RESEARCH_CONTROLS },

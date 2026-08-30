@@ -449,6 +449,22 @@ describe("Firecrawl Crawl Adapter", () => {
     );
   });
 
+  it("rejects crawl instructions/contentSize/timeout rather than dropping them (#87)", () => {
+    const { adapter } = makeCrawlAdapter({}, createInMemoryAsyncJobStateFile());
+    assert.throws(
+      () => adapter.crawl.fetch.validate({ url: "https://x.example", instructions: "skip" }),
+      UnsupportedOptionError,
+    );
+    assert.throws(
+      () => adapter.crawl.fetch.validate({ url: "https://x.example", contentSize: "high" }),
+      UnsupportedOptionError,
+    );
+    assert.throws(
+      () => adapter.crawl.fetch.validate({ url: "https://x.example", timeout: 20 }),
+      UnsupportedOptionError,
+    );
+  });
+
   it("creates, polls scraping→completed, and maps pages", async () => {
     const { adapter, calls } = makeCrawlAdapter({
       onPoll: (n) =>

@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **Tavily/Firecrawl crawl/map conformance (#87):** crawl and map controls for both advertisers now have consume-or-reject rows, and the coverage-guard map enumerates them (the #81 remainder). Firecrawl crawl `instructions`, `contentSize`, and `timeout` — previously accepted and dropped — now reject at validation before any transport access.
+- **Registry-derived doc-completeness pin (#88):** `docs/architecture.md` and `skills/scoutline/SKILL.md` provider tables/matrices are asserted against `PROVIDER_IDS`, so a provider landing without its table cell fails the gate.
+
 ## [0.19.0] - 2026-08-30
 
 ### Added

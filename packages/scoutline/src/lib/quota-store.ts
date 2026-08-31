@@ -430,7 +430,7 @@ function parseQuotaState(
  * snapshot to avoid cross-unit drift (e.g. applying a `requests`
  * decrement against a `credits` category).
  */
-export type QuotaUnit = "requests" | "tokens" | "credits";
+export type QuotaUnit = "requests" | "tokens" | "credits" | "USD";
 
 /**
  * The amount a single billable attempt consumed. PB-T2's contract:

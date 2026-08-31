@@ -272,7 +272,7 @@ Provider selection, and `doctor`.
 | `vision.chart` | Yes | Pending | No | No | No | No | No | No | No | No | No | No | Implemented, pending live conformance |
 | `vision.diff` (image diff) | Yes | No | No | No | No | No | No | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
 | `vision.video` | Yes | No | No | No | No | No | No | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
-| `quota` | Yes | Yes | Yes | No | Yes | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | No | Yes (credits) | Yes (credits) | Normalized `QuotaDashboard` (ADR-0001) |
+| `quota` | Yes | Yes | Yes | No | Yes | Yes (USD balance) | No | No | Yes (rate-limit telemetry, not spend) | No | Yes (credits) | Yes (credits) | Normalized `QuotaDashboard` (ADR-0001) |
 | `diagnostics` (`doctor`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Lists every Provider; probes configured |
 | `read` (Reader) | Yes | **No** | Yes | Yes | No | Yes | Yes | No | Yes | Yes | Yes | Yes | Parallel (Extract API), Jina, You.com, Linkup, and Spider.cloud add Reader support |
 | `crawl` | **No** | **No** | Yes | No | No | Yes (async) | No | No | No | No | No | Yes (sync) | Tavily sync; Firecrawl async (resumable after Ctrl-C) |

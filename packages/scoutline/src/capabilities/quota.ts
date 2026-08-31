@@ -49,7 +49,7 @@ export interface QuotaWindow {
 
 export interface QuotaCategory {
   name: string;
-  unit: "requests" | "tokens" | "credits";
+  unit: "requests" | "tokens" | "credits" | "USD";
   current: QuotaWindow;
   weekly?: QuotaWindow;
 }

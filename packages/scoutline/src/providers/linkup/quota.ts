@@ -2,12 +2,14 @@
  * Linkup Quota Capability.
  *
  * Maps the Linkup `GET /v1/credits/balance` response into the
- * normalized Provider-quota interface. Linkup is metered billing: the
- * endpoint reports ONLY a remaining credit `balance`, never a limit,
- * so the single "credits" category publishes the exact `remaining`
- * with `used`, `limit`, and `remainingPercent` omitted (GitHub #49
- * unknown-limit window) — nothing is fabricated against an invented
- * ceiling or percentage.
+ * normalized Provider-quota interface. Linkup is metered USD billing
+ * (per-call costs of $0.005–$2.50 against a prepaid dollar balance):
+ * the endpoint reports ONLY a remaining `balance`, never a limit, so
+ * the single "credits" category publishes the exact `remaining` with
+ * `unit: "USD"` — the number is dollars, "credits" is Linkup's
+ * branding — and omits `used`, `limit`, and `remainingPercent`
+ * (GitHub #49 unknown-limit window); nothing is fabricated against an
+ * invented ceiling or percentage.
  *
  * Structurally cloned from the Jina quota pattern (non-destructive
  * GET, IMPLEMENTATION-CONTRACT analog-adapter table): one direct GET
@@ -37,7 +39,9 @@ import { fetchLinkupCreditBalance, type LinkupTransportDeps } from "./client.js"
 
 /**
  * Normalize a raw Linkup credit-balance payload
- * (`{ balance: <number> }`) into the shared quota interface.
+ * (`{ balance: <number> }`) into the shared quota interface. The
+ * balance is USD-denominated (Linkup bills per-call dollar amounts
+ * against a prepaid dollar balance), hence `unit: "USD"`.
  *
  * A missing or non-finite `balance` is a malformed response and throws
  * `ApiError` 500. A valid balance flows through
@@ -60,7 +64,7 @@ export function normalizeLinkupQuota(raw: unknown): ProviderQuotaSuccess {
     categories: [
       {
         name: "credits",
-        unit: "credits",
+        unit: "USD",
         current: { remaining: balance },
       },
     ],

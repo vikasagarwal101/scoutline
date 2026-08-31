@@ -790,7 +790,7 @@ Authority and score are kept on separate axes. A provider is either:
 | `zai`, `minimax`, `tavily`, `firecrawl` | mapped | Real credit/token signal. |
 | `brave` | always-unknown | Reports a rate-limit window, not spend or credits. Brave uses metered billing; the numeric window is displayed for telemetry but is not a budget signal. |
 | `jina` | always-unknown | Rate-limit telemetry (`X-RateLimit-Remaining-*` headers), not spend; not a budget signal. |
-| `linkup` | always-unknown | Credit remaining balance (limit unknown); not a percentage-bounded plan signal. |
+| `linkup` | always-unknown | USD remaining balance (limit unknown; `unit: "USD"` — Linkup's "credits" are dollars); not a percentage-bounded plan signal. |
 | `spider` | always-unknown | Credit remaining balance (limit unknown); not a percentage-bounded plan signal. |
 | `exa`, `parallel`, `perplexity` | always-unknown | Advertise no `quota` capability; nothing to map. |
 | `you` | always-unknown | Advertises no `quota` capability; You.com exposes no spend endpoint. Nothing to map. |

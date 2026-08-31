@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- `doctor` availability surfacing: every provider row now carries `availability` (`ok | exhausted | error | unconfigured`) — `exhausted` requires fresh quota-snapshot evidence of a capability-relevant category at 0% remaining (within the standard 10-minute staleness gate), regardless of the probe outcome, so a provider whose key pool is drained classifies as `exhausted` even when a generic probe error would otherwise mask it; a missing snapshot entry never fabricates exhaustion. Rows are ordered healthy-first (`ok`, then `exhausted`, then `error`, then `unconfigured`; same-class rows keep registry order, stable), a top-level `availableProviders` array lists the `ok` providers in registry order, and the new `--available` flag filters the `providers` array to those rows (`availableProviders` is unchanged by the filter; exit codes and `--no-tools` semantics are unchanged).
+
 ## [0.19.2] - 2026-08-31
 
 ### Changed

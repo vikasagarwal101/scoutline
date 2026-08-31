@@ -243,9 +243,26 @@ declared Capabilities, and probe status. It probes every configured Provider
 unless `--no-tools` is supplied. Missing non-effective credentials are
 skipped; a missing effective Provider credential fails the report.
 
+Every provider row carries an `availability` classification
+(`ok | exhausted | error | unconfigured`), derived in precedence order:
+not-configured → `unconfigured`; fresh snapshot evidence of a
+capability-relevant category at 0% → `exhausted` (regardless of the probe
+outcome — the signal is snapshot-based, never probe-error-based, since Tavily
+and Perplexity demote quota failures to generic transport errors); a probe
+failure without fresh-0% evidence → `error`; everything else → `ok`. A
+missing snapshot entry never fabricates exhaustion. Rows are ordered
+healthy-first — `ok`, `exhausted`, `error`, `unconfigured` — with same-class
+rows keeping registry order (stable), and the report carries
+`availableProviders` (the `ok` providers in registry order). `--available`
+filters the rows array to the `ok` rows without changing `availableProviders`
+or the exit codes.
+
 Under `--no-tools` the report contains metadata only. Configured entries are
 `skipped` with reason `tools-disabled`; unconfigured entries are `skipped`
 with reason `not-configured`. No Adapter or transport is constructed.
+Tools-disabled rows take the same snapshot rule as probed rows: a
+`--no-tools` run with fresh-0% evidence reports `availability: "exhausted"`
+with its row status still `skipped`.
 
 Z.AI connectivity uses MCP tool discovery. MiniMax connectivity uses a raw
 single-attempt quota probe that authenticates without a generative request.
@@ -357,6 +374,15 @@ capability except `repository-exploration`) are visible per-Provider,
 not collapsed. Capabilities supplied by exactly one Provider
 (`repository-exploration`, Z.AI only) are listed for that Provider
 alone.
+
+Additive fields under the same schema version (no bump): each
+`providers` row carries `availability`
+(`ok | exhausted | error | unconfigured`, classified from the row
+status plus the injected quota snapshot's freshness and
+capability-relevant 0% evidence — `lib/availability.ts` owns the
+classifier and the stable healthy-first comparator), and the report
+carries `availableProviders` (the `ok` rows' ids in registry order;
+unchanged by the `--available` row filter).
 
 `sharedCapabilities` and `zaiOnlyCapabilities` are gone: their
 two-array derivation silently hid any capability supplied by more than

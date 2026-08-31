@@ -236,7 +236,7 @@ scoutline history show 20260829T142233Z-7f3a
 | Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | No | No | No | No | No | No | No | No | No | No | `scoutline vision chart` |
 | Two-image diff, video | Yes | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision diff`, `vision video` |
 | Quota (normalized) | Yes | Yes | Yes | **No** (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | **No** | **No** | Yes (rate-limit telemetry, not spend) | **No** | Yes (credit balance, not spend) | Yes (credit balance, not spend) | `scoutline quota [--all-providers]` |
-| Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes (single-scrape probe) | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor [--no-tools]` |
+| Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes (single-scrape probe) | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor [--no-tools] [--available]`; every row carries `availability` (`ok`/`exhausted`/`error`/`unconfigured`), rows sort healthy-first, and `availableProviders` lists the `ok` providers in registry order |
 | Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes (rejects Z.AI-only options) | Yes (rejects Z.AI-only options) | **No** (UNSUPPORTED_CAPABILITY) | Yes (returns page titles) | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes | Yes (rejects Z.AI-only options plus `--format text`) | Yes (renders JavaScript; rejects `--format text` and `--no-images`) | Yes (rejects Z.AI-only options) | `scoutline read` |
 | Repository exploration (search/read/tree/brief) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | `scoutline repo ...` |
 | Crawl | **No** | **No** | Yes | **No** | **No** | Yes (async; resumable after Ctrl-C) | **No** | **No** | **No** | **No** | **No** | Yes (sync) | `scoutline crawl` |
@@ -548,7 +548,11 @@ Provider-neutral. PB-T5 adds additive optional fields to both schemas
 Parallel, Perplexity, You.com),
 and each `doctor` provider entry may carry `quota: { source:
 "snapshot" | "none", observedAt?, authoritative }` plus `verification:
-{ status, checkedAt, reason? }`. Pre-PB-T5 consumers ignore these
+{ status, checkedAt, reason? }`. Each doctor row also carries
+`availability: "ok" | "exhausted" | "error" | "unconfigured"`
+(snapshot-based exhaustion evidence, healthy-first row ordering,
+`availableProviders` short list; `--available` filters the rows to
+`ok`). Pre-PB-T5 consumers ignore these
 fields (handled by fall-through). `repo` returns the schema-version-1 objects documented
 above; the standard envelope wraps them in `json`/`pretty` and the
 exact object is emitted in `data`. `read` returns the schema-version-1

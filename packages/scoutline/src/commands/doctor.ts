@@ -33,6 +33,12 @@ import { redactSecrets, configuredSecrets } from "../lib/redact.js";
 import type { ProviderDescriptor, ProviderId, ProviderCapability } from "../providers/types.js";
 import type { VerificationPromotionStore } from "../lib/config-store.js";
 import {
+  AVAILABILITY_CLASS_RANK,
+  classifyAvailability,
+  compareAvailabilityRows,
+  type ProviderAvailability,
+} from "../lib/availability.js";
+import {
   DEFAULT_QUOTA_STALE_THRESHOLD_MS,
   isQuotaSnapshotStale,
   type QuotaState,
@@ -123,6 +129,41 @@ export interface DoctorDiagnosticsDependencies {
    * `quotaSnapshot` is supplied.
    */
   readonly thresholdMs?: number;
+  /**
+   * When `true` (`--available`), the report's `providers` array is
+   * filtered to rows whose `availability` is `"ok"`. The
+   * `availableProviders` short list is computed BEFORE the filter and
+   * is unchanged by it, so the full diagnostic picture (who is
+   * exhausted, who errored) survives via the classification summary
+   * even in filtered mode. Availability classification itself always
+   * runs on every row, filtered or not.
+   */
+  readonly availableOnly?: boolean;
+}
+
+/**
+ * A {@link ProviderDiagnostic} row carrying the additive `availability`
+ * classification (#94). Additive under DiagnosticsReport schema
+ * version 2 (the documented PB-T5 additive-without-bump policy): the
+ * field is always present on rows built by
+ * {@link buildDiagnosticsReport}; older consumers that read the plain
+ * {@link ProviderDiagnostic} shape ignore it.
+ */
+export interface ProviderDiagnosticWithAvailability extends ProviderDiagnostic {
+  readonly availability: ProviderAvailability;
+}
+
+/**
+ * The {@link DiagnosticsReport} shape built by
+ * {@link buildDiagnosticsReport}: every provider row carries
+ * `availability` and the report carries `availableProviders` — the ids
+ * whose row availability is `"ok"`, in registry order (#94). Additive
+ * under schema version 2; older consumers reading the plain
+ * {@link DiagnosticsReport} shape are unaffected.
+ */
+export interface DiagnosticsReportWithAvailability extends DiagnosticsReport {
+  readonly providers: readonly ProviderDiagnosticWithAvailability[];
+  readonly availableProviders: readonly ProviderId[];
 }
 
 interface AdapterWithDiagnostics {
@@ -185,10 +226,19 @@ async function probeProvider(
  * Doctor never live-probes quota — it only reads the snapshot. The
  * `quota` field appears even under `--no-tools` (snapshot reads are
  * local state, not transport).
+ *
+ * #94: every entry carries an `availability` classification
+ * (`ok` | `exhausted` | `error` | `unconfigured`), the rows are
+ * ordered healthy-first (class rank, then registry order — stable),
+ * and the report carries `availableProviders` (the ok rows in registry
+ * order). `deps.availableOnly` (`--available`) filters the rows array
+ * to the ok rows; `availableProviders` is unchanged by the filter.
+ * Additive under schema version 2 — see
+ * {@link DiagnosticsReportWithAvailability}.
  */
 export async function buildDiagnosticsReport(
   deps: DoctorDiagnosticsDependencies,
-): Promise<DiagnosticsReport> {
+): Promise<DiagnosticsReportWithAvailability> {
   const secrets = configuredSecrets(deps.env);
   const now = (deps.now ?? Date.now)();
   const thresholdMs = deps.thresholdMs ?? DEFAULT_QUOTA_STALE_THRESHOLD_MS;
@@ -232,7 +282,7 @@ export async function buildDiagnosticsReport(
   const verificationFor = (provider: ProviderId): ProviderVerificationSummary | undefined =>
     deps.verificationRecords?.[provider];
 
-  const providers: ProviderDiagnostic[] = deps.noTools
+  const probed: ProviderDiagnostic[] = deps.noTools
     ? baseEntries.map((entry) => ({
         ...entry,
         status: "skipped" as const,
@@ -244,6 +294,42 @@ export async function buildDiagnosticsReport(
       }))
     : await probeEntries(baseEntries, deps, secrets, quotaFor, verificationFor);
 
+  // #94 — attach the availability classification to EVERY row (probe
+  // and --no-tools paths alike). Pure state reads: the freshness gate
+  // and the capability-relevant 0% evidence come from the injected
+  // snapshot; there is no transport here. A missing snapshot entry
+  // never fabricates exhaustion. Tools-disabled rows take the same
+  // snapshot rule (the gate is absence of evidence, not the flag);
+  // not-configured rows are `unconfigured`.
+  const withAvailability: ProviderDiagnosticWithAvailability[] = probed.map((row) => ({
+    ...row,
+    availability: classifyAvailability(row, deps.quotaSnapshot?.quota[row.provider], now),
+  }));
+
+  // #94 — `availableProviders` is the ok subset in REGISTRY order,
+  // computed from the pre-sort rows (which are in descriptor order) so
+  // the contract is registry-order-by-construction, not sort-order.
+  const availableProviders: ProviderId[] = withAvailability
+    .filter((row) => row.availability === "ok")
+    .map((row) => row.provider);
+
+  // #94 — healthy-first ordering (D7): primary key the availability
+  // class (ok < exhausted < error < unconfigured), secondary the
+  // registry rank; the sort is stable so same-class rows keep
+  // registry order. The same-status registry-order pins hold because
+  // the reordering only crosses class boundaries.
+  const registryRankById = new Map<ProviderId, number>(
+    deps.descriptors.map((descriptor, index) => [descriptor.id, index]),
+  );
+  const sorted: ProviderDiagnosticWithAvailability[] = withAvailability.sort((a, b) =>
+    compareAvailabilityRows(
+      a,
+      b,
+      (row) => AVAILABILITY_CLASS_RANK[row.availability],
+      (row) => registryRankById.get(row.provider) ?? Number.MAX_SAFE_INTEGER,
+    ),
+  );
+
   // T3b — verification promotion (review item 10). After a successful
   // probe, flip the matching Provider's `verification.status` from
   // `unverified` to `verified`. Best-effort: a write failure is
@@ -251,10 +337,12 @@ export async function buildDiagnosticsReport(
   // probe into a Doctor failure. Only `status: "ok"` records are
   // promotable; skipped, failed, no-tools, and network-deferred
   // records are not (the probe result is authoritative). Awaited so a
-  // subsequent read after Doctor completion is deterministic.
+  // subsequent read after Doctor completion is deterministic. Runs
+  // over the sorted UNFILTERED rows so `--available` never suppresses
+  // a promotion that a successful probe earned.
   if (deps.verificationPromoter) {
     const checkedAt = now;
-    for (const entry of providers) {
+    for (const entry of sorted) {
       if (entry.status !== "ok") continue;
       try {
         await deps.verificationPromoter.promote(entry.provider, checkedAt);
@@ -266,6 +354,12 @@ export async function buildDiagnosticsReport(
       }
     }
   }
+
+  // #94 — `--available` filters the ROWS only; `availableProviders`
+  // (computed above, pre-filter) is unchanged by it.
+  const providers: ProviderDiagnosticWithAvailability[] = deps.availableOnly
+    ? sorted.filter((row) => row.availability === "ok")
+    : sorted;
 
   // L1 fix: the cache summary is formatted by the CLI handler and
   // threaded through deps.cacheSummary. The report builder only embeds
@@ -284,6 +378,7 @@ export async function buildDiagnosticsReport(
       visionMcpCompatible: nodeMajor() >= 22,
     },
     providers,
+    availableProviders,
     ...(cache !== undefined ? { cache } : {}),
   };
 }
@@ -449,6 +544,18 @@ configured supplier when a non-supplier is selected; under
 --no-fallback (or SCOUTLINE_NO_FALLBACK=1) the preflight surfaces
 UNSUPPORTED_CAPABILITY for the selected non-supplier.
 
+Availability and ordering: every provider row carries an
+availability field with the closed vocabulary
+"ok" | "exhausted" | "error" | "unconfigured". "exhausted" requires
+fresh quota-snapshot evidence (a capability-relevant category at 0%
+remaining within the 10-minute staleness gate) regardless of the
+probe outcome — a probe error with fresh 0% evidence is "exhausted",
+and a missing snapshot never fabricates exhaustion. Rows are
+ordered healthy-first: ok, then exhausted, then error, then
+unconfigured; same-class rows keep registry order (stable). The
+availableProviders field lists the availability-"ok" providers in
+registry order. Exit codes are unchanged by the ordering.
+
 Public 'repo' and 'read' commands participate in Provider selection.
 They honour --provider / SCOUTLINE_PROVIDER / the default zai, route
 through the matching Adapter's Repository / Reader Capability, and
@@ -466,6 +573,10 @@ Options:
                --no-tools no Provider transport is constructed: a
                configured Provider is reported as skipped
                (tools-disabled) and does not fail the report.
+  --available  Filter the providers array to availability-"ok" rows
+               (the agent-facing short list). availableProviders is
+               unchanged by the filter, and every row was still
+               classified before filtering.
 
 Exit codes:
   0  All configured probes succeeded (or only tools-disabled skips).
@@ -476,4 +587,5 @@ Examples:
   scoutline doctor                 # full diagnostics
   scoutline doctor --provider minimax
   scoutline doctor --no-tools      # metadata only, no transport
+  scoutline doctor --available     # healthy rows only
 `.trim();

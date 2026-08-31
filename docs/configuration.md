@@ -948,6 +948,13 @@ Each provider entry in the diagnostics report carries:
   is observational). The summary appears even under `--no-tools` (a
   snapshot read is local state, not transport) and even when the
   diagnostics probe fails (the snapshot is independent of the probe).
+  `source` is `"snapshot"` only when the provider advertises the
+  `quota` capability and the snapshot holds a real entry for it
+  (`observedAt > 0`). Otherwise — no `quota` capability, no snapshot
+  entry, or a bare scaffold entry (`observedAt: 0`, created but never
+  observed) — the block is `{ source: "none", authoritative: false }`
+  with `observedAt` omitted (#92): Doctor never reports an
+  unobserved scaffold as provider ground-truth.
 - `verification`: mirrors Plan A's `config.providers[id].verification`
   record so the user can see when each provider was last verified by
   a successful `doctor` probe.

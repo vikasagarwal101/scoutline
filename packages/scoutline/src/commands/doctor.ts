@@ -203,10 +203,24 @@ export async function buildDiagnosticsReport(
   // once per Provider. Both are pure lookups against injected state
   // (snapshot/config records), never transport. Returned as a side
   // table so the probe branches can attach them without re-reading.
+  const descriptorById = new Map<ProviderId, ProviderDescriptor>(
+    deps.descriptors.map((descriptor) => [descriptor.id, descriptor]),
+  );
   const quotaFor = (provider: ProviderId): ProviderDiagnosticQuota | undefined => {
     if (!deps.quotaSnapshot) return undefined;
+    // #92 — the quota block must be honest. A Provider that does not
+    // advertise the `quota` capability has no provider ground-truth to
+    // report, and a bare scaffold entry (`observedAt: 0`) was never
+    // observed. Both — and a missing entry — collapse to the same
+    // `{ source: "none", authoritative: false }` shape (no `observedAt`).
+    const descriptor = descriptorById.get(provider);
     const snapshot = deps.quotaSnapshot.quota[provider];
-    if (!snapshot) {
+    if (
+      !descriptor ||
+      !descriptor.capabilities().has("quota") ||
+      !snapshot ||
+      snapshot.observedAt === 0
+    ) {
       return { source: "none", authoritative: false };
     }
     return {

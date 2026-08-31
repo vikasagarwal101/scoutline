@@ -70,6 +70,15 @@ export SPIDER_API_KEY="your-spider-key"
 Get a Z.AI key at: https://z.ai/manage-apikey/apikey-list
 Get a Tavily key at: https://app.tavily.com/home/api-keys
 Get an Exa key at: https://dashboard.exa.ai
+Get a MiniMax key at: https://platform.minimaxi.com/user-center/basic-information/interface-key
+Get a Brave key at: https://api.search.brave.com/app/subscriptions
+Get a Firecrawl key at: https://www.firecrawl.dev/signin
+Get a Parallel AI key at: https://parallel.ai
+Get a Perplexity key at: https://www.perplexity.ai/settings/api
+Get a Jina AI key at: https://jina.ai
+Get a You.com key at: https://you.com/api
+Get a Linkup key at: https://app.linkup.so
+Get a Spider.cloud key at: https://spider.cloud
 
 ### Interactive onboarding (`scoutline init`)
 
@@ -86,6 +95,7 @@ refused — set environment variables instead.
 ```bash
 npx scoutline@0.18.1 config get                        # full config, credentials always masked
 npx scoutline@0.18.1 config set routing.search tavily,brave   # strict: typos FAIL, not drop
+npx scoutline@0.18.1 config set routing.reader parallel,linkup,jina   # first configured reader supplier wins
 npx scoutline@0.18.1 config unset routing.search
 npx scoutline@0.18.1 config set fallbackEnabled false
 ```
@@ -339,6 +349,50 @@ npx scoutline@0.18.1 --provider brave search "large context topic" --content-siz
 npx scoutline@0.18.1 --provider brave quota
 npx scoutline@0.18.1 doctor --provider brave
 
+# Firecrawl (Search, Reader, Crawl, Map)
+npx scoutline@0.18.1 --provider firecrawl search "AI funding rounds" --content-size high
+npx scoutline@0.18.1 --provider firecrawl read https://example.com/
+npx scoutline@0.18.1 --provider firecrawl crawl https://docs.example.com --depth 2
+npx scoutline@0.18.1 --provider firecrawl map https://docs.example.com
+npx scoutline@0.18.1 --provider firecrawl quota   # remaining credits
+
+# Parallel AI (Search, Reader, Research)
+npx scoutline@0.18.1 --provider parallel search "AI funding rounds" --topic news
+npx scoutline@0.18.1 --provider parallel read https://example.com/
+npx scoutline@0.18.1 --provider parallel research "Compare Rust async runtimes"
+npx scoutline@0.18.1 doctor --provider parallel
+
+# Perplexity (Search, Research)
+npx scoutline@0.18.1 --provider perplexity search "latest AI research" --topic news
+npx scoutline@0.18.1 --provider perplexity research "Compare Rust async runtimes"
+npx scoutline@0.18.1 doctor --provider perplexity
+
+# Jina AI (Search, Reader, Research)
+npx scoutline@0.18.1 --provider jina search "AI policy news" --topic news
+npx scoutline@0.18.1 --provider jina read https://example.com/
+npx scoutline@0.18.1 --provider jina research "State of carbon capture 2025"
+npx scoutline@0.18.1 --provider jina quota   # rate-limit telemetry, not spend
+
+# You.com (Search, Reader, Research)
+npx scoutline@0.18.1 --provider you search "AI policy news" --topic news
+npx scoutline@0.18.1 --provider you read https://example.com/
+npx scoutline@0.18.1 --provider you research "State of carbon capture 2025"
+npx scoutline@0.18.1 doctor --provider you
+
+# Linkup (Search, Reader, Research)
+npx scoutline@0.18.1 --provider linkup search "AI funding rounds" --topic news
+npx scoutline@0.18.1 --provider linkup read https://example.com/
+npx scoutline@0.18.1 --provider linkup research "Compare Rust async runtimes"
+npx scoutline@0.18.1 --provider linkup quota   # prepaid USD balance
+npx scoutline@0.18.1 doctor --provider linkup
+
+# Spider.cloud (Search, Reader, Crawl, Map)
+npx scoutline@0.18.1 --provider spider search "AI funding rounds" --topic news
+npx scoutline@0.18.1 --provider spider read https://example.com/
+npx scoutline@0.18.1 --provider spider crawl https://docs.example.com --depth 2
+npx scoutline@0.18.1 --provider spider map https://docs.example.com
+npx scoutline@0.18.1 --provider spider quota   # credit balance
+
 # All-Provider quota
 npx scoutline@0.18.1 quota --all-providers
 
@@ -350,6 +404,23 @@ npx scoutline@0.18.1 cache prune --older-than 24h   # delete entries older than 
 # Config (see "Settings via scoutline config" above)
 npx scoutline@0.18.1 config get routing
 ```
+
+## Which provider when
+
+| Provider | Reach for it when |
+| --- | --- |
+| Z.AI | Default. Vision (image/video/diff), repo exploration, raw MCP tools, Code Mode. |
+| MiniMax | Vision via the MiniMax Token Plan (analyze + specialized ops). |
+| Tavily | Broadest web coverage (search/read/crawl/map/research); quota breaks usage down per endpoint. |
+| Exa | Research with citations; also search/reader. |
+| Brave | Web/news/video searches (`--type video` is Brave-only); quota is a rate-limit window, not spend. |
+| Firecrawl | Crawl (async, resumable after Ctrl-C) and map; credit-based (`--content-size high` costs +1 credit/result). |
+| Parallel AI | Research and reader; search carries the full control set (domain/recency/location/content-size). |
+| Perplexity | Search and research (no reader). |
+| Jina AI | Keyless reader (works with no key); research; quota is rate-limit telemetry (free tier). |
+| You.com | Search/reader/research; no quota endpoint. |
+| Linkup | Research priced by reasoning depth ($0.25-$2.50/query); quota reports the prepaid USD balance. |
+| Spider.cloud | Crawl/map (sync) plus search/reader; credit-based. |
 
 ## Repository Exploration
 

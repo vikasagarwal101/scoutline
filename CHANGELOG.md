@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Skill guide now teaches all twelve providers (#98):** the agent-facing `skills/scoutline/SKILL.md` gains Quick Start example blocks for Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, and Spider.cloud (capabilities verified against the live capability matrix), a "Which provider when" guidance table with per-provider strengths and cost notes, key-registration links for 9 more providers (from the init wizard's registration metadata), and a diversified `routing.reader` example alongside the existing `routing.search` one.
+
 ## [0.19.4] - 2026-09-01
 
 ### Changed

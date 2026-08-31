@@ -16,6 +16,12 @@
  *     (unknown-limit window — GitHub #49) reports that value verbatim;
  *     `used`, `limit`, and `remainingPercent` are omitted rather than
  *     inferred or fabricated.
+ *   - A Provider that reports a known `used` with an explicit remaining
+ *     percentage but NO limit (used-only window — GitHub #99; Tavily's
+ *     unlimited key publishes `key.limit: null`) keeps the observed
+ *     `used` alongside the explicit percentage; `limit` and `remaining`
+ *     are omitted rather than fabricated. Additive under QuotaDashboard
+ *     schema v1.
  *   - Invalid optional counts are omitted together (not set to zero).
  *   - A category that has neither a valid percentage, nor valid counts,
  *     nor an explicit remaining is rejected with `QUOTA_ERROR`.
@@ -247,6 +253,14 @@ function epochMsToIso(epochMs: unknown): string | undefined {
  *      fabricated.
  *   4. Otherwise throw `QUOTA_ERROR` — the category is unrecoverable.
  *
+ * Used-only windows (#99): an explicit percentage combined with a
+ * finite nonnegative `used` and NO `limit` (Provider cannot or does
+ * not publish a ceiling, e.g. Tavily's unlimited key) keeps the
+ * observed `used` next to the percentage; `limit` and `remaining`
+ * are omitted rather than fabricated. Inputs that supply an invalid
+ * count pair keep the omitted-together discipline — this branch never
+ * rescues a partially invalid set.
+ *
  * Invalid optional counts are omitted together; valid counts populate
  * `used`, `limit`, and a derived `remaining`. `durationSeconds` and
  * `resetsAt` are included only when finite/ISO-valid.
@@ -290,6 +304,19 @@ export function buildQuotaWindow(inputs: QuotaWindowInputs): QuotaWindow {
     window.remaining = counts.limit - counts.used;
   } else if (remainingOnly) {
     window.remaining = inputs.remaining;
+  } else if (
+    remainingPercent !== undefined &&
+    inputs.limit === undefined &&
+    isFiniteNonnegative(inputs.used)
+  ) {
+    // Used-only window (#99 — e.g. Tavily's unlimited key, whose
+    // `key.limit` the /usage endpoint documents as null): an explicit
+    // percentage with an observed usage count but no ceiling. The
+    // observed `used` is retained; `limit` and `remaining` are omitted
+    // rather than fabricated. This is a retaining path, not a new
+    // accepting path — such inputs already succeeded (minus the used
+    // count) before #99.
+    window.used = inputs.used;
   }
 
   if (isFinitePositive(inputs.durationSeconds)) {

@@ -189,6 +189,28 @@ describe("Tavily Quota — normalization", () => {
     assert.strictEqual(unlimited.categories.length >= 1, true);
     assert.strictEqual(unlimited.categories[0].name, "requests");
     assert.strictEqual(unlimited.categories[0].current.remainingPercent, 100);
+    // #99: the observed usage count survives the unlimited-key window;
+    // no limit exists to report and remaining is omitted, not fabricated.
+    assert.strictEqual(unlimited.categories[0].current.used, 100);
+    assert.ok(!("limit" in unlimited.categories[0].current), "no limit exists");
+    assert.ok(
+      !("remaining" in unlimited.categories[0].current),
+      "remaining omitted, not fabricated",
+    );
+  });
+
+  it("keeps plan usage when plan_limit is null (defensive used-only window, #99)", () => {
+    const raw = {
+      key: { usage: 5, limit: 100 },
+      account: { plan_usage: 40, plan_limit: null },
+    };
+    const result = normalizeTavilyQuota(raw);
+    const plan = result.categories.find((c) => c.name === "plan");
+    assert.ok(plan, "plan category still emitted for a null plan_limit");
+    assert.strictEqual(plan.current.used, 40);
+    assert.strictEqual(plan.current.remainingPercent, 100);
+    assert.ok(!("limit" in plan.current), "no limit exists to report");
+    assert.ok(!("remaining" in plan.current), "remaining omitted, not fabricated");
   });
 
   it("rejects a malformed (non-object) response", () => {

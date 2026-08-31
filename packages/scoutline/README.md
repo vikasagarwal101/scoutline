@@ -478,6 +478,17 @@ exhaustion. Rows are ordered healthy-first (`ok`, then `exhausted`, then
 top-level `availableProviders` array lists the `ok` providers in registry
 order.
 
+In an interactive terminal (the `tty` output mode), doctor renders the same
+report as a human-friendly summary instead of JSON: a header with the
+effective provider plus `capabilityMatrix`, routing, and cache summaries
+(omitted when absent — never rendered as `undefined`), followed by every
+provider row in the same healthy-first order. Each row carries an
+availability glyph and label (`✓ ok`, `⚠ exhausted`, `✗ error`,
+`· unconfigured`), the probe status, and snapshot source/age lines
+(`quota snapshot · fresh (2m ago)` / `stale · non-authoritative`). Agents
+capturing stdout and `data`/`json` modes keep the byte-identical JSON
+payload — the summary is presentation-only.
+
 ## Notes
 
 - `repo search` defaults to English results. Use `--language zh` for Chinese.

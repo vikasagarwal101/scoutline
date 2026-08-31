@@ -43,6 +43,7 @@ import {
   isQuotaSnapshotStale,
   type QuotaState,
 } from "../lib/quota-store.js";
+import { formatDiagnosticsReport } from "../lib/tty.js";
 
 // ---------------------------------------------------------------------------
 // Report builder
@@ -473,25 +474,40 @@ export interface DoctorOptions {
 
 /**
  * Injectable dependencies for the doctor command. `buildReport` resolves
- * the diagnostics report; the command only wraps it for presentation and
- * exit-code selection.
+ * the availability-carrying diagnostics report; the command only wraps
+ * it for presentation and exit-code selection.
  */
 export interface DoctorCommandDependencies {
-  readonly buildReport: () => Promise<DiagnosticsReport>;
+  readonly buildReport: () => Promise<DiagnosticsReportWithAvailability>;
+  /**
+   * Optional clock for the TTY presentation's snapshot-age labels
+   * (T5 — #95). Defaults to `Date.now` — the same clock pattern the
+   * report builder's `now` uses; tests inject a fixed clock for
+   * deterministic age labels.
+   */
+  readonly now?: () => number;
 }
 
 /**
  * Run the doctor command. Returns the diagnostics report as base data
  * with a computed exit code (1 when the effective Provider is
- * unconfigured or any configured probe failed; otherwise 0).
+ * unconfigured or any configured probe failed; otherwise 0). T5 (#95):
+ * the result also carries a TTY presentation override —
+ * {@link formatDiagnosticsReport} rendered against the injected clock —
+ * so terminal (`tty` output mode) runs get the human-friendly
+ * healthy-first summary while the data payload itself stays
+ * byte-identical (the tty string is presentation-only and never enters
+ * `data`).
  */
 export async function doctor(
   deps: DoctorCommandDependencies,
-): Promise<CommandResult<DiagnosticsReport>> {
+): Promise<CommandResult<DiagnosticsReportWithAvailability>> {
   const report = await deps.buildReport();
+  const now = (deps.now ?? Date.now)();
   return {
     kind: "data",
     data: report,
+    presentations: { tty: formatDiagnosticsReport(report, now) },
     exitCode: doctorExitCode(report),
   };
 }

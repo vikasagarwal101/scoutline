@@ -780,10 +780,16 @@ Authority and score are kept on separate axes. A provider is either:
   is the selection score.
 - **Always-unknown** — has no authoritative spend signal. Always
   reported as `authority:"unknown"` regardless of whether a snapshot
-  exists. Eligible as fallback, but never wins over a mapped provider,
-  even one at 5% remaining. (Encoding unknown as a numeric `50` would
-  let it win over a low-scored known provider, contradicting "never
-  fullest"; the explicit tier is the fix.)
+  exists. Eligible as fallback; it never wins over a **healthy** mapped
+  provider, even one at 5% remaining. (Encoding unknown as a numeric
+  `50` would let it win over a low-scored known provider,
+  contradicting "never fullest"; the explicit tier is the fix.) Since
+  the exhaustion-aware ranking change (#97), "healthy" is operative: a
+  mapped provider whose capability-mapped category reads 0% on a
+  snapshot observed within the last 24 hours
+  (`QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS`) is itself demoted below the
+  unknown tier, so an always-unknown provider outranks a
+  fresh-exhausted mapped one.
 
 | Provider | Tier | Reason |
 | --- | --- | --- |
@@ -849,19 +855,35 @@ production wires a stderr writer, tests inject a recorder):
 | `CATEGORY_NOT_FOUND` | No alias and no fallback matched — likely provider-side rename. |
 | `PERCENT_CORRUPT` | Matched category's `remainingPercent` is non-finite or outside 0..100. PB-T1 should prevent this, but a hand-edited `state.json` could violate it; the scorer treats corrupt input as unknown rather than synthesizing a score. |
 
-A depleted category (`remainingPercent: 0`) is **not** corrupt — a
-known-tier provider at 0% still ranks above any unknown-tier provider.
+A depleted category (`remainingPercent: 0`) is **not** corrupt — the
+scorer still reports it as `authority:"known", score:0`. What changed
+with exhaustion-aware ranking (#97) is the ranking that consumes it: a
+known-tier provider at 0% on a snapshot observed within the last 24
+hours is demoted below every unknown-tier provider, while a 0% reading
+older than that horizon ranks exactly as it did before (known tier).
 
 ### Ranking output
 
 `rankProvidersForCapability(state, capability, candidates)` returns an
 ordered list:
 
-1. **Known tier** first, sorted by score descending.
-2. **Unknown tier** after every known entry, in registry order.
-3. Ties within a tier break by registry order
+1. **Known tier** first, sorted by score descending — except a known
+   entry at 0% on a snapshot observed within the last 24 hours
+   (`QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS`; judged against the `now`
+   option, or the current clock at the selection boundary), which is
+   demoted to the unknown tier with reason `KNOWN_EXHAUSTED` and a
+   matching warning.
+2. **Unknown tier** after every (healthy) known entry, in registry
+   order.
+3. **Demoted (`KNOWN_EXHAUSTED`) entries last**, in registry order —
+   strictly below every natural unknown, so a still-exhausted provider
+   can never ride registry order back to the top.
+4. Ties within a band break by registry order
    (`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider]` by default;
    overridable via the `registryOrder` option).
+
+Calls that supply no clock (no `now` option) skip the exhaustion check
+entirely and get the pre-#97 ordering.
 
 The ranking is deterministic for identical inputs — same `state` +
 same `candidates` + same `registryOrder` always produces the same
@@ -989,13 +1011,25 @@ the same flag so a user can correlate a selection pick with the data
 that drove it — without misattributing the pick to data fresher than
 it is.
 
+Selection and the dashboard also agree on exhaustion: a mapped
+provider whose capability-relevant category reads 0% on a snapshot
+observed within the last 24 hours is the provider selection demotes
+(`KNOWN_EXHAUSTED`, below the unknown tier) and the one the doctor
+dashboard labels `exhausted`. The two freshness windows differ by
+design — the dashboard judges freshness with the 10-minute snapshot
+staleness gate, while selection trusts a 0% reading for up to 24 hours
+(`QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS`) — so a provider can be
+`exhausted` on the dashboard yet still ranked (known tier) once its
+snapshot ages past the demotion horizon.
+
 Freshness is judged solely from `observedAt` — the snapshot's
 ground-truth clock. `locallyUpdatedAt` (PB-T2's local decrement)
 **never** resets the staleness clock; a snapshot with a stale
 `observedAt` and a fresh `locallyUpdatedAt` is still
 non-authoritative. Local decrements between harvests are tracked as
 `decrementedSinceObserved` and re-applied on refresh only for the
-portion the provider `used` count has not yet absorbed.
+portion the provider `used` count has not yet absorbed. The 24h
+selection horizon reads the same `observedAt` clock.
 
 ## Security
 

@@ -53,6 +53,14 @@ const ZAI_CATEGORIES_5 = [
   { name: "tokens", unit: "tokens", current: { remainingPercent: 100 } },
 ];
 
+const ZAI_CATEGORIES_0 = [
+  {
+    name: "requests",
+    unit: "requests",
+    current: { used: 1000, limit: 1000, remaining: 0, remainingPercent: 0 },
+  },
+];
+
 const TAVILY_CATEGORIES_95 = [
   {
     name: "requests",
@@ -315,6 +323,98 @@ describe("resolveEffectiveProvider: known-score ordering", () => {
       quotaSnapshot: snapshot,
     });
     assert.strictEqual(result, "zai");
+  });
+});
+
+// ===========================================================================
+// 3.5 KNOWN_EXHAUSTED demotion (#97) — freshness-gated ranking demotion
+// ===========================================================================
+
+describe("resolveEffectiveProvider: KNOWN_EXHAUSTED demotion (#97)", () => {
+  it("demotes a fresh-0% known provider below the unknown tier (unknown-tier provider wins the dispatch)", async () => {
+    // Rolling fixture: observedAt is anchored at the run-time clock
+    // (never a fixed calendar date), so the 0% reading stays within
+    // the 24h QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS forever. The
+    // resolver is called without `now`, so it evaluates freshness
+    // against the current clock — the production shape.
+    const snapshot = await stateWith([
+      { provider: "zai", categories: ZAI_CATEGORIES_0, observedAt: Date.now() - 60_000 },
+      // exa has no snapshot entry: a natural unknown-tier provider.
+    ]);
+    const result = resolveEffectiveProvider({
+      explicitProvider: undefined,
+      env: { Z_AI_API_KEY: "z", EXA_API_KEY: "e" },
+      capabilityId: "search",
+      descriptors: [
+        makeDescriptor("zai", { configured: true, capabilities: ["search"] }),
+        makeDescriptor("exa", { configured: true, capabilities: ["search"] }),
+      ],
+      quotaSnapshot: snapshot,
+    });
+    assert.strictEqual(result, "exa", "the demoted exhausted provider must not win");
+  });
+
+  it("threads an explicit `now` into the ranker; without one the resolver uses the current clock", async () => {
+    const observedAt = 1_700_000_000_000;
+    const snapshot = await stateWith([
+      { provider: "zai", categories: ZAI_CATEGORIES_0, observedAt },
+      { provider: "exa", categories: [] },
+    ]);
+    const options = {
+      explicitProvider: undefined,
+      env: { Z_AI_API_KEY: "z", EXA_API_KEY: "e" },
+      capabilityId: "search",
+      descriptors: [
+        makeDescriptor("zai", { configured: true, capabilities: ["search"] }),
+        makeDescriptor("exa", { configured: true, capabilities: ["search"] }),
+      ],
+      quotaSnapshot: snapshot,
+    };
+    // Explicit `now` within the horizon ⇒ zai demotes, exa wins.
+    assert.strictEqual(
+      resolveEffectiveProvider({ ...options, now: observedAt + 1_000 }),
+      "exa",
+    );
+    // No `now` ⇒ current clock. The Nov-2023 snapshot is far older
+    // than the 24h horizon, so zai stays known-at-0 and wins — the
+    // pre-#97 behavior for stale evidence flows through the resolver.
+    assert.strictEqual(resolveEffectiveProvider(options), "zai");
+  });
+
+  it("dispatch: a fresh-0% known provider is demoted below the unknown tier (exa is invoked first)", async () => {
+    const snapshot = await stateWith([
+      { provider: "zai", categories: ZAI_CATEGORIES_0, observedAt: Date.now() - 60_000 },
+    ]);
+    const built = [
+      makeDispatchDescriptor("zai", "Z_AI_API_KEY", "search", () => []),
+      makeDispatchDescriptor("exa", "EXA_API_KEY", "search", () => []),
+    ];
+    const { adapter, stderr } = createTestAdapter();
+    const status = await main(["search", "hello"], {
+      invocation: adapter,
+      env: { Z_AI_API_KEY: "z", EXA_API_KEY: "e" },
+      providerDescriptors: built.map((b) => b.descriptor),
+      quotaState: snapshot,
+      // #63: pin fanout-off (mirrors the DISPATCH_CASES harness).
+      configFanout: false,
+      // #73: hermetic config — no ambient read.
+      loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+      searchCache: makeInMemoryCache(),
+      searchSleep: async () => {},
+      searchRandom: () => 0.5,
+    });
+    assert.strictEqual(
+      status,
+      0,
+      `expected exit 0, got ${status}; stderr=${JSON.stringify(stderr)}`,
+    );
+    const firstInvoked = built.find((b) => b.invokes.length > 0);
+    assert.ok(firstInvoked, "at least one provider must be invoked");
+    assert.strictEqual(
+      firstInvoked.descriptor.id,
+      "exa",
+      "the demoted exhausted provider must not be attempted first",
+    );
   });
 });
 

@@ -739,6 +739,27 @@ export async function writeQuotaSnapshot(
 export const DEFAULT_QUOTA_STALE_THRESHOLD_MS = 10 * 60 * 1000;
 
 /**
+ * Selection-only freshness horizon for KNOWN_EXHAUSTED demotion
+ * (#97): a 0% reading on a provider's capability-mapped category
+ * demotes that provider below the unknown tier in
+ * {@link "../lib/quota-mapping.js".rankProvidersForCapability} only
+ * while `now - observedAt` is within this horizon. Snapshots older
+ * than the horizon score exactly as they did before #97.
+ *
+ * Deliberately NOT the 10-minute {@link DEFAULT_QUOTA_STALE_THRESHOLD_MS}
+ * command-cadence gate, on two grounds: (a) the after-command
+ * due-refresh is command-coupled and best-effort, so snapshot
+ * freshness at selection time is not oracle-grade; (b) gating
+ * demotion on the 10-minute threshold would tie exhaustion-trust to
+ * refresh cadence — any >10-minute pause between commands would lapse
+ * the demotion and float a still-exhausted provider back to the top.
+ * The 24h horizon decouples exhaustion-trust from the command-cadence
+ * gate; the value is insensitive anywhere in the hours-to-days band,
+ * so retuning is a one-constant change.
+ */
+export const QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS = 24 * 60 * 60 * 1000;
+
+/**
  * A snapshot is stale when `observedAt` is older than the threshold
  * relative to `now`. A missing snapshot (undefined) is always stale.
  */

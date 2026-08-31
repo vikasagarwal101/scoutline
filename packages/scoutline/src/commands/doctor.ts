@@ -431,17 +431,19 @@ capabilityMatrix field reflects that descriptor state
 (repository-exploration currently lists only Z.AI while MiniMax and
 Tavily lack it).
 
-Reader is a Provider Capability. Z.AI, Tavily, Exa, Parallel, Jina,
-and Spider.cloud descriptor metadata all advertise reader; MiniMax,
-Brave, and Perplexity advertise and supply neither. The
-capabilityMatrix field lists Z.AI, Tavily, Exa, Parallel, Jina, and
-Spider.cloud for reader.
+Reader is a Provider Capability. Z.AI, Tavily, Exa, Firecrawl,
+Parallel, Jina, You.com, Linkup, and Spider.cloud descriptor metadata
+all advertise reader; MiniMax, Brave, and Perplexity advertise and
+supply neither. The capabilityMatrix field lists Z.AI, Tavily, Exa,
+Firecrawl, Parallel, Jina, You.com, Linkup, and Spider.cloud for
+reader.
 
 Crawl and Map are Provider Capabilities owned by Tavily, Firecrawl,
 and Spider.cloud. Z.AI, MiniMax, Exa, and Brave do not advertise
 either; the capabilityMatrix lists Tavily, Firecrawl, and Spider.cloud
 for each. Research is
-supplied by Tavily, Exa, Parallel, Perplexity, and Jina. By default (0.11.0+) Provider fallback
+supplied by Tavily, Exa, Parallel, Perplexity, Jina, You.com, and
+Linkup. By default (0.11.0+) Provider fallback
 emits a stderr notice and silently reroutes to the next eligible
 configured supplier when a non-supplier is selected; under
 --no-fallback (or SCOUTLINE_NO_FALLBACK=1) the preflight surfaces

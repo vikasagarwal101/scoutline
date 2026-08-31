@@ -61,8 +61,8 @@ record API keys in `~/.scoutline/config.json` (mode 0600):
 scoutline init
 ```
 
-The wizard walks you through a provider checklist (Z.AI, MiniMax, Tavily,
-Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com — equal
+The wizard walks you through a registry-derived provider checklist
+(all 12 built-in Providers, rendered in registry order — equal
 weight, none pre-checked), takes each key via
 hidden input, and performs a single inline validation probe against an
 ephemeral in-memory environment (the candidate key is never persisted or
@@ -157,7 +157,7 @@ selected provider does not advertise the capability (for example,
 MiniMax does not advertise `repository-exploration` or `reader`) or
 fails at runtime, Scoutline emits a stderr notice and silently
 reroutes to the next eligible configured provider in registry order
-`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you]`. Pass `--no-fallback`
+`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider]`. Pass `--no-fallback`
 (or set `SCOUTLINE_NO_FALLBACK=1`) to restore the previous strict
 single-provider, fail-loud behavior for scripting or cost-sensitive
 workflows. See
@@ -464,7 +464,7 @@ Quota output is a schema-version-1 `QuotaDashboard`:
 }
 ```
 
-Doctor output is a schema-version-1 `DiagnosticsReport` listing every built-in
+Doctor output is a schema-version-2 `DiagnosticsReport` listing every built-in
 Provider with its configured state, declared capabilities, probe status, and a
 one-line cache summary under the `cache` field.
 

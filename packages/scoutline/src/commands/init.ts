@@ -95,9 +95,9 @@ The fresh flow:
   - offers to import a provider key already present in env (the
     wizard notes that env precedence means the env value keeps
     winning at runtime)
-  - shows a provider checklist (Z.AI, MiniMax, Tavily, Exa, Brave,
-    Firecrawl) with NO pre-checked defaults — every provider has
-    equal weight
+  - shows the registry-derived provider checklist (all 12 built-in
+    Providers, rendered in registry order) with NO pre-checked
+    defaults — every provider has equal weight
   - for each selected provider, asks whether you have a key, takes a
     hidden input, and performs a single inline validation probe
     against an ephemeral in-memory environment (the candidate

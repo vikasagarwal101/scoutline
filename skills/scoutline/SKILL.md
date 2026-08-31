@@ -540,7 +540,10 @@ Use `--output-format json` for `{ success, data, timestamp }` wrapping.
 returns a **schema-version-2** `DiagnosticsReport` carrying a
 `capabilityMatrix` field (per-capability list of supplying Providers)
 plus a one-line cache summary under `cache.summary`. Both are
-Provider-neutral. PB-T5 adds additive optional fields to both schemas
+Provider-neutral. In all-provider mode the quota `providers` array sorts
+healthy-first (#96): `ok` rows, then `error` rows, then `no-capability`
+rows, with registry order preserved within each class. PB-T5 adds
+additive optional fields to both schemas
 (no version bump): each `quota` success row may carry `quotaSource:
 { source: "snapshot" | "live", observedAt, authoritative }`, the
 `providers` union may include a `{ status: "none", reason:

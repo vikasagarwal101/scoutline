@@ -136,8 +136,10 @@ export function normalizeTavilyQuota(raw: unknown): ProviderQuotaSuccess {
   const categories: QuotaCategory[] = [];
 
   // Aggregate "requests" category — key.usage / key.limit.
-  // key.limit may be null (unlimited); in that case report usage with
-  // 100% remaining since there is no ceiling to derive a ratio from.
+  // Tavily documents `key.limit` as null for an unlimited key. There is
+  // no ceiling to derive a ratio from, so the window is explicit 100%
+  // remaining; #99 keeps the observed usage count in that used-only
+  // window (`used` without `limit`/`remaining`) instead of dropping it.
   let aggregate: ReturnType<typeof buildQuotaWindow>;
   if (keyLimit !== undefined) {
     aggregate = buildQuotaWindow({
@@ -166,6 +168,10 @@ export function normalizeTavilyQuota(raw: unknown): ProviderQuotaSuccess {
   }
 
   // Monthly plan window — account.plan_usage / account.plan_limit.
+  // The /usage docs do not promise a null `plan_limit` (unlike
+  // `key.limit`), so the used-only branch below is defensive: if a
+  // null plan limit ever appears, the observed plan usage still
+  // surfaces as a used-only window (#99) instead of dropping it.
   const accountRecord = response.account;
   if (accountRecord && typeof accountRecord === "object" && !Array.isArray(accountRecord)) {
     const planUsed = readNumber(accountRecord.plan_usage);

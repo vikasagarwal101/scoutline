@@ -821,6 +821,33 @@ matched **case-sensitively** against the live normalizer's emission
 case-sensitive `Credits`); a case change is treated as drift and
 surfaces through the fail-open path.
 
+### Tavily: plan window vs key-level pool
+
+Tavily reports two independent quota windows, and only the key-level
+one gates calls:
+
+- The **key-level `requests` aggregate** — shared by the per-endpoint
+  `search`/`extract`/`crawl`/`map`/`research` categories, which all
+  draw on the same key-level limit — is the pool the API actually
+  bills against. When the pool is overdrawn, a per-endpoint counter
+  can exceed the shared limit; the normalizer clamps `used` to the
+  limit so the category reads 0% instead of throwing.
+- The account-level **`plan` category** is the monthly billing window.
+  It can read a healthy percentage while the key pool is exhausted:
+  "plan 4.5% remaining" does not mean Tavily calls will succeed.
+  Doctor's `availability` verdict and quota-based selection use the
+  key-pool `requests` category, never `plan`. Observed in the wild: a
+  `doctor` run surfaced a "plan limit exceeded" error while the fresh
+  snapshot still showed `plan` at 4.5% remaining — the key pool was
+  spent; the billing window was not.
+
+An unlimited key has no ceiling to derive a ratio from (Tavily's
+`/usage` endpoint documents `key.limit` as null in that case): the
+aggregate surfaces a **used-only window** — the observed `used` count
+alongside an explicit `remainingPercent: 100`, with `limit` and
+`remaining` omitted rather than fabricated. Additive under
+`QuotaDashboard` schema v1.
+
 ### MiniMax model aliases
 
 MiniMax's `/remains` normalizer emits one category per live

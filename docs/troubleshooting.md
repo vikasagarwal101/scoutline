@@ -512,6 +512,20 @@ Brave's numbers without the caveat. Wait for staleness (10+ min) or
 force a refresh via `scoutline quota`. Extending the snapshot schema
 to carry warnings is tracked as future work.
 
+## Tavily fails while `plan` still shows remaining quota
+
+Tavily's quota dashboard carries two independent windows, and only
+one of them gates calls. The key-level `requests` aggregate — shared
+by the per-endpoint `search`, `extract`, `crawl`, `map`, and
+`research` categories — is the pool the API actually draws from; the
+account-level `plan` category is only the monthly billing window.
+When the key pool is exhausted, calls fail (and `doctor` surfaces the
+provider as `exhausted`/`error`) even though `plan` still reads a
+healthy percentage — for example a "plan limit exceeded" error
+alongside a fresh snapshot showing `plan` at 4.5% remaining. Doctor's
+availability verdict and quota-based selection derive from the
+key-pool `requests` category, never `plan`.
+
 ## Need more information
 
 Run command-local help, which is the canonical option reference:

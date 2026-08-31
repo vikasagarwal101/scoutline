@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **Tavily unlimited keys keep their observed usage count (#99):** `buildQuotaWindow` now retains a valid `used` alongside an explicit remaining percentage when no `limit` exists (used-only window), instead of silently dropping it — Tavily's `/usage` documents `key.limit` as null for unlimited keys, and those dashboards previously showed a bare "100% remaining" with no counts. `limit` and `remaining` stay omitted rather than fabricated; every other input shape is byte-identical (additive under QuotaDashboard schema v1).
+
+### Documentation
+
+- **Tavily plan window vs key-level pool (#100):** configuration.md and troubleshooting.md now explain the two windows — the key-level `requests` pool gates calls while the account-level `plan` is the billing window, per-endpoint categories clamp used-over-limit to 0%, and a "plan limit exceeded" error can coexist with fresh plan-window remaining.
+
 ## [0.19.5] - 2026-09-01
 
 ### Added

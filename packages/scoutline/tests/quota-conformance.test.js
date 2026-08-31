@@ -185,6 +185,28 @@ describe("quota window builder — remainingPercent rules", () => {
     assert.ok(!("remaining" in w), "remaining omitted with the set");
   });
 
+  it("keeps a valid used count with an explicit percent when no limit exists (used-only window, #99)", () => {
+    const w = buildQuotaWindow({ used: 100, explicitRemainingPercent: 100 });
+    assert.strictEqual(w.remainingPercent, 100);
+    assert.strictEqual(w.used, 100);
+    assert.ok(!("limit" in w), "no limit exists to report");
+    assert.ok(!("remaining" in w), "remaining is omitted, not fabricated");
+  });
+
+  it("used-only window keeps used only when limit is fully absent, not when the set is invalid", () => {
+    // Invalid count set (used invalid, limit present) keeps the
+    // omitted-together discipline: explicit percent survives, counts do not.
+    const invalid = buildQuotaWindow({ explicitRemainingPercent: 50, used: NaN, limit: 100 });
+    assert.strictEqual(invalid.remainingPercent, 50);
+    assert.ok(!("used" in invalid), "invalid used still omitted together");
+    // Unknown-limit remaining-only window (#49 discipline): `remaining` is
+    // published verbatim and `used` stays omitted.
+    const remainingOnly = buildQuotaWindow({ used: 100, remaining: 12 });
+    assert.strictEqual(remainingOnly.remaining, 12);
+    assert.strictEqual(remainingOnly.remainingPercent, undefined);
+    assert.ok(!("used" in remainingOnly), "#49 path keeps omitting used");
+  });
+
   it("throws QUOTA_ERROR when a category has neither valid percent nor valid counts", () => {
     assert.throws(
       () => buildQuotaWindow({ used: 150, limit: 100 }),

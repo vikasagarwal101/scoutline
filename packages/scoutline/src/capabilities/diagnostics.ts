@@ -66,10 +66,12 @@ export interface ProviderDiagnostic {
    * available (a snapshot read is a local state read, not transport).
    *
    * Doctor NEVER live-probes quota — it only reads the snapshot. The
-   * `source` is therefore always `"snapshot"` when an entry exists, or
-   * `"none"` when the snapshot has no entry for this Provider.
-   * Additive under schema version 2: pre-PB-T5 callers that omit the
-   * dependency produce entries without this field.
+   * `source` is `"snapshot"` only when the Provider advertises the
+   * `quota` capability AND the snapshot holds a real entry
+   * (`observedAt > 0`) for it; anything else — no `quota` capability,
+   * no snapshot entry, or a bare scaffold entry (`observedAt: 0`) —
+   * is `"none"`. Additive under schema version 2: pre-PB-T5 callers
+   * that omit the dependency produce entries without this field.
    */
   readonly quota?: ProviderDiagnosticQuota;
   /**
@@ -88,22 +90,27 @@ export interface ProviderDiagnostic {
  * Plan B). A structural view of PB-T1's snapshot entry for this
  * Provider: never carries categories (Doctor is observational; full
  * categories belong to the `quota` command). Doctor never live-probes
- * quota, so the source is always `"snapshot"` (when an entry exists)
- * or `"none"` (when it does not).
+ * quota, so the source is `"snapshot"` only when the Provider
+ * advertises `quota` and the snapshot holds a real entry for it
+ * (`observedAt > 0`); otherwise `"none"`.
  */
 export interface ProviderDiagnosticQuota {
   /**
-   * `"snapshot"` — read from PB-T1's `state.json`. `"none"` — the
-   * snapshot has no entry for this Provider (it may be unconfigured,
-   * may not advertise `quota`, or may simply have never been
-   * refreshed). Doctor never emits `"live"`; the live probe belongs
+   * `"snapshot"` — read from PB-T1's `state.json`, and only when the
+   * Provider advertises the `quota` capability and the entry is a
+   * real observation (`observedAt > 0`). `"none"` — the Provider does
+   * not advertise `quota`, the snapshot has no entry for it, or the
+   * entry is a bare scaffold (`observedAt: 0` — created but never
+   * observed). Doctor never emits `"live"`; the live probe belongs
    * to the `quota` command, not Doctor.
    */
   readonly source: "snapshot" | "none";
   /**
    * Epoch-ms the snapshot was observed. Omitted when `source` is
-   * `"none"`. Freshness is judged solely from `observedAt` — never
-   * from `locallyUpdatedAt` (PB-T2's local decrement never resets the
+   * `"none"` (including the scaffold case — an `observedAt: 0`
+   * scaffold is never surfaced as an observation). Freshness is
+   * judged solely from `observedAt` — never from
+   * `locallyUpdatedAt` (PB-T2's local decrement never resets the
    * staleness clock).
    */
   readonly observedAt?: number;

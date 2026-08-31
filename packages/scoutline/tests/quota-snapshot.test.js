@@ -654,6 +654,48 @@ describe("PB-T5 doctor — quota snapshot + verification summaries", () => {
     assert.strictEqual(minimaxEntry.quota.observedAt, undefined);
   });
 
+  it("a Provider without the quota capability reports source:'none' even with a snapshot entry", async () => {
+    const exa = makeDiagnosticDescriptor("exa", { capabilities: ["diagnostics"] });
+    const report = await buildDiagnosticsReport({
+      noTools: true,
+      effectiveProvider: "exa",
+      descriptors: [exa],
+      env: { EXA_API_KEY: "k" },
+      sleep,
+      random: () => 0,
+      quotaSnapshot: stateFrom({
+        exa: snapshotAt(FRESH_MS, ZAI_SUCCESS.categories), // entry exists — but exa has no quota capability
+      }),
+      now: fixedNow,
+    });
+    const row = report.providers[0];
+    assert.ok(row.quota, "quota block present");
+    assert.strictEqual(row.quota.source, "none", "no quota capability → never a snapshot source");
+    assert.strictEqual(row.quota.authoritative, false);
+    assert.strictEqual(row.quota.observedAt, undefined);
+  });
+
+  it("a scaffold snapshot entry (observedAt: 0) reports source:'none' — not a fabricated snapshot", async () => {
+    const zai = makeDiagnosticDescriptor("zai");
+    const report = await buildDiagnosticsReport({
+      noTools: true,
+      effectiveProvider: "zai",
+      descriptors: [zai],
+      env: { Z_AI_API_KEY: "k" },
+      sleep,
+      random: () => 0,
+      quotaSnapshot: stateFrom({
+        zai: { observedAt: 0, categories: [] }, // bare scaffold — never observed
+      }),
+      now: fixedNow,
+    });
+    const row = report.providers[0];
+    assert.ok(row.quota, "quota block present");
+    assert.strictEqual(row.quota.source, "none", "scaffold entry → none");
+    assert.strictEqual(row.quota.authoritative, false);
+    assert.strictEqual(row.quota.observedAt, undefined);
+  });
+
   it("stale snapshot → source:'snapshot' but authoritative:false", async () => {
     const zai = makeDiagnosticDescriptor("zai");
     const report = await buildDiagnosticsReport({

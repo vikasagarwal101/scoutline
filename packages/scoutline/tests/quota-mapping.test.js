@@ -33,7 +33,10 @@ import {
   resolveMiniMaxAliasesForCapability,
   scoreCapability,
 } from "../dist/lib/quota-mapping.js";
-import { createInMemoryQuotaStore } from "../dist/lib/quota-store.js";
+import {
+  QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS,
+  createInMemoryQuotaStore,
+} from "../dist/lib/quota-store.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "../dist/providers/registry.js";
 
 // ---------------------------------------------------------------------------
@@ -611,7 +614,41 @@ describe("quota-mapping: rankProvidersForCapability", () => {
     assert.strictEqual(ranked[1].reason, "PROVIDER_NON_AUTHORITATIVE");
   });
 
-  it("a 0% known provider still ranks above an unknown provider", async () => {
+  it("a fresh-0% known provider ranks below an unknown provider (#97 KNOWN_EXHAUSTED demotion)", async () => {
+    // REVERSED by #97: the pre-#97 pin ("a 0% known provider still
+    // ranks above an unknown provider") encoded freshness-blind
+    // ranking — a still-exhausted provider floated to the top of the
+    // selection order. The fixture now passes an explicit `now` that
+    // makes the 0% reading fresh (within the 24h
+    // QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS); zai is demoted to the
+    // unknown tier with reason KNOWN_EXHAUSTED and ranks strictly
+    // below the natural unknown exa.
+    const depleted = [
+      {
+        name: "requests",
+        unit: "requests",
+        current: { used: 1000, limit: 1000, remaining: 0, remainingPercent: 0 },
+      },
+    ];
+    const observedAt = 1_700_000_000_000;
+    const state = await stateWith([
+      { provider: "zai", categories: depleted, observedAt },
+      { provider: "exa", categories: [] },
+    ]);
+    const ranked = rankProvidersForCapability(state, "search", ["exa", "zai"], {
+      now: observedAt + 1_000,
+    });
+    assert.strictEqual(ranked[0].provider, "exa");
+    assert.strictEqual(ranked[0].authority, "unknown");
+    assert.strictEqual(ranked[1].provider, "zai");
+    assert.strictEqual(ranked[1].authority, "unknown");
+    assert.strictEqual(ranked[1].reason, "KNOWN_EXHAUSTED");
+  });
+
+  it("a no-clock call keeps the pre-#97 ordering (0% known above unknown)", async () => {
+    // ScoreOptions.now absent ⇒ the exhaustiveness check is skipped
+    // entirely (quota-mapping stays clockless); callers that do not
+    // pass a clock see the pre-#97 ranking unchanged.
     const depleted = [
       {
         name: "requests",
@@ -745,6 +782,142 @@ describe("quota-mapping: rankProvidersForCapability", () => {
       ranked.map((r) => r.provider),
       ["tavily", "zai"],
     );
+  });
+});
+
+// ===========================================================================
+// 6.5 KNOWN_EXHAUSTED demotion (#97) — freshness-gated ranking demotion
+// ===========================================================================
+
+describe("quota-mapping: KNOWN_EXHAUSTED demotion (#97)", () => {
+  const depletedRequests = [
+    {
+      name: "requests",
+      unit: "requests",
+      current: { used: 1000, limit: 1000, remaining: 0, remainingPercent: 0 },
+    },
+  ];
+
+  it("demotes a fresh-0% known provider strictly below every natural unknown", async () => {
+    // The D6 positioning pin: registry-early mapped provider (zai,
+    // fresh 0%) + registry-later never-mapped provider (exa) ⇒ the
+    // demoted provider is LAST. A membership-only rewrite into the
+    // existing unknown bucket would leave registry-early zai above
+    // registry-later exa — the exact motivating bug (#97).
+    const observedAt = 1_700_000_000_000;
+    const state = await stateWith([
+      { provider: "zai", categories: depletedRequests, observedAt },
+      { provider: "exa", categories: [] }, // never-mapped, natural unknown
+    ]);
+    const { onWarning, warnings } = captureWarnings();
+    const ranked = rankProvidersForCapability(state, "search", ["zai", "exa"], {
+      now: observedAt + 60_000,
+      onWarning,
+    });
+    assert.deepStrictEqual(ranked.map((r) => r.provider), ["exa", "zai"]);
+    assert.strictEqual(ranked[0].authority, "unknown");
+    assert.strictEqual(ranked[0].reason, "PROVIDER_NON_AUTHORITATIVE");
+    assert.strictEqual(ranked[1].authority, "unknown");
+    assert.strictEqual(ranked[1].reason, "KNOWN_EXHAUSTED");
+    assert.ok(
+      warnings.some(
+        (w) => w.code === "KNOWN_EXHAUSTED" && w.provider === "zai" && w.capability === "search",
+      ),
+      `expected a KNOWN_EXHAUSTED warning for zai, got ${JSON.stringify(warnings)}`,
+    );
+  });
+
+  it("natural unknowns come first in registry order, demoted entries after them in registry order", async () => {
+    // Two fresh-0% mapped providers (zai and minimax — registry 0 and
+    // 1; minimax resolves through the model-alias table) and one
+    // natural unknown registry-later (exa, registry 3). D6 order:
+    // [natural unknowns in registry order] then [demoted entries in
+    // registry order] ⇒ exa, zai, minimax.
+    const observedAt = 1_700_000_000_000;
+    const state = await stateWith([
+      { provider: "zai", categories: depletedRequests, observedAt },
+      {
+        provider: "minimax",
+        categories: [{ name: "zorla-x", unit: "requests", current: { remainingPercent: 0 } }],
+        observedAt,
+      },
+      { provider: "exa", categories: [] },
+    ]);
+    const ranked = rankProvidersForCapability(state, "search", ["minimax", "exa", "zai"], {
+      now: observedAt + 60_000,
+    });
+    assert.deepStrictEqual(ranked.map((r) => r.provider), ["exa", "zai", "minimax"]);
+    for (const r of ranked) {
+      assert.strictEqual(r.authority, "unknown");
+    }
+    assert.strictEqual(ranked[0].reason, "PROVIDER_NON_AUTHORITATIVE");
+    assert.strictEqual(ranked[1].reason, "KNOWN_EXHAUSTED");
+    assert.strictEqual(ranked[2].reason, "KNOWN_EXHAUSTED");
+  });
+
+  it("stale-0% (observedAt older than the horizon) stays known-at-0", async () => {
+    // Trust-decay guard: a snapshot older than the 24h horizon scores
+    // exactly as it did before #97 (known tier, score 0).
+    const observedAt = 1_700_000_000_000;
+    const state = await stateWith([
+      { provider: "zai", categories: depletedRequests, observedAt },
+      { provider: "exa", categories: [] },
+    ]);
+    const ranked = rankProvidersForCapability(state, "search", ["exa", "zai"], {
+      now: observedAt + QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS + 1,
+    });
+    assert.deepStrictEqual(ranked.map((r) => r.provider), ["zai", "exa"]);
+    assert.strictEqual(ranked[0].authority, "known");
+    assert.strictEqual(ranked[0].score, 0);
+    assert.strictEqual(ranked[1].authority, "unknown");
+  });
+
+  it("the horizon boundary is inclusive (age === horizon demotes; older does not)", async () => {
+    const observedAt = 1_700_000_000_000;
+    const state = await stateWith([
+      { provider: "zai", categories: depletedRequests, observedAt },
+      { provider: "exa", categories: [] },
+    ]);
+    const atHorizon = rankProvidersForCapability(state, "search", ["exa", "zai"], {
+      now: observedAt + QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS,
+    });
+    assert.strictEqual(atHorizon[0].provider, "exa");
+    assert.strictEqual(atHorizon[0].reason, "PROVIDER_NON_AUTHORITATIVE");
+    assert.strictEqual(atHorizon[1].reason, "KNOWN_EXHAUSTED");
+
+    const pastHorizon = rankProvidersForCapability(state, "search", ["exa", "zai"], {
+      now: observedAt + QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS + 1,
+    });
+    assert.strictEqual(pastHorizon[0].provider, "zai");
+    assert.strictEqual(pastHorizon[0].authority, "known");
+  });
+
+  it("scoreCapability is unchanged: a fresh-0% category is still known/0 with no demotion warning", async () => {
+    // D6: demotion lives in ranking, not in scoring's meaning. The
+    // scorer has no clock and never emits KNOWN_EXHAUSTED.
+    const observedAt = 1_700_000_000_000;
+    const state = await stateWith([{ provider: "zai", categories: depletedRequests, observedAt }]);
+    const { onWarning, warnings } = captureWarnings();
+    const result = scoreCapability(state, "zai", "search", {
+      now: observedAt + 1_000,
+      onWarning,
+    });
+    assert.deepStrictEqual(result, { authority: "known", score: 0, category: "requests" });
+    assert.deepStrictEqual(warnings.map((w) => w.code), []);
+  });
+
+  it("emits exactly one KNOWN_EXHAUSTED warning per demoted provider (de-duped candidates)", async () => {
+    const observedAt = 1_700_000_000_000;
+    const state = await stateWith([{ provider: "zai", categories: depletedRequests, observedAt }]);
+    const { onWarning, warnings } = captureWarnings();
+    const ranked = rankProvidersForCapability(state, "search", ["zai", "zai"], {
+      now: observedAt + 1_000,
+      onWarning,
+    });
+    assert.strictEqual(ranked.length, 1);
+    assert.strictEqual(ranked[0].reason, "KNOWN_EXHAUSTED");
+    assert.strictEqual(warnings.length, 1);
+    assert.strictEqual(warnings[0].code, "KNOWN_EXHAUSTED");
   });
 });
 

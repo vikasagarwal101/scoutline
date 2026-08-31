@@ -240,6 +240,17 @@ export interface ResolveEffectiveProviderOptions {
    * matches no descriptor and is skipped.
    */
   readonly routing?: Readonly<Record<string, readonly ProviderId[]>>;
+  /**
+   * The clock for the #97 KNOWN_EXHAUSTED demotion, as a Unix epoch
+   * millisecond, passed through to
+   * {@link rankProvidersForCapability}'s `ScoreOptions.now`. Absent ⇒
+   * the resolver evaluates snapshot freshness against the current
+   * clock, so existing no-`now` call sites typecheck and behave
+   * unchanged (snapshots older than the 24h
+   * `QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS` score exactly as before).
+   * Tests inject a fixed `now` for deterministic freshness.
+   */
+  readonly now?: number;
 }
 
 /**
@@ -273,8 +284,13 @@ export interface ResolveEffectiveProviderOptions {
  *      {@link rankProvidersForCapability} against the supplied
  *      snapshot. Known-tier providers are ranked by score descending;
  *      unknown-tier providers (Brave rate-limit, Exa no-quota) follow
- *      in registry order. A known provider at 5% remaining still wins
- *      over a non-authoritative provider.
+ *      in registry order. A healthy known provider at 5% remaining
+ *      still wins over a non-authoritative provider; since #97, a
+ *      known provider whose capability-mapped category reads 0% on a
+ *      snapshot observed within the 24h demotion horizon is demoted
+ *      below the natural unknowns, so an unknown-tier provider can be
+ *      picked over it (freshness is judged against `options.now`, or
+ *      the current clock when absent).
  *   4. **None eligible.** When no descriptor is both configured and
  *      capable, return `"zai"` — the compatibility default — so the
  *      executor surfaces the same typed exhaustion error today's
@@ -354,12 +370,19 @@ export function resolveEffectiveProvider(options: ResolveEffectiveProviderOption
   }
 
   // 3. Quota-aware ranking via PB-T3. The snapshot is present (guarded
-  //    above), so known-tier providers win over unknown-tier
-  //    providers. The first entry is the winner; the rest are available
-  //    to the executor's reactive candidate loop (which rebuilds
+  //    above), so healthy known-tier providers win over unknown-tier
+  //    providers — with the #97 carve-out: a known provider whose
+  //    capability-mapped category reads 0% on a snapshot within the
+  //    24h demotion horizon is demoted below the natural unknowns, so
+  //    a still-exhausted provider no longer floats to the first pick.
+  //    Freshness is judged against the injected `now`, or the current
+  //    clock when absent (existing call sites unchanged). The first
+  //    entry is the winner; the rest are available to the executor's
+  //    reactive candidate loop (which rebuilds
   //    [effective, ...registry] independently).
   const ranked = rankProvidersForCapability(quotaSnapshot, capabilityId, eligibleIds, {
     registryOrder: order,
+    now: options.now ?? Date.now(),
   });
   return ranked[0]?.provider ?? eligibleIds[0] ?? "zai";
 }

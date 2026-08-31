@@ -24,8 +24,16 @@
  *    Providers with a real credit/token signal form a **known tier**,
  *    ranked by score; providers without a signal (Brave rate-limit,
  *    Exa none) form an **unknown tier**, ranked after every known
- *    provider. The unknown tier never wins over a known provider, even
- *    a low-scored one.
+ *    provider. The unknown tier never wins over a healthy known
+ *    provider, even a low-scored one. The one exception is the #97
+ *    KNOWN_EXHAUSTED demotion: a known provider whose capability-mapped
+ *    category reads 0% on a snapshot observed within the 24h
+ *    {@link QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS} is demoted into the
+ *    unknown tier by the ranker and placed strictly below every
+ *    natural unknown. Demotion is ranking-only — the scorer still
+ *    returns `authority:"known", score:0` — and runs only when the
+ *    caller supplies a clock (`ScoreOptions.now`); without one the
+ *    checks are skipped and the pre-#97 ordering holds.
  *
  * Boundary rules:
  *   - Imports the quota contract types from `capabilities/quota.js`,
@@ -55,6 +63,7 @@ import type { QuotaCategory } from "../capabilities/quota.js";
 import type { ProviderCapability, ProviderId } from "../providers/types.js";
 import { PROVIDER_IDS } from "../providers/types.js";
 import type { QuotaState } from "./quota-store.js";
+import { QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS } from "./quota-store.js";
 
 // ---------------------------------------------------------------------------
 // Authority-bearing score result
@@ -71,10 +80,13 @@ import type { QuotaState } from "./quota-store.js";
  *   ranked.
  * - `authority: "unknown"` — no authoritative signal is available
  *   (provider has no spend quota; snapshot missing; mapped category
- *   absent and no fallback matched; percent corrupt). `reason` is a
- *   stable, machine-readable reason code, NOT a user-facing message.
- *   Unknown entries are eligible as fallback but never win over a
- *   known-scored provider (PB-T4 contract).
+ *   absent and no fallback matched; percent corrupt; or — since #97 —
+ *   the ranker demoted a fresh-0% known score to KNOWN_EXHAUSTED).
+ *   `reason` is a stable, machine-readable reason code, NOT a
+ *   user-facing message. Unknown entries are eligible as fallback and
+ *   rank after every healthy known-scored provider (PB-T4 contract);
+ *   a known provider demoted to KNOWN_EXHAUSTED ranks after the
+ *   natural unknowns.
  *
  * `unknown` is NEVER encoded as a numeric score (no neutral `50`, no
  * `Infinity`, no `0`). This is the explicit fix for the "neutral 50 yet
@@ -125,7 +137,20 @@ export type UnknownScoreReason =
    * this, but a hand-edited `state.json` could violate it; the scorer
    * treats corrupt input as unknown rather than synthesizing a score.
    */
-  | "PERCENT_CORRUPT";
+  | "PERCENT_CORRUPT"
+  /**
+   * Ranking-only demotion (#97): the provider scored
+   * `authority:"known", score:0` — its capability-mapped category is
+   * depleted — on a snapshot whose `observedAt` is within
+   * {@link QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS} of the caller's
+   * clock. The ranker rewrites the entry into the unknown tier and
+   * ranks it strictly below every natural unknown, so a
+   * still-exhausted provider no longer floats to the top of the
+   * selection order. Never produced by {@link scoreCapability}
+   * (demotion lives in ranking, not in scoring's meaning) and never
+   * when no clock was supplied.
+   */
+  | "KNOWN_EXHAUSTED";
 
 // ---------------------------------------------------------------------------
 // Mapping table — (provider, capability) → category aliases
@@ -373,8 +398,11 @@ export const CAPABILITY_MAPPINGS: readonly CapabilityMappingEntry[] = [
  * - `"always-unknown"` — the provider has no authoritative spend
  *   signal. {@link CapabilityScore} always returns `authority:"unknown"`
  *   with the documented reason, regardless of whether a snapshot
- *   exists. The provider remains **eligible** for PB-T4 fallback, but
- *   it never wins over a known-scored provider.
+ *   exists. The provider remains **eligible** for PB-T4 fallback; it
+ *   never wins over a healthy known-scored provider (since #97, a
+ *   known provider whose capability-mapped category reads 0% on a
+ *   snapshot within the 24h demotion horizon is demoted below the
+ *   unknown tier itself, so "healthy" is the operative word).
  *
  * `reason` is surfaced unchanged through the warning channel when a
  * score is requested for an always-unknown provider; it documents the
@@ -413,8 +441,12 @@ export interface ProviderAuthorityPolicy {
  *   percentage-bounded plan signal.
  *
  * All six providers stay **eligible** for PB-T4 fallback (their
- * `authority:"unknown"` score sorts after every known provider), so
- * they can still be picked when no known provider remains.
+ * `authority:"unknown"` score sorts after every healthy known
+ * provider), so they can still be picked when no healthy known
+ * provider remains. Since #97 they can even outrank a mapped provider:
+ * a known-tier provider whose capability-mapped category reads 0% on
+ * a snapshot observed within the 24h demotion horizon is demoted below
+ * the natural unknowns in the ranking.
  */
 export const PROVIDER_AUTHORITY_POLICIES: readonly ProviderAuthorityPolicy[] = [
   { provider: "zai", kind: "mapped", reason: "Z.AI exposes TIME_LIMIT/TOKENS_LIMIT signals." },
@@ -500,7 +532,8 @@ export interface QuotaMappingWarning {
     | "SNAPSHOT_EMPTY"
     | "CATEGORY_NOT_FOUND"
     | "PROVIDER_FALLBACK_USED"
-    | "PERCENT_CORRUPT";
+    | "PERCENT_CORRUPT"
+    | "KNOWN_EXHAUSTED";
   readonly provider: ProviderId;
   readonly capability: ProviderCapability;
   readonly message: string;
@@ -637,6 +670,19 @@ export interface ScoreOptions {
    * stderr writer; tests inject a recorder.
    */
   readonly onWarning?: (warning: QuotaMappingWarning) => void;
+  /**
+   * The clock for the #97 KNOWN_EXHAUSTED demotion, as a Unix epoch
+   * millisecond. This module stays clockless: when `now` is absent
+   * the exhaustiveness check is skipped entirely and ranking behaves
+   * exactly as it did before #97 (a 0% known provider outranks the
+   * unknown tier). When supplied, a known-tier candidate whose
+   * capability-mapped category read 0% on a snapshot observed within
+   * {@link QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS} of this clock is
+   * demoted below the natural unknowns in
+   * {@link rankProvidersForCapability}. Ignored by
+   * {@link scoreCapability} — scoring's meaning is unchanged (D6).
+   */
+  readonly now?: number;
 }
 
 function isTrustworthyPercent(value: unknown): value is number {
@@ -795,9 +841,17 @@ export function scoreCapability(
  *
  * - Known-tier entries appear first, sorted by `score` descending.
  *   Ties break by registry order (`PROVIDER_IDS` by default, or the
- *   `registryOrder` option).
- * - Unknown-tier entries appear after every known entry, in registry
- *   order. They remain eligible as fallback.
+ *   `registryOrder` option). A known-tier provider whose
+ *   capability-mapped category reads 0% on a snapshot within the 24h
+ *   demotion horizon (#97, `ScoreOptions.now` supplied) does not stay
+ *   here — it is demoted to the unknown tier with reason
+ *   `KNOWN_EXHAUSTED`.
+ * - Unknown-tier entries appear after every (healthy) known entry, in
+ *   registry order. They remain eligible as fallback.
+ * - Demoted (`KNOWN_EXHAUSTED`) entries rank strictly below every
+ *   natural unknown: natural unknowns first in registry order, then
+ *   demoted entries in registry order (D6 positioning). Without a
+ *   supplied clock no demotion happens and this band is empty.
  *
  * Optional fields are present only when meaningful: `score`/`category`
  * for known entries; `reason` for unknown entries.
@@ -819,15 +873,27 @@ export interface RankedProvider {
  *
  * Algorithm:
  *   1. Score each candidate via {@link scoreCapability}.
- *   2. Partition into known and unknown tiers.
- *   3. Sort known tier by score desc; break ties by registry order.
- *   4. Sort unknown tier by registry order only.
- *   5. Concatenate: known first, then unknown.
+ *   2. Demote fresh-exhausted known entries (#97): when a clock was
+ *      supplied, a known entry whose capability-mapped category read
+ *      0% on a snapshot observed within
+ *      {@link QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS} is rewritten to
+ *      the unknown tier with reason `KNOWN_EXHAUSTED`.
+ *   3. Partition into known and unknown tiers.
+ *   4. Sort known tier by score desc; break ties by registry order.
+ *   5. Sort unknown tier by registry order only.
+ *   6. Concatenate: known first, then natural unknowns in registry
+ *      order, then demoted entries in registry order (D6 positioning —
+ *      demoted entries rank strictly below every natural unknown).
  *
- * The "5% known beats unknown" contract falls out of steps 3–5: every
- * known entry precedes every unknown entry regardless of score. A
- * known provider at 5% remaining still ranks above a non-authoritative
- * Brave/Exa provider, because Brave/Exa are in the unknown tier.
+ * The "5% known beats unknown" contract falls out of steps 3–6: every
+ * healthy known entry precedes every unknown entry regardless of
+ * score. A known provider at 5% remaining still ranks above a
+ * non-authoritative Brave/Exa provider, because Brave/Exa are in the
+ * unknown tier. The contract is freshness-scoped since #97: at 0% on a
+ * fresh snapshot the provider is demoted below the unknown tier
+ * instead — the one case where an unknown-tier provider outranks a
+ * known one. Without a supplied clock the demotion never runs and the
+ * pre-#97 ordering holds byte-for-byte.
  *
  * Duplicate candidates are de-duplicated in first-occurrence order
  * before scoring (defensive — PB-T4 builds candidate lists, and a
@@ -879,8 +945,53 @@ export function rankProvidersForCapability(
     inputOrder: idx,
   }));
 
-  const known = staged.filter((s) => s.score.authority === "known");
-  const unknown = staged.filter((s) => s.score.authority === "unknown");
+  // Demotion pass (#97, D6) — between staging and the known/unknown
+  // partition. A staged known entry whose capability-mapped category
+  // read 0% on a snapshot observed within the 24h horizon is rewritten
+  // to the unknown tier with reason KNOWN_EXHAUSTED. The mapping
+  // lookup is the same one the scorer uses (getCapabilityMapping;
+  // MiniMax alias expansion happens inside the scorer, so a known-0
+  // score already proves a mapped category matched), and a provider
+  // with no mapping row cannot demote because it can never score
+  // known. Demotion is skipped entirely when no clock was supplied —
+  // the module stays clockless and no-`now` callers see pre-#97
+  // ranking. scoreCapability itself is untouched: a fresh-0% category
+  // still scores known/0 (D6).
+  const nowMs = options.now;
+  const demoted = new Set<ProviderId>();
+  if (nowMs !== undefined) {
+    const onWarning = options.onWarning ?? (() => {});
+    for (const s of staged) {
+      if (s.score.authority !== "known" || s.score.score !== 0) continue;
+      if (!getCapabilityMapping(s.provider, capability)) continue;
+      const snapshot = state.quota[s.provider];
+      if (!snapshot) continue;
+      if (nowMs - snapshot.observedAt > QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS) continue;
+      demoted.add(s.provider);
+      onWarning({
+        code: "KNOWN_EXHAUSTED",
+        provider: s.provider,
+        capability,
+        message: `${s.provider} is exhausted for ${capability} (mapped category "${s.score.category}" at 0% on a snapshot ${Math.round((nowMs - snapshot.observedAt) / 60000)} min old, within the 24h demotion horizon); demoted below unknown-tier providers.`,
+      });
+    }
+  }
+  const effective: Staged[] = staged.map((s) =>
+    demoted.has(s.provider)
+      ? { ...s, score: { authority: "unknown", reason: "KNOWN_EXHAUSTED" } as CapabilityScore }
+      : s,
+  );
+
+  const known = effective.filter((s) => s.score.authority === "known");
+  // D6 positioning: natural unknowns and demoted entries are kept in
+  // separate bands so a demoted provider can never ride registry order
+  // above a natural unknown.
+  const naturalUnknown = effective.filter(
+    (s) => s.score.authority === "unknown" && !demoted.has(s.provider),
+  );
+  const demotedUnknown = effective.filter(
+    (s) => s.score.authority === "unknown" && demoted.has(s.provider),
+  );
 
   // Known tier: score desc, registry order, then input order (stable).
   known.sort((a, b) => {
@@ -891,11 +1002,15 @@ export function rankProvidersForCapability(
     return a.inputOrder - b.inputOrder;
   });
 
-  // Unknown tier: registry order, then input order (stable).
-  unknown.sort((a, b) => {
+  // Unknown tiers: registry order, then input order (stable). The
+  // natural-unknown band sorts first; the demoted band sorts after it
+  // (D6 positioning).
+  const sortByRegistry = (a: Staged, b: Staged) => {
     if (a.orderRank !== b.orderRank) return a.orderRank - b.orderRank;
     return a.inputOrder - b.inputOrder;
-  });
+  };
+  naturalUnknown.sort(sortByRegistry);
+  demotedUnknown.sort(sortByRegistry);
 
   const toRanked = (s: Staged): RankedProvider => {
     if (s.score.authority === "known") {
@@ -913,5 +1028,9 @@ export function rankProvidersForCapability(
     };
   };
 
-  return [...known.map(toRanked), ...unknown.map(toRanked)];
+  return [
+    ...known.map(toRanked),
+    ...naturalUnknown.map(toRanked),
+    ...demotedUnknown.map(toRanked),
+  ];
 }

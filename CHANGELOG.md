@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Provider selection is now exhaustion-aware (#97):** a known-tier provider whose capability-mapped quota category reads 0% on a snapshot observed within the last 24 hours (`QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS`) is demoted below the unknown tier in the quota-ranked pick — a depleted provider no longer outranks healthy non-authoritative providers (linkup/you/parallel/spider/…) just because it is mapped. Demotion is ranking-only (scoring still reports `authority:"known", score:0`), strictly below every natural unknown (ADR-0005), runs only when a clock is supplied (programmatic callers without `now` keep the pre-#97 ordering byte-for-byte), and the routing-prefix walk plus reactive fallback are unchanged. The previously documented "0%-known still wins" contract is reversed; configuration.md and the ranking docstrings describe the new bands.
 - `quota` dashboard rows now present **healthy-first** (#96): `ok` rows, then probe errors, then no-capability rows, with registry order preserved within each class (stable sort — same-class rows never reorder). Previously rows were presented in raw registry order regardless of health. Resolution is still settled-all; exit codes and the single-provider default dashboard are unchanged. The ordering is now the documented contract (architecture.md, `quota --help`, SKILL.md).
 
 ## [0.19.3] - 2026-08-31

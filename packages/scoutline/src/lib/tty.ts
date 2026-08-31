@@ -134,6 +134,11 @@ function renderCategory(category: QuotaCategoryLike, lines: string[]): void {
   const counts: string[] = [];
   if (typeof current.used === "number" && typeof current.limit === "number") {
     counts.push(`${current.used}/${current.limit}`);
+  } else if (typeof current.used === "number") {
+    // Used-only window (#99): the provider publishes an observed usage
+    // count but no ceiling (Tavily's unlimited key). Surface the count
+    // without fabricating a limit or a remaining figure.
+    counts.push(`${color.gray(`${current.used} used`)}`);
   }
   if (typeof current.remaining === "number") {
     counts.push(`${color.green(`${current.remaining} left`)}`);

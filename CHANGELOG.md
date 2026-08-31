@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- The TTY quota dashboard now renders a used-only window's observed count (`N used`) instead of printing no counts line — the JSON has carried `used` for ceiling-less windows since #99; the terminal view catches up. No limit or remaining is fabricated.
+
+## [0.19.6] - 2026-09-01
+
+### Changed
+
 - **Tavily unlimited keys keep their observed usage count (#99):** `buildQuotaWindow` now retains a valid `used` alongside an explicit remaining percentage when no `limit` exists (used-only window), instead of silently dropping it — Tavily's `/usage` documents `key.limit` as null for unlimited keys, and those dashboards previously showed a bare "100% remaining" with no counts. `limit` and `remaining` stay omitted rather than fabricated; every other input shape is byte-identical (additive under QuotaDashboard schema v1).
 
 ### Documentation

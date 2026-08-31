@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **Linkup quota `unit` is now `"USD"`** (was `"credits"`): Linkup's `/v1/credits/balance` returns a dollar-denominated prepaid balance (per-call costs of $0.005–$2.50 are quoted in USD; "credits" is Linkup's branding), so the quota category publishes the exact remaining amount under `unit: "USD"`. Category name and numeric value are unchanged; the TTY dashboard (which never renders the unit field) is unaffected. Scripted consumers keying on `unit == "credits"` for linkup must update.
+
 ## [0.19.1] - 2026-08-30
 
 ### Fixed

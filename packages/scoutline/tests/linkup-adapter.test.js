@@ -609,7 +609,7 @@ describe("Linkup Quota + Diagnostics Adapters — credits balance", () => {
     assert.equal(dash.provider, "linkup");
     assert.equal(dash.status, "ok");
     assert.equal(dash.categories[0].name, "credits");
-    assert.equal(dash.categories[0].unit, "credits");
+    assert.equal(dash.categories[0].unit, "USD");
     assert.equal(dash.categories[0].current.remaining, 42);
     assert.equal(dash.categories[0].current.remainingPercent, undefined);
   });

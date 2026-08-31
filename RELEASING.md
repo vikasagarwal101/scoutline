@@ -2,6 +2,8 @@
 
 This project uses manual releases with Git tags and release notes derived from CHANGELOG.md.
 
+**Preferred:** run `scripts/release.sh <X.Y.Z>` (add `--dry-run` to exercise every gate without shipping). It encodes the checklist below with fail-loud gates on the steps that have historically failed silently — the CHANGELOG retitle, non-empty release notes, tag placement, and registry propagation. The manual checklist remains as the reference for what it does.
+
 ## Checklist
 
 1. Make sure the working tree is clean.

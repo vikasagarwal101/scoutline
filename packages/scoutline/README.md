@@ -409,6 +409,7 @@ scoutline quota --all-providers       # every configured Provider
 scoutline doctor                      # full diagnostics
 scoutline doctor --no-tools           # metadata only, no transport
 scoutline doctor --provider minimax   # MiniMax connectivity
+scoutline doctor --available          # availability-"ok" rows only
 
 # Cache - inspect, clear, or prune the local cache
 scoutline cache stats                 # inventory of both subdirectories (live/expired, per provider and capability)
@@ -466,7 +467,16 @@ Quota output is a schema-version-1 `QuotaDashboard`:
 
 Doctor output is a schema-version-2 `DiagnosticsReport` listing every built-in
 Provider with its configured state, declared capabilities, probe status, and a
-one-line cache summary under the `cache` field.
+one-line cache summary under the `cache` field. Every provider row also carries
+an `availability` classification with the closed vocabulary
+`ok | exhausted | error | unconfigured`: `exhausted` requires fresh
+quota-snapshot evidence (a capability-relevant category at 0% remaining within
+the 10-minute staleness gate) regardless of the probe outcome — a probe error
+with fresh 0% evidence is `exhausted`, and a missing snapshot never fabricates
+exhaustion. Rows are ordered healthy-first (`ok`, then `exhausted`, then
+`error`, then `unconfigured`; same-class rows keep registry order), and the
+top-level `availableProviders` array lists the `ok` providers in registry
+order.
 
 ## Notes
 
@@ -478,7 +488,10 @@ one-line cache summary under the `cache` field.
 - `quota --all-providers` exits 1 if any configured Provider fails; successful
   entries are still reported.
 - `doctor` exits 1 when the effective Provider is unconfigured or any
-  configured probe fails; successful entries are still reported.
+  configured probe fails; successful entries are still reported. The
+  healthy-first row ordering never changes exit codes. `--available` filters
+  the `providers` array to the `availability: "ok"` rows; the
+  `availableProviders` summary is unchanged by the filter.
 - `read` returns a schema-version-1 envelope (content read or extract read) in every output mode. `--with-images-summary`, `--no-gfm`, and `--keep-img-data-url` are passed through to the Provider request. `--max-chars` is ignored on extract reads; `--full-envelope` is silently deprecated.
 - Vision tool calls automatically retry transient 5xx/network errors (default: 2 retries). Configure with `ZAI_MCP_VISION_RETRY_COUNT` (or `ZAI_MCP_RETRY_COUNT` for all tools).
 - Tool discovery can be cached to speed `tools`/`tool`/`doctor` (default: on, 24h TTL). The cache shares the unified root with the response cache; configure both via `SCOUTLINE_CACHE`, `SCOUTLINE_CACHE_TTL_MS`, `SCOUTLINE_CACHE_SIZE_MB`, and `SCOUTLINE_CACHE_DIR` (legacy aliases `ZAI_MCP_TOOL_CACHE*`, `ZAI_MCP_CACHE_DIR`, and `ZAI_CACHE*` are accepted silently).

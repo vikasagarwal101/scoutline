@@ -958,6 +958,27 @@ Each provider entry in the diagnostics report carries:
 - `verification`: mirrors Plan A's `config.providers[id].verification`
   record so the user can see when each provider was last verified by
   a successful `doctor` probe.
+- `availability`: `ok | exhausted | error | unconfigured` — the
+  provider's usable-now verdict, derived in precedence order
+  (first match wins): a not-configured skip is `unconfigured`; a
+  fresh snapshot entry (within `DEFAULT_QUOTA_STALE_THRESHOLD_MS`,
+  10 min) with a **capability-relevant** category at
+  `remainingPercent === 0` is `exhausted` regardless of the probe
+  outcome (capability-relevant = the categories the quota ranking
+  maps for that provider — Tavily's key-pool `requests`, not its
+  account-level `plan`; providers with no mapping fall back to any
+  fresh category at 0%); a probe failure without fresh-0% evidence is
+  `error`; everything else is `ok`. A missing snapshot entry never
+  fabricates `exhausted`, and `--no-tools` rows carry the same
+  snapshot rule (a tools-disabled row with fresh-0% evidence is
+  `exhausted` with its row status still `skipped`). Rows are ordered
+  healthy-first — `ok`, then `exhausted`, then `error`, then
+  `unconfigured`, with same-class rows keeping registry order
+  (stable) — and the report's `availableProviders` array lists the
+  `ok` providers in registry order. `--available` filters the
+  `providers` array to the `ok` rows (`availableProviders` is
+  unchanged by the filter). Exit codes are unchanged by the ordering.
+  Additive under DiagnosticsReport schema version 2.
 
 ### Correlating selection with the dashboard
 

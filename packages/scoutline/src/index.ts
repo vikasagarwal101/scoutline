@@ -2717,6 +2717,11 @@ async function handleDoctor(
   }
 
   const noTools = flags["no-tools"] === true;
+  // #94 — `--available` filters the report's providers array to
+  // availability-"ok" rows. The filter itself lives in
+  // buildDiagnosticsReport (availableOnly); only the flag parse
+  // happens here.
+  const availableOnly = flags["available"] === true;
   // Resolve the effective Provider ID for report metadata, mirroring
   // Search/Vision/quota. Descriptors are intentionally NOT passed here so
   // the report always lists every built-in Provider even when the
@@ -2737,6 +2742,7 @@ async function handleDoctor(
         buildReport: () =>
           buildDiagnosticsReport({
             noTools,
+            availableOnly,
             effectiveProvider,
             descriptors: deps.providerDescriptors,
             env: deps.env,

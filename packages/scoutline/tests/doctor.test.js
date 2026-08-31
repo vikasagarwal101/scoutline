@@ -1254,3 +1254,362 @@ describe("doctor routing field", () => {
     assert.ok(DOCTOR_HELP.includes("config set routing"));
   });
 });
+
+// ===========================================================================
+// Availability — classification, healthy-first ordering, availableProviders,
+// and --available (#94). Availability NEVER fabricates: no snapshot entry
+// means never "exhausted". Exhaustion evidence is snapshot-based (fresh 0%
+// on a capability-relevant category), never probe-error-based.
+// ===========================================================================
+
+const AVAIL_NOW = 1_800_000_000_000;
+const FRESH = AVAIL_NOW - 1_000; // 1s old — inside the 10-min staleness gate
+const STALE = AVAIL_NOW - 11 * 60 * 1000; // 11min old — outside the gate
+
+/** Build a ProviderQuotaSnapshot entry from [name, remainingPercent] pairs. */
+function availabilitySnapshot(pairs, observedAt = FRESH) {
+  return {
+    observedAt,
+    categories: pairs.map(([name, remainingPercent]) => ({
+      name,
+      unit: "requests",
+      current: { remainingPercent },
+    })),
+  };
+}
+
+describe("doctor availability — mapping helper (quota-mapping)", () => {
+  it("getProviderQuotaCategoryNames returns aliases plus fallback, and undefined for unmapped providers", async () => {
+    const { getProviderQuotaCategoryNames } = await import("../dist/lib/quota-mapping.js");
+    // zai — static aliases only: requests + tokens.
+    assert.deepStrictEqual([...getProviderQuotaCategoryNames("zai")].sort(), [
+      "requests",
+      "tokens",
+    ]);
+    // tavily — endpoint aliases PLUS the aggregate `requests` provider
+    // fallback; account-level `plan` is absent (it is not
+    // capability-relevant and must not mask a key-pool 0%).
+    const tavilyNames = getProviderQuotaCategoryNames("tavily");
+    assert.ok(tavilyNames?.has("requests"), "tavily includes the provider fallback pool");
+    assert.ok(tavilyNames?.has("search"), "tavily includes endpoint aliases");
+    assert.ok(!tavilyNames?.has("plan"), "tavily excludes the account-level plan category");
+    // minimax — the static rows are an empty-alias sentinel; the helper
+    // expands through the model-alias table like the scorer does.
+    const minimaxNames = getProviderQuotaCategoryNames("minimax");
+    assert.ok(minimaxNames?.has("zorla-x"), "minimax expands the model-alias table");
+    // brave — no mapping rows at all.
+    assert.strictEqual(getProviderQuotaCategoryNames("brave"), undefined);
+  });
+});
+
+describe("doctor availability — classification and ordering (#94)", () => {
+  function availabilityDeps(overrides = {}) {
+    return {
+      noTools: false,
+      effectiveProvider: "zai",
+      descriptors: [],
+      env: {},
+      sleep: NO_SLEEP,
+      random: NO_RANDOM,
+      now: () => AVAIL_NOW,
+      ...overrides,
+    };
+  }
+
+  it("classifyAvailability precedence: unconfigured > exhausted > error > ok", async () => {
+    const { classifyAvailability } = await import("../dist/lib/availability.js");
+    // unconfigured wins even over fresh-0% evidence.
+    assert.strictEqual(
+      classifyAvailability(
+        { status: "skipped", provider: "zai", reason: "not-configured" },
+        availabilitySnapshot([["tokens", 0]]),
+        AVAIL_NOW,
+      ),
+      "unconfigured",
+    );
+    // exhausted beats error: probe failure + fresh 0% evidence.
+    assert.strictEqual(
+      classifyAvailability(
+        { status: "error", provider: "zai" },
+        availabilitySnapshot([["requests", 0]]),
+        AVAIL_NOW,
+      ),
+      "exhausted",
+    );
+    // probe failure without fresh-0% evidence is plain error.
+    assert.strictEqual(
+      classifyAvailability({ status: "error", provider: "zai" }, undefined, AVAIL_NOW),
+      "error",
+    );
+    // a healthy row with no evidence is ok.
+    assert.strictEqual(
+      classifyAvailability({ status: "ok", provider: "zai" }, undefined, AVAIL_NOW),
+      "ok",
+    );
+  });
+
+  it("compareAvailabilityRows sorts by class rank then injected registry rank, stable on full ties", async () => {
+    const { AVAILABILITY_CLASS_RANK, compareAvailabilityRows } = await import(
+      "../dist/lib/availability.js"
+    );
+    assert.deepStrictEqual(AVAILABILITY_CLASS_RANK, {
+      ok: 0,
+      exhausted: 1,
+      error: 2,
+      unconfigured: 3,
+    });
+    const rows = [
+      { id: "a", cls: "unconfigured", rank: 2 },
+      { id: "b", cls: "ok", rank: 9 },
+      { id: "c", cls: "error", rank: 1 },
+      { id: "d", cls: "ok", rank: 1 },
+    ];
+    const sorted = [...rows].sort((x, y) =>
+      compareAvailabilityRows(
+        x,
+        y,
+        (row) => AVAILABILITY_CLASS_RANK[row.cls],
+        (row) => row.rank,
+      ),
+    );
+    assert.deepStrictEqual(
+      sorted.map((row) => row.id),
+      ["d", "b", "c", "a"],
+    );
+    // No tiebreak injected: equal classes keep input order (stability).
+    const stable = [...rows].sort((x, y) =>
+      compareAvailabilityRows(x, y, (row) => AVAILABILITY_CLASS_RANK[row.cls]),
+    );
+    assert.deepStrictEqual(
+      stable.map((row) => row.id),
+      ["b", "d", "c", "a"],
+    );
+  });
+
+  it("inverted fixture: an error row registry-earlier than an ok row is reported healthy-first", async () => {
+    const descriptors = [
+      makeZaiDescriptor({
+        listToolsImpl: () => {
+          throw new AuthError("zai auth failed");
+        },
+      }),
+      makeMiniMaxDescriptor({
+        fetchImpl: () => ({ ok: true, status: 200, json: async () => ({ model_remains: [] }) }),
+      }),
+    ];
+    const report = await buildDiagnosticsReport(
+      availabilityDeps({
+        descriptors,
+        env: { Z_AI_API_KEY: ZAI_KEY, MINIMAX_API_KEY: MINIMAX_KEY },
+        effectiveProvider: "zai",
+      }),
+    );
+    // The sort is the red-first pin: before #94 the rows stayed in
+    // registry order [zai, minimax].
+    assert.deepStrictEqual(
+      report.providers.map((p) => p.provider),
+      ["minimax", "zai"],
+      "healthy-first ordering (D7): ok row precedes the error row",
+    );
+    assert.deepStrictEqual(
+      report.providers.map((p) => p.availability),
+      ["ok", "error"],
+    );
+    assert.deepStrictEqual(report.availableProviders, ["minimax"]);
+  });
+
+  it("probe-ok row with a fresh capability-relevant category at 0% is exhausted", async () => {
+    const descriptors = [makeZaiDescriptor({ listToolsImpl: () => [] })];
+    const report = await buildDiagnosticsReport(
+      availabilityDeps({
+        descriptors,
+        env: { Z_AI_API_KEY: ZAI_KEY },
+        quotaSnapshot: { version: 1, quota: { zai: availabilitySnapshot([["tokens", 0]]) } },
+      }),
+    );
+    const zai = report.providers[0];
+    assert.strictEqual(zai.status, "ok", "probe outcome is preserved");
+    assert.strictEqual(zai.availability, "exhausted");
+    assert.deepStrictEqual(report.availableProviders, [], "an exhausted row is not available");
+  });
+
+  it("probe-error row with fresh 0% evidence is exhausted, not error (D2 precedence)", async () => {
+    const descriptors = [
+      makeMiniMaxDescriptor({
+        fetchImpl: () => {
+          throw new Error("MiniMax request failed");
+        },
+      }),
+    ];
+    const report = await buildDiagnosticsReport(
+      availabilityDeps({
+        descriptors,
+        env: { MINIMAX_API_KEY: MINIMAX_KEY },
+        effectiveProvider: "minimax",
+        quotaSnapshot: {
+          version: 1,
+          quota: { minimax: availabilitySnapshot([["zorla-x", 0]]) },
+        },
+      }),
+    );
+    const minimax = report.providers[0];
+    assert.strictEqual(minimax.status, "error", "probe failure is preserved");
+    assert.strictEqual(minimax.availability, "exhausted", "snapshot evidence outranks the probe");
+  });
+
+  it("stale 0% evidence never exhausts and a missing snapshot never exhausts", async () => {
+    const descriptors = [makeZaiDescriptor({ listToolsImpl: () => [] })];
+    const staleReport = await buildDiagnosticsReport(
+      availabilityDeps({
+        descriptors,
+        env: { Z_AI_API_KEY: ZAI_KEY },
+        quotaSnapshot: {
+          version: 1,
+          quota: { zai: availabilitySnapshot([["tokens", 0]], STALE) },
+        },
+      }),
+    );
+    assert.strictEqual(staleReport.providers[0].availability, "ok");
+    const noSnapshotReport = await buildDiagnosticsReport(
+      availabilityDeps({
+        descriptors,
+        env: { Z_AI_API_KEY: ZAI_KEY },
+        quotaSnapshot: { version: 1, quota: {} },
+      }),
+    );
+    assert.strictEqual(noSnapshotReport.providers[0].availability, "ok");
+  });
+
+  it("a non-capability-relevant category at 0% does not mask healthy mapped pools", async () => {
+    const descriptors = [makeZaiDescriptor({ listToolsImpl: () => [] })];
+    const report = await buildDiagnosticsReport(
+      availabilityDeps({
+        descriptors,
+        env: { Z_AI_API_KEY: ZAI_KEY },
+        quotaSnapshot: {
+          version: 1,
+          quota: {
+            // "plan" is not in zai's capability mapping — its 0% is
+            // ignored; the mapped `tokens` pool is healthy.
+            zai: availabilitySnapshot([
+              ["plan", 0],
+              ["tokens", 95],
+            ]),
+          },
+        },
+      }),
+    );
+    assert.strictEqual(report.providers[0].availability, "ok");
+  });
+
+  it("unmapped provider falls back to any fresh category at 0% (--no-tools row, status stays skipped)", async () => {
+    const report = await buildDiagnosticsReport(
+      availabilityDeps({
+        noTools: true,
+        descriptors: [capabilityDescriptor("brave", ["search", "diagnostics"])],
+        env: { BRAVE_SEARCH_API_KEY: "brave-key" },
+        quotaSnapshot: {
+          version: 1,
+          quota: { brave: availabilitySnapshot([["Searches", 0]]) },
+        },
+      }),
+    );
+    const brave = report.providers[0];
+    assert.strictEqual(brave.status, "skipped", "no-tools status is unchanged");
+    assert.strictEqual(brave.reason, "tools-disabled");
+    assert.strictEqual(brave.availability, "exhausted", "any-category fallback applies");
+  });
+
+  it("unconfigured row is unconfigured; unconfigured beats fresh-0% evidence", async () => {
+    const report = await buildDiagnosticsReport(
+      availabilityDeps({
+        descriptors: [capabilityDescriptor("zai", ["search", "quota", "diagnostics"], false)],
+        quotaSnapshot: { version: 1, quota: { zai: availabilitySnapshot([["tokens", 0]]) } },
+      }),
+    );
+    const zai = report.providers[0];
+    assert.strictEqual(zai.status, "skipped");
+    assert.strictEqual(zai.reason, "not-configured");
+    assert.strictEqual(zai.availability, "unconfigured");
+  });
+
+  it("tools-disabled row with a healthy snapshot is ok", async () => {
+    const report = await buildDiagnosticsReport(
+      availabilityDeps({
+        noTools: true,
+        descriptors: [capabilityDescriptor("zai", ["search", "quota", "diagnostics"])],
+        env: { Z_AI_API_KEY: ZAI_KEY },
+        quotaSnapshot: { version: 1, quota: { zai: availabilitySnapshot([["tokens", 95]]) } },
+      }),
+    );
+    const zai = report.providers[0];
+    assert.strictEqual(zai.status, "skipped");
+    assert.strictEqual(zai.reason, "tools-disabled");
+    assert.strictEqual(zai.availability, "ok");
+  });
+
+  it("availableProviders lists ok rows in registry (descriptor) order, not id-sorted order", async () => {
+    const descriptors = [
+      makeMiniMaxDescriptor({
+        fetchImpl: () => ({ ok: true, status: 200, json: async () => ({ model_remains: [] }) }),
+      }),
+      makeZaiDescriptor({ listToolsImpl: () => [] }),
+    ];
+    const report = await buildDiagnosticsReport(
+      availabilityDeps({
+        descriptors,
+        env: { Z_AI_API_KEY: ZAI_KEY, MINIMAX_API_KEY: MINIMAX_KEY },
+      }),
+    );
+    // Both rows are ok: registry order [minimax, zai], which is NOT the
+    // id-sorted order and NOT affected by the (no-op) healthy-first sort.
+    assert.deepStrictEqual(report.availableProviders, ["minimax", "zai"]);
+  });
+
+  it("--available filters the providers array to ok rows and leaves availableProviders unchanged", async () => {
+    const descriptors = [
+      makeZaiDescriptor({
+        listToolsImpl: () => {
+          throw new AuthError("zai auth failed");
+        },
+      }),
+      makeMiniMaxDescriptor({
+        fetchImpl: () => ({ ok: true, status: 200, json: async () => ({ model_remains: [] }) }),
+      }),
+    ];
+    const env = { Z_AI_API_KEY: ZAI_KEY, MINIMAX_API_KEY: MINIMAX_KEY };
+    const unfiltered = await buildDiagnosticsReport(
+      availabilityDeps({ descriptors, env, effectiveProvider: "zai" }),
+    );
+    const filtered = await buildDiagnosticsReport(
+      availabilityDeps({ descriptors, env, effectiveProvider: "zai", availableOnly: true }),
+    );
+    assert.deepStrictEqual(
+      unfiltered.providers.map((p) => p.provider),
+      ["minimax", "zai"],
+    );
+    assert.deepStrictEqual(
+      filtered.providers.map((p) => p.provider),
+      ["minimax"],
+      "only availability-ok rows survive the filter",
+    );
+    for (const row of filtered.providers) {
+      assert.strictEqual(row.availability, "ok");
+    }
+    assert.deepStrictEqual(
+      filtered.availableProviders,
+      unfiltered.availableProviders,
+      "availableProviders is unchanged by the filter",
+    );
+  });
+
+  it("help documents availability, availableProviders, --available, and the healthy-first ordering", () => {
+    assert.ok(DOCTOR_HELP.includes("--available"), "help documents the --available flag");
+    assert.ok(DOCTOR_HELP.includes("availableProviders"), "help documents availableProviders");
+    assert.ok(DOCTOR_HELP.includes("availability"), "help documents the availability field");
+    assert.ok(
+      /healthy-first/i.test(DOCTOR_HELP),
+      "help documents the healthy-first row ordering",
+    );
+  });
+});

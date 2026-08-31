@@ -558,6 +558,38 @@ export function resolveMiniMaxAliasesForCapability(
 }
 
 /**
+ * The union of capability-relevant quota category names for one
+ * provider — exactly the names the scorer can match for that provider:
+ * the effective `categoryAliases` of every {@link CAPABILITY_MAPPINGS}
+ * row (MiniMax rows expand through the model-alias table) plus each
+ * row's `providerFallbackCategory` (Tavily's aggregate `requests`
+ * pool). Account-level or informational categories a provider may also
+ * emit (e.g. Tavily's `plan`) are deliberately absent: they are not
+ * capability-relevant.
+ *
+ * Returns `undefined` when the provider has no mapping rows at all
+ * (observational-only or always-unknown providers) — callers choose
+ * their own fallback (doctor's availability classifier treats any
+ * fresh category at 0% as exhausted for unmapped providers).
+ */
+export function getProviderQuotaCategoryNames(
+  provider: ProviderId,
+): ReadonlySet<string> | undefined {
+  const rows = CAPABILITY_MAPPINGS.filter((m) => m.provider === provider);
+  if (rows.length === 0) return undefined;
+  const names = new Set<string>();
+  for (const row of rows) {
+    for (const alias of resolveEffectiveAliases(row, DEFAULT_MINIMAX_MODEL_ALIASES)) {
+      names.add(alias);
+    }
+    if (row.providerFallbackCategory !== undefined) {
+      names.add(row.providerFallbackCategory);
+    }
+  }
+  return names;
+}
+
+/**
  * Resolve the effective alias list for a mapping entry. For non-MiniMax
  * providers, returns the entry's static `categoryAliases`. For MiniMax,
  * expands the alias table.

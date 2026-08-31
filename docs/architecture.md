@@ -232,9 +232,10 @@ rate-limit window, **not** spend or credits consumed — Brave uses metered
 billing, so it is not a budget signal.
 
 `quota` reports the effective Provider by default. `quota --all-providers`
-queries every configured Provider in registry order using settled
-collection: a single Provider failure preserves the successful entries and
-yields exit 1.
+queries every configured Provider using settled collection and sorts the
+rows healthy-first — `ok` rows, then probe errors, then no-capability
+rows, with registry order preserved within each class — so a single
+Provider failure preserves the successful entries and yields exit 1.
 
 ### Diagnostics
 

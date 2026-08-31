@@ -768,7 +768,7 @@ describe("quota dashboard — all-provider mode", () => {
     assert.strictEqual(dashboard.providers[0].provider, "minimax");
   });
 
-  it("preserves registry order in the providers array", async () => {
+  it("preserves registry order for same-class (all ok) rows", async () => {
     const zai = makeQuotaDescriptor("zai", { result: ZAI_SUCCESS });
     const minimax = makeQuotaDescriptor("minimax", { result: MINIMAX_SUCCESS });
     const dashboard = await buildQuotaDashboard({
@@ -782,6 +782,26 @@ describe("quota dashboard — all-provider mode", () => {
     assert.deepStrictEqual(
       dashboard.providers.map((p) => p.provider),
       ["zai", "minimax"],
+    );
+  });
+
+  it("sorts rows healthy-first: an erroring zai yields to a healthy minimax (#96)", async () => {
+    const zai = makeQuotaDescriptor("zai", {
+      error: new ScoutlineError("fail", "API_ERROR"),
+    });
+    const minimax = makeQuotaDescriptor("minimax", { result: MINIMAX_SUCCESS });
+    const dashboard = await buildQuotaDashboard({
+      allProviders: true,
+      effectiveProvider: "zai",
+      descriptors: [zai, minimax],
+      env: { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k" },
+      sleep,
+      random,
+    });
+    assert.deepStrictEqual(
+      dashboard.providers.map((p) => p.provider),
+      ["minimax", "zai"],
+      "healthy (ok) rows sort before error rows regardless of registry order",
     );
   });
 

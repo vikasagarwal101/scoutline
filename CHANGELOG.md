@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- `quota` dashboard rows now present **healthy-first** (#96): `ok` rows, then probe errors, then no-capability rows, with registry order preserved within each class (stable sort — same-class rows never reorder). Previously rows were presented in raw registry order regardless of health. Resolution is still settled-all; exit codes and the single-provider default dashboard are unchanged. The ordering is now the documented contract (architecture.md, `quota --help`, SKILL.md).
+
 ## [0.19.3] - 2026-08-31
 
 ### Added

@@ -315,11 +315,13 @@ extract reads share the same cache entries as content reads.
 
 `scoutline quota` returns a schema-version-1 `QuotaDashboard` (ADR-0001).
 Percentages are remaining percentages clamped to `0..100`. Provider-specific
-fields do not cross the Interface.
+fields do not cross the Interface. In `--all-providers` mode rows sort
+healthy-first (#96): `ok` rows, then `error` rows, then `no-capability`
+rows, with registry order preserved within each class.
 
 ```bash
 scoutline quota                       # effective Provider
-scoutline quota --all-providers       # every configured Provider; exit 1 if any fails
+scoutline quota --all-providers       # every configured Provider, healthy-first; exit 1 if any fails
 ```
 
 `scoutline doctor` returns a **schema-version-2** `DiagnosticsReport`

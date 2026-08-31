@@ -509,7 +509,7 @@ describeIfLive("Provider live Quota — MiniMax", () => {
 });
 
 describeIfLive("Provider live Quota — all providers", () => {
-  it("quota --all-providers lists every configured provider in registry order", async () => {
+  it("quota --all-providers lists every configured provider healthy-first", async () => {
     if (!requireConfigured(zaiConfigured && minimaxConfigured)) {
       assert.fail("Both Z_AI_API_KEY and MINIMAX_API_KEY are required for live-release mode");
       return;
@@ -522,11 +522,16 @@ describeIfLive("Provider live Quota — all providers", () => {
     });
     const dashboard = JSON.parse(stdout);
     assertQuotaDashboardShape(dashboard, "zai");
-    // Registry order is zai, then minimax.
+    // Healthy-first ordering (#96): ok rows before error rows, with
+    // registry order (zai, then minimax) preserved within each class.
+    const classRank = new Map(
+      dashboard.providers.map((p) => [p.provider, p.status === "ok" ? 0 : 1]),
+    );
+    const expected = ["zai", "minimax"].sort((a, b) => classRank.get(a) - classRank.get(b));
     assert.deepStrictEqual(
       dashboard.providers.map((p) => p.provider),
-      ["zai", "minimax"],
-      "registry order preserved",
+      expected,
+      "healthy-first order preserved (ok rows before error rows; registry order within class)",
     );
     // Each entry is either success or failure; both are valid live.
     const allOk = dashboard.providers.every((p) => p.status === "ok");

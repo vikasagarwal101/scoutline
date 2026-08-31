@@ -35,6 +35,7 @@ import type { ProviderDescriptor, ProviderId } from "../providers/types.js";
 import { getProviderDescriptor } from "../providers/selection.js";
 import { redactSecrets, configuredSecrets, redactCredentialString } from "../lib/redact.js";
 import { formatQuotaDashboard } from "../lib/tty.js";
+import { compareAvailabilityRows } from "../lib/availability.js";
 import {
   DEFAULT_QUOTA_STALE_THRESHOLD_MS,
   isQuotaSnapshotStale,
@@ -273,6 +274,20 @@ async function buildDefaultDashboard(deps: QuotaDashboardDependencies): Promise<
 }
 
 /**
+ * Healthy-first class rank for quota rows (GitHub #96): `ok` rows
+ * first, then probe failures, then no-capability rows. This is the
+ * quota call-site's extractor vocabulary for
+ * {@link compareAvailabilityRows} — the doctor availability taxonomy
+ * ("exhausted"/"unconfigured") has no counterpart on the quota
+ * Interface, so the rank lives here rather than in availability.ts.
+ */
+const QUOTA_ROW_CLASS_RANK: Readonly<Record<"ok" | "error" | "none", number>> = {
+  ok: 0,
+  error: 1,
+  none: 2,
+};
+
+/**
  * All-provider dashboard. For every Provider configured FOR QUOTA in
  * static registry order: resolve its row via {@link resolveQuotaRow},
  * which honors the snapshot path, emits a `ProviderQuotaNone` row for
@@ -282,6 +297,11 @@ async function buildDefaultDashboard(deps: QuotaDashboardDependencies): Promise<
  * recursively redacted before joining the dashboard, and the command
  * exits 1 when any configured Provider fails. No configured Provider
  * is a configuration failure, not an empty success.
+ *
+ * The resolved rows are presented HEALTHY-FIRST (GitHub #96): `ok`
+ * rows, then probe errors, then `ProviderQuotaNone` rows, with
+ * registry order preserved within each class, so the usable Providers
+ * read off the top of the dashboard.
  *
  * The filter is CAPABILITY-AWARE (GitHub #49): `isConfigured(env,
  * "quota")` excludes a Provider that can serve some capabilities
@@ -307,7 +327,8 @@ async function buildAllProvidersDashboard(
   const now = (deps.now ?? Date.now)();
   const thresholdMs = deps.thresholdMs ?? DEFAULT_QUOTA_STALE_THRESHOLD_MS;
   const snapshotEnabled = deps.quotaSnapshot !== undefined;
-  // Resolve every configured Provider in registry order. Settled
+  // Resolve every configured Provider in registry order (resolution
+  // order only — presentation order is applied below). Settled
   // collection preserves partial failure: a `resolveQuotaRow` throw is
   // caught here (single-row callers re-throw). Note `resolveQuotaRow`
   // already redacts all-provider failures itself; the outer
@@ -316,10 +337,24 @@ async function buildAllProvidersDashboard(
   const settled = await Promise.all(
     configured.map((d) => resolveQuotaRow(d, deps, secrets, snapshotEnabled, now, thresholdMs)),
   );
+  // Healthy-first presentation order (GitHub #96): `ok` rows, then
+  // probe errors, then no-capability rows, registry order within each
+  // class. The rank lookup is built from the same `configured`
+  // iteration the rows were just resolved in, and `Array.sort` is
+  // stable, so same-class rows keep that order.
+  const registryRank = new Map(configured.map((d, index) => [d.id, index]));
+  const providers = settled.sort((a, b) =>
+    compareAvailabilityRows(
+      a,
+      b,
+      (row) => QUOTA_ROW_CLASS_RANK[row.status],
+      (row) => registryRank.get(row.provider) ?? Number.MAX_SAFE_INTEGER,
+    ),
+  );
   return {
     schemaVersion: 1,
     effectiveProvider: deps.effectiveProvider,
-    providers: settled,
+    providers,
   };
 }
 
@@ -416,9 +451,10 @@ Reports plan usage as a normalized, schema-version-1 dashboard
 optional weekly windows, counts, remaining percentage, and ISO reset
 time. No Provider-specific field crosses the Interface.
 
-Default mode reports EVERY configured Provider in registry order —
-including those without a quota Capability (e.g. Exa emits a no-signal
-row labeled "no-capability"). Pin a single Provider with --provider
+Default mode reports EVERY configured Provider, sorted healthy-first:
+ok rows first, then error rows, then no-capability rows (e.g. Exa
+emits a no-signal row labeled "no-capability"); rows within the same
+class keep registry order. Pin a single Provider with --provider
 <id> (or the SCOUTLINE_PROVIDER env var); --all-providers explicitly
 forces the multi-Provider default even under a pin. A pin to a Provider
 that does not advertise quota (Exa) errors with UNSUPPORTED_CAPABILITY —

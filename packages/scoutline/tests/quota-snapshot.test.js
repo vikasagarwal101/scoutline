@@ -498,6 +498,31 @@ describe("PB-T5 quota — failure isolation under snapshot path", () => {
     assert.ok(!serialized.includes(SECRET), "credential redacted");
   });
 
+  it("all-provider mode: rows sort healthy-first — a failed zai probe yields to a fresh-snapshot minimax (#96)", async () => {
+    const zai = makeQuotaDescriptor("zai", {
+      error: new ScoutlineError("boom", "API_ERROR"),
+    });
+    const minimax = makeQuotaDescriptor("minimax", { result: MINIMAX_SUCCESS });
+    const dashboard = await buildQuotaDashboard({
+      allProviders: true,
+      effectiveProvider: "zai",
+      descriptors: [zai, minimax],
+      env: { Z_AI_API_KEY: "k", MINIMAX_API_KEY: "k" },
+      sleep,
+      random,
+      quotaSnapshot: stateFrom({
+        minimax: snapshotAt(FRESH_MS, MINIMAX_SUCCESS.categories),
+      }),
+      now: fixedNow,
+    });
+    assert.deepStrictEqual(
+      dashboard.providers.map((p) => p.provider),
+      ["minimax", "zai"],
+      "ok rows (snapshot-sourced included) sort before error rows",
+    );
+    assert.strictEqual(minimax.invokeCount(), 0, "fresh snapshot short-circuits");
+  });
+
   it("default-mode: a live-probe failure still propagates through the ordinary error path", async () => {
     const zai = makeQuotaDescriptor("zai", {
       error: new ScoutlineError("boom", "AUTH_ERROR"),

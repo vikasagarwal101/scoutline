@@ -95,27 +95,89 @@ function decodePdfHexString(hex: string): string {
 }
 
 /**
+ * Extract BT ... ET text blocks from a content stream, respecting literal strings
+ * and comments so that "ET" occurring inside a string does not prematurely terminate the block.
+ */
+function extractBtBlocks(streamStr: string): string[] {
+  const blocks: string[] = [];
+  const len = streamStr.length;
+  let i = 0;
+
+  while (i < len) {
+    if (
+      (i === 0 || /[\s\[\]<>()/%]/.test(streamStr[i - 1]!)) &&
+      streamStr.slice(i, i + 2) === "BT" &&
+      (i + 2 === len || /[\s\[\]<>()/%]/.test(streamStr[i + 2]!))
+    ) {
+      i += 2;
+      const start = i;
+      let inString = false;
+      let parenDepth = 0;
+      let inHex = false;
+      let inComment = false;
+
+      while (i < len) {
+        const ch = streamStr[i];
+
+        if (inComment) {
+          if (ch === "\r" || ch === "\n") inComment = false;
+        } else if (inHex) {
+          if (ch === ">") inHex = false;
+        } else if (inString) {
+          if (ch === "\\") {
+            i++;
+          } else if (ch === "(") {
+            parenDepth++;
+          } else if (ch === ")") {
+            parenDepth--;
+            if (parenDepth === 0) inString = false;
+          }
+        } else {
+          if (ch === "%") {
+            inComment = true;
+          } else if (ch === "<" && streamStr[i + 1] !== "<") {
+            inHex = true;
+          } else if (ch === "(") {
+            inString = true;
+            parenDepth = 1;
+          } else if (
+            (i === 0 || /[\s\[\]<>()/%]/.test(streamStr[i - 1]!)) &&
+            streamStr.slice(i, i + 2) === "ET" &&
+            (i + 2 === len || /[\s\[\]<>()/%]/.test(streamStr[i + 2]!))
+          ) {
+            blocks.push(streamStr.slice(start, i));
+            i += 2;
+            break;
+          }
+        }
+        i++;
+      }
+    } else {
+      i++;
+    }
+  }
+
+  return blocks;
+}
+
+/**
  * Parse text operators from a decompressed PDF content stream.
  */
 function parseContentStreamText(streamStr: string): string {
   const lines: string[] = [];
   let currentLine = "";
 
-  // Find all BT (Begin Text) ... ET (End Text) blocks
-  const btRegex = /BT\b([\s\S]*?)\bET/g;
-  let btMatch: RegExpExecArray | null;
+  const textBlocks = extractBtBlocks(streamStr);
 
-  while ((btMatch = btRegex.exec(streamStr)) !== null) {
-    const textBlock = btMatch[1]!;
-
+  for (const textBlock of textBlocks) {
     // Tokenize text block looking for string operators:
     // 1. (...) Tj
     // 2. [(...)] TJ
-    // 3. ' or "
+    // 3. ' or " (including optional aw ac numeric operands)
     // 4. Td, TD, T* for line breaks
 
     const opRegex =
-      /\((?:[^()\\]|\\.)*\)\s*Tj|\[((?:(?:\((?:[^()\\]|\\.)*\))|<[0-9a-fA-F\s]+>|[^[\]()])*)\]\s*TJ|<[0-9a-fA-F\s]+>\s*Tj|T\*|(?:-?\d+(?:\.\d+)?\s+){2}(?:Td|TD)|(?:\((?:[^()\\]|\\.)*\))\s*['"]/g;
+      /\((?:[^()\\]|\\.)*\)\s*Tj|\[((?:(?:\((?:[^()\\]|\\.)*\))|<[0-9a-fA-F\s]+>|[^[\]()])*)\]\s*TJ|<[0-9a-fA-F\s]+>\s*Tj|T\*|(?:-?\d+(?:\.\d+)?\s+){2}(?:Td|TD)|(?:\((?:[^()\\]|\\.)*\))\s*'|(?:-?\d+(?:\.\d+)?\s+){2}(?:\((?:[^()\\]|\\.)*\))\s*"|(?:\((?:[^()\\]|\\.)*\))\s*"/g;
 
     let opMatch: RegExpExecArray | null;
     while ((opMatch = opRegex.exec(textBlock)) !== null) {
@@ -152,7 +214,9 @@ function parseContentStreamText(streamStr: string): string {
           lines.push(currentLine.trim());
           currentLine = "";
         }
-        const rawStr = token.slice(1, token.lastIndexOf(")")).trim();
+        const lastParen = token.lastIndexOf(")");
+        const firstParen = token.lastIndexOf("(", lastParen);
+        const rawStr = token.slice(firstParen + 1, lastParen).trim();
         currentLine += decodePdfLiteralString(rawStr) + " ";
       }
     }
@@ -172,6 +236,8 @@ function parseContentStreamText(streamStr: string): string {
 function extractPureNodePdfText(buffer: Buffer): string {
   const fileStr = buffer.toString("latin1");
   const extractedSections: string[] = [];
+  const MAX_TOTAL_DECOMPRESSED_BYTES = 50 * 1024 * 1024; // 50MB across document
+  let totalDecompressedBytes = 0;
 
   // Match stream ... endstream
   const streamRegex = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
@@ -183,20 +249,47 @@ function extractPureNodePdfText(buffer: Buffer): string {
     const rawStreamSlice = buffer.subarray(streamStart, streamStart + streamLength);
 
     // Look backward for stream's own dictionary << ... >> before 'stream'
-    const beforeStream = fileStr.slice(Math.max(0, match.index - 1000), match.index).trimEnd();
+    // Bracket-balance backwards from '>>' to find outermost matching '<<'
+    const beforeStream = fileStr.slice(Math.max(0, match.index - 2000), match.index).trimEnd();
+    let dictSlice = "";
     const lastDictEnd = beforeStream.lastIndexOf(">>");
-    const lastDictStart = lastDictEnd !== -1 ? beforeStream.lastIndexOf("<<", lastDictEnd) : -1;
-    const dictSlice = lastDictStart !== -1 ? beforeStream.slice(lastDictStart, lastDictEnd + 2) : "";
+    if (lastDictEnd !== -1) {
+      let depth = 1;
+      let pos = lastDictEnd;
+      while (pos > 1) {
+        if (beforeStream.slice(pos - 2, pos) === ">>") {
+          depth++;
+          pos -= 2;
+        } else if (beforeStream.slice(pos - 2, pos) === "<<") {
+          depth--;
+          pos -= 2;
+          if (depth === 0) {
+            dictSlice = beforeStream.slice(pos, lastDictEnd + 2);
+            break;
+          }
+        } else {
+          pos--;
+        }
+      }
+    }
     const isFlate = dictSlice.includes("/FlateDecode");
 
     let streamBytes: Buffer | null = null;
-    const maxOutputLength = 20 * 1024 * 1024;
     if (isFlate) {
+      if (totalDecompressedBytes >= MAX_TOTAL_DECOMPRESSED_BYTES) {
+        break; // Document-wide decompression budget reached
+      }
+      const maxStreamOutput = Math.min(
+        20 * 1024 * 1024,
+        MAX_TOTAL_DECOMPRESSED_BYTES - totalDecompressedBytes,
+      );
       try {
-        streamBytes = zlib.inflateSync(rawStreamSlice, { maxOutputLength });
+        streamBytes = zlib.inflateSync(rawStreamSlice, { maxOutputLength: maxStreamOutput });
+        totalDecompressedBytes += streamBytes.length;
       } catch {
         try {
-          streamBytes = zlib.inflateRawSync(rawStreamSlice, { maxOutputLength });
+          streamBytes = zlib.inflateRawSync(rawStreamSlice, { maxOutputLength: maxStreamOutput });
+          totalDecompressedBytes += streamBytes.length;
         } catch {
           // Stream may be raw or uncompressed
         }
@@ -330,13 +423,32 @@ export async function repairPdf(buffer: Buffer, timeoutMs = 5000): Promise<Buffe
   // 1. Pure Node xref reconstruction
   const MAX_REPAIR_OBJECTS = 500_000;
   const fileStr = buffer.toString("latin1");
-  // Exclude stream bodies when scanning for object definitions to avoid matching fake tokens
-  const cleanStr = fileStr.replace(/stream\r?\n[\s\S]*?\r?\nendstream/g, "stream\nendstream");
+
+  // Pre-compute stream body intervals [start, end] so we do not match fake objects inside stream data
+  // while preserving exact byte offsets in the original file
+  const streamIntervals: Array<[number, number]> = [];
+  const streamRegex = /stream\r?\n[\s\S]*?\r?\nendstream/g;
+  let sMatch: RegExpExecArray | null;
+  while ((sMatch = streamRegex.exec(fileStr)) !== null) {
+    streamIntervals.push([sMatch.index, sMatch.index + sMatch[0].length]);
+  }
+
+  function isInsideStream(offset: number): boolean {
+    for (const [sStart, sEnd] of streamIntervals) {
+      if (offset >= sStart && offset < sEnd) return true;
+    }
+    return false;
+  }
+
   const objRegex = /(\d+)\s+(\d+)\s+obj/g;
   const objects: Array<{ id: number; generation: number; offset: number }> = [];
 
   let objMatch: RegExpExecArray | null;
-  while ((objMatch = objRegex.exec(cleanStr)) !== null) {
+  let overLimit = false;
+  while ((objMatch = objRegex.exec(fileStr)) !== null) {
+    if (isInsideStream(objMatch.index)) {
+      continue;
+    }
     const id = Number(objMatch[1]);
     const generation = Number(objMatch[2]);
     if (id > 0 && id <= MAX_REPAIR_OBJECTS) {
@@ -345,10 +457,14 @@ export async function repairPdf(buffer: Buffer, timeoutMs = 5000): Promise<Buffe
         generation,
         offset: objMatch.index,
       });
+      if (objects.length > MAX_REPAIR_OBJECTS) {
+        overLimit = true;
+        break;
+      }
     }
   }
 
-  if (objects.length > 0 && objects.length <= MAX_REPAIR_OBJECTS) {
+  if (objects.length > 0 && !overLimit) {
     objects.sort((a, b) => a.id - b.id);
     const maxId = objects[objects.length - 1]!.id;
 

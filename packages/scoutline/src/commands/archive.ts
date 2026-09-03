@@ -132,7 +132,7 @@ export async function fetchWithArchiveBackoff<T = Response>(
       }
       return res as unknown as T;
     } catch (err: unknown) {
-      if (err instanceof NetworkError || err instanceof TimeoutError) {
+      if (err instanceof NetworkError || err instanceof TimeoutError || err instanceof ValidationError) {
         throw err;
       }
       if (controller.signal.aborted) {

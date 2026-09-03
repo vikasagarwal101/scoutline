@@ -70,6 +70,10 @@ describe("scoutline fetch command", () => {
       } else if (req.url === "/not-found") {
         res.writeHead(404, { "Content-Type": "text/plain" });
         res.end("Not Found");
+      } else if (req.url === "/aborted-stream") {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.write("partial content before connection drop...");
+        req.socket.destroy();
       } else {
         res.writeHead(500, { "Content-Type": "text/plain" });
         res.end("Server Error");
@@ -273,15 +277,15 @@ describe("scoutline fetch command", () => {
       }
     });
 
-    it("cleans up temporary file and leaves destination empty on failed stream", async () => {
+    it("cleans up temporary file and leaves destination empty on mid-stream network drop", async () => {
       const failOut = path.join(tempDir, "failed-stream.txt");
-      // executeFetch on 404 does not stream, so testing failure on HTTP error:
-      const res = await executeFetch(`${serverBaseUrl}/not-found`, { out: failOut });
-      assert.equal(res.status, 404);
+      await assert.rejects(
+        () => executeFetch(`${serverBaseUrl}/aborted-stream`, { out: failOut }),
+      );
       assert.equal(fs.existsSync(failOut), false);
       const files = fs.readdirSync(tempDir);
       const tmpFiles = files.filter((f) => f.includes("failed-stream.txt.tmp"));
-      assert.equal(tmpFiles.length, 0, "temporary file must not linger");
+      assert.equal(tmpFiles.length, 0, "temporary file must not linger after aborted stream");
     });
   });
 

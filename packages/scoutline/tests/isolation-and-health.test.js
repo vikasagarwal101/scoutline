@@ -137,7 +137,11 @@ describe("Concurrency Isolation & Provider Health Diagnostics", () => {
 
         // Wait until p1's lockfile exists (deterministic under load), instead of a fixed 20ms.
         const lockPath = path.join(lockDir, `${lockHash}.lock`);
+        const deadline = Date.now() + 5000;
         while (!fs.existsSync(lockPath)) {
+          if (Date.now() > deadline) {
+            throw new Error(`Timed out waiting for p1 lockfile at ${lockPath}`);
+          }
           await new Promise((resolve) => setTimeout(resolve, 5));
         }
 

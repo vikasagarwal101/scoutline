@@ -302,9 +302,9 @@ export async function executeFetch(
 
     const MAX_IN_MEMORY_BYTES = 50 * 1024 * 1024; // 50MB ceiling without --out
 
-    if (options.out && response.ok && response.body && !isPdfHeader && options.pdf !== "text") {
+    if (options.out && response.ok && response.body && options.pdf !== "text") {
       outPath = path.resolve(process.cwd(), options.out);
-      const tempPath = `${outPath}.tmp.${process.pid}.${Date.now()}`;
+      const tempPath = `${outPath}.tmp.${process.pid}.${crypto.randomUUID()}`;
       try {
         await fs.mkdir(path.dirname(outPath), { recursive: true });
         const writeStream = createWriteStream(tempPath);
@@ -338,7 +338,7 @@ export async function executeFetch(
         md5 = md5Hasher.digest("hex");
       }
     } else {
-      if (!options.out) {
+      if (!options.out || options.pdf === "text") {
         const contentLengthHeader = resHeaders["content-length"];
         if (contentLengthHeader && Number(contentLengthHeader) > MAX_IN_MEMORY_BYTES) {
           throw new ValidationError(
@@ -348,7 +348,7 @@ export async function executeFetch(
         }
       }
       const arrayBuffer = await response.arrayBuffer();
-      if (!options.out && arrayBuffer.byteLength > MAX_IN_MEMORY_BYTES) {
+      if ((!options.out || options.pdf === "text") && arrayBuffer.byteLength > MAX_IN_MEMORY_BYTES) {
         throw new ValidationError(
           `Response size (${arrayBuffer.byteLength} bytes) exceeds in-memory ceiling (50MB).`,
           "Use --out <file> to stream large responses directly to disk.",
@@ -361,7 +361,7 @@ export async function executeFetch(
       }
       if (options.out && response.ok) {
         outPath = path.resolve(process.cwd(), options.out);
-        const tempPath = `${outPath}.tmp.${process.pid}.${Date.now()}`;
+        const tempPath = `${outPath}.tmp.${process.pid}.${crypto.randomUUID()}`;
         try {
           await fs.mkdir(path.dirname(outPath), { recursive: true });
           await fs.writeFile(tempPath, rawBuffer);

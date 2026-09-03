@@ -52,6 +52,7 @@ import {
 } from "./commands/usage.js";
 import { historyCommand, HISTORY_HELP } from "./commands/history.js";
 import { handleFetch, FETCH_HELP } from "./commands/fetch.js";
+import { handleArchive, ARCHIVE_HELP } from "./commands/archive.js";
 import { cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
 import type { PruneSelectors, PruneCachesResult } from "./lib/cache.js";
 import { parseBatchManifest } from "./lib/batch-manifest.js";
@@ -194,6 +195,8 @@ Commands:
            credential-free)
   fetch    Direct, binary-safe HTTP client (evidentiary GET + API,
            credential-free)
+  archive  Internet Archive Wayback Machine (CDX index + snapshot
+           replay, credential-free)
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
   init     Interactive onboarding wizard (writes ~/.scoutline/config.json)
 
@@ -242,6 +245,7 @@ Help:
   scoutline usage --help
   scoutline history --help
   scoutline fetch --help
+  scoutline archive --help
   scoutline init --help
 `.trim();
 
@@ -3302,6 +3306,7 @@ export async function handleHistory(
 }
 
 export { handleFetch, fetchCommand, executeFetch, FETCH_HELP } from "./commands/fetch.js";
+export { handleArchive, archiveCdxCommand, archiveGetCommand, ARCHIVE_HELP } from "./commands/archive.js";
 
 async function handleQuota(
   args: string[],
@@ -4336,6 +4341,20 @@ export async function main(
   if (command === "fetch") {
     try {
       return await handleFetch(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
+  // `archive` is credential-free (queries Internet Archive public APIs;
+  // keyless, no Provider resolution, no Adapter, no quota tracking).
+  // Short-circuit before the credentialed config load so missing or
+  // unconfigured ~/.scoutline/config.json never blocks CDX searches or
+  // snapshot replay (ADR-0006).
+  if (command === "archive") {
+    try {
+      return await handleArchive(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
       return getErrorExitCode(error);

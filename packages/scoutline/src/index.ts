@@ -227,6 +227,7 @@ Global Options:
   --save [<path>]      Save the result as a clean report (content + requestId) after a successful shared-capability run (search/read/crawl/map/research/repo/vision). Master copy in the artifact store; <path> also receives an export copy. A valueless --save (trailing, or followed by another option, e.g. --save --save-format markdown) writes the master only. Refuses an existing export target without --save-force.
   --save-format <json|markdown>  Report format (default: json)
   --save-force         Overwrite an existing export target
+  --isolated           Run in process-isolated state (unique artifacts namespace)
 
 Help:
   scoutline --help
@@ -372,6 +373,7 @@ function extractGlobalOptions(args: string[]): {
   forceRaw?: boolean;
   provider?: string;
   noFallback?: boolean;
+  isolated?: boolean;
   save?: SaveRequest;
   rest: string[];
 } {
@@ -381,6 +383,7 @@ function extractGlobalOptions(args: string[]): {
   let forceRaw = false;
   let provider: string | undefined;
   let noFallback = false;
+  let isolated = false;
   let savePath: string | undefined;
   let saveSeen = false;
   let saveFormat: SaveFormat = "json";
@@ -487,6 +490,10 @@ function extractGlobalOptions(args: string[]): {
       saveForce = true;
       continue;
     }
+    if (arg === "--isolated") {
+      isolated = true;
+      continue;
+    }
     rest.push(arg);
   }
 
@@ -496,6 +503,7 @@ function extractGlobalOptions(args: string[]): {
     forceRaw,
     provider,
     noFallback,
+    isolated,
     save: saveSeen ? { exportPath: savePath, format: saveFormat, force: saveForce } : undefined,
     rest,
   };
@@ -2728,6 +2736,7 @@ async function handleDoctor(
   }
 
   const noTools = flags["no-tools"] === true;
+  const healthProbe = flags["health"] === true;
   // #94 — `--available` filters the report's providers array to
   // availability-"ok" rows. The filter itself lives in
   // buildDiagnosticsReport (availableOnly); only the flag parse
@@ -2753,6 +2762,7 @@ async function handleDoctor(
         buildReport: () =>
           buildDiagnosticsReport({
             noTools,
+            healthProbe,
             availableOnly,
             effectiveProvider,
             descriptors: deps.providerDescriptors,
@@ -3997,7 +4007,8 @@ export async function main(
   args: readonly string[],
   dependencies: MainDependencies,
 ): Promise<number> {
-  const { invocation, env, now } = dependencies;
+  const { invocation, env: initialEnv, now } = dependencies;
+  let env: NodeJS.ProcessEnv = initialEnv;
   // #73: one normalized config-loader seam — an explicit loader wins,
   // then an injected deps.config, else production ambient loading. All
   // hermeticity gates below read this local, never the raw field.
@@ -4065,7 +4076,10 @@ export async function main(
     );
     return getErrorExitCode(error);
   }
-  const { outputFormat, forcePretty, forceRaw, provider, noFallback, rest } = extracted;
+  const { outputFormat, forcePretty, forceRaw, provider, noFallback, isolated, rest } = extracted;
+  if (isolated) {
+    env = { ...env, SCOUTLINE_ISOLATED: "1" };
+  }
 
   // Fixup C — B10: resolve the output mode BEFORE the dispatch try/catch.
   // An invalid explicit mode still surfaces as a typed ValidationError,

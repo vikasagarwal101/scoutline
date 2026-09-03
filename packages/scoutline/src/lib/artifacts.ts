@@ -50,6 +50,7 @@ export type ArtifactFormat = "json" | "markdown";
 /** Environment keys {@link resolveArtifactsDir} reads. */
 export interface ArtifactsDirEnvironment extends ConfigRootEnvironment {
   readonly SCOUTLINE_ARTIFACTS_DIR?: string;
+  readonly SCOUTLINE_ISOLATED?: string;
 }
 
 /** Byte source for the request-id hex tail; defaults to crypto.randomBytes. */
@@ -91,9 +92,14 @@ export function resolveArtifactsDir(
   env: ArtifactsDirEnvironment,
   platform: ConfigRootPlatform = { homedir: os.homedir() },
 ): string {
-  return (
-    env.SCOUTLINE_ARTIFACTS_DIR || path.join(resolveConfigRootPure(env, platform), "artifacts")
-  );
+  const baseDir =
+    env.SCOUTLINE_ARTIFACTS_DIR || path.join(resolveConfigRootPure(env, platform), "artifacts");
+
+  if (env.SCOUTLINE_ISOLATED === "1" || env.SCOUTLINE_ISOLATED === "true") {
+    return path.join(baseDir, "isolated", `${process.pid}`);
+  }
+
+  return baseDir;
 }
 
 export interface WriteArtifactOptions {

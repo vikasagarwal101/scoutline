@@ -195,6 +195,7 @@ export async function withAsyncFileLock<T>(
       signal.addEventListener("abort", onAbort, { once: true });
     });
 
+  let attempt = 0;
   for (;;) {
     if (signal?.aborted) throw lockAborted();
     let handle;
@@ -229,8 +230,13 @@ export async function withAsyncFileLock<T>(
         await sleep(500);
         continue;
       }
-      await sleep(500);
-      // Re-check deadline after sleeping — the 500ms sleep may have
+      attempt++;
+      const backoffMs = Math.min(
+        500,
+        Math.floor(50 * Math.pow(1.3, Math.min(attempt, 8)) + Math.random() * 50),
+      );
+      await sleep(backoffMs);
+      // Re-check deadline after sleeping — the sleep may have
       // crossed it, and the next open attempt bypasses the check above.
       if (Date.now() > deadline) {
         throw lockDeadline();

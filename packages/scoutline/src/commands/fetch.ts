@@ -18,6 +18,7 @@ import type { CommandResult, TextOutputMode } from "../command-invocation.js";
 import { invokeCommand } from "../command-invocation.js";
 import type { OutputMode } from "../lib/output.js";
 import { ValidationError, FileError, TimeoutError, NetworkError, ApiError } from "../lib/errors.js";
+import { isPdfBuffer, extractPdfText, repairPdf } from "../lib/pdf.js";
 import type { HandlerDependencies } from "../index.js";
 
 export const DEFAULT_USER_AGENT =
@@ -36,6 +37,8 @@ Options:
   --method <verb>          HTTP method: GET, POST, PUT, DELETE, PATCH, HEAD (default: GET)
   --data <@file|string>    Request body (prefix with @ to read from a local file)
   --header, -H <K:V>       Custom HTTP header (can be specified multiple times)
+  --pdf <text|raw>         PDF processing: text (extract text layer) or raw (preserve bytes)
+  --pdf-repair             Attempt structural/xref repair on broken PDF documents
   --timeout <ms>           Request timeout in milliseconds (default: 30000)
   --help, -h               Show this help message
 
@@ -51,6 +54,8 @@ export interface FetchOptions {
   readonly method?: string;
   readonly data?: string;
   readonly headers?: readonly string[];
+  readonly pdf?: "text" | "raw";
+  readonly pdfRepair?: boolean;
   readonly timeout?: number;
 }
 
@@ -94,6 +99,8 @@ export function parseFetchArgs(args: readonly string[]): {
   let ua: string | undefined;
   let method: string | undefined;
   let data: string | undefined;
+  let pdf: "text" | "raw" | undefined;
+  let pdfRepair = false;
   let timeout: number | undefined;
   let showHelp = false;
   const headers: string[] = [];
@@ -151,6 +158,19 @@ export function parseFetchArgs(args: readonly string[]): {
       }
       headers.push(next);
       i += 2;
+    } else if (arg === "--pdf") {
+      const next = args[i + 1];
+      if (next !== "text" && next !== "raw") {
+        throw new ValidationError(
+          `Invalid --pdf mode: "${next}".`,
+          "Valid modes: text, raw.",
+        );
+      }
+      pdf = next;
+      i += 2;
+    } else if (arg === "--pdf-repair") {
+      pdfRepair = true;
+      i++;
     } else if (arg === "--timeout") {
       const next = args[i + 1];
       if (!next || !/^\d+$/.test(next)) {
@@ -176,6 +196,8 @@ export function parseFetchArgs(args: readonly string[]): {
       ...(method ? { method } : {}),
       ...(data !== undefined ? { data } : {}),
       ...(headers.length > 0 ? { headers } : {}),
+      ...(pdf ? { pdf } : {}),
+      ...(pdfRepair ? { pdfRepair: true } : {}),
       ...(timeout !== undefined ? { timeout } : {}),
     },
     positional,
@@ -268,7 +290,15 @@ export async function executeFetch(
 
   const contentType = resHeaders["content-type"] || undefined;
   const arrayBuffer = await response.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
+  let buffer: Buffer = Buffer.from(arrayBuffer);
+
+  const isPdf =
+    isPdfBuffer(buffer) || Boolean(contentType && contentType.includes("application/pdf"));
+
+  if (isPdf && options.pdfRepair) {
+    buffer = Buffer.from(await repairPdf(buffer));
+  }
+
   const bytes = buffer.length;
 
   let md5: string | undefined;
@@ -291,20 +321,26 @@ export async function executeFetch(
 
   // Decode content string for text-compatible bodies
   let content: string | undefined;
-  const isBinary =
-    contentType &&
-    !contentType.includes("text") &&
-    !contentType.includes("json") &&
-    !contentType.includes("xml") &&
-    !contentType.includes("javascript") &&
-    !contentType.includes("csv") &&
-    !contentType.includes("html");
+  if (isPdf) {
+    if (options.pdf === "text") {
+      content = await extractPdfText(buffer);
+    }
+  } else {
+    const isBinary =
+      contentType &&
+      !contentType.includes("text") &&
+      !contentType.includes("json") &&
+      !contentType.includes("xml") &&
+      !contentType.includes("javascript") &&
+      !contentType.includes("csv") &&
+      !contentType.includes("html");
 
-  if (!isBinary || !options.out) {
-    try {
-      content = buffer.toString("utf8");
-    } catch {
-      // Leave undefined if decoding fails
+    if (!isBinary || !options.out) {
+      try {
+        content = buffer.toString("utf8");
+      } catch {
+        // Leave undefined if decoding fails
+      }
     }
   }
 

@@ -2314,7 +2314,7 @@ async function handleRepo(
     ...(deps.now !== undefined ? { now: deps.now } : {}),
   };
 
-  const language = flags.language as "en" | "zh" | undefined;
+  const language = (flags.language ?? flags.lang) as "en" | "zh" | undefined;
   const maxChars = flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined;
   const noCache = flags["no-cache"] === true;
   const treePath = flags.path as string | undefined;

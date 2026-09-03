@@ -4,6 +4,8 @@ description: |
   Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com,
   Linkup, and Spider.cloud CLI
   providing:
+  - Fetch: direct evidentiary HTTP/REST retrieval with MD5 verification and file payload dispatch
+  - Archive: temporal CDX indexing and verbatim snapshot replay via Wayback Machine
   - Vision: image/video analysis, OCR, UI-to-code, error diagnosis (GLM-5V-Turbo)
   - Search: real-time web search with domain/recency/topic filtering
   - Reader: web page to markdown extraction (Z.AI, Tavily, Exa, Firecrawl, Parallel, Jina,

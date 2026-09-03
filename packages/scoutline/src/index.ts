@@ -1603,6 +1603,9 @@ async function handleRead(
     keepImgDataUrl: flags["keep-img-data-url"] === true,
     withImagesSummary: flags["with-images-summary"] === true,
     maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
+    raw: flags["raw"] === true,
+    pdf: flags.pdf as "text" | "raw" | undefined,
+    pdfRepair: flags["pdf-repair"] === true,
     fullEnvelope: flags["full-envelope"] === true,
     extract,
   };

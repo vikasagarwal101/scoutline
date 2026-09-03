@@ -1,6 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as path from "node:path";
+import * as fs from "node:fs";
+import * as os from "node:os";
 
 import { resolveArtifactsDir } from "../dist/lib/artifacts.js";
 import { buildDiagnosticsReport } from "../dist/commands/doctor.js";
@@ -27,12 +29,12 @@ describe("Concurrency Isolation & Provider Health Diagnostics", () => {
   describe("Artifacts Directory Isolation", () => {
     it("returns standard artifacts directory by default", () => {
       const dir = resolveArtifactsDir({}, { homedir: "/home/user" });
-      assert.match(dir, /\.scoutline\/artifacts$/);
+      assert.equal(dir, path.join("/home/user", ".scoutline", "artifacts"));
     });
 
     it("returns process-isolated directory when SCOUTLINE_ISOLATED=1", () => {
-      const dir = resolveArtifactsDir({ SCOUTLINE_ISOLATED: "1" }, { homedir: "/home/user" });
-      assert.match(dir, new RegExp(`\\.scoutline/artifacts/isolated/${process.pid}$`));
+      const dir = resolveArtifactsDir({ SCOUTLINE_ISOLATED: "1" }, { homedir: "/home/user", pid: 99999 });
+      assert.equal(dir, path.join("/home/user", ".scoutline", "artifacts", "isolated", "99999"));
     });
   });
 
@@ -113,6 +115,46 @@ describe("Concurrency Isolation & Provider Health Diagnostics", () => {
 
       assert.equal(executed, true);
       assert.equal(result, 42);
+    });
+
+    it("retries with backoff and acquires lock under contention", async () => {
+      const lockDir = fs.mkdtempSync(path.join(os.tmpdir(), "lock-test-"));
+      const lockHash = "contention-hash";
+      const executionOrder = [];
+
+      try {
+        const p1 = withAsyncFileLock(
+          lockDir,
+          lockHash,
+          async () => {
+            executionOrder.push("p1-start");
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            executionOrder.push("p1-end");
+            return "first";
+          },
+          { timeoutMs: 2000, staleMs: 10000, timeoutLabel: "First" },
+        );
+
+        // Ensure p1 creates lockfile first
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        const p2 = withAsyncFileLock(
+          lockDir,
+          lockHash,
+          async () => {
+            executionOrder.push("p2-acquired");
+            return "second";
+          },
+          { timeoutMs: 2000, staleMs: 10000, timeoutLabel: "Second" },
+        );
+
+        const [r1, r2] = await Promise.all([p1, p2]);
+        assert.equal(r1, "first");
+        assert.equal(r2, "second");
+        assert.deepEqual(executionOrder, ["p1-start", "p1-end", "p2-acquired"]);
+      } finally {
+        fs.rmSync(lockDir, { recursive: true, force: true });
+      }
     });
   });
 });

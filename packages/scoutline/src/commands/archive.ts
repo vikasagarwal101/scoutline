@@ -86,14 +86,15 @@ export interface ArchiveGetOptions {
 /**
  * Fetch with exponential backoff on HTTP 429/503 (rate limiting).
  */
-export async function fetchWithArchiveBackoff(
+export async function fetchWithArchiveBackoff<T = Response>(
   url: string,
   options: {
     timeout?: number;
     headers?: Record<string, string>;
     sleep?: (ms: number) => Promise<void>;
   } = {},
-): Promise<Response> {
+  consumer?: (res: Response) => Promise<T>,
+): Promise<T> {
   const timeoutMs = options.timeout ?? DEFAULT_ARCHIVE_TIMEOUT_MS;
   const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const maxRetries = 3;
@@ -126,8 +127,14 @@ export async function fetchWithArchiveBackoff(
         );
       }
 
-      return res;
+      if (consumer) {
+        return await consumer(res);
+      }
+      return res as unknown as T;
     } catch (err: unknown) {
+      if (err instanceof NetworkError || err instanceof TimeoutError) {
+        throw err;
+      }
       if (controller.signal.aborted) {
         throw new TimeoutError(timeoutMs, `Archive request timed out after ${timeoutMs}ms`);
       }
@@ -167,6 +174,9 @@ export async function executeArchiveCdx(
   if (options.to) queryParams.set("to", options.to);
   if (options.status) queryParams.set("filter", `statuscode:${options.status}`);
   if (options.limit !== undefined) {
+    if (options.limit <= 0 || options.limit > 10000) {
+      throw new ValidationError(`--limit must be between 1 and 10000, got ${options.limit}.`);
+    }
     queryParams.set("limit", String(options.limit));
   } else {
     queryParams.set("limit", "50");
@@ -174,16 +184,19 @@ export async function executeArchiveCdx(
 
   const endpoint = dependencies.cdxEndpoint ?? WAYBACK_CDX_ENDPOINT;
   const reqUrl = `${endpoint}?${queryParams.toString()}`;
-  const response = await fetchWithArchiveBackoff(reqUrl, {
-    timeout: options.timeout,
-    sleep: dependencies.sleep,
-  });
-
-  if (!response.ok) {
-    throw new NetworkError(`CDX query failed with HTTP ${response.status}: ${response.statusText}`);
-  }
-
-  const raw = (await response.json()) as unknown;
+  const raw = await fetchWithArchiveBackoff(
+    reqUrl,
+    {
+      timeout: options.timeout,
+      sleep: dependencies.sleep,
+    },
+    async (res) => {
+      if (!res.ok) {
+        throw new NetworkError(`CDX query failed with HTTP ${res.status}: ${res.statusText}`);
+      }
+      return (await res.json()) as unknown;
+    },
+  );
   if (!Array.isArray(raw)) {
     return {
       schemaVersion: 1,
@@ -232,27 +245,31 @@ export async function resolveAvailableSnapshot(
 
   const endpoint = dependencies.availabilityEndpoint ?? WAYBACK_AVAILABILITY_ENDPOINT;
   const reqUrl = `${endpoint}?${queryParams.toString()}`;
-  const response = await fetchWithArchiveBackoff(reqUrl, {
-    timeout: dependencies.timeout,
-    sleep: dependencies.sleep,
-  });
-
-  if (!response.ok) {
-    throw new NetworkError(
-      `Wayback availability check failed with HTTP ${response.status}: ${response.statusText}`,
-    );
-  }
-
-  const data = (await response.json()) as {
-    archived_snapshots?: {
-      closest?: {
-        available?: boolean;
-        url?: string;
-        timestamp?: string;
-        status?: string;
+  const data = await fetchWithArchiveBackoff(
+    reqUrl,
+    {
+      timeout: dependencies.timeout,
+      sleep: dependencies.sleep,
+    },
+    async (res) => {
+      if (!res.ok) {
+        throw new NetworkError(
+          `Wayback availability check failed with HTTP ${res.status}: ${res.statusText}`,
+        );
+      }
+      return (await res.json()) as {
+        archived_snapshots?: {
+          closest?: {
+            available?: boolean;
+            url?: string;
+            timestamp?: string;
+            status?: string;
+          };
+        };
       };
-    };
-  };
+    },
+  );
+
 
   const closest = data.archived_snapshots?.closest;
   if (!closest || !closest.available || !closest.timestamp) {
@@ -284,10 +301,17 @@ export async function executeArchiveGet(
     throw new ValidationError("URL is required for archive get.");
   }
 
+  if (options.at !== undefined && options.at !== "best" && !/^\d{4,14}$/.test(options.at)) {
+    throw new ValidationError(
+      `Invalid --at timestamp: "${options.at}".`,
+      'Allowed values: "best" or a 4 to 14 digit timestamp (YYYYMMDDhhmmss).',
+    );
+  }
+
   let snapshotTimestamp: string;
   let archiveUrl: string;
 
-  if (options.at && options.at !== "best" && /^\d{4,14}$/.test(options.at)) {
+  if (options.at && options.at !== "best") {
     snapshotTimestamp = options.at;
     archiveUrl = `https://web.archive.org/web/${snapshotTimestamp}/${url}`;
   } else {
@@ -299,19 +323,27 @@ export async function executeArchiveGet(
   // Notice the `id_` flag right after the timestamp: tells Wayback to return raw original bytes
   const replayBase = dependencies.replayBaseUrl ?? "https://web.archive.org/web";
   const verbatimFetchUrl = `${replayBase}/${snapshotTimestamp}id_/${url}`;
-  const response = await fetchWithArchiveBackoff(verbatimFetchUrl, {
-    timeout: options.timeout,
-    sleep: dependencies.sleep,
-  });
+  const { statusCode, contentType, buffer } = await fetchWithArchiveBackoff(
+    verbatimFetchUrl,
+    {
+      timeout: options.timeout,
+      sleep: dependencies.sleep,
+    },
+    async (res) => {
+      const arrayBuffer = await res.arrayBuffer();
+      return {
+        statusCode: res.status,
+        contentType: res.headers.get("content-type") || undefined,
+        buffer: Buffer.from(arrayBuffer),
+      };
+    },
+  );
 
-  const contentType = response.headers.get("content-type") || undefined;
-  const arrayBuffer = await response.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
   const bytes = buffer.length;
 
   let content: string | undefined;
   try {
-    content = buffer.toString("utf8");
+    content = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
   } catch {
     // Leave undefined if binary
   }
@@ -321,7 +353,7 @@ export async function executeArchiveGet(
     url,
     snapshotTimestamp,
     archiveUrl,
-    statusCode: response.status,
+    statusCode,
     bytes,
     ...(contentType ? { contentType } : {}),
     ...(content !== undefined ? { content } : {}),
@@ -459,6 +491,7 @@ export async function handleArchive(
   args: string[],
   outputMode: OutputMode,
   deps: HandlerDependencies,
+  forceRaw = false,
 ): Promise<number> {
   const { subcommand, positional, flags, showHelp } = parseArchiveArgs(args);
 
@@ -476,13 +509,25 @@ export async function handleArchive(
       );
     }
 
+    let limit: number | undefined;
+    if (typeof flags.limit === "string") {
+      if (!/^\d+$/.test(flags.limit)) {
+        throw new ValidationError("Invalid --limit: must be a positive integer.");
+      }
+      const parsedLimit = Number(flags.limit);
+      if (parsedLimit <= 0 || parsedLimit > 10000) {
+        throw new ValidationError(
+          `--limit must be between 1 and 10000, got ${parsedLimit}.`,
+        );
+      }
+      limit = parsedLimit;
+    }
+
     const options: ArchiveCdxOptions = {
       ...(typeof flags.from === "string" ? { from: flags.from } : {}),
       ...(typeof flags.to === "string" ? { to: flags.to } : {}),
       ...(typeof flags.status === "string" ? { status: flags.status } : {}),
-      ...(typeof flags.limit === "string" && /^\d+$/.test(flags.limit)
-        ? { limit: Number(flags.limit) }
-        : {}),
+      ...(limit !== undefined ? { limit } : {}),
     };
 
     return invokeCommand(
@@ -503,9 +548,16 @@ export async function handleArchive(
       );
     }
 
+    if (typeof flags.at === "string" && flags.at !== "best" && !/^\d{4,14}$/.test(flags.at)) {
+      throw new ValidationError(
+        `Invalid --at timestamp: "${flags.at}".`,
+        'Allowed values: "best" or a 4 to 14 digit timestamp (YYYYMMDDhhmmss).',
+      );
+    }
+
     const options: ArchiveGetOptions = {
       ...(typeof flags.at === "string" ? { at: flags.at } : {}),
-      ...(flags.raw === true ? { raw: true } : {}),
+      ...(flags.raw === true || forceRaw ? { raw: true } : {}),
     };
 
     return invokeCommand(

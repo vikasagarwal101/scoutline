@@ -58,8 +58,9 @@ _Avoid_: live search, cache replay
 
 **Provider Health Diagnostics**:
 An active, concurrent operational probe (`scoutline doctor --health`) evaluating
-live reachability, latency, and quota/credit balance across all configured
-providers prior to pipeline dispatch.
+live reachability, latency, and operational health across all configured
+providers prior to pipeline dispatch (quota/credit status remains read from
+stored snapshots and is not live-probed).
 _Avoid_: providers command, passive diagnostics
 
 **MiniMax Token Plan**:

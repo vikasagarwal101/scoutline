@@ -255,6 +255,12 @@ interface DiagnosticsRowLike {
     readonly status: "verified" | "unverified";
     readonly checkedAt: number;
   };
+  readonly health?: {
+    readonly healthy: boolean;
+    readonly latencyMs: number;
+    readonly status: "ok" | "auth_error" | "error";
+    readonly error?: string;
+  };
 }
 
 /**
@@ -363,7 +369,16 @@ export function formatDiagnosticsReport(
     lines.push(
       `  ${presentation.render(presentation.glyph)} ${color.bold(row.provider)} ${presentation.render(availability)}`,
     );
-    if (row.status === "error" && row.error !== undefined) {
+    if (row.health !== undefined) {
+      if (row.health.healthy) {
+        lines.push(`      ${color.green("health probe ok")} ${color.gray(`(${row.health.latencyMs}ms)`)}`);
+      } else {
+        const detail = row.health.error ? ` ${color.dim(row.health.error)}` : "";
+        lines.push(
+          `      ${color.red(`health probe ${row.health.status}`)} ${color.gray(`(${row.health.latencyMs}ms)`)}${detail}`,
+        );
+      }
+    } else if (row.status === "error" && row.error !== undefined) {
       lines.push(`      ${color.red("probe failed")} ${color.dim(row.error.message)}`);
     } else if (row.status === "skipped") {
       lines.push(`      ${color.gray(`probe skipped (${row.reason ?? "skipped"})`)}`);

@@ -81,6 +81,24 @@ describe("scoutline archive command", () => {
         { name: "ValidationError" },
       );
     });
+
+    it("rejects limit <= 0 or > 10000 in cdx", async () => {
+      await assert.rejects(
+        () => executeArchiveCdx("https://example.com/*", { limit: 10001 }),
+        { name: "ValidationError" },
+      );
+      await assert.rejects(
+        () => executeArchiveCdx("https://example.com/*", { limit: 0 }),
+        { name: "ValidationError" },
+      );
+    });
+
+    it("rejects invalid --at timestamp format in get", async () => {
+      await assert.rejects(
+        () => executeArchiveGet("https://example.com/", { at: "not-a-timestamp" }),
+        { name: "ValidationError" },
+      );
+    });
   });
 
   describe("CDX Index Enumeration logic", () => {

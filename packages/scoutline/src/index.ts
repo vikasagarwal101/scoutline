@@ -403,6 +403,9 @@ function extractGlobalOptions(args: string[]): {
     }
     if (arg === "--raw") {
       forceRaw = true;
+      if (rest.length > 0) {
+        rest.push(arg);
+      }
       continue;
     }
     if (arg === "--provider") {
@@ -1541,6 +1544,7 @@ async function handleRead(
   args: string[],
   outputMode: OutputMode,
   deps: HandlerDependencies,
+  forceRaw = false,
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
@@ -1611,7 +1615,7 @@ async function handleRead(
     keepImgDataUrl: flags["keep-img-data-url"] === true,
     withImagesSummary: flags["with-images-summary"] === true,
     maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
-    raw: flags["raw"] === true,
+    raw: forceRaw || flags["raw"] === true,
     pdf: flags.pdf as "text" | "raw" | undefined,
     pdfRepair: flags["pdf-repair"] === true,
     fullEnvelope: flags["full-envelope"] === true,
@@ -4357,7 +4361,7 @@ export async function main(
   // evidentiary downloads or API calls (ADR-0006).
   if (command === "fetch") {
     try {
-      return await handleFetch(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
+      return await handleFetch(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true), forceRaw);
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
       return getErrorExitCode(error);
@@ -4371,7 +4375,7 @@ export async function main(
   // snapshot replay (ADR-0006).
   if (command === "archive") {
     try {
-      return await handleArchive(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
+      return await handleArchive(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true), forceRaw);
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
       return getErrorExitCode(error);
@@ -4660,7 +4664,7 @@ export async function main(
         break;
       case "read":
         commandRecognized = true;
-        exitCode = await handleRead(commandArgs, outputMode, handlerDepsWithSave);
+        exitCode = await handleRead(commandArgs, outputMode, handlerDepsWithSave, forceRaw);
         break;
       case "crawl":
         commandRecognized = true;

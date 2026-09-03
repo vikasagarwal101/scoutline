@@ -28,6 +28,45 @@ export const DEFAULT_USER_AGENT =
 
 export const DEFAULT_FETCH_TIMEOUT_MS = 30000;
 
+/**
+ * Incrementally read from a ReadableStream up to maxBytes.
+ * Throws ValidationError if incoming data exceeds maxBytes without buffering the remainder.
+ */
+export async function readBoundedResponseBody(
+  body: ReadableStream<Uint8Array> | null,
+  maxBytes: number,
+  label = "Response size",
+): Promise<Buffer> {
+  if (!body) {
+    return Buffer.alloc(0);
+  }
+  const reader = body.getReader();
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        totalBytes += value.byteLength;
+        if (totalBytes > maxBytes) {
+          await reader.cancel().catch(() => {});
+          throw new ValidationError(
+            `${label} (${totalBytes} bytes) exceeds in-memory ceiling (${Math.round(maxBytes / (1024 * 1024))}MB).`,
+            "Use --out <file> to stream large responses directly to disk.",
+          );
+        }
+        chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+      }
+    }
+    return Buffer.concat(chunks);
+  } catch (err) {
+    await reader.cancel().catch(() => {});
+    throw err;
+  }
+}
+
 export const FETCH_HELP = `
 scoutline fetch <url> [options] - Direct, binary-safe HTTP client
 
@@ -302,7 +341,7 @@ export async function executeFetch(
 
     const MAX_IN_MEMORY_BYTES = 50 * 1024 * 1024; // 50MB ceiling without --out
 
-    if (options.out && response.ok && response.body && options.pdf !== "text") {
+    if (options.out && response.ok && response.body && !options.pdfRepair && options.pdf !== "text") {
       outPath = path.resolve(process.cwd(), options.out);
       const tempPath = `${outPath}.tmp.${process.pid}.${crypto.randomUUID()}`;
       try {
@@ -338,7 +377,7 @@ export async function executeFetch(
         md5 = md5Hasher.digest("hex");
       }
     } else {
-      if (!options.out || options.pdf === "text") {
+      if (!options.out || options.pdf === "text" || options.pdfRepair) {
         const contentLengthHeader = resHeaders["content-length"];
         if (contentLengthHeader && Number(contentLengthHeader) > MAX_IN_MEMORY_BYTES) {
           throw new ValidationError(
@@ -347,31 +386,14 @@ export async function executeFetch(
           );
         }
       }
-      const arrayBuffer = await response.arrayBuffer();
-      if ((!options.out || options.pdf === "text") && arrayBuffer.byteLength > MAX_IN_MEMORY_BYTES) {
-        throw new ValidationError(
-          `Response size (${arrayBuffer.byteLength} bytes) exceeds in-memory ceiling (50MB).`,
-          "Use --out <file> to stream large responses directly to disk.",
-        );
-      }
-      rawBuffer = Buffer.from(arrayBuffer);
+      rawBuffer = await readBoundedResponseBody(
+        response.body as ReadableStream<Uint8Array> | null,
+        (!options.out || options.pdf === "text" || options.pdfRepair) ? MAX_IN_MEMORY_BYTES : Infinity,
+        "Response size",
+      );
       bytes = rawBuffer.length;
       if (md5Hasher) {
         md5 = md5Hasher.update(rawBuffer).digest("hex");
-      }
-      if (options.out && response.ok) {
-        outPath = path.resolve(process.cwd(), options.out);
-        const tempPath = `${outPath}.tmp.${process.pid}.${crypto.randomUUID()}`;
-        try {
-          await fs.mkdir(path.dirname(outPath), { recursive: true });
-          await fs.writeFile(tempPath, rawBuffer);
-          await fs.rename(tempPath, outPath);
-        } catch (err) {
-          await fs.unlink(tempPath).catch(() => {});
-          throw new FileError(
-            `Failed to write output file "${outPath}": ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
       }
     }
   } catch (err: unknown) {
@@ -397,11 +419,43 @@ export async function executeFetch(
     let pdfBuf: Buffer = rawBuffer;
     if (options.pdfRepair) {
       pdfBuf = Buffer.from(await repairPdf(pdfBuf, timeoutMs));
+      bytes = pdfBuf.length;
+      if (md5Hasher) {
+        md5 = crypto.createHash("md5").update(pdfBuf).digest("hex");
+      }
     }
     if (options.pdf === "text") {
       content = await extractPdfText(pdfBuf, timeoutMs);
     }
+    if (options.out && response.ok) {
+      outPath = path.resolve(process.cwd(), options.out);
+      const tempPath = `${outPath}.tmp.${process.pid}.${crypto.randomUUID()}`;
+      try {
+        await fs.mkdir(path.dirname(outPath), { recursive: true });
+        await fs.writeFile(tempPath, pdfBuf);
+        await fs.rename(tempPath, outPath);
+      } catch (err) {
+        await fs.unlink(tempPath).catch(() => {});
+        throw new FileError(
+          `Failed to write output file "${outPath}": ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   } else if (rawBuffer !== null) {
+    if (options.out && response.ok) {
+      outPath = path.resolve(process.cwd(), options.out);
+      const tempPath = `${outPath}.tmp.${process.pid}.${crypto.randomUUID()}`;
+      try {
+        await fs.mkdir(path.dirname(outPath), { recursive: true });
+        await fs.writeFile(tempPath, rawBuffer);
+        await fs.rename(tempPath, outPath);
+      } catch (err) {
+        await fs.unlink(tempPath).catch(() => {});
+        throw new FileError(
+          `Failed to write output file "${outPath}": ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
     const isBinary =
       contentType &&
       !contentType.includes("text") &&

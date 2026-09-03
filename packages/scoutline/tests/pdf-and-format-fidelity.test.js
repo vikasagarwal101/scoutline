@@ -133,6 +133,37 @@ endobj`;
       const text = await extractPdfText(buffer);
       assert.match(text, /Nested Dict Text/);
     });
+
+    it("decodes 2-byte Identity-H and UTF-16BE hex strings", async () => {
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 100 >>\nstream\nBT\n<00480069> Tj\n<FEFF0057006F0072006C0064> Tj\nET\nendstream\nendobj`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Hi World/);
+    });
+
+    it("extracts literal strings with escaped parentheses in quote operators", async () => {
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 120 >>\nstream\nBT\n(prefix \\(suffix\\)) '\n0 0 (a \\(b\\) c) "\nET\nendstream\nendobj`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /prefix \(suffix\)/);
+      assert.match(text, /a \(b\) c/);
+    });
+
+    it("extracts text containing balanced nested parentheses in Tj", async () => {
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 80 >>\nstream\nBT\n(Chapter (draft)) Tj\nET\nendstream\nendobj`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Chapter \(draft\)/);
+    });
+
+    it("ignores BT ... ET blocks inside comments and metadata literals", async () => {
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Title (BT Fake Title ET) /Length 120 >>\nstream\n% BT Stale Comment Text ET\nBT\n(Actual Visible Text) Tj\nET\nendstream\nendobj`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Actual Visible Text/);
+      assert.doesNotMatch(text, /Fake Title/);
+      assert.doesNotMatch(text, /Stale Comment Text/);
+    });
   });
 
   describe("repairPdf (xref reconstruction)", () => {
@@ -179,6 +210,21 @@ endobj
       const hostilePdf = Buffer.from(`%PDF-1.4\n4000000000 0 obj\n<< /Type /Catalog >>\nendobj\n`, "latin1");
       const repaired = await repairPdf(hostilePdf);
       assert.ok(repaired instanceof Buffer);
+    });
+
+    it("preserves Encrypt and ID entries in repaired trailer", async () => {
+      const damagedPdf = Buffer.from(`%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R /Encrypt 2 0 R /ID [<1234><5678>] >>\n%%EOF`, "latin1");
+      const repaired = await repairPdf(damagedPdf);
+      const repairedStr = repaired.toString("latin1");
+      assert.match(repairedStr, /\/Encrypt 2 0 R/);
+      assert.match(repairedStr, /\/ID \[<1234><5678>\]/);
+    });
+
+    it("skips pure reconstruction for PDFs containing ObjStm", async () => {
+      const objStmPdf = Buffer.from(`%PDF-1.5\n1 0 obj\n<< /Type /ObjStm >>\nstream\n...\nendstream\nendobj\n`, "latin1");
+      const repaired = await repairPdf(objStmPdf);
+      const repairedStr = repaired.toString("latin1");
+      assert.equal(repairedStr, objStmPdf.toString("latin1"));
     });
   });
 

@@ -84,12 +84,45 @@ function decodePdfLiteralString(str: string): string {
 function decodePdfHexString(hex: string): string {
   const clean = hex.replace(/\s+/g, "");
   const padded = clean.length % 2 !== 0 ? clean + "0" : clean;
-  let result = "";
+  const bytes: number[] = [];
   for (let i = 0; i < padded.length; i += 2) {
     const byte = parseInt(padded.slice(i, i + 2), 16);
     if (!isNaN(byte)) {
-      result += String.fromCharCode(byte);
+      bytes.push(byte);
     }
+  }
+
+  // Check if hex is UTF-16BE with BOM (\xFE\xFF)
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    let res = "";
+    for (let i = 2; i + 1 < bytes.length; i += 2) {
+      const code = (bytes[i]! << 8) | bytes[i + 1]!;
+      res += String.fromCharCode(code);
+    }
+    return res;
+  }
+
+  // Check if 2-byte Identity-H ASCII (e.g. <00480069> -> "Hi")
+  if (bytes.length >= 2 && bytes.length % 2 === 0) {
+    let isTwoByteAscii = true;
+    for (let i = 0; i < bytes.length; i += 2) {
+      if (bytes[i] !== 0x00 || bytes[i + 1]! < 0x20 || bytes[i + 1]! > 0x7e) {
+        isTwoByteAscii = false;
+        break;
+      }
+    }
+    if (isTwoByteAscii) {
+      let res = "";
+      for (let i = 0; i < bytes.length; i += 2) {
+        res += String.fromCharCode(bytes[i + 1]!);
+      }
+      return res;
+    }
+  }
+
+  let result = "";
+  for (const byte of bytes) {
+    result += String.fromCharCode(byte);
   }
   return result;
 }
@@ -102,8 +135,57 @@ function extractBtBlocks(streamStr: string): string[] {
   const blocks: string[] = [];
   const len = streamStr.length;
   let i = 0;
+  let outerInComment = false;
+  let outerInString = false;
+  let outerParenDepth = 0;
+  let outerInHex = false;
 
   while (i < len) {
+    const ch = streamStr[i];
+
+    if (outerInComment) {
+      if (ch === "\r" || ch === "\n") outerInComment = false;
+      i++;
+      continue;
+    }
+    if (outerInHex) {
+      if (ch === ">") outerInHex = false;
+      i++;
+      continue;
+    }
+    if (outerInString) {
+      if (ch === "\\") {
+        i += 2;
+      } else if (ch === "(") {
+        outerParenDepth++;
+        i++;
+      } else if (ch === ")") {
+        outerParenDepth--;
+        if (outerParenDepth === 0) outerInString = false;
+        i++;
+      } else {
+        i++;
+      }
+      continue;
+    }
+
+    if (ch === "%") {
+      outerInComment = true;
+      i++;
+      continue;
+    }
+    if (ch === "<" && streamStr[i + 1] !== "<") {
+      outerInHex = true;
+      i++;
+      continue;
+    }
+    if (ch === "(") {
+      outerInString = true;
+      outerParenDepth = 1;
+      i++;
+      continue;
+    }
+
     if (
       (i === 0 || /[\s\[\]<>()/%]/.test(streamStr[i - 1]!)) &&
       streamStr.slice(i, i + 2) === "BT" &&
@@ -117,27 +199,27 @@ function extractBtBlocks(streamStr: string): string[] {
       let inComment = false;
 
       while (i < len) {
-        const ch = streamStr[i];
+        const c = streamStr[i];
 
         if (inComment) {
-          if (ch === "\r" || ch === "\n") inComment = false;
+          if (c === "\r" || c === "\n") inComment = false;
         } else if (inHex) {
-          if (ch === ">") inHex = false;
+          if (c === ">") inHex = false;
         } else if (inString) {
-          if (ch === "\\") {
+          if (c === "\\") {
             i++;
-          } else if (ch === "(") {
+          } else if (c === "(") {
             parenDepth++;
-          } else if (ch === ")") {
+          } else if (c === ")") {
             parenDepth--;
             if (parenDepth === 0) inString = false;
           }
         } else {
-          if (ch === "%") {
+          if (c === "%") {
             inComment = true;
-          } else if (ch === "<" && streamStr[i + 1] !== "<") {
+          } else if (c === "<" && streamStr[i + 1] !== "<") {
             inHex = true;
-          } else if (ch === "(") {
+          } else if (c === "(") {
             inString = true;
             parenDepth = 1;
           } else if (
@@ -169,16 +251,13 @@ function parseContentStreamText(streamStr: string): string {
 
   const textBlocks = extractBtBlocks(streamStr);
 
+  const literalPattern = "\\((?:[^()\\\\]|\\\\.|(?:\\([^()\\\\]*\\)))*\\)";
+  const opRegex = new RegExp(
+    `${literalPattern}\\s*Tj|\\[((?:(?:${literalPattern})|<[0-9a-fA-F\\s]+>|[^\\[\\]()])*)\\]\\s*TJ|<[0-9a-fA-F\\s]+>\\s*Tj|T\\*|(?:-?\\d+(?:\\.\\d+)?\\s+){2}(?:Td|TD)|(?:${literalPattern})\\s*'|(?:-?\\d+(?:\\.\\d+)?\\s+){2}(?:${literalPattern})\\s*"|(?:${literalPattern})\\s*"`,
+    "g",
+  );
+
   for (const textBlock of textBlocks) {
-    // Tokenize text block looking for string operators:
-    // 1. (...) Tj
-    // 2. [(...)] TJ
-    // 3. ' or " (including optional aw ac numeric operands)
-    // 4. Td, TD, T* for line breaks
-
-    const opRegex =
-      /\((?:[^()\\]|\\.)*\)\s*Tj|\[((?:(?:\((?:[^()\\]|\\.)*\))|<[0-9a-fA-F\s]+>|[^[\]()])*)\]\s*TJ|<[0-9a-fA-F\s]+>\s*Tj|T\*|(?:-?\d+(?:\.\d+)?\s+){2}(?:Td|TD)|(?:\((?:[^()\\]|\\.)*\))\s*'|(?:-?\d+(?:\.\d+)?\s+){2}(?:\((?:[^()\\]|\\.)*\))\s*"|(?:\((?:[^()\\]|\\.)*\))\s*"/g;
-
     let opMatch: RegExpExecArray | null;
     while ((opMatch = opRegex.exec(textBlock)) !== null) {
       const token = opMatch[0]!;
@@ -214,9 +293,8 @@ function parseContentStreamText(streamStr: string): string {
           lines.push(currentLine.trim());
           currentLine = "";
         }
-        const lastParen = token.lastIndexOf(")");
-        const firstParen = token.lastIndexOf("(", lastParen);
-        const rawStr = token.slice(firstParen + 1, lastParen).trim();
+        const stringToken = token.replace(/^\s*(?:-?\d+(?:\.\d+)?\s+)*/, "");
+        const rawStr = stringToken.slice(1, stringToken.lastIndexOf(")")).trim();
         currentLine += decodePdfLiteralString(rawStr) + " ";
       }
     }
@@ -433,11 +511,16 @@ export async function repairPdf(buffer: Buffer, timeoutMs = 5000): Promise<Buffe
     streamIntervals.push([sMatch.index, sMatch.index + sMatch[0].length]);
   }
 
+  let streamIntervalIndex = 0;
   function isInsideStream(offset: number): boolean {
-    for (const [sStart, sEnd] of streamIntervals) {
-      if (offset >= sStart && offset < sEnd) return true;
+    while (
+      streamIntervalIndex < streamIntervals.length &&
+      offset >= streamIntervals[streamIntervalIndex]![1]
+    ) {
+      streamIntervalIndex++;
     }
-    return false;
+    const interval = streamIntervals[streamIntervalIndex];
+    return interval !== undefined && offset >= interval[0] && offset < interval[1];
   }
 
   const objRegex = /(\d+)\s+(\d+)\s+obj/g;
@@ -464,7 +547,7 @@ export async function repairPdf(buffer: Buffer, timeoutMs = 5000): Promise<Buffe
     }
   }
 
-  if (objects.length > 0 && !overLimit) {
+  if (objects.length > 0 && !overLimit && !/\/Type\s*\/ObjStm\b/.test(fileStr)) {
     objects.sort((a, b) => a.id - b.id);
     const maxId = objects[objects.length - 1]!.id;
 
@@ -484,23 +567,36 @@ export async function repairPdf(buffer: Buffer, timeoutMs = 5000): Promise<Buffe
         }
       }
 
-      let trailerStr = `trailer\n<< /Size ${maxId + 1} >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
-
-      // Search for /Root in trailer dictionaries first (last trailer wins)
+      // Search for /Root, /Encrypt, /ID in trailer dictionaries first (last trailer wins)
       let rootMatch: RegExpMatchArray | null = null;
+      let encryptMatch: RegExpMatchArray | null = null;
+      let idMatch: RegExpMatchArray | null = null;
       const trailerRegex = /trailer\s*<<([\s\S]*?)>>/g;
       let trailerMatch: RegExpExecArray | null;
       while ((trailerMatch = trailerRegex.exec(fileStr)) !== null) {
-        const candidate = trailerMatch[1]?.match(/\/Root\s+(\d+\s+\d+\s+R)/);
-        if (candidate) rootMatch = candidate;
+        const candidateRoot = trailerMatch[1]?.match(/\/Root\s+(\d+\s+\d+\s+R)/);
+        if (candidateRoot) rootMatch = candidateRoot;
+        const candidateEncrypt = trailerMatch[1]?.match(/\/Encrypt\s+(\d+\s+\d+\s+R)/);
+        if (candidateEncrypt) encryptMatch = candidateEncrypt;
+        const candidateId = trailerMatch[1]?.match(/\/ID\s*(\[[^\]]*\])/);
+        if (candidateId) idMatch = candidateId;
       }
       if (!rootMatch) {
         rootMatch = fileStr.match(/\/Root\s+(\d+\s+\d+\s+R)/);
       }
-
-      if (rootMatch) {
-        trailerStr = `trailer\n<< /Size ${maxId + 1} /Root ${rootMatch[1]} >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+      if (!encryptMatch) {
+        encryptMatch = fileStr.match(/\/Encrypt\s+(\d+\s+\d+\s+R)/);
       }
+      if (!idMatch) {
+        idMatch = fileStr.match(/\/ID\s*(\[[^\]]*\])/);
+      }
+
+      let extraTrailerEntries = "";
+      if (rootMatch) extraTrailerEntries += ` /Root ${rootMatch[1]}`;
+      if (encryptMatch) extraTrailerEntries += ` /Encrypt ${encryptMatch[1]}`;
+      if (idMatch) extraTrailerEntries += ` /ID ${idMatch[1]}`;
+
+      const trailerStr = `trailer\n<< /Size ${maxId + 1}${extraTrailerEntries} >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
 
       return Buffer.concat([buffer, Buffer.from(xrefStr + trailerStr, "latin1")]);
     }

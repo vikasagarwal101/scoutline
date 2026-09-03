@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.20.0] - 2026-09-04
+
+### Added
+
+- **Evidentiary Direct Retrieval (`scoutline fetch <url>`)**:
+  - Direct HTTP retrieval client supporting GET/POST/PUT/PATCH/DELETE/HEAD methods, custom headers (`-H / --header`), user-agent overrides (`-A / --user-agent`), request timeouts, and file payloads (`--data @file` or JSON inline).
+  - Evidentiary integrity auditing: `--md5` calculates MD5 digests over raw retrieved response bodies.
+  - Safe local disk saving: `--out <file>` captures verbatim bodies without screen truncation.
+  - Credential-free early dispatch: operates directly over HTTP/HTTPS without requiring AI provider credentials or local config.
+- **Temporal Archival Intelligence (`scoutline archive <cdx|get>`)**:
+  - `archive cdx <url>`: Direct temporal index querying against the Internet Archive CDX API with `--from`, `--to`, `--status`, and `--limit` filters.
+  - `archive get <url>`: Verbatim snapshot replay in Wayback `id_` raw mode (bypassing Wayback toolbars and script injection) with automatic nearest-snapshot resolution via Wayback Availability API and polite jittered exponential backoff retry under 429/503 rate limits.
+- **Format Fidelity & Hybrid PDF Processing**:
+  - Zero-dependency pure-Node PDF text extraction (FlateDecode inflation, text operators `BT`/`ET`, `Tj`, `TJ`, `Td`, hex strings) with opportunistic system delegation to `pdftotext` and `qpdf` when available.
+  - Structural cross-reference reconstruction and repair (`--pdf-repair`) for damaged or truncated PDF streams.
+  - `--raw` flag in `read` and `fetch`: Preserves verbatim content without markdown conversion (XML feeds, JSON-LD, SVG, raw HTML).
+- **Active Provider Health Diagnostics & Concurrency Isolation**:
+  - `doctor --health`: Active live connectivity and latency probe against configured providers with structured response status (`ok`, `auth_error`, `error`) and latency metrics in milliseconds.
+  - `--isolated` global flag & `SCOUTLINE_ISOLATED=1`: Namespaces artifact stores into process-isolated temporary directories for high-throughput headless multi-agent concurrency.
+  - Jittered exponential backoff in async file locking to prevent lock-step contention between concurrent processes.
+- **Standardized Output Envelopes & Strict Controls Conformance**:
+  - Standardized `{ success: true, data, timestamp }` envelope guaranteed under `-O json` and `-O pretty` across all command results.
+  - Strict capability-matrix validation for `--lang` / `--language` parameter controls (`ValidationError` on invalid values).
+
 ## [0.19.7] - 2026-09-01
 
 ### Changed

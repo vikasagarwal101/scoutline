@@ -343,6 +343,8 @@ The CLI is self-documenting. Use `--help` at any level:
 
 ```bash
 scoutline --help              # All commands
+scoutline fetch --help        # Direct HTTP retrieval (GET/POST, @file, --md5, --out)
+scoutline archive --help      # Wayback temporal index (cdx) and replay (get)
 scoutline search --help       # Search options
 scoutline read --help         # Reader options
 scoutline crawl --help        # Crawl options
@@ -351,7 +353,7 @@ scoutline research --help     # Research options
 scoutline vision --help       # Vision commands
 scoutline batch --help        # Batch manifest runner (distribution by default)
 scoutline repo --help         # GitHub repo commands
-scoutline doctor --help       # Provider diagnostics
+scoutline doctor --help       # Provider diagnostics (--health for live probe)
 scoutline quota --help        # Plan usage
 scoutline cache --help        # Local cache inspection, clearing, and pruning
 ```
@@ -359,6 +361,15 @@ scoutline cache --help        # Local cache inspection, clearing, and pruning
 ### Examples
 
 ```bash
+# Evidentiary Direct Retrieval (no AI credentials required)
+scoutline fetch https://api.github.com/repos/nodejs/node --md5
+scoutline fetch https://example.com/api -X POST --data @payload.json -H "Content-Type: application/json"
+scoutline fetch https://example.com/doc.pdf --pdf text --out extracted.txt
+
+# Temporal Archival (Wayback Machine)
+scoutline archive cdx https://example.com/ --from 20200101 --limit 5
+scoutline archive get https://example.com/ --at 20210601000000 --raw
+
 # Search
 scoutline search "TypeScript best practices" --count 10
 scoutline --provider tavily search "earnings call" --topic finance

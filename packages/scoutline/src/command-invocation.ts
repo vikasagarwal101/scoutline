@@ -104,6 +104,12 @@ function selectOutput(
   now: () => number,
   secrets: string[],
 ): string {
+  if (outputMode === "json" || outputMode === "pretty") {
+    const data = result.kind === "text" ? result.text : result.data;
+    const redactedData = redactSecrets(data, secrets);
+    return formatSuccessOutput(redactedData, outputMode, now);
+  }
+
   if (result.kind === "text") {
     return redactSecrets(result.text, secrets) as string;
   }

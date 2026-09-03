@@ -11,9 +11,11 @@
  * translation) and is dispatched before credentialed config load.
  */
 
+import { createWriteStream } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
+import { Readable } from "node:stream";
 import type { CommandResult, TextOutputMode } from "../command-invocation.js";
 import { invokeCommand } from "../command-invocation.js";
 import type { OutputMode } from "../lib/output.js";
@@ -127,17 +129,17 @@ export function parseFetchArgs(args: readonly string[]): {
       }
       out = next;
       i += 2;
-    } else if (arg === "--ua") {
+    } else if (arg === "--ua" || arg === "-A" || arg === "--user-agent") {
       const next = args[i + 1];
       if (!next || next.startsWith("-")) {
-        throw new ValidationError("--ua requires a User-Agent string argument.");
+        throw new ValidationError(`${arg} requires a User-Agent string argument.`);
       }
       ua = next;
       i += 2;
-    } else if (arg === "--method") {
+    } else if (arg === "--method" || arg === "-X") {
       const next = args[i + 1];
       if (!next || next.startsWith("-")) {
-        throw new ValidationError("--method requires an HTTP verb argument.");
+        throw new ValidationError(`${arg} requires an HTTP verb argument.`);
       }
       method = next.toUpperCase();
       i += 2;
@@ -173,7 +175,7 @@ export function parseFetchArgs(args: readonly string[]): {
       i++;
     } else if (arg === "--timeout") {
       const next = args[i + 1];
-      if (!next || !/^\d+$/.test(next)) {
+      if (!next || !/^\d+$/.test(next) || Number(next) <= 0) {
         throw new ValidationError("--timeout requires a positive integer in milliseconds.");
       }
       timeout = Number(next);
@@ -182,8 +184,17 @@ export function parseFetchArgs(args: readonly string[]): {
       positional.push(arg);
       i++;
     } else {
-      // Unknown option — ignore or let invokeCommand handle global options
-      i++;
+      // Global options accepted in rest stream
+      if (arg === "-O" || arg === "--output-format" || arg === "--save-format") {
+        i += 2;
+      } else if (arg === "--save" || arg === "--save-force" || arg === "--isolated") {
+        i++;
+      } else {
+        throw new ValidationError(
+          `Unknown option: "${arg}".`,
+          'Run "scoutline fetch --help" for available options.',
+        );
+      }
     }
   }
 
@@ -265,6 +276,14 @@ export async function executeFetch(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   let response: Response;
+  const resHeaders: Record<string, string> = {};
+  let contentType: string | undefined;
+  let outPath: string | undefined;
+  let rawBuffer: Buffer | null = null;
+  let bytes = 0;
+  let md5: string | undefined;
+  const md5Hasher = options.md5 ? crypto.createHash("md5") : null;
+
   try {
     response = await fetch(url, {
       method,
@@ -273,9 +292,71 @@ export async function executeFetch(
       redirect: "follow",
       signal: controller.signal,
     });
+
+    response.headers.forEach((val, key) => {
+      resHeaders[key.toLowerCase()] = val;
+    });
+    contentType = resHeaders["content-type"] || undefined;
+
+    const isPdfHeader = Boolean(contentType && contentType.includes("application/pdf"));
+
+    if (options.out && response.ok && response.body && !isPdfHeader && options.pdf !== "text") {
+      outPath = path.resolve(process.cwd(), options.out);
+      try {
+        await fs.mkdir(path.dirname(outPath), { recursive: true });
+        const writeStream = createWriteStream(outPath);
+        const nodeReadable = Readable.fromWeb(
+          response.body as import("node:stream/web").ReadableStream,
+        );
+        await new Promise<void>((resolve, reject) => {
+          nodeReadable.on("data", (chunk: Buffer) => {
+            bytes += chunk.length;
+            if (md5Hasher) md5Hasher.update(chunk);
+          });
+          nodeReadable.pipe(writeStream);
+          writeStream.on("finish", () => resolve());
+          writeStream.on("error", (err) => {
+            writeStream.destroy();
+            reject(err);
+          });
+          nodeReadable.on("error", (err) => {
+            writeStream.destroy();
+            reject(err);
+          });
+        });
+      } catch (err) {
+        throw new FileError(
+          `Failed to write output file "${outPath}": ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      if (md5Hasher) {
+        md5 = md5Hasher.digest("hex");
+      }
+    } else {
+      const arrayBuffer = await response.arrayBuffer();
+      rawBuffer = Buffer.from(arrayBuffer);
+      bytes = rawBuffer.length;
+      if (md5Hasher) {
+        md5 = md5Hasher.update(rawBuffer).digest("hex");
+      }
+      if (options.out && response.ok) {
+        outPath = path.resolve(process.cwd(), options.out);
+        try {
+          await fs.mkdir(path.dirname(outPath), { recursive: true });
+          await fs.writeFile(outPath, rawBuffer);
+        } catch (err) {
+          throw new FileError(
+            `Failed to write output file "${outPath}": ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
   } catch (err: unknown) {
     if (controller.signal.aborted) {
       throw new TimeoutError(timeoutMs, `Direct fetch timed out after ${timeoutMs}ms`);
+    }
+    if (err instanceof FileError || err instanceof TimeoutError) {
+      throw err;
     }
     const msg = err instanceof Error ? err.message : String(err);
     throw new NetworkError(`Fetch failed: ${msg}`);
@@ -283,49 +364,21 @@ export async function executeFetch(
     clearTimeout(timer);
   }
 
-  const resHeaders: Record<string, string> = {};
-  response.headers.forEach((val, key) => {
-    resHeaders[key.toLowerCase()] = val;
-  });
-
-  const contentType = resHeaders["content-type"] || undefined;
-  const arrayBuffer = await response.arrayBuffer();
-  let buffer: Buffer = Buffer.from(arrayBuffer);
-
   const isPdf =
-    isPdfBuffer(buffer) || Boolean(contentType && contentType.includes("application/pdf"));
-
-  if (isPdf && options.pdfRepair) {
-    buffer = Buffer.from(await repairPdf(buffer));
-  }
-
-  const bytes = buffer.length;
-
-  let md5: string | undefined;
-  if (options.md5) {
-    md5 = crypto.createHash("md5").update(buffer).digest("hex");
-  }
-
-  let outPath: string | undefined;
-  if (options.out) {
-    outPath = path.resolve(process.cwd(), options.out);
-    try {
-      await fs.mkdir(path.dirname(outPath), { recursive: true });
-      await fs.writeFile(outPath, buffer);
-    } catch (err) {
-      throw new FileError(
-        `Failed to write output file "${outPath}": ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
+    (rawBuffer !== null && isPdfBuffer(rawBuffer)) ||
+    Boolean(contentType && contentType.includes("application/pdf"));
 
   // Decode content string for text-compatible bodies
   let content: string | undefined;
-  if (isPdf) {
-    if (options.pdf === "text") {
-      content = await extractPdfText(buffer);
+  if (isPdf && rawBuffer !== null) {
+    let pdfBuf: Buffer = rawBuffer;
+    if (options.pdfRepair) {
+      pdfBuf = Buffer.from(await repairPdf(pdfBuf, timeoutMs));
     }
-  } else {
+    if (options.pdf === "text") {
+      content = await extractPdfText(pdfBuf, timeoutMs);
+    }
+  } else if (rawBuffer !== null) {
     const isBinary =
       contentType &&
       !contentType.includes("text") &&
@@ -337,7 +390,7 @@ export async function executeFetch(
 
     if (!isBinary || !options.out) {
       try {
-        content = buffer.toString("utf8");
+        content = rawBuffer.toString("utf8");
       } catch {
         // Leave undefined if decoding fails
       }
@@ -353,7 +406,7 @@ export async function executeFetch(
     headers: resHeaders,
     bytes,
     ...(md5 ? { md5 } : {}),
-    ...(outPath ? { outPath: options.out } : {}),
+    ...(outPath ? { outPath } : {}),
     ...(contentType ? { contentType } : {}),
     ...(content !== undefined ? { content } : {}),
   };
@@ -402,6 +455,7 @@ export async function handleFetch(
   args: string[],
   outputMode: OutputMode,
   deps: HandlerDependencies,
+  forceRaw = false,
 ): Promise<number> {
   const { options, positional, showHelp } = parseFetchArgs(args);
 
@@ -410,10 +464,15 @@ export async function handleFetch(
     return 0;
   }
 
+  const effectiveOptions: FetchOptions = {
+    ...options,
+    raw: forceRaw || options.raw === true,
+  };
+
   const url = positional[0]!;
   return invokeCommand(
     deps.invocation,
-    () => fetchCommand(url, options),
+    () => fetchCommand(url, effectiveOptions),
     outputMode,
     deps.now,
     deps.secrets,

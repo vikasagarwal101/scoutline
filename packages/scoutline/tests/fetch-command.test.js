@@ -208,6 +208,70 @@ describe("scoutline fetch command", () => {
       assert.equal(result.status, 200);
       assert.equal(result.content, JSON.stringify({ query: "scoutline" }));
     });
+
+    it("accepts -X for method and -A / --user-agent for User-Agent", () => {
+      const parsedX = parseFetchArgs(["https://example.com", "-X", "post"]);
+      assert.equal(parsedX.options.method, "POST");
+
+      const parsedA = parseFetchArgs(["https://example.com", "-A", "CustomBot/1.0"]);
+      assert.equal(parsedA.options.ua, "CustomBot/1.0");
+
+      const parsedUa = parseFetchArgs(["https://example.com", "--user-agent", "CustomBot/2.0"]);
+      assert.equal(parsedUa.options.ua, "CustomBot/2.0");
+    });
+
+    it("does not write to --out on HTTP error (404/500)", async () => {
+      const errorOut = path.join(tempDir, "should-not-exist.txt");
+      const result = await executeFetch(`${serverBaseUrl}/not-found`, {
+        out: errorOut,
+      });
+      assert.equal(result.status, 404);
+      assert.equal(fs.existsSync(errorOut), false, "--out file must not be written on HTTP error");
+    });
+
+    it("streams direct downloads to --out and computes md5", async () => {
+      const streamOut = path.join(tempDir, "streamed.txt");
+      const result = await executeFetch(`${serverBaseUrl}/hello`, {
+        out: streamOut,
+        md5: true,
+      });
+      assert.equal(result.status, 200);
+      assert.equal(fs.existsSync(streamOut), true);
+      const content = fs.readFileSync(streamOut, "utf8");
+      assert.equal(content, "Hello World!");
+      const expectedMd5 = crypto.createHash("md5").update(Buffer.from("Hello World!")).digest("hex");
+      assert.equal(result.md5, expectedMd5);
+    });
+
+    it("rejects non-positive --timeout values", () => {
+      assert.throws(
+        () => parseFetchArgs(["https://example.com", "--timeout", "0"]),
+        { name: "ValidationError" },
+      );
+      assert.throws(
+        () => parseFetchArgs(["https://example.com", "--timeout", "-5"]),
+        { name: "ValidationError" },
+      );
+    });
+
+    it("rejects unknown options in parseFetchArgs", () => {
+      assert.throws(
+        () => parseFetchArgs(["https://example.com", "--bogus"]),
+        { name: "ValidationError" },
+      );
+    });
+
+    it("resolves relative --out to absolute path", async () => {
+      const relOut = "relative-test.txt";
+      const resolved = path.resolve(process.cwd(), relOut);
+      try {
+        const result = await executeFetch(`${serverBaseUrl}/hello`, { out: relOut });
+        assert.equal(result.outPath, resolved);
+        assert.equal(fs.existsSync(resolved), true);
+      } finally {
+        if (fs.existsSync(resolved)) fs.unlinkSync(resolved);
+      }
+    });
   });
 
   describe("CLI & Early Credential-Free Dispatch", () => {

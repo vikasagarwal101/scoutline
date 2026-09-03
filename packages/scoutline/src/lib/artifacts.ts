@@ -82,6 +82,10 @@ export function newRequestId(
   return `${utcCompactTimestamp(new Date(now))}-${hex}`;
 }
 
+export interface ArtifactsPlatform extends ConfigRootPlatform {
+  readonly pid?: number;
+}
+
 /**
  * Artifacts root: `SCOUTLINE_ARTIFACTS_DIR` (canonical SCOUTLINE_* name, no
  * legacy alias) wins; otherwise the config root's `artifacts/` sibling.
@@ -90,13 +94,14 @@ export function newRequestId(
  */
 export function resolveArtifactsDir(
   env: ArtifactsDirEnvironment,
-  platform: ConfigRootPlatform = { homedir: os.homedir() },
+  platform: ArtifactsPlatform = { homedir: os.homedir(), pid: process.pid },
 ): string {
   const baseDir =
     env.SCOUTLINE_ARTIFACTS_DIR || path.join(resolveConfigRootPure(env, platform), "artifacts");
 
   if (env.SCOUTLINE_ISOLATED === "1" || env.SCOUTLINE_ISOLATED === "true") {
-    return path.join(baseDir, "isolated", `${process.pid}`);
+    const pid = platform.pid ?? process.pid;
+    return path.join(baseDir, "isolated", `${pid}`);
   }
 
   return baseDir;

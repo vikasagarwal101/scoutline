@@ -2,6 +2,12 @@
 
 Requirements gathered from real usage in an investigative-research pipeline where scoutline is the primary web-access CLI. Each item: the capability, the rationale (functional, generic), and priority. No project specifics.
 
+> **Implementation Note (ADR-0006)**:
+> In the shipped CLI, the seed requirements below are consolidated into canonical namespaces:
+> - Requirements 3 & 4 (`get` & `api`) are consolidated into `scoutline fetch <url>`.
+> - Requirements 1 & 2 are implemented as `scoutline archive <cdx|get>`.
+> - Requirement 6 (`providers --health`) is implemented as `scoutline doctor --health`.
+
 ## TIER 1 — highest priority (these replaced the most manual fallback work)
 
 ### 1. `scoutline archive cdx <url-or-pattern> [--from TS] [--to TS] [--status 200]`

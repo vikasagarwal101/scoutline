@@ -115,9 +115,30 @@ endobj
       assert.match(repairedStr, /startxref/);
       assert.match(repairedStr, /%%EOF/);
     });
+
+    it("points startxref directly at the xref keyword", async () => {
+      const damagedPdf = Buffer.from(`%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n`, "latin1");
+      const repaired = await repairPdf(damagedPdf);
+      const repairedStr = repaired.toString("latin1");
+      const startxrefMatch = repairedStr.match(/startxref\n(\d+)\n%%EOF/);
+      assert.ok(startxrefMatch, "repaired PDF must contain startxref");
+      const offset = Number(startxrefMatch[1]);
+      assert.equal(repaired.subarray(offset, offset + 4).toString("latin1"), "xref");
+    });
   });
 
   describe("read --raw format fidelity", () => {
+    it("rejects invalid --pdf options at validation time", async () => {
+      const mockDeps = {
+        capability: {},
+        execution: {},
+      };
+      await assert.rejects(
+        () => read("https://example.com/doc.pdf", { pdf: "invalid-mode" }, mockDeps),
+        { name: "ValidationError" },
+      );
+    });
+
     it("preserves raw format and content without markdown conversion when --raw is set", async () => {
       const rawXml = `<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom"><title>Sample Feed</title><entry><title>Entry 1</title></entry></feed>`;
 

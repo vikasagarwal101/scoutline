@@ -213,17 +213,28 @@ function extractPureNodePdfText(buffer: Buffer): string {
   return extractedSections.join("\n\n").trim();
 }
 
-function runExternalTextTool(cmd: string, args: string[], input: Buffer): Promise<string | null> {
+function runExternalTextTool(
+  cmd: string,
+  args: string[],
+  input: Buffer,
+  timeoutMs = 5000,
+): Promise<string | null> {
   return new Promise((resolve) => {
     let finished = false;
+    let timer: NodeJS.Timeout | null = null;
     const finish = (val: string | null) => {
       if (!finished) {
         finished = true;
+        if (timer) clearTimeout(timer);
         resolve(val);
       }
     };
     try {
-      const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "ignore"] });
+      timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        finish(null);
+      }, timeoutMs);
       let stdout = "";
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk) => {
@@ -246,17 +257,28 @@ function runExternalTextTool(cmd: string, args: string[], input: Buffer): Promis
   });
 }
 
-function runExternalBinaryTool(cmd: string, args: string[], input: Buffer): Promise<Buffer | null> {
+function runExternalBinaryTool(
+  cmd: string,
+  args: string[],
+  input: Buffer,
+  timeoutMs = 5000,
+): Promise<Buffer | null> {
   return new Promise((resolve) => {
     let finished = false;
+    let timer: NodeJS.Timeout | null = null;
     const finish = (val: Buffer | null) => {
       if (!finished) {
         finished = true;
+        if (timer) clearTimeout(timer);
         resolve(val);
       }
     };
     try {
-      const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "ignore"] });
+      timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        finish(null);
+      }, timeoutMs);
       const chunks: Buffer[] = [];
       child.stdout.on("data", (chunk: Buffer) => {
         chunks.push(chunk);
@@ -281,7 +303,7 @@ function runExternalBinaryTool(cmd: string, args: string[], input: Buffer): Prom
 /**
  * Extract text from a PDF buffer using opportunistic delegation or pure-Node fallback.
  */
-export async function extractPdfText(buffer: Buffer): Promise<string> {
+export async function extractPdfText(buffer: Buffer, timeoutMs = 5000): Promise<string> {
   // 1. Pure Node fast path
   const text = extractPureNodePdfText(buffer);
   if (text.length > 0) {
@@ -289,7 +311,7 @@ export async function extractPdfText(buffer: Buffer): Promise<string> {
   }
 
   // 2. Opportunistic pdftotext if installed
-  const externalText = await runExternalTextTool("pdftotext", ["-", "-"], buffer);
+  const externalText = await runExternalTextTool("pdftotext", ["-", "-"], buffer, timeoutMs);
   if (externalText) {
     return externalText;
   }
@@ -300,7 +322,7 @@ export async function extractPdfText(buffer: Buffer): Promise<string> {
 /**
  * Attempt structural repair on damaged PDFs (e.g. broken xref table).
  */
-export async function repairPdf(buffer: Buffer): Promise<Buffer> {
+export async function repairPdf(buffer: Buffer, timeoutMs = 5000): Promise<Buffer> {
   // 1. Pure Node xref reconstruction
   const fileStr = buffer.toString("latin1");
   const objRegex = /(\d+)\s+(\d+)\s+obj/g;
@@ -319,19 +341,21 @@ export async function repairPdf(buffer: Buffer): Promise<Buffer> {
     objects.sort((a, b) => a.id - b.id);
     const maxId = objects[objects.length - 1]!.id;
 
-    let xrefStr = `\nxref\n0 ${maxId + 1}\n0000000000 65535 f \n`;
-    const offsetMap = new Map(objects.map((o) => [o.id, o.offset]));
+    const prefix = buffer.length > 0 && buffer[buffer.length - 1] === 0x0a ? "" : "\n";
+    const xrefOffset = buffer.length + prefix.length;
+    let xrefStr = `${prefix}xref\n0 ${maxId + 1}\n0000000000 65535 f \n`;
+    const objMap = new Map(objects.map((o) => [o.id, o]));
 
     for (let i = 1; i <= maxId; i++) {
-      const offset = offsetMap.get(i);
-      if (offset !== undefined) {
-        xrefStr += `${String(offset).padStart(10, "0")} 00000 n \n`;
+      const obj = objMap.get(i);
+      if (obj !== undefined) {
+        const genStr = String(obj.generation).padStart(5, "0");
+        xrefStr += `${String(obj.offset).padStart(10, "0")} ${genStr} n \n`;
       } else {
         xrefStr += `0000000000 65535 f \n`;
       }
     }
 
-    const xrefOffset = buffer.length;
     let trailerStr = `trailer\n<< /Size ${maxId + 1} >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
 
     const rootMatch = fileStr.match(/\/Root\s+(\d+\s+\d+\s+R)/);
@@ -343,7 +367,7 @@ export async function repairPdf(buffer: Buffer): Promise<Buffer> {
   }
 
   // 2. Opportunistic qpdf if installed
-  const externalRepaired = await runExternalBinaryTool("qpdf", ["--qdf", "-", "-"], buffer);
+  const externalRepaired = await runExternalBinaryTool("qpdf", ["--qdf", "-", "-"], buffer, timeoutMs);
   if (externalRepaired) {
     return externalRepaired;
   }

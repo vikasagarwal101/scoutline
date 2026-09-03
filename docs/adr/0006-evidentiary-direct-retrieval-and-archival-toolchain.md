@@ -8,7 +8,7 @@ Extends Scoutline from a multi-provider AI search/reader gateway into a complete
 
 Scoutline's core architecture was designed around provider-abstracted capabilities (`search`, `read`, `crawl`, `map`, `research`, `vision`) with transparent fallback across AI providers. In investigative-research pipelines, however, this model introduces critical gaps:
 
-1. **Evidentiary preservation**: Downloading raw datasets, PDFs, and official records requires byte-exact retrieval with cryptographic checksums (`--md5`) and browser-like user agents, which AI scraping/reader APIs do not provide.
+1. **Evidentiary preservation**: Downloading raw datasets, PDFs, and official records requires byte-exact retrieval with integrity checksums (`--md5` for transmission integrity verification; SHA-256 for cryptographic non-repudiation) and browser-like user agents, which AI scraping/reader APIs do not provide.
 2. **REST/API communication**: Querying structured endpoints requires sending arbitrary JSON payloads and receiving un-mangled responses without Markdown conversion.
 3. **Archival provenance**: Recovering lost content, verifying historical site changes, and discovering deleted endpoints requires querying the Internet Archive Wayback Machine CDX API and replaying raw, unadulterated captures (without archive chrome/toolbars).
 4. **Pipeline reliability & concurrency**: Running high-throughput parallel pipelines (`xargs -P N`) suffers from output corruption when multiple processes contend for shared disk state (`~/.scoutline/`) or leak notices to stdout. Mid-pipeline quota exhaustion causes preventable failures if providers cannot be probed prior to dispatch.
@@ -19,7 +19,7 @@ Scoutline's core architecture was designed around provider-abstracted capabiliti
 Direct, provider-independent HTTP operations are consolidated under the first-class `scoutline fetch` command:
 - `scoutline fetch <url> [--out <file>] [--md5] [--raw] [--ua <agent>] [--method <verb>] [--data <@file|string>] [--header <K:V>]`:
   - **Evidentiary GET mode (default)**: Byte-exact, binary-safe retrieval following redirects, defaulting to a modern browser User-Agent, with optional streaming to disk (`--out`) and cryptographic integrity hashing (`--md5`).
-  - **Structured API / REST mode**: Supports arbitrary HTTP methods (`--method POST`), JSON request payloads from file (`--data @body.json`), and custom headers (`--header K:V`), returning un-mangled responses without Markdown translation.
+  - **Structured API / REST mode**: Supports arbitrary HTTP methods (`--method POST`, `-X POST`), JSON request payloads from file (`--data @body.json`), and custom headers (`--header K:V`), returning un-mangled responses without Markdown translation.
 - `scoutline fetch` is strictly direct: it does not invoke AI providers, does not participate in provider fallback, and does not perform AI/markdown conversion.
 
 ### 2. Dedicated Archival Namespace (`scoutline archive <cdx|get>`)
@@ -29,13 +29,13 @@ Archival intelligence represents a distinct domain separate from direct fetching
 
 ### 3. Provider Health Probe via `scoutline doctor --health`
 To avoid command bloat from single-purpose top-level commands, the requirement for an active provider health check (`providers --health`) is consolidated into the existing diagnostic command as `scoutline doctor --health`:
-- Performs an active, concurrent probe across all configured providers checking endpoint reachability, response latency, and live quota/credit availability.
+- Performs an active, concurrent probe across all configured providers checking endpoint reachability, response latency, and operational health status (quota balances remain read from cached/stored snapshots).
 - A dedicated `providers` command is rejected because diagnostics already belong to `doctor`.
 
 ### 4. Hybrid PDF Extraction and Repair
 PDF handling on `fetch` and `read` (`--pdf text|raw`, `--pdf-repair`):
-- Pure-JS/WASM text extraction is bundled into the package so Scoutline remains fully self-sufficient out-of-the-box without mandatory external system dependencies.
-- Opportunistic delegation to system tools (`qpdf` / `pdftotext`) is used when installed on the host, specifically for structural xref repair (`--pdf-repair`).
+- Pure-JS text extraction is bundled into the package so Scoutline remains fully self-sufficient out-of-the-box without mandatory external system dependencies.
+- Opportunistic delegation to system tools is used when installed on the host: `pdftotext` for external text layer extraction, and `qpdf` specifically for structural xref repair (`--pdf-repair`).
 
 ### 5. Concurrency Resilience and Ephemeral Execution
 To eliminate JSON output corruption under concurrent invocations:

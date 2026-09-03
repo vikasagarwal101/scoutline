@@ -126,8 +126,8 @@ export async function breakStaleLock(
  * Serialize a critical section via an exclusive lockfile.
  *
  * Creates `{stateDir}/{identityHash}.lock` with `wx` (exclusive create).
- * If the lock is held, polls every 500ms until acquired or `timeoutMs`
- * elapses. A lock older than `staleMs` is broken (unlinked) and retried —
+ * If the lock is held, retries with jittered exponential backoff until acquired or
+ * `timeoutMs` elapses. A lock older than `staleMs` is broken (unlinked) and retried —
  * but only when its mtime is genuinely stale: while `fn()` runs, the
  * holder refreshes the lock mtime (issue #46/#48a), so a live holder is
  * never displaced no matter how long the critical section takes.

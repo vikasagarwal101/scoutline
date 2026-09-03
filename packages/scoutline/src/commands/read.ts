@@ -246,6 +246,12 @@ export async function read(
   // 1. Parse-level validation BEFORE Provider/Adapter work.
   validateUrl(url);
   validateExtractMode(options.extract);
+  if (options.pdf !== undefined && options.pdf !== "text" && options.pdf !== "raw") {
+    throw new ValidationError(
+      `Invalid --pdf value: ${String(options.pdf)}`,
+      'Allowed values for --pdf are "text" or "raw"',
+    );
+  }
 
   // 2. Build the Provider-neutral request. Only fields that affect
   //    the Provider request or the cache identity appear here;
@@ -287,12 +293,15 @@ export async function read(
 
   if (isPdf) {
     let pdfBuf: Buffer = contentBuffer;
+    const timeoutMs = (options.timeout ?? 20) * 1000;
     if (options.pdfRepair) {
-      pdfBuf = Buffer.from(await repairPdf(pdfBuf));
+      pdfBuf = Buffer.from(await repairPdf(pdfBuf, timeoutMs));
     }
     if (options.pdf === "text" || (!options.raw && options.pdf !== "raw")) {
-      finalContent = await extractPdfText(pdfBuf);
+      finalContent = await extractPdfText(pdfBuf, timeoutMs);
       finalContentFormat = "text";
+    } else if (options.pdf === "raw") {
+      finalContentFormat = "raw";
     }
   }
 

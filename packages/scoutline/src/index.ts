@@ -403,9 +403,6 @@ function extractGlobalOptions(args: string[]): {
     }
     if (arg === "--raw") {
       forceRaw = true;
-      if (rest.length > 0) {
-        rest.push(arg);
-      }
       continue;
     }
     if (arg === "--provider") {

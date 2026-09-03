@@ -330,7 +330,19 @@ export async function executeArchiveGet(
       sleep: dependencies.sleep,
     },
     async (res) => {
+      const contentLength = res.headers.get("content-length");
+      const MAX_ARCHIVE_IN_MEMORY = 50 * 1024 * 1024;
+      if (contentLength && Number(contentLength) > MAX_ARCHIVE_IN_MEMORY) {
+        throw new ValidationError(
+          `Archive capture size (${contentLength} bytes) exceeds in-memory limit (50MB).`,
+        );
+      }
       const arrayBuffer = await res.arrayBuffer();
+      if (arrayBuffer.byteLength > MAX_ARCHIVE_IN_MEMORY) {
+        throw new ValidationError(
+          `Archive capture size (${arrayBuffer.byteLength} bytes) exceeds in-memory limit (50MB).`,
+        );
+      }
       return {
         statusCode: res.status,
         contentType: res.headers.get("content-type") || undefined,
@@ -342,10 +354,30 @@ export async function executeArchiveGet(
   const bytes = buffer.length;
 
   let content: string | undefined;
-  try {
-    content = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-  } catch {
-    // Leave undefined if binary
+  const isExplicitBinary = Boolean(
+    contentType &&
+      /application\/(pdf|zip|gzip|octet-stream)|image\/|audio\/|video\//i.test(contentType),
+  );
+  const isTextualMime = Boolean(
+    contentType &&
+      (contentType.startsWith("text/") ||
+        /application\/(json|xml|javascript|atom\+xml|rss\+xml)/i.test(contentType)),
+  );
+
+  if (!isExplicitBinary) {
+    if (isTextualMime) {
+      try {
+        content = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+      } catch {
+        content = buffer.toString("utf8");
+      }
+    } else {
+      try {
+        content = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+      } catch {
+        // Leave undefined if binary
+      }
+    }
   }
 
   return {

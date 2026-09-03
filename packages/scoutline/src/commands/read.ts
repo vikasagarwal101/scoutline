@@ -296,6 +296,7 @@ export async function read(
     const timeoutMs = (options.timeout ?? 20) * 1000;
     if (options.pdfRepair) {
       pdfBuf = Buffer.from(await repairPdf(pdfBuf, timeoutMs));
+      finalContent = pdfBuf.toString("latin1");
     }
     if (options.pdf === "text" || (!options.raw && options.pdf !== "raw")) {
       finalContent = await extractPdfText(pdfBuf, timeoutMs);

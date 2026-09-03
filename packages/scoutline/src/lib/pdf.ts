@@ -16,8 +16,8 @@ import { spawn } from "node:child_process";
  */
 export function isPdfBuffer(buffer: Buffer): boolean {
   if (!buffer || buffer.length < 5) return false;
-  const header = buffer.subarray(0, 1024).toString("latin1");
-  return header.includes("%PDF-");
+  const header = buffer.subarray(0, 1024).toString("latin1").trimStart();
+  return header.startsWith("%PDF-");
 }
 
 /**
@@ -115,7 +115,7 @@ function parseContentStreamText(streamStr: string): string {
     // 4. Td, TD, T* for line breaks
 
     const opRegex =
-      /\((?:[^()\\]|\\.)*\)\s*Tj|\[((?:(?:\((?:[^()\\]|\\.)*\))|<[0-9a-fA-F\s]+>|[^[\]()])*)\]\s*TJ|<[0-9a-fA-F\s]+>\s*Tj|T\*|(?:\d+(?:\.\d+)?\s+){2}(?:Td|TD)|(?:\((?:[^()\\]|\\.)*\))\s*'/g;
+      /\((?:[^()\\]|\\.)*\)\s*Tj|\[((?:(?:\((?:[^()\\]|\\.)*\))|<[0-9a-fA-F\s]+>|[^[\]()])*)\]\s*TJ|<[0-9a-fA-F\s]+>\s*Tj|T\*|(?:-?\d+(?:\.\d+)?\s+){2}(?:Td|TD)|(?:\((?:[^()\\]|\\.)*\))\s*['"]/g;
 
     let opMatch: RegExpExecArray | null;
     while ((opMatch = opRegex.exec(textBlock)) !== null) {
@@ -147,7 +147,7 @@ function parseContentStreamText(streamStr: string): string {
           }
         }
         currentLine += " ";
-      } else if (token.endsWith("'")) {
+      } else if (token.endsWith("'") || token.endsWith('"')) {
         if (currentLine.trim().length > 0) {
           lines.push(currentLine.trim());
           currentLine = "";
@@ -182,17 +182,21 @@ function extractPureNodePdfText(buffer: Buffer): string {
     const streamLength = match[1]!.length;
     const rawStreamSlice = buffer.subarray(streamStart, streamStart + streamLength);
 
-    // Look backward for stream dictionary before 'stream'
-    const dictSlice = fileStr.slice(Math.max(0, match.index - 500), match.index);
+    // Look backward for stream's own dictionary << ... >> before 'stream'
+    const beforeStream = fileStr.slice(Math.max(0, match.index - 1000), match.index).trimEnd();
+    const lastDictEnd = beforeStream.lastIndexOf(">>");
+    const lastDictStart = lastDictEnd !== -1 ? beforeStream.lastIndexOf("<<", lastDictEnd) : -1;
+    const dictSlice = lastDictStart !== -1 ? beforeStream.slice(lastDictStart, lastDictEnd + 2) : "";
     const isFlate = dictSlice.includes("/FlateDecode");
 
     let streamBytes: Buffer | null = null;
+    const maxOutputLength = 20 * 1024 * 1024;
     if (isFlate) {
       try {
-        streamBytes = zlib.inflateSync(rawStreamSlice);
+        streamBytes = zlib.inflateSync(rawStreamSlice, { maxOutputLength });
       } catch {
         try {
-          streamBytes = zlib.inflateRawSync(rawStreamSlice);
+          streamBytes = zlib.inflateRawSync(rawStreamSlice, { maxOutputLength });
         } catch {
           // Stream may be raw or uncompressed
         }
@@ -324,46 +328,66 @@ export async function extractPdfText(buffer: Buffer, timeoutMs = 5000): Promise<
  */
 export async function repairPdf(buffer: Buffer, timeoutMs = 5000): Promise<Buffer> {
   // 1. Pure Node xref reconstruction
+  const MAX_REPAIR_OBJECTS = 500_000;
   const fileStr = buffer.toString("latin1");
+  // Exclude stream bodies when scanning for object definitions to avoid matching fake tokens
+  const cleanStr = fileStr.replace(/stream\r?\n[\s\S]*?\r?\nendstream/g, "stream\nendstream");
   const objRegex = /(\d+)\s+(\d+)\s+obj/g;
   const objects: Array<{ id: number; generation: number; offset: number }> = [];
 
   let objMatch: RegExpExecArray | null;
-  while ((objMatch = objRegex.exec(fileStr)) !== null) {
-    objects.push({
-      id: Number(objMatch[1]),
-      generation: Number(objMatch[2]),
-      offset: objMatch.index,
-    });
+  while ((objMatch = objRegex.exec(cleanStr)) !== null) {
+    const id = Number(objMatch[1]);
+    const generation = Number(objMatch[2]);
+    if (id > 0 && id <= MAX_REPAIR_OBJECTS) {
+      objects.push({
+        id,
+        generation,
+        offset: objMatch.index,
+      });
+    }
   }
 
-  if (objects.length > 0) {
+  if (objects.length > 0 && objects.length <= MAX_REPAIR_OBJECTS) {
     objects.sort((a, b) => a.id - b.id);
     const maxId = objects[objects.length - 1]!.id;
 
-    const prefix = buffer.length > 0 && buffer[buffer.length - 1] === 0x0a ? "" : "\n";
-    const xrefOffset = buffer.length + prefix.length;
-    let xrefStr = `${prefix}xref\n0 ${maxId + 1}\n0000000000 65535 f \n`;
-    const objMap = new Map(objects.map((o) => [o.id, o]));
+    if (maxId <= MAX_REPAIR_OBJECTS) {
+      const prefix = buffer.length > 0 && buffer[buffer.length - 1] === 0x0a ? "" : "\n";
+      const xrefOffset = buffer.length + prefix.length;
+      let xrefStr = `${prefix}xref\n0 ${maxId + 1}\n0000000000 65535 f \n`;
+      const objMap = new Map(objects.map((o) => [o.id, o]));
 
-    for (let i = 1; i <= maxId; i++) {
-      const obj = objMap.get(i);
-      if (obj !== undefined) {
-        const genStr = String(obj.generation).padStart(5, "0");
-        xrefStr += `${String(obj.offset).padStart(10, "0")} ${genStr} n \n`;
-      } else {
-        xrefStr += `0000000000 65535 f \n`;
+      for (let i = 1; i <= maxId; i++) {
+        const obj = objMap.get(i);
+        if (obj !== undefined) {
+          const genStr = String(obj.generation).padStart(5, "0");
+          xrefStr += `${String(obj.offset).padStart(10, "0")} ${genStr} n \n`;
+        } else {
+          xrefStr += `0000000000 65535 f \n`;
+        }
       }
+
+      let trailerStr = `trailer\n<< /Size ${maxId + 1} >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+
+      // Search for /Root in trailer dictionaries first (last trailer wins)
+      let rootMatch: RegExpMatchArray | null = null;
+      const trailerRegex = /trailer\s*<<([\s\S]*?)>>/g;
+      let trailerMatch: RegExpExecArray | null;
+      while ((trailerMatch = trailerRegex.exec(fileStr)) !== null) {
+        const candidate = trailerMatch[1]?.match(/\/Root\s+(\d+\s+\d+\s+R)/);
+        if (candidate) rootMatch = candidate;
+      }
+      if (!rootMatch) {
+        rootMatch = fileStr.match(/\/Root\s+(\d+\s+\d+\s+R)/);
+      }
+
+      if (rootMatch) {
+        trailerStr = `trailer\n<< /Size ${maxId + 1} /Root ${rootMatch[1]} >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+      }
+
+      return Buffer.concat([buffer, Buffer.from(xrefStr + trailerStr, "latin1")]);
     }
-
-    let trailerStr = `trailer\n<< /Size ${maxId + 1} >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
-
-    const rootMatch = fileStr.match(/\/Root\s+(\d+\s+\d+\s+R)/);
-    if (rootMatch) {
-      trailerStr = `trailer\n<< /Size ${maxId + 1} /Root ${rootMatch[1]} >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
-    }
-
-    return Buffer.concat([buffer, Buffer.from(xrefStr + trailerStr, "latin1")]);
   }
 
   // 2. Opportunistic qpdf if installed

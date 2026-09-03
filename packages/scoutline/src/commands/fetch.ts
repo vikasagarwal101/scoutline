@@ -300,11 +300,14 @@ export async function executeFetch(
 
     const isPdfHeader = Boolean(contentType && contentType.includes("application/pdf"));
 
+    const MAX_IN_MEMORY_BYTES = 50 * 1024 * 1024; // 50MB ceiling without --out
+
     if (options.out && response.ok && response.body && !isPdfHeader && options.pdf !== "text") {
       outPath = path.resolve(process.cwd(), options.out);
+      const tempPath = `${outPath}.tmp.${process.pid}.${Date.now()}`;
       try {
         await fs.mkdir(path.dirname(outPath), { recursive: true });
-        const writeStream = createWriteStream(outPath);
+        const writeStream = createWriteStream(tempPath);
         const nodeReadable = Readable.fromWeb(
           response.body as import("node:stream/web").ReadableStream,
         );
@@ -324,7 +327,9 @@ export async function executeFetch(
             reject(err);
           });
         });
+        await fs.rename(tempPath, outPath);
       } catch (err) {
+        await fs.unlink(tempPath).catch(() => {});
         throw new FileError(
           `Failed to write output file "${outPath}": ${err instanceof Error ? err.message : String(err)}`,
         );
@@ -333,7 +338,22 @@ export async function executeFetch(
         md5 = md5Hasher.digest("hex");
       }
     } else {
+      if (!options.out) {
+        const contentLengthHeader = resHeaders["content-length"];
+        if (contentLengthHeader && Number(contentLengthHeader) > MAX_IN_MEMORY_BYTES) {
+          throw new ValidationError(
+            `Response size (${contentLengthHeader} bytes) exceeds in-memory ceiling (50MB).`,
+            "Use --out <file> to stream large responses directly to disk.",
+          );
+        }
+      }
       const arrayBuffer = await response.arrayBuffer();
+      if (!options.out && arrayBuffer.byteLength > MAX_IN_MEMORY_BYTES) {
+        throw new ValidationError(
+          `Response size (${arrayBuffer.byteLength} bytes) exceeds in-memory ceiling (50MB).`,
+          "Use --out <file> to stream large responses directly to disk.",
+        );
+      }
       rawBuffer = Buffer.from(arrayBuffer);
       bytes = rawBuffer.length;
       if (md5Hasher) {
@@ -341,10 +361,13 @@ export async function executeFetch(
       }
       if (options.out && response.ok) {
         outPath = path.resolve(process.cwd(), options.out);
+        const tempPath = `${outPath}.tmp.${process.pid}.${Date.now()}`;
         try {
           await fs.mkdir(path.dirname(outPath), { recursive: true });
-          await fs.writeFile(outPath, rawBuffer);
+          await fs.writeFile(tempPath, rawBuffer);
+          await fs.rename(tempPath, outPath);
         } catch (err) {
+          await fs.unlink(tempPath).catch(() => {});
           throw new FileError(
             `Failed to write output file "${outPath}": ${err instanceof Error ? err.message : String(err)}`,
           );
@@ -355,7 +378,7 @@ export async function executeFetch(
     if (controller.signal.aborted) {
       throw new TimeoutError(timeoutMs, `Direct fetch timed out after ${timeoutMs}ms`);
     }
-    if (err instanceof FileError || err instanceof TimeoutError) {
+    if (err instanceof FileError || err instanceof TimeoutError || err instanceof ValidationError) {
       throw err;
     }
     const msg = err instanceof Error ? err.message : String(err);

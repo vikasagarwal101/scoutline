@@ -17,6 +17,11 @@ describe("PDF Text Extraction & Format Fidelity", () => {
       assert.equal(isPdfBuffer(pdf), true);
       assert.equal(isPdfBuffer(Buffer.from("<html>Hello</html>")), false);
     });
+
+    it("rejects non-PDF buffers that merely contain %PDF- in the middle", () => {
+      const htmlWithPdfMarker = Buffer.from("<html><body>Check out this %PDF-1.4 spec</body></html>");
+      assert.equal(isPdfBuffer(htmlWithPdfMarker), false);
+    });
   });
 
   describe("extractPdfText (Pure Node fallback)", () => {
@@ -94,6 +99,15 @@ endobj`;
       const text = await extractPdfText(buffer);
       assert.match(text, /Part1 Part2 ABC/);
     });
+
+    it("extracts text with signed Td/TD operands and double quote operator", async () => {
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 120 >>\nstream\nBT\n(Line 1) Tj\n0 -16 Td\n(Line 2) Tj\n(Line 3) "\nET\nendstream\nendobj`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Line 1/);
+      assert.match(text, /Line 2/);
+      assert.match(text, /Line 3/);
+    });
   });
 
   describe("repairPdf (xref reconstruction)", () => {
@@ -124,6 +138,12 @@ endobj
       assert.ok(startxrefMatch, "repaired PDF must contain startxref");
       const offset = Number(startxrefMatch[1]);
       assert.equal(repaired.subarray(offset, offset + 4).toString("latin1"), "xref");
+    });
+
+    it("safely handles giant object IDs without hanging", async () => {
+      const hostilePdf = Buffer.from(`%PDF-1.4\n4000000000 0 obj\n<< /Type /Catalog >>\nendobj\n`, "latin1");
+      const repaired = await repairPdf(hostilePdf);
+      assert.ok(repaired instanceof Buffer);
     });
   });
 

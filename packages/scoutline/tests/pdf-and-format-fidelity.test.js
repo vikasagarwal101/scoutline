@@ -108,6 +108,31 @@ endobj`;
       assert.match(text, /Line 2/);
       assert.match(text, /Line 3/);
     });
+
+    it("does not truncate BT block when literal string contains ET", async () => {
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 120 >>\nstream\nBT\n(see ET for details) Tj\n(second line) Tj\nET\nendstream\nendobj`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /see ET for details/);
+      assert.match(text, /second line/);
+    });
+
+    it("extracts text with double-quote operator with 2 numeric operands", async () => {
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 120 >>\nstream\nBT\n0 0 (Heading text) "\nET\nendstream\nendobj`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Heading text/);
+    });
+
+    it("extracts FlateDecode stream with nested DecodeParms dictionary", async () => {
+      const streamContent = Buffer.from("BT\n(Nested Dict Text) Tj\nET\n");
+      const compressed = zlib.deflateSync(streamContent);
+      const prefix = Buffer.from(`%PDF-1.4\n1 0 obj\n<< /Filter /FlateDecode /DecodeParms << /Columns 4 >> /Length ${compressed.length} >>\nstream\n`);
+      const suffix = Buffer.from("\nendstream\nendobj\n");
+      const buffer = Buffer.concat([prefix, compressed, suffix]);
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Nested Dict Text/);
+    });
   });
 
   describe("repairPdf (xref reconstruction)", () => {
@@ -138,6 +163,16 @@ endobj
       assert.ok(startxrefMatch, "repaired PDF must contain startxref");
       const offset = Number(startxrefMatch[1]);
       assert.equal(repaired.subarray(offset, offset + 4).toString("latin1"), "xref");
+    });
+
+    it("preserves exact byte offsets for objects located after stream bodies in repairPdf", async () => {
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 20 >>\nstream\n12345678901234567890\nendstream\nendobj\n2 0 obj\n<< /Type /Catalog >>\nendobj\n`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const expectedOffsetObj2 = pdfString.indexOf("2 0 obj");
+      const repaired = await repairPdf(buffer);
+      const repairedStr = repaired.toString("latin1");
+      const offsetStr = String(expectedOffsetObj2).padStart(10, "0");
+      assert.match(repairedStr, new RegExp(`${offsetStr} 00000 n`));
     });
 
     it("safely handles giant object IDs without hanging", async () => {

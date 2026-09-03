@@ -17,6 +17,7 @@ import { invokeCommand } from "../command-invocation.js";
 import type { OutputMode } from "../lib/output.js";
 import { ValidationError, TimeoutError, NetworkError } from "../lib/errors.js";
 import type { HandlerDependencies } from "../index.js";
+import { readBoundedResponseBody } from "./fetch.js";
 
 export const ARCHIVE_HELP = `
 scoutline archive <subcommand> [args] [options] - Internet Archive Wayback Machine
@@ -337,16 +338,15 @@ export async function executeArchiveGet(
           `Archive capture size (${contentLength} bytes) exceeds in-memory limit (50MB).`,
         );
       }
-      const arrayBuffer = await res.arrayBuffer();
-      if (arrayBuffer.byteLength > MAX_ARCHIVE_IN_MEMORY) {
-        throw new ValidationError(
-          `Archive capture size (${arrayBuffer.byteLength} bytes) exceeds in-memory limit (50MB).`,
-        );
-      }
+      const buffer = await readBoundedResponseBody(
+        res.body as ReadableStream<Uint8Array> | null,
+        MAX_ARCHIVE_IN_MEMORY,
+        "Archive capture size",
+      );
       return {
         statusCode: res.status,
         contentType: res.headers.get("content-type") || undefined,
-        buffer: Buffer.from(arrayBuffer),
+        buffer,
       };
     },
   );

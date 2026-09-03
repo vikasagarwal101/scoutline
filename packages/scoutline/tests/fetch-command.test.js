@@ -5,12 +5,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as crypto from "node:crypto";
+import { Readable } from "node:stream";
 
 import {
   executeFetch,
   fetchCommand,
   parseFetchArgs,
   validateFetchUrl,
+  readBoundedResponseBody,
   FETCH_HELP,
   DEFAULT_USER_AGENT,
 } from "../dist/commands/fetch.js";
@@ -74,6 +76,9 @@ describe("scoutline fetch command", () => {
         res.writeHead(200, { "Content-Type": "text/plain" });
         res.write("partial content before connection drop...");
         req.socket.destroy();
+      } else if (req.url === "/damaged-pdf") {
+        res.writeHead(200, { "Content-Type": "application/pdf" });
+        res.end("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n");
       } else {
         res.writeHead(500, { "Content-Type": "text/plain" });
         res.end("Server Error");
@@ -286,6 +291,32 @@ describe("scoutline fetch command", () => {
       const files = fs.readdirSync(tempDir);
       const tmpFiles = files.filter((f) => f.includes("failed-stream.txt.tmp"));
       assert.equal(tmpFiles.length, 0, "temporary file must not linger after aborted stream");
+    });
+
+    it("repairs damaged PDF before writing to --out", async () => {
+      const repairOut = path.join(tempDir, "repaired.pdf");
+      const result = await executeFetch(`${serverBaseUrl}/damaged-pdf`, {
+        out: repairOut,
+        pdfRepair: true,
+      });
+      assert.equal(fs.existsSync(repairOut), true);
+      const written = fs.readFileSync(repairOut, "latin1");
+      assert.match(written, /startxref/);
+      assert.match(written, /xref/);
+    });
+
+    it("throws ValidationError and cancels stream when chunked body exceeds limit", async () => {
+      async function* generateChunks() {
+        const chunk = new Uint8Array(1024);
+        while (true) {
+          yield chunk;
+        }
+      }
+      const stream = Readable.toWeb(Readable.from(generateChunks()));
+      await assert.rejects(
+        () => readBoundedResponseBody(stream, 2048, "Test stream"),
+        { name: "ValidationError" },
+      );
     });
   });
 

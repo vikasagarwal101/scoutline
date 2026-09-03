@@ -135,8 +135,11 @@ describe("Concurrency Isolation & Provider Health Diagnostics", () => {
           { timeoutMs: 2000, staleMs: 10000, timeoutLabel: "First" },
         );
 
-        // Ensure p1 creates lockfile first
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        // Wait until p1's lockfile exists (deterministic under load), instead of a fixed 20ms.
+        const lockPath = path.join(lockDir, `${lockHash}.lock`);
+        while (!fs.existsSync(lockPath)) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
 
         const p2 = withAsyncFileLock(
           lockDir,

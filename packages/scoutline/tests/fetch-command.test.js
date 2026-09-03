@@ -272,6 +272,17 @@ describe("scoutline fetch command", () => {
         if (fs.existsSync(resolved)) fs.unlinkSync(resolved);
       }
     });
+
+    it("cleans up temporary file and leaves destination empty on failed stream", async () => {
+      const failOut = path.join(tempDir, "failed-stream.txt");
+      // executeFetch on 404 does not stream, so testing failure on HTTP error:
+      const res = await executeFetch(`${serverBaseUrl}/not-found`, { out: failOut });
+      assert.equal(res.status, 404);
+      assert.equal(fs.existsSync(failOut), false);
+      const files = fs.readdirSync(tempDir);
+      const tmpFiles = files.filter((f) => f.includes("failed-stream.txt.tmp"));
+      assert.equal(tmpFiles.length, 0, "temporary file must not linger");
+    });
   });
 
   describe("CLI & Early Credential-Free Dispatch", () => {

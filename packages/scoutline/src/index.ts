@@ -51,6 +51,7 @@ import {
   MAX_USAGE_WINDOW_DAYS,
 } from "./commands/usage.js";
 import { historyCommand, HISTORY_HELP } from "./commands/history.js";
+import { handleFetch, FETCH_HELP } from "./commands/fetch.js";
 import { cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
 import type { PruneSelectors, PruneCachesResult } from "./lib/cache.js";
 import { parseBatchManifest } from "./lib/batch-manifest.js";
@@ -191,6 +192,8 @@ Commands:
            credential-free)
   history  Inventory of saved --save artifacts (list / show / stats,
            credential-free)
+  fetch    Direct, binary-safe HTTP client (evidentiary GET + API,
+           credential-free)
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
   init     Interactive onboarding wizard (writes ~/.scoutline/config.json)
 
@@ -238,6 +241,7 @@ Help:
   scoutline cache --help
   scoutline usage --help
   scoutline history --help
+  scoutline fetch --help
   scoutline init --help
 `.trim();
 
@@ -3297,6 +3301,8 @@ export async function handleHistory(
   );
 }
 
+export { handleFetch, fetchCommand, executeFetch, FETCH_HELP } from "./commands/fetch.js";
+
 async function handleQuota(
   args: string[],
   outputMode: OutputMode,
@@ -4316,6 +4322,20 @@ export async function main(
   if (command === "config") {
     try {
       return await handleConfig(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
+  // `fetch` is credential-free (direct network call to target origin;
+  // no Provider resolution, no Adapter, no LLM translation, no quota
+  // tracking). Short-circuit before the credentialed config load so
+  // missing or unconfigured ~/.scoutline/config.json never blocks direct
+  // evidentiary downloads or API calls (ADR-0006).
+  if (command === "fetch") {
+    try {
+      return await handleFetch(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
       return getErrorExitCode(error);

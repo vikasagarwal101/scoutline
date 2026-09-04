@@ -51,6 +51,8 @@ import {
   MAX_USAGE_WINDOW_DAYS,
 } from "./commands/usage.js";
 import { historyCommand, HISTORY_HELP } from "./commands/history.js";
+import { handleFetch, FETCH_HELP } from "./commands/fetch.js";
+import { handleArchive, parseArchiveArgs, ARCHIVE_HELP } from "./commands/archive.js";
 import { cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
 import type { PruneSelectors, PruneCachesResult } from "./lib/cache.js";
 import { parseBatchManifest } from "./lib/batch-manifest.js";
@@ -191,6 +193,10 @@ Commands:
            credential-free)
   history  Inventory of saved --save artifacts (list / show / stats,
            credential-free)
+  fetch    Direct, binary-safe HTTP client (evidentiary GET + API,
+           credential-free)
+  archive  Internet Archive Wayback Machine (CDX index + snapshot
+           replay, credential-free)
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
   init     Interactive onboarding wizard (writes ~/.scoutline/config.json)
 
@@ -221,6 +227,7 @@ Global Options:
   --save [<path>]      Save the result as a clean report (content + requestId) after a successful shared-capability run (search/read/crawl/map/research/repo/vision). Master copy in the artifact store; <path> also receives an export copy. A valueless --save (trailing, or followed by another option, e.g. --save --save-format markdown) writes the master only. Refuses an existing export target without --save-force.
   --save-format <json|markdown>  Report format (default: json)
   --save-force         Overwrite an existing export target
+  --isolated           Run in process-isolated state (unique artifacts namespace)
 
 Help:
   scoutline --help
@@ -238,6 +245,8 @@ Help:
   scoutline cache --help
   scoutline usage --help
   scoutline history --help
+  scoutline fetch --help
+  scoutline archive --help
   scoutline init --help
 `.trim();
 
@@ -364,6 +373,7 @@ function extractGlobalOptions(args: string[]): {
   forceRaw?: boolean;
   provider?: string;
   noFallback?: boolean;
+  isolated?: boolean;
   save?: SaveRequest;
   rest: string[];
 } {
@@ -373,6 +383,7 @@ function extractGlobalOptions(args: string[]): {
   let forceRaw = false;
   let provider: string | undefined;
   let noFallback = false;
+  let isolated = false;
   let savePath: string | undefined;
   let saveSeen = false;
   let saveFormat: SaveFormat = "json";
@@ -479,6 +490,10 @@ function extractGlobalOptions(args: string[]): {
       saveForce = true;
       continue;
     }
+    if (arg === "--isolated") {
+      isolated = true;
+      continue;
+    }
     rest.push(arg);
   }
 
@@ -488,6 +503,7 @@ function extractGlobalOptions(args: string[]): {
     forceRaw,
     provider,
     noFallback,
+    isolated,
     save: saveSeen ? { exportPath: savePath, format: saveFormat, force: saveForce } : undefined,
     rest,
   };
@@ -1525,6 +1541,7 @@ async function handleRead(
   args: string[],
   outputMode: OutputMode,
   deps: HandlerDependencies,
+  forceRaw = false,
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
@@ -1553,6 +1570,21 @@ async function handleRead(
     );
   }
   const extract = extractFlag !== undefined ? (extractFlag as ExtractMode) : undefined;
+
+  // Byte-exact PDF modes are fetch-only (ADR-0006 §8): Reader content
+  // is provider-normalized and cannot be byte-faithful. Reject at
+  // parse level (before Provider resolution) with a pointer instead
+  // of accepting and dropping the flags. Note: `--raw` keeps its
+  // legacy global output-mode meaning and is not read's flag.
+  // forceRaw carries the global --raw token: read has no content-raw
+  // mode, so answering with a provider-normalized read (the legacy
+  // output-mode interpretation) would silently do the wrong thing —
+  // reject loudly with the fetch pointer instead.
+  if (flags.pdf !== undefined || flags["pdf-repair"] !== undefined || forceRaw) {
+    throw new ValidationError(
+      "--raw/--pdf/--pdf-repair are fetch-only (read content is provider-normalized); use `scoutline fetch <url> --raw` for the verbatim body or `scoutline fetch <url> --pdf text` / `--pdf raw` with `--pdf-repair` for damaged PDFs (see `scoutline fetch --help`)",
+    );
+  }
 
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
   // explicit --provider > SCOUTLINE_PROVIDER > quota-ranked pick.
@@ -2295,7 +2327,7 @@ async function handleRepo(
     ...(deps.now !== undefined ? { now: deps.now } : {}),
   };
 
-  const language = flags.language as "en" | "zh" | undefined;
+  const language = (flags.language ?? flags.lang) as "en" | "zh" | undefined;
   const maxChars = flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined;
   const noCache = flags["no-cache"] === true;
   const treePath = flags.path as string | undefined;
@@ -2717,6 +2749,7 @@ async function handleDoctor(
   }
 
   const noTools = flags["no-tools"] === true;
+  const healthProbe = flags["health"] === true;
   // #94 — `--available` filters the report's providers array to
   // availability-"ok" rows. The filter itself lives in
   // buildDiagnosticsReport (availableOnly); only the flag parse
@@ -2742,6 +2775,7 @@ async function handleDoctor(
         buildReport: () =>
           buildDiagnosticsReport({
             noTools,
+            healthProbe,
             availableOnly,
             effectiveProvider,
             descriptors: deps.providerDescriptors,
@@ -3296,6 +3330,9 @@ export async function handleHistory(
     deps.secrets,
   );
 }
+
+export { handleFetch, fetchCommand, executeFetch, FETCH_HELP } from "./commands/fetch.js";
+export { handleArchive, archiveCdxCommand, archiveGetCommand, ARCHIVE_HELP } from "./commands/archive.js";
 
 async function handleQuota(
   args: string[],
@@ -3983,7 +4020,8 @@ export async function main(
   args: readonly string[],
   dependencies: MainDependencies,
 ): Promise<number> {
-  const { invocation, env, now } = dependencies;
+  const { invocation, env: initialEnv, now } = dependencies;
+  let env: NodeJS.ProcessEnv = initialEnv;
   // #73: one normalized config-loader seam — an explicit loader wins,
   // then an injected deps.config, else production ambient loading. All
   // hermeticity gates below read this local, never the raw field.
@@ -4051,7 +4089,10 @@ export async function main(
     );
     return getErrorExitCode(error);
   }
-  const { outputFormat, forcePretty, forceRaw, provider, noFallback, rest } = extracted;
+  const { outputFormat, forcePretty, forceRaw, provider, noFallback, isolated, rest } = extracted;
+  if (isolated) {
+    env = { ...env, SCOUTLINE_ISOLATED: "1" };
+  }
 
   // Fixup C — B10: resolve the output mode BEFORE the dispatch try/catch.
   // An invalid explicit mode still surfaces as a typed ValidationError,
@@ -4129,7 +4170,11 @@ export async function main(
   // fails the other.
   const consume: ConsumptionSink | undefined =
     dependencies.consume ??
-    (quotaRefreshEnabled
+    // ADR-0006 §5: --isolated runs skip local state persistence
+    // entirely — no usage-ledger writes, no quota-snapshot writes — so
+    // concurrent isolated processes never contend on shared
+    // config-root files. Reads (doctor's quota view) are unaffected.
+    (quotaRefreshEnabled && !isolated
       ? createCompositeConsumptionSink(
           createQuotaStoreConsumptionSink({ store: quotaStore, now: now ?? Date.now }),
           // The ledger path resolves from the SAME injected-env config
@@ -4316,6 +4361,53 @@ export async function main(
   if (command === "config") {
     try {
       return await handleConfig(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true));
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
+  // `fetch` is credential-free (direct network call to target origin;
+  // no Provider resolution, no Adapter, no LLM translation, no quota
+  // tracking). Short-circuit before the credentialed config load so
+  // missing or unconfigured ~/.scoutline/config.json never blocks direct
+  // evidentiary downloads or API calls (ADR-0006).
+  if (command === "fetch") {
+    try {
+      // `--raw` is a CONTENT flag on fetch (emit the body verbatim),
+      // not the legacy global output-mode flag. With no explicit -O it
+      // would otherwise resolve the output to `data` and bury the body
+      // inside the JSON envelope; route to a text presentation mode so
+      // the body prints directly. An explicit -O still wins.
+      const fetchOutputMode =
+        forceRaw && outputFormat === undefined ? ("compact" as OutputMode) : outputMode;
+      return await handleFetch(commandArgs, fetchOutputMode, buildHandlerDeps(env, envSecrets, true), forceRaw);
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
+  // `archive` is credential-free (queries Internet Archive public APIs;
+  // keyless, no Provider resolution, no Adapter, no quota tracking).
+  // Short-circuit before the credentialed config load so missing or
+  // unconfigured ~/.scoutline/config.json never blocks CDX searches or
+  // snapshot replay (ADR-0006).
+  if (command === "archive") {
+    try {
+      // Same as fetch, but ONLY for `get`: `--raw` there is a content
+      // flag (emit the snapshot body verbatim) that must not resolve to
+      // the `data` envelope hiding it. `cdx --raw` keeps the legacy
+      // global meaning (unwrapped data) — flipping its presentation to
+      // the human table was never the flag's contract.
+      // Determine the subcommand through the parser (not positional
+      // assumption): options may precede `get`/`cdx`.
+      const archiveSubcommand = parseArchiveArgs(commandArgs).subcommand;
+      const archiveOutputMode =
+        forceRaw && outputFormat === undefined && archiveSubcommand === "get"
+          ? ("compact" as OutputMode)
+          : outputMode;
+      return await handleArchive(commandArgs, archiveOutputMode, buildHandlerDeps(env, envSecrets, true), forceRaw);
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
       return getErrorExitCode(error);
@@ -4539,7 +4631,7 @@ export async function main(
     // structured error envelope; data-only stdout).
   };
 
-  if (quotaRefreshEnabled && isQuotaObservationalCommand) {
+  if (quotaRefreshEnabled && !isolated && isQuotaObservationalCommand) {
     await refreshQuotaSnapshots({
       descriptors: providerDescriptors,
       env: resolvedEnv,
@@ -4604,7 +4696,7 @@ export async function main(
         break;
       case "read":
         commandRecognized = true;
-        exitCode = await handleRead(commandArgs, outputMode, handlerDepsWithSave);
+        exitCode = await handleRead(commandArgs, outputMode, handlerDepsWithSave, forceRaw);
         break;
       case "crawl":
         commandRecognized = true;
@@ -4688,6 +4780,7 @@ export async function main(
   // single state-file read + no transport calls.
   if (
     quotaRefreshEnabled &&
+    !isolated &&
     commandRecognized &&
     !isQuotaObservationalCommand &&
     !isHelpInvocation &&

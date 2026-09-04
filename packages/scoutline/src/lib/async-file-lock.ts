@@ -126,8 +126,8 @@ export async function breakStaleLock(
  * Serialize a critical section via an exclusive lockfile.
  *
  * Creates `{stateDir}/{identityHash}.lock` with `wx` (exclusive create).
- * If the lock is held, polls every 500ms until acquired or `timeoutMs`
- * elapses. A lock older than `staleMs` is broken (unlinked) and retried —
+ * If the lock is held, retries with jittered exponential backoff until acquired or
+ * `timeoutMs` elapses. A lock older than `staleMs` is broken (unlinked) and retried —
  * but only when its mtime is genuinely stale: while `fn()` runs, the
  * holder refreshes the lock mtime (issue #46/#48a), so a live holder is
  * never displaced no matter how long the critical section takes.
@@ -195,6 +195,7 @@ export async function withAsyncFileLock<T>(
       signal.addEventListener("abort", onAbort, { once: true });
     });
 
+  let attempt = 0;
   for (;;) {
     if (signal?.aborted) throw lockAborted();
     let handle;
@@ -229,8 +230,13 @@ export async function withAsyncFileLock<T>(
         await sleep(500);
         continue;
       }
-      await sleep(500);
-      // Re-check deadline after sleeping — the 500ms sleep may have
+      attempt++;
+      const backoffMs = Math.min(
+        500,
+        Math.floor(50 * Math.pow(1.3, Math.min(attempt, 8)) + Math.random() * 50),
+      );
+      await sleep(backoffMs);
+      // Re-check deadline after sleeping — the sleep may have
       // crossed it, and the next open attempt bypasses the check above.
       if (Date.now() > deadline) {
         throw lockDeadline();

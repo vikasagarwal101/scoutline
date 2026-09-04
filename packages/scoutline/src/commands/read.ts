@@ -241,6 +241,19 @@ export async function read(
   // 1. Parse-level validation BEFORE Provider/Adapter work.
   validateUrl(url);
   validateExtractMode(options.extract);
+  // Byte-exact modes are fetch-only (ADR-0006 §8): the Reader path
+  // returns provider-normalized content and cannot be byte-faithful.
+  // Reject removed flags loudly instead of accepting and dropping them.
+  const removedByteModes = options as { raw?: boolean; pdf?: unknown; pdfRepair?: boolean };
+  if (
+    removedByteModes.raw === true ||
+    removedByteModes.pdf !== undefined ||
+    removedByteModes.pdfRepair === true
+  ) {
+    throw new ValidationError(
+      "read no longer supports --raw/--pdf/--pdf-repair: Reader content is provider-normalized. For byte-exact retrieval use `scoutline fetch <url> --raw` (verbatim body) or `scoutline fetch <url> --pdf text` / `--pdf raw` (add `--pdf-repair` for damaged PDFs); see `scoutline fetch --help`.",
+    );
+  }
 
   // 2. Build the Provider-neutral request. Only fields that affect
   //    the Provider request or the cache identity appear here;
@@ -265,6 +278,10 @@ export async function read(
     return { kind: "data", data: envelope };
   }
 
+  // The envelope reports exactly what the Reader provider returned
+  // (`contentFormat: markdown|text`). Client-side relabeling or
+  // reconstruction of provider-normalized content is intentionally
+  // absent — byte-exact retrieval is `fetch`'s contract.
   const { text, originalLen, truncated } = truncateContent(result.content, options.maxChars);
   const envelope = buildContentEnvelope(result, text, originalLen, truncated);
 
@@ -348,6 +365,7 @@ Options:
   --keep-img-data-url  Keep image data URLs in output
   --timeout <s>   Request timeout in seconds (default: 20)
   --max-chars <n> Truncate content to <n> chars (content reads only)
+  (byte-exact PDF/raw retrieval: see "scoutline fetch --help")
   --full-envelope Silently accepted and ignored. The envelope is always
                   returned at schema-version-1 (deprecation: D3).
   --extract <m>   Pull a specific slice out as a typed envelope with

@@ -79,9 +79,14 @@ function decodePdfLiteralString(str: string): string {
 }
 
 /**
- * Decode a PDF hex string <...>.
+ * Decode a PDF hex string <...>. Returns the decoded text plus a
+ * `unmappable` flag: hex bytes that are neither a UTF-16BE BOM sequence
+ * nor the 2-byte Identity-H ASCII pattern cannot be authoritatively
+ * decoded without the font's ToUnicode/encoding context, so callers
+ * treat a document containing them as low-confidence and prefer the
+ * external text layer (`pdftotext`) when available.
  */
-function decodePdfHexString(hex: string): string {
+function decodePdfHexString(hex: string): { text: string; unmappable: boolean } {
   const clean = hex.replace(/\s+/g, "");
   const padded = clean.length % 2 !== 0 ? clean + "0" : clean;
   const bytes: number[] = [];
@@ -99,7 +104,7 @@ function decodePdfHexString(hex: string): string {
       const code = (bytes[i]! << 8) | bytes[i + 1]!;
       res += String.fromCharCode(code);
     }
-    return res;
+    return { text: res, unmappable: false };
   }
 
   // Check if 2-byte Identity-H ASCII (e.g. <00480069> -> "Hi")
@@ -116,7 +121,7 @@ function decodePdfHexString(hex: string): string {
       for (let i = 0; i < bytes.length; i += 2) {
         res += String.fromCharCode(bytes[i + 1]!);
       }
-      return res;
+      return { text: res, unmappable: false };
     }
   }
 
@@ -124,7 +129,61 @@ function decodePdfHexString(hex: string): string {
   for (const byte of bytes) {
     result += String.fromCharCode(byte);
   }
-  return result;
+  // High bytes without a recognized 2-byte structure: likely CID or a
+  // simple-font encoding we have no table for.
+  const unmappable = bytes.some((b) => b > 0x7e);
+  return { text: result, unmappable };
+}
+
+/**
+ * Read a balanced PDF literal string starting at `start` (which must
+ * point at the opening "("). Nested parentheses are literal characters
+ * per the spec; escapes are decoded. Returns the decoded value and the
+ * index just past the closing ")".
+ */
+function readLiteralStringAt(src: string, start: number): { value: string; next: number } {
+  let depth = 0;
+  let i = start;
+  let raw = "";
+  while (i < src.length) {
+    const ch = src[i]!;
+    if (ch === "\\") {
+      raw += ch + (src[i + 1] ?? "");
+      i += 2;
+      continue;
+    }
+    if (ch === "(") {
+      depth++;
+      if (depth > 1) raw += ch;
+      i++;
+      continue;
+    }
+    if (ch === ")") {
+      depth--;
+      if (depth === 0) {
+        i++;
+        break;
+      }
+      raw += ch;
+      i++;
+      continue;
+    }
+    raw += ch;
+    i++;
+  }
+  return { value: decodePdfLiteralString(raw), next: i };
+}
+
+/**
+ * Read a PDF number at `start` (integer or real, optional sign, leading
+ * dot like `-.5` and trailing dot like `4.` per the PDF grammar).
+ */
+function readNumberAt(src: string, start: number): { value: number; next: number } {
+  let i = start;
+  if (src[i] === "+" || src[i] === "-") i++;
+  while (i < src.length && /[0-9.]/.test(src[i]!)) i++;
+  const value = Number(src.slice(start, i));
+  return { value: isNaN(value) ? 0 : value, next: i };
 }
 
 /**
@@ -174,7 +233,14 @@ function extractBtBlocks(streamStr: string): string[] {
       i++;
       continue;
     }
-    if (ch === "<" && streamStr[i + 1] !== "<") {
+    if (ch === "<") {
+      // Consume both characters of a dictionary opener: advancing one
+      // char at a time would make the second "<" look like a lone
+      // hex-string opener and mask the dictionary body.
+      if (streamStr[i + 1] === "<") {
+        i += 2;
+        continue;
+      }
       outerInHex = true;
       i++;
       continue;
@@ -217,7 +283,9 @@ function extractBtBlocks(streamStr: string): string[] {
         } else {
           if (c === "%") {
             inComment = true;
-          } else if (c === "<" && streamStr[i + 1] !== "<") {
+          } else if (c === "<" && streamStr[i + 1] === "<") {
+            i++; // first "<" of "<<"; the shared tail i++ consumes the second
+          } else if (c === "<") {
             inHex = true;
           } else if (c === "(") {
             inString = true;
@@ -243,77 +311,189 @@ function extractBtBlocks(streamStr: string): string[] {
 }
 
 /**
- * Parse text operators from a decompressed PDF content stream.
+ * Parse text operators from a decompressed PDF content stream using a
+ * tokenizer rather than operand regexes: balanced literal strings
+ * (arbitrary nesting), hex strings, PDF reals (signed, leading/trailing
+ * dot), TJ arrays, and the full set of text-showing operators (Tj, TJ,
+ * ', ") are recognized so valid content is not silently dropped.
+ * `ctx.sawUnmappableHex` is set when a hex string cannot be decoded
+ * with confidence (CID/unknown encoding) so the caller can prefer the
+ * external text layer.
  */
-function parseContentStreamText(streamStr: string): string {
+function parseContentStreamText(
+  streamStr: string,
+  ctx: { sawUnmappableHex: boolean },
+): string {
+  type Operand =
+    | { type: "str"; value: string }
+    | { type: "hex"; value: string; unmappable: boolean }
+    | { type: "num"; value: number }
+    | { type: "array"; items: Operand[] };
+
   const lines: string[] = [];
   let currentLine = "";
 
-  const textBlocks = extractBtBlocks(streamStr);
-
-  const literalPattern = "\\((?:[^()\\\\]|\\\\.|(?:\\([^()\\\\]*\\)))*\\)";
-  const opRegex = new RegExp(
-    `${literalPattern}\\s*Tj|\\[((?:(?:${literalPattern})|<[0-9a-fA-F\\s]+>|[^\\[\\]()])*)\\]\\s*TJ|<[0-9a-fA-F\\s]+>\\s*Tj|T\\*|(?:-?\\d+(?:\\.\\d+)?\\s+){2}(?:Td|TD)|(?:${literalPattern})\\s*'|(?:-?\\d+(?:\\.\\d+)?\\s+){2}(?:${literalPattern})\\s*"|(?:${literalPattern})\\s*"`,
-    "g",
-  );
-
-  for (const textBlock of textBlocks) {
-    let opMatch: RegExpExecArray | null;
-    while ((opMatch = opRegex.exec(textBlock)) !== null) {
-      const token = opMatch[0]!;
-
-      if (token === "T*" || /Td|TD$/.test(token)) {
-        if (currentLine.trim().length > 0) {
-          lines.push(currentLine.trim());
-          currentLine = "";
-        }
-      } else if (token.endsWith("Tj") && token.startsWith("(")) {
-        const rawStr = token.slice(1, token.lastIndexOf(")")).trim();
-        currentLine += decodePdfLiteralString(rawStr) + " ";
-      } else if (token.endsWith("Tj") && token.startsWith("<")) {
-        const rawHex = token.slice(1, token.lastIndexOf(">")).trim();
-        currentLine += decodePdfHexString(rawHex) + " ";
-      } else if (token.endsWith("TJ")) {
-        const arrayContent = opMatch[1] ?? "";
-        const itemRegex = /\((?:[^()\\]|\\.)*\)|<[0-9a-fA-F\s]+>/g;
-        let itemMatch: RegExpExecArray | null;
-        while ((itemMatch = itemRegex.exec(arrayContent)) !== null) {
-          const item = itemMatch[0]!;
-          if (item.startsWith("(")) {
-            const rawStr = item.slice(1, -1);
-            currentLine += decodePdfLiteralString(rawStr);
-          } else if (item.startsWith("<")) {
-            const rawHex = item.slice(1, -1);
-            currentLine += decodePdfHexString(rawHex);
-          }
-        }
-        currentLine += " ";
-      } else if (token.endsWith("'") || token.endsWith('"')) {
-        if (currentLine.trim().length > 0) {
-          lines.push(currentLine.trim());
-          currentLine = "";
-        }
-        const stringToken = token.replace(/^\s*(?:-?\d+(?:\.\d+)?\s+)*/, "");
-        const rawStr = stringToken.slice(1, stringToken.lastIndexOf(")")).trim();
-        currentLine += decodePdfLiteralString(rawStr) + " ";
-      }
-    }
-
+  const pushLine = () => {
     if (currentLine.trim().length > 0) {
       lines.push(currentLine.trim());
       currentLine = "";
     }
+  };
+  const appendText = (value: string) => {
+    if (value.length > 0) currentLine += value;
+  };
+
+  for (const block of extractBtBlocks(streamStr)) {
+    const stack: Operand[] = [];
+
+    const readHexStringOperand = (index: number): { operand: Operand; next: number } => {
+      const end = block.indexOf(">", index);
+      const close = end === -1 ? block.length : end;
+      const decoded = decodePdfHexString(block.slice(index + 1, close));
+      if (decoded.unmappable) ctx.sawUnmappableHex = true;
+      return {
+        operand: { type: "hex", value: decoded.text, unmappable: decoded.unmappable },
+        next: end === -1 ? block.length : end + 1,
+      };
+    };
+
+    let i = 0;
+    while (i < block.length) {
+      const ch = block[i]!;
+
+      if (/\s/.test(ch)) {
+        i++;
+        continue;
+      }
+      if (ch === "%") {
+        while (i < block.length && block[i] !== "\r" && block[i] !== "\n") i++;
+        continue;
+      }
+      if (ch === "(") {
+        const { value, next } = readLiteralStringAt(block, i);
+        stack.push({ type: "str", value });
+        i = next;
+        continue;
+      }
+      if (ch === "<" && block[i + 1] === "<") {
+        // Inline dictionary: skip with bracket balance.
+        let depth = 1;
+        i += 2;
+        while (i < block.length && depth > 0) {
+          if (block.slice(i, i + 2) === "<<") {
+            depth++;
+            i += 2;
+          } else if (block.slice(i, i + 2) === ">>") {
+            depth--;
+            i += 2;
+          } else {
+            i++;
+          }
+        }
+        continue;
+      }
+      if (ch === "<") {
+        const { operand, next } = readHexStringOperand(i);
+        stack.push(operand);
+        i = next;
+        continue;
+      }
+      if (ch === "[") {
+        // TJ array: strings and kerning numbers until the closing "]".
+        const items: Operand[] = [];
+        i++;
+        while (i < block.length && block[i] !== "]") {
+          const c = block[i]!;
+          if (/\s/.test(c)) {
+            i++;
+          } else if (c === "(") {
+            const { value, next } = readLiteralStringAt(block, i);
+            items.push({ type: "str", value });
+            i = next;
+          } else if (c === "<") {
+            const end = block.indexOf(">", i);
+            const close = end === -1 ? block.length : end;
+            const decoded = decodePdfHexString(block.slice(i + 1, close));
+            if (decoded.unmappable) ctx.sawUnmappableHex = true;
+            items.push({ type: "hex", value: decoded.text, unmappable: decoded.unmappable });
+            i = end === -1 ? block.length : end + 1;
+          } else if (/[0-9+.\-]/.test(c)) {
+            const { value, next } = readNumberAt(block, i);
+            items.push({ type: "num", value });
+            i = next;
+          } else {
+            i++;
+          }
+        }
+        i++; // consume "]"
+        stack.push({ type: "array", items });
+        continue;
+      }
+      if (/[0-9+.\-]/.test(ch)) {
+        const { value, next } = readNumberAt(block, i);
+        stack.push({ type: "num", value });
+        i = next;
+        continue;
+      }
+
+      // Operator keyword (letters, apostrophe, double quote, asterisk).
+      let j = i;
+      while (j < block.length && /[A-Za-z'*"]/.test(block[j]!)) j++;
+      const op = block.slice(i, j);
+      i = j;
+      if (op.length === 0) {
+        i++;
+        continue;
+      }
+
+      const top = stack[stack.length - 1];
+      switch (op) {
+        case "Tj":
+          // Successive Tj operators continue at the current text
+          // position: no injected space between operands.
+          if (top && (top.type === "str" || top.type === "hex")) appendText(top.value);
+          break;
+        case "TJ":
+          if (top?.type === "array") {
+            for (const item of top.items) {
+              if (item.type === "str" || item.type === "hex") appendText(item.value);
+            }
+          }
+          break;
+        case "T*":
+        case "Td":
+        case "TD":
+          pushLine();
+          break;
+        case "'":
+        case '"': {
+          // Move to the next line and show text: aw/ac operands sit
+          // below the string on the operand stack.
+          pushLine();
+          if (top && (top.type === "str" || top.type === "hex")) appendText(top.value + " ");
+          break;
+        }
+        default:
+          break; // operators without direct text semantics
+      }
+    }
+
+    pushLine();
   }
 
   return lines.join("\n");
 }
 
 /**
- * Built-in pure-Node text extraction by scanning PDF streams.
+ * Built-in pure-Node text extraction by scanning PDF streams. Returns
+ * the text plus a low-confidence flag set when any hex string could not
+ * be decoded with font context (CID/unknown encoding) — such text is a
+ * Latin-1 best effort, and callers should prefer the external layer.
  */
-function extractPureNodePdfText(buffer: Buffer): string {
+function extractPureNodePdfText(buffer: Buffer): { text: string; lowConfidence: boolean } {
   const fileStr = buffer.toString("latin1");
   const extractedSections: string[] = [];
+  const ctx = { sawUnmappableHex: false };
   const MAX_TOTAL_DECOMPRESSED_BYTES = 50 * 1024 * 1024; // 50MB across document
   let totalDecompressedBytes = 0;
 
@@ -378,14 +558,14 @@ function extractPureNodePdfText(buffer: Buffer): string {
 
     if (streamBytes) {
       const decodedStr = streamBytes.toString("latin1");
-      const text = parseContentStreamText(decodedStr);
+      const text = parseContentStreamText(decodedStr, ctx);
       if (text.trim().length > 0) {
         extractedSections.push(text.trim());
       }
     }
   }
 
-  return extractedSections.join("\n\n").trim();
+  return { text: extractedSections.join("\n\n").trim(), lowConfidence: ctx.sawUnmappableHex };
 }
 
 // External tools process untrusted input; cap accumulated stdout so a
@@ -497,10 +677,12 @@ function runExternalBinaryTool(
  * Extract text from a PDF buffer using opportunistic delegation or pure-Node fallback.
  */
 export async function extractPdfText(buffer: Buffer, timeoutMs = 5000): Promise<string> {
-  // 1. Pure Node fast path
-  const text = extractPureNodePdfText(buffer);
-  if (text.length > 0) {
-    return text;
+  // 1. Pure Node fast path. Low-confidence results (hex strings the
+  // pure path cannot decode with font context) defer to the external
+  // text layer when one is installed.
+  const pure = extractPureNodePdfText(buffer);
+  if (pure.text.length > 0 && !pure.lowConfidence) {
+    return pure.text;
   }
 
   // 2. Opportunistic pdftotext if installed
@@ -509,7 +691,65 @@ export async function extractPdfText(buffer: Buffer, timeoutMs = 5000): Promise<
     return externalText;
   }
 
+  // 3. No external tool available: serve the best-effort pure text.
+  if (pure.text.length > 0) {
+    return pure.text;
+  }
+
   return "[PDF document with no extractable text layer or scanned raster pages]";
+}
+
+/**
+ * Blank out literal strings, hex strings, and comments so textual
+ * lookalikes inside string data cannot satisfy dictionary probes.
+ */
+function maskStringsAndComments(src: string): string {
+  let out = "";
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i]!;
+    if (ch === "%") {
+      let j = i;
+      while (j < src.length && src[j] !== "\r" && src[j] !== "\n") j++;
+      out += " ".repeat(j - i);
+      i = j;
+      continue;
+    }
+    if (ch === "(") {
+      let depth = 1;
+      let j = i + 1;
+      while (j < src.length && depth > 0) {
+        const c = src[j]!;
+        if (c === "\\") {
+          j += 2;
+          continue;
+        }
+        if (c === "(") depth++;
+        else if (c === ")") depth--;
+        j++;
+      }
+      out += " ".repeat(Math.min(j, src.length) - i);
+      i = j;
+      continue;
+    }
+    if (ch === "<") {
+      if (src[i + 1] === "<") {
+        // Dictionary opener: contents must stay visible to probes —
+        // do NOT fall through to the hex-string mask on the second "<".
+        out += "<<";
+        i += 2;
+        continue;
+      }
+      const gt = src.indexOf(">", i);
+      const j = gt === -1 ? src.length : gt + 1;
+      out += " ".repeat(j - i);
+      i = j;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
 }
 
 /**
@@ -520,52 +760,100 @@ export async function repairPdf(buffer: Buffer, timeoutMs = 5000): Promise<Buffe
   const MAX_REPAIR_OBJECTS = 500_000;
   const fileStr = buffer.toString("latin1");
 
-  // Pre-compute stream body intervals [start, end] so we do not match fake objects inside stream data
-  // while preserving exact byte offsets in the original file
-  const streamIntervals: Array<[number, number]> = [];
-  const streamRegex = /stream\r?\n[\s\S]*?\r?\nendstream/g;
-  let sMatch: RegExpExecArray | null;
-  while ((sMatch = streamRegex.exec(fileStr)) !== null) {
-    streamIntervals.push([sMatch.index, sMatch.index + sMatch[0].length]);
-  }
-
-  let streamIntervalIndex = 0;
-  function isInsideStream(offset: number): boolean {
-    while (
-      streamIntervalIndex < streamIntervals.length &&
-      offset >= streamIntervals[streamIntervalIndex]![1]
-    ) {
-      streamIntervalIndex++;
-    }
-    const interval = streamIntervals[streamIntervalIndex];
-    return interval !== undefined && offset >= interval[0] && offset < interval[1];
-  }
-
-  const objRegex = /(\d+)\s+(\d+)\s+obj/g;
+  // Lexically scan indirect-object headers OUTSIDE comments, literal and
+  // hex strings, and stream bodies: object-like text inside string data
+  // must never become an xref entry pointing into that string, and
+  // duplicate ids must resolve to the real headers (later occurrences
+  // win below, matching incremental-update semantics). /Type /ObjStm is
+  // detected in an actual object dictionary, not anywhere in the file.
   const objects: Array<{ id: number; generation: number; offset: number }> = [];
-
-  let objMatch: RegExpExecArray | null;
   let overLimit = false;
-  while ((objMatch = objRegex.exec(fileStr)) !== null) {
-    if (isInsideStream(objMatch.index)) {
-      continue;
-    }
-    const id = Number(objMatch[1]);
-    const generation = Number(objMatch[2]);
-    if (id > 0 && id <= MAX_REPAIR_OBJECTS) {
-      objects.push({
-        id,
-        generation,
-        offset: objMatch.index,
-      });
-      if (objects.length > MAX_REPAIR_OBJECTS) {
-        overLimit = true;
-        break;
+  let objStmDetected = false;
+  {
+    let i = 0;
+    while (i < fileStr.length) {
+      const ch = fileStr[i]!;
+      if (ch === "%") {
+        while (i < fileStr.length && fileStr[i] !== "\r" && fileStr[i] !== "\n") i++;
+        continue;
       }
+      if (ch === "(") {
+        let depth = 1;
+        i++;
+        while (i < fileStr.length && depth > 0) {
+          const c = fileStr[i]!;
+          if (c === "\\") {
+            i += 2;
+            continue;
+          }
+          if (c === "(") depth++;
+          else if (c === ")") depth--;
+          i++;
+        }
+        continue;
+      }
+      if (ch === "<" && fileStr[i + 1] === "<") {
+        // Dictionary opener: skip the balanced << ... >> so dictionary
+        // contents are never mistaken for hex-string or object data.
+        let depth = 1;
+        i += 2;
+        while (i < fileStr.length && depth > 0) {
+          if (fileStr.slice(i, i + 2) === "<<") {
+            depth++;
+            i += 2;
+          } else if (fileStr.slice(i, i + 2) === ">>") {
+            depth--;
+            i += 2;
+          } else {
+            i++;
+          }
+        }
+        continue;
+      }
+      if (ch === "<") {
+        const gt = fileStr.indexOf(">", i);
+        i = gt === -1 ? fileStr.length : gt + 1;
+        continue;
+      }
+      if (
+        fileStr.startsWith("stream", i) &&
+        (i === 0 || fileStr.slice(Math.max(0, i - 3), i) !== "end") &&
+        /[\r\n]/.test(fileStr[i + 6] ?? "\n")
+      ) {
+        // Jump PAST the closing "endstream" keyword: resuming at it
+        // would let the "stream" substring inside "endstream" trigger
+        // a bogus second skip that swallows the rest of the file.
+        const end = fileStr.indexOf("endstream", i + 6);
+        i = end === -1 ? fileStr.length : end + "endstream".length;
+        continue;
+      }
+      if (/[0-9]/.test(ch)) {
+        const header = /^(\d+)\s+(\d+)\s+obj\b/.exec(fileStr.slice(i, i + 32));
+        if (header) {
+          const id = Number(header[1]);
+          const generation = Number(header[2]);
+          if (id > 0 && id <= MAX_REPAIR_OBJECTS) {
+            objects.push({ id, generation, offset: i });
+            if (objects.length > MAX_REPAIR_OBJECTS) {
+              overLimit = true;
+              break;
+            }
+          }
+          i += header[0].length;
+          if (!objStmDetected) {
+            const dictProbe = maskStringsAndComments(fileStr.slice(i, i + 512));
+            if (/^\s*<<[\s\S]{0,400}?\/Type\s*\/ObjStm\b/.test(dictProbe)) {
+              objStmDetected = true;
+            }
+          }
+          continue;
+        }
+      }
+      i++;
     }
   }
 
-  if (objects.length > 0 && !overLimit && !/\/Type\s*\/ObjStm\b/.test(fileStr)) {
+  if (objects.length > 0 && !overLimit && !objStmDetected) {
     objects.sort((a, b) => a.id - b.id);
     const maxId = objects[objects.length - 1]!.id;
 

@@ -281,6 +281,35 @@ endobj`;
       assert.match(text, /Real Text/, "the real indirect length must resolve (comment-tolerant), keeping the full stream");
     });
 
+    it("ignores indirect-length headers behind embedded endstream tokens with fake objects", async () => {
+      // The stream contains an embedded `endstream` BEFORE its declared
+      // end, followed by a fake object header. The lexical length-validated
+      // scan must skip the whole stream, never reading the fake header.
+      const content = "BT\n(Fence Start) Tj\nendstream\n6 0 obj\n<<>>\nendobj\n(Fence End) Tj\nET\n";
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 5 0 R >>\nstream\n${content}endstream\nendobj\n5 0 obj\n% len\n${content.length}\nendobj\n`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Fence Start/);
+      assert.match(text, /Fence End/, "the /Length-declared extent must be honored past the embedded token");
+    });
+
+    it("treats stream tokens inside literal strings as plain text", async () => {
+      const content2 = "BT\n(Real After Fake) Tj\nET\n";
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Title (fake stream\r token) /Length ${content2.length} >>\nstream\n${content2}endstream\nendobj\n`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Real After Fake/, "a stream token inside a literal must not corrupt the interval");
+    });
+
+    it("handles BT blocks with many no-op numeric operators without unbounded stack growth", async () => {
+      const noise = "0 0 Td\n".repeat(2000);
+      const content3 = `BT\n${noise}(Survivor Text) Tj\nET\n`;
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length ${content3.length} >>\nstream\n${content3}endstream\nendobj\n`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Survivor Text/);
+    });
+
     it("keeps best-effort text for non-ASCII literals when no external tool exists", async () => {
       const content = "BT\n(caf\\351 au lait) Tj\nET\n";
       const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length ${content.length} >>\nstream\n${content}endstream\nendobj`;

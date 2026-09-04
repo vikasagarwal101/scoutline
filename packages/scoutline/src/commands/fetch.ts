@@ -28,8 +28,13 @@ export const DEFAULT_USER_AGENT =
 
 export const DEFAULT_FETCH_TIMEOUT_MS = 30000;
 
-/** Headers that must never follow a redirect to a different origin. */
-const CROSS_ORIGIN_STRIPPED_HEADERS = new Set(["authorization", "cookie", "proxy-authorization"]);
+/**
+ * Headers permitted to follow a redirect to a different origin. An
+ * ALLOWLIST, not a denylist: any caller-supplied header (X-API-Key,
+ * custom auth schemes, ...) is dropped before the other origin is
+ * contacted — only the transport-neutral defaults survive.
+ */
+const CROSS_ORIGIN_ALLOWED_HEADERS = new Set(["user-agent", "accept", "accept-encoding"]);
 
 /**
  * Incrementally read from a ReadableStream up to maxBytes.
@@ -401,10 +406,11 @@ export async function executeFetch(
       // to the other origin (fetch-spec redirect semantics). Once
       // stripped they stay stripped for later hops.
       if (new URL(nextUrl).origin !== new URL(requestUrl).origin) {
-        // Header names are case-insensitive: filter by lowercased key.
+        // Allowlist (case-insensitive): caller headers never cross
+        // origins; only the default transport headers survive.
         hopHeaders = Object.fromEntries(
-          Object.entries(hopHeaders).filter(
-            ([key]) => !CROSS_ORIGIN_STRIPPED_HEADERS.has(key.toLowerCase()),
+          Object.entries(hopHeaders).filter(([key]) =>
+            CROSS_ORIGIN_ALLOWED_HEADERS.has(key.toLowerCase()),
           ),
         );
       }

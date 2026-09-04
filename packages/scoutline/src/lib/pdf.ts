@@ -680,7 +680,7 @@ function resolveStreamInterval(
     probe !== -1;
     probe = fileStr.indexOf("endstream", probe + 9)
   ) {
-    if (/^endstream[\s\S]{0,4}?endobj/.test(fileStr.slice(probe, probe + 60))) {
+    if (/^endstream[\s\S]{0,4}?endobj\b/.test(fileStr.slice(probe, probe + 60))) {
       keywordAt = probe;
       break;
     }
@@ -692,7 +692,7 @@ function resolveStreamInterval(
   // resolved from their integer object so generators that use them do
   // not fall back to a textual endstream search that can stop at an
   // embedded "endstream" sequence inside the stream body.
-  const lengthMatch = /\/Length\s+(\d+)(?!\s+\d+\s+R)/.exec(dictSlice);
+  const lengthMatch = /\/Length\s+(\d+)(?!\d)(?!\s+\d+\s+R)/.exec(dictSlice);
   const declared =
     lengthMatch !== null
       ? Number(lengthMatch[1])

@@ -76,6 +76,13 @@ describe("scoutline fetch command", () => {
         res.writeHead(200, { "Content-Type": "text/plain" });
         res.write("partial content before connection drop...");
         req.socket.destroy();
+      } else if (req.url === "/binary") {
+        res.writeHead(200, { "Content-Type": "application/octet-stream" });
+        res.end(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0x00, 0xfe, 0xdc]));
+      } else if (req.method === "HEAD" && req.url === "/head-meta") {
+        // Metadata-only response: big declared Content-Length, no body.
+        res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": String(60 * 1024 * 1024) });
+        res.end();
       } else if (req.url === "/damaged-pdf") {
         res.writeHead(200, { "Content-Type": "application/pdf" });
         res.end("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n");
@@ -305,6 +312,9 @@ describe("scoutline fetch command", () => {
       const failOut = path.join(tempDir, "failed-stream.txt");
       await assert.rejects(
         () => executeFetch(`${serverBaseUrl}/aborted-stream`, { out: failOut }),
+        // A dropped response body is a REMOTE transfer failure, not a
+        // filesystem error (mutation guard: was FileError before).
+        (err) => err.code === "NETWORK_ERROR" && !/write output file/i.test(err.message),
       );
       assert.equal(fs.existsSync(failOut), false);
       const files = fs.readdirSync(tempDir);
@@ -367,6 +377,29 @@ describe("scoutline fetch command", () => {
         (err) => err.name === "ValidationError" && /exceeds in-memory/.test(err.message),
       );
       assert.equal(fs.existsSync(outPath), false, "no partial --out file on bounded failure");
+    });
+
+    it("does not decode binary bodies as UTF-8 when --out is absent", async () => {
+      const result = await executeFetch(`${serverBaseUrl}/binary`);
+      assert.equal(result.content, undefined, "binary body must not be utf8-decoded into content");
+      const cmd = await fetchCommand(`${serverBaseUrl}/binary`);
+      assert.match(
+        cmd.presentations?.tty ?? "",
+        /\[Binary payload: \d+ bytes, HTTP 200\]/,
+        "presentation must be the binary summary, not mojibake",
+      );
+    });
+
+    it("HEAD responses do not trip the in-memory ceiling via metadata-only Content-Length", async () => {
+      const result = await executeFetch(`${serverBaseUrl}/head-meta`, { method: "HEAD" });
+      assert.equal(result.status, 200);
+      assert.equal(result.bytes, 0);
+    });
+
+    it("does not claim a written file for non-OK responses when --out was requested", async () => {
+      const cmd = await fetchCommand(`${serverBaseUrl}/not-found`, { out: path.join(tempDir, "never.txt") });
+      assert.equal(fs.existsSync(path.join(tempDir, "never.txt")), false);
+      assert.doesNotMatch(cmd.presentations?.tty ?? "", /-> /, "presentation must not claim a file that was never written");
     });
   });
 

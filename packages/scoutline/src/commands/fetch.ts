@@ -28,6 +28,9 @@ export const DEFAULT_USER_AGENT =
 
 export const DEFAULT_FETCH_TIMEOUT_MS = 30000;
 
+/** Headers that must never follow a redirect to a different origin. */
+const CROSS_ORIGIN_STRIPPED_HEADERS = new Set(["authorization", "cookie", "proxy-authorization"]);
+
 /**
  * Incrementally read from a ReadableStream up to maxBytes.
  * Throws ValidationError if incoming data exceeds maxBytes without buffering the remainder.
@@ -374,11 +377,12 @@ export async function executeFetch(
     // undici follow semantics).
     let currentMethod = method;
     let requestUrl = url;
+    let hopHeaders: Record<string, string> = reqHeaders;
     for (let hop = 0; ; hop++) {
       const hopBody = buildRequestBody();
       response = await fetch(requestUrl, {
         method: currentMethod,
-        headers: reqHeaders,
+        headers: hopHeaders,
         body: hopBody,
         // Required by undici for streaming request bodies (@file payloads).
         ...(hopBody !== undefined && typeof hopBody !== "string" ? { duplex: "half" as const } : {}),
@@ -392,9 +396,24 @@ export async function executeFetch(
       if (hop >= 10) {
         throw new NetworkError(`Too many redirects (>10) while fetching ${url}`);
       }
-      requestUrl = new URL(location, requestUrl).toString();
+      const nextUrl = new URL(location, requestUrl).toString();
+      // Cross-origin redirect: never forward credential-bearing headers
+      // to the other origin (fetch-spec redirect semantics). Once
+      // stripped they stay stripped for later hops.
+      if (new URL(nextUrl).origin !== new URL(requestUrl).origin) {
+        // Header names are case-insensitive: filter by lowercased key.
+        hopHeaders = Object.fromEntries(
+          Object.entries(hopHeaders).filter(
+            ([key]) => !CROSS_ORIGIN_STRIPPED_HEADERS.has(key.toLowerCase()),
+          ),
+        );
+      }
+      requestUrl = nextUrl;
+      // 303 downgrades any method except GET and HEAD (a HEAD redirect
+      // must stay metadata-only, never switch to a body-downloading
+      // GET); 301/302 downgrade POST per browser semantics.
       if (
-        response.status === 303 ||
+        (response.status === 303 && currentMethod !== "GET" && currentMethod !== "HEAD") ||
         ((response.status === 301 || response.status === 302) && currentMethod === "POST")
       ) {
         currentMethod = "GET";

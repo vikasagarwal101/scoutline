@@ -42,10 +42,30 @@ describe("scoutline fetch command", () => {
   let server;
   let serverPort;
   let serverBaseUrl;
+  let otherServer;
+  let otherServerBaseUrl;
   let tempDir;
 
   before(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-fetch-test-"));
+
+    // A SECOND origin (different port = different origin) for
+    // cross-origin redirect assertions.
+    otherServer = http.createServer((req, res) => {
+      if (req.url === "/other-echo-headers") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(req.headers));
+      } else {
+        res.writeHead(500);
+        res.end();
+      }
+    });
+    await new Promise((resolve) => {
+      otherServer.listen(0, "127.0.0.1", () => {
+        otherServerBaseUrl = `http://127.0.0.1:${otherServer.address().port}`;
+        resolve();
+      });
+    });
 
     server = http.createServer((req, res) => {
       if (req.url === "/hello") {
@@ -76,6 +96,12 @@ describe("scoutline fetch command", () => {
         res.writeHead(200, { "Content-Type": "text/plain" });
         res.write("partial content before connection drop...");
         req.socket.destroy();
+      } else if (req.url === "/cross-origin-307") {
+        res.writeHead(307, { Location: `${otherServerBaseUrl}/other-echo-headers` });
+        res.end();
+      } else if (req.url === "/head-303") {
+        res.writeHead(303, { Location: "/head-meta" });
+        res.end();
       } else if (req.url === "/casey-type") {
         res.writeHead(200, { "Content-Type": "Text/Plain" });
         res.end("Mixed Case Type Body");
@@ -127,6 +153,9 @@ describe("scoutline fetch command", () => {
   });
 
   after(async () => {
+    if (otherServer) {
+      await new Promise((resolve) => otherServer.close(resolve));
+    }
     if (server) {
       await new Promise((resolve) => server.close(resolve));
     }
@@ -423,6 +452,25 @@ describe("scoutline fetch command", () => {
       });
       assert.equal(result.status, 200);
       assert.equal(result.content, "redirect-replay-body", "body must be replayed on the redirected hop");
+    });
+
+    it("strips credential-bearing headers on cross-origin redirects", async () => {
+      const result = await executeFetch(`${serverBaseUrl}/cross-origin-307`, {
+        method: "POST",
+        data: "x=1",
+        headers: ["Authorization: Bearer sekrit", "Cookie: session=abc", "X-Keep: yes"],
+      });
+      assert.equal(result.status, 200);
+      const echoed = JSON.parse(result.content ?? "{}");
+      assert.equal(echoed.authorization, undefined, "Authorization must not cross origins");
+      assert.equal(echoed.cookie, undefined, "Cookie must not cross origins");
+      assert.equal(echoed["x-keep"], "yes", "non-credential headers are forwarded");
+    });
+
+    it("preserves HEAD across a 303 redirect (metadata-only stays metadata-only)", async () => {
+      const result = await executeFetch(`${serverBaseUrl}/head-303`, { method: "HEAD" });
+      assert.equal(result.status, 200, "HEAD must not downgrade to GET on 303");
+      assert.equal(result.bytes, 0);
     });
 
     it("does not claim a written file for non-OK responses when --out was requested", async () => {

@@ -549,6 +549,57 @@ function scanBackwardDictionary(fileStr: string, keywordStart: number, window = 
 }
 
 /**
+ * Find an indirect-object header (`N G obj`) with a lexical scan that
+ * skips comments, literal/hex strings, and stream bodies — a header
+ * lookalike inside stream data must never be selected.
+ */
+function findObjectHeaderOffset(fileStr: string, header: string): number {
+  let i = 0;
+  while (i < fileStr.length) {
+    const ch = fileStr[i]!;
+    if (ch === "%") {
+      while (i < fileStr.length && fileStr[i] !== "\r" && fileStr[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "(") {
+      let depth = 1;
+      i++;
+      while (i < fileStr.length && depth > 0) {
+        const c = fileStr[i]!;
+        if (c === "\\") {
+          i += 2;
+          continue;
+        }
+        if (c === "(") depth++;
+        else if (c === ")") depth--;
+        i++;
+      }
+      continue;
+    }
+    if (ch === "<" && fileStr[i + 1] !== "<") {
+      const gt = fileStr.indexOf(">", i);
+      i = gt === -1 ? fileStr.length : gt + 1;
+      continue;
+    }
+    if (
+      fileStr.startsWith("stream", i) &&
+      (i === 0 || fileStr.slice(Math.max(0, i - 3), i) !== "end") &&
+      /[\r\n]/.test(fileStr[i + 6] ?? "\n")
+    ) {
+      const end = fileStr.indexOf("endstream", i + 6);
+      i = end === -1 ? fileStr.length : end + "endstream".length;
+      continue;
+    }
+    if (fileStr.startsWith(header, i)) {
+      const after = fileStr[i + header.length];
+      if (after === undefined || /[\s\r\n<>%]/.test(after)) return i;
+    }
+    i++;
+  }
+  return -1;
+}
+
+/**
  * Resolve an indirect /Length (N G R) by reading the integer the
  * referenced object holds. Returns null when the reference or object
  * cannot be resolved.
@@ -557,10 +608,21 @@ function resolveIndirectLength(fileStr: string, maskedDict: string): number | nu
   const ref = /\/Length\s+(\d+)\s+(\d+)\s+R\b/.exec(maskedDict);
   if (!ref) return null;
   const header = `${ref[1]} ${ref[2]} obj`;
-  const at = fileStr.indexOf(header);
+  const at = findObjectHeaderOffset(fileStr, header);
   if (at === -1) return null;
   let p = at + header.length;
-  while (p < fileStr.length && /\s/.test(fileStr[p]!)) p++;
+  while (p < fileStr.length) {
+    if (/\s/.test(fileStr[p]!)) {
+      p++;
+      continue;
+    }
+    // The integer may be preceded by comments inside the object.
+    if (fileStr[p] === "%") {
+      while (p < fileStr.length && fileStr[p] !== "\r" && fileStr[p] !== "\n") p++;
+      continue;
+    }
+    break;
+  }
   const num = /^(\d+)/.exec(fileStr.slice(p, p + 16));
   return num ? Number(num[1]) : null;
 }
@@ -685,7 +747,7 @@ function extractPureNodePdfText(buffer: Buffer): { text: string; lowConfidence: 
   // endstream keyword), so embedded "endstream" bytes inside stream
   // data cannot truncate a stream. The "end" prefix guard keeps the
   // tail of "endstream" keywords from matching as stream starts.
-  const streamKeywordRegex = /stream\r?\n/g;
+  const streamKeywordRegex = /stream(?:\r\n|\r|\n)/g;
   let match: RegExpExecArray | null;
 
   while ((match = streamKeywordRegex.exec(fileStr)) !== null) {

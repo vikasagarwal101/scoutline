@@ -865,18 +865,22 @@ describe("consumption: handler wiring through main (usage-ledger Ticket 4)", () 
   });
 
   it("read --raw: parse-level rejection with the fetch pointer, no provider work", async () => {
+    const sink = createInMemoryConsumptionSink();
     const reader = createFakeReaderDescriptor({
       id: "zai",
       capabilityOptions: { fetch: { result: T4_RESULTS.read } },
     });
-    const drive = makeMainDeps({ descriptors: [reader.descriptor] });
+    const drive = makeMainDeps({ descriptors: [reader.descriptor], consume: sink });
     const status = await main(["read", "https://example.com/x", "--raw"], drive.mainDeps);
     assert.strictEqual(status, 1, `stderr: ${JSON.stringify(drive.stderr)}`);
     const parsed = JSON.parse(drive.stderr[drive.stderr.length - 1]);
     assert.strictEqual(parsed.code, "VALIDATION_ERROR");
     assert.match(parsed.error, /fetch/, "the error must point users at the fetch command");
-    // The rejection is parse-level: the reader adapter is never invoked.
+    // The rejection is parse-level: zero stdout AND zero consumption
+    // events — no billable provider work happened (an invocation would
+    // emit at least one ledger event through the injected sink).
     assert.strictEqual(drive.stdout.length, 0);
+    assert.strictEqual(sink.events.length, 0, "the reader adapter must never be invoked");
   });
 
   it("read: one event on invoke, none on a cache hit", async () => {

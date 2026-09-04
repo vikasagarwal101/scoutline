@@ -34,7 +34,14 @@ export const DEFAULT_FETCH_TIMEOUT_MS = 30000;
  * custom auth schemes, ...) is dropped before the other origin is
  * contacted — only the transport-neutral defaults survive.
  */
-const CROSS_ORIGIN_ALLOWED_HEADERS = new Set(["user-agent", "accept", "accept-encoding"]);
+const CROSS_ORIGIN_ALLOWED_HEADERS = new Set([
+  "user-agent",
+  "accept",
+  "accept-encoding",
+  // Non-credential request metadata: 307/308 replay the body, and a
+  // JSON endpoint needs its Content-Type to parse it.
+  "content-type",
+]);
 
 /**
  * Incrementally read from a ReadableStream up to maxBytes.

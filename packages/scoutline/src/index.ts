@@ -1541,6 +1541,7 @@ async function handleRead(
   args: string[],
   outputMode: OutputMode,
   deps: HandlerDependencies,
+  forceRaw = false,
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
@@ -1575,9 +1576,13 @@ async function handleRead(
   // parse level (before Provider resolution) with a pointer instead
   // of accepting and dropping the flags. Note: `--raw` keeps its
   // legacy global output-mode meaning and is not read's flag.
-  if (flags.pdf !== undefined || flags["pdf-repair"] !== undefined) {
+  // forceRaw carries the global --raw token: read has no content-raw
+  // mode, so answering with a provider-normalized read (the legacy
+  // output-mode interpretation) would silently do the wrong thing —
+  // reject loudly with the fetch pointer instead.
+  if (flags.pdf !== undefined || flags["pdf-repair"] !== undefined || forceRaw) {
     throw new ValidationError(
-      "--pdf/--pdf-repair are fetch-only (read content is provider-normalized); use `scoutline fetch <url> --pdf text` / `--pdf raw` with `--pdf-repair` for damaged PDFs, or `scoutline fetch <url> --raw` for the verbatim body (see `scoutline fetch --help`)",
+      "--raw/--pdf/--pdf-repair are fetch-only (read content is provider-normalized); use `scoutline fetch <url> --raw` for the verbatim body or `scoutline fetch <url> --pdf text` / `--pdf raw` with `--pdf-repair` for damaged PDFs (see `scoutline fetch --help`)",
     );
   }
 
@@ -4691,7 +4696,7 @@ export async function main(
         break;
       case "read":
         commandRecognized = true;
-        exitCode = await handleRead(commandArgs, outputMode, handlerDepsWithSave);
+        exitCode = await handleRead(commandArgs, outputMode, handlerDepsWithSave, forceRaw);
         break;
       case "crawl":
         commandRecognized = true;

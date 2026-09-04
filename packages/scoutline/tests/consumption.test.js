@@ -864,6 +864,21 @@ describe("consumption: handler wiring through main (usage-ledger Ticket 4)", () 
     assert.strictEqual(sink2.events.length, 0, "cache hit must not emit");
   });
 
+  it("read --raw: parse-level rejection with the fetch pointer, no provider work", async () => {
+    const reader = createFakeReaderDescriptor({
+      id: "zai",
+      capabilityOptions: { fetch: { result: T4_RESULTS.read } },
+    });
+    const drive = makeMainDeps({ descriptors: [reader.descriptor] });
+    const status = await main(["read", "https://example.com/x", "--raw"], drive.mainDeps);
+    assert.strictEqual(status, 1, `stderr: ${JSON.stringify(drive.stderr)}`);
+    const parsed = JSON.parse(drive.stderr[drive.stderr.length - 1]);
+    assert.strictEqual(parsed.code, "VALIDATION_ERROR");
+    assert.match(parsed.error, /fetch/, "the error must point users at the fetch command");
+    // The rejection is parse-level: the reader adapter is never invoked.
+    assert.strictEqual(drive.stdout.length, 0);
+  });
+
   it("read: one event on invoke, none on a cache hit", async () => {
     const invokes = [];
     const sink = createInMemoryConsumptionSink();

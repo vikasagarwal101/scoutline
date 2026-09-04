@@ -454,17 +454,19 @@ describe("scoutline fetch command", () => {
       assert.equal(result.content, "redirect-replay-body", "body must be replayed on the redirected hop");
     });
 
-    it("strips credential-bearing headers on cross-origin redirects", async () => {
+    it("drops ALL caller-supplied headers on cross-origin redirects (allowlist)", async () => {
       const result = await executeFetch(`${serverBaseUrl}/cross-origin-307`, {
         method: "POST",
         data: "x=1",
-        headers: ["Authorization: Bearer sekrit", "Cookie: session=abc", "X-Keep: yes"],
+        headers: ["Authorization: Bearer sekrit", "Cookie: session=abc", "X-API-Key: k1", "X-Keep: yes"],
       });
       assert.equal(result.status, 200);
       const echoed = JSON.parse(result.content ?? "{}");
       assert.equal(echoed.authorization, undefined, "Authorization must not cross origins");
       assert.equal(echoed.cookie, undefined, "Cookie must not cross origins");
-      assert.equal(echoed["x-keep"], "yes", "non-credential headers are forwarded");
+      assert.equal(echoed["x-api-key"], undefined, "custom credential headers must not cross origins");
+      assert.equal(echoed["x-keep"], undefined, "only allowlisted transport headers cross origins");
+      assert.equal(echoed["accept-encoding"], "identity", "allowlisted defaults survive");
     });
 
     it("preserves HEAD across a 303 redirect (metadata-only stays metadata-only)", async () => {

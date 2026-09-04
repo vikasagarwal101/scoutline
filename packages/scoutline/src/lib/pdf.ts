@@ -486,6 +486,10 @@ function parseContentStreamText(
         default:
           break; // operators without direct text semantics
       }
+      // Operators consume their operands: a hostile BT block with
+      // thousands of no-op operators must not accumulate them on the
+      // stack until the heap is exhausted.
+      stack.length = 0;
     }
 
     pushLine();
@@ -551,9 +555,15 @@ function scanBackwardDictionary(fileStr: string, keywordStart: number, window = 
 /**
  * Find an indirect-object header (`N G obj`) with a lexical scan that
  * skips comments, literal/hex strings, and stream bodies — a header
- * lookalike inside stream data must never be selected.
+ * lookalike inside stream data must never be selected. Stream bodies
+ * are skipped with length-VALIDATED boundaries (`resolving` guards
+ * against indirect-length resolution cycles).
  */
-function findObjectHeaderOffset(fileStr: string, header: string): number {
+function findObjectHeaderOffset(
+  fileStr: string,
+  header: string,
+  resolving: ReadonlySet<string> = new Set(),
+): number {
   let i = 0;
   while (i < fileStr.length) {
     const ch = fileStr[i]!;
@@ -586,8 +596,13 @@ function findObjectHeaderOffset(fileStr: string, header: string): number {
       (i === 0 || fileStr.slice(Math.max(0, i - 3), i) !== "end") &&
       /[\r\n]/.test(fileStr[i + 6] ?? "\n")
     ) {
-      const end = fileStr.indexOf("endstream", i + 6);
-      i = end === -1 ? fileStr.length : end + "endstream".length;
+      const interval = resolveStreamInterval(
+        fileStr,
+        i,
+        maskStringsAndComments(scanBackwardDictionary(fileStr, i)),
+        resolving,
+      );
+      i = interval.resumeAfter;
       continue;
     }
     if (fileStr.startsWith(header, i)) {
@@ -604,11 +619,19 @@ function findObjectHeaderOffset(fileStr: string, header: string): number {
  * referenced object holds. Returns null when the reference or object
  * cannot be resolved.
  */
-function resolveIndirectLength(fileStr: string, maskedDict: string): number | null {
+function resolveIndirectLength(
+  fileStr: string,
+  maskedDict: string,
+  resolving: ReadonlySet<string> = new Set(),
+): number | null {
   const ref = /\/Length\s+(\d+)\s+(\d+)\s+R\b/.exec(maskedDict);
   if (!ref) return null;
-  const header = `${ref[1]} ${ref[2]} obj`;
-  const at = findObjectHeaderOffset(fileStr, header);
+  // Recursion guard: a length object whose own stream references back
+  // must not loop (A -> B -> A); give up and fall back instead.
+  const refKey = `${ref[1]} ${ref[2]}`;
+  if (resolving.has(refKey)) return null;
+  const header = `${refKey} obj`;
+  const at = findObjectHeaderOffset(fileStr, header, new Set([...resolving, refKey]));
   if (at === -1) return null;
   let p = at + header.length;
   while (p < fileStr.length) {
@@ -640,6 +663,7 @@ function resolveStreamInterval(
   fileStr: string,
   keywordStart: number,
   dictSlice: string,
+  resolving: ReadonlySet<string> = new Set(),
 ): { bodyStart: number; dataEnd: number; resumeAfter: number } {
   let bodyStart = keywordStart + "stream".length;
   if (fileStr[bodyStart] === "\r") bodyStart++;
@@ -657,7 +681,7 @@ function resolveStreamInterval(
   const declared =
     lengthMatch !== null
       ? Number(lengthMatch[1])
-      : resolveIndirectLength(fileStr, dictSlice);
+      : resolveIndirectLength(fileStr, dictSlice, resolving);
   if (declared !== null) {
     let probe = bodyStart + declared;
     if (fileStr[probe] === "\r") probe++;
@@ -747,15 +771,49 @@ function extractPureNodePdfText(buffer: Buffer): { text: string; lowConfidence: 
   // endstream keyword), so embedded "endstream" bytes inside stream
   // data cannot truncate a stream. The "end" prefix guard keeps the
   // tail of "endstream" keywords from matching as stream starts.
-  const streamKeywordRegex = /stream(?:\r\n|\r|\n)/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = streamKeywordRegex.exec(fileStr)) !== null) {
-    const keywordStart = match.index;
-    if (fileStr.slice(Math.max(0, keywordStart - 3), keywordStart) === "end") continue;
+  // Lexical stream scan: literal strings and comments are skipped
+  // while walking, so a `stream` token inside string or comment data
+  // can never corrupt the next stream interval.
+  let cursor = 0;
+  while (true) {
+    // Advance to the next stream keyword outside strings/comments.
+    let keywordStart = -1;
+    let i = cursor;
+    while (i < fileStr.length) {
+      const ch = fileStr[i]!;
+      if (ch === "%") {
+        while (i < fileStr.length && fileStr[i] !== "\r" && fileStr[i] !== "\n") i++;
+        continue;
+      }
+      if (ch === "(") {
+        let depth = 1;
+        i++;
+        while (i < fileStr.length && depth > 0) {
+          const c = fileStr[i]!;
+          if (c === "\\") {
+            i += 2;
+            continue;
+          }
+          if (c === "(") depth++;
+          else if (c === ")") depth--;
+          i++;
+        }
+        continue;
+      }
+      if (
+        fileStr.startsWith("stream", i) &&
+        (i === 0 || fileStr.slice(Math.max(0, i - 3), i) !== "end") &&
+        /[\r\n]/.test(fileStr[i + 6] ?? "\n")
+      ) {
+        keywordStart = i;
+        break;
+      }
+      i++;
+    }
+    if (keywordStart === -1) break;
     const dictSlice = maskStringsAndComments(scanBackwardDictionary(fileStr, keywordStart));
     const interval = resolveStreamInterval(fileStr, keywordStart, dictSlice);
-    streamKeywordRegex.lastIndex = interval.resumeAfter;
+    cursor = interval.resumeAfter;
     const rawStreamSlice = buffer.subarray(interval.bodyStart, interval.dataEnd);
 
     // Filter-chain classification (R6-C): the pure path can only

@@ -379,5 +379,33 @@ describe("scoutline fetch command", () => {
       assert.equal(parsed.success, true);
       assert.equal(parsed.data.content, "Hello World!");
     });
+
+    it("--raw prints the body verbatim without the JSON envelope", async () => {
+      const { adapter, stdout } = makeAdapter();
+      const code = await main(["fetch", `${serverBaseUrl}/hello`, "--raw"], {
+        invocation: adapter,
+        env: {},
+        loadScoutlineConfig: () => {
+          throw new Error("Should not be called for fetch!");
+        },
+      });
+      assert.equal(code, 0);
+      assert.equal(stdout.join(""), "Hello World!");
+    });
+
+    it("an explicit -O json still wins over --raw (envelope preserved)", async () => {
+      const { adapter, stdout } = makeAdapter();
+      const code = await main(["fetch", `${serverBaseUrl}/hello`, "--raw", "-O", "json"], {
+        invocation: adapter,
+        env: {},
+        loadScoutlineConfig: () => {
+          throw new Error("Should not be called for fetch!");
+        },
+      });
+      assert.equal(code, 0);
+      const parsed = JSON.parse(stdout.join(""));
+      assert.equal(parsed.success, true);
+      assert.equal(parsed.data.content, "Hello World!");
+    });
   });
 });

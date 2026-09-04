@@ -503,9 +503,12 @@ export async function fetchCommand(
   if (options.out) {
     const md5Text = data.md5 ? ` (MD5: ${data.md5})` : "";
     presentationText = `Fetched ${data.bytes} bytes from ${data.url} -> ${options.out}${md5Text} [HTTP ${data.status}]`;
-  } else if (options.raw && data.content !== undefined) {
-    presentationText = data.content;
   } else if (data.content !== undefined) {
+    // Text-compatible bodies are the presentation in every mode; the
+    // raw/non-raw distinction is the OUTPUT ROUTING (the dispatcher
+    // sends --raw to a text mode so the body prints without the JSON
+    // envelope), not the string itself. Byte-exact binary output is
+    // --out's contract — stdout remains a text surface.
     presentationText = data.content;
   } else {
     presentationText = `[Binary payload: ${data.bytes} bytes, HTTP ${data.status}]`;

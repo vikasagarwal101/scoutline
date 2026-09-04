@@ -443,9 +443,10 @@ export async function archiveGetCommand(
   const data = await executeArchiveGet(url, options);
 
   let presentationText = "";
-  if (options.raw && data.content !== undefined) {
-    presentationText = data.content;
-  } else if (data.content !== undefined) {
+  if (data.content !== undefined) {
+    // Same contract as fetch: the body IS the presentation; `--raw`
+    // routes output to a text mode (no JSON envelope) in the
+    // dispatcher rather than changing this string.
     presentationText = data.content;
   } else {
     presentationText = `[Archived snapshot: ${data.snapshotTimestamp}, ${data.bytes} bytes, HTTP ${data.statusCode}]`;

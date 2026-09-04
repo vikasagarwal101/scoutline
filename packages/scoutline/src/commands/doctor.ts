@@ -51,6 +51,7 @@ import { formatDiagnosticsReport } from "../lib/tty.js";
 
 export interface DoctorDiagnosticsDependencies {
   readonly noTools: boolean;
+  readonly healthProbe?: boolean;
   readonly effectiveProvider: ProviderId;
   readonly descriptors: readonly ProviderDescriptor[];
   readonly env: NodeJS.ProcessEnv;
@@ -142,6 +143,13 @@ export interface DoctorDiagnosticsDependencies {
   readonly availableOnly?: boolean;
 }
 
+export interface ProviderHealthCheck {
+  readonly healthy: boolean;
+  readonly latencyMs: number;
+  readonly status: "ok" | "error" | "auth_error";
+  readonly error?: string;
+}
+
 /**
  * A {@link ProviderDiagnostic} row carrying the additive `availability`
  * classification (#94). Additive under DiagnosticsReport schema
@@ -152,6 +160,7 @@ export interface DoctorDiagnosticsDependencies {
  */
 export interface ProviderDiagnosticWithAvailability extends ProviderDiagnostic {
   readonly availability: ProviderAvailability;
+  readonly health?: ProviderHealthCheck;
 }
 
 /**
@@ -415,7 +424,13 @@ async function probeEntries(
     configuredIndexes.map(async (index) => {
       const descriptor = deps.descriptors[index];
       if (!descriptor) throw new Error(`Missing descriptor at index ${index}`);
-      return probeProvider(descriptor, deps.env, deps.sleep, deps.random);
+      const t0 = Date.now();
+      try {
+        await probeProvider(descriptor, deps.env, deps.sleep, deps.random);
+        return { latencyMs: Date.now() - t0 };
+      } catch (error) {
+        throw { error, latencyMs: Date.now() - t0 };
+      }
     }),
   );
 
@@ -437,13 +452,39 @@ async function probeEntries(
     }
     const result = settled[settledCursor++];
     if (result?.status === "fulfilled") {
-      return { ...entry, status: "ok" as const, ...additive };
+      const latencyMs = result.value.latencyMs;
+      return {
+        ...entry,
+        status: "ok" as const,
+        ...(deps.healthProbe ? { health: { healthy: true, latencyMs, status: "ok" as const } } : {}),
+        ...additive,
+      };
     }
+    const errPayload = result?.reason as { error?: unknown; latencyMs?: number } | undefined;
+    const rawReason = errPayload && typeof errPayload === "object" && "error" in errPayload ? errPayload.error : result?.reason;
+    const latencyMs = errPayload && typeof errPayload === "object" && typeof errPayload.latencyMs === "number" ? errPayload.latencyMs : 0;
     const redacted = redactSecrets(
-      diagnosticErrorFromError(result?.reason),
+      diagnosticErrorFromError(rawReason),
       secrets,
     ) as NonNullable<ProviderDiagnostic["error"]>;
-    return { ...entry, status: "error" as const, error: redacted, ...additive };
+    const isAuth = redacted.code === "AUTH_ERROR";
+    const healthStatus = isAuth ? ("auth_error" as const) : ("error" as const);
+    return {
+      ...entry,
+      status: "error" as const,
+      error: redacted,
+      ...(deps.healthProbe
+        ? {
+            health: {
+              healthy: false,
+              latencyMs,
+              status: healthStatus,
+              error: redacted.message,
+            },
+          }
+        : {}),
+      ...additive,
+    };
   });
 }
 
@@ -593,6 +634,8 @@ Options:
                (the agent-facing short list). availableProviders is
                unchanged by the filter, and every row was still
                classified before filtering.
+  --health     Perform live active latency and health diagnostics against
+               configured providers
 
 Exit codes:
   0  All configured probes succeeded (or only tools-disabled skips).

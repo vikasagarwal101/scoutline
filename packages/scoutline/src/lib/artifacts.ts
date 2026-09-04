@@ -50,6 +50,7 @@ export type ArtifactFormat = "json" | "markdown";
 /** Environment keys {@link resolveArtifactsDir} reads. */
 export interface ArtifactsDirEnvironment extends ConfigRootEnvironment {
   readonly SCOUTLINE_ARTIFACTS_DIR?: string;
+  readonly SCOUTLINE_ISOLATED?: string;
 }
 
 /** Byte source for the request-id hex tail; defaults to crypto.randomBytes. */
@@ -81,6 +82,10 @@ export function newRequestId(
   return `${utcCompactTimestamp(new Date(now))}-${hex}`;
 }
 
+export interface ArtifactsPlatform extends ConfigRootPlatform {
+  readonly pid?: number;
+}
+
 /**
  * Artifacts root: `SCOUTLINE_ARTIFACTS_DIR` (canonical SCOUTLINE_* name, no
  * legacy alias) wins; otherwise the config root's `artifacts/` sibling.
@@ -89,11 +94,17 @@ export function newRequestId(
  */
 export function resolveArtifactsDir(
   env: ArtifactsDirEnvironment,
-  platform: ConfigRootPlatform = { homedir: os.homedir() },
+  platform: ArtifactsPlatform = { homedir: os.homedir(), pid: process.pid },
 ): string {
-  return (
-    env.SCOUTLINE_ARTIFACTS_DIR || path.join(resolveConfigRootPure(env, platform), "artifacts")
-  );
+  const baseDir =
+    env.SCOUTLINE_ARTIFACTS_DIR || path.join(resolveConfigRootPure(env, platform), "artifacts");
+
+  if (env.SCOUTLINE_ISOLATED === "1" || env.SCOUTLINE_ISOLATED === "true") {
+    const pid = platform.pid ?? process.pid;
+    return path.join(baseDir, "isolated", `${pid}`);
+  }
+
+  return baseDir;
 }
 
 export interface WriteArtifactOptions {

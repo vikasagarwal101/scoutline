@@ -171,10 +171,12 @@ describe("usage-ledger Ticket 3 — production consume wiring in main", () => {
 
     // D3: the production construction is the composite of the two
     // sinks, inside the gate's ternary (an injected
-    // MainDependencies.consume still wins).
+    // MainDependencies.consume still wins). The gate additionally
+    // excludes isolated runs (ADR-0006 §5: --isolated skips shared
+    // state persistence entirely).
     assert.match(
       indexSource,
-      /dependencies\.consume\s*\?\?\s*\(quotaRefreshEnabled\s*\?\s*createCompositeConsumptionSink\(/,
+      /dependencies\.consume\s*\?\?\s*(?:\/\/[^\n]*\n\s*)*\(quotaRefreshEnabled && !isolated\s*\?\s*createCompositeConsumptionSink\(/,
       "production consume must be composite(quotaStoreSink, usageLedgerSink) behind the gate",
     );
 

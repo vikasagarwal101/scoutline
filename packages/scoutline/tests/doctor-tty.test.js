@@ -78,6 +78,27 @@ function rowLineIndex(lines, provider, availability) {
   return idx;
 }
 
+describe("doctor --health TTY rendering", () => {
+  it("renders the active health probe status and latency per provider row", () => {
+    const report = makeMixedReport();
+    report.providers[0].health = { healthy: true, latencyMs: 42, status: "ok" };
+    const out = formatDiagnosticsReport(report, NOW);
+    assert.match(out, /health probe ok/);
+    assert.match(out, /42ms/);
+
+    report.providers[1].health = {
+      healthy: false,
+      latencyMs: 77,
+      status: "auth_error",
+      error: "401 Unauthorized",
+    };
+    const out2 = formatDiagnosticsReport(report, NOW);
+    assert.match(out2, /health probe auth_error/);
+    assert.match(out2, /77ms/);
+    assert.match(out2, /401 Unauthorized/);
+  });
+});
+
 describe("doctor TTY presentation (#95)", () => {
   it("renders rows healthy-first in the report's given order (formatter does not sort)", () => {
     const out = formatDiagnosticsReport(makeMixedReport(), NOW);

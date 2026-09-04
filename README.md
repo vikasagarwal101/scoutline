@@ -15,6 +15,8 @@
 
 ## Features
 
+- **Fetch** — Direct, credential-free evidentiary HTTP retrieval with `--md5`/`--sha256` digests, disk streaming (`--out`), raw REST methods (`-X`), and byte-exact PDF processing (`--pdf`, `--pdf-repair`)
+- **Archive** — Temporal intelligence via the Internet Archive: CDX capture indexing and verbatim `id_`-mode snapshot replay
 - **Search** — Real-time web search with domain, recency, and topic filtering
 - **Reader** — Fetch and parse web pages to clean markdown
 - **Crawl** — Multi-page website traversal with depth, breadth, and path filters
@@ -31,9 +33,9 @@
 ```bash
 export Z_AI_API_KEY="your-api-key"
 
-npx scoutline@0.17.4 --help
-npx scoutline@0.17.4 search "React 19 new features" --count 5
-npx scoutline@0.17.4 vision analyze ./screenshot.png "What errors do you see?"
+npx scoutline@0.20.0 --help
+npx scoutline@0.20.0 search "React 19 new features" --count 5
+npx scoutline@0.20.0 vision analyze ./screenshot.png "What errors do you see?"
 ```
 
 Get your Z.AI API key at: https://z.ai/manage-apikey/apikey-list
@@ -63,17 +65,17 @@ a successful probe.
 
 ```bash
 export MINIMAX_API_KEY="your-minimax-key"
-npx scoutline@0.17.4 --provider minimax search "latest LLM benchmarks"
+npx scoutline@0.20.0 --provider minimax search "latest LLM benchmarks"
 ```
 
 ### Using Tavily (Search, Reader, Crawl, Map, Research)
 
 ```bash
 export TAVILY_API_KEY="your-tavily-key"
-npx scoutline@0.17.4 --provider tavily search "AI funding rounds" --topic news
-npx scoutline@0.17.4 --provider tavily read https://example.com/
-npx scoutline@0.17.4 --provider tavily crawl https://docs.example.com --depth 2
-npx scoutline@0.17.4 --provider tavily research "Compare React vs Svelte for production"
+npx scoutline@0.20.0 --provider tavily search "AI funding rounds" --topic news
+npx scoutline@0.20.0 --provider tavily read https://example.com/
+npx scoutline@0.20.0 --provider tavily crawl https://docs.example.com --depth 2
+npx scoutline@0.20.0 --provider tavily research "Compare React vs Svelte for production"
 ```
 
 Get your Tavily API key at: https://app.tavily.com
@@ -82,9 +84,9 @@ Get your Tavily API key at: https://app.tavily.com
 
 ```bash
 export EXA_API_KEY="your-exa-key"
-npx scoutline@0.17.4 --provider exa search "latest AI research" --topic news
-npx scoutline@0.17.4 --provider exa read https://example.com/
-npx scoutline@0.17.4 --provider exa research "Compare Rust async runtimes"
+npx scoutline@0.20.0 --provider exa search "latest AI research" --topic news
+npx scoutline@0.20.0 --provider exa read https://example.com/
+npx scoutline@0.20.0 --provider exa research "Compare Rust async runtimes"
 ```
 
 Get your Exa API key at: https://dashboard.exa.ai
@@ -93,9 +95,9 @@ Get your Exa API key at: https://dashboard.exa.ai
 
 ```bash
 export BRAVE_SEARCH_API_KEY="your-brave-key"
-npx scoutline@0.17.4 --provider brave search "AI policy news" --topic news
-npx scoutline@0.17.4 --provider brave search "rust async" --type video
-npx scoutline@0.17.4 --provider brave search "large context topic" --content-size high
+npx scoutline@0.20.0 --provider brave search "AI policy news" --topic news
+npx scoutline@0.20.0 --provider brave search "rust async" --type video
+npx scoutline@0.20.0 --provider brave search "large context topic" --content-size high
 ```
 
 Brave is the only Provider that supports `--type video`. `--content-size high`
@@ -107,10 +109,10 @@ a pure free tier to $5 monthly metered credits.
 
 ```bash
 export FIRECRAWL_API_KEY="your-firecrawl-key"
-npx scoutline@0.17.4 --provider firecrawl search "AI funding rounds" --content-size high
-npx scoutline@0.17.4 --provider firecrawl read https://example.com/
-npx scoutline@0.17.4 --provider firecrawl crawl https://docs.example.com --limit 10
-npx scoutline@0.17.4 --provider firecrawl map https://example.com/
+npx scoutline@0.20.0 --provider firecrawl search "AI funding rounds" --content-size high
+npx scoutline@0.20.0 --provider firecrawl read https://example.com/
+npx scoutline@0.20.0 --provider firecrawl crawl https://docs.example.com --limit 10
+npx scoutline@0.20.0 --provider firecrawl map https://example.com/
 ```
 
 Get your Firecrawl API key at: https://www.firecrawl.dev/signin
@@ -124,9 +126,9 @@ after Ctrl-C with no double-charge (state-file resume + reclaim-on-miss).
 
 ```bash
 export PARALLEL_API_KEY="your-parallel-key"
-npx scoutline@0.17.4 --provider parallel search "AI funding rounds" --topic news
-npx scoutline@0.17.4 --provider parallel read https://example.com/
-npx scoutline@0.17.4 --provider parallel research "Compare React vs Svelte for production"
+npx scoutline@0.20.0 --provider parallel search "AI funding rounds" --topic news
+npx scoutline@0.20.0 --provider parallel read https://example.com/
+npx scoutline@0.20.0 --provider parallel research "Compare React vs Svelte for production"
 ```
 
 Get your Parallel AI API key at: https://api.parallel.ai
@@ -135,8 +137,8 @@ Get your Parallel AI API key at: https://api.parallel.ai
 
 ```bash
 export PERPLEXITY_API_KEY="your-perplexity-key"
-npx scoutline@0.17.4 --provider perplexity search "latest AI research" --topic news
-npx scoutline@0.17.4 --provider perplexity research "Compare Rust async runtimes"
+npx scoutline@0.20.0 --provider perplexity search "latest AI research" --topic news
+npx scoutline@0.20.0 --provider perplexity research "Compare Rust async runtimes"
 ```
 
 Get your Perplexity API key at: https://www.perplexity.ai/settings/api
@@ -145,9 +147,9 @@ Get your Perplexity API key at: https://www.perplexity.ai/settings/api
 
 ```bash
 export JINA_API_KEY="your-jina-key"  # optional — keyless supported
-npx scoutline@0.17.4 --provider jina search "AI policy news" --topic news
-npx scoutline@0.17.4 --provider jina read https://example.com/
-npx scoutline@0.17.4 --provider jina research "State of carbon capture 2025"
+npx scoutline@0.20.0 --provider jina search "AI policy news" --topic news
+npx scoutline@0.20.0 --provider jina read https://example.com/
+npx scoutline@0.20.0 --provider jina research "State of carbon capture 2025"
 ```
 
 Get your Jina AI API key at: https://jina.ai/api-dashboard/
@@ -164,9 +166,9 @@ defaults to 120 seconds. Raise it with `JINA_DEEPSEARCH_TIMEOUT`
 
 ```bash
 export YDC_API_KEY="your-you-key"  # YOU_API_KEY also accepted
-npx scoutline@0.17.7 --provider you search "AI policy news" --topic news
-npx scoutline@0.17.7 --provider you read https://example.com/
-npx scoutline@0.17.7 --provider you research "State of carbon capture 2025"
+npx scoutline@0.20.0 --provider you search "AI policy news" --topic news
+npx scoutline@0.20.0 --provider you read https://example.com/
+npx scoutline@0.20.0 --provider you research "State of carbon capture 2025"
 ```
 
 Get your You.com API key at: https://you.com/api
@@ -343,6 +345,8 @@ The CLI is self-documenting. Use `--help` at any level:
 
 ```bash
 scoutline --help              # All commands
+scoutline fetch --help        # Direct HTTP retrieval (GET/POST, @file, --md5, --out)
+scoutline archive --help      # Wayback temporal index (cdx) and replay (get)
 scoutline search --help       # Search options
 scoutline read --help         # Reader options
 scoutline crawl --help        # Crawl options
@@ -351,7 +355,7 @@ scoutline research --help     # Research options
 scoutline vision --help       # Vision commands
 scoutline batch --help        # Batch manifest runner (distribution by default)
 scoutline repo --help         # GitHub repo commands
-scoutline doctor --help       # Provider diagnostics
+scoutline doctor --help       # Provider diagnostics (--health for live probe)
 scoutline quota --help        # Plan usage
 scoutline cache --help        # Local cache inspection, clearing, and pruning
 ```
@@ -359,6 +363,15 @@ scoutline cache --help        # Local cache inspection, clearing, and pruning
 ### Examples
 
 ```bash
+# Evidentiary Direct Retrieval (no AI credentials required)
+scoutline fetch https://api.github.com/repos/nodejs/node --md5
+scoutline fetch https://example.com/api -X POST --data @payload.json -H "Content-Type: application/json"
+scoutline fetch https://example.com/doc.pdf --pdf text --out extracted.txt
+
+# Temporal Archival (Wayback Machine)
+scoutline archive cdx https://example.com/ --from 20200101 --limit 5
+scoutline archive get https://example.com/ --at 20210601000000 --raw
+
 # Search
 scoutline search "TypeScript best practices" --count 10
 scoutline --provider tavily search "earnings call" --topic finance

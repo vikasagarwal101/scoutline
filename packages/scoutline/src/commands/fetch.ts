@@ -73,6 +73,7 @@ scoutline fetch <url> [options] - Direct, binary-safe HTTP client
 Options:
   --out <file>             Save response body directly to a local file
   --md5                    Compute and report MD5 checksum of the response
+  --sha256                 Compute and report SHA-256 checksum (evidentiary digest)
   --raw                    Emit raw body content directly
   --ua <agent>             Custom User-Agent string (default: Chromium)
   --method <verb>          HTTP method: GET, POST, PUT, DELETE, PATCH, HEAD (default: GET)
@@ -90,6 +91,7 @@ Global Options:
 export interface FetchOptions {
   readonly out?: string;
   readonly md5?: boolean;
+  readonly sha256?: boolean;
   readonly raw?: boolean;
   readonly ua?: string;
   readonly method?: string;
@@ -109,6 +111,7 @@ export interface FetchResultData {
   readonly headers: Readonly<Record<string, string>>;
   readonly bytes: number;
   readonly md5?: string;
+  readonly sha256?: string;
   readonly outPath?: string;
   readonly contentType?: string;
   readonly content?: string;
@@ -136,6 +139,7 @@ export function parseFetchArgs(args: readonly string[]): {
 } {
   let out: string | undefined;
   let md5 = false;
+  let sha256 = false;
   let raw = false;
   let ua: string | undefined;
   let method: string | undefined;
@@ -157,6 +161,9 @@ export function parseFetchArgs(args: readonly string[]): {
       i++;
     } else if (arg === "--md5") {
       md5 = true;
+      i++;
+    } else if (arg === "--sha256") {
+      sha256 = true;
       i++;
     } else if (arg === "--raw") {
       raw = true;
@@ -214,10 +221,19 @@ export function parseFetchArgs(args: readonly string[]): {
       i++;
     } else if (arg === "--timeout") {
       const next = args[i + 1];
-      if (!next || !/^\d+$/.test(next) || Number(next) <= 0) {
-        throw new ValidationError("--timeout requires a positive integer in milliseconds.");
+      const parsedTimeout = Number(next);
+      if (
+        !next ||
+        !/^\d+$/.test(next) ||
+        parsedTimeout <= 0 ||
+        !Number.isSafeInteger(parsedTimeout)
+      ) {
+        throw new ValidationError(
+          "--timeout requires a positive integer in milliseconds.",
+          "The value must be a safe integer (e.g. 30000), not zero or an oversized digit string.",
+        );
       }
-      timeout = Number(next);
+      timeout = parsedTimeout;
       i += 2;
     } else if (!arg.startsWith("-")) {
       positional.push(arg);
@@ -241,6 +257,7 @@ export function parseFetchArgs(args: readonly string[]): {
     options: {
       ...(out ? { out } : {}),
       ...(md5 ? { md5: true } : {}),
+      ...(sha256 ? { sha256: true } : {}),
       ...(raw ? { raw: true } : {}),
       ...(ua ? { ua } : {}),
       ...(method ? { method } : {}),
@@ -321,7 +338,12 @@ export async function executeFetch(
   let rawBuffer: Buffer | null = null;
   let bytes = 0;
   let md5: string | undefined;
+  let sha256: string | undefined;
   const md5Hasher = options.md5 ? crypto.createHash("md5") : null;
+  // SHA-256 is the evidentiary digest (collision-resistant); MD5 stays
+  // for transmission-integrity compatibility. Both, when requested,
+  // always describe the ORIGINAL response bytes.
+  const sha256Hasher = options.sha256 ? crypto.createHash("sha256") : null;
 
   try {
     response = await fetch(url, {
@@ -354,6 +376,7 @@ export async function executeFetch(
           nodeReadable.on("data", (chunk: Buffer) => {
             bytes += chunk.length;
             if (md5Hasher) md5Hasher.update(chunk);
+            if (sha256Hasher) sha256Hasher.update(chunk);
           });
           nodeReadable.pipe(writeStream);
           writeStream.on("finish", () => resolve());
@@ -376,6 +399,9 @@ export async function executeFetch(
       if (md5Hasher) {
         md5 = md5Hasher.digest("hex");
       }
+      if (sha256Hasher) {
+        sha256 = sha256Hasher.digest("hex");
+      }
     } else {
       // Every buffered path — including error bodies reached when --out
       // cannot stream (non-ok responses have no evidentiary value worth
@@ -395,6 +421,9 @@ export async function executeFetch(
       bytes = rawBuffer.length;
       if (md5Hasher) {
         md5 = md5Hasher.update(rawBuffer).digest("hex");
+      }
+      if (sha256Hasher) {
+        sha256 = sha256Hasher.update(rawBuffer).digest("hex");
       }
     }
   } catch (err: unknown) {
@@ -417,13 +446,13 @@ export async function executeFetch(
   // Decode content string for text-compatible bodies
   let content: string | undefined;
   if (isPdf && rawBuffer !== null) {
+    // The retrieved body is the evidence: --md5, --out, and the byte
+    // count always describe the ORIGINAL response bytes. The repaired
+    // buffer exists only to make extraction possible (--pdf text) —
+    // hashing or persisting it would misdescribe what the origin sent.
     let pdfBuf: Buffer = rawBuffer;
     if (options.pdfRepair) {
       pdfBuf = Buffer.from(await repairPdf(pdfBuf, timeoutMs));
-      bytes = pdfBuf.length;
-      if (md5Hasher) {
-        md5 = crypto.createHash("md5").update(pdfBuf).digest("hex");
-      }
     }
     if (options.pdf === "text") {
       content = await extractPdfText(pdfBuf, timeoutMs);
@@ -433,7 +462,7 @@ export async function executeFetch(
       const tempPath = `${outPath}.tmp.${process.pid}.${crypto.randomUUID()}`;
       try {
         await fs.mkdir(path.dirname(outPath), { recursive: true });
-        await fs.writeFile(tempPath, pdfBuf);
+        await fs.writeFile(tempPath, rawBuffer);
         await fs.rename(tempPath, outPath);
       } catch (err) {
         await fs.unlink(tempPath).catch(() => {});
@@ -484,6 +513,7 @@ export async function executeFetch(
     headers: resHeaders,
     bytes,
     ...(md5 ? { md5 } : {}),
+    ...(sha256 ? { sha256 } : {}),
     ...(outPath ? { outPath } : {}),
     ...(contentType ? { contentType } : {}),
     ...(content !== undefined ? { content } : {}),

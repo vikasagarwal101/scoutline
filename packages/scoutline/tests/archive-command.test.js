@@ -118,6 +118,9 @@ describe("scoutline archive command", () => {
               ["20230601000000", "200", "4610", "DIGESTDEF456", "https://example.com/"],
             ]),
           );
+        } else if (urlObj.pathname === "/hang") {
+          // Hold the socket open; never respond. Used to prove the
+          // caller's --timeout governs the availability request.
         } else if (urlObj.pathname === "/available") {
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(
@@ -203,6 +206,22 @@ describe("scoutline archive command", () => {
       assert.equal(result.snapshotTimestamp, "20230601000000");
       assert.equal(result.statusCode, 200);
       assert.match(result.content, /Historical Page Content/);
+    });
+
+    it("honors the caller --timeout on the availability request, not just the replay", { timeout: 10000 }, async () => {
+      // The /hang route never responds: only the CALLER timeout (150ms
+      // here) aborting the request can end this quickly. The assertion
+      // on the reported duration is the teeth — without propagation the
+      // request would sit on the 30s default and report 30000.
+      await assert.rejects(
+        () =>
+          executeArchiveGet(
+            "https://example.com/x",
+            { at: "best", timeout: 150 },
+            { availabilityEndpoint: `${mockBase}/hang`, sleep: async () => {} },
+          ),
+        (err) => /timed out after 150ms/.test(err.message),
+      );
     });
   });
 

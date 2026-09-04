@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file.
 - **Format Fidelity & Hybrid PDF Processing**:
   - Zero-dependency pure-Node PDF text extraction (FlateDecode inflation, text operators `BT`/`ET`, `Tj`, `TJ`, `Td`, hex strings) with opportunistic system delegation to `pdftotext` and `qpdf` when available.
   - Structural cross-reference reconstruction and repair (`--pdf-repair`) for damaged or truncated PDF streams.
+  - `--md5` / `--sha256` checksums in `fetch`: Both digests (combinable) always describe the ORIGINAL response bytes — repaired buffers, when `--pdf-repair` runs, feed text extraction only and never the digest, byte count, or `--out` artifact.
   - `--raw` flag in `fetch` and `archive get`: Emits the response/snapshot body directly on stdout without the JSON envelope (an explicit `-O` still wins). Byte-exact binary output remains `--out`'s contract — stdout is a text surface. `read` intentionally stays provider-normalized — `read --pdf`/`--pdf-repair` reject with a pointer to `fetch` (byte-faithful retrieval is impossible through the Reader provider path).
 - **Active Provider Health Diagnostics & Concurrency Isolation**:
   - `doctor --health`: Active live connectivity and latency probe against configured providers with structured response status (`ok`, `auth_error`, `error`) and latency metrics in milliseconds.

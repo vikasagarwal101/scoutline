@@ -1577,7 +1577,7 @@ async function handleRead(
   // legacy global output-mode meaning and is not read's flag.
   if (flags.pdf !== undefined || flags["pdf-repair"] !== undefined) {
     throw new ValidationError(
-      "--pdf/--pdf-repair are fetch-only (read content is provider-normalized); use `scoutline fetch <url> --pdf text|raw [--pdf-repair]`",
+      "--pdf/--pdf-repair are fetch-only (read content is provider-normalized); use `scoutline fetch <url> --pdf text` instead (see `scoutline fetch --help`)",
     );
   }
 

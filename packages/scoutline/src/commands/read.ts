@@ -48,7 +48,6 @@ import { executeReaderOperation } from "../lib/execution.js";
 import { OUTPUT_MODES } from "../lib/output.js";
 import { ValidationError } from "../lib/errors.js";
 import { extract, isExtractMode, type ExtractMode } from "../lib/extract.js";
-import { isPdfBuffer, extractPdfText, repairPdf } from "../lib/pdf.js";
 
 // ---------------------------------------------------------------------------
 // Option and dependency types
@@ -64,9 +63,6 @@ export interface ReadOptions {
   keepImgDataUrl?: boolean;
   withImagesSummary?: boolean;
   maxChars?: number;
-  raw?: boolean;
-  pdf?: "text" | "raw";
-  pdfRepair?: boolean;
   /**
    * Silently accepted and ignored at v1 (core-flows D3). The envelope
    * is always returned. Retained on the options type so callers and
@@ -172,7 +168,6 @@ function buildContentEnvelope(
   text: string,
   originalLen: number,
   truncated: boolean,
-  contentFormatOverride?: string,
 ): Record<string, unknown> {
   // Preserve metadata/external verbatim when present on the cached
   // result. Built as a fresh object so the readonly invariants on
@@ -183,7 +178,7 @@ function buildContentEnvelope(
     finalUrl: result.finalUrl,
     title: result.title,
     content: text,
-    contentFormat: contentFormatOverride ?? result.contentFormat,
+    contentFormat: result.contentFormat,
     truncated,
     originalContentLength: originalLen,
   };
@@ -246,10 +241,17 @@ export async function read(
   // 1. Parse-level validation BEFORE Provider/Adapter work.
   validateUrl(url);
   validateExtractMode(options.extract);
-  if (options.pdf !== undefined && options.pdf !== "text" && options.pdf !== "raw") {
+  // Byte-exact modes are fetch-only (ADR-0006 §8): the Reader path
+  // returns provider-normalized content and cannot be byte-faithful.
+  // Reject removed flags loudly instead of accepting and dropping them.
+  const removedByteModes = options as { raw?: boolean; pdf?: unknown; pdfRepair?: boolean };
+  if (
+    removedByteModes.raw === true ||
+    removedByteModes.pdf !== undefined ||
+    removedByteModes.pdfRepair === true
+  ) {
     throw new ValidationError(
-      `Invalid --pdf value: ${String(options.pdf)}`,
-      'Allowed values for --pdf are "text" or "raw"',
+      "read no longer supports --raw/--pdf/--pdf-repair: Reader content is provider-normalized. Use `scoutline fetch <url> --raw | --pdf text|raw [--pdf-repair]` for byte-exact retrieval.",
     );
   }
 
@@ -276,38 +278,12 @@ export async function read(
     return { kind: "data", data: envelope };
   }
 
-  let finalContent = result.content;
-  let finalContentFormat = options.raw ? "raw" : result.contentFormat;
-
-  const contentBuffer = Buffer.from(result.content, "latin1");
-  const isPdf =
-    isPdfBuffer(contentBuffer) ||
-    Boolean(
-      result.metadata &&
-        typeof result.metadata === "object" &&
-        "contentType" in result.metadata &&
-        String((result.metadata as Record<string, unknown>).contentType).includes(
-          "application/pdf",
-        ),
-    );
-
-  if (isPdf) {
-    let pdfBuf: Buffer = contentBuffer;
-    const timeoutMs = (options.timeout ?? 20) * 1000;
-    if (options.pdfRepair) {
-      pdfBuf = Buffer.from(await repairPdf(pdfBuf, timeoutMs));
-      finalContent = pdfBuf.toString("latin1");
-    }
-    if (options.pdf === "text" || (!options.raw && options.pdf !== "raw")) {
-      finalContent = await extractPdfText(pdfBuf, timeoutMs);
-      finalContentFormat = "text";
-    } else if (options.pdf === "raw") {
-      finalContentFormat = "raw";
-    }
-  }
-
-  const { text, originalLen, truncated } = truncateContent(finalContent, options.maxChars);
-  const envelope = buildContentEnvelope(result, text, originalLen, truncated, finalContentFormat);
+  // The envelope reports exactly what the Reader provider returned
+  // (`contentFormat: markdown|text`). Client-side relabeling or
+  // reconstruction of provider-normalized content is intentionally
+  // absent — byte-exact retrieval is `fetch`'s contract.
+  const { text, originalLen, truncated } = truncateContent(result.content, options.maxChars);
+  const envelope = buildContentEnvelope(result, text, originalLen, truncated);
 
   // 4. Presentations: text-oriented modes emit `content` directly for
   //    content reads (D4 — Reader content is naturally prose). All
@@ -389,9 +365,7 @@ Options:
   --keep-img-data-url  Keep image data URLs in output
   --timeout <s>   Request timeout in seconds (default: 20)
   --max-chars <n> Truncate content to <n> chars (content reads only)
-  --raw           Emit raw body content without markdown conversion
-  --pdf <text|raw> Process PDF bodies: text (extract text) or raw (preserve bytes)
-  --pdf-repair    Attempt structural/xref repair on broken PDF documents
+  (byte-exact PDF/raw retrieval: see "scoutline fetch --help")
   --full-envelope Silently accepted and ignored. The envelope is always
                   returned at schema-version-1 (deprecation: D3).
   --extract <m>   Pull a specific slice out as a typed envelope with

@@ -1541,7 +1541,6 @@ async function handleRead(
   args: string[],
   outputMode: OutputMode,
   deps: HandlerDependencies,
-  forceRaw = false,
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
@@ -1570,6 +1569,17 @@ async function handleRead(
     );
   }
   const extract = extractFlag !== undefined ? (extractFlag as ExtractMode) : undefined;
+
+  // Byte-exact PDF modes are fetch-only (ADR-0006 §8): Reader content
+  // is provider-normalized and cannot be byte-faithful. Reject at
+  // parse level (before Provider resolution) with a pointer instead
+  // of accepting and dropping the flags. Note: `--raw` keeps its
+  // legacy global output-mode meaning and is not read's flag.
+  if (flags.pdf !== undefined || flags["pdf-repair"] !== undefined) {
+    throw new ValidationError(
+      "--pdf/--pdf-repair are fetch-only (read content is provider-normalized); use `scoutline fetch <url> --pdf text|raw [--pdf-repair]`",
+    );
+  }
 
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
   // explicit --provider > SCOUTLINE_PROVIDER > quota-ranked pick.
@@ -1612,9 +1622,6 @@ async function handleRead(
     keepImgDataUrl: flags["keep-img-data-url"] === true,
     withImagesSummary: flags["with-images-summary"] === true,
     maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
-    raw: forceRaw || flags["raw"] === true,
-    pdf: flags.pdf as "text" | "raw" | undefined,
-    pdfRepair: flags["pdf-repair"] === true,
     fullEnvelope: flags["full-envelope"] === true,
     extract,
   };
@@ -4661,7 +4668,7 @@ export async function main(
         break;
       case "read":
         commandRecognized = true;
-        exitCode = await handleRead(commandArgs, outputMode, handlerDepsWithSave, forceRaw);
+        exitCode = await handleRead(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "crawl":
         commandRecognized = true;

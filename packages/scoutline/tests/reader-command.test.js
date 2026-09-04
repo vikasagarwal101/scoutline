@@ -1377,6 +1377,14 @@ describe("Reader Migration 04 direct handler interface — valid success through
       (err) => err.code === "VALIDATION_ERROR",
     );
   });
+
+  it("read direct rejects removed byte-exact modes through the seam (parse-level)", async () => {
+    const deps = makeDirectDeps({ fetch: () => cannedContentResult() });
+    await assert.rejects(
+      read("https://example.com/doc.pdf", { pdf: "raw" }, deps),
+      (err) => err.code === "VALIDATION_ERROR" && /fetch/.test(err.message),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

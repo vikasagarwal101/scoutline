@@ -33,7 +33,7 @@ To avoid command bloat from single-purpose top-level commands, the requirement f
 - A dedicated `providers` command is rejected because diagnostics already belong to `doctor`.
 
 ### 4. Hybrid PDF Extraction and Repair
-PDF handling on `fetch` and `read` (`--pdf text|raw`, `--pdf-repair`):
+PDF handling on `fetch` (`--pdf text|raw`, `--pdf-repair`). `read` deliberately has no PDF/byte modes: the Reader capability returns provider-normalized content, which cannot be byte-faithful, so `read --pdf`/`--pdf-repair` are rejected at parse time with a pointer to `fetch`:
 - Pure-JS text extraction is bundled into the package so Scoutline remains fully self-sufficient out-of-the-box without mandatory external system dependencies.
 - Opportunistic delegation to system tools is used when installed on the host: `pdftotext` for external text layer extraction, and `qpdf` specifically for structural xref repair (`--pdf-repair`).
 
@@ -52,11 +52,11 @@ In accordance with Scoutline's strict anti-silent-drop policy:
 - For search providers, `--lang` is mapped to native provider parameters (e.g. `gl`/`hl` or language settings) where supported.
 - If a provider does not support language localization, the command rejects with `UNSUPPORTED_OPTION` rather than silently dropping the parameter.
 
-### 8. Format Fidelity on Reader (`--raw`)
-When reading non-HTML content types (`application/json`, `application/xml`, `text/xml`, `application/atom+xml`, `text/csv`) or when `--raw` is specified, `scoutline read` bypasses Turndown/Readability and emits byte-faithful content.
+### 8. Format Fidelity via Direct Retrieval (`fetch --raw`)
+Byte-faithful output is a property of owning the HTTP socket, so it lives in `scoutline fetch --raw` (and `archive get --raw` for snapshot replays). `scoutline read` reports exactly what the Reader provider returned (`contentFormat: markdown|text`); relabeling provider-normalized content as "raw" was rejected during PR #101 review because the provider round-trip has already decoded the bytes (UTF-8), making byte reconstruction impossible.
 
 ## Consequences
 
-- The CLI surface expands coherently without command sprawl: `scoutline fetch` handles direct evidentiary/API HTTP, `scoutline archive` handles temporal index discovery and replay, while `doctor` and `read` absorb operational and format augmentations.
+- The CLI surface expands coherently without command sprawl: `scoutline fetch` handles direct evidentiary/API HTTP (including all byte-exact and PDF modes), `scoutline archive` handles temporal index discovery and replay, while `doctor` absorbs operational augmentations.
 - Direct commands (`fetch`, `archive`) are keyless and deterministic; they never spend AI provider tokens or trigger provider fallback.
 - Batch and automated pipelines gain robust concurrency guarantees and pre-flight health gating.

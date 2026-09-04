@@ -388,6 +388,10 @@ function extractPureNodePdfText(buffer: Buffer): string {
   return extractedSections.join("\n\n").trim();
 }
 
+// External tools process untrusted input; cap accumulated stdout so a
+// hostile PDF cannot exhaust the heap through pdftotext/qpdf output.
+const MAX_EXTERNAL_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024;
+
 function runExternalTextTool(
   cmd: string,
   args: string[],
@@ -411,8 +415,15 @@ function runExternalTextTool(
         finish(null);
       }, timeoutMs);
       let stdout = "";
+      let stdoutBytes = 0;
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk) => {
+        stdoutBytes += Buffer.byteLength(chunk);
+        if (stdoutBytes > MAX_EXTERNAL_TOOL_OUTPUT_BYTES) {
+          child.kill("SIGKILL");
+          finish(null);
+          return;
+        }
         stdout += chunk;
       });
       child.on("error", () => finish(null));
@@ -455,7 +466,14 @@ function runExternalBinaryTool(
         finish(null);
       }, timeoutMs);
       const chunks: Buffer[] = [];
+      let stdoutBytes = 0;
       child.stdout.on("data", (chunk: Buffer) => {
+        stdoutBytes += chunk.length;
+        if (stdoutBytes > MAX_EXTERNAL_TOOL_OUTPUT_BYTES) {
+          child.kill("SIGKILL");
+          finish(null);
+          return;
+        }
         chunks.push(chunk);
       });
       child.on("error", () => finish(null));

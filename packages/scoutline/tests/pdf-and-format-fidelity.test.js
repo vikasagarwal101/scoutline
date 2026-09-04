@@ -262,6 +262,25 @@ endobj`;
       assert.match(text, /Real Content/, "string-embedded markers must not skip a real content stream");
     });
 
+    it("extracts streams delimited by lone carriage-return line endings", async () => {
+      const content = "BT\r(Old Mac Line Ending Text) Tj\rET\r";
+      const pdfString = `%PDF-1.4\r1 0 obj\r<< /Length ${content.length} >>\rstream\r${content}endstream\rendobj\r`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Old Mac Line Ending Text/);
+    });
+
+    it("ignores indirect-length header lookalikes inside stream data", async () => {
+      // The stream body contains a fake "5 0 obj" + integer BEFORE the
+      // real object; the lexical lookup must resolve the real one, and
+      // the real object carries a comment before its integer.
+      const content = "BT\n(Real Text) Tj\n5 0 obj\n40\nendobj\nET\n";
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 5 0 R >>\nstream\n${content}endstream\nendobj\n5 0 obj\n% comment before the integer\n${content.length}\nendobj\n`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Real Text/, "the real indirect length must resolve (comment-tolerant), keeping the full stream");
+    });
+
     it("keeps best-effort text for non-ASCII literals when no external tool exists", async () => {
       const content = "BT\n(caf\\351 au lait) Tj\nET\n";
       const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length ${content.length} >>\nstream\n${content}endstream\nendobj`;

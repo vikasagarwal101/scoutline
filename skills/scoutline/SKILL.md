@@ -4,7 +4,7 @@ description: |
   Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com,
   Linkup, and Spider.cloud CLI
   providing:
-  - Fetch: direct evidentiary HTTP/REST retrieval with MD5 verification and file payload dispatch
+  - Fetch: direct evidentiary HTTP/REST retrieval with MD5/SHA-256 digests, disk streaming, and PDF processing
   - Archive: temporal CDX indexing and verbatim snapshot replay via Wayback Machine
   - Vision: image/video analysis, OCR, UI-to-code, error diagnosis (GLM-5V-Turbo)
   - Search: real-time web search with domain/recency/topic filtering
@@ -26,7 +26,7 @@ description: |
 # Scoutline
 
 Access Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com,
-Linkup, and Spider.cloud capabilities via `npx scoutline@0.19.5`. The
+Linkup, and Spider.cloud capabilities via `npx scoutline@0.20.0`. The
 CLI is self-documenting — use `--help` at any level.
 
 ## Setup
@@ -95,11 +95,11 @@ refused — set environment variables instead.
 ### Settings via `scoutline config` (scriptable, no TTY)
 
 ```bash
-npx scoutline@0.19.5 config get                        # full config, credentials always masked
-npx scoutline@0.19.5 config set routing.search tavily,brave   # strict: typos FAIL, not drop
-npx scoutline@0.19.5 config set routing.reader parallel,linkup,jina   # first configured reader supplier wins
-npx scoutline@0.19.5 config unset routing.search
-npx scoutline@0.19.5 config set fallbackEnabled false
+npx scoutline@0.20.0 config get                        # full config, credentials always masked
+npx scoutline@0.20.0 config set routing.search tavily,brave   # strict: typos FAIL, not drop
+npx scoutline@0.20.0 config set routing.reader parallel,linkup,jina   # first configured reader supplier wins
+npx scoutline@0.20.0 config unset routing.search
+npx scoutline@0.20.0 config set fallbackEnabled false
 ```
 
 The `routing` key sets a standing per-capability provider preference:
@@ -295,6 +295,8 @@ input).
 | batch | Manifest of operations run across providers (distribution by default) | `--help` for manifest + flags |
 | search | Real-time web search | `--help` for filtering options (incl. `--topic`) and local context |
 | read | Fetch web pages as markdown (nine providers) | `--help` for format options |
+| fetch | Direct evidentiary HTTP retrieval (credential-free) | `--help` for `--out`/`--md5`/`--sha256`/`--pdf`/`-X`/`--data` |
+| archive | Wayback CDX indexing + verbatim snapshot replay (credential-free) | `--help` for `cdx`/`get` (`--at`, `--raw`) |
 | crawl | Multi-page website traversal (Tavily, Firecrawl, or Spider.cloud) | `--help` for depth/breadth/filters |
 | map | URL-set discovery without fetching pages (Tavily, Firecrawl, or Spider.cloud) | `--help` for depth/breadth/filters |
 | research | Deep research with citations (seven providers; 4-250 credits) | `--help` for model/citation/timeout and local context |
@@ -314,97 +316,101 @@ input).
 
 ```bash
 # Z.AI (default)
-npx scoutline@0.19.5 vision analyze ./screenshot.png "What errors do you see?"
-npx scoutline@0.19.5 search "React 19 new features" --count 5
-npx scoutline@0.19.5 read https://docs.example.com/api
-npx scoutline@0.19.5 read https://docs.example.com/api --with-images-summary --no-gfm
-npx scoutline@0.19.5 repo search facebook/react "server components"
-npx scoutline@0.19.5 repo search openai/codex "config" --language en
-npx scoutline@0.19.5 repo tree openai/codex --path codex-rs --depth 2
-npx scoutline@0.19.5 quota
-npx scoutline@0.19.5 doctor
+npx scoutline@0.20.0 vision analyze ./screenshot.png "What errors do you see?"
+npx scoutline@0.20.0 search "React 19 new features" --count 5
+npx scoutline@0.20.0 read https://docs.example.com/api
+npx scoutline@0.20.0 read https://docs.example.com/api --with-images-summary --no-gfm
+npx scoutline@0.20.0 fetch https://api.github.com/repos/nodejs/node --sha256
+npx scoutline@0.20.0 fetch https://example.com/report.pdf --pdf text --out report.txt
+npx scoutline@0.20.0 archive cdx https://example.com/ --from 20230101 --to 20231231
+npx scoutline@0.20.0 archive get https://example.com/ --at 20230601000000 --raw
+npx scoutline@0.20.0 repo search facebook/react "server components"
+npx scoutline@0.20.0 repo search openai/codex "config" --language en
+npx scoutline@0.20.0 repo tree openai/codex --path codex-rs --depth 2
+npx scoutline@0.20.0 quota
+npx scoutline@0.20.0 doctor
 
 # MiniMax Token Plan
-npx scoutline@0.19.5 --provider minimax search "AI policy news"
-npx scoutline@0.19.5 --provider minimax vision analyze ./diagram.png "Explain this"
-npx scoutline@0.19.5 --provider minimax quota
-npx scoutline@0.19.5 doctor --provider minimax
+npx scoutline@0.20.0 --provider minimax search "AI policy news"
+npx scoutline@0.20.0 --provider minimax vision analyze ./diagram.png "Explain this"
+npx scoutline@0.20.0 --provider minimax quota
+npx scoutline@0.20.0 doctor --provider minimax
 
 # Tavily (Search, Reader, Crawl, Map, Research)
-npx scoutline@0.19.5 --provider tavily search "AI funding rounds" --topic news
-npx scoutline@0.19.5 --provider tavily read https://example.com/
-npx scoutline@0.19.5 --provider tavily crawl https://docs.example.com --depth 2
-npx scoutline@0.19.5 --provider tavily map https://docs.example.com
-npx scoutline@0.19.5 --provider tavily research "Rust async runtime comparison"
-npx scoutline@0.19.5 doctor --provider tavily
+npx scoutline@0.20.0 --provider tavily search "AI funding rounds" --topic news
+npx scoutline@0.20.0 --provider tavily read https://example.com/
+npx scoutline@0.20.0 --provider tavily crawl https://docs.example.com --depth 2
+npx scoutline@0.20.0 --provider tavily map https://docs.example.com
+npx scoutline@0.20.0 --provider tavily research "Rust async runtime comparison"
+npx scoutline@0.20.0 doctor --provider tavily
 
 # Exa (Search, Reader, Research)
-npx scoutline@0.19.5 --provider exa search "latest AI research" --topic news
-npx scoutline@0.19.5 --provider exa read https://example.com/
-npx scoutline@0.19.5 --provider exa research "Compare Rust async runtimes"
-npx scoutline@0.19.5 doctor --provider exa
+npx scoutline@0.20.0 --provider exa search "latest AI research" --topic news
+npx scoutline@0.20.0 --provider exa read https://example.com/
+npx scoutline@0.20.0 --provider exa research "Compare Rust async runtimes"
+npx scoutline@0.20.0 doctor --provider exa
 
 # Brave (Search: web, news, video)
-npx scoutline@0.19.5 --provider brave search "AI policy news" --topic news
-npx scoutline@0.19.5 --provider brave search "rust async" --type video
-npx scoutline@0.19.5 --provider brave search "large context topic" --content-size high
-npx scoutline@0.19.5 --provider brave quota
-npx scoutline@0.19.5 doctor --provider brave
+npx scoutline@0.20.0 --provider brave search "AI policy news" --topic news
+npx scoutline@0.20.0 --provider brave search "rust async" --type video
+npx scoutline@0.20.0 --provider brave search "large context topic" --content-size high
+npx scoutline@0.20.0 --provider brave quota
+npx scoutline@0.20.0 doctor --provider brave
 
 # Firecrawl (Search, Reader, Crawl, Map)
-npx scoutline@0.19.5 --provider firecrawl search "AI funding rounds" --content-size high
-npx scoutline@0.19.5 --provider firecrawl read https://example.com/
-npx scoutline@0.19.5 --provider firecrawl crawl https://docs.example.com --depth 2
-npx scoutline@0.19.5 --provider firecrawl map https://docs.example.com
-npx scoutline@0.19.5 --provider firecrawl quota   # remaining credits
+npx scoutline@0.20.0 --provider firecrawl search "AI funding rounds" --content-size high
+npx scoutline@0.20.0 --provider firecrawl read https://example.com/
+npx scoutline@0.20.0 --provider firecrawl crawl https://docs.example.com --depth 2
+npx scoutline@0.20.0 --provider firecrawl map https://docs.example.com
+npx scoutline@0.20.0 --provider firecrawl quota   # remaining credits
 
 # Parallel AI (Search, Reader, Research)
-npx scoutline@0.19.5 --provider parallel search "AI funding rounds" --topic news
-npx scoutline@0.19.5 --provider parallel read https://example.com/
-npx scoutline@0.19.5 --provider parallel research "Compare Rust async runtimes"
-npx scoutline@0.19.5 doctor --provider parallel
+npx scoutline@0.20.0 --provider parallel search "AI funding rounds" --topic news
+npx scoutline@0.20.0 --provider parallel read https://example.com/
+npx scoutline@0.20.0 --provider parallel research "Compare Rust async runtimes"
+npx scoutline@0.20.0 doctor --provider parallel
 
 # Perplexity (Search, Research)
-npx scoutline@0.19.5 --provider perplexity search "latest AI research" --topic news
-npx scoutline@0.19.5 --provider perplexity research "Compare Rust async runtimes"
-npx scoutline@0.19.5 doctor --provider perplexity
+npx scoutline@0.20.0 --provider perplexity search "latest AI research" --topic news
+npx scoutline@0.20.0 --provider perplexity research "Compare Rust async runtimes"
+npx scoutline@0.20.0 doctor --provider perplexity
 
 # Jina AI (Search, Reader, Research)
-npx scoutline@0.19.5 --provider jina search "AI policy news" --topic news
-npx scoutline@0.19.5 --provider jina read https://example.com/
-npx scoutline@0.19.5 --provider jina research "State of carbon capture 2025"
-npx scoutline@0.19.5 --provider jina quota   # rate-limit telemetry, not spend
+npx scoutline@0.20.0 --provider jina search "AI policy news" --topic news
+npx scoutline@0.20.0 --provider jina read https://example.com/
+npx scoutline@0.20.0 --provider jina research "State of carbon capture 2025"
+npx scoutline@0.20.0 --provider jina quota   # rate-limit telemetry, not spend
 
 # You.com (Search, Reader, Research)
-npx scoutline@0.19.5 --provider you search "AI policy news" --topic news
-npx scoutline@0.19.5 --provider you read https://example.com/
-npx scoutline@0.19.5 --provider you research "State of carbon capture 2025"
-npx scoutline@0.19.5 doctor --provider you
+npx scoutline@0.20.0 --provider you search "AI policy news" --topic news
+npx scoutline@0.20.0 --provider you read https://example.com/
+npx scoutline@0.20.0 --provider you research "State of carbon capture 2025"
+npx scoutline@0.20.0 doctor --provider you
 
 # Linkup (Search, Reader, Research)
-npx scoutline@0.19.5 --provider linkup search "AI funding rounds" --topic news
-npx scoutline@0.19.5 --provider linkup read https://example.com/
-npx scoutline@0.19.5 --provider linkup research "Compare Rust async runtimes"
-npx scoutline@0.19.5 --provider linkup quota   # prepaid USD balance
-npx scoutline@0.19.5 doctor --provider linkup
+npx scoutline@0.20.0 --provider linkup search "AI funding rounds" --topic news
+npx scoutline@0.20.0 --provider linkup read https://example.com/
+npx scoutline@0.20.0 --provider linkup research "Compare Rust async runtimes"
+npx scoutline@0.20.0 --provider linkup quota   # prepaid USD balance
+npx scoutline@0.20.0 doctor --provider linkup
 
 # Spider.cloud (Search, Reader, Crawl, Map)
-npx scoutline@0.19.5 --provider spider search "AI funding rounds" --topic news
-npx scoutline@0.19.5 --provider spider read https://example.com/
-npx scoutline@0.19.5 --provider spider crawl https://docs.example.com --depth 2
-npx scoutline@0.19.5 --provider spider map https://docs.example.com
-npx scoutline@0.19.5 --provider spider quota   # credit balance
+npx scoutline@0.20.0 --provider spider search "AI funding rounds" --topic news
+npx scoutline@0.20.0 --provider spider read https://example.com/
+npx scoutline@0.20.0 --provider spider crawl https://docs.example.com --depth 2
+npx scoutline@0.20.0 --provider spider map https://docs.example.com
+npx scoutline@0.20.0 --provider spider quota   # credit balance
 
 # All-Provider quota
-npx scoutline@0.19.5 quota --all-providers
+npx scoutline@0.20.0 quota --all-providers
 
 # Local cache inspection, clearing, and pruning
-npx scoutline@0.19.5 cache stats                 # inventory both subdirectories
-npx scoutline@0.19.5 cache clear                 # delete every file in cache/ and tools/
-npx scoutline@0.19.5 cache prune --older-than 24h   # delete entries older than 24h (Nh|Nm|Ns|seconds)
+npx scoutline@0.20.0 cache stats                 # inventory both subdirectories
+npx scoutline@0.20.0 cache clear                 # delete every file in cache/ and tools/
+npx scoutline@0.20.0 cache prune --older-than 24h   # delete entries older than 24h (Nh|Nm|Ns|seconds)
 
 # Config (see "Settings via scoutline config" above)
-npx scoutline@0.19.5 config get routing
+npx scoutline@0.20.0 config get routing
 ```
 
 ## Which provider when

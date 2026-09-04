@@ -349,16 +349,20 @@ endobj`;
       );
     });
 
-    it("does not misread an indirect reference's object number as a direct length", async () => {
-      // /Length 12 0 R must not backtrack-capture "1" as a direct
-      // length: the indirect resolution must run and the full extent
-      // must be honored.
-      const content = "BT\n(Twelve Ref Start) Tj\nendstream\n12 0 obj\n99\nendobj\n(Twelve Ref End) Tj\nET\n";
+    it("indirect-length resolution wins over an embedded endobj-terminated endstream", async () => {
+      // The embedded `endstream\nendobj` IS a valid textual-fallback
+      // boundary: only the correctly resolved INDIRECT length (12 0 R
+      // -> the real integer object after the stream) can preserve the
+      // full extent. On a build where the direct lookahead backtracks
+      // (`/Length 12 0 R` misread as a direct 1) or the in-stream
+      // lookalike is selected, validation fails and the textual
+      // fallback truncates at the embedded token — losing the tail.
+      const content = "BT\n(Twelve Ref Start) Tj\nendstream\nendobj\n(Twelve Ref End) Tj\nET\n";
       const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 12 0 R >>\nstream\n${content}endstream\nendobj\n12 0 obj\n${content.length}\nendobj\n`;
       const buffer = Buffer.from(pdfString, "latin1");
       const text = await extractPdfText(buffer);
       assert.match(text, /Twelve Ref Start/);
-      assert.match(text, /Twelve Ref End/);
+      assert.match(text, /Twelve Ref End/, "only the indirect resolution keeps text past the embedded boundary");
     });
 
     it("keeps best-effort text for non-ASCII literals when no external tool exists", async () => {

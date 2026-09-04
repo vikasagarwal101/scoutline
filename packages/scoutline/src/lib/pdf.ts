@@ -138,10 +138,17 @@ function decodePdfHexString(hex: string): { text: string; unmappable: boolean } 
 /**
  * Read a balanced PDF literal string starting at `start` (which must
  * point at the opening "("). Nested parentheses are literal characters
- * per the spec; escapes are decoded. Returns the decoded value and the
- * index just past the closing ")".
+ * per the spec; escapes are decoded. Returns the decoded value, the
+ * index just past the closing ")", and an `unmappable` flag set when
+ * the decoded text contains high bytes — literal strings share the
+ * hex strings' limitation (no font/ToUnicode context), so callers mark
+ * the document low-confidence and prefer the external text layer.
  */
-function readLiteralStringAt(src: string, start: number): { value: string; next: number } {
+function readLiteralStringAt(src: string, start: number): {
+  value: string;
+  next: number;
+  unmappable: boolean;
+} {
   let depth = 0;
   let i = start;
   let raw = "";
@@ -171,7 +178,8 @@ function readLiteralStringAt(src: string, start: number): { value: string; next:
     raw += ch;
     i++;
   }
-  return { value: decodePdfLiteralString(raw), next: i };
+  const value = decodePdfLiteralString(raw);
+  return { value, next: i, unmappable: /[^\x00-\x7e]/.test(value) };
 }
 
 /**
@@ -316,13 +324,13 @@ function extractBtBlocks(streamStr: string): string[] {
  * (arbitrary nesting), hex strings, PDF reals (signed, leading/trailing
  * dot), TJ arrays, and the full set of text-showing operators (Tj, TJ,
  * ', ") are recognized so valid content is not silently dropped.
- * `ctx.sawUnmappableHex` is set when a hex string cannot be decoded
- * with confidence (CID/unknown encoding) so the caller can prefer the
- * external text layer.
+ * `ctx.sawUnmappable` is set when a hex or literal string cannot be
+ * decoded with confidence (CID/unknown encoding, high bytes) so the
+ * caller can prefer the external text layer.
  */
 function parseContentStreamText(
   streamStr: string,
-  ctx: { sawUnmappableHex: boolean },
+  ctx: { sawUnmappable: boolean },
 ): string {
   type Operand =
     | { type: "str"; value: string }
@@ -350,7 +358,7 @@ function parseContentStreamText(
       const end = block.indexOf(">", index);
       const close = end === -1 ? block.length : end;
       const decoded = decodePdfHexString(block.slice(index + 1, close));
-      if (decoded.unmappable) ctx.sawUnmappableHex = true;
+      if (decoded.unmappable) ctx.sawUnmappable = true;
       return {
         operand: { type: "hex", value: decoded.text, unmappable: decoded.unmappable },
         next: end === -1 ? block.length : end + 1,
@@ -370,7 +378,8 @@ function parseContentStreamText(
         continue;
       }
       if (ch === "(") {
-        const { value, next } = readLiteralStringAt(block, i);
+        const { value, next, unmappable } = readLiteralStringAt(block, i);
+        if (unmappable) ctx.sawUnmappable = true;
         stack.push({ type: "str", value });
         i = next;
         continue;
@@ -407,14 +416,15 @@ function parseContentStreamText(
           if (/\s/.test(c)) {
             i++;
           } else if (c === "(") {
-            const { value, next } = readLiteralStringAt(block, i);
+            const { value, next, unmappable } = readLiteralStringAt(block, i);
+            if (unmappable) ctx.sawUnmappable = true;
             items.push({ type: "str", value });
             i = next;
           } else if (c === "<") {
             const end = block.indexOf(">", i);
             const close = end === -1 ? block.length : end;
             const decoded = decodePdfHexString(block.slice(i + 1, close));
-            if (decoded.unmappable) ctx.sawUnmappableHex = true;
+            if (decoded.unmappable) ctx.sawUnmappable = true;
             items.push({ type: "hex", value: decoded.text, unmappable: decoded.unmappable });
             i = end === -1 ? block.length : end + 1;
           } else if (/[0-9+.\-]/.test(c)) {
@@ -485,6 +495,142 @@ function parseContentStreamText(
 }
 
 /**
+ * Parse a stream dictionary's /Filter entry into an ordered chain.
+ * Handles both `/Filter /Name` and `/Filter [/A /B]` forms; an absent
+ * entry yields an empty chain (unfiltered).
+ */
+function parseFilterChain(dictSlice: string): string[] {
+  const arrayMatch = /\/Filter\s*\[([^\]]*)\]/.exec(dictSlice);
+  if (arrayMatch) {
+    return (arrayMatch[1]!.match(/\/[A-Za-z0-9]+/g) ?? []).map((name) => name.slice(1));
+  }
+  const single = /\/Filter\s*(\/[A-Za-z0-9]+)/.exec(dictSlice);
+  return single ? [single[1]!.slice(1)] : [];
+}
+
+/**
+ * Heuristic content-role check: streams whose dictionary marks them as
+ * embedded images, object/metadata containers, or font programs are
+ * not page content and must not contribute text.
+ */
+function isNonContentDictionary(dictSlice: string): boolean {
+  return /\/Subtype\s*\/Image\b|\/Type\s*\/ObjStm\b|\/Type\s*\/Metadata\b|\/Length1\b|\/FontFile\d?\b/.test(
+    dictSlice,
+  );
+}
+
+/**
+ * Locate a stream's own dictionary by balancing brackets backward from
+ * the ">>" nearest the keyword (within the window). Imperfect for ">>"
+ * inside dictionary strings, but /Length sits early in real stream
+ * dictionaries and resolveStreamInterval validates before trusting it.
+ */
+function scanBackwardDictionary(fileStr: string, keywordStart: number, window = 2000): string {
+  const beforeStream = fileStr.slice(Math.max(0, keywordStart - window), keywordStart).trimEnd();
+  const lastDictEnd = beforeStream.lastIndexOf(">>");
+  if (lastDictEnd === -1) return "";
+  let depth = 1;
+  let pos = lastDictEnd;
+  while (pos > 1) {
+    if (beforeStream.slice(pos - 2, pos) === ">>") {
+      depth++;
+      pos -= 2;
+    } else if (beforeStream.slice(pos - 2, pos) === "<<") {
+      depth--;
+      pos -= 2;
+      if (depth === 0) {
+        return beforeStream.slice(pos, lastDictEnd + 2);
+      }
+    } else {
+      pos--;
+    }
+  }
+  return "";
+}
+
+/**
+ * Resolve a stream body interval: [bodyStart, dataEnd) plus the index
+ * to resume scanning from (past the real endstream keyword). Primary
+ * signal is the dictionary /Length, VALIDATED against a following
+ * endstream keyword, so embedded "endstream" bytes inside stream data
+ * cannot truncate the stream or leak stream interiors into syntax
+ * scans. The textual search is only a fallback for absent or indirect
+ * (/Length 12 0 R) or non-validating lengths.
+ */
+function resolveStreamInterval(
+  fileStr: string,
+  keywordStart: number,
+  dictSlice: string,
+): { bodyStart: number; dataEnd: number; resumeAfter: number } {
+  let bodyStart = keywordStart + "stream".length;
+  if (fileStr[bodyStart] === "\r") bodyStart++;
+  if (fileStr[bodyStart] === "\n") bodyStart++;
+
+  let keywordAt = fileStr.indexOf("endstream", bodyStart);
+  let dataEnd = keywordAt === -1 ? fileStr.length : keywordAt;
+
+  const lengthMatch = /\/Length\s+(\d+)/.exec(dictSlice);
+  if (lengthMatch) {
+    let probe = bodyStart + Number(lengthMatch[1]);
+    if (fileStr[probe] === "\r") probe++;
+    if (fileStr[probe] === "\n") probe++;
+    if (fileStr.startsWith("endstream", probe)) {
+      dataEnd = bodyStart + Number(lengthMatch[1]);
+      keywordAt = probe;
+    }
+  }
+  const resumeAfter = keywordAt === -1 ? fileStr.length : keywordAt + "endstream".length;
+  return { bodyStart, dataEnd, resumeAfter };
+}
+
+/**
+ * Read the dictionary that starts at/after `i` (leading whitespace
+ * tolerated), balancing << >> while skipping literal strings, hex
+ * strings, and comments so delimiters inside string data cannot
+ * unbalance the walk. Returns the dictionary text and the index just
+ * past its closing ">>" (or end of input when unterminated).
+ */
+function readObjectDictionaryAt(fileStr: string, i: number): { text: string; next: number } {
+  let p = i;
+  while (p < fileStr.length && /\s/.test(fileStr[p]!)) p++;
+  if (fileStr.slice(p, p + 2) !== "<<") return { text: "", next: i };
+  const start = p;
+  let depth = 1;
+  p += 2;
+  while (p < fileStr.length && depth > 0) {
+    const ch = fileStr[p]!;
+    if (ch === "%") {
+      while (p < fileStr.length && fileStr[p] !== "\r" && fileStr[p] !== "\n") p++;
+    } else if (ch === "(") {
+      let sDepth = 1;
+      p++;
+      while (p < fileStr.length && sDepth > 0) {
+        const c = fileStr[p]!;
+        if (c === "\\") {
+          p += 2;
+          continue;
+        }
+        if (c === "(") sDepth++;
+        else if (c === ")") sDepth--;
+        p++;
+      }
+    } else if (ch === "<" && fileStr[p + 1] !== "<") {
+      const gt = fileStr.indexOf(">", p);
+      p = gt === -1 ? fileStr.length : gt + 1;
+    } else if (fileStr.slice(p, p + 2) === "<<") {
+      depth++;
+      p += 2;
+    } else if (fileStr.slice(p, p + 2) === ">>") {
+      depth--;
+      p += 2;
+    } else {
+      p++;
+    }
+  }
+  return { text: fileStr.slice(start, p), next: p };
+}
+
+/**
  * Built-in pure-Node text extraction by scanning PDF streams. Returns
  * the text plus a low-confidence flag set when any hex string could not
  * be decoded with font context (CID/unknown encoding) — such text is a
@@ -493,47 +639,45 @@ function parseContentStreamText(
 function extractPureNodePdfText(buffer: Buffer): { text: string; lowConfidence: boolean } {
   const fileStr = buffer.toString("latin1");
   const extractedSections: string[] = [];
-  const ctx = { sawUnmappableHex: false };
+  const ctx = { sawUnmappable: false };
   const MAX_TOTAL_DECOMPRESSED_BYTES = 50 * 1024 * 1024; // 50MB across document
   let totalDecompressedBytes = 0;
 
-  // Match stream ... endstream
-  const streamRegex = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  // Stream keyword scan; body intervals come from the dictionary
+  // /Length via resolveStreamInterval (validated against the real
+  // endstream keyword), so embedded "endstream" bytes inside stream
+  // data cannot truncate a stream. The "end" prefix guard keeps the
+  // tail of "endstream" keywords from matching as stream starts.
+  const streamKeywordRegex = /stream\r?\n/g;
   let match: RegExpExecArray | null;
 
-  while ((match = streamRegex.exec(fileStr)) !== null) {
-    const streamStart = match.index + match[0].indexOf("\n") + 1;
-    const streamLength = match[1]!.length;
-    const rawStreamSlice = buffer.subarray(streamStart, streamStart + streamLength);
+  while ((match = streamKeywordRegex.exec(fileStr)) !== null) {
+    const keywordStart = match.index;
+    if (fileStr.slice(Math.max(0, keywordStart - 3), keywordStart) === "end") continue;
+    const dictSlice = scanBackwardDictionary(fileStr, keywordStart);
+    const interval = resolveStreamInterval(fileStr, keywordStart, dictSlice);
+    streamKeywordRegex.lastIndex = interval.resumeAfter;
+    const rawStreamSlice = buffer.subarray(interval.bodyStart, interval.dataEnd);
 
-    // Look backward for stream's own dictionary << ... >> before 'stream'
-    // Bracket-balance backwards from '>>' to find outermost matching '<<'
-    const beforeStream = fileStr.slice(Math.max(0, match.index - 2000), match.index).trimEnd();
-    let dictSlice = "";
-    const lastDictEnd = beforeStream.lastIndexOf(">>");
-    if (lastDictEnd !== -1) {
-      let depth = 1;
-      let pos = lastDictEnd;
-      while (pos > 1) {
-        if (beforeStream.slice(pos - 2, pos) === ">>") {
-          depth++;
-          pos -= 2;
-        } else if (beforeStream.slice(pos - 2, pos) === "<<") {
-          depth--;
-          pos -= 2;
-          if (depth === 0) {
-            dictSlice = beforeStream.slice(pos, lastDictEnd + 2);
-            break;
-          }
-        } else {
-          pos--;
-        }
-      }
+    // Filter-chain classification (R6-C): the pure path can only
+    // decode an unfiltered stream or a single FlateDecode. Anything
+    // else (e.g. [/ASCII85Decode /FlateDecode]) marks the document
+    // low-confidence instead of silently skipping the stream while a
+    // nonempty partial result suppresses pdftotext.
+    const filterChain = parseFilterChain(dictSlice);
+    const flateOnly = filterChain.length === 1 && filterChain[0] === "FlateDecode";
+
+    // Non-content streams (embedded images, object/metadata containers,
+    // font programs) must not contribute text even when their bytes
+    // look like content syntax. Full page-resource-graph resolution is
+    // out of scope for the pure path; dictionary markers cover the
+    // common non-content families.
+    if (isNonContentDictionary(dictSlice)) {
+      continue;
     }
-    const isFlate = dictSlice.includes("/FlateDecode");
 
     let streamBytes: Buffer | null = null;
-    if (isFlate) {
+    if (flateOnly) {
       if (totalDecompressedBytes >= MAX_TOTAL_DECOMPRESSED_BYTES) {
         break; // Document-wide decompression budget reached
       }
@@ -552,8 +696,12 @@ function extractPureNodePdfText(buffer: Buffer): { text: string; lowConfidence: 
           // Stream may be raw or uncompressed
         }
       }
-    } else {
+    } else if (filterChain.length === 0) {
       streamBytes = rawStreamSlice;
+    } else {
+      // Unsupported filter chain: do not attempt to inflate partially
+      // encoded bytes; defer to the external text layer.
+      ctx.sawUnmappable = true;
     }
 
     if (streamBytes) {
@@ -565,7 +713,7 @@ function extractPureNodePdfText(buffer: Buffer): { text: string; lowConfidence: 
     }
   }
 
-  return { text: extractedSections.join("\n\n").trim(), lowConfidence: ctx.sawUnmappableHex };
+  return { text: extractedSections.join("\n\n").trim(), lowConfidence: ctx.sawUnmappable };
 }
 
 // External tools process untrusted input; cap accumulated stdout so a
@@ -733,9 +881,9 @@ function maskStringsAndComments(src: string): string {
       continue;
     }
     if (ch === "<") {
+      // Dictionary opener: contents must stay visible to probes —
+      // do NOT fall through to the hex-string mask on the second "<".
       if (src[i + 1] === "<") {
-        // Dictionary opener: contents must stay visible to probes —
-        // do NOT fall through to the hex-string mask on the second "<".
         out += "<<";
         i += 2;
         continue;
@@ -793,21 +941,9 @@ export async function repairPdf(buffer: Buffer, timeoutMs = 5000): Promise<Buffe
         continue;
       }
       if (ch === "<" && fileStr[i + 1] === "<") {
-        // Dictionary opener: skip the balanced << ... >> so dictionary
-        // contents are never mistaken for hex-string or object data.
-        let depth = 1;
-        i += 2;
-        while (i < fileStr.length && depth > 0) {
-          if (fileStr.slice(i, i + 2) === "<<") {
-            depth++;
-            i += 2;
-          } else if (fileStr.slice(i, i + 2) === ">>") {
-            depth--;
-            i += 2;
-          } else {
-            i++;
-          }
-        }
+        // Dictionary: skip with string awareness — `>>` inside literal
+        // or hex strings must not close the walk.
+        i = readObjectDictionaryAt(fileStr, i).next;
         continue;
       }
       if (ch === "<") {
@@ -820,11 +956,12 @@ export async function repairPdf(buffer: Buffer, timeoutMs = 5000): Promise<Buffe
         (i === 0 || fileStr.slice(Math.max(0, i - 3), i) !== "end") &&
         /[\r\n]/.test(fileStr[i + 6] ?? "\n")
       ) {
-        // Jump PAST the closing "endstream" keyword: resuming at it
-        // would let the "stream" substring inside "endstream" trigger
-        // a bogus second skip that swallows the rest of the file.
-        const end = fileStr.indexOf("endstream", i + 6);
-        i = end === -1 ? fileStr.length : end + "endstream".length;
+        // Skip the ENTIRE stream body using the dictionary /Length
+        // (validated) so an embedded "endstream" sequence inside the
+        // data cannot make the scanner resume mid-stream and index
+        // object-like text living inside the stream.
+        const interval = resolveStreamInterval(fileStr, i, scanBackwardDictionary(fileStr, i));
+        i = interval.resumeAfter;
         continue;
       }
       if (/[0-9]/.test(ch)) {
@@ -841,8 +978,12 @@ export async function repairPdf(buffer: Buffer, timeoutMs = 5000): Promise<Buffe
           }
           i += header[0].length;
           if (!objStmDetected) {
-            const dictProbe = maskStringsAndComments(fileStr.slice(i, i + 512));
-            if (/^\s*<<[\s\S]{0,400}?\/Type\s*\/ObjStm\b/.test(dictProbe)) {
+            // Inspect the object's actual dictionary (no fixed byte
+            // window) with strings masked: /Type /ObjStm separated from
+            // the header by padding/comments must still be found, while
+            // lookalikes inside string data must not match.
+            const dict = readObjectDictionaryAt(fileStr, i);
+            if (/\/Type\s*\/ObjStm\b/.test(maskStringsAndComments(dict.text))) {
               objStmDetected = true;
             }
           }

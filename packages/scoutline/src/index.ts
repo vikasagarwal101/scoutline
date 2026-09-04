@@ -4165,7 +4165,11 @@ export async function main(
   // fails the other.
   const consume: ConsumptionSink | undefined =
     dependencies.consume ??
-    (quotaRefreshEnabled
+    // ADR-0006 §5: --isolated runs skip local state persistence
+    // entirely — no usage-ledger writes, no quota-snapshot writes — so
+    // concurrent isolated processes never contend on shared
+    // config-root files. Reads (doctor's quota view) are unaffected.
+    (quotaRefreshEnabled && !isolated
       ? createCompositeConsumptionSink(
           createQuotaStoreConsumptionSink({ store: quotaStore, now: now ?? Date.now }),
           // The ledger path resolves from the SAME injected-env config
@@ -4386,11 +4390,15 @@ export async function main(
   // snapshot replay (ADR-0006).
   if (command === "archive") {
     try {
-      // Same as fetch: `--raw` on `archive get` is a content flag (emit
-      // the snapshot body verbatim); without an explicit -O it must not
-      // resolve to the `data` envelope that would hide it.
+      // Same as fetch, but ONLY for `get`: `--raw` there is a content
+      // flag (emit the snapshot body verbatim) that must not resolve to
+      // the `data` envelope hiding it. `cdx --raw` keeps the legacy
+      // global meaning (unwrapped data) — flipping its presentation to
+      // the human table was never the flag's contract.
       const archiveOutputMode =
-        forceRaw && outputFormat === undefined ? ("compact" as OutputMode) : outputMode;
+        forceRaw && outputFormat === undefined && commandArgs[0] === "get"
+          ? ("compact" as OutputMode)
+          : outputMode;
       return await handleArchive(commandArgs, archiveOutputMode, buildHandlerDeps(env, envSecrets, true), forceRaw);
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
@@ -4615,7 +4623,7 @@ export async function main(
     // structured error envelope; data-only stdout).
   };
 
-  if (quotaRefreshEnabled && isQuotaObservationalCommand) {
+  if (quotaRefreshEnabled && !isolated && isQuotaObservationalCommand) {
     await refreshQuotaSnapshots({
       descriptors: providerDescriptors,
       env: resolvedEnv,

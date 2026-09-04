@@ -11,7 +11,7 @@
  * translation) and is dispatched before credentialed config load.
  */
 
-import { createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
@@ -307,8 +307,10 @@ export async function executeFetch(
     }
   }
 
-  // Parse body
-  let reqBody: string | Buffer | undefined;
+  // Parse body. File-backed payloads (@file) STREAM from disk so a
+  // large upload cannot exhaust the CLI's heap before the request
+  // starts; only existence is checked up front.
+  let reqBody: string | ReadableStream<Uint8Array> | undefined;
   if (options.data !== undefined) {
     if (method === "GET" || method === "HEAD") {
       throw new ValidationError(`Cannot send request body with HTTP ${method}.`);
@@ -316,12 +318,13 @@ export async function executeFetch(
     if (options.data.startsWith("@")) {
       const filePath = path.resolve(process.cwd(), options.data.slice(1));
       try {
-        reqBody = await fs.readFile(filePath);
+        await fs.stat(filePath);
       } catch (err) {
         throw new FileError(
           `Failed to read request body file "${filePath}": ${err instanceof Error ? err.message : String(err)}`,
         );
       }
+      reqBody = Readable.toWeb(createReadStream(filePath)) as ReadableStream<Uint8Array>;
     } else {
       reqBody = options.data;
     }
@@ -350,9 +353,11 @@ export async function executeFetch(
       method,
       headers: reqHeaders,
       body: reqBody,
+      // Required by undici for streaming request bodies (@file payloads).
+      ...(reqBody !== undefined && typeof reqBody !== "string" ? { duplex: "half" as const } : {}),
       redirect: "follow",
       signal: controller.signal,
-    });
+    } as RequestInit);
 
     response.headers.forEach((val, key) => {
       resHeaders[key.toLowerCase()] = val;
@@ -386,12 +391,20 @@ export async function executeFetch(
           });
           nodeReadable.on("error", (err) => {
             writeStream.destroy();
-            reject(err);
+            // A body-stream failure is a REMOTE transfer failure, not a
+            // local filesystem error — classify it so the JSON error
+            // contract reports NETWORK, not FILE.
+            reject(
+              new NetworkError(
+                `Response body stream failed while writing to disk: ${err instanceof Error ? err.message : String(err)}`,
+              ),
+            );
           });
         });
         await fs.rename(tempPath, outPath);
       } catch (err) {
         await fs.unlink(tempPath).catch(() => {});
+        if (err instanceof NetworkError) throw err;
         throw new FileError(
           `Failed to write output file "${outPath}": ${err instanceof Error ? err.message : String(err)}`,
         );
@@ -406,8 +419,18 @@ export async function executeFetch(
       // Every buffered path — including error bodies reached when --out
       // cannot stream (non-ok responses have no evidentiary value worth
       // an unbounded buffer) — is subject to the same in-memory ceiling.
+      // Bodiless responses (HEAD, 204, 304) never allocate a body, so
+      // their (metadata-only) Content-Length must not trip the ceiling.
+      const bodiless = method === "HEAD" || response.status === 204 || response.status === 304;
       const contentLengthHeader = resHeaders["content-length"];
-      if (contentLengthHeader && Number(contentLengthHeader) > MAX_IN_MEMORY_BYTES) {
+      if (
+        !bodiless &&
+        contentLengthHeader &&
+        Number(contentLengthHeader) > MAX_IN_MEMORY_BYTES
+      ) {
+        // Release the connection before throwing: an uncancelled body
+        // keeps the keep-alive socket pinned until process exit.
+        await response.body?.cancel().catch(() => {});
         throw new ValidationError(
           `Response size (${contentLengthHeader} bytes) exceeds in-memory ceiling (50MB).`,
           "Use --out <file> to stream large responses directly to disk.",
@@ -495,7 +518,11 @@ export async function executeFetch(
       !contentType.includes("csv") &&
       !contentType.includes("html");
 
-    if (!isBinary || !options.out) {
+    // Binary classification is respected on the in-memory path too: a
+    // binary body without --out must NOT be decoded as UTF-8 (lossy
+    // mojibake); the presentation falls back to the binary summary and
+    // byte-exact output remains --out's contract.
+    if (!isBinary) {
       try {
         content = rawBuffer.toString("utf8");
       } catch {
@@ -530,9 +557,12 @@ export async function fetchCommand(
   const data = await executeFetch(url, options);
 
   let presentationText = "";
-  if (options.out) {
+  // Gate on the file that was actually WRITTEN (data.outPath is set only
+  // after a successful atomic rename): non-OK responses never produce a
+  // file and must not claim one.
+  if (data.outPath) {
     const md5Text = data.md5 ? ` (MD5: ${data.md5})` : "";
-    presentationText = `Fetched ${data.bytes} bytes from ${data.url} -> ${options.out}${md5Text} [HTTP ${data.status}]`;
+    presentationText = `Fetched ${data.bytes} bytes from ${data.url} -> ${data.outPath}${md5Text} [HTTP ${data.status}]`;
   } else if (data.content !== undefined) {
     // Text-compatible bodies are the presentation in every mode; the
     // raw/non-raw distinction is the OUTPUT ROUTING (the dispatcher

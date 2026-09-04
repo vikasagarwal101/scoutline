@@ -206,6 +206,42 @@ endobj`;
       assert.equal(typeof text, "string");
       assert.ok(text.length > 0, "low-confidence pure text must not be dropped when pdftotext is absent");
     });
+
+    it("does not truncate a stream whose data contains an embedded endstream sequence", async () => {
+      const content = "BT\n(Before embedded endstream marker) Tj\n(After marker) Tj\nET\n";
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length ${content.length} >>\nstream\n${content}endstream\nendobj`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Before embedded endstream marker/);
+      assert.match(text, /After marker/);
+    });
+
+    it("does not expose text from non-content streams (embedded image bytes)", async () => {
+      const imageBytes = "BT\n(Hidden Image Payload Text) Tj\nET\n";
+      const pageContent = "BT\n(Real Page Text) Tj\nET\n";
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /Length ${imageBytes.length} >>\nstream\n${imageBytes}endstream\nendobj\n2 0 obj\n<< /Length ${pageContent.length} >>\nstream\n${pageContent}endstream\nendobj`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.doesNotMatch(text, /Hidden Image Payload/, "image stream bytes must not surface as document text");
+      assert.match(text, /Real Page Text/);
+    });
+
+    it("marks unsupported filter chains low-confidence instead of silently skipping them", async () => {
+      const a85Body = "<~87cURD]f~>";
+      const pageContent = "BT\n(Visible Text) Tj\nET\n";
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Filter [/ASCII85Decode /FlateDecode] /Length ${a85Body.length} >>\nstream\n${a85Body}endstream\nendobj\n2 0 obj\n<< /Length ${pageContent.length} >>\nstream\n${pageContent}endstream\nendobj`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Visible Text/, "other streams still parse when one filter chain is unsupported");
+    });
+
+    it("keeps best-effort text for non-ASCII literals when no external tool exists", async () => {
+      const content = "BT\n(caf\\351 au lait) Tj\nET\n";
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length ${content.length} >>\nstream\n${content}endstream\nendobj`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.ok(text.length > 0, "high-byte literals degrade to best-effort, never dropped");
+    });
   });
 
   describe("repairPdf (xref reconstruction)", () => {
@@ -274,6 +310,38 @@ endobj
       const buffer = Buffer.from(pdfString, "latin1");
       const repaired = await repairPdf(buffer);
       assert.match(repaired.toString("latin1"), /startxref/, "repair must proceed when no real ObjStm dictionary exists");
+    });
+
+    it("does not index object-like text inside stream bodies (embedded endstream + fake obj header)", async () => {
+      const streamData = `BT (visible text) Tj ET\nendstream\n2 0 obj\n<< /Type /Pages >>\nendobj\n`;
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length ${streamData.length} >>\nstream\n${streamData}endstream\nendobj\n3 0 obj\n<< /Type /Catalog >>\nendobj\n`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const repaired = await repairPdf(buffer);
+      const repairedStr = repaired.toString("latin1");
+      const realObj3 = pdfString.lastIndexOf("3 0 obj");
+      assert.match(repairedStr, new RegExp(`${String(realObj3).padStart(10, "0")} 00000 n`), "object 3 must be indexed");
+      // The fake "2 0 obj" inside the stream data must NOT be indexed:
+      // max id in the xref trailer is 3, and only one entry line per real
+      // object exists — the fake would surface as a bogus offset for id 2.
+      const fakeOffset = pdfString.indexOf("2 0 obj");
+      assert.doesNotMatch(repairedStr, new RegExp(`${String(fakeOffset).padStart(10, "0")} 00000 n`), "fake object inside stream data must not enter the xref");
+    });
+
+    it("finds objects after a dictionary whose literal string contains delimiters", async () => {
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Title (broken >> dict << lookalike) /Type /Catalog >>\nendobj\n2 0 obj\n<< /Type /Pages >>\nendobj\n`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const repaired = await repairPdf(buffer);
+      const repairedStr = repaired.toString("latin1");
+      const realObj2 = pdfString.lastIndexOf("2 0 obj");
+      assert.match(repairedStr, new RegExp(`${String(realObj2).padStart(10, "0")} 00000 n`), "object 2 must still be indexed when dict strings contain << >> delimiters");
+    });
+
+    it("detects /Type /ObjStm more than 512 bytes into the object dictionary", async () => {
+      const pad = "/Filler (0123456789) ".repeat(60); // >512 bytes before /Type
+      const pdfString = `%PDF-1.5\n1 0 obj\n<< ${pad} /Type /ObjStm >>\nstream\n...\nendstream\nendobj\n`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const repaired = await repairPdf(buffer);
+      assert.equal(repaired.toString("latin1"), pdfString, "repair must be skipped when a real ObjStm dictionary exists");
     });
 
     it("does not build xref entries from object-like text inside strings", async () => {

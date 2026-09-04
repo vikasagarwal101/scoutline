@@ -669,7 +669,22 @@ function resolveStreamInterval(
   if (fileStr[bodyStart] === "\r") bodyStart++;
   if (fileStr[bodyStart] === "\n") bodyStart++;
 
-  let keywordAt = fileStr.indexOf("endstream", bodyStart);
+  // Textual fallback: accept an `endstream` keyword only when it is
+  // followed by `endobj` (or end-of-file adjacency) — an embedded
+  // `endstream` token inside stream data is typically followed by more
+  // data, never by the object terminator, so this keeps the fallback
+  // from resuming mid-stream.
+  let keywordAt = -1;
+  for (
+    let probe = fileStr.indexOf("endstream", bodyStart);
+    probe !== -1;
+    probe = fileStr.indexOf("endstream", probe + 9)
+  ) {
+    if (/^endstream[\s\S]{0,4}?endobj/.test(fileStr.slice(probe, probe + 60))) {
+      keywordAt = probe;
+      break;
+    }
+  }
   let dataEnd = keywordAt === -1 ? fileStr.length : keywordAt;
 
   // Direct /Length N (the lookahead avoids reading the object number of

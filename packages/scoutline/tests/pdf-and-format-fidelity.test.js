@@ -310,6 +310,19 @@ endobj`;
       assert.match(text, /Survivor Text/);
     });
 
+    it("ignores referenced-object lookalikes behind embedded endstream tokens inside indirect-length streams", async () => {
+      // The stream body embeds `endstream` + a fake "5 0 obj <int>" that
+      // WOULD validate against a further embedded token. The endobj-
+      // terminated fallback keeps the lexical length-lookup skip over
+      // the whole stream, so the REAL object 5 (after the stream) wins.
+      const content = "BT\n(Guard Start) Tj\nendstream\n5 0 obj\n19\nendobj\nendstream\n5 0 obj\n40\nendobj\n(Guard End) Tj\nET\n";
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 5 0 R >>\nstream\n${content}endstream\nendobj\n5 0 obj\n${content.length}\nendobj\n`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Guard Start/);
+      assert.match(text, /Guard End/, "the real length object must win over the in-stream lookalike");
+    });
+
     it("keeps best-effort text for non-ASCII literals when no external tool exists", async () => {
       const content = "BT\n(caf\\351 au lait) Tj\nET\n";
       const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length ${content.length} >>\nstream\n${content}endstream\nendobj`;

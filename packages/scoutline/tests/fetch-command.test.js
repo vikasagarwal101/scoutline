@@ -458,7 +458,13 @@ describe("scoutline fetch command", () => {
       const result = await executeFetch(`${serverBaseUrl}/cross-origin-307`, {
         method: "POST",
         data: "x=1",
-        headers: ["Authorization: Bearer sekrit", "Cookie: session=abc", "X-API-Key: k1", "X-Keep: yes"],
+        headers: [
+          "Authorization: Bearer sekrit",
+          "Cookie: session=abc",
+          "X-API-Key: k1",
+          "X-Keep: yes",
+          "Content-Type: application/json",
+        ],
       });
       assert.equal(result.status, 200);
       const echoed = JSON.parse(result.content ?? "{}");
@@ -467,6 +473,7 @@ describe("scoutline fetch command", () => {
       assert.equal(echoed["x-api-key"], undefined, "custom credential headers must not cross origins");
       assert.equal(echoed["x-keep"], undefined, "only allowlisted transport headers cross origins");
       assert.equal(echoed["accept-encoding"], "identity", "allowlisted defaults survive");
+      assert.equal(echoed["content-type"], "application/json", "307/308 body replays keep their Content-Type");
     });
 
     it("preserves HEAD across a 303 redirect (metadata-only stays metadata-only)", async () => {

@@ -323,6 +323,44 @@ endobj`;
       assert.match(text, /Guard End/, "the real length object must win over the in-stream lookalike");
     });
 
+    it("processes later streams when an earlier stream has no usable /Length", async () => {
+      // Stream 1 has NO /Length: the endobj-terminated textual fallback
+      // must bound it (a broken fallback swallows the rest of the file
+      // and stream 2 is never visited). Mutation guard: on the
+      // backspace-bug build, "Second Stream Text" disappears.
+      const first = "BT\n(First Unlen Stream) Tj\nET\n";
+      const second = "BT\n(Second Stream Text) Tj\nET\n";
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< >>\nstream\n${first}endstream\nendobj\n2 0 obj\n<< /Length ${second.length} >>\nstream\n${second}endstream\nendobj\n`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /First Unlen Stream/);
+      assert.match(text, /Second Stream Text/, "streams after a /Length-less stream must still be processed");
+      // Repair observable: the textual fallback must bound stream 1 so
+      // the lexical object scan still indexes objects AFTER it. On the
+      // backspace-bug build the skip runs to EOF and object 2 vanishes
+      // from the xref.
+      const repaired = await repairPdf(buffer);
+      const repairedStr = repaired.toString("latin1");
+      const obj2Offset = pdfString.lastIndexOf("2 0 obj");
+      assert.match(
+        repairedStr,
+        new RegExp(`${String(obj2Offset).padStart(10, "0")} 00000 n`),
+        "objects after a /Length-less stream must still be indexed",
+      );
+    });
+
+    it("does not misread an indirect reference's object number as a direct length", async () => {
+      // /Length 12 0 R must not backtrack-capture "1" as a direct
+      // length: the indirect resolution must run and the full extent
+      // must be honored.
+      const content = "BT\n(Twelve Ref Start) Tj\nendstream\n12 0 obj\n99\nendobj\n(Twelve Ref End) Tj\nET\n";
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 12 0 R >>\nstream\n${content}endstream\nendobj\n12 0 obj\n${content.length}\nendobj\n`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Twelve Ref Start/);
+      assert.match(text, /Twelve Ref End/);
+    });
+
     it("keeps best-effort text for non-ASCII literals when no external tool exists", async () => {
       const content = "BT\n(caf\\351 au lait) Tj\nET\n";
       const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length ${content.length} >>\nstream\n${content}endstream\nendobj`;

@@ -251,7 +251,7 @@ export async function read(
     removedByteModes.pdfRepair === true
   ) {
     throw new ValidationError(
-      "read no longer supports --raw/--pdf/--pdf-repair: Reader content is provider-normalized. Use `scoutline fetch <url> --raw | --pdf text|raw [--pdf-repair]` for byte-exact retrieval.",
+      "read no longer supports --raw/--pdf/--pdf-repair: Reader content is provider-normalized. Use `scoutline fetch <url> --pdf text` for byte-exact PDF retrieval (see `scoutline fetch --help`).",
     );
   }
 

@@ -228,19 +228,27 @@ endobj
     });
   });
 
-  describe("read --raw format fidelity", () => {
-    it("rejects invalid --pdf options at validation time", async () => {
+  describe("read provider-normalized fidelity", () => {
+    it("rejects removed byte-exact modes (--raw/--pdf/--pdf-repair) at validation time", async () => {
       const mockDeps = {
         capability: {},
         execution: {},
       };
       await assert.rejects(
-        () => read("https://example.com/doc.pdf", { pdf: "invalid-mode" }, mockDeps),
-        { name: "ValidationError" },
+        () => read("https://example.com/doc.pdf", { pdf: "text" }, mockDeps),
+        (err) => err.code === "VALIDATION_ERROR" && /fetch/.test(err.message),
+      );
+      await assert.rejects(
+        () => read("https://example.com/doc.pdf", { raw: true }, mockDeps),
+        (err) => err.code === "VALIDATION_ERROR" && /fetch/.test(err.message),
+      );
+      await assert.rejects(
+        () => read("https://example.com/doc.pdf", { pdfRepair: true }, mockDeps),
+        (err) => err.code === "VALIDATION_ERROR" && /fetch/.test(err.message),
       );
     });
 
-    it("preserves raw format and content without markdown conversion when --raw is set", async () => {
+    it("reports provider content and contentFormat verbatim without client-side relabeling", async () => {
       const rawXml = `<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom"><title>Sample Feed</title><entry><title>Entry 1</title></entry></feed>`;
 
       const { capability } = createFakeReaderCapability({
@@ -266,10 +274,12 @@ endobj
         },
       };
 
-      const result = await read("https://example.com/atom.xml", { raw: true }, mockDeps);
+      const result = await read("https://example.com/atom.xml", {}, mockDeps);
       assert.equal(result.kind, "data");
       const envelope = result.data;
-      assert.equal(envelope.contentFormat, "raw");
+      // The envelope reports the provider's own format claim verbatim;
+      // read no longer relabels normalized content as "raw".
+      assert.equal(envelope.contentFormat, "markdown");
       assert.equal(envelope.content, rawXml);
     });
   });

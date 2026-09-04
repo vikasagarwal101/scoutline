@@ -316,7 +316,12 @@ export async function executeArchiveGet(
     snapshotTimestamp = options.at;
     archiveUrl = `https://web.archive.org/web/${snapshotTimestamp}/${url}`;
   } else {
-    const resolved = await resolveAvailableSnapshot(url, options.at, dependencies);
+    const resolved = await resolveAvailableSnapshot(url, options.at, {
+      ...dependencies,
+      // The availability check honors the caller timeout like the replay
+      // request does (default only when the caller did not set one).
+      ...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
+    });
     snapshotTimestamp = resolved.timestamp;
     archiveUrl = resolved.archiveUrl;
   }

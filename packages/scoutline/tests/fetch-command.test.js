@@ -312,16 +312,38 @@ describe("scoutline fetch command", () => {
       assert.equal(tmpFiles.length, 0, "temporary file must not linger after aborted stream");
     });
 
-    it("repairs damaged PDF before writing to --out", async () => {
+    it("preserves the original evidence bytes with --pdf-repair: --out, --md5, and bytes describe the wire body", async () => {
       const repairOut = path.join(tempDir, "repaired.pdf");
       const result = await executeFetch(`${serverBaseUrl}/damaged-pdf`, {
         out: repairOut,
         pdfRepair: true,
+        md5: true,
       });
       assert.equal(fs.existsSync(repairOut), true);
-      const written = fs.readFileSync(repairOut, "latin1");
-      assert.match(written, /startxref/);
-      assert.match(written, /xref/);
+      // The written file is the RETRIEVED body, not the repaired buffer:
+      // the repair exists only to make extraction possible.
+      const written = fs.readFileSync(repairOut);
+      const original = Buffer.from("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n", "latin1");
+      assert.ok(written.equals(original), "--out must preserve the verbatim response body");
+      // The digest and byte count describe the original evidence too.
+      assert.equal(result.bytes, original.length);
+      assert.equal(result.md5, crypto.createHash("md5").update(original).digest("hex"));
+    });
+
+    it("rejects oversized --timeout digit strings that are not safe integers", () => {
+      assert.throws(
+        () => parseFetchArgs(["https://example.com", "--timeout", "99999999999999999999"]),
+        { name: "ValidationError" },
+      );
+    });
+
+    it("computes --sha256 (combinable with --md5) over the original response bytes", async () => {
+      const result = await executeFetch(`${serverBaseUrl}/hello`, { md5: true, sha256: true });
+      const body = Buffer.from("Hello World!", "utf8");
+      assert.equal(result.md5, crypto.createHash("md5").update(body).digest("hex"));
+      assert.equal(result.sha256, crypto.createHash("sha256").update(body).digest("hex"));
+      const parsed = parseFetchArgs(["https://example.com", "--sha256"]);
+      assert.equal(parsed.options.sha256, true);
     });
 
     it("throws ValidationError and cancels stream when chunked body exceeds limit", async () => {

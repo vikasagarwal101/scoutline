@@ -294,6 +294,11 @@ export async function executeFetch(
   const reqHeaders: Record<string, string> = {
     "User-Agent": options.ua ?? DEFAULT_USER_AGENT,
     Accept: "*/*",
+    // Ask the origin for an uncompressed body: undici transparently
+    // decodes Content-Encoding, so accepting gzip/br would make --out,
+    // --md5, and --sha256 describe DECODED bytes rather than what the
+    // origin served. With identity the received body is the wire body.
+    "Accept-Encoding": "identity",
   };
 
   if (options.headers) {
@@ -309,26 +314,38 @@ export async function executeFetch(
 
   // Parse body. File-backed payloads (@file) STREAM from disk so a
   // large upload cannot exhaust the CLI's heap before the request
-  // starts; only existence is checked up front.
-  let reqBody: string | ReadableStream<Uint8Array> | undefined;
+  // starts; the path is validated (regular file) up front and retained
+  // so redirect hops can reopen a FRESH stream — undici cannot replay a
+  // consumed ReadableStream on 307/308.
+  let dataFilePath: string | undefined;
+  let inlineData: string | undefined;
   if (options.data !== undefined) {
     if (method === "GET" || method === "HEAD") {
       throw new ValidationError(`Cannot send request body with HTTP ${method}.`);
     }
     if (options.data.startsWith("@")) {
-      const filePath = path.resolve(process.cwd(), options.data.slice(1));
+      dataFilePath = path.resolve(process.cwd(), options.data.slice(1));
       try {
-        await fs.stat(filePath);
+        const st = await fs.stat(dataFilePath);
+        if (!st.isFile()) {
+          throw new FileError(
+            `Request body path "${dataFilePath}" is not a regular file.`,
+          );
+        }
       } catch (err) {
+        if (err instanceof FileError) throw err;
         throw new FileError(
-          `Failed to read request body file "${filePath}": ${err instanceof Error ? err.message : String(err)}`,
+          `Failed to read request body file "${dataFilePath}": ${err instanceof Error ? err.message : String(err)}`,
         );
       }
-      reqBody = Readable.toWeb(createReadStream(filePath)) as ReadableStream<Uint8Array>;
     } else {
-      reqBody = options.data;
+      inlineData = options.data;
     }
   }
+  const buildRequestBody = (): string | ReadableStream<Uint8Array> | undefined =>
+    dataFilePath !== undefined
+      ? (Readable.toWeb(createReadStream(dataFilePath)) as ReadableStream<Uint8Array>)
+      : inlineData;
 
   const timeoutMs = options.timeout ?? DEFAULT_FETCH_TIMEOUT_MS;
   const controller = new AbortController();
@@ -337,6 +354,7 @@ export async function executeFetch(
   let response: Response;
   const resHeaders: Record<string, string> = {};
   let contentType: string | undefined;
+  let contentTypeLower: string | undefined;
   let outPath: string | undefined;
   let rawBuffer: Buffer | null = null;
   let bytes = 0;
@@ -349,22 +367,51 @@ export async function executeFetch(
   const sha256Hasher = options.sha256 ? crypto.createHash("sha256") : null;
 
   try {
-    response = await fetch(url, {
-      method,
-      headers: reqHeaders,
-      body: reqBody,
-      // Required by undici for streaming request bodies (@file payloads).
-      ...(reqBody !== undefined && typeof reqBody !== "string" ? { duplex: "half" as const } : {}),
-      redirect: "follow",
-      signal: controller.signal,
-    } as RequestInit);
+    // Redirects are followed MANUALLY: each hop rebuilds the request
+    // body (a fresh file stream for @file payloads — undici cannot
+    // replay a consumed stream on 307/308) and applies the standard
+    // method downgrade (301/302/303 POST -> GET, per browser and
+    // undici follow semantics).
+    let currentMethod = method;
+    let requestUrl = url;
+    for (let hop = 0; ; hop++) {
+      const hopBody = buildRequestBody();
+      response = await fetch(requestUrl, {
+        method: currentMethod,
+        headers: reqHeaders,
+        body: hopBody,
+        // Required by undici for streaming request bodies (@file payloads).
+        ...(hopBody !== undefined && typeof hopBody !== "string" ? { duplex: "half" as const } : {}),
+        redirect: "manual",
+        signal: controller.signal,
+      } as RequestInit);
+      const location = response.headers.get("location");
+      const redirectable = [301, 302, 303, 307, 308].includes(response.status);
+      if (!redirectable || !location) break;
+      await response.body?.cancel().catch(() => {});
+      if (hop >= 10) {
+        throw new NetworkError(`Too many redirects (>10) while fetching ${url}`);
+      }
+      requestUrl = new URL(location, requestUrl).toString();
+      if (
+        response.status === 303 ||
+        ((response.status === 301 || response.status === 302) && currentMethod === "POST")
+      ) {
+        currentMethod = "GET";
+        dataFilePath = undefined;
+        inlineData = undefined;
+      }
+    }
 
     response.headers.forEach((val, key) => {
       resHeaders[key.toLowerCase()] = val;
     });
     contentType = resHeaders["content-type"] || undefined;
+    // Media types are case-insensitive (Text/Plain is text): normalize
+    // before any classification so mixed-case types are not binary.
+    contentTypeLower = contentType?.toLowerCase();
 
-    const isPdfHeader = Boolean(contentType && contentType.includes("application/pdf"));
+    const isPdfHeader = Boolean(contentTypeLower && contentTypeLower.includes("application/pdf"));
 
     const MAX_IN_MEMORY_BYTES = 50 * 1024 * 1024; // 50MB ceiling without --out
 
@@ -456,6 +503,15 @@ export async function executeFetch(
     if (err instanceof FileError || err instanceof TimeoutError || err instanceof ValidationError) {
       throw err;
     }
+    // A @file payload that vanishes or fails to open mid-flight surfaces
+    // as a raw undici TypeError with a filesystem cause: classify it as
+    // the local file error it is, not a network failure.
+    const causeCode = (err as { cause?: { code?: string } })?.cause?.code;
+    if (causeCode && ["ENOENT", "EISDIR", "EACCES", "EPERM"].includes(causeCode)) {
+      throw new FileError(
+        `Failed to read request body file: ${causeCode} (${dataFilePath ?? "unknown path"})`,
+      );
+    }
     const msg = err instanceof Error ? err.message : String(err);
     throw new NetworkError(`Fetch failed: ${msg}`);
   } finally {
@@ -464,7 +520,7 @@ export async function executeFetch(
 
   const isPdf =
     (rawBuffer !== null && isPdfBuffer(rawBuffer)) ||
-    Boolean(contentType && contentType.includes("application/pdf"));
+    Boolean(contentTypeLower && contentTypeLower.includes("application/pdf"));
 
   // Decode content string for text-compatible bodies
   let content: string | undefined;
@@ -510,13 +566,13 @@ export async function executeFetch(
       }
     }
     const isBinary =
-      contentType &&
-      !contentType.includes("text") &&
-      !contentType.includes("json") &&
-      !contentType.includes("xml") &&
-      !contentType.includes("javascript") &&
-      !contentType.includes("csv") &&
-      !contentType.includes("html");
+      contentTypeLower !== undefined &&
+      !contentTypeLower.includes("text") &&
+      !contentTypeLower.includes("json") &&
+      !contentTypeLower.includes("xml") &&
+      !contentTypeLower.includes("javascript") &&
+      !contentTypeLower.includes("csv") &&
+      !contentTypeLower.includes("html");
 
     // Binary classification is respected on the in-memory path too: a
     // binary body without --out must NOT be decoded as UTF-8 (lossy

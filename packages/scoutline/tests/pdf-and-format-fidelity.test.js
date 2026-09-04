@@ -208,12 +208,15 @@ endobj`;
     });
 
     it("does not truncate a stream whose data contains an embedded endstream sequence", async () => {
-      const content = "BT\n(Before embedded endstream marker) Tj\n(After marker) Tj\nET\n";
+      // The fixture embeds a REAL line-start `endstream` token inside
+      // the content (per review): the naive truncate-at-first-match
+      // behavior would lose everything after it.
+      const content = "BT\n(Before endstream) Tj\nendstream\n(After) Tj\nET\n";
       const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length ${content.length} >>\nstream\n${content}endstream\nendobj`;
       const buffer = Buffer.from(pdfString, "latin1");
       const text = await extractPdfText(buffer);
-      assert.match(text, /Before embedded endstream marker/);
-      assert.match(text, /After marker/);
+      assert.match(text, /Before endstream/);
+      assert.match(text, /After/);
     });
 
     it("does not expose text from non-content streams (embedded image bytes)", async () => {
@@ -233,6 +236,30 @@ endobj`;
       const buffer = Buffer.from(pdfString, "latin1");
       const text = await extractPdfText(buffer);
       assert.match(text, /Visible Text/, "other streams still parse when one filter chain is unsupported");
+    });
+
+    it("detects ObjStm when a comment precedes the object dictionary", async () => {
+      const pdfString = `%PDF-1.5\n1 0 obj\n% generator note before the dict\n<< /Type /ObjStm >>\nstream\n...\nendstream\nendobj\n`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const repaired = await repairPdf(buffer);
+      assert.equal(repaired.toString("latin1"), pdfString, "repair must be skipped despite the leading comment");
+    });
+
+    it("resolves indirect /Length so embedded endstream tokens cannot truncate", async () => {
+      const content = "BT\n(Before ind-endstream) Tj\nendstream\n(After ind) Tj\nET\n";
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 5 0 R >>\nstream\n${content}endstream\nendobj\n5 0 obj\n${content.length}\nendobj\n`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Before ind-endstream/);
+      assert.match(text, /After ind/);
+    });
+
+    it("dictionary marker lookalikes inside strings do not misclassify streams", async () => {
+      const content2 = "BT\n(Real Content) Tj\nET\n";
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Title (fake /Subtype /Image noise) /Length ${content2.length} >>\nstream\n${content2}endstream\nendobj\n2 0 obj\n<< /Title (fake /Filter /ASCII85Decode) /Length 0 >>\nstream\nendstream\nendobj\n`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Real Content/, "string-embedded markers must not skip a real content stream");
     });
 
     it("keeps best-effort text for non-ASCII literals when no external tool exists", async () => {

@@ -76,6 +76,12 @@ describe("scoutline fetch command", () => {
         res.writeHead(200, { "Content-Type": "text/plain" });
         res.write("partial content before connection drop...");
         req.socket.destroy();
+      } else if (req.url === "/casey-type") {
+        res.writeHead(200, { "Content-Type": "Text/Plain" });
+        res.end("Mixed Case Type Body");
+      } else if (req.url === "/post-redirect-307") {
+        res.writeHead(307, { Location: "/echo-body" });
+        res.end();
       } else if (req.url === "/binary") {
         res.writeHead(200, { "Content-Type": "application/octet-stream" });
         res.end(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0x00, 0xfe, 0xdc]));
@@ -394,6 +400,29 @@ describe("scoutline fetch command", () => {
       const result = await executeFetch(`${serverBaseUrl}/head-meta`, { method: "HEAD" });
       assert.equal(result.status, 200);
       assert.equal(result.bytes, 0);
+    });
+
+    it("normalizes mixed-case Content-Type media types (Text/Plain is text)", async () => {
+      const result = await executeFetch(`${serverBaseUrl}/casey-type`);
+      assert.equal(result.content, "Mixed Case Type Body", "Text/Plain must not be classified binary");
+    });
+
+    it("rejects --data @<directory> as a FileError before the request starts", async () => {
+      await assert.rejects(
+        () => executeFetch(`${serverBaseUrl}/echo-body`, { method: "POST", data: `@${tempDir}` }),
+        (err) => err.name === "FileError" || /not a regular file/.test(err.message),
+      );
+    });
+
+    it("replays @file bodies across 307 redirects with a fresh stream", async () => {
+      const payload = path.join(tempDir, "redirect-payload.txt");
+      fs.writeFileSync(payload, "redirect-replay-body");
+      const result = await executeFetch(`${serverBaseUrl}/post-redirect-307`, {
+        method: "POST",
+        data: `@${payload}`,
+      });
+      assert.equal(result.status, 200);
+      assert.equal(result.content, "redirect-replay-body", "body must be replayed on the redirected hop");
     });
 
     it("does not claim a written file for non-OK responses when --out was requested", async () => {

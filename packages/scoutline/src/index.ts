@@ -52,7 +52,7 @@ import {
 } from "./commands/usage.js";
 import { historyCommand, HISTORY_HELP } from "./commands/history.js";
 import { handleFetch, FETCH_HELP } from "./commands/fetch.js";
-import { handleArchive, ARCHIVE_HELP } from "./commands/archive.js";
+import { handleArchive, parseArchiveArgs, ARCHIVE_HELP } from "./commands/archive.js";
 import { cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
 import type { PruneSelectors, PruneCachesResult } from "./lib/cache.js";
 import { parseBatchManifest } from "./lib/batch-manifest.js";
@@ -1577,7 +1577,7 @@ async function handleRead(
   // legacy global output-mode meaning and is not read's flag.
   if (flags.pdf !== undefined || flags["pdf-repair"] !== undefined) {
     throw new ValidationError(
-      "--pdf/--pdf-repair are fetch-only (read content is provider-normalized); use `scoutline fetch <url> --pdf text` instead (see `scoutline fetch --help`)",
+      "--pdf/--pdf-repair are fetch-only (read content is provider-normalized); use `scoutline fetch <url> --pdf text` / `--pdf raw` with `--pdf-repair` for damaged PDFs, or `scoutline fetch <url> --raw` for the verbatim body (see `scoutline fetch --help`)",
     );
   }
 
@@ -4395,8 +4395,11 @@ export async function main(
       // the `data` envelope hiding it. `cdx --raw` keeps the legacy
       // global meaning (unwrapped data) — flipping its presentation to
       // the human table was never the flag's contract.
+      // Determine the subcommand through the parser (not positional
+      // assumption): options may precede `get`/`cdx`.
+      const archiveSubcommand = parseArchiveArgs(commandArgs).subcommand;
       const archiveOutputMode =
-        forceRaw && outputFormat === undefined && commandArgs[0] === "get"
+        forceRaw && outputFormat === undefined && archiveSubcommand === "get"
           ? ("compact" as OutputMode)
           : outputMode;
       return await handleArchive(commandArgs, archiveOutputMode, buildHandlerDeps(env, envSecrets, true), forceRaw);
@@ -4772,6 +4775,7 @@ export async function main(
   // single state-file read + no transport calls.
   if (
     quotaRefreshEnabled &&
+    !isolated &&
     commandRecognized &&
     !isQuotaObservationalCommand &&
     !isHelpInvocation &&

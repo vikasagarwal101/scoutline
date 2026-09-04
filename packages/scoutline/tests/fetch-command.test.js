@@ -79,6 +79,25 @@ describe("scoutline fetch command", () => {
       } else if (req.url === "/damaged-pdf") {
         res.writeHead(200, { "Content-Type": "application/pdf" });
         res.end("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n");
+      } else if (req.url === "/huge-chunked-error") {
+        // Non-ok body served chunked (no content-length): only the
+        // incremental bound can stop it — the --out + error path must
+        // not read with an unlimited ceiling.
+        res.writeHead(500, { "Content-Type": "text/plain" });
+        res.on("error", () => {});
+        const chunk = Buffer.alloc(1024 * 1024, 0x78);
+        let sent = 0;
+        const writeNext = () => {
+          while (sent < 60 * 1024 * 1024) {
+            sent += chunk.length;
+            if (!res.write(chunk)) {
+              res.once("drain", writeNext);
+              return;
+            }
+          }
+          res.end();
+        };
+        writeNext();
       } else {
         res.writeHead(500, { "Content-Type": "text/plain" });
         res.end("Server Error");
@@ -317,6 +336,15 @@ describe("scoutline fetch command", () => {
         () => readBoundedResponseBody(stream, 2048, "Test stream"),
         { name: "ValidationError" },
       );
+    });
+
+    it("bounds non-success --out bodies to the in-memory ceiling (chunked, no content-length)", async () => {
+      const outPath = path.join(tempDir, "huge-error.out");
+      await assert.rejects(
+        () => executeFetch(`${serverBaseUrl}/huge-chunked-error`, { out: outPath }),
+        (err) => err.name === "ValidationError" && /exceeds in-memory/.test(err.message),
+      );
+      assert.equal(fs.existsSync(outPath), false, "no partial --out file on bounded failure");
     });
   });
 

@@ -377,18 +377,19 @@ export async function executeFetch(
         md5 = md5Hasher.digest("hex");
       }
     } else {
-      if (!options.out || options.pdf === "text" || options.pdfRepair) {
-        const contentLengthHeader = resHeaders["content-length"];
-        if (contentLengthHeader && Number(contentLengthHeader) > MAX_IN_MEMORY_BYTES) {
-          throw new ValidationError(
-            `Response size (${contentLengthHeader} bytes) exceeds in-memory ceiling (50MB).`,
-            "Use --out <file> to stream large responses directly to disk.",
-          );
-        }
+      // Every buffered path — including error bodies reached when --out
+      // cannot stream (non-ok responses have no evidentiary value worth
+      // an unbounded buffer) — is subject to the same in-memory ceiling.
+      const contentLengthHeader = resHeaders["content-length"];
+      if (contentLengthHeader && Number(contentLengthHeader) > MAX_IN_MEMORY_BYTES) {
+        throw new ValidationError(
+          `Response size (${contentLengthHeader} bytes) exceeds in-memory ceiling (50MB).`,
+          "Use --out <file> to stream large responses directly to disk.",
+        );
       }
       rawBuffer = await readBoundedResponseBody(
         response.body as ReadableStream<Uint8Array> | null,
-        (!options.out || options.pdf === "text" || options.pdfRepair) ? MAX_IN_MEMORY_BYTES : Infinity,
+        MAX_IN_MEMORY_BYTES,
         "Response size",
       );
       bytes = rawBuffer.length;

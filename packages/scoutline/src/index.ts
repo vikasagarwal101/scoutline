@@ -4365,7 +4365,14 @@ export async function main(
   // evidentiary downloads or API calls (ADR-0006).
   if (command === "fetch") {
     try {
-      return await handleFetch(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true), forceRaw);
+      // `--raw` is a CONTENT flag on fetch (emit the body verbatim),
+      // not the legacy global output-mode flag. With no explicit -O it
+      // would otherwise resolve the output to `data` and bury the body
+      // inside the JSON envelope; route to a text presentation mode so
+      // the body prints directly. An explicit -O still wins.
+      const fetchOutputMode =
+        forceRaw && outputFormat === undefined ? ("compact" as OutputMode) : outputMode;
+      return await handleFetch(commandArgs, fetchOutputMode, buildHandlerDeps(env, envSecrets, true), forceRaw);
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
       return getErrorExitCode(error);
@@ -4379,7 +4386,12 @@ export async function main(
   // snapshot replay (ADR-0006).
   if (command === "archive") {
     try {
-      return await handleArchive(commandArgs, outputMode, buildHandlerDeps(env, envSecrets, true), forceRaw);
+      // Same as fetch: `--raw` on `archive get` is a content flag (emit
+      // the snapshot body verbatim); without an explicit -O it must not
+      // resolve to the `data` envelope that would hide it.
+      const archiveOutputMode =
+        forceRaw && outputFormat === undefined ? ("compact" as OutputMode) : outputMode;
+      return await handleArchive(commandArgs, archiveOutputMode, buildHandlerDeps(env, envSecrets, true), forceRaw);
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
       return getErrorExitCode(error);

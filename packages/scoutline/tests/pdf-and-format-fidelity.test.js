@@ -138,7 +138,8 @@ endobj`;
       const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 100 >>\nstream\nBT\n<00480069> Tj\n<FEFF0057006F0072006C0064> Tj\nET\nendstream\nendobj`;
       const buffer = Buffer.from(pdfString, "latin1");
       const text = await extractPdfText(buffer);
-      assert.match(text, /Hi World/);
+      assert.match(text, /Hi/);
+      assert.match(text, /World/);
     });
 
     it("extracts literal strings with escaped parentheses in quote operators", async () => {
@@ -157,12 +158,53 @@ endobj`;
     });
 
     it("ignores BT ... ET blocks inside comments and metadata literals", async () => {
-      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Title (BT Fake Title ET) /Length 120 >>\nstream\n% BT Stale Comment Text ET\nBT\n(Actual Visible Text) Tj\nET\nendstream\nendobj`;
+      // The fake literal ALSO appears inside the stream (outside any
+      // BT/ET block) so the doesNotMatch assertion is non-vacuous: a
+      // scanner that read string contents as operators would extract it.
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Title (BT Fake Title ET) /Length 120 >>\nstream\n% BT Stale Comment Text ET\nBT\n(Actual Visible Text) Tj\nET\n(BT Fake Title ET) Tj\nendstream\nendobj`;
       const buffer = Buffer.from(pdfString, "latin1");
       const text = await extractPdfText(buffer);
       assert.match(text, /Actual Visible Text/);
       assert.doesNotMatch(text, /Fake Title/);
       assert.doesNotMatch(text, /Stale Comment Text/);
+    });
+
+    it("extracts literal strings with multiple nested parenthesis levels", async () => {
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 80 >>\nstream\nBT\n(outer (mid (deep)) text) Tj\nET\nendstream\nendobj`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /outer \(mid \(deep\)\) text/);
+    });
+
+    it("extracts hex-string operands for the quote operators", async () => {
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 80 >>\nstream\nBT\n<0048 0069> '\n0 0 <0057 006F 0072> "\nET\nendstream\nendobj`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Hi/);
+      assert.match(text, /Wor/);
+    });
+
+    it("recognizes signed and leading-dot numeric operands for Td", async () => {
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 120 >>\nstream\nBT\n-.5 4. Td (Line A) Tj\n0 -12.5 Td (Line B) Tj\nET\nendstream\nendobj`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /Line A/);
+      assert.match(text, /Line B/);
+    });
+
+    it("does not inject a space between successive Tj operands", async () => {
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 80 >>\nstream\nBT\n(Hello) Tj (World) Tj\nET\nendstream\nendobj`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.match(text, /HelloWorld/);
+    });
+
+    it("still serves best-effort text for unmappable CID hex when no external tool exists", async () => {
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Length 80 >>\nstream\nBT\n<90A190A2> Tj\nET\nendstream\nendobj`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const text = await extractPdfText(buffer);
+      assert.equal(typeof text, "string");
+      assert.ok(text.length > 0, "low-confidence pure text must not be dropped when pdftotext is absent");
     });
   });
 
@@ -225,6 +267,27 @@ endobj
       const repaired = await repairPdf(objStmPdf);
       const repairedStr = repaired.toString("latin1");
       assert.equal(repairedStr, objStmPdf.toString("latin1"));
+    });
+
+    it("does not treat /Type /ObjStm inside ordinary string data as an ObjStm object", async () => {
+      const pdfString = `%PDF-1.5\n1 0 obj\n<< /Title (/Type /ObjStm lookalike) /Type /Catalog >>\nendobj\n`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const repaired = await repairPdf(buffer);
+      assert.match(repaired.toString("latin1"), /startxref/, "repair must proceed when no real ObjStm dictionary exists");
+    });
+
+    it("does not build xref entries from object-like text inside strings", async () => {
+      const pdfString = `%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Title (fake 2 0 obj endobj noise) >>\nendobj\n2 0 obj\n<< /Type /Pages >>\nendobj\n`;
+      const buffer = Buffer.from(pdfString, "latin1");
+      const repaired = await repairPdf(buffer);
+      const repairedStr = repaired.toString("latin1");
+      // The REAL object-2 header is the last occurrence; the first sits
+      // inside the /Title string and must never win.
+      const realObj2Offset = pdfString.lastIndexOf("2 0 obj");
+      const fakeObj2Offset = pdfString.indexOf("2 0 obj");
+      assert.notEqual(realObj2Offset, fakeObj2Offset, "fixture must contain both a fake and a real header");
+      const offsetStr = String(realObj2Offset).padStart(10, "0");
+      assert.match(repairedStr, new RegExp(`${offsetStr} 00000 n`), "xref for object 2 must point at the real header, not the string copy");
     });
   });
 

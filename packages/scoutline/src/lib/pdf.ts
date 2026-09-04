@@ -549,6 +549,23 @@ function scanBackwardDictionary(fileStr: string, keywordStart: number, window = 
 }
 
 /**
+ * Resolve an indirect /Length (N G R) by reading the integer the
+ * referenced object holds. Returns null when the reference or object
+ * cannot be resolved.
+ */
+function resolveIndirectLength(fileStr: string, maskedDict: string): number | null {
+  const ref = /\/Length\s+(\d+)\s+(\d+)\s+R\b/.exec(maskedDict);
+  if (!ref) return null;
+  const header = `${ref[1]} ${ref[2]} obj`;
+  const at = fileStr.indexOf(header);
+  if (at === -1) return null;
+  let p = at + header.length;
+  while (p < fileStr.length && /\s/.test(fileStr[p]!)) p++;
+  const num = /^(\d+)/.exec(fileStr.slice(p, p + 16));
+  return num ? Number(num[1]) : null;
+}
+
+/**
  * Resolve a stream body interval: [bodyStart, dataEnd) plus the index
  * to resume scanning from (past the real endstream keyword). Primary
  * signal is the dictionary /Length, VALIDATED against a following
@@ -569,13 +586,22 @@ function resolveStreamInterval(
   let keywordAt = fileStr.indexOf("endstream", bodyStart);
   let dataEnd = keywordAt === -1 ? fileStr.length : keywordAt;
 
-  const lengthMatch = /\/Length\s+(\d+)/.exec(dictSlice);
-  if (lengthMatch) {
-    let probe = bodyStart + Number(lengthMatch[1]);
+  // Direct /Length N (the lookahead avoids reading the object number of
+  // an indirect /Length N G R as a direct length); indirect lengths are
+  // resolved from their integer object so generators that use them do
+  // not fall back to a textual endstream search that can stop at an
+  // embedded "endstream" sequence inside the stream body.
+  const lengthMatch = /\/Length\s+(\d+)(?!\s+\d+\s+R)/.exec(dictSlice);
+  const declared =
+    lengthMatch !== null
+      ? Number(lengthMatch[1])
+      : resolveIndirectLength(fileStr, dictSlice);
+  if (declared !== null) {
+    let probe = bodyStart + declared;
     if (fileStr[probe] === "\r") probe++;
     if (fileStr[probe] === "\n") probe++;
     if (fileStr.startsWith("endstream", probe)) {
-      dataEnd = bodyStart + Number(lengthMatch[1]);
+      dataEnd = bodyStart + declared;
       keywordAt = probe;
     }
   }
@@ -592,7 +618,18 @@ function resolveStreamInterval(
  */
 function readObjectDictionaryAt(fileStr: string, i: number): { text: string; next: number } {
   let p = i;
-  while (p < fileStr.length && /\s/.test(fileStr[p]!)) p++;
+  while (p < fileStr.length) {
+    if (/\s/.test(fileStr[p]!)) {
+      p++;
+      continue;
+    }
+    // Object headers may carry comments before the dictionary opener.
+    if (fileStr[p] === "%") {
+      while (p < fileStr.length && fileStr[p] !== "\r" && fileStr[p] !== "\n") p++;
+      continue;
+    }
+    break;
+  }
   if (fileStr.slice(p, p + 2) !== "<<") return { text: "", next: i };
   const start = p;
   let depth = 1;
@@ -654,7 +691,7 @@ function extractPureNodePdfText(buffer: Buffer): { text: string; lowConfidence: 
   while ((match = streamKeywordRegex.exec(fileStr)) !== null) {
     const keywordStart = match.index;
     if (fileStr.slice(Math.max(0, keywordStart - 3), keywordStart) === "end") continue;
-    const dictSlice = scanBackwardDictionary(fileStr, keywordStart);
+    const dictSlice = maskStringsAndComments(scanBackwardDictionary(fileStr, keywordStart));
     const interval = resolveStreamInterval(fileStr, keywordStart, dictSlice);
     streamKeywordRegex.lastIndex = interval.resumeAfter;
     const rawStreamSlice = buffer.subarray(interval.bodyStart, interval.dataEnd);
@@ -663,7 +700,9 @@ function extractPureNodePdfText(buffer: Buffer): { text: string; lowConfidence: 
     // decode an unfiltered stream or a single FlateDecode. Anything
     // else (e.g. [/ASCII85Decode /FlateDecode]) marks the document
     // low-confidence instead of silently skipping the stream while a
-    // nonempty partial result suppresses pdftotext.
+    // nonempty partial result suppresses pdftotext. The dictionary is
+    // masked so /Filter or marker text inside strings/comments cannot
+    // impersonate the real entries.
     const filterChain = parseFilterChain(dictSlice);
     const flateOnly = filterChain.length === 1 && filterChain[0] === "FlateDecode";
 
@@ -960,7 +999,11 @@ export async function repairPdf(buffer: Buffer, timeoutMs = 5000): Promise<Buffe
         // (validated) so an embedded "endstream" sequence inside the
         // data cannot make the scanner resume mid-stream and index
         // object-like text living inside the stream.
-        const interval = resolveStreamInterval(fileStr, i, scanBackwardDictionary(fileStr, i));
+        const interval = resolveStreamInterval(
+          fileStr,
+          i,
+          maskStringsAndComments(scanBackwardDictionary(fileStr, i)),
+        );
         i = interval.resumeAfter;
         continue;
       }

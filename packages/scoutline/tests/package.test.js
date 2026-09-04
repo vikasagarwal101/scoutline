@@ -67,7 +67,10 @@ function runNpmPackDryRun() {
         return;
       }
       try {
-        resolve(JSON.parse(stdout));
+        const parsed = JSON.parse(stdout);
+        // npm <=11 emits an ARRAY of pack entries; npm 12 emits a
+        // name-keyed OBJECT. Normalize to the array shape either way.
+        resolve(Array.isArray(parsed) ? parsed : Object.values(parsed));
       } catch (err) {
         reject(new Error(`npm pack --dry-run emitted invalid JSON: ${err.message}`));
       }
@@ -104,7 +107,9 @@ function packToDir(destDir) {
         reject(new Error(`npm pack emitted invalid JSON: ${err.message}\nstdout=${stdout}`));
         return;
       }
-      const entry = Array.isArray(parsed) ? parsed[0] : parsed;
+      // npm <=11 array shape vs npm 12 name-keyed object (see
+      // runNpmPackDryRun): unwrap the single pack entry either way.
+      const entry = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
       const filename = entry && typeof entry.filename === "string" ? entry.filename : null;
       if (!filename) {
         reject(new Error(`npm pack response missing filename: ${stdout}`));

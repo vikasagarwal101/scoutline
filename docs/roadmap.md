@@ -41,9 +41,7 @@ features next; features that reverse a written decision (ADR) last.
 
 ### Studied seeds — ADR-gated (start with a superseding ADR, not code)
 
-- **`serve` — MCP server mode** (`docs/plans/v2/12-mcp-server-mode.md`) —
-  expose the capability layer as MCP tools served by scoutline itself.
-  Reverses the "serving the CLI itself as an MCP server" exclusion below.
+- **`serve` — MCP server mode** — **Deferred indefinitely**
 
 ### Studied seeds — visionary
 
@@ -54,9 +52,6 @@ features next; features that reverse a written decision (ADR) last.
 - **Research journal + provenance**
   (`docs/plans/v2/07-research-journal.md`) — append-only local research
   memory with provenance hashes; `journal recall` / `journal export`.
-- **Temporal reading + Wayback adapter**
-  (`docs/plans/v2/08-temporal-reading-wayback.md`) — `read --as-of <date>`,
-  page diff over time, cache-pinned recency for `search --as-of`.
 - **`watch` monitoring** (`docs/plans/v2/09-watch-monitoring.md`) — snapshot
   and diff URLs, site maps, or queries; cron-friendly exit codes.
 - **`--budget-tokens` output compaction**

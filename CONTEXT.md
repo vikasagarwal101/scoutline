@@ -149,6 +149,16 @@ Map, Vision, or Quota. The base release normalizes its diagnostic
 probe as an operational Capability.
 _Avoid_: Jina API, Jina Reader API
 
+**Output Budget**:
+The whole-envelope output size limit expressed through `--max-chars`:
+"fit everything this command prints in ~N characters," applied by a
+deterministic priority ladder that never cuts URLs, titles, or
+citations, flags that shrinking occurred, and persists the full
+untrimmed envelope so everything trimmed stays recoverable by
+reference. Distinct from per-field caps (`--max-summary`) and from
+result-count semantics (`--count`), which are not sizing.
+_Avoid_: token budget, truncation, compaction (the mechanism, not the concept)
+
 ## Flagged Ambiguities
 
 **Vision**:

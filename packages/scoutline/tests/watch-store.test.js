@@ -746,6 +746,30 @@ describe("watch store review round 3", () => {
         });
     });
 
+    it("purge refuses a symlinked target directory (never follows outside the root)", async (t) => {
+        await withTemp(t, async (root) => {
+            const added = await addTarget(root, { url: "https://sym.example/", name: "sym", now: NOW_1 });
+            await appendSnapshot(root, added.id, {
+                body: new TextEncoder().encode("v0"),
+                now: NOW_1,
+                lock: FAST_LOCK,
+            });
+            // Replace the target dir with a symlink pointing outside the
+            // watch root; a victim file must survive the refused purge.
+            const outside = path.join(path.dirname(root), "sym-victim-" + Date.now());
+            await fs.mkdir(outside, { recursive: true });
+            await fs.writeFile(path.join(outside, "keep-me"), "evidence");
+            await fs.rm(path.join(root, added.id), { recursive: true, force: true });
+            await fs.symlink(outside, path.join(root, added.id), "dir");
+            await assert.rejects(
+                () => removeTarget(root, added.id, { purge: true, lock: FAST_LOCK }),
+                (err) => err instanceof ValidationError && /symlink/i.test(err.message),
+            );
+            assert.equal((await fs.readdir(outside)).includes("keep-me"), true);
+            await fs.rm(outside, { recursive: true, force: true }).catch(() => {});
+        });
+    });
+
     it("rejects malformed registry rows: wrong-type fields, bad id grammar, bad keep", async (t) => {
         await withTemp(t, async (root) => {
             await fs.mkdir(root, { recursive: true });

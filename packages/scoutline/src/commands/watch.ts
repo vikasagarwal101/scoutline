@@ -425,6 +425,19 @@ async function runTickLocked(
   },
 ): Promise<WatchRunReport> {
   const nowAt = options.now.toISOString();
+  // Registry membership gate (review): the tick captured `target` before
+  // the lock wait — a `watch remove --purge` racing the wait can delete
+  // the target dir and release the tick lock, after which this tick
+  // would run against a purged target, hold the lock while the purge's
+  // final rmdir executes, and have its lock deleted under it. Re-check
+  // membership INSIDE the tick lock: a purged target fails the lookup
+  // before any snapshot/readSnapshot/append runs, and the lock it holds
+  // is fresh (acquired after the purge released) so the purge's rmdir
+  // cannot delete it.
+  const stillRegistered = await getTarget(root, target.id);
+  if (!stillRegistered) {
+    throw new ValidationError(`watch target ${target.id} is not registered.`);
+  }
   const listing = await listSnapshots(root, target.id);
   const last = listing.at(-1);
   const prevAt = last ? last.capturedAt : null;

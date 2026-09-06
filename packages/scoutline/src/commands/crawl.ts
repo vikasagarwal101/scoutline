@@ -8,7 +8,8 @@
  * `CrawlResult` into the public envelope. The Adapter owns URL
  * validation, credentials, transport, raw response parsing, cache
  * identity, and error normalization; the handler owns projection
- * (`--max-chars` per-page truncation) and output-mode presentation.
+ * (`--max-chars` whole-envelope Output Budget at the dispatcher
+ * seam) and output-mode presentation.
  *
  * Provider selection, capability support, configuration, Adapter
  * construction, and adapter.crawl agreement live in `src/index.ts`.

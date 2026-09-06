@@ -54,9 +54,9 @@ features next; features that reverse a written decision (ADR) last.
   memory with provenance hashes; `journal recall` / `journal export`.
 - **`watch` monitoring** (`docs/plans/v2/09-watch-monitoring.md`) — snapshot
   and diff URLs, site maps, or queries; cron-friendly exit codes.
-- **`--budget-tokens` output compaction**
-  (`docs/plans/v2/10-token-budget-output.md`) — context-aware, deterministic
-  output sizing at the projection layer; citation-preserving priorities.
+- **Output Budget** — shipped as the `--max-chars` whole-envelope
+  evolution (ADR-0007); the seed doc
+  (`docs/plans/v2/10-token-budget-output.md`) is superseded.
 - **Selection strategies** (`docs/plans/v2/11-selection-strategies.md`) —
   `--strategy cheapest|freshest|diverse` extending the quota-aware ranking.
 

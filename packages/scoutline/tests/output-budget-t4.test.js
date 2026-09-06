@@ -1301,3 +1301,43 @@ describe("PR #103 R5 — fences close on the opening delimiter", () => {
     assert.ok(out.projection.content.includes("~~~\n# not a heading\n```"), "fence block intact");
   });
 });
+
+describe("PR #103 R6 — fences close only on a run at least as long as the opening (greptile P1)", () => {
+  it("a ``` line inside a ```` fence does not close it; fenced body survives a trim budget", () => {
+    // Four backticks open the fence; a three-backtick line inside is
+    // content (CommonMark: closing run must be >= opening run and use
+    // the same char). If ``` closed it, the trailing body would be
+    // misclassified as plain text/heading and the drop order shifts.
+    const e = {
+      url: "https://e/1",
+      title: "T",
+      content:
+        "# T\n\n````\n```\ninside\n````\n\nbody " + "z".repeat(300),
+    };
+    const out = applyBudget(e, measurePayload(e) - 60, READ_LADDER);
+    assert.ok(out.compaction, "tight budget fires");
+    // The nested ``` line is fence CONTENT — survives verbatim.
+    assert.ok(out.projection.content.includes("\n```\ninside\n"), "inner fence content survives");
+    assert.ok(!out.projection.content.includes("z".repeat(150)), "body bled");
+  });
+
+  it("splitSections: a # heading inside a ````/```-nested fence stays code", () => {
+    const content =
+      "# T\n\n````\n```\n# not a heading\n```\n````\n\n## Real\n\nbody " + "q".repeat(120) + "\n";
+    const e = { url: "https://e/1", title: "T", content };
+    const floor = measurePayload({
+      url: "https://e/1",
+      title: "T",
+      content: "# T\n\n````\n```\n# not a heading\n```\n````\n",
+    });
+    const out = applyBudget(e, floor + 30, READ_LADDER);
+    assert.ok(out.compaction);
+    // The whole nested fence block survives as one unit — the inner
+    // ``` never closed the ```` fence, so "# not a heading" was never
+    // a section boundary.
+    assert.ok(
+      out.projection.content.includes("````\n```\n# not a heading\n```\n````"),
+      "nested fence block intact",
+    );
+  });
+});

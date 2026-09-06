@@ -9,8 +9,8 @@
  * public v1 envelope(s) (content read vs extract read). The Adapter
  * (providers/zai/reader.ts) owns URL rewrite, credentials, transport,
  * raw response parsing, cache identity, and retry/terminal
- * classification; the handler owns projection (`--max-chars` truncation,
- * `--extract` slicing), output-mode presentation, and the
+ * classification; the handler owns projection (`--max-chars`
+ * whole-envelope budgeting at the dispatcher seam, `--extract` slicing), output-mode presentation, and the
  * schema-version-1 envelope migration.
  *
  * Provider selection, capability support, configuration, Adapter
@@ -191,8 +191,9 @@ function buildContentEnvelope(
 /**
  * Build the v1 extract-read envelope. `items` carry the extracted
  * slice; `originalItemCount` and `truncated` report projection state.
- * `--max-chars` is intentionally IGNORED for extract reads
- * (truncating a code block or link list mid-item is harmful).
+ * `--max-chars` budgets the whole envelope at the handler seam
+ * (index.ts, READ_EXTRACT_LADDER): field VALUES trim, field names and
+ * URLs are never dropped.
  */
 function buildExtractEnvelope(
   result: ReaderFetchResult,
@@ -556,10 +557,9 @@ Output format (schema-version-1 migration):
       "truncated":       false,
       "originalItemCount": <number>
     }
-  --max-chars applies ONLY to content reads (sets truncated:true and
-  originalContentLength). --max-chars is a whole-envelope budget on
-  BOTH shapes; on extract reads it trims field VALUES only (field names
-  and URLs are never dropped).
+  --max-chars is a whole-envelope budget on BOTH shapes; on extract
+  reads it trims field VALUES only (field names and URLs are never
+  dropped).
 
 Output modes for read results:
   - data: raw schema-version-1 envelope object.

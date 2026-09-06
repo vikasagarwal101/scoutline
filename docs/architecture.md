@@ -313,8 +313,8 @@ Key boundaries:
 - **Repository Explorer is Provider-neutral.** It imports only the
   normalized Repository Capability, shared execution, and normalized
   errors. It owns canonical paths, deterministic breadth-first traversal,
-  deduplication, request-bound directory safety, and local `--max-chars`
-  projection over the normalized result.
+  deduplication, request-bound directory safety, and the local
+  `--max-chars` Output Budget projection over the normalized result.
 - **Adapter owns the transport.** The Z.AI Repository Adapter resolves its
   credential once, builds legacy keys from that same credential, invokes
   through resolved raw tool names, recognizes encoded MCP error envelopes
@@ -327,11 +327,12 @@ Key boundaries:
   write`. Each of the three operation kinds gets one retry (matching the
   current single-retry non-Vision policy). Cache hits construct and
   close no transport.
-- **Explorer owns projection.** `executeRepositoryOperation` returns the
-  full normalized result and performs no projection. The Explorer
-  applies max-character projection afterward, in
-  `commands/repository-explorer.ts`, before constructing the final
-  `CommandResult`.
+- **Explorer owns normalization.** `executeRepositoryOperation` returns
+  the full normalized result and performs no projection. The Output
+  Budget ladders are exported from `commands/repository-explorer.ts`
+  but run at the handler seam in `src/index.ts`
+  (`applyCommandOutputBudget`) — the handler passes no `maxChars` to
+  the Explorer before constructing the final `CommandResult`.
 
 ### Cache continuity
 
@@ -418,7 +419,7 @@ read argv + global flags
             -> Z.AI Reader Adapter (URL rewrite, encoded MCP errors,
                per-attempt transport)
             -> raw WebReader operation through resolved public name
-       -> projection: --max-chars (content read only) / --extract <mode>
+       -> projection: --max-chars whole-envelope budget / --extract <mode>
   -> schema-version-1 CommandResult (content-read or extract-read envelope)
 ```
 
@@ -470,10 +471,11 @@ Key boundaries:
   transport.
 - **Handler owns projection.** `executeReaderOperation` returns the full
   normalized `ReaderFetchResult`. The handler projects it into the v1
-  content-read envelope (with optional `--max-chars` truncation) or the
-  extract-read envelope (with `--extract <mode>` slicing); extract reads
-  are never character-truncated. The `--full-envelope` flag is silently
-  accepted and ignored (D3).
+  content-read envelope or the extract-read envelope (with `--extract
+  <mode>` slicing); `--max-chars` budgets the whole envelope on both
+  shapes (extract reads trim field values only — field names and URLs are
+  never dropped). The `--full-envelope` flag is silently accepted and
+  ignored (D3).
 
 ### Cache continuity
 
@@ -561,7 +563,7 @@ crawl argv + global flags
        -> executeCrawlOperation (validate, identity, cache, retry, write)
             -> Tavily Crawl Adapter (depth/breadth/select-paths mapping)
             -> POST /crawl, normalized CrawlResult
-       -> projection: per-page --max-chars truncation
+       -> projection: whole-envelope --max-chars budget
   -> schema-version-1 CommandResult
 ```
 
@@ -577,10 +579,11 @@ Key boundaries:
   for Research) do not advertise the capability; their Adapters supply
   nothing.
 - **Map is the simplest of the three.** The Tavily `/map` endpoint
-  returns a URL set with no per-page content, so the handler has no
-  `--max-chars` projection. Crawl and Research are richer; the
-  handler projects with `--max-chars` (Research: report text; Crawl:
-  per-page content).
+  returns a URL set with no per-page content, so Map is not a budget
+  ladder surface (`--max-chars` rejects there). Crawl and Research are
+  richer; the handler budgets their whole envelopes with `--max-chars`
+  (Research: report body trims, citations survive longest; Crawl: page
+  contents trim, trailing pages drop late).
 - **Research runs an async create→poll lifecycle server-side.** The
   Adapter's `invoke()` owns the full lifecycle, including
   resume-on-restart (see [Research state file](#research-state-file))
@@ -643,12 +646,12 @@ Resilience contract:
 | --- | --- |
 | `commands/vision.ts` | Eight vision operations with shared client lifecycle management. |
 | `commands/search.ts` | Search filtering, formatting, and multi-query result merging. Topic control is part of the shared search controls (`--topic <general\|news\|finance>`). |
-| `commands/read.ts` | Thin read handler: parse-level validation (URL scheme, `--extract`), `executeReaderOperation` invocation, schema-v1 envelope projection (`--max-chars` content truncation, `--extract` slicing), output-mode presentation. Provider selection lives in `src/index.ts`. No Explorer module — Reader is a single fetch. |
+| `commands/read.ts` | Thin read handler: parse-level validation (URL scheme, `--extract`), `executeReaderOperation` invocation, schema-v1 envelope projection (`--max-chars` whole-envelope budget, `--extract` slicing), output-mode presentation. Provider selection lives in `src/index.ts`. No Explorer module — Reader is a single fetch. |
 | `commands/repo.ts` | Thin command routing: parse, dispatch table, Explorer invocation, output mode. Provider selection lives in `src/index.ts`. |
-| `commands/repository-explorer.ts` | Provider-neutral Explorer: canonical paths, deterministic BFS, schema-v1 projection, local max-chars. |
-| `commands/crawl.ts` | Thin crawl handler: parse-level URL validation, `executeCrawlOperation`, per-page `--max-chars` projection, schema-v1 envelope. |
+| `commands/repository-explorer.ts` | Provider-neutral Explorer: canonical paths, deterministic BFS, schema-v1 projection, local `--max-chars` budget ladders. |
+| `commands/crawl.ts` | Thin crawl handler: parse-level URL validation, `executeCrawlOperation`, whole-envelope `--max-chars` budget, schema-v1 envelope. |
 | `commands/map.ts` | Thin map handler: parse-level URL validation, `executeMapOperation`, schema-v1 envelope (URLs only). |
-| `commands/research.ts` | Research handler: SIGINT-registered polling loop, `--max-chars` projection on the report, resume-on-restart via `lib/async-job-state.ts`, schema-v1 envelope. |
+| `commands/research.ts` | Research handler: SIGINT-registered polling loop, `--max-chars` whole-envelope budget (citations survive longest), resume-on-restart via `lib/async-job-state.ts`, schema-v1 envelope. |
 | `commands/tools.ts` | MCP tool discovery, schema lookup, and raw calls. |
 | `commands/code.ts` | TypeScript tool chaining through UTCP Code Mode. |
 | `commands/doctor.ts`, `commands/quota.ts` | Provider-aware diagnostics and quota dashboard. |
@@ -670,6 +673,47 @@ live under the Explorer (`commands/repository-explorer.ts`), the read
 handler (`commands/read.ts`), the crawl/map/research handlers
 (`commands/crawl.ts`, `commands/map.ts`, `commands/research.ts`),
 `lib/execution.ts`, and the Provider Adapter Modules.
+
+## Output Budget (ADR-0007)
+
+`--max-chars` on a ladder surface means "fit everything this command
+prints in ~N characters" — a whole-envelope Output Budget applied as a
+deterministic local projection after caching, normalization, `--count`,
+and `--max-summary`. It never invokes a model and never enters a cache
+key, a wire request, or the artifacts log's `args` allow-list.
+
+- **Engine** (`lib/output-budget.ts`, pure): `applyBudget(envelope,
+  budget, ladder)` walks the command's ordered shrinking rules to a
+  fixpoint until `measurePayload(projection) <= budget`
+  (deterministic sorted-key JSON measurement). Never-cut fields are
+  expressed by omission — no rule touches URLs, titles, or citations.
+  When every rule is exhausted the result clamps to the floor envelope
+  with `compaction.note: "floor"`; the budget never throws.
+- **Ladders** are per-command priority tables declared at the handler
+  seam in `src/index.ts` (`applyCommandOutputBudget`) and the search
+  handler (`search.ts`): search (summaries trim, then source/date drop,
+  then lowest ranks drop), read (later paragraphs trim, bottom sections
+  drop late; extract reads trim field values only), crawl (page contents
+  trim, trailing pages drop late), research (report body trims,
+  citations survive longest), repo search/read/brief (excerpts/file
+  content/README excerpts trim; repository identity never cut).
+- **Reference preservation** (`lib/output-budget-persistence.ts`): when
+  a budget fires, the full untrimmed envelope — post-redaction,
+  pre-compaction, exactly what an unbudgeted run would print — is
+  written through the existing `writeArtifact` + `appendLogEntry` seams
+  in the `--save` shape, and the payload gains `compaction: { budget,
+  ref }` in every output mode. `scoutline history show <ref>` recovers
+  it offline. A budget that fits writes no artifact and stamps no
+  `compaction` (zero gratuitous side effects).
+- **Rejection matrix:** every command without a ladder rejects
+  `--max-chars` at parse time with `UNSUPPORTED_OPTION` — `vision`,
+  `map`, `batch`, `tools`, `tool`, `call`, `doctor`, `quota`, `code`,
+  `cache`, `usage`, `history`, `init`, `config`, `fetch`, `archive`,
+  and `repo tree` (the former accept-and-drop). The seven ladder
+  surfaces are `search`, `read`, `crawl`, `research`, `repo search`,
+  `repo read`, `repo brief`. Batch manifests carry per-op `maxChars`
+  onto the read/crawl/research/repo search/read/brief ops at the op
+  level; the batch envelope itself is never budgeted.
 
 ## Shared Runtime Behavior
 

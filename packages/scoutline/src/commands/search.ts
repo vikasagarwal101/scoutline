@@ -22,6 +22,7 @@ import type {
 import type { ResponseCache } from "../lib/cache.js";
 import type { RetryPolicy } from "../lib/execution.js";
 import { executeSearch } from "../lib/execution.js";
+import type { LadderRule } from "../lib/output-budget.js";
 import { canonicalUrl } from "../lib/url.js";
 import type { ProviderDescriptor, ProviderId } from "../providers/types.js";
 import { formatSearchResultsPretty } from "../lib/tty.js";
@@ -97,6 +98,60 @@ function truncate(text: string | undefined, max?: number): string {
   if (!max || max <= 0 || text.length <= max) return text;
   return text.slice(0, max - 1).trimEnd() + "…";
 }
+
+/**
+ * Output Budget ladder for search (ADR-0007, T3): cheapest losses
+ * first — summaries trim, then `source`/`date` drop, then the lowest
+ * ranks drop LAST. url/title/rank are never cut: expressed by
+ * omission (no rule ever touches them). `occurrences`/`mergedFrom`
+ * ride along on surviving rows (provenance shrinks only when its row
+ * does — the artifact keeps the full envelope either way).
+ *
+ * Each rule is one pure whole-envelope step; the engine (T1) applies
+ * rules to fixpoint, so a halving trim converges deterministically
+ * without any search-command walk logic.
+ */
+const budgetedResults = (apply: (results: unknown[]) => unknown[]) => (envelope: unknown) => {
+  const e = envelope as { results?: unknown[] };
+  return { ...e, results: apply(e.results ?? []) };
+};
+
+const trimSummariesRule: LadderRule = {
+  name: "trim-summaries",
+  apply: budgetedResults((results) =>
+    results.map((r) => {
+      const row = r as { summary?: string };
+      if (!row.summary) return r;
+      // Halve, then strip the ellipsis char the trim appends — repeated
+      // steps must always strictly shrink (the engine's exhaust check).
+      const half = Math.max(0, Math.floor(row.summary.replace(/…$/, "").length / 2));
+      return { ...row, summary: half > 0 ? "…".repeat(1) + row.summary.slice(0, half) : "" };
+    }),
+  ),
+};
+
+const dropSourceDateRule: LadderRule = {
+  name: "drop-source-date",
+  apply: budgetedResults((results) => {
+    const next = results.map((r) => {
+      const { source: _s, date: _d, ...rest } = r as Record<string, unknown>;
+      void _s;
+      void _d;
+      return rest;
+    });
+    return next;
+  }),
+};
+
+const dropLowestRankRule: LadderRule = {
+  name: "drop-lowest-rank",
+  apply: budgetedResults((results) =>
+    results.length <= 1 ? results : results.slice(0, -1),
+  ),
+};
+
+/** The search Output Budget ladder (ordered; see ADR-0007 T3). */
+export const SEARCH_LADDER = [trimSummariesRule, dropSourceDateRule, dropLowestRankRule] as const;
 
 function filterFields(result: FormattedResult, fields?: string[]): Partial<FormattedResult> {
   if (!fields || fields.length === 0) return result;
@@ -242,6 +297,19 @@ function buildPresentations(
     refs: renderTextFormat(formattedResults, "refs"),
     tty: formatSearchResultsPretty(formattedResults),
   };
+}
+
+/**
+ * Output Budget T3: rebuild every text presentation from a budgeted
+ * projection so -O compact/markdown/refs/tty reflect the shrunken
+ * envelope (urls/titles/ranks stay visible by the ladder's never-cut
+ * invariant). Exported for the handler seam (index.ts); a thin passthrough
+ * over `buildPresentations` — no separate render logic to drift.
+ */
+export function rebuildBudgetedPresentations(
+  budgetedResults: readonly unknown[],
+): NonNullable<DataCommandResult["presentations"]> {
+  return buildPresentations(budgetedResults as FormattedResult[]);
 }
 
 /** Format a normalized SearchSource[] into ranked FormattedResult[]. */
@@ -836,6 +904,10 @@ Options:
   --location <l>      Location hint (provider support varies): cn, us
   --count <n>         Limit number of results (applied after normalization)
   --max-summary <n>   Truncate each result summary to <n> chars (JSON modes only)
+  --max-chars <n>     Fit the whole printed output in ~<n> chars (summaries trim, then
+                      source/date drop, then lowest-ranked results drop; urls and titles
+                      are never cut; the full result is saved to the artifacts store —
+                      recover with "scoutline history show")
   --fields <a,b,c>    Field allowlist for JSON output (e.g. title,url)
   --merge             Treat the query as multiple sub-queries split on '|'.
                       Runs them in parallel, dedupes by URL, ranks by how many

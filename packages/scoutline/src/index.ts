@@ -43,6 +43,7 @@ import {
   repoRead,
   repoBrief,
   REPO_HELP,
+  BRIEF_LADDER,
   parseBriefFocus,
   parseBriefDepth,
   parseBriefMaxChars,
@@ -2561,7 +2562,9 @@ async function handleRepo(
   // lax parseInt silently coerced `500x` → 500). `repo tree` rejects
   // the flag above; `repo brief` parsed its own strict value earlier.
   const maxChars =
-    command === "search" || command === "read" ? parseMaxCharsFlag(flags) : undefined;
+    command === "search" || command === "read" || command === "brief"
+      ? parseMaxCharsFlag(flags)
+      : undefined;
   const noCache = flags["no-cache"] === true;
   const treePath = flags.path as string | undefined;
   const depth = flags.depth ? parseInt(flags.depth as string, 10) : undefined;
@@ -2657,13 +2660,19 @@ async function handleRepo(
           }
         },
       );
-      // Output Budget T4 (ADR-0007): whole-envelope budget at the
-      // handler seam for repo search/read. `repo tree` rejected the
-      // flag at parse above; `repo brief` applies its own parsed value
-      // to the assembled envelope (T5 — still the legacy per-probe
-      // forwarding until that ticket flips it).
+      // Output Budget T4/T5 (ADR-0007): whole-envelope budget at the
+      // handler seam for repo search/read/brief. `repo tree` rejected
+      // the flag at parse above. Brief consumed its parsed value ONCE
+      // here (T5): `repoBrief` forwards nothing to its probes (raw
+      // search/read results compose the envelope) and BRIEF_LADDER
+      // shrinks the assembled envelope.
       const budgeted = await applyCommandOutputBudget(outcome.result, maxChars, {
-        ladder: command === "read" ? REPO_READ_LADDER : REPO_SEARCH_LADDER,
+        ladder:
+          command === "read"
+            ? REPO_READ_LADDER
+            : command === "brief"
+              ? BRIEF_LADDER
+              : REPO_SEARCH_LADDER,
         command: "repo",
         context,
         deps,

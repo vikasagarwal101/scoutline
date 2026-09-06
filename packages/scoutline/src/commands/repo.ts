@@ -11,7 +11,7 @@
  * construction, and adapter.repository agreement live in
  * `src/index.ts`. The Explorer receives a `RepositoryCapability`
  * plus shared `ExecutionDependencies` and owns path canonicalization,
- * BFS, maxChars projection, and result projection.
+ * BFS, and result projection.
  *
  * Handler interface (P6-07A): mirrors the shared Search command
  * pattern. `deps: RepoHandlerDependencies` is REQUIRED — production
@@ -37,6 +37,7 @@ import type {
 } from "../capabilities/repository.js";
 import type { ExecutionDependencies } from "../lib/execution.js";
 import { OUTPUT_MODES } from "../lib/output.js";
+import type { LadderRule } from "../lib/output-budget.js";
 import { explorerSearch, explorerReadFile, explorerTree } from "./repository-explorer.js";
 import { ValidationError } from "../lib/errors.js";
 import { configuredSecrets, redactCredentialString } from "../lib/redact.js";
@@ -289,7 +290,14 @@ export interface RepoBriefOptions {
   path?: string;
   /** Tree-only depth; defaults to the Explorer's default (1). */
   depth?: number;
-  /** Per-call search/read budget; tree is never character-limited. */
+  /**
+   * Parsed `--max-chars` (strict positive integer via
+   * `parseBriefMaxChars`). T5 (ADR-0007): consumed ONCE at the
+   * handler seam against the ASSEMBLED brief envelope — never
+   * forwarded to any probe (the pre-T5 per-call truncation is
+   * removed); the tree was never character-limited and stays that
+   * way.
+   */
   maxChars?: number;
   /** Bypasses the response cache for every probe. */
   noCache?: boolean;
@@ -492,8 +500,10 @@ function detectBriefSignals(tree: RepositoryTreeResult): RepoBriefDetected {
  * Parse-level validation (DESIGN D7): `validateRepo`, `--depth` and
  * `--max-chars` positive integers, `--focus` a non-empty subset of the
  * sealed set (default all four). Forwarding (DESIGN D3): `--no-cache`
- * to every call; `--max-chars` to searches/reads only (the tree is
- * never character-limited); `--depth`/`--path` to the tree only.
+ * to every call; `--depth`/`--path` to the tree only. T5 (ADR-0007):
+ * `--max-chars` forwards to NOTHING — it parses (strict, unchanged)
+ * and the handler-seam ladder consumes it once against the assembled
+ * envelope.
  *
  * Every Explorer call runs settled (DESIGN D6): a throw becomes a
  * `failed` probe record and the brief continues. Exit policy: ≥1 probe
@@ -513,7 +523,12 @@ export async function repoBrief(
   // every probe receives — a direct caller's numeric string never leaks
   // downstream as a string.
   const depth = parseBriefDepth(options.depth);
-  const maxChars = parseBriefMaxChars(options.maxChars);
+  // Strict-parse ONLY: the parsed value deliberately goes unused here —
+  // consuming it is the dispatcher seam's job (index.ts routes the CLI
+  // flag through applyCommandOutputBudget + BRIEF_LADDER; direct handler
+  // callers get validation for their own routing). Keep the parse so an
+  // invalid value fails fast inside the handler, never mid-composition.
+  void parseBriefMaxChars(options.maxChars);
 
   const focus =
     options.focus === undefined ? [...REPO_BRIEF_FOCUS] : [...new Set(options.focus)];
@@ -563,7 +578,7 @@ export async function repoBrief(
       explorerSearch(
         deps.capability,
         { repository: repo, query: README_QUERY },
-        { noCache: options.noCache, maxChars },
+        { noCache: options.noCache },
         deps.execution,
       ),
       secrets,
@@ -586,7 +601,7 @@ export async function repoBrief(
       explorerSearch(
         deps.capability,
         { repository: repo, query: MANIFEST_QUERY },
-        { noCache: options.noCache, maxChars },
+        { noCache: options.noCache },
         deps.execution,
       ),
       secrets,
@@ -630,7 +645,7 @@ export async function repoBrief(
           explorerReadFile(
             deps.capability,
             { repository: repo, path },
-            { noCache: options.noCache, maxChars },
+            { noCache: options.noCache },
             deps.execution,
           ),
           secrets,
@@ -692,6 +707,120 @@ export async function repoBrief(
 }
 
 // ---------------------------------------------------------------------------
+// Output Budget ladder for brief (ADR-0007, T5) — the assembled envelope
+// is consumed ONCE at the handler seam; probes always return raw results.
+// ---------------------------------------------------------------------------
+
+/**
+ * Halve the LAST trimmable text field found in a backward scan over
+ * the brief's shrinkable text bodies. Search order per call:
+ * `files[].content` (file inventory — cheapest loss), then
+ * `entryPoints.excerpts[].text`, then `docs.excerpts[].text` (README
+ * excerpt). Halving happens on the LAST trimmable slot, so the
+ * engine's fixpoint bleeds every body before any later drop rule
+ * destroys one (the T4-corrected backward scan — never last-item-only).
+ * Never-cut fields (repository, focus, coverage, tree structure,
+ * detected, schemaVersion, query, path) are untouched by omission.
+ *
+ * PURE like every ladder rule (the engine contract): returns a NEW
+ * envelope with one halved slot; the input is never mutated — the
+ * persistence layer writes the untrimmed envelope through the SAME
+ * reference after projection, so an in-place edit here would corrupt
+ * the reference artifact.
+ */
+const trimBriefBodiesRule: LadderRule = {
+  name: "trim-brief-bodies",
+  apply(envelope) {
+    const e = envelope as {
+      files?: Array<{ content?: string }>;
+      entryPoints?: { excerpts?: Array<{ text?: string }> };
+      docs?: { excerpts?: Array<{ text?: string }> };
+    };
+    const halve = (text: string | undefined): string | null => {
+      if (!text) return null;
+      const stripped = text.replace(/…$/, "");
+      if (stripped.length <= 1) return null;
+      return "…" + stripped.slice(0, Math.max(1, Math.floor(stripped.length / 2)));
+    };
+    for (let i = (e.files ?? []).length - 1; i >= 0; i--) {
+      const shortened = halve(e.files?.[i]?.content);
+      if (shortened === null) continue;
+      const files = [...(e.files ?? [])];
+      files[i] = { ...files[i], content: shortened };
+      return { ...e, files };
+    }
+    for (let i = (e.entryPoints?.excerpts ?? []).length - 1; i >= 0; i--) {
+      const shortened = halve(e.entryPoints?.excerpts?.[i]?.text);
+      if (shortened === null) continue;
+      const excerpts = [...(e.entryPoints?.excerpts ?? [])];
+      excerpts[i] = { ...excerpts[i], text: shortened };
+      return { ...e, entryPoints: { ...e.entryPoints, excerpts } };
+    }
+    for (let i = (e.docs?.excerpts ?? []).length - 1; i >= 0; i--) {
+      const shortened = halve(e.docs?.excerpts?.[i]?.text);
+      if (shortened === null) continue;
+      const excerpts = [...(e.docs?.excerpts ?? [])];
+      excerpts[i] = { ...excerpts[i], text: shortened };
+      return { ...e, docs: { ...e.docs, excerpts } };
+    }
+    return envelope;
+  },
+};
+
+/**
+ * Drop the LAST file inventory entry — detail sections drop late,
+ * after bleeding. README content lives in `docs` (the excerpts above),
+ * so this drops manifest file bodies, deepest inventory detail first
+ * from the end. The `tree` structure summary is never dropped.
+ */
+const dropLastFileRule: LadderRule = {
+  name: "drop-last-file",
+  apply(envelope) {
+    const e = envelope as { files?: unknown[] };
+    if (!e.files || e.files.length <= 1) return envelope;
+    return { ...e, files: e.files.slice(0, -1) };
+  },
+};
+
+/** Omit a key by destructuring — pure (no `delete` on the input). */
+const dropKey = (envelope: object, key: string): object => {
+  const { [key]: _dropped, ...rest } = envelope as Record<string, unknown>;
+  void _dropped;
+  return key in (envelope as Record<string, unknown>) ? rest : envelope;
+};
+
+/**
+ * Drop the `entryPoints` section (manifest search detail) — after file
+ * bodies bled and the inventory shrank. Never touches `tree`/`docs`.
+ */
+const dropEntryPointsRule: LadderRule = {
+  name: "drop-entry-points",
+  apply(envelope) {
+    return dropKey(envelope as object, "entryPoints");
+  },
+};
+
+/**
+ * Drop the `files` section wholesale — the last drop before the floor
+ * clamp. `repository`, `focus`, `coverage`, `tree`, `detected`, and
+ * `docs` (the README evidence) survive to the floor.
+ */
+const dropFilesRule: LadderRule = {
+  name: "drop-files",
+  apply(envelope) {
+    return dropKey(envelope as object, "files");
+  },
+};
+
+/** The repo-brief Output Budget ladder (ordered; ADR-0007 T5). */
+export const BRIEF_LADDER = [
+  trimBriefBodiesRule,
+  dropLastFileRule,
+  dropEntryPointsRule,
+  dropFilesRule,
+] as const;
+
+// ---------------------------------------------------------------------------
 // Help
 // ---------------------------------------------------------------------------
 
@@ -736,9 +865,12 @@ Brief Options:
                               (default: all four; comma-separated, order preserved)
   --path <path>               Tree scope (search/read have no path parameter)
   --depth <n>                 Tree traversal depth (default: 1)
-  --max-chars <n>             Per-call search/read character budget (forwarded
-                              to every search and read probe; the tree is
-                              never character-limited)
+  --max-chars <n>             Fit the whole assembled brief in ~<n> chars
+                              (README excerpts and file bodies trim, file
+                              inventory drops late; repository name and the
+                              structure summary are never cut; the full
+                              untrimmed brief is saved to the artifacts store
+                              — recover via "scoutline history show")
 
 Common Options:
   --no-cache                 Bypass the response cache for this invocation
@@ -768,8 +900,9 @@ Output format (intentional schema-version-1 migration):
              tree?, docs?, entryPoints?, files?, detected:{hasReadme,
              hasManifest, manifestKinds}}  (sections gated by --focus;
              coverage.probes records every probe attempt as ok/failed/
-             skipped). Tree is never character-limited; --max-chars
-             applies per call to searches and reads only.
+             skipped). --max-chars is a whole-envelope budget on the
+             assembled brief (never per-probe; the tree is never
+             character-limited).
   Root path is the empty string "". --max-chars is a whole-envelope
   budget on search/read (repo tree REJECTS it: UNSUPPORTED_OPTION).
   Output modes for repo results:

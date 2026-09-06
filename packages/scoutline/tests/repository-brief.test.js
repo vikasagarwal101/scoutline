@@ -851,7 +851,12 @@ describe("repoBrief — handler composition (DESIGN D3/D4)", () => {
     ]);
   });
 
-  it("--max-chars forwards to every search/read and never to tree", async () => {
+  // T5 FLIP (ADR-0007): this pin encoded the OLD per-probe forwarding
+  // contract (maxChars reached every search/read and truncated their
+  // results). Consume-once replaced it — sub-calls receive NO budget
+  // and their results arrive RAW; the whole-envelope ladder consumes
+  // the flag once at the assembled-envelope seam (T5 tests pin that).
+  it("--max-chars forwards to NO search/read and never to tree (T5 consume-once flip)", async () => {
     const { capability } = makeFakeBriefCapability({
       search: (request) => ({
         schemaVersion: 1,
@@ -881,13 +886,14 @@ describe("repoBrief — handler composition (DESIGN D3/D4)", () => {
     const brief = result.data;
     // Tree is never character-limited: the section is the raw tree.
     assert.deepStrictEqual(brief.tree, DEFAULT_TREE);
-    // Searches and reads are projected.
-    assert.strictEqual(brief.docs.truncated, true);
-    assert.strictEqual(brief.docs.excerpts[0].text, "XXXXXXXXX…");
-    assert.strictEqual(brief.entryPoints.truncated, true);
+    // T5: searches and reads ALSO arrive raw — maxChars no longer
+    // truncates any probe result (forwarding removed).
+    assert.strictEqual(brief.docs.truncated, false);
+    assert.strictEqual(brief.docs.excerpts[0].text, "X".repeat(200));
+    assert.strictEqual(brief.entryPoints.truncated, false);
     for (const entry of brief.files) {
-      assert.strictEqual(entry.truncated, true);
-      assert.strictEqual(entry.content, "YYYYYYYYY…");
+      assert.strictEqual(entry.truncated, false);
+      assert.strictEqual(entry.content, "Y".repeat(200));
     }
   });
 
@@ -937,10 +943,13 @@ describe("repoBrief — handler composition (DESIGN D3/D4)", () => {
     assert.deepStrictEqual(calls, ["tree:src"]);
   });
 
-  it("coerces string-typed depth/maxChars to numbers before forwarding (validated value === forwarded value)", async () => {
+  it("coerces string-typed depth to a number before forwarding (validated value === forwarded value); maxChars parses but forwards nowhere (T5)", async () => {
     // Direct handler callers can pass numeric strings (the CLI parses
     // flags as strings). repoBrief binds the parsed values, so the
     // coerced numbers — never the raw strings — reach the Explorer.
+    // T5: maxChars still PARSES (strict validation unchanged) but is no
+    // longer FORWARDED — sub-calls receive no budget; the probe results
+    // arrive raw.
     const { capability } = makeFakeBriefCapability({
       search: (request) => ({
         schemaVersion: 1,
@@ -970,11 +979,12 @@ describe("repoBrief — handler composition (DESIGN D3/D4)", () => {
     const brief = result.data;
     assert.strictEqual(brief.tree.depth, 2);
     assert.strictEqual(typeof brief.tree.depth, "number");
-    assert.strictEqual(brief.docs.truncated, true);
-    assert.strictEqual(brief.docs.excerpts[0].text, "XXXXXXXXX…");
+    // T5: raw probe results — maxChars never truncates them.
+    assert.strictEqual(brief.docs.truncated, false);
+    assert.strictEqual(brief.docs.excerpts[0].text, "X".repeat(200));
     for (const entry of brief.files) {
-      assert.strictEqual(entry.truncated, true);
-      assert.strictEqual(entry.content, "YYYYYYYYY…");
+      assert.strictEqual(entry.truncated, false);
+      assert.strictEqual(entry.content, "Y".repeat(200));
     }
   });
 
@@ -1594,7 +1604,11 @@ describe("Ticket 3 — repo brief dispatch through main (DESIGN D5)", () => {
     );
 
     assert.strictEqual(status, 0);
-    assert.strictEqual(stderr.length, 0);
+    // T5: the handler seam consumed --max-chars once → budget notice.
+    assert.ok(
+      stderr.some((l) => l.includes("output budget: 500 chars")),
+      `budget notice expected, got ${JSON.stringify(stderr)}`,
+    );
     // --no-cache forwards to every probe: zero cache reads.
     assert.strictEqual(m.cacheRec.gets.length, 0, "--no-cache forwards to every probe");
     // --focus structure,files suppresses BOTH search probes.
@@ -1604,12 +1618,24 @@ describe("Ticket 3 — repo brief dispatch through main (DESIGN D5)", () => {
     assert.ok(!("docs" in brief) && !("entryPoints" in brief), "search sections omitted");
     // --depth 2 reaches the tree probe as a positive integer.
     assert.strictEqual(brief.tree.depth, 2);
-    // --max-chars 500 is a per-call budget on every read request
-    // (600-char canned content truncates to 499 chars + ellipsis).
-    assert.ok(Array.isArray(brief.files) && brief.files.length > 0);
-    for (const entry of brief.files) {
-      assert.strictEqual(entry.truncated, true, "--max-chars 500 reaches read requests");
-      assert.strictEqual(entry.content.length, 500);
+    // T5 FLIP (ADR-0007): this pin encoded the OLD forwarding contract
+    // (--max-chars 500 reached every read request and truncated its
+    // content per-call to 499+…). Consume-once replaced it — no
+    // sub-call receives the budget. At this crush budget the ladder
+    // bleeds both 600-char bodies and then drops the file section
+    // wholesale; the raw, untruncated envelope is recoverable from the
+    // artifacts store, and output-budget-t5.test.js pins the raw
+    // sub-result + compaction/ref/artifact contracts at gentler
+    // budgets.
+    assert.ok(!("docs" in brief) && !("entryPoints" in brief), "search sections still omitted");
+    assert.ok("compaction" in brief, "the seam consumed --max-chars once (T5)");
+    assert.strictEqual(brief.compaction.budget, 500);
+    assert.ok(typeof brief.compaction.ref === "string", "full envelope recoverable by ref");
+    assert.ok(brief.tree, "structure survives the crush budget");
+    if (Array.isArray(brief.files)) {
+      for (const entry of brief.files) {
+        assert.strictEqual(entry.truncated, false, "--max-chars 500 reaches NO read request (T5)");
+      }
     }
   });
 
@@ -1771,14 +1797,15 @@ describe("Ticket 3 — repo brief dispatch through main (DESIGN D5)", () => {
       /--max-chars <n>/,
       "max-chars flag documented",
     );
+    // T5 flip: the wording is now whole-envelope, not per-call.
     assert.match(
       REPO_HELP,
-      /per[- ]call/i,
-      "per-call max-chars wording present",
+      /whole.assembled brief|whole-envelope budget on the\s+assembled brief/i,
+      "whole-envelope max-chars wording present",
     );
     assert.match(
       REPO_HELP,
-      /tree is never character-limited|tree is never limited/i,
+      /tree is never character-limited|tree is never limited|never per-probe; the tree is never/i,
       "tree never limited note present",
     );
     // Envelope schema note: brief is a new schema-version-1 shape.

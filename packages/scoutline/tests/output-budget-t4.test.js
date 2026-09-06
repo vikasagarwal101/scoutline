@@ -753,11 +753,21 @@ describe("repo --max-chars (main) — search/read whole-envelope; tree rejects; 
       assert.equal(status, 1);
       const err = JSON.parse(stderr[0]);
       assert.equal(err.code, "UNSUPPORTED_OPTION");
-      assert.match(err.error, /--max-chars/);
-      // Fix-round E: the message attributes the SUBCOMMAND, never a
-      // Provider — tree has no ladder; no Provider is at fault.
-      assert.match(err.error, /repo tree/);
-      assert.ok(!/Provider "zai"/.test(err.error), "no provider attribution");
+      // M7 (owner-ruled): CommandOptionUnsupportedError — the old
+      // `Provider "repo tree" does not support option "--max-chars"
+      // capability "repository-exploration"` wording was a false
+      // sentence (no provider consulted). Tree now uses the
+      // command-scoped message + budgeted-surfaces hint.
+      assert.equal(
+        err.error,
+        'Command "repo tree" does not accept option "--max-chars"',
+      );
+      assert.ok(
+        !/Provider/.test(err.error),
+        "message must never say \"Provider\"",
+      );
+      assert.match(err.help ?? "", /repo search/, "hint names budgeted surfaces");
+      assert.match(err.help ?? "", /scoutline repo --help/);
     });
   });
 

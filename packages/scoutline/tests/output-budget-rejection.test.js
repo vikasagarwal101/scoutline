@@ -177,17 +177,19 @@ describe("non-ladder commands reject --max-chars with UNSUPPORTED_OPTION at pars
       assert.deepEqual(stdout, [], `${command}: data-only stdout contract — nothing on stdout`);
       const err = JSON.parse(stderr.join(""));
       assert.equal(err.code, "UNSUPPORTED_OPTION", `${command}: error code`);
-      assert.match(err.error, /--max-chars/, `${command}: names the option`);
-      // D5 attribution style (mirrors repo tree T4): the COMMAND is the
-      // quoted subject of the UnsupportedOptionError constructor, never
-      // a real provider id ("zai", "tavily", ...).
-      assert.ok(
-        new RegExp(`\\b${command}\\b`).test(err.error),
-        `${command}: message attributes the command`,
+      // M7: the message is command-scoped, machine-parseable, and never
+      // claims a provider was consulted (parse-time rejection — none was).
+      assert.equal(
+        err.error,
+        `Command "${command}" does not accept option "--max-chars"`,
+        `${command}: exact command-scoped message`,
       );
+      // Derivation-style guard on top of the exact match: whatever the
+      // message becomes, it must never contain the word "Provider" —
+      // the lie the owner rejected.
       assert.ok(
-        !/Provider "(zai|tavily|exa|jina|firecrawl|spider|minimax|perplexity|brave|linkup|you|parallel)"/.test(err.error),
-        `${command}: no provider attribution`,
+        !/Provider/.test(err.error),
+        `${command}: message must never say "Provider"`,
       );
     });
   }
@@ -204,6 +206,11 @@ describe("non-ladder commands reject --max-chars with UNSUPPORTED_OPTION at pars
     assert.equal(status, 1);
     const err = JSON.parse(stderr.join(""));
     assert.equal(err.code, "UNSUPPORTED_OPTION");
+    assert.equal(
+      err.error,
+      'Command "map" does not accept option "--max-chars"',
+      "valueless form gets the same command-scoped message",
+    );
   });
 
   it("command help still renders for a non-ladder command carrying --max-chars", async () => {

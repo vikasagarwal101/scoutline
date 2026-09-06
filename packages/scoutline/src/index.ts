@@ -121,6 +121,7 @@ import {
   ValidationError,
   UnsupportedCapabilityError,
   UnsupportedOptionError,
+  CommandOptionUnsupportedError,
   getErrorExitCode,
 } from "./lib/errors.js";
 import * as os from "node:os";
@@ -2540,16 +2541,13 @@ async function handleRepo(
     // flag instead of accept-and-drop (it was parsed for every
     // subcommand but never consumed by tree).
     if (flags["max-chars"] !== undefined) {
-      // Fix-round E: attribute the SUBCOMMAND, not a Provider — tree has
-      // no Output Budget ladder; no Provider is at fault. The
-      // constructor's first slot is the attributed label; passing
-      // "repo tree" (not a Provider id) keeps the class/code surface
-      // (UNSUPPORTED_OPTION) while telling the truth in the message.
-      throw new UnsupportedOptionError(
-        "repo tree",
-        "repository-exploration",
-        "--max-chars",
-      );
+      // M7 (owner-ruled fix): CommandOptionUnsupportedError — parse-time
+      // rejection, no Provider consulted, so the Provider-scoped
+      // UnsupportedOptionError wording was a false sentence. Tree keeps
+      // the same code/exit; `help` points at the budgeted surfaces.
+      throw new CommandOptionUnsupportedError("repo tree", "--max-chars", {
+        help: "Budgeted surfaces: repo search, repo read, repo brief. Try `scoutline repo --help`.",
+      });
     }
   } else if (command === "read") {
     readPath = positional[2];
@@ -4589,7 +4587,7 @@ export async function main(
   ) {
     invocation.writeStderr(
       formatErrorOutput(
-        new UnsupportedOptionError(command, "cli", "--max-chars"),
+        new CommandOptionUnsupportedError(command, "--max-chars"),
         outputMode,
         envSecrets,
       ),

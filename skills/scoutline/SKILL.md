@@ -5,7 +5,10 @@ description: |
   Linkup, and Spider.cloud CLI
   providing:
   - Fetch: direct evidentiary HTTP/REST retrieval with MD5/SHA-256 digests, disk streaming, and PDF processing
-  - Archive: temporal CDX indexing and verbatim snapshot replay via Wayback Machine
+  - Archive: temporal CDX indexing, verbatim snapshot replay, and snapshot-vs-live section diffing
+    via Wayback Machine
+  - Watch: keyless page monitoring — add/list/remove targets, cron ticks (0/1/2 exit contract),
+    and JSONL/RSS change feeds
   - Vision: image/video analysis, OCR, UI-to-code, error diagnosis (GLM-5V-Turbo)
   - Search: real-time web search with domain/recency/topic filtering
   - Reader: web page to markdown extraction (Z.AI, Tavily, Exa, Firecrawl, Parallel, Jina,
@@ -296,7 +299,8 @@ input).
 | search | Real-time web search | `--help` for filtering options (incl. `--topic`) and local context |
 | read | Fetch web pages as markdown (nine providers) | `--help` for format options |
 | fetch | Direct evidentiary HTTP retrieval (credential-free) | `--help` for `--out`/`--md5`/`--sha256`/`--pdf`/`-X`/`--data` |
-| archive | Wayback CDX indexing + verbatim snapshot replay (credential-free) | `--help` for `cdx`/`get` (`--at`, `--raw`) |
+| archive | Wayback CDX indexing, verbatim snapshot replay, snapshot-vs-live diff (credential-free) | `--help` for `cdx`/`get` (`--at`, `--raw`) and `diff` (`--since`) |
+| watch | Keyless page monitoring (credential-free, stateful; rejected under `--isolated`) | `--help` for `add`/`list`/`remove`/`run`/`feed`; `run` exits 0/1/2 |
 | crawl | Multi-page website traversal (Tavily, Firecrawl, or Spider.cloud) | `--help` for depth/breadth/filters |
 | map | URL-set discovery without fetching pages (Tavily, Firecrawl, or Spider.cloud) | `--help` for depth/breadth/filters |
 | research | Deep research with citations (seven providers; 4-250 credits) | `--help` for model/citation/timeout and local context |
@@ -324,6 +328,10 @@ npx scoutline@0.20.0 fetch https://api.github.com/repos/nodejs/node --sha256
 npx scoutline@0.20.0 fetch https://example.com/report.pdf --pdf text --out report.txt
 npx scoutline@0.20.0 archive cdx https://example.com/ --from 20230101 --to 20231231
 npx scoutline@0.20.0 archive get https://example.com/ --at 20230601000000 --raw
+npx scoutline@0.20.0 archive diff https://example.com/ --since 30d
+npx scoutline@0.20.0 watch add https://example.com/changelog --name example-changelog
+npx scoutline@0.20.0 watch run --all        # exit 0/1/2: no-change / change / fetch error
+npx scoutline@0.20.0 watch feed example-changelog --format rss
 npx scoutline@0.20.0 repo search facebook/react "server components"
 npx scoutline@0.20.0 repo search openai/codex "config" --language en
 npx scoutline@0.20.0 repo tree openai/codex --path codex-rs --depth 2
@@ -609,6 +617,37 @@ algorithm, and a valid hit is written through to the new key. Legacy files
 are never rewritten, migrated, or deleted. `--no-cache` performs no reads or
 writes. Injected credentials drive the fingerprint and legacy-key
 construction — ambient `process.env` is never reread.
+
+## Watch (page monitoring) + `archive diff`
+
+Keyless and credential-free like `fetch`/`archive`; watch is stateful
+(state under `SCOUTLINE_WATCH_DIR`, default `~/.scoutline/watch`) and
+therefore rejected under `--isolated`. Page targets only (http(s)) in v1.
+
+`watch run` exit codes are a cron contract:
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | No change — first run establishes a baseline (also exit 0) |
+| `1` | Change, including a permanent move (`moved`) to a new final URL |
+| `2` | Fetch error (network/timeout/HTTP >= 400); the snapshot ring does not advance |
+
+`--all` ticks every target and exits worst-wins (2 > 1 > 0); every
+target's outcome stays in the report array. Plain validation errors
+(unknown target, bad flags) remain `VALIDATION_ERROR` (house exit 1) —
+do not conflate with the tick contract.
+
+- `watch add <url> [--name] [--keep 1..100]` — names unique
+  case-sensitively (default host+path slug); ids never reused
+- `watch remove [--purge]` — change-log evidence survives unless purged
+- `watch feed [--format jsonl|rss]` — stdout IS the document: jsonl
+  streams the change log verbatim; rss renders change/moved entries
+  with guid `{targetId}:{gen}`
+- `archive diff <url> --since <date|duration>` — one-shot
+  snapshot-vs-live section diff; snapshot = newest CDX capture at or
+  before the instant (no capture <= T is a `VALIDATION_ERROR` pointing
+  at `archive cdx`); non-HTML degrades to hash-only; permanent move
+  reports `moved`
 
 ## Output
 

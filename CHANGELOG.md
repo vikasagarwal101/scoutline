@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Keyless Page Monitoring (`scoutline watch <add|list|remove|run|feed>`)**:
+  - `watch add <url> [--name <name>] [--keep <1..100>]`: registers a page target (http(s) pages only in v1) in a persistent registry under `SCOUTLINE_WATCH_DIR` (default `~/.scoutline/watch`). Names are unique case-sensitively (default name is the host+path slug); ids are never reused — removal retires the id. `--keep` bounds the snapshot ring (1..100, default 5).
+  - `watch list`: the registry, oldest first.
+  - `watch remove <name-or-id> [--purge]`: identity-guarded removal; the per-target change log and snapshots survive as evidence unless `--purge` deletes them.
+  - `watch run <name-or-id|--all> [--timeout <ms>]`: one monitoring tick with a cron-facing exit contract — 0 = no change (the first run establishes a baseline, also exit 0), 1 = change (including a permanent move), 2 = fetch error (network error, timeout, or HTTP >= 400; a failed capture never enters the snapshot ring). `--all` ticks every registered target at one instant and exits with the worst result (2 > 1 > 0). A permanent (301/308) redirect whose final URL left the registered one reports `moved` and exits 1 even when content is byte-identical. Plain validation errors (unknown target, bad flag values) keep the house `VALIDATION_ERROR` exit 1 behavior — do not conflate them with the tick contract's exit 1.
+  - `watch feed <name-or-id> [--format <jsonl|rss>]`: the change history as a document — `jsonl` (default) streams the change log verbatim (byte passthrough), `rss` renders the `change` and `moved` entries as an RSS 2.0 document with guid `{targetId}:{gen}` (baseline/no-change/error entries stay log-only). In both modes stdout IS the document; a valueless `--format` is refused.
+  - `--isolated` is rejected at parse time: watch is stateful by design (persistent snapshot ring plus a never-pruned change log).
+- **Snapshot-vs-Live Section Diff (`scoutline archive diff <url> --since <date|duration>`)**:
+  - One-shot comparison of a Wayback snapshot against the live page. `--since` (ISO date, ISO datetime, or duration like `30d`) resolves the newest CDX capture at or before the target instant — never a nearest-after substitution; no qualifying capture is a `VALIDATION_ERROR` pointing at `archive cdx` to inspect coverage.
+  - Both sides compare through the raw bytes (snapshot via Wayback `id_` verbatim replay, live via a real HTTP fetch) and a deterministic section-diff engine: heading-anchored `{added, removed, changed}`; non-HTML bytes degrade to a sha256 hash-only verdict over raw bytes; a permanent redirect to a different final URL reports `moved`.
+
 ## [0.20.0] - 2026-09-04
 
 ### Added

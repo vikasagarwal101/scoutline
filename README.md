@@ -16,7 +16,8 @@
 ## Features
 
 - **Fetch** — Direct, credential-free evidentiary HTTP retrieval with `--md5`/`--sha256` digests, disk streaming (`--out`), raw REST methods (`-X`), and byte-exact PDF processing (`--pdf`, `--pdf-repair`)
-- **Archive** — Temporal intelligence via the Internet Archive: CDX capture indexing and verbatim `id_`-mode snapshot replay
+- **Archive** — Temporal intelligence via the Internet Archive: CDX capture indexing, verbatim `id_`-mode snapshot replay, and snapshot-vs-live section diffing (`archive diff`)
+- **Watch** — Keyless page monitoring: register pages (`watch add`), run cron ticks (`watch run`), and read the change history as JSONL or RSS (`watch feed`)
 - **Search** — Real-time web search with domain, recency, and topic filtering
 - **Reader** — Fetch and parse web pages to clean markdown
 - **Crawl** — Multi-page website traversal with depth, breadth, and path filters
@@ -346,7 +347,8 @@ The CLI is self-documenting. Use `--help` at any level:
 ```bash
 scoutline --help              # All commands
 scoutline fetch --help        # Direct HTTP retrieval (GET/POST, @file, --md5, --out)
-scoutline archive --help      # Wayback temporal index (cdx) and replay (get)
+scoutline archive --help      # Wayback index (cdx), replay (get), diff vs live (diff)
+scoutline watch --help        # Keyless page monitoring (add / list / remove / run / feed)
 scoutline search --help       # Search options
 scoutline read --help         # Reader options
 scoutline crawl --help        # Crawl options
@@ -371,7 +373,34 @@ scoutline fetch https://example.com/doc.pdf --pdf text --out extracted.txt
 # Temporal Archival (Wayback Machine)
 scoutline archive cdx https://example.com/ --from 20200101 --limit 5
 scoutline archive get https://example.com/ --at 20210601000000 --raw
+scoutline archive diff https://example.com/docs --since 30d   # snapshot vs live sections
 
+# Page Monitoring (keyless, cron-friendly)
+scoutline watch add https://example.com/changelog --name example-changelog
+scoutline watch run example-changelog     # exit 0/1/2 — see table below
+scoutline watch run --all                 # worst result wins (2 > 1 > 0)
+scoutline watch feed example-changelog --format rss
+scoutline watch remove example-changelog --purge
+```
+
+### `watch run` exit codes (cron contract)
+
+`watch run` is new public surface: its exit codes are the signal a cron
+job or script consumes.
+
+| Exit | Meaning |
+|---|---|
+| `0` | No change — the first run against a target establishes a baseline and also exits 0 |
+| `1` | Change detected — including a permanent move (`moved`) to a new final URL |
+| `2` | Fetch error (network failure, timeout, or HTTP >= 400); the snapshot ring does not advance |
+
+`watch run --all` ticks every target and exits with the worst result
+(`2 > 1 > 0`); each target's outcome is still in the report array. Plain
+validation errors (unknown target, invalid flag values) keep the house
+`VALIDATION_ERROR` behavior — exit 1 via the standard error contract,
+not the tick-contract exit 1.
+
+```bash
 # Search
 scoutline search "TypeScript best practices" --count 10
 scoutline --provider tavily search "earnings call" --topic finance

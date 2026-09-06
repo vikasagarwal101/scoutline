@@ -4,7 +4,14 @@
 
 import * as vision from "./commands/vision.js";
 import type { VisionExecutionDependencies } from "./commands/vision.js";
-import { search, SEARCH_HELP, resolveFanoutPlan, executeFanoutPlan } from "./commands/search.js";
+import {
+  search,
+  SEARCH_HELP,
+  resolveFanoutPlan,
+  executeFanoutPlan,
+  SEARCH_LADDER,
+  rebuildBudgetedPresentations,
+} from "./commands/search.js";
 import { read, READ_HELP } from "./commands/read.js";
 import { crawl, CRAWL_HELP } from "./commands/crawl.js";
 import { map, MAP_HELP } from "./commands/map.js";
@@ -85,6 +92,8 @@ import {
   type ProviderRouting,
   type SaveLogEntry,
 } from "./lib/artifacts.js";
+import { applyBudget } from "./lib/output-budget.js";
+import { persistCompaction } from "./lib/output-budget-persistence.js";
 import {
   ConfigurationError,
   FileError,
@@ -1196,6 +1205,11 @@ async function handleSearch(
   const count = parseAndValidateCount(flags.count);
   const topic = parseAndValidateTopic(flags.topic);
   const type = parseAndValidateType(flags.type);
+  // Output Budget T3: strict positive-integer parse (parseBriefMaxChars
+  // class, NOT the lax parseInt idiom the other flags below still use —
+  // T4/T6 unify those). Parse-level, before Provider resolution, so a
+  // bad value is VALIDATION_ERROR regardless of credentials.
+  const maxChars = parseBriefMaxChars(flags["max-chars"]);
   // `type` is a content axis; `topic` is an editorial axis. They are
   // mutually exclusive. Enforced at parse time (before Provider
   // resolution) so the error is VALIDATION_ERROR regardless of provider.
@@ -1285,31 +1299,36 @@ async function handleSearch(
   // D5): fan-out records the arm list with no single effective; single
   // records requested + effective (the hook overrides effective with the
   // executor's actual server when runtime fallback switched providers).
+  // Output Budget T3: the same meta (args allow-list + ProviderRouting)
+  // doubles as the compaction artifact's persistCompaction meta — hoisted
+  // to a `budgetMeta` binding so both consumers state it once.
+  const searchSaveArgs = {
+    ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+    ...(count !== undefined ? { count } : {}),
+    ...(type !== undefined ? { type } : {}),
+    ...(topic !== undefined ? { topic } : {}),
+    ...(flags.merge === true ? { merge: true } : {}),
+    ...(flags["no-cache"] === true ? { "no-cache": true } : {}),
+    ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+  };
+  const searchProviderRouting: ProviderRouting =
+    fanoutPlan.mode === "fanout"
+      ? {
+          mode: "fanout",
+          ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+          arms: fanoutPlan.arms,
+        }
+      : {
+          mode: "single",
+          ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+          // Single mode always resolved a provider above (the ternary).
+          effective: providerId as ProviderId,
+        };
   const save = createSaveArtifactHook(deps, {
     command: "search",
     outputMode,
-    args: {
-      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
-      ...(count !== undefined ? { count } : {}),
-      ...(type !== undefined ? { type } : {}),
-      ...(topic !== undefined ? { topic } : {}),
-      ...(flags.merge === true ? { merge: true } : {}),
-      ...(flags["no-cache"] === true ? { "no-cache": true } : {}),
-      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
-    },
-    provider:
-      fanoutPlan.mode === "fanout"
-        ? {
-            mode: "fanout",
-            ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
-            arms: fanoutPlan.arms,
-          }
-        : {
-            mode: "single",
-            ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
-            // Single mode always resolved a provider above (the ternary).
-            effective: providerId as ProviderId,
-          },
+    args: searchSaveArgs,
+    provider: searchProviderRouting,
   });
   const query = positional.join(" ");
 
@@ -1467,9 +1486,77 @@ async function handleSearch(
           ? result
           : { ...result, data: { context: contextInfo, results: result.data } };
 
+      // Output Budget T3 (ADR-0007): whole-envelope budgeting at the
+      // handler seam — AFTER dispatch (single AND fan-out have merged
+      // by here), AFTER --count (both its per-request cap and the
+      // post-merge slice ran inside dispatch), AFTER --max-summary
+      // (per-field lever composed underneath), and AFTER the --context
+      // wrapper so the envelope measured is exactly what -O data
+      // prints. The ladder only targets the `results` rows; the
+      // `--context` block (counts, hashes — D6 privacy shape) is
+      // never-cut by construction, like url/title/rank. Presentations
+      // are rebuilt from the projection so text modes reflect the
+      // budget; the stamped `compaction` payload field survives every
+      // output mode including -O data. Without the flag this is the
+      // identity function — the zero-diff invariant.
+      const applyOutputBudget = async (
+        result: CommandResult,
+      ): Promise<CommandResult> => {
+        if (maxChars === undefined || result.kind !== "data") return result;
+        // `--context` wraps the payload as {context, results}; budget
+        // the wrapper wholesale (context participates in measurement,
+        // never in a rule) and persist the wrapper verbatim. The bare
+        // array path wraps in {results} for measurement and persists
+        // the bare array (the unbudgeted print shape — cardinal pin).
+        const isContextWrapped =
+          result.data !== null &&
+          typeof result.data === "object" &&
+          !Array.isArray(result.data) &&
+          Array.isArray((result.data as { results?: unknown[] }).results);
+        if (!isContextWrapped && !Array.isArray(result.data)) return result;
+        const measured = isContextWrapped ? result.data : { results: result.data };
+        const persisted = isContextWrapped
+          ? measured
+          : Array.isArray(result.data)
+            ? result.data
+            : measured;
+        const outcome = applyBudget(measured, maxChars, SEARCH_LADDER);
+        if (outcome.compaction === undefined) {
+          return result;
+        }
+        // Caller redacts BEFORE persisting (the save seam's contract,
+        // mirrored): the artifact's `result` is the post-redaction,
+        // pre-compaction payload — EXACTLY what an unbudgeted run prints.
+        const redactedEnvelope = redactSecrets(persisted, deps.secrets);
+        const compaction = await persistCompaction(
+          redactedEnvelope,
+          outcome.compaction,
+          {
+            command: "search",
+            args: searchSaveArgs,
+            provider: searchProviderRouting,
+            outputFormat: outputMode,
+          },
+          {
+            env: deps.env,
+            now: deps.now ?? Date.now,
+          },
+        );
+        context.notice(
+          `output budget: ${maxChars} chars — full untrimmed envelope saved (${compaction.ref})`,
+        );
+        const projection = outcome.projection as { results: unknown[] };
+        return {
+          ...result,
+          data: { ...measured, results: projection.results, compaction },
+          // Budgeted data is post-`--fields` projection already; text
+          // presentations over the budgeted rows keep url/title visible.
+          presentations: rebuildBudgetedPresentations(projection.results),
+        };
+      };
+
       if (fanoutPlan.mode === "fanout") {
-        return applyContextWrapper(
-          await executeFanoutPlan(
+        return applyOutputBudget(applyContextWrapper(await executeFanoutPlan(
             fanoutPlan,
             {
               descriptors: deps.providerDescriptors,
@@ -1491,7 +1578,7 @@ async function handleSearch(
             },
             context,
           ),
-        );
+        ));
       }
       const outcome = await executeWithFallback(
         {
@@ -1528,7 +1615,7 @@ async function handleSearch(
           );
         },
       );
-      return applyContextWrapper(outcome.result);
+      return applyOutputBudget(applyContextWrapper(outcome.result));
     },
     outputMode,
     deps.now,

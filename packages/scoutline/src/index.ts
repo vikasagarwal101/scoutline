@@ -12,6 +12,7 @@ import {
   SEARCH_LADDER,
   rebuildBudgetedPresentations,
 } from "./commands/search.js";
+import type { FormattedResult } from "./commands/search.js";
 import {
   read,
   READ_HELP,
@@ -1654,18 +1655,32 @@ async function handleSearch(
           {
             env: deps.env,
             now: deps.now ?? Date.now,
+            onNotice: context.notice,
           },
         );
         context.notice(
           `output budget: ${maxChars} chars — full untrimmed envelope saved (${compaction.ref})`,
         );
         const projection = outcome.projection as { results: unknown[] };
+        // Fix-round (review): `result.data` rows are POST-`--fields`
+        // (title/url/rank may be stripped — the rank-vs-row join
+        // budgeted text modes need no longer exists once fields
+        // filters them). Rebuilding text presentations from filtered
+        // rows prints "undefined — undefined" links, so the budgeted
+        // rebuild applies ONLY to the unfiltered path; under --fields
+        // the original full-row presentations stand (they never claim
+        // to be budgeted — pre-T3 text modes showed these same full
+        // rows; data is the budgeted surface).
+        const fieldsActive =
+          searchOptions.fields !== undefined && searchOptions.fields.length > 0;
         return {
           ...result,
           data: { ...measured, results: projection.results, compaction },
-          // Budgeted data is post-`--fields` projection already; text
-          // presentations over the budgeted rows keep url/title visible.
-          presentations: rebuildBudgetedPresentations(projection.results),
+          // Unfiltered: rebuild text modes from the budgeted rows so
+          // url/title stay visible at budgeted size.
+          ...(fieldsActive
+            ? {}
+            : { presentations: rebuildBudgetedPresentations(projection.results) }),
         };
       };
 
@@ -1787,6 +1802,12 @@ async function handleRead(
     );
   }
 
+  // Fix-round (review): parse --max-chars BEFORE Provider resolution
+  // so a malformed value is VALIDATION_ERROR regardless of provider
+  // state (an unknown --provider must not mask it) — same order as
+  // search.
+  const maxChars = parseMaxCharsFlag(flags);
+
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
   // explicit --provider > SCOUTLINE_PROVIDER > quota-ranked pick.
   // Selection never consults credentials beyond the descriptor
@@ -1835,7 +1856,6 @@ async function handleRead(
     fullEnvelope: flags["full-envelope"] === true,
     extract,
   };
-  const maxChars = parseMaxCharsFlag(flags);
 
   // Shared Reader execution dependencies. The cache/sleep/random
   // default to the same production values as Search and Repository
@@ -1900,10 +1920,10 @@ async function handleRead(
           effective: providerId,
         },
         outputMode,
-        rebuild: (projection) => {
+        rebuild: (projection, result) => {
           // Text presentations emit `content` directly for content
           // reads; rebuild them from the budgeted content string.
-          const r = outcome.result;
+          const r = result;
           if (r.kind !== "data") return r as CommandResult;
           if (readOptions.extract !== undefined) {
             return { ...r, data: projection } as CommandResult;
@@ -1947,6 +1967,11 @@ async function handleCrawl(
     throw new ValidationError("URL must start with http:// or https://");
   }
 
+  // Fix-round (review): parse --max-chars BEFORE Provider resolution
+  // (same parse-first order as search/read) so a malformed value is
+  // VALIDATION_ERROR regardless of provider state.
+  const maxChars = parseMaxCharsFlag(flags);
+
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
   // explicit --provider > SCOUTLINE_PROVIDER > quota-ranked pick.
   // (PB-T4.)
@@ -1965,9 +1990,6 @@ async function handleCrawl(
   // isolated in-memory doubles.
   // save-artifacts T4: one save hook for this run (inert unless main wired
   // a save). args = the provider-influencing allow-list only.
-  // Output Budget T4 (ADR-0007): strict positive-integer parse; the
-  // whole-envelope budget runs at the handler seam below (CRAWL_LADDER).
-  const maxChars = parseMaxCharsFlag(flags);
   const crawlSaveArgs = {
     ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
     ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
@@ -2053,8 +2075,8 @@ async function handleCrawl(
           effective: providerId,
         },
         outputMode,
-        rebuild: (projection) => {
-          const r = outcome.result;
+        rebuild: (projection, result) => {
+          const r = result;
           if (r.kind !== "data") return r as CommandResult;
           const pages =
             (projection as { pages?: { url: string; content: string }[] }).pages ?? [];
@@ -2446,8 +2468,8 @@ async function handleResearch(
           effective: providerId,
         },
         outputMode,
-        rebuild: (projection) => {
-          const r = outcome.result;
+        rebuild: (projection, result) => {
+          const r = result;
           if (r.kind !== "data") return r as CommandResult;
           const e = projection as {
             sections?: { heading: string; body: string }[];
@@ -2524,7 +2546,6 @@ async function handleRepo(
   let readPath: string | undefined;
   let briefFocus: readonly RepoBriefFocus[] | undefined;
   let briefDepth: number | undefined;
-  let briefMaxChars: number | undefined;
   if (command === "search") {
     searchQuery = positional.slice(2).join(" ");
     if (!repo || !searchQuery) {
@@ -2603,19 +2624,19 @@ async function handleRepo(
       }
       briefDepth = parseBriefDepth(depthRaw);
     }
-    const briefMaxCharsRaw = flags["max-chars"];
-    if (briefMaxCharsRaw !== undefined) {
-      if (briefMaxCharsRaw === true) {
-        throw new ValidationError("--max-chars requires a value.");
-      }
-      briefMaxChars = parseBriefMaxChars(briefMaxCharsRaw);
-    }
   } else {
     throw new ValidationError(
       `Unknown repo command: ${command}`,
       'Run "scoutline repo --help" for available commands',
     );
   }
+
+  // Fix-round (review): parse --max-chars BEFORE Provider resolution
+  // (same parse-first order as search/read/crawl) so a malformed
+  // value is VALIDATION_ERROR regardless of provider state. Brief
+  // already parsed (and validated) its own value above; tree rejected
+  // the flag there.
+  const maxChars = parseMaxCharsFlag(flags);
 
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
   // explicit --provider > SCOUTLINE_PROVIDER > quota-ranked pick.
@@ -2652,11 +2673,8 @@ async function handleRepo(
   const language = (flags.language ?? flags.lang) as "en" | "zh" | undefined;
   // ADR-0007 T4: strict positive-integer parse for search/read (the
   // lax parseInt silently coerced `500x` → 500). `repo tree` rejects
-  // the flag above; `repo brief` parsed its own strict value earlier.
-  const maxChars =
-    command === "search" || command === "read" || command === "brief"
-      ? parseMaxCharsFlag(flags)
-      : undefined;
+  // the flag above; `repo brief` parsed its own strict value earlier
+  // (pre-provider, same fix-round order).
   const noCache = flags["no-cache"] === true;
   const treePath = flags.path as string | undefined;
   const depth = flags.depth ? parseInt(flags.depth as string, 10) : undefined;
@@ -2774,8 +2792,8 @@ async function handleRepo(
           effective: providerId,
         },
         outputMode,
-        rebuild: (projection) => {
-          const r = outcome.result;
+        rebuild: (projection, result) => {
+          const r = result;
           if (r.kind !== "data") return r as CommandResult;
           return { ...r, data: projection } as CommandResult;
         },
@@ -4058,13 +4076,22 @@ async function applyCommandOutputBudget(
     {
       env: options.deps.env,
       now: options.deps.now ?? Date.now,
+      onNotice: options.context.notice,
     },
   );
   options.context.notice(
     `output budget: ${maxChars} chars — full untrimmed envelope saved (${compaction.ref})`,
   );
   const data = outcome.projection as Record<string, unknown>;
-  return options.rebuild({ ...data, compaction }, { ...result, data });
+  // Fix-round (review): the ladder changed content — an envelope that
+  // carries a `truncated` field must say so (docs contract), but rules
+  // cannot stamp it in-rule (the stamp's own size defeats the engine's
+  // shrink check on first pass). Stamped here, post-walk, once.
+  const stamped =
+    "truncated" in data && data.truncated !== true
+      ? { ...data, truncated: true }
+      : data;
+  return options.rebuild({ ...stamped, compaction }, { ...result, data });
 }
 
 /**

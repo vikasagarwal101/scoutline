@@ -1046,3 +1046,82 @@ describe("output modes + zero-diff (T4)", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// PR #103 fix-round pins (review): single omission marker, strict shrink,
+// truncated-truth stamps, stamp reserve.
+// ---------------------------------------------------------------------------
+
+describe("PR #103 fix-round — marker + truth-flag pins", () => {
+  it("repeated halving never accumulates omission markers (read ladder)", () => {
+    const e = {
+      url: "https://e/1",
+      title: "T",
+      content: "# Title\n\n" + "x".repeat(400),
+    };
+    const out = applyBudget(e, 120, READ_LADDER);
+    const trimmed = out.projection.content.split("\n").filter((l) => l.startsWith("…"));
+    for (const line of trimmed) {
+      assert.ok(!line.startsWith("……"), "one omission marker, never stacked");
+    }
+  });
+
+  it("crawl trim keeps ONE marker and stamps page truth flags", () => {
+    const e = crawlResult();
+    const out = applyBudget(e, Math.floor(measurePayload(e) / 2), CRAWL_LADDER);
+    const page = out.projection.pages.find((p) => p.content.startsWith("…"));
+    if (page !== undefined) {
+      assert.ok(!page.content.startsWith("……"), "single marker");
+      assert.equal(page.truncated, true, "trimmed page says truncated:true");
+      assert.equal(
+        typeof page.originalContentLength,
+        "number",
+        "originalContentLength present",
+      );
+    }
+  });
+
+  it("repo-read trim stamps truncated:true while originalContentLength keeps the full length", () => {
+    const e = {
+      schemaVersion: 1,
+      repository: "owner/repo",
+      path: "README.md",
+      content: "y".repeat(400),
+      truncated: false,
+      originalContentLength: 400,
+    };
+    const out = applyBudget(e, 200, REPO_READ_LADDER);
+    assert.ok(out.compaction);
+    assert.equal(out.projection.truncated, true, "ladder sets the truth flag");
+    assert.equal(out.projection.originalContentLength, 400, "original length preserved");
+    assert.ok(out.projection.content.length < 400, "content actually shrank");
+  });
+
+  it("repo-search trim stamps truncated:true", () => {
+    const e = {
+      schemaVersion: 1,
+      repository: "owner/repo",
+      query: "q",
+      language: "en",
+      excerpts: [{ text: "z".repeat(300) }, { text: "w".repeat(300) }],
+      truncated: false,
+      originalTextLength: 600,
+    };
+    const out = applyBudget(e, 300, REPO_SEARCH_LADDER);
+    assert.ok(out.compaction);
+    assert.equal(out.projection.truncated, true, "ladder sets the truth flag");
+  });
+
+  it("two-char lines never stall the trim (degenerate replacement skip)", () => {
+    // Final body line "OK" cannot strictly shrink by halving — the rule
+    // must skip it and trim the earlier, longer line instead.
+    const e = {
+      url: "https://e/1",
+      title: "T",
+      content: "# Title\n\n" + "a".repeat(100) + "\n\nOK",
+    };
+    const out = applyBudget(e, measurePayload(e) - 30, READ_LADDER);
+    assert.ok(out.compaction);
+    assert.ok(!out.projection.content.includes("a".repeat(100)), "long line bled");
+  });
+});

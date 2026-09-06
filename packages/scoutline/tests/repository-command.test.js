@@ -1640,6 +1640,37 @@ describe("P6-07A flags/defaults — Explorer request shape", () => {
     assert.ok(typeof parsed.content === "string");
   });
 
+  it("search: mid-budget trims excerpts AND sets truncated:true (non-floor teeth)", async () => {
+    const big = [{ text: "alpha".repeat(60) }, { text: "beta".repeat(60) }];
+    const m = makeMainDeps({ search: () => cannedSearchResult(big) });
+    const { adapter, stdout } = createRecordingAdapter();
+    await main(["repo", "search", "owner/repo", "query", "--max-chars", "300"], {
+      ...m.mainDeps,
+      invocation: adapter,
+    });
+    const parsed = JSON.parse(stdout[0]);
+    assert.ok(parsed.compaction, "mid budget fires");
+    assert.equal(parsed.compaction.note, undefined, "not the floor");
+    assert.equal(parsed.excerpts.length, 2, "excerpts survive (only bodies bled)");
+    assert.ok(parsed.excerpts[0].text.length < 300, "first excerpt actually shrank");
+    assert.equal(parsed.truncated, true, "truth flag set when the ladder cuts");
+  });
+
+  it("read: mid-budget trims content AND sets truncated:true (non-floor teeth)", async () => {
+    const full = "abcdefghijklmnop".repeat(20);
+    const m = makeMainDeps({ readFile: () => cannedFileResult(full) });
+    const { adapter, stdout } = createRecordingAdapter();
+    await main(["repo", "read", "owner/repo", "README.md", "--max-chars", "250"], {
+      ...m.mainDeps,
+      invocation: adapter,
+    });
+    const parsed = JSON.parse(stdout[0]);
+    assert.ok(parsed.compaction, "mid budget fires");
+    assert.equal(parsed.compaction.note, undefined, "not the floor");
+    assert.ok(parsed.content.length < full.length, "content actually shrank");
+    assert.equal(parsed.truncated, true, "truth flag set when the ladder cuts");
+  });
+
   it("read: --no-cache bypasses cache write-back (cache.set count is zero)", async () => {
     const m = makeMainDeps({ readFile: () => cannedFileResult() });
     const { adapter } = createRecordingAdapter();

@@ -70,6 +70,14 @@ export interface PersistCompactionOptions {
   readonly now: () => number;
   /** Injectable entropy so hermetic tests never touch crypto. */
   readonly randomBytes?: RandomBytesSource;
+  /**
+   * Fix-round (review): sink for {@link appendLogEntry}'s corrupt-log
+   * reset notice, mirroring createSaveArtifactHook's
+   * `notice(logNotice)`. Without it a corrupt `index.json` is silently
+   * reset by this run's append — earlier artifacts become unreachable
+   * through `history` with NO stderr trace at all.
+   */
+  readonly onNotice?: (message: string) => void;
 }
 
 /**
@@ -109,7 +117,8 @@ export async function persistCompaction(
     cliVersion: CLI_VERSION,
     masterPath: path.basename(masterPath),
   };
-  await appendLogEntry(dir, entry);
+  const logNotice = await appendLogEntry(dir, entry);
+  if (logNotice !== undefined) options.onNotice?.(logNotice);
   return { ...compaction, ref: requestId };
 }
 

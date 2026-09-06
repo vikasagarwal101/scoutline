@@ -472,11 +472,16 @@ const trimLastSectionBodiesRule: LadderRule = {
     // Find the LAST section with a non-trivial body; halve it.
     for (let i = sections.length - 1; i >= 0; i--) {
       const section = sections[i]!;
-      const stripped = section.body.replace(/…$/, "");
-      if (stripped.length <= 1) continue;
-      const half = Math.max(1, Math.floor(stripped.length / 2));
+      const clean = section.body.replace(/^…+/, "").replace(/…$/, "");
+      if (clean.length <= 1) continue;
+      const half = Math.max(1, Math.floor(clean.length / 2));
+      // Fix-round (review): halve the STRIPPED text — repeated passes
+      // keep ONE omission marker (never "………" accumulation) — and
+      // skip bodies the halving cannot strictly shrink.
+      const replacement = "…" + clean.slice(0, half);
+      if (replacement.length >= section.body.length) continue;
       const next = [...sections];
-      next[i] = { ...section, body: "…" + stripped.slice(0, half) };
+      next[i] = { ...section, body: replacement };
       return { ...e, sections: next };
     }
     return envelope;

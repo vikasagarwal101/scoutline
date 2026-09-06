@@ -76,7 +76,7 @@ export interface SearchExecutionDependencies {
   readonly now?: () => number;
 }
 
-interface FormattedResult {
+export interface FormattedResult {
   rank: number;
   title: string;
   url: string;
@@ -122,10 +122,12 @@ const trimSummariesRule: LadderRule = {
     results.map((r) => {
       const row = r as { summary?: string };
       if (!row.summary) return r;
-      // Halve, then strip the ellipsis char the trim appends — repeated
-      // steps must always strictly shrink (the engine's exhaust check).
-      const half = Math.max(0, Math.floor(row.summary.replace(/…$/, "").length / 2));
-      return { ...row, summary: half > 0 ? "…".repeat(1) + row.summary.slice(0, half) : "" };
+      // Fix-round (review): halve the STRIPPED text — repeated passes
+      // keep ONE omission marker (never "………" accumulation) and each
+      // pass strictly shrinks (the engine's exhaust check).
+      const clean = row.summary.replace(/^…+/, "").replace(/…$/, "");
+      const half = Math.floor(clean.length / 2);
+      return { ...row, summary: half > 0 ? "…" + clean.slice(0, half) : "" };
     }),
   ),
 };

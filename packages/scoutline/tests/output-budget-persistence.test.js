@@ -218,3 +218,27 @@ describe("persistCompaction — does NOT fire", () => {
     });
   });
 });
+
+describe("PR #103 fix-round — corrupt-log notice propagation", () => {
+  it("persistCompaction forwards appendLogEntry's corrupt-index warning via onNotice", async (t) => {
+    await withTempDir(t, async (dir) => {
+      // Seed a CORRUPT index.json; the append must reset it and report.
+      await fs.writeFile(path.join(dir, "index.json"), "{not valid json", "utf8");
+      const notices = [];
+      const compaction = await persistCompaction(
+        makeEnvelope(1),
+        { budget: 5, note: "floor" },
+        META,
+        { ...persistenceOptions(dir), onNotice: (m) => notices.push(m) },
+      );
+      assert.ok(compaction.ref, "ref still stamped");
+      assert.ok(
+        notices.some((m) => /corrupt/i.test(m)),
+        `corrupt reset notice propagated, got: ${JSON.stringify(notices)}`,
+      );
+      // And the reset log survives with the new entry.
+      const { log } = await readLog(dir);
+      assert.equal(log.entries.length, 1);
+    });
+  });
+});

@@ -225,7 +225,7 @@ function buildExtractEnvelope(
 const trimLastParagraphsRule: LadderRule = {
   name: "trim-last-paragraphs",
   apply(envelope) {
-    const e = envelope as { content?: string };
+    const e = envelope as { content?: string; truncated?: boolean };
     const content = e.content;
     if (!content) return envelope;
     const lines = content.split("\n");
@@ -238,12 +238,26 @@ const trimLastParagraphsRule: LadderRule = {
     // cut" holds at every budget.
     for (let i = lines.length - 1; i >= 0; i--) {
       if (/^#{1,6}\s/.test(lines[i]!)) continue;
-      const stripped = lines[i]!.replace(/…$/, "");
-      if (stripped.length <= 1) continue;
-      const half = Math.max(1, Math.floor(stripped.length / 2));
+      const clean = lines[i]!.replace(/^…+/, "").replace(/…$/, "");
+      if (clean.length <= 1) continue;
+      const half = Math.max(1, Math.floor(clean.length / 2));
       const next = [...lines];
-      next[i] = "…" + stripped.slice(0, half);
-      return { ...e, content: next.join("\n") };
+      // Fix-round (review): halve the MARKER-FREE text — every pass
+      // rebuilds exactly ONE leading omission marker (accumulating
+      // "………" markers wasted budget and misread as stacked omissions)
+      // and the replacement is strictly shorter than the line it
+      // replaces (the engine's exhaust check).
+      const replacement = "…" + clean.slice(0, half);
+      if (replacement.length >= lines[i]!.length) continue;
+      next[i] = replacement;
+          // Fix-round (review): content changed — flip a pre-existing
+    // `truncated: false` to true (truth flags: README/troubleshooting
+    // promise this). Conditional so the flip never ADDS the key (that
+    // would inflate first-pass size and defeat the engine's shrink
+    // check); the seam stamps envelopes that never had one.
+      return e.truncated === false
+        ? { ...e, content: next.join("\n"), truncated: true }
+        : { ...e, content: next.join("\n") };
     }
     return envelope;
   },
@@ -283,18 +297,23 @@ function splitSections(content: string): Section[] {
 const dropBottomSectionsRule: LadderRule = {
   name: "drop-bottom-sections",
   apply(envelope) {
-    const e = envelope as { content?: string };
+    const e = envelope as { content?: string; truncated?: boolean };
     const content = e.content;
     if (!content) return envelope;
     const sections = splitSections(content);
     if (sections.length <= 1) return envelope;
     sections.pop();
-    return {
-      ...e,
-      content: sections
-        .map((s) => [...(s.heading ? [s.heading] : []), ...s.bodyLines].join("\n"))
-        .join("\n"),
-    };
+        // Fix-round (review): content changed — flip a pre-existing
+    // `truncated: false` to true (truth flags: README/troubleshooting
+    // promise this). Conditional so the flip never ADDS the key (that
+    // would inflate first-pass size and defeat the engine's shrink
+    // check); the seam stamps envelopes that never had one.
+    const rejoined = sections
+      .map((s) => [...(s.heading ? [s.heading] : []), ...s.bodyLines].join("\n"))
+      .join("\n");
+    return e.truncated === false
+      ? { ...e, content: rejoined, truncated: true }
+      : { ...e, content: rejoined };
   },
 };
 
@@ -310,7 +329,7 @@ const dropBottomSectionsRule: LadderRule = {
 const trimItemValuesRule: LadderRule = {
   name: "trim-item-values",
   apply(envelope) {
-    const e = envelope as { items?: unknown[] };
+    const e = envelope as { items?: unknown[]; truncated?: boolean };
     const items = e.items;
     if (!items || items.length === 0) return envelope;
     let changed = false;
@@ -321,10 +340,18 @@ const trimItemValuesRule: LadderRule = {
       const out: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(row)) {
         if (typeof value === "string" && value.length > 1 && key !== "url") {
-          const stripped = value.replace(/…$/, "");
-          const half = Math.max(1, Math.floor(stripped.length / 2));
-          out[key] = "…" + stripped.slice(0, half);
-          trimmed = true;
+          const clean = value.replace(/^…+/, "").replace(/…$/, "");
+          const half = Math.max(1, Math.floor(clean.length / 2));
+          // Fix-round (review): halve the MARKER-FREE text (exactly ONE
+          // omission marker across repeated passes) and skip values the
+          // halving cannot strictly shrink.
+          const replacement = "…" + clean.slice(0, half);
+          if (replacement.length >= value.length) {
+            out[key] = value; // keep the field — skipping the copy would DROP the name
+          } else {
+            out[key] = replacement;
+            trimmed = true;
+          }
         } else {
           out[key] = value;
         }
@@ -333,7 +360,14 @@ const trimItemValuesRule: LadderRule = {
       return out;
     });
     if (!changed) return envelope;
-    return { ...e, items: next };
+        // Fix-round (review): content changed — flip a pre-existing
+    // `truncated: false` to true (truth flags: README/troubleshooting
+    // promise this). Conditional so the flip never ADDS the key (that
+    // would inflate first-pass size and defeat the engine's shrink
+    // check); the seam stamps envelopes that never had one.
+    return e.truncated === false
+      ? { ...e, items: next, truncated: true }
+      : { ...e, items: next };
   },
 };
 

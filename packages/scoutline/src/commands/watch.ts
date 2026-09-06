@@ -56,6 +56,7 @@ import { extractSections, diffDocuments } from "../lib/section-diff.js";
 import {
   fetchLiveDocument,
   charsetFromContentType,
+  isSameDocumentUrl,
 } from "./archive.js";
 
 export const WATCH_HELP = `
@@ -413,12 +414,12 @@ async function runTick(
   );
 
   // Permanent move (ruling #7): permanent redirect AND the final URL left
-  // the registered one. Compares normalized URL spellings so a
-  // trailing-slash rewrite alone is not a move. Exit 1 even when the
-  // content is byte-identical — the durable identity changed.
-  const sameUrl =
-    new URL(finalUrl).toString() === new URL(target.url).toString();
-  if (live.moved && !sameUrl) {
+  // the registered one, compared via isSameDocumentUrl (exported from
+  // archive.ts) so watch and `archive diff` give the same word the same
+  // meaning: a trailing-slash variant of the same path is NOT a move.
+  // Exit 1 even when the content is byte-identical — the durable identity
+  // changed.
+  if (live.moved && !isSameDocumentUrl(finalUrl, target.url)) {
     const diff = diffDocuments(priorExtraction, currentExtraction);
     await appendChangeLog(root, target.id, {
       at: options.now,
@@ -452,7 +453,10 @@ async function runTick(
     diff.removed.length === 0 &&
     diff.changed.length === 0 &&
     priorExtraction.hash === currentExtraction.hash &&
-    prior.finalUrl === finalUrl;
+    // Same-document comparison (see isSameDocumentUrl): a finalUrl hop
+    // to a trailing-slash variant of the same path is not a change.
+    (prior.finalUrl === finalUrl ||
+      (prior.finalUrl != null && isSameDocumentUrl(prior.finalUrl, finalUrl ?? "")));
   if (unchanged) {
     await appendChangeLog(root, target.id, {
       at: options.now,
@@ -626,9 +630,15 @@ function parseFeedFormat(raw: string | boolean | undefined): "jsonl" | "rss" {
  * through this BEFORE templating. `&` first (else double-escapes), then
  * the four markup delimiters; `'` as `&#39;` (also valid in attribute
  * values). No CDATA tricks — the frozen fixture pins the mapping.
+ * XML 1.0 forbids control chars other than \t \n \r — any other char
+ * below 0x20 would make strict readers reject the whole feed, so it is
+ * stripped (not entity-encoded: no valid encoding exists). Chars above
+ * the BMP (surrogate pairs / invalid code points) are out of scope.
  */
 function xmlEscape(text: string): string {
   return text
+    // eslint-disable-next-line no-control-regex -- test fixture uses \x01
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -655,7 +665,11 @@ function feedItemTitle(
   const added = entry.added ?? [];
   if (added.length > 0) return `added: ${added[0] ?? ""}`;
   const removed = entry.removed ?? [];
-  return `removed: ${removed[0] ?? ""}`;
+  if (removed.length > 0) return `removed: ${removed[0] ?? ""}`;
+  // finalUrl-only change (empty diff arrays): the fallback would render
+  // a garbage "removed: " + empty description — name the actual change.
+  if (entry.finalUrl) return `changed: ${entry.finalUrl}`;
+  return `changed: (content only)`;
 }
 
 function feedItemDescription(entry: ParsedChangeLogEntry): string {
@@ -667,6 +681,9 @@ function feedItemDescription(entry: ParsedChangeLogEntry): string {
   if (removed.length > 0) segments.push(`removed: ${removed.join(", ")}`);
   if (changed.length > 0) segments.push(`changed: ${changed.join(", ")}`);
   if (entry.kind === "moved") segments.push(`moved to ${entry.finalUrl ?? ""}`);
+  // Mirrors feedItemTitle's fallback: a finalUrl-only change renders as
+  // an explicit url-change description, never an empty string.
+  if (segments.length === 0 && entry.finalUrl) segments.push(`url changed to ${entry.finalUrl}`);
   return segments.join("; ");
 }
 

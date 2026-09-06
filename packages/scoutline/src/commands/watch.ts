@@ -21,7 +21,11 @@
  * would silently orphan the monitored state).
  */
 
-import type { CommandResult, TextOutputMode } from "../command-invocation.js";
+import type {
+  CommandResult,
+  CommandInvocationAdapter,
+  TextOutputMode,
+} from "../command-invocation.js";
 import { invokeCommand } from "../command-invocation.js";
 import type { OutputMode } from "../lib/output.js";
 import { ValidationError } from "../lib/errors.js";
@@ -31,12 +35,22 @@ import {
   addTarget,
   listTargets,
   removeTarget,
+  getTarget,
+  listSnapshots,
+  readSnapshot,
+  appendSnapshot,
+  appendChangeLog,
   WATCH_DEFAULT_KEEP,
   WATCH_MIN_KEEP,
   WATCH_MAX_KEEP,
   type WatchTarget,
   type WatchDirEnvironment,
 } from "../lib/watch-store.js";
+import { extractSections, diffDocuments } from "../lib/section-diff.js";
+import {
+  fetchLiveDocument,
+  charsetFromContentType,
+} from "./archive.js";
 
 export const WATCH_HELP = `
 scoutline watch <subcommand> [args] [options] - Keyless page monitoring
@@ -63,6 +77,10 @@ Options for 'watch add':
 Options for 'watch remove':
   --purge                  Also delete the per-target change log and
                            snapshots (default keeps the evidence)
+
+Options for 'watch run':
+  --timeout <ms>           Live fetch timeout in milliseconds
+                           (default: 30000; must be a positive integer)
 
 Global Options:
   --output-format, -O      Output format: data, json, pretty, compact, markdown, refs, tty
@@ -195,6 +213,375 @@ function formatTargetRow(target: WatchTarget): string {
   return `${target.id}  ${target.name}  keep=${target.keep}  ${target.url}`;
 }
 
+// ---------------------------------------------------------------------------
+// watch run (T5 — the cron tick)
+// ---------------------------------------------------------------------------
+
+/** Default live-fetch timeout (reuses the fetch-command constant value). */
+const RUN_DEFAULT_TIMEOUT_MS = 30000;
+/** Live response cap per tick (the 50MB fetch-command default class). */
+const RUN_MAX_BYTES = 50 * 1024 * 1024;
+
+/** `watch run` report payload (frozen contract; data-only stdout). */
+export interface WatchRunReport {
+  readonly schemaVersion: 1;
+  readonly target: string;
+  readonly gen: number | null;
+  readonly result: "baseline" | "no-change" | "change" | "moved" | "error";
+  readonly baseline?: boolean;
+  readonly diff?: { added: string[]; removed: string[]; changed: string[] };
+  readonly hashOnly?: boolean;
+  readonly finalUrl?: string | null;
+  /** Present only when result is "moved" (plan ruling #7). */
+  readonly moved?: boolean;
+  /** Present only when result is "error" (the failure reason). */
+  readonly reason?: string;
+  readonly prevAt: string | null;
+  readonly nowAt: string;
+}
+
+/** `watch run --all` payload: one report per target, id (chronological) order. */
+export interface WatchRunAllReport {
+  readonly schemaVersion: 1;
+  readonly results: readonly WatchRunReport[];
+}
+
+/**
+ * `--timeout` gate: strict positive integer, matching the `--keep` gate
+ * class (`Number()` alone would admit "1e3", " 300", "300.0").
+ */
+function parseTimeout(raw: string | boolean | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string") {
+    throw new ValidationError(
+      "--timeout requires a value.",
+      "Pass a positive integer of milliseconds, e.g. --timeout 30000.",
+    );
+  }
+  if (!/^\d+$/.test(raw) || Number(raw) < 1) {
+    throw new ValidationError(
+      `Invalid --timeout value "${raw}".`,
+      "--timeout must be a positive integer of milliseconds, e.g. --timeout 30000.",
+    );
+  }
+  return Number(raw);
+}
+
+/** Descriptive message for a live-fetch failure (exit-2 path). */
+function fetchFailureReason(url: string, error: unknown): string {
+  if (error instanceof ValidationError) return error.message;
+  const message = error instanceof Error ? error.message : String(error);
+  return `live fetch of ${url} failed: ${message}`;
+}
+
+/**
+ * One monitoring tick against one target (plan rulings #5/#7 + the T5
+ * dispatch brief):
+ *
+ *   - fetch failure (network error / HTTP >= 400 / timeout) → NOTHING is
+ *     written to the ring, an `error` change-log entry lands with
+ *     `gen: null`, report `result: "error"`, exit 2. An HTTP-500 page is
+ *     a FAILED CAPTURE, not content — it is never diffed.
+ *   - first run (no prior snapshot) → baseline: gen-1 snapshot + baseline
+ *     log entry, exit 0. Baseline establishes, never detects.
+ *   - otherwise the prior snapshot's RAW bytes (plus the charset hint
+ *     derived from its stored contentType) diff against the fresh live
+ *     bytes: identical sections AND identical raw hash AND unchanged
+ *     finalUrl → no-change, exit 0; anything else → change, exit 1.
+ *   - permanent move (permanent redirect AND finalUrl differs from the
+ *     registered url) → `moved`: the snapshot is written at the NEW
+ *     finalUrl, gen advances, exit 1 even when the content is
+ *     byte-identical (durable identity changed; the operator updates the
+ *     registry). Temporary redirects ride normal change/no-change.
+ */
+async function runTick(
+  root: string,
+  target: WatchTarget,
+  options: {
+    readonly timeoutMs: number;
+    readonly now: Date;
+  },
+): Promise<WatchRunReport> {
+  const nowAt = options.now.toISOString();
+  const listing = await listSnapshots(root, target.id);
+  const last = listing.at(-1);
+  const prevAt = last ? last.capturedAt : null;
+  const prior = last ? await readSnapshot(root, target.id, last.gen) : null;
+
+  let live: Awaited<ReturnType<typeof fetchLiveDocument>>;
+  try {
+    live = await fetchLiveDocument(target.url, options.timeoutMs);
+  } catch (error) {
+    // Ring does NOT advance: no appendSnapshot. The failed capture is
+    // logged as evidence with gen:null (a 500 page is not content).
+    const reason = fetchFailureReason(target.url, error);
+    await appendChangeLog(root, target.id, {
+      at: options.now,
+      kind: "error",
+      exit: 2,
+      gen: null,
+    });
+    return {
+      schemaVersion: 1,
+      target: target.name,
+      gen: null,
+      result: "error",
+      reason,
+      finalUrl: null,
+      prevAt,
+      nowAt,
+    };
+  }
+
+  // An HTTP >= 400 page is a FAILED CAPTURE, not content: same handling
+  // as a network error — nothing written to the ring, never diffed.
+  if (live.statusCode >= 400) {
+    const reason = `live fetch of ${target.url} failed: HTTP ${live.statusCode}`;
+    await appendChangeLog(root, target.id, {
+      at: options.now,
+      kind: "error",
+      exit: 2,
+      gen: null,
+    });
+    return {
+      schemaVersion: 1,
+      target: target.name,
+      gen: null,
+      result: "error",
+      reason,
+      finalUrl: null,
+      prevAt,
+      nowAt,
+    };
+  }
+
+  const currentBytes = new Uint8Array(
+    live.raw.buffer,
+    live.raw.byteOffset,
+    live.raw.byteLength,
+  );
+  const gen = await appendSnapshot(root, target.id, {
+    body: currentBytes,
+    now: options.now,
+    contentType: live.contentType,
+    finalUrl: live.finalUrl,
+  });
+  const finalUrl = live.finalUrl;
+
+  // Baseline establishes, never detects (ruling #5).
+  if (prior === null) {
+    await appendChangeLog(root, target.id, {
+      at: options.now,
+      kind: "baseline",
+      exit: 0,
+      gen,
+      ...(finalUrl !== undefined ? { finalUrl } : {}),
+    });
+    return {
+      schemaVersion: 1,
+      target: target.name,
+      gen,
+      result: "baseline",
+      baseline: true,
+      diff: { added: [], removed: [], changed: [] },
+      hashOnly: false,
+      finalUrl,
+      prevAt: null,
+      nowAt,
+    };
+  }
+
+  const priorExtraction = extractSections(
+    prior.body,
+    charsetFromContentType(prior.contentType),
+  );
+  const currentExtraction = extractSections(
+    currentBytes,
+    charsetFromContentType(live.contentType),
+  );
+
+  // Permanent move (ruling #7): permanent redirect AND the final URL left
+  // the registered one. Compares normalized URL spellings so a
+  // trailing-slash rewrite alone is not a move. Exit 1 even when the
+  // content is byte-identical — the durable identity changed.
+  const sameUrl =
+    new URL(finalUrl).toString() === new URL(target.url).toString();
+  if (live.moved && !sameUrl) {
+    const diff = diffDocuments(priorExtraction, currentExtraction);
+    await appendChangeLog(root, target.id, {
+      at: options.now,
+      kind: "moved",
+      exit: 1,
+      gen,
+      added: diff.added,
+      removed: diff.removed,
+      changed: diff.changed,
+      hashOnly: diff.hashOnly,
+      ...(finalUrl !== undefined ? { finalUrl } : {}),
+    });
+    return {
+      schemaVersion: 1,
+      target: target.name,
+      gen,
+      result: "moved",
+      baseline: false,
+      moved: true,
+      diff: { added: diff.added, removed: diff.removed, changed: diff.changed },
+      hashOnly: diff.hashOnly,
+      finalUrl,
+      prevAt,
+      nowAt,
+    };
+  }
+
+  const diff = diffDocuments(priorExtraction, currentExtraction);
+  const unchanged =
+    diff.added.length === 0 &&
+    diff.removed.length === 0 &&
+    diff.changed.length === 0 &&
+    priorExtraction.hash === currentExtraction.hash &&
+    prior.finalUrl === finalUrl;
+  if (unchanged) {
+    await appendChangeLog(root, target.id, {
+      at: options.now,
+      kind: "no-change",
+      exit: 0,
+      gen,
+      ...(finalUrl !== undefined ? { finalUrl } : {}),
+    });
+    return {
+      schemaVersion: 1,
+      target: target.name,
+      gen,
+      result: "no-change",
+      baseline: false,
+      diff: { added: [], removed: [], changed: [] },
+      hashOnly: diff.hashOnly,
+      finalUrl,
+      prevAt,
+      nowAt,
+    };
+  }
+
+  await appendChangeLog(root, target.id, {
+    at: options.now,
+    kind: "change",
+    exit: 1,
+    gen,
+    added: diff.added,
+    removed: diff.removed,
+    changed: diff.changed,
+    hashOnly: diff.hashOnly,
+    ...(finalUrl !== undefined ? { finalUrl } : {}),
+  });
+  return {
+    schemaVersion: 1,
+    target: target.name,
+    gen,
+    result: "change",
+    baseline: false,
+    diff: { added: diff.added, removed: diff.removed, changed: diff.changed },
+    hashOnly: diff.hashOnly,
+    finalUrl,
+    prevAt,
+    nowAt,
+  };
+}
+
+/** `watch run` presentation text (tty/compact/markdown/refs). */
+function runReportText(report: WatchRunReport): string {
+  if (report.result === "error") {
+    return `watch ${report.target}: error (${report.reason})`;
+  }
+  const parts: string[] = [];
+  const diff = report.diff ?? { added: [], removed: [], changed: [] };
+  if (diff.added.length > 0) parts.push(`added: ${diff.added.join(", ")}`);
+  if (diff.removed.length > 0) parts.push(`removed: ${diff.removed.join(", ")}`);
+  if (diff.changed.length > 0) parts.push(`changed: ${diff.changed.join(", ")}`);
+  if (report.result === "baseline") parts.push("baseline established");
+  if (report.result === "moved") parts.push(`moved to ${report.finalUrl}`);
+  const detail = parts.length > 0 ? ` — ${parts.join("; ")}` : " — no change";
+  return `watch ${report.target} [gen ${report.gen}]: ${report.result}${detail}`;
+}
+
+const RUN_EXIT: Record<WatchRunReport["result"], number> = {
+  baseline: 0,
+  "no-change": 0,
+  change: 1,
+  moved: 1,
+  error: 2,
+};
+
+/**
+ * `watch run <name-or-id|--all> [--timeout <ms>]` dispatcher. One tick
+ * (or, with `--all`, one tick per registered target in id order); exit
+ * code per the 0/1/2 contract, worst-wins for `--all` (2 > 1 > 0).
+ */
+async function executeWatchRun(input: {
+  readonly flags: Record<string, string | boolean>;
+  readonly positional: readonly string[];
+  readonly env: NodeJS.ProcessEnv;
+  readonly now?: () => number;
+  readonly invocation: CommandInvocationAdapter;
+  readonly outputMode: OutputMode;
+  readonly secrets: string[];
+}): Promise<number> {
+  const all = input.flags.all === true;
+  const ref = input.positional[0];
+  if (all && ref !== undefined) {
+    throw new ValidationError(
+      "watch run --all cannot be combined with an explicit target.",
+      "Pass either --all or a target name/id, not both.",
+    );
+  }
+  if (!all && !ref) {
+    throw new ValidationError(
+      "watch run requires a target name or id (or --all).",
+      'Run "scoutline watch list" to see the registered targets.',
+    );
+  }
+  const timeoutMs = parseTimeout(input.flags.timeout) ?? RUN_DEFAULT_TIMEOUT_MS;
+  const root = resolveWatchDir(input.env as WatchDirEnvironment);
+
+  return invokeCommand(
+    input.invocation,
+    async () => {
+      const targets = all ? await listTargets(root) : [await getTarget(root, ref!)];
+      // One invocation = one logical instant: every target in an --all
+      // sweep ticks at the same captured now (review advisory A1).
+      const now = input.now ? new Date(input.now()) : new Date();
+      const reports: WatchRunReport[] = [];
+      for (const target of targets) {
+        reports.push(await runTick(root, target, { timeoutMs, now }));
+      }
+      const exit = reports.reduce(
+        (worst, report) => Math.max(worst, RUN_EXIT[report.result]),
+        0,
+      );
+      if (all) {
+        const data: WatchRunAllReport = { schemaVersion: 1, results: reports };
+        const text = reports.map((r) => runReportText(r)).join("\n");
+        return {
+          kind: "data" as const,
+          data,
+          exitCode: exit,
+          presentations: watchPresentations(text),
+        };
+      }
+      const report = reports[0]!;
+      return {
+        kind: "data" as const,
+        data: report,
+        exitCode: exit,
+        presentations: watchPresentations(runReportText(report)),
+      };
+    },
+    input.outputMode,
+    input.now,
+    input.secrets,
+  );
+}
+
 /**
  * Dispatcher handler for `watch` in `src/index.ts`. `isolated` is the
  * global-flag extraction result: watch state is a design feature (the
@@ -319,13 +706,25 @@ export async function handleWatch(
     );
   }
 
-  // Named-but-not-yet-landed subcommands: help and the terminal string
-  // enumerate the full family; dispatch refuses until T5/T6 land so the
+  if (subcommand === "run") {
+    return await executeWatchRun({
+      flags,
+      positional,
+      env: deps.env,
+      now: deps.now,
+      invocation: deps.invocation,
+      outputMode,
+      secrets: deps.secrets,
+    });
+  }
+
+  // Named-but-not-yet-landed subcommand: help and the terminal string
+  // enumerate the full family; dispatch refuses until T6 lands so the
   // strings never need re-editing (they are byte-pinned by tests).
-  if (subcommand === "run" || subcommand === "feed") {
+  if (subcommand === "feed") {
     throw new ValidationError(
       `watch ${subcommand} is not available in this build.`,
-      "It lands with the watch tick/feed tickets on this branch.",
+      "It lands with the watch feed ticket on this branch.",
     );
   }
 

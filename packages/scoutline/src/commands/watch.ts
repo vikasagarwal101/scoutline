@@ -921,13 +921,30 @@ async function executeWatchFeed(input: {
       // append — both throw before output. readline hides the final
       // newline, so the byte is checked on the raw file size + last
       // chunk.
-      const stat = await fs.stat(file);
-      if (stat.size > 0) {
-        const raw = await fs.readFile(file, "utf8");
-        if (!raw.endsWith("\n")) {
-          throw new ValidationError(
-            `${file}: last line is missing its terminating newline (corrupt append).`,
-          );
+      // Terminal-newline check via a BOUNDED tail read (greptile
+      // follow-up): the log is append-only and unbounded, so slurping
+      // it whole would make the feed's peak memory proportional to the
+      // entire history — exactly what the streaming passes avoid. One
+      // byte (plus presence) decides the framing.
+      let stat;
+      try {
+        stat = await fs.stat(file);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") stat = undefined;
+        else throw error;
+      }
+      if (stat && stat.size > 0) {
+        const handle = await fs.open(file, "r");
+        try {
+          const tail = Buffer.alloc(1);
+          await handle.read(tail, 0, 1, stat.size - 1);
+          if (tail[0] !== 0x0a) {
+            throw new ValidationError(
+              `${file}: last line is missing its terminating newline (corrupt append).`,
+            );
+          }
+        } finally {
+          await handle.close();
         }
       }
       const lines = readline.createInterface({

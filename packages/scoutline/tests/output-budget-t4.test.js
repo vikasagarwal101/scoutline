@@ -30,7 +30,11 @@ import { READ_LADDER, READ_EXTRACT_LADDER } from "../dist/commands/read.js";
 import { CRAWL_LADDER } from "../dist/commands/crawl.js";
 import { RESEARCH_LADDER, research } from "../dist/commands/research.js";
 import { REPO_SEARCH_LADDER, REPO_READ_LADDER } from "../dist/commands/repository-explorer.js";
-import { applyBudget, measurePayload } from "../dist/lib/output-budget.js";
+import {
+  applyBudget,
+  measurePayload,
+  COMPACTION_STAMP_RESERVE,
+} from "../dist/lib/output-budget.js";
 import { readLog } from "../dist/lib/artifacts.js";
 import { buildHistoryShowReport } from "../dist/commands/history.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
@@ -303,7 +307,7 @@ describe("READ_LADDER — url/title/headings never cut; later paragraphs trim fi
       title: "T",
       content: "# Title\n\nIntro paragraph about the page.",
     });
-    const out = applyBudget(e, rootOnly + 60, READ_LADDER);
+    const out = applyBudget(e, rootOnly + 60 + COMPACTION_STAMP_RESERVE, READ_LADDER);
     assert.ok(out.compaction);
     assert.ok(out.projection.content.includes("# Title"), "root survives");
     assert.ok(
@@ -1123,5 +1127,65 @@ describe("PR #103 fix-round — marker + truth-flag pins", () => {
     const out = applyBudget(e, measurePayload(e) - 30, READ_LADDER);
     assert.ok(out.compaction);
     assert.ok(!out.projection.content.includes("a".repeat(100)), "long line bled");
+  });
+});
+
+describe("PR #103 R2 — fence- and Setext-aware heading guards", () => {
+  it("fenced code lines are never trimmed and do not start sections", () => {
+    const e = {
+      url: "https://e/1",
+      title: "T",
+      content:
+        "# Title\n\n```ts\n# a code comment\nexport const x = 1;\n```\n\nBody " +
+        "y".repeat(120) +
+        "\n\n## Alpha\n\n" +
+        "A".repeat(80),
+    };
+    const out = applyBudget(e, measurePayload(e) - 5, READ_LADDER);
+    assert.ok(out.compaction, "a budget just under full must fire");
+    const lines = out.projection.content.split("\n");
+    const fenceIdx = lines.findIndex((l) => l.startsWith("```"));
+    // Every original fenced line stays intact (never halved).
+    assert.ok(lines[fenceIdx].startsWith("```ts"), "opening fence intact");
+    assert.ok(lines.some((l) => l === "# a code comment"), "hash comment inside fence never trimmed");
+    assert.ok(lines.some((l) => l.includes("## Alpha")), "Alpha heading survives");
+  });
+
+  it("Setext underline and its title line are never trimmed", () => {
+    const e = {
+      url: "https://e/1",
+      title: "T",
+      content:
+        "My Setext Title\n===============\n\n" +
+        "body body body " +
+        "z".repeat(120) +
+        "\n",
+    };
+    const out = applyBudget(e, 200 + COMPACTION_STAMP_RESERVE, READ_LADDER);
+    const lines = out.projection.content.split("\n");
+    assert.ok(lines[0] === "My Setext Title", "setext title never trimmed");
+    assert.ok(lines[1].startsWith("==="), "setext underline never trimmed");
+  });
+
+  it("whitespace-only preamble merges into the first heading section", () => {
+    const e = {
+      url: "https://e/1",
+      title: "T",
+      content:
+        "\n\n   \n# Root\n\nIntro " +
+        "q".repeat(80) +
+        "\n\n## Sub\n\n" +
+        "s".repeat(80),
+    };
+    // Mid budget sized to keep exactly the root section: a whitespace-
+    // only preamble must NOT count as its own section (the old shape let
+    // every heading drop, killing the root). Requiring "# Root" with the
+    // Sub body gone proves the preamble merged into the root section.
+    const out = applyBudget(e, 160 + COMPACTION_STAMP_RESERVE, READ_LADDER);
+    assert.ok(out.compaction);
+    // Whitespace-only preamble merged into the root section, so a
+    // one-section-survivor budget keeps # Root (the pre-fix shape
+    // dropped the phantom preamble section first and lost the root).
+    assert.ok(out.projection.content.includes("# Root"), "root survives a mid budget");
   });
 });

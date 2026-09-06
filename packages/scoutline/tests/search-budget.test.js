@@ -481,7 +481,7 @@ describe("search --max-chars across output modes", () => {
 
   async function runMode(mode, extra = [], artifactsDir) {
     const { status, stdout, stderr } = await runMain(
-      ["-O", mode, "--provider", "tavily", "search", "q", "--max-chars", "300", ...extra],
+      ["-O", mode, "--provider", "tavily", "search", "q", "--max-chars", String(300 + COMPACTION_STAMP_RESERVE), ...extra],
       {
         ...(artifactsDir !== undefined ? { artifactsDir } : {}),
         extraDeps: deps(),
@@ -507,7 +507,7 @@ describe("search --max-chars across output modes", () => {
         const parsed =
           mode === "data" ? JSON.parse(out) : JSON.parse(out).data;
         assert.ok(parsed.compaction, `compaction visible in -O ${mode}`);
-        assert.equal(parsed.compaction.budget, 300);
+        assert.equal(parsed.compaction.budget, 300 + COMPACTION_STAMP_RESERVE);
       }
     });
   });
@@ -732,7 +732,7 @@ describe("PR #103 fix-round — --fields + text presentations", () => {
       const { status, stdout, stderr } = await runMain(
         [
           "-O", "compact", "--provider", "tavily",
-          "search", "q", "--max-chars", "300", "--fields", "summary",
+          "search", "q", "--max-chars", String(300 + COMPACTION_STAMP_RESERVE), "--fields", "summary",
         ],
         {
           artifactsDir: dir,
@@ -751,7 +751,7 @@ describe("PR #103 fix-round — --fields + text presentations", () => {
       // presentation keeps full rows under --fields (pre-T3 shape, no
       // "undefined — undefined" leakage).
       const { stdout: dstdout } = await runMain(
-        ["-O", "data", "--provider", "tavily", "search", "q", "--max-chars", "300", "--fields", "summary"],
+        ["-O", "data", "--provider", "tavily", "search", "q", "--max-chars", String(300 + COMPACTION_STAMP_RESERVE), "--fields", "summary"],
         {
           artifactsDir: dir,
           extraDeps: { providerDescriptors: [makeDescriptor("tavily", { q: fiveSources() })] },

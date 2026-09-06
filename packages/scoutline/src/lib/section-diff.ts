@@ -214,6 +214,9 @@ export function extractSections(
       if (!part.includes("-->")) inComment = true;
       continue;
     }
+    // Doctype declarations are not document text: an HTML4→HTML5
+    // doctype change must not report a content diff.
+    if (/^<!doctype/i.test(part)) continue;
     // Skip-region containment: while inside an unclosed <script>/<style>/
     // <head>/<title>, everything — including tags and stray <h_> tokens —
     // is content noise. Recovery: the exact CLOSE tag ends the region

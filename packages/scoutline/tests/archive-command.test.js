@@ -814,6 +814,19 @@ describe("archive diff review fixes", () => {
     );
   });
 
+  it("accepts a plain date in any host timezone (review round 2)", () => {
+    // Timezone-independent calendar validation: the field check reads
+    // the input digits, never host-local or UTC projections.
+    const { atMs } = resolveSinceInstant("2023-01-01", () => 0);
+    assert.equal(atMs, Date.parse("2023-01-01T00:00:00Z"));
+  });
+
+  it("rejects impossible calendar fields: 2023-02-30, 2023-02-29 (non-leap), month 00/13 (review round 2)", () => {
+    for (const bad of ["2023-02-30", "2023-02-29", "2023-00-10", "2023-13-01"]) {
+      assert.throws(() => resolveSinceInstant(bad, () => 0), ValidationError, bad);
+    }
+  });
+
   it("resolves --since with a numeric offset crossing UTC midnight (review)", () => {
     const { atMs, asOf } = resolveSinceInstant(
       "2023-01-01T00:00:00+05:00",

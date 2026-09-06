@@ -589,6 +589,27 @@ export function parseChangeLogLine(file: string, line: string, index: number): P
       "The log is append-only evidence; repair it by hand or remove the file to reset.",
     );
   }
+  // Structural validation (review): a bare {"kind":"change"} must fail
+  // closed, not surface as at:"undefined"/exit:NaN/gen:NaN — corrupted
+  // audit records never reach feed consumers.
+  if (typeof parsed.at !== "string") {
+    throw new ValidationError(
+      `Change log ${file} line ${index} is missing a valid "at" timestamp.`,
+      "The log is append-only evidence; repair it by hand or remove the file to reset.",
+    );
+  }
+  if (typeof parsed.exit !== "number") {
+    throw new ValidationError(
+      `Change log ${file} line ${index} is missing a valid numeric "exit".`,
+      "The log is append-only evidence; repair it by hand or remove the file to reset.",
+    );
+  }
+  if (parsed.gen !== null && typeof parsed.gen !== "number") {
+    throw new ValidationError(
+      `Change log ${file} line ${index} is missing a valid "gen" (number or null).`,
+      "The log is append-only evidence; repair it by hand or remove the file to reset.",
+    );
+  }
   return {
     at: typeof parsed.at === "string" ? parsed.at : String(parsed.at),
     kind: kind as ChangeLogKind,
@@ -629,6 +650,7 @@ export async function readChangeLog(
     );
   }
   const body = raw === "" ? "" : raw.slice(0, -1);
+  if (body === "") return [];
   return body
     .split("\n")
     .map((line, index) => parseChangeLogLine(file, line, index + 1));

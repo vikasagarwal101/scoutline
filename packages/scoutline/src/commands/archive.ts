@@ -534,14 +534,24 @@ const SINCE_DURATION_UNITS: Record<string, number> = {
  * overflow (review fix: offset datetimes crossing UTC midnight were
  * wrongly rejected).
  */
-function isCalendarOverflow(since: string, asDate: Date): boolean {
+function isCalendarOverflow(since: string): boolean {
+  // Validate the calendar fields from the INPUT digits alone — no Date
+  // projection (review): both host-local getters AND UTC projection are
+  // wrong for some input class (local: UTC-negative zones reject valid
+  // plain dates; UTC: offset datetimes shift the day). Pure field checks
+  // are timezone-independent and offset-correct by construction.
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(since.trim());
   if (!m) return false;
-  return (
-    asDate.getFullYear() !== Number(m[1]) ||
-    asDate.getMonth() !== Number(m[2]) - 1 ||
-    asDate.getDate() !== Number(m[3])
-  );
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (month < 1 || month > 12) return true;
+  const daysInMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day < 1 || day > (daysInMonth[month - 1] ?? 30);
+}
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
 }
 
 export function resolveSinceInstant(
@@ -583,7 +593,7 @@ export function resolveSinceInstant(
   if (
     trimmed === "" ||
     Number.isNaN(asDate.getTime()) ||
-    isCalendarOverflow(normalized, asDate) ||
+    isCalendarOverflow(normalized) ||
     Number.isNaN(Date.parse(asDate.toISOString()))
   ) {
     throw new ValidationError(

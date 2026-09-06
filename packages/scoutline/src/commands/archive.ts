@@ -8,6 +8,10 @@
  *   - `archive get <url> [--at <timestamp|best>] [--raw]`:
  *     Replays a capture using Wayback's `id_` verbatim mode (toolbar stripped),
  *     auto-resolving the best snapshot via the Availability API when omitted.
+ *   - `archive diff <url> --since <date|duration>`:
+ *     One-shot snapshot-vs-live comparison: replays the capture at or
+ *     before `--since` (CDX-selected, never nearest-after) and diffs its
+ *     sections against the live page (watch-temporal-diff lane B, T3).
  *
  * Credential-free (public, keyless API) dispatched before config load.
  */
@@ -17,7 +21,12 @@ import { invokeCommand } from "../command-invocation.js";
 import type { OutputMode } from "../lib/output.js";
 import { ValidationError, TimeoutError, NetworkError } from "../lib/errors.js";
 import type { HandlerDependencies } from "../index.js";
-import { readBoundedResponseBody } from "./fetch.js";
+import {
+  readBoundedResponseBody,
+  DEFAULT_USER_AGENT,
+  DEFAULT_FETCH_TIMEOUT_MS,
+} from "./fetch.js";
+import { extractSections, diffDocuments } from "../lib/section-diff.js";
 
 export const ARCHIVE_HELP = `
 scoutline archive <subcommand> [args] [options] - Internet Archive Wayback Machine
@@ -25,6 +34,7 @@ scoutline archive <subcommand> [args] [options] - Internet Archive Wayback Machi
 Subcommands:
   cdx <url-or-pattern>     Query the CDX Server index to enumerate captures
   get <url>                Fetch a capture's raw original content (toolbar stripped)
+  diff <url>               Compare a Wayback snapshot against the live page
 
 Options for 'archive cdx':
   --from <timestamp>       Earliest timestamp (e.g. 2020, 20200101)
@@ -35,6 +45,10 @@ Options for 'archive cdx':
 Options for 'archive get':
   --at <timestamp|best>    Target timestamp or 'best' for nearest (default: best)
   --raw                    Emit raw body content directly
+
+Options for 'archive diff':
+  --since <date|duration>  Snapshot boundary: ISO date (2026-08-01), ISO datetime
+                           (2026-08-01T12:00:00Z), or duration (30d, 12h, 1w, 2y)
 
 Global Options:
   --output-format, -O      Output format: data, json, pretty, compact, markdown, refs, tty
@@ -68,6 +82,24 @@ export interface ArchiveGetReport {
   readonly bytes: number;
   readonly contentType?: string;
   readonly content?: string;
+}
+
+export interface ArchiveDiffOptions {
+  readonly since?: string;
+  readonly timeout?: number;
+}
+
+export interface ArchiveDiffReport {
+  readonly schemaVersion: 1;
+  readonly url: string;
+  readonly asOf: string;
+  readonly snapshotTimestamp: string;
+  readonly finalUrl: string;
+  readonly added: readonly string[];
+  readonly removed: readonly string[];
+  readonly changed: readonly string[];
+  readonly hashOnly: boolean;
+  readonly moved: boolean;
 }
 
 export interface ArchiveCdxOptions {
@@ -473,6 +505,280 @@ export async function archiveGetCommand(
 }
 
 /**
+ * Duration units accepted by `--since` (e.g. `30d`), mapped to days.
+ */
+const SINCE_DURATION_UNITS: Record<string, number> = {
+  d: 24 * 60 * 60,
+  h: 60 * 60,
+  w: 7 * 24 * 60 * 60,
+  y: 365 * 24 * 60 * 60,
+};
+
+/**
+ * Resolve `--since` to a target instant T (ms since epoch) and the
+ * report's `asOf` echo (ISO date form for plain dates, computed ISO
+ * instant for durations). Rejects bare numbers, unknown units, negative
+ * durations, and invalid dates — never falls back to a guess.
+ */
+export function resolveSinceInstant(
+  since: string,
+  now: () => number = Date.now,
+): { atMs: number; asOf: string } {
+  const durationMatch = /^(\d+)([dhwy])$/.exec(since.trim());
+  if (durationMatch) {
+    const atMs = now() - Number(durationMatch[1]) * SINCE_DURATION_UNITS[durationMatch[2] ?? ""]! * 1000;
+    return { atMs, asOf: new Date(atMs).toISOString() };
+  }
+  if (/^\d+([.,]\d+)?$/.test(since.trim())) {
+    throw new ValidationError(
+      `Invalid --since value: "${since}".`,
+      "Durations require a unit: 30d, 12h, 1w, 2y.",
+    );
+  }
+  const asDate = new Date(since);
+  // Reject unparseable input AND calendar overflows (`2023-13-45` rolls
+  // over to 2024-02-14 in the constructor rather than throwing).
+  const overflowed =
+    asDate.toString() !== "Invalid Date" &&
+    /^\d{4}-\d{2}-\d{2}/.test(since.trim()) &&
+    asDate.toISOString().slice(0, 10) !== since.trim().slice(0, 10);
+  if (since.trim() === "" || asDate.toString() === "Invalid Date" || overflowed) {
+    throw new ValidationError(
+      `Invalid --since value: "${since}".`,
+      "Use an ISO date (2026-08-01), ISO datetime (2026-08-01T12:00:00Z), or duration (30d).",
+    );
+  }
+  const plainDate = /^\d{4}-\d{2}-\d{2}$/.test(since.trim());
+  return {
+    atMs: asDate.getTime(),
+    // Plain dates echo in date form; datetimes echo the ISO instant.
+    asOf: plainDate ? since.trim() : asDate.toISOString(),
+  };
+}
+
+/** CDX timestamp (YYYYMMDDhhmmss) of a capture, zero-padded for compare. */
+function cdxTimestampMs(timestamp: string): number {
+  return Date.parse(
+    timestamp.replace(
+      /^(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?$/,
+      "$1-$2-$3T$4:$5:$6Z",
+    ),
+  );
+}
+
+/** Pull the charset parameter out of a Content-Type header, if present. */
+function charsetFromContentType(contentType: string | undefined): string | undefined {
+  if (!contentType) return undefined;
+  const match = /charset=([^;]+)/i.exec(contentType);
+  // Strip surrounding quotes — `charset="utf-8"` is legal (RFC 9110)
+  // but TextDecoder rejects the quoted label, silently mis-decoding
+  // quoted non-UTF-8 content via the UTF-8 fallback.
+  return match?.[1]?.trim().replace(/^['"]|['"]$/g, "");
+}
+
+/**
+ * Select the newest CDX capture whose timestamp is at-or-before T
+ * (strict; never nearest-after). No qualifying capture → ValidationError
+ * pointing at `archive cdx` — no silent substitution (audit correction 1).
+ */
+async function selectSnapshotAtOrBefore(
+  url: string,
+  atMs: number,
+  since: string,
+  dependencies: { sleep?: (ms: number) => Promise<void>; cdxEndpoint?: string },
+): Promise<string> {
+  const to = new Date(atMs).toISOString().replace(/\D/g, "").slice(0, 14);
+  const report = await executeArchiveCdx(url, { to, status: "200", limit: 50 }, dependencies);
+  let best: { timestamp: string; ms: number } | undefined;
+  for (const capture of report.captures) {
+    const ms = cdxTimestampMs(capture.timestamp);
+    if (!Number.isNaN(ms) && ms <= atMs && (!best || ms > best.ms)) {
+      best = { timestamp: capture.timestamp, ms };
+    }
+  }
+  if (!best) {
+    throw new ValidationError(
+      `No Wayback capture at or before --since ${since} for "${url}".`,
+      "Use 'scoutline archive cdx <url>' to inspect capture coverage.",
+    );
+  }
+  return best.timestamp;
+}
+
+/**
+ * Replay a snapshot's RAW original bytes (Wayback `id_` mode) for
+ * diff-side consumption. Same bounded-read discipline as archive get.
+ */
+async function fetchSnapshotRaw(
+  url: string,
+  snapshotTimestamp: string,
+  dependencies: { sleep?: (ms: number) => Promise<void>; replayBaseUrl?: string },
+): Promise<{ raw: Buffer; contentType?: string }> {
+  const replayBase = dependencies.replayBaseUrl ?? "https://web.archive.org/web";
+  const verbatimFetchUrl = `${replayBase}/${snapshotTimestamp}id_/${url}`;
+  return fetchWithArchiveBackoff(
+    verbatimFetchUrl,
+    { sleep: dependencies.sleep },
+    async (res) => {
+      const MAX_ARCHIVE_IN_MEMORY = 50 * 1024 * 1024;
+      const buffer = await readBoundedResponseBody(
+        res.body as ReadableStream<Uint8Array> | null,
+        MAX_ARCHIVE_IN_MEMORY,
+        "Archive capture size",
+      );
+      return { raw: buffer, contentType: res.headers.get("content-type") || undefined };
+    },
+  );
+}
+
+/**
+ * Fetch the LIVE side: manual redirect loop (≤10 hops, 303/301/302
+ * downgrade semantics per fetch), 50MB bounded read (never
+ * `arrayBuffer()`), browser UA, AbortController timeout. Returns the
+ * final body plus `moved` — true only when the chain contains a
+ * permanent (301/308) hop AND the final URL differs from the request.
+ */
+async function fetchLiveDocument(
+  url: string,
+  timeoutMs: number,
+): Promise<{ raw: Buffer; finalUrl: string; moved: boolean; contentType?: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let sawPermanent = false;
+  try {
+    let requestUrl = url;
+    for (let hop = 0; ; hop++) {
+      const res = await fetch(requestUrl, {
+        headers: { "User-Agent": DEFAULT_USER_AGENT },
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      const location = res.headers.get("location");
+      const redirectable = [301, 302, 303, 307, 308].includes(res.status);
+      if (!redirectable || !location) {
+        const MAX_LIVE_IN_MEMORY = 50 * 1024 * 1024;
+        const raw = await readBoundedResponseBody(
+          res.body as ReadableStream<Uint8Array> | null,
+          MAX_LIVE_IN_MEMORY,
+          "Live page size",
+        );
+        return {
+          raw,
+          finalUrl: requestUrl,
+          moved: sawPermanent && requestUrl !== url,
+          contentType: res.headers.get("content-type") || undefined,
+        };
+      }
+      await res.body?.cancel().catch(() => {});
+      if (hop >= 10) {
+        throw new NetworkError(`Too many redirects (>10) while fetching ${url}`);
+      }
+      if (res.status === 301 || res.status === 308) sawPermanent = true;
+      requestUrl = new URL(location, requestUrl).toString();
+    }
+  } catch (err: unknown) {
+    if (controller.signal.aborted) {
+      throw new TimeoutError(timeoutMs, `Live fetch timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * One-shot snapshot-vs-live section diff (watch-temporal-diff lane B, T3).
+ *
+ * Archive side = snapshot RAW bytes via `id_` replay; live side = real
+ * HTTP fetch. Sections extracted from each side's bytes under its own
+ * charset hint; non-HTML degrades to hash-only per the engine contract.
+ */
+export async function executeArchiveDiff(
+  url: string,
+  options: ArchiveDiffOptions = {},
+  dependencies: {
+    sleep?: (ms: number) => Promise<void>;
+    cdxEndpoint?: string;
+    replayBaseUrl?: string;
+    now?: () => number;
+  } = {},
+): Promise<ArchiveDiffReport> {
+  if (!url || url.trim().length === 0) {
+    throw new ValidationError("URL is required for archive diff.");
+  }
+  if (typeof options.since !== "string") {
+    throw new ValidationError(
+      "--since is required for archive diff.",
+      "Example: scoutline archive diff https://example.com --since 2026-08-01",
+    );
+  }
+
+  const { atMs, asOf } = resolveSinceInstant(options.since, dependencies.now);
+  const snapshotTimestamp = await selectSnapshotAtOrBefore(url, atMs, options.since, {
+    sleep: dependencies.sleep,
+    cdxEndpoint: dependencies.cdxEndpoint,
+  });
+  const [snapshot, live] = await Promise.all([
+    fetchSnapshotRaw(url, snapshotTimestamp, dependencies),
+    fetchLiveDocument(url, options.timeout ?? DEFAULT_FETCH_TIMEOUT_MS),
+  ]);
+
+  const diff = diffDocuments(
+    extractSections(snapshot.raw, charsetFromContentType(snapshot.contentType)),
+    extractSections(live.raw, charsetFromContentType(live.contentType)),
+  );
+
+  return {
+    schemaVersion: 1,
+    url,
+    asOf,
+    snapshotTimestamp,
+    finalUrl: live.finalUrl,
+    added: diff.added,
+    removed: diff.removed,
+    changed: diff.changed,
+    hashOnly: diff.hashOnly,
+    moved: live.moved,
+  };
+}
+
+/**
+ * Invocation-seam wrapper for archive diff.
+ */
+export async function archiveDiffCommand(
+  url: string,
+  options: ArchiveDiffOptions = {},
+): Promise<CommandResult<ArchiveDiffReport>> {
+  const data = await executeArchiveDiff(url, options);
+
+  const parts = [
+    `Snapshot ${data.snapshotTimestamp} vs live — as of ${data.asOf}:`,
+    `${data.added.length} added, ${data.removed.length} removed, ${data.changed.length} changed` +
+      `${data.hashOnly ? " (hash-only)" : ""}`,
+  ];
+  if (data.moved) {
+    parts.push(`Page has permanently moved to ${data.finalUrl}`);
+  }
+  if (data.added.length > 0) parts.push(`added: ${data.added.join(", ")}`);
+  if (data.removed.length > 0) parts.push(`removed: ${data.removed.join(", ")}`);
+  if (data.changed.length > 0) parts.push(`changed: ${data.changed.join(", ")}`);
+  const text = parts.join("\n");
+
+  const presentations: Partial<Record<TextOutputMode, string>> = {
+    tty: text,
+    compact: text,
+    markdown: text,
+    refs: text,
+  };
+
+  return {
+    kind: "data",
+    data,
+    presentations,
+  };
+}
+
+/**
  * Parse CLI args for archive command.
  */
 export function parseArchiveArgs(args: readonly string[]): {
@@ -607,8 +913,48 @@ export async function handleArchive(
     );
   }
 
+  if (subcommand === "diff") {
+    const url = positional[0];
+    if (!url) {
+      throw new ValidationError(
+        "URL is required for archive diff.",
+        "Example: scoutline archive diff https://example.com --since 30d",
+      );
+    }
+    if (typeof flags.since !== "string") {
+      throw new ValidationError(
+        "--since is required for archive diff.",
+        "Example: scoutline archive diff https://example.com --since 2026-08-01",
+      );
+    }
+    const since = flags.since;
+
+    let timeout: number | undefined;
+    if (typeof flags.timeout === "string") {
+      if (!/^\d+$/.test(flags.timeout) || Number(flags.timeout) === 0) {
+        throw new ValidationError(
+          `Invalid --timeout: "${flags.timeout}".`,
+          "Must be a positive integer number of milliseconds.",
+        );
+      }
+      timeout = Number(flags.timeout);
+    }
+
+    return invokeCommand(
+      deps.invocation,
+      () =>
+        archiveDiffCommand(url, {
+          since,
+          ...(timeout !== undefined ? { timeout } : {}),
+        }),
+      outputMode,
+      deps.now,
+      deps.secrets,
+    );
+  }
+
   throw new ValidationError(
     `Unknown archive subcommand "${subcommand}".`,
-    "Valid subcommands: cdx, get.",
+    "Valid subcommands: cdx, get, diff.",
   );
 }

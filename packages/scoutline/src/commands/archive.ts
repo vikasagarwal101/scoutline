@@ -556,16 +556,28 @@ export function resolveSinceInstant(
   };
 }
 
-/** CDX timestamp (YYYYMMDDhhmmss) of a capture, zero-padded for compare. */
+/**
+ * CDX timestamp (YYYYMMDDhhmmss) of a capture as ms since epoch. CDX
+ * accepts truncated timestamps ("2023", "202301"); fill to 14 digits
+ * first — month/day default to 01, time fields to 00, exactly CDX's
+ * own from/to semantics — so a short form participates in at-or-before
+ * selection instead of parsing NaN and being silently excluded.
+ */
 function cdxTimestampMs(timestamp: string): number {
+  const full =
+    timestamp.slice(0, 4) +
+    (timestamp.slice(4, 6) || "01") +
+    (timestamp.slice(6, 8) || "01") +
+    (timestamp.slice(8, 10) || "00") +
+    (timestamp.slice(10, 12) || "00") +
+    (timestamp.slice(12, 14) || "00");
   return Date.parse(
-    timestamp.replace(
-      /^(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?$/,
+    full.replace(
+      /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/,
       "$1-$2-$3T$4:$5:$6Z",
     ),
   );
 }
-
 /** Pull the charset parameter out of a Content-Type header, if present. */
 export function charsetFromContentType(contentType: string | undefined): string | undefined {
   if (!contentType) return undefined;
@@ -588,12 +600,45 @@ async function selectSnapshotAtOrBefore(
   dependencies: { sleep?: (ms: number) => Promise<void>; cdxEndpoint?: string },
 ): Promise<string> {
   const to = new Date(atMs).toISOString().replace(/\D/g, "").slice(0, 14);
-  const report = await executeArchiveCdx(url, { to, status: "200", limit: 50 }, dependencies);
+  // CDX returns captures ASCENDING; a positive limit yields the OLDEST
+  // N, which with >N captures before T silently selects a decades-old
+  // snapshot. The Wayback CDX server's documented contract supports a
+  // NEGATIVE limit ("last N results") — query the newest 100 captures
+  // at-or-before T in one round-trip. This query is built here rather
+  // than going through executeArchiveCdx because that public option
+  // surface (rightly) rejects limit<=0; the CLI --limit gate keeps its
+  // 1..10000 contract untouched.
+  // NOTE: Internet Archive was unreachable at review time; this rests
+  // on the documented negative-limit contract, with the client-side
+  // re-filter below retained as defense in depth — if a server ever
+  // ignored the negative limit, behavior degrades to the old
+  // oldest-50 window, never worse.
+  const queryParams = new URLSearchParams({
+    url,
+    output: "json",
+    fl: "timestamp,statuscode,length,digest,original",
+    to,
+    filter: "statuscode:200",
+    limit: "-100",
+  });
+  const endpoint = dependencies.cdxEndpoint ?? WAYBACK_CDX_ENDPOINT;
+  const raw = await fetchWithArchiveBackoff(
+    `${endpoint}?${queryParams.toString()}`,
+    { sleep: dependencies.sleep },
+    async (res) => {
+      if (!res.ok) {
+        throw new NetworkError(`CDX query failed with HTTP ${res.status}: ${res.statusText}`);
+      }
+      return (await res.json()) as unknown;
+    },
+  );
+  const dataRows = Array.isArray(raw) ? raw.slice(1) : [];
   let best: { timestamp: string; ms: number } | undefined;
-  for (const capture of report.captures) {
-    const ms = cdxTimestampMs(capture.timestamp);
+  for (const row of dataRows) {
+    if (!Array.isArray(row) || row.length < 5) continue;
+    const ms = cdxTimestampMs(String(row[0]));
     if (!Number.isNaN(ms) && ms <= atMs && (!best || ms > best.ms)) {
-      best = { timestamp: capture.timestamp, ms };
+      best = { timestamp: String(row[0]), ms };
     }
   }
   if (!best) {
@@ -613,20 +658,29 @@ async function fetchSnapshotRaw(
   url: string,
   snapshotTimestamp: string,
   dependencies: { sleep?: (ms: number) => Promise<void>; replayBaseUrl?: string },
-): Promise<{ raw: Buffer; contentType?: string }> {
+): Promise<{ raw: Buffer; contentType?: string; statusCode: number }> {
   const replayBase = dependencies.replayBaseUrl ?? "https://web.archive.org/web";
   const verbatimFetchUrl = `${replayBase}/${snapshotTimestamp}id_/${url}`;
   return fetchWithArchiveBackoff(
     verbatimFetchUrl,
     { sleep: dependencies.sleep },
     async (res) => {
+      // A failed `id_` replay is a FAILED CAPTURE, never content —
+      // cross-surface rule (watch run enforces the same on its side).
+      if (res.status >= 400) {
+        throw new NetworkError(`Snapshot replay failed with HTTP ${res.status}.`);
+      }
       const MAX_ARCHIVE_IN_MEMORY = 50 * 1024 * 1024;
       const buffer = await readBoundedResponseBody(
         res.body as ReadableStream<Uint8Array> | null,
         MAX_ARCHIVE_IN_MEMORY,
         "Archive capture size",
       );
-      return { raw: buffer, contentType: res.headers.get("content-type") || undefined };
+      return {
+        raw: buffer,
+        contentType: res.headers.get("content-type") || undefined,
+        statusCode: res.status,
+      };
     },
   );
 }
@@ -724,6 +778,14 @@ export async function executeArchiveDiff(
     fetchLiveDocument(url, options.timeout ?? DEFAULT_FETCH_TIMEOUT_MS),
   ]);
 
+  // An HTTP >= 400 live response is a FAILED CAPTURE, never content —
+  // a 500 error page is not "everything changed". Cross-surface rule
+  // (watch run enforces the same on its ticks). Replay-side status is
+  // already checked inside fetchSnapshotRaw.
+  if (live.statusCode >= 400) {
+    throw new NetworkError(`Live fetch failed with HTTP ${live.statusCode}.`);
+  }
+
   const diff = diffDocuments(
     extractSections(snapshot.raw, charsetFromContentType(snapshot.contentType)),
     extractSections(live.raw, charsetFromContentType(live.contentType)),
@@ -739,8 +801,35 @@ export async function executeArchiveDiff(
     removed: diff.removed,
     changed: diff.changed,
     hashOnly: diff.hashOnly,
-    moved: live.moved,
+    // Normalized comparison (see isSameDocumentUrl): a permanent hop to
+    // a trailing-slash variant is the same document, not a move.
+    moved: live.moved && !isSameDocumentUrl(live.finalUrl, url),
   };
+}
+
+/**
+ * Same-document URL comparison: normalizes before comparing so a
+ * 301 to a trailing-slash variant of the same path is NOT a move,
+ * matching watch run's cross-surface rule. Case-insensitive host,
+ * trailing-slash-insensitive for non-root paths, query strings stay
+ * significant. Unparseable inputs fall back to exact string equality
+ * (degrades to the pre-normalization behavior, never worse).
+ * Exported for watch.ts to adopt the same comparison.
+ */
+export function isSameDocumentUrl(a: string, b: string): boolean {
+  let ua: URL;
+  let ub: URL;
+  try {
+    ua = new URL(a);
+    ub = new URL(b);
+  } catch {
+    return a === b;
+  }
+  if (ua.protocol !== ub.protocol || ua.host.toLowerCase() !== ub.host.toLowerCase()) return false;
+  const stripTrailingSlash = (pathname: string) =>
+    pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  if (stripTrailingSlash(ua.pathname) !== stripTrailingSlash(ub.pathname)) return false;
+  return ua.search === ub.search;
 }
 
 /**
@@ -931,6 +1020,14 @@ export async function handleArchive(
     const since = flags.since;
 
     let timeout: number | undefined;
+    if (flags.timeout !== undefined && typeof flags.timeout !== "string") {
+      // Boolean form (`--timeout` with no value) is not silently
+      // ignored — matches the watch family's --timeout/--since gates.
+      throw new ValidationError(
+        "--timeout requires a value.",
+        "Must be a positive integer number of milliseconds.",
+      );
+    }
     if (typeof flags.timeout === "string") {
       if (!/^\d+$/.test(flags.timeout) || Number(flags.timeout) === 0) {
         throw new ValidationError(

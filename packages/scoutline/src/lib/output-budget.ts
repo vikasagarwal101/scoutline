@@ -48,10 +48,15 @@ export type BudgetLadder<T = unknown> = readonly LadderRule<T>[];
 // Marker-protocol state lives in a module-level WeakSet (never on the
 // envelope): the walk registers each projection it produces, and ladder
 // rules consult it to strip ONLY ladder-emitted leading markers while
-// leaving a genuine source `…` untouched on the first pass.
+// leaving a genuine source `…` untouched on the first pass. R5
+// (review, declined): a per-walk registry was tried and REJECTED — the
+// cross-walk registration is what keeps a re-budgeted projection from
+// ACCUMULATING markers ("……"); a genuine `…` can never be stripped by
+// it because only walk-produced projections register, and those
+// objects' leading markers are by construction ladder-emitted.
 const walkedProjections = new WeakSet<object>();
 
-/** True when the walk has already shrunk this envelope once (marker protocol). */
+/** True when any walk has already shrunk this envelope (marker protocol). */
 export function wasBudgetWalked(value: object): boolean {
   return walkedProjections.has(value);
 }

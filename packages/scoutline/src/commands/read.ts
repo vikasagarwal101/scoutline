@@ -242,10 +242,21 @@ const trimLastParagraphsRule: LadderRule = {
     // underlines (===/---), or the title line above a Setext underline.
     const fenced: boolean[] = new Array<boolean>(lines.length).fill(false);
     let inFence = false;
+    // R5: fences close with the OPENING delimiter's char (CommonMark) —
+    // a `~~~` line inside a ``` block must not flip the state.
+    let fenceChar: "`" | "~" | undefined;
     for (let k = 0; k < lines.length; k++) {
-      if (/^ {0,3}(```|~~~)/.test(lines[k]!)) {
+      const fenceMatch = /^ {0,3}(```|~~~)/.exec(lines[k]!);
+      if (fenceMatch) {
         fenced[k] = true;
-        inFence = !inFence;
+        const thisChar = fenceMatch[1]![0] as "`" | "~";
+        if (!inFence) {
+          inFence = true;
+          fenceChar = thisChar;
+        } else if (thisChar === fenceChar) {
+          inFence = false;
+          fenceChar = undefined;
+        }
         continue;
       }
       fenced[k] = inFence || /^ {0,3}(?: {4}|\t)/.test(lines[k]!);
@@ -304,9 +315,22 @@ function splitSections(content: string): Section[] {
   // merges into the following heading so the drop rule can never pop the
   // root section off and leave the preamble.
   let inFence = false;
+  // R5: a fence closes with the OPENING delimiter's char — a ~~~ line
+  // inside a ``` block does not end the fence (so a later fenced `# x`
+  // stays code, never a section heading).
+  let fenceChar: "`" | "~" | undefined;
   for (const line of content.split("\n")) {
-    const fence = /^ {0,3}(```|~~~)/.test(line);
-    if (fence) inFence = !inFence;
+    const fenceMatch = /^ {0,3}(```|~~~)/.exec(line);
+    if (fenceMatch) {
+      const thisChar = fenceMatch[1]![0] as "`" | "~";
+      if (!inFence) {
+        inFence = true;
+        fenceChar = thisChar;
+      } else if (thisChar === fenceChar) {
+        inFence = false;
+        fenceChar = undefined;
+      }
+    }
     const match = !inFence ? line.match(/^ {0,3}(#{1,6})\s+(.*)$/) : null;
     if (match) {
       // An EMPTY preamble is not a section of its own (floor-shape

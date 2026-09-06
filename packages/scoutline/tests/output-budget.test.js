@@ -265,13 +265,17 @@ describe("PR #103 fix-round — serialization safety + stamp reserve", () => {
 
   it("projection + stamped compaction fit within the requested budget (reserve pin)", () => {
     // Boundary case: the requested budget sits exactly reserve-sized
-    // above the reachable floor (one row, summaries trimmed to the
-    // fixture minimum), so the walk lands within the reserve and the
-    // stamped payload must fit the requested budget exactly.
+    // above the reachable floor (one row, summary trimmed to
+    // TRIMMED_SUMMARY_LEN — LADDER's floor never trims to empty, R5
+    // review: the previous ""-summary fixture was an unreachable
+    // floor), so the walk lands within the reserve and the stamped
+    // payload must fit the requested budget exactly.
     const envelope = makeEnvelope(3);
     const floor = measurePayload({
       query: "q",
-      results: [{ url: "https://example.com/r1", title: "Result 1", summary: "" }],
+      results: [
+        { url: "https://example.com/r1", title: "Result 1", summary: "s".repeat(TRIMMED_SUMMARY_LEN) },
+      ],
     });
     const budget = floor + COMPACTION_STAMP_RESERVE;
     const out = applyBudget(envelope, budget, LADDER);

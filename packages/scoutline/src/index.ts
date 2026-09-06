@@ -398,6 +398,65 @@ const SAVE_CAPABLE_COMMANDS: ReadonlySet<string> = new Set([
   "vision",
 ]);
 
+/**
+ * ADR-0007 D5 — every command the dispatcher routes (below): the
+ * exhaustive 21-command surface. Exported so the rejection-matrix test
+ * derives its enumeration from the dispatcher's own partition instead
+ * of a hand-maintained list that drifts when a command is added — a
+ * future command without a ladder or a rejection row fails the
+ * enumeration pin by omission. (`config` is dispatched but absent from
+ * MAIN_HELP's Commands list — the audit's omission catch.)
+ */
+export const DISPATCHED_COMMANDS: ReadonlySet<string> = new Set([
+  "vision",
+  "search",
+  "read",
+  "crawl",
+  "map",
+  "research",
+  "repo",
+  "batch",
+  "tools",
+  "tool",
+  "call",
+  "doctor",
+  "quota",
+  "code",
+  "cache",
+  "usage",
+  "history",
+  "init",
+  "config",
+  "fetch",
+  "archive",
+]);
+
+/**
+ * ADR-0007 D5 — commands WITHOUT an Output Budget ladder. They reject
+ * `--max-chars` at parse time with UNSUPPORTED_OPTION: nothing outside
+ * the ladder surfaces (search/read/crawl/research + repo
+ * search/read/brief; repo tree rejects on its own) may accept-and-drop
+ * the flag. Exported for the structural enumeration pin.
+ */
+export const REJECT_MAX_CHARS_COMMANDS: ReadonlySet<string> = new Set([
+  "vision",
+  "map",
+  "batch",
+  "tools",
+  "tool",
+  "call",
+  "doctor",
+  "quota",
+  "code",
+  "cache",
+  "usage",
+  "history",
+  "init",
+  "config",
+  "fetch",
+  "archive",
+]);
+
 function extractGlobalOptions(args: string[]): {
   outputFormat?: string;
   forcePretty?: boolean;
@@ -4476,6 +4535,33 @@ export async function main(
   // `--save` export target already exists. The credentialed section below
   // reuses this binding.
   const isHelpInvocation = isCommandHelpInvocation(commandArgs);
+
+  // ADR-0007 D5 — rejection matrix, fired at parse time before any
+  // dispatch: a command without an Output Budget ladder that carries
+  // `--max-chars` rejects UNSUPPORTED_OPTION instead of accepting and
+  // dropping it. Uses the raw argv (any `--max-chars` token, valued or
+  // not — collectLongFlagValues only matches the exact flag form);
+  // subcommand-level ladder surfaces (repo search/read/brief) and repo
+  // tree's own rejection are decided downstream in `repo` handling. Help
+  // invocations stay exempt: `--help` is documentation, not a run.
+  // Grammar note (review T6): `--max-chars=500` and `--no-max-chars`
+  // forms are NOT matched — uniform CLI grammar, not a gate hole: the
+  // ladder surfaces are equally blind to those forms (no `=`-form flag
+  // support CLI-wide), so no accept-and-drop asymmetry exists.
+  if (
+    !isHelpInvocation &&
+    REJECT_MAX_CHARS_COMMANDS.has(command) &&
+    collectLongFlagValues(rest, "max-chars").length > 0
+  ) {
+    invocation.writeStderr(
+      formatErrorOutput(
+        new UnsupportedOptionError(command, "cli", "--max-chars"),
+        outputMode,
+        envSecrets,
+      ),
+    );
+    return 1;
+  }
 
   // PB-T1/PB-T2 — Quota snapshot store + consumption sink.
   //

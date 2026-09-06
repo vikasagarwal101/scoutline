@@ -199,6 +199,11 @@ const INPUT_FIELD_TABLES: Readonly<Record<AllowedBatchCommand, readonly FieldEnt
     ["noImages", { kind: "boolean" }],
     ["withLinks", { kind: "boolean" }],
     ["withImagesSummary", { kind: "boolean" }],
+    // ADR-0007 D7 (T6): read IS a ladder surface; per-op maxChars
+    // compiles to `--max-chars` argv and the op inherits whole-envelope
+    // budgeting. (The pre-T6 omission was an accept-and-drop class gap —
+    // the CLI read surface carries the flag.)
+    ["maxChars", { kind: "number" }],
     ["noCache", { kind: "boolean" }],
   ],
   crawl: [
@@ -296,6 +301,7 @@ export interface ReadBatchInput {
   readonly noImages?: boolean;
   readonly withLinks?: boolean;
   readonly withImagesSummary?: boolean;
+  readonly maxChars?: number;
   readonly noCache?: boolean;
 }
 
@@ -808,6 +814,7 @@ export function compileInput(op: BatchOperation): string[] {
       emitFlag(argv, "noImages", input.noImages);
       emitFlag(argv, "withLinks", input.withLinks);
       emitFlag(argv, "withImagesSummary", input.withImagesSummary);
+      emitFlag(argv, "maxChars", input.maxChars);
       emitFlag(argv, "noCache", input.noCache);
       return argv;
     }

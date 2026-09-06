@@ -1193,3 +1193,35 @@ describe("compileInput argv snapshots", () => {
     assert.deepStrictEqual(argv, ["q"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// ADR-0007 D7 (T6) — read joins the ladder-carrying batch commands: the
+// per-op `maxChars` allowlist row + the `--max-chars` compile pin. (The
+// pre-T6 read table omitted it — an accept-and-drop class gap: the CLI
+// read surface carries the flag but the manifest rejected it.)
+// ---------------------------------------------------------------------------
+
+describe("read batch input maxChars (ADR-0007 D7)", () => {
+  it("parses maxChars on read ops and preserves it in the parsed input", async () => {
+    const m = await load();
+    const parsed = m.parseBatchManifest(
+      manifest(op("r1", "read", { url: "https://example.com/doc", maxChars: 400 })),
+      DEPS,
+    );
+    assert.strictEqual(parsed.operations.length, 1);
+    assert.strictEqual(parsed.operations[0].input.maxChars, 400);
+  });
+
+  it("compiles read maxChars to --max-chars argv", async () => {
+    const m = await load();
+    const argv = m.compileInput({ name: "x", command: "read", input: { url: "https://example.com/doc", maxChars: 400 } });
+    assert.deepStrictEqual(argv, ["https://example.com/doc", "--max-chars", "400"]);
+  });
+
+  it("still rejects maxChars on repo tree (tree keeps its rejection)", async () => {
+    await assertRejects(
+      manifest(op("repo", "repo", { subcommand: "tree", repository: "o/n", maxChars: 500 })),
+      'operations[0].input: field "maxChars" is not valid for repo subcommand "tree"',
+    );
+  });
+});

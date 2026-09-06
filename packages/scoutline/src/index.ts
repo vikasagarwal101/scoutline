@@ -2098,9 +2098,13 @@ async function handleCrawl(
               originalContentLength: original.replace(/^…/, "").length,
             };
           });
+          // R3 follow-up: the stamped pages ARE the data payload —
+          // data-mode consumers see the truth metadata, not just text
+          // modes.
+          const data = { ...(projection as Record<string, unknown>), pages };
           return {
             ...r,
-            data: projection,
+            data,
             presentations: rebuildBudgetedCrawlPresentations(pages),
           } as CommandResult;
         },
@@ -4109,7 +4113,10 @@ async function applyCommandOutputBudget(
     "truncated" in data && data.truncated !== true
       ? { ...data, truncated: true }
       : data;
-  return options.rebuild({ ...stamped, compaction }, { ...result, data });
+  // The rebuild's second argument carries the PRE-BUDGET envelope as
+  // `.data` (raw lengths, provider flags) — the stamped projection is
+  // the FIRST argument. Crawl's seam uses the raw pages for truth metadata.
+  return options.rebuild({ ...stamped, compaction }, { ...result, data: result.data });
 }
 
 /**

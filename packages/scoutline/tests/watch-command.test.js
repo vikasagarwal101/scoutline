@@ -27,9 +27,11 @@ import * as path from "node:path";
 import { main } from "../dist/index.js";
 import { WATCH_HELP, parseWatchArgs } from "../dist/commands/watch.js";
 import {
+  addTarget,
   appendChangeLog,
   listSnapshots,
   readChangeLog,
+  WATCH_CHANGELOG_FILENAME,
   WATCH_REGISTRY_FILENAME,
 } from "../dist/lib/watch-store.js";
 
@@ -707,6 +709,295 @@ describe("scoutline watch command (T4)", () => {
       } finally {
         await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
         await new Promise((resolve) => server.close(resolve));
+      }
+    });
+  });
+  describe("watch feed (T6 — JSONL + RSS 2.0 renderers)", () => {
+    // Store-direct seeding (T2 injection seams): frozen ids/gens/clock.
+    // The feed only READS the log, so no loopback server is needed —
+    // hostile/moved/log-noise shapes are appended straight through
+    // appendChangeLog, which writes the same line shapes the tick does.
+    const FROZEN_NOW = Date.parse("2026-09-06T08:00:00Z");
+    const FROZEN_HEX = () => new Uint8Array([0xab, 0xcd]);
+    const TARGET_URL = "https://example.com/docs";
+
+    const seedTarget = async (dir) =>
+      addTarget(dir, {
+        url: TARGET_URL,
+        name: "example-docs",
+        now: FROZEN_NOW,
+        randomBytes: FROZEN_HEX,
+      });
+
+    const feed = (dir) => async (argv) => {
+      const { adapter, stdout, stderr } = makeAdapter();
+      const code = await main(argv, {
+        invocation: adapter,
+        env: { SCOUTLINE_WATCH_DIR: dir },
+        loadScoutlineConfig: () => {
+          throw new Error("Should not be called!");
+        },
+      });
+      return { code, stdout: stdout.join(""), stderr: stderr.join("") };
+    };
+
+    it("jsonl default: stdout byte-equals the change-log file", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-feed-"));
+      try {
+        const target = await seedTarget(dir);
+        // Full kind coverage via store-direct appends (same shapes the
+        // tick writes; the feed must pass every line through verbatim).
+        await appendChangeLog(dir, target.id, { at: FROZEN_NOW, kind: "baseline", exit: 0, gen: 1 });
+        await appendChangeLog(dir, target.id, {
+          at: FROZEN_NOW + 60000,
+          kind: "change",
+          exit: 1,
+          gen: 2,
+          added: ["Security"],
+          removed: [],
+          changed: ["Install"],
+          hashOnly: false,
+          finalUrl: TARGET_URL,
+        });
+        await appendChangeLog(dir, target.id, { at: FROZEN_NOW + 120000, kind: "no-change", exit: 0, gen: 3 });
+        await appendChangeLog(dir, target.id, { at: FROZEN_NOW + 180000, kind: "error", exit: 2, gen: null });
+
+        const r = await feed(dir)(["watch", "feed", target.id]);
+        assert.equal(r.code, 0);
+        const file = await fs.readFile(path.join(dir, target.id, WATCH_CHANGELOG_FILENAME), "utf8");
+        assert.equal(r.stdout, file);
+        assert.match(r.stdout, /"kind":"change"/);
+        assert.match(r.stdout, /"kind":"error"/);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it("--format jsonl explicit works", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-feed-"));
+      try {
+        const target = await seedTarget(dir);
+        await appendChangeLog(dir, target.id, { at: FROZEN_NOW, kind: "baseline", exit: 0, gen: 1 });
+        const r = await feed(dir)(["watch", "feed", target.id, "--format", "jsonl"]);
+        assert.equal(r.code, 0);
+        assert.equal(
+          r.stdout,
+          await fs.readFile(path.join(dir, target.id, WATCH_CHANGELOG_FILENAME), "utf8"),
+        );
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it("rss renders the frozen plan fixture byte-exactly", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-feed-"));
+      try {
+        const target = await seedTarget(dir);
+        await appendChangeLog(dir, target.id, { at: FROZEN_NOW, kind: "baseline", exit: 0, gen: 1, finalUrl: TARGET_URL });
+        await appendChangeLog(dir, target.id, {
+          at: FROZEN_NOW + 60000,
+          kind: "change",
+          exit: 1,
+          gen: 2,
+          added: ["Security"],
+          removed: [],
+          changed: ["Install"],
+          hashOnly: false,
+          finalUrl: TARGET_URL,
+        });
+        const r = await feed(dir)(["watch", "feed", target.id, "--format", "rss"]);
+        assert.equal(r.code, 0);
+        assert.equal(r.stdout, [
+          '<?xml version="1.0" encoding="UTF-8"?>',
+          '<rss version="2.0"><channel>',
+          "  <title>scoutline watch: example-docs</title>",
+          `  <link>${TARGET_URL}</link>`,
+          "  <item>",
+          "    <title>changed: Install</title>",
+          `    <guid isPermaLink="false">${target.id}:2</guid>`,
+          "    <pubDate>Sun, 06 Sep 2026 08:01:00 GMT</pubDate>",
+          "    <description>added: Security; changed: Install</description>",
+          "  </item>",
+          "</channel></rss>",
+        ].join("\n"));
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it("moved item: title moved:, description ends with the move, guid gen", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-feed-"));
+      try {
+        const target = await seedTarget(dir);
+        const movedUrl = "https://example.com/docs/v2";
+        await appendChangeLog(dir, target.id, {
+          at: FROZEN_NOW,
+          kind: "moved",
+          exit: 1,
+          gen: 4,
+          added: [],
+          removed: [],
+          changed: [],
+          hashOnly: false,
+          finalUrl: movedUrl,
+        });
+        const r = await feed(dir)(["watch", "feed", target.id, "--format", "rss"]);
+        assert.equal(r.code, 0);
+        assert.match(r.stdout, /<title>moved: https:\/\/example\.com\/docs\/v2<\/title>/);
+        assert.match(r.stdout, /<description>moved to https:\/\/example\.com\/docs\/v2<\/description>/);
+        assert.match(r.stdout, new RegExp(`<guid isPermaLink="false">${target.id}:4</guid>`));
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it("xml-escapes hostile section headings everywhere", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-feed-"));
+      try {
+        const target = await seedTarget(dir);
+        await appendChangeLog(dir, target.id, {
+          at: FROZEN_NOW,
+          kind: "change",
+          exit: 1,
+          gen: 2,
+          added: ['<script>alert("x")</script> & "quotes" \'single\''],
+          removed: [],
+          changed: [],
+          hashOnly: false,
+        });
+        const r = await feed(dir)(["watch", "feed", target.id, "--format", "rss"]);
+        assert.equal(r.code, 0);
+        assert.ok(!r.stdout.includes("<script"), "unescaped markup must not appear");
+        assert.match(
+          r.stdout,
+          /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt; &amp; &quot;quotes&quot; &#39;single&#39;/,
+        );
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it("item filter: baseline/no-change/error produce no items (jsonl keeps them)", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-feed-"));
+      try {
+        const target = await seedTarget(dir);
+        await appendChangeLog(dir, target.id, { at: FROZEN_NOW, kind: "baseline", exit: 0, gen: 1 });
+        await appendChangeLog(dir, target.id, { at: FROZEN_NOW + 60000, kind: "no-change", exit: 0, gen: 2 });
+        await appendChangeLog(dir, target.id, { at: FROZEN_NOW + 120000, kind: "error", exit: 2, gen: null });
+        const rss = await feed(dir)(["watch", "feed", target.id, "--format", "rss"]);
+        assert.equal(rss.code, 0);
+        assert.ok(!rss.stdout.includes("<item>"), "log noise must not become items");
+        assert.ok(rss.stdout.includes("<channel>"));
+        const jsonl = await feed(dir)(["watch", "feed", target.id]);
+        assert.equal(
+          (jsonl.stdout.match(/"kind":"(baseline|no-change|error)"/g) ?? []).length,
+          3,
+        );
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it("empty log: rss is a valid empty channel, jsonl is empty stdout, both exit 0", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-feed-"));
+      try {
+        const target = await seedTarget(dir);
+        const rss = await feed(dir)(["watch", "feed", target.id, "--format", "rss"]);
+        assert.equal(rss.code, 0);
+        assert.equal(rss.stdout, [
+          '<?xml version="1.0" encoding="UTF-8"?>',
+          '<rss version="2.0"><channel>',
+          "  <title>scoutline watch: example-docs</title>",
+          `  <link>${TARGET_URL}</link>`,
+          "</channel></rss>",
+        ].join("\n"));
+        const jsonl = await feed(dir)(["watch", "feed", target.id]);
+        assert.equal(jsonl.code, 0);
+        assert.equal(jsonl.stdout, "");
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it("unknown target and invalid --format are VALIDATION_ERROR", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-feed-"));
+      try {
+        await seedTarget(dir);
+        const runner = feed(dir);
+        const unknown = await runner(["watch", "feed", "no-such-target"]);
+        assert.equal(unknown.code, 1);
+        assert.match(unknown.stderr, /VALIDATION_ERROR/);
+        assert.match(unknown.stderr, /Unknown watch target/);
+        const badFormat = await runner(["watch", "feed", "example-docs", "--format", "atom"]);
+        assert.equal(badFormat.code, 1);
+        assert.match(badFormat.stderr, /VALIDATION_ERROR/);
+        assert.match(badFormat.stderr, /--format/);
+        // stdout pin: validation failures emit no partial document.
+        assert.equal(unknown.stdout, "");
+        assert.equal(badFormat.stdout, "");
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it("valueless --format is a VALIDATION_ERROR (no silent jsonl default)", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-feed-"));
+      try {
+        const target = await seedTarget(dir);
+        await appendChangeLog(dir, target.id, { at: FROZEN_NOW, kind: "baseline", exit: 0, gen: 1 });
+        // Parser hands a trailing --format as boolean true; the sibling
+        // --keep/--name gates refuse that form, and so must --format.
+        const r = await feed(dir)(["watch", "feed", target.id, "--format"]);
+        assert.equal(r.code, 1);
+        assert.match(r.stderr, /VALIDATION_ERROR/);
+        assert.match(r.stderr, /--format requires a value/);
+        assert.equal(r.stdout, "");
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it("determinism pin: rendering twice is byte-identical", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-feed-"));
+      try {
+        const target = await seedTarget(dir);
+        await appendChangeLog(dir, target.id, {
+          at: FROZEN_NOW,
+          kind: "change",
+          exit: 1,
+          gen: 2,
+          added: ["A"],
+          removed: ["B"],
+          changed: ["C"],
+          finalUrl: TARGET_URL,
+        });
+        const runner = feed(dir);
+        const r1 = await runner(["watch", "feed", target.id, "--format", "rss"]);
+        const r2 = await runner(["watch", "feed", target.id, "--format", "rss"]);
+        assert.equal(r1.stdout, r2.stdout);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it("hand-edited log line with an unknown kind fails closed loudly", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-feed-"));
+      try {
+        const target = await seedTarget(dir);
+        await appendChangeLog(dir, target.id, { at: FROZEN_NOW, kind: "baseline", exit: 0, gen: 1 });
+        const file = path.join(dir, target.id, WATCH_CHANGELOG_FILENAME);
+        const original = await fs.readFile(file, "utf8");
+        await fs.writeFile(file, `${original}{"at":"2026-09-06T08:05:00.000Z","kind":"exploded","exit":1,"gen":9}\n`);
+        for (const format of ["rss", "jsonl"]) {
+          const r = await feed(dir)(["watch", "feed", target.id, "--format", format]);
+          assert.equal(r.code, 1, `${format} must fail closed`);
+          assert.match(r.stderr, /VALIDATION_ERROR/);
+          assert.match(r.stderr, /unknown kind/);
+          // stdout pin: no partial document may precede the failure.
+          assert.equal(r.stdout, "");
+        }
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
       }
     });
   });

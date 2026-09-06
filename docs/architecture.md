@@ -285,7 +285,7 @@ repo argv + global flags
   -> descriptor capability check (repository-exploration)
   -> descriptor.isConfigured (effective Provider)
   -> descriptor.create -> Adapter
-  -> Provider-neutral Explorer (canonical paths, BFS, projection)
+  -> Provider-neutral Explorer (canonical paths, BFS, projection; budget ladders run at the handler seam)
        -> executeRepositoryOperation (validate, identity, cache,
           legacy decode, retry, write, project)
             -> Z.AI Repository Adapter
@@ -648,7 +648,7 @@ Resilience contract:
 | `commands/search.ts` | Search filtering, formatting, and multi-query result merging. Topic control is part of the shared search controls (`--topic <general\|news\|finance>`). |
 | `commands/read.ts` | Thin read handler: parse-level validation (URL scheme, `--extract`), `executeReaderOperation` invocation, schema-v1 envelope projection (`--max-chars` whole-envelope budget, `--extract` slicing), output-mode presentation. Provider selection lives in `src/index.ts`. No Explorer module — Reader is a single fetch. |
 | `commands/repo.ts` | Thin command routing: parse, dispatch table, Explorer invocation, output mode. Provider selection lives in `src/index.ts`. |
-| `commands/repository-explorer.ts` | Provider-neutral Explorer: canonical paths, deterministic BFS, schema-v1 projection, local `--max-chars` budget ladders. |
+| `commands/repository-explorer.ts` | Provider-neutral Explorer: canonical paths, deterministic BFS, schema-v1 projection. Its Output Budget ladders export from here but run at the handler seam (`src/index.ts`, `applyCommandOutputBudget`). |
 | `commands/crawl.ts` | Thin crawl handler: parse-level URL validation, `executeCrawlOperation`, whole-envelope `--max-chars` budget, schema-v1 envelope. |
 | `commands/map.ts` | Thin map handler: parse-level URL validation, `executeMapOperation`, schema-v1 envelope (URLs only). |
 | `commands/research.ts` | Research handler: SIGINT-registered polling loop, `--max-chars` whole-envelope budget (citations survive longest), resume-on-restart via `lib/async-job-state.ts`, schema-v1 envelope. |

@@ -54,7 +54,7 @@ import {
   type RetryPolicy,
 } from "../lib/execution.js";
 import { ValidationError } from "../lib/errors.js";
-import type { LadderRule } from "../lib/output-budget.js";
+import { wasBudgetWalked, type LadderRule } from "../lib/output-budget.js";
 
 // ---------------------------------------------------------------------------
 // Repository-path canonicalizer (DESIGN.md §18, technical plan
@@ -606,7 +606,9 @@ const trimLastExcerptRule: LadderRule = {
       const row = excerpts[i] as { text?: string };
       const text = row.text;
       if (!text) continue;
-      const clean = text.replace(/^…+/, "").replace(/…$/, "");
+      // Marker protocol (R3): strip ONE leading marker only when the
+      // envelope already reports a ladder trim (truncated === true).
+      const clean = (wasBudgetWalked(e) || e.truncated === true ? text.replace(/^…/, "") : text).replace(/…$/, "");
       if (clean.length <= 1) continue;
       const half = Math.max(1, Math.floor(clean.length / 2));
       // Fix-round (review): halve the STRIPPED text (ONE omission
@@ -658,7 +660,8 @@ const trimContentRule: LadderRule = {
     const e = envelope as { content?: string; truncated?: boolean };
     const content = e.content;
     if (!content) return envelope;
-    const clean = content.replace(/^…+/, "").replace(/…$/, "");
+    // Marker protocol (R3): same envelope-flag rule as the search rule.
+    const clean = (wasBudgetWalked(e) || e.truncated === true ? content.replace(/^…/, "") : content).replace(/…$/, "");
     if (clean.length <= 1) return envelope;
     const half = Math.max(1, Math.floor(clean.length / 2));
     // Fix-round (review): same marker/strict-shrink/truncated-stamp

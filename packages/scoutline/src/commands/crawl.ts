@@ -29,7 +29,7 @@ import type { ExecutionDependencies } from "../lib/execution.js";
 import { executeCachedOperation } from "../lib/execution.js";
 import { OUTPUT_MODES } from "../lib/output.js";
 import { ValidationError } from "../lib/errors.js";
-import type { LadderRule } from "../lib/output-budget.js";
+import { wasBudgetWalked, type LadderRule } from "../lib/output-budget.js";
 
 // ---------------------------------------------------------------------------
 // Option and dependency types
@@ -166,10 +166,20 @@ const trimPageContentsRule: LadderRule = {
     // bleeds every page body before drop-trailing-pages destroys whole
     // trailing URLs whose bodies were never trimmed.
     for (let i = pages.length - 1; i >= 0; i--) {
-      const page = pages[i] as { content?: string };
+      const page = pages[i] as {
+        content?: string;
+        truncated?: boolean;
+        originalContentLength?: number;
+      };
       const content = page.content;
       if (!content) continue;
-      const clean = content.replace(/^…+/, "").replace(/…$/, "");
+      // Marker protocol (R3): strip ONE leading marker only on subsequent
+      // passes (the page's own truncated flag, flipped by this rule).
+      // The envelope (not the page row) carries the walked state — page
+      // rows are rebuilt each pass and would never register.
+      const clean = (
+        wasBudgetWalked(e) || page.truncated === true ? content.replace(/^…/, "") : content
+      ).replace(/…$/, "");
       if (clean.length <= 1) continue;
       const half = Math.max(1, Math.floor(clean.length / 2));
       // Fix-round (review): halve the STRIPPED text — repeated passes
@@ -178,14 +188,12 @@ const trimPageContentsRule: LadderRule = {
       // truth flags when the ladder changed the content.
       const replacement = "…" + clean.slice(0, half);
       if (replacement.length >= content.length) continue;
+      // R3: no per-page metadata stamped in-rule — the truth flags
+      // cost more than short-page halvings save, which made short
+      // pages unbleedable. The crawl seam stamps pages post-walk
+      // (index.ts crawl rebuild) from the marker protocol.
       const nextPages = [...pages];
-      nextPages[i] = {
-        ...page,
-        content: replacement,
-        truncated: true,
-        originalContentLength:
-          (page as { originalContentLength?: number }).originalContentLength ?? clean.length,
-      };
+      nextPages[i] = { ...page, content: replacement };
       return { ...e, pages: nextPages };
     }
     return envelope;

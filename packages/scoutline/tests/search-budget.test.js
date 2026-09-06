@@ -34,7 +34,11 @@ import * as path from "node:path";
 
 import { main } from "../dist/index.js";
 import { SEARCH_LADDER } from "../dist/commands/search.js";
-import { applyBudget, measurePayload } from "../dist/lib/output-budget.js";
+import {
+  applyBudget,
+  measurePayload,
+  COMPACTION_STAMP_RESERVE,
+} from "../dist/lib/output-budget.js";
 import { readLog } from "../dist/lib/artifacts.js";
 import { buildHistoryShowReport } from "../dist/commands/history.js";
 import { ValidationError } from "../dist/lib/errors.js";
@@ -192,7 +196,7 @@ describe("SEARCH_LADDER — whole-envelope priority", () => {
         summary: "",
       })),
     });
-    const level2 = applyBudget(envelope, floorOfFive, SEARCH_LADDER);
+    const level2 = applyBudget(envelope, floorOfFive + COMPACTION_STAMP_RESERVE, SEARCH_LADDER);
     assert.equal(level2.projection.results.length, 5, "rows survive level 2");
     assert.ok(
       level2.projection.results.every((r) => r.source === undefined && r.date === undefined),
@@ -206,7 +210,7 @@ describe("SEARCH_LADDER — whole-envelope priority", () => {
         { rank: 2, title: "Two", url: "https://e/2", summary: "" },
       ],
     });
-    const level3 = applyBudget(envelope, twoRows, SEARCH_LADDER);
+    const level3 = applyBudget(envelope, twoRows + COMPACTION_STAMP_RESERVE, SEARCH_LADDER);
     assert.deepEqual(
       level3.projection.results.map((r) => r.rank),
       [1, 2],
@@ -248,7 +252,7 @@ describe("SEARCH_LADDER — whole-envelope priority", () => {
         { rank: 2, title: "Two", url: "https://e/2", summary: "" },
       ],
     });
-    const { projection } = applyBudget(envelope, twoRows, SEARCH_LADDER);
+    const { projection } = applyBudget(envelope, twoRows + COMPACTION_STAMP_RESERVE, SEARCH_LADDER);
     assert.ok(
       projection.results.some((r) => r.rank === 1),
       "rank 1 must survive (drops start at the lowest rank)",
@@ -718,6 +722,47 @@ describe("stamp accounting — compaction metadata is outside the budget", () =>
       const envelope = { results: fiveSources().map((s, i) => ({ ...s, rank: i + 1 })) };
       const expected = applyBudget(envelope, 900, SEARCH_LADDER);
       assert.deepEqual(data.results, expected.projection.results);
+    });
+  });
+});
+
+describe("PR #103 fix-round — --fields + text presentations", () => {
+  it("--fields omitting title/url/rank still renders full rows in text modes", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const { status, stdout, stderr } = await runMain(
+        [
+          "-O", "compact", "--provider", "tavily",
+          "search", "q", "--max-chars", "300", "--fields", "summary",
+        ],
+        {
+          artifactsDir: dir,
+          extraDeps: { providerDescriptors: [makeDescriptor("tavily", { q: fiveSources() })] },
+        },
+      );
+      assert.equal(status, 0, JSON.stringify(stderr));
+      const out = stdout.join("");
+      assert.ok(out.length > 0, "compact mode renders");
+      assert.ok(
+        out.includes("https://e/1"),
+        `compact keeps url despite --fields summary: ${out.slice(0, 120)}`,
+      );
+      assert.ok(!out.includes("undefined"), "no undefined field leakage");
+      // The data surface stays budgeted (rank 5 dropped), while the text
+      // presentation keeps full rows under --fields (pre-T3 shape, no
+      // "undefined — undefined" leakage).
+      const { stdout: dstdout } = await runMain(
+        ["-O", "data", "--provider", "tavily", "search", "q", "--max-chars", "300", "--fields", "summary"],
+        {
+          artifactsDir: dir,
+          extraDeps: { providerDescriptors: [makeDescriptor("tavily", { q: fiveSources() })] },
+        },
+      );
+      const data = JSON.parse(dstdout.join(""));
+      assert.ok(data.compaction, "budget fires under --fields too");
+      assert.ok(
+        data.results.every((r) => r.summary.length < 120),
+        "data summaries trimmed by the budget under --fields",
+      );
     });
   });
 });

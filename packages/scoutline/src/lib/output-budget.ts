@@ -53,7 +53,14 @@ export interface BudgetOutcome<T = unknown> {
 function sortKeysDeep(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortKeysDeep);
   if (value !== null && typeof value === "object") {
-    const sorted: Record<string, unknown> = {};
+    // Null-prototype accumulator (fix-round): a payload's OWN
+    // `__proto__` key (legal in JSON — `JSON.parse` creates it as an
+    // own property) must survive as an own key. On a `{}` accumulator
+    // the assignment `sorted["__proto__"] = v` routes through
+    // Object.prototype's setter and the key silently vanishes from
+    // measurement while the printed JSON still carries it — the
+    // measured size then under-reports the print.
+    const sorted: Record<string, unknown> = Object.create(null);
     for (const key of Object.keys(value).sort()) {
       sorted[key] = sortKeysDeep((value as Record<string, unknown>)[key]);
     }
@@ -82,10 +89,30 @@ export function measurePayload(value: unknown): number {
 }
 
 /**
+ * Chars reserved for the `compaction {budget, ref}` stamp the handler
+ * seam adds to every budgeted projection AFTER `applyBudget` returns
+ * (ADR-0007 D6: the field lives inside the data payload). Upper bound
+ * of `,"compaction":{"budget":<n>,"ref":"YYYYMMDDThhmmssZ-hex"}` at the
+ * compact-JSON measurement the engine uses — deterministic, offline,
+ * and honest at the seam: the walked projection plus this reserve fits
+ * the budget in data mode (ADR-0007: "measurement is serialized payload
+ * length"). Output wrappers (`-O json`'s success/timestamp envelope,
+ * pretty indentation, text presentations) are presentation chrome the
+ * ADR scopes OUT of the measured payload; README documents the budget
+ * as applying to the payload.
+ */
+export const COMPACTION_STAMP_RESERVE = 52;
+
+/**
  * Project `envelope` onto `budget` chars by walking `ladder`. Pure: the
  * input is never mutated and an envelope that already fits is returned
  * by reference with no `compaction`. Negative and NaN budgets normalize
  * to 0 (floor clamp); an infinite budget always fits.
+ *
+ * The walk reserves {@link COMPACTION_STAMP_RESERVE} chars for the
+ * mandatory stamp, so a returned projection plus its `compaction` field
+ * fits `budget` — the dispatcher no longer overshoots by appending the
+ * stamp unmeasured.
  */
 export function applyBudget<T>(
   envelope: T,
@@ -98,8 +125,11 @@ export function applyBudget<T>(
   if (size <= effectiveBudget) {
     return { projection };
   }
+  // ponytail: reserve assumes the compact stamp shape above; if the
+  // stamp grows a third field (e.g. reason codes), bump the constant.
+  const target = Math.max(0, effectiveBudget - COMPACTION_STAMP_RESERVE);
   for (const rule of ladder) {
-    while (size > effectiveBudget) {
+    while (size > target) {
       const next = rule.apply(projection);
       if (next === projection) break;
       const nextSize = measurePayload(next);
@@ -107,7 +137,7 @@ export function applyBudget<T>(
       projection = next;
       size = nextSize;
     }
-    if (size <= effectiveBudget) {
+    if (size <= target) {
       return { projection, compaction: { budget: effectiveBudget } };
     }
   }

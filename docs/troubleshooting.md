@@ -313,7 +313,8 @@ shape back, slice it: `scoutline read URL --extract code -O data | jq -c .items[
 
 `--max-chars` budgets the whole envelope on extract reads too — but it
 trims field **values** only, never dropping field names or URLs. Extract
-reports `originalItemCount`; see the next section for the budget behavior.
+reports `originalItemCount`; see "`--max-chars` Looks Unexpected" below for the
+budget behavior.
 
 ## Repository Search Returns 0 Excerpts or Reports "Empty Result"
 

@@ -313,8 +313,8 @@ Key boundaries:
 - **Repository Explorer is Provider-neutral.** It imports only the
   normalized Repository Capability, shared execution, and normalized
   errors. It owns canonical paths, deterministic breadth-first traversal,
-  deduplication, request-bound directory safety, and the local
-  `--max-chars` Output Budget projection over the normalized result.
+  deduplication, and request-bound directory safety. The Output Budget
+  ladders it exports run at the handler seam (next bullet), not here.
 - **Adapter owns the transport.** The Z.AI Repository Adapter resolves its
   credential once, builds legacy keys from that same credential, invokes
   through resolved raw tool names, recognizes encoded MCP error envelopes

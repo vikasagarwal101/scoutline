@@ -595,7 +595,7 @@ async function collectTreeSnapshots(
 const trimLastExcerptRule: LadderRule = {
   name: "trim-last-excerpt",
   apply(envelope) {
-    const e = envelope as { excerpts?: unknown[] };
+    const e = envelope as { excerpts?: unknown[]; truncated?: boolean };
     const excerpts = e.excerpts;
     if (!excerpts || excerpts.length === 0) return envelope;
     // Backward scan (fix-round A): halve the LAST excerpt whose text is
@@ -606,12 +606,25 @@ const trimLastExcerptRule: LadderRule = {
       const row = excerpts[i] as { text?: string };
       const text = row.text;
       if (!text) continue;
-      const stripped = text.replace(/…$/, "");
-      if (stripped.length <= 1) continue;
-      const half = Math.max(1, Math.floor(stripped.length / 2));
+      const clean = text.replace(/^…+/, "").replace(/…$/, "");
+      if (clean.length <= 1) continue;
+      const half = Math.max(1, Math.floor(clean.length / 2));
+      // Fix-round (review): halve the STRIPPED text (ONE omission
+      // marker across passes), skip texts the halving cannot strictly
+      // shrink, and stamp the truth flag the envelope contract
+      // promises consumers (`truncated: true` when the ladder cuts).
+      const replacement = "…" + clean.slice(0, half);
+      if (replacement.length >= text.length) continue;
       const next = [...excerpts];
-      next[i] = { ...row, text: "…" + stripped.slice(0, half) };
-      return { ...e, excerpts: next };
+      next[i] = { ...row, text: replacement };
+          // Fix-round (review): content changed — flip a pre-existing
+    // `truncated: false` to true (truth flags: README/troubleshooting
+    // promise this). Conditional so the flip never ADDS the key (that
+    // would inflate first-pass size and defeat the engine's shrink
+    // check); the seam stamps envelopes that never had one.
+      return e.truncated === false
+        ? { ...e, excerpts: next, truncated: true }
+        : { ...e, excerpts: next };
     }
     return envelope;
   },
@@ -620,10 +633,17 @@ const trimLastExcerptRule: LadderRule = {
 const dropTrailingExcerptsRule: LadderRule = {
   name: "drop-trailing-excerpts",
   apply(envelope) {
-    const e = envelope as { excerpts?: unknown[] };
+    const e = envelope as { excerpts?: unknown[]; truncated?: boolean };
     const excerpts = e.excerpts;
     if (!excerpts || excerpts.length <= 1) return envelope;
-    return { ...e, excerpts: excerpts.slice(0, -1) };
+        // Fix-round (review): content changed — flip a pre-existing
+    // `truncated: false` to true (truth flags: README/troubleshooting
+    // promise this). Conditional so the flip never ADDS the key (that
+    // would inflate first-pass size and defeat the engine's shrink
+    // check); the seam stamps envelopes that never had one.
+    return e.truncated === false
+      ? { ...e, excerpts: excerpts.slice(0, -1), truncated: true }
+      : { ...e, excerpts: excerpts.slice(0, -1) };
   },
 };
 
@@ -635,13 +655,24 @@ const dropTrailingExcerptsRule: LadderRule = {
 const trimContentRule: LadderRule = {
   name: "trim-content",
   apply(envelope) {
-    const e = envelope as { content?: string };
+    const e = envelope as { content?: string; truncated?: boolean };
     const content = e.content;
     if (!content) return envelope;
-    const stripped = content.replace(/…$/, "");
-    if (stripped.length <= 1) return envelope;
-    const half = Math.max(1, Math.floor(stripped.length / 2));
-    return { ...e, content: "…" + stripped.slice(0, half) };
+    const clean = content.replace(/^…+/, "").replace(/…$/, "");
+    if (clean.length <= 1) return envelope;
+    const half = Math.max(1, Math.floor(clean.length / 2));
+    // Fix-round (review): same marker/strict-shrink/truncated-stamp
+    // contract as the search rule above.
+    const replacement = "…" + clean.slice(0, half);
+    if (replacement.length >= content.length) return envelope;
+        // Fix-round (review): content changed — flip a pre-existing
+    // `truncated: false` to true (truth flags: README/troubleshooting
+    // promise this). Conditional so the flip never ADDS the key (that
+    // would inflate first-pass size and defeat the engine's shrink
+    // check); the seam stamps envelopes that never had one.
+    return e.truncated === false
+      ? { ...e, content: replacement, truncated: true }
+      : { ...e, content: replacement };
   },
 };
 

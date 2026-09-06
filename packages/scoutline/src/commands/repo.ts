@@ -737,9 +737,13 @@ const trimBriefBodiesRule: LadderRule = {
     };
     const halve = (text: string | undefined): string | null => {
       if (!text) return null;
-      const stripped = text.replace(/…$/, "");
-      if (stripped.length <= 1) return null;
-      return "…" + stripped.slice(0, Math.max(1, Math.floor(stripped.length / 2)));
+      const clean = text.replace(/^…+/, "").replace(/…$/, "");
+      if (clean.length <= 1) return null;
+      // Fix-round (review): halve the STRIPPED text (ONE omission
+      // marker across passes) and return null when the halving cannot
+      // strictly shrink — the scan moves on instead of stalling.
+      const replacement = "…" + clean.slice(0, Math.max(1, Math.floor(clean.length / 2)));
+      return replacement.length < text.length ? replacement : null;
     };
     for (let i = (e.files ?? []).length - 1; i >= 0; i--) {
       const shortened = halve(e.files?.[i]?.content);

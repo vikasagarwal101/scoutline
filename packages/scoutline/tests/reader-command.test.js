@@ -1151,6 +1151,33 @@ describe("Reader Migration 04 projection — --max-chars", () => {
     assert.strictEqual(parsed.compaction.budget, 3);
   });
 
+  it("extract read mid-budget VALUES shrink but field names survive (trim assertion with teeth)", async () => {
+    // Budget chosen to trim (not floor): values must actually shorten.
+    const body = "```js\nconst abcdefgh = 1234567890;\n```\n```python\nx = 1\n```\n";
+    const m = makeMainDeps({ fetch: fetchWithBody(body) });
+    const { adapter, stdout } = createRecordingAdapter();
+    const full = await main(["read", "https://example.com/", "--extract", "code"], {
+      ...m.mainDeps,
+      invocation: adapter,
+    });
+    void full;
+    const fullItems = JSON.parse(stdout[0]).items;
+    const m2 = makeMainDeps({ fetch: fetchWithBody(body) });
+    const { adapter: a2, stdout: s2 } = createRecordingAdapter();
+    await main(["read", "https://example.com/", "--extract", "code", "--max-chars", "120"], {
+      ...m2.mainDeps,
+      invocation: a2,
+    });
+    const budgeted = JSON.parse(s2[0]);
+    assert.ok(budgeted.compaction, "mid budget fires");
+    assert.strictEqual(budgeted.items.length, fullItems.length, "items never dropped");
+    assert.ok(
+      budgeted.items[0].code.length < fullItems[0].code.length,
+      "first code value actually trimmed",
+    );
+    assert.ok("language" in budgeted.items[0] && "code" in budgeted.items[0]);
+  });
+
   it("content read without --max-chars reports truncated:false and full length", async () => {
     const m = makeMainDeps({
       fetch: () => cannedContentResult({ content: "short body" }),

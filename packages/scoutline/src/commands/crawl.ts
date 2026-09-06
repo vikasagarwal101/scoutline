@@ -169,11 +169,23 @@ const trimPageContentsRule: LadderRule = {
       const page = pages[i] as { content?: string };
       const content = page.content;
       if (!content) continue;
-      const stripped = content.replace(/…$/, "");
-      if (stripped.length <= 1) continue;
-      const half = Math.max(1, Math.floor(stripped.length / 2));
+      const clean = content.replace(/^…+/, "").replace(/…$/, "");
+      if (clean.length <= 1) continue;
+      const half = Math.max(1, Math.floor(clean.length / 2));
+      // Fix-round (review): halve the STRIPPED text — repeated passes
+      // keep ONE omission marker (never "………" accumulation) — skip
+      // pages the halving cannot strictly shrink, and stamp the
+      // truth flags when the ladder changed the content.
+      const replacement = "…" + clean.slice(0, half);
+      if (replacement.length >= content.length) continue;
       const nextPages = [...pages];
-      nextPages[i] = { ...page, content: "…" + stripped.slice(0, half) };
+      nextPages[i] = {
+        ...page,
+        content: replacement,
+        truncated: true,
+        originalContentLength:
+          (page as { originalContentLength?: number }).originalContentLength ?? clean.length,
+      };
       return { ...e, pages: nextPages };
     }
     return envelope;
@@ -301,8 +313,8 @@ Output format (schema-version-1):
         "url":            "<page URL>",
         "content":        "<page body as markdown/text>",
         "contentFormat":  "markdown" | "text",
-        "truncated":      false,          // present when --max-chars is set
-        "originalContentLength": <number>  // present when --max-chars is set
+        "truncated":      false,          // true when the Output Budget ladder trimmed this page
+        "originalContentLength": <number>  // full pre-budget length when the budget trims
       }
     ],
     "totalPages": <number>

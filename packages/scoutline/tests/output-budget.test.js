@@ -20,7 +20,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { measurePayload, serializePayload, applyBudget } from "../dist/lib/output-budget.js";
+import {
+  measurePayload,
+  serializePayload,
+  applyBudget,
+  COMPACTION_STAMP_RESERVE,
+} from "../dist/lib/output-budget.js";
 
 const SUMMARY_LEN = 40;
 const TRIMMED_SUMMARY_LEN = 4;
@@ -106,20 +111,28 @@ describe("applyBudget — ladder walk", () => {
   it("trims early fields before dropping late items (order pin)", () => {
     const envelope = makeEnvelope(3);
     const expected = makeEnvelope(2, TRIMMED_SUMMARY_LEN);
-    const result = applyBudget(envelope, measurePayload(expected), LADDER);
+    // Fix-round: the engine reserves room for the mandatory `compaction`
+    // stamp, so "fits" means projected payload + reserve <= budget.
+    const result = applyBudget(
+      envelope,
+      measurePayload(expected) + COMPACTION_STAMP_RESERVE,
+      LADDER,
+    );
     assert.deepEqual(result.projection, expected);
     assert.equal(result.projection.results.length, 2);
     assert.equal(result.projection.results[0].summary.length, TRIMMED_SUMMARY_LEN);
     assert.equal(result.projection.results[0].url, "https://example.com/r1");
     assert.equal(result.projection.results[1].url, "https://example.com/r2");
-    assert.deepEqual(result.compaction, { budget: measurePayload(expected) });
+    assert.deepEqual(result.compaction, {
+      budget: measurePayload(expected) + COMPACTION_STAMP_RESERVE,
+    });
     assert.equal("ref" in result.compaction, false);
     assert.equal("note" in result.compaction, false);
   });
 
   it("applies a rule repeatedly until the projection fits", () => {
     const envelope = makeEnvelope(3);
-    const budget = measurePayload(makeEnvelope(1));
+    const budget = measurePayload(makeEnvelope(1)) + COMPACTION_STAMP_RESERVE;
     const result = applyBudget(envelope, budget, [dropLowestRank]);
     assert.equal(result.projection.results.length, 1);
     assert.equal(result.projection.results[0].url, "https://example.com/r1");
@@ -130,9 +143,10 @@ describe("applyBudget — ladder walk", () => {
     const noopRule = { name: "noop", apply: (p) => p };
     const envelope = makeEnvelope(3);
     const expected = makeEnvelope(3, TRIMMED_SUMMARY_LEN);
-    const result = applyBudget(envelope, measurePayload(expected), [noopRule, trimSummaries]);
+    const budget = measurePayload(expected) + COMPACTION_STAMP_RESERVE;
+    const result = applyBudget(envelope, budget, [noopRule, trimSummaries]);
     assert.deepEqual(result.projection, expected);
-    assert.deepEqual(result.compaction, { budget: measurePayload(expected) });
+    assert.deepEqual(result.compaction, { budget });
   });
 });
 
@@ -224,5 +238,40 @@ describe("applyBudget — determinism and purity", () => {
     applyBudget(envelope, 1, LADDER);
     applyBudget(envelope, measurePayload(makeEnvelope(2, TRIMMED_SUMMARY_LEN)), LADDER);
     assert.equal(serializePayload(envelope), snapshot);
+  });
+});
+
+describe("PR #103 fix-round — serialization safety + stamp reserve", () => {
+  it("own __proto__ keys survive measurement (no silent drop)", () => {
+    // JSON.parse can produce an own `__proto__` key. The accumulator
+    // must carry it (null-prototype), never route through the
+    // Object.prototype setter (silent drop → under-measurement).
+    const envelope = JSON.parse('{"__proto__":{"polluted":true},"a":1}');
+    const raw = JSON.stringify(envelope);
+    assert.ok(raw.includes("polluted"), "own key present pre-measurement");
+    // Canonical serialization must not LOSE the key's bytes — the whole
+    // hazard was the Object.prototype setter dropping it mid-measure.
+    assert.ok(
+      serializePayload(envelope).includes("polluted"),
+      "serializePayload keeps the own __proto__ key",
+    );
+    // And measurement must therefore include its bytes.
+    assert.equal(
+      measurePayload(envelope),
+      serializePayload(envelope).length,
+      "measurement counts every emitted byte",
+    );
+  });
+
+  it("projection + stamped compaction fit within the requested budget (reserve pin)", () => {
+    const envelope = makeEnvelope(3);
+    const budget = measurePayload(envelope) - 30;
+    const out = applyBudget(envelope, budget, LADDER);
+    assert.ok(out.compaction, "budget below size must fire");
+    const stamped = { ...out.projection, compaction: { ...out.compaction, ref: "20270115T080000Z-a1b2" } };
+    assert.ok(
+      measurePayload(stamped) <= budget,
+      "walked projection + stamp never exceed the requested budget",
+    );
   });
 });

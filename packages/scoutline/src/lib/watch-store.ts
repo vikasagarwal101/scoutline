@@ -256,6 +256,10 @@ function validateTargetRow(row: unknown, index: number): WatchTarget {
       "Each row needs a minted id (timestamp-hex), name, url, integer keep, and ISO createdAt. Fix or remove the file in the watch directory.",
     );
   }
+  // Scheme gate (review): addTarget enforces http(s), but registry rows
+  // are hand-editable — a ftp:/file: URL must fail closed here, before
+  // `watch run` ever fetches it.
+  requireHttpUrl(candidate.url);
   return {
     id: candidate.id,
     name: candidate.name,
@@ -463,12 +467,16 @@ function unknownTargetError(ref: string): ValidationError {
  *
  * Lock ordering (review: purge raced ticks): the registry lock is held
  * for the whole removal, and the PURGE `fs.rm` additionally runs under
- * the target's own append lock (`watch-target-<id>`). An in-flight
- * tick's appends either complete before the registry rewrite (purge
- * then removes them) or start after it and are rejected as
+ * the target's own tick lock (`watch-tick-<id>`) and append lock
+ * (`watch-target-<id>`), taken at the SAME stateDir the tick and
+ * appends use (`<root>/<id>/`) so they guard the same lock files. An
+ * in-flight tick's appends either complete before the registry rewrite
+ * (purge then removes them) or start after it and are rejected as
  * unknown-target (the registry no longer has the row) — evidence can
- * never be recreated under a purged id, and the lock file is unlinked
- * by `fs.rm` only after every waiter has drained.
+ * never be recreated under a purged id. The `fs.rm` unlinks the lock
+ * files purge itself holds; that is safe because the lock cleanup
+ * tolerates ENOENT and the registry-membership re-check (not the lock)
+ * is what bars late writers.
  */
 export async function removeTarget(
   root: string,
@@ -492,14 +500,33 @@ export async function removeTarget(
       if (options.purge) {
         // Serialize with the tick lock (watch-tick-<id>) AND the store's
         // append lock (watch-target-<id>): rm only after every in-flight
-        // writer for this target has finished, so no writer recreates the
-        // directory after purge and no writer's lock file is deleted
-        // under a live holder.
-        const rm = () =>
-          withAsyncFileLock(root, "watch-target-" + target.id, async () => {
-            await fs.rm(path.join(root, target.id), { recursive: true, force: true });
+        // writer for this target has finished. Lock DIR mirrors the
+        // lock's own site (review): withAsyncFileLock writes
+        // <stateDir>/<identity>.lock, and runTick (withTargetTickLock)
+        // plus the store appends all lock at path.join(root, id) —
+        // locking at root would guard DIFFERENT files and serialize
+        // against nothing.
+        // The rm itself spares *.lock (review): the directory holds the
+        // very lock files this critical section runs under — deleting
+        // them would let a newcomer wx-create a fresh lock and enter
+        // concurrently. Contents go inside the locks; the emptied dir
+        // (locks included, already unlinked by then) goes after release —
+        // a writer slipping in between still hits the registry-membership
+        // re-check and refuses before writing.
+        const targetDir = path.join(root, target.id);
+        const rmContents = () =>
+          withAsyncFileLock(targetDir, "watch-target-" + target.id, async () => {
+            const entries = await fs.readdir(targetDir).catch(() => []);
+            await Promise.all(
+              entries
+                .filter((entry) => !entry.endsWith(".lock"))
+                .map((entry) =>
+                  fs.rm(path.join(targetDir, entry), { recursive: true, force: true }),
+                ),
+            );
           }, lockOpts);
-        await withAsyncFileLock(root, "watch-tick-" + target.id, rm, lockOpts);
+        await withAsyncFileLock(targetDir, "watch-tick-" + target.id, rmContents, lockOpts);
+        await fs.rm(targetDir, { recursive: true, force: true });
       }
       return target;
     },

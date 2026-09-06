@@ -1381,13 +1381,18 @@ describe("watch review round 3", () => {
         }
     });
 
-    it("jsonl feed handles a multi-MB log with bounded memory (no whole-file slurp)", async () => {
+    it("jsonl feed round-trips a multi-MB log (8000 lines, exit 0)", async () => {
         const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-r3e-"));
         try {
             const target = await addTarget(dir, { url: "https://biglog.example/a", name: "biglog-a" });
             const file = path.join(dir, target.id, "change-log.jsonl");
             await fs.mkdir(path.dirname(file), { recursive: true });
             // ~4MB of well-formed entries (one per line, terminated).
+            // No timing assertion (review): wall-clock is load-flaky in
+            // both directions — it fails slow CI on a correct stream and
+            // passes a fast whole-file slurp. The streaming implementation
+            // (two readline passes + 1-byte tail check, never readFile) is
+            // pinned by construction; this test pins scale correctness.
             const entry = JSON.stringify({ at: "2026-09-05T12:00:00.000Z", kind: "no-change", exit: 0, gen: 1, pad: "x".repeat(512) });
             const handle = await fs.open(file, "w");
             try {
@@ -1395,12 +1400,9 @@ describe("watch review round 3", () => {
             } finally {
                 await handle.close();
             }
-            const t0 = Date.now();
             const r = await feed(dir)(["watch", "feed", target.id, "--format", "jsonl"]);
             assert.equal(r.code, 0, r.stderr);
-            const lines = r.stdout.split("\n").filter((l) => l !== "").length;
-            assert.equal(lines, 8000);
-            assert.ok(Date.now() - t0 < 10000, "streaming passes must not read the file whole");
+            assert.equal(r.stdout.split("\n").filter((l) => l !== "").length, 8000);
         } finally {
             await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
         }

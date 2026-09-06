@@ -690,6 +690,62 @@ describe("watch store review round 3", () => {
         });
     });
 
+    it("rejects a hand-edited registry row with a non-http(s) URL (fail closed before run)", async (t) => {
+        await withTemp(t, async (root) => {
+            await fs.mkdir(root, { recursive: true });
+            for (const url of ["ftp://evil.example/docs", "file:///etc/passwd", "javascript:alert(1)"]) {
+                await fs.writeFile(
+                    path.join(root, "targets.json"),
+                    JSON.stringify({
+                        targets: [{
+                            id: "20260905T120000Z-abcd",
+                            name: "evil",
+                            type: "page",
+                            url,
+                            keep: 5,
+                            createdAt: "2026-09-05T12:00:00Z",
+                        }],
+                    }),
+                );
+                await assert.rejects(
+                    () => listTargets(root),
+                    (err) => err instanceof ValidationError,
+                    `hand-edited url ${url} must fail closed`,
+                );
+            }
+        });
+    });
+
+    it("purge waits for a holder of the tick lock (same lock file as runTick)", async (t) => {
+        await withTemp(t, async (root) => {
+            const added = await addTarget(root, { url: "https://tick.example/", name: "tick", now: NOW_1 });
+            await appendSnapshot(root, added.id, {
+                body: new TextEncoder().encode("v0"),
+                now: NOW_1,
+                lock: FAST_LOCK,
+            });
+            // Hold runTick's tick lock by hand: lock path mirrors
+            // withTargetTickLock — stateDir = path.join(root, id),
+            // identity = "watch-tick-<id>".
+            const lockDir = path.join(root, added.id);
+            await fs.mkdir(lockDir, { recursive: true });
+            const lockPath = path.join(lockDir, `watch-tick-${added.id}.lock`);
+            const handle = await fs.open(lockPath, "wx");
+            let purged = false;
+            const purge = removeTarget(root, added.id, { purge: true, lock: FAST_LOCK })
+                .then(() => { purged = true; });
+            // The purge must NOT complete while the tick lock is held —
+            // it guards the same file the tick holds, not a root-level twin.
+            await new Promise((r) => setTimeout(r, 150));
+            assert.equal(purged, false, "purge completed without waiting for the tick lock");
+            await handle.close();
+            await fs.unlink(lockPath).catch(() => {});
+            await purge;
+            assert.equal(purged, true);
+            await assert.rejects(() => fs.access(path.join(root, added.id)));
+        });
+    });
+
     it("rejects malformed registry rows: wrong-type fields, bad id grammar, bad keep", async (t) => {
         await withTemp(t, async (root) => {
             await fs.mkdir(root, { recursive: true });

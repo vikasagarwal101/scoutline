@@ -301,10 +301,13 @@ describe("scoutline archive command", () => {
         if (path === "/cdx") {
           // At-or-before selection: the engine must pass to=<T> so the
           // fixture answers with only the captures CDX would return.
+          // limit<0 emulates the Wayback CDX documented contract:
+          // the LAST |limit| captures (newest), not the first.
           const to = u.searchParams.get("to");
-          const rows = [CDX_ROWS[0]].concat(
-            CDX_ROWS.slice(1).filter((r) => !to || r[0] <= to),
-          );
+          const limit = Number(u.searchParams.get("limit") ?? "50");
+          const eligible = CDX_ROWS.slice(1).filter((r) => !to || r[0] <= to);
+          const window = limit < 0 ? eligible.slice(limit) : eligible.slice(0, limit);
+          const rows = [CDX_ROWS[0]].concat(window);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(rows));
         } else if (path.startsWith("/replay/20230601000000id_")) {
@@ -322,11 +325,30 @@ describe("scoutline archive command", () => {
         } else if (path === "/live-binary") {
           res.writeHead(200, { "Content-Type": "application/octet-stream" });
           res.end(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+        } else if (path === "/live-slash") {
+          // 301 to a trailing-slash variant of the same document: a raw
+          // string compare calls this a move; normalized comparison must
+          // not (cross-surface parity with watch run).
+          res.writeHead(301, { Location: "/live-slash/" });
+          res.end();
+        } else if (path === "/live-slash/") {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(LIVE_HTML);
         } else if (path === "/live-moved") {
           res.writeHead(301, { Location: "/live" });
           res.end();
         } else if (path === "/live-temp-moved") {
           res.writeHead(302, { Location: "/live" });
+          res.end();
+        } else if (path === "/live-500") {
+          // A >= 400 live response is a FAILED CAPTURE, never content —
+          // cross-surface rule already enforced by watch run.
+          res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+          res.end("<html><body><h1>Server Error</h1></body></html>");
+        } else if (path === "/replay-fail/*") {
+          // Unreachable in dispatch; replay failure is injected via a
+          // dedicated server below (replay route returning >= 400).
+          res.writeHead(404);
           res.end();
         } else {
           res.writeHead(404, { "Content-Type": "text/plain" });
@@ -391,6 +413,169 @@ describe("scoutline archive command", () => {
       // 12h before Jun 2 is still Jun 1: 20230601 qualifies.
       const r2 = await executeArchiveDiff(`${base}/live`, { since: "12h" }, { ...deps(), now });
       assert.equal(r2.snapshotTimestamp, "20230601000000");
+    });
+
+    it("zero-pads short CDX timestamps so truncated captures participate in selection", async () => {
+      // CDX accepts truncated timestamps ("2023", "202301", ...); forms
+      // of 6-12 digits parse as NaN and the capture is silently
+      // excluded from selection. "202301" must win as 20230101000000
+      // (CDX's own from/to padding semantics) — not be skipped in favor
+      // of the later plain 20230101000000 row.
+      const rows = [
+        CDX_ROWS[0], // header: ["timestamp", "statuscode", ...]
+        ["202301", "200", "100", "DSHORT", "https://example.com/docs"],
+        ["20230101000000", "200", "100", "D1", "https://example.com/docs"],
+        CDX_ROWS[1],
+        CDX_ROWS[2],
+      ];
+      const shortServer = http.createServer((req, res) => {
+        const u = new URL(req.url, `http://${req.headers.host}`);
+        // ponytail: short keepAliveTimeout — undici holds the pooled
+        // connection when a response body goes unconsumed; without this
+        // server.close() waits out the default ~3s (artifact, not the
+        // behavior under test).
+        shortServer.keepAliveTimeout = 50;
+        if (u.pathname === "/cdx") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(rows));
+        } else if (
+          u.pathname.startsWith("/replay/20230101000000id_") ||
+          u.pathname.startsWith("/replay/202301id_")
+        ) {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(OLD_HTML);
+        } else if (u.pathname === "/live") {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(LIVE_HTML);
+        } else {
+          res.writeHead(404); res.end();
+        }
+      });
+      await new Promise((resolve) => shortServer.listen(0, "127.0.0.1", resolve));
+      try {
+        const shortBase = `http://127.0.0.1:${shortServer.address().port}`;
+        // T = 2023-01-15: "202301" must count as 20230101000000 (padded)
+        // and win as the first-seen newest ≤ T. Unpadded it is NaN-excluded
+        // and the plain 20230101000000 row wins instead — snapshotTimestamp
+        // distinguishes the two rows.
+        const r = await executeArchiveDiff(`${shortBase}/live`, { since: "2023-01-15" }, {
+          cdxEndpoint: `${shortBase}/cdx`,
+          replayBaseUrl: `${shortBase}/replay`,
+        });
+        assert.equal(r.snapshotTimestamp, "202301");
+      } finally {
+        await new Promise((resolve) => shortServer.close(resolve));
+      }
+    });
+
+    it("8-digit short timestamp 20230115 pads to midnight and wins the inclusive at-or-before boundary", async () => {
+      // "20230115" must count as 20230115T00:00:00 — exactly T, so the
+      // inclusive at-or-before boundary selects it over the older
+      // 20230101 row. If 8-digit rows ever parse NaN again they are
+      // silently excluded and the older row wins instead —
+      // snapshotTimestamp distinguishes the two.
+      const rows = [
+        CDX_ROWS[0], // header: ["timestamp", "statuscode", ...]
+        ["20230101", "200", "100", "DOLD8", "https://example.com/docs"],
+        ["20230115", "200", "100", "D8DIGIT", "https://example.com/docs"],
+      ];
+      const short8Server = http.createServer((req, res) => {
+        const u = new URL(req.url, `http://${req.headers.host}`);
+        // ponytail: short keepAliveTimeout — undici holds the pooled
+        // connection when a response body goes unconsumed; without this
+        // server.close() waits the default ~3s (artifact, not the
+        // behavior under test).
+        short8Server.keepAliveTimeout = 50;
+        if (u.pathname === "/cdx") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(rows));
+        } else if (
+          u.pathname.startsWith("/replay/20230115id_") ||
+          u.pathname.startsWith("/replay/20230101id_")
+        ) {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(OLD_HTML);
+        } else if (u.pathname === "/live") {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(LIVE_HTML);
+        } else {
+          res.writeHead(404); res.end();
+        }
+      });
+      await new Promise((resolve) => short8Server.listen(0, "127.0.0.1", resolve));
+      try {
+        const short8Base = `http://127.0.0.1:${short8Server.address().port}`;
+        // T = 2023-01-15T00:00:00Z: padded "20230115" lands exactly on T.
+        const r = await executeArchiveDiff(`${short8Base}/live`, { since: "2023-01-15" }, {
+          cdxEndpoint: `${short8Base}/cdx`,
+          replayBaseUrl: `${short8Base}/replay`,
+        });
+        assert.equal(r.snapshotTimestamp, "20230115");
+      } finally {
+        await new Promise((resolve) => short8Server.close(resolve));
+      }
+    });
+
+    it("selects the NEWEST capture <= T even when >50 captures precede T (negative limit)", async () => {
+      // CDX returns captures ascending. With the naive first-50 window the
+      // selection only ever sees the OLDEST 50 captures and silently picks
+      // a decades-old snapshot. The Wayback CDX documented contract:
+      // negative limit = LAST |limit| results (newest). Fixture mirrors
+      // that contract; 60 status-200 captures <= T, newest far beyond
+      // the first 50 — only a negative-limit query can see it.
+      const MANY_ROWS = [CDX_ROWS[0]].concat(
+        Array.from({ length: 60 }, (_, i) => {
+          const day = String((i % 28) + 1).padStart(2, "0");
+          const month = String(Math.floor(i / 28) + 1).padStart(2, "0");
+          return ["2023" + month + day + "120000", "200", "100", `D${i}`, "https://example.com/docs"];
+        }),
+      );
+      let cdxQuery;
+      const manyServer = http.createServer((req, res) => {
+        const u = new URL(req.url, `http://${req.headers.host}`);
+        if (u.pathname === "/cdx") {
+          cdxQuery = u;
+          const to = u.searchParams.get("to");
+          const limit = Number(u.searchParams.get("limit") ?? "50");
+          const eligible = MANY_ROWS.slice(1).filter((r) => !to || r[0] <= to);
+          const window = limit < 0 ? eligible.slice(limit) : eligible.slice(0, limit);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify([CDX_ROWS[0]].concat(window)));
+        } else if (u.pathname.startsWith("/replay/20230304120000id_")) {
+          // Capture #59 (Mar 4) — the newest <= 2023-03-05T00:00:00Z.
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(OLD_HTML);
+        } else if (u.pathname === "/live") {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(LIVE_HTML);
+        } else {
+          res.writeHead(404);
+          res.end();
+        }
+      });
+      // ponytail: short keepAliveTimeout — unconsumed pooled response
+      // bodies otherwise stall server.close() ~3s (see fixture note above).
+      manyServer.keepAliveTimeout = 50;
+      await new Promise((resolve) => manyServer.listen(0, "127.0.0.1", resolve));
+      try {
+        const manyBase = `http://127.0.0.1:${manyServer.address().port}`;
+        const r = await executeArchiveDiff(`${manyBase}/live`, { since: "2023-03-05" }, {
+          cdxEndpoint: `${manyBase}/cdx`,
+          replayBaseUrl: `${manyBase}/replay`,
+        });
+        assert.equal(r.snapshotTimestamp, "20230304120000");
+        // Teeth: only a NEGATIVE limit asks CDX for the newest window;
+        // a positive limit (+100) yields the oldest 60 and selects
+        // capture #1 (2023) instead. Fixture honors the sign (slice
+        // direction) so the assertion pins the emitted param, not the
+        // happy path — see mutation verification in the ticket report.
+        assert.ok(cdxQuery, "CDX query was made");
+        assert.equal(cdxQuery.searchParams.get("limit"), "-100");
+        assert.equal(cdxQuery.searchParams.get("to"), "20230305000000");
+        assert.equal(cdxQuery.searchParams.get("filter"), "statuscode:200");
+      } finally {
+        await new Promise((resolve) => manyServer.close(resolve));
+      }
     });
 
     it("selects the capture EXACTLY at --since T, not the earlier one", async () => {
@@ -481,6 +666,61 @@ describe("scoutline archive command", () => {
       assert.equal(temp.finalUrl, `${base}/live`);
     });
 
+    it("moved=false when a permanent redirect lands on a trailing-slash variant of the same document", async () => {
+      const r = await executeArchiveDiff(`${base}/live-slash`, { since: "2023-12-31" }, deps());
+      assert.equal(r.moved, false);
+      assert.equal(r.finalUrl, `${base}/live-slash/`);
+    });
+
+    it("live HTTP >= 400 is a failed capture, not content (NetworkError)", async () => {
+      await assert.rejects(
+        executeArchiveDiff(`${base}/live-500`, { since: "2023-12-31" }, deps()),
+        (err) =>
+          err instanceof NetworkError &&
+          /Live fetch failed with HTTP 500/.test(err.message),
+      );
+    });
+
+    it("snapshot replay HTTP >= 400 is a failed capture, not content (NetworkError)", async () => {
+      // Dedicated server: CDX healthy, but the id_ replay route 502s —
+      // a failed replay must never be diffed as "everything changed".
+      const failServer = http.createServer((req, res) => {
+        const u = new URL(req.url, `http://${req.headers.host}`);
+        // ponytail: short keepAliveTimeout so close() below doesn't wait
+        // out the default ~3s when an unconsumed 502 body holds the pooled
+        // connection (undici artifact, not behavior under test).
+        failServer.keepAliveTimeout = 50;
+        if (u.pathname === "/cdx") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify([CDX_ROWS[0], CDX_ROWS[1]]));
+        } else if (u.pathname.startsWith("/replay/")) {
+          res.writeHead(502, { "Content-Type": "text/html; charset=utf-8" });
+          res.end("<html><body><h1>Bad Gateway</h1></body></html>");
+        } else if (u.pathname === "/live") {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(LIVE_HTML);
+        } else {
+          res.writeHead(404);
+          res.end();
+        }
+      });
+      await new Promise((resolve) => failServer.listen(0, "127.0.0.1", resolve));
+      try {
+        const failBase = `http://127.0.0.1:${failServer.address().port}`;
+        await assert.rejects(
+          executeArchiveDiff(`${failBase}/live`, { since: "2023-12-31" }, {
+            cdxEndpoint: `${failBase}/cdx`,
+            replayBaseUrl: `${failBase}/replay`,
+          }),
+          (err) =>
+            err instanceof NetworkError &&
+            /Snapshot replay failed with HTTP 502/.test(err.message),
+        );
+      } finally {
+        await new Promise((resolve) => failServer.close(resolve));
+      }
+    });
+
     it("degrades to hash-only when the live side is not HTML", async () => {
       const r = await executeArchiveDiff(`${base}/live-binary`, { since: "2023-12-31" }, deps());
       assert.equal(r.hashOnly, true);
@@ -514,6 +754,20 @@ describe("scoutline archive command", () => {
       });
       assert.equal(code, 1);
       assert.match(stderr.join(""), /VALIDATION_ERROR/);
+    });
+
+    it("rejects a valueless --timeout at parse level (family: watch --since/--timeout)", async () => {
+      const { adapter, stderr } = makeAdapter();
+      const code = await main(["archive", "diff", "https://example.com", "--since", "30d", "--timeout"], {
+        invocation: adapter,
+        env: {},
+        loadScoutlineConfig: () => {
+          throw new Error("Should not be called!");
+        },
+      });
+      assert.equal(code, 1);
+      assert.match(stderr.join(""), /VALIDATION_ERROR/);
+      assert.match(stderr.join(""), /--timeout requires a value/);
     });
 
     it("lists diff in the subcommand error string and ARCHIVE_HELP", async () => {

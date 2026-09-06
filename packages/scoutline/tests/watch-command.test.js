@@ -684,6 +684,38 @@ describe("scoutline watch command (T4)", () => {
       }
     });
 
+    it("--all contains a per-target ValidationError as an error report (review r3)", async () => {
+      // A snapshot with its BYTES deleted reads as an internal
+      // ValidationError (incomplete generation). The old rethrow
+      // rejected Promise.all and suppressed the whole results document.
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-run-"));
+      const { server, routes, base } = await makeTickServer();
+      try {
+        const runner = makeRunnerAt(dir, Date.parse("2026-09-06T08:00:00Z"));
+        routes["/ok"] = { body: HTML_V1, status: 200, type: "text/html; charset=utf-8" };
+        const ok = await addAt(runner, `${base}/ok`, "ok-docs");
+        const broken = await addAt(runner, `${base}/ok`, "broken-docs");
+        await runner(["watch", "run", "ok-docs"]);
+        await runner(["watch", "run", "broken-docs"]);
+        // Corrupt the newest generation of broken-docs: kill its bytes.
+        const snaps = await listSnapshots(dir, broken.id);
+        await fs.unlink(path.join(dir, broken.id, "snapshots", `gen-${snaps[snaps.length - 1].gen}.snapshot.bytes`));
+        routes["/ok"] = { body: HTML_V2, status: 200, type: "text/html; charset=utf-8" };
+        const rr = await runner(["watch", "run", "--all"]);
+        // Worst exit wins (2 > 1): the error report escalates the batch
+        // to 2, and BOTH outcomes still appear — never an abort.
+        assert.equal(rr.code, 2);
+        const data = JSON.parse(rr.stdout);
+        assert.equal(data.results.length, 2);
+        const byName = new Map(data.results.map((r) => [r.name ?? r.target, r]));
+        assert.equal(byName.get("ok-docs").result, "change");
+        assert.equal(byName.get("broken-docs").result, "error");
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+        await new Promise((resolve) => server.close(resolve));
+      }
+    });
+
     it("--all on an empty registry: exit 0, results []", async () => {
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-run-"));
       try {
@@ -836,6 +868,7 @@ describe("scoutline watch command (T4)", () => {
           '<rss version="2.0"><channel>',
           "  <title>scoutline watch: example-docs</title>",
           `  <link>${TARGET_URL}</link>`,
+          "  <description>Change history for example-docs</description>",
           "  <item>",
           "    <title>changed: Install</title>",
           `    <guid isPermaLink="false">${target.id}:2</guid>`,
@@ -1066,6 +1099,7 @@ describe("scoutline watch command (T4)", () => {
           '<rss version="2.0"><channel>',
           "  <title>scoutline watch: example-docs</title>",
           `  <link>${TARGET_URL}</link>`,
+          "  <description>Change history for example-docs</description>",
           "</channel></rss>",
         ].join("\n"));
         const jsonl = await feed(dir)(["watch", "feed", target.id]);
@@ -1280,4 +1314,87 @@ describe("scoutline watch command (T4)", () => {
       }
     });
   });
+});
+
+// ---------------------------------------------------------------------------
+// Review round 3: feed framing fail-closed, RSS channel description,
+// --all per-target error containment
+// ---------------------------------------------------------------------------
+
+describe("watch review round 3", () => {
+    const feed = (dir) => makeRunner(dir);
+
+    it("feed --format jsonl rejects a blank line in the log (fail-closed, not silently dropped)", async () => {
+        const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-r3a-"));
+        try {
+            const target = await addTarget(dir, { url: "https://blank.example/a", name: "blank-a" });
+            const file = path.join(dir, target.id, "change-log.jsonl");
+            await fs.mkdir(path.dirname(file), { recursive: true });
+            await fs.writeFile(
+                file,
+                JSON.stringify({ at: "2026-09-05T12:00:00.000Z", kind: "baseline", exit: 0, gen: 1 }) +
+                    "\n\n" +
+                    JSON.stringify({ at: "2026-09-05T12:01:00.000Z", kind: "change", exit: 1, gen: 2 }) +
+                    "\n",
+            );
+            const r = await feed(dir)(["watch", "feed", target.id, "--format", "jsonl"]);
+            assert.equal(r.code, 1);
+            assert.match(r.stderr, /blank/);
+            // No partial document reached stdout.
+            assert.equal(r.stdout, "");
+        } finally {
+            await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+        }
+    });
+
+    it("feed --format jsonl rejects an unterminated final record (torn append)", async () => {
+        const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-r3b-"));
+        try {
+            const target = await addTarget(dir, { url: "https://torn.example/a", name: "torn-a" });
+            const file = path.join(dir, target.id, "change-log.jsonl");
+            await fs.mkdir(path.dirname(file), { recursive: true });
+            await fs.writeFile(
+                file,
+                JSON.stringify({ at: "2026-09-05T12:00:00.000Z", kind: "baseline", exit: 0, gen: 1 }) +
+                    "\n" +
+                    '{"at":"2026-09-05T12:01:00.000Z","kind":"cha',
+            );
+            const r = await feed(dir)(["watch", "feed", target.id, "--format", "jsonl"]);
+            assert.equal(r.code, 1);
+            assert.match(r.stderr, /terminating newline/);
+            assert.equal(r.stdout, "");
+        } finally {
+            await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+        }
+    });
+
+    it("well-formed logs still stream through the jsonl feed untouched", async () => {
+        const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-r3c-"));
+        try {
+            const target = await addTarget(dir, { url: "https://okfeed.example/a", name: "ok-a" });
+            await appendChangeLog(dir, target.id, { at: "2026-09-05T12:00:00.000Z", kind: "baseline", exit: 0, gen: 1 });
+            const r = await feed(dir)(["watch", "feed", target.id, "--format", "jsonl"]);
+            assert.equal(r.code, 0);
+            assert.match(r.stdout, /"kind":"baseline"/);
+        } finally {
+            await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+        }
+    });
+
+    it("RSS channel carries a channel-level <description> even with no items", async () => {
+        const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-r3d-"));
+        try {
+            const target = await addTarget(dir, { url: "https://nodesc.example/a", name: "nodesc-a" });
+            // Empty log: the channel must still be valid RSS 2.0 (title,
+            // link, description all present).
+            const r = await feed(dir)(["watch", "feed", target.id, "--format", "rss"]);
+            assert.equal(r.code, 0);
+            assert.match(r.stdout, /<title>scoutline watch: nodesc-a<\/title>/);
+            assert.match(r.stdout, /<link>https:\/\/nodesc\.example\/a<\/link>/);
+            assert.match(r.stdout, /<description>Change history for nodesc-a<\/description>/);
+            assert.doesNotMatch(r.stdout, /<item>/);
+        } finally {
+            await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+        }
+    });
 });

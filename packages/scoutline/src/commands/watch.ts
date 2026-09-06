@@ -363,11 +363,14 @@ async function runTick(
   },
 ): Promise<WatchRunReport> {
   // Serialize the whole tick — read-diff-write, fetch included — under
-  // the SAME per-target lock the store's appends use (same dir, same
-  // key): overlapping cron invocations used to both read the same prior
-  // snapshot before either append ran (review). A store failure inside
-  // the tick surfaces as an error report (exit 2), never an aborted
-  // --all sweep (review).
+  // a DISTINCT per-target lock (`watch-tick-<id>`, see the docblock on
+  // withTargetTickLock): reusing the store's `watch-target-<id>` append
+  // lock would self-deadlock (the store appends re-acquire it inside
+  // the tick), and it serializes tick-vs-tick because appends only ever
+  // happen inside a tick. Overlapping cron invocations used to both
+  // read the same prior snapshot before either append ran (review). A
+  // store failure inside the tick surfaces as an error report (exit 2),
+  // never an aborted --all sweep (review).
   try {
     return await withTargetTickLock(
       root,
@@ -376,7 +379,11 @@ async function runTick(
       options.timeoutMs,
     );
   } catch (error) {
-    if (error instanceof ValidationError) throw error;
+    // Internal per-target failures (missing snapshot bytes, a target
+    // removed mid-sweep, registry shape errors) become that target's
+    // error report instead of rejecting Promise.all and suppressing the
+    // whole --all results document (review): every tick's outcome
+    // stays in the report array and worst-exit still wins.
     return tickFailureReport(root, target, options, error);
   }
 }
@@ -838,6 +845,9 @@ function renderRssFeed(
     '<rss version="2.0"><channel>',
     `  <title>${safe(`scoutline watch: ${target.name}`)}</title>`,
     `  <link>${safe(target.url)}</link>`,
+    // Channel-level <description> is REQUIRED by RSS 2.0 (with title
+    // and link) — present even when the feed has no items (review).
+    `  <description>${safe(`Change history for ${target.name}`)}</description>`,
   ];
   for (const entry of entries) {
     if (entry.kind !== "change" && entry.kind !== "moved") continue;
@@ -901,16 +911,38 @@ async function executeWatchFeed(input: {
     }
     if (exists) {
       // Two streaming passes (review: bounded memory, not one big read):
-      // pass 1 validates EVERY line before a byte reaches stdout (the
-      // fail-closed no-partial-document contract); pass 2 emits. Peak
-      // memory is one line, never the whole unbounded log.
+      // pass 1 validates EVERY line AND the raw framing before a byte
+      // reaches stdout (the fail-closed no-partial-document contract);
+      // pass 2 emits. Peak memory is one line, never the whole log.
+      //
+      // Framing equals readChangeLog's grammar (review): blank lines
+      // anywhere are corruption (not silently dropped), and an
+      // unterminated final record (no trailing newline) is a torn
+      // append — both throw before output. readline hides the final
+      // newline, so the byte is checked on the raw file size + last
+      // chunk.
+      const stat = await fs.stat(file);
+      if (stat.size > 0) {
+        const raw = await fs.readFile(file, "utf8");
+        if (!raw.endsWith("\n")) {
+          throw new ValidationError(
+            `${file}: last line is missing its terminating newline (corrupt append).`,
+          );
+        }
+      }
       const lines = readline.createInterface({
         input: createReadStream(file),
         crlfDelay: Infinity,
       });
       let index = 0;
       for await (const line of lines) {
-        if (line.trim() !== "") parseChangeLogLinePublic(file, line, index);
+        if (line.trim() === "") {
+          throw new ValidationError(
+            `${file}: line ${index + 1} is blank (corrupt change log).`,
+            "The log is append-only evidence; repair it by hand or remove the file to reset.",
+          );
+        }
+        parseChangeLogLinePublic(file, line, index + 1);
         index += 1;
       }
       await lines.close();
@@ -919,7 +951,6 @@ async function executeWatchFeed(input: {
         crlfDelay: Infinity,
       });
       for await (const line of emit) {
-        if (line.trim() === "") continue;
         const redacted = redactSecrets(line, input.secrets);
         input.invocation.writeStdout(redacted + "\n");
       }

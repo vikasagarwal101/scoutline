@@ -149,11 +149,15 @@ const INLINE_TAGS = new Set([
   "big",
 ]);
 
-/** Block-level text breaks — enough section shape without a DOM tree. */
+/** Block-level text breaks — enough section shape without a DOM tree.
+ * `br` is ABSENT (review): it is phrasing content inside a heading —
+ * `<h1>Alpha<br>Beta</h1>` is one heading `Alpha Beta`, not heading
+ * `Alpha` + body `Beta` — and inside a body it is a soft break that
+ * does not need a paragraph gap.
+ */
 const BLOCK_TAGS = new Set([
   "p",
   "div",
-  "br",
   "li",
   "tr",
   "table",
@@ -198,6 +202,11 @@ export function extractSections(
   let headingTag: string | null = null;
   let headingChunks: string[] = [];
   let inComment = false;
+  // Heading chunks are already entity-decoded when collected (review:
+  // decoding again at flush made `<h1>&lt;</h1>` and `<h1><</h1>` the
+  // SAME heading — decode exactly once, here).
+  const finalizeHeading = (): string =>
+    normalizeText(headingChunks.join(""));
   // Tokenize on tags, honoring quoted attribute values first: `<a
   // title="1 > 0">` must land in ONE token, not split at the `>` inside
   // the quotes (splitting leaks `0">` into body text and false-diffs).
@@ -248,12 +257,20 @@ export function extractSections(
         // a BLOCK open also ends it (old markup never closed things).
         // INLINE closes (`</b>`, `</em>`) do NOT — `<h1>Hello
         // <b>world</b> again</h1>` keeps `again` in the heading.
+        // `br` inside a heading is phrasing content, not a block break
+        // (review): `<h1>Alpha<br>Beta</h1>` stays ONE heading
+        // `Alpha Beta`.
         const endsHeading =
           (isClose && tag === headingTag) ||
           (!isClose && /^h[1-6]$/.test(tag)) ||
-          (!isClose && BLOCK_TAGS.has(tag));
+          (!isClose && BLOCK_TAGS.has(tag)) ||
+          // A DIFFERENT block tag's close also ends the heading (legacy
+          // `<h1>Title</div>` never reopens): only inline closes are
+          // exempt (review) — `<h1>A</p>` must not swallow following
+          // body text into the heading.
+          (isClose && tag !== headingTag && BLOCK_TAGS.has(tag));
         if (endsHeading) {
-          const headingText = normalizeText(decodeEntities(headingChunks.join("")));
+          const headingText = finalizeHeading();
           // A heading always emits its own section, even when the old
           // section has no body — two consecutive headings must not
           // merge into one bucket (`<h1>A</h1><h2>B</h2>` yields two).
@@ -290,7 +307,7 @@ export function extractSections(
   }
   // Missing heading closer (old markup): flush the buffered heading anyway.
   if (headingTag !== null) {
-    const headingText = normalizeText(decodeEntities(headingChunks.join("")));
+    const headingText = finalizeHeading();
     flushSection(sections, currentHeading, bodyChunks);
     currentHeading = headingText === "" ? null : headingText;
   }

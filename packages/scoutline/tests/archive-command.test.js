@@ -855,3 +855,95 @@ describe("archive diff review fixes", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review round 3: declared-length preflight before the bounded reader
+// ---------------------------------------------------------------------------
+
+describe("archive diff review round 3", () => {
+    it("rejects an oversized live Content-Length before reading the body", async () => {
+        const server = http.createServer((req, res) => {
+            const u = new URL(req.url, `http://${req.headers.host}`);
+            if (u.pathname === "/cdx") {
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify([
+                    ["timestamp", "statuscode", "length", "digest", "original"],
+                    ["20230601000000", "200", "100", "D2", "https://example.com/docs"],
+                ]));
+                return;
+            }
+            if (u.pathname === "/live-huge") {
+                res.writeHead(200, {
+                    "Content-Type": "text/html; charset=utf-8",
+                    "Content-Length": String(60 * 1024 * 1024),
+                });
+                // Send a sliver of the declared 60MB, then stall: the
+                // preflight must reject from the DECLARED length before
+                // the reader ever starts (a bare stalled response with
+                // zero bytes would never even resolve fetch()).
+                res.write("<h1>wait");
+                return;
+            }
+            if (u.pathname.startsWith("/replay/")) {
+                res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+                res.end("<h1>Old</h1>");
+                return;
+            }
+            res.writeHead(404); res.end();
+        });
+        await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const base = `http://127.0.0.1:${server.address().port}`;
+        try {
+            await assert.rejects(
+                () => executeArchiveDiff(`${base}/live-huge`, { since: "2023-12-31", timeout: 5000 }, {
+                    cdxEndpoint: `${base}/cdx`,
+                    replayBaseUrl: `${base}/replay`,
+                }),
+                (err) => err instanceof ValidationError && /Live page size \(62914560 bytes\)/.test(err.message),
+            );
+        } finally {
+            await new Promise((resolve) => server.close(resolve));
+        }
+    });
+
+    it("rejects an oversized replay Content-Length before reading the body", async () => {
+        const server = http.createServer((req, res) => {
+            const u = new URL(req.url, `http://${req.headers.host}`);
+            if (u.pathname === "/cdx") {
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify([
+                    ["timestamp", "statuscode", "length", "digest", "original"],
+                    ["20230601000000", "200", "100", "D2", "https://example.com/docs"],
+                ]));
+                return;
+            }
+            if (u.pathname.startsWith("/replay/")) {
+                res.writeHead(200, {
+                    "Content-Type": "text/html; charset=utf-8",
+                    "Content-Length": String(60 * 1024 * 1024),
+                });
+                res.write("<h1>wait"); // sliver, then stall
+                return;
+            }
+            if (u.pathname === "/live") {
+                res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+                res.end("<h1>Live</h1>");
+                return;
+            }
+            res.writeHead(404); res.end();
+        });
+        await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const base = `http://127.0.0.1:${server.address().port}`;
+        try {
+            await assert.rejects(
+                () => executeArchiveDiff(`${base}/live`, { since: "2023-12-31", timeout: 5000 }, {
+                    cdxEndpoint: `${base}/cdx`,
+                    replayBaseUrl: `${base}/replay`,
+                }),
+                (err) => err instanceof ValidationError && /Archive capture size \(62914560 bytes\)/.test(err.message),
+            );
+        } finally {
+            await new Promise((resolve) => server.close(resolve));
+        }
+    });
+});

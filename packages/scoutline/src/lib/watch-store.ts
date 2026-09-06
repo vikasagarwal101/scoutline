@@ -211,7 +211,87 @@ function toIso(value: Date | number | string): string {
   return new Date(value).toISOString();
 }
 
-async function isEnoent(error: unknown): Promise<boolean> {
+/**
+ * Format every minted id ever produced by {@link newRequestId} in this
+ * codebase: `<UTC compact timestamp>-<4 lowercase hex chars>`. Registry
+ * rows are attacker-controllable (a hand-crafted `targets.json` with
+ * `id: "../.."` would otherwise escape `<root>` through every
+ * `path.join(root, id)` — including `removeTarget --purge`'s recursive
+ * `fs.rm`, a directory-deletion primitive outside the watch root).
+ * The grammar check rejects separators and other path metacharacters
+ * by construction (review).
+ */
+const TARGET_ID_PATTERN = /^\d{8}T\d{6}Z-[0-9a-f]{4}$/;
+
+/**
+ * Validate one registry row before it is ever used to build a path.
+ * Malformed ids, names, urls, keep, or createdAt fail closed loudly —
+ * the registry is a trust boundary, not internal state (review).
+ */
+function validateTargetRow(row: unknown, index: number): WatchTarget {
+  if (typeof row !== "object" || row === null) {
+    throw new ValidationError(
+      `watch targets.json row ${index} is not an object.`,
+      "Fix or remove the malformed row in the watch directory.",
+    );
+  }
+  const candidate = row as Partial<WatchTarget>;
+  if (
+    typeof candidate.id !== "string" ||
+    !TARGET_ID_PATTERN.test(candidate.id) ||
+    typeof candidate.name !== "string" ||
+    candidate.name === "" ||
+    (candidate.type !== undefined && candidate.type !== "page") ||
+    typeof candidate.url !== "string" ||
+    candidate.url === "" ||
+    typeof candidate.keep !== "number" ||
+    !Number.isInteger(candidate.keep) ||
+    candidate.keep < WATCH_MIN_KEEP ||
+    candidate.keep > WATCH_MAX_KEEP ||
+    typeof candidate.createdAt !== "string" ||
+    Number.isNaN(Date.parse(candidate.createdAt))
+  ) {
+    throw new ValidationError(
+      `watch targets.json row ${index} has an invalid or unsafe shape.`,
+      "Each row needs a minted id (timestamp-hex), name, url, integer keep, and ISO createdAt. Fix or remove the file in the watch directory.",
+    );
+  }
+  return {
+    id: candidate.id,
+    name: candidate.name,
+    type: "page",
+    url: candidate.url,
+    keep: candidate.keep,
+    createdAt: candidate.createdAt,
+  };
+}
+
+/**
+ * Validate every registry row AND the retired-id tombstones. Retired
+ * ids are also joined into paths by future re-adds, so they carry the
+ * same id grammar.
+ */
+function validateRegistry(candidate: {
+  targets: readonly unknown[];
+  retiredIds?: readonly unknown[];
+}): { targets: WatchTarget[]; retiredIds?: string[] } {
+  const targets = candidate.targets.map((row, index) => validateTargetRow(row, index));
+  const retiredIds = candidate.retiredIds?.map((id, index) => {
+    if (typeof id !== "string" || !TARGET_ID_PATTERN.test(id)) {
+      throw new ValidationError(
+        `watch targets.json retiredIds[${index}] is not a minted id.`,
+        "Fix or remove the malformed entry in the watch directory.",
+      );
+    }
+    return id;
+  });
+  return {
+    targets,
+    ...(retiredIds !== undefined ? { retiredIds } : {}),
+  };
+}
+
+function isEnoent(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
@@ -245,12 +325,7 @@ async function readRegistry(root: string): Promise<WatchRegistry> {
       'Expected {"targets":[...]} — fix or remove the file in the watch directory.',
     );
   }
-  return {
-    targets: candidate.targets as WatchTarget[],
-    ...(candidate.retiredIds !== undefined
-      ? { retiredIds: candidate.retiredIds as string[] }
-      : {}),
-  };
+  return validateRegistry(candidate as { targets: readonly unknown[]; retiredIds?: readonly unknown[] });
 }
 
 async function writeRegistry(root: string, registry: WatchRegistry): Promise<void> {
@@ -385,12 +460,22 @@ function unknownTargetError(ref: string): ValidationError {
  * entry — the `<root>/<id>/` change log is evidence and is never pruned
  * implicitly; the id is retired so it is never reused. `purge: true`
  * also deletes the per-target directory.
+ *
+ * Lock ordering (review: purge raced ticks): the registry lock is held
+ * for the whole removal, and the PURGE `fs.rm` additionally runs under
+ * the target's own append lock (`watch-target-<id>`). An in-flight
+ * tick's appends either complete before the registry rewrite (purge
+ * then removes them) or start after it and are rejected as
+ * unknown-target (the registry no longer has the row) — evidence can
+ * never be recreated under a purged id, and the lock file is unlinked
+ * by `fs.rm` only after every waiter has drained.
  */
 export async function removeTarget(
   root: string,
   ref: string,
   options: RemoveTargetOptions = {},
 ): Promise<WatchTarget> {
+  const lockOpts = lockOptions("Watch registry write", options.lock);
   return withAsyncFileLock(
     root,
     REGISTRY_LOCK,
@@ -405,11 +490,20 @@ export async function removeTarget(
         retiredIds: [...(registry.retiredIds ?? []), target.id],
       });
       if (options.purge) {
-        await fs.rm(path.join(root, target.id), { recursive: true, force: true });
+        // Serialize with the tick lock (watch-tick-<id>) AND the store's
+        // append lock (watch-target-<id>): rm only after every in-flight
+        // writer for this target has finished, so no writer recreates the
+        // directory after purge and no writer's lock file is deleted
+        // under a live holder.
+        const rm = () =>
+          withAsyncFileLock(root, "watch-target-" + target.id, async () => {
+            await fs.rm(path.join(root, target.id), { recursive: true, force: true });
+          }, lockOpts);
+        await withAsyncFileLock(root, "watch-tick-" + target.id, rm, lockOpts);
       }
       return target;
     },
-    lockOptions("Watch registry write", options.lock),
+    lockOpts,
   );
 }
 
@@ -466,6 +560,17 @@ async function requireTarget(root: string, id: string): Promise<WatchTarget> {
 }
 
 /**
+ * Re-check registry membership INSIDE the per-target lock (review:
+ * purge raced ticks). `removeTarget` rewrites the registry before
+ * purging and takes this same lock for the `fs.rm`, so an append that
+ * acquires the lock after a completed purge finds the row gone and
+ * refuses — no evidence can be recreated under a purged id.
+ */
+async function requireTargetUnderLock(root: string, id: string): Promise<WatchTarget> {
+  return requireTarget(root, id);
+}
+
+/**
  * Append one generation to a target's snapshot ring and return its
  * generation number. The ONLY gen-advancing call in the store. Ordering:
  * mkdir → write gen file → unlink old generations. Atomic-enough first:
@@ -484,6 +589,7 @@ export async function appendSnapshot(
     path.join(root, id),
     targetLock(id),
     async () => {
+      await requireTargetUnderLock(root, id);
       await fs.mkdir(snapshotDir(root, id), { recursive: true, mode: 0o700 });
       // Max gen on disk — NOT a file count: crash leftovers must not
       // reissue a number.
@@ -505,16 +611,34 @@ export async function appendSnapshot(
       await atomicReplaceFile(snapshotPath(root, id, gen), `${JSON.stringify(metadata)}\n`);
       // Prune old generations AFTER the new one is durable. keep is
       // recomputed from the listing every time, so stale survivors from
-      // a crashed prune are swept here too.
+      // a crashed prune are swept here too. Orphaned BYTES files (crash
+      // between the two unlinks, or between the bytes write and the
+      // metadata write) are invisible to the listing — sweep any
+      // `gen-*.snapshot.bytes` with no surviving metadata, or a crashed
+      // prune leaks disk forever (review).
       const survivors = [...listing, metadata].sort((a, b) => a.gen - b.gen);
       const excess = survivors.slice(0, Math.max(0, survivors.length - target.keep));
-      for (const stale of excess) {
-        await fs
-          .unlink(path.join(snapshotDir(root, id), `gen-${stale.gen}.snapshot`))
-          .catch(() => {});
-        await fs
-          .unlink(path.join(snapshotDir(root, id), `gen-${stale.gen}.snapshot.bytes`))
-          .catch(() => {});
+      const survivorGens = new Set(survivors.map((snap) => snap.gen));
+      const excessGens = new Set(excess.map((snap) => snap.gen));
+      const currentFiles = await fs.readdir(snapshotDir(root, id));
+      for (const filename of currentFiles) {
+        const orphan = /^gen-(\d+)\.snapshot\.bytes$/.exec(filename);
+        if (orphan && !survivorGens.has(Number(orphan[1]))) {
+          excessGens.add(Number(orphan[1]));
+        }
+      }
+      const unlinkSwallowingOnlyEnoent = (file: string): Promise<void> =>
+        fs.unlink(file).catch((error: unknown) => {
+          // ENOENT = a concurrent prune already took it: not an error.
+          // Anything else (EACCES, EPERM, EISDIR, ...) is a real failure
+          // that would otherwise leave the ring oversized indefinitely
+          // (review) — propagate it so the tick reports the error.
+          if (isEnoent(error)) return;
+          throw error;
+        });
+      for (const staleGen of excessGens) {
+        await unlinkSwallowingOnlyEnoent(path.join(snapshotDir(root, id), `gen-${staleGen}.snapshot`));
+        await unlinkSwallowingOnlyEnoent(path.join(snapshotDir(root, id), `gen-${staleGen}.snapshot.bytes`));
       }
       return gen;
     },
@@ -685,11 +809,18 @@ export async function appendChangeLog(
     path.join(root, id),
     targetLock(id),
     async () => {
+      await requireTargetUnderLock(root, id);
       await fs.mkdir(path.join(root, id), { recursive: true, mode: 0o700 });
       // 0600, same discipline as atomicReplaceFile and the snapshot
-      // bytes: evidence files are owner-only.
-      const handle = await fs.open(path.join(root, id, WATCH_CHANGELOG_FILENAME), "a", 0o600);
+      // bytes: evidence files are owner-only. An existing log with
+      // broader permissions is repaired before writing (review): the
+      // append-mode open inherits only the creation mode, so a
+      // hand-chmodded 0644 log would keep accepting world-readable
+      // evidence.
+      const logPath = path.join(root, id, WATCH_CHANGELOG_FILENAME);
+      const handle = await fs.open(logPath, "a", 0o600);
       try {
+        await handle.chmod(0o600).catch(() => {});
         await handle.writeFile(line);
       } finally {
         await handle.close();

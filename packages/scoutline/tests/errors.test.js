@@ -20,6 +20,7 @@ import {
   ConfigurationError,
   UnsupportedCapabilityError,
   UnsupportedOptionError,
+  CommandOptionUnsupportedError,
   AuthError,
   ApiError,
   NetworkError,
@@ -140,6 +141,49 @@ describe("UnsupportedOptionError", () => {
     assert.ok(err.message.includes("minimax"));
     assert.ok(err.message.includes("search"));
     assert.ok(err.message.includes("domain"));
+  });
+
+  // M7: the provider wording stays VERBATIM — adapter tests check it
+  // character-for-character and this class is untouched by the CLI fix.
+  it("message format is the exact provider wording (verbatim pin)", () => {
+    const err = new UnsupportedOptionError("minimax", "search", "domain");
+    assert.strictEqual(
+      err.message,
+      'Provider "minimax" does not support option "domain" for capability "search"',
+    );
+  });
+});
+
+describe("CommandOptionUnsupportedError", () => {
+  // M7 (owner-ruled): CLI-parse rejections misused
+  // UnsupportedOptionError — "Provider X does not support option Y" is
+  // false at parse time (no provider consulted). This class attributes
+  // the COMMAND. Same code + exit so envelopes stay machine-parseable.
+  it("command-scoped message names the command and option, never a provider", () => {
+    const err = new CommandOptionUnsupportedError("map", "--max-chars");
+    assert.strictEqual(err.code, "UNSUPPORTED_OPTION");
+    assert.strictEqual(err.exitCode, 1);
+    assert.strictEqual(err.message, 'Command "map" does not accept option "--max-chars"');
+  });
+
+  it("accepts a help hint (repo tree's budgeted-surfaces guidance)", () => {
+    const err = new CommandOptionUnsupportedError("repo tree", "--max-chars", {
+      help: "Budgeted surfaces: repo search, repo read, repo brief. Try `scoutline repo --help`.",
+    });
+    assert.strictEqual(err.code, "UNSUPPORTED_OPTION");
+    assert.ok(err.message.includes("repo tree"));
+    assert.strictEqual(
+      err.help,
+      "Budgeted surfaces: repo search, repo read, repo brief. Try `scoutline repo --help`.",
+    );
+  });
+
+  it("is a ScoutlineError (envelope-compatible)", () => {
+    const err = new CommandOptionUnsupportedError("map", "--max-chars");
+    assert.ok(err instanceof ScoutlineError);
+    const parsed = JSON.parse(formatErrorOutput(err, "data"));
+    assert.strictEqual(parsed.code, "UNSUPPORTED_OPTION");
+    assert.strictEqual(parsed.success, false);
   });
 });
 

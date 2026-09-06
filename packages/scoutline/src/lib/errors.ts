@@ -129,6 +129,33 @@ export class UnsupportedOptionError extends ScoutlineError {
   }
 }
 
+/**
+ * M7 (owner-ruled fix): CLI-parse rejection of a flag a command does not
+ * accept. Previously these sites threw `UnsupportedOptionError`, whose
+ * message — `Provider "X" does not support option …` — is a false
+ * sentence at parse time: no Provider was consulted, none is at fault.
+ * `UnsupportedOptionError` stays untouched for genuine Provider-side
+ * use (adapters pin its wording verbatim).
+ *
+ * Same public code (`UNSUPPORTED_OPTION`) and exit code (1) so error
+ * envelopes stay machine-parseable; only the attribution changes —
+ * the COMMAND is the subject. `help` carries surface-specific guidance
+ * (e.g. `repo tree` points at the budgeted repo subcommands).
+ */
+export class CommandOptionUnsupportedError extends ScoutlineError {
+  readonly command: string;
+  readonly option: string;
+  constructor(command: string, option: string, options: { help?: string } = {}) {
+    super(`Command "${command}" does not accept option "${option}"`, "UNSUPPORTED_OPTION", {
+      help: options.help,
+      exitCode: 1,
+    });
+    this.name = "CommandOptionUnsupportedError";
+    this.command = command;
+    this.option = option;
+  }
+}
+
 export class ConfigurationError extends ScoutlineError {
   constructor(message: string, help?: string) {
     // Configuration failures use exit 3 to distinguish them from

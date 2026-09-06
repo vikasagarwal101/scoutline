@@ -34,6 +34,7 @@ import { buildHistoryShowReport } from "../dist/commands/history.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 import { main } from "../dist/index.js";
 import { withTempDir } from "./helpers/temp-dir.js";
+import { ValidationError } from "../dist/lib/errors.js";
 import { createFakeRepositoryCapability } from "./helpers/fake-adapter.js";
 
 const FIXED_NOW = 1_800_000_000_000;
@@ -300,20 +301,16 @@ describe("repoBrief --max-chars — sub-calls receive NO budget; envelope consum
         };
       },
     });
-    // Wrap the capability ops to capture the OPTIONS the handler passes
-    // into explorerSearch/explorerReadFile. The fake capability sits
-    // BELOW the Explorer, so we spy at the boundary that matters: the
-    // handler's own module seam. Simplest reliable observable: the
-    // probe RESULTS stay raw (untruncated) — maxChars forwarding would
-    // truncate them per-call. See the next test for the options spy.
+    // Fix-round F-2 (review M3): `maxChars` is not a repoBrief option —
+    // the dispatcher seam owns it. The forwarding question is now
+    // structural (the option cannot be expressed), and a direct caller
+    // passing it gets a LOUD rejection, never a silent no-op budgeting.
     const { execution } = makeExecution();
-    const result = await repoBrief(
-      "owner/repo",
-      { focus: REPO_BRIEF_FOCUS, maxChars: 50 },
-      { capability, execution },
+    await assert.rejects(
+      () => repoBrief("owner/repo", { focus: REPO_BRIEF_FOCUS, maxChars: 50 }, { capability, execution }),
+      (err) => err instanceof ValidationError && /maxChars is not a repoBrief option/.test(err.message),
     );
-    assert.strictEqual(result.kind, "data");
-    assert.ok(seen.length >= 3, "search + read probes ran");
+    assert.ok(seen.length === 0, "rejection precedes every probe");
     void seen;
   });
 
@@ -322,7 +319,7 @@ describe("repoBrief --max-chars — sub-calls receive NO budget; envelope consum
     const { execution } = makeExecution();
     const result = await repoBrief(
       "owner/repo",
-      { focus: REPO_BRIEF_FOCUS, maxChars: 50 },
+      { focus: REPO_BRIEF_FOCUS },
       { capability, execution },
     );
     assert.strictEqual(result.kind, "data");

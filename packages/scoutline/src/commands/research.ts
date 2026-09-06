@@ -5,8 +5,10 @@
  * Research runs an asynchronous create→poll lifecycle server-side and
  * costs 4-250 credits per request. The handler shows a wait disclaimer
  * before invoke, sets up a Ctrl-C signal handler that prints the
- * request_id + resume command, and applies `--max-chars` as a report
- * projection after the cached normalized result is produced.
+ * request_id + resume command, and returns the full unbudgeted
+ * envelope — `--max-chars` is NOT an option here: the dispatcher seam
+ * (index.ts) applies the whole-envelope budget via RESEARCH_LADDER
+ * after this returns (ADR-0007).
  *
  * The Adapter's `invoke()` owns the full lifecycle (state-file resume,
  * POST, poll loop, completion/failure/404 handling); shared execution
@@ -15,7 +17,7 @@
  * Provider selection, capability support, configuration, Adapter
  * construction, and adapter.research agreement live in `src/index.ts`.
  *
- * Cache stores the full report; `--max-chars` is a handler projection.
+ * Cache stores the full report; the budget is a dispatcher-seam projection.
  */
 
 import * as fs from "node:fs";
@@ -47,7 +49,6 @@ export interface ResearchOptions {
   readonly outputLength?: "short" | "standard" | "long";
   readonly citationFormat?: "numbered" | "mla" | "apa" | "chicago";
   readonly domain?: string;
-  readonly maxChars?: number;
   /** Polling timeout in seconds. Default 300. */
   readonly timeout?: number;
   readonly noCache?: boolean;
@@ -522,6 +523,16 @@ export async function research(
 ): Promise<CommandResult> {
   if (typeof query !== "string" || query.trim() === "") {
     throw new ValidationError("Research query must contain at least one non-whitespace character");
+  }
+  // Output Budget whole-branch review M3: the option field is GONE from
+  // ResearchOptions (the T4 per-field truncation was removed), so a
+  // typed caller cannot pass it — but a JS deep importer still can.
+  // Fail loud instead of silently no-budgeting (repoBrief guards the
+  // same way; the CLI applies the budget at the handler seam).
+  if ((options as Record<string, unknown>).maxChars !== undefined) {
+    throw new ValidationError(
+      "--max-chars is applied by the CLI as a whole-envelope Output Budget; research() does not accept it",
+    );
   }
 
   const contextInput = deps.context;

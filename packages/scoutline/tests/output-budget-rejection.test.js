@@ -28,6 +28,8 @@ import { main } from "../dist/index.js";
 import {
   DISPATCHED_COMMANDS,
   REJECT_MAX_CHARS_COMMANDS,
+  SWITCH_CASES,
+  IF_ARMS,
 } from "../dist/index.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 
@@ -98,6 +100,23 @@ describe("the dispatcher's --max-chars partition is complete over all dispatched
         "repo", "research", "search", "tool", "tools", "usage", "vision",
       ].sort(),
     );
+  });
+
+  it("F-6: DISPATCHED_COMMANDS equals the dispatch surface extracted from index.ts source", () => {
+    // Mechanical link (review N10): the credentialed switch labels (the
+    // ones carrying `commandRecognized = true`) plus the credential-free
+    // if-chain arms, regex-extracted from the dispatcher's own source at
+    // import time, must equal the exported set exactly. A command added
+    // to dispatch without the set (or a set entry with no dispatch site)
+    // fails here — the hand-maintained set can no longer drift.
+    const extracted = new Set([...SWITCH_CASES, ...IF_ARMS]);
+    assert.deepEqual(
+      [...extracted].sort(),
+      [...DISPATCHED_COMMANDS].sort(),
+      "dispatch surface (switch cases + if arms) must equal DISPATCHED_COMMANDS",
+    );
+    assert.equal(SWITCH_CASES.size + IF_ARMS.size, 21, "14 switch cases + 7 if arms");
+    for (const c of SWITCH_CASES) assert.ok(!IF_ARMS.has(c), `"${c}" dispatched twice`);
   });
 
   it("every dispatched command is either a ladder surface or in the rejection set", () => {

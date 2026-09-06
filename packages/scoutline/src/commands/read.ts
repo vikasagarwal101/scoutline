@@ -300,9 +300,12 @@ const dropBottomSectionsRule: LadderRule = {
 
 /**
  * Extract-read ladder (D8): trim field VALUES (`code`, `markdown`,
- * `text`, `slug`), never drop field names or URLs — `url`, `language`,
- * `level`, `rows` are never-cut by omission. `items` never shrink: an
- * item is the unit of extraction.
+ * `text`, `slug`), never drop field names or URLs. Only field NAMES
+ * and `url` VALUES are never-cut: `url` is the one value the rule
+ * exempts (below); every other string value (`language`, `slug`,
+ * `code`, `text`, …) DOES trim at extreme budgets (D8's letter — trim
+ * values, never drop names/URLs). `items` never shrink: an item is
+ * the unit of extraction.
  */
 const trimItemValuesRule: LadderRule = {
   name: "trim-item-values",

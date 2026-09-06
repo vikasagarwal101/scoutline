@@ -292,6 +292,42 @@ describe("search --max-chars (main, single provider) — whole envelope", () => 
     });
   });
 
+  it("E2E redaction (review M2): a configured secret in a result field is [REDACTED] in the written master artifact", async (t) => {
+    await withTempDir(t, async (dir) => {
+      // The fake adapter embeds the CONFIGURED credential value in a
+      // result field (summary). deps.secrets comes from
+      // configuredSecrets(resolvedEnv), so TAVILY_API_KEY's value is a
+      // configured secret for this run.
+      const secret = "sk-tv-secret-DO-NOT-LEAK-9812";
+      const poisoned = fiveSources().map((s, i) =>
+        i === 0 ? { ...s, summary: `key=${secret} ${s.summary}` } : s,
+      );
+      const { status } = await runMain(
+        ["--provider", "tavily", "search", "q", "--max-chars", "700"],
+        {
+          extraDeps: {
+            // extraDeps.env replaces the default env wholesale — carry
+            // the isolated artifacts dir AND the credential so the
+            // secret is actually CONFIGURED for this run (deps.secrets
+            // derives from configuredSecrets(resolvedEnv)).
+            env: { SCOUTLINE_ARTIFACTS_DIR: dir, TAVILY_API_KEY: secret },
+            providerDescriptors: [makeDescriptor("tavily", { q: poisoned })],
+          },
+        },
+      );
+      assert.equal(status, 0);
+
+      const { log } = await readLog(dir);
+      assert.ok(log.entries.length >= 1, "compaction fired and logged");
+      const entry = log.entries[0];
+      const master = await fs.readFile(path.join(dir, entry.masterPath), "utf8");
+      // The secret never appears verbatim anywhere in the master file…
+      assert.ok(!master.includes(secret), "secret value absent from the budget artifact");
+      // …and the field it sat in carries the marker.
+      assert.ok(master.includes("[REDACTED]"), "redaction marker present in the artifact");
+    });
+  });
+
   it("writes the FULL untrimmed envelope (post-redaction, pre-compaction) and recovers via history show", async (t) => {
     await withTempDir(t, async (dir) => {
       const { status } = await runMain(

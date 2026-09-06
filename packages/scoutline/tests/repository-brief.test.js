@@ -877,24 +877,14 @@ describe("repoBrief — handler composition (DESIGN D3/D4)", () => {
       }),
     });
     const { execution } = makeBriefExecution();
-    const result = await repoBrief(
-      "owner/repo",
-      { focus: REPO_BRIEF_FOCUS, maxChars: 10 },
-      { capability, execution },
+    // Fix-round F-2 (review M3): `maxChars` is no longer a repoBrief
+    // option — the dispatcher seam owns the flag. A direct caller
+    // passing it gets a LOUD ValidationError, never a silent no-op.
+    await assert.rejects(
+      () => repoBrief("owner/repo", { focus: REPO_BRIEF_FOCUS, maxChars: 10 }, { capability, execution }),
+      (err) => err instanceof ValidationError && /maxChars is not a repoBrief option/.test(err.message),
     );
-    assert.strictEqual(result.kind, "data");
-    const brief = result.data;
-    // Tree is never character-limited: the section is the raw tree.
-    assert.deepStrictEqual(brief.tree, DEFAULT_TREE);
-    // T5: searches and reads ALSO arrive raw — maxChars no longer
-    // truncates any probe result (forwarding removed).
-    assert.strictEqual(brief.docs.truncated, false);
-    assert.strictEqual(brief.docs.excerpts[0].text, "X".repeat(200));
-    assert.strictEqual(brief.entryPoints.truncated, false);
-    for (const entry of brief.files) {
-      assert.strictEqual(entry.truncated, false);
-      assert.strictEqual(entry.content, "Y".repeat(200));
-    }
+
   });
 
   it("--no-cache forwards to every probe (tree, searches, reads): zero cache reads", async () => {
@@ -943,13 +933,12 @@ describe("repoBrief — handler composition (DESIGN D3/D4)", () => {
     assert.deepStrictEqual(calls, ["tree:src"]);
   });
 
-  it("coerces string-typed depth to a number before forwarding (validated value === forwarded value); maxChars parses but forwards nowhere (T5)", async () => {
+  it("coerces string-typed depth to a number before forwarding (validated value === forwarded value); maxChars is a loud rejection (F-2)", async () => {
     // Direct handler callers can pass numeric strings (the CLI parses
     // flags as strings). repoBrief binds the parsed values, so the
     // coerced numbers — never the raw strings — reach the Explorer.
-    // T5: maxChars still PARSES (strict validation unchanged) but is no
-    // longer FORWARDED — sub-calls receive no budget; the probe results
-    // arrive raw.
+    // Fix-round F-2: maxChars is not an option AT ALL — the dispatcher
+    // seam owns it; a direct caller passing it rejects loudly.
     const { capability } = makeFakeBriefCapability({
       search: (request) => ({
         schemaVersion: 1,
@@ -970,9 +959,19 @@ describe("repoBrief — handler composition (DESIGN D3/D4)", () => {
       }),
     });
     const { execution } = makeBriefExecution();
+    await assert.rejects(
+      () => repoBrief(
+        "owner/repo",
+        { focus: REPO_BRIEF_FOCUS, depth: "2", maxChars: "10" },
+        { capability, execution },
+      ),
+      (err) => err instanceof ValidationError && /maxChars is not a repoBrief option/.test(err.message),
+    );
+    // Depth coercion itself still runs (same options object): prove it
+    // via a clean run that omits maxChars.
     const result = await repoBrief(
       "owner/repo",
-      { focus: REPO_BRIEF_FOCUS, depth: "2", maxChars: "10" },
+      { focus: REPO_BRIEF_FOCUS, depth: "2" },
       { capability, execution },
     );
     assert.strictEqual(result.kind, "data");
@@ -1019,12 +1018,19 @@ describe("repoBrief — handler composition (DESIGN D3/D4)", () => {
     );
   });
 
-  it("validates --max-chars as a positive integer", async () => {
+  it("maxChars rejects on the handler regardless of value (F-2: not an option; bad values still fail loudly)", async () => {
     const { capability } = makeFakeBriefCapability();
     const { execution } = makeBriefExecution();
+    // Fix-round F-2: ANY provided maxChars — including invalid ones —
+    // is a ValidationError at the handler; valid values route through
+    // the dispatcher seam, never here.
     await assert.rejects(
       () => repoBrief("owner/repo", { maxChars: 0 }, { capability, execution }),
       ValidationError,
+    );
+    await assert.rejects(
+      () => repoBrief("owner/repo", { maxChars: 500 }, { capability, execution }),
+      (err) => err instanceof ValidationError && /maxChars is not a repoBrief option/.test(err.message),
     );
   });
 

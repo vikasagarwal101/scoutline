@@ -126,7 +126,7 @@ import {
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   invokeCommand,
   type SaveHook,
@@ -456,6 +456,38 @@ export const REJECT_MAX_CHARS_COMMANDS: ReadonlySet<string> = new Set([
   "fetch",
   "archive",
 ]);
+
+/**
+ * Review N10 (fix-round F-6) — the dispatch surface, extracted from
+ * this file's own source at import time. The credentialed switch labels
+ * the credential-free if-chain arms: every case label has a
+ * `commandRecognized = true` follower (the catch arm at the bottom is
+ * excluded by name), and the seven if-chain arms are
+ * `if (command === "<cmd>") {` sites inside main() (the repo
+ * subcommand arms are `else if` chains in handleRepo and are NOT
+ * dispatcher-level). If this ever disagrees with DISPATCHED_COMMANDS,
+ * the rejection-matrix test fails: a command added to dispatch without
+ * the set (or vice versa) cannot go unnoticed.
+ */
+const SOURCE_TEXT = readFileSync(new URL(import.meta.url), "utf8");
+// Line-start regex: never matches this extractor's own literals (they sit
+// mid-line), and the compiled one-line signature still matches.
+const MAIN_MATCH = SOURCE_TEXT.match(/^export async function main\(/m);
+const DISPATCH_SURFACE_SOURCE = MAIN_MATCH === null ? "" : SOURCE_TEXT.slice(MAIN_MATCH.index);
+export const SWITCH_CASES = new Set(
+  [
+    ...DISPATCH_SURFACE_SOURCE.matchAll(
+      /case "([a-z-]+)":\s*\n\s*commandRecognized = true;/g,
+    ),
+  ].map((m) => m[1]),
+);
+export const IF_ARMS = new Set(
+  [
+    ...DISPATCH_SURFACE_SOURCE.matchAll(
+      /^\s*if \(command === "([a-z-]+)"\) \{$/gm,
+    ),
+  ].map((m) => m[1]),
+);
 
 function extractGlobalOptions(args: string[]): {
   outputFormat?: string;
@@ -2232,6 +2264,14 @@ async function handleResearch(
     "--context-mode",
   ) as ResearchContextMode | undefined;
 
+  // Output Budget T4 (ADR-0007): strict positive-integer parse, hoisted
+  // to parse level BEFORE Provider resolution (mirroring search) so a
+  // bad value is VALIDATION_ERROR regardless of credentials — the
+  // whole-envelope budget runs at the handler seam below
+  // (RESEARCH_LADDER) — report body trims first, the citations block
+  // (`sources`) survives longest.
+  const maxChars = parseMaxCharsFlag(flags);
+
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
   // explicit --provider > SCOUTLINE_PROVIDER > quota-ranked pick.
   // (PB-T4.)
@@ -2315,11 +2355,6 @@ async function handleResearch(
         noCache: flags["no-cache"] === true,
         context: resumeContext,
       };
-      // Output Budget T4 (ADR-0007): strict positive-integer parse; the
-      // whole-envelope budget runs at the handler seam below
-      // (RESEARCH_LADDER) — report body trims first, the citations
-      // block (`sources`) survives longest.
-      const maxChars = parseMaxCharsFlag(flags);
 
       // Local-context plan, Ticket 2 (DESIGN D3/D5): read + parse the
       // context source exactly ONCE, here in the handler and BEFORE
@@ -2702,7 +2737,6 @@ async function handleRepo(
                   ...(briefFocus !== undefined ? { focus: briefFocus } : {}),
                   path: treePath,
                   depth: briefDepth,
-                  maxChars: briefMaxChars,
                   noCache,
                 },
                 { capability, execution: executionDeps, secrets: deps.secrets },

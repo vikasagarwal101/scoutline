@@ -439,36 +439,56 @@ describe("search --max-chars across output modes", () => {
     providerDescriptors: [makeDescriptor("tavily", { q: fiveSources() })],
   });
 
-  async function runMode(mode, extra = []) {
-    const { stdout } = await runMain(
+  async function runMode(mode, extra = [], artifactsDir) {
+    const { status, stdout, stderr } = await runMain(
       ["-O", mode, "--provider", "tavily", "search", "q", "--max-chars", "300", ...extra],
-      { extraDeps: deps() },
+      {
+        ...(artifactsDir !== undefined ? { artifactsDir } : {}),
+        extraDeps: deps(),
+      },
     );
-    return stdout.join("");
+    // Hermeticity + diagnosability (flake hunt 2026-09-06): budget-fire
+    // runs MUST carry an isolated artifacts dir — without one they write
+    // to the ambient ~/.scoutline/artifacts and parallel test processes
+    // contend on the shared "artifacts-write" lock, intermittently
+    // failing the run (empty stdout + FileError on stderr). Fail loud
+    // with stderr instead of JSON.parse("") noise.
+    assert.ok(artifactsDir !== undefined, "runMode requires an isolated artifactsDir");
+    assert.equal(status, 0, `search failed in -O ${mode}: ${JSON.stringify(stderr)}`);
+    const out = stdout.join("");
+    assert.ok(out.length > 0, `empty stdout in -O ${mode}: ${JSON.stringify(stderr)}`);
+    return out;
   }
 
   it("stamps compaction in -O data, -O json, and -O pretty", async (t) => {
-    for (const mode of ["data", "json", "pretty"]) {
-      const out = await runMode(mode);
-      const parsed =
-        mode === "data" ? JSON.parse(out) : JSON.parse(out).data;
-      assert.ok(parsed.compaction, `compaction visible in -O ${mode}`);
-      assert.equal(parsed.compaction.budget, 300);
-    }
+    await withTempDir(t, async (dir) => {
+      for (const mode of ["data", "json", "pretty"]) {
+        const out = await runMode(mode, [], dir);
+        const parsed =
+          mode === "data" ? JSON.parse(out) : JSON.parse(out).data;
+        assert.ok(parsed.compaction, `compaction visible in -O ${mode}`);
+        assert.equal(parsed.compaction.budget, 300);
+      }
+    });
   });
 
   it("whole-envelope budgeting engages in TEXT modes too (presentations rebuilt from the projection)", async (t) => {
     // Budget 300 on the five-row fixture drops rank 5 (level-3
     // shrink) — the markdown presentation must show 4 URLs, not 5.
-    const markdown = await runMode("markdown");
-    const urls = markdown.match(/https:\/\/e\/\d+/g) ?? [];
-    assert.equal(urls.length, 4, "text mode reflects the budgeted envelope");
-    assert.ok(!markdown.includes("https://e/5"), "dropped rank stays dropped in text mode");
-    const compact = await runMode("compact");
-    assert.ok(compact.includes("https://e/1"), "compact mode keeps urls");
+    await withTempDir(t, async (dir) => {
+      const markdown = await runMode("markdown", [], dir);
+      const urls = markdown.match(/https:\/\/e\/\d+/g) ?? [];
+      assert.equal(urls.length, 4, "text mode reflects the budgeted envelope");
+      assert.ok(!markdown.includes("https://e/5"), "dropped rank stays dropped in text mode");
+      const compact = await runMode("compact", [], dir);
+      assert.ok(compact.includes("https://e/1"), "compact mode keeps urls");
+    });
   });
 
   it("--max-summary composes underneath: per-field lever applies first, budget envelopes the rest (all modes)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      t.artifactsDir = dir;
+    });
     // Case A (the lever rescues): max-summary 20 shrinks every summary
     // to ≤20 chars BEFORE the envelope budget decides what else must
     // go — a budget of 1100 then FITS (the ~592-char envelope is
@@ -477,7 +497,7 @@ describe("search --max-chars across output modes", () => {
     // have fired and trimmed summaries (fixture full size ~1.1k).
     const a = await runMain(
       ["--provider", "tavily", "search", "q", "--max-summary", "20", "--max-chars", "1100"],
-      { extraDeps: deps() },
+      { artifactsDir: t.artifactsDir, extraDeps: deps() },
     );
     assert.equal(a.status, 0);
     const dataA = parseData(a.stdout);
@@ -496,7 +516,7 @@ describe("search --max-chars across output modes", () => {
     // max-summary-20 envelope fires the whole-envelope stamp.
     const b = await runMain(
       ["--provider", "tavily", "search", "q", "--max-summary", "20", "--max-chars", "550"],
-      { extraDeps: deps() },
+      { artifactsDir: t.artifactsDir, extraDeps: deps() },
     );
     assert.equal(b.status, 0);
     const dataB = parseData(b.stdout);

@@ -242,20 +242,26 @@ const trimLastParagraphsRule: LadderRule = {
     // underlines (===/---), or the title line above a Setext underline.
     const fenced: boolean[] = new Array<boolean>(lines.length).fill(false);
     let inFence = false;
-    // R5: fences close with the OPENING delimiter's char (CommonMark) —
-    // a `~~~` line inside a ``` block must not flip the state.
+    // R5/R6: a fence closes with a run of the OPENING delimiter's
+    // char at least as long as the opening run (CommonMark) — a `~~~`
+    // line inside a ``` block, or a ``` line inside a ```` fence, must
+    // not flip the state.
     let fenceChar: "`" | "~" | undefined;
+    let fenceLen = 0;
     for (let k = 0; k < lines.length; k++) {
-      const fenceMatch = /^ {0,3}(```|~~~)/.exec(lines[k]!);
+      const fenceMatch = /^ {0,3}(`+|~+)/.exec(lines[k]!);
       if (fenceMatch) {
         fenced[k] = true;
-        const thisChar = fenceMatch[1]![0] as "`" | "~";
+        const run = fenceMatch[1]!;
+        const thisChar = run[0] as "`" | "~";
         if (!inFence) {
           inFence = true;
           fenceChar = thisChar;
-        } else if (thisChar === fenceChar) {
+          fenceLen = run.length;
+        } else if (thisChar === fenceChar && run.length >= fenceLen) {
           inFence = false;
           fenceChar = undefined;
+          fenceLen = 0;
         }
         continue;
       }
@@ -315,20 +321,25 @@ function splitSections(content: string): Section[] {
   // merges into the following heading so the drop rule can never pop the
   // root section off and leave the preamble.
   let inFence = false;
-  // R5: a fence closes with the OPENING delimiter's char — a ~~~ line
-  // inside a ``` block does not end the fence (so a later fenced `# x`
-  // stays code, never a section heading).
+  // R5/R6: a fence closes with a run of the OPENING delimiter's char
+  // at least as long as the opening run — a ~~~ line inside a ```
+  // block, or a ``` line inside a ```` fence, does not end the fence
+  // (so a later fenced `# x` stays code, never a section heading).
   let fenceChar: "`" | "~" | undefined;
+  let fenceLen = 0;
   for (const line of content.split("\n")) {
-    const fenceMatch = /^ {0,3}(```|~~~)/.exec(line);
+    const fenceMatch = /^ {0,3}(`+|~+)/.exec(line);
     if (fenceMatch) {
-      const thisChar = fenceMatch[1]![0] as "`" | "~";
+      const run = fenceMatch[1]!;
+      const thisChar = run[0] as "`" | "~";
       if (!inFence) {
         inFence = true;
         fenceChar = thisChar;
-      } else if (thisChar === fenceChar) {
+        fenceLen = run.length;
+      } else if (thisChar === fenceChar && run.length >= fenceLen) {
         inFence = false;
         fenceChar = undefined;
+        fenceLen = 0;
       }
     }
     const match = !inFence ? line.match(/^ {0,3}(#{1,6})\s+(.*)$/) : null;

@@ -290,15 +290,6 @@ export interface RepoBriefOptions {
   path?: string;
   /** Tree-only depth; defaults to the Explorer's default (1). */
   depth?: number;
-  /**
-   * Parsed `--max-chars` (strict positive integer via
-   * `parseBriefMaxChars`). T5 (ADR-0007): consumed ONCE at the
-   * handler seam against the ASSEMBLED brief envelope — never
-   * forwarded to any probe (the pre-T5 per-call truncation is
-   * removed); the tree was never character-limited and stays that
-   * way.
-   */
-  maxChars?: number;
   /** Bypasses the response cache for every probe. */
   noCache?: boolean;
 }
@@ -497,13 +488,14 @@ function detectBriefSignals(tree: RepositoryTreeResult): RepoBriefDetected {
  * tree → search("README") → search(manifest names) → read loop (README
  * first, then manifests in canonical kind order, cap 4 total reads).
  *
- * Parse-level validation (DESIGN D7): `validateRepo`, `--depth` and
- * `--max-chars` positive integers, `--focus` a non-empty subset of the
- * sealed set (default all four). Forwarding (DESIGN D3): `--no-cache`
- * to every call; `--depth`/`--path` to the tree only. T5 (ADR-0007):
- * `--max-chars` forwards to NOTHING — it parses (strict, unchanged)
- * and the handler-seam ladder consumes it once against the assembled
- * envelope.
+ * Parse-level validation (DESIGN D7): `validateRepo`, `--depth` a
+ * positive integer, `--focus` a non-empty subset of the sealed set
+ * (default all four). Forwarding (DESIGN D3): `--no-cache` to every
+ * call; `--depth`/`--path` to the tree only. T5 (ADR-0007) + fix-round
+ * F-2: `--max-chars` is NOT an option here at all — the dispatcher
+ * seam (index.ts) consumes it once against the assembled envelope via
+ * BRIEF_LADDER; passing it to `repoBrief` directly is a loud
+ * ValidationError, never a silent no-op.
  *
  * Every Explorer call runs settled (DESIGN D6): a throw becomes a
  * `failed` probe record and the brief continues. Exit policy: ≥1 probe
@@ -523,12 +515,19 @@ export async function repoBrief(
   // every probe receives — a direct caller's numeric string never leaks
   // downstream as a string.
   const depth = parseBriefDepth(options.depth);
-  // Strict-parse ONLY: the parsed value deliberately goes unused here —
-  // consuming it is the dispatcher seam's job (index.ts routes the CLI
-  // flag through applyCommandOutputBudget + BRIEF_LADDER; direct handler
-  // callers get validation for their own routing). Keep the parse so an
-  // invalid value fails fast inside the handler, never mid-composition.
-  void parseBriefMaxChars(options.maxChars);
+  // Fix-round F-2 (review M3): `maxChars` is NOT a brief option — the
+  // whole-envelope budget is consumed ONCE at the dispatcher seam
+  // (index.ts parseBriefMaxChars → applyCommandOutputBudget +
+  // BRIEF_LADDER). A direct caller passing it here would get a silent
+  // no-op; reject loudly instead.
+  // Structural read (the option is intentionally absent from the
+  // interface): detect a legacy/direct caller passing it anyway.
+  const smuggledMaxChars = (options as { maxChars?: unknown }).maxChars;
+  if (smuggledMaxChars !== undefined) {
+    throw new ValidationError(
+      "maxChars is not a repoBrief option — the dispatcher seam owns --max-chars (applyCommandOutputBudget + BRIEF_LADDER)",
+    );
+  }
 
   const focus =
     options.focus === undefined ? [...REPO_BRIEF_FOCUS] : [...new Set(options.focus)];

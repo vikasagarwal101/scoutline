@@ -250,9 +250,9 @@ const INPUT_FIELD_TABLES: Readonly<Record<AllowedBatchCommand, readonly FieldEnt
     ],
     // Scoped to the subcommands whose handlers consume the compiled
     // flag: the repo handler threads `language` only into `search`, and
-    // `maxChars` into `search`/`read`/`brief` (`tree` ignores both) —
-    // a manifest must never request an option the handler silently
-    // discards.
+    // `maxChars` into `search`/`read`/`brief` (`tree` REJECTS both —
+    // manifest validation refuses before compile) — a manifest must
+    // never request an option the handler silently discards.
     ["language", { kind: "string", enumValues: REPO_LANGUAGE_VALUES, allowedFor: ["search"] }],
     ["maxChars", { kind: "number", allowedFor: ["search", "read", "brief"] }],
     ["focus", { kind: "string", allowedFor: ["brief"] }],

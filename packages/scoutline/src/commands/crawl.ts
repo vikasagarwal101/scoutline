@@ -149,10 +149,11 @@ function buildCrawlPresentations(
 // ---------------------------------------------------------------------------
 
 /**
- * Crawl ladder: seed url + status survive (every page's `url` and the
- * envelope's `baseUrl`/`totalPages` are never-cut by omission); page
- * content trims; the TRAILING pages (urls) drop late — cheapest loss
- * is the last page's body, then earlier bodies, then trailing URLs.
+ * Crawl ladder: seed url + status survive; page urls and the
+ * envelope's `baseUrl` are never-cut by omission. `totalPages` is
+ * RECOMPUTED to stay truthful as trailing pages drop — every current
+ * provider constructs `totalPages === pages.length`, so the drop rule
+ * preserves that invariant (`totalPages` is a cut, not a survivor).
  */
 const trimPageContentsRule: LadderRule = {
   name: "trim-page-contents",

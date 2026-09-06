@@ -28,7 +28,7 @@ import * as path from "node:path";
 import { main } from "../dist/index.js";
 import { READ_LADDER, READ_EXTRACT_LADDER } from "../dist/commands/read.js";
 import { CRAWL_LADDER } from "../dist/commands/crawl.js";
-import { RESEARCH_LADDER } from "../dist/commands/research.js";
+import { RESEARCH_LADDER, research } from "../dist/commands/research.js";
 import { REPO_SEARCH_LADDER, REPO_READ_LADDER } from "../dist/commands/repository-explorer.js";
 import { applyBudget, measurePayload } from "../dist/lib/output-budget.js";
 import { readLog } from "../dist/lib/artifacts.js";
@@ -283,7 +283,10 @@ describe("READ_LADDER — url/title/headings never cut; later paragraphs trim fi
     // headings is ONE section — the drop rule can never fire on it.
     const floorish = applyBudget(e, 10, READ_LADDER);
     assert.equal(floorish.compaction.note, "floor");
-    assert.ok(floorish.projection.content.length > 0, "body never fully dropped by the section rule");
+    assert.ok(
+      floorish.projection.content.length > 0,
+      "body never fully dropped by the section rule",
+    );
     assert.equal(floorish.projection.url, "https://e/1");
     assert.equal(floorish.projection.title, "T");
   });
@@ -295,19 +298,33 @@ describe("READ_LADDER — url/title/headings never cut; later paragraphs trim fi
     // skipped) and fits WITHOUT dropping a section. The pre-fix ladder
     // dropped ## Beta here with its body untrimmed — the priority
     // inversion this pin forbids (flipped from the old drop pin).
-    const rootOnly = measurePayload({ url: "https://e/1", title: "T", content: "# Title\n\nIntro paragraph about the page." });
+    const rootOnly = measurePayload({
+      url: "https://e/1",
+      title: "T",
+      content: "# Title\n\nIntro paragraph about the page.",
+    });
     const out = applyBudget(e, rootOnly + 60, READ_LADDER);
     assert.ok(out.compaction);
     assert.ok(out.projection.content.includes("# Title"), "root survives");
-    assert.ok(out.projection.content.includes("## Alpha"), "alpha heading survives — body bled, not dropped");
-    assert.ok(out.projection.content.includes("## Beta"), "beta heading survives — body bled, not dropped");
+    assert.ok(
+      out.projection.content.includes("## Alpha"),
+      "alpha heading survives — body bled, not dropped",
+    );
+    assert.ok(
+      out.projection.content.includes("## Beta"),
+      "beta heading survives — body bled, not dropped",
+    );
     assert.ok(!out.projection.content.includes("A".repeat(50)), "alpha body bled");
     assert.ok(!out.projection.content.includes("B".repeat(50)), "beta body bled");
   });
 
   it("crush budget: bottom sections drop only after all bleeding", () => {
     const e = envelope();
-    const out = applyBudget(e, measurePayload({ url: "https://e/1", title: "T", content: "" }), READ_LADDER);
+    const out = applyBudget(
+      e,
+      measurePayload({ url: "https://e/1", title: "T", content: "" }),
+      READ_LADDER,
+    );
     assert.ok(out.compaction);
     assert.ok(out.projection.content.includes("# Title"), "top survives");
     assert.ok(!out.projection.content.includes("## Beta"), "bottom dropped at crush budget");
@@ -329,7 +346,10 @@ describe("READ_LADDER — url/title/headings never cut; later paragraphs trim fi
     };
     const out = applyBudget(e, 200, READ_LADDER);
     assert.ok(out.compaction, "fires at this budget");
-    assert.ok(out.projection.content.includes("## References"), "trailing heading survives trimming");
+    assert.ok(
+      out.projection.content.includes("## References"),
+      "trailing heading survives trimming",
+    );
     assert.ok(out.projection.content.includes("# Title"), "root heading survives");
     assert.ok(out.projection.content.length < e.content.length, "body bled instead");
   });
@@ -354,6 +374,31 @@ describe("READ_EXTRACT_LADDER — trims field VALUES, never drops field names", 
       assert.ok("language" in item, "field name kept");
       assert.ok("code" in item, "field name kept");
     }
+  });
+
+  it("non-url VALUES do trim at crush budgets (F-3 truth pin): `language` shrinks (D8 — trim values, never names/URLs)", () => {
+    const e = envelope();
+    const out = applyBudget(e, 10, READ_EXTRACT_LADDER);
+    // `language` is NOT exempt — its VALUE halves like any non-url
+    // string ("python" → "…pyt" class). Never-cut is field NAMES +
+    // `url` VALUES only (F-3: the docstring's old "language never-cut
+    // by omission" claim was false; the doc now tells this truth).
+    // Exact: the "python" item's language VALUE itself is trimmed
+    // (…-prefixed). An exempting mutation leaves it verbatim "python".
+    const py = out.projection.items.find(
+      (item) => item.language.startsWith("…") || item.language === "python",
+    );
+    assert.ok(py, "python item present");
+    assert.notEqual(
+      py.language,
+      "python",
+      "language value trimmed at a crush budget (only `url` values are exempt)",
+    );
+    assert.ok(py.language.length < "python".length, "trimmed value is shorter");
+    assert.ok(
+      out.projection.items.every((item) => item.language !== undefined),
+      "field name language kept on every item",
+    );
   });
 
   it("URLs never trim: --extract links items keep their url values", () => {
@@ -384,7 +429,11 @@ describe("CRAWL_LADDER — page urls never cut; contents trim; trailing pages dr
     const bleed = applyBudget(e, Math.floor(full * 0.4), CRAWL_LADDER);
     assert.ok(bleed.compaction);
     const urls = bleed.projection.pages.map((p) => p.url);
-    assert.deepEqual(urls, ["https://example.com/p1", "https://example.com/p2", "https://example.com/p3"], "all three urls in-band under a mid budget");
+    assert.deepEqual(
+      urls,
+      ["https://example.com/p1", "https://example.com/p2", "https://example.com/p3"],
+      "all three urls in-band under a mid budget",
+    );
     assert.ok(
       bleed.projection.pages.every((p) => p.content.length < 320),
       "backward scan bled every body (not just the final one)",
@@ -402,6 +451,19 @@ describe("CRAWL_LADDER — page urls never cut; contents trim; trailing pages dr
     const dropUrls = drop.projection.pages.map((p) => p.url);
     assert.ok(dropUrls.includes("https://example.com/p1"), "first page survives the drop phase");
     assert.ok(!dropUrls.includes("https://example.com/p3"), "trailing page dropped first");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix-round F-2 twin (orchestrator): research() smuggle guard
+// ---------------------------------------------------------------------------
+
+describe("research() — maxChars is not an option (review M3)", () => {
+  it("a JS deep importer passing maxChars fails loud, not silent no-budget", async () => {
+    await assert.rejects(
+      research("q", { maxChars: 500 }, { capability: {}, execution: {} }),
+      (err) => err instanceof Error && /does not accept it/.test(err.message),
+    );
   });
 });
 
@@ -426,10 +488,7 @@ describe("RESEARCH_LADDER — sources survive longest; body trims first", () => 
       ["https://example.com/s1", "https://example.com/s2"],
       "citations block never cut",
     );
-    assert.ok(
-      measurePayload(out.projection.sections) < measurePayload(e.sections),
-      "body shrank",
-    );
+    assert.ok(measurePayload(out.projection.sections) < measurePayload(e.sections), "body shrank");
   });
 });
 
@@ -525,12 +584,14 @@ describe("crawl --max-chars (main) — whole envelope, trailing pages drop late"
         ["--provider", "tavily", "crawl", "https://example.com", "--max-chars", "300"],
         {
           artifactsDir: dir,
-          descriptors: [makeAsyncProvider({
-            id: "tavily",
-            envVar: "TAVILY_API_KEY",
-            capability: "crawl",
-            ok: crawlResult,
-          }).descriptor],
+          descriptors: [
+            makeAsyncProvider({
+              id: "tavily",
+              envVar: "TAVILY_API_KEY",
+              capability: "crawl",
+              ok: crawlResult,
+            }).descriptor,
+          ],
         },
       );
       assert.equal(status, 0);
@@ -544,6 +605,36 @@ describe("crawl --max-chars (main) — whole envelope, trailing pages drop late"
   });
 });
 
+describe("E2E redaction (review M2) — the T4 budget artifact is redacted", () => {
+  it("read: a configured secret in the result content is [REDACTED] in the written master artifact", async (t) => {
+    await withTempDir(t, async (dir) => {
+      // The env value below is a CONFIGURED secret for the run
+      // (deps.secrets = configuredSecrets(resolvedEnv)); the fake
+      // reader embeds it inside the page content.
+      const secret = "sk-zai-secret-DO-NOT-LEAK-4417";
+      const poisoned = readResult(threeSections() + "\n\nCredential: " + secret + "\n");
+      const descriptors = [makeReaderProvider("zai", poisoned).descriptor];
+      const { status } = await runMain(
+        ["--provider", "zai", "read", "https://example.com/doc", "--max-chars", "300"],
+        {
+          artifactsDir: dir,
+          descriptors,
+          env: { Z_AI_API_KEY: secret, SCOUTLINE_ARTIFACTS_DIR: dir },
+        },
+      );
+      assert.equal(status, 0);
+
+      const { log } = await readLog(dir);
+      assert.ok(log.entries.length >= 1, "compaction fired and logged");
+      const entry = log.entries.find((e) => e.command === "read");
+      assert.ok(entry, "read compaction entry present");
+      const master = await fs.readFile(path.join(dir, entry.masterPath), "utf8");
+      assert.ok(!master.includes(secret), "secret value absent from the budget artifact");
+      assert.ok(master.includes("[REDACTED]"), "redaction marker present in the artifact");
+    });
+  });
+});
+
 describe("research --max-chars (main) — citations survive longest", () => {
   it("compaction stamped; sources block intact in-band", async (t) => {
     await withTempDir(t, async (dir) => {
@@ -551,12 +642,14 @@ describe("research --max-chars (main) — citations survive longest", () => {
         ["--provider", "tavily", "research", "quantum", "--max-chars", "300"],
         {
           artifactsDir: dir,
-          descriptors: [makeAsyncProvider({
-            id: "tavily",
-            envVar: "TAVILY_API_KEY",
-            capability: "research",
-            ok: researchResult,
-          }).descriptor],
+          descriptors: [
+            makeAsyncProvider({
+              id: "tavily",
+              envVar: "TAVILY_API_KEY",
+              capability: "research",
+              ok: researchResult,
+            }).descriptor,
+          ],
         },
       );
       assert.equal(status, 0);
@@ -572,30 +665,38 @@ describe("research --max-chars (main) — citations survive longest", () => {
 
 describe("repo --max-chars (main) — search/read whole-envelope; tree rejects; strict parse", () => {
   function repoDeps({ search, readFile, listDirectory } = {}) {
-    return [makeRepoProvider({
-      search: search ?? (() => ({
-        schemaVersion: 1,
-        repository: "owner/repo",
-        query: "query",
-        language: "en",
-        excerpts: [{ text: "x".repeat(150) }, { text: "y".repeat(150) }],
-        truncated: false,
-        originalTextLength: 300,
-      })),
-      readFile: readFile ?? (() => ({
-        schemaVersion: 1,
-        repository: "owner/repo",
-        path: "README.md",
-        content: "z".repeat(400),
-        truncated: false,
-        originalContentLength: 400,
-      })),
-      listDirectory: listDirectory ?? (() => ({
-        repository: "owner/repo",
-        path: "",
-        entries: [{ name: "README.md", path: "README.md", kind: "file" }],
-      })),
-    }).descriptor];
+    return [
+      makeRepoProvider({
+        search:
+          search ??
+          (() => ({
+            schemaVersion: 1,
+            repository: "owner/repo",
+            query: "query",
+            language: "en",
+            excerpts: [{ text: "x".repeat(150) }, { text: "y".repeat(150) }],
+            truncated: false,
+            originalTextLength: 300,
+          })),
+        readFile:
+          readFile ??
+          (() => ({
+            schemaVersion: 1,
+            repository: "owner/repo",
+            path: "README.md",
+            content: "z".repeat(400),
+            truncated: false,
+            originalContentLength: 400,
+          })),
+        listDirectory:
+          listDirectory ??
+          (() => ({
+            repository: "owner/repo",
+            path: "",
+            entries: [{ name: "README.md", path: "README.md", kind: "file" }],
+          })),
+      }).descriptor,
+    ];
   }
 
   it("repo search: compaction stamped, query/repository survive, request never sees maxChars", async (t) => {
@@ -675,11 +776,35 @@ describe("repo --max-chars (main) — search/read whole-envelope; tree rejects; 
     });
   });
 
+  it("F-5: research --max-chars bad value is VALIDATION_ERROR even with NO credentials (parse hoisted before provider resolution)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      // No env credentials at all — the old in-closure parse sat after
+      // provider resolution, so this shape surfaced exit 3
+      // (CONFIGURATION_ERROR) before the parse error. The hoist makes
+      // research behave like search/read/crawl/repo (T3's ordering).
+      const { status, stderr } = await runMain(["research", "quantum", "--max-chars", "500x"], {
+        artifactsDir: dir,
+        descriptors: [],
+        env: { SCOUTLINE_ARTIFACTS_DIR: dir },
+      });
+      assert.equal(status, 1);
+      assert.ok(
+        stderr.some((l) => l.includes("--max-chars must be a positive integer")),
+        `parse error first, got: ${JSON.stringify(stderr)}`,
+      );
+    });
+  });
+
   it("strict parse: repo search/read/research/crawl/read reject 500x, 1.5, 0", async (t) => {
     await withTempDir(t, async (dir) => {
       const descriptors = [
         ...repoDeps(),
-        makeAsyncProvider({ id: "tavily", envVar: "TAVILY_API_KEY", capability: "research", ok: researchResult }).descriptor,
+        makeAsyncProvider({
+          id: "tavily",
+          envVar: "TAVILY_API_KEY",
+          capability: "research",
+          ok: researchResult,
+        }).descriptor,
       ];
       const argvs = [
         ["repo", "search", "owner/repo", "query"],
@@ -712,25 +837,47 @@ describe("repo --max-chars (main) — search/read whole-envelope; tree rejects; 
 describe("-O markdown reflects the budgeted projection (fix-round C)", () => {
   it("crawl markdown: the trailing page's drop is visible in the markdown body", async (t) => {
     await withTempDir(t, async (dir) => {
-      const descriptors = [makeAsyncProvider({
-        id: "tavily", envVar: "TAVILY_API_KEY", capability: "crawl", ok: crawlResult,
-      }).descriptor];
+      const descriptors = [
+        makeAsyncProvider({
+          id: "tavily",
+          envVar: "TAVILY_API_KEY",
+          capability: "crawl",
+          ok: crawlResult,
+        }).descriptor,
+      ];
       const { status, stdout } = await runMain(
-        ["-O", "markdown", "--provider", "tavily", "crawl", "https://example.com", "--max-chars", "300"],
+        [
+          "-O",
+          "markdown",
+          "--provider",
+          "tavily",
+          "crawl",
+          "https://example.com",
+          "--max-chars",
+          "300",
+        ],
         { artifactsDir: dir, descriptors },
       );
       assert.equal(status, 0);
       const md = stdout.join("");
       assert.ok(md.includes("https://example.com/p1"), "first page visible in markdown");
-      assert.ok(!md.includes("https://example.com/p3"), "dropped trailing page absent from markdown");
+      assert.ok(
+        !md.includes("https://example.com/p3"),
+        "dropped trailing page absent from markdown",
+      );
     });
   });
 
   it("research markdown: the Sources block survives the budget in markdown", async (t) => {
     await withTempDir(t, async (dir) => {
-      const descriptors = [makeAsyncProvider({
-        id: "tavily", envVar: "TAVILY_API_KEY", capability: "research", ok: researchResult,
-      }).descriptor];
+      const descriptors = [
+        makeAsyncProvider({
+          id: "tavily",
+          envVar: "TAVILY_API_KEY",
+          capability: "research",
+          ok: researchResult,
+        }).descriptor,
+      ];
       const { status, stdout } = await runMain(
         ["-O", "markdown", "--provider", "tavily", "research", "quantum", "--max-chars", "150"],
         { artifactsDir: dir, descriptors },
@@ -747,7 +894,16 @@ describe("-O markdown reflects the budgeted projection (fix-round C)", () => {
     await withTempDir(t, async (dir) => {
       const descriptors = [makeReaderProvider("zai", readResult(threeSections())).descriptor];
       const { status, stdout } = await runMain(
-        ["-O", "markdown", "--provider", "zai", "read", "https://example.com/doc", "--max-chars", "200"],
+        [
+          "-O",
+          "markdown",
+          "--provider",
+          "zai",
+          "read",
+          "https://example.com/doc",
+          "--max-chars",
+          "200",
+        ],
         { artifactsDir: dir, descriptors },
       );
       assert.equal(status, 0);
@@ -764,7 +920,16 @@ describe("output modes + zero-diff (T4)", () => {
       const descriptors = [makeReaderProvider("zai", readResult(threeSections())).descriptor];
       for (const mode of ["data", "json", "pretty"]) {
         const { stdout } = await runMain(
-          ["-O", mode, "--provider", "zai", "read", "https://example.com/doc", "--max-chars", "300"],
+          [
+            "-O",
+            mode,
+            "--provider",
+            "zai",
+            "read",
+            "https://example.com/doc",
+            "--max-chars",
+            "300",
+          ],
           { artifactsDir: dir, descriptors },
         );
         const parsed =
@@ -787,36 +952,58 @@ describe("output modes + zero-diff (T4)", () => {
       assert.equal(data.content, threeSections(), "full content, byte-identical");
       assert.deepEqual(await fs.readdir(dir), [], "no budget → no store writes");
 
-      const crawl = [makeAsyncProvider({ id: "tavily", envVar: "TAVILY_API_KEY", capability: "crawl", ok: crawlResult }).descriptor];
+      const crawl = [
+        makeAsyncProvider({
+          id: "tavily",
+          envVar: "TAVILY_API_KEY",
+          capability: "crawl",
+          ok: crawlResult,
+        }).descriptor,
+      ];
       const c = await runMain(["--provider", "tavily", "crawl", "https://example.com"], {
-        artifactsDir: dir, descriptors: crawl,
+        artifactsDir: dir,
+        descriptors: crawl,
       });
       assert.equal(c.status, 0);
       const cData = parseData(c.stdout);
       assert.ok(!("compaction" in cData));
       assert.equal(cData.pages.length, 3, "no pages dropped without the flag");
 
-      const repo = [makeRepoProvider({
-        search: () => ({
-          schemaVersion: 1, repository: "owner/repo", query: "query", language: "en",
-          excerpts: [{ text: "abc" }], truncated: false, originalTextLength: 3,
-        }),
-        readFile: () => ({
-          schemaVersion: 1, repository: "owner/repo", path: "README.md",
-          content: "hello world", truncated: false, originalContentLength: 11,
-        }),
-        listDirectory: () => ({
-          repository: "owner/repo", path: "",
-          entries: [{ name: "README.md", path: "README.md", kind: "file" }],
-        }),
-      }).descriptor];
+      const repo = [
+        makeRepoProvider({
+          search: () => ({
+            schemaVersion: 1,
+            repository: "owner/repo",
+            query: "query",
+            language: "en",
+            excerpts: [{ text: "abc" }],
+            truncated: false,
+            originalTextLength: 3,
+          }),
+          readFile: () => ({
+            schemaVersion: 1,
+            repository: "owner/repo",
+            path: "README.md",
+            content: "hello world",
+            truncated: false,
+            originalContentLength: 11,
+          }),
+          listDirectory: () => ({
+            repository: "owner/repo",
+            path: "",
+            entries: [{ name: "README.md", path: "README.md", kind: "file" }],
+          }),
+        }).descriptor,
+      ];
       const s = await runMain(["repo", "search", "owner/repo", "query"], {
-        artifactsDir: dir, descriptors: repo,
+        artifactsDir: dir,
+        descriptors: repo,
       });
       assert.equal(s.status, 0);
       assert.ok(!("compaction" in parseData(s.stdout)));
       const r = await runMain(["repo", "read", "owner/repo", "README.md"], {
-        artifactsDir: dir, descriptors: repo,
+        artifactsDir: dir,
+        descriptors: repo,
       });
       assert.equal(r.status, 0);
       const rData = parseData(r.stdout);
@@ -836,10 +1023,10 @@ describe("output modes + zero-diff (T4)", () => {
       );
       assert.equal(a.status, 0);
       const secondDir = await fs.mkdtemp(path.join(dir, "ref-"));
-      const b = await runMain(
-        ["--provider", "zai", "read", "https://example.com/doc"],
-        { artifactsDir: secondDir, descriptors },
-      );
+      const b = await runMain(["--provider", "zai", "read", "https://example.com/doc"], {
+        artifactsDir: secondDir,
+        descriptors,
+      });
       const { log } = await readLog(dir);
       const report = await buildHistoryShowReport(log, log.entries[0].requestId, async (e) =>
         fs.readFile(path.join(dir, e.masterPath), "utf8"),

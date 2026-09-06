@@ -159,6 +159,27 @@ reference. Distinct from per-field caps (`--max-summary`) and from
 result-count semantics (`--count`), which are not sizing.
 _Avoid_: token budget, truncation, compaction (the mechanism, not the concept)
 
+**Section Diff**:
+A structural, section-level comparison of two page captures, both
+sides raw bytes (`archive get` snapshot vs `fetch` live) passed
+through ONE deterministic headings-and-paragraph extractor. The
+extractor is diff tooling only — it produces no reader envelope and
+impersonates no Provider normalization.
+_Avoid_: byte diff, provider diff, summarization
+
+**Watch Target**:
+A registered URL monitored by `watch` — a bounded ring of raw
+snapshot generations plus a never-pruned change log. The log is the
+durable history; snapshots are just inputs. Page targets are keyless
+and provider-free in v1.
+_Avoid_: watcher, monitor job, cron job
+
+**Change Log**:
+The append-only record of watch observations (change, baseline,
+moved, error) that survives snapshot rotation and feeds both the
+JSONL and RSS surfaces.
+_Avoid_: history (that is the `--save` artifacts inventory), feed
+
 ## Flagged Ambiguities
 
 **Vision**:

@@ -207,6 +207,14 @@ describe("extractSections", () => {
         assert.equal(result.sections[0].heading, null);
     });
 
+    it("doctype declarations never become section text (HTML4 to HTML5 doctype is not a content change)", () => {
+        const a = extractSections(utf8('<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN"><h1>A</h1><p>x</p>'));
+        const b = extractSections(utf8("<!DOCTYPE html><h1>A</h1><p>x</p>"));
+        assert.equal(a.ok && b.ok, true);
+        assert.deepEqual(a.sections, b.sections);
+        assert.equal(a.sections.some((sec) => sec.body.includes("DOCTYPE")), false);
+    });
+
     it("HTML comments never become section text", () => {
         const a = extractSections(utf8("<p>a</p><!-- retired copy --><p>b</p>"));
         const b = extractSections(utf8("<p>a</p><!-- new copy --><p>b</p>"));

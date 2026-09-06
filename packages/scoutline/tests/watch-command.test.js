@@ -1181,6 +1181,40 @@ describe("scoutline watch command (T4)", () => {
       }
     });
 
+    it("RSS redacts secrets containing XML-sensitive characters before escaping (review round 2)", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-feed-"));
+      try {
+        const target = await seedTarget(dir);
+        await appendChangeLog(dir, target.id, {
+          at: FROZEN_NOW,
+          kind: "moved",
+          exit: 1,
+          gen: 2,
+          added: [],
+          removed: [],
+          changed: [],
+          finalUrl: "https://example.com/r?tok=pa&ss",
+        });
+        const feedWithSecret = (d) => async (argv) => {
+          const { adapter, stdout, stderr } = makeAdapter();
+          const code = await main(argv, {
+            invocation: adapter,
+            env: { SCOUTLINE_WATCH_DIR: d, Z_AI_API_KEY: "pa&ss" },
+            loadScoutlineConfig: () => {
+              throw new Error("Should not be called!");
+            },
+          });
+          return { code, stdout: stdout.join(""), stderr: stderr.join("") };
+        };
+        const r = await feedWithSecret(dir)(["watch", "feed", target.id, "--format", "rss"]);
+        assert.equal(r.code, 0);
+        assert.ok(!r.stdout.includes("pa&ss"), "raw secret must be gone");
+        assert.ok(!r.stdout.includes("pa&amp;ss"), "escaped secret form must be gone too");
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
     it("RSS strips XML 1.0-forbidden U+FFFE/U+FFFF (review)", async () => {
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-feed-"));
       try {

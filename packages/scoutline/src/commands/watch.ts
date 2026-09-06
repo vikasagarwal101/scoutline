@@ -123,9 +123,15 @@ function withTargetTickLock<T>(
   root: string,
   targetId: string,
   fn: () => Promise<T>,
+  fetchTimeoutMs: number,
 ): Promise<T> {
+  // Lock-acquire budget derives from the FETCH timeout (review): a
+  // holder running a legitimate 45s fetch under --timeout 60000 must
+  // not make the overlapping invocation fail at a fixed 30s lock
+  // deadline. Acquire may wait up to the holder's worst-case run
+  // (fetch timeout) plus lock overhead.
   return withAsyncFileLock(path.join(root, targetId), "watch-tick-" + targetId, fn, {
-    timeoutMs: 30000,
+    timeoutMs: fetchTimeoutMs + 5000,
     staleMs: 600000,
     timeoutLabel: "Watch tick",
   });
@@ -363,8 +369,11 @@ async function runTick(
   // the tick surfaces as an error report (exit 2), never an aborted
   // --all sweep (review).
   try {
-    return await withTargetTickLock(root, target.id, () =>
-      runTickLocked(root, target, options),
+    return await withTargetTickLock(
+      root,
+      target.id,
+      () => runTickLocked(root, target, options),
+      options.timeoutMs,
     );
   } catch (error) {
     if (error instanceof ValidationError) throw error;
@@ -546,11 +555,18 @@ async function runTickLocked(
   }
 
   const diff = diffDocuments(priorExtraction, currentExtraction);
+  // Raw-hash equality is REQUIRED only on the hash-only path (review):
+  // when both sides extracted structurally, ignored HTML (comments,
+  // script bodies, doctype) is deliberately invisible — an empty
+  // structural diff is no-change even when raw bytes differ.
+  const hashMatches = diff.hashOnly
+    ? priorExtraction.hash === currentExtraction.hash
+    : true;
   const unchanged =
     diff.added.length === 0 &&
     diff.removed.length === 0 &&
     diff.changed.length === 0 &&
-    priorExtraction.hash === currentExtraction.hash &&
+    hashMatches &&
     // Same-document comparison (see isSameDocumentUrl): a finalUrl hop
     // to a trailing-slash variant of the same path is not a change.
     (prior.finalUrl === finalUrl ||
@@ -805,21 +821,32 @@ function feedItemDescription(entry: ParsedChangeLogEntry): string {
  * ruling #4). Deterministic by construction (ruling #6): the only
  * timestamps come from entry `at`, declaration + indentation are fixed.
  */
-function renderRssFeed(target: WatchTarget, entries: readonly ParsedChangeLogEntry[]): string {
+function renderRssFeed(
+  target: WatchTarget,
+  entries: readonly ParsedChangeLogEntry[],
+  secrets: readonly string[],
+): string {
+  // Redact BEFORE XML escaping (review): a secret containing an
+  // XML-sensitive char (&, <, >, ", ') is transformed by xmlEscape, so
+  // post-escape redaction misses the encoded form and the secret
+  // resurfaces when a reader decodes the entity. Redacting the raw
+  // value first removes both forms.
+  const safe = (text: string): string =>
+    xmlEscape(redactSecrets(text, [...secrets]) as string);
   const lines: string[] = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<rss version="2.0"><channel>',
-    `  <title>${xmlEscape(`scoutline watch: ${target.name}`)}</title>`,
-    `  <link>${xmlEscape(target.url)}</link>`,
+    `  <title>${safe(`scoutline watch: ${target.name}`)}</title>`,
+    `  <link>${safe(target.url)}</link>`,
   ];
   for (const entry of entries) {
     if (entry.kind !== "change" && entry.kind !== "moved") continue;
     lines.push(
       "  <item>",
-      `    <title>${xmlEscape(feedItemTitle(entry))}</title>`,
-      `    <guid isPermaLink="false">${xmlEscape(`${target.id}:${entry.gen}`)}</guid>`,
-      `    <pubDate>${xmlEscape(rfc822(entry.at))}</pubDate>`,
-      `    <description>${xmlEscape(feedItemDescription(entry))}</description>`,
+      `    <title>${safe(feedItemTitle(entry))}</title>`,
+      `    <guid isPermaLink="false">${safe(`${target.id}:${entry.gen}`)}</guid>`,
+      `    <pubDate>${safe(rfc822(entry.at))}</pubDate>`,
+      `    <description>${safe(feedItemDescription(entry))}</description>`,
       "  </item>",
     );
   }
@@ -902,9 +929,7 @@ async function executeWatchFeed(input: {
   }
 
   const entries = await readChangeLog(root, target.id);
-  input.invocation.writeStdout(
-    redactSecrets(renderRssFeed(target, entries), input.secrets) as string,
-  );
+  input.invocation.writeStdout(renderRssFeed(target, entries, input.secrets));
   return 0;
 }
 

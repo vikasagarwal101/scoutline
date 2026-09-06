@@ -587,6 +587,37 @@ describe("watch store review fixes", () => {
     });
 });
 
+describe("watch store review fixes round 2", () => {
+    it("an empty change-log file reads as [] (review)", async () => {
+        const root = await fs.mkdtemp(path.join("/tmp", "scoutline-store-r2-"));
+        try {
+            const added = await addTarget(root, { url: "https://empty.example/a", name: "empty-a" });
+            const file = path.join(root, added.id, "change-log.jsonl");
+            await fs.mkdir(path.dirname(file), { recursive: true });
+            await fs.writeFile(file, "");
+            assert.deepEqual(await readChangeLog(root, added.id), []);
+        } finally {
+            await fs.rm(root, { recursive: true, force: true }).catch(() => {});
+        }
+    });
+
+    it("a structurally malformed entry fails closed, not at:undefined/NaN (review)", async () => {
+        const root = await fs.mkdtemp(path.join("/tmp", "scoutline-store-r2-"));
+        try {
+            const added = await addTarget(root, { url: "https://mal.example/a", name: "mal-a" });
+            const file = path.join(root, added.id, "change-log.jsonl");
+            await fs.mkdir(path.dirname(file), { recursive: true });
+            await fs.writeFile(file, JSON.stringify({ kind: "change" }) + "\n");
+            await assert.rejects(
+                () => readChangeLog(root, added.id),
+                (err) => err instanceof ValidationError,
+            );
+        } finally {
+            await fs.rm(root, { recursive: true, force: true }).catch(() => {});
+        }
+    });
+});
+
 describe("concurrent double-fire serializes", () => {
     it("N concurrent appendSnapshot+appendChangeLog → N log lines, gens exactly 1..N", async (t) => {
         await withTempDir(t, async (root) => {

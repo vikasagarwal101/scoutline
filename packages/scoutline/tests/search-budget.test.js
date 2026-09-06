@@ -750,13 +750,14 @@ describe("PR #103 fix-round — --fields + text presentations", () => {
       // The data surface stays budgeted (rank 5 dropped), while the text
       // presentation keeps full rows under --fields (pre-T3 shape, no
       // "undefined — undefined" leakage).
-      const { stdout: dstdout } = await runMain(
+      const { status: dstatus, stdout: dstdout, stderr: dstderr } = await runMain(
         ["-O", "data", "--provider", "tavily", "search", "q", "--max-chars", String(300 + COMPACTION_STAMP_RESERVE), "--fields", "summary"],
         {
           artifactsDir: dir,
           extraDeps: { providerDescriptors: [makeDescriptor("tavily", { q: fiveSources() })] },
         },
       );
+      assert.equal(dstatus, 0, JSON.stringify(dstderr));
       const data = JSON.parse(dstdout.join(""));
       assert.ok(data.compaction, "budget fires under --fields too");
       assert.ok(

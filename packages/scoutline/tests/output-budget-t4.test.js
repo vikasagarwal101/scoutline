@@ -1074,15 +1074,12 @@ describe("PR #103 fix-round — marker + truth-flag pins", () => {
     const e = crawlResult();
     const out = applyBudget(e, Math.floor(measurePayload(e) / 2), CRAWL_LADDER);
     const page = out.projection.pages.find((p) => p.content.startsWith("…"));
-    if (page !== undefined) {
-      assert.ok(!page.content.startsWith("……"), "single marker");
-      assert.equal(page.truncated, true, "trimmed page says truncated:true");
-      assert.equal(
-        typeof page.originalContentLength,
-        "number",
-        "originalContentLength present",
-      );
-    }
+    // R3: assert existence upfront — a silent pass would leave the
+    // truth-flag checks unchecked.
+    assert.ok(page, "halving at half-size must trim at least one page");
+    assert.ok(!page.content.startsWith("……"), "single marker");
+    // In-rule stamps moved to the seam (R3): the pure ladder projection
+    // carries the marker; the seam stamps truth flags post-walk.
   });
 
   it("repo-read trim stamps truncated:true while originalContentLength keeps the full length", () => {

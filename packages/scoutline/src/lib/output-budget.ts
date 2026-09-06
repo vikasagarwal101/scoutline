@@ -38,6 +38,24 @@ export interface LadderRule<T = unknown> {
 /** Ordered shrinking rules; earlier rules are cheaper losses. */
 export type BudgetLadder<T = unknown> = readonly LadderRule<T>[];
 
+/**
+ * Envelope-key the walk stamps after the FIRST rule application: ladder
+ * rules strip a leading omission marker only when this key is present —
+ * the first pass never strips, so a genuine source `…` rides into the
+ * kept prefix; later passes strip exactly the marker the ladder wrote.
+ * Object-keyed so it never serializes into measured output.
+ */
+// Marker-protocol state lives in a module-level WeakSet (never on the
+// envelope): the walk registers each projection it produces, and ladder
+// rules consult it to strip ONLY ladder-emitted leading markers while
+// leaving a genuine source `…` untouched on the first pass.
+const walkedProjections = new WeakSet<object>();
+
+/** True when the walk has already shrunk this envelope once (marker protocol). */
+export function wasBudgetWalked(value: object): boolean {
+  return walkedProjections.has(value);
+}
+
 /** Shrink record stamped inside the data payload when the budget fires. */
 export interface BudgetCompaction {
   readonly budget: number;
@@ -152,6 +170,11 @@ export function applyBudget<T>(
       const nextSize = measurePayload(next);
       if (nextSize >= size) break;
       projection = next;
+      // Marker protocol: after the first successful shrink the walk
+      // owns any leading omission marker on trimmed text.
+      if (typeof next === "object" && next !== null) {
+        walkedProjections.add(next);
+      }
       size = nextSize;
     }
     if (size <= target) return { projection, compaction: { budget: effectiveBudget } };

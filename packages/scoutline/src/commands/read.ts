@@ -48,7 +48,7 @@ import { executeReaderOperation } from "../lib/execution.js";
 import { OUTPUT_MODES } from "../lib/output.js";
 import { ValidationError } from "../lib/errors.js";
 import { extract, isExtractMode, type ExtractMode } from "../lib/extract.js";
-import type { LadderRule } from "../lib/output-budget.js";
+import { wasBudgetWalked, type LadderRule } from "../lib/output-budget.js";
 
 // ---------------------------------------------------------------------------
 // Option and dependency types
@@ -243,7 +243,7 @@ const trimLastParagraphsRule: LadderRule = {
     const fenced: boolean[] = new Array<boolean>(lines.length).fill(false);
     let inFence = false;
     for (let k = 0; k < lines.length; k++) {
-      if (/^ {0,3}```/.test(lines[k]!)) {
+      if (/^ {0,3}(```|~~~)/.test(lines[k]!)) {
         fenced[k] = true;
         inFence = !inFence;
         continue;
@@ -260,7 +260,12 @@ const trimLastParagraphsRule: LadderRule = {
     };
     for (let i = lines.length - 1; i >= 0; i--) {
       if (fenced[i] === true || isHeadingLine(i)) continue;
-      const clean = lines[i]!.replace(/^…+/, "").replace(/…$/, "");
+      // Marker protocol (R3): strip ONE leading omission marker ONLY on
+      // subsequent passes (wasBudgetWalked(e) || e.truncated === true — the ladder itself
+      // flipped it). A source-content leading "…" on the first pass rides
+      // into the kept prefix instead of being mistaken for a marker.
+      const hasPriorMarker = wasBudgetWalked(e) || e.truncated === true;
+      const clean = (hasPriorMarker ? lines[i]!.replace(/^…/, "") : lines[i]!).replace(/…$/, "");
       if (clean.length <= 1) continue;
       const half = Math.max(1, Math.floor(clean.length / 2));
       const next = [...lines];
@@ -300,7 +305,7 @@ function splitSections(content: string): Section[] {
   // root section off and leave the preamble.
   let inFence = false;
   for (const line of content.split("\n")) {
-    const fence = /^ {0,3}```/.test(line);
+    const fence = /^ {0,3}(```|~~~)/.test(line);
     if (fence) inFence = !inFence;
     const match = !inFence ? line.match(/^ {0,3}(#{1,6})\s+(.*)$/) : null;
     if (match) {
@@ -371,7 +376,9 @@ const trimItemValuesRule: LadderRule = {
       const out: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(row)) {
         if (typeof value === "string" && value.length > 1 && key !== "url") {
-          const clean = value.replace(/^…+/, "").replace(/…$/, "");
+          // Marker protocol (R3): same rule as the content trim — only
+          // strip a leading marker the ladder itself emitted.
+          const clean = (wasBudgetWalked(e) || e.truncated === true ? value.replace(/^…/, "") : value).replace(/…$/, "");
           const half = Math.max(1, Math.floor(clean.length / 2));
           // Fix-round (review): halve the MARKER-FREE text (exactly ONE
           // omission marker across repeated passes) and skip values the

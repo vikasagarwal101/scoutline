@@ -2078,8 +2078,26 @@ async function handleCrawl(
         rebuild: (projection, result) => {
           const r = result;
           if (r.kind !== "data") return r as CommandResult;
-          const pages =
-            (projection as { pages?: { url: string; content: string }[] }).pages ?? [];
+          // R3: stamp crawl truth flags post-walk — pages the ladder
+          // trimmed carry `truncated: true` + `originalContentLength`
+          // from the pre-budget envelope, so short pages stay bleedable
+          // (in-rule stamps cost more than their halvings saved).
+          const rawPages =
+            (r.data as { pages?: { content?: string }[] }).pages ?? [];
+          const pages = (
+            (projection as { pages?: { url: string; content: string }[] }).pages ?? []
+          ).map((p, i) => {
+            // Marker protocol: a leading "…" on a page the walk produced
+            // means the ladder trimmed it (first-pass source markers are
+            // never stripped by the rules).
+            if (!p.content.startsWith("…")) return p;
+            const original = rawPages[i]?.content ?? p.content;
+            return {
+              ...p,
+              truncated: true,
+              originalContentLength: original.replace(/^…/, "").length,
+            };
+          });
           return {
             ...r,
             data: projection,
@@ -2633,9 +2651,9 @@ async function handleRepo(
 
   // Fix-round (review): parse --max-chars BEFORE Provider resolution
   // (same parse-first order as search/read/crawl) so a malformed
-  // value is VALIDATION_ERROR regardless of provider state. Brief
-  // already parsed (and validated) its own value above; tree rejected
-  // the flag there.
+  // value is VALIDATION_ERROR regardless of provider state. This
+  // single hoisted parse covers search/read/brief; `repo tree`
+  // rejected the flag in its own branch above.
   const maxChars = parseMaxCharsFlag(flags);
 
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):

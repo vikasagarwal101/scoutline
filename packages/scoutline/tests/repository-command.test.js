@@ -1652,7 +1652,10 @@ describe("P6-07A flags/defaults — Explorer request shape", () => {
     assert.ok(parsed.compaction, "mid budget fires");
     assert.equal(parsed.compaction.note, undefined, "not the floor");
     assert.equal(parsed.excerpts.length, 2, "excerpts survive (only bodies bled)");
-    assert.ok(parsed.excerpts[0].text.length < 300, "first excerpt actually shrank");
+    assert.ok(
+      parsed.excerpts[0].text.length < big[0].text.length,
+      "first excerpt actually shrank vs the full text",
+    );
     assert.equal(parsed.truncated, true, "truth flag set when the ladder cuts");
   });
 

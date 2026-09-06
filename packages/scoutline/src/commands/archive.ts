@@ -26,7 +26,12 @@ import {
   DEFAULT_USER_AGENT,
   DEFAULT_FETCH_TIMEOUT_MS,
 } from "./fetch.js";
-import { extractSections, diffDocuments } from "../lib/section-diff.js";
+import {
+  extractSections,
+  extractSectionsHashOnly,
+  diffDocuments,
+  isHtmlContentType,
+} from "../lib/section-diff.js";
 
 export const ARCHIVE_HELP = `
 scoutline archive <subcommand> [args] [options] - Internet Archive Wayback Machine
@@ -520,39 +525,77 @@ const SINCE_DURATION_UNITS: Record<string, number> = {
  * instant for durations). Rejects bare numbers, unknown units, negative
  * durations, and invalid dates — never falls back to a guess.
  */
+/**
+ * Strict calendar validation for an ISO date or datetime prefix: every
+ * field must be in range (`2023-13-45` rolls over in the constructor
+ * rather than throwing). The local calendar fields of the parsed date
+ * are compared against the input digits — NOT its UTC projection, so
+ * a valid `2023-01-01T00:00:00+05:00` (UTC 2022-12-31) is not an
+ * overflow (review fix: offset datetimes crossing UTC midnight were
+ * wrongly rejected).
+ */
+function isCalendarOverflow(since: string, asDate: Date): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(since.trim());
+  if (!m) return false;
+  return (
+    asDate.getFullYear() !== Number(m[1]) ||
+    asDate.getMonth() !== Number(m[2]) - 1 ||
+    asDate.getDate() !== Number(m[3])
+  );
+}
+
 export function resolveSinceInstant(
   since: string,
   now: () => number = Date.now,
 ): { atMs: number; asOf: string } {
-  const durationMatch = /^(\d+)([dhwy])$/.exec(since.trim());
+  const trimmed = since.trim();
+  const durationMatch = /^(\d+)([dhwy])$/.exec(trimmed);
   if (durationMatch) {
-    const atMs = now() - Number(durationMatch[1]) * SINCE_DURATION_UNITS[durationMatch[2] ?? ""]! * 1000;
+    const unit = SINCE_DURATION_UNITS[durationMatch[2] ?? ""]!;
+    const ms = Number(durationMatch[1]) * unit * 1000;
+    // A gigantic digit string overflows Date range and would surface as
+    // a RangeError from toISOString — a ValidationError, not UNKNOWN_ERROR.
+    if (!Number.isFinite(ms) || Number.isNaN(Date.now() === 0 ? NaN : new Date(now() - ms).getTime())) {
+      throw new ValidationError(
+        `Invalid --since value: "${since}".`,
+        "Duration is out of the representable date range.",
+      );
+    }
+    const atMs = now() - ms;
     return { atMs, asOf: new Date(atMs).toISOString() };
   }
-  if (/^\d+([.,]\d+)?$/.test(since.trim())) {
+  if (/^\d+([.,]\d+)?$/.test(trimmed)) {
     throw new ValidationError(
       `Invalid --since value: "${since}".`,
       "Durations require a unit: 30d, 12h, 1w, 2y.",
     );
   }
-  const asDate = new Date(since);
-  // Reject unparseable input AND calendar overflows (`2023-13-45` rolls
-  // over to 2024-02-14 in the constructor rather than throwing).
-  const overflowed =
-    asDate.toString() !== "Invalid Date" &&
-    /^\d{4}-\d{2}-\d{2}/.test(since.trim()) &&
-    asDate.toISOString().slice(0, 10) !== since.trim().slice(0, 10);
-  if (since.trim() === "" || asDate.toString() === "Invalid Date" || overflowed) {
+  // Datetimes without an explicit offset (`2026-08-01T12:00:00`) parse
+  // as LOCAL time per ECMAScript — machine-dependent. Normalize: no
+  // offset means Z (review fix), so the same CLI input means the same
+  // instant everywhere. Plain dates already parse as UTC.
+  const normalized = /^(\d{4}-\d{2}-\d{2})T([0-9:.]+)$/.test(trimmed)
+    ? `${trimmed}Z`
+    : trimmed;
+  const asDate = new Date(normalized);
+  // Reject unparseable input AND calendar overflows (isCalendarOverflow
+  // compares LOCAL calendar fields — offset-correct, see its docblock).
+  if (
+    trimmed === "" ||
+    Number.isNaN(asDate.getTime()) ||
+    isCalendarOverflow(normalized, asDate) ||
+    Number.isNaN(Date.parse(asDate.toISOString()))
+  ) {
     throw new ValidationError(
       `Invalid --since value: "${since}".`,
       "Use an ISO date (2026-08-01), ISO datetime (2026-08-01T12:00:00Z), or duration (30d).",
     );
   }
-  const plainDate = /^\d{4}-\d{2}-\d{2}$/.test(since.trim());
+  const plainDate = /^\d{4}-\d{2}-\d{2}$/.test(trimmed);
   return {
     atMs: asDate.getTime(),
     // Plain dates echo in date form; datetimes echo the ISO instant.
-    asOf: plainDate ? since.trim() : asDate.toISOString(),
+    asOf: plainDate ? trimmed : asDate.toISOString(),
   };
 }
 
@@ -597,7 +640,11 @@ async function selectSnapshotAtOrBefore(
   url: string,
   atMs: number,
   since: string,
-  dependencies: { sleep?: (ms: number) => Promise<void>; cdxEndpoint?: string },
+  dependencies: {
+    sleep?: (ms: number) => Promise<void>;
+    cdxEndpoint?: string;
+    timeout?: number;
+  },
 ): Promise<string> {
   const to = new Date(atMs).toISOString().replace(/\D/g, "").slice(0, 14);
   // CDX returns captures ASCENDING; a positive limit yields the OLDEST
@@ -624,7 +671,7 @@ async function selectSnapshotAtOrBefore(
   const endpoint = dependencies.cdxEndpoint ?? WAYBACK_CDX_ENDPOINT;
   const raw = await fetchWithArchiveBackoff(
     `${endpoint}?${queryParams.toString()}`,
-    { sleep: dependencies.sleep },
+    { sleep: dependencies.sleep, ...(dependencies.timeout !== undefined ? { timeout: dependencies.timeout } : {}) },
     async (res) => {
       if (!res.ok) {
         throw new NetworkError(`CDX query failed with HTTP ${res.status}: ${res.statusText}`);
@@ -657,13 +704,20 @@ async function selectSnapshotAtOrBefore(
 async function fetchSnapshotRaw(
   url: string,
   snapshotTimestamp: string,
-  dependencies: { sleep?: (ms: number) => Promise<void>; replayBaseUrl?: string },
+  dependencies: {
+    sleep?: (ms: number) => Promise<void>;
+    replayBaseUrl?: string;
+    timeout?: number;
+  },
 ): Promise<{ raw: Buffer; contentType?: string; statusCode: number }> {
   const replayBase = dependencies.replayBaseUrl ?? "https://web.archive.org/web";
   const verbatimFetchUrl = `${replayBase}/${snapshotTimestamp}id_/${url}`;
   return fetchWithArchiveBackoff(
     verbatimFetchUrl,
-    { sleep: dependencies.sleep },
+    {
+      sleep: dependencies.sleep,
+      ...(dependencies.timeout !== undefined ? { timeout: dependencies.timeout } : {}),
+    },
     async (res) => {
       // A failed `id_` replay is a FAILED CAPTURE, never content —
       // cross-surface rule (watch run enforces the same on its side).
@@ -772,9 +826,14 @@ export async function executeArchiveDiff(
   const snapshotTimestamp = await selectSnapshotAtOrBefore(url, atMs, options.since, {
     sleep: dependencies.sleep,
     cdxEndpoint: dependencies.cdxEndpoint,
+    ...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
   });
   const [snapshot, live] = await Promise.all([
-    fetchSnapshotRaw(url, snapshotTimestamp, dependencies),
+    fetchSnapshotRaw(url, snapshotTimestamp, {
+      sleep: dependencies.sleep,
+      replayBaseUrl: dependencies.replayBaseUrl,
+      ...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
+    }),
     fetchLiveDocument(url, options.timeout ?? DEFAULT_FETCH_TIMEOUT_MS),
   ]);
 
@@ -786,9 +845,18 @@ export async function executeArchiveDiff(
     throw new NetworkError(`Live fetch failed with HTTP ${live.statusCode}.`);
   }
 
+  // Content-Type gate (review): a non-HTML media type forces hash-only;
+  // unknown/absent types fall back to extractSections' HTML-shaped sniff.
+  const extractByMediaType = (
+    raw: Uint8Array,
+    contentType: string | undefined,
+  ) =>
+    isHtmlContentType(contentType) === false
+      ? extractSectionsHashOnly(raw)
+      : extractSections(raw, charsetFromContentType(contentType));
   const diff = diffDocuments(
-    extractSections(snapshot.raw, charsetFromContentType(snapshot.contentType)),
-    extractSections(live.raw, charsetFromContentType(live.contentType)),
+    extractByMediaType(snapshot.raw, snapshot.contentType),
+    extractByMediaType(live.raw, live.contentType),
   );
 
   return {
@@ -1033,6 +1101,13 @@ export async function handleArchive(
         throw new ValidationError(
           `Invalid --timeout: "${flags.timeout}".`,
           "Must be a positive integer number of milliseconds.",
+        );
+      }
+      if (Number(flags.timeout) > 2147483647) {
+        // Node setTimeout ceiling (review): larger values clamp to ~1ms.
+        throw new ValidationError(
+          `Invalid --timeout: "${flags.timeout}".`,
+          "Must be at most 2147483647 ms (Node setTimeout limit).",
         );
       }
       timeout = Number(flags.timeout);

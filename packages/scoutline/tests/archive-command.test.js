@@ -9,6 +9,8 @@ import {
   parseArchiveArgs,
   fetchWithArchiveBackoff,
   ARCHIVE_HELP,
+  resolveSinceInstant,
+  handleArchive,
 } from "../dist/commands/archive.js";
 import { main } from "../dist/index.js";
 import { NetworkError, ValidationError } from "../dist/lib/errors.js";
@@ -784,5 +786,59 @@ describe("scoutline archive command", () => {
       assert.match(ARCHIVE_HELP, /diff <url>/);
       assert.match(ARCHIVE_HELP, /--since/);
     });
+  });
+});
+
+describe("archive diff review fixes", () => {
+  it("rejects --timeout above the Node setTimeout ceiling (review)", async () => {
+    const stdout = [];
+    const stderr = [];
+    const invocation = {
+      stdoutIsTTY: false,
+      stdinIsTTY: false,
+      environmentOutputMode: "data",
+      readStdin: async () => "",
+      writeStdout: (v) => stdout.push(v),
+      writeStderr: (v) => stderr.push(v),
+      runQuietly: async (op) => op(),
+      setExitCode: () => {},
+    };
+    await assert.rejects(
+      handleArchive(
+        ["diff", "https://example.com", "--since", "30d", "--timeout", "3000000000"],
+        "data",
+        { invocation, env: {}, secrets: [], providerDescriptors: [], fallbackEnabled: false },
+      ),
+      (err) =>
+        err instanceof ValidationError && /2147483647/.test(`${err.message} ${err.help ?? ""}`),
+    );
+  });
+
+  it("resolves --since with a numeric offset crossing UTC midnight (review)", () => {
+    const { atMs, asOf } = resolveSinceInstant(
+      "2023-01-01T00:00:00+05:00",
+      () => Date.parse("2026-09-06T00:00:00Z"),
+    );
+    assert.equal(atMs, Date.parse("2022-12-31T19:00:00Z"));
+    assert.equal(asOf, "2022-12-31T19:00:00.000Z");
+  });
+
+  it("treats offset-less datetimes as UTC, not local time (review)", () => {
+    const { atMs } = resolveSinceInstant("2026-08-01T12:00:00", () => 0);
+    assert.equal(atMs, Date.parse("2026-08-01T12:00:00Z"));
+  });
+
+  it("rejects a calendar-overflow date (2023-13-45)", () => {
+    assert.throws(
+      () => resolveSinceInstant("2023-13-45", () => 0),
+      ValidationError,
+    );
+  });
+
+  it("rejects an oversized duration with ValidationError, not RangeError (review)", () => {
+    assert.throws(
+      () => resolveSinceInstant("9999999999y", () => 0),
+      ValidationError,
+    );
   });
 });

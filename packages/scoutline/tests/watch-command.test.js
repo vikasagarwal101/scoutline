@@ -657,10 +657,8 @@ describe("scoutline watch command (T4)", () => {
         assert.equal(byName.get("b-stable").result, "no-change");
         assert.equal(byName.get("c-broken").result, "error");
         // Id order (== chronological): a-change < b-stable < c-broken.
-        const ids = [tA.id, tB.id, tC.id].sort();
         assert.deepEqual(data.results.map((x) => x.name ?? x.target), ["a-change", "b-stable", "c-broken"]);
         assert.ok(tA.id < tB.id && tB.id < tC.id, "ids minted in registration order");
-        void ids;
         // And when the worst is 1: two targets (change + no-change) → 1.
         const dir2 = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-run-"));
         const { server: s2, routes: r2, base: b2 } = await makeTickServer();
@@ -1134,6 +1132,94 @@ describe("scoutline watch command (T4)", () => {
         const r1 = await runner(["watch", "feed", target.id, "--format", "rss"]);
         const r2 = await runner(["watch", "feed", target.id, "--format", "rss"]);
         assert.equal(r1.stdout, r2.stdout);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it("rejects --timeout above the Node setTimeout ceiling (review)", async () => {
+      const r = await run(["watch", "run", "whatever", "--timeout", "3000000000"]);
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /VALIDATION_ERROR/);
+      assert.match(r.stderr, /2147483647/);
+    });
+
+    it("feed redacts configured secrets from jsonl and rss output (review)", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-feed-"));
+      try {
+        const target = await seedTarget(dir);
+        await appendChangeLog(dir, target.id, {
+          at: FROZEN_NOW,
+          kind: "moved",
+          exit: 1,
+          gen: 2,
+          added: [],
+          removed: [],
+          changed: [],
+          finalUrl: "https://example.com/redirect?token=sekrit-token-value",
+        });
+        const feedWithSecret = (d) => async (argv) => {
+          const { adapter, stdout, stderr } = makeAdapter();
+          const code = await main(argv, {
+            invocation: adapter,
+            env: { SCOUTLINE_WATCH_DIR: d, Z_AI_API_KEY: "sekrit-token-value" },
+            loadScoutlineConfig: () => {
+              throw new Error("Should not be called!");
+            },
+          });
+          return { code, stdout: stdout.join(""), stderr: stderr.join("") };
+        };
+        const r = await feedWithSecret(dir)(["watch", "feed", target.id, "--format", "rss"]);
+        assert.equal(r.code, 0);
+        assert.ok(!r.stdout.includes("sekrit-token-value"), "RSS must redact secrets");
+        assert.ok(r.stdout.includes("example.com/redirect"), "URL survives, only the token goes");
+        const r2 = await feedWithSecret(dir)(["watch", "feed", target.id, "--format", "jsonl"]);
+        assert.equal(r2.code, 0);
+        assert.ok(!r2.stdout.includes("sekrit-token-value"), "JSONL must redact secrets");
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it("RSS strips XML 1.0-forbidden U+FFFE/U+FFFF (review)", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-feed-"));
+      try {
+        const target = await seedTarget(dir);
+        const bad = "Bad\uFFFEHeading\uFFFF";
+        await appendChangeLog(dir, target.id, {
+          at: FROZEN_NOW,
+          kind: "change",
+          exit: 1,
+          gen: 2,
+          added: [bad],
+          removed: [],
+          changed: [],
+        });
+        const r = await feed(dir)(["watch", "feed", target.id, "--format", "rss"]);
+        assert.equal(r.code, 0);
+        assert.ok(!r.stdout.includes("\uFFFE"), "U+FFFE must never reach the feed");
+        assert.ok(!r.stdout.includes("\uFFFF"), "U+FFFF must never reach the feed");
+        assert.match(r.stdout, /<title>added: BadHeading<\/title>/);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it("jsonl feed emits exactly one trailing newline per line (streamed passthrough)", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-feed-"));
+      try {
+        const target = await seedTarget(dir);
+        await appendChangeLog(dir, target.id, { at: FROZEN_NOW, kind: "baseline", exit: 0, gen: 1 });
+        const r = await feed(dir)(["watch", "feed", target.id, "--format", "jsonl"]);
+        assert.equal(r.code, 0);
+        const lines = r.stdout.split("\n");
+        assert.equal(lines[lines.length - 1], "", "document ends with one newline");
+        assert.equal(lines.filter((l) => l.trim() === "").length, 1, "no blank lines");
+        const onDisk = await fs.readFile(
+          path.join(dir, target.id, "change-log.jsonl"),
+          "utf8",
+        );
+        assert.equal(r.stdout, onDisk, "byte-equal passthrough preserved");
       } finally {
         await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
       }

@@ -637,10 +637,10 @@ target's outcome stays in the report array. Plain validation errors
 (unknown target, bad flags) remain `VALIDATION_ERROR` (house exit 1) —
 do not conflate with the tick contract.
 
-- `watch add <url> [--name] [--keep 1..100]` — names unique
+- `watch add <url> [--name <name>] [--keep 1..100]` — names unique
   case-sensitively (default host+path slug); ids never reused
-- `watch remove [--purge]` — change-log evidence survives unless purged
-- `watch feed [--format jsonl|rss]` — stdout IS the document: jsonl
+- `watch remove <name-or-id> [--purge]` — change-log evidence survives unless purged
+- `watch feed <name-or-id> [--format jsonl|rss]` — stdout IS the document: jsonl
   streams the change log verbatim; rss renders change/moved entries
   with guid `{targetId}:{gen}`
 - `archive diff <url> --since <date|duration>` — one-shot

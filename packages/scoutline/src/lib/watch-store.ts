@@ -442,6 +442,22 @@ export async function listTargets(root: string): Promise<readonly WatchTarget[]>
   return [...registry.targets].sort((a, b) => (a.id < b.id ? -1 : 1));
 }
 
+/**
+ * Exact-id lookup with NO name fallback (review: retired-id-as-name
+ * collision). `getTarget` may ref-match a name, which is right for
+ * user-supplied refs — but the tick/append membership re-checks hold a
+ * captured target object and must confirm THAT row still exists; a
+ * retired id later reused as a NEW target's name must not satisfy the
+ * check for the removed target. Returns null when the id has no live row.
+ */
+export async function findTargetById(
+  root: string,
+  id: string,
+): Promise<WatchTarget | null> {
+  const registry = await readRegistry(root);
+  return registry.targets.find((target) => target.id === id) ?? null;
+}
+
 /** Resolve one target by exact id, else by exact name. */
 export async function getTarget(root: string, ref: string): Promise<WatchTarget> {
   const registry = await readRegistry(root);

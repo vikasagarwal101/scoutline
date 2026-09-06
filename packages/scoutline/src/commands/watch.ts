@@ -39,6 +39,7 @@ import {
   listTargets,
   removeTarget,
   getTarget,
+  findTargetById,
   listSnapshots,
   readSnapshot,
   readChangeLog,
@@ -433,8 +434,11 @@ async function runTickLocked(
   // membership INSIDE the tick lock: a purged target fails the lookup
   // before any snapshot/readSnapshot/append runs, and the lock it holds
   // is fresh (acquired after the purge released) so the purge's rmdir
-  // cannot delete it.
-  const stillRegistered = await getTarget(root, target.id);
+  // cannot delete it. Exact-id lookup, NO name fallback (review): the
+  // re-check confirms THIS captured row — a retired id later reused as
+  // a new target's name must not satisfy the check for the removed
+  // target.
+  const stillRegistered = await findTargetById(root, target.id);
   if (!stillRegistered) {
     throw new ValidationError(`watch target ${target.id} is not registered.`);
   }

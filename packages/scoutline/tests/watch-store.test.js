@@ -41,6 +41,7 @@ import {
     addTarget,
     listTargets,
     getTarget,
+    findTargetById,
     removeTarget,
     appendSnapshot,
     listSnapshots,
@@ -551,6 +552,41 @@ describe("ring non-advance on failed capture", () => {
 // --------------------------------------------------------- concurrency
 
 describe("watch store review fixes", () => {
+    it("getTarget resolves id-before-name when a target's name collides with another target's id (review)", async (t) => {
+        await withTempDir(t, async (root) => {
+            const a = await addTarget(root, { url: "https://a.example/", name: "a", now: NOW_1, randomBytes: byteStream(11) });
+            const b = await addTarget(root, { url: "https://b.example/", name: "b", now: NOW_1, randomBytes: byteStream(77) });
+            // Force target b's NAME to equal target a's id — a user-supplied
+            // ref can then match one row by id and another by name.
+            const registry = JSON.parse(await fs.readFile(path.join(root, "targets.json"), "utf8"));
+            const rowB = registry.targets.find((row) => row.name === "b");
+            rowB.name = a.id;
+            await fs.writeFile(path.join(root, "targets.json"), JSON.stringify(registry));
+            // Ref = a's id matches BOTH rows (a by id, b by name). Resolution
+            // must be the id match — the caller named a's id.
+            const got = await getTarget(root, a.id);
+            assert.equal(got.id, a.id);
+            assert.equal(got.name, "a");
+        });
+    });
+
+    it("findTargetById never name-matches: a retired id reused as a NEW target's name is not that target (review)", async (t) => {
+        await withTempDir(t, async (root) => {
+            const a = await addTarget(root, { url: "https://a.example/", name: "a", now: NOW_1, randomBytes: byteStream(11) });
+            await removeTarget(root, a.id, { purge: true });
+            // New target NAME deliberately equals the retired id string.
+            const b = await addTarget(root, { url: "https://b.example/", name: a.id, now: NOW_1, randomBytes: byteStream(77) });
+            // Contrast: getTarget ref-matches by name (the caller could mean
+            // either); findTargetById — the tick/append membership re-check —
+            // must see NO target for the retired id, proving the re-check
+            // cannot mistake the new same-named target for the purged one.
+            assert.deepEqual(await getTarget(root, a.id), b);
+            const found = await findTargetById(root, a.id);
+            assert.equal(found, null);
+            assert.deepEqual(await findTargetById(root, b.id), b);
+        });
+    });
+
     it("addTarget preserves retiredIds tombstones across a remove-then-add (review)", async () => {
         const root = await fs.mkdtemp(path.join("/tmp", "scoutline-store-review-"));
         try {

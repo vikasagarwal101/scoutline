@@ -567,7 +567,7 @@ function cdxTimestampMs(timestamp: string): number {
 }
 
 /** Pull the charset parameter out of a Content-Type header, if present. */
-function charsetFromContentType(contentType: string | undefined): string | undefined {
+export function charsetFromContentType(contentType: string | undefined): string | undefined {
   if (!contentType) return undefined;
   const match = /charset=([^;]+)/i.exec(contentType);
   // Strip surrounding quotes — `charset="utf-8"` is legal (RFC 9110)
@@ -638,10 +638,10 @@ async function fetchSnapshotRaw(
  * final body plus `moved` — true only when the chain contains a
  * permanent (301/308) hop AND the final URL differs from the request.
  */
-async function fetchLiveDocument(
+export async function fetchLiveDocument(
   url: string,
   timeoutMs: number,
-): Promise<{ raw: Buffer; finalUrl: string; moved: boolean; contentType?: string }> {
+): Promise<{ raw: Buffer; finalUrl: string; moved: boolean; contentType?: string; statusCode: number }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let sawPermanent = false;
@@ -667,6 +667,7 @@ async function fetchLiveDocument(
           finalUrl: requestUrl,
           moved: sawPermanent && requestUrl !== url,
           contentType: res.headers.get("content-type") || undefined,
+          statusCode: res.status,
         };
       }
       await res.body?.cancel().catch(() => {});

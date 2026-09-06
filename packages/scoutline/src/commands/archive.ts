@@ -230,6 +230,10 @@ export async function executeArchiveCdx(
     },
     async (res) => {
       if (!res.ok) {
+        // Drain-cancel the body (review): an unread streaming error body
+        // pins an Undici connection slot; repeated 5xx can stall later
+        // archive requests. cancel() releases the connection.
+        await res.body?.cancel().catch(() => {});
         throw new NetworkError(`CDX query failed with HTTP ${res.status}: ${res.statusText}`);
       }
       return (await res.json()) as unknown;
@@ -589,7 +593,8 @@ export function resolveSinceInstant(
     : trimmed;
   const asDate = new Date(normalized);
   // Reject unparseable input AND calendar overflows (isCalendarOverflow
-  // compares LOCAL calendar fields — offset-correct, see its docblock).
+  // validates the calendar fields of the INPUT digits directly — no
+  // Date projection; see its docblock).
   if (
     trimmed === "" ||
     Number.isNaN(asDate.getTime()) ||
@@ -684,6 +689,10 @@ async function selectSnapshotAtOrBefore(
     { sleep: dependencies.sleep, ...(dependencies.timeout !== undefined ? { timeout: dependencies.timeout } : {}) },
     async (res) => {
       if (!res.ok) {
+        // Drain-cancel the body (review): an unread streaming error body
+        // pins an Undici connection slot; repeated 5xx can stall later
+        // archive requests. cancel() releases the connection.
+        await res.body?.cancel().catch(() => {});
         throw new NetworkError(`CDX query failed with HTTP ${res.status}: ${res.statusText}`);
       }
       return (await res.json()) as unknown;
@@ -735,6 +744,18 @@ async function fetchSnapshotRaw(
         throw new NetworkError(`Snapshot replay failed with HTTP ${res.status}.`);
       }
       const MAX_ARCHIVE_IN_MEMORY = 50 * 1024 * 1024;
+      // Declared-length preflight (review): an oversized Content-Length
+      // is rejected and cancelled BEFORE the bounded read — a stalled
+      // oversized body would otherwise hold the request open for the
+      // full timeout. Chunked/absent lengths fall through to the
+      // incremental bounded reader.
+      const declaredLength = Number(res.headers.get("content-length") ?? "");
+      if (Number.isFinite(declaredLength) && declaredLength > MAX_ARCHIVE_IN_MEMORY) {
+        await res.body?.cancel().catch(() => {});
+        throw new ValidationError(
+          `Archive capture size (${declaredLength} bytes) exceeds in-memory ceiling (50MB).`,
+        );
+      }
       const buffer = await readBoundedResponseBody(
         res.body as ReadableStream<Uint8Array> | null,
         MAX_ARCHIVE_IN_MEMORY,
@@ -775,6 +796,16 @@ export async function fetchLiveDocument(
       const redirectable = [301, 302, 303, 307, 308].includes(res.status);
       if (!redirectable || !location) {
         const MAX_LIVE_IN_MEMORY = 50 * 1024 * 1024;
+        // Declared-length preflight (review): same discipline as the
+        // archive side — reject an oversized declaration and cancel the
+        // body instead of stalling in the reader for the full timeout.
+        const declaredLength = Number(res.headers.get("content-length") ?? "");
+        if (Number.isFinite(declaredLength) && declaredLength > MAX_LIVE_IN_MEMORY) {
+          await res.body?.cancel().catch(() => {});
+          throw new ValidationError(
+            `Live page size (${declaredLength} bytes) exceeds in-memory ceiling (50MB).`,
+          );
+        }
         const raw = await readBoundedResponseBody(
           res.body as ReadableStream<Uint8Array> | null,
           MAX_LIVE_IN_MEMORY,

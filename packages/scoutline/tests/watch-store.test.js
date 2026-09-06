@@ -648,3 +648,170 @@ describe("concurrent double-fire serializes", () => {
         });
     });
 });
+
+// ---------------------------------------------------------------------------
+// Review round 3: registry as trust boundary, purge/tick serialization,
+// orphan-byte sweep, prune error propagation, log mode repair
+// ---------------------------------------------------------------------------
+
+describe("watch store review round 3", () => {
+    const withTemp = (t, fn) => withTempDir(t, fn);
+
+    it("rejects a crafted registry row with a path-escaping id (../..)", async (t) => {
+        await withTemp(t, async (root) => {
+            await fs.mkdir(root, { recursive: true });
+            const victim = path.join(path.dirname(root), "victim-" + Date.now());
+            await fs.mkdir(victim, { recursive: true });
+            await fs.writeFile(path.join(victim, "keep-me"), "evidence");
+            await fs.writeFile(
+                path.join(root, "targets.json"),
+                JSON.stringify({
+                    targets: [{
+                        id: "../..",
+                        name: "evil",
+                        type: "page",
+                        url: "https://evil.example/",
+                        keep: 5,
+                        createdAt: "2026-09-05T12:00:00Z",
+                    }],
+                }),
+            );
+            await assert.rejects(
+                () => listTargets(root),
+                (err) => err instanceof ValidationError && /row 0/.test(err.message),
+            );
+            await assert.rejects(
+                () => removeTarget(root, "evil", { purge: true }),
+                ValidationError,
+            );
+            // The escape was never reachable, but prove the victim survived.
+            assert.equal((await fs.readdir(victim)).includes("keep-me"), true);
+            await fs.rm(victim, { recursive: true, force: true }).catch(() => {});
+        });
+    });
+
+    it("rejects malformed registry rows: wrong-type fields, bad id grammar, bad keep", async (t) => {
+        await withTemp(t, async (root) => {
+            await fs.mkdir(root, { recursive: true });
+            const badRows = [
+                { id: "20260905T120000Z-0g0g", name: "n", url: "https://a.example/", keep: 5, createdAt: "2026-09-05T12:00:00Z" }, // non-hex
+                { id: "20260905T120000Z-ab", name: "n", url: "https://a.example/", keep: 5, createdAt: "2026-09-05T12:00:00Z" }, // short
+                { id: "20260905T120000Z-abcd", name: "", url: "https://a.example/", keep: 5, createdAt: "2026-09-05T12:00:00Z" }, // empty name
+                { id: "20260905T120000Z-abcd", name: "n", url: "", keep: 5, createdAt: "2026-09-05T12:00:00Z" }, // empty url
+                { id: "20260905T120000Z-abcd", name: "n", url: "https://a.example/", keep: 1.5, createdAt: "2026-09-05T12:00:00Z" }, // non-integer
+                { id: "20260905T120000Z-abcd", name: "n", url: "https://a.example/", keep: 0, createdAt: "2026-09-05T12:00:00Z" }, // below min
+                { id: "20260905T120000Z-abcd", name: "n", url: "https://a.example/", keep: 5, createdAt: "not-a-date" }, // bad createdAt
+                { id: "20260905T120000Z-abcd", name: "n", type: "query", url: "https://a.example/", keep: 5, createdAt: "2026-09-05T12:00:00Z" }, // unknown type
+                "not-an-object",
+            ];
+            for (const [i, row] of badRows.entries()) {
+                await fs.writeFile(
+                    path.join(root, "targets.json"),
+                    JSON.stringify({ targets: [row] }),
+                );
+                await assert.rejects(
+                    () => listTargets(root),
+                    (err) => err instanceof ValidationError && /row 0|row 0/i.test(err.message),
+                    `row ${i} (${JSON.stringify(row)}) must be rejected`,
+                );
+            }
+        });
+    });
+
+    it("rejects a malformed retiredIds tombstone", async (t) => {
+        await withTemp(t, async (root) => {
+            await fs.mkdir(root, { recursive: true });
+            await fs.writeFile(
+                path.join(root, "targets.json"),
+                JSON.stringify({ targets: [], retiredIds: ["../../etc"] }),
+            );
+            await assert.rejects(() => listTargets(root), ValidationError);
+        });
+    });
+
+    it("purged target: an append racing after purge is rejected, not recreated", async (t) => {
+        await withTemp(t, async (root) => {
+            const added = await addTarget(root, { url: "https://race.example/", name: "race", now: NOW_1 });
+            // Seed one generation so the directory exists.
+            await appendSnapshot(root, added.id, {
+                body: new TextEncoder().encode("v0"),
+                now: NOW_1,
+                lock: FAST_LOCK,
+            });
+            // Hold the target append lock, start the purge, let it wait
+            // on the lock, then release: the registry rewrite happens
+            // BEFORE the lock wait, so the late append must be refused.
+            const unlock = await withHeldTargetLock(root, added.id);
+            const purge = removeTarget(root, added.id, { purge: true, lock: FAST_LOCK });
+            await new Promise((r) => setTimeout(r, 120));
+            const lateAppend = appendSnapshot(root, added.id, {
+                body: new TextEncoder().encode("late"),
+                now: NOW_1,
+                lock: FAST_LOCK,
+            }).then(
+                () => "appended",
+                () => "rejected",
+            );
+            await unlock();
+            await purge;
+            const outcome = await lateAppend;
+            assert.equal(outcome, "rejected");
+            // And no evidence was recreated under the purged id.
+            await assert.rejects(() => fs.access(path.join(root, added.id)));
+        });
+    });
+
+    it("orphaned snapshot BYTES files (crashed prune) are swept by the next append", async (t) => {
+        await withTemp(t, async (root) => {
+            const added = await addTarget(root, {
+                url: "https://sweep.example/", name: "sweep", keep: 2, now: NOW_1,
+            });
+            for (let i = 0; i < 3; i += 1) {
+                await appendSnapshot(root, added.id, {
+                    body: new TextEncoder().encode(`v${i}`),
+                    now: NOW_1, lock: FAST_LOCK,
+                });
+            }
+            const dir = path.join(root, added.id, "snapshots");
+            // Simulate a crashed prune: bytes without metadata.
+            await fs.writeFile(path.join(dir, "gen-99.snapshot.bytes"), "orphan");
+            const before = await fs.readdir(dir);
+            assert.equal(before.includes("gen-99.snapshot.bytes"), true);
+            await appendSnapshot(root, added.id, {
+                body: new TextEncoder().encode("v3"),
+                now: NOW_1, lock: FAST_LOCK,
+            });
+            const after = await fs.readdir(dir);
+            assert.equal(after.includes("gen-99.snapshot.bytes"), false);
+            // Ring stays bounded at keep=2.
+            assert.equal((await listSnapshots(root, added.id)).length, 2);
+        });
+    });
+
+    it("appendChangeLog repairs an existing log with broader permissions to 0600", async (t) => {
+        await withTemp(t, async (root) => {
+            const added = await addTarget(root, { url: "https://perm.example/", name: "perm", now: NOW_1 });
+            const file = path.join(root, added.id, "change-log.jsonl");
+            await fs.mkdir(path.dirname(file), { recursive: true });
+            await fs.writeFile(file, "");
+            await fs.chmod(file, 0o644);
+            await appendChangeLog(root, added.id, { at: NOW_1, kind: "baseline", exit: 0, gen: 1 });
+            const mode = (await fs.stat(file)).mode & 0o777;
+            assert.equal(mode, 0o600);
+        });
+    });
+});
+
+/** Hold a target's append lock from outside the store; returns an unlock. */
+async function withHeldTargetLock(root, id) {
+    // Lock path mirrors withAsyncFileLock: <stateDir>/<identityHash>.lock,
+    // stateDir = path.join(root, id), identity = targetLock(id).
+    const lockDir = path.join(root, id);
+    await fs.mkdir(lockDir, { recursive: true });
+    const lockPath = path.join(lockDir, `watch-target-${id}.lock`);
+    const handle = await fs.open(lockPath, "wx");
+    return async () => {
+        await handle.close();
+        await fs.unlink(lockPath).catch(() => {});
+    };
+}

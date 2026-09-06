@@ -536,7 +536,10 @@ only `node:crypto` and TextDecoder. `extractSections(raw,
 charsetHint?)` decodes raw bytes under the charset hint (default UTF-8,
 extraction-only) and buckets the document into ordered heading/paragraph
 sections with a lenient scanner that survives old-era archived markup
-(uppercase tags, missing closers). `diffSections` is a heading-anchored
+(uppercase tags, missing closers; an unclosed `<script>`/`<style>`
+swallows only the remainder — earlier sections survive, and a skip
+region that swallows the whole document degrades to hash-only rather
+than reporting an empty diff). `diffSections` is a heading-anchored
 structural diff (`{added, removed, changed}` as heading texts;
 whitespace runs collapse so minor reformatting is not a change).
 Non-HTML bytes degrade to `hashOnly`: a sha256 verdict over the RAW
@@ -572,9 +575,11 @@ exits 0), 1 = change (including permanent `moved`), 2 = fetch error
 (ring does not advance); `--all` ticks every target concurrently
 (fetches overlap; one shared `now`; results stay in registry
 order), worst wins (2 > 1 > 0); each tick holds the per-target
-`watch-tick-<id>` lock so overlapping cron invocations serialize. Plain validation errors keep the house
-`VALIDATION_ERROR` exit-1 behavior — distinct from the contract's
-exit 1. `watch feed` emits the change history as a document (stdout is
+`watch-tick-<id>` lock so overlapping cron invocations serialize. Plain validation errors also exit 1 under the house
+`VALIDATION_ERROR` behavior — the SAME code as the contract's
+change exit, not distinct: automation must inspect stderr (the JSON
+error envelope) to tell a malformed-argument run from a detected
+change. `watch feed` emits the change history as a document (stdout is
 the body): `jsonl` streams the log verbatim; `rss` renders change and
 moved entries as RSS 2.0 with guid `{targetId}:{gen}`.
 

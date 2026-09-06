@@ -230,8 +230,10 @@ describe("extractSections", () => {
     });
 
     it("TextDecoder fixture gate: labels actually decode these byte arrays", () => {
-        assert.ok(hasDecoder("gbk"), "TextDecoder gbk unsupported — fixture is garbage-in");
-        assert.ok(hasDecoder("shift_jis"), "TextDecoder shift_jis unsupported — fixture is garbage-in");
+        // Same environment gate as the charset tests (review): a Node
+        // build without these ICU codecs (small-icu) skips the fixture
+        // proof instead of failing the whole suite.
+        if (!hasDecoder("gbk") || !hasDecoder("shift_jis")) return;
         assert.equal(decoderFor("gbk").decode(gbkZhongWen), "中文");
         assert.equal(decoderFor("shift_jis").decode(sjisKonnichiwa), "こんにちは");
     });
@@ -471,5 +473,58 @@ describe("determinism pin", () => {
         const r1 = JSON.stringify(extractSections(raw));
         const r2 = JSON.stringify(extractSections(raw));
         assert.equal(r1, r2);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Review round 3: heading-identity fixes (entity decode, br, block close)
+// ---------------------------------------------------------------------------
+
+describe("extractSections review round 3", () => {
+    const enc = (s) => new TextEncoder().encode(s);
+
+    it("entity-encoded and literal angle brackets are DISTINCT headings (single decode)", () => {
+        // Double-decoding made <h1>&lt;</h1> and <h1><</h1> the same
+        // heading "<", so a change between them diffed as no-change.
+        const a = extractSections(enc("<h1>&lt;</h1><p>entity</p>"));
+        const b = extractSections(enc("<h1><</h1><p>literal</p>"));
+        assert.equal(a.ok && b.ok, true);
+        assert.equal(a.sections[0].heading, "<");
+        assert.equal(b.sections[0].heading, "<</h1>");
+        const d = diffSections(a.sections, b.sections);
+        assert.ok(
+            d.added.length > 0 || d.removed.length > 0,
+            "a change between the two headings must not be an empty diff",
+        );
+    });
+
+    it("an entity-encoded literal stays single-decoded (<h1>&amp;lt;</h1> is \"&lt;\")", () => {
+        const result = extractSections(enc("<h1>&amp;lt;</h1>"));
+        assert.equal(result.ok, true);
+        assert.equal(result.sections[0].heading, "&lt;");
+    });
+
+    it("<br> inside a heading is phrasing, not a block break", () => {
+        const result = extractSections(enc("<h1>Alpha<br>Beta</h1><p>body</p>"));
+        assert.equal(result.ok, true);
+        assert.equal(result.sections[0].heading, "AlphaBeta");
+        assert.equal(result.sections[0].body, "body");
+        // Changing the SECOND heading line is a heading change, not a
+        // body change under the truncated heading "Alpha".
+        const other = extractSections(enc("<h1>Alpha<br>Gamma</h1><p>body</p>"));
+        const d = diffSections(result.sections, other.sections);
+        // Heading-anchored matching reports reworded headings as
+        // removed+added (design contract), which still proves the
+        // change is detected — the old truncated-heading behavior
+        // misreported it as a body change or nothing at all.
+        assert.ok(d.added.includes("AlphaGamma"));
+        assert.ok(d.removed.includes("AlphaBeta"));
+    });
+
+    it("a different block tag's close ends the heading (legacy <h1>Title</div>)", () => {
+        const result = extractSections(enc("<h1>Title</div><p>Body text</p>"));
+        assert.equal(result.ok, true);
+        assert.equal(result.sections[0].heading, "Title");
+        assert.equal(result.sections[0].body, "Body text");
     });
 });

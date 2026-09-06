@@ -394,7 +394,7 @@ job or script consumes.
 | `1` | Change detected — including a permanent move (`moved`) to a new final URL |
 | `2` | Fetch error (network failure, timeout, or HTTP >= 400); the snapshot ring does not advance |
 
-`watch run --all` ticks every target and exits with the worst result
+`watch run --all` ticks every target concurrently (one shared `now`) and exits with the worst result
 (`2 > 1 > 0`); each target's outcome is still in the report array. Plain
 validation errors (unknown target, invalid flag values) keep the house
 `VALIDATION_ERROR` behavior — exit 1 via the standard error contract,

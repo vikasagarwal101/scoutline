@@ -550,6 +550,43 @@ describe("ring non-advance on failed capture", () => {
 
 // --------------------------------------------------------- concurrency
 
+describe("watch store review fixes", () => {
+    it("addTarget preserves retiredIds tombstones across a remove-then-add (review)", async () => {
+        const root = await fs.mkdtemp(path.join("/tmp", "scoutline-store-review-"));
+        try {
+            const added = await addTarget(root, { url: "https://retire.example/a", name: "retire-a" });
+            await removeTarget(root, added.id, { purge: true });
+            await addTarget(root, { url: "https://retire.example/b", name: "retire-b" });
+            const registry = JSON.parse(
+                await fs.readFile(path.join(root, "targets.json"), "utf8"),
+            );
+            assert.ok(
+                (registry.retiredIds ?? []).includes(added.id),
+                "tombstone for the removed id must survive the next add",
+            );
+        } finally {
+            await fs.rm(root, { recursive: true, force: true }).catch(() => {});
+        }
+    });
+
+    it("extra blank JSONL lines in the log fail closed (review)", async () => {
+        const root = await fs.mkdtemp(path.join("/tmp", "scoutline-store-review-"));
+        try {
+            const added = await addTarget(root, { url: "https://blank.example/a", name: "blank-a" });
+            await appendChangeLog(root, added.id, { at: NOW_1, kind: "baseline", exit: 0, gen: 1 });
+            const file = path.join(root, added.id, "change-log.jsonl");
+            const original = await fs.readFile(file, "utf8");
+            await fs.writeFile(file, original + "\n\n");
+            await assert.rejects(
+                () => readChangeLog(root, added.id),
+                (err) => err instanceof ValidationError,
+            );
+        } finally {
+            await fs.rm(root, { recursive: true, force: true }).catch(() => {});
+        }
+    });
+});
+
 describe("concurrent double-fire serializes", () => {
     it("N concurrent appendSnapshot+appendChangeLog → N log lines, gens exactly 1..N", async (t) => {
         await withTempDir(t, async (root) => {
@@ -565,8 +602,7 @@ describe("concurrent double-fire serializes", () => {
                             kind: gen === 1 ? "baseline" : "no-change",
                             exit: 0,
                             gen,
-                            lock: FAST_LOCK,
-                        }),
+                        }, { lock: FAST_LOCK }),
                     ),
                 );
             }

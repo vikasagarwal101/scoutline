@@ -153,6 +153,74 @@ describe("extractSections", () => {
         assert.equal(result.sections[0].heading, "こんにちは");
     });
 
+    it("inline closing tags stay inside the heading (review: <h1>Hello <b>world</b> again</h1>)", () => {
+        const result = extractSections(utf8("<h1>Hello <b>world</b> again</h1>"));
+        assert.equal(result.ok, true);
+        assert.equal(result.sections.length, 1);
+        assert.equal(result.sections[0].heading, "Hello world again");
+        assert.equal(result.sections[0].body, "");
+    });
+
+    it("text after an inline pair in a heading stays in the heading (<h2>Using <em>API</em> safely</h2>)", () => {
+        const result = extractSections(utf8("<h2>Using <em>API</em> safely</h2>"));
+        assert.equal(result.ok, true);
+        assert.equal(result.sections[0].heading, "Using API safely");
+    });
+
+    it("void <meta>/<link> never open a skip region (<meta charset=\"utf-8\"><h1>Content</h1><p>body</p>)", () => {
+        const result = extractSections(utf8('<meta charset="utf-8"><link rel="stylesheet" href="x.css"><h1>Content</h1><p>body</p>'));
+        assert.equal(result.ok, true);
+        assert.equal(result.sections.length, 1);
+        assert.equal(result.sections[0].heading, "Content");
+        assert.equal(result.sections[0].body, "body");
+    });
+
+    it("an unclosed skipped element that swallows the WHOLE document degrades to hash-only", () => {
+        // Nothing survives before <script> and no close tag exists: the
+        // structural result would be an empty section list — an equality
+        // false-positive machine. It must degrade to the hash verdict.
+        const result = extractSections(utf8("<script>var x = 1;<h2>After</h2><p>text</p>"));
+        assert.equal(result.ok, false);
+        assert.equal(result.reason, "no-html");
+        assert.match(result.hash, /^[0-9a-f]{64}$/);
+    });
+
+    it("an unclosed skipped element after real sections keeps the earlier sections", () => {
+        // Partial recovery: text before the unclosed skip region is real
+        // document content and stays extractable; the swallowed tail is
+        // gone, but the earlier sections are still usable evidence.
+        const result = extractSections(utf8("<h1>T</h1><script>var x = 1;<h2>After</h2><p>text</p>"));
+        assert.equal(result.ok, true);
+        assert.deepEqual(result.sections, [{ heading: "T", body: "" }]);
+    });
+
+    it("skipped elements inside a heading drop content but keep the heading (<h1>Doc <script>bad()</script> Title</h1>)", () => {
+        const result = extractSections(utf8("<h1>Doc <script>bad()</script> Title</h1>"));
+        assert.equal(result.ok, true);
+        assert.equal(result.sections[0].heading, "Doc Title");
+    });
+
+    it("a stray closing heading tag does not open a new heading (</h2> is noise)", () => {
+        const result = extractSections(utf8("<p>lead</p></h2><p>orphan body</p>"));
+        assert.equal(result.ok, true);
+        assert.equal(result.sections.length, 1);
+        assert.equal(result.sections[0].heading, null);
+    });
+
+    it("HTML comments never become section text", () => {
+        const a = extractSections(utf8("<p>a</p><!-- retired copy --><p>b</p>"));
+        const b = extractSections(utf8("<p>a</p><!-- new copy --><p>b</p>"));
+        assert.equal(a.ok && b.ok, true);
+        assert.deepEqual(a.sections, b.sections);
+        assert.equal(a.sections.some((s) => s.body.includes("retired")), false);
+    });
+
+    it("quoted attribute values keep their > inside the tag (<a title=\"1 > 0\">label</a>)", () => {
+        const result = extractSections(utf8('<a title="1 > 0">label</a>'));
+        assert.equal(result.ok, true);
+        assert.equal(result.sections[0].body, "label");
+    });
+
     it("TextDecoder fixture gate: labels actually decode these byte arrays", () => {
         assert.ok(hasDecoder("gbk"), "TextDecoder gbk unsupported — fixture is garbage-in");
         assert.ok(hasDecoder("shift_jis"), "TextDecoder shift_jis unsupported — fixture is garbage-in");

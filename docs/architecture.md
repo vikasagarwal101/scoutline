@@ -569,8 +569,10 @@ closed loudly on malformed lines. Because the state is the feature,
 `watch run` carries a cron-facing exit contract that is new public
 surface: 0 = no change (the first run establishes a baseline and also
 exits 0), 1 = change (including permanent `moved`), 2 = fetch error
-(ring does not advance); `--all` ticks every target at one instant,
-worst wins (2 > 1 > 0). Plain validation errors keep the house
+(ring does not advance); `--all` ticks every target concurrently
+(fetches overlap; one shared `now`; results stay in registry
+order), worst wins (2 > 1 > 0); each tick holds the per-target
+`watch-tick-<id>` lock so overlapping cron invocations serialize. Plain validation errors keep the house
 `VALIDATION_ERROR` exit-1 behavior — distinct from the contract's
 exit 1. `watch feed` emits the change history as a document (stdout is
 the body): `jsonl` streams the log verbatim; `rss` renders change and

@@ -52,12 +52,24 @@ import {
   type WatchDirEnvironment,
   type ParsedChangeLogEntry,
 } from "../lib/watch-store.js";
-import { extractSections, diffDocuments } from "../lib/section-diff.js";
+import {
+  extractSections,
+  extractSectionsHashOnly,
+  diffDocuments,
+  isHtmlContentType,
+} from "../lib/section-diff.js";
 import {
   fetchLiveDocument,
   charsetFromContentType,
   isSameDocumentUrl,
 } from "./archive.js";
+import { redactSecrets } from "../lib/redact.js";
+import { withAsyncFileLock } from "../lib/async-file-lock.js";
+import { createReadStream } from "node:fs";
+import * as readline from "node:readline";
+import {
+  parseChangeLogLine as parseChangeLogLinePublic,
+} from "../lib/watch-store.js";
 
 export const WATCH_HELP = `
 scoutline watch <subcommand> [args] [options] - Keyless page monitoring
@@ -87,7 +99,7 @@ Options for 'watch remove':
 
 Options for 'watch run':
   --timeout <ms>           Live fetch timeout in milliseconds
-                           (default: 30000; must be a positive integer)
+                           (default: 30000; positive integer ≤ 2147483647)
 
 Options for 'watch feed':
   --format <jsonl|rss>     Feed format (default: jsonl). jsonl streams
@@ -98,6 +110,26 @@ Options for 'watch feed':
 Global Options:
   --output-format, -O      Output format: data, json, pretty, compact, markdown, refs, tty
 `.trim();
+
+/**
+ * Per-target lock wrapper for runTick. Key is deliberately DISTINCT
+ * from the store's `watch-target-<id>` append lock (same lock file
+ * would self-deadlock: the store appends re-acquire it inside the
+ * tick). `watch-tick-<id>` serializes tick-vs-tick — the read-diff-write
+ * race between overlapping cron invocations; appends only ever happen
+ * inside a tick, so they stay serialized transitively.
+ */
+function withTargetTickLock<T>(
+  root: string,
+  targetId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return withAsyncFileLock(path.join(root, targetId), "watch-tick-" + targetId, fn, {
+    timeoutMs: 30000,
+    staleMs: 600000,
+    timeoutLabel: "Watch tick",
+  });
+}
 
 /** Report envelope for `watch add` (the registry entry + removal evidence). */
 export interface WatchAddReport extends WatchTarget {
@@ -277,7 +309,16 @@ function parseTimeout(raw: string | boolean | undefined): number | undefined {
       "--timeout must be a positive integer of milliseconds, e.g. --timeout 30000.",
     );
   }
-  return Number(raw);
+  const value = Number(raw);
+  // Node's setTimeout ceiling (review): larger values are clamped to ~1ms
+  // by the timer, aborting otherwise-successful fetches almost instantly.
+  if (value > 2_147_483_647) {
+    throw new ValidationError(
+      `Invalid --timeout value "${raw}".`,
+      "--timeout must be at most 2147483647 ms (Node setTimeout limit).",
+    );
+  }
+  return value;
 }
 
 /** Descriptive message for a live-fetch failure (exit-2 path). */
@@ -308,6 +349,58 @@ function fetchFailureReason(url: string, error: unknown): string {
  *     registry). Temporary redirects ride normal change/no-change.
  */
 async function runTick(
+  root: string,
+  target: WatchTarget,
+  options: {
+    readonly timeoutMs: number;
+    readonly now: Date;
+  },
+): Promise<WatchRunReport> {
+  // Serialize the whole tick — read-diff-write, fetch included — under
+  // the SAME per-target lock the store's appends use (same dir, same
+  // key): overlapping cron invocations used to both read the same prior
+  // snapshot before either append ran (review). A store failure inside
+  // the tick surfaces as an error report (exit 2), never an aborted
+  // --all sweep (review).
+  try {
+    return await withTargetTickLock(root, target.id, () =>
+      runTickLocked(root, target, options),
+    );
+  } catch (error) {
+    if (error instanceof ValidationError) throw error;
+    return tickFailureReport(root, target, options, error);
+  }
+}
+
+/** Error report shared by fetch failures and (review) store failures. */
+async function tickFailureReport(
+  root: string,
+  target: WatchTarget,
+  options: { readonly now: Date },
+  error: unknown,
+): Promise<WatchRunReport> {
+  const reason = fetchFailureReason(target.url, error);
+  // Best-effort evidence log: the store itself may be the failure, so
+  // a logging error must not replace the error report.
+  await appendChangeLog(root, target.id, {
+    at: options.now,
+    kind: "error",
+    exit: 2,
+    gen: null,
+  }).catch(() => {});
+  return {
+    schemaVersion: 1,
+    target: target.name,
+    gen: null,
+    result: "error",
+    reason,
+    finalUrl: null,
+    prevAt: null,
+    nowAt: options.now.toISOString(),
+  };
+}
+
+async function runTickLocked(
   root: string,
   target: WatchTarget,
   options: {
@@ -404,14 +497,19 @@ async function runTick(
     };
   }
 
-  const priorExtraction = extractSections(
-    prior.body,
-    charsetFromContentType(prior.contentType),
-  );
-  const currentExtraction = extractSections(
-    currentBytes,
-    charsetFromContentType(live.contentType),
-  );
+  // Content-Type gate (review): a non-HTML media type forces the
+  // hash-only verdict — never a structural scan of a text/plain body
+  // that merely contains HTML-like tokens (silent no-change risk).
+  // `isHtmlContentType` returns null for unknown/absent types: the
+  // legacy HTML-shaped sniff inside extractSections decides those.
+  const priorIsHtml = isHtmlContentType(prior.contentType);
+  const currentIsHtml = isHtmlContentType(live.contentType);
+  const priorExtraction = priorIsHtml === false
+    ? extractSectionsHashOnly(prior.body)
+    : extractSections(prior.body, charsetFromContentType(prior.contentType));
+  const currentExtraction = currentIsHtml === false
+    ? extractSectionsHashOnly(currentBytes)
+    : extractSections(currentBytes, charsetFromContentType(live.contentType));
 
   // Permanent move (ruling #7): permanent redirect AND the final URL left
   // the registered one, compared via isSameDocumentUrl (exported from
@@ -566,10 +664,12 @@ async function executeWatchRun(input: {
       // One invocation = one logical instant: every target in an --all
       // sweep ticks at the same captured now (review advisory A1).
       const now = input.now ? new Date(input.now()) : new Date();
-      const reports: WatchRunReport[] = [];
-      for (const target of targets) {
-        reports.push(await runTick(root, target, { timeoutMs, now }));
-      }
+      // Concurrent ticks (review: sequential awaits captured targets
+      // seconds apart); results re-assemble in registry order — the
+      // array contract is order-stable while fetches overlap.
+      const reports = await Promise.all(
+        targets.map((target) => runTick(root, target, { timeoutMs, now })),
+      );
       const exit = reports.reduce(
         (worst, report) => Math.max(worst, RUN_EXIT[report.result]),
         0,
@@ -637,8 +737,17 @@ function parseFeedFormat(raw: string | boolean | undefined): "jsonl" | "rss" {
  */
 function xmlEscape(text: string): string {
   return text
-    // eslint-disable-next-line no-control-regex -- test fixture uses \x01
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
+    // XML 1.0 Char production (review fix): drop C0 controls (except
+    // tab/LF/CR), U+FFFE/U+FFFF (never legal in XML 1.0), and lone
+    // surrogates. Astral chars are surrogate PAIRS and must survive —
+    // so the filter drops enumerated bad code points rather than
+    // negating good ones (a negated class would strip each surrogate
+    // half of a legal pair).
+    // eslint-disable-next-line no-control-regex -- stripping controls is the point
+    .replace(
+      /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/gu,
+      "",
+    )
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -735,6 +844,7 @@ async function executeWatchFeed(input: {
   readonly positional: readonly string[];
   readonly env: NodeJS.ProcessEnv;
   readonly invocation: CommandInvocationAdapter;
+  readonly secrets: string[];
 }): Promise<number> {
   const ref = input.positional[0];
   if (!ref) {
@@ -748,27 +858,53 @@ async function executeWatchFeed(input: {
   const target = await getTarget(root, ref);
 
   if (format === "jsonl") {
-    // Byte passthrough: stdout is the log's JSONL lines verbatim (the
-    // raw file text, never re-serialized through the parsed shapes, so
-    // key order and spacing survive). Missing file (no baseline yet) is
-    // the empty document. Hand-edited lines still fail closed loudly —
-    // the validation-only read below runs BEFORE anything is written.
-    let raw = "";
+    // Line-streamed passthrough (review): the change log is append-only
+    // and unbounded, so the document is emitted one line at a time —
+    // never a whole-file read plus a second full parsed copy in memory.
+    // The fail-closed validation also streams line-by-line and runs
+    // BEFORE the first byte reaches stdout. Redaction applies per line:
+    // finalUrl fields can carry redirect-embedded secrets.
+    const file = path.join(root, target.id, WATCH_CHANGELOG_FILENAME);
+    let exists = true;
     try {
-      raw = await fs.readFile(
-        path.join(root, target.id, WATCH_CHANGELOG_FILENAME),
-        "utf8",
-      );
+      await fs.access(file);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      exists = false;
     }
-    if (raw !== "") await readChangeLog(root, target.id);
-    input.invocation.writeStdout(raw);
-    return 0;
+    if (exists) {
+      // Two streaming passes (review: bounded memory, not one big read):
+      // pass 1 validates EVERY line before a byte reaches stdout (the
+      // fail-closed no-partial-document contract); pass 2 emits. Peak
+      // memory is one line, never the whole unbounded log.
+      const lines = readline.createInterface({
+        input: createReadStream(file),
+        crlfDelay: Infinity,
+      });
+      let index = 0;
+      for await (const line of lines) {
+        if (line.trim() !== "") parseChangeLogLinePublic(file, line, index);
+        index += 1;
+      }
+      await lines.close();
+      const emit = readline.createInterface({
+        input: createReadStream(file),
+        crlfDelay: Infinity,
+      });
+      for await (const line of emit) {
+        if (line.trim() === "") continue;
+        const redacted = redactSecrets(line, input.secrets);
+        input.invocation.writeStdout(redacted + "\n");
+      }
+      await emit.close();
+    }
+    return 0; // Missing file (no baseline yet) = the empty document.
   }
 
   const entries = await readChangeLog(root, target.id);
-  input.invocation.writeStdout(renderRssFeed(target, entries));
+  input.invocation.writeStdout(
+    redactSecrets(renderRssFeed(target, entries), input.secrets) as string,
+  );
   return 0;
 }
 
@@ -914,6 +1050,7 @@ export async function handleWatch(
       positional,
       env: deps.env,
       invocation: deps.invocation,
+      secrets: deps.secrets,
     });
   }
 

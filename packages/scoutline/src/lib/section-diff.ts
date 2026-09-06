@@ -64,6 +64,25 @@ export interface DocumentDiff extends SectionDiff {
   readonly hashOnly: boolean;
 }
 
+/**
+ * HTML media-type gate (review: classify by Content-Type, not by byte
+ * sniffing): extraction is structural ONLY for HTML responses. A
+ * `text/plain` or `application/json` body that happens to contain an
+ * `<x>`-like token must go down the hash-only path — otherwise two
+ * different plain-text bodies can extract identical (empty) section
+ * lists and report a silent no-change instead of a `(hash)` verdict.
+ * Unknown/missing content types keep the legacy sniff path (old
+ * Wayback replays often carry none). Returns null = "unknown": the
+ * caller falls back to extractSections' own HTML-shaped detection.
+ */
+export function isHtmlContentType(contentType?: string): boolean | null {
+  if (contentType === undefined) return null;
+  const type = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (type === "") return null;
+  if (type === "text/html" || type === "application/xhtml+xml") return true;
+  return false;
+}
+
 /** Placeholder identifier for the untitled lead section. */
 const INTRO_ID = "(intro)";
 /** Placeholder identifier reported when only the raw-byte hash is compared. */
@@ -98,8 +117,13 @@ function decodeEntities(text: string): string {
     .replace(/&amp;/gi, "&");
 }
 
-/** Elements whose content is metadata/script noise, dropped from buckets. */
-const SKIPPED_ELEMENTS = new Set(["script", "style", "head", "title", "meta", "link"]);
+/**
+ * Elements whose content is metadata/script noise, dropped from buckets.
+ * With paired close tags only — `meta`/`link` are VOID: they never close,
+ * so a skip region must never be opened for them (a void `<meta ...>` would
+ * otherwise swallow every following token to end of document).
+ */
+const SKIPPED_ELEMENTS = new Set(["script", "style", "head", "title"]);
 
 /** Inline elements whose tags never break text flow. */
 const INLINE_TAGS = new Set([
@@ -169,11 +193,38 @@ export function extractSections(
   let currentHeading: string | null = null;
   let bodyChunks: string[] = [];
   let sawHtmlTag = false;
+  let sawHeading = false;
   let skipUntil: string | null = null;
   let headingTag: string | null = null;
   let headingChunks: string[] = [];
-  const textParts = decoded.split(/(<[^>]*>)/g);
+  let inComment = false;
+  // Tokenize on tags, honoring quoted attribute values first: `<a
+  // title="1 > 0">` must land in ONE token, not split at the `>` inside
+  // the quotes (splitting leaks `0">` into body text and false-diffs).
+  const textParts = decoded.split(/(<(?:[^>"']|"[^"]*"|'[^']*')*>)/g);
   for (const part of textParts) {
+    // HTML comments are not document text: a changed `<!-- retired
+    // copy -->` must never produce a content diff. A comment containing
+    // `>` splits across parts, so containment runs until `-->`.
+    if (inComment) {
+      if (part.includes("-->")) inComment = false;
+      continue;
+    }
+    if (part.startsWith("<!--")) {
+      if (!part.includes("-->")) inComment = true;
+      continue;
+    }
+    // Skip-region containment: while inside an unclosed <script>/<style>/
+    // <head>/<title>, everything — including tags and stray <h_> tokens —
+    // is content noise. Recovery: the exact CLOSE tag ends the region
+    // (a nested re-open does not; recovery still terminates at EOF since
+    // the loop runs to end of document).
+    if (skipUntil !== null) {
+      if (new RegExp(`^<\\s*/\\s*${skipUntil}\\s*>$`, "i").test(part)) {
+        skipUntil = null;
+      }
+      continue;
+    }
     const match = part.startsWith("<") && part.length > 1
       ? /^<\s*(\/?)\s*([a-zA-Z][a-zA-Z0-9]*)/.exec(part)
       : null;
@@ -181,26 +232,34 @@ export function extractSections(
       const isClose = (match[1] ?? "") === "/";
       const tag = (match[2] ?? "").toLowerCase();
       sawHtmlTag = true;
-      if (skipUntil !== null) {
-        if (isClose && tag === skipUntil) skipUntil = null;
+      // Skipped elements are checked BEFORE the heading branch so
+      // `<h1>Doc <script>noise()</script> Title</h1>` drops the script
+      // content but keeps the heading text (`meta`/`link` are void and
+      // never open a skip region — see SKIPPED_ELEMENTS).
+      if (SKIPPED_ELEMENTS.has(tag) && !isClose) {
+        skipUntil = tag;
         continue;
       }
       if (headingTag !== null) {
-        // Inside a heading: its own close ends it; a heading open, a close
-        // of any kind, or a BLOCK open (old markup never closed things)
-        // also ends it; inline formatting contributes nothing.
+        // Inside a heading: its own close ends it; a NEW heading open or
+        // a BLOCK open also ends it (old markup never closed things).
+        // INLINE closes (`</b>`, `</em>`) do NOT — `<h1>Hello
+        // <b>world</b> again</h1>` keeps `again` in the heading.
         const endsHeading =
           (isClose && tag === headingTag) ||
           (!isClose && /^h[1-6]$/.test(tag)) ||
-          isClose ||
-          BLOCK_TAGS.has(tag);
+          (!isClose && BLOCK_TAGS.has(tag));
         if (endsHeading) {
           const headingText = normalizeText(decodeEntities(headingChunks.join("")));
+          // A heading always emits its own section, even when the old
+          // section has no body — two consecutive headings must not
+          // merge into one bucket (`<h1>A</h1><h2>B</h2>` yields two).
           flushSection(sections, currentHeading, bodyChunks);
           currentHeading = headingText === "" ? null : headingText;
           bodyChunks = [];
           headingTag = null;
           headingChunks = [];
+          sawHeading = true;
           if (!isClose && /^h[1-6]$/.test(tag)) {
             headingTag = tag;
             headingChunks = [];
@@ -208,21 +267,17 @@ export function extractSections(
         }
         continue;
       }
-      if (SKIPPED_ELEMENTS.has(tag) && !isClose) {
-        skipUntil = tag;
-        continue;
-      }
-      if (/^h[1-6]$/.test(tag)) {
+      if (/^h[1-6]$/.test(tag) && !isClose) {
         headingTag = tag;
         headingChunks = [];
+        sawHeading = true;
         continue;
       }
-      if (BLOCK_TAGS.has(tag) && !INLINE_TAGS.has(tag) && bodyChunks.length > 0) {
+      if (!isClose && BLOCK_TAGS.has(tag) && !INLINE_TAGS.has(tag) && bodyChunks.length > 0) {
         bodyChunks.push("\n\n");
       }
       continue;
     }
-    if (skipUntil !== null) continue;
     const text = decodeEntities(part);
     if (headingTag !== null) {
       headingChunks.push(text);
@@ -238,6 +293,13 @@ export function extractSections(
   }
   flushSection(sections, currentHeading, bodyChunks);
   if (!sawHtmlTag) return { ok: false, reason: "no-html", hash: hashRaw(raw) };
+  // HTML detection saw a tag but no heading and no text survived (e.g.
+  // an unclosed <script> swallowed the document): NOT a credible
+  // structural extraction — degrade to the hash-only verdict instead of
+  // reporting a false empty-section diff.
+  if (!sawHeading && sections.length === 0) {
+    return { ok: false, reason: "no-html", hash: hashRaw(raw) };
+  }
   return { ok: true, sections, hash: hashRaw(raw) };
 }
 
@@ -329,6 +391,17 @@ export function diffDocuments(a: ExtractionResult, b: ExtractionResult): Documen
     changed: a.hash === b.hash ? [] : [HASH_ID],
     hashOnly: true,
   };
+}
+
+/**
+ * Forced hash-only extraction (review Content-Type gate): the media
+ * type says non-HTML, so structural extraction is skipped entirely and
+ * the result is the same failure shape extractSections produces for
+ * non-HTML-shaped bytes — {@link diffDocuments} then lands on the
+ * raw-hash verdict.
+ */
+export function extractSectionsHashOnly(raw: Uint8Array): ExtractionFailure {
+  return { ok: false, reason: "no-html", hash: hashRaw(raw) };
 }
 
 /**

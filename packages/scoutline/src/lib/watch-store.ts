@@ -341,7 +341,16 @@ export async function addTarget(
         keep,
         createdAt: toIso(now),
       };
-      await writeRegistry(root, { targets: [...registry.targets, target] });
+      // Preserve `retiredIds` (review): the tombstones are what keeps
+      // removed ids out of the mint loop above; dropping them here would
+      // let a future id collision reuse a removed target's historical
+      // anchor (its change log lives under the retired id forever).
+      await writeRegistry(root, {
+        targets: [...registry.targets, target],
+        ...(registry.retiredIds !== undefined
+          ? { retiredIds: registry.retiredIds }
+          : {}),
+      });
       return target;
     },
     lockOptions("Watch registry write", options.lock),
@@ -563,7 +572,7 @@ function validateKind(kind: string): asserts kind is ChangeLogKind {
  * (audit evidence must never thin itself; contrast the artifacts log's
  * fail-open reads).
  */
-function parseChangeLogLine(file: string, line: string, index: number): ParsedChangeLogEntry {
+export function parseChangeLogLine(file: string, line: string, index: number): ParsedChangeLogEntry {
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(line) as Record<string, unknown>;
@@ -610,9 +619,18 @@ export async function readChangeLog(
     if (await isEnoent(error)) return [];
     throw error;
   }
-  return raw
+  // Fail-closed strictness (review): ONLY the single terminal newline is
+  // structural. A blank line anywhere else — including a trailing run of
+  // two — is a hand-edited/corrupt log and must throw, not be silently
+  // dropped by the `filter` (the fail-closed contract the reader claims).
+  if (!raw.endsWith("\n") && raw !== "") {
+    throw new ValidationError(
+      `${file}: last line is missing its terminating newline (corrupt append).`,
+    );
+  }
+  const body = raw === "" ? "" : raw.slice(0, -1);
+  return body
     .split("\n")
-    .filter((line) => line !== "")
     .map((line, index) => parseChangeLogLine(file, line, index + 1));
 }
 

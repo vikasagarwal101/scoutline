@@ -1341,3 +1341,77 @@ describe("PR #103 R6 — fences close only on a run at least as long as the open
     );
   });
 });
+
+describe("PR #103 R7 — CommonMark fence open/close rules (greptile P1 + cubic P2)", () => {
+  it("trim scan: a 1-2 backtick/tilde run never opens a fence (CommonMark needs 3+)", () => {
+    // Inline code like `code` or ``x`` at line start must be treated
+    // as ordinary trimmable text, never as a fence opening. If the
+    // 1-2 char run opened a fence, the rest of the document would be
+    // untrimmable and a real `# heading` below would be misread as
+    // fenced code. Pin: at a crush budget every ordinary line bleeds —
+    // the inline-code line included — while the ATX heading survives
+    // as a heading (never as fenced content).
+    const e = {
+      url: "https://e/1",
+      title: "T",
+      content: "# T\n\n`code` prose\n\n## Real\n\nbody " + "z".repeat(300),
+    };
+    // This floor is NOT reachable (the bleed rule cannot produce it —
+    // see the R5/R6 floor shapes); use it only as a reference point,
+    // then pin at floor + 84 (the stamp reserve), where the ladder
+    // lands on exactly `# T`, a bled inline-code line, and `## Real`
+    // with a bled body (verified reachable).
+    const floor = measurePayload({
+      url: "https://e/1",
+      title: "T",
+      content: "# T\n\n…c\n\n## Real\n\n…z\n",
+    });
+    const out = applyBudget(e, floor + COMPACTION_STAMP_RESERVE, READ_LADDER);
+    assert.ok(out.compaction, "crush budget fires");
+    // The inline-code line stays trimmable ordinary text: it bleeds.
+    assert.ok(!out.projection.content.includes("`code` prose"), "short-run line is trimmable");
+    assert.ok(!out.projection.content.includes("z".repeat(150)), "body bleeds");
+    assert.ok(out.projection.content.includes("## Real"), "real heading survives");
+  });
+
+  it("splitSections: a 1-2 char run does not fence off later headings", () => {
+    // Same defect in the section scanner: if `` opened a fence, every
+    // later `# heading` would stay inside the phantom fence and the
+    // section map would collapse to one section (the whole doc),
+    // changing drop order. Pin: the heading after the short run IS a
+    // section boundary — a crush budget drops the LATER section, not
+    // the root one. 158 is calibrated (see probe note in the trim
+    // test): small enough that ## Tail cannot fit even fully bled,
+    // large enough that root + ## Real survive with bled bodies.
+    const content =
+      "# T\n\n``x``\n\n## Real\n\nbody " + "q".repeat(120) + "\n\n## Tail\n\ntail " + "w".repeat(300) + "\n";
+    const e = { url: "https://e/1", title: "T", content };
+    const out = applyBudget(e, 158, READ_LADDER);
+    assert.ok(out.compaction, "crush budget fires");
+    // With ``x`` correctly ordinary text, ## Tail is the LAST section
+    // and drops first; the root heading and ## Real survive.
+    assert.ok(out.projection.content.startsWith("# T"), "root heading survives");
+    assert.ok(out.projection.content.includes("## Real"), "## Real survives");
+    assert.ok(!out.projection.content.includes("## Tail"), "tail section dropped first");
+  });
+
+  it("a ```js info-string line inside a ``` fence does not close it (close fences take no suffix)", () => {
+    // CommonMark: a closing fence may be followed ONLY by spaces. A
+    // line like ```lang mid-fence is fence CONTENT; if it closed the
+    // fence, the tail after it would be misread as headings/prose and
+    // trimmed/split wrongly. Pin: the fenced tail survives verbatim
+    // while post-fence body bleeds.
+    const e = {
+      url: "https://e/1",
+      title: "T",
+      content: "# T\n\n```\n```js\nconst x = 1;\n```\n\nbody " + "z".repeat(300),
+    };
+    const out = applyBudget(e, measurePayload(e) - 60, READ_LADDER);
+    assert.ok(out.compaction, "tight budget fires");
+    assert.ok(
+      out.projection.content.includes("```\n```js\nconst x = 1;\n```"),
+      "fence block stays closed only by the bare closer",
+    );
+    assert.ok(!out.projection.content.includes("z".repeat(150)), "post-fence body bleeds");
+  });
+});

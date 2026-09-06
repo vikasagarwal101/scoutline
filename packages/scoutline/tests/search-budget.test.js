@@ -778,16 +778,15 @@ describe("PR #103 fix-round — --fields + text presentations", () => {
 describe("PR #103 R5 — --fields + text modes: budgeted presentations, no undefined leakage", () => {
   it("text modes reflect the budgeted envelope under --fields (rank 5 dropped, no undefined)", async (t) => {
     await withTempDir(t, async (dir) => {
-      // Budget 300 drops rank 5 (same fixture as the text-mode pin in
-      // "whole-envelope budgeting engages in TEXT modes too"). Under
-      // --fields the rebuilt presentation must STILL drop rank 5 and
-      // must never print "undefined" for filtered-out fields.
-      // A crush budget forces the ladder down to FOUR rows (all five
-      // fit only at 172+; 170 leaves 4) even after `--fields` filtered
-      // the rows small — the rebuilt presentation must reflect that,
-      // not the full set. With summaries bled to empty the renderer
-      // prints nothing per row, so assert on the data-mode projection
-      // the rebuild consumed (4 rows) plus the no-undefined invariant.
+      // A crush budget of 170 forces the ladder down to FOUR rows
+      // (ranks 4 AND 5 drop — all five rows fit only at 172+) even
+      // after `--fields` filtered the rows small — the rebuilt
+      // presentation must reflect that, not the full set. (An earlier
+      // draft pinned budget 300 dropping only rank 5; the scenario was
+      // tightened and the stale number left behind — R7 review caught
+      // it.) With summaries bled to empty the renderer prints nothing
+      // per row, so assert on the data-mode projection the rebuild
+      // consumed (4 rows) plus the no-undefined invariant.
       const budget = "170";
       const descriptors = { providerDescriptors: [makeDescriptor("tavily", { q: fiveSources() })] };
       for (const mode of ["markdown", "compact"]) {

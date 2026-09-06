@@ -249,16 +249,25 @@ const trimLastParagraphsRule: LadderRule = {
     let fenceChar: "`" | "~" | undefined;
     let fenceLen = 0;
     for (let k = 0; k < lines.length; k++) {
-      const fenceMatch = /^ {0,3}(`+|~+)/.exec(lines[k]!);
+      // R7: CommonMark both ways — an opening run needs 3+ delimiters
+      // (a 1-2 backtick run is inline code, never a fence) and a
+      // closing run must be followed by spaces ONLY (`` ```js `` is
+      // content; only a bare closer ends the fence).
+      const fenceMatch = /^ {0,3}((`|~)\2{2,})(.*)$/.exec(lines[k]!);
       if (fenceMatch) {
         fenced[k] = true;
         const run = fenceMatch[1]!;
         const thisChar = run[0] as "`" | "~";
+        const tail = fenceMatch[3]!;
         if (!inFence) {
           inFence = true;
           fenceChar = thisChar;
           fenceLen = run.length;
-        } else if (thisChar === fenceChar && run.length >= fenceLen) {
+        } else if (
+          thisChar === fenceChar &&
+          run.length >= fenceLen &&
+          tail.trim() === ""
+        ) {
           inFence = false;
           fenceChar = undefined;
           fenceLen = 0;
@@ -328,15 +337,22 @@ function splitSections(content: string): Section[] {
   let fenceChar: "`" | "~" | undefined;
   let fenceLen = 0;
   for (const line of content.split("\n")) {
-    const fenceMatch = /^ {0,3}(`+|~+)/.exec(line);
+    // R7: same CommonMark open/close rules as the trim scanner — 3+
+    // delimiter run to open, spaces-only tail to close.
+    const fenceMatch = /^ {0,3}((`|~)\2{2,})(.*)$/.exec(line);
     if (fenceMatch) {
       const run = fenceMatch[1]!;
       const thisChar = run[0] as "`" | "~";
+      const tail = fenceMatch[3]!;
       if (!inFence) {
         inFence = true;
         fenceChar = thisChar;
         fenceLen = run.length;
-      } else if (thisChar === fenceChar && run.length >= fenceLen) {
+      } else if (
+        thisChar === fenceChar &&
+        run.length >= fenceLen &&
+        tail.trim() === ""
+      ) {
         inFence = false;
         fenceChar = undefined;
         fenceLen = 0;

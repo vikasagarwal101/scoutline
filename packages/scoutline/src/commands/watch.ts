@@ -9,9 +9,10 @@
  *   - `watch list` — the registry, ascending by id (chronological).
  *   - `watch remove <name-or-id> [--purge]` — identity-guarded removal;
  *     the change-log evidence dir survives by default, `--purge` drops it.
- *   - `watch run` / `watch feed` — T5/T6 surfaces; they are named in
- *     help and the terminal subcommand string but dispatch to a
- *     not-yet-available error until their tickets land on this branch.
+ *   - `watch run` — the cron tick with the 0/1/2 exit contract.
+ *   - `watch feed <name-or-id> [--format <jsonl|rss>]` — the change
+ *     history as a document: jsonl streams the change log verbatim,
+ *     rss renders change/moved entries as RSS 2.0.
  *
  * Credential-free (no Provider resolution, no Adapter, no quota
  * tracking) and dispatched before the credentialed config load — but
@@ -30,6 +31,8 @@ import { invokeCommand } from "../command-invocation.js";
 import type { OutputMode } from "../lib/output.js";
 import { ValidationError } from "../lib/errors.js";
 import type { HandlerDependencies } from "../index.js";
+import * as path from "node:path";
+import * as fs from "node:fs/promises";
 import {
   resolveWatchDir,
   addTarget,
@@ -38,13 +41,16 @@ import {
   getTarget,
   listSnapshots,
   readSnapshot,
+  readChangeLog,
   appendSnapshot,
   appendChangeLog,
   WATCH_DEFAULT_KEEP,
   WATCH_MIN_KEEP,
   WATCH_MAX_KEEP,
+  WATCH_CHANGELOG_FILENAME,
   type WatchTarget,
   type WatchDirEnvironment,
+  type ParsedChangeLogEntry,
 } from "../lib/watch-store.js";
 import { extractSections, diffDocuments } from "../lib/section-diff.js";
 import {
@@ -81,6 +87,12 @@ Options for 'watch remove':
 Options for 'watch run':
   --timeout <ms>           Live fetch timeout in milliseconds
                            (default: 30000; must be a positive integer)
+
+Options for 'watch feed':
+  --format <jsonl|rss>     Feed format (default: jsonl). jsonl streams
+                           the change log verbatim; rss renders change
+                           and moved entries as an RSS 2.0 document —
+                           in both modes stdout IS the document
 
 Global Options:
   --output-format, -O      Output format: data, json, pretty, compact, markdown, refs, tty
@@ -582,6 +594,167 @@ async function executeWatchRun(input: {
   );
 }
 
+// ---------------------------------------------------------------------------
+// watch feed (T6)
+// ---------------------------------------------------------------------------
+
+/** Legal `--format` values (ruling #1: jsonl default). */
+const FEED_FORMATS: readonly ["jsonl", "rss"] = ["jsonl", "rss"];
+
+function parseFeedFormat(raw: string | boolean | undefined): "jsonl" | "rss" {
+  if (raw === undefined) return "jsonl";
+  // `--no-format <x>` lands here as `false` — same valueless refusal as
+  // the --keep/--name/--timeout gate class (a bare `--format` is `true`).
+  if (typeof raw !== "string") {
+    throw new ValidationError(
+      "--format requires a value.",
+      "Use one of: jsonl, rss.",
+    );
+  }
+  if (raw !== "jsonl" && raw !== "rss") {
+    throw new ValidationError(
+      `Invalid --format ${JSON.stringify(raw)}.`,
+      "Use one of: jsonl, rss.",
+    );
+  }
+  return raw;
+}
+
+/**
+ * XML escaping (ruling #5 — SECURITY-CRITICAL): section headings are
+ * arbitrary web text, so every text node and attribute value goes
+ * through this BEFORE templating. `&` first (else double-escapes), then
+ * the four markup delimiters; `'` as `&#39;` (also valid in attribute
+ * values). No CDATA tricks — the frozen fixture pins the mapping.
+ */
+function xmlEscape(text: string): string {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+/**
+ * pubDate = RFC 822 (GMT) from the entry's own `at` instant. Invalid
+ * dates (hand-edited logs) render as NaN → the item keeps position but
+ * the reader sees an unusable date — same non-throw posture the T2
+ * review advisory set for the rest of the renderer.
+ */
+function rfc822(at: string): string {
+  return new Date(at).toUTCString();
+}
+
+function feedItemTitle(
+  entry: ParsedChangeLogEntry,
+): string {
+  if (entry.kind === "moved") return `moved: ${entry.finalUrl ?? ""}`;
+  const changed = entry.changed ?? [];
+  if (changed.length > 0) return `changed: ${changed[0] ?? ""}`;
+  const added = entry.added ?? [];
+  if (added.length > 0) return `added: ${added[0] ?? ""}`;
+  const removed = entry.removed ?? [];
+  return `removed: ${removed[0] ?? ""}`;
+}
+
+function feedItemDescription(entry: ParsedChangeLogEntry): string {
+  const segments: string[] = [];
+  const added = entry.added ?? [];
+  const removed = entry.removed ?? [];
+  const changed = entry.changed ?? [];
+  if (added.length > 0) segments.push(`added: ${added.join(", ")}`);
+  if (removed.length > 0) segments.push(`removed: ${removed.join(", ")}`);
+  if (changed.length > 0) segments.push(`changed: ${changed.join(", ")}`);
+  if (entry.kind === "moved") segments.push(`moved to ${entry.finalUrl ?? ""}`);
+  return segments.join("; ");
+}
+
+/**
+ * RSS 2.0 document for one target — the frozen shape from the plan:
+ * channel title `scoutline watch: <name>`, channel link = target url,
+ * items are `change` and `moved` entries ONLY (ruling #3; baseline /
+ * no-change / error stay log noise for the jsonl stream), guid
+ * `{targetId}:{gen}` isPermaLink="false" (pure function of id+gen,
+ * ruling #4). Deterministic by construction (ruling #6): the only
+ * timestamps come from entry `at`, declaration + indentation are fixed.
+ */
+function renderRssFeed(target: WatchTarget, entries: readonly ParsedChangeLogEntry[]): string {
+  const lines: string[] = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<rss version="2.0"><channel>',
+    `  <title>${xmlEscape(`scoutline watch: ${target.name}`)}</title>`,
+    `  <link>${xmlEscape(target.url)}</link>`,
+  ];
+  for (const entry of entries) {
+    if (entry.kind !== "change" && entry.kind !== "moved") continue;
+    lines.push(
+      "  <item>",
+      `    <title>${xmlEscape(feedItemTitle(entry))}</title>`,
+      `    <guid isPermaLink="false">${xmlEscape(`${target.id}:${entry.gen}`)}</guid>`,
+      `    <pubDate>${xmlEscape(rfc822(entry.at))}</pubDate>`,
+      `    <description>${xmlEscape(feedItemDescription(entry))}</description>`,
+      "  </item>",
+    );
+  }
+  lines.push("</channel></rss>");
+  return lines.join("\n");
+}
+
+/**
+ * `watch feed` behavior. The OUTPUT BODY IS THE DOCUMENT (ruling #2,
+ * the `archive-get --raw` / fetch `--raw` precedent): jsonl mode
+ * streams the change-log FILE verbatim (byte passthrough — the raw
+ * text is read, never re-serialized through the parsed shapes, so
+ * key order and spacing survive); rss mode emits the XML. Both write
+ * through `deps.invocation.writeStdout` directly — a feed is a
+ * document, so no CommandResult envelope ever wraps it, in ANY output
+ * mode. Fail-closed parsing comes free: `readChangeLog` throws
+ * ValidationError on malformed lines and unknown kinds (for jsonl that
+ * validation-only read happens BEFORE the passthrough write).
+ */
+async function executeWatchFeed(input: {
+  readonly flags: Record<string, string | boolean>;
+  readonly positional: readonly string[];
+  readonly env: NodeJS.ProcessEnv;
+  readonly invocation: CommandInvocationAdapter;
+}): Promise<number> {
+  const ref = input.positional[0];
+  if (!ref) {
+    throw new ValidationError(
+      "watch feed requires a target name or id.",
+      'Run "scoutline watch list" to see the registered targets.',
+    );
+  }
+  const format = parseFeedFormat(input.flags.format);
+  const root = resolveWatchDir(input.env as WatchDirEnvironment);
+  const target = await getTarget(root, ref);
+
+  if (format === "jsonl") {
+    // Byte passthrough: stdout is the log's JSONL lines verbatim (the
+    // raw file text, never re-serialized through the parsed shapes, so
+    // key order and spacing survive). Missing file (no baseline yet) is
+    // the empty document. Hand-edited lines still fail closed loudly —
+    // the validation-only read below runs BEFORE anything is written.
+    let raw = "";
+    try {
+      raw = await fs.readFile(
+        path.join(root, target.id, WATCH_CHANGELOG_FILENAME),
+        "utf8",
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (raw !== "") await readChangeLog(root, target.id);
+    input.invocation.writeStdout(raw);
+    return 0;
+  }
+
+  const entries = await readChangeLog(root, target.id);
+  input.invocation.writeStdout(renderRssFeed(target, entries));
+  return 0;
+}
+
 /**
  * Dispatcher handler for `watch` in `src/index.ts`. `isolated` is the
  * global-flag extraction result: watch state is a design feature (the
@@ -718,14 +891,13 @@ export async function handleWatch(
     });
   }
 
-  // Named-but-not-yet-landed subcommand: help and the terminal string
-  // enumerate the full family; dispatch refuses until T6 lands so the
-  // strings never need re-editing (they are byte-pinned by tests).
   if (subcommand === "feed") {
-    throw new ValidationError(
-      `watch ${subcommand} is not available in this build.`,
-      "It lands with the watch feed ticket on this branch.",
-    );
+    return await executeWatchFeed({
+      flags,
+      positional,
+      env: deps.env,
+      invocation: deps.invocation,
+    });
   }
 
   throw new ValidationError(

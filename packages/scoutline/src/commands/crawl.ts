@@ -28,6 +28,7 @@ import type { ExecutionDependencies } from "../lib/execution.js";
 import { executeCachedOperation } from "../lib/execution.js";
 import { OUTPUT_MODES } from "../lib/output.js";
 import { ValidationError } from "../lib/errors.js";
+import type { LadderRule } from "../lib/output-budget.js";
 
 // ---------------------------------------------------------------------------
 // Option and dependency types
@@ -141,6 +142,67 @@ function buildCrawlPresentations(
   const markdown = pages.map((p) => `## ${p.url}\n\n${p.content}`).join("\n\n---\n\n");
   return { compact, markdown, refs, tty: markdown };
 }
+
+// ---------------------------------------------------------------------------
+// Output Budget ladder (ADR-0007, T4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Crawl ladder: seed url + status survive (every page's `url` and the
+ * envelope's `baseUrl`/`totalPages` are never-cut by omission); page
+ * content trims; the TRAILING pages (urls) drop late — cheapest loss
+ * is the last page's body, then earlier bodies, then trailing URLs.
+ */
+const trimPageContentsRule: LadderRule = {
+  name: "trim-page-contents",
+  apply(envelope) {
+    const e = envelope as { pages?: unknown[] };
+    const pages = e.pages;
+    if (!pages || pages.length === 0) return envelope;
+    // Backward scan (fix-round A): halve the LAST page whose content is
+    // still trimmable, not just the final page. The engine's fixpoint
+    // bleeds every page body before drop-trailing-pages destroys whole
+    // trailing URLs whose bodies were never trimmed.
+    for (let i = pages.length - 1; i >= 0; i--) {
+      const page = pages[i] as { content?: string };
+      const content = page.content;
+      if (!content) continue;
+      const stripped = content.replace(/…$/, "");
+      if (stripped.length <= 1) continue;
+      const half = Math.max(1, Math.floor(stripped.length / 2));
+      const nextPages = [...pages];
+      nextPages[i] = { ...page, content: "…" + stripped.slice(0, half) };
+      return { ...e, pages: nextPages };
+    }
+    return envelope;
+  },
+};
+
+const dropTrailingPagesRule: LadderRule = {
+  name: "drop-trailing-pages",
+  apply(envelope) {
+    const e = envelope as { pages?: unknown[]; totalPages?: number };
+    const pages = e.pages;
+    if (!pages || pages.length <= 1) return envelope;
+    return { ...e, pages: pages.slice(0, -1), totalPages: pages.length - 1 };
+  },
+};
+
+/** The crawl Output Budget ladder (ordered; see ADR-0007 T4). */
+export const CRAWL_LADDER = [trimPageContentsRule, dropTrailingPagesRule] as const;
+
+/**
+ * Output Budget T4: rebuild every text presentation from a budgeted
+ * projection so -O compact/markdown/refs/tty reflect the shrunken
+ * pages. Thin passthrough over `buildCrawlPresentations` — no separate
+ * render logic to drift. Exported for the handler seam (index.ts).
+ */
+export function rebuildBudgetedCrawlPresentations(
+  pages: readonly { url: string; content: string }[],
+): Readonly<Partial<Record<string, string>>> {
+  return buildCrawlPresentations(pages as ProjectedPage[]);
+}
+
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
@@ -217,8 +279,10 @@ Options:
   --format <f>         Output format: markdown (default), text
   --content-size <s>   Extraction depth: medium (default), high
   --timeout <s>        Request timeout in seconds (default: 150)
-  --max-chars <n>      Truncate each page's content to <n> chars
-                       (projection only; cache stores full content)
+  --max-chars <n>      Fit the whole printed output in ~<n> chars (page
+                        contents trim, trailing pages drop late; page urls
+                        never cut; full untrimmed crawl saved to the
+                        artifacts store — recover via "scoutline history show")
   --no-cache           Bypass the response cache for this invocation
 
 Common Options:

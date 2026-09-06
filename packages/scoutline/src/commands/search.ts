@@ -25,7 +25,7 @@ import { executeSearch } from "../lib/execution.js";
 import type { LadderRule } from "../lib/output-budget.js";
 import { canonicalUrl } from "../lib/url.js";
 import type { ProviderDescriptor, ProviderId } from "../providers/types.js";
-import { formatSearchResultsPretty } from "../lib/tty.js";
+import { formatSearchResultsPretty, type SearchResultLike } from "../lib/tty.js";
 import {
   ValidationError,
   UnsupportedOptionError,
@@ -271,33 +271,53 @@ export function mergeResults(
 }
 
 function renderTextFormat(
-  results: FormattedResult[],
+  results: readonly Partial<FormattedResult>[],
   mode: "compact" | "markdown" | "refs",
 ): string {
   if (results.length === 0) return "";
   const lines: string[] = [];
-  for (const r of results) {
+  let rank = 0;
+  for (const row of results) {
+    // R5: the budget seam rebuilds presentations from the projection,
+    // which under `--fields` is field-filtered (title/url/rank may be
+    // absent). Never print `undefined` — omit what the allowlist took.
+    rank += 1;
+    const r = { rank, title: "", url: "", ...row } as FormattedResult;
     const occBadge = r.occurrences && r.occurrences > 1 ? ` ×${r.occurrences}` : "";
     if (mode === "compact") {
-      lines.push(`${r.title}${occBadge} — ${r.url}`);
+      lines.push(
+        r.title && r.url
+          ? `${r.title}${occBadge} — ${r.url}`
+          : r.url || r.title || r.summary || "",
+      );
     } else if (mode === "markdown") {
-      lines.push(`${r.rank}. [${r.title}](${r.url})${occBadge}`);
+      if (r.title && r.url) {
+        lines.push(`${r.rank}. [${r.title}](${r.url})${occBadge}`);
+      } else if (r.url) {
+        lines.push(`${r.rank}. ${r.url}${occBadge}`);
+      } else if (r.title) {
+        lines.push(`${r.rank}. ${r.title}${occBadge}`);
+      }
       if (r.summary) lines.push(`   ${r.summary}`);
     } else if (mode === "refs") {
-      lines.push(`[${r.rank}]${occBadge} ${r.title} — ${r.url}`);
+      lines.push(
+        r.title && r.url
+          ? `[${r.rank}]${occBadge} ${r.title} — ${r.url}`
+          : `[${r.rank}]${occBadge} ${r.url || r.title || ""}`,
+      );
     }
   }
   return lines.join("\n");
 }
 
 function buildPresentations(
-  formattedResults: FormattedResult[],
+  formattedResults: readonly Partial<FormattedResult>[],
 ): NonNullable<DataCommandResult["presentations"]> {
   return {
     compact: renderTextFormat(formattedResults, "compact"),
     markdown: renderTextFormat(formattedResults, "markdown"),
     refs: renderTextFormat(formattedResults, "refs"),
-    tty: formatSearchResultsPretty(formattedResults),
+    tty: formatSearchResultsPretty(formattedResults as SearchResultLike[]),
   };
 }
 
@@ -311,7 +331,17 @@ function buildPresentations(
 export function rebuildBudgetedPresentations(
   budgetedResults: readonly unknown[],
 ): NonNullable<DataCommandResult["presentations"]> {
-  return buildPresentations(budgetedResults as FormattedResult[]);
+  // R5: budgeted rows may be `--fields`-filtered (title/url/rank
+  // absent). Renumber ranks in display order (drop-lowest-rank keeps
+  // the surviving ranks non-contiguous — renumber so refs/markdown
+  // read 1..N) and let renderTextFormat omit absent fields.
+  const rows = (budgetedResults as Partial<FormattedResult>[]).map((r, i) => ({
+    title: "",
+    url: "",
+    ...r,
+    rank: i + 1,
+  }));
+  return buildPresentations(rows);
 }
 
 /** Format a normalized SearchSource[] into ranked FormattedResult[]. */

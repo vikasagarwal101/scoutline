@@ -1662,25 +1662,17 @@ async function handleSearch(
           `output budget: ${maxChars} chars — full untrimmed envelope saved (${compaction.ref})`,
         );
         const projection = outcome.projection as { results: unknown[] };
-        // Fix-round (review): `result.data` rows are POST-`--fields`
-        // (title/url/rank may be stripped — the rank-vs-row join
-        // budgeted text modes need no longer exists once fields
-        // filters them). Rebuilding text presentations from filtered
-        // rows prints "undefined — undefined" links, so the budgeted
-        // rebuild applies ONLY to the unfiltered path; under --fields
-        // the original full-row presentations stand (they never claim
-        // to be budgeted — pre-T3 text modes showed these same full
-        // rows; data is the budgeted surface).
-        const fieldsActive =
-          searchOptions.fields !== undefined && searchOptions.fields.length > 0;
+        // R5 (review): rebuild text presentations from the budgeted
+        // rows in EVERY case — including `--fields`, where the
+        // projection rows are field-filtered. Skipping the rebuild let
+        // the UNBUDGETED full-row presentations stand, so `--max-chars`
+        // did not bound what text-mode users saw. The renderer omits
+        // fields the allowlist took (never "undefined — undefined") and
+        // renumbers ranks in display order.
         return {
           ...result,
           data: { ...measured, results: projection.results, compaction },
-          // Unfiltered: rebuild text modes from the budgeted rows so
-          // url/title stay visible at budgeted size.
-          ...(fieldsActive
-            ? {}
-            : { presentations: rebuildBudgetedPresentations(projection.results) }),
+          presentations: rebuildBudgetedPresentations(projection.results),
         };
       };
 
@@ -2084,18 +2076,21 @@ async function handleCrawl(
           // (in-rule stamps cost more than their halvings saved).
           const rawPages =
             (r.data as { pages?: { content?: string }[] }).pages ?? [];
+          // R5: stamp truth flags by comparing against the RAW page — a
+          // projected page whose content differs from its pre-budget
+          // original was trimmed by the ladder; a page that merely
+          // GENUINELY begins with "…" rides through byte-identical and
+          // must NOT be marked (the startsWith("…") shape mis-flagged
+          // it when any other page triggered compaction).
           const pages = (
             (projection as { pages?: { url: string; content: string }[] }).pages ?? []
           ).map((p, i) => {
-            // Marker protocol: a leading "…" on a page the walk produced
-            // means the ladder trimmed it (first-pass source markers are
-            // never stripped by the rules).
-            if (!p.content.startsWith("…")) return p;
             const original = rawPages[i]?.content ?? p.content;
+            if (p.content === original) return p;
             return {
               ...p,
               truncated: true,
-              originalContentLength: original.replace(/^…/, "").length,
+              originalContentLength: original.length,
             };
           });
           // R3 follow-up: the stamped pages ARE the data payload —

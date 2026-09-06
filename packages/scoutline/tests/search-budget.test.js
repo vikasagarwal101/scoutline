@@ -727,7 +727,11 @@ describe("stamp accounting — compaction metadata is outside the budget", () =>
 });
 
 describe("PR #103 fix-round — --fields + text presentations", () => {
-  it("--fields omitting title/url/rank still renders full rows in text modes", async (t) => {
+  // R5: this pin previously encoded the skip (text modes kept FULL
+  // unbudgeted rows under --fields). It flips with the fix: text modes
+  // now render the BUDGETED, field-filtered projection (cubic P1) —
+  // absent fields are omitted, never "undefined".
+  it("--fields omitting title/url/rank renders the budgeted rows in text modes (omitted, never undefined)", async (t) => {
     await withTempDir(t, async (dir) => {
       const { status, stdout, stderr } = await runMain(
         [
@@ -743,13 +747,16 @@ describe("PR #103 fix-round — --fields + text presentations", () => {
       const out = stdout.join("");
       assert.ok(out.length > 0, "compact mode renders");
       assert.ok(
-        out.includes("https://e/1"),
-        `compact keeps url despite --fields summary: ${out.slice(0, 120)}`,
+        !out.includes("undefined"),
+        `no undefined leakage for fields the allowlist took: ${out.slice(0, 120)}`,
       );
-      assert.ok(!out.includes("undefined"), "no undefined field leakage");
-      // The data surface stays budgeted (rank 5 dropped), while the text
-      // presentation keeps full rows under --fields (pre-T3 shape, no
-      // "undefined — undefined" leakage).
+      const lines = out.split("\n").filter((l) => l.trim().length > 0);
+      assert.ok(lines.length >= 1 && lines.length <= 5, "compact renders the budgeted rows");
+      for (const line of lines) {
+        assert.match(line, /^…/, "budgeted rows are the trimmed summaries (--fields summary)");
+      }
+      // The data surface stays budgeted — summaries trimmed by the
+      // ladder under --fields.
       const { status: dstatus, stdout: dstdout, stderr: dstderr } = await runMain(
         ["-O", "data", "--provider", "tavily", "search", "q", "--max-chars", String(300 + COMPACTION_STAMP_RESERVE), "--fields", "summary"],
         {
@@ -764,6 +771,45 @@ describe("PR #103 fix-round — --fields + text presentations", () => {
         data.results.every((r) => r.summary.length < 120),
         "data summaries trimmed by the budget under --fields",
       );
+    });
+  });
+});
+
+describe("PR #103 R5 — --fields + text modes: budgeted presentations, no undefined leakage", () => {
+  it("text modes reflect the budgeted envelope under --fields (rank 5 dropped, no undefined)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      // Budget 300 drops rank 5 (same fixture as the text-mode pin in
+      // "whole-envelope budgeting engages in TEXT modes too"). Under
+      // --fields the rebuilt presentation must STILL drop rank 5 and
+      // must never print "undefined" for filtered-out fields.
+      // A crush budget forces the ladder down to FOUR rows (all five
+      // fit only at 172+; 170 leaves 4) even after `--fields` filtered
+      // the rows small — the rebuilt presentation must reflect that,
+      // not the full set. With summaries bled to empty the renderer
+      // prints nothing per row, so assert on the data-mode projection
+      // the rebuild consumed (4 rows) plus the no-undefined invariant.
+      const budget = "170";
+      const descriptors = { providerDescriptors: [makeDescriptor("tavily", { q: fiveSources() })] };
+      for (const mode of ["markdown", "compact"]) {
+        const { status, stdout, stderr } = await runMain(
+          ["-O", mode, "--provider", "tavily", "search", "q", "--max-chars", budget, "--fields", "summary"],
+          { artifactsDir: dir, extraDeps: descriptors },
+        );
+        assert.equal(status, 0, JSON.stringify(stderr));
+        const out = stdout.join("");
+        assert.ok(!out.includes("undefined"), `${mode}: no undefined field leakage`);
+        // Cross-check the budgeted shape in data mode under the SAME
+        // budget: 4 rows survive — the text rebuild consumed exactly
+        // this projection, not the unbudgeted five.
+        const { status: dstatus, stdout: dstdout, stderr: dstderr } = await runMain(
+          ["-O", "data", "--provider", "tavily", "search", "q", "--max-chars", budget, "--fields", "summary"],
+          { artifactsDir: dir, extraDeps: descriptors },
+        );
+        assert.equal(dstatus, 0, JSON.stringify(dstderr));
+        const data = JSON.parse(dstdout.join(""));
+        assert.ok(data.compaction, "crush budget fires under --fields");
+        assert.equal(data.results.length, 4, "4 budgeted rows survive (5th dropped)");
+      }
     });
   });
 });

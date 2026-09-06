@@ -1186,3 +1186,118 @@ describe("PR #103 R2 — fence- and Setext-aware heading guards", () => {
     assert.ok(out.projection.content.includes("# Root"), "root survives a mid budget");
   });
 });
+
+// ---------------------------------------------------------------------------
+// PR #103 R5 (review): genuine leading "…" must never be mis-marked as
+// budget-trimmed; walked-state must not leak across applyBudget calls;
+// Markdown fences close on the OPENING delimiter only.
+// ---------------------------------------------------------------------------
+
+describe("PR #103 R5 — genuine leading … is not a ladder marker", () => {
+  it("crawl (main): an untouched page that genuinely begins with … carries NO truncated flag", async (t) => {
+    await withTempDir(t, async (dir) => {
+      // Page 1's content genuinely begins with "…"; page 2 is huge.
+      // The ladder bleeds from the END backward — a mid budget trims
+      // page 2 only, so page 1 rides through verbatim. The seam must
+      // NOT stamp truncated:true on page 1 (its "…" is source text).
+      const result = () => ({
+        schemaVersion: 1,
+        baseUrl: "https://example.com",
+        pages: [
+          { url: "https://example.com/p1", content: "…genuine " + "x".repeat(30), contentFormat: "markdown" },
+          { url: "https://example.com/p2", content: "y".repeat(800), contentFormat: "markdown" },
+        ],
+        totalPages: 2,
+      });
+      const { status, stdout, stderr } = await runMain(
+        ["--provider", "tavily", "crawl", "https://example.com", "--max-chars", "420"],
+        {
+          artifactsDir: dir,
+          descriptors: [
+            makeAsyncProvider({ id: "tavily", envVar: "TAVILY_API_KEY", capability: "crawl", ok: result }).descriptor,
+          ],
+        },
+      );
+      assert.equal(status, 0, JSON.stringify(stderr));
+      const data = parseData(stdout);
+      assert.ok(data.compaction, "budget fires");
+      const p1 = data.pages.find((p) => p.url === "https://example.com/p1");
+      assert.ok(p1, "page 1 survives (urls never cut)");
+      assert.equal(p1.content, "…genuine " + "x".repeat(30), "untouched page verbatim");
+      assert.ok(!("truncated" in p1), "a genuine leading … is NOT a budget trim (R5)");
+      const p2 = data.pages.find((p) => p.url === "https://example.com/p2");
+      if (p2) {
+        assert.equal(p2.truncated, true, "a really trimmed page IS flagged");
+      }
+    });
+  });
+});
+
+describe("PR #103 R5 — walked-state semantics (cubic P2, declined with rationale)", () => {
+  it("re-budgeting a walked projection never ACCUMULATES markers (cross-walk registration is load-bearing)", () => {
+    // The review asked for a per-walk registry. Rejected: only
+    // walk-produced projections ever register, and those objects'
+    // leading "…" is by construction ladder-emitted — a genuine
+    // source "…" cannot be stripped by the WeakSet. The cross-walk
+    // registration is what lets a re-budget strip the OLD marker
+    // before prepending the new one. A per-walk registry produced
+    // "……" accumulation on re-budget (verified live during the fix
+    // round). Pin the invariant that actually matters:
+    const env = () => ({
+      schemaVersion: 1,
+      baseUrl: "https://example.com",
+      pages: [
+        { url: "https://example.com/p1", content: "c".repeat(600) },
+        { url: "https://example.com/p2", content: "d".repeat(600) },
+      ],
+      totalPages: 2,
+    });
+    const first = applyBudget(env(), 900, CRAWL_LADDER);
+    assert.ok(first.compaction, "walk 1 fires");
+    const reBudgeted = applyBudget(first.projection, 500, CRAWL_LADDER);
+    for (const page of reBudgeted.projection.pages) {
+      assert.ok(!page.content.startsWith("……"), "re-budget keeps ONE marker (no accumulation)");
+    }
+  });
+});
+
+describe("PR #103 R5 — fences close on the opening delimiter", () => {
+  it("trim scan: a ~~~ line inside a ``` block stays fenced and is never a trim candidate", () => {
+    // ``` opens the fence; a line beginning with ~~~ inside the block
+    // must NOT close it (CommonMark: fences close with the OPENING
+    // delimiter). Consequence pinned: the fenced lines survive a trim
+    // budget verbatim while the trailing body bleeds.
+    const e = {
+      url: "https://e/1",
+      title: "T",
+      content:
+        "# T\n\n```\n~~~ not a closer\n```\n\nbody " + "z".repeat(300),
+    };
+    const out = applyBudget(e, measurePayload(e) - 60, READ_LADDER);
+    assert.ok(out.compaction, "tight budget fires");
+    assert.ok(out.projection.content.includes("~~~ not a closer"), "fence content survives");
+    assert.ok(!out.projection.content.includes("z".repeat(150)), "body bled");
+  });
+
+  it("splitSections: a # heading AFTER a ~~~-poisoned ``` block stays inside the fence", () => {
+    // If ~~~ closed the ``` fence, "# not a heading" would be parsed
+    // as a section heading and change the drop order. Pin: a crush
+    // budget keeps the fence block intact including the fake heading.
+    const e = {
+      url: "https://e/1",
+      title: "T",
+      content:
+        "# T\n\n```\n~~~\n# not a heading\n```\n\n## Real\n\nbody " + "q".repeat(120) + "\n",
+    };
+    const floor = measurePayload({
+      url: "https://e/1",
+      title: "T",
+      content: "# T\n\n```\n~~~\n# not a heading\n```\n",
+    });
+    const out = applyBudget(e, floor + 30, READ_LADDER);
+    assert.ok(out.compaction);
+    // The whole fence block (~~~ line AND the fake # line) survives as
+    // one unit; "# not a heading" was never a section boundary.
+    assert.ok(out.projection.content.includes("~~~\n# not a heading\n```"), "fence block intact");
+  });
+});

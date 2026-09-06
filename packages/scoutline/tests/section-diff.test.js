@@ -507,7 +507,7 @@ describe("extractSections review round 3", () => {
     it("<br> inside a heading is phrasing, not a block break", () => {
         const result = extractSections(enc("<h1>Alpha<br>Beta</h1><p>body</p>"));
         assert.equal(result.ok, true);
-        assert.equal(result.sections[0].heading, "AlphaBeta");
+        assert.equal(result.sections[0].heading, "Alpha Beta");
         assert.equal(result.sections[0].body, "body");
         // Changing the SECOND heading line is a heading change, not a
         // body change under the truncated heading "Alpha".
@@ -517,8 +517,24 @@ describe("extractSections review round 3", () => {
         // removed+added (design contract), which still proves the
         // change is detected — the old truncated-heading behavior
         // misreported it as a body change or nothing at all.
-        assert.ok(d.added.includes("AlphaGamma"));
-        assert.ok(d.removed.includes("AlphaBeta"));
+        assert.ok(d.added.includes("Alpha Gamma"));
+        assert.ok(d.removed.includes("Alpha Beta"));
+    });
+
+    it("<br> separates words and body lines, and a br reflow is not a change", () => {
+        // `Frequently Asked<br>Questions` must not merge into
+        // `AskedQuestions` (greptile follow-up): the break is a space.
+        const faq = extractSections(enc("<h1>Frequently Asked<br>Questions</h1>"));
+        assert.equal(faq.sections[0].heading, "Frequently Asked Questions");
+        // Body-side <br> is a soft break, not a paragraph gap.
+        const body = extractSections(enc("<p>alpha<br>beta</p><h1>H</h1>"));
+        assert.equal(body.sections[0].body, "alpha beta");
+        // Replacing the break with a plain space reflows nothing:
+        const d = diffSections(
+            extractSections(enc("<h1>Alpha<br>Beta</h1>")).sections,
+            extractSections(enc("<h1>Alpha Beta</h1>")).sections,
+        );
+        assert.deepEqual(d, { added: [], removed: [], changed: [] });
     });
 
     it("a different block tag's close ends the heading (legacy <h1>Title</div>)", () => {

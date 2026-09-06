@@ -584,6 +584,19 @@ export function resolveSinceInstant(
       "Durations require a unit: 30d, 12h, 1w, 2y.",
     );
   }
+  // ISO GRAMMAR GATE (macroscope follow-up): reject anything that is
+  // not a supported ISO date/datetime BEFORE `new Date` — Node parses
+  // non-ISO forms like `2023/06/01` in the HOST LOCAL timezone, so
+  // identical --since values would select different Wayback cutoffs on
+  // different machines. Accepted: date, date+Ttime (Z appended below
+  // when offset-less), or explicit Z/±HH:MM/±HHMM offsets.
+  const ISO_SINCE = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+  if (!ISO_SINCE.test(trimmed)) {
+    throw new ValidationError(
+      `Invalid --since value: "${since}".`,
+      "Use an ISO date (2026-08-01), ISO datetime (2026-08-01T12:00:00Z), or duration (30d).",
+    );
+  }
   // Datetimes without an explicit offset (`2026-08-01T12:00:00`) parse
   // as LOCAL time per ECMAScript — machine-dependent. Normalize: no
   // offset means Z (review fix), so the same CLI input means the same
@@ -639,7 +652,10 @@ function cdxTimestampMs(timestamp: string): number {
 /** Pull the charset parameter out of a Content-Type header, if present. */
 export function charsetFromContentType(contentType: string | undefined): string | undefined {
   if (!contentType) return undefined;
-  const match = /charset=([^;]+)/i.exec(contentType);
+  // RFC 9110 allows optional whitespace around the parameter '=' —
+  // `charset = iso-8859-1` must yield the label, not undefined (which
+  // would silently mis-decode non-UTF-8 bytes as UTF-8).
+  const match = /charset\s*=\s*([^;]+)/i.exec(contentType);
   // Strip surrounding quotes — `charset="utf-8"` is legal (RFC 9110)
   // but TextDecoder rejects the quoted label, silently mis-decoding
   // quoted non-UTF-8 content via the UTF-8 fallback.
@@ -795,6 +811,15 @@ export async function fetchLiveDocument(
       const location = res.headers.get("location");
       const redirectable = [301, 302, 303, 307, 308].includes(res.status);
       if (!redirectable || !location) {
+        // A >=400 live response is a FAILED CAPTURE — reject and cancel
+        // BEFORE the bounded read (macroscope follow-up): reading the
+        // error body first lets a stalled or oversized error page
+        // surface as TimeoutError/ValidationError instead of the
+        // failed-capture NetworkError.
+        if (res.status >= 400) {
+          await res.body?.cancel().catch(() => {});
+          throw new NetworkError(`Live fetch failed with HTTP ${res.status}.`);
+        }
         const MAX_LIVE_IN_MEMORY = 50 * 1024 * 1024;
         // Declared-length preflight (review): same discipline as the
         // archive side — reject an oversized declaration and cancel the

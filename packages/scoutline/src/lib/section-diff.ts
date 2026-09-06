@@ -253,13 +253,19 @@ export function extractSections(
         continue;
       }
       if (headingTag !== null) {
+        // `br` inside a heading is phrasing content, not a block break
+        // (review): `<h1>Alpha<br>Beta</h1>` stays ONE heading. It still
+        // separates words — normalizeText collapses the runs, so a
+        // later `Alpha<br />Beta` reflow is NOT a content change, but
+        // `Alpha<br>Beta` never merges into `AlphaBeta`.
+        if (tag === "br" && !isClose) {
+          headingChunks.push(" ");
+          continue;
+        }
         // Inside a heading: its own close ends it; a NEW heading open or
         // a BLOCK open also ends it (old markup never closed things).
         // INLINE closes (`</b>`, `</em>`) do NOT — `<h1>Hello
         // <b>world</b> again</h1>` keeps `again` in the heading.
-        // `br` inside a heading is phrasing content, not a block break
-        // (review): `<h1>Alpha<br>Beta</h1>` stays ONE heading
-        // `Alpha Beta`.
         const endsHeading =
           (isClose && tag === headingTag) ||
           (!isClose && /^h[1-6]$/.test(tag)) ||
@@ -291,6 +297,12 @@ export function extractSections(
         headingTag = tag;
         headingChunks = [];
         sawHeading = true;
+        continue;
+      }
+      if (tag === "br" && !isClose) {
+        // Soft break inside a paragraph: a single newline, not the
+        // paragraph gap block tags produce (review).
+        bodyChunks.push("\n");
         continue;
       }
       if (!isClose && BLOCK_TAGS.has(tag) && !INLINE_TAGS.has(tag) && bodyChunks.length > 0) {

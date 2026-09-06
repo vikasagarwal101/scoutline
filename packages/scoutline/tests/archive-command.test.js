@@ -10,6 +10,7 @@ import {
   fetchWithArchiveBackoff,
   ARCHIVE_HELP,
   resolveSinceInstant,
+  charsetFromContentType,
   handleArchive,
 } from "../dist/commands/archive.js";
 import { main } from "../dist/index.js";
@@ -941,6 +942,67 @@ describe("archive diff review round 3", () => {
                     replayBaseUrl: `${base}/replay`,
                 }),
                 (err) => err instanceof ValidationError && /Archive capture size \(62914560 bytes\)/.test(err.message),
+            );
+        } finally {
+            await new Promise((resolve) => server.close(resolve));
+        }
+    });
+});
+
+describe("archive diff review round 4", () => {
+    it("rejects non-ISO --since forms before Date parsing (host-local trap)", () => {
+        // Node parses `2023/06/01` as LOCAL time — the same CLI input
+        // must not select different cutoffs on different machines.
+        for (const bad of ["2023/06/01", "June 1 2023", "2023-6-1", "2023-06-01 12:00:00", "20230601"]) {
+            assert.throws(() => resolveSinceInstant(bad, () => 0), ValidationError, bad);
+        }
+        for (const ok of ["2023-06-01", "2023-06-01T12:00:00", "2023-06-01T12:00:00Z", "2023-06-01T12:00:00+05:00", "2023-06-01T12:00:00.500Z", "2023-06-01T12:00+0530"]) {
+            assert.doesNotThrow(() => resolveSinceInstant(ok, () => 0), ok);
+        }
+    });
+
+    it("parses charset with whitespace around the parameter '='", () => {
+        assert.equal(charsetFromContentType("text/html; charset = iso-8859-1"), "iso-8859-1");
+        assert.equal(charsetFromContentType("text/html; charset=utf-8"), "utf-8");
+        assert.equal(charsetFromContentType('text/html; charset="utf-8"'), "utf-8");
+        assert.equal(charsetFromContentType("text/html"), undefined);
+    });
+
+    it("live HTTP >= 400 rejects with NetworkError before any body read", async () => {
+        const server = http.createServer((req, res) => {
+            const u = new URL(req.url, `http://${req.headers.host}`);
+            if (u.pathname === "/cdx") {
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify([
+                    ["timestamp", "statuscode", "length", "digest", "original"],
+                    ["20230601000000", "200", "100", "D2", "https://example.com/docs"],
+                ]));
+                return;
+            }
+            if (u.pathname === "/live-500") {
+                res.writeHead(500, {
+                    "Content-Type": "text/html; charset=utf-8",
+                    "Content-Length": String(60 * 1024 * 1024),
+                });
+                res.write("<h1>error sliver"); // stalled oversized error body
+                return;
+            }
+            if (u.pathname.startsWith("/replay/")) {
+                res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+                res.end("<h1>Old</h1>");
+                return;
+            }
+            res.writeHead(404); res.end();
+        });
+        await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const base = `http://127.0.0.1:${server.address().port}`;
+        try {
+            await assert.rejects(
+                () => executeArchiveDiff(`${base}/live-500`, { since: "2023-12-31", timeout: 5000 }, {
+                    cdxEndpoint: `${base}/cdx`,
+                    replayBaseUrl: `${base}/replay`,
+                }),
+                (err) => err instanceof NetworkError && /Live fetch failed with HTTP 500/.test(err.message),
             );
         } finally {
             await new Promise((resolve) => server.close(resolve));

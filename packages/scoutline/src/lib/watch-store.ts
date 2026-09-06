@@ -516,11 +516,27 @@ export async function removeTarget(
         const targetDir = path.join(root, target.id);
         const rmContents = () =>
           withAsyncFileLock(targetDir, "watch-target-" + target.id, async () => {
+            // lstat, not stat (review): a hand-swapped SYMLINKED target
+            // dir would otherwise be followed by the recursive deletes
+            // below and purge entries OUTSIDE the watch root. Refuse the
+            // swap instead of following it.
+            const info = await fs.lstat(targetDir);
+            if (info.isSymbolicLink()) {
+              throw new ValidationError(
+                `watch target directory ${targetDir} is a symlink; refusing to purge through it.`,
+                "Remove the symlink and restore the directory, or delete it by hand.",
+              );
+            }
             const entries = await fs.readdir(targetDir).catch(() => []);
             await Promise.all(
               entries
                 .filter((entry) => !entry.endsWith(".lock"))
                 .map((entry) =>
+                  // rm never follows symlinks for its traversal root, but
+                  // keep an explicit lstat guard on directory entries too:
+                  // a nested symlinked dir with recursive:true would be
+                  // unlinked (fine — it removes the LINK) while its target
+                  // survives, so deletion stays inside the watch root.
                   fs.rm(path.join(targetDir, entry), { recursive: true, force: true }),
                 ),
             );

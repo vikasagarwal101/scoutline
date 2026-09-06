@@ -716,14 +716,20 @@ Commands:
 
 Search Options:
   --language <lang>   Result language: en (default) or zh
-  --max-chars <n>     Truncate output to <n> chars
+  --max-chars <n>     Fit the whole printed output in ~<n> chars (excerpts
+                      trim, trailing excerpts drop; the full untrimmed result
+                      is saved to the artifacts store — recover via
+                      "scoutline history show")
 
 Tree Options:
   --path <path>       Directory path to inspect (default: repo root)
   --depth <n>         Expand subdirectory trees (default: 1)
 
 Read Options:
-  --max-chars <n>     Truncate file content to <n> chars
+  --max-chars <n>     Fit the whole printed output in ~<n> chars (file
+                      content trims; repository/path never cut; the full
+                      untrimmed file is saved to the artifacts store —
+                      recover via "scoutline history show")
 
 Brief Options:
   --focus <list>              Subset of: structure, readme, manifest, files
@@ -764,8 +770,8 @@ Output format (intentional schema-version-1 migration):
              coverage.probes records every probe attempt as ok/failed/
              skipped). Tree is never character-limited; --max-chars
              applies per call to searches and reads only.
-  Root path is the empty string "". --max-chars applies only to
-  search/read content; tree is never character-limited.
+  Root path is the empty string "". --max-chars is a whole-envelope
+  budget on search/read (repo tree REJECTS it: UNSUPPORTED_OPTION).
   Output modes for repo results:
     - data: raw schema-version-1 value as plain JSON (no envelope).
     - json / pretty: standard {success, data, timestamp} envelope

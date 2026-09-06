@@ -1482,6 +1482,9 @@ describe("explorerTree — never character-limited", () => {
     // budget must NOT truncate entry names, entry paths, or any other
     // Tree field. The long strings below would survive only if the
     // projection never runs.
+    // ADR-0007 AC-6 (T4): the CLI now REJECTS `repo tree --max-chars`
+    // with UNSUPPORTED_OPTION at parse (see tests/output-budget-t4.test.js);
+    // this pin guards the Explorer's defensive backstop beneath that.
     const longName = "x".repeat(500);
     const longPath = longName; // root listing: path === name
     const cap = makeFakeCapability({
@@ -1527,6 +1530,9 @@ describe("Repository Explorer source boundary (NFR-004, ARCHITECTURE.md §2)", (
     "../capabilities/repository.js",
     "../lib/execution.js",
     "../lib/errors.js",
+    // ADR-0007 T4: the pure Output Budget ladder types — provider-neutral
+    // projection library, same class as errors.js (no Provider surface).
+    "../lib/output-budget.js",
   ]);
 
   const FORBIDDEN_IMPORT_SUBSTRINGS = [

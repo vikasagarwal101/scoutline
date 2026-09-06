@@ -54,6 +54,7 @@ import {
   type RetryPolicy,
 } from "../lib/execution.js";
 import { ValidationError } from "../lib/errors.js";
+import type { LadderRule } from "../lib/output-budget.js";
 
 // ---------------------------------------------------------------------------
 // Repository-path canonicalizer (DESIGN.md §18, technical plan
@@ -579,6 +580,76 @@ async function collectTreeSnapshots(
 
   return snapshots;
 }
+
+// ---------------------------------------------------------------------------
+// Output Budget ladders (ADR-0007, T4) — repo search / repo read
+// whole-envelope replacements for the legacy per-field projections.
+// ---------------------------------------------------------------------------
+
+
+/**
+ * Repo-search ladder: metadata (`repository`, `query`, `language`,
+ * `originalTextLength`) never cut (omission); the LAST excerpts trim
+ * first; the TRAILING excerpts drop late.
+ */
+const trimLastExcerptRule: LadderRule = {
+  name: "trim-last-excerpt",
+  apply(envelope) {
+    const e = envelope as { excerpts?: unknown[] };
+    const excerpts = e.excerpts;
+    if (!excerpts || excerpts.length === 0) return envelope;
+    // Backward scan (fix-round A): halve the LAST excerpt whose text is
+    // still trimmable, not just the final one. The engine's fixpoint
+    // bleeds every excerpt body before drop-trailing-excerpts destroys
+    // whole trailing excerpts whose text was never trimmed.
+    for (let i = excerpts.length - 1; i >= 0; i--) {
+      const row = excerpts[i] as { text?: string };
+      const text = row.text;
+      if (!text) continue;
+      const stripped = text.replace(/…$/, "");
+      if (stripped.length <= 1) continue;
+      const half = Math.max(1, Math.floor(stripped.length / 2));
+      const next = [...excerpts];
+      next[i] = { ...row, text: "…" + stripped.slice(0, half) };
+      return { ...e, excerpts: next };
+    }
+    return envelope;
+  },
+};
+
+const dropTrailingExcerptsRule: LadderRule = {
+  name: "drop-trailing-excerpts",
+  apply(envelope) {
+    const e = envelope as { excerpts?: unknown[] };
+    const excerpts = e.excerpts;
+    if (!excerpts || excerpts.length <= 1) return envelope;
+    return { ...e, excerpts: excerpts.slice(0, -1) };
+  },
+};
+
+/**
+ * Repo-read ladder: `repository`/`path` never cut; `content` halves
+ * from the end until it fits (single-rule fixpoint — the engine's
+ * halving loop converges deterministically).
+ */
+const trimContentRule: LadderRule = {
+  name: "trim-content",
+  apply(envelope) {
+    const e = envelope as { content?: string };
+    const content = e.content;
+    if (!content) return envelope;
+    const stripped = content.replace(/…$/, "");
+    if (stripped.length <= 1) return envelope;
+    const half = Math.max(1, Math.floor(stripped.length / 2));
+    return { ...e, content: "…" + stripped.slice(0, half) };
+  },
+};
+
+/** The repo-search Output Budget ladder (ordered; see ADR-0007 T4). */
+export const REPO_SEARCH_LADDER = [trimLastExcerptRule, dropTrailingExcerptsRule] as const;
+
+/** The repo-read Output Budget ladder (ordered; see ADR-0007 T4). */
+export const REPO_READ_LADDER = [trimContentRule] as const;
 
 // ---------------------------------------------------------------------------
 // Public Explorer API.

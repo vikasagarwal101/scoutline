@@ -101,7 +101,17 @@ export function measurePayload(value: unknown): number {
  * ADR scopes OUT of the measured payload; README documents the budget
  * as applying to the payload.
  */
-export const COMPACTION_STAMP_RESERVE = 52;
+// Fix-round R2: exact upper bound of the appended JSON fragment
+// `,"compaction":{"budget":<n>,"ref":"<21-char requestId>"}` (+16 for
+// `,"note":"floor"` on the floor path). finalUrl/ids aside, the ref is a
+// fixed 21-char requestId (`YYYYMMDDThhmmssZ-` + 4 hex), so the non-floor
+// stamp is 36 + digits(budget) + 21 chars — bounded by the longest budget
+// the CLI can print. Keep the constant exact so projections reach the
+// budget without overshooting it.
+// Measured: `,"compaction":{"budget":300,"ref":"<21-char>"}` is 68 chars;
+// the floor form adds `,"note":"floor"` (16) = 84 max for realistic budgets.
+// 84 reserves the exact worst case so stamped output never overshoots.
+export const COMPACTION_STAMP_RESERVE = 84;
 
 /**
  * Project `envelope` onto `budget` chars by walking `ladder`. Pure: the
@@ -128,6 +138,13 @@ export function applyBudget<T>(
   // ponytail: reserve assumes the compact stamp shape above; if the
   // stamp grows a third field (e.g. reason codes), bump the constant.
   const target = Math.max(0, effectiveBudget - COMPACTION_STAMP_RESERVE);
+  // Fix-round R2: ladder rules run TO EXHAUSTION before the next rule —
+  // an exhausted early rule (all lines bled) must not leave the next rule
+  // (section drops) blind to the target. The old shape exited the whole
+  // ladder the moment any rule could not shrink, so documents whose
+  // never-cut skeleton alone exceeded the target skipped every drop and
+  // floor-clamped with useless bled content instead of a minimal shape.
+  let exhausted = true;
   for (const rule of ladder) {
     while (size > target) {
       const next = rule.apply(projection);
@@ -137,9 +154,9 @@ export function applyBudget<T>(
       projection = next;
       size = nextSize;
     }
-    if (size <= target) {
-      return { projection, compaction: { budget: effectiveBudget } };
-    }
+    if (size <= target) return { projection, compaction: { budget: effectiveBudget } };
+    if (rule.apply(projection) !== projection) exhausted = false;
   }
+  void exhausted;
   return { projection, compaction: { budget: effectiveBudget, note: "floor" } };
 }

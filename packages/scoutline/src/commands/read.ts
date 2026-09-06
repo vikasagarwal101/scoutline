@@ -236,8 +236,30 @@ const trimLastParagraphsRule: LadderRule = {
     // candidates (fix-round B): /^#{1,6}\s/ lines are skipped even
     // when a heading is the document's last line — "headings never
     // cut" holds at every budget.
+    // Fix-round R2: fence-aware trim — never touch fenced code lines
+    // (rewriting ```ts to …```typ corrupts the fence) and never trim
+    // heading lines: ATX (incl. up to 3 leading spaces), Setext
+    // underlines (===/---), or the title line above a Setext underline.
+    const fenced: boolean[] = new Array<boolean>(lines.length).fill(false);
+    let inFence = false;
+    for (let k = 0; k < lines.length; k++) {
+      if (/^ {0,3}```/.test(lines[k]!)) {
+        fenced[k] = true;
+        inFence = !inFence;
+        continue;
+      }
+      fenced[k] = inFence || /^ {0,3}(?: {4}|\t)/.test(lines[k]!);
+    }
+    const isHeadingLine = (idx: number): boolean => {
+      const line = lines[idx]!;
+      if (/^ {0,3}#{1,6}\s/.test(line)) return true;
+      if (/^ {0,3}(?:=+|-+)\s*$/.test(line)) return true;
+      const next = idx + 1 < lines.length ? lines[idx + 1]! : "";
+      if (line.trim().length > 0 && /^ {0,3}(?:=+|-+)\s*$/.test(next)) return true;
+      return false;
+    };
     for (let i = lines.length - 1; i >= 0; i--) {
-      if (/^#{1,6}\s/.test(lines[i]!)) continue;
+      if (fenced[i] === true || isHeadingLine(i)) continue;
       const clean = lines[i]!.replace(/^…+/, "").replace(/…$/, "");
       if (clean.length <= 1) continue;
       const half = Math.max(1, Math.floor(clean.length / 2));
@@ -272,15 +294,24 @@ interface Section {
 function splitSections(content: string): Section[] {
   const sections: Section[] = [];
   let current: Section = { heading: null, bodyLines: [] };
+  // Fix-round R2: fence-aware (a ``` fenced `# comment` is code, never a
+  // heading) and indented-ATX-aware; a whitespace-only-or-empty preamble
+  // merges into the following heading so the drop rule can never pop the
+  // root section off and leave the preamble.
+  let inFence = false;
   for (const line of content.split("\n")) {
-    const match = line.match(/^(#{1,6})\s+(.*)$/);
+    const fence = /^ {0,3}```/.test(line);
+    if (fence) inFence = !inFence;
+    const match = !inFence ? line.match(/^ {0,3}(#{1,6})\s+(.*)$/) : null;
     if (match) {
       // An EMPTY preamble is not a section of its own (floor-shape
       // fix): otherwise the drop rule's `length <= 1` guard counts the
       // phantom preamble and lets every heading-bearing section drop,
       // killing the root heading at crush budgets. Merging it into the
       // following heading section keeps the document root as section 1.
-      if (current.heading === null && current.bodyLines.length === 0) {
+      // Whitespace-only lines count as empty here (R2): leading blank
+      // lines must not promote the preamble to a droppable section.
+      if (current.heading === null && current.bodyLines.every((l) => l.trim() === "")) {
         current = { heading: line, bodyLines: [] };
       } else {
         sections.push(current);

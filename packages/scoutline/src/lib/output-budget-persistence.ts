@@ -98,13 +98,31 @@ export async function persistCompaction(
 ): Promise<BudgetCompaction> {
   if (compaction.ref !== undefined) return compaction;
   const dir = resolveArtifactsDir(options.env, options.platform);
-  const requestId = newRequestId(options.now(), options.randomBytes);
-  const content = `${serializeIndented({
-    schemaVersion: BUDGET_REPORT_SCHEMA_VERSION,
-    requestId,
-    result: envelope,
-  })}\n`;
-  const masterPath = await writeArtifact(dir, requestId, content, { format: "json" });
+  // Fix-round R2 (HIGH): requestIds are seconds-timestamp + 2 random
+  // bytes — a collision must not fail the whole budgeted invocation.
+  // Retry with a fresh ID when writeArtifact refuses an existing
+  // master; any other error still propagates. Bounded (3 attempts):
+  // repeated refusal means the store is adversarial, not unlucky.
+  let requestId = "";
+  let masterPath = "";
+  let attempts = 0;
+  for (;;) {
+    attempts += 1;
+    requestId = newRequestId(options.now(), options.randomBytes);
+    const content = `${serializeIndented({
+      schemaVersion: BUDGET_REPORT_SCHEMA_VERSION,
+      requestId,
+      result: envelope,
+    })}\n`;
+    try {
+      masterPath = await writeArtifact(dir, requestId, content, { format: "json" });
+      break;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (attempts < 3 && message.includes("Refusing to overwrite existing artifact")) continue;
+      throw error;
+    }
+  }
   const entry: SaveLogEntry = {
     kind: "save",
     requestId,

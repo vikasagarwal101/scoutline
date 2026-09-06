@@ -28,7 +28,11 @@ import * as path from "node:path";
 
 import { BRIEF_LADDER } from "../dist/commands/repo.js";
 import { repoBrief, REPO_BRIEF_FOCUS } from "../dist/commands/repo.js";
-import { applyBudget, measurePayload } from "../dist/lib/output-budget.js";
+import {
+  applyBudget,
+  measurePayload,
+  COMPACTION_STAMP_RESERVE,
+} from "../dist/lib/output-budget.js";
 import { readLog } from "../dist/lib/artifacts.js";
 import { buildHistoryShowReport } from "../dist/commands/history.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
@@ -157,7 +161,13 @@ function fullBrief() {
     },
     tree: defaultTree(),
     docs,
-    entryPoints: { ...docs, query: "package.json pyproject.toml Cargo.toml go.mod" },
+    // Fix-round R2: independent excerpts array — the spread alone aliases
+    // docs.excerpts, so per-probe assignments would hit one shared slot.
+    entryPoints: {
+      ...docs,
+      excerpts: docs.excerpts.map((x) => ({ ...x })),
+      query: "package.json pyproject.toml Cargo.toml go.mod",
+    },
     files: [
       {
         path: "README.md",
@@ -241,7 +251,7 @@ describe("BRIEF_LADDER — repo name + structure never cut; docs/files trim; det
       ],
       detected: { hasReadme: true, hasManifest: false, manifestKinds: [] },
     };
-    const out = applyBudget(e, 700, BRIEF_LADDER);
+    const out = applyBudget(e, 700 + COMPACTION_STAMP_RESERVE, BRIEF_LADDER);
     assert.ok(out.compaction);
     const [a, b] = out.projection.files;
     assert.ok(
@@ -559,5 +569,23 @@ describe("repo brief --max-chars (main) — consume once, persist the full envel
       assert.strictEqual(b.stdout[0], a.stdout[0], "byte-identical");
       assert.ok(!("compaction" in JSON.parse(a.stdout[0])));
     });
+  });
+});
+
+describe("PR #103 R2 — brief truth flags", () => {
+  it("trimmed file bodies and search evidence carry truncation truth flags", () => {
+    const e = fullBrief();
+    const out = applyBudget(e, 1250 + COMPACTION_STAMP_RESERVE, BRIEF_LADDER).projection;
+    const shortFiles = (out.files ?? []).filter((f) => f.content.length < 400);
+    for (const f of shortFiles) {
+      assert.equal(f.truncated, true, "shortened file body marked truncated");
+      assert.equal(typeof f.originalContentLength, "number");
+    }
+    if (out.entryPoints?.excerpts?.[0]?.text.length < 200) {
+      assert.equal(out.entryPoints.truncated, true, "manifest evidence marked");
+    }
+    if (out.docs?.excerpts?.[0]?.text.length < 200) {
+      assert.equal(out.docs.truncated, true, "README evidence marked");
+    }
   });
 });

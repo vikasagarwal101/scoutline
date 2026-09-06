@@ -731,9 +731,9 @@ const trimBriefBodiesRule: LadderRule = {
   name: "trim-brief-bodies",
   apply(envelope) {
     const e = envelope as {
-      files?: Array<{ content?: string }>;
-      entryPoints?: { excerpts?: Array<{ text?: string }> };
-      docs?: { excerpts?: Array<{ text?: string }> };
+      files?: Array<{ content?: string; truncated?: boolean; originalContentLength?: number }>;
+      entryPoints?: { excerpts?: Array<{ text?: string }>; truncated?: boolean };
+      docs?: { excerpts?: Array<{ text?: string }>; truncated?: boolean };
     };
     const halve = (text: string | undefined): string | null => {
       if (!text) return null;
@@ -749,7 +749,15 @@ const trimBriefBodiesRule: LadderRule = {
       const shortened = halve(e.files?.[i]?.content);
       if (shortened === null) continue;
       const files = [...(e.files ?? [])];
-      files[i] = { ...files[i], content: shortened };
+      // Fix-round R2: mark the shortened file body (truth flags — the
+      // brief must not claim complete evidence it compacted).
+      const prev = files[i] as { content?: string; truncated?: boolean; originalContentLength?: number };
+      files[i] = {
+        ...prev,
+        content: shortened,
+        truncated: true,
+        originalContentLength: prev.originalContentLength ?? prev.content?.length ?? shortened.length,
+      };
       return { ...e, files };
     }
     for (let i = (e.entryPoints?.excerpts ?? []).length - 1; i >= 0; i--) {
@@ -757,14 +765,32 @@ const trimBriefBodiesRule: LadderRule = {
       if (shortened === null) continue;
       const excerpts = [...(e.entryPoints?.excerpts ?? [])];
       excerpts[i] = { ...excerpts[i], text: shortened };
-      return { ...e, entryPoints: { ...e.entryPoints, excerpts } };
+      // Fix-round R2: mark the shortened manifest evidence.
+      const ep = e.entryPoints as { truncated?: boolean };
+      return {
+        ...e,
+        entryPoints: {
+          ...e.entryPoints,
+          excerpts,
+          ...(ep.truncated === false ? { truncated: true } : {}),
+        },
+      };
     }
     for (let i = (e.docs?.excerpts ?? []).length - 1; i >= 0; i--) {
       const shortened = halve(e.docs?.excerpts?.[i]?.text);
       if (shortened === null) continue;
       const excerpts = [...(e.docs?.excerpts ?? [])];
       excerpts[i] = { ...excerpts[i], text: shortened };
-      return { ...e, docs: { ...e.docs, excerpts } };
+      // Fix-round R2: mark the shortened README evidence.
+      const docs = e.docs as { truncated?: boolean };
+      return {
+        ...e,
+        docs: {
+          ...e.docs,
+          excerpts,
+          ...(docs.truncated === false ? { truncated: true } : {}),
+        },
+      };
     }
     return envelope;
   },

@@ -242,3 +242,25 @@ describe("PR #103 fix-round — corrupt-log notice propagation", () => {
     });
   });
 });
+
+describe("PR #103 R2 — requestId collision retry", () => {
+  it("persists under an id collision instead of failing the invocation", async (t) => {
+    await withTempDir(t, async (dir) => {
+      // First write reserves the id the second persistCompaction call
+      // will "choose" — force collision by seeding the store.
+      const first = await persistCompaction(makeEnvelope(1), { budget: 5, note: "floor" }, META, persistenceOptions(dir));
+      assert.ok(first.ref);
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync(path.join(dir, `${first.ref}.json`), "occupied");
+      const seen = [];
+      const second = await persistCompaction(
+        makeEnvelope(1),
+        { budget: 5, note: "floor" },
+        META,
+        { ...persistenceOptions(dir), onNotice: (m) => seen.push(m) },
+      );
+      assert.ok(second.ref, "ref still produced despite the occupied id");
+      assert.notEqual(second.ref, first.ref, "fresh id chosen on refusal");
+    });
+  });
+});

@@ -515,6 +515,15 @@ describe("change log", () => {
             assert.equal(entries.length, 6);
         });
     });
+
+    it("change-log.jsonl is created 0600 (the atomicReplaceFile discipline)", async (t) => {
+        await withTempDir(t, async (root) => {
+            const added = await addTarget(root, { url: "https://example.com/", now: NOW_1 });
+            await appendChangeLog(root, added.id, baseEntry);
+            const stat = await fs.stat(path.join(root, added.id, "change-log.jsonl"));
+            assert.equal(stat.mode & 0o777, 0o600);
+        });
+    });
 });
 
 // ------------------------------------------------- ring non-advance on error

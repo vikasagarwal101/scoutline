@@ -646,7 +646,9 @@ export async function appendChangeLog(
     targetLock(id),
     async () => {
       await fs.mkdir(path.join(root, id), { recursive: true, mode: 0o700 });
-      const handle = await fs.open(path.join(root, id, WATCH_CHANGELOG_FILENAME), "a");
+      // 0600, same discipline as atomicReplaceFile and the snapshot
+      // bytes: evidence files are owner-only.
+      const handle = await fs.open(path.join(root, id, WATCH_CHANGELOG_FILENAME), "a", 0o600);
       try {
         await handle.writeFile(line);
       } finally {

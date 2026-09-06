@@ -198,8 +198,9 @@ Commands:
            credential-free)
   archive  Internet Archive Wayback Machine (CDX index + snapshot
            replay, credential-free)
-  watch    Keyless page monitoring (add / list / remove targets under
-           a persistent snapshot ring + change log, credential-free)
+  watch    Keyless page monitoring (add / list / remove targets, run
+           monitoring ticks, read the change feed — a persistent
+           snapshot ring + change log, credential-free)
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
   init     Interactive onboarding wizard (writes ~/.scoutline/config.json)
 

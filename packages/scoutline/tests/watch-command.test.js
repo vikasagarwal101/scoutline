@@ -30,6 +30,7 @@ import {
   addTarget,
   appendChangeLog,
   listSnapshots,
+  listTargets,
   readChangeLog,
   WATCH_CHANGELOG_FILENAME,
   WATCH_REGISTRY_FILENAME,
@@ -604,6 +605,31 @@ describe("scoutline watch command (T4)", () => {
       }
     });
 
+    it("permanent 301 to a trailing-slash variant of the SAME path is NOT moved (cross-surface rule)", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-run-"));
+      const { server, routes, base } = await makeTickServer();
+      try {
+        const runner = makeRunnerAt(dir, Date.parse("2026-09-06T08:00:00Z"));
+        // Baseline serves /a directly (no redirect yet).
+        routes["/a"] = { body: HTML_V1, status: 200, type: "text/html; charset=utf-8" };
+        const target = await addAt(runner, `${base}/a`, "slash-docs");
+        await runner(["watch", "run", "slash-docs"]);
+        // 301 to /a/ — same document by the archive.ts normalization.
+        routes["/a"] = { status: 301, location: `${base}/a/` };
+        routes["/a/"] = { body: HTML_V1, status: 200, type: "text/html; charset=utf-8" };
+        const r2 = await runner(["watch", "run", "slash-docs"]);
+        assert.equal(r2.code, 0, "trailing-slash 301 is not a durable move");
+        const data = JSON.parse(r2.stdout);
+        assert.equal(data.result, "no-change");
+        assert.equal(data.moved ?? false, false);
+        const log = await readChangeLog(dir, target.id);
+        assert.equal(log.at(-1).kind, "no-change");
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+        await new Promise((resolve) => server.close(resolve));
+      }
+    });
+
     it("--all: worst exit wins, every target in results in id order", async () => {
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-run-"));
       const { server, routes, base } = await makeTickServer();
@@ -874,6 +900,139 @@ describe("scoutline watch command (T4)", () => {
         );
       } finally {
         await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it("strips XML-invalid control chars (raw \\x01 must never reach the feed bytes)", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-feed-"));
+      try {
+        const target = await seedTarget(dir);
+        await appendChangeLog(dir, target.id, {
+          at: FROZEN_NOW,
+          kind: "change",
+          exit: 1,
+          gen: 2,
+          added: ["Bad\x01Heading"],
+          removed: [],
+          changed: [],
+          hashOnly: false,
+        });
+        const r = await feed(dir)(["watch", "feed", target.id, "--format", "rss"]);
+        assert.equal(r.code, 0);
+        assert.ok(!r.stdout.includes("\x01"), "raw control chars are XML-invalid");
+        assert.ok(!r.stdout.includes("Bad\x01"), "stripped, not entity-encoded");
+        assert.match(r.stdout, /<title>added: BadHeading<\/title>/);
+        // Tab/newline/CR are the three legal XML 1.0 control chars — kept.
+        await appendChangeLog(dir, target.id, {
+          at: FROZEN_NOW + 60000,
+          kind: "change",
+          exit: 1,
+          gen: 3,
+          added: ["Keep\tTab\nNL\rCR"],
+          removed: [],
+          changed: [],
+          hashOnly: false,
+        });
+        const r2 = await feed(dir)(["watch", "feed", target.id, "--format", "rss"]);
+        assert.equal(r2.code, 0);
+        assert.match(r2.stdout, /<title>added: Keep\tTab\nNL\rCR<\/title>/);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it("finalUrl-only change: fallback title/description, never an empty 'removed: '", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-feed-"));
+      try {
+        const target = await seedTarget(dir);
+        const newUrl = "https://example.com/docs/v3";
+        await appendChangeLog(dir, target.id, {
+          at: FROZEN_NOW,
+          kind: "change",
+          exit: 1,
+          gen: 2,
+          added: [],
+          removed: [],
+          changed: [],
+          hashOnly: false,
+          finalUrl: newUrl,
+        });
+        const r = await feed(dir)(["watch", "feed", target.id, "--format", "rss"]);
+        assert.equal(r.code, 0);
+        assert.ok(!r.stdout.includes("removed: </title>"), "garbage empty title");
+        assert.match(r.stdout, /<title>changed: https:\/\/example\.com\/docs\/v3<\/title>/);
+        assert.match(r.stdout, /<description>url changed to https:\/\/example\.com\/docs\/v3<\/description>/);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it("end-to-end: 302 to a new URL with identical content → exit 1, kind change, empty arrays; rss renders the fallback", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-watch-run-"));
+      const routes = {
+        "/a": {
+          body: `<html><head><title>Doc</title></head><body>
+<h1>Install</h1><p>Run the installer.</p>
+</body></html>`,
+          status: 200,
+          type: "text/html; charset=utf-8",
+        },
+      };
+      const server = http.createServer((req, res) => {
+        const r = routes[new URL(req.url, `http://${req.headers.host}`).pathname] ?? {
+          status: 404,
+          body: "Not found",
+          type: "text/plain",
+        };
+        if (r.location) {
+          res.writeHead(r.status, { Location: r.location });
+          res.end();
+          return;
+        }
+        res.writeHead(r.status, { "Content-Type": r.type });
+        res.end(Buffer.from(r.body, "utf8"));
+      });
+      try {
+        await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const base = `http://127.0.0.1:${server.address().port}`;
+        const runner = makeRunner(dir);
+        // add through the CLI so the registry lives under `dir`
+        const added = await main(["watch", "add", `${base}/a`, "--name", "hop-docs"], {
+          invocation: makeAdapter().adapter,
+          env: { SCOUTLINE_WATCH_DIR: dir },
+          loadScoutlineConfig: () => {
+            throw new Error("Should not be called!");
+          },
+          now: () => Date.parse("2026-09-06T08:00:00Z"),
+        });
+        assert.equal(added, 0);
+        await runner(["watch", "run", "hop-docs"]);
+        routes["/a"] = { status: 302, location: `${base}/b` };
+        routes["/b"] = {
+          body: `<html><head><title>Doc</title></head><body>
+<h1>Install</h1><p>Run the installer.</p>
+</body></html>`,
+          status: 200,
+          type: "text/html; charset=utf-8",
+        };
+        const r2 = await runner(["watch", "run", "hop-docs"]);
+        assert.equal(r2.code, 1, "durable state (finalUrl) changed");
+        const data = JSON.parse(r2.stdout);
+        assert.equal(data.result, "change");
+        assert.deepEqual(data.diff, { added: [], removed: [], changed: [] });
+        const listed = await listTargets(dir);
+        const target = listed.find((t) => t.name === "hop-docs");
+        assert.ok(target);
+        const log = await readChangeLog(dir, target.id);
+        assert.equal(log.at(-1).kind, "change");
+        const rf = await feed(dir)(["watch", "feed", target.id, "--format", "rss"]);
+        assert.equal(rf.code, 0);
+        assert.ok(!rf.stdout.includes("removed: </title>"), "garbage empty title");
+        assert.match(rf.stdout, new RegExp(`<title>changed: ${base}/b</title>`));
+        assert.match(rf.stdout, new RegExp(`<description>url changed to ${base}/b</description>`));
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+        await new Promise((resolve) => server.close(resolve));
       }
     });
 

@@ -52,7 +52,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { main } from "../dist/index.js";
+import { main, DISPATCHED_COMMANDS, ACCEPT_NO_JOURNAL_COMMANDS } from "../dist/index.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 import {
   appendJournalEntry,
@@ -515,7 +515,7 @@ describe("T2a: always-on search journaling (main-driven)", () => {
     }
   });
 
-  it("fanout search: no single server → no journal write (single-server entry shape; marker/fanout journaling is a later ruling)", async () => {
+  it("fanout search miss → journal entry with mode:\"fanout\" routing (must-fix 3 — no silent skip of an always-on surface)", async () => {
     const artifactsDir = makeTempDir("scoutline-journal-fanout-");
     const log = [];
     const { adapter, stdout, stderr } = makeAdapter();
@@ -532,15 +532,14 @@ describe("T2a: always-on search journaling (main-driven)", () => {
         }),
       );
       assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
-      const indexFile = join(artifactsDir, "index.json");
-      const store = existsSync(indexFile)
-        ? JSON.parse(readFileSync(indexFile, "utf8"))
-        : { entries: [] };
-      assert.deepStrictEqual(
-        store.entries,
-        [],
-        "fanout has no single server — no journal entry in T2a",
-      );
+      const store = readJournalEntries(artifactsDir);
+      assert.strictEqual(store.entries.length, 1, "fanout journals exactly one entry");
+      const entry = store.entries[0];
+      assert.strictEqual(entry.kind, "journal");
+      assert.strictEqual(entry.provider.mode, "fanout");
+      assert.deepStrictEqual(entry.provider.arms, ["zai", "brave"]);
+      assert.ok(entry.skeleton.results.length > 0, "fanout skeleton carries result rows");
+      assert.ok(typeof entry.cacheKey === "string" && entry.cacheKey.length > 0);
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
     }
@@ -588,6 +587,289 @@ describe("T2a: history list renders journal entries without TypeError", () => {
       assert.strictEqual(envelope.entries.length, 1);
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("T2a-fix: batch-driven ops journal per their own capability (must-fix 1)", () => {
+  it("batch of [search, read] → exactly the search op journals (read is T3)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-batch-");
+    const cacheDir = makeTempDir("scoutline-journal-batch-cache-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    // One dual-capability descriptor (batch assignment resolves per-op
+    // capability; two same-id single-capability descriptors would make the
+    // read op's resolution hit a search-only preflight).
+    const dualDesc = {
+      id: "zai",
+      isConfigured: () => true,
+      capabilities: () => new Set(["search", "reader"]),
+      create: () => ({
+        id: "zai",
+        search: {
+          validate() {},
+          cacheIdentity(request) {
+            return {
+              provider: "zai",
+              capability: "search",
+              credentialFingerprint: "fp-zai",
+              request,
+              legacyCandidates: [],
+            };
+          },
+          async invoke() {
+            return [{ title: "t-zai", url: "https://zai/r", summary: "s" }];
+          },
+        },
+        reader: {
+          fetch: {
+            kind: "reader-fetch",
+            validate() {},
+            cacheIdentity(r) {
+              return {
+                provider: "zai",
+                capability: "reader",
+                credentialFingerprint: "fp-zai",
+                request: r,
+                legacyCandidates: [],
+              };
+            },
+            decodeCached: () => null,
+            async invoke(request) {
+              return {
+                schemaVersion: 1,
+                url: request.url,
+                finalUrl: request.url,
+                title: "T",
+                content: "read by zai",
+                contentFormat: "markdown",
+              };
+            },
+          },
+        },
+      }),
+    };
+    const manifest = {
+      schemaVersion: 1,
+      operations: [
+        { name: "op-search", command: "search", input: { query: "rust vs go" } },
+        { name: "op-read", command: "read", input: { url: "https://example.com" } },
+      ],
+    };
+    const manifestDir = makeTempDir("scoutline-journal-batch-manifest-");
+    const manifestFile = join(manifestDir, "manifest.json");
+    writeFileSync(manifestFile, JSON.stringify(manifest), "utf8");
+    try {
+      const status = await main(
+        ["batch", manifestFile],
+        hermeticMainDeps({
+          invocation: adapter,
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir, SCOUTLINE_CACHE_DIR: cacheDir },
+          providerDescriptors: [dualDesc],
+          loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+        }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const store = readJournalEntries(artifactsDir);
+      const journals = store.entries.filter((e) => e.kind === "journal");
+      assert.strictEqual(journals.length, 1, "exactly the search op journals");
+      assert.strictEqual(journals[0].capability, "search");
+      assert.strictEqual(journals[0].query, "rust vs go");
+      assert.ok(journals[0].skeleton.results.length > 0);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+      rmSync(cacheDir, { recursive: true, force: true });
+      rmSync(manifestDir, { recursive: true, force: true });
+    }
+  });
+
+  it("config journal:false kills batch op journaling too (config-only switch, no per-op flag)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-batch-off-");
+    const cacheDir = makeTempDir("scoutline-journal-batch-off-cache-");
+    const { adapter, stderr } = makeAdapter();
+    const searchDesc = makeSearchDescriptor("zai", []);
+    const manifest = {
+      schemaVersion: 1,
+      operations: [{ name: "op-search", command: "search", input: { query: "q" } }],
+    };
+    const manifestDir = makeTempDir("scoutline-journal-batch-off-manifest-");
+    const manifestFile = join(manifestDir, "manifest.json");
+    writeFileSync(manifestFile, JSON.stringify(manifest), "utf8");
+    try {
+      const status = await main(
+        ["batch", manifestFile],
+        hermeticMainDeps({
+          invocation: adapter,
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir, SCOUTLINE_CACHE_DIR: cacheDir },
+          providerDescriptors: [searchDesc],
+          loadScoutlineConfig: async () => ({ version: 1, providers: {}, journal: false }),
+        }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const indexFile = join(artifactsDir, "index.json");
+      if (existsSync(indexFile)) {
+        const store = JSON.parse(readFileSync(indexFile, "utf8"));
+        assert.deepStrictEqual(
+          store.entries.filter((e) => e.kind === "journal"),
+          [],
+          "no journal entries under config journal:false",
+        );
+      }
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+      rmSync(cacheDir, { recursive: true, force: true });
+      rmSync(manifestDir, { recursive: true, force: true });
+    }
+  });
+
+  it("batch --no-journal stays REJECTED at parse (command-local surface; ruling: per-op journaling is config-switch only)", async () => {
+    const { adapter, stderr } = makeAdapter();
+    const status = await main(
+      ["batch", "manifest.json", "--no-journal"],
+      hermeticMainDeps({
+        invocation: adapter,
+        env: {},
+        loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+      }),
+    );
+    assert.strictEqual(status, 1);
+    const envelope = JSON.parse(stderr.find((line) => line.trim().startsWith("{")) ?? "{}");
+    assert.strictEqual(envelope.error?.code ?? envelope.code, "UNSUPPORTED_OPTION");
+  });
+});
+
+describe("T2a-fix: history show + stats over journal entries (must-fix 2, NIT 2)", () => {
+  it("history show <journal-id> renders the journal entry itself — exit 0, no master read, no crash", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-show-");
+    const log = [];
+    const searchRun = makeAdapter();
+    try {
+      await main(
+        ["search", "rust vs go"],
+        journalDeps(searchRun.adapter, log, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
+      );
+      const store = readJournalEntries(artifactsDir);
+      const journalId = store.entries[0].requestId;
+      const show = makeAdapter();
+      const status = await main(
+        ["history", "show", journalId],
+        hermeticMainDeps({
+          invocation: show.adapter,
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+        }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(show.stderr)}`);
+      const envelope = JSON.parse(show.stdout[0]);
+      assert.strictEqual(envelope.entry.kind, "journal");
+      assert.strictEqual(envelope.entry.requestId, journalId);
+      // The journal entry IS the artifact: report = the entry body.
+      assert.strictEqual(envelope.report.kind, "journal");
+      assert.ok(envelope.report.skeleton.results.length > 0);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("history stats: journal rows count under capability (NIT 2) and masterBytes skips them (guard)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-stats-");
+    const log = [];
+    const searchRun = makeAdapter();
+    try {
+      await main(
+        ["search", "rust vs go"],
+        journalDeps(searchRun.adapter, log, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
+      );
+      const stats = makeAdapter();
+      const status = await main(
+        ["history", "stats"],
+        hermeticMainDeps({
+          invocation: stats.adapter,
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+        }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stats.stderr)}`);
+      const envelope = JSON.parse(stats.stdout[0]);
+      assert.strictEqual(envelope.byCommand["search"], 1, "journal row counts under capability");
+      assert.strictEqual(envelope.byCommand[undefined], undefined, "no undefined key");
+      assert.strictEqual(envelope.byKind.journal, 1);
+      assert.strictEqual(envelope.masterBytes, 0, "journal rows add no master bytes");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("T2a NIT 3: --no-journal rejection matrix — derived enumeration pin", () => {
+  it("the accept set is exactly the journalable subset of the dispatch surface", () => {
+    // The accept set ⊆ dispatch surface: no flag surface for a command
+    // that does not exist.
+    for (const command of ACCEPT_NO_JOURNAL_COMMANDS) {
+      assert.ok(
+        DISPATCHED_COMMANDS.has(command),
+        `accept-set command "${command}" is not dispatched`,
+      );
+    }
+    // And the journalable commands are all present:
+    for (const journalable of ["search", "read", "research"]) {
+      assert.ok(
+        ACCEPT_NO_JOURNAL_COMMANDS.has(journalable),
+        `journalable command "${journalable}" missing from the accept set`,
+      );
+    }
+  });
+
+  it("a future accept-set entry without dispatch fails the pin (mutation guard)", () => {
+    // Simulates the drift the pin exists to catch: adding a command to
+    // ACCEPT_NO_JOURNAL_COMMANDS (accepting --no-journal) without adding
+    // it to dispatch — or vice versa — fails by omission.
+    const simulatedAccept = new Set(ACCEPT_NO_JOURNAL_COMMANDS);
+    simulatedAccept.add("transmogrify");
+    const simulatedDispatch = new Set(DISPATCHED_COMMANDS);
+    const notDispatched = [...simulatedAccept].filter((c) => !simulatedDispatch.has(c));
+    assert.deepEqual(
+      notDispatched,
+      ["transmogrify"],
+      "an accept-set entry with no dispatch site must be exactly the omission",
+    );
+  });
+
+  it("--no-journal rejects on every non-accept dispatched command (matrix rows)", async () => {
+    const rows = [
+      ["vision", ["vision", "analyze", "img.png"]],
+      ["crawl", ["crawl", "https://example.com"]],
+      ["map", ["map", "https://example.com"]],
+      ["batch", ["batch", "manifest.json"]],
+      ["repo", ["repo", "tree"]],
+      ["fetch", ["fetch", "https://example.com"]],
+      ["history", ["history", "list"]],
+      ["config", ["config", "get", "fanout"]],
+      ["doctor", ["doctor"]],
+      ["quota", ["quota"]],
+      ["usage", ["usage"]],
+      ["cache", ["cache", "stats"]],
+      ["tools", ["tools"]],
+      ["init", ["init"]],
+      ["archive", ["archive", "cdx", "example.com"]],
+      ["watch", ["watch", "list"]],
+      ["code", ["code", "session"]],
+    ];
+    for (const [command, argv] of rows) {
+      const { adapter, stderr } = makeAdapter();
+      const status = await main(
+        [...argv, "--no-journal"],
+        hermeticMainDeps({
+          invocation: adapter,
+          env: {},
+          loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+        }),
+      );
+      const envelope = JSON.parse(stderr.find((line) => line.trim().startsWith("{")) ?? "{}");
+      assert.ok(
+        (status === 1 && (envelope.error?.code ?? envelope.code) === "UNSUPPORTED_OPTION") ||
+          (status === 1 && envelope.error?.message?.includes("--no-journal")),
+        `${command} --no-journal must reject UNSUPPORTED_OPTION (got status=${status})`,
+      );
     }
   });
 });

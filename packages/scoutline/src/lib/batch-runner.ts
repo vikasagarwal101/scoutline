@@ -44,7 +44,8 @@ import { compileInput } from "./batch-manifest.js";
 import type { AllowedBatchCommand, BatchManifest, BatchOperation } from "./batch-manifest.js";
 import type { BatchProviderAssignment } from "./batch-assign.js";
 import type { CommandInvocationAdapter } from "../command-invocation.js";
-import type { HandlerDependencies } from "../index.js";
+import type { HandlerDependencies, ServingCapture } from "../index.js";
+import { captureServingDescriptorsForOp } from "../index.js";
 import type { ProviderCapability, ProviderDescriptor, ProviderId } from "../providers/types.js";
 
 // ---------------------------------------------------------------------------
@@ -427,11 +428,38 @@ export async function runBatch(
     const handler: BatchOperationHandler = deps.handlers[op.command]!;
     const capture = createPerOpCapture();
 
+    // History-journal merge T2a must-fix 1: batch-driven ops journal per
+    // their OWN capability (PRD AC3 — no exclusion branch). When main
+    // enabled batch journaling (config switch only; `--no-journal` on the
+    // batch COMMAND is command-local and stays rejected), each op gets
+    // its own ServingCapture cell; the descriptors are wrapped around
+    // THAT cell for the op, so concurrent ops never cross-contaminate
+    // and the per-op journal hook reads exactly its own invoke.
+    // Non-journalable commands (repo/vision/crawl/map) run unwired;
+    // read/research journaling arrives in T3 on the same seam.
+    const journaling = deps.handlerDeps.journalBatchEnabled === true;
+    const opJournalCell = journaling ? ({} as import("../index.js").ServingCapture) : undefined;
+    const journalInput =
+      opJournalCell !== undefined &&
+      (op.command === "search" || op.command === "read" || op.command === "research")
+        ? { capability: op.command, capture: opJournalCell }
+        : undefined;
+    const opDescriptors =
+      opJournalCell !== undefined
+        ? captureServingDescriptorsForOp(deps.handlerDeps.providerDescriptors, opJournalCell)
+        : deps.handlerDeps.providerDescriptors;
+
     // D5 spread seam: the ONLY override of the shared handler deps.
     const opDeps: HandlerDependencies = {
       ...deps.handlerDeps,
       provider: assignment.provider,
       invocation: capture.adapter,
+      ...(opDescriptors !== deps.handlerDeps.providerDescriptors
+        ? { providerDescriptors: opDescriptors }
+        : {}),
+      ...(journalInput !== undefined
+        ? { journal: journalInput as HandlerDependencies["journal"] }
+        : {}),
     };
 
     const startedAt = now();

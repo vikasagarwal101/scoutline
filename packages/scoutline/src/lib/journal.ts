@@ -13,7 +13,7 @@
  * (query text and skeleton URLs pass it — PRD AC9, pinned E2E).
  */
 import { createHash } from "node:crypto";
-import { appendLogEntry, newRequestId, type SingleProviderRouting, type AppendLogEntryOptions } from "./artifacts.js";
+import { appendLogEntry, newRequestId, type ProviderRouting, type AppendLogEntryOptions } from "./artifacts.js";
 import { redactSecrets } from "./redact.js";
 
 /** Capabilities that journal (PRD AC3); the seam is capability-driven so T3 extends, not rewrites. */
@@ -40,7 +40,13 @@ export interface JournalLogEntry {
   /** ms epoch — the CALLER's injected instant; never Date.now() in here. */
   readonly timestamp: number;
   readonly capability: JournalableCapability;
-  readonly provider: SingleProviderRouting;
+  /**
+   * Review must-fix 3: the ProviderRouting union — a single-provider run
+   * records {mode:"single", effective, servedFrom}; a fan-out run
+   * records {mode:"fanout", arms} faithfully (the same shape the save
+   * hook logs). No silent skip of an always-on surface.
+   */
+  readonly provider: ProviderRouting;
   /** Redacted query text (search) or URL (read/research). */
   readonly query: string;
   /** sha256 hex of the normalized skeleton serialization. */
@@ -110,14 +116,28 @@ export function asJournalEntry(value: unknown): JournalLogEntry | undefined {
   if (typeof e.cacheKey !== "string" || e.cacheKey.length === 0) return undefined;
   const provider = e.provider as Record<string, unknown> | undefined;
   if (typeof provider !== "object" || provider === null) return undefined;
-  if (provider.mode !== "single") return undefined;
-  if (typeof provider.effective !== "string" || provider.effective.length === 0) return undefined;
-  if (provider.requested !== undefined && typeof provider.requested !== "string") return undefined;
-  if (
-    provider.servedFrom !== undefined &&
-    provider.servedFrom !== "live" &&
-    provider.servedFrom !== "cache"
-  ) {
+  // Must-fix 3: the ProviderRouting union — single keeps the #108
+  // servedFrom distinction; fanout carries {mode, arms}.
+  if (provider.mode === "single") {
+    if (typeof provider.effective !== "string" || provider.effective.length === 0) return undefined;
+    if (provider.requested !== undefined && typeof provider.requested !== "string") return undefined;
+    if (
+      provider.servedFrom !== undefined &&
+      provider.servedFrom !== "live" &&
+      provider.servedFrom !== "cache"
+    ) {
+      return undefined;
+    }
+  } else if (provider.mode === "fanout") {
+    if (
+      !Array.isArray(provider.arms) ||
+      provider.arms.length === 0 ||
+      !provider.arms.every((arm) => typeof arm === "string" && arm.length > 0)
+    ) {
+      return undefined;
+    }
+    if (provider.requested !== undefined && typeof provider.requested !== "string") return undefined;
+  } else {
     return undefined;
   }
   if (typeof e.skeleton !== "object" || e.skeleton === null || Array.isArray(e.skeleton)) {
@@ -158,7 +178,7 @@ export async function appendJournalEntry(
 
 export interface JournalInput {
   readonly capability: JournalableCapability;
-  readonly provider: SingleProviderRouting;
+  readonly provider: ProviderRouting;
   readonly query: string;
   readonly cacheKey: string;
   readonly skeleton: JournalSkeleton;

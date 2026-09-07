@@ -635,8 +635,11 @@ describe("zero-diff: without --max-chars, byte-identical output", () => {
   it("fan-out: no flag → byte-identical to the pre-T3 shape (mergedFrom, no compaction)", async (t) => {
     await withTempDir(t, async (dir) => {
       const shared = src("Shared", "https://e/shared", "s".repeat(30));
+      // --no-journal (T2a fix): the fan-out run now ALWAYS-ON journals
+      // (must-fix 3); this budget zero-diff pin isolates the budget
+      // surface, so it opts out of the journal for the run.
       const { status, stdout } = await runMain(
-        ["--provider", "tavily,exa", "search", "q"],
+        ["--provider", "tavily,exa", "search", "q", "--no-journal"],
         {
           artifactsDir: dir,
           extraDeps: {

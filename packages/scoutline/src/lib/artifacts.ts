@@ -382,6 +382,17 @@ function asSaveLogEntry(value: unknown): SaveLogEntry | undefined {
   if (provider.mode === "single") {
     if (typeof provider.effective !== "string" || provider.effective.length === 0) return undefined;
     if (provider.requested !== undefined && typeof provider.requested !== "string") return undefined;
+    // Issue #108 review: servedFrom is schema-optional but, when present,
+    // enum-constrained — a persisted "banana" must fail the entry guard
+    // (fail-open whole-log semantics) rather than flow into history
+    // reports unvalidated.
+    if (
+      provider.servedFrom !== undefined &&
+      provider.servedFrom !== "live" &&
+      provider.servedFrom !== "cache"
+    ) {
+      return undefined;
+    }
   } else if (provider.mode === "fanout") {
     if (
       !Array.isArray(provider.arms) ||

@@ -82,6 +82,7 @@ import {
 import { historyCommand, HISTORY_HELP } from "./commands/history.js";
 import { handleFetch, FETCH_HELP } from "./commands/fetch.js";
 import { handleArchive, parseArchiveArgs, ARCHIVE_HELP } from "./commands/archive.js";
+import { handleWatch } from "./commands/watch.js";
 import { cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
 import type { PruneSelectors, PruneCachesResult } from "./lib/cache.js";
 import { parseBatchManifest } from "./lib/batch-manifest.js";
@@ -230,6 +231,9 @@ Commands:
            credential-free)
   archive  Internet Archive Wayback Machine (CDX index + snapshot
            replay, credential-free)
+  watch    Keyless page monitoring (add / list / remove targets, run
+           monitoring ticks, read the change feed — a persistent
+           snapshot ring + change log, credential-free)
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
   init     Interactive onboarding wizard (writes ~/.scoutline/config.json)
 
@@ -280,6 +284,7 @@ Help:
   scoutline history --help
   scoutline fetch --help
   scoutline archive --help
+  scoutline watch --help
   scoutline init --help
 `.trim();
 
@@ -4912,6 +4917,28 @@ export async function main(
           ? ("compact" as OutputMode)
           : outputMode;
       return await handleArchive(commandArgs, archiveOutputMode, buildHandlerDeps(env, envSecrets, true), forceRaw);
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
+  // `watch` credential-free like archive/fetch (keyless page monitoring
+  // — registry CRUD only in T4, no Provider resolution, no Adapter, no
+  // quota tracking), so it too short-circuits before the credentialed
+  // config load. The `isolated` flag is the global extraction result:
+  // watch is stateful BY DESIGN (persistent ring + never-pruned change
+  // log under SCOUTLINE_WATCH_DIR), so a subcommand run under
+  // --isolated is refused at parse time inside the handler — a unique
+  // artifacts namespace would silently orphan the monitored state.
+  if (command === "watch") {
+    try {
+      return await handleWatch(
+        commandArgs,
+        outputMode,
+        buildHandlerDeps(env, envSecrets, true),
+        isolated,
+      );
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
       return getErrorExitCode(error);

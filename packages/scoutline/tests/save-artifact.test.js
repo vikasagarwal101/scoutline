@@ -739,7 +739,7 @@ function decodeReaderFetchResult(value) {
 }
 
 /** Reader double whose cacheIdentity mirrors the zai adapter: real v2 key + one legacy candidate. */
-function makeProvenanceReaderDescriptor(id, { down = false, warm = "none" } = {}, cache = null) {
+function makeProvenanceReaderDescriptor(id, { down = false, warm = "none" } = {}, cache = null, invokeLog = null) {
   return {
     id,
     isConfigured: () => true,
@@ -808,6 +808,10 @@ function makeProvenanceReaderDescriptor(id, { down = false, warm = "none" } = {}
           },
           decodeCached: decodeReaderFetchResult,
           async invoke(request) {
+            // Review nit 3: the invoke log makes the "must NOT run" pins
+            // live — without the push, deepStrictEqual(invokeLog, []) was
+            // vacuously true.
+            if (invokeLog) invokeLog.push(id);
             if (down) {
               throw new TimeoutError(`simulated outage: ${id} unreachable (ECONNREFUSED)`);
             }
@@ -847,8 +851,8 @@ async function runProvenanceScenario({ warm }) {
         env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
         readerCache: cache,
         providerDescriptors: [
-          makeProvenanceReaderDescriptor("zai", { down: true, warm }, cache),
-          makeProvenanceReaderDescriptor("tavily", {}, cache),
+          makeProvenanceReaderDescriptor("zai", { down: true, warm }, cache, invokeLog),
+          makeProvenanceReaderDescriptor("tavily", {}, cache, invokeLog),
         ],
       }),
     );
@@ -897,7 +901,11 @@ describe("save entries distinguish served-live vs served-from-cache (issue #108)
   it("control: cold cache + zai unreachable — live tavily fallback pins servedFrom:'live'", async () => {
     const out = await runProvenanceScenario({ warm: "none" });
     assert.strictEqual(out.status, 0, `stderr=${JSON.stringify(out.stderr)}`);
-    assert.ok(!out.invokeLog.includes("zai") || true, "control: zai attempted and failed");
+    // Review nit 3: was a dead `|| true` assert. zai is the registry-first
+    // effective — the executor must attempt it (and its invoke must throw)
+    // before tavily serves live.
+    assert.ok(out.invokeLog.includes("zai"), "control: zai must be attempted (and fail)");
+    assert.ok(out.invokeLog.includes("tavily"), "control: tavily must serve live");
     assert.deepStrictEqual(out.entry.provider, {
       mode: "single",
       requested: "zai",

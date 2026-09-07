@@ -243,7 +243,15 @@ function formatHistoryList(report: HistoryListReport): string {
   ];
   for (const row of report.entries) {
     const provider =
-      row.provider.mode === "fanout" ? `fanout(${row.provider.arms.join("+")})` : row.provider.effective;
+      row.provider.mode === "fanout"
+        ? `fanout(${row.provider.arms.join("+")})`
+        : // Issue #108: a cache-served run rendered bare `effective` reads
+          // "zai served this" during an outage zai was never contacted in;
+          // the qualifier restores the distinction (render-only — the
+          // data envelope carries the field verbatim).
+          row.provider.servedFrom === "cache"
+            ? `${row.provider.effective} (cache)`
+            : row.provider.effective;
     lines.push(
       columns([
         row.requestId,

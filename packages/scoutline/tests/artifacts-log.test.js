@@ -339,6 +339,7 @@ describe("readLog", () => {
         { ...saveEntry(), provider: { mode: "single" } }, // missing effective
         { ...saveEntry(), provider: { mode: "fanout", arms: [] } }, // empty arms
         { ...saveEntry(), provider: { mode: "sideways", arms: ["zai"] } }, // unknown mode
+        { ...saveEntry(), provider: { mode: "single", effective: "zai", servedFrom: "banana" } }, // invalid servedFrom enum (#108 review)
         { ...saveEntry(), artifactFormat: "yaml" }, // invalid format
         { ...saveEntry(), cliVersion: 1 }, // non-string version
         { ...saveEntry(), masterPath: "../escape.json" }, // path escape

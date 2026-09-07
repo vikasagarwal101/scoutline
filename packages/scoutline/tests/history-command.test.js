@@ -246,6 +246,46 @@ describe("history: text-mode list rendering (column separators)", () => {
     assert.ok(row.slice(22).startsWith(timestamp), `timestamp column misaligned: ${row}`);
     assert.strictEqual(row[22 + 24], " ", "the exactly-full timestamp must still be followed by a space");
   });
+
+  // Issue #108 review finding 1: a cache-served run renders `zai (cache)`
+  // in the provider column — bare `zai` reads "zai served live" during an
+  // outage zai was never contacted in. Live and fan-out rows are unchanged.
+  it("renders servedFrom cache as `effective (cache)`; live and fanout rows unchanged", async () => {
+    const deps = (entries) => ({
+      subcommand: "list",
+      readLog: async () => ({ log: { version: 1, entries } }),
+      readMaster: async () => undefined,
+      masterSizeOf: async () => 0,
+      notice: () => {},
+      now: fixedNow,
+    });
+    const result = await historyCommand(
+      deps([
+        entry({ requestId: "20260829T120000Z-0001" }),
+        entry({
+          requestId: "20260829T120000Z-0002",
+          provider: { mode: "single", effective: "zai", servedFrom: "cache" },
+        }),
+        entry({
+          requestId: "20260829T120000Z-0003",
+          provider: { mode: "fanout", arms: ["zai", "tavily"] },
+        }),
+      ]),
+    );
+    const lines = result.presentations.compact.split("\n");
+    // Newest-first ordering (timestamp desc, requestId desc on ties) puts
+    // the fanout row first (0003), then cache (0002), then bare live (0001).
+    assert.ok(
+      lines[2].endsWith("fanout(zai+tavily)"),
+      `fanout row unchanged: ${lines[2]}`,
+    );
+    assert.ok(
+      lines[3].endsWith("zai (cache)"),
+      `cache-served row renders the qualifier: ${lines[3]}`,
+    );
+    // Entry without servedFrom (pre-#108 entry) renders bare effective.
+    assert.ok(lines[4].endsWith("zai"), `live row renders bare effective: ${lines[4]}`);
+  });
 });
 
 describe("history: buildHistoryShowReport (pure)", () => {

@@ -523,6 +523,68 @@ matrix lists the nine `reader` suppliers (Z.AI, Tavily, Exa, Firecrawl,
 Parallel, Jina, You.com, Linkup, Spider.cloud); MiniMax, Brave, and
 Perplexity are absent because their descriptors do not advertise it.
 
+## Watch + Section Diff (Lane B)
+
+`scoutline watch` and `scoutline archive diff` are keyless,
+provider-less temporal-diff surfaces over one shared pure engine. Per
+ADR-0006 §2's domain separation (keyless, deterministic direct tooling
+beside the provider-backed capabilities — never inside provider
+fallback), both dispatch before the credentialed config load, exactly
+like `fetch` and `archive cdx|get`: no Provider resolution, no Adapter,
+no quota tracking, no response cache.
+
+The engine (`src/lib/section-diff.ts`) is pure — no I/O, no fs/net,
+only `node:crypto` and TextDecoder. `extractSections(raw,
+charsetHint?)` decodes raw bytes under the charset hint (default UTF-8,
+extraction-only) and buckets the document into ordered heading/paragraph
+sections with a lenient scanner that survives old-era archived markup
+(uppercase tags, missing closers; an unclosed `<script>`/`<style>`
+swallows only the remainder — earlier sections survive, and a skip
+region that swallows the whole document degrades to hash-only rather
+than reporting an empty diff). `diffSections` is a heading-anchored
+structural diff (`{added, removed, changed}` as heading texts;
+whitespace runs collapse so minor reformatting is not a change).
+Non-HTML bytes degrade to `hashOnly`: a sha256 verdict over the RAW
+bytes (never the decoded string), reported as `(hash)`.
+
+`archive diff <url> --since <date|duration>` is the one-shot surface,
+additive beside `cdx|get` (ADR-0006 §3 anti-sprawl). `--since` resolves
+a target instant; snapshot selection queries the CDX seam for the
+newest capture **at or before** that instant (strict, never
+nearest-after — the availability API cannot honor never-after); no
+qualifying capture is a `VALIDATION_ERROR` pointing at `archive cdx`.
+The snapshot replays through Wayback's `id_` verbatim mode for RAW
+bytes; the live side is a real bounded HTTP fetch
+(`readBoundedResponseBody` discipline, manual redirect loop). Both
+sides enter the same engine — raw-vs-raw, one charset hint each.
+
+`watch` is the only new top-level command (a family earns it). The
+store (`src/lib/watch-store.ts`) is a third local surface beside
+`cache/|tools/` and `artifacts/`, deliberately NOT the `--save`
+artifacts store (monitoring churn is not curation): registry
+`targets.json` + bounded snapshot ring + append-only change log under
+one root — `SCOUTLINE_WATCH_DIR` (else `<config root>/watch`), resolved
+pure off the artifacts-seam pattern. Ids are `newRequestId`-style and
+never reused (removal retires the id); the ring advances ONLY on a
+successful capture (a failed tick logs `error` with `gen: null` and
+leaves the ring untouched); the change log never prunes and fails
+closed loudly on malformed lines. Because the state is the feature,
+`watch` refuses `--isolated` at parse time.
+
+`watch run` carries a cron-facing exit contract that is new public
+surface: 0 = no change (the first run establishes a baseline and also
+exits 0), 1 = change (including permanent `moved`), 2 = fetch error
+(ring does not advance); `--all` ticks every target concurrently
+(fetches overlap; one shared `now`; results stay in registry
+order), worst wins (2 > 1 > 0); each tick holds the per-target
+`watch-tick-<id>` lock so overlapping cron invocations serialize. Plain validation errors also exit 1 under the house
+`VALIDATION_ERROR` behavior — the SAME code as the contract's
+change exit, not distinct: automation must inspect stderr (the JSON
+error envelope) to tell a malformed-argument run from a detected
+change. `watch feed` emits the change history as a document (stdout is
+the body): `jsonl` streams the log verbatim; `rss` renders change and
+moved entries as RSS 2.0 with guid `{targetId}:{gen}`.
+
 ## Crawl, Map, Research Capabilities
 
 `scoutline crawl`, `scoutline map`, and `scoutline research` participate

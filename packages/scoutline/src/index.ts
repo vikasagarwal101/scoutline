@@ -3886,6 +3886,16 @@ const REPORT_SCHEMA_VERSION = 1;
 /** Observation cell: the provider whose invoke() actually resolved. */
 interface ServingCapture {
   servedProvider?: ProviderId;
+  /**
+   * Issue #108: where the serving bytes came from. `"live"` = the
+   * recorded invoke() resolved (set by the invoke wrapper); `"cache"` =
+   * the serving attempt returned without ever invoking (set by the
+   * cacheIdentity wrapper when the subsequent cache consult hits).
+   * Unset = no save-capable attempt observed (non-capable commands,
+   * pre-run failures) — the save hook then records `"live"`, matching
+   * pre-#108 entries' implicit assumption.
+   */
+  servedFrom?: "live" | "cache";
 }
 
 /** What main hands the save-capable handlers when a save will happen. */
@@ -3913,6 +3923,7 @@ function withCaptureInvoke(
     invoke: async (...args: unknown[]) => {
       const outcome = await invoke(...args);
       capture.servedProvider = id;
+      capture.servedFrom = "live";
       return outcome;
     },
   };
@@ -3924,10 +3935,22 @@ function withCaptureInvoke(
   // attempt immediately before the cache consult, and it is the last
   // per-attempt hook of the attempt that serves, so capturing here names
   // the serving provider in both the live and cache-hit paths.
+  //
+  // Issue #108 origin split: cacheIdentity runs before the CACHE consult
+  // too, so it cannot yet know whether THIS attempt serves from cache.
+  // Speculatively mark `servedFrom: "cache"`; if the cache misses, the
+  // same attempt's invoke() runs immediately after and overwrites to
+  // `"live"`. A fallback sequence (cache-miss candidate, then a live or
+  // cache-hit server later in the plan) leaves the SERVER's last write
+  // standing — every write after the serving attempt belongs to a later
+  // failed candidate, so its invoke throw path cannot clobber the value.
+  // A `--no-cache` run never gets a cache-served value: its invoke
+  // always runs and stamps `"live"`.
   const cacheIdentity = slot.cacheIdentity;
   if (typeof cacheIdentity === "function") {
     wrapped.cacheIdentity = (...args: unknown[]) => {
       capture.servedProvider = id;
+      capture.servedFrom = "cache";
       return (cacheIdentity as (...a: unknown[]) => unknown).apply(slot, args);
     };
   }
@@ -4172,6 +4195,20 @@ function createSaveArtifactHook(
               // The executor's actual server wins over the pre-run
               // resolution when runtime fallback switched providers (D5).
               effective: capture.servedProvider ?? meta.provider.effective,
+              // Issue #108: distinguish "the effective provider served
+              // live" from "the effective provider's on-disk cache served
+              // (possibly while the provider was unreachable)". Capture
+              // unset (non-capable command, pre-run failure) records
+              // "live" — the pre-#108 entry's implicit assumption.
+              servedFrom: capture.servedFrom ?? "live",
+              // Issue #108: unpinned runs previously logged no
+              // `requested`, so a cache-served defaulted run was
+              // indistinguishable from a pinned live one. Record the
+              // defaulted request (pre-run effective) alongside the
+              // capture-derived effective.
+              ...(meta.provider.requested === undefined
+                ? { requested: meta.provider.effective }
+                : {}),
             };
       const entry: SaveLogEntry = {
         kind: "save",

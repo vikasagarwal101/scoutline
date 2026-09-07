@@ -181,8 +181,18 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
         readFileSync(join(artifactsDir, masterName), "utf8"),
       );
       // The log joins by requestId and records the export destination.
-      assert.deepStrictEqual(store.entries.map((e) => e.requestId), [requestId]);
+      // T2a: the same run ALWAYS-ON journals beside the save — the log
+      // holds both the save entry and its cross-linked journal entry.
+      assert.deepStrictEqual(
+        store.entries.map((e) => e.kind),
+        ["save", "journal"],
+      );
+      assert.deepStrictEqual(store.entries.map((e) => e.requestId), [
+        requestId,
+        store.entries[1].requestId,
+      ]);
       assert.strictEqual(store.entries[0].exportPath, exportTarget);
+      assert.strictEqual(store.entries[1].saveRef, requestId);
       // The stderr notice carries the requestId + both destinations.
       const notice = stderr.find((line) => line.includes(requestId));
       assert.ok(notice, `no notice carrying the requestId; stderr=${JSON.stringify(stderr)}`);

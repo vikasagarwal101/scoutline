@@ -147,6 +147,7 @@ export async function invokeCommand(
   now: () => number = Date.now,
   secrets?: string[],
   save?: SaveHook,
+  journal?: SaveHook,
 ): Promise<number> {
   const notices: string[] = [];
 
@@ -174,6 +175,14 @@ export async function invokeCommand(
     // suppressed). With no hook this is a no-op.
     if (save !== undefined) {
       await save({ result, resolvedSecrets, now, notice: context.notice });
+    }
+    // History-journal merge T2a: the always-on journal hook runs BESIDE
+    // the save hook at the same seam — AFTER it, so the save hook has
+    // already stamped its requestId into the shared capture cell for the
+    // saveRef cross-link. Same failure contract (rides the catch below);
+    // without a hook this is a no-op, byte-identical to the pre-T2a seam.
+    if (journal !== undefined) {
+      await journal({ result, resolvedSecrets, now, notice: context.notice });
     }
   } catch (error) {
     for (const notice of notices) {

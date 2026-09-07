@@ -83,7 +83,7 @@ import { historyCommand, HISTORY_HELP } from "./commands/history.js";
 import { handleFetch, FETCH_HELP } from "./commands/fetch.js";
 import { handleArchive, parseArchiveArgs, ARCHIVE_HELP } from "./commands/archive.js";
 import { handleWatch } from "./commands/watch.js";
-import { cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
+import { buildProviderCacheKey, cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
 import type { PruneSelectors, PruneCachesResult } from "./lib/cache.js";
 import { parseBatchManifest } from "./lib/batch-manifest.js";
 import type { AllowedBatchCommand } from "./lib/batch-manifest.js";
@@ -114,7 +114,14 @@ import {
   type ArtifactFormat,
   type ProviderRouting,
   type SaveLogEntry,
+  type SingleProviderRouting,
 } from "./lib/artifacts.js";
+import {
+  buildJournalEntry,
+  buildSearchSkeleton,
+  appendJournalEntry,
+  type JournalableCapability,
+} from "./lib/journal.js";
 import { applyBudget, type LadderRule } from "./lib/output-budget.js";
 import { persistCompaction } from "./lib/output-budget-persistence.js";
 import {
@@ -464,6 +471,22 @@ export const REJECT_MAX_CHARS_COMMANDS: ReadonlySet<string> = new Set([
   "fetch",
   "archive",
   "watch",
+]);
+
+/**
+ * History-journal merge T2a — the `--no-journal` per-call escape ships
+ * on exactly the journalable capabilities (search/read/research; ADR
+ * -0008's `--no-fallback` idiom). Every OTHER command rejects it at
+ * parse time with UNSUPPORTED_OPTION — the `--max-chars`
+ * command-local pattern, NOT `--save`'s global accept-and-drop: a
+ * privacy off-switch accepted-and-dropped somewhere would be a silent
+ * no-op. `read`/`research` ACCEPT the flag in T2a; their journaling
+ * itself arrives in T3 — the SURFACE ships with the switch.
+ */
+export const ACCEPT_NO_JOURNAL_COMMANDS: ReadonlySet<string> = new Set([
+  "search",
+  "read",
+  "research",
 ]);
 
 /**
@@ -870,6 +893,17 @@ export interface HandlerDependencies {
    * every other run is byte-identical to pre-T4.
    */
   readonly save?: SaveHookInput;
+  /**
+   * History-journal merge T2a: present when this run will journal
+   * (journalable command, not a help run, journaling not switched off
+   * via config `"journal": false` or `--no-journal`). The journalable
+   * handlers turn it into an invokeCommand journal hook beside the
+   * save hook via createJournalHook; read/research (T3) consume the
+   * SAME field — the seam is capability-driven, not command-hardcoded.
+   * Shares the ServingCapture cell with {@link save} when both wired,
+   * which is how the saveRef cross-link works.
+   */
+  readonly journal?: JournalHookInput;
   readonly searchCache: ResponseCache;
   readonly searchSleep: (ms: number) => Promise<void>;
   readonly searchRandom: () => number;
@@ -1452,6 +1486,20 @@ async function handleSearch(
     args: searchSaveArgs,
     provider: searchProviderRouting,
   });
+  // History-journal merge T2a: the always-on journal hook beside the
+  // save hook — wired whenever main handed a journal input (journalable
+  // command, journaling on). The result rows for the skeleton come from
+  // the dispatch result inside the behavior; when BOTH hooks are wired
+  // they share the same capture cell (saveRef cross-link).
+  let journalRows: readonly { url?: string; title?: string }[] | undefined;
+  const journal =
+    deps.journal === undefined || fanoutPlan.mode === "fanout"
+      ? undefined
+      : createJournalHook(deps, {
+          journal: deps.journal,
+          query: positional.join(" "),
+          resultRows: () => journalRows,
+        });
   const query = positional.join(" ");
 
   const fieldsRaw = flags.fields as string | undefined;
@@ -1743,12 +1791,23 @@ async function handleSearch(
           );
         },
       );
+      // T2a: capture the final (post-merge, post-count) result rows for
+      // the journal skeleton BEFORE the budget projects them — the hook
+      // reads this cell after the behavior resolves.
+      if (
+        deps.journal !== undefined &&
+        outcome.result.kind === "data" &&
+        Array.isArray(outcome.result.data)
+      ) {
+        journalRows = outcome.result.data;
+      }
       return applyOutputBudget(applyContextWrapper(outcome.result));
     },
     outputMode,
     deps.now,
     deps.secrets,
     save,
+    journal,
   );
 }
 
@@ -3896,11 +3955,37 @@ interface ServingCapture {
    * pre-#108 entries' implicit assumption.
    */
   servedFrom?: "live" | "cache";
+  /**
+   * History-journal merge T2a: the response-cache key of the serving
+   * attempt's request (stamped beside servedFrom by the cacheIdentity
+   * wrapper — it is the per-attempt hook that knows the identity). The
+   * journal entry records cacheKey per PRD AC2; unset = no capable
+   * attempt observed.
+   */
+  cacheKey?: string;
+  /**
+   * T2a saveRef cross-link cell: the save hook (which runs FIRST in
+   * invokeCommand) stamps its requestId here; the journal hook reads
+   * it — same-run `--save` + journaling links both entries (PRD AC10).
+   */
+  savedRequestId?: string;
 }
 
 /** What main hands the save-capable handlers when a save will happen. */
 interface SaveHookInput {
   readonly request: SaveRequest;
+  readonly capture: ServingCapture;
+}
+
+/**
+ * History-journal merge T2a — what main hands the journalable handlers
+ * when this run will journal (journalable command + not a help run +
+ * journaling not switched off). Mirrors SaveHookInput's shape: the
+ * SAME capture cell the save path uses, so provider honesty and the
+ * cache resolution inherit the #108 fix for free.
+ */
+interface JournalHookInput {
+  readonly capability: JournalableCapability;
   readonly capture: ServingCapture;
 }
 
@@ -3951,7 +4036,33 @@ function withCaptureInvoke(
     wrapped.cacheIdentity = (...args: unknown[]) => {
       capture.servedProvider = id;
       capture.servedFrom = "cache";
-      return (cacheIdentity as (...a: unknown[]) => unknown).apply(slot, args);
+      // T2a: the identity IS the request the cache key is derived from
+      // (executeSearch/executeCachedOperation feed it straight into
+      // buildProviderCacheKey) — recompute the key here so the journal
+      // records the exact cache partition the serving attempt used.
+      const identity = (
+        cacheIdentity as (...a: unknown[]) => unknown
+      ).apply(slot, args) as {
+        provider?: string;
+        capability?: string;
+        credentialFingerprint?: string;
+        request?: unknown;
+      } | null;
+      if (
+        identity !== null &&
+        typeof identity === "object" &&
+        typeof identity.provider === "string" &&
+        typeof identity.capability === "string" &&
+        typeof identity.credentialFingerprint === "string"
+      ) {
+        capture.cacheKey = buildProviderCacheKey({
+          provider: identity.provider as ProviderId,
+          capability: identity.capability,
+          credentialFingerprint: identity.credentialFingerprint,
+          request: identity.request,
+        });
+      }
+      return identity;
     };
   }
   return wrapped;
@@ -4026,9 +4137,11 @@ interface SaveWiring {
 function buildSaveWiring(
   request: SaveRequest | undefined,
   descriptors: readonly ProviderDescriptor[],
+  /** T2a: a journaling run's capture cell — shared so saveRef links one run's two entries. */
+  existingCapture?: ServingCapture,
 ): SaveWiring | undefined {
   if (request === undefined) return undefined;
-  const capture: ServingCapture = {};
+  const capture: ServingCapture = existingCapture ?? {};
   return {
     descriptors: captureServingDescriptors(descriptors, capture),
     input: { request, capture },
@@ -4176,6 +4289,11 @@ function createSaveArtifactHook(
     try {
       const dir = resolveArtifactsDir(deps.env);
       const requestId = newRequestId(now());
+      // T2a saveRef cross-link: stamp this requestId into the shared
+      // capture cell — the journal hook (running after this hook in the
+      // same invokeCommand) reads it so the journal entry of the SAME
+      // run carries saveRef (PRD AC10).
+      capture.savedRequestId = requestId;
       const data = result.kind === "data" ? result.data : result.text;
       const redactedData = redactSecrets(data, resolvedSecrets);
       const content =
@@ -4264,6 +4382,68 @@ function createSaveArtifactHook(
         "Check the artifacts directory and export path, then retry.",
       );
     }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// History-journal merge T2a — the ALWAYS-ON journal hook at the same
+// invocation seam (command-invocation.ts) as the save hook. The seam
+// COMPOSES: main passes an extra `journal` hook and invokeCommand runs
+// it after the save hook inside the same try, so a journal write
+// failure rides the existing catch (notices flushed, one error
+// envelope, stdout suppressed) — identical failure contract to saves.
+// The hook is capability-driven ({@link JournalableCapability}), so
+// T3's read/research wiring extends the SAME seam, never rewrites it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build one run's journal hook. Returns undefined unless main wired a
+ * journal input ({@link JournalHookInput}) — the always-on posture is
+ * main's decision (config kill-switch + `--no-journal` resolved
+ * there), keeping this builder trivially inert in every non-journaling
+ * run. Miss/hit distinction: T2a writes the FULL entry when the
+ * serving capture says the run went live (a cache miss — invoke()
+ * resolved); T2b adds the repeat-marker branch for servedFrom "cache".
+ */
+function createJournalHook(
+  deps: HandlerDependencies,
+  meta: {
+    readonly journal: JournalHookInput;
+    readonly query: string;
+    /** Result rows for the skeleton — a thunk; the rows exist only after dispatch (T3 supplies its own per-capability thunk). */
+    readonly resultRows?: () => readonly { url?: string; title?: string }[] | undefined;
+  },
+): SaveHook {
+  const { capability, capture } = meta.journal;
+  return async ({ resolvedSecrets, now }) => {
+    // Fanout runs have no single server to attribute — the entry shape
+    // is SingleProviderRouting (PRD AC2), so fanout journaling is a
+    // later ruling; T2a writes nothing there.
+    if (capture.servedProvider === undefined) return;
+    // HIT branch is T2b's (repeat marker); a capture that never went
+    // live recorded no fresh generation to journal.
+    if (capture.servedFrom !== "live") return;
+    const skeleton =
+      capability === "search"
+        ? buildSearchSkeleton(meta.resultRows?.() ?? [])
+        : undefined;
+    if (skeleton === undefined) return; // T3: read/research skeletons
+    const provider: SingleProviderRouting = {
+      mode: "single",
+      effective: capture.servedProvider,
+      servedFrom: "live",
+    };
+    const entry = buildJournalEntry({
+      capability,
+      provider,
+      query: meta.query,
+      cacheKey: capture.cacheKey ?? "",
+      skeleton,
+      now,
+      secrets: resolvedSecrets,
+      ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
+    });
+    await appendJournalEntry(resolveArtifactsDir(deps.env), entry);
   };
 }
 
@@ -4685,6 +4865,27 @@ export async function main(
     );
     return 1;
   }
+
+  // History-journal merge T2a — `--no-journal` is command-local (the
+  // --max-chars pattern above): rejected at parse time on every command
+  // outside the three journalable surfaces, so no accept-and-drop hole
+  // exists for a privacy flag. Uses raw argv like the max-chars gate;
+  // help invocations stay exempt (documentation, not a run).
+  if (
+    !isHelpInvocation &&
+    !ACCEPT_NO_JOURNAL_COMMANDS.has(command) &&
+    collectLongFlagValues(rest, "no-journal").length > 0
+  ) {
+    invocation.writeStderr(
+      formatErrorOutput(
+        new CommandOptionUnsupportedError(command, "--no-journal"),
+        outputMode,
+        envSecrets,
+      ),
+    );
+    return 1;
+  }
+  const noJournal = !isHelpInvocation && collectLongFlagValues(rest, "no-journal").length > 0;
 
   // PB-T1/PB-T2 — Quota snapshot store + consumption sink.
   //
@@ -5240,18 +5441,56 @@ export async function main(
   // flow ONLY into handler execution; quota refresh and every other
   // consumer keep the original list. Without a save this is the identical
   // deps object and the whole path is byte-identical to pre-T4.
+  //
+  // History-journal merge T2a: the journal wiring builds FIRST when this
+  // run will journal (journalable command + not help + journaling on —
+  // the always-on posture, ADR-0008), so its capture-wrapped descriptors
+  // underpin BOTH hooks: a save on a journaling run wraps the ALREADY
+  // wrapped descriptors and shares the journal capture cell (the saveRef
+  // cross-link). A save without journaling keeps the exact pre-T2a wiring.
+  // History-journal merge T2a: journaling fires on the journalable
+  // commands (search/read/research) unless switched off — per-call
+  // `--no-journal` or config `"journal": false` (absent/unset = ON,
+  // the inverted fanout idiom). The capture cell is shared with any
+  // same-run save wiring below.
+  const journalCapture: ServingCapture | undefined =
+    !isHelpInvocation &&
+    ACCEPT_NO_JOURNAL_COMMANDS.has(command) &&
+    !noJournal &&
+    (config as { journal?: unknown }).journal !== false
+      ? {}
+      : undefined;
+  const journalingDescriptors =
+    journalCapture === undefined
+      ? providerDescriptors
+      : captureServingDescriptors(providerDescriptors, journalCapture);
+  const journalWiring =
+    journalCapture === undefined
+      ? undefined
+      : { capability: command as JournalableCapability, capture: journalCapture };
   const saveWiring =
     saveRequest === undefined || isHelpInvocation
       ? undefined
-      : buildSaveWiring(saveRequest, providerDescriptors);
+      : buildSaveWiring(saveRequest, journalingDescriptors, journalCapture);
   const handlerDepsWithSave: HandlerDependencies =
-    saveWiring === undefined
+    saveWiring === undefined && journalWiring === undefined
       ? handlerDepsWithSelection
-      : {
-          ...handlerDepsWithSelection,
-          providerDescriptors: saveWiring.descriptors,
-          save: saveWiring.input,
-        };
+      : saveWiring === undefined
+        ? {
+            ...handlerDepsWithSelection,
+            providerDescriptors: journalingDescriptors,
+            journal: journalWiring,
+          }
+        : {
+            ...handlerDepsWithSelection,
+            providerDescriptors: saveWiring.descriptors,
+            save: saveWiring.input,
+            // A save on a journaling run shares the journal's capture
+            // cell (the descriptors are already journal-wrapped, and
+            // buildSaveWiring wraps them AGAIN around the same cell) —
+            // one cell, both hooks, the saveRef cross-link works.
+            ...(journalWiring === undefined ? {} : { journal: journalWiring }),
+          };
   let exitCode: number;
   let commandRecognized = false;
   try {

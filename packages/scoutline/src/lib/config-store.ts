@@ -39,6 +39,14 @@ export interface ScoutlineConfig {
    * pre-fan-out behavior); true → tier-3 activation per DESIGN D1.
    */
   readonly fanout?: boolean;
+  /**
+   * Always-on research journaling kill-switch (history-journal merge,
+   * ADR-0008). Absent/undefined/true → journaling enabled (the
+   * `fanout` idiom inverted: the feature is on by default); explicit
+   * false → no journal entries are written. Read leniently like
+   * `fanout` — a non-boolean field never fails config load.
+   */
+  readonly journal?: boolean;
   readonly providers: Partial<Record<ProviderId, ProviderConfig>>;
   readonly hintShown?: boolean;
   /**
@@ -202,6 +210,7 @@ function parseConfig(contents: string): ParsedConfig {
   if (
     (parsed.fallbackEnabled !== undefined && typeof parsed.fallbackEnabled !== "boolean") ||
     (parsed.fanout !== undefined && typeof parsed.fanout !== "boolean") ||
+    (parsed.journal !== undefined && typeof parsed.journal !== "boolean") ||
     (parsed.hintShown !== undefined && typeof parsed.hintShown !== "boolean") ||
     (parsed.providers !== undefined && !isRecord(parsed.providers))
   ) {
@@ -231,6 +240,7 @@ function parseConfig(contents: string): ParsedConfig {
         ? { fallbackEnabled: parsed.fallbackEnabled as boolean }
         : {}),
       ...(parsed.fanout !== undefined ? { fanout: parsed.fanout as boolean } : {}),
+      ...(parsed.journal !== undefined ? { journal: parsed.journal as boolean } : {}),
       providers,
       ...(parsed.hintShown !== undefined ? { hintShown: parsed.hintShown as boolean } : {}),
       ...(routing !== undefined ? { routing } : {}),

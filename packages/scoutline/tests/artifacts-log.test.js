@@ -379,12 +379,21 @@ describe("readLog", () => {
 // unknown kinds still fail the whole log open; base-rule violations on a
 // journal entry fail the same way they do for save.
 describe("kind widening — journal entries", () => {
-  /** Minimal journal entry; overrides replace top-level keys. */
+  /** Minimal journal entry; overrides replace top-level keys.
+   *  T2a: the widened body check validates the FULL shape — the
+   *  fixture carries the writer's field set (capability, query,
+   *  contentHash, cacheKey, provider, skeleton). */
   function journalEntry(overrides = {}) {
     return {
       kind: "journal",
       requestId: "20260829T150000Z-0a1b",
       timestamp: NOW_BASE + 3_600_000,
+      capability: "search",
+      provider: { mode: "single", effective: "zai", servedFrom: "live" },
+      query: "rust vs go",
+      contentHash: "a".repeat(64),
+      cacheKey: "v2.search.zai.fp-zai.0f.json",
+      skeleton: { results: [{ url: "https://z.ai/r", title: "t-zai" }] },
       ...overrides,
     };
   }

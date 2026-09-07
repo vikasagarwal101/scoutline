@@ -42,6 +42,7 @@ import {
   DEFAULT_LOCK_TIMEOUT_MS,
   withAsyncFileLock,
 } from "./async-file-lock.js";
+import { asJournalEntry } from "./journal.js";
 import pkg from "../../package.json" with { type: "json" };
 
 /** Report format of a saved artifact (spec: `--save-format json|markdown`). */
@@ -387,10 +388,14 @@ function asLogEntry(value: unknown): SaveLogEntry | undefined {
   // entry must fail validation here so the log fails open instead (review
   // fixup).
   if (!Number.isFinite(new Date(e.timestamp).getTime())) return undefined;
-  // Journal entries end at the base rules (log-only; T2a/T3 own the body).
-  // Return BEFORE the save-body checks below, which would reject their
-  // absent master fields — the widening's whole point.
-  if (e.kind === "journal") return value as SaveLogEntry;
+  // Journal entries (T2a): full body validation — capability enum,
+  // redacted query, sha256 contentHash, cacheKey, provider restricted
+  // to SingleProviderRouting (fanout has no single server), and the
+  // skeleton shape per the writer's contract (search: url+title list;
+  // read/research bodies arrive in T3, validated when written). Return
+  // BEFORE the save-body checks below, which would reject their absent
+  // master fields — the widening's whole point.
+  if (e.kind === "journal") return asJournalEntry(value) as SaveLogEntry | undefined;
   if (typeof e.command !== "string" || e.command.length === 0) return undefined;
   if (typeof e.args !== "object" || e.args === null || Array.isArray(e.args)) return undefined;
   const provider = e.provider as Record<string, unknown> | undefined;

@@ -36,9 +36,11 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export interface HistoryEntrySummary {
   readonly requestId: string;
   readonly timestamp: number;
+  /** Save entries: the command; journal entries: the capability (T2a review nit — journal rows have no command). */
   readonly command: string;
   readonly provider: SaveLogEntry["provider"];
-  readonly artifactFormat: SaveLogEntry["artifactFormat"];
+  /** Save entries only; journal entries render "-" (no master, no format). */
+  readonly artifactFormat: string;
   readonly kind: SaveLogEntry["kind"];
   readonly exportPath?: string;
 }
@@ -87,6 +89,21 @@ export interface HistoryListOptions {
 
 /** List-row projection of a log entry (the inventory field set, pinned by tests). */
 function toSummary(entry: SaveLogEntry): HistoryEntrySummary {
+  // T2a review nit: journal entries (kind === "journal") carry the
+  // capability + provider + skeleton shape, NOT command/artifactFormat —
+  // projecting those undefined fields crashed formatHistoryList's padEnd.
+  // Minimal per-kind projection here; the full list widening is T6b.
+  if (entry.kind === "journal") {
+    const journal = entry as unknown as { capability: string; provider: { mode: string } };
+    return {
+      requestId: entry.requestId,
+      timestamp: entry.timestamp,
+      command: journal.capability,
+      provider: entry.provider,
+      artifactFormat: "-",
+      kind: entry.kind,
+    };
+  }
   return {
     requestId: entry.requestId,
     timestamp: entry.timestamp,
@@ -242,16 +259,22 @@ function formatHistoryList(report: HistoryListReport): string {
     header,
   ];
   for (const row of report.entries) {
+    // T2a review nit: null-safe provider deref — journal rows carry a
+    // single-provider routing shape; a row without a provider object
+    // (never written today) renders "-" instead of crashing.
+    const routing = row.provider as { mode?: string; arms?: string[]; effective?: string; servedFrom?: string } | undefined;
     const provider =
-      row.provider.mode === "fanout"
-        ? `fanout(${row.provider.arms.join("+")})`
-        : // Issue #108: a cache-served run rendered bare `effective` reads
-          // "zai served this" during an outage zai was never contacted in;
-          // the qualifier restores the distinction (render-only — the
-          // data envelope carries the field verbatim).
-          row.provider.servedFrom === "cache"
-            ? `${row.provider.effective} (cache)`
-            : row.provider.effective;
+      routing === undefined || typeof routing !== "object"
+        ? "-"
+        : routing.mode === "fanout"
+          ? `fanout(${(routing.arms ?? []).join("+")})`
+          : // Issue #108: a cache-served run rendered bare `effective` reads
+            // "zai served this" during an outage zai was never contacted in;
+            // the qualifier restores the distinction (render-only — the
+            // data envelope carries the field verbatim).
+            routing.servedFrom === "cache"
+              ? `${routing.effective} (cache)`
+              : (routing.effective ?? "-");
     lines.push(
       columns([
         row.requestId,

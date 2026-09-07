@@ -274,3 +274,35 @@ Developer: "Does `scoutline archive` trigger provider fallback?"
 Domain expert: "No. `archive` is a Direct command targeting the Internet
 Archive Wayback Machine directly. It does not use AI providers, does not
 consume provider tokens, and does not fall back."
+
+**Journal**:
+The always-on record of research work: every `search` / `read` /
+`research` call appends a permanent, local-only Journal entry (a
+skeleton — query, provider, timestamp, content hash, url+title
+identity) into the shared artifacts store. Journaling is recording,
+not retention: full content survives only via an explicit `--save`
+artifact, and the Journal never re-fetches. Consumed through
+`history recall` / `history export`. Escape hatches: `--no-journal`
+per call, config off.
+_Avoid_: research log, diary, auto-save
+
+**Skeleton**:
+The thin, self-contained identity of a result carried inside a
+Journal entry (search: url+title list; read: url+title; research:
+citations). Deliberately not the content — permanent and tiny, so
+the record of work stays cheap while bodies live in the ephemeral
+cache or a `--save` artifact.
+_Avoid_: summary, snippet cache, result copy
+
+**Recall**:
+Local recollection over the Journal (`history recall "<text>"`): scored
+matching against recorded queries and skeletons — never network, never
+re-fetch, never cache reads. The provider-call-saving alternative to
+re-running a search.
+_Avoid_: journal search, re-query
+
+**Generation**:
+One cache-miss recording of a query — the skeleton as returned at that
+moment. Repeat asks over time create multiple generations, so recall and
+`--as-of` can answer "what did I know when" as results drift.
+_Avoid_: version, snapshot

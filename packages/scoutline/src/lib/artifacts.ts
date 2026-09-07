@@ -282,8 +282,13 @@ const ARTIFACTS_LOG_LOCK_IDENTITY = "artifacts-write";
 /** CLI version stamped into each entry (the src/index.ts pkg-import idiom). */
 export const CLI_VERSION: string = pkg.version;
 
-/** Entry kind discriminator — "save" now; seed-07 journaling adds "journal" later. */
-export type LogEntryKind = "save";
+/**
+ * Entry kind discriminator — "save" masters plus "journal" (history-journal
+ * merge D1): journal entries are LOG-ONLY (no master file); their body
+ * fields arrive with the T2a/T3 writers. A kind outside this union still
+ * fails the whole-log open — the fail-loud path is load-bearing.
+ */
+export type LogEntryKind = "save" | "journal";
 
 /** Single-provider routing: what was requested and what actually served. */
 export interface SingleProviderRouting {
@@ -358,16 +363,23 @@ function emptyLog(): ArtifactsLog {
 }
 
 /**
- * Structural guard for one entry: every field of the {@link SaveLogEntry}
- * shape is type-checked BEFORE the cast, and `masterPath` must be a bare
- * filename (no path separators, no dot segments) so a hostile persisted
- * entry cannot steer `history show`'s `path.join(dir, masterPath)` read
- * outside the artifacts dir (review fixup: the unvalidated-entry hole).
+ * Structural guard for one entry (history-journal merge D1): per-kind
+ * dispatch over {@link LogEntryKind}. The BASE rules — kind known,
+ * requestId non-empty string, timestamp a finite in-Date-range number —
+ * are shared by every kind; the body check is per-kind. `save` keeps
+ * every field of the {@link SaveLogEntry} shape type-checked BEFORE the
+ * cast, and `masterPath` must be a bare filename (no path separators,
+ * no dot segments) so a hostile persisted entry cannot steer `history
+ * show`'s `path.join(dir, masterPath)` read outside the artifacts dir
+ * (review fixup: the unvalidated-entry hole). `journal` entries are
+ * LOG-ONLY (no master); their body fields arrive with the T2a/T3
+ * writers, so T1 validates the base shape only. Any other kind still
+ * returns undefined — the fail-loud whole-log path is load-bearing.
  */
-function asSaveLogEntry(value: unknown): SaveLogEntry | undefined {
+function asLogEntry(value: unknown): SaveLogEntry | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const e = value as Record<string, unknown>;
-  if (e.kind !== "save") return undefined;
+  if (e.kind !== "save" && e.kind !== "journal") return undefined;
   if (typeof e.requestId !== "string" || e.requestId.length === 0) return undefined;
   if (typeof e.timestamp !== "number" || !Number.isFinite(e.timestamp)) return undefined;
   // Reject finite-but-out-of-Date-range values: history list/stats render
@@ -375,6 +387,10 @@ function asSaveLogEntry(value: unknown): SaveLogEntry | undefined {
   // entry must fail validation here so the log fails open instead (review
   // fixup).
   if (!Number.isFinite(new Date(e.timestamp).getTime())) return undefined;
+  // Journal entries end at the base rules (log-only; T2a/T3 own the body).
+  // Return BEFORE the save-body checks below, which would reject their
+  // absent master fields — the widening's whole point.
+  if (e.kind === "journal") return value as SaveLogEntry;
   if (typeof e.command !== "string" || e.command.length === 0) return undefined;
   if (typeof e.args !== "object" || e.args === null || Array.isArray(e.args)) return undefined;
   const provider = e.provider as Record<string, unknown> | undefined;
@@ -434,7 +450,7 @@ function asArtifactsLog(value: unknown): { log: ArtifactsLog; corruptEntry: bool
   const entries: SaveLogEntry[] = [];
   let corruptEntry = false;
   for (const raw of candidate.entries) {
-    const entry = asSaveLogEntry(raw);
+    const entry = asLogEntry(raw);
     if (entry === undefined) {
       corruptEntry = true;
       continue;

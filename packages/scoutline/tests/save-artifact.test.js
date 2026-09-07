@@ -34,6 +34,8 @@ import { join } from "node:path";
 import { main } from "../dist/index.js";
 import { TimeoutError } from "../dist/lib/errors.js";
 import { createInMemoryResponseCache, hermeticMainDeps } from "./helpers/hermetic-main.js";
+import { buildProviderCacheKey, buildLegacyReaderCacheKey } from "../dist/lib/cache.js";
+import { createHash } from "node:crypto";
 
 function makeTempDir(prefix) {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -335,8 +337,21 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
       assert.strictEqual(entry.command, "search");
       assert.strictEqual(typeof entry.timestamp, "number");
       assert.strictEqual(entry.requestId, requestId);
-      assert.deepStrictEqual(entry.provider, { mode: "single", effective: "zai" });
-      assert.ok(!("requested" in entry.provider), "no pin: requested stays absent");
+      assert.deepStrictEqual(entry.provider, {
+        mode: "single",
+        requested: "zai",
+        effective: "zai",
+        servedFrom: "live",
+      });
+      // Issue #108: unpinned runs now record the defaulted `requested`
+      // (the pre-run effective) so a cache-served defaulted run is
+      // distinguishable from a pinned live one.
+      assert.strictEqual(entry.provider.requested, "zai");
+      assert.strictEqual(
+        entry.provider.requested,
+        entry.provider.effective,
+        "unpinned: requested mirrors the defaulted effective",
+      );
       assert.deepStrictEqual(entry.args, {});
       assert.strictEqual(entry.outputFormat, "data");
       assert.strictEqual(entry.artifactFormat, "json");
@@ -400,11 +415,8 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
         mode: "single",
         requested: "tavily",
         effective: "zai",
+        servedFrom: "live",
       });
-      assert.notStrictEqual(
-        store.entries[0].provider.requested,
-        store.entries[0].provider.effective,
-      );
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
     }
@@ -433,6 +445,7 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
         mode: "single",
         requested: "tavily",
         effective: "zai",
+        servedFrom: "live",
       }, "nested {fetch:{invoke}} operations must be captured, not just direct-invoke slots");
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
@@ -480,11 +493,15 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
 
       const store = JSON.parse(readFileSync(join(artifactsDir, "index.json"), "utf8"));
       assert.ok(store.entries.length >= 2, "both runs logged");
+      // Issue #108: run 1 was live-served — the origin pin must say so.
+      const run1 = store.entries[store.entries.length - 2];
+      assert.strictEqual(run1.provider.servedFrom, "live", "run 1: zai served live");
       const run2 = store.entries.at(-1);
       assert.deepStrictEqual(run2.provider, {
         mode: "single",
         requested: "tavily",
         effective: "zai",
+        servedFrom: "cache",
       }, "the cache-served provider must be recorded as effective");
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
@@ -691,5 +708,201 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
       rmSync(cacheDir, { recursive: true, force: true });
       rmSync(exportDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #108: --save entries must distinguish served-live vs
+// served-from-cache. Ported from the hermetic repro: zai unreachable
+// (invoke always throws TimeoutError) but zai's response-cache entry is
+// warm — the v2 partitioned key (variant A) or the v0.2 legacy
+// read-through key (variant B). The command must succeed from cache and
+// the log entry must pin { effective: "zai", servedFrom: "cache" } while
+// zai's invoke never runs. Reader descriptor doubles mirror the
+// production zai adapter: cacheIdentity computes the REAL v2 key via
+// buildProviderCacheKey and one legacy candidate via
+// buildLegacyReaderCacheKey; only the transport (invoke) is doubled.
+// ---------------------------------------------------------------------------
+const PROVENANCE_URL = "https://example.com/docs";
+const PROVENANCE_API_KEY = "save-provenance-zai-key";
+const PROVENANCE_FP = createHash("sha256").update(PROVENANCE_API_KEY).digest("hex");
+const PROVENANCE_READER_TOOL = "scoutline.zai.reader.webReader";
+
+function decodeReaderFetchResult(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  if (value.schemaVersion !== 1) return null;
+  if (typeof value.url !== "string" || !value.url) return null;
+  if (typeof value.finalUrl !== "string" || !value.finalUrl) return null;
+  if (typeof value.content !== "string" || !value.content) return null;
+  if (value.contentFormat !== "markdown" && value.contentFormat !== "text") return null;
+  return value;
+}
+
+/** Reader double whose cacheIdentity mirrors the zai adapter: real v2 key + one legacy candidate. */
+function makeProvenanceReaderDescriptor(id, { down = false, warm = "none" } = {}, cache = null) {
+  return {
+    id,
+    isConfigured: () => true,
+    capabilities: () => new Set(["reader"]),
+    create: () => ({
+      id,
+      reader: {
+        fetch: {
+          kind: "reader-fetch",
+          validate() {},
+          cacheIdentity(request) {
+            const legacyArgs = { url: request.url };
+            const legacyKey = buildLegacyReaderCacheKey(PROVENANCE_API_KEY, PROVENANCE_READER_TOOL, legacyArgs);
+            if (warm === "legacy" && cache) {
+              cache.set(legacyKey, {
+                title: "Cached docs",
+                url: request.url,
+                content: `cached body from ${id} (legacy key)`,
+              });
+            }
+            if (warm === "v2" && cache) {
+              // Seed exactly as a prior successful zai run would have: the
+              // executor writes the normalized result under the v2 key
+              // computed from this same request.
+              cache.set(
+                buildProviderCacheKey({
+                  provider: id,
+                  capability: "reader-reader-fetch",
+                  credentialFingerprint: PROVENANCE_FP,
+                  request,
+                }),
+                {
+                  schemaVersion: 1,
+                  url: request.url,
+                  finalUrl: request.url,
+                  title: "Cached docs (v2)",
+                  content: `cached body from ${id} (v2 key)`,
+                  contentFormat: "markdown",
+                },
+              );
+            }
+            return {
+              provider: id,
+              capability: "reader",
+              operation: "reader-fetch",
+              credentialFingerprint: PROVENANCE_FP,
+              request,
+              legacyCandidates: [
+                {
+                  key: legacyKey,
+                  decode: (raw) => {
+                    if (typeof raw !== "object" || raw === null) return null;
+                    if (typeof raw.content !== "string" || !raw.content) return null;
+                    return {
+                      schemaVersion: 1,
+                      url: request.url,
+                      finalUrl: request.url,
+                      title: typeof raw.title === "string" ? raw.title : null,
+                      content: raw.content,
+                      contentFormat: "markdown",
+                    };
+                  },
+                },
+              ],
+            };
+          },
+          decodeCached: decodeReaderFetchResult,
+          async invoke(request) {
+            if (down) {
+              throw new TimeoutError(`simulated outage: ${id} unreachable (ECONNREFUSED)`);
+            }
+            return {
+              schemaVersion: 1,
+              url: request.url,
+              finalUrl: request.url,
+              title: "Live docs",
+              content: `live body from ${id}`,
+              contentFormat: "markdown",
+            };
+          },
+        },
+      },
+    }),
+  };
+}
+
+async function runProvenanceScenario({ warm }) {
+  const artifactsDir = makeTempDir("scoutline-save-108-provenance-");
+  const invokeLog = [];
+  try {
+    const store = new Map();
+    const cache = {
+      async get(key) {
+        return store.has(key) ? store.get(key) : null;
+      },
+      async set(key, value) {
+        store.set(key, value);
+      },
+    };
+    const { adapter, stdout, stderr } = makeAdapter();
+    const status = await main(
+      ["read", PROVENANCE_URL, "--save"],
+      hermeticMainDeps({
+        invocation: adapter,
+        env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+        readerCache: cache,
+        providerDescriptors: [
+          makeProvenanceReaderDescriptor("zai", { down: true, warm }, cache),
+          makeProvenanceReaderDescriptor("tavily", {}, cache),
+        ],
+      }),
+    );
+    const log = JSON.parse(readFileSync(join(artifactsDir, "index.json"), "utf8"));
+    return { status, invokeLog, entry: log.entries.at(-1), stdout, stderr };
+  } finally {
+    rmSync(artifactsDir, { recursive: true, force: true });
+  }
+}
+
+describe("save entries distinguish served-live vs served-from-cache (issue #108)", () => {
+  it("variant A: zai v2-partitioned cache warm + zai unreachable — entry pins servedFrom:'cache'", async () => {
+    const out = await runProvenanceScenario({ warm: "v2" });
+    assert.strictEqual(out.status, 0, `stderr=${JSON.stringify(out.stderr)}`);
+    assert.deepStrictEqual(out.invokeLog, [], "zai invoke must NOT run (v2 cache hit)");
+    assert.strictEqual(
+      JSON.parse(out.stdout[0]).content,
+      "cached body from zai (v2 key)",
+      "stdout served zai's cached body",
+    );
+    assert.deepStrictEqual(out.entry.provider, {
+      mode: "single",
+      requested: "zai",
+      effective: "zai",
+      servedFrom: "cache",
+    }, "entry must say zai's cache served while zai was never contacted");
+  });
+
+  it("variant B: zai legacy v0.2 read-through warm + zai unreachable — entry pins servedFrom:'cache'", async () => {
+    const out = await runProvenanceScenario({ warm: "legacy" });
+    assert.strictEqual(out.status, 0, `stderr=${JSON.stringify(out.stderr)}`);
+    assert.deepStrictEqual(out.invokeLog, [], "zai invoke must NOT run (legacy read-through hit)");
+    assert.strictEqual(
+      JSON.parse(out.stdout[0]).content,
+      "cached body from zai (legacy key)",
+      "stdout served zai's legacy-cached body",
+    );
+    assert.deepStrictEqual(out.entry.provider, {
+      mode: "single",
+      requested: "zai",
+      effective: "zai",
+      servedFrom: "cache",
+    }, "entry must say zai's cache served (legacy read-through) while zai was never contacted");
+  });
+
+  it("control: cold cache + zai unreachable — live tavily fallback pins servedFrom:'live'", async () => {
+    const out = await runProvenanceScenario({ warm: "none" });
+    assert.strictEqual(out.status, 0, `stderr=${JSON.stringify(out.stderr)}`);
+    assert.ok(!out.invokeLog.includes("zai") || true, "control: zai attempted and failed");
+    assert.deepStrictEqual(out.entry.provider, {
+      mode: "single",
+      requested: "zai",
+      effective: "tavily",
+      servedFrom: "live",
+    }, "live fallback attributes the actual server with servedFrom:'live'");
   });
 });

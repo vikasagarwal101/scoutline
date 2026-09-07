@@ -290,6 +290,14 @@ export interface SingleProviderRouting {
   readonly mode: "single";
   readonly requested?: string;
   readonly effective: string;
+  /**
+   * Where the serving bytes came from (issue #108): "live" = the effective
+   * provider was actually contacted; "cache" = served from that provider's
+   * on-disk response cache (v2 partitioned or v0.2 legacy read-through),
+   * possibly while the provider was unreachable. Optional so pre-#108
+   * entries stay valid; save entries always set it.
+   */
+  readonly servedFrom?: "live" | "cache";
 }
 
 /** Fan-out routing (ADR-0004): ordered arms; no single effective exists. */

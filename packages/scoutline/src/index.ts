@@ -123,6 +123,7 @@ import {
   appendJournalEntry,
   type JournalableCapability,
 } from "./lib/journal.js";
+import { buildJournalCacheKeyMap, buildJournalRepeatMarker } from "./lib/journal.js";
 import { applyBudget, type LadderRule } from "./lib/output-budget.js";
 import { persistCompaction } from "./lib/output-budget-persistence.js";
 import {
@@ -4458,16 +4459,37 @@ function createJournalHook(
 ): SaveHook {
   const { capability, capture } = meta.journal;
   return async ({ resolvedSecrets, now }) => {
+    const artifactsDir = resolveArtifactsDir(deps.env);
     // Must-fix 3: fan-out runs journal with the plan's routing — the
     // capture cell tracks per-arm invokes but no single server, so the
     // entry records {mode:"fanout", arms} faithfully (the same shape
     // the save hook logs). A fan-out run with no resolved invoke wrote
     // nothing (failed before any arm served) — nothing to journal.
-    if (meta.fanoutRouting !== undefined) {
-      if (capture.servedFrom !== "live") return;
+    const fanout = meta.fanoutRouting;
+    if (fanout !== undefined) {
+      if (capture.servedFrom === undefined) return;
       // NIT 1: no cacheKey → skip (a poison empty-string entry would
       // fail the validator and blank the whole log on next read).
       if (capture.cacheKey === undefined) return;
+      if (capture.servedFrom === "cache") {
+        // T2b: warm-cache re-ask → tiny repeat marker when the map
+        // resolves a prior full entry; journal-cold → full entry.
+        const map = await buildJournalCacheKeyMap(artifactsDir);
+        const repeatOf = map.get(capture.cacheKey);
+        if (repeatOf !== undefined) {
+          await appendJournalEntry(
+            artifactsDir,
+            buildJournalRepeatMarker({
+              capability,
+              provider: fanout,
+              repeatOf,
+              now,
+            }),
+          );
+          return;
+        }
+        // journal-cold fallthrough: the full entry below.
+      }
       const skeleton =
         capability === "search"
           ? buildSearchSkeleton(meta.resultRows?.() ?? [])
@@ -4475,7 +4497,7 @@ function createJournalHook(
       if (skeleton === undefined) return;
       const entry = buildJournalEntry({
         capability,
-        provider: meta.fanoutRouting,
+        provider: fanout,
         query: meta.query,
         cacheKey: capture.cacheKey,
         skeleton,
@@ -4483,26 +4505,41 @@ function createJournalHook(
         secrets: resolvedSecrets,
         ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
       });
-      await appendJournalEntry(resolveArtifactsDir(deps.env), entry);
+      await appendJournalEntry(artifactsDir, entry);
       return;
     }
     if (capture.servedProvider === undefined) return;
-    // HIT branch is T2b's (repeat marker); a capture that never went
-    // live recorded no fresh generation to journal.
-    if (capture.servedFrom !== "live") return;
     // NIT 1: skip rather than poison — an undefined cacheKey cannot
     // satisfy the validator, and an empty string would blank history.
     if (capture.cacheKey === undefined) return;
+    const provider: SingleProviderRouting = {
+      mode: "single",
+      effective: capture.servedProvider,
+      // T2b: servedFrom carries the capture's truth — "live" for a
+      // fresh generation, "cache" when the response cache served (the
+      // #108 honesty; the marker/full branch below rides it).
+      servedFrom: capture.servedFrom ?? "live",
+    };
+    // T2b (PRD AC2 Variant B): a cache-served run is a warm re-ask —
+    // write the tiny repeat marker when the cacheKey map resolves a
+    // prior FULL journal entry; journal-cold-but-cache-warm (cleared
+    // journal or pre-journal cache) writes ONE full entry instead.
+    if (capture.servedFrom === "cache") {
+      const map = await buildJournalCacheKeyMap(artifactsDir);
+      const repeatOf = map.get(capture.cacheKey);
+      if (repeatOf !== undefined) {
+        await appendJournalEntry(
+          artifactsDir,
+          buildJournalRepeatMarker({ capability, provider, repeatOf, now }),
+        );
+        return;
+      }
+    }
     const skeleton =
       capability === "search"
         ? buildSearchSkeleton(meta.resultRows?.() ?? [])
         : undefined;
     if (skeleton === undefined) return; // T3: read/research skeletons
-    const provider: SingleProviderRouting = {
-      mode: "single",
-      effective: capture.servedProvider,
-      servedFrom: "live",
-    };
     const entry = buildJournalEntry({
       capability,
       provider,
@@ -4513,7 +4550,7 @@ function createJournalHook(
       secrets: resolvedSecrets,
       ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
     });
-    await appendJournalEntry(resolveArtifactsDir(deps.env), entry);
+    await appendJournalEntry(artifactsDir, entry);
   };
 }
 

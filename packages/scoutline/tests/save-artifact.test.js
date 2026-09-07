@@ -503,10 +503,15 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
 
       const store = JSON.parse(readFileSync(join(artifactsDir, "index.json"), "utf8"));
       assert.ok(store.entries.length >= 2, "both runs logged");
-      // Issue #108: run 1 was live-served — the origin pin must say so.
-      const run1 = store.entries[store.entries.length - 2];
+      // T2b: always-on journaling appends journal entries beside the
+      // saves (run 2's cache hit adds a repeat MARKER), so position
+      // indexing is no longer stable — select by kind instead. The #108
+      // pin itself is unchanged: each SAVE entry's provider truth.
+      const saveEntries = store.entries.filter((e) => e.kind === "save");
+      assert.strictEqual(saveEntries.length, 2, "one save entry per run");
+      const run1 = saveEntries[0];
       assert.strictEqual(run1.provider.servedFrom, "live", "run 1: zai served live");
-      const run2 = store.entries.at(-1);
+      const run2 = saveEntries[1];
       assert.deepStrictEqual(run2.provider, {
         mode: "single",
         requested: "tavily",

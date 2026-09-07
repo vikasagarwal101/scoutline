@@ -381,6 +381,13 @@ function asLogEntry(value: unknown): SaveLogEntry | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const e = value as Record<string, unknown>;
   if (e.kind !== "save" && e.kind !== "journal") return undefined;
+  // T2b repeat markers are the one journal shape WITHOUT a requestId —
+  // dispatch to the journal validator BEFORE the base requestId rule so
+  // `repeatOf` presence routes to the marker check (which enforces its
+  // own tiny field set); everything else keeps the base rules.
+  if (e.kind === "journal" && e.repeatOf !== undefined) {
+    return asJournalEntry(value) as SaveLogEntry | undefined;
+  }
   if (typeof e.requestId !== "string" || e.requestId.length === 0) return undefined;
   if (typeof e.timestamp !== "number" || !Number.isFinite(e.timestamp)) return undefined;
   // Reject finite-but-out-of-Date-range values: history list/stats render

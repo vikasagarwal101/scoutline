@@ -150,7 +150,9 @@ probe as an operational Capability.
 _Avoid_: Jina API, Jina Reader API
 
 **Output Budget**:
-The whole-envelope output size limit expressed through `--max-chars`:
+_PLANNED (ADR 0007; implementation pending — today `--max-chars` is
+still a per-field truncation cap)._ The whole-envelope output size
+limit expressed through `--max-chars`:
 "fit everything this command prints in ~N characters," applied by a
 deterministic priority ladder that never cuts URLs, titles, or
 citations, flags that shrinking occurred, and persists the full

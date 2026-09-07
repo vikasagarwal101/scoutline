@@ -35,7 +35,7 @@ export function isTTY(): boolean {
   return Boolean(process.stdout.isTTY);
 }
 
-interface SearchResultLike {
+export interface SearchResultLike {
   rank?: number;
   title?: string;
   url?: string;

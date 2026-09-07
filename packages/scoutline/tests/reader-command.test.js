@@ -1005,7 +1005,8 @@ describe("Reader Migration 04 golden outputs — content read (schema-version-1 
 //
 // Schema-version-1 extract envelope (D2) across data/json/pretty/compact
 // modes. Text-oriented modes use JSON fallback because extracted items
-// are data, not prose. `--max-chars` is IGNORED for extract reads.
+// are data, not prose. ADR-0007 T4: `--max-chars` budgets extract
+// reads (READ_EXTRACT_LADDER — trim VALUES, never field names/URLs).
 // ---------------------------------------------------------------------------
 
 /**
@@ -1093,12 +1094,14 @@ describe("Reader Migration 04 golden outputs — extract read (schema-version-1 
 });
 
 // ---------------------------------------------------------------------------
-// Projection: --max-chars on content (truncation state), IGNORED for extract.
+// Projection: ADR-0007 T4 whole-envelope `--max-chars` on content AND
+// extract (the seam in index.ts); the reader-command legacy truncation
+// pins above were flipped explicitly.
 // ---------------------------------------------------------------------------
 
 describe("Reader Migration 04 projection — --max-chars", () => {
-  it("content read --max-chars truncates content and sets truncated/originalContentLength", async () => {
-    const long = "abcdefghijklmnop";
+  it("content read --max-chars whole-envelope budgets: content shrinks, compaction stamped, url/title never cut", async () => {
+    const long = "abcdefghijklmnop".repeat(10);
     const m = makeMainDeps({ fetch: () => cannedContentResult({ content: long }) });
     const { adapter, stdout } = createRecordingAdapter();
     await main(["read", "https://example.com/", "--max-chars", "5"], {
@@ -1106,16 +1109,19 @@ describe("Reader Migration 04 projection — --max-chars", () => {
       invocation: adapter,
     });
     const parsed = JSON.parse(stdout[0]);
-    assert.strictEqual(parsed.originalContentLength, long.length);
-    assert.strictEqual(parsed.truncated, true);
-    assert.ok(parsed.content.length < long.length);
-    assert.ok(parsed.content.endsWith("…"));
+    // ADR-0007 T4: whole-envelope budget. A budget of 5 cannot fit any
+    // envelope (floor clamp) — never-cut url/title still survive.
+    assert.ok(parsed.url === "https://example.com/");
+    assert.ok(parsed.title);
+    assert.ok(parsed.compaction, "compaction stamped in-band");
+    assert.strictEqual(parsed.compaction.budget, 5);
+    assert.ok(parsed.compaction.note === "floor" || parsed.content.length < long.length);
   });
 
   it("content read --max-chars never enters the Adapter request (projection only)", async () => {
     const m = makeMainDeps({ fetch: () => cannedContentResult() });
     const { adapter } = createRecordingAdapter();
-    await main(["read", "https://example.com/", "--max-chars", "5"], {
+    await main(["read", "https://example.com/", "--max-chars", "500"], {
       ...m.mainDeps,
       invocation: adapter,
     });
@@ -1124,7 +1130,7 @@ describe("Reader Migration 04 projection — --max-chars", () => {
     }
   });
 
-  it("extract read --max-chars is IGNORED (no truncation, no envelope field)", async () => {
+  it("extract read --max-chars BUDGETS items (trim field VALUES, never drop field names) — ADR-0007 D8 flip", async () => {
     const body = "```js\nconst abc = 12345;\n```\n```python\nx = 1\n```\n";
     const m = makeMainDeps({ fetch: fetchWithBody(body) });
     const { adapter, stdout } = createRecordingAdapter();
@@ -1133,13 +1139,43 @@ describe("Reader Migration 04 projection — --max-chars", () => {
       invocation: adapter,
     });
     const parsed = JSON.parse(stdout[0]);
-    // originalItemCount reflects ALL extracted items; no truncation.
-    assert.strictEqual(parsed.originalItemCount, 2);
-    assert.strictEqual(parsed.truncated, false);
-    assert.deepStrictEqual(parsed.items, [
-      { language: "js", code: "const abc = 12345;" },
-      { language: "python", code: "x = 1" },
-    ]);
+    // The budget of 3 fires the floor clamp: both items survive with
+    // their field names intact (language/code keys never dropped),
+    // values floor-clamped; the compaction stamp records budget 3.
+    assert.strictEqual(parsed.mode, "code");
+    for (const item of parsed.items) {
+      assert.ok("language" in item, "field names never dropped");
+      assert.ok("code" in item, "field names never dropped");
+    }
+    assert.ok(parsed.compaction, "extract budgets fire compaction (flag no longer ignored)");
+    assert.strictEqual(parsed.compaction.budget, 3);
+  });
+
+  it("extract read mid-budget VALUES shrink but field names survive (trim assertion with teeth)", async () => {
+    // Budget chosen to trim (not floor): values must actually shorten.
+    const body = "```js\nconst abcdefgh = 1234567890;\n```\n```python\nx = 1\n```\n";
+    const m = makeMainDeps({ fetch: fetchWithBody(body) });
+    const { adapter, stdout } = createRecordingAdapter();
+    const full = await main(["read", "https://example.com/", "--extract", "code"], {
+      ...m.mainDeps,
+      invocation: adapter,
+    });
+    void full;
+    const fullItems = JSON.parse(stdout[0]).items;
+    const m2 = makeMainDeps({ fetch: fetchWithBody(body) });
+    const { adapter: a2, stdout: s2 } = createRecordingAdapter();
+    await main(["read", "https://example.com/", "--extract", "code", "--max-chars", "120"], {
+      ...m2.mainDeps,
+      invocation: a2,
+    });
+    const budgeted = JSON.parse(s2[0]);
+    assert.ok(budgeted.compaction, "mid budget fires");
+    assert.strictEqual(budgeted.items.length, fullItems.length, "items never dropped");
+    assert.ok(
+      budgeted.items[0].code.length < fullItems[0].code.length,
+      "first code value actually trimmed",
+    );
+    assert.ok("language" in budgeted.items[0] && "code" in budgeted.items[0]);
   });
 
   it("content read without --max-chars reports truncated:false and full length", async () => {

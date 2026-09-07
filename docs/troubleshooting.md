@@ -311,9 +311,10 @@ shape of each item are unchanged from v0.2; only the outer envelope changed
 (bare array → schema-versioned object with `items`). To get the bare-array
 shape back, slice it: `scoutline read URL --extract code -O data | jq -c .items[]`.
 
-`--max-chars` is **ignored on extract reads** — extract reads are not
-character-truncated. Extract reports `originalItemCount` instead; see the
-next section for the content-read behavior.
+`--max-chars` budgets the whole envelope on extract reads too — but it
+trims field **values** only, never dropping field names or URLs. Extract
+reports `originalItemCount`; see "`--max-chars` Looks Unexpected" below for the
+budget behavior.
 
 ## Repository Search Returns 0 Excerpts or Reports "Empty Result"
 
@@ -328,27 +329,37 @@ zero-content File, so a zero-excerpt Z.AI response is malformed.
 
 ## `--max-chars` Looks Unexpected
 
-`--max-chars` is a deterministic local projection applied **after** caching
-and validation. It never invokes a model:
+`--max-chars` is a deterministic local whole-envelope Output Budget applied
+**after** caching, validation, `--count`, and `--max-summary`. It never
+invokes a model:
 
-- absent, zero, or negative → no truncation;
-- `repo search` → one total budget across `excerpts[].text`; the final
-  retained excerpt is truncated with the existing ellipsis rule and later
-  excerpts are omitted;
-- `repo read` → only `content` is truncated; `originalContentLength` and
+- absent, zero, or negative → no budget;
+- `search` → summaries trim, then source/date drop, then lowest-ranked
+  results drop; URLs and titles are never cut;
+- `read` (content read) → later paragraphs trim first, bottom sections
+  drop late; headings never cut; sets `truncated: true` and preserves
+  `originalContentLength`;
+- `read --extract <mode>` → trims field **values** only; field names and
+  URLs are never dropped. The extract envelope reports `originalItemCount`;
+- `crawl` → page contents trim, trailing pages drop late; page URLs never
+  cut;
+- `research` → report body trims first; the citations block survives
+  longest;
+- `repo search` → excerpts trim, trailing excerpts drop; URLs never cut;
+- `repo read` → file content trims; `originalContentLength` and
   `truncated` always describe the pre-truncation length;
-- `repo tree` → never character-limited; metadata, JSON envelopes, and
-  snapshots are not part of any budget;
-- `read` (content read) → truncates the envelope's `content`; sets
-  `truncated: true` and preserves `originalContentLength`;
-- `read --extract <mode>` → **ignored**. Extract reads are not
-  character-truncated; the extract envelope reports `originalItemCount`
-  instead. Truncating a code block or link list mid-item would be harmful.
+- `repo brief` → applied once to the assembled brief; README excerpts and
+  file bodies trim, file inventory drops late; repository name and
+  structure summary never cut;
+- `repo tree` → **rejects** the flag (`UNSUPPORTED_OPTION`).
 
-If your consumer expected a smaller content-read result, lower `--max-chars`;
-if you expected the full result, drop the flag or pass a larger value.
-Cached results are always the complete normalized result — projection is the
-only place `--max-chars` ever appears.
+If the budget fired, nothing is lost: the payload carries `compaction:
+{budget, ref}` and the full untrimmed envelope is in the artifacts store —
+recover it with `scoutline history show <ref>`. If your consumer expected
+a smaller result, lower `--max-chars`; if you expected the full result,
+drop the flag or pass a larger value. Cached results are always the
+complete normalized result — projection is the only place `--max-chars`
+ever appears.
 
 ## Cache Hits Don't Refresh
 

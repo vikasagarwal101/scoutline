@@ -391,6 +391,7 @@ scoutline search "security news" --recency oneDay
 # Reader - fetch web content
 scoutline read https://docs.example.com/api
 scoutline read https://blog.example.com --format text
+scoutline read https://example.com/long-article --max-chars 2000
 
 # Repo - GitHub exploration
 scoutline repo tree facebook/react
@@ -503,7 +504,7 @@ payload — the summary is presentation-only.
   healthy-first row ordering never changes exit codes. `--available` filters
   the `providers` array to the `availability: "ok"` rows; the
   `availableProviders` summary is unchanged by the filter.
-- `read` returns a schema-version-1 envelope (content read or extract read) in every output mode. `--with-images-summary`, `--no-gfm`, and `--keep-img-data-url` are passed through to the Provider request. `--max-chars` is ignored on extract reads; `--full-envelope` is silently deprecated.
+- `read` returns a schema-version-1 envelope (content read or extract read) in every output mode. `--with-images-summary`, `--no-gfm`, and `--keep-img-data-url` are passed through to the Provider request. `--max-chars` is a whole-envelope budget on both shapes (extract reads trim field values only); `--full-envelope` is silently deprecated.
 - Vision tool calls automatically retry transient 5xx/network errors (default: 2 retries). Configure with `ZAI_MCP_VISION_RETRY_COUNT` (or `ZAI_MCP_RETRY_COUNT` for all tools).
 - Tool discovery can be cached to speed `tools`/`tool`/`doctor` (default: on, 24h TTL). The cache shares the unified root with the response cache; configure both via `SCOUTLINE_CACHE`, `SCOUTLINE_CACHE_TTL_MS`, `SCOUTLINE_CACHE_SIZE_MB`, and `SCOUTLINE_CACHE_DIR` (legacy aliases `ZAI_MCP_TOOL_CACHE*`, `ZAI_MCP_CACHE_DIR`, and `ZAI_CACHE*` are accepted silently).
 - The local cache lives at `~/.scoutline/` (`cache/` for responses, `tools/` for tool discovery) on every platform. Inspect, clear, or prune it with `scoutline cache stats`, `scoutline cache clear`, and `scoutline cache prune`. Prune deletes expired entries by their stored timestamp (`--older-than <24h|90m|30s|seconds>` replaces the TTL threshold; `--provider`/`--capability` narrow the response scan to v2 filenames — the tool cache is unpartitioned and is always scanned age-only).
@@ -553,21 +554,26 @@ legacy grammar; it is not wrapped in the v1 envelope.
 - Actual `.`/`..` segments, backslashes, and ASCII control characters are
   rejected. Percent escapes (`%XX`) are never decoded — they remain literal.
 
-### `--max-chars` (deterministic, local)
+### `--max-chars` (Output Budget, deterministic and local)
 
 `--max-chars` is **never** a summarization model call. It is presentation
-projection applied to the normalized result after caching.
+projection applied to the normalized result after caching: "fit everything
+this command prints in ~N characters" (ADR-0007).
 
-- Absent, zero, or negative → no truncation.
-- `repo read` → truncates `content` with the existing ellipsis rule; preserves
-  the original length in `originalContentLength` and sets `truncated: true`.
-- `repo search` → applies **one total budget** across `excerpts[].text` in
-  Provider order; the final retained excerpt is truncated and later excerpts
-  are omitted.
-- `repo tree` → never character-limited.
-- `repo brief` → forwarded verbatim to every search and read call (per-call
-  budget); the tree probe is never character-limited.
-- Metadata, JSON envelopes, and Tree snapshots are not part of the budget.
+- Absent, zero, or negative → no budget.
+- `repo read` → whole-envelope budget; `content` trims and later sections
+  drop late, repository/path never cut; preserves the original length in
+  `originalContentLength` and sets `truncated: true`.
+- `repo search` → whole-envelope budget; excerpts trim, trailing excerpts
+  drop; URLs are never cut.
+- `repo tree` → **rejects** the flag (`UNSUPPORTED_OPTION`).
+- `repo brief` → applied **once** to the assembled brief envelope (never
+  forwarded per-probe); README excerpts and file bodies trim, file inventory
+  drops late, repository name and structure summary never cut.
+- When the budget fires, the payload gains a `compaction` field and the full
+  untrimmed envelope is saved to the artifacts store — recover with
+  `scoutline history show <ref>`.
+- Metadata and JSON envelopes are never part of the ladder's cut order.
 
 ### Empty results
 
@@ -681,8 +687,9 @@ always structured data.
 **Scripting impact:** any consumer that did `scoutline read URL > file.md`,
 `scoutline read URL | jq -r .content`, or `scoutline read URL --extract code |
 jq -c .[]` against v0.2 output must switch to the v1 envelope. `--max-chars`
-still truncates the content-read `content`; it is **ignored on extract reads**
-(extract reports `originalItemCount` instead). The deprecated
+is a whole-envelope Output Budget on both shapes; on extract reads it trims
+field values only (never drops field names or URLs; extract reports
+`originalItemCount`). The deprecated
 `--full-envelope` flag is silently accepted and ignored — the envelope is
 always returned at v1.
 

@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **`--max-chars` is now a whole-envelope Output Budget** (ADR-0007): on every ladder surface — `search`, `read`, `crawl`, `research`, `repo search`, `repo read`, and `repo brief` — the flag means "fit everything this command prints in ~N characters," applied by a deterministic per-command priority ladder (URLs, titles, and citations are never cut; `--max-summary` and `--count` still compose underneath/before the budget). This replaces the previous per-field truncation on read/crawl/research/repo surfaces and the total-excerpt budget on `repo search`. Batch manifests inherit the same semantics: per-op `maxChars` on read/crawl/research/repo search/read/brief ops budgets that op's whole envelope (the batch envelope itself is never budgeted).
+- **`repo brief --max-chars` now consumes the flag once on the assembled brief envelope** instead of forwarding it verbatim to every underlying search and read probe (the tree probe was never character-limited and remains so).
+- **`repo tree --max-chars` now rejects with `UNSUPPORTED_OPTION`** instead of silently accepting and dropping the flag, and repo `--max-chars` parsing is strict everywhere: fractional or trailing-junk values (e.g. `500x`) fail with `VALIDATION_ERROR` instead of being silently `parseInt`-truncated. Every command without a budget ladder (`vision`, `map`, `batch`, `tools`, `tool`, `call`, `doctor`, `quota`, `code`, `cache`, `usage`, `history`, `init`, `config`, `fetch`, `archive`, and `repo tree`) rejects `--max-chars` at parse time — no surface accepts and drops it.
+
+### Added
+
+- **Reference-preserving compaction:** when a budget fires, the printed payload carries a `compaction: { budget, ref?, note? }` field inside the data (all output modes), and the full untrimmed envelope is written to the artifacts store in the same shape as `--save` (redacted through the same seam), so nothing gathered is lost — `scoutline history show <ref>` recovers the complete result offline. A budget that fits writes no artifact and stamps no `compaction`.
+
 ### Added
 
 - **Keyless Page Monitoring (`scoutline watch <add|list|remove|run|feed>`)**:

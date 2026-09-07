@@ -8,7 +8,8 @@
  * `CrawlResult` into the public envelope. The Adapter owns URL
  * validation, credentials, transport, raw response parsing, cache
  * identity, and error normalization; the handler owns projection
- * (`--max-chars` per-page truncation) and output-mode presentation.
+ * (`--max-chars` whole-envelope Output Budget at the dispatcher
+ * seam) and output-mode presentation.
  *
  * Provider selection, capability support, configuration, Adapter
  * construction, and adapter.crawl agreement live in `src/index.ts`.
@@ -28,6 +29,7 @@ import type { ExecutionDependencies } from "../lib/execution.js";
 import { executeCachedOperation } from "../lib/execution.js";
 import { OUTPUT_MODES } from "../lib/output.js";
 import { ValidationError } from "../lib/errors.js";
+import { wasBudgetWalked, type LadderRule } from "../lib/output-budget.js";
 
 // ---------------------------------------------------------------------------
 // Option and dependency types
@@ -141,6 +143,88 @@ function buildCrawlPresentations(
   const markdown = pages.map((p) => `## ${p.url}\n\n${p.content}`).join("\n\n---\n\n");
   return { compact, markdown, refs, tty: markdown };
 }
+
+// ---------------------------------------------------------------------------
+// Output Budget ladder (ADR-0007, T4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Crawl ladder: seed url + status survive; page urls and the
+ * envelope's `baseUrl` are never-cut by omission. `totalPages` is
+ * RECOMPUTED to stay truthful as trailing pages drop — every current
+ * provider constructs `totalPages === pages.length`, so the drop rule
+ * preserves that invariant (`totalPages` is a cut, not a survivor).
+ */
+const trimPageContentsRule: LadderRule = {
+  name: "trim-page-contents",
+  apply(envelope) {
+    const e = envelope as { pages?: unknown[] };
+    const pages = e.pages;
+    if (!pages || pages.length === 0) return envelope;
+    // Backward scan (fix-round A): halve the LAST page whose content is
+    // still trimmable, not just the final page. The engine's fixpoint
+    // bleeds every page body before drop-trailing-pages destroys whole
+    // trailing URLs whose bodies were never trimmed.
+    for (let i = pages.length - 1; i >= 0; i--) {
+      const page = pages[i] as {
+        content?: string;
+        truncated?: boolean;
+        originalContentLength?: number;
+      };
+      const content = page.content;
+      if (!content) continue;
+      // Marker protocol (R3): strip ONE leading marker only on subsequent
+      // passes (the page's own truncated flag, flipped by this rule).
+      // The envelope (not the page row) carries the walked state — page
+      // rows are rebuilt each pass and would never register.
+      const clean = (
+        wasBudgetWalked(e) || page.truncated === true ? content.replace(/^…/, "") : content
+      ).replace(/…$/, "");
+      if (clean.length <= 1) continue;
+      const half = Math.max(1, Math.floor(clean.length / 2));
+      // Fix-round (review): halve the STRIPPED text — repeated passes
+      // keep ONE omission marker (never "………" accumulation) — skip
+      // pages the halving cannot strictly shrink, and stamp the
+      // truth flags when the ladder changed the content.
+      const replacement = "…" + clean.slice(0, half);
+      if (replacement.length >= content.length) continue;
+      // R3: no per-page metadata stamped in-rule — the truth flags
+      // cost more than short-page halvings save, which made short
+      // pages unbleedable. The crawl seam stamps pages post-walk
+      // (index.ts crawl rebuild) from the marker protocol.
+      const nextPages = [...pages];
+      nextPages[i] = { ...page, content: replacement };
+      return { ...e, pages: nextPages };
+    }
+    return envelope;
+  },
+};
+
+const dropTrailingPagesRule: LadderRule = {
+  name: "drop-trailing-pages",
+  apply(envelope) {
+    const e = envelope as { pages?: unknown[]; totalPages?: number };
+    const pages = e.pages;
+    if (!pages || pages.length <= 1) return envelope;
+    return { ...e, pages: pages.slice(0, -1), totalPages: pages.length - 1 };
+  },
+};
+
+/** The crawl Output Budget ladder (ordered; see ADR-0007 T4). */
+export const CRAWL_LADDER = [trimPageContentsRule, dropTrailingPagesRule] as const;
+
+/**
+ * Output Budget T4: rebuild every text presentation from a budgeted
+ * projection so -O compact/markdown/refs/tty reflect the shrunken
+ * pages. Thin passthrough over `buildCrawlPresentations` — no separate
+ * render logic to drift. Exported for the handler seam (index.ts).
+ */
+export function rebuildBudgetedCrawlPresentations(
+  pages: readonly { url: string; content: string }[],
+): Readonly<Partial<Record<string, string>>> {
+  return buildCrawlPresentations(pages as ProjectedPage[]);
+}
+
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
@@ -217,8 +301,10 @@ Options:
   --format <f>         Output format: markdown (default), text
   --content-size <s>   Extraction depth: medium (default), high
   --timeout <s>        Request timeout in seconds (default: 150)
-  --max-chars <n>      Truncate each page's content to <n> chars
-                       (projection only; cache stores full content)
+  --max-chars <n>      Fit the whole printed output in ~<n> chars (page
+                        contents trim, trailing pages drop late; page urls
+                        never cut; full untrimmed crawl saved to the
+                        artifacts store — recover via "scoutline history show")
   --no-cache           Bypass the response cache for this invocation
 
 Common Options:
@@ -235,8 +321,8 @@ Output format (schema-version-1):
         "url":            "<page URL>",
         "content":        "<page body as markdown/text>",
         "contentFormat":  "markdown" | "text",
-        "truncated":      false,          // present when --max-chars is set
-        "originalContentLength": <number>  // present when --max-chars is set
+        "truncated":      false,          // true when the Output Budget ladder trimmed this page
+        "originalContentLength": <number>  // full pre-budget length when the budget trims
       }
     ],
     "totalPages": <number>

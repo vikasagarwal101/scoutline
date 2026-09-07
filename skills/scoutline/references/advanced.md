@@ -369,7 +369,7 @@ repo argv
 
 The Explorer owns canonical repository paths, deterministic breadth-first
 traversal, deduplication, request-bound directory safety, schema-v1
-projection, and local `--max-chars` projection. The Z.AI Adapter owns
+projection, and local `--max-chars` Output Budget projection. The Z.AI Adapter owns
 credential resolution, legacy-key reconstruction, encoded MCP error
 parsing, and best-effort per-attempt close.
 
@@ -391,7 +391,7 @@ read argv
                name; URL rewrite as finalUrl), wrapped through one retry
                (single-retry non-Vision policy)
             -> normalized cache write
-       -> projection: --max-chars (content read only) / --extract <mode>
+       -> projection: --max-chars whole-envelope budget / --extract <mode>
   -> schema-version-1 CommandResult (content-read or extract-read envelope)
 ```
 
@@ -400,8 +400,9 @@ depth semantics, or canonical paths — projection lives in the thin
 `commands/read.ts` handler. The Z.AI Reader Adapter owns URL rewrite,
 credential resolution, legacy-key reconstruction, encoded MCP error parsing,
 and best-effort per-attempt close. `--full-envelope` is silently accepted
-and ignored; the v1 envelope is always returned. `--max-chars` is ignored
-on extract reads, which report `originalItemCount` instead.
+and ignored; the v1 envelope is always returned. `--max-chars` is a
+whole-envelope Output Budget on both shapes (extract reads trim field
+values only; extract envelopes report `originalItemCount` instead).
 
 ### Encoded MCP Error Taxonomy
 

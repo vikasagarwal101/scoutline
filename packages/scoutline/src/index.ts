@@ -436,6 +436,7 @@ export const DISPATCHED_COMMANDS: ReadonlySet<string> = new Set([
   "config",
   "fetch",
   "archive",
+  "watch",
 ]);
 
 /**
@@ -462,6 +463,7 @@ export const REJECT_MAX_CHARS_COMMANDS: ReadonlySet<string> = new Set([
   "config",
   "fetch",
   "archive",
+  "watch",
 ]);
 
 /**

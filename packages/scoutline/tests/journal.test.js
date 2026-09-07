@@ -53,12 +53,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { main, DISPATCHED_COMMANDS, ACCEPT_NO_JOURNAL_COMMANDS } from "../dist/index.js";
-import { hermeticMainDeps } from "./helpers/hermetic-main.js";
+import { createInMemoryResponseCache, hermeticMainDeps } from "./helpers/hermetic-main.js";
 import {
   appendJournalEntry,
   buildSearchSkeleton,
   skeletonContentHash,
   normalizeSkeleton,
+  buildJournalCacheKeyMap,
 } from "../dist/lib/journal.js";
 import { readLog } from "../dist/lib/artifacts.js";
 import { CommandOptionUnsupportedError } from "../dist/lib/errors.js";
@@ -128,6 +129,105 @@ function readJournalEntries(artifactsDir) {
   const store = JSON.parse(readFileSync(logFile, "utf8"));
   return store;
 }
+
+describe("T2b unit pins: repeat-marker validation + cacheKey map", () => {
+  it("a SMUGGLED marker (repeatOf + query/skeleton/contentHash/cacheKey/requestId) fails validation → whole-log fail-open (tiny-shape teeth)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-mkv-");
+    try {
+      await appendJournalEntry(artifactsDir, {
+        kind: "journal",
+        timestamp: 1,
+        capability: "search",
+        provider: { mode: "single", effective: "zai", servedFrom: "cache" },
+        repeatOf: "20260907T000000Z-0000",
+        // The smuggle: full-body fields on a marker shape.
+        requestId: "20260907T000000Z-0001",
+        query: "smuggled",
+        contentHash: "a".repeat(64),
+        cacheKey: "v2.json",
+        skeleton: { results: [{ url: "https://x", title: "t" }] },
+      });
+      const { log, notice } = await readLog(artifactsDir);
+      assert.strictEqual(log.entries.length, 0, "smuggled marker dropped");
+      assert.ok(
+        notice !== undefined && notice.length > 0,
+        "corruption notice surfaced",
+      );
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("a WELL-FORMED marker validates (full entry + marker coexist in one readable log)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-mkvalid-");
+    try {
+      await appendJournalEntry(artifactsDir, {
+        kind: "journal",
+        requestId: "20260907T000000Z-0002",
+        timestamp: 1,
+        capability: "search",
+        provider: { mode: "single", effective: "zai", servedFrom: "live" },
+        query: "q",
+        contentHash: "b".repeat(64),
+        cacheKey: "v2.json",
+        skeleton: { results: [{ url: "https://x", title: "t" }] },
+      });
+      await appendJournalEntry(artifactsDir, {
+        kind: "journal",
+        timestamp: 2,
+        capability: "search",
+        provider: { mode: "single", effective: "zai", servedFrom: "cache" },
+        repeatOf: "20260907T000000Z-0002",
+      });
+      const { log, notice } = await readLog(artifactsDir);
+      assert.strictEqual(log.entries.length, 2);
+      assert.strictEqual(notice, undefined);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("buildJournalCacheKeyMap: full entries map cacheKey→requestId, MARKERS NEVER MAP, last write wins", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-map-");
+    try {
+      await appendJournalEntry(artifactsDir, {
+        kind: "journal",
+        requestId: "r-first",
+        timestamp: 1,
+        capability: "search",
+        provider: { mode: "single", effective: "zai", servedFrom: "live" },
+        query: "q",
+        contentHash: "b".repeat(64),
+        cacheKey: "key-a",
+        skeleton: { results: [] },
+      });
+      await appendJournalEntry(artifactsDir, {
+        kind: "journal",
+        requestId: "r-second",
+        timestamp: 2,
+        capability: "search",
+        provider: { mode: "single", effective: "zai", servedFrom: "live" },
+        query: "q",
+        contentHash: "c".repeat(64),
+        cacheKey: "key-a", // same key, later entry wins
+        skeleton: { results: [] },
+      });
+      await appendJournalEntry(artifactsDir, {
+        kind: "journal",
+        timestamp: 3,
+        capability: "search",
+        provider: { mode: "single", effective: "zai", servedFrom: "cache" },
+        repeatOf: "r-second", // marker: must not enter the map
+      });
+      const map = await buildJournalCacheKeyMap(artifactsDir);
+      assert.strictEqual(map.size, 1);
+      assert.strictEqual(map.get("key-a"), "r-second", "latest full entry wins");
+      assert.strictEqual(map.get("r-second"), undefined);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("T2a: always-on journal writer unit pins", () => {
   it("buildSearchSkeleton extracts the url+title list from search result rows", async () => {
@@ -794,6 +894,303 @@ describe("T2a-fix: history show + stats over journal entries (must-fix 2, NIT 2)
       assert.strictEqual(envelope.byCommand[undefined], undefined, "no undefined key");
       assert.strictEqual(envelope.byKind.journal, 1);
       assert.strictEqual(envelope.masterBytes, 0, "journal rows add no master bytes");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("T2b: warm-cache repeat markers (main-driven)", () => {
+  /**
+   * Shared warm-cache driver: run the same query twice against ONE
+   * artifacts dir + ONE shared in-memory response cache (`searchCache`
+   * dep — the hermetic-main idiom; the real on-disk cache resolves its
+   * root from process.env at module scope, so injected env cannot steer
+   * it). Run 1 is a cache MISS (full entry); run 2 is the same request
+   * served from cache (T2b's marker branch). Distinct adapters per run
+   * keep stdout/stderr isolated.
+   */
+  async function runTwice(artifactsDir, extra = {}, depsExtra = {}, argv2) {
+    const seen = [];
+    const responseCache = createInMemoryResponseCache();
+    const mk = (runDeps = {}) =>
+      journalDeps(makeAdapter().adapter, seen, {
+        env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir, ...extra },
+        searchCache: responseCache,
+        ...depsExtra,
+        ...runDeps,
+      });
+    const s1 = await main(["search", "rust vs go"], mk());
+    const s2 = await main(argv2 ?? ["search", "rust vs go"], mk());
+    return { statuses: [s1, s2], invokes: seen.length };
+  }
+
+  it("cache HIT on search → ONE tiny repeat marker {kind, timestamp, capability, provider, repeatOf} pointing at the prior FULL entry's requestId; full entry untouched", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-marker-");
+    try {
+      const { statuses, invokes } = await runTwice(artifactsDir);
+      assert.deepStrictEqual(statuses, [0, 0]);
+      assert.strictEqual(invokes, 1, "run 2 served from cache (no second provider invoke)");
+      const store = readJournalEntries(artifactsDir);
+      assert.strictEqual(store.entries.length, 2, "full entry + marker");
+      const [full, marker] = store.entries;
+      assert.strictEqual(full.requestId !== undefined, true);
+      // Repeat marker: EXACTLY the tiny ruling-locked shape — no query,
+      // no skeleton, no contentHash, no cacheKey, no requestId.
+      assert.deepStrictEqual(Object.keys(marker).sort(), [
+        "capability",
+        "kind",
+        "provider",
+        "repeatOf",
+        "timestamp",
+      ]);
+      assert.strictEqual(marker.kind, "journal");
+      assert.strictEqual(marker.capability, "search");
+      assert.strictEqual(marker.repeatOf, full.requestId);
+      assert.ok(typeof marker.timestamp === "number");
+      // The marker is tiny — no payload fields leaked in.
+      const serialized = JSON.stringify(marker);
+      assert.ok(serialized.length < 300, `marker not tiny: ${serialized.length}B`);
+      // Provider recorded from the capture cell (the #108 honesty): the
+      // cache-serving provider, servedFrom "cache".
+      assert.strictEqual(marker.provider.mode, "single");
+      assert.strictEqual(marker.provider.effective, "zai");
+      assert.strictEqual(marker.provider.servedFrom, "cache");
+      // Append-only: the referenced full entry is byte-identical after
+      // the marker write (variant-C rejection pin, now with a second
+      // shape in the log).
+      const store2 = readJournalEntries(artifactsDir);
+      assert.deepStrictEqual(store2.entries[0], full);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("journal-cold-but-cache-warm: cache hit with NO resolvable prior full entry → ONE FULL entry instead of a marker", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-cold-");
+    try {
+      // Warm the shared response cache WITHOUT journaling (--no-journal
+      // run 1), then a normal run hits the cache with an empty journal.
+      const seen = [];
+      const responseCache = createInMemoryResponseCache();
+      const deps = (argv, runDeps = {}) =>
+        journalDeps(makeAdapter().adapter, seen, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          searchCache: responseCache,
+          ...runDeps,
+        });
+      const s1 = await main(["search", "rust vs go", "--no-journal"], deps());
+      assert.strictEqual(s1, 0);
+      assert.strictEqual(seen.length, 1, "run 1 live (miss)");
+      const s2 = await main(["search", "rust vs go"], deps());
+      assert.strictEqual(s2, 0);
+      assert.strictEqual(seen.length, 1, "run 2 cache-served");
+      const store = readJournalEntries(artifactsDir);
+      assert.strictEqual(store.entries.length, 1, "journal-cold rule → ONE FULL entry");
+      const entry = store.entries[0];
+      assert.strictEqual(entry.kind, "journal");
+      assert.strictEqual(entry.repeatOf, undefined, "not a marker");
+      assert.ok(Array.isArray(entry.skeleton?.results), "full skeleton present");
+      assert.strictEqual(entry.query, "rust vs go");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("marker branch resolves through the on-read map: after the journal is emptied, a cache hit writes a FULL entry (no stale pre-clear requestId resolution)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-stale-");
+    try {
+      const { statuses } = await runTwice(artifactsDir);
+      assert.deepStrictEqual(statuses, [0, 0]);
+      let store = readJournalEntries(artifactsDir);
+      assert.strictEqual(store.entries.length, 2);
+      // Wipe the journal by hand (history clear is T6a; same effect on
+      // index.json) — the cacheKey map must rebuild from the CLEARED
+      // log on the next write, not resolve the dead requestId.
+      writeFileSync(
+        join(artifactsDir, "index.json"),
+        JSON.stringify({ version: 1, entries: [] }, null, 2) + "\n",
+        { mode: 0o600 },
+      );
+      const seen = [];
+      const responseCache = createInMemoryResponseCache();
+      // Re-warm a FRESH cache (live miss, journaling off so the empty
+      // journal stays empty), then hit it with journaling on.
+      await main(
+        ["search", "rust vs go", "--no-journal"],
+        journalDeps(makeAdapter().adapter, seen, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          searchCache: responseCache,
+        }),
+      );
+      const s4 = await main(
+        ["search", "rust vs go"],
+        journalDeps(makeAdapter().adapter, seen, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          searchCache: responseCache,
+        }),
+      );
+      assert.strictEqual(s4, 0);
+      assert.strictEqual(seen.length, 1, "run 4 cache-served (run 3 was the fresh miss)");
+      store = readJournalEntries(artifactsDir);
+      assert.strictEqual(store.entries.length, 1, "post-clear cache hit → ONE entry");
+      assert.strictEqual(
+        store.entries[0].repeatOf,
+        undefined,
+        "journal-cold rule fires (FULL entry, not a marker to a dead requestId)",
+      );
+      assert.ok(Array.isArray(store.entries[0].skeleton?.results));
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("escape switches hold on the marker branch too: --no-journal cache hit → NOTHING; config journal:false cache hit → NOTHING", async () => {
+    const cases = [
+      ["flag", { flags: ["--no-journal"], deps: {} }],
+      [
+        "config",
+        {
+          flags: [],
+          deps: {
+            loadScoutlineConfig: async () => ({ version: 1, providers: {}, journal: false }),
+          },
+        },
+      ],
+    ];
+    for (const [name, { flags, deps }] of cases) {
+      const artifactsDir = makeTempDir(`scoutline-journal-mkoff-${name}-`);
+      try {
+        // Warm the shared cache with a journaled miss first so the log
+        // file exists.
+        const seen = [];
+        const responseCache = createInMemoryResponseCache();
+        const mk = (runDeps = {}, argv) =>
+          main(
+            argv,
+            journalDeps(makeAdapter().adapter, seen, {
+              env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+              searchCache: responseCache,
+              ...runDeps,
+            }),
+          );
+        await mk({}, ["search", "warm only"]);
+        const before = readFileSync(join(artifactsDir, "index.json"), "utf8");
+        const s2 = await mk(deps, ["search", "warm only", ...flags]);
+        assert.strictEqual(s2, 0);
+        assert.strictEqual(seen.length, 1, "second run served from cache");
+        const after = readFileSync(join(artifactsDir, "index.json"), "utf8");
+        assert.strictEqual(
+          after,
+          before,
+          `${name}: no marker, no full entry under the off switch`,
+        );
+      } finally {
+        rmSync(artifactsDir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("fanout cache hit → marker with the fanout provider shape {mode:\"fanout\", arms} (mirrors T2a fanout handling)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-mk-fanout-");
+    try {
+      const seen = [];
+      const twoArms = ["zai", "brave"].map((id) => makeSearchDescriptor(id, seen));
+      const responseCache = createInMemoryResponseCache();
+      const deps = () =>
+        hermeticMainDeps({
+          invocation: makeAdapter().adapter,
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          providerDescriptors: twoArms,
+          configFanout: true,
+          loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+          searchCache: responseCache,
+        });
+      const s1 = await main(["search", "rust vs go"], deps());
+      const s2 = await main(["search", "rust vs go"], deps());
+      assert.deepStrictEqual([s1, s2], [0, 0]);
+      const store = readJournalEntries(artifactsDir);
+      assert.strictEqual(store.entries.length, 2, "fanout full entry + fanout marker");
+      const [full, marker] = store.entries;
+      assert.strictEqual(full.provider.mode, "fanout");
+      assert.strictEqual(marker.kind, "journal");
+      assert.deepStrictEqual(
+        marker.provider,
+        { mode: "fanout", arms: ["zai", "brave"] },
+        "fanout marker carries the fanout provider shape",
+      );
+      assert.strictEqual(marker.repeatOf, full.requestId);
+      assert.strictEqual(marker.query, undefined, "marker stays tiny on fanout");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("marker written ONLY on a cache hit: after cache expiry a live MISS with a still-resolvable map key writes a FULL entry (mutation pin: marker-on-miss)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-missfull-");
+    try {
+      const seen = [];
+      const cacheStore = new Map();
+      const responseCache = {
+        async get(key) {
+          return cacheStore.has(key) ? cacheStore.get(key) : null;
+        },
+        async set(key, value) {
+          cacheStore.set(key, value);
+        },
+      };
+      const deps = () =>
+        journalDeps(makeAdapter().adapter, seen, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          searchCache: responseCache,
+        });
+      await main(["search", "rust vs go"], deps()); // miss → FULL
+      await main(["search", "rust vs go"], deps()); // hit → MARKER
+      cacheStore.clear(); // 24h TTL expiry: next run is a LIVE miss
+      await main(["search", "rust vs go"], deps()); // miss again → FULL
+      assert.strictEqual(seen.length, 2, "two live invokes, one cache hit");
+      const store = readJournalEntries(artifactsDir);
+      assert.deepStrictEqual(
+        store.entries.map((e) => (e.repeatOf !== undefined ? "MARKER" : "FULL")),
+        ["FULL", "MARKER", "FULL"],
+        "a live miss NEVER writes a marker even when the map holds the key",
+      );
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("marker-vs-full discriminator: a full entry NEVER carries repeatOf; a marker NEVER carries skeleton/query/cacheKey — mixed log stays readable and countable", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-mixed-");
+    try {
+      // Full (cold miss), marker (warm hit), full (new query miss).
+      const seen = [];
+      const responseCache = createInMemoryResponseCache();
+      const deps = () =>
+        journalDeps(makeAdapter().adapter, seen, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          searchCache: responseCache,
+        });
+      await main(["search", "rust vs go"], deps());
+      await main(["search", "rust vs go"], deps());
+      await main(["search", "zig vs odin"], deps());
+      assert.strictEqual(seen.length, 2, "two misses, one hit");
+      const store = readJournalEntries(artifactsDir);
+      assert.strictEqual(store.entries.length, 3);
+      const [e1, e2, e3] = store.entries;
+      assert.strictEqual(e1.repeatOf, undefined);
+      assert.ok(Array.isArray(e1.skeleton?.results));
+      assert.strictEqual(e3.repeatOf, undefined);
+      assert.ok(Array.isArray(e3.skeleton?.results));
+      assert.strictEqual(e2.repeatOf, e1.requestId);
+      assert.strictEqual(e2.skeleton, undefined);
+      assert.strictEqual(e2.query, undefined);
+      assert.strictEqual(e2.cacheKey, undefined);
+      // The stats substrate: distinct marker/full counts are derivable.
+      const markers = store.entries.filter((e) => e.repeatOf !== undefined);
+      const fulls = store.entries.filter((e) => e.repeatOf === undefined);
+      assert.strictEqual(markers.length, 1);
+      assert.strictEqual(fulls.length, 2);
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
     }

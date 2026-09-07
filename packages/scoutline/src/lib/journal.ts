@@ -13,7 +13,13 @@
  * (query text and skeleton URLs pass it — PRD AC9, pinned E2E).
  */
 import { createHash } from "node:crypto";
-import { appendLogEntry, newRequestId, type ProviderRouting, type AppendLogEntryOptions } from "./artifacts.js";
+import {
+  appendLogEntry,
+  newRequestId,
+  readLog,
+  type ProviderRouting,
+  type AppendLogEntryOptions,
+} from "./artifacts.js";
 import { redactSecrets } from "./redact.js";
 
 /** Capabilities that journal (PRD AC3); the seam is capability-driven so T3 extends, not rewrites. */
@@ -60,6 +66,23 @@ export interface JournalLogEntry {
 }
 
 /**
+ * T2b repeat marker (PRD AC2 Variant B): the ~100B record of a
+ * warm-cache re-ask. `repeatOf` is the requestId of the latest PRIOR
+ * full journal entry sharing the same cacheKey (resolved through the
+ * on-read map). Deliberately tiny — no query, no skeleton, no
+ * contentHash, no cacheKey, no requestId of its own.
+ */
+export interface JournalRepeatMarker {
+  readonly kind: "journal";
+  readonly timestamp: number;
+  readonly capability: JournalableCapability;
+  /** The serving provider, cache-honestly ({servedFrom:"cache"} etc). */
+  readonly provider: ProviderRouting;
+  /** requestId of the referenced full journal entry. */
+  readonly repeatOf: string;
+}
+
+/**
  * Normalize a skeleton to the exact bytes contentHash is computed over
  * (and recall/export will compare later): recursively key-sorted JSON —
  * the buildProviderCacheKey request-hash idiom, so a differently-ordered
@@ -101,11 +124,18 @@ export function buildSearchSkeleton(
   };
 }
 
-/** Structural guard for one journal entry — the widened T1 body check (T2a owns it). */
-export function asJournalEntry(value: unknown): JournalLogEntry | undefined {
+/**
+ * Structural guard for one journal record (the widened T1 body check).
+ * T2b splits the dispatch: a record carrying `repeatOf` is a REPEAT
+ * MARKER (the tiny shape — exactly {kind, timestamp, capability,
+ * provider, repeatOf}); anything else is a FULL entry. The presence of
+ * `repeatOf` is the marker-vs-full discriminator.
+ */
+export function asJournalEntry(value: unknown): JournalLogEntry | JournalRepeatMarker | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const e = value as Record<string, unknown>;
   if (e.kind !== "journal") return undefined;
+  if (e.repeatOf !== undefined) return asJournalRepeatMarker(value);
   if (typeof e.requestId !== "string" || e.requestId.length === 0) return undefined;
   if (typeof e.timestamp !== "number" || !Number.isFinite(e.timestamp)) return undefined;
   if (e.capability !== "search" && e.capability !== "read" && e.capability !== "research") {
@@ -158,6 +188,98 @@ export function asJournalEntry(value: unknown): JournalLogEntry | undefined {
   return value as JournalLogEntry;
 }
 
+/**
+ * Structural guard for one T2b repeat marker: EXACTLY the tiny ruling
+ * shape — `repeatOf` a non-empty string, capability on the enum,
+ * provider the routing union, and NO full-body fields (a marker
+ * carrying any of query/skeleton/contentHash/cacheKey/requestId is the
+ * discriminator violated and fails validation — the fail-loud whole-log
+ * path applies).
+ */
+function asJournalRepeatMarker(value: unknown): JournalRepeatMarker | undefined {
+  const e = value as Record<string, unknown>;
+  if (typeof e.repeatOf !== "string" || e.repeatOf.length === 0) return undefined;
+  if (typeof e.timestamp !== "number" || !Number.isFinite(e.timestamp)) return undefined;
+  if (e.capability !== "search" && e.capability !== "read" && e.capability !== "research") {
+    return undefined;
+  }
+  if (e.requestId !== undefined) return undefined;
+  if (e.query !== undefined) return undefined;
+  if (e.contentHash !== undefined) return undefined;
+  if (e.cacheKey !== undefined) return undefined;
+  if (e.skeleton !== undefined) return undefined;
+  const provider = e.provider as Record<string, unknown> | undefined;
+  if (typeof provider !== "object" || provider === null) return undefined;
+  if (provider.mode === "single") {
+    if (typeof provider.effective !== "string" || provider.effective.length === 0) return undefined;
+    if (provider.requested !== undefined && typeof provider.requested !== "string") return undefined;
+    if (
+      provider.servedFrom !== undefined &&
+      provider.servedFrom !== "live" &&
+      provider.servedFrom !== "cache"
+    ) {
+      return undefined;
+    }
+  } else if (provider.mode === "fanout") {
+    if (
+      !Array.isArray(provider.arms) ||
+      provider.arms.length === 0 ||
+      !provider.arms.every((arm) => typeof arm === "string" && arm.length > 0)
+    ) {
+      return undefined;
+    }
+    if (provider.requested !== undefined && typeof provider.requested !== "string") return undefined;
+  } else {
+    return undefined;
+  }
+  return value as JournalRepeatMarker;
+}
+
+/**
+ * T2b cacheKey → latest full-entry requestId map (DESIGN D2): rebuilt
+ * from the log ON READ — every full journal entry maps its cacheKey to
+ * its requestId, last write wins. Markers resolve `repeatOf` through
+ * it; an absent entry (cleared journal, pre-journal cache) makes the
+ * hit journal-cold and the caller writes a FULL entry instead. The
+ * rebuild-on-read is what keeps the map honest across processes and
+ * after `history clear` (T6a).
+ */
+export async function buildJournalCacheKeyMap(
+  dir: string,
+): Promise<Map<string, string>> {
+  const { log } = await readLog(dir);
+  const map = new Map<string, string>();
+  for (const entry of log.entries) {
+    if (entry.kind !== "journal") continue;
+    const journal = entry as unknown as Partial<JournalLogEntry> & Partial<JournalRepeatMarker>;
+    if (journal.repeatOf !== undefined) continue; // markers never map
+    if (typeof journal.cacheKey === "string" && typeof journal.requestId === "string") {
+      map.set(journal.cacheKey, journal.requestId);
+    }
+  }
+  return map;
+}
+
+/**
+ * T2b: build the tiny repeat marker for a warm-cache re-ask. The
+ * provider is the cache-honest routing (servedFrom "cache" for single,
+ * or the fanout arms) — the caller passes what the capture cell holds.
+ */
+export function buildJournalRepeatMarker(input: {
+  readonly capability: JournalableCapability;
+  readonly provider: ProviderRouting;
+  readonly repeatOf: string;
+  readonly now: () => number;
+}): JournalRepeatMarker {
+  return {
+    kind: "journal",
+    timestamp: input.now(),
+    capability: input.capability,
+    provider: input.provider,
+    repeatOf: input.repeatOf,
+  };
+}
+
 export interface AppendJournalEntryOptions extends AppendLogEntryOptions {}
 
 /**
@@ -168,7 +290,7 @@ export interface AppendJournalEntryOptions extends AppendLogEntryOptions {}
  */
 export async function appendJournalEntry(
   dir: string,
-  entry: JournalLogEntry,
+  entry: JournalLogEntry | JournalRepeatMarker,
   options: AppendJournalEntryOptions = {},
 ): Promise<string | undefined> {
   // The union log type rides appendLogEntry's SaveLogEntry signature;

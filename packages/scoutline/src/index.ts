@@ -112,6 +112,7 @@ import {
   resolveArtifactsDir,
   writeArtifact,
   type ArtifactFormat,
+  type FanoutProviderRouting,
   type ProviderRouting,
   type SaveLogEntry,
   type SingleProviderRouting,
@@ -904,6 +905,16 @@ export interface HandlerDependencies {
    * which is how the saveRef cross-link works.
    */
   readonly journal?: JournalHookInput;
+  /**
+   * History-journal merge T2a must-fix 1: batch-driven ops journal per
+   * their OWN capability (PRD AC3 — no exclusion branch). The top-level
+   * wiring above sets `journal` directly for single commands; for the
+   * batch noun (not in ACCEPT_NO_JOURNAL_COMMANDS) main sets this
+   * switch instead and the batch runner builds a per-op journal input
+   * keyed on the op's command (config switch only — no per-op flag in
+   * v1; `--no-journal` on the batch COMMAND itself stays rejected).
+   */
+  readonly journalBatchEnabled?: boolean;
   readonly searchCache: ResponseCache;
   readonly searchSleep: (ms: number) => Promise<void>;
   readonly searchRandom: () => number;
@@ -1490,15 +1501,27 @@ async function handleSearch(
   // save hook — wired whenever main handed a journal input (journalable
   // command, journaling on). The result rows for the skeleton come from
   // the dispatch result inside the behavior; when BOTH hooks are wired
-  // they share the same capture cell (saveRef cross-link).
+  // they share the same capture cell (saveRef cross-link). Fan-out runs
+  // journal too (review must-fix 3): the hook records the plan's
+  // {mode:"fanout", arms} routing — no silent skip of an always-on
+  // surface. The rows/fanout routing both arrive via thunks read AFTER
+  // dispatch resolves.
   let journalRows: readonly { url?: string; title?: string }[] | undefined;
   const journal =
-    deps.journal === undefined || fanoutPlan.mode === "fanout"
+    deps.journal === undefined
       ? undefined
       : createJournalHook(deps, {
           journal: deps.journal,
           query: positional.join(" "),
           resultRows: () => journalRows,
+          fanoutRouting:
+            fanoutPlan.mode === "fanout"
+              ? {
+                  mode: "fanout" as const,
+                  ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+                  arms: fanoutPlan.arms,
+                }
+              : undefined,
         });
   const query = positional.join(" ");
 
@@ -1732,7 +1755,7 @@ async function handleSearch(
       };
 
       if (fanoutPlan.mode === "fanout") {
-        return applyOutputBudget(applyContextWrapper(await executeFanoutPlan(
+        const fanoutResult = await executeFanoutPlan(
             fanoutPlan,
             {
               descriptors: deps.providerDescriptors,
@@ -1753,8 +1776,13 @@ async function handleSearch(
               secrets: deps.secrets,
             },
             context,
-          ),
-        ));
+          );
+        // T2a must-fix 3: the fan-out rows feed the journal skeleton the
+        // same way the single path's outcome does below.
+        if (fanoutResult.kind === "data" && Array.isArray(fanoutResult.data)) {
+          journalRows = fanoutResult.data;
+        }
+        return applyOutputBudget(applyContextWrapper(fanoutResult));
       }
       const outcome = await executeWithFallback(
         {
@@ -3943,7 +3971,7 @@ async function handleCode(
 const REPORT_SCHEMA_VERSION = 1;
 
 /** Observation cell: the provider whose invoke() actually resolved. */
-interface ServingCapture {
+export interface ServingCapture {
   servedProvider?: ProviderId;
   /**
    * Issue #108: where the serving bytes came from. `"live"` = the
@@ -4126,6 +4154,18 @@ function captureServingDescriptors(
     create: (context: ProviderContext): ProviderAdapter =>
       captureAdapterInvoke(descriptor.create(context), descriptor.id, capture),
   }));
+}
+
+/**
+ * T2a must-fix 1: the batch runner's per-op wrapper — same behavior as
+ * {@link captureServingDescriptors}, exported because each batch op owns
+ * its own ServingCapture cell (concurrent ops must not cross-stamp).
+ */
+export function captureServingDescriptorsForOp(
+  descriptors: readonly ProviderDescriptor[],
+  capture: ServingCapture,
+): readonly ProviderDescriptor[] {
+  return captureServingDescriptors(descriptors, capture);
 }
 
 /** Wiring built in main only when a save will actually happen. */
@@ -4412,17 +4452,47 @@ function createJournalHook(
     readonly query: string;
     /** Result rows for the skeleton — a thunk; the rows exist only after dispatch (T3 supplies its own per-capability thunk). */
     readonly resultRows?: () => readonly { url?: string; title?: string }[] | undefined;
+    /** Must-fix 3: the fan-out plan's routing, when this run is fan-out mode. */
+    readonly fanoutRouting?: FanoutProviderRouting;
   },
 ): SaveHook {
   const { capability, capture } = meta.journal;
   return async ({ resolvedSecrets, now }) => {
-    // Fanout runs have no single server to attribute — the entry shape
-    // is SingleProviderRouting (PRD AC2), so fanout journaling is a
-    // later ruling; T2a writes nothing there.
+    // Must-fix 3: fan-out runs journal with the plan's routing — the
+    // capture cell tracks per-arm invokes but no single server, so the
+    // entry records {mode:"fanout", arms} faithfully (the same shape
+    // the save hook logs). A fan-out run with no resolved invoke wrote
+    // nothing (failed before any arm served) — nothing to journal.
+    if (meta.fanoutRouting !== undefined) {
+      if (capture.servedFrom !== "live") return;
+      // NIT 1: no cacheKey → skip (a poison empty-string entry would
+      // fail the validator and blank the whole log on next read).
+      if (capture.cacheKey === undefined) return;
+      const skeleton =
+        capability === "search"
+          ? buildSearchSkeleton(meta.resultRows?.() ?? [])
+          : undefined;
+      if (skeleton === undefined) return;
+      const entry = buildJournalEntry({
+        capability,
+        provider: meta.fanoutRouting,
+        query: meta.query,
+        cacheKey: capture.cacheKey,
+        skeleton,
+        now,
+        secrets: resolvedSecrets,
+        ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
+      });
+      await appendJournalEntry(resolveArtifactsDir(deps.env), entry);
+      return;
+    }
     if (capture.servedProvider === undefined) return;
     // HIT branch is T2b's (repeat marker); a capture that never went
     // live recorded no fresh generation to journal.
     if (capture.servedFrom !== "live") return;
+    // NIT 1: skip rather than poison — an undefined cacheKey cannot
+    // satisfy the validator, and an empty string would blank history.
+    if (capture.cacheKey === undefined) return;
     const skeleton =
       capability === "search"
         ? buildSearchSkeleton(meta.resultRows?.() ?? [])
@@ -4437,7 +4507,7 @@ function createJournalHook(
       capability,
       provider,
       query: meta.query,
-      cacheKey: capture.cacheKey ?? "",
+      cacheKey: capture.cacheKey,
       skeleton,
       now,
       secrets: resolvedSecrets,
@@ -5474,7 +5544,18 @@ export async function main(
       : buildSaveWiring(saveRequest, journalingDescriptors, journalCapture);
   const handlerDepsWithSave: HandlerDependencies =
     saveWiring === undefined && journalWiring === undefined
-      ? handlerDepsWithSelection
+      ? command === "batch" &&
+          !isHelpInvocation &&
+          (config as { journal?: unknown }).journal !== false
+        ? // T2a must-fix 1: the batch noun journals PER-OP — the runner
+          // wraps the descriptors around each op's OWN capture cell and
+          // builds the op's journal input from its own command. The
+          // unwrapped descriptors flow through here deliberately.
+        {
+            ...handlerDepsWithSelection,
+            journalBatchEnabled: true,
+          }
+        : handlerDepsWithSelection
       : saveWiring === undefined
         ? {
             ...handlerDepsWithSelection,
@@ -5525,7 +5606,10 @@ export async function main(
         break;
       case "batch":
         commandRecognized = true;
-        exitCode = await handleBatch(commandArgs, outputMode, handlerDepsWithSelection);
+        // T2a must-fix 1: batch rides handlerDepsWithSave so the
+        // journalBatchEnabled switch flows into the runner (no save
+        // wiring exists for batch — the flag is the only extra field).
+        exitCode = await handleBatch(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "tools":
         commandRecognized = true;

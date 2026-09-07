@@ -177,6 +177,12 @@ export async function buildHistoryShowReport(
       "Run history list to see saved request ids.",
     );
   }
+  // T2a review must-fix 2: a journal entry IS the artifact — log-only,
+  // no master. Render the entry itself (the { entry, report } shape's
+  // `report` is the journal entry's own body) with no master read.
+  if (entry.kind === "journal") {
+    return { schemaVersion: 1, entry, report: entry };
+  }
   const text = await readMaster(entry);
   if (text === undefined) {
     throw new FileError(
@@ -216,10 +222,22 @@ export async function buildHistoryStatsReport(
   let oldest: number | undefined;
   let newest: number | undefined;
   for (const entry of log.entries) {
-    byCommand[entry.command] = (byCommand[entry.command] ?? 0) + 1;
-    byArtifactFormat[entry.artifactFormat] = (byArtifactFormat[entry.artifactFormat] ?? 0) + 1;
+    // T2a NIT 2: journal rows count under their CAPABILITY (they carry
+    // no command); save rows keep the command. Same for artifactFormat
+    // (journal rows have none — counted as "-" to keep the fold total).
+    if (entry.kind === "journal") {
+      const capability = (entry as unknown as { capability: string }).capability;
+      byCommand[capability] = (byCommand[capability] ?? 0) + 1;
+      byArtifactFormat["-"] = (byArtifactFormat["-"] ?? 0) + 1;
+    } else {
+      byCommand[entry.command] = (byCommand[entry.command] ?? 0) + 1;
+      byArtifactFormat[entry.artifactFormat] =
+        (byArtifactFormat[entry.artifactFormat] ?? 0) + 1;
+      // must-fix 2 (latent guard): only save entries have masters — a
+      // journal row's masterPath is absent, stat must never run.
+      masterBytes += await masterSizeOf(entry);
+    }
     byKind[entry.kind] = (byKind[entry.kind] ?? 0) + 1;
-    masterBytes += await masterSizeOf(entry);
     if (oldest === undefined || entry.timestamp < oldest) oldest = entry.timestamp;
     if (newest === undefined || entry.timestamp > newest) newest = entry.timestamp;
   }

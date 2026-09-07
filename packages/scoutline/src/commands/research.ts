@@ -5,8 +5,10 @@
  * Research runs an asynchronous create→poll lifecycle server-side and
  * costs 4-250 credits per request. The handler shows a wait disclaimer
  * before invoke, sets up a Ctrl-C signal handler that prints the
- * request_id + resume command, and applies `--max-chars` as a report
- * projection after the cached normalized result is produced.
+ * request_id + resume command, and returns the full unbudgeted
+ * envelope — `--max-chars` is NOT an option here: the dispatcher seam
+ * (index.ts) applies the whole-envelope budget via RESEARCH_LADDER
+ * after this returns (ADR-0007).
  *
  * The Adapter's `invoke()` owns the full lifecycle (state-file resume,
  * POST, poll loop, completion/failure/404 handling); shared execution
@@ -15,7 +17,7 @@
  * Provider selection, capability support, configuration, Adapter
  * construction, and adapter.research agreement live in `src/index.ts`.
  *
- * Cache stores the full report; `--max-chars` is a handler projection.
+ * Cache stores the full report; the budget is a dispatcher-seam projection.
  */
 
 import * as fs from "node:fs";
@@ -36,6 +38,7 @@ import { OUTPUT_MODES } from "../lib/output.js";
 import { TimeoutError, ValidationError } from "../lib/errors.js";
 import { buildBiasAppend, slug } from "../lib/context-file.js";
 import type { ContextSourceContent, ParsedContextText } from "../lib/context-file.js";
+import type { LadderRule } from "../lib/output-budget.js";
 
 // ---------------------------------------------------------------------------
 // Option and dependency types
@@ -46,7 +49,6 @@ export interface ResearchOptions {
   readonly outputLength?: "short" | "standard" | "long";
   readonly citationFormat?: "numbered" | "mla" | "apa" | "chicago";
   readonly domain?: string;
-  readonly maxChars?: number;
   /** Polling timeout in seconds. Default 300. */
   readonly timeout?: number;
   readonly noCache?: boolean;
@@ -451,6 +453,68 @@ function buildResearchPresentations(
 }
 
 // ---------------------------------------------------------------------------
+// Output Budget ladder (ADR-0007, T4)
+// ---------------------------------------------------------------------------
+
+
+/**
+ * Research ladder: the citations block (`sources` — url+title per
+ * citation) survives longest; the report BODY (`sections[].body`)
+ * trims first, from the LAST section upward. `heading`s never cut
+ * (omission); `query`/`model`/`context` are metadata, never touched.
+ */
+const trimLastSectionBodiesRule: LadderRule = {
+  name: "trim-last-section-bodies",
+  apply(envelope) {
+    const e = envelope as { sections?: { heading: string; body: string }[] };
+    const sections = e.sections;
+    if (!sections || sections.length === 0) return envelope;
+    // Find the LAST section with a non-trivial body; halve it.
+    for (let i = sections.length - 1; i >= 0; i--) {
+      const section = sections[i]!;
+      const clean = section.body.replace(/^…+/, "").replace(/…$/, "");
+      if (clean.length <= 1) continue;
+      const half = Math.max(1, Math.floor(clean.length / 2));
+      // Fix-round (review): halve the STRIPPED text — repeated passes
+      // keep ONE omission marker (never "………" accumulation) — and
+      // skip bodies the halving cannot strictly shrink.
+      const replacement = "…" + clean.slice(0, half);
+      if (replacement.length >= section.body.length) continue;
+      const next = [...sections];
+      next[i] = { ...section, body: replacement };
+      return { ...e, sections: next };
+    }
+    return envelope;
+  },
+};
+
+const dropBottomSectionsRule: LadderRule = {
+  name: "drop-bottom-sections",
+  apply(envelope) {
+    const e = envelope as { sections?: unknown[] };
+    const sections = e.sections;
+    if (!sections || sections.length <= 1) return envelope;
+    return { ...e, sections: sections.slice(0, -1) };
+  },
+};
+
+/** The research Output Budget ladder (ordered; see ADR-0007 T4). */
+export const RESEARCH_LADDER = [trimLastSectionBodiesRule, dropBottomSectionsRule] as const;
+
+/**
+ * Output Budget T4: rebuild the text presentations from a budgeted
+ * projection so -O compact/markdown/refs/tty reflect the shrunken
+ * envelope (sources — the citations block — survive longest there
+ * too). Thin passthrough over `buildResearchPresentations`.
+ */
+export function rebuildBudgetedResearchPresentations(
+  sections: readonly { heading: string; body: string }[],
+  sources: readonly { title?: string; url?: string }[],
+): Readonly<Partial<Record<string, string>>> {
+  return buildResearchPresentations(sections, sources);
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -464,6 +528,16 @@ export async function research(
 ): Promise<CommandResult> {
   if (typeof query !== "string" || query.trim() === "") {
     throw new ValidationError("Research query must contain at least one non-whitespace character");
+  }
+  // Output Budget whole-branch review M3: the option field is GONE from
+  // ResearchOptions (the T4 per-field truncation was removed), so a
+  // typed caller cannot pass it — but a JS deep importer still can.
+  // Fail loud instead of silently no-budgeting (repoBrief guards the
+  // same way; the CLI applies the budget at the handler seam).
+  if ((options as Record<string, unknown>).maxChars !== undefined) {
+    throw new ValidationError(
+      "--max-chars is applied by the CLI as a whole-envelope Output Budget; research() does not accept it",
+    );
   }
 
   const contextInput = deps.context;
@@ -553,10 +627,12 @@ export async function research(
       if (timeoutId !== undefined) clearTimeout(timeoutId);
     }
 
-    const reportText =
-      options.maxChars && options.maxChars > 0 && result.report.length > options.maxChars
-        ? result.report.slice(0, options.maxChars - 1).trimEnd() + "…"
-        : result.report;
+    // ADR-0007 (T4): whole-envelope `--max-chars` budgeting lives at
+    // the handler seam (index.ts, RESEARCH_LADDER) — applied AFTER this
+    // return. The legacy per-field report truncation is retired; the
+    // envelope below always carries the full unbudgeted report (the
+    // zero-diff shape — identical when no flag is passed).
+    const reportText = result.report;
 
     const sections = parseReportSections(reportText);
 
@@ -577,10 +653,6 @@ export async function research(
       sections: effectiveSections,
       sources: result.sources,
     };
-    if (options.maxChars && options.maxChars > 0 && result.report.length > options.maxChars) {
-      envelope.reportTruncated = true;
-      envelope.originalReportLength = result.report.length;
-    }
     // Local-context plan, Ticket 2 (DESIGN D5): one optional envelope
     // field recording what was parsed locally — counts, hashes, and
     // the path only, never content (D6 privacy boundary). schemaVersion
@@ -664,8 +736,11 @@ Options:
                          (honored by Tavily; ignored with a stderr warning on Exa)
   --domain <d>           Restrict research to a single domain
                          (honored by Tavily; ignored with a stderr warning on Exa)
-  --max-chars <n>        Truncate the report text to <n> chars
-                         (projection only; cache stores full report)
+  --max-chars <n>        Fit the whole printed output in ~<n> chars
+                         (report body trims, citations block survives
+                         longest; full untrimmed report saved to the
+                         artifacts store — recover via "scoutline
+                         history show")
   --timeout <s>          Polling timeout in seconds (default: 300)
   --no-cache             Bypass the response cache for this invocation
 

@@ -10,9 +10,9 @@
  * selection, retries, or presentation.
  *
  * Map is the simplest of the three new Tavily capabilities: the API
- * returns URLs only (no per-page content), so there is no per-page
- * projection or truncation concern. The handler therefore needs no
- * `--max-chars` flag.
+ * returns URLs only (no per-page content), so Map is not an Output
+ * Budget ladder surface — the dispatcher rejects `--max-chars` there
+ * (UNSUPPORTED_OPTION).
  */
 
 import type { CacheIdentity, CachedOperation } from "../lib/execution.js";

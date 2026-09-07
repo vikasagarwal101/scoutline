@@ -486,8 +486,8 @@ reads total. The cap counts the README, so when a README is present only
 the first three manifest kinds are read (`go.mod` is the one dropped).
 A focus-requested read stage that selects nothing still records a
 terminal `read:<files>` probe (`skipped`/`no-selection`). `--max-chars`
-is a per-call budget forwarded to every search and read; the tree is
-never character-limited. A failed probe is recorded in `coverage.probes`
+is applied once to the assembled brief envelope (never forwarded to the
+probes); the tree is never character-limited. A failed probe is recorded in `coverage.probes`
 (ok/failed/skipped with a stable code and redacted message) while the
 brief continues — `coverage` and `detected` are always present, so
 consumers distinguish "not requested", "failed", "dependency failed",
@@ -496,19 +496,23 @@ The brief is never cached as a unit; its probes reuse the per-operation
 repository cache entries, and identical responses yield byte-identical
 output.
 
-### `--max-chars` is deterministic and local
+### `--max-chars` is an Output Budget (deterministic and local)
 
 `--max-chars` never invokes a model — it is post-normalization projection:
+"fit everything this command prints in ~N characters" (ADR-0007).
 
-- absent / zero / negative → no truncation;
-- `repo search` → one total budget across `excerpts[].text`; the final
-  retained excerpt is truncated, later excerpts are omitted;
-- `repo read` → only `content` is truncated; `originalContentLength` and
-  `truncated` describe the pre-truncation state;
-- `repo tree` → never character-limited; metadata and JSON envelopes are not
-  part of any budget;
-- `repo brief` → forwarded verbatim to every search and read probe as a
-  per-call budget; the tree probe is never character-limited.
+- absent / zero / negative → no budget;
+- `repo search` → whole-envelope budget; excerpts trim, trailing excerpts
+  drop late; URLs are never cut;
+- `repo read` → whole-envelope budget; `content` trims first;
+  `originalContentLength` and `truncated` describe the pre-truncation state;
+- `repo tree` → **rejects** the flag (`UNSUPPORTED_OPTION`); metadata and
+  JSON envelopes are never part of the ladder's cut order;
+- `repo brief` → applied once to the assembled brief envelope (nothing
+  is forwarded to the probes).
+- On every ladder surface, a fired budget stamps `compaction {budget, ref}`
+  inside the data payload and saves the full untrimmed envelope to the
+  artifacts store — recover with `scoutline history show <ref>`.
 
 ### Errors and lifecycle
 
@@ -583,12 +587,15 @@ for the structured extract shape every time.
 
 ### `--max-chars` and `--full-envelope`
 
-`--max-chars` is deterministic local projection (never a model):
+`--max-chars` is a whole-envelope Output Budget (deterministic, never a
+model):
 
-- absent / zero / negative → no truncation;
-- content read → truncates the envelope's `content`; sets `truncated: true`
-  and preserves `originalContentLength`;
-- extract read → **ignored**. Extract reports `originalItemCount` instead.
+- absent / zero / negative → no budget;
+- content read → later paragraphs trim first, bottom sections drop late;
+  headings never cut; sets `truncated: true` and preserves
+  `originalContentLength`;
+- extract read → trims field **values** only; field names and URLs are never
+  dropped. Extract reports `originalItemCount`.
 
 `--full-envelope` is silently accepted and ignored — the v1 envelope is
 always returned. Scripts that branched on its presence will now always

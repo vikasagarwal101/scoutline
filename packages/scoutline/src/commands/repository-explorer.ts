@@ -54,6 +54,7 @@ import {
   type RetryPolicy,
 } from "../lib/execution.js";
 import { ValidationError } from "../lib/errors.js";
+import { wasBudgetWalked, type LadderRule } from "../lib/output-budget.js";
 
 // ---------------------------------------------------------------------------
 // Repository-path canonicalizer (DESIGN.md §18, technical plan
@@ -579,6 +580,110 @@ async function collectTreeSnapshots(
 
   return snapshots;
 }
+
+// ---------------------------------------------------------------------------
+// Output Budget ladders (ADR-0007, T4) — repo search / repo read
+// whole-envelope replacements for the legacy per-field projections.
+// ---------------------------------------------------------------------------
+
+
+/**
+ * Repo-search ladder: metadata (`repository`, `query`, `language`,
+ * `originalTextLength`) never cut (omission); the LAST excerpts trim
+ * first; the TRAILING excerpts drop late.
+ */
+const trimLastExcerptRule: LadderRule = {
+  name: "trim-last-excerpt",
+  apply(envelope) {
+    const e = envelope as { excerpts?: unknown[]; truncated?: boolean };
+    const excerpts = e.excerpts;
+    if (!excerpts || excerpts.length === 0) return envelope;
+    // Backward scan (fix-round A): halve the LAST excerpt whose text is
+    // still trimmable, not just the final one. The engine's fixpoint
+    // bleeds every excerpt body before drop-trailing-excerpts destroys
+    // whole trailing excerpts whose text was never trimmed.
+    for (let i = excerpts.length - 1; i >= 0; i--) {
+      const row = excerpts[i] as { text?: string };
+      const text = row.text;
+      if (!text) continue;
+      // Marker protocol (R3): strip ONE leading marker only when the
+      // envelope already reports a ladder trim (truncated === true).
+      const clean = (wasBudgetWalked(e) || e.truncated === true ? text.replace(/^…/, "") : text).replace(/…$/, "");
+      if (clean.length <= 1) continue;
+      const half = Math.max(1, Math.floor(clean.length / 2));
+      // Fix-round (review): halve the STRIPPED text (ONE omission
+      // marker across passes), skip texts the halving cannot strictly
+      // shrink, and stamp the truth flag the envelope contract
+      // promises consumers (`truncated: true` when the ladder cuts).
+      const replacement = "…" + clean.slice(0, half);
+      if (replacement.length >= text.length) continue;
+      const next = [...excerpts];
+      next[i] = { ...row, text: replacement };
+          // Fix-round (review): content changed — flip a pre-existing
+    // `truncated: false` to true (truth flags: README/troubleshooting
+    // promise this). Conditional so the flip never ADDS the key (that
+    // would inflate first-pass size and defeat the engine's shrink
+    // check); the seam stamps envelopes that never had one.
+      return e.truncated === false
+        ? { ...e, excerpts: next, truncated: true }
+        : { ...e, excerpts: next };
+    }
+    return envelope;
+  },
+};
+
+const dropTrailingExcerptsRule: LadderRule = {
+  name: "drop-trailing-excerpts",
+  apply(envelope) {
+    const e = envelope as { excerpts?: unknown[]; truncated?: boolean };
+    const excerpts = e.excerpts;
+    if (!excerpts || excerpts.length <= 1) return envelope;
+        // Fix-round (review): content changed — flip a pre-existing
+    // `truncated: false` to true (truth flags: README/troubleshooting
+    // promise this). Conditional so the flip never ADDS the key (that
+    // would inflate first-pass size and defeat the engine's shrink
+    // check); the seam stamps envelopes that never had one.
+    return e.truncated === false
+      ? { ...e, excerpts: excerpts.slice(0, -1), truncated: true }
+      : { ...e, excerpts: excerpts.slice(0, -1) };
+  },
+};
+
+/**
+ * Repo-read ladder: `repository`/`path` never cut; `content` halves
+ * from the end until it fits (single-rule fixpoint — the engine's
+ * halving loop converges deterministically).
+ */
+const trimContentRule: LadderRule = {
+  name: "trim-content",
+  apply(envelope) {
+    const e = envelope as { content?: string; truncated?: boolean };
+    const content = e.content;
+    if (!content) return envelope;
+    // Marker protocol (R3): same envelope-flag rule as the search rule.
+    const clean = (wasBudgetWalked(e) || e.truncated === true ? content.replace(/^…/, "") : content).replace(/…$/, "");
+    if (clean.length <= 1) return envelope;
+    const half = Math.max(1, Math.floor(clean.length / 2));
+    // Fix-round (review): same marker/strict-shrink/truncated-stamp
+    // contract as the search rule above.
+    const replacement = "…" + clean.slice(0, half);
+    if (replacement.length >= content.length) return envelope;
+        // Fix-round (review): content changed — flip a pre-existing
+    // `truncated: false` to true (truth flags: README/troubleshooting
+    // promise this). Conditional so the flip never ADDS the key (that
+    // would inflate first-pass size and defeat the engine's shrink
+    // check); the seam stamps envelopes that never had one.
+    return e.truncated === false
+      ? { ...e, content: replacement, truncated: true }
+      : { ...e, content: replacement };
+  },
+};
+
+/** The repo-search Output Budget ladder (ordered; see ADR-0007 T4). */
+export const REPO_SEARCH_LADDER = [trimLastExcerptRule, dropTrailingExcerptsRule] as const;
+
+/** The repo-read Output Budget ladder (ordered; see ADR-0007 T4). */
+export const REPO_READ_LADDER = [trimContentRule] as const;
 
 // ---------------------------------------------------------------------------
 // Public Explorer API.

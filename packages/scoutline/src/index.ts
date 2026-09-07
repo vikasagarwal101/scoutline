@@ -4,11 +4,35 @@
 
 import * as vision from "./commands/vision.js";
 import type { VisionExecutionDependencies } from "./commands/vision.js";
-import { search, SEARCH_HELP, resolveFanoutPlan, executeFanoutPlan } from "./commands/search.js";
-import { read, READ_HELP } from "./commands/read.js";
-import { crawl, CRAWL_HELP } from "./commands/crawl.js";
+import {
+  search,
+  SEARCH_HELP,
+  resolveFanoutPlan,
+  executeFanoutPlan,
+  SEARCH_LADDER,
+  rebuildBudgetedPresentations,
+} from "./commands/search.js";
+import type { FormattedResult } from "./commands/search.js";
+import {
+  read,
+  READ_HELP,
+  READ_LADDER,
+  READ_EXTRACT_LADDER,
+  budgetedContentPresentations,
+} from "./commands/read.js";
+import {
+  crawl,
+  CRAWL_HELP,
+  CRAWL_LADDER,
+  rebuildBudgetedCrawlPresentations,
+} from "./commands/crawl.js";
 import { map, MAP_HELP } from "./commands/map.js";
-import { research, RESEARCH_HELP } from "./commands/research.js";
+import {
+  research,
+  RESEARCH_HELP,
+  RESEARCH_LADDER,
+  rebuildBudgetedResearchPresentations,
+} from "./commands/research.js";
 import type {
   ResearchContextInput,
   ResearchContextMode,
@@ -20,10 +44,15 @@ import {
   repoRead,
   repoBrief,
   REPO_HELP,
+  BRIEF_LADDER,
   parseBriefFocus,
   parseBriefDepth,
   parseBriefMaxChars,
 } from "./commands/repo.js";
+import {
+  REPO_SEARCH_LADDER,
+  REPO_READ_LADDER,
+} from "./commands/repository-explorer.js";
 import type { RepoBriefFocus } from "./capabilities/repository.js";
 import { listTools, showTool, callTool, TOOLS_HELP, CALL_HELP } from "./commands/tools.js";
 import { doctor, buildDiagnosticsReport, DOCTOR_HELP } from "./commands/doctor.js";
@@ -86,17 +115,21 @@ import {
   type ProviderRouting,
   type SaveLogEntry,
 } from "./lib/artifacts.js";
+import { applyBudget, type LadderRule } from "./lib/output-budget.js";
+import { persistCompaction } from "./lib/output-budget-persistence.js";
 import {
   ConfigurationError,
   FileError,
   ValidationError,
   UnsupportedCapabilityError,
+  UnsupportedOptionError,
+  CommandOptionUnsupportedError,
   getErrorExitCode,
 } from "./lib/errors.js";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   invokeCommand,
   type SaveHook,
@@ -371,6 +404,99 @@ const SAVE_CAPABLE_COMMANDS: ReadonlySet<string> = new Set([
   "repo",
   "vision",
 ]);
+
+/**
+ * ADR-0007 D5 — every command the dispatcher routes (below): the
+ * exhaustive 21-command surface. Exported so the rejection-matrix test
+ * derives its enumeration from the dispatcher's own partition instead
+ * of a hand-maintained list that drifts when a command is added — a
+ * future command without a ladder or a rejection row fails the
+ * enumeration pin by omission. (`config` is dispatched but absent from
+ * MAIN_HELP's Commands list — the audit's omission catch.)
+ */
+export const DISPATCHED_COMMANDS: ReadonlySet<string> = new Set([
+  "vision",
+  "search",
+  "read",
+  "crawl",
+  "map",
+  "research",
+  "repo",
+  "batch",
+  "tools",
+  "tool",
+  "call",
+  "doctor",
+  "quota",
+  "code",
+  "cache",
+  "usage",
+  "history",
+  "init",
+  "config",
+  "fetch",
+  "archive",
+  "watch",
+]);
+
+/**
+ * ADR-0007 D5 — commands WITHOUT an Output Budget ladder. They reject
+ * `--max-chars` at parse time with UNSUPPORTED_OPTION: nothing outside
+ * the ladder surfaces (search/read/crawl/research + repo
+ * search/read/brief; repo tree rejects on its own) may accept-and-drop
+ * the flag. Exported for the structural enumeration pin.
+ */
+export const REJECT_MAX_CHARS_COMMANDS: ReadonlySet<string> = new Set([
+  "vision",
+  "map",
+  "batch",
+  "tools",
+  "tool",
+  "call",
+  "doctor",
+  "quota",
+  "code",
+  "cache",
+  "usage",
+  "history",
+  "init",
+  "config",
+  "fetch",
+  "archive",
+  "watch",
+]);
+
+/**
+ * Review N10 (fix-round F-6) — the dispatch surface, extracted from
+ * this file's own source at import time. The credentialed switch labels
+ * the credential-free if-chain arms: every case label has a
+ * `commandRecognized = true` follower (the catch arm at the bottom is
+ * excluded by name), and the seven if-chain arms are
+ * `if (command === "<cmd>") {` sites inside main() (the repo
+ * subcommand arms are `else if` chains in handleRepo and are NOT
+ * dispatcher-level). If this ever disagrees with DISPATCHED_COMMANDS,
+ * the rejection-matrix test fails: a command added to dispatch without
+ * the set (or vice versa) cannot go unnoticed.
+ */
+const SOURCE_TEXT = readFileSync(new URL(import.meta.url), "utf8");
+// Line-start regex: never matches this extractor's own literals (they sit
+// mid-line), and the compiled one-line signature still matches.
+const MAIN_MATCH = SOURCE_TEXT.match(/^export async function main\(/m);
+const DISPATCH_SURFACE_SOURCE = MAIN_MATCH === null ? "" : SOURCE_TEXT.slice(MAIN_MATCH.index);
+export const SWITCH_CASES = new Set(
+  [
+    ...DISPATCH_SURFACE_SOURCE.matchAll(
+      /case "([a-z-]+)":\s*\n\s*commandRecognized = true;/g,
+    ),
+  ].map((m) => m[1]),
+);
+export const IF_ARMS = new Set(
+  [
+    ...DISPATCH_SURFACE_SOURCE.matchAll(
+      /^\s*if \(command === "([a-z-]+)"\) \{$/gm,
+    ),
+  ].map((m) => m[1]),
+);
 
 function extractGlobalOptions(args: string[]): {
   outputFormat?: string;
@@ -1201,6 +1327,11 @@ async function handleSearch(
   const count = parseAndValidateCount(flags.count);
   const topic = parseAndValidateTopic(flags.topic);
   const type = parseAndValidateType(flags.type);
+  // Output Budget T3: strict positive-integer parse (parseBriefMaxChars
+  // class, NOT the lax parseInt idiom the other flags below still use —
+  // T4/T6 unify those). Parse-level, before Provider resolution, so a
+  // bad value is VALIDATION_ERROR regardless of credentials.
+  const maxChars = parseMaxCharsFlag(flags);
   // `type` is a content axis; `topic` is an editorial axis. They are
   // mutually exclusive. Enforced at parse time (before Provider
   // resolution) so the error is VALIDATION_ERROR regardless of provider.
@@ -1290,31 +1421,36 @@ async function handleSearch(
   // D5): fan-out records the arm list with no single effective; single
   // records requested + effective (the hook overrides effective with the
   // executor's actual server when runtime fallback switched providers).
+  // Output Budget T3: the same meta (args allow-list + ProviderRouting)
+  // doubles as the compaction artifact's persistCompaction meta — hoisted
+  // to a `budgetMeta` binding so both consumers state it once.
+  const searchSaveArgs = {
+    ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+    ...(count !== undefined ? { count } : {}),
+    ...(type !== undefined ? { type } : {}),
+    ...(topic !== undefined ? { topic } : {}),
+    ...(flags.merge === true ? { merge: true } : {}),
+    ...(flags["no-cache"] === true ? { "no-cache": true } : {}),
+    ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+  };
+  const searchProviderRouting: ProviderRouting =
+    fanoutPlan.mode === "fanout"
+      ? {
+          mode: "fanout",
+          ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+          arms: fanoutPlan.arms,
+        }
+      : {
+          mode: "single",
+          ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+          // Single mode always resolved a provider above (the ternary).
+          effective: providerId as ProviderId,
+        };
   const save = createSaveArtifactHook(deps, {
     command: "search",
     outputMode,
-    args: {
-      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
-      ...(count !== undefined ? { count } : {}),
-      ...(type !== undefined ? { type } : {}),
-      ...(topic !== undefined ? { topic } : {}),
-      ...(flags.merge === true ? { merge: true } : {}),
-      ...(flags["no-cache"] === true ? { "no-cache": true } : {}),
-      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
-    },
-    provider:
-      fanoutPlan.mode === "fanout"
-        ? {
-            mode: "fanout",
-            ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
-            arms: fanoutPlan.arms,
-          }
-        : {
-            mode: "single",
-            ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
-            // Single mode always resolved a provider above (the ternary).
-            effective: providerId as ProviderId,
-          },
+    args: searchSaveArgs,
+    provider: searchProviderRouting,
   });
   const query = positional.join(" ");
 
@@ -1472,9 +1608,83 @@ async function handleSearch(
           ? result
           : { ...result, data: { context: contextInfo, results: result.data } };
 
+      // Output Budget T3 (ADR-0007): whole-envelope budgeting at the
+      // handler seam — AFTER dispatch (single AND fan-out have merged
+      // by here), AFTER --count (both its per-request cap and the
+      // post-merge slice ran inside dispatch), AFTER --max-summary
+      // (per-field lever composed underneath), and AFTER the --context
+      // wrapper so the envelope measured is exactly what -O data
+      // prints. The ladder only targets the `results` rows; the
+      // `--context` block (counts, hashes — D6 privacy shape) is
+      // never-cut by construction, like url/title/rank. Presentations
+      // are rebuilt from the projection so text modes reflect the
+      // budget; the stamped `compaction` payload field survives every
+      // output mode including -O data. Without the flag this is the
+      // identity function — the zero-diff invariant.
+      const applyOutputBudget = async (
+        result: CommandResult,
+      ): Promise<CommandResult> => {
+        if (maxChars === undefined || result.kind !== "data") return result;
+        // `--context` wraps the payload as {context, results}; budget
+        // the wrapper wholesale (context participates in measurement,
+        // never in a rule) and persist the wrapper verbatim. The bare
+        // array path wraps in {results} for measurement and persists
+        // the bare array (the unbudgeted print shape — cardinal pin).
+        const isContextWrapped =
+          result.data !== null &&
+          typeof result.data === "object" &&
+          !Array.isArray(result.data) &&
+          Array.isArray((result.data as { results?: unknown[] }).results);
+        if (!isContextWrapped && !Array.isArray(result.data)) return result;
+        const measured = isContextWrapped ? result.data : { results: result.data };
+        const persisted = isContextWrapped
+          ? measured
+          : Array.isArray(result.data)
+            ? result.data
+            : measured;
+        const outcome = applyBudget(measured, maxChars, SEARCH_LADDER);
+        if (outcome.compaction === undefined) {
+          return result;
+        }
+        // Caller redacts BEFORE persisting (the save seam's contract,
+        // mirrored): the artifact's `result` is the post-redaction,
+        // pre-compaction payload — EXACTLY what an unbudgeted run prints.
+        const redactedEnvelope = redactSecrets(persisted, deps.secrets);
+        const compaction = await persistCompaction(
+          redactedEnvelope,
+          outcome.compaction,
+          {
+            command: "search",
+            args: searchSaveArgs,
+            provider: searchProviderRouting,
+            outputFormat: outputMode,
+          },
+          {
+            env: deps.env,
+            now: deps.now ?? Date.now,
+            onNotice: context.notice,
+          },
+        );
+        context.notice(
+          `output budget: ${maxChars} chars — full untrimmed envelope saved (${compaction.ref})`,
+        );
+        const projection = outcome.projection as { results: unknown[] };
+        // R5 (review): rebuild text presentations from the budgeted
+        // rows in EVERY case — including `--fields`, where the
+        // projection rows are field-filtered. Skipping the rebuild let
+        // the UNBUDGETED full-row presentations stand, so `--max-chars`
+        // did not bound what text-mode users saw. The renderer omits
+        // fields the allowlist took (never "undefined — undefined") and
+        // renumbers ranks in display order.
+        return {
+          ...result,
+          data: { ...measured, results: projection.results, compaction },
+          presentations: rebuildBudgetedPresentations(projection.results),
+        };
+      };
+
       if (fanoutPlan.mode === "fanout") {
-        return applyContextWrapper(
-          await executeFanoutPlan(
+        return applyOutputBudget(applyContextWrapper(await executeFanoutPlan(
             fanoutPlan,
             {
               descriptors: deps.providerDescriptors,
@@ -1496,7 +1706,7 @@ async function handleSearch(
             },
             context,
           ),
-        );
+        ));
       }
       const outcome = await executeWithFallback(
         {
@@ -1533,7 +1743,7 @@ async function handleSearch(
           );
         },
       );
-      return applyContextWrapper(outcome.result);
+      return applyOutputBudget(applyContextWrapper(outcome.result));
     },
     outputMode,
     deps.now,
@@ -1591,6 +1801,12 @@ async function handleRead(
     );
   }
 
+  // Fix-round (review): parse --max-chars BEFORE Provider resolution
+  // so a malformed value is VALIDATION_ERROR regardless of provider
+  // state (an unknown --provider must not mask it) — same order as
+  // search.
+  const maxChars = parseMaxCharsFlag(flags);
+
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
   // explicit --provider > SCOUTLINE_PROVIDER > quota-ranked pick.
   // Selection never consults credentials beyond the descriptor
@@ -1608,14 +1824,15 @@ async function handleRead(
 
   // save-artifacts T4: one save hook for this run (inert unless main wired
   // a save). args = the provider-influencing allow-list only.
+  const readSaveArgs = {
+    ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+    ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+    ...(flags["no-cache"] === true ? { "no-cache": true } : {}),
+  };
   const save = createSaveArtifactHook(deps, {
     command: "read",
     outputMode,
-    args: {
-      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
-      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
-      ...(flags["no-cache"] === true ? { "no-cache": true } : {}),
-    },
+    args: readSaveArgs,
     provider: {
       mode: "single",
       ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
@@ -1631,7 +1848,10 @@ async function handleRead(
     noGfm: flags["no-gfm"] === true,
     keepImgDataUrl: flags["keep-img-data-url"] === true,
     withImagesSummary: flags["with-images-summary"] === true,
-    maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
+    // ADR-0007 T4: --max-chars is consumed by the handler seam below
+    // (whole-envelope budget, READ_LADDER / READ_EXTRACT_LADDER) — the
+    // legacy per-field content truncation is retired. The command still
+    // receives maxChars: undefined; the seam owns every projection.
     fullEnvelope: flags["full-envelope"] === true,
     extract,
   };
@@ -1681,7 +1901,41 @@ async function handleRead(
           );
         },
       );
-      return outcome.result;
+      // Output Budget T4 (ADR-0007): whole-envelope budgeting at the
+      // handler seam — AFTER the reader projection above (which is the
+      // identity without the flag). Content reads walk READ_LADDER
+      // (later paragraphs trim first, bottom sections drop late);
+      // extract reads walk READ_EXTRACT_LADDER (trim field VALUES,
+      // never drop field names/URLs — the flag is no longer ignored).
+      const budgeted = await applyCommandOutputBudget(outcome.result, maxChars, {
+        ladder: readOptions.extract !== undefined ? READ_EXTRACT_LADDER : READ_LADDER,
+        command: "read",
+        context,
+        deps,
+        args: readSaveArgs,
+        provider: {
+          mode: "single",
+          ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+          effective: providerId,
+        },
+        outputMode,
+        rebuild: (projection, result) => {
+          // Text presentations emit `content` directly for content
+          // reads; rebuild them from the budgeted content string.
+          const r = result;
+          if (r.kind !== "data") return r as CommandResult;
+          if (readOptions.extract !== undefined) {
+            return { ...r, data: projection } as CommandResult;
+          }
+          const content = (projection as { content?: string }).content ?? "";
+          return {
+            ...r,
+            data: projection,
+            presentations: budgetedContentPresentations(content),
+          } as CommandResult;
+        },
+      });
+      return budgeted;
     },
     outputMode,
     deps.now,
@@ -1712,6 +1966,11 @@ async function handleCrawl(
     throw new ValidationError("URL must start with http:// or https://");
   }
 
+  // Fix-round (review): parse --max-chars BEFORE Provider resolution
+  // (same parse-first order as search/read) so a malformed value is
+  // VALIDATION_ERROR regardless of provider state.
+  const maxChars = parseMaxCharsFlag(flags);
+
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
   // explicit --provider > SCOUTLINE_PROVIDER > quota-ranked pick.
   // (PB-T4.)
@@ -1730,14 +1989,15 @@ async function handleCrawl(
   // isolated in-memory doubles.
   // save-artifacts T4: one save hook for this run (inert unless main wired
   // a save). args = the provider-influencing allow-list only.
+  const crawlSaveArgs = {
+    ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+    ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+    ...(typeof flags.limit === "string" ? { limit: flags.limit } : {}),
+  };
   const save = createSaveArtifactHook(deps, {
     command: "crawl",
     outputMode,
-    args: {
-      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
-      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
-      ...(typeof flags.limit === "string" ? { limit: flags.limit } : {}),
-    },
+    args: crawlSaveArgs,
     provider: {
       mode: "single",
       ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
@@ -1789,7 +2049,6 @@ async function handleCrawl(
               contentSize: flags["content-size"] as "medium" | "high" | undefined,
               timeout: flags.timeout ? parseInt(flags.timeout as string, 10) : undefined,
               noCache: flags["no-cache"] === true,
-              maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
             },
             {
               capability: adapter.crawl as Parameters<typeof crawl>[2]["capability"],
@@ -1799,7 +2058,60 @@ async function handleCrawl(
           );
         },
       );
-      return outcome.result;
+      // Output Budget T4: whole-envelope budget at the handler seam —
+      // page urls, baseUrl, totalPages never cut; page content trims
+      // (backward-scan bleed); trailing pages drop late. Presentations
+      // rebuilt from the projection so text modes reflect the budget.
+      const budgeted = await applyCommandOutputBudget(outcome.result, maxChars, {
+        ladder: CRAWL_LADDER,
+        command: "crawl",
+        context,
+        deps,
+        args: crawlSaveArgs,
+        provider: {
+          mode: "single",
+          ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+          effective: providerId,
+        },
+        outputMode,
+        rebuild: (projection, result) => {
+          const r = result;
+          if (r.kind !== "data") return r as CommandResult;
+          // R3: stamp crawl truth flags post-walk — pages the ladder
+          // trimmed carry `truncated: true` + `originalContentLength`
+          // from the pre-budget envelope, so short pages stay bleedable
+          // (in-rule stamps cost more than their halvings saved).
+          const rawPages =
+            (r.data as { pages?: { content?: string }[] }).pages ?? [];
+          // R5: stamp truth flags by comparing against the RAW page — a
+          // projected page whose content differs from its pre-budget
+          // original was trimmed by the ladder; a page that merely
+          // GENUINELY begins with "…" rides through byte-identical and
+          // must NOT be marked (the startsWith("…") shape mis-flagged
+          // it when any other page triggered compaction).
+          const pages = (
+            (projection as { pages?: { url: string; content: string }[] }).pages ?? []
+          ).map((p, i) => {
+            const original = rawPages[i]?.content ?? p.content;
+            if (p.content === original) return p;
+            return {
+              ...p,
+              truncated: true,
+              originalContentLength: original.length,
+            };
+          });
+          // R3 follow-up: the stamped pages ARE the data payload —
+          // data-mode consumers see the truth metadata, not just text
+          // modes.
+          const data = { ...(projection as Record<string, unknown>), pages };
+          return {
+            ...r,
+            data,
+            presentations: rebuildBudgetedCrawlPresentations(pages),
+          } as CommandResult;
+        },
+      });
+      return budgeted;
     },
     outputMode,
     deps.now,
@@ -1999,6 +2311,14 @@ async function handleResearch(
     "--context-mode",
   ) as ResearchContextMode | undefined;
 
+  // Output Budget T4 (ADR-0007): strict positive-integer parse, hoisted
+  // to parse level BEFORE Provider resolution (mirroring search) so a
+  // bad value is VALIDATION_ERROR regardless of credentials — the
+  // whole-envelope budget runs at the handler seam below
+  // (RESEARCH_LADDER) — report body trims first, the citations block
+  // (`sources`) survives longest.
+  const maxChars = parseMaxCharsFlag(flags);
+
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
   // explicit --provider > SCOUTLINE_PROVIDER > quota-ranked pick.
   // (PB-T4.)
@@ -2014,21 +2334,19 @@ async function handleResearch(
   // Shared Research execution dependencies.
   // save-artifacts T4: one save hook for this run (inert unless main wired
   // a save). args = the provider-influencing allow-list only.
+  const researchSaveArgs = {
+    ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+    ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+    ...(model !== undefined ? { model } : {}),
+    ...(outputLength !== undefined ? { "output-length": outputLength } : {}),
+    ...(citationFormat !== undefined ? { "citation-format": citationFormat } : {}),
+    ...(typeof flags.domain === "string" ? { domain: flags.domain } : {}),
+    ...(flags["no-cache"] === true ? { "no-cache": true } : {}),
+  };
   const save = createSaveArtifactHook(deps, {
     command: "research",
     outputMode,
-    args: {
-      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
-      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
-      // Request-affecting controls (DESIGN D6/G6 allow-list: provider-
-      // influencing options, "capability controls"; review round 2):
-      // recorded set-only-when-given, the search --no-cache convention.
-      ...(model !== undefined ? { model } : {}),
-      ...(outputLength !== undefined ? { "output-length": outputLength } : {}),
-      ...(citationFormat !== undefined ? { "citation-format": citationFormat } : {}),
-      ...(typeof flags.domain === "string" ? { domain: flags.domain } : {}),
-      ...(flags["no-cache"] === true ? { "no-cache": true } : {}),
-    },
+    args: researchSaveArgs,
     provider: {
       mode: "single",
       ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
@@ -2080,7 +2398,6 @@ async function handleResearch(
         outputLength,
         citationFormat,
         domain: flags.domain as string | undefined,
-        maxChars: flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined,
         timeout: flags.timeout ? parseInt(flags.timeout as string, 10) : undefined,
         noCache: flags["no-cache"] === true,
         context: resumeContext,
@@ -2158,7 +2475,41 @@ async function handleResearch(
           );
         },
       );
-      return outcome.result;
+      // Output Budget T4 (ADR-0007): whole-envelope budget at the
+      // handler seam — report body trims first (last section up), the
+      // citations block (`sources`, url+title per citation) survives
+      // longest (never-cut by omission). Presentations rebuilt from
+      // the projection so text modes reflect the budget.
+      const budgeted = await applyCommandOutputBudget(outcome.result, maxChars, {
+        ladder: RESEARCH_LADDER,
+        command: "research",
+        context,
+        deps,
+        args: researchSaveArgs,
+        provider: {
+          mode: "single",
+          ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+          effective: providerId,
+        },
+        outputMode,
+        rebuild: (projection, result) => {
+          const r = result;
+          if (r.kind !== "data") return r as CommandResult;
+          const e = projection as {
+            sections?: { heading: string; body: string }[];
+            sources?: { title?: string; url?: string }[];
+          };
+          return {
+            ...r,
+            data: projection,
+            presentations: rebuildBudgetedResearchPresentations(
+              e.sections ?? [],
+              e.sources ?? [],
+            ),
+          } as CommandResult;
+        },
+      });
+      return budgeted;
     },
     outputMode,
     deps.now,
@@ -2219,7 +2570,6 @@ async function handleRepo(
   let readPath: string | undefined;
   let briefFocus: readonly RepoBriefFocus[] | undefined;
   let briefDepth: number | undefined;
-  let briefMaxChars: number | undefined;
   if (command === "search") {
     searchQuery = positional.slice(2).join(" ");
     if (!repo || !searchQuery) {
@@ -2231,6 +2581,18 @@ async function handleRepo(
   } else if (command === "tree") {
     if (!repo) {
       throw new ValidationError("Missing repo", "Usage: scoutline repo tree <owner/repo>");
+    }
+    // ADR-0007 AC-6 (T4): tree has NO Output Budget ladder — reject the
+    // flag instead of accept-and-drop (it was parsed for every
+    // subcommand but never consumed by tree).
+    if (flags["max-chars"] !== undefined) {
+      // M7 (owner-ruled fix): CommandOptionUnsupportedError — parse-time
+      // rejection, no Provider consulted, so the Provider-scoped
+      // UnsupportedOptionError wording was a false sentence. Tree keeps
+      // the same code/exit; `help` points at the budgeted surfaces.
+      throw new CommandOptionUnsupportedError("repo tree", "--max-chars", {
+        help: "Budgeted surfaces: repo search, repo read, repo brief. Try `scoutline repo --help`.",
+      });
     }
   } else if (command === "read") {
     readPath = positional[2];
@@ -2286,19 +2648,19 @@ async function handleRepo(
       }
       briefDepth = parseBriefDepth(depthRaw);
     }
-    const briefMaxCharsRaw = flags["max-chars"];
-    if (briefMaxCharsRaw !== undefined) {
-      if (briefMaxCharsRaw === true) {
-        throw new ValidationError("--max-chars requires a value.");
-      }
-      briefMaxChars = parseBriefMaxChars(briefMaxCharsRaw);
-    }
   } else {
     throw new ValidationError(
       `Unknown repo command: ${command}`,
       'Run "scoutline repo --help" for available commands',
     );
   }
+
+  // Fix-round (review): parse --max-chars BEFORE Provider resolution
+  // (same parse-first order as search/read/crawl) so a malformed
+  // value is VALIDATION_ERROR regardless of provider state. This
+  // single hoisted parse covers search/read/brief; `repo tree`
+  // rejected the flag in its own branch above.
+  const maxChars = parseMaxCharsFlag(flags);
 
   // Resolve the effective Provider (DESIGN.md §6, FR-001–FR-005):
   // explicit --provider > SCOUTLINE_PROVIDER > quota-ranked pick.
@@ -2333,21 +2695,25 @@ async function handleRepo(
   };
 
   const language = (flags.language ?? flags.lang) as "en" | "zh" | undefined;
-  const maxChars = flags["max-chars"] ? parseInt(flags["max-chars"] as string, 10) : undefined;
+  // ADR-0007 T4: strict positive-integer parse for search/read (the
+  // lax parseInt silently coerced `500x` → 500). `repo tree` rejects
+  // the flag above; `repo brief` parsed its own strict value earlier
+  // (pre-provider, same fix-round order).
   const noCache = flags["no-cache"] === true;
   const treePath = flags.path as string | undefined;
   const depth = flags.depth ? parseInt(flags.depth as string, 10) : undefined;
   // save-artifacts T4: one save hook for this run (inert unless main wired
   // a save). args = the provider-influencing allow-list only.
+  const repoSaveArgs = {
+    ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+    ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+    ...(noCache ? { "no-cache": true } : {}),
+    ...(depth !== undefined ? { depth } : {}),
+  };
   const save = createSaveArtifactHook(deps, {
     command: "repo",
     outputMode,
-    args: {
-      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
-      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
-      ...(noCache ? { "no-cache": true } : {}),
-      ...(depth !== undefined ? { depth } : {}),
-    },
+    args: repoSaveArgs,
     provider: {
       mode: "single",
       ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
@@ -2380,7 +2746,10 @@ async function handleRepo(
               return repoSearch(
                 repo,
                 searchQuery as string,
-                { language, maxChars, noCache },
+                // ADR-0007 T4: maxChars no longer enters the Explorer —
+                // the whole-envelope budget runs at the handler seam
+                // below (REPO_SEARCH_LADDER).
+                { language, noCache },
                 { capability, execution: executionDeps },
                 context,
               );
@@ -2395,7 +2764,9 @@ async function handleRepo(
               return repoRead(
                 repo,
                 readPath as string,
-                { maxChars, noCache },
+                // ADR-0007 T4: same — the seam owns the projection
+                // (REPO_READ_LADDER).
+                { noCache },
                 { capability, execution: executionDeps },
                 context,
               );
@@ -2406,7 +2777,6 @@ async function handleRepo(
                   ...(briefFocus !== undefined ? { focus: briefFocus } : {}),
                   path: treePath,
                   depth: briefDepth,
-                  maxChars: briefMaxChars,
                   noCache,
                 },
                 { capability, execution: executionDeps, secrets: deps.secrets },
@@ -2423,7 +2793,36 @@ async function handleRepo(
           }
         },
       );
-      return outcome.result;
+      // Output Budget T4/T5 (ADR-0007): whole-envelope budget at the
+      // handler seam for repo search/read/brief. `repo tree` rejected
+      // the flag at parse above. Brief consumed its parsed value ONCE
+      // here (T5): `repoBrief` forwards nothing to its probes (raw
+      // search/read results compose the envelope) and BRIEF_LADDER
+      // shrinks the assembled envelope.
+      const budgeted = await applyCommandOutputBudget(outcome.result, maxChars, {
+        ladder:
+          command === "read"
+            ? REPO_READ_LADDER
+            : command === "brief"
+              ? BRIEF_LADDER
+              : REPO_SEARCH_LADDER,
+        command: "repo",
+        context,
+        deps,
+        args: repoSaveArgs,
+        provider: {
+          mode: "single",
+          ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+          effective: providerId,
+        },
+        outputMode,
+        rebuild: (projection, result) => {
+          const r = result;
+          if (r.kind !== "data") return r as CommandResult;
+          return { ...r, data: projection } as CommandResult;
+        },
+      });
+      return budgeted;
     },
     outputMode,
     deps.now,
@@ -3658,6 +4057,86 @@ async function exportTargetExists(filePath: string): Promise<boolean> {
  * wrapped into FileError so every artifact-path failure keeps the D8
  * FILE_ERROR contract.
  */
+/**
+ * Output Budget (ADR-0007, T4): the shared handler-seam budget step for
+ * read/crawl/research/repo. Mirrors handleSearch's applyOutputBudget —
+ * applied AFTER the command returns its data envelope (post-merge,
+ * post-everything), stamps `compaction {budget, ref}` inside the data
+ * payload (visible in -O data/json/pretty alike), persists the FULL
+ * untrimmed envelope (post-redaction, pre-compaction — exactly what an
+ * unbudgeted run prints) through persistCompaction, and lets the
+ * caller rebuild text presentations from the projection. Without a
+ * budget (or when the envelope already fits) this is the identity
+ * function — the zero-diff invariant.
+ */
+async function applyCommandOutputBudget(
+  result: CommandResult,
+  maxChars: number | undefined,
+  options: {
+    readonly ladder: readonly LadderRule[];
+    readonly command: string;
+    readonly context: { notice(message: string): void };
+    readonly deps: HandlerDependencies;
+    readonly args: Readonly<Record<string, unknown>>;
+    readonly provider: ProviderRouting;
+    readonly outputMode: OutputMode;
+    /** Post-budget rebuild of the result's text presentations. */
+    readonly rebuild: (projection: unknown, result: CommandResult) => CommandResult;
+  },
+): Promise<CommandResult> {
+  if (maxChars === undefined || result.kind !== "data") return result;
+  const outcome = applyBudget(result.data, maxChars, options.ladder);
+  if (outcome.compaction === undefined) return result;
+  const redactedEnvelope = redactSecrets(result.data, options.deps.secrets);
+  const compaction = await persistCompaction(
+    redactedEnvelope,
+    outcome.compaction,
+    {
+      command: options.command,
+      args: options.args,
+      provider: options.provider,
+      outputFormat: options.outputMode,
+    },
+    {
+      env: options.deps.env,
+      now: options.deps.now ?? Date.now,
+      onNotice: options.context.notice,
+    },
+  );
+  options.context.notice(
+    `output budget: ${maxChars} chars — full untrimmed envelope saved (${compaction.ref})`,
+  );
+  const data = outcome.projection as Record<string, unknown>;
+  // Fix-round (review): the ladder changed content — an envelope that
+  // carries a `truncated` field must say so (docs contract), but rules
+  // cannot stamp it in-rule (the stamp's own size defeats the engine's
+  // shrink check on first pass). Stamped here, post-walk, once.
+  const stamped =
+    "truncated" in data && data.truncated !== true
+      ? { ...data, truncated: true }
+      : data;
+  // The rebuild's second argument carries the PRE-BUDGET envelope as
+  // `.data` (raw lengths, provider flags) — the stamped projection is
+  // the FIRST argument. Crawl's seam uses the raw pages for truth metadata.
+  return options.rebuild({ ...stamped, compaction }, { ...result, data: result.data });
+}
+
+/**
+ * Fix-round F: valueless `--max-chars` (`true` after flag parsing) on
+ * the T4 surfaces says "requires a value" — the brief surface's
+ * established wording — instead of parseBriefMaxChars's
+ * "must be a positive integer" (which reads wrong for a missing value).
+ * The brief surface's own pre-check (inside handleRepo) is untouched.
+ */
+function parseMaxCharsFlag(flags: Record<string, unknown>): number | undefined {
+  const raw = flags["max-chars"];
+  if (raw === undefined) return undefined;
+  if (raw === true) {
+    throw new ValidationError("--max-chars requires a value.");
+  }
+  return parseBriefMaxChars(raw);
+}
+
 function createSaveArtifactHook(
   deps: HandlerDependencies,
   meta: {
@@ -4142,6 +4621,33 @@ export async function main(
   // `--save` export target already exists. The credentialed section below
   // reuses this binding.
   const isHelpInvocation = isCommandHelpInvocation(commandArgs);
+
+  // ADR-0007 D5 — rejection matrix, fired at parse time before any
+  // dispatch: a command without an Output Budget ladder that carries
+  // `--max-chars` rejects UNSUPPORTED_OPTION instead of accepting and
+  // dropping it. Uses the raw argv (any `--max-chars` token, valued or
+  // not — collectLongFlagValues only matches the exact flag form);
+  // subcommand-level ladder surfaces (repo search/read/brief) and repo
+  // tree's own rejection are decided downstream in `repo` handling. Help
+  // invocations stay exempt: `--help` is documentation, not a run.
+  // Grammar note (review T6): `--max-chars=500` and `--no-max-chars`
+  // forms are NOT matched — uniform CLI grammar, not a gate hole: the
+  // ladder surfaces are equally blind to those forms (no `=`-form flag
+  // support CLI-wide), so no accept-and-drop asymmetry exists.
+  if (
+    !isHelpInvocation &&
+    REJECT_MAX_CHARS_COMMANDS.has(command) &&
+    collectLongFlagValues(rest, "max-chars").length > 0
+  ) {
+    invocation.writeStderr(
+      formatErrorOutput(
+        new CommandOptionUnsupportedError(command, "--max-chars"),
+        outputMode,
+        envSecrets,
+      ),
+    );
+    return 1;
+  }
 
   // PB-T1/PB-T2 — Quota snapshot store + consumption sink.
   //

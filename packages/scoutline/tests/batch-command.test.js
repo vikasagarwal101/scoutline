@@ -858,3 +858,121 @@ describe("batch help distribution semantics", () => {
     assert.ok(help.includes("fan-out is suppressed"));
   });
 });
+
+// ---------------------------------------------------------------------------
+// ADR-0007 D7 (T6) — per-op `maxChars` compiles to `--max-chars` argv and
+// the op inherits whole-envelope Output Budget semantics at the OP level:
+// the op's captured stdout carries the budgeted projection + compaction
+// stamp, while the BATCH summary envelope itself is never budgeted (no
+// ladder exists for it — a large envelope is the truth of the run).
+// ---------------------------------------------------------------------------
+
+/** Reader-capable descriptor double returning a long markdown document. */
+function makeReaderDescriptor(id, content) {
+  const invokes = [];
+  return {
+    descriptor: {
+      id,
+      isConfigured: () => true,
+      capabilities: () => new Set(["reader"]),
+      create: () => ({
+        id,
+        reader: {
+          fetch: {
+            kind: "reader-fetch",
+            validate() {},
+            cacheIdentity(request) {
+              return {
+                provider: id,
+                capability: "reader",
+                credentialFingerprint: "fp-" + id,
+                request,
+                legacyCandidates: [],
+              };
+            },
+            async invoke(request) {
+              invokes.push(request);
+              return {
+                schemaVersion: 1,
+                url: request.url,
+                finalUrl: request.url,
+                title: "Doc",
+                content,
+                contentFormat: "markdown",
+              };
+            },
+          },
+        },
+      }),
+    },
+    invokes,
+  };
+}
+
+describe("batch per-op maxChars → whole-envelope budgeting (ADR-0007 D7)", () => {
+  const LONG_DOC = "# Doc\n\n" + "x".repeat(2000);
+
+  it("an op-level budget fires compaction inside the op's captured stdout", async (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-t6-budget-"));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const reader = makeReaderDescriptor("zai", LONG_DOC);
+    const manifest = {
+      schemaVersion: 1,
+      operations: [
+        { name: "op-budgeted", command: "read", input: { url: "https://example.com/doc", maxChars: 400 } },
+      ],
+    };
+    const file = path.join(dir, "manifest.json");
+    fs.writeFileSync(file, JSON.stringify(manifest), "utf8");
+    const { adapter, stdout } = fakeInvocation();
+
+    const status = await main(
+      ["batch", file],
+      batchDeps(adapter, [reader], { env: { SCOUTLINE_ARTIFACTS_DIR: dir } }),
+    );
+
+    assert.strictEqual(status, 0);
+    assert.strictEqual(stdout.length, 1);
+    const envelope = JSON.parse(stdout[0]);
+    assert.strictEqual(envelope.ok, 1);
+    const record = envelope.results[0];
+    assert.strictEqual(record.ok, true);
+    const opOutput = JSON.parse(record.stdout);
+    assert.ok(opOutput.compaction, "op-level compaction fired in the op's stdout");
+    assert.strictEqual(opOutput.compaction.budget, 400);
+    assert.ok(opOutput.content.length < LONG_DOC.length, "projection shrank the body");
+    assert.strictEqual(opOutput.url, "https://example.com/doc", "url survives");
+  });
+
+  it("the batch summary envelope itself is never budgeted", async (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-t6-budget-"));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const reader = makeReaderDescriptor("zai", LONG_DOC);
+    const manifest = {
+      schemaVersion: 1,
+      operations: [
+        { name: "op-budgeted", command: "read", input: { url: "https://example.com/doc", maxChars: 400 } },
+        { name: "op-unbudgeted", command: "read", input: { url: "https://example.com/doc2" } },
+      ],
+    };
+    const file = path.join(dir, "manifest.json");
+    fs.writeFileSync(file, JSON.stringify(manifest), "utf8");
+    const { adapter, stdout } = fakeInvocation();
+
+    const status = await main(
+      ["batch", file],
+      batchDeps(adapter, [reader], { env: { SCOUTLINE_ARTIFACTS_DIR: dir } }),
+    );
+
+    assert.strictEqual(status, 0);
+    const envelope = JSON.parse(stdout[0]);
+    assert.strictEqual(envelope.total, 2);
+    assert.strictEqual(envelope.ok, 2);
+    assert.ok(!("compaction" in envelope), "the summary envelope carries no compaction stamp");
+    // The unbudgeted op's stdout is the FULL document (zero-diff without
+    // the flag, inside batch too).
+    const full = JSON.parse(envelope.results[1].stdout);
+    assert.ok(!("compaction" in full), "no compaction on the unbudgeted op");
+    assert.strictEqual(full.content, LONG_DOC, "unbudgeted op output byte-identical to the raw document");
+  });
+});

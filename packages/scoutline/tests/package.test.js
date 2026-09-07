@@ -129,6 +129,15 @@ function packToDir(destDir) {
  */
 function installTarballOffline(tarballPath, destDir) {
   return new Promise((resolve, reject) => {
+    // npm 12 (f623c6f follow-up): `npm run` exports the user-level
+    // npm_config_allow_scripts (e.g. "9router" from ~/.npmrc) into this
+    // child env, and npm 12 rejects the env form with EALLOWSCRIPTS in
+    // project-scoped installs ("--allow-scripts not allowed"). The
+    // install is --ignore-scripts anyway — scrub the inherited var so
+    // the offline gate passes identically under `npm run test:offline`
+    // and a direct `node scripts/run-tests.mjs offline`.
+    const env = { ...process.env };
+    delete env.npm_config_allow_scripts;
     const proc = spawn(
       "npm",
       [
@@ -141,7 +150,7 @@ function installTarballOffline(tarballPath, destDir) {
         destDir,
         tarballPath,
       ],
-      { stdio: ["ignore", "pipe", "pipe"] },
+      { stdio: ["ignore", "pipe", "pipe"], env },
     );
     let stdout = "";
     let stderr = "";

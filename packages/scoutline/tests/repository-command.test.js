@@ -1581,7 +1581,7 @@ describe("P6-07A flags/defaults — Explorer request shape", () => {
     });
   });
 
-  it("search: --max-chars projects excerpts only (never enters the request)", async () => {
+  it("search: --max-chars whole-envelope budgets (compaction stamped, never enters the request)", async () => {
     const m = makeMainDeps({
       search: () => cannedSearchResult([{ text: "abcdefghij" }, { text: "klmnopqrst" }]),
     });
@@ -1596,11 +1596,15 @@ describe("P6-07A flags/defaults — Explorer request shape", () => {
       language: "en",
     });
     const parsed = JSON.parse(stdout[0]);
-    assert.strictEqual(parsed.excerpts.length, 1);
-    assert.ok(parsed.excerpts[0].text.startsWith("abcd"));
-    assert.ok(parsed.excerpts[0].text.endsWith("…"));
-    assert.strictEqual(parsed.truncated, true);
-    assert.strictEqual(parsed.originalTextLength, 20);
+    // ADR-0007 T4: whole-envelope budget — never-cut metadata survives,
+    // compaction stamped in-band (budget 5 floors on this fixture).
+    assert.ok(parsed.query === "query");
+    assert.ok(parsed.compaction, "compaction stamped in-band");
+    assert.strictEqual(parsed.compaction.budget, 5);
+    assert.ok(parsed.excerpts.length >= 1, "floor keeps the first excerpt");
+    for (const e of parsed.excerpts) {
+      assert.ok(typeof e.text === "string");
+    }
   });
 
   it("search: --max-chars never enters cacheIdentity", async () => {
@@ -1615,7 +1619,7 @@ describe("P6-07A flags/defaults — Explorer request shape", () => {
     }
   });
 
-  it("read: --max-chars projects content only (never enters the request)", async () => {
+  it("read: --max-chars whole-envelope budgets (compaction stamped, never enters request)", async () => {
     const m = makeMainDeps({ readFile: () => cannedFileResult("abcdefghijklmnop") });
     const { adapter, stdout } = createRecordingAdapter();
     await main(["repo", "read", "owner/repo", "README.md", "--max-chars", "5"], {
@@ -1627,10 +1631,47 @@ describe("P6-07A flags/defaults — Explorer request shape", () => {
       path: "README.md",
     });
     const parsed = JSON.parse(stdout[0]);
-    assert.ok(parsed.content.length < 16);
-    assert.ok(parsed.content.endsWith("…"));
-    assert.strictEqual(parsed.truncated, true);
-    assert.strictEqual(parsed.originalContentLength, 16);
+    // ADR-0007 T4: whole-envelope budget — repository/path never cut,
+    // compaction stamped (budget 5 floors on this fixture).
+    assert.ok(parsed.repository === "owner/repo");
+    assert.ok(parsed.path === "README.md");
+    assert.ok(parsed.compaction, "compaction stamped in-band");
+    assert.strictEqual(parsed.compaction.budget, 5);
+    assert.ok(typeof parsed.content === "string");
+  });
+
+  it("search: mid-budget trims excerpts AND sets truncated:true (non-floor teeth)", async () => {
+    const big = [{ text: "alpha".repeat(60) }, { text: "beta".repeat(60) }];
+    const m = makeMainDeps({ search: () => cannedSearchResult(big) });
+    const { adapter, stdout } = createRecordingAdapter();
+    await main(["repo", "search", "owner/repo", "query", "--max-chars", "300"], {
+      ...m.mainDeps,
+      invocation: adapter,
+    });
+    const parsed = JSON.parse(stdout[0]);
+    assert.ok(parsed.compaction, "mid budget fires");
+    assert.equal(parsed.compaction.note, undefined, "not the floor");
+    assert.equal(parsed.excerpts.length, 2, "excerpts survive (only bodies bled)");
+    assert.ok(
+      parsed.excerpts[0].text.length < big[0].text.length,
+      "first excerpt actually shrank vs the full text",
+    );
+    assert.equal(parsed.truncated, true, "truth flag set when the ladder cuts");
+  });
+
+  it("read: mid-budget trims content AND sets truncated:true (non-floor teeth)", async () => {
+    const full = "abcdefghijklmnop".repeat(20);
+    const m = makeMainDeps({ readFile: () => cannedFileResult(full) });
+    const { adapter, stdout } = createRecordingAdapter();
+    await main(["repo", "read", "owner/repo", "README.md", "--max-chars", "250"], {
+      ...m.mainDeps,
+      invocation: adapter,
+    });
+    const parsed = JSON.parse(stdout[0]);
+    assert.ok(parsed.compaction, "mid budget fires");
+    assert.equal(parsed.compaction.note, undefined, "not the floor");
+    assert.ok(parsed.content.length < full.length, "content actually shrank");
+    assert.equal(parsed.truncated, true, "truth flag set when the ladder cuts");
   });
 
   it("read: --no-cache bypasses cache write-back (cache.set count is zero)", async () => {

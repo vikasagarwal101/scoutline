@@ -407,6 +407,7 @@ scoutline --provider tavily search "earnings call" --topic finance
 
 # Reader
 scoutline read https://docs.example.com/api
+scoutline read https://example.com/long-article --max-chars 2000
 scoutline --provider tavily read https://example.com/
 
 # Crawl

@@ -22,6 +22,11 @@
  *     `used` alongside the explicit percentage; `limit` and `remaining`
  *     are omitted rather than fabricated. Additive under QuotaDashboard
  *     schema v1.
+ *   - A Provider whose counts are invalid but which publishes an exact
+ *     `remaining` (e.g. Z.AI's cumulative `currentValue` past the
+ *     window cap — GitHub #109) has `remaining` published verbatim next
+ *     to any explicit remaining percentage; counts are omitted rather
+ *     than derived from contradicting fields.
  *   - Invalid optional counts are omitted together (not set to zero).
  *   - A category that has neither a valid percentage, nor valid counts,
  *     nor an explicit remaining is rejected with `QUOTA_ERROR`.
@@ -182,12 +187,14 @@ export interface QuotaWindowInputs {
    */
   explicitRemainingPercent?: number;
   /**
-   * A Provider-supplied EXACT remaining count for a window whose limit
-   * is unknown (GitHub #49). Used only when neither an explicit
-   * percentage nor a valid count set is present: the built window
-   * carries `remaining` verbatim and omits `used`, `limit`, and
-   * `remainingPercent` — nothing is inferred from tier tables or
-   * fabricated as a percentage.
+   * A Provider-supplied EXACT remaining count. Two distinct uses:
+   * (GitHub #49) a window whose limit is unknown and neither an
+   * explicit percentage nor a valid count set is present — the built
+   * window carries `remaining` verbatim and omits `used`, `limit`, and
+   * `remainingPercent`; and (GitHub #109) a window whose counts are
+   * invalid — `remaining` is published verbatim next to any explicit
+   * remaining percentage, counts omitted. Nothing is ever inferred
+   * from tier tables or fabricated as a percentage.
    */
   remaining?: number;
 }

@@ -560,6 +560,8 @@ export interface HistoryExportReport {
   readonly total: number;
   /** The deterministic markdown dossier (byte-identical for the same log). */
   readonly markdown: string;
+  /** Section requestIds, newest-first, post-filter (the refs basis). */
+  readonly sectionsOrder: readonly string[];
 }
 
 /** Existence probe for a saveRef'd master (stat only — content is never read). */
@@ -627,6 +629,10 @@ export async function buildHistoryExportReport(
     ...(options.since !== undefined ? { since: options.since } : {}),
     total: sections.length,
     markdown: renderHistoryExportDossier(sections, options.since),
+    // Review nit 1: the refs presentation's id list — the SAME filtered,
+    // newest-first set the markdown sections render (post-`--since`), so
+    // the two outputs can never disagree on window membership.
+    sectionsOrder: sections.map((section) => section.requestId),
   };
 }
 
@@ -699,16 +705,11 @@ export async function historyExportCommand(input: {
     ...(input.since !== undefined ? { since: input.since } : {}),
     ...(input.masterExists !== undefined ? { masterExists: input.masterExists } : {}),
   });
-  const refs = log.entries
-    .filter(
-      (entry) =>
-        (entry as unknown as Record<string, unknown>).kind === "journal" &&
-        (entry as unknown as Record<string, unknown>).requestId !== undefined &&
-        (entry as unknown as Record<string, unknown>).repeatOf === undefined,
-    )
-    .map((entry) => (entry as unknown as { requestId: string }).requestId)
-    .reverse()
-    .join("\n");
+  // Review nit 1: refs carries the SAME --since window as the markdown
+  // sections (timestamp >= since, boundary INCLUSIVE) — full entries
+  // only, newest first. The sections themselves already hold exactly
+  // this set, so render refs from THEM (one filter, zero drift).
+  const refs = report.sectionsOrder.join("\n");
   return {
     kind: "data",
     data: report,

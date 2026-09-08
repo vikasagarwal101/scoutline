@@ -118,10 +118,15 @@ export function normalizeZaiQuota(raw: unknown): ProviderQuotaSuccess {
     // live: currentValue 4912 vs usage 1000) — then counts are invalid
     // and the API's OWN explicit `remaining` + USED `percentage` are
     // the honest signal (percentage 98.8 used => 1.2 remaining).
+    // The predicate must mirror buildQuotaWindow's validCountSet
+    // (finite, nonnegative, used <= limit, limit > 0): a negative
+    // currentValue or zero cap passes `used <= limit` yet is rejected
+    // downstream, re-throwing QUOTA_ERROR the fallback exists to fix.
     const used = readNumber(timeLimit.currentValue);
     const limit = readNumber(timeLimit.usage);
     const usedPercent = readNumber(timeLimit.percentage);
-    const countsValid = used !== undefined && limit !== undefined && used <= limit;
+    const countsValid =
+      used !== undefined && limit !== undefined && used >= 0 && limit > 0 && used <= limit;
     categories.push({
       name: "requests",
       unit: "requests",

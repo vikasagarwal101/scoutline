@@ -577,3 +577,71 @@ describe("review r3: --all sweep spares atomic-replace temporaries (macroscope/c
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review batch 3 (PR #111): honest mastersDeleted (issue 7).
+// ---------------------------------------------------------------------------
+
+describe("review batch 3: honest mastersDeleted count (issue 7)", () => {
+  it("--all sweeps orphans and counts only successful unlinks (3 masters on disk, 2 logged → mastersDeleted === 3)", async () => {
+    const artifactsDir = makeTempDir("scoutline-clear-honest-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      seedMixedStore(artifactsDir);
+      writeFileSync(join(artifactsDir, "orphan.md"), "# orphan\n");
+      const status = await main(
+        ["history", "clear", "--all"],
+        clearDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const envelope = JSON.parse(stdout[0]);
+      assert.strictEqual(envelope.removed, 5);
+      assert.strictEqual(envelope.kept, 0);
+      // 2 logged masters + 1 orphan = 3 files actually unlinked.
+      assert.strictEqual(
+        envelope.mastersDeleted,
+        3,
+        `mastersDeleted must count every successful unlink: got ${envelope.mastersDeleted}`,
+      );
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("--all does NOT count a subdirectory (fs.unlink on a dir fails → not counted in mastersDeleted)", async () => {
+    const { mkdirSync } = await import("node:fs");
+    const artifactsDir = makeTempDir("scoutline-clear-honest-dir-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      seedMixedStore(artifactsDir);
+      mkdirSync(join(artifactsDir, "subdir"));
+      const status = await main(
+        ["history", "clear", "--all"],
+        clearDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const envelope = JSON.parse(stdout[0]);
+      assert.strictEqual(envelope.mastersDeleted, 2, "only the two logged masters count");
+      // The subdir survived (EISDIR — not a store file and not counted).
+      assert.ok(readdirSync(artifactsDir).includes("subdir"), "subdir survives (not a master file)");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("bare clear: the lib result carries no mastersDeleted key (only --all sets it)", async () => {
+    const { clearArtifactsLog } = await import("../dist/lib/artifacts.js");
+    const artifactsDir = makeTempDir("scoutline-clear-honest-bare-");
+    try {
+      seedMixedStore(artifactsDir);
+      const result = await clearArtifactsLog(artifactsDir);
+      assert.strictEqual(result.removed, 3);
+      assert.strictEqual("mastersDeleted" in result, false, "bare clear omits mastersDeleted");
+      // --all: key is present and a number.
+      const allResult = await clearArtifactsLog(artifactsDir, { all: true });
+      assert.strictEqual(typeof allResult.mastersDeleted, "number", "--all sets mastersDeleted");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});

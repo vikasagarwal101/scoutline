@@ -694,3 +694,85 @@ describe("review r3: recall forwards the corrupt-log notice (cubic P2)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review batch 3 (PR #111): recall markdown escaping (issues 4/8) and the
+// orientation gate vs the corrupt-log notice (issue 10).
+// ---------------------------------------------------------------------------
+
+describe("review batch 3: recall markdown is markdown-escaped (issues 4/8)", () => {
+  it("hostile query/title cannot forge headings or break markdown links", async () => {
+    const artifactsDir = makeTempDir("scoutline-recall-escape-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      await seedStore(artifactsDir, [
+        fullEntry({
+          requestId: "r-evil",
+          timestamp: T0 - 1 * H,
+          query: "evil\n## Forged Heading",
+          skeleton: { results: [{ url: "https://example.com/good", title: "x](http://evil" }] },
+        }),
+      ]);
+      const status = await main(
+        ["history", "recall", "evil", "-O", "markdown"],
+        recallDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const markdown = stdout.join("");
+      const lines = markdown.split("\n");
+      // Heading: newline collapsed (one line), `#` escaped.
+      const heading = lines.find((l) => l.startsWith("## "));
+      assert.strictEqual(
+        heading,
+        "## evil \\#\\# Forged Heading (search, score 2)",
+        `heading escaped on one line: ${JSON.stringify(heading)}`,
+      );
+      // Row link: the early `](` cannot close the link destination.
+      const row = lines.find((l) => l.startsWith("- ["));
+      assert.strictEqual(
+        row,
+        "- [x\\]\\(http://evil](https://example\\.com/good)",
+        `link text escaped: ${JSON.stringify(row)}`,
+      );
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("review batch 3: orientation gate vs corrupt-log notice (issue 10)", () => {
+  it("corrupt store: the corruption notice shows and the fake 'journal is empty' line does NOT", async () => {
+    const artifactsDir = makeTempDir("scoutline-recall-gate-corrupt-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      writeFileSync(join(artifactsDir, "index.json"), "{ not json");
+      const status = await main(
+        ["history", "recall", "rust"],
+        recallDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
+      );
+      assert.strictEqual(status, 0, "fail-open: exit 0");
+      const joined = stderr.join("\n");
+      assert.ok(joined.includes("corrupt (invalid JSON)"), `real diagnostic present: ${joined}`);
+      assert.ok(!joined.includes("journal is empty"), `fake orientation suppressed: ${joined}`);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("clean empty store: the orientation notice still fires (gate preserves the empty case)", async () => {
+    const artifactsDir = makeTempDir("scoutline-recall-gate-clean-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      const status = await main(
+        ["history", "recall", "rust"],
+        recallDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
+      );
+      assert.strictEqual(status, 0);
+      const joined = stderr.join("\n");
+      assert.ok(joined.includes("journal is empty"), `orientation fires: ${joined}`);
+      assert.ok(!joined.includes("corrupt"), "no corruption diagnostic on a clean store");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});

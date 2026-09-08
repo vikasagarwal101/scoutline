@@ -4380,8 +4380,8 @@ async function handleHistoryExport(
   // index below and the renderer consume the same ReadLogResult, so a
   // saveRef'd export performs 1 read total, not 1 per row (the old
   // per-call `readLog(dir)` inside masterExists made export O(N²) in
-  // log reads). Content stays read-only; stats on master paths are the
-  // only other I/O.
+  // log reads). Content stays read-only over the network — the only
+  // other I/O is LOCAL master reads (the log already points at them).
   const memoized = await readArtifactsLog(dir);
   const saveEntriesById = new Map<string, { readonly masterPath: string }>();
   for (const entry of memoized.log.entries) {
@@ -4402,14 +4402,15 @@ async function handleHistoryExport(
     (context) =>
       historyExportCommand({
         readLog: () => Promise.resolve(memoized),
-        // Existence check ONLY: stat the saveRef'd master path — never
-        // open it, never fetch anything (the read-only ceiling).
+        // Review batch 3 (issue 3): read the saveRef'd master's body
+        // from disk when present (the durable local copy the log
+        // points at — never a network/cache re-fetch). Absent or
+        // unreadable both degrade to the dossier's (missing) note.
         masterExists: async (saveRequestId) => {
           const save = saveEntriesById.get(saveRequestId);
           if (save === undefined) return false;
           try {
-            await fs.stat(path.join(dir, save.masterPath));
-            return true;
+            return await fs.readFile(path.join(dir, save.masterPath), "utf8");
           } catch {
             return false;
           }

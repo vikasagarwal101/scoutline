@@ -132,6 +132,7 @@ import {
   buildReadSkeleton,
   buildResearchSkeleton,
   appendJournalEntry,
+  appendJournalEntryMaybeRepeat,
   type JournalableCapability,
   type JournalSkeleton,
 } from "./lib/journal.js";
@@ -1529,6 +1530,13 @@ async function handleSearch(
   // surface. The rows/fanout routing both arrive via thunks read AFTER
   // dispatch resolves.
   let journalRows: readonly { url?: string; title?: string }[] | undefined;
+  // Fan-out arm-race fix: stamp one serving cell per PLANNED arm on the
+  // shared capture BEFORE any arm runs, so the descriptor wrappers can
+  // record each arm's live/cache truth independently (a delayed
+  // cache-hit arm can no longer overwrite a live arm's servedFrom).
+  if (fanoutPlan.mode === "fanout" && deps.journal !== undefined) {
+    installFanoutArmCells(deps.journal.capture, fanoutPlan.arms);
+  }
   const journal =
     deps.journal === undefined
       ? undefined
@@ -1800,9 +1808,11 @@ async function handleSearch(
             context,
           );
         // T2a must-fix 3: the fan-out rows feed the journal skeleton the
-        // same way the single path's outcome does below.
-        if (fanoutResult.kind === "data" && Array.isArray(fanoutResult.data)) {
-          journalRows = fanoutResult.data;
+        // same way the single path's outcome does below. Rows come from
+        // the PRE-projection merge — `--fields` filtering must not blank
+        // the journal's url/title identities.
+        if (fanoutResult.kind === "data" && Array.isArray(fanoutResult.rawRows)) {
+          journalRows = fanoutResult.rawRows;
         }
         return applyOutputBudget(applyContextWrapper(fanoutResult));
       }
@@ -1843,13 +1853,15 @@ async function handleSearch(
       );
       // T2a: capture the final (post-merge, post-count) result rows for
       // the journal skeleton BEFORE the budget projects them — the hook
-      // reads this cell after the behavior resolves.
+      // reads this cell after the behavior resolves. Rows come from the
+      // PRE-projection result: `--fields` filtering must not blank the
+      // journal skeleton's url/title identities.
       if (
         deps.journal !== undefined &&
         outcome.result.kind === "data" &&
-        Array.isArray(outcome.result.data)
+        Array.isArray(outcome.result.rawRows)
       ) {
-        journalRows = outcome.result.data;
+        journalRows = outcome.result.rawRows;
       }
       return applyOutputBudget(applyContextWrapper(outcome.result));
     },
@@ -4009,6 +4021,12 @@ async function handleHistoryNote(
       "Pass the observation or query as the positional argument.",
     );
   }
+  if (positional.length > 2) {
+    throw new ValidationError(
+      "history note accepts exactly one positional note text; quote multi-word notes.",
+      "Multi-word notes must be passed as a single quoted argument, e.g. history note \"rust vs go comparison\".",
+    );
+  }
 
   // --url / --title: repeatable pairs (search: the result list; read:
   // exactly one row; research: the citations). parseArgs keeps the LAST
@@ -4242,7 +4260,15 @@ async function handleHistoryClear(
 
   // `--all` is the ONLY accepted flag; every other flag (and any
   // positional beyond the subcommand) is a family-convention
-  // VALIDATION_ERROR BEFORE the store is touched.
+  // VALIDATION_ERROR BEFORE the store is touched. `--all` is boolean —
+  // parseArgs binds the next non-dash token as its value, so `--all
+  // stray` must not silently degrade to journal scope.
+  if (flags.all !== undefined && flags.all !== true) {
+    throw new ValidationError(
+      "--all is a boolean flag and takes no value.",
+      "Valid form: scoutline history clear [--all].",
+    );
+  }
   const all = flags.all === true;
   const known = new Set(["help", "h", "all"]);
   const unknown = Object.keys(flags).filter((key) => !known.has(key));
@@ -4566,6 +4592,16 @@ export interface ServingCapture {
    * it — same-run `--save` + journaling links both entries (PRD AC10).
    */
   savedRequestId?: string;
+  /**
+   * Fan-out arm-race fix: one serving cell per PLANNED arm, keyed by
+   * provider id. handleSearch attaches the cells (from the resolved
+   * fan-out plan) BEFORE the arms run; the descriptor wrappers look the
+   * cell up at create() time and stamp it alongside the shared cell. A
+   * delayed cache-hit arm can therefore never overwrite a live arm's
+   * servedFrom: each arm owns its cell. Absent on the single-provider
+   * path (and on batch ops, which already use per-op capture cells).
+   */
+  armServing?: ReadonlyMap<string, { servedFrom?: "live" | "cache" }>;
 }
 
 /** What main hands the save-capable handlers when a save will happen. */
@@ -4599,6 +4635,8 @@ function withCaptureInvoke(
   id: ProviderId,
   capture: ServingCapture,
 ): Record<string, unknown> {
+  const armCell =
+    capture.armServing !== undefined ? capture.armServing.get(id) : undefined;
   const invoke = slot.invoke as (...args: unknown[]) => Promise<unknown>;
   const wrapped: Record<string, unknown> = {
     ...slot,
@@ -4606,6 +4644,7 @@ function withCaptureInvoke(
       const outcome = await invoke(...args);
       capture.servedProvider = id;
       capture.servedFrom = "live";
+      if (armCell !== undefined) armCell.servedFrom = "live";
       return outcome;
     },
   };
@@ -4633,6 +4672,7 @@ function withCaptureInvoke(
     wrapped.cacheIdentity = (...args: unknown[]) => {
       capture.servedProvider = id;
       capture.servedFrom = "cache";
+      if (armCell !== undefined) armCell.servedFrom = "cache";
       // T2a: the identity IS the request the cache key is derived from
       // (executeSearch/executeCachedOperation feed it straight into
       // buildProviderCacheKey) — recompute the key here so the journal
@@ -4644,6 +4684,7 @@ function withCaptureInvoke(
         capability?: string;
         credentialFingerprint?: string;
         request?: unknown;
+        operation?: unknown;
       } | null;
       if (
         identity !== null &&
@@ -4652,9 +4693,18 @@ function withCaptureInvoke(
         typeof identity.capability === "string" &&
         typeof identity.credentialFingerprint === "string"
       ) {
+        // Reader/repository identities carry an `operation` field and the
+        // shared executors namespace their keys `${capability}-${operation}`
+        // (src/lib/execution.ts) — mirror that so the journal cacheKey
+        // identifies the real response-cache partition. Search/quota
+        // identities have no operation field and keep the bare capability.
+        const opNamespace =
+          typeof identity.operation === "string"
+            ? `${identity.capability}-${identity.operation}`
+            : identity.capability;
         capture.cacheKey = buildProviderCacheKey({
           provider: identity.provider as ProviderId,
-          capability: identity.capability,
+          capability: opNamespace,
           credentialFingerprint: identity.credentialFingerprint,
           request: identity.request,
         });
@@ -4723,6 +4773,23 @@ function captureServingDescriptors(
     create: (context: ProviderContext): ProviderAdapter =>
       captureAdapterInvoke(descriptor.create(context), descriptor.id, capture),
   }));
+}
+
+/**
+ * Fan-out wiring (PRD AC2 + arm-race fix): build a stable per-arm
+ * serving map from the resolved fan-out plan and install it on the
+ * shared capture cell. Each descriptor wrapper looks its arm cell up
+ * at create() time so a delayed cache-hit arm cannot overwrite the live
+ * arm's servedFrom. Returns the same descriptor list — the wrappers
+ * resolve the arm cell on demand via `capture.armServing`.
+ */
+function installFanoutArmCells(
+  capture: ServingCapture,
+  fanoutArms: readonly ProviderId[],
+): void {
+  const cells = new Map<string, { servedFrom?: "live" | "cache" }>();
+  for (const armId of fanoutArms) cells.set(armId, {});
+  capture.armServing = cells;
 }
 
 /**
@@ -5074,28 +5141,58 @@ function createJournalHook(
     // nothing (failed before any arm served) — nothing to journal.
     const fanout = meta.fanoutRouting;
     if (fanout !== undefined) {
-      if (capture.servedFrom === undefined) return;
+      // Fan-out arm-race (review batch 1): the shared capture cell can
+      // be overwritten by a delayed cache-hit arm, dropping the live
+      // arm's servedFrom. The descriptor wrappers now stamp per-arm
+      // cells (captured in the same wrapper pass as the shared cell);
+      // a fan-out is a "live" journal-write when ANY arm ran live (the
+      // combined result was freshly generated) and only an ALL-arms-
+      // cache-hit with a resolvable map key writes a marker.
+      const armMap = capture.armServing;
+      const everyArmIsCache =
+        armMap !== undefined &&
+        armMap.size > 0 &&
+        [...armMap.values()].every((c) => c.servedFrom === "cache");
+      const anyArmObserved =
+        armMap !== undefined && armMap.size > 0;
+      if (!anyArmObserved) return;
       // NIT 1: no cacheKey → skip (a poison empty-string entry would
       // fail the validator and blank the whole log on next read).
       if (capture.cacheKey === undefined) return;
-      if (capture.servedFrom === "cache") {
+      // A cache-served fan-out that ALSO saw a live arm is a fresh
+      // generation — journal a FULL entry (the marker rule below would
+      // be wrong: a combined result is not a repeat of any prior).
+      if (everyArmIsCache) {
         // T2b: warm-cache re-ask → tiny repeat marker when the map
         // resolves a prior full entry; journal-cold → full entry.
-        const map = await buildJournalCacheKeyMap(artifactsDir);
-        const repeatOf = map.get(capture.cacheKey);
-        if (repeatOf !== undefined) {
-          await appendJournalEntry(
-            artifactsDir,
+        const skeleton = buildSkeletonForCapability(capability, meta);
+        if (skeleton === undefined) return;
+        const entry = buildJournalEntry({
+          capability,
+          provider: fanout,
+          query: meta.query,
+          cacheKey: capture.cacheKey,
+          skeleton,
+          now,
+          secrets: resolvedSecrets,
+          ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
+        });
+        await appendJournalEntryMaybeRepeat(
+          artifactsDir,
+          entry,
+          (repeatOf) =>
             buildJournalRepeatMarker({
               capability,
               provider: fanout,
               repeatOf,
+              // Warm-cache --save: the save hook already stamped the
+              // master's requestId into the shared capture cell — keep
+              // the same-run saveRef cross-link on the marker (PRD AC10).
+              ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
               now,
             }),
-          );
-          return;
-        }
-        // journal-cold fallthrough: the full entry below.
+        );
+        return;
       }
       const skeleton = buildSkeletonForCapability(capability, meta);
       if (skeleton === undefined) return;
@@ -5129,15 +5226,32 @@ function createJournalHook(
     // prior FULL journal entry; journal-cold-but-cache-warm (cleared
     // journal or pre-journal cache) writes ONE full entry instead.
     if (capture.servedFrom === "cache") {
-      const map = await buildJournalCacheKeyMap(artifactsDir);
-      const repeatOf = map.get(capture.cacheKey);
-      if (repeatOf !== undefined) {
-        await appendJournalEntry(
-          artifactsDir,
-          buildJournalRepeatMarker({ capability, provider, repeatOf, now }),
-        );
-        return;
-      }
+      const skeleton = buildSkeletonForCapability(capability, meta);
+      if (skeleton === undefined) return;
+      const entry = buildJournalEntry({
+        capability,
+        provider,
+        query: meta.query,
+        cacheKey: capture.cacheKey,
+        skeleton,
+        now,
+        secrets: resolvedSecrets,
+        ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
+      });
+      await appendJournalEntryMaybeRepeat(
+        artifactsDir,
+        entry,
+        (repeatOf) =>
+          buildJournalRepeatMarker({
+            capability,
+            provider,
+            repeatOf,
+            // Same-run saveRef cross-link (PRD AC10), single path.
+            ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
+            now,
+          }),
+      );
+      return;
     }
     const skeleton = buildSkeletonForCapability(capability, meta);
     if (skeleton === undefined) return;

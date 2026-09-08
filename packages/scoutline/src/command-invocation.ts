@@ -24,6 +24,15 @@ export interface DataCommandResult<T = unknown> {
   readonly data: T;
   readonly presentations?: CommandPresentations;
   readonly exitCode?: number;
+  /**
+   * Pre-projection (pre-`--fields`) rows for capabilities whose journal
+   * skeleton must preserve url+title identities even when the user
+   * projects away those fields in the command output.
+   *
+   * Only the search command populates this; every other command leaves
+   * it absent (undefined is not `unknown`-assignable but it's optional).
+   */
+  readonly rawRows?: readonly { url?: string; title?: string }[];
 }
 
 export interface TextCommandResult {

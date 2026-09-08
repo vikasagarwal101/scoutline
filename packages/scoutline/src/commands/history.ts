@@ -531,11 +531,202 @@ export async function historyClearCommand(input: {
 }
 
 // ---------------------------------------------------------------------------
+// T6c — export (the dossier renderer; DESIGN D5 / PRD AC5)
+// ---------------------------------------------------------------------------
+
+/** One dossier section's identity set (derived from a full journal entry). */
+export interface HistoryExportSection {
+  readonly requestId: string;
+  readonly timestamp: number;
+  readonly capability: JournalableCapability;
+  readonly query: string;
+  /** Rendered per family conventions (incl. the `x (cache)` qualifier). */
+  readonly provider: string;
+  readonly contentHash: string;
+  readonly rows: readonly { readonly url: string; readonly title: string }[];
+  readonly tags: readonly string[];
+  readonly saveRef?: string;
+  /** Existence-stat verdict on the saveRef'd master: true/false, or absent when the save entry itself is gone from the log. */
+  readonly saveMasterOnDisk?: boolean;
+}
+
+/** `history export` data-mode envelope. */
+export interface HistoryExportReport {
+  readonly schemaVersion: 1;
+  readonly generatedAt: number;
+  /** The parsed `--since` lower bound, when given. */
+  readonly since?: number;
+  /** Sections rendered — FULL entries only (repeat markers never). */
+  readonly total: number;
+  /** The deterministic markdown dossier (byte-identical for the same log). */
+  readonly markdown: string;
+}
+
+/** Existence probe for a saveRef'd master (stat only — content is never read). */
+export type MasterExists = (requestId: string) => Promise<boolean | undefined>;
+
+/**
+ * Render the export dossier (T6c, PRD AC5): pure markdown over the
+ * filtered FULL journal entries — one section per finding (entry
+ * identity from the skeleton), one provenance line
+ * `{url, at, contentHash}` per skeleton row (`at` = entry timestamp
+ * ISO, `contentHash` = the ENTRY's hash). Repeat markers are NEVER
+ * sections (the list default-skip ruling, DESIGN D5); save entries are
+ * not findings either — a save surfaces only as its skeleton's
+ * `saveRef` pointer, annotated by an EXISTENCE check (stat only: the
+ * master's content is never read, never fetched). Sections order
+ * newest-first (timestamp desc, requestId desc) — derived from entry
+ * fields, not append order, so the same set renders byte-identically
+ * regardless of append sequence.
+ */
+export async function buildHistoryExportReport(
+  log: ArtifactsLog,
+  options: {
+    readonly since?: number;
+    readonly now: () => number;
+    readonly masterExists?: MasterExists;
+  },
+): Promise<HistoryExportReport> {
+  const sections: HistoryExportSection[] = [];
+  for (const entry of log.entries) {
+    if (entry.kind !== "journal") continue;
+    const journal = entry as unknown as {
+      requestId?: string;
+      repeatOf?: string;
+      capability: JournalableCapability;
+      query: string;
+      provider: SaveLogEntry["provider"];
+      contentHash: string;
+      skeleton: { results: readonly { url: string; title: string }[] };
+      tags?: readonly string[];
+      saveRef?: string;
+    };
+    if (journal.repeatOf !== undefined) continue; // markers are never sections
+    if (options.since !== undefined && entry.timestamp < options.since) continue;
+    let saveMasterOnDisk: boolean | undefined;
+    if (journal.saveRef !== undefined && options.masterExists !== undefined) {
+      saveMasterOnDisk = await options.masterExists(journal.saveRef);
+    }
+    sections.push({
+      requestId: journal.requestId ?? "",
+      timestamp: entry.timestamp,
+      capability: journal.capability,
+      query: journal.query,
+      provider: formatExportProvider(journal.provider),
+      contentHash: journal.contentHash,
+      rows: journal.skeleton.results,
+      tags: journal.tags ?? [],
+      ...(journal.saveRef !== undefined ? { saveRef: journal.saveRef } : {}),
+      ...(saveMasterOnDisk !== undefined ? { saveMasterOnDisk } : {}),
+    });
+  }
+  sections.sort((a, b) => b.timestamp - a.timestamp || (a.requestId < b.requestId ? 1 : -1));
+  return {
+    schemaVersion: 1,
+    generatedAt: options.now(),
+    ...(options.since !== undefined ? { since: options.since } : {}),
+    total: sections.length,
+    markdown: renderHistoryExportDossier(sections, options.since),
+  };
+}
+
+/** Provider rendering per family conventions: `x (cache)` on servedFrom cache, `fanout(a+b)` on arms (render-only). */
+function formatExportProvider(provider: SaveLogEntry["provider"]): string {
+  const routing = provider as { mode?: string; arms?: string[]; effective?: string; servedFrom?: string };
+  if (routing.mode === "fanout") return `fanout(${(routing.arms ?? []).join("+")})`;
+  if (routing.servedFrom === "cache") return `${routing.effective} (cache)`;
+  return routing.effective ?? "-";
+}
+
+/** The deterministic markdown renderer (frozen byte-exact by tests). */
+function renderHistoryExportDossier(
+  sections: readonly HistoryExportSection[],
+  since: number | undefined,
+): string {
+  const lines = ["# Research journal export", ""];
+  if (since !== undefined) {
+    lines.push(`since: ${new Date(since).toISOString()} (inclusive)`, "");
+  }
+  for (const section of sections) {
+    const firstRow = section.rows[0];
+    const title = firstRow !== undefined && firstRow.title.length > 0 ? firstRow.title : section.query;
+    lines.push(
+      `## ${title || section.capability}`,
+      `- query: ${section.query}`,
+      `- capability: ${section.capability}`,
+      `- provider: ${section.provider}`,
+      `- recorded: ${new Date(section.timestamp).toISOString()}`,
+      `- requestId: ${section.requestId}`,
+      `- tags: ${section.tags.length > 0 ? section.tags.join(",") : "-"}`,
+      `- saved artifact: ${
+        section.saveRef === undefined
+          ? "-"
+          : section.saveMasterOnDisk === false
+            ? `${section.saveRef} (missing)`
+            : section.saveRef
+      }`,
+      "",
+    );
+    const at = new Date(section.timestamp).toISOString();
+    for (const row of section.rows) {
+      lines.push(`- ${row.url} — ${row.title}`);
+      lines.push(`  \`{url:${row.url}, at:${at}, contentHash:${section.contentHash}}\``);
+    }
+    lines.push("");
+  }
+  lines.push(`${sections.length} finding(s)`);
+  return lines.join("\n");
+}
+
+/**
+ * T6c: the export command. Read-only: `readLog` + existence stats on
+ * saveRef'd masters are the ONLY I/O — zero network, zero cache reads,
+ * master CONTENT never opened (owner: no re-fetch, ever). Fail-open on
+ * a missing store (header-only dossier, exit 0); a corrupt log's
+ * read-notice rides the stderr notice seam.
+ */
+export async function historyExportCommand(input: {
+  readonly readLog: () => Promise<import("../lib/artifacts.js").ReadLogResult>;
+  readonly masterExists?: MasterExists;
+  readonly notice: (message: string) => void;
+  readonly now: () => number;
+  readonly since?: number;
+}): Promise<CommandResult> {
+  const { log, notice } = await input.readLog();
+  if (notice !== undefined) input.notice(notice);
+  const report = await buildHistoryExportReport(log, {
+    now: input.now,
+    ...(input.since !== undefined ? { since: input.since } : {}),
+    ...(input.masterExists !== undefined ? { masterExists: input.masterExists } : {}),
+  });
+  const refs = log.entries
+    .filter(
+      (entry) =>
+        (entry as unknown as Record<string, unknown>).kind === "journal" &&
+        (entry as unknown as Record<string, unknown>).requestId !== undefined &&
+        (entry as unknown as Record<string, unknown>).repeatOf === undefined,
+    )
+    .map((entry) => (entry as unknown as { requestId: string }).requestId)
+    .reverse()
+    .join("\n");
+  return {
+    kind: "data",
+    data: report,
+    presentations: {
+      compact: report.markdown,
+      markdown: report.markdown,
+      refs,
+      tty: report.markdown,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Help
 // ---------------------------------------------------------------------------
 
 export const HISTORY_HELP = `History - Saved --save artifacts + research journal (list / show /
-stats / note / recall; clear MUTATES)
+stats / note / recall / export; clear MUTATES)
 
 Usage:
   scoutline history list [--since N] [--limit N] [--command <name>]
@@ -546,6 +737,7 @@ Usage:
                           [--url <url> [--title <title>]]... [--tags a,b]
   scoutline history recall <text> [--limit N] [--as-of <date>]
                            [--capability <search|read|research>]
+  scoutline history export [--since <date>]
   scoutline history clear [--all]
 
 Reads the artifact store (default ~/.scoutline/artifacts/, override with
@@ -800,4 +992,35 @@ Exit codes:
 Examples:
   scoutline history clear
   scoutline history clear --all
+`;
+
+export const HISTORY_EXPORT_HELP = `History export - Markdown dossier of journal findings (read-only)
+
+Usage:
+  scoutline history export [--since <date>]
+
+Render a deterministic markdown dossier over the journal: one section
+per finding (full journal entries only — search/read/research
+skeletons), newest first. Each section carries the entry identity
+(query, capability, provider, recorded time, requestId, tags) and a
+provenance line \`{url, at, contentHash}\` per skeleton row — the cited
+identity of every source, never its content. Repeat markers are never
+sections (same ruling as list default). A cross-linked --save artifact
+appears only as its saveRef pointer, annotated by an existence check;
+master content is NEVER read and NOTHING is fetched (no re-fetch, ever
+— no network, no response-cache reads, no master opens). Same log
+renders byte-identical output.
+
+Options:
+  --since <date>  Lower bound on entry timestamps (inclusive: >=).
+                  Accepts ISO-8601 or epoch-ms.
+
+Exit codes:
+  0  Success (including an empty or missing store — header-only
+     dossier)
+  1  Invalid --since value or unexpected arguments (VALIDATION_ERROR)
+
+Examples:
+  scoutline history export
+  scoutline history export --since 2026-09-01
 `;

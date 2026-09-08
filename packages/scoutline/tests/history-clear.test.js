@@ -451,7 +451,8 @@ describe("T6a: help identity — no longer read-only (main-driven)", () => {
       // The unknown-subcommand roster string gains clear (family error surface).
       const bogus = makeAdapter();
       await main(["history", "bogus"], clearDeps(bogus.adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }));
-      assert.match(bogus.stderr.at(-1), /list, show, stats, note, recall, clear/);
+      // T6c: the roster gains export (family error surface).
+      assert.match(bogus.stderr.at(-1), /list, show, stats, note, recall, export, clear/);
       // clear's own help renders (the note/recall per-subcommand pattern).
       const own = makeAdapter();
       await main(["history", "clear", "--help"], clearDeps(own.adapter));

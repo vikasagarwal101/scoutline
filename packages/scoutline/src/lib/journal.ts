@@ -449,15 +449,21 @@ export function buildNoteEntry(input: NoteInput): JournalLogEntry {
     ? (redactSecrets(input.rows, secrets) as SkeletonItem[])
     : input.rows;
   const skeleton: JournalSkeleton = { results: redactedRows };
+  // Review nit 2: ONE now() snapshot — requestId, timestamp, and the
+  // note: cacheKey all mint from the same instant, so a clock tick
+  // between calls can never split the entry's identity (a diverging
+  // cacheKey would embed an id that matches nothing).
+  const at = input.now();
+  const requestId = newRequestId(at);
   return {
     kind: "journal",
-    requestId: newRequestId(input.now()),
-    timestamp: input.now(),
+    requestId,
+    timestamp: at,
     capability: input.capability,
     provider: NOTE_PROVIDER_ROUTING,
     query: redactedQuery,
     contentHash: skeletonContentHash(skeleton),
-    cacheKey: `note:${newRequestId(input.now())}`,
+    cacheKey: `note:${requestId}`,
     skeleton,
     ...(input.tags !== undefined && input.tags.length > 0 ? { tags: input.tags } : {}),
   };

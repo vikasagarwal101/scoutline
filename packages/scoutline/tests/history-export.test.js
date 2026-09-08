@@ -546,3 +546,86 @@ describe("T6c: help surfaces", () => {
     }
   });
 });
+
+describe("T6c review nits: refs presentation honors --since; note entry single-now snapshot", () => {
+  it("refs presentation applies the same --since cutoff as the markdown (boundary == included)", async () => {
+    const artifactsDir = makeTempDir("scoutline-export-refs-since-");
+    try {
+      const atBoundary = T0 - 2 * H;
+      await seedStore(artifactsDir, [
+        fullEntry({ requestId: "r-before", timestamp: T0 - 5 * H, query: "early", skeleton: { results: [] } }),
+        fullEntry({ requestId: "r-exact", timestamp: atBoundary, query: "boundary", skeleton: { results: [] } }),
+        fullEntry({ requestId: "r-after", timestamp: T0 - 1 * H, query: "late", skeleton: { results: [] } }),
+        marker({ timestamp: T0 - 1 * H, repeatOf: "r-after" }),
+      ]);
+      const { adapter, stdout, stderr } = makeAdapter();
+      const status = await main(
+        ["history", "export", "--since", new Date(atBoundary).toISOString(), "-O", "refs"],
+        exportDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const refs = stdout.join("");
+      assert.ok(refs.includes("r-exact"), "boundary-equal entry in refs (== included)");
+      assert.ok(refs.includes("r-after"), "after-window entry in refs");
+      assert.ok(!refs.includes("r-before"), "before-window entry ABSENT from refs (was unfiltered — review nit 1)");
+      // Consistency with the markdown sections over the same window.
+      const data = makeAdapter();
+      await main(
+        ["history", "export", "--since", new Date(atBoundary).toISOString()],
+        exportDeps(data.adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
+      );
+      const envelope = parseEnvelope(data.stdout);
+      assert.strictEqual(envelope.total, 2);
+      for (const id of ["r-exact", "r-after"]) assert.ok(envelope.markdown.includes(id));
+      assert.ok(!envelope.markdown.includes("r-before"));
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("refs WITHOUT --since lists every full entry (no regression on the unfiltered path)", async () => {
+    const artifactsDir = makeTempDir("scoutline-export-refs-all-");
+    try {
+      await seedStore(artifactsDir, [
+        fullEntry({ requestId: "r-1", timestamp: T0 - 5 * H, query: "early", skeleton: { results: [] } }),
+        fullEntry({ requestId: "r-2", timestamp: T0 - 1 * H, query: "late", skeleton: { results: [] } }),
+        marker({ timestamp: T0 - 1 * H, repeatOf: "r-2" }),
+      ]);
+      const { adapter, stdout, stderr } = makeAdapter();
+      const status = await main(
+        ["history", "export", "-O", "refs"],
+        exportDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const refs = stdout.join("");
+      assert.ok(refs.includes("r-1") && refs.includes("r-2"));
+      assert.ok(!refs.includes("req-x"), "markers never in refs");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("buildNoteEntry uses ONE now() snapshot: requestId, timestamp, and the note: cacheKey embed the same instant", async () => {
+    const { buildNoteEntry } = await import("../dist/lib/journal.js");
+    // Ticking clock: every successive now() call differs — two calls
+    // inside buildNoteEntry would mint a cacheKey embedding an id that
+    // does not match the entry's own requestId/timestamp (review nit 2).
+    let tick = 0;
+    const tickingNow = () => T0 + tick++ * 60_000;
+    const entry = buildNoteEntry({
+      capability: "search",
+      query: "snapshot pin",
+      rows: [{ url: "https://example.com/a", title: "A" }],
+      now: tickingNow,
+    });
+    assert.strictEqual(entry.timestamp, T0, "first now() call is the entry instant");
+    // The cacheKey embeds the SAME minted id (single snapshot; the id's
+    // own instant, not a second clock read):
+    assert.strictEqual(entry.cacheKey, `note:${entry.requestId}`);
+    // And the id embeds the same instant the timestamp carries: strip
+    // the random 4-hex tail and compare to the timestamp's compact form.
+    const idInstant = entry.requestId.slice(0, -5); // drop "-hex4"
+    const tsInstant = new Date(entry.timestamp).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+    assert.strictEqual(idInstant, tsInstant, `requestId instant matches timestamp: ${entry.requestId}`);
+  });
+});

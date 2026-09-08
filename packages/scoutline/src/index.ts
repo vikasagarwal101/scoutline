@@ -144,6 +144,7 @@ import {
   configFilePath,
   atomicReplaceFile,
   readConfig,
+  resolveConfigRoot,
   resolveConfigRootPure,
   resolveEnvFromConfig,
   setConfigValue,
@@ -193,6 +194,7 @@ import {
   type InitDependencies,
   type InitPrompts,
 } from "./commands/init.js";
+import { checkAgentRegistration } from "./lib/agent-registration/deploy.js";
 import pkg from "../package.json" with { type: "json" };
 const { version: VERSION } = pkg;
 
@@ -4235,6 +4237,17 @@ export interface MainDependencies {
   readonly env: NodeJS.ProcessEnv;
   readonly now?: () => number;
   /**
+   * Optional injectable agent-registration stamp check (agent
+   * registration D5/D6). Production wires `checkAgentRegistration` from
+   * `src/lib/agent-registration/deploy.js` against `os.homedir()`, the
+   * ambient config root (resolveConfigRoot reads process.env directly),
+   * and the package version; tests inject doubles so dispatch runs stay
+   * hermetic. Invoked exactly once per CLI run, before command dispatch;
+   * a rejection is caught and degraded to a stderr notice so a broken
+   * refresh never breaks the invoked command.
+   */
+  readonly agentRegistrationCheck?: () => Promise<{ refreshed: boolean }>;
+  /**
    * Injectable Provider registry. Production defaults to the static
    * built-in descriptors; tests pass doubles to route Search through a
    * fake Adapter without touching real transports.
@@ -4615,6 +4628,30 @@ export async function main(
 
   const command = rest[0] ?? "";
   const commandArgs = rest.slice(1);
+
+  // Lazy agent-registration stamp check (agent registration D5/D6):
+  // fires exactly once per CLI run, before command dispatch. Stamp-absent
+  // runs are zero-cost no-ops; drift refreshes the registered tools. A
+  // rejection is degraded to a stderr notice so a broken refresh never
+  // breaks the invoked command.
+  const agentRegistrationCheck =
+    dependencies.agentRegistrationCheck ??
+    (() =>
+      checkAgentRegistration({
+        home: os.homedir(),
+        configRoot: resolveConfigRoot(),
+        version: VERSION,
+        writeStderr: (value) => invocation.writeStderr(value),
+      }));
+  try {
+    await agentRegistrationCheck();
+  } catch (error) {
+    invocation.writeStderr(
+      `scoutline: agent registration check failed — ${
+        error instanceof Error ? error.message : String(error)
+      } (command continues)\n`,
+    );
+  }
   // Hoisted above the save guards and the credential-free short-circuits:
   // a command-help invocation (`<cmd> --help`) is documentation, not a
   // run, so the pre-dispatch save guards must not refuse it even when the
@@ -4844,6 +4881,13 @@ export async function main(
   // (T3a ticket): the command's code lands now, but its public docs
   // (MAIN_HELP Commands list, README setup, skills/) wait for T3b.
   if (command === "init") {
+    if (commandArgs.includes("--unregister")) {
+      // Surface parse only (D6): consuming the flag here guarantees
+      // `--unregister` never falls into the interactive wizard. Exit
+      // code, output content, and reversal semantics are T5's contract.
+      invocation.writeStderr("scoutline: init --unregister is not implemented yet\n");
+      return 0;
+    }
     const initDeps: InitDependencies = {
       descriptors: providerDescriptors,
       prompts: dependencies.initPrompts ?? createInquirerPrompts(),

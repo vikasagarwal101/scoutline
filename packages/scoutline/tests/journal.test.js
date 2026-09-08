@@ -1933,3 +1933,132 @@ describe("T3: history surfaces render read + research journal rows", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review round 3 (PR #111): request/timestamp single-clock snapshot +
+// Unicode recall tokens + mixed-fanout repeat-marker integrity.
+// ---------------------------------------------------------------------------
+
+const T0_R3 = Date.UTC(2026, 8, 8, 12, 0, 0);
+const fixedNowR3 = () => T0_R3;
+
+/** Full journal entry factory for the r3 pins (the T2a write shape). */
+function r3FullEntry(overrides = {}) {
+  return {
+    kind: "journal",
+    requestId: "20260908T120000Z-r3a1",
+    timestamp: T0_R3,
+    capability: "search",
+    provider: { mode: "single", effective: "zai", servedFrom: "live" },
+    query: "rust vs go",
+    contentHash: "a".repeat(64),
+    cacheKey: "r3-key",
+    skeleton: { results: [] },
+    ...overrides,
+  };
+}
+
+/** Seed entries through the real append seam, then parse the store. */
+async function r3Seed(artifactsDir, entries) {
+  for (const entry of entries) {
+    await appendJournalEntry(artifactsDir, entry);
+  }
+  return readJournalEntries(artifactsDir);
+}
+
+function r3RecallDeps(adapter, extra = {}) {
+  return hermeticMainDeps({
+    invocation: adapter,
+    env: { SCOUTLINE_ARTIFACTS_DIR: extra.artifactsDir },
+    now: fixedNowR3,
+    loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+  });
+}
+
+function r3Envelope(stdout) {
+  assert.ok(stdout.length >= 1, `expected stdout data, got ${JSON.stringify(stdout)}`);
+  return JSON.parse(stdout[0]);
+}
+
+describe("review r3: buildJournalEntry one-clock identity (cubic P3)", () => {
+  it("a clock tick between the requestId mint and the timestamp read never splits the entry (requestId instant === timestamp)", async () => {
+    const { buildJournalEntry } = await import("../dist/lib/journal.js");
+    let ticks = 0;
+    // First now() → 1000, second → 2000: a second-boundary wrap between
+    // the two reads is the exact defect the snapshot must kill.
+    const entry = buildJournalEntry({
+      capability: "search",
+      provider: { mode: "single", effective: "zai", servedFrom: "live" },
+      query: "q",
+      cacheKey: "k",
+      skeleton: { results: [] },
+      now: () => (ticks++ === 0 ? 1000 : 2000),
+    });
+    // newRequestId embeds utcCompactTimestamp (second floor) — with ONE
+    // snapshot both fields derive from the SAME instant.
+    const m = /^(\d{8}T\d{6}Z)-/.exec(entry.requestId);
+    assert.ok(m, `requestId shape: ${entry.requestId}`);
+    const instant = Date.parse(
+      `${m[1].slice(0, 4)}-${m[1].slice(4, 6)}-${m[1].slice(6, 8)}T${m[1].slice(9, 11)}:${m[1].slice(11, 13)}:${m[1].slice(13, 15)}Z`,
+    );
+    assert.strictEqual(instant, entry.timestamp, "requestId instant must equal entry timestamp");
+  });
+
+  it("buildJournalRepeatMarker snapshots one clock too (marker identity pin)", async () => {
+    const { buildJournalRepeatMarker } = await import("../dist/lib/journal.js");
+    let ticks = 0;
+    const marker = buildJournalRepeatMarker({
+      capability: "search",
+      provider: { mode: "single", effective: "zai", servedFrom: "cache" },
+      repeatOf: "r-1",
+      now: () => (ticks++ === 0 ? 1000 : 2000),
+    });
+    assert.strictEqual(marker.timestamp, 1000, "ONE now() read — no second read");
+  });
+});
+
+describe("review r3: recall tokenize is Unicode-aware (coderabbit major)", () => {
+  it("non-Latin queries recall their entries: CJK query tokens survive tokenize on BOTH sides", async () => {
+    const artifactsDir = makeTempDir("scoutline-recall-cjk-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      await r3Seed(artifactsDir, [
+        r3FullEntry({ requestId: "r-cjk-1", query: "日本語 検索" }),
+        r3FullEntry({ requestId: "r-latin-1", query: "rust vs go", cacheKey: "r3-key-2" }),
+      ]);
+      const status = await main(
+        ["history", "recall", "日本語"],
+        r3RecallDeps(adapter, { artifactsDir }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const envelope = r3Envelope(stdout);
+      assert.deepStrictEqual(
+        envelope.results.map((r) => r.requestId),
+        ["r-cjk-1"],
+        "CJK query must match the CJK entry (score > 0)",
+      );
+      assert.ok(envelope.results[0].score >= 1);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("accented Latin terms keep their atoms: café matches café, not fragments", async () => {
+    const artifactsDir = makeTempDir("scoutline-recall-accent-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      await r3Seed(artifactsDir, [
+        r3FullEntry({ requestId: "r-acc-1", query: "café opened" }),
+      ]);
+      const status = await main(
+        ["history", "recall", "café"],
+        r3RecallDeps(adapter, { artifactsDir }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const envelope = r3Envelope(stdout);
+      assert.deepStrictEqual(envelope.results.map((r) => r.requestId), ["r-acc-1"]);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});

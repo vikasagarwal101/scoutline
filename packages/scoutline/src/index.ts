@@ -1016,6 +1016,14 @@ export interface HandlerDependencies {
    * When absent, the dispatcher uses the production function.
    */
   readonly pruneCaches?: (selectors: PruneSelectors) => Promise<PruneCachesResult>;
+  /**
+   * Review r3 (P1): injectable artifacts-log read for the history
+   * handlers. Production wires the real `readLog`; tests inject a
+   * counting spy. handleHistoryExport memoizes ONE read per invocation
+   * through this seam — the save-entry index and the renderer consume
+   * the same result, so export never rescans the log per row.
+   */
+  readonly readArtifactsLog?: typeof readLog;
 }
 
 async function handleVision(
@@ -4311,7 +4319,14 @@ async function handleHistoryExport(
     }
     const str = String(rawSince);
     const parsed = /^\d+$/.test(str) ? Number(str) : Date.parse(str);
-    if (!Number.isFinite(parsed)) {
+    // Reject finite-but-out-of-Date-range values too: the renderer's
+    // new Date(since).toISOString() would throw a raw RangeError on
+    // them — the documented contract is VALIDATION_ERROR (review r3).
+    if (
+      !Number.isFinite(parsed) ||
+      parsed < -8_640_000_000_000_000 ||
+      parsed > 8_640_000_000_000_000
+    ) {
       throw new ValidationError(
         `Invalid --since value "${str}".`,
         "Pass an ISO-8601 date or epoch-ms, e.g. --since 2026-09-01.",
@@ -4334,22 +4349,33 @@ async function handleHistoryExport(
 
   const dir = resolveArtifactsDir(deps.env);
   const now = deps.now ?? Date.now;
+  const readArtifactsLog = deps.readArtifactsLog ?? readLog;
+  // Review r3 (P1): ONE memoized log read per export — the save-entry
+  // index below and the renderer consume the same ReadLogResult, so a
+  // saveRef'd export performs 1 read total, not 1 per row (the old
+  // per-call `readLog(dir)` inside masterExists made export O(N²) in
+  // log reads). Content stays read-only; stats on master paths are the
+  // only other I/O.
+  const memoized = await readArtifactsLog(dir);
+  const saveEntriesById = new Map<string, { readonly masterPath: string }>();
+  for (const entry of memoized.log.entries) {
+    const e = entry as unknown as Record<string, unknown>;
+    if (e.kind === "save" && typeof e.requestId === "string" && typeof e.masterPath === "string") {
+      saveEntriesById.set(e.requestId as string, { masterPath: e.masterPath as string });
+    }
+  }
   return invokeCommand(
     deps.invocation,
     (context) =>
       historyExportCommand({
-        readLog: () => readLog(dir),
+        readLog: () => Promise.resolve(memoized),
         // Existence check ONLY: stat the saveRef'd master path — never
         // open it, never fetch anything (the read-only ceiling).
         masterExists: async (saveRequestId) => {
-          const save = (await readLog(dir)).log.entries.find(
-            (entry) =>
-              (entry as unknown as Record<string, unknown>).kind === "save" &&
-              (entry as unknown as { requestId?: string }).requestId === saveRequestId,
-          );
+          const save = saveEntriesById.get(saveRequestId);
           if (save === undefined) return false;
           try {
-            await fs.stat(path.join(dir, (save as { masterPath: string }).masterPath));
+            await fs.stat(path.join(dir, save.masterPath));
             return true;
           } catch {
             return false;
@@ -5362,6 +5388,14 @@ export interface MainDependencies {
    * falls back to the production function so the seam stays opt-in.
    */
   readonly pruneCaches?: (selectors: PruneSelectors) => Promise<PruneCachesResult>;
+  /**
+   * Review r3 (P1): injectable artifacts-log read for the history
+   * handlers. Production wires the real `readLog`; tests inject a
+   * counting spy. handleHistoryExport memoizes ONE read per invocation
+   * through this seam — the save-entry index and the renderer consume
+   * the same result, so export never rescans the log per row.
+   */
+  readonly readArtifactsLog?: typeof readLog;
 }
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -5703,6 +5737,10 @@ export async function main(
     // function from `src/lib/cache.js`; tests inject a double so the
     // dispatcher contract can be exercised without touching disk.
     pruneCaches: dependencies.pruneCaches,
+    // Review r3 (P1): history handlers read the artifacts log through
+    // this seam. Production wires the real readLog; tests inject a
+    // counting spy (export's read-count pin).
+    readArtifactsLog: dependencies.readArtifactsLog,
     // PB-T5: verification records are NOT threaded here. They are
     // derived from `config` AFTER it is loaded (the credentialed
     // path); `buildHandlerDeps` runs once BEFORE config load (the

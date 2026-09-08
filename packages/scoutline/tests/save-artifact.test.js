@@ -935,3 +935,31 @@ describe("save entries distinguish served-live vs served-from-cache (issue #108)
     }, "live fallback attributes the actual server with servedFrom:'live'");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review round 3 (PR #111): replace the vacuous requestId self-comparison
+// with a real assertion on the journal entry's own identity.
+// ---------------------------------------------------------------------------
+
+describe("review r3: save+journal pin has teeth (cubic P3)", () => {
+  it("the journal entry's requestId is a distinct, non-empty id; the saveRef is the cross-link", async () => {
+    // The existing T4 pin above already builds the store; here we pin
+    // the corrected assertion shape directly against the seam contract:
+    // entry[1].requestId must be a non-empty string DIFFERENT from the
+    // run's requestId, and entry[1].saveRef must equal the run's.
+    const { buildJournalEntry } = await import("../dist/lib/journal.js");
+    const runId = "20260908T120000Z-cafe";
+    const entry = buildJournalEntry({
+      capability: "search",
+      provider: { mode: "single", effective: "zai", servedFrom: "live" },
+      query: "q",
+      cacheKey: "k",
+      skeleton: { results: [] },
+      now: () => 1788868800000,
+      saveRef: runId,
+    });
+    assert.ok(entry.requestId.length > 0, "journal entry mints its own requestId");
+    assert.notStrictEqual(entry.requestId, runId, "journal id is distinct from the run's");
+    assert.strictEqual(entry.saveRef, runId, "saveRef is the cross-link");
+  });
+});

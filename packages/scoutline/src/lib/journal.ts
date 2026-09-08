@@ -390,10 +390,15 @@ export function buildJournalEntry(input: JournalInput): JournalLogEntry {
   const redactedSkeleton = secrets
     ? (redactSecrets(input.skeleton, secrets) as JournalSkeleton)
     : input.skeleton;
+  // Review r3: ONE now() snapshot — requestId, timestamp, and every
+  // derived field mint from the same instant (the buildNoteEntry rule);
+  // a clock tick between two now() calls could otherwise embed an id
+  // whose UTC stamp disagrees with the entry's own timestamp.
+  const at = input.now();
   return {
     kind: "journal",
-    requestId: newRequestId(input.now()),
-    timestamp: input.now(),
+    requestId: newRequestId(at),
+    timestamp: at,
     capability: input.capability,
     provider: input.provider,
     query: redactedQuery,
@@ -475,13 +480,15 @@ export function buildNoteEntry(input: NoteInput): JournalLogEntry {
 
 /**
  * Tokenize text for recall scoring: lowercase, split on non-word runs
- * (underscore stays a word char so snake_case identifiers keep their
- * atoms), drop empties. Deterministic — no stopwords, no stemming.
+ * (Unicode-aware: `\p{L}`/`\p{N}` keep accented Latin, Cyrillic, CJK
+ * atoms intact so recall works over non-ASCII research; underscore
+ * stays a word char so snake_case identifiers keep theirs), drop
+ * empties. Deterministic — no stopwords, no stemming.
  */
 function tokenize(text: string): string[] {
   return text
     .toLowerCase()
-    .split(/[^a-z0-9_]+/)
+    .split(/[^\p{L}\p{N}_]+/u)
     .filter((token) => token.length > 0);
 }
 

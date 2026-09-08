@@ -139,6 +139,12 @@ export function buildHistoryListReport(log: ArtifactsLog, options: HistoryListOp
       ? utcDayFloor(options.now()) - (options.sinceDays - 1) * DAY_MS
       : undefined;
   const kept = log.entries.filter((entry) => {
+    // T2b review F1 (DESIGN D5 ruled end-state, pulled forward): repeat
+    // markers are skipped by default — they have no requestId of their
+    // own, so they are not inventory rows (list --repeats opt-in is T6b).
+    if (entry.kind === "journal" && (entry as unknown as { repeatOf?: string }).repeatOf !== undefined) {
+      return false;
+    }
     if (options.command !== undefined && entry.command !== options.command) return false;
     if (cutoff !== undefined && entry.timestamp < cutoff) return false;
     return true;

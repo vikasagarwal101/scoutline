@@ -305,15 +305,6 @@ export function buildQuotaWindow(inputs: QuotaWindowInputs): QuotaWindow {
   } else if (remainingOnly) {
     window.remaining = inputs.remaining;
   } else if (
-    typeof inputs.remaining === "number" &&
-    Number.isFinite(inputs.remaining) &&
-    inputs.remaining >= 0
-  ) {
-    // Invalid counts but a Provider-published EXACT remaining count
-    // (e.g. Z.AI cumulative currentValue > cap): publish `remaining`
-    // verbatim next to any explicit percentage; never derive counts.
-    window.remaining = inputs.remaining;
-  } else if (
     remainingPercent !== undefined &&
     inputs.limit === undefined &&
     isFiniteNonnegative(inputs.used)
@@ -326,6 +317,17 @@ export function buildQuotaWindow(inputs: QuotaWindowInputs): QuotaWindow {
     // accepting path — such inputs already succeeded (minus the used
     // count) before #99.
     window.used = inputs.used;
+  } else if (
+    typeof inputs.remaining === "number" &&
+    Number.isFinite(inputs.remaining) &&
+    inputs.remaining >= 0
+  ) {
+    // Invalid counts but a Provider-published EXACT remaining count
+    // (e.g. Z.AI cumulative currentValue > cap): publish `remaining`
+    // verbatim next to any explicit percentage; never derive counts.
+    // Ordered after the #99 used-only path so every pre-existing
+    // accepting input keeps its exact pre-#109 shape.
+    window.remaining = inputs.remaining;
   }
 
   if (isFinitePositive(inputs.durationSeconds)) {

@@ -220,6 +220,17 @@ describe("quota window builder — remainingPercent rules", () => {
     assert.ok(!("limit" in w), "invalid counts stay omitted");
   });
 
+  it("keeps the #99 used-only shape for a used+percent+remaining input (ordering pin)", () => {
+    // Strict additivity: the remaining-verbatim branch sits AFTER the
+    // #99 used-only path, so this hypothetical input keeps its exact
+    // pre-fix shape — the new branch must not shadow it.
+    const w = buildQuotaWindow({ used: 40, explicitRemainingPercent: 50, remaining: 88 });
+    assert.strictEqual(w.remainingPercent, 50);
+    assert.strictEqual(w.used, 40);
+    assert.ok(!("remaining" in w), "#99 path omits remaining, never fabricates");
+    assert.ok(!("limit" in w), "no limit exists to report");
+  });
+
   it("still throws when invalid counts come with no percent and no remaining", () => {
     assert.throws(
       () => buildQuotaWindow({ used: 4912, limit: 1000 }),

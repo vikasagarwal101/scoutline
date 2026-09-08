@@ -252,7 +252,7 @@ scoutline history list --since 7 --command search
 scoutline history show 20260829T142233Z-7f3a
 scoutline history recall "rust async runtimes"            # offline re-find
 scoutline history recall "rust" --capability search --as-of 2026-08-01
-scoutline history note "decision: tavily for finance queries"
+scoutline history note --capability search "decision: tavily for finance queries"
 scoutline history export                                    # cited markdown dossier
 scoutline history clear                                     # journal entries only
 scoutline search "x" --no-journal                           # skip this one call

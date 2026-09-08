@@ -58,13 +58,18 @@ const argOf = (name, fallback) => {
 const scales = argOf("--entries", "10000,50000,100000")
   .split(",")
   .map((n) => {
-    const v = parseInt(n, 10);
+    const v = Number(n);
     if (!Number.isInteger(v) || v <= 0) throw new Error(`bad --entries value: ${n}`);
     return v;
   });
-const runs = parseInt(argOf("--runs", "5"), 10);
+const runs = Number(argOf("--runs", "5"));
+if (!Number.isInteger(runs) || runs <= 0) throw new Error(`bad --runs value: ${argOf("--runs", "5")}`);
 
-const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+const median = (xs) => {
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+};
 const avg = (xs) => xs.reduce((s, v) => s + v, 0) / xs.length;
 const max = (xs) => xs.reduce((a, b) => Math.max(a, b), 0);
 const fmt = (xs) => `med ${median(xs).toFixed(1)}ms  avg ${avg(xs).toFixed(1)}ms  max ${max(xs).toFixed(1)}ms`;
@@ -92,21 +97,32 @@ function fullEntry(i) {
 }
 
 // T2b repeat marker shape (~150B): identity + repeatOf, nothing else.
-function markerEntry(i) {
+function markerEntry(i, repeatOf = "req-seed") {
   return {
     kind: "journal",
     timestamp: 1700000000000 + i * 60000,
     capability: "search",
     provider: { mode: "single", effective: "tavily", servedFrom: "cache" },
-    repeatOf: "req-seed",
+    repeatOf,
   };
 }
 
 /** One-shot direct write of an N-entry mixed log (85% full / 15% markers), 0600. */
 async function writeMixedLog(dir, count) {
   const entries = [];
+  let lastFullId = null;
   for (let i = 0; i < count; i += 1) {
-    entries.push(i % 7 === 0 ? markerEntry(i) : fullEntry(i));
+    // ponytail: markers link the nearest prior full entry — synthetic
+    // cacheKeys are unique per index, so same-cacheKey repeats can't be
+    // modeled here; upgrade to shared cacheKeys/queries if lastAsked
+    // fidelity ever matters.
+    if (i % 7 === 0) {
+      entries.push(markerEntry(i, lastFullId ?? undefined));
+    } else {
+      const e = fullEntry(i);
+      lastFullId = e.requestId;
+      entries.push(e);
+    }
   }
   const file = path.join(dir, "index.json");
   const tmp = `${file}.tmp.probe`;
@@ -176,7 +192,7 @@ for (const scale of scales) {
     const hitPath = await bench("hit path (map read + marker append)", async () => {
       const map = await buildJournalCacheKeyMap(dir);
       const repeatOf = map.get(`cache-${scale % 7 === 0 ? scale - 1 : scale}`) ?? "req-seed";
-      await appendJournalEntry(dir, markerEntry(scale));
+      await appendJournalEntry(dir, markerEntry(scale, repeatOf));
       return repeatOf;
     });
 

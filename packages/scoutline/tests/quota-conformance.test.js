@@ -401,6 +401,26 @@ describe("Z.AI quota normalization", () => {
     assert.strictEqual(w.remainingPercent, 95);
     assert.ok(!("used" in w), "negative used not published as window counts");
     assert.ok(!("limit" in w), "cap not published against invalid used");
+
+    const zeroCap = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 0,
+          currentValue: 0,
+          remaining: 100,
+          percentage: 0,
+          nextResetTime: 1791411480983,
+        },
+      ],
+    });
+    const w0 = zeroCap.categories[0].current;
+    assert.strictEqual(w0.remaining, 100, "zero cap falls back to API remaining");
+    assert.ok(!("used" in w0), "zero-cap counts not published");
+    assert.ok(!("limit" in w0), "zero cap not published");
   });
 
   it("keeps counts-derived output for a sane TIME_LIMIT payload (#109 both-ways pin)", () => {

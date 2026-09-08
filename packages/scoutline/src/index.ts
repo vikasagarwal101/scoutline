@@ -79,7 +79,7 @@ import {
   DEFAULT_USAGE_WINDOW_DAYS,
   MAX_USAGE_WINDOW_DAYS,
 } from "./commands/usage.js";
-import { historyCommand, HISTORY_HELP } from "./commands/history.js";
+import { historyCommand, HISTORY_HELP, HISTORY_NOTE_HELP } from "./commands/history.js";
 import { handleFetch, FETCH_HELP } from "./commands/fetch.js";
 import { handleArchive, parseArchiveArgs, ARCHIVE_HELP } from "./commands/archive.js";
 import { handleWatch } from "./commands/watch.js";
@@ -119,6 +119,7 @@ import {
 } from "./lib/artifacts.js";
 import {
   buildJournalEntry,
+  buildNoteEntry,
   buildSearchSkeleton,
   buildReadSkeleton,
   buildResearchSkeleton,
@@ -3783,10 +3784,18 @@ export async function handleHistory(
     deps.invocation.writeStdout(HISTORY_HELP);
     return 0;
   }
+  // T4 (`history note`, DESIGN D5): the explicit, hand-written journal
+  // entry — seed 07's `journal record` re-homed onto `history`. Branches
+  // BEFORE the unknown-subcommand guard so `note` owns its own arg
+  // surface (--capability/--url/--title/--tags), which the list/show/
+  // stats surface never parses.
+  if (subcommand === "note") {
+    return handleHistoryNote(args, outputMode, deps);
+  }
   if (subcommand !== "list" && subcommand !== "show" && subcommand !== "stats") {
     throw new ValidationError(
       `Unknown history subcommand "${subcommand}".`,
-      "Valid subcommands: list, show, stats.",
+      "Valid subcommands: list, show, stats, note.",
     );
   }
 
@@ -3881,6 +3890,149 @@ export async function handleHistory(
         ...(commandFilter !== undefined ? { command: commandFilter } : {}),
         ...(requestId !== undefined ? { requestId } : {}),
       }),
+    outputMode,
+    deps.now,
+    deps.secrets,
+  );
+}
+
+/**
+ * T4 (`history note`, PRD AC6 / DESIGN D5): the explicit write. Builds
+ * ONE full journal entry from hand-supplied fields through the SAME
+ * write-seam discipline the always-on path uses — redaction over query
+ * + skeleton rows, contentHash over the normalized skeleton, minted
+ * requestId — then appends under the write lock (append-only, 0600,
+ * log-only: no master file). The provider is a sentinel (`"note"`): a
+ * note records work no Provider served, and the routing is not
+ * hand-choosable. Config `"journal": false` does NOT suppress an
+ * explicit note — the kill-switch governs the ALWAYS-ON posture only;
+ * `note` is opt-in by construction.
+ */
+async function handleHistoryNote(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+): Promise<number> {
+  const { flags, positional } = parseArgs(args);
+
+  if (flags.help || flags.h) {
+    deps.invocation.writeStdout(HISTORY_NOTE_HELP);
+    return 0;
+  }
+
+  // --capability <search|read|research> — required, enum-gated (the
+  // journal surface's own capability union; note cannot invent one).
+  const rawCapability = flags.capability;
+  if (rawCapability === undefined || rawCapability === true) {
+    throw new ValidationError(
+      "history note requires --capability.",
+      "Pass one of: search, read, research.",
+    );
+  }
+  if (
+    rawCapability !== "search" &&
+    rawCapability !== "read" &&
+    rawCapability !== "research"
+  ) {
+    throw new ValidationError(
+      `Invalid --capability value "${rawCapability}".`,
+      "Pass one of: search, read, research.",
+    );
+  }
+
+  // Positional text: the hand-written query (search) or URL
+  // (read/research) — exactly one, non-empty.
+  const text = positional[1];
+  if (text === undefined || text.length === 0) {
+    throw new ValidationError(
+      "history note requires the note text.",
+      "Pass the observation or query as the positional argument.",
+    );
+  }
+
+  // --url / --title: repeatable pairs (search: the result list; read:
+  // exactly one row; research: the citations). parseArgs keeps the LAST
+  // value of a repeated flag, so collect pairs from the raw stream —
+  // a note's skeleton is ordered rows, not a last-wins map.
+  const rows: { url: string; title: string }[] = [];
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === "--url") {
+      const url = args[i + 1];
+      if (url === undefined || url.length === 0 || url.startsWith("-")) {
+        throw new ValidationError("--url requires a value.", "Pass the row url after --url.");
+      }
+      // Title: the NEXT --title between this --url and the next --url
+      // (the pairing grammar); absent → the url is its own title (the
+      // buildReadSkeleton self-containment idiom).
+      let title = url;
+      for (let j = i + 2; j < args.length && args[j] !== "--url"; j++) {
+        if (args[j] === "--title") {
+          const value = args[j + 1];
+          if (value === undefined || value.length === 0 || value.startsWith("-")) {
+            throw new ValidationError("--title requires a value.", "Pass the row title after --title.");
+          }
+          title = value;
+          break;
+        }
+      }
+      rows.push({ url, title });
+    }
+  }
+  // Read skeletons are EXACTLY one row (the T3 validator tooth): a
+  // read note with 2+ --url rows would write an entry its own store
+  // rejects — validate here for the command's own error wording.
+  if (rawCapability === "read" && rows.length > 1) {
+    throw new ValidationError(
+      "history note --capability read takes at most one --url row.",
+      "A read skeleton is the single {url,title} fetch identity.",
+    );
+  }
+
+  // --tags a,b,c — comma-separated, trimmed, empties dropped.
+  let tags: string[] | undefined;
+  const rawTags = flags.tags;
+  if (rawTags !== undefined) {
+    if (rawTags === true) {
+      throw new ValidationError("--tags requires a value.", "Pass a comma-separated list, e.g. --tags followup,reading.");
+    }
+    tags = String(rawTags)
+      .split(",")
+      .map((tag) => tag.trim())
+      .filter((tag) => tag.length > 0);
+  }
+
+  const dir = resolveArtifactsDir(deps.env);
+  const now = deps.now ?? Date.now;
+  const entry = buildNoteEntry({
+    capability: rawCapability,
+    query: text,
+    rows,
+    now,
+    secrets: deps.secrets,
+    ...(tags !== undefined && tags.length > 0 ? { tags } : {}),
+  });
+
+  return invokeCommand(
+    deps.invocation,
+    () =>
+      appendJournalEntry(dir, entry).then((notice) => ({
+        kind: "data" as const,
+        data: {
+          schemaVersion: 1,
+          requestId: entry.requestId,
+          timestamp: entry.timestamp,
+          capability: entry.capability,
+          query: entry.query,
+          tags: entry.tags ?? [],
+          rowCount: entry.skeleton.results.length,
+        },
+        presentations: {
+          compact: `journal note recorded: ${entry.requestId} (${entry.capability})`,
+          markdown: `journal note recorded: ${entry.requestId} (${entry.capability})`,
+          refs: entry.requestId,
+          tty: `journal note recorded: ${entry.requestId} (${entry.capability})`,
+        },
+      })),
     outputMode,
     deps.now,
     deps.secrets,

@@ -222,7 +222,7 @@ question lines, max 256 KiB) to steer the run. Sources: `--context
   strings ever transmit. Outputs record counts, the source path, and a
   SHA-256 — never file content.
 
-### Saved artifacts (`--save` + `history`)
+### Saved artifacts (`--save` + `history`) + research journal
 
 Provider-backed commands accept `--save [<path>]` to keep a durable clean
 report — content plus a request id, no provider/argv metadata inside — with
@@ -235,10 +235,27 @@ redacted through the same seam as stdout and never touched by cache
 operations. `history list|show|stats` is the credential-free, fail-open
 inventory over that log.
 
+Every `search` / `read` / `research` call — batch ops included — also
+records a thin journal entry (skeleton: query, provider, url+title
+identity, content hash) into the same store, permanently and locally
+(0600, never uploaded, secrets redacted). Warm repeats (cache hits) record
+a tiny repeat marker instead. **Prefer `history recall` over re-running a
+similar search**: it scores past queries and skeletons offline — no
+provider call, no network — and `--as-of <date>` answers "what did the
+journal know then". Bodies are never recorded; use `--save` when you need
+the full result kept. Escape hatches: `--no-journal` on a single call,
+`journal: false` in config (`config set journal false`) to stop entirely.
+
 ```bash
 scoutline search "x" --save report.md --save-format markdown
 scoutline history list --since 7 --command search
 scoutline history show 20260829T142233Z-7f3a
+scoutline history recall "rust async runtimes"            # offline re-find
+scoutline history recall "rust" --capability search --as-of 2026-08-01
+scoutline history note "decision: tavily for finance queries"
+scoutline history export                                    # cited markdown dossier
+scoutline history clear                                     # journal entries only
+scoutline search "x" --no-journal                           # skip this one call
 ```
 
 ## Capability Matrix
@@ -312,7 +329,7 @@ input).
 | doctor | Provider-aware diagnostics (schema v2) | `--help` for `--no-tools` |
 | cache | Inspect or clear the local cache | `--help` for stats/clear |
 | usage | Local call-usage report (90-day `usage.json` ledger) | `--help` for `--days`/`--provider` |
-| history | Read-only inventory of `--save` artifacts (list/show/stats) | `--help` for `--since`/`--limit`/`--command` |
+| history | Saved `--save` artifacts + research journal: list/show/stats/recall/export/note; clear MUTATES | `--help` for `--kind`/`--repeats`/`--as-of`/`--all` |
 | code | TypeScript tool chaining (Z.AI) | |
 | init | Interactive onboarding wizard (writes ~/.scoutline/config.json) | `--help` for the four lifecycle states |
 
@@ -411,6 +428,10 @@ npx scoutline@0.20.0 --provider spider quota   # credit balance
 
 # All-Provider quota
 npx scoutline@0.20.0 quota --all-providers
+
+# Research journal — recall past work instead of re-searching (offline, no provider call)
+npx scoutline@0.20.0 history recall "rust async" --limit 5
+npx scoutline@0.20.0 history export --since 7
 
 # Local cache inspection, clearing, and pruning
 npx scoutline@0.20.0 cache stats                 # inventory both subdirectories

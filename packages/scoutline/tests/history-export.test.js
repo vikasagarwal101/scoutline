@@ -436,7 +436,7 @@ describe("T6c: I/O honesty (zero network, zero cache reads, masters never opened
       assert.strictEqual(status, 0, "missing master under saveRef is an annotation, not an error");
       const envelope = parseEnvelope(stdout);
       assert.ok(
-        /\(saved artifact \d+ no longer on disk\)|saved artifact: .*missing/.test(envelope.markdown),
+        /saved artifact: .*missing/.test(envelope.markdown),
         `pointer annotated as missing: ${JSON.stringify(envelope.markdown)}`,
       );
       assert.strictEqual(stderr.filter((l) => l.trim().length > 0).length, 0, "stderr clean on success");

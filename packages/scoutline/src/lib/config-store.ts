@@ -497,6 +497,19 @@ const KEY_FALLBACK_ENABLED: ConfigKeyDescriptor = {
   describe: "boolean — always-on provider fallback switch",
 };
 
+/**
+ * History-journal merge (T7, ADR-0008): the journaling kill-switch is
+ * a settable config key exactly like `fanout` — a documented global
+ * escape hatch must be scriptable, not wizard-only.
+ */
+const KEY_JOURNAL: ConfigKeyDescriptor = {
+  path: "journal",
+  gettable: true,
+  settable: true,
+  credential: false,
+  describe: "boolean — always-on research journaling switch (default true)",
+};
+
 /** The mandated fan-out cost warning (search-fanout DESIGN D7, verbatim). */
 export const FANOUT_COST_SENTENCE =
   "every search will bill ALL configured search providers — N arms = N billable calls";
@@ -617,6 +630,7 @@ export function resolveConfigKey(path: string): ConfigKeyDescriptor | null {
   const trimmed = path.trim();
   if (trimmed === "fallbackEnabled") return KEY_FALLBACK_ENABLED;
   if (trimmed === "fanout") return KEY_FANOUT;
+  if (trimmed === "journal") return KEY_JOURNAL;
   if (trimmed === "routing") return KEY_ROUTING_TABLE;
   if (trimmed.startsWith("routing.")) {
     // Capability-validated: `routing.serch` must not resolve — get/set/
@@ -803,7 +817,7 @@ export async function setConfigValue(
   return serializeConfigWrite(options, async () => {
     const current = await readConfig(options);
     let next: ScoutlineConfig;
-    if (key === KEY_FALLBACK_ENABLED || key === KEY_FANOUT) {
+    if (key === KEY_FALLBACK_ENABLED || key === KEY_FANOUT || key === KEY_JOURNAL) {
       const lowered = value.trim().toLowerCase();
       if (lowered !== "true" && lowered !== "false") {
         throw new ValidationError(
@@ -814,7 +828,9 @@ export async function setConfigValue(
       next =
         key === KEY_FALLBACK_ENABLED
           ? { ...current, fallbackEnabled: lowered === "true" }
-          : { ...current, fanout: lowered === "true" };
+          : key === KEY_FANOUT
+            ? { ...current, fanout: lowered === "true" }
+            : { ...current, journal: lowered === "true" };
     } else {
       const { capability, ids } = parseRoutingValue(path, value);
       const routing = { ...current.routing, [capability]: ids };
@@ -891,6 +907,13 @@ export async function unsetConfigValue(
       }
       const { fanout: _fo, ...rest } = current;
       void _fo;
+      next = rest;
+    } else if (trimmed === "journal") {
+      if (current.journal === undefined) {
+        throw new ValidationError('"journal" is not set.', "Nothing to unset.");
+      }
+      const { journal: _jo, ...rest } = current;
+      void _jo;
       next = rest;
     } else {
       throw new ValidationError(

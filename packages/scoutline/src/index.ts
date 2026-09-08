@@ -247,7 +247,8 @@ Commands:
   usage    Report local call-usage history (usage.json ledger,
            credential-free)
   history  Saved --save artifacts + research journal (list / show /
-           stats / note / recall; clear MUTATES, credential-free)
+           stats / note / recall / export; clear MUTATES,
+           credential-free)
   fetch    Direct, binary-safe HTTP client (evidentiary GET + API,
            credential-free)
   archive  Internet Archive Wayback Machine (CDX index + snapshot

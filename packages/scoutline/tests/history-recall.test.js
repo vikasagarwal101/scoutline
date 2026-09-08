@@ -670,3 +670,27 @@ describe("T5: envelope shape + validation (family conventions)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review round 3 (PR #111): recall forwards the readLog fail-open notice.
+// ---------------------------------------------------------------------------
+
+describe("review r3: recall forwards the corrupt-log notice (cubic P2)", () => {
+  it("corrupt index.json → the read notice reaches stderr BEFORE scoring (no silent empty)", async () => {
+    const artifactsDir = makeTempDir("scoutline-recall-notice-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      writeFileSync(join(artifactsDir, "index.json"), "{ not json");
+      const status = await main(
+        ["history", "recall", "rust"],
+        recallDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
+      );
+      assert.strictEqual(status, 0, "fail-open: exit 0");
+      assert.strictEqual(JSON.parse(stdout[0]).results.length, 0);
+      const notices = stderr.filter((l) => l.trim().length > 0);
+      assert.ok(notices.length >= 1, `corrupt-log diagnostic must reach stderr, got ${JSON.stringify(stderr)}`);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});

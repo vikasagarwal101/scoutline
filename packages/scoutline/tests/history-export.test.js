@@ -629,3 +629,72 @@ describe("T6c review nits: refs presentation honors --since; note entry single-n
     assert.strictEqual(idInstant, tsInstant, `requestId instant matches timestamp: ${entry.requestId}`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review round 3 (PR #111): out-of-range --since VALIDATION_ERROR,
+// one-pass master lookup (O(N) not O(N²)), honest --all clear wording.
+// ---------------------------------------------------------------------------
+
+describe("review r3: export --since Date-range validation (macroscope)", () => {
+  it("finite-but-out-of-Date-range --since → VALIDATION_ERROR (no RangeError crash)", async () => {
+    const artifactsDir = makeTempDir("scoutline-export-rangesince-");
+    try {
+      for (const raw of ["99999999999999999", "8640000000000001"]) {
+        const { adapter, stderr, stdout } = makeAdapter();
+        const status = await main(
+          ["history", "export", "--since", raw],
+          exportDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
+        );
+        assert.strictEqual(status, 1, `raw=${raw}`);
+        const envelope = JSON.parse(stderr.find((l) => l.trim().startsWith("{")) ?? "{}");
+        assert.strictEqual(envelope.error?.code ?? envelope.code, "VALIDATION_ERROR", `raw=${raw}`);
+        assert.strictEqual(stdout.length, 0, "no stdout on validation error");
+      }
+      // The in-range boundary values still parse (upper edge inclusive of epoch-ms range).
+      const { adapter, stdout, stderr } = makeAdapter();
+      const status = await main(
+        ["history", "export", "--since", "8640000000000000"],
+        exportDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      assert.ok(JSON.parse(stdout[0]).markdown.includes("since: +275760-09-13"), "ISO render of the epoch-ms ceiling");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("review r3: export masterExists reads the log ONCE (greptile/macroscope P1)", () => {
+  it("exporting N saveRef'd entries performs ONE log read total, not one per entry (read-count pin)", async () => {
+    const artifactsDir = makeTempDir("scoutline-export-onepass-");
+    try {
+      await seedStore(artifactsDir, [
+        saveEntry({ requestId: "20260908T110000Z-save1", timestamp: FIXTURES.eNew.timestamp }),
+        FIXTURES.eOld,
+        FIXTURES.eNew,
+      ]);
+      let readCalls = 0;
+      const { adapter, stdout, stderr } = makeAdapter();
+      const status = await main(
+        ["history", "export"],
+        exportDeps(adapter, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          now: fixedNow,
+          // Spy on the store read the dispatcher seam supplies.
+          readArtifactsLog: async () => {
+            readCalls += 1;
+            const { readLog } = await import("../dist/lib/artifacts.js");
+            return readLog(artifactsDir);
+          },
+        }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const envelope = JSON.parse(stdout[0]);
+      assert.strictEqual(envelope.total, 2);
+      assert.strictEqual(readCalls, 1, `export must read the log exactly once (got ${readCalls})`);
+      assert.ok(envelope.markdown.includes("20260908T110000Z-save1"), "saveRef still resolves");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});

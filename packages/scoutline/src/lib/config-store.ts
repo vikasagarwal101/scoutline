@@ -43,8 +43,9 @@ export interface ScoutlineConfig {
    * Always-on research journaling kill-switch (history-journal merge,
    * ADR-0008). Absent/undefined/true → journaling enabled (the
    * `fanout` idiom inverted: the feature is on by default); explicit
-   * false → no journal entries are written. Read leniently like
-   * `fanout` — a non-boolean field never fails config load.
+   * false → no journal entries are written. Loaded LENIENTLY: a
+   * non-boolean value is ignored (field dropped, default-on applies)
+   * and never fails config load.
    */
   readonly journal?: boolean;
   readonly providers: Partial<Record<ProviderId, ProviderConfig>>;
@@ -210,11 +211,20 @@ function parseConfig(contents: string): ParsedConfig {
   if (
     (parsed.fallbackEnabled !== undefined && typeof parsed.fallbackEnabled !== "boolean") ||
     (parsed.fanout !== undefined && typeof parsed.fanout !== "boolean") ||
-    (parsed.journal !== undefined && typeof parsed.journal !== "boolean") ||
     (parsed.hintShown !== undefined && typeof parsed.hintShown !== "boolean") ||
     (parsed.providers !== undefined && !isRecord(parsed.providers))
   ) {
     throw corruptConfig();
+  }
+  // Review r3: `journal` loads LENIENTLY (the documented "non-boolean
+  // never fails config load" contract): a malformed value is IGNORED —
+  // field dropped, journaling falls back to the enabled default — the
+  // same posture as the lenient `providers` entries. A whole-file
+  // corruption throw here would lock a user out of every command over
+  // a one-field typo.
+  let journal: boolean | undefined;
+  if (typeof parsed.journal === "boolean") {
+    journal = parsed.journal;
   }
 
   const providers: Partial<Record<ProviderId, ProviderConfig>> = {};
@@ -240,7 +250,7 @@ function parseConfig(contents: string): ParsedConfig {
         ? { fallbackEnabled: parsed.fallbackEnabled as boolean }
         : {}),
       ...(parsed.fanout !== undefined ? { fanout: parsed.fanout as boolean } : {}),
-      ...(parsed.journal !== undefined ? { journal: parsed.journal as boolean } : {}),
+      ...(journal !== undefined ? { journal } : {}),
       providers,
       ...(parsed.hintShown !== undefined ? { hintShown: parsed.hintShown as boolean } : {}),
       ...(routing !== undefined ? { routing } : {}),

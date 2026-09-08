@@ -518,11 +518,15 @@ export async function historyClearCommand(input: {
     kept: result.kept,
     mastersDeleted,
   };
-  const text =
-    `history clear (${report.scope}): removed ${report.removed} journal entr${report.removed === 1 ? "y" : "ies"}` +
-    (input.all
-      ? ` and ${mastersDeleted} save master file(s); 0 entries remain`
-      : `; ${report.kept} saved artifact(s) kept`);
+  // Review r3 wording fix: `removed` counts ALL kinds — labelling it
+  // "journal entries" under --all mislabeled saves as journal rows.
+  // --all states the total plus the per-kind split; bare clear keeps
+  // the journal-only phrasing (its removed count IS journal-only).
+  const journalRemoved = report.removedByKind.journal ?? 0;
+  const saveRemoved = report.removedByKind.save ?? 0;
+  const text = input.all
+    ? `history clear (all): removed ${report.removed} entr${report.removed === 1 ? "y" : "ies"} (${journalRemoved} journal, ${saveRemoved} save) and ${mastersDeleted} save master file(s); 0 entries remain`
+    : `history clear (journal): removed ${report.removed} journal entr${report.removed === 1 ? "y" : "ies"}; ${report.kept} saved artifact(s) kept`;
   return {
     kind: "data",
     data: report,
@@ -889,7 +893,11 @@ export async function historyRecallCommand(input: {
   readonly capability?: JournalableCapability;
   readonly limit?: number;
 }): Promise<CommandResult> {
-  const { log } = await input.readLog();
+  const { log, notice } = await input.readLog();
+  // Review r3: a corrupt/unreadable index.json carries a fail-open
+  // diagnostic — forward it BEFORE scoring, exactly as export does, so
+  // the user never gets bare empty-output silence on a corrupt store.
+  if (notice !== undefined) input.notice(notice);
   const results = buildJournalRecall(log.entries as readonly unknown[], input.text, {
     ...(input.asOf !== undefined ? { asOf: input.asOf } : {}),
     ...(input.capability !== undefined ? { capability: input.capability } : {}),

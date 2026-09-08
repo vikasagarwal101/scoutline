@@ -45,13 +45,13 @@ function makeTempDir(prefix) {
   return mkdtempSync(join(tmpdir(), prefix));
 }
 
-function makeAdapter() {
+function makeAdapter(environmentOutputMode = "data") {
   const stdout = [];
   const stderr = [];
   const adapter = {
     stdoutIsTTY: false,
     stdinIsTTY: false,
-    environmentOutputMode: "data",
+    environmentOutputMode,
     readStdin: async () => "",
     writeStdout: (v) => stdout.push(v),
     writeStderr: (v) => stderr.push(v),
@@ -473,5 +473,82 @@ describe("T6a: help identity — no longer read-only (main-driven)", () => {
     const line = lines[start] + " " + (lines[start + 1] ?? "");
     assert.ok(!/read-only/i.test(line), `MAIN_HELP history entry must drop the read-only wording: "${line}"`);
     assert.ok(/clear/.test(line), `MAIN_HELP history entry must mention clear: "${line}"`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review round 3 (PR #111): honest --all summary wording (coderabbit/cubic).
+// ---------------------------------------------------------------------------
+
+describe("review r3: history clear --all wording (coderabbit/cubic)", () => {
+  it("--all summary labels the removed total as entries and separates journal from save counts", async () => {
+    const artifactsDir = makeTempDir("scoutline-clear-wording-");
+    const { adapter, stdout, stderr } = makeAdapter("compact");
+    try {
+      seedMixedStore(artifactsDir); // 2 full journal + 1 marker + 2 saves
+      const status = await main(
+        ["history", "clear", "--all"],
+        clearDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const text = stdout.join("\n");
+      assert.ok(text.length > 0, "compact mode prints the summary text");
+      assert.match(text, /removed 5 entries \(3 journal, 2 save\)/, `text=${text}`);
+      assert.ok(text.includes("2 save master file(s)"), `text=${text}`);
+      assert.ok(!text.includes("5 journal"), "total must never be labelled journal");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("bare clear wording keeps the journal-only phrasing with an explicit count", async () => {
+    const artifactsDir = makeTempDir("scoutline-clear-wording-bare-");
+    const { adapter, stdout, stderr } = makeAdapter("compact");
+    try {
+      seedMixedStore(artifactsDir);
+      const status = await main(
+        ["history", "clear"],
+        clearDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const text = stdout.join("\n");
+      assert.ok(text.length > 0, "compact mode prints the summary text");
+      assert.match(text, /removed 3 journal entries/, `text=${text}`);
+      assert.ok(text.includes("2 saved artifact(s) kept"), `text=${text}`);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review round 3 (PR #111): --all sweep respects the tmp-file discipline
+// — an in-flight save's `.tmp.*` temp file must survive the wipe (the
+// save renames it into place AFTER the log append; deleting it mid-save
+// would corrupt the atomic-replace contract). User data files remain in
+// scope of the wipe — --all is documented as the FULL wipe (the orphan
+// pin above) — but process-internal temporaries are not store content.
+// ---------------------------------------------------------------------------
+
+describe("review r3: --all sweep spares atomic-replace temporaries (macroscope/cubic)", () => {
+  it("a `.tmp.` temp file present during --all survives the sweep; logged masters + orphans still go", async () => {
+    const artifactsDir = makeTempDir("scoutline-clear-tmp-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      seedMixedStore(artifactsDir);
+      const tmpName = "20260908T120000Z-tmp9.json.tmp.4242.deadbeef";
+      writeFileSync(join(artifactsDir, tmpName), "{}\n");
+      const status = await main(
+        ["history", "clear", "--all"],
+        clearDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const leftovers = readdirSync(artifactsDir);
+      assert.ok(leftovers.includes(tmpName), `temp file must survive: ${JSON.stringify(leftovers)}`);
+      assert.ok(!leftovers.includes("s-1.json"), "logged master still deleted");
+      assert.ok(!leftovers.includes("index.json.lock") || leftovers.filter((n) => n.endsWith(".lock")).length <= 1);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
   });
 });

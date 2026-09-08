@@ -374,9 +374,11 @@ function emptyLog(): ArtifactsLog {
  * no dot segments) so a hostile persisted entry cannot steer `history
  * show`'s `path.join(dir, masterPath)` read outside the artifacts dir
  * (review fixup: the unvalidated-entry hole). `journal` entries are
- * LOG-ONLY (no master); their body fields arrive with the T2a/T3
- * writers, so T1 validates the base shape only. Any other kind still
- * returns undefined — the fail-loud whole-log path is load-bearing.
+ * LOG-ONLY (no master) and validate their FULL body through
+ * `asJournalEntry` (capability enum, contentHash shape, provider
+ * routing, skeleton rows, tags, saveRef) — an entry is kept only when
+ * the whole body validates. Any other kind still returns undefined —
+ * the fail-loud whole-log path is load-bearing.
  */
 function asLogEntry(value: unknown): SaveLogEntry | undefined {
   if (typeof value !== "object" || value === null) return undefined;
@@ -625,8 +627,16 @@ export async function clearArtifactsLog(
           // orphan master (pre-clear corruption, manual file) would
           // otherwise survive the wipe. Bare clear never reaches here —
           // save masters stay byte-untouched under the journal valve.
+          // Review r3: `.tmp.` process temporaries are SPARED — an
+          // in-flight save writes its temp file BEFORE appending the
+          // log entry and renames after, so deleting one mid-save would
+          // corrupt the atomic-replace contract (the rename then lands
+          // a master the wipe cannot see). Temp files orphaned by a
+          // crash are harmless leftovers, not store content.
           for (const name of await fs.readdir(dir)) {
-            if (name === ARTIFACTS_LOG_FILENAME || name.endsWith(".lock")) continue;
+            if (name === ARTIFACTS_LOG_FILENAME || name.endsWith(".lock") || name.includes(".tmp.")) {
+              continue;
+            }
             await fs.unlink(path.join(dir, name)).catch(() => {});
           }
         }

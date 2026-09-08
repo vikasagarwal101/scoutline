@@ -394,6 +394,8 @@ Usage:
   scoutline history list [--since N] [--limit N] [--command <name>]
   scoutline history show <requestId>
   scoutline history stats
+  scoutline history note --capability <search|read|research> <text>
+                          [--url <url> [--title <title>]]... [--tags a,b]
 
 Reads the artifact store (default ~/.scoutline/artifacts/, override with
 SCOUTLINE_ARTIFACTS_DIR) without touching Providers, credentials, or the
@@ -410,6 +412,10 @@ Options:
           content by requestId.
   stats   Counts by command, artifact format, and entry kind, plus the
           total master bytes and oldest/newest span.
+  note    Write an explicit journal entry: hand-supplied work record or
+          observation (see \`scoutline history note --help\`). Not
+          suppressed by config "journal": false — that switch governs
+          the always-on recording, and note is opt-in by construction.
 
 Exit codes:
   0  Success (including the empty fail-open cases)
@@ -421,4 +427,51 @@ Examples:
   scoutline history list --limit 5
   scoutline history show 20260829T142233Z-7f3a
   scoutline history stats
+  scoutline history note --capability search "compared rust vs go" \\
+    --url https://go.dev/doc --title "Go Documentation" --tags lang-comparison
+`;
+
+export const HISTORY_NOTE_HELP = `History note - Write an explicit journal entry
+
+Usage:
+  scoutline history note --capability <search|read|research> <text>
+                          [--url <url> [--title <title>]]... [--tags a,b,c]
+
+Records hand-written work or observations into the research journal —
+the re-homed \`journal record\`: the same kind:"journal" entry the
+always-on recording writes, but supplied by you rather than a Provider
+run. Notes are local-only, redacted at the write seam, 0600, log-only
+(no master file), and never re-fetched. The entry's provider field is
+the sentinel "note": no Provider served it, and the routing is not
+hand-choosable. Notes ignore the always-on escape hatches — config
+"journal": false does NOT suppress an explicit note (that switch
+governs automatic recording; note is opt-in by construction).
+
+Options:
+  --capability <search|read|research>
+          The capability the note records (required). Drives the
+          skeleton shape: search = url+title list; read = exactly one
+          {url,title} row; research = citations list.
+  <text>  The note itself: the query (search) or URL (read/research)
+          plus any observation text (required, positional).
+  --url <url>
+          One skeleton row. Repeat for multi-row skeletons. Without
+          --url the skeleton is an empty list (a bare observation).
+  --title <title>
+          Title for the preceding --url row; defaults to the url
+          itself. Belongs to the nearest preceding --url.
+  --tags <a,b,c>
+          Comma-separated tags stored on the entry.
+
+Exit codes:
+  0  Note recorded
+  1  Missing/invalid --capability, missing text, a valueless --url or
+     --title, more than one --url on a read note (VALIDATION_ERROR)
+
+Examples:
+  scoutline history note --capability search "compared rust vs go" \\
+    --url https://go.dev/doc --title "Go Documentation" --tags lang-comparison
+  scoutline history note --capability read "read the announcement" \\
+    --url https://example.com/changelog
+  scoutline history note --capability research "open question on quotas"
 `;

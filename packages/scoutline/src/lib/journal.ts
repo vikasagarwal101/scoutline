@@ -404,3 +404,61 @@ export function buildJournalEntry(input: JournalInput): JournalLogEntry {
     ...(input.saveRef !== undefined ? { saveRef: input.saveRef } : {}),
   };
 }
+
+/**
+ * T4 (`history note`, DESIGN D5): the sentinel provider a hand-written
+ * note carries. A note records work NO provider served, so the routing
+ * must not read as a served run — `effective:"note"` is deliberately
+ * outside the Provider registry ids, `servedFrom:"live"` satisfies the
+ * validator union, and the shape is NOT hand-choosable from the CLI:
+ * the command exposes no `--provider`, and a smuggled real id would
+ * assert a provider call that never happened (mutation-pinned).
+ */
+export const NOTE_PROVIDER_ROUTING: ProviderRouting = Object.freeze({
+  mode: "single",
+  effective: "note",
+  servedFrom: "live",
+});
+
+export interface NoteInput {
+  readonly capability: JournalableCapability;
+  /** Hand-written query text (search) or URL (read/research). */
+  readonly query: string;
+  /** Hand-supplied skeleton rows (url+title pairs, in given order). */
+  readonly rows: readonly SkeletonItem[];
+  readonly now: () => number;
+  readonly secrets?: string[];
+  readonly tags?: readonly string[];
+}
+
+/**
+ * T4: build one explicit journal entry from hand-supplied note fields
+ * through the SAME write-seam discipline as {@link buildJournalEntry}:
+ * redaction over query + skeleton rows, contentHash over the normalized
+ * skeleton, requestId minted from the injected clock. The cacheKey is
+ * the note's own namespace (a note references no response-cache
+ * partition — `note:` prefix keeps it out of any cache-key collision
+ * with real serving keys).
+ */
+export function buildNoteEntry(input: NoteInput): JournalLogEntry {
+  const secrets = input.secrets;
+  const redactedQuery = secrets
+    ? (redactSecrets(input.query, secrets) as string)
+    : input.query;
+  const redactedRows = secrets
+    ? (redactSecrets(input.rows, secrets) as SkeletonItem[])
+    : input.rows;
+  const skeleton: JournalSkeleton = { results: redactedRows };
+  return {
+    kind: "journal",
+    requestId: newRequestId(input.now()),
+    timestamp: input.now(),
+    capability: input.capability,
+    provider: NOTE_PROVIDER_ROUTING,
+    query: redactedQuery,
+    contentHash: skeletonContentHash(skeleton),
+    cacheKey: `note:${newRequestId(input.now())}`,
+    skeleton,
+    ...(input.tags !== undefined && input.tags.length > 0 ? { tags: input.tags } : {}),
+  };
+}

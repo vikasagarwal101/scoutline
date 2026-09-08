@@ -535,10 +535,15 @@ export function buildJournalRecall(
     if (typeof raw !== "object" || raw === null) continue;
     const entry = raw as Record<string, unknown>;
     if (entry.kind !== "journal") continue; // saves never text-searched
-    if (entry.repeatOf !== undefined) {
+    // asJournalEntry dispatches on repeatOf itself: a marker shape
+    // returns a JournalRepeatMarker, everything else a full entry (or
+    // undefined when the shape fails validation — skipped, never scored).
+    const journal = asJournalEntry(raw);
+    if (journal === undefined) continue;
+    if ("repeatOf" in journal) {
       // Repeat marker: resolve, never score separately.
-      const target = byId.get(entry.repeatOf as string);
-      const markerTime = typeof entry.timestamp === "number" ? entry.timestamp : 0;
+      const target = byId.get(journal.repeatOf);
+      const markerTime = journal.timestamp;
       if (
         target !== undefined &&
         markerTime > target.lastAsked &&
@@ -548,8 +553,6 @@ export function buildJournalRecall(
       }
       continue;
     }
-    const journal = asJournalEntry(raw) as JournalLogEntry | undefined;
-    if (journal === undefined || "repeatOf" in journal) continue;
     const full: JournalLogEntry = journal;
     if (options.capability !== undefined && full.capability !== options.capability) continue;
     if (options.asOf !== undefined && full.timestamp > options.asOf) continue;

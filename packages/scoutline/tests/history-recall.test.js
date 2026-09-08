@@ -121,16 +121,10 @@ function saveEntry(overrides = {}) {
 }
 
 /** Seed a store dir with entries via the real append seam. */
-async function seedStore(dir, entries, stepMs = 1000) {
-  let i = 0;
+async function seedStore(dir, entries) {
   for (const entry of entries) {
-    await appendJournalEntry(dir, entry, {
-      // stagger timestamps is caller's job; here only lock options
-      setTimeout,
-    });
-    i++;
+    await appendJournalEntry(dir, entry);
   }
-  return i;
 }
 
 /** Parse the data-mode stdout envelope of one recall run. */
@@ -450,9 +444,20 @@ describe("T5: I/O honesty (zero network, zero cache reads, masters never opened,
   before(() => armFetchSpy());
   after(() => disarmFetchSpy());
 
-  it("recall makes ZERO network calls and never opens master files (spy pins)", async () => {
+  it("recall makes ZERO network calls, ZERO cache reads, and never opens master files (three spy classes)", async () => {
     const artifactsDir = makeTempDir("scoutline-recall-io-");
     const { adapter, stdout, stderr } = makeAdapter();
+    // Cache-read tripwire: counting caches whose .get THROWS — `history`
+    // dispatches before cache wiring today, so this pins that even a
+    // future wiring change fails loud instead of silently re-serving.
+    const throwingCache = () => ({
+      async get() {
+        throw new Error("RECALL READ THE RESPONSE CACHE");
+      },
+      async set() {
+        throw new Error("RECALL WROTE THE RESPONSE CACHE");
+      },
+    });
     try {
       await seedStore(artifactsDir, [
         fullEntry({
@@ -463,12 +468,28 @@ describe("T5: I/O honesty (zero network, zero cache reads, masters never opened,
         }),
         saveEntry({ requestId: "s-1", timestamp: T0 - 1 * H }),
       ]);
-      // Master file for the save entry exists — recall must not open it.
-      writeFileSync(join(artifactsDir, "s-1.json"), JSON.stringify({ body: "x" }), "utf8");
+      // Master-open tripwire: the save's master exists but is chmod
+      // 0o000 — any open during recall surfaces as EACCES and fails
+      // the run (ESM module namespaces are frozen, so fs.readFile
+      // cannot be monkeypatched; chmod is the environment-honest
+      // equivalent of a master-open spy).
+      const masterPath = join(artifactsDir, "s-1.json");
+      writeFileSync(masterPath, JSON.stringify({ body: "x" }), "utf8");
+      const { chmodSync } = await import("node:fs");
+      chmodSync(masterPath, 0o000);
       const before = readFileSync(join(artifactsDir, "index.json"), "utf8");
       const status = await main(
         ["history", "recall", "rust"],
-        recallDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
+        recallDeps(adapter, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          now: fixedNow,
+          searchCache: throwingCache(),
+          readerCache: throwingCache(),
+          crawlCache: throwingCache(),
+          mapCache: throwingCache(),
+          researchCache: throwingCache(),
+          repositoryCache: throwingCache(),
+        }),
       );
       assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
       assert.strictEqual(fetchAttempts.length, 0, `fetch spy fired: ${JSON.stringify(fetchAttempts)}`);
@@ -614,24 +635,35 @@ describe("T5: envelope shape + validation (family conventions)", () => {
     }
   });
 
-  it("help surfaces: `history --help` lists recall; `history recall --help` renders its own help (exit 0, writes nothing)", async () => {
+  it("help surfaces: `history --help` Usage block carries the recall line; `history note --help` does NOT (placement pin, T5 review F1)", async () => {
     const artifactsDir = makeTempDir("scoutline-recall-help-");
     try {
       const h1 = makeAdapter();
       const s1 = await main(["history", "--help"], recallDeps(h1.adapter));
       assert.strictEqual(s1, 0);
-      assert.ok(h1.stdout.join("").includes("recall"), "history help must list recall");
+      const help = h1.stdout.join("");
+      assert.ok(
+        help.includes("scoutline history recall <text> [--limit N] [--as-of <date>]"),
+        "HISTORY_HELP Usage must carry the recall line",
+      );
 
       const h2 = makeAdapter();
-      const s2 = await main(
-        ["history", "recall", "--help"],
-        recallDeps(h2.adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
-      );
+      const s2 = await main(["history", "note", "--help"], recallDeps(h2.adapter));
       assert.strictEqual(s2, 0);
-      const help = h2.stdout.join("");
-      assert.ok(help.includes("--as-of"));
-      assert.ok(help.includes("--capability"));
-      assert.ok(help.includes("--limit"));
+      const noteHelp = h2.stdout.join("");
+      assert.ok(!noteHelp.includes("--as-of"), "note help must not advertise recall's --as-of");
+      assert.ok(noteHelp.includes("History note"), "note help renders its own surface");
+
+      const h3 = makeAdapter();
+      const s3 = await main(
+        ["history", "recall", "--help"],
+        recallDeps(h3.adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
+      );
+      assert.strictEqual(s3, 0);
+      const recallHelp = h3.stdout.join("");
+      assert.ok(recallHelp.includes("--as-of"));
+      assert.ok(recallHelp.includes("--capability"));
+      assert.ok(recallHelp.includes("--limit"));
       assert.ok(!existsSync(join(artifactsDir, "index.json")), "help writes nothing");
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });

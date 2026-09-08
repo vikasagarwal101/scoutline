@@ -582,7 +582,10 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
       );
       assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
       const store = JSON.parse(readFileSync(join(artifactsDir, "index.json"), "utf8"));
-      assert.deepStrictEqual(store.entries.at(-1).args, {
+      // History-journal T3: research journals always-on now, so the log
+      // holds [save, journal]; the args pin reads the SAVE entry.
+      const saveEntry = store.entries.find((e) => e.kind === "save");
+      assert.deepStrictEqual(saveEntry.args, {
         provider: "tavily",
         "no-cache": true,
         model: "pro",
@@ -872,7 +875,10 @@ async function runProvenanceScenario({ warm }) {
       }),
     );
     const log = JSON.parse(readFileSync(join(artifactsDir, "index.json"), "utf8"));
-    return { status, invokeLog, entry: log.entries.at(-1), stdout, stderr };
+    // History-journal T3: read journals too; the #108 provenance pins
+    // read the SAVE entry.
+    const entry = log.entries.find((e) => e.kind === "save");
+    return { status, invokeLog, entry, stdout, stderr };
   } finally {
     rmSync(artifactsDir, { recursive: true, force: true });
   }

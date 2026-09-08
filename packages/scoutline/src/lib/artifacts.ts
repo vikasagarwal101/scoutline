@@ -40,6 +40,7 @@ import { FileError } from "./errors.js";
 import {
   DEFAULT_LOCK_STALE_MS,
   DEFAULT_LOCK_TIMEOUT_MS,
+  LockTimeoutError,
   withAsyncFileLock,
 } from "./async-file-lock.js";
 import { asJournalEntry } from "./journal.js";
@@ -558,4 +559,111 @@ export async function appendLogEntry(
     },
   );
   return notice;
+}
+
+// ---------------------------------------------------------------------------
+// T6a (history-journal merge DESIGN D5): `history clear` — the store's
+// first sanctioned REWRITE seam. Bare clear is the journal-kind valve
+// (the fast-refilling layer); `--all` extends to saves + their masters.
+// ---------------------------------------------------------------------------
+
+/** Lock options for {@link clearArtifactsLog} (tests shrink timings). */
+export interface ClearArtifactsLogOptions {
+  readonly timeoutMs?: number;
+  readonly staleMs?: number;
+  /** Injectable timer so lock retries resolve faster than the 500ms sleep. */
+  readonly setTimeout?: typeof setTimeout;
+  /** `--all`: also remove save entries AND delete their master files. */
+  readonly all?: boolean;
+}
+
+/**
+ * `history clear` (T6a): rewrite `<dir>/index.json` in place under the
+ * SAME `artifacts-write` lock every append uses, so a clear never
+ * interleaves with a concurrent append (the rewrite is read-filter-write
+ * INSIDE the critical section — the whole-log consistency append relies
+ * on). Read side rides the fail-open {@link readLog} contract: a corrupt
+ * or unrecognized pre-state reads as EMPTY, so clear "removes nothing"
+ * and writes back a valid empty log — the wipe still succeeds.
+ *
+ * Bare clear keeps every non-journal entry (saves + their masters are
+ * byte-untouched); `--all` removes save entries too and unlinks their
+ * master files (a master that vanished is fine; an `--all` sweep also
+ * leaves no logged master behind — no orphans).
+ */
+export async function clearArtifactsLog(
+  dir: string,
+  options: ClearArtifactsLogOptions = {},
+): Promise<ClearArtifactsLogResult> {
+  let removedByKind: Record<string, number> = {};
+  let kept = 0;
+  let notice: string | undefined;
+  try {
+    await withAsyncFileLock(
+      dir,
+      ARTIFACTS_LOG_LOCK_IDENTITY,
+      async () => {
+        const current = await readLog(dir);
+        notice = current.notice;
+        const keptEntries: SaveLogEntry[] = [];
+        for (const entry of current.log.entries) {
+          // Bare clear = the journal valve: remove kind:"journal" (full
+          // entries + markers), keep everything else. --all removes all.
+          if (options.all || entry.kind === "journal") {
+            removedByKind[entry.kind] = (removedByKind[entry.kind] ?? 0) + 1;
+          } else {
+            keptEntries.push(entry);
+            kept += 1;
+          }
+        }
+        await atomicReplaceFile(
+          path.join(dir, ARTIFACTS_LOG_FILENAME),
+          `${JSON.stringify({ version: ARTIFACTS_LOG_VERSION, entries: keptEntries }, null, 2)}\n`,
+        );
+        if (options.all) {
+          // Full wipe sweeps the DIRECTORY, not just logged masters: an
+          // orphan master (pre-clear corruption, manual file) would
+          // otherwise survive the wipe. Bare clear never reaches here —
+          // save masters stay byte-untouched under the journal valve.
+          for (const name of await fs.readdir(dir)) {
+            if (name === ARTIFACTS_LOG_FILENAME || name.endsWith(".lock")) continue;
+            await fs.unlink(path.join(dir, name)).catch(() => {});
+          }
+        }
+      },
+      {
+        timeoutMs: options.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
+        staleMs: options.staleMs ?? DEFAULT_LOCK_STALE_MS,
+        setTimeout: options.setTimeout,
+        timeoutLabel: "Artifacts log clear",
+      },
+    );
+  } catch (error) {
+    // Lock-acquire timeout is a typed FILE_ERROR (the cache-prune seam
+    // precedent): a bare LockTimeoutError would surface through the
+    // dispatcher boundary as UNKNOWN_ERROR.
+    if (
+      error instanceof LockTimeoutError ||
+      (error instanceof Error && error.message.endsWith("create-lock timed out"))
+    ) {
+      throw new FileError(
+        error instanceof LockTimeoutError ? `${error.label} create-lock timed out` : error.message,
+        "Another scoutline process holds the artifacts-write lock; try again once it finishes.",
+      );
+    }
+    throw error;
+  }
+  return { removed: Object.values(removedByKind).reduce((a, b) => a + b, 0), removedByKind, kept, notice };
+}
+
+/** `clearArtifactsLog` outcome: what the valve removed and what stayed. */
+export interface ClearArtifactsLogResult {
+  /** Total entries removed (all kinds). */
+  readonly removed: number;
+  /** Removed counts by entry kind. */
+  readonly removedByKind: Readonly<Record<string, number>>;
+  /** Entries that survived the clear. */
+  readonly kept: number;
+  /** The fail-open read notice (corrupt pre-state), for stderr. */
+  readonly notice?: string;
 }

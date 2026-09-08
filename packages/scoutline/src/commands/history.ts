@@ -1,9 +1,11 @@
 /**
- * history command — read-only inventory over the saved-artifact store
- * (save-artifacts plan, Ticket 5).
+ * history command — the artifacts-store front door: the read-only
+ * inventory (save-artifacts plan, Ticket 5) widened by the
+ * history-journal merge with `note` (T4), `recall` (T5), and `clear`
+ * (T6a — history's first MUTATING op).
  *
- * Three subcommands over `<artifacts>/index.json` and the master reports
- * it references:
+ * Subcommands over `<artifacts>/index.json` and the master reports it
+ * references:
  *
  *   - `history list [--since N] [--limit N] [--command C]` — newest
  *     first, from the LOG ONLY (a master file with no log entry is an
@@ -13,6 +15,9 @@
  *     entry whose master vanished are FILE_ERROR (D7/D8).
  *   - `history stats` — counts by command / artifactFormat / kind,
  *     summed master bytes, and the oldest/newest span.
+ *   - `history note` / `history recall` — see their own help.
+ *   - `history clear [--all]` — the valve: journal kind by default,
+ *     full wipe under --all (rewrites the log under the write lock).
  *
  * Like `usage` (DESIGN D8), this module is presentation + aggregation
  * only: I/O happens through injectable readers so every path is
@@ -25,6 +30,7 @@
 import type { CommandResult, TextOutputMode } from "../command-invocation.js";
 import { FileError } from "../lib/errors.js";
 import type { ArtifactsLog, SaveLogEntry } from "../lib/artifacts.js";
+import { clearArtifactsLog } from "../lib/artifacts.js";
 import { buildJournalRecall } from "../lib/journal.js";
 import type { JournalRecallResult, JournalableCapability } from "../lib/journal.js";
 
@@ -387,10 +393,77 @@ export async function historyCommand(deps: HistoryCommandDependencies): Promise<
 }
 
 // ---------------------------------------------------------------------------
+// T6a — clear (the valve; DESIGN D5). History's first MUTATING op.
+// ---------------------------------------------------------------------------
+
+/** `history clear` data-mode envelope. */
+export interface HistoryClearReport {
+  readonly schemaVersion: 1;
+  readonly generatedAt: number;
+  /** "journal" (bare) or "all" (--all). */
+  readonly scope: "journal" | "all";
+  /** Total entries removed. */
+  readonly removed: number;
+  /** Removed counts by entry kind. */
+  readonly removedByKind: Readonly<Record<string, number>>;
+  /** Entries kept (0 under --all). */
+  readonly kept: number;
+  /** Save masters deleted under --all (0 bare). */
+  readonly mastersDeleted: number;
+}
+
+/**
+ * `history clear` (PRD AC7): bare = the journal-kind valve — every
+ * kind:"journal" entry (full entries AND repeat markers) is rewritten
+ * away; save entries and their masters are byte-untouched. `--all` is
+ * the full wipe: save entries go too and their master files are
+ * deleted. The rewrite runs inside the artifacts write lock
+ * (`clearArtifactsLog`); a corrupt pre-state reads fail-open EMPTY, so
+ * clear succeeds and writes back a valid empty log. Journaling itself
+ * is untouched — the next search/read/research re-populates (the
+ * response cache is never touched; that is \`cache clear\`).
+ */
+export async function historyClearCommand(input: {
+  readonly dir: string;
+  readonly all: boolean;
+  readonly now: () => number;
+  readonly notice: (message: string) => void;
+  readonly lock?: { readonly timeoutMs?: number; readonly setTimeout?: typeof setTimeout };
+}): Promise<CommandResult> {
+  const result = await clearArtifactsLog(input.dir, {
+    all: input.all,
+    ...(input.lock?.timeoutMs !== undefined ? { timeoutMs: input.lock.timeoutMs } : {}),
+    ...(input.lock?.setTimeout !== undefined ? { setTimeout: input.lock.setTimeout } : {}),
+  });
+  if (result.notice !== undefined) input.notice(result.notice);
+  const mastersDeleted = input.all ? result.removedByKind.save ?? 0 : 0;
+  const report: HistoryClearReport = {
+    schemaVersion: 1,
+    generatedAt: input.now(),
+    scope: input.all ? "all" : "journal",
+    removed: result.removed,
+    removedByKind: result.removedByKind,
+    kept: result.kept,
+    mastersDeleted,
+  };
+  const text =
+    `history clear (${report.scope}): removed ${report.removed} journal entr${report.removed === 1 ? "y" : "ies"}` +
+    (input.all
+      ? ` and ${mastersDeleted} save master file(s); 0 entries remain`
+      : `; ${report.kept} saved artifact(s) kept`);
+  return {
+    kind: "data",
+    data: report,
+    presentations: { compact: text, markdown: text, refs: text, tty: text },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Help
 // ---------------------------------------------------------------------------
 
-export const HISTORY_HELP = `History - Read-only inventory of saved --save artifacts
+export const HISTORY_HELP = `History - Saved --save artifacts + research journal (list / show /
+stats / note / recall; clear MUTATES)
 
 Usage:
   scoutline history list [--since N] [--limit N] [--command <name>]
@@ -400,13 +473,13 @@ Usage:
                           [--url <url> [--title <title>]]... [--tags a,b]
   scoutline history recall <text> [--limit N] [--as-of <date>]
                            [--capability <search|read|research>]
+  scoutline history clear [--all]
 
 Reads the artifact store (default ~/.scoutline/artifacts/, override with
 SCOUTLINE_ARTIFACTS_DIR) without touching Providers, credentials, or the
-response cache. The listing comes from the metadata log only; a report
-file without a log entry is invisible. Reads fail open: a missing store
-is an empty listing (exit 0); a corrupt log is ignored with a stderr
-notice.
+response cache. Every subcommand except clear is read-only: reads fail
+open — a missing store is an empty listing (exit 0); a corrupt log is
+ignored with a stderr notice.
 
 Options:
   list    Saved runs, newest first. --since N keeps the last N UTC days
@@ -424,6 +497,9 @@ Options:
           overlap over recorded queries + skeletons, ranked by score
           then recency (see \`scoutline history recall --help\`). No
           network, no cache reads, no master files — pure log scoring.
+  clear   The valve (MUTATES the store; see \`scoutline history clear
+          --help\`): bare clear removes the journal kind only — the
+          fast-refilling layer. --save artifacts need \`--all\`.
 
 Exit codes:
   0  Success (including the empty fail-open cases)
@@ -437,6 +513,8 @@ Examples:
   scoutline history stats
   scoutline history note --capability search "compared rust vs go" \\
     --url https://go.dev/doc --title "Go Documentation" --tags lang-comparison
+  scoutline history clear
+  scoutline history clear --all
 `;
 
 export const HISTORY_NOTE_HELP = `History note - Write an explicit journal entry
@@ -612,3 +690,35 @@ function renderRecallMarkdown(results: readonly JournalRecallResult[]): string {
   }
   return lines.join("\n");
 }
+
+export const HISTORY_CLEAR_HELP = `History clear - Clear the research journal (the valve; MUTATES the store)
+
+Usage:
+  scoutline history clear [--all]
+
+Bare \`history clear\` removes the JOURNAL kind only: every
+kind:"journal" entry — full skeleton entries AND repeat markers — is
+rewritten away under the artifacts write lock. --save artifacts and
+their report files are untouched. The journal is the fast-refilling
+layer: it repopulates as you run search/read/research (journaling is
+never disabled by clearing).
+
+--all extends the wipe: --save entries go too AND their master files
+are deleted. This is the full wipe; nothing survives it.
+
+A corrupt or unrecognized log reads fail-open EMPTY, so clear succeeds
+and writes back a valid empty log. The response cache is NOT touched —
+use \`scoutline cache clear\` for that.
+
+Options:
+  --all  Full wipe: remove save entries too and delete their master
+         files (default: journal kind only).
+
+Exit codes:
+  0  Success (including clearing an empty or corrupt store)
+  1  Invalid flags (VALIDATION_ERROR); lock timeout (LOCK_TIMEOUT)
+
+Examples:
+  scoutline history clear
+  scoutline history clear --all
+`;

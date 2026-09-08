@@ -207,6 +207,26 @@ describe("quota window builder — remainingPercent rules", () => {
     assert.ok(!("used" in remainingOnly), "#49 path keeps omitting used");
   });
 
+  it("publishes an explicit remaining next to a finite percent when the count set is invalid (#109)", () => {
+    // Z.AI cumulative currentValue past the cap: counts invalid, but the
+    // Provider publishes both an exact remaining and a used percentage.
+    const w = buildQuotaWindow({
+      explicitRemainingPercent: 1.2,
+      remaining: 88,
+    });
+    assert.strictEqual(w.remainingPercent, 1.2);
+    assert.strictEqual(w.remaining, 88);
+    assert.ok(!("used" in w), "invalid counts stay omitted");
+    assert.ok(!("limit" in w), "invalid counts stay omitted");
+  });
+
+  it("still throws when invalid counts come with no percent and no remaining", () => {
+    assert.throws(
+      () => buildQuotaWindow({ used: 4912, limit: 1000 }),
+      (err) => err instanceof ScoutlineError && err.code === "QUOTA_ERROR",
+    );
+  });
+
   it("throws QUOTA_ERROR when a category has neither valid percent nor valid counts", () => {
     assert.throws(
       () => buildQuotaWindow({ used: 150, limit: 100 }),
@@ -315,6 +335,61 @@ describe("Z.AI quota normalization", () => {
         }),
       (err) => err instanceof ScoutlineError && err.code === "QUOTA_ERROR",
     );
+  });
+
+  it("honors API remaining + percentage when TIME_LIMIT currentValue exceeds the cap (#109)", () => {
+    const normalized = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 1000,
+          currentValue: 4912,
+          remaining: 88,
+          percentage: 98.8,
+          nextResetTime: 1791411480983,
+        },
+        {
+          type: "TOKENS_LIMIT",
+          unit: 3,
+          number: 5,
+          percentage: 4,
+          nextResetTime: 1788850059317,
+        },
+      ],
+    });
+    const w = normalized.categories.find((c) => c.name === "requests").current;
+    assert.strictEqual(w.remaining, 88);
+    assert.strictEqual(w.remainingPercent, 1.2);
+    assert.strictEqual(w.durationSeconds, 18000);
+    assert.strictEqual(w.resetsAt, "2026-10-07T22:18:00.983Z");
+    assert.ok(!("used" in w), "cumulative used not published as window counts");
+    assert.ok(!("limit" in w), "cap not published against cumulative used");
+  });
+
+  it("keeps counts-derived output for a sane TIME_LIMIT payload (#109 both-ways pin)", () => {
+    const normalized = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 1000,
+          currentValue: 15,
+          remaining: 985,
+          percentage: 1,
+          nextResetTime: 1791411480983,
+        },
+      ],
+    });
+    const w = normalized.categories[0].current;
+    assert.strictEqual(w.remainingPercent, 98.5);
+    assert.strictEqual(w.used, 15);
+    assert.strictEqual(w.limit, 1000);
+    assert.strictEqual(w.remaining, 985);
   });
 
   it("maps plan from level, defaulting when absent", () => {

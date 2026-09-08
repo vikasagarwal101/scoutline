@@ -113,17 +113,35 @@ export function normalizeZaiQuota(raw: unknown): ProviderQuotaSuccess {
       typeof timeLimit.unit === "number" && Number.isFinite(timeLimit.unit)
         ? timeLimit.unit * 3600
         : undefined;
+    // Counts are trustworthy only while currentValue stays within the
+    // window cap. Z.AI also reports cumulative currentValue (observed
+    // live: currentValue 4912 vs usage 1000) — then counts are invalid
+    // and the API's OWN explicit `remaining` + USED `percentage` are
+    // the honest signal (percentage 98.8 used => 1.2 remaining).
+    const used = readNumber(timeLimit.currentValue);
+    const limit = readNumber(timeLimit.usage);
+    const usedPercent = readNumber(timeLimit.percentage);
+    const countsValid = used !== undefined && limit !== undefined && used <= limit;
     categories.push({
       name: "requests",
       unit: "requests",
-      current: buildQuotaWindow({
-        used: readNumber(timeLimit.currentValue),
-        limit: readNumber(timeLimit.usage),
-        durationSeconds,
-        resetsAtEpochMs: readNumber(timeLimit.nextResetTime),
-        // Z.AI `percentage` is a USED percentage — do NOT treat it as an
-        // explicit remaining percentage. Derive from counts instead.
-      }),
+      current: buildQuotaWindow(
+        countsValid
+          ? {
+              used,
+              limit,
+              durationSeconds,
+              resetsAtEpochMs: readNumber(timeLimit.nextResetTime),
+              // Z.AI `percentage` is a USED percentage — do NOT treat it as an
+              // explicit remaining percentage. Derive from counts instead.
+            }
+          : {
+              explicitRemainingPercent: usedPercent !== undefined ? 100 - usedPercent : undefined,
+              remaining: readNumber(timeLimit.remaining),
+              durationSeconds,
+              resetsAtEpochMs: readNumber(timeLimit.nextResetTime),
+            },
+      ),
     });
   }
 

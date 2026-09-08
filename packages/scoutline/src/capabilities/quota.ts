@@ -305,6 +305,15 @@ export function buildQuotaWindow(inputs: QuotaWindowInputs): QuotaWindow {
   } else if (remainingOnly) {
     window.remaining = inputs.remaining;
   } else if (
+    typeof inputs.remaining === "number" &&
+    Number.isFinite(inputs.remaining) &&
+    inputs.remaining >= 0
+  ) {
+    // Invalid counts but a Provider-published EXACT remaining count
+    // (e.g. Z.AI cumulative currentValue > cap): publish `remaining`
+    // verbatim next to any explicit percentage; never derive counts.
+    window.remaining = inputs.remaining;
+  } else if (
     remainingPercent !== undefined &&
     inputs.limit === undefined &&
     isFiniteNonnegative(inputs.used)

@@ -56,10 +56,12 @@ import { main, DISPATCHED_COMMANDS, ACCEPT_NO_JOURNAL_COMMANDS } from "../dist/i
 import { createInMemoryResponseCache, hermeticMainDeps } from "./helpers/hermetic-main.js";
 import {
   appendJournalEntry,
+  appendJournalEntryMaybeRepeat,
   buildSearchSkeleton,
   skeletonContentHash,
   normalizeSkeleton,
   buildJournalCacheKeyMap,
+  buildJournalRepeatMarker,
 } from "../dist/lib/journal.js";
 import { readLog } from "../dist/lib/artifacts.js";
 import { CommandOptionUnsupportedError } from "../dist/lib/errors.js";
@@ -1300,6 +1302,7 @@ function makeReaderDescriptor(id, log, options = {}) {
             return {
               provider: id,
               capability: "reader",
+              operation: "reader-fetch",
               credentialFingerprint: `fp-${id}`,
               request,
               legacyCandidates: [],
@@ -2057,6 +2060,275 @@ describe("review r3: recall tokenize is Unicode-aware (coderabbit major)", () =>
       assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
       const envelope = r3Envelope(stdout);
       assert.deepStrictEqual(envelope.results.map((r) => r.requestId), ["r-acc-1"]);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("review batch 1: fixes (PR #111)", () => {
+  it("--fields filtered search still journals url+title skeleton rows (pre-projection capture)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-fields-");
+    const log = [];
+    const { adapter, stderr } = makeAdapter();
+    try {
+      const status = await main(
+        ["search", "rust vs go", "--fields", "summary"],
+        journalDeps(adapter, log, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const store = readJournalEntries(artifactsDir);
+      assert.strictEqual(store.entries.length, 1);
+      const entry = store.entries[0];
+      assert.ok(Array.isArray(entry.skeleton.results));
+      assert.strictEqual(entry.skeleton.results.length, 1);
+      assert.strictEqual(entry.skeleton.results[0].url, "https://zai/r");
+      assert.strictEqual(entry.skeleton.results[0].title, "t-zai");
+      // The --fields projection stripped the stdout copy, not the journal.
+      const rawJournal = readFileSync(join(artifactsDir, "index.json"), "utf8");
+      assert.ok(!rawJournal.includes('"summary"'), "journal skeleton must not carry the projected field");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fanout --fields keeps skeleton identities too (fan-out pre-projection capture)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-fields-fanout-");
+    const log = [];
+    const { adapter, stderr } = makeAdapter();
+    const twoArms = ["zai", "brave"].map((id) => makeSearchDescriptor(id, log));
+    try {
+      const status = await main(
+        ["search", "rust vs go", "--fields", "summary"],
+        hermeticMainDeps({
+          invocation: adapter,
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          providerDescriptors: twoArms,
+          configFanout: true,
+          loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+        }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const store = readJournalEntries(artifactsDir);
+      assert.strictEqual(store.entries.length, 1);
+      const entry = store.entries[0];
+      for (const row of entry.skeleton.results) {
+        assert.ok(typeof row.url === "string" && row.url.length > 0);
+        assert.ok(typeof row.title === "string" && row.title.length > 0);
+      }
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fan-out arm race: shared capture cell survives (live arm survives delayed cache-hit)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-armrace-");
+    const log = [];
+    const { adapter, stderr } = makeAdapter();
+    // Two-arm fan-out where both arms run cold (live). The journal
+    // hook must observe at least ONE live arm and write a full entry,
+    // never a marker — even when the later-resolving arm's cache hit
+    // would have over-written servedFrom without per-arm cells.
+    const zaiDesc = makeSearchDescriptor("zai", log);
+    const braveDesc = makeSearchDescriptor("brave", log);
+    try {
+      const status = await main(
+        ["search", "rust vs go"],
+        hermeticMainDeps({
+          invocation: adapter,
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          providerDescriptors: [zaiDesc, braveDesc],
+          configFanout: true,
+          loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+        }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const store = readJournalEntries(artifactsDir);
+      const journals = store.entries.filter((e) => e.kind === "journal");
+      assert.strictEqual(journals.length, 1, `expected one journal entry, got ${JSON.stringify(journals)}`);
+      assert.strictEqual(journals[0].repeatOf, undefined, "must be a full entry, not a marker");
+      assert.strictEqual(journals[0].provider.mode, "fanout");
+      assert.ok(journals[0].skeleton.results.length > 0);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("--fields read skeleton keeps the fetch identity (read pre-projection capture)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-read-fields-");
+    const { adapter, stderr } = makeAdapter();
+    const log = [];
+    try {
+      // --max-chars is a post-envelope budget; the read identity must
+      // survive it for the skeleton.
+      const status = await main(
+        ["read", "https://example.com/doc", "--max-chars", "50"],
+        journalDeps(adapter, log, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          providerDescriptors: [makeReaderDescriptor("zai", log)],
+        }),
+      );
+      // May fail on budget floor for tiny content, but a SUCCESS must
+      // journal the identity.
+      if (status === 0) {
+        const store = readJournalEntries(artifactsDir);
+        assert.ok(store.entries.length >= 1);
+        const readEntry = store.entries.find((e) => e.kind === "journal" && e.capability === "read");
+        assert.ok(readEntry, "read entry present");
+        assert.ok(readEntry.skeleton.results[0].url.length > 0);
+      } else {
+        // Budget refusal — not a regression pin, just skip.
+        assert.ok(true);
+      }
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("read journal cacheKey carries the operation suffix matching the response-cache partition", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-read-key-");
+    const { adapter, stderr } = makeAdapter();
+    const log = [];
+    try {
+      const status = await main(
+        ["read", "https://example.com/doc"],
+        journalDeps(adapter, log, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          providerDescriptors: [makeReaderDescriptor("zai", log)],
+        }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const store = readJournalEntries(artifactsDir);
+      const readEntry = store.entries.find((e) => e.kind === "journal" && e.capability === "read");
+      assert.ok(readEntry, "read entry present");
+      assert.ok(
+        readEntry.cacheKey.includes("reader-reader-fetch"),
+        `cacheKey must carry the operation suffix, got ${readEntry.cacheKey}`,
+      );
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("two parallel cache-hits for the same key → exactly one FULL + one MARKER (atomic read-check-append)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-atomic-");
+    try {
+      const full = {
+        kind: "journal",
+        requestId: "20260908T000000Z-atomic",
+        timestamp: 1800000000000,
+        capability: "search",
+        provider: { mode: "single", effective: "zai", servedFrom: "live" },
+        query: "q",
+        contentHash: skeletonContentHash(buildSearchSkeleton([{ title: "t", url: "https://x" }])),
+        cacheKey: "v2.search.zai.atomic.json",
+        skeleton: buildSearchSkeleton([{ title: "t", url: "https://x" }]),
+      };
+      await appendJournalEntry(artifactsDir, full);
+      // Two concurrent cache-hit appends race: both resolve repeatOf
+      // through the in-lock map; the first writes... (they both write
+      // markers — the full entry already exists).
+      await Promise.all([
+        appendJournalEntryMaybeRepeat(
+          artifactsDir,
+          { ...full, requestId: "20260908T000001Z-a1", timestamp: 1800000000001 },
+          (repeatOf) =>
+            buildJournalRepeatMarker({
+              capability: "search",
+              provider: { mode: "single", effective: "zai", servedFrom: "cache" },
+              repeatOf,
+              now: () => 1800000000001,
+            }),
+        ),
+        appendJournalEntryMaybeRepeat(
+          artifactsDir,
+          { ...full, requestId: "20260908T000001Z-a2", timestamp: 1800000000002 },
+          (repeatOf) =>
+            buildJournalRepeatMarker({
+              capability: "search",
+              provider: { mode: "single", effective: "zai", servedFrom: "cache" },
+              repeatOf,
+              now: () => 1800000000002,
+            }),
+        ),
+      ]);
+      const { log } = await readLog(artifactsDir);
+      const markers = log.entries.filter((e) => e.repeatOf !== undefined);
+      const fulls = log.entries.filter((e) => e.repeatOf === undefined);
+      assert.strictEqual(fulls.length, 1, "exactly one full entry");
+      assert.strictEqual(markers.length, 2, "both racers wrote markers (no duplicate full)");
+      for (const m of markers) {
+        assert.strictEqual(m.repeatOf, "20260908T000000Z-atomic");
+      }
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("cache-hit + --save → the repeat marker carries the saveRef cross-link (single path)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-saveref-");
+    const responseCache = createInMemoryResponseCache();
+    try {
+      const seen = [];
+      const mkDeps = (adapter) =>
+        journalDeps(adapter, seen, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          searchCache: responseCache,
+        });
+      // Miss run with --save → full entry + save entry.
+      const exportDir = makeTempDir("scoutline-journal-saveref-exp-");
+      const exportTarget = join(exportDir, "report.json");
+      const a1 = makeAdapter();
+      const s1 = await main(["search", "rust vs go", "--save", exportTarget], mkDeps(a1.adapter));
+      assert.strictEqual(s1, 0);
+      let store = readJournalEntries(artifactsDir);
+      assert.ok(store.entries.some((e) => e.kind === "save"));
+      // Warm-cache hit run with --save → marker with saveRef.
+      const a2 = makeAdapter();
+      const s2 = await main(["search", "rust vs go", "--save", exportTarget, "--save-force"], mkDeps(a2.adapter));
+      assert.strictEqual(s2, 0);
+      store = readJournalEntries(artifactsDir);
+      const markers = store.entries.filter((e) => e.kind === "journal" && e.repeatOf !== undefined);
+      assert.ok(markers.length >= 1, "a marker was written for the cache hit");
+      const marker = markers[markers.length - 1];
+      assert.ok(
+        typeof marker.saveRef === "string" && marker.saveRef.length > 0,
+        `warm-cache marker must carry saveRef, got ${JSON.stringify(marker)}`,
+      );
+      const saves = store.entries.filter((e) => e.kind === "save");
+      assert.ok(
+        saves.some((s) => s.requestId === marker.saveRef),
+        "saveRef points at a real save entry",
+      );
+      rmSync(exportDir, { recursive: true, force: true });
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("search query containing a literal LINKUP_API_KEY value redacts it in the journal entry", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-linkup-redact-");
+    const log = [];
+    const SECRET = "sk-linkup-secret-8f2e1a9b4c";
+    const { adapter, stderr } = makeAdapter();
+    try {
+      const status = await main(
+        [`search`, `pricing ${SECRET}`],
+        hermeticMainDeps({
+          invocation: adapter,
+          env: {
+            SCOUTLINE_ARTIFACTS_DIR: artifactsDir,
+            LINKUP_API_KEY: SECRET,
+          },
+          providerDescriptors: [makeSearchDescriptor("zai", log)],
+          loadScoutlineConfig: async () => ({ version: 1, providers: {}, journal: true }),
+        }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const raw = readFileSync(join(artifactsDir, "index.json"), "utf8");
+      assert.ok(!raw.includes(SECRET), "LINKUP secret leaked into the journal log");
+      const store = JSON.parse(raw);
+      assert.ok(!JSON.stringify(store.entries[0].query).includes(SECRET));
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
     }

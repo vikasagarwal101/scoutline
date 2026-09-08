@@ -13,12 +13,24 @@
  * (query text and skeleton URLs pass it — PRD AC9, pinned E2E).
  */
 import { createHash } from "node:crypto";
+import { join } from "node:path";
+import { atomicReplaceFile } from "./config-store.js";
+import {
+  DEFAULT_LOCK_STALE_MS,
+  DEFAULT_LOCK_TIMEOUT_MS,
+  withAsyncFileLock,
+} from "./async-file-lock.js";
 import {
   appendLogEntry,
   newRequestId,
   readLog,
+  ARTIFACTS_LOG_FILENAME,
+  ARTIFACTS_LOG_VERSION,
+  ARTIFACTS_LOG_LOCK_IDENTITY,
   type ProviderRouting,
   type AppendLogEntryOptions,
+  type ArtifactsLog,
+  type SaveLogEntry,
 } from "./artifacts.js";
 import { redactSecrets } from "./redact.js";
 
@@ -96,6 +108,8 @@ export interface JournalRepeatMarker {
   readonly provider: ProviderRouting;
   /** requestId of the referenced full journal entry. */
   readonly repeatOf: string;
+  /** Cross-link to the --save entry when the same run saved (PRD AC10). */
+  readonly saveRef?: string;
 }
 
 /**
@@ -270,6 +284,12 @@ function asJournalRepeatMarker(value: unknown): JournalRepeatMarker | undefined 
   if (e.contentHash !== undefined) return undefined;
   if (e.cacheKey !== undefined) return undefined;
   if (e.skeleton !== undefined) return undefined;
+  // saveRef is the marker's ONE optional payload field (warm-cache save
+  // cross-link, PRD AC10): same non-empty-string rule the full entry's
+  // saveRef follows.
+  if (e.saveRef !== undefined && (typeof e.saveRef !== "string" || e.saveRef.length === 0)) {
+    return undefined;
+  }
   const provider = e.provider as Record<string, unknown> | undefined;
   if (typeof provider !== "object" || provider === null) return undefined;
   if (provider.mode === "single") {
@@ -305,21 +325,28 @@ function asJournalRepeatMarker(value: unknown): JournalRepeatMarker | undefined 
  * hit journal-cold and the caller writes a FULL entry instead. The
  * rebuild-on-read is what keeps the map honest across processes and
  * after `history clear` (T6a).
+ *
+ * Sync variant takes a parsed log; async variant reads from disk.
  */
-export async function buildJournalCacheKeyMap(
-  dir: string,
-): Promise<Map<string, string>> {
-  const { log } = await readLog(dir);
+function buildJournalCacheKeyMapFromLog(log: Readonly<{ entries: readonly unknown[] }>): Map<string, string> {
   const map = new Map<string, string>();
   for (const entry of log.entries) {
-    if (entry.kind !== "journal") continue;
-    const journal = entry as unknown as Partial<JournalLogEntry> & Partial<JournalRepeatMarker>;
+    if (typeof entry !== "object" || entry === null) continue;
+    const journal = entry as Partial<JournalLogEntry> & Partial<JournalRepeatMarker>;
+    if (journal.kind !== "journal") continue;
     if (journal.repeatOf !== undefined) continue; // markers never map
     if (typeof journal.cacheKey === "string" && typeof journal.requestId === "string") {
       map.set(journal.cacheKey, journal.requestId);
     }
   }
   return map;
+}
+
+export async function buildJournalCacheKeyMap(
+  dir: string,
+): Promise<Map<string, string>> {
+  const { log } = await readLog(dir);
+  return buildJournalCacheKeyMapFromLog(log);
 }
 
 /**
@@ -331,6 +358,7 @@ export function buildJournalRepeatMarker(input: {
   readonly capability: JournalableCapability;
   readonly provider: ProviderRouting;
   readonly repeatOf: string;
+  readonly saveRef?: string;
   readonly now: () => number;
 }): JournalRepeatMarker {
   return {
@@ -339,6 +367,7 @@ export function buildJournalRepeatMarker(input: {
     capability: input.capability,
     provider: input.provider,
     repeatOf: input.repeatOf,
+    ...(input.saveRef !== undefined ? { saveRef: input.saveRef } : {}),
   };
 }
 
@@ -349,6 +378,11 @@ export interface AppendJournalEntryOptions extends AppendLogEntryOptions {}
  * composition over {@link appendLogEntry} (the log IS index.json; the
  * lock, the atomic replace, and the 0600 discipline are inherited).
  * Strictly append-only: nothing here ever rewrites an existing entry.
+ *
+ * Callers that know they are in the cache-hit path should use
+ * {@link appendJournalEntryMaybeRepeat} instead: its read-check-append
+ * is atomic under the write lock, so two concurrent cache hits never
+ * both write a full entry under the same cacheKey.
  */
 export async function appendJournalEntry(
   dir: string,
@@ -358,6 +392,56 @@ export async function appendJournalEntry(
   // The union log type rides appendLogEntry's SaveLogEntry signature;
   // journal entries pass the same asLogEntry dispatch at read time.
   return appendLogEntry(dir, entry as unknown as Parameters<typeof appendLogEntry>[1], options);
+}
+
+/**
+ * Append under the write lock, but ATOMICALLY decide whether to write a
+ * full entry or a tiny repeat marker based on whether the current log
+ * already has a full entry whose cacheKey matches.
+ *
+ * The read-check-append runs as one critical section under the
+ * artifacts-write lock — two concurrent cache hits after `history clear`
+ * never both write a full entry under the same cacheKey (the check-then-
+ * act race the plan calls out).
+ *
+ * The pre-built full entry is the "journal-cold" default. If the
+ * cacheKey map resolves to a prior full entry, the marker builder is
+ * called with that requestId and the result is appended instead.
+ */
+export async function appendJournalEntryMaybeRepeat(
+  dir: string,
+  fullEntry: JournalLogEntry,
+  makeMarker: (repeatOf: string) => JournalRepeatMarker,
+  options: AppendJournalEntryOptions = {},
+): Promise<string | undefined> {
+  let notice: string | undefined;
+  await withAsyncFileLock(
+    dir,
+    ARTIFACTS_LOG_LOCK_IDENTITY,
+    async () => {
+      const current = await readLog(dir);
+      notice = current.notice;
+      const map = buildJournalCacheKeyMapFromLog(current.log);
+      const prior = fullEntry.cacheKey ? map.get(fullEntry.cacheKey) : undefined;
+      const entry =
+        prior !== undefined ? makeMarker(prior) : fullEntry;
+      const next: ArtifactsLog = {
+        version: ARTIFACTS_LOG_VERSION,
+        entries: [...current.log.entries, entry as unknown as SaveLogEntry],
+      };
+      await atomicReplaceFile(
+        join(dir, ARTIFACTS_LOG_FILENAME),
+        `${JSON.stringify(next, null, 2)}\n`,
+      );
+    },
+    {
+      timeoutMs: options.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
+      staleMs: options.staleMs ?? DEFAULT_LOCK_STALE_MS,
+      setTimeout: options.setTimeout,
+      timeoutLabel: "Artifacts log write",
+    },
+  );
+  return notice;
 }
 
 export interface JournalInput {

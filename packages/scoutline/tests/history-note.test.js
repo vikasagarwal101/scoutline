@@ -269,6 +269,17 @@ describe("T4: arg validation (existing history subcommand conventions)", () => {
     assert.strictEqual(envelope.error?.code ?? envelope.code, "VALIDATION_ERROR");
   });
 
+  it("extra positional arguments → VALIDATION_ERROR exit 1 (multi-word notes must be quoted)", async () => {
+    const { adapter, stderr } = makeAdapter();
+    const status = await main(
+      ["history", "note", "--capability", "search", "compared", "rust", "vs", "go"],
+      noteDeps(adapter),
+    );
+    assert.strictEqual(status, 1);
+    const envelope = JSON.parse(stderr.find((line) => line.trim().startsWith("{")) ?? "{}");
+    assert.strictEqual(envelope.error?.code ?? envelope.code, "VALIDATION_ERROR");
+  });
+
   it("invalid --capability → VALIDATION_ERROR exit 1", async () => {
     const { adapter, stderr } = makeAdapter();
     const status = await main(

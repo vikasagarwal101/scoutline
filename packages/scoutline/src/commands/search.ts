@@ -447,7 +447,7 @@ export async function search(
       ? formattedResults.map((r) => filterFields(r, options.fields))
       : formattedResults;
 
-  return { kind: "data", data, presentations };
+  return { kind: "data", data, presentations, rawRows: formattedResults };
 }
 
 // ---------------------------------------------------------------------------
@@ -872,7 +872,7 @@ export async function executeFanoutPlan(
     options.searchOptions.fields && options.searchOptions.fields.length > 0
       ? merged.map((r) => filterFields(r, options.searchOptions.fields))
       : merged;
-  return { kind: "data", data, presentations };
+  return { kind: "data", data, presentations, rawRows: merged };
 }
 
 // Help text

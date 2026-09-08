@@ -279,7 +279,7 @@ export const ARTIFACTS_LOG_FILENAME = "index.json";
 export const ARTIFACTS_LOG_VERSION = 1;
 
 /** Fixed lock identity serializing every index.json append (cache-write precedent). */
-const ARTIFACTS_LOG_LOCK_IDENTITY = "artifacts-write";
+export const ARTIFACTS_LOG_LOCK_IDENTITY = "artifacts-write";
 
 /** CLI version stamped into each entry (the src/index.ts pkg-import idiom). */
 export const CLI_VERSION: string = pkg.version;

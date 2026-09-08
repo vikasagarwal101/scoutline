@@ -318,6 +318,10 @@ describe("T6a: corrupt pre-state + validation + lock (main-driven)", () => {
       ["history", "clear", "--since", "3"],
       ["history", "clear", "--force"],
       ["history", "clear", "extra"],
+      // parseArgs binds the next non-dash token as --all's value; a
+      // valued --all must be REJECTED, not silently downgraded to
+      // journal-only scope with the stray token swallowed.
+      ["history", "clear", "--all", "stray"],
     ]) {
       const artifactsDir = makeTempDir("scoutline-clear-badflag-");
       const { adapter, stdout, stderr } = makeAdapter();
@@ -333,6 +337,27 @@ describe("T6a: corrupt pre-state + validation + lock (main-driven)", () => {
       } finally {
         rmSync(artifactsDir, { recursive: true, force: true });
       }
+    }
+  });
+
+  it("valued --all (`clear --all stray`) is rejected and the store is untouched (review batch 1)", async () => {
+    const artifactsDir = makeTempDir("scoutline-clear-all-valued-");
+    const { adapter, stderr } = makeAdapter();
+    try {
+      seedMixedStore(artifactsDir);
+      const status = await main(
+        ["history", "clear", "--all", "stray"],
+        clearDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
+      );
+      assert.strictEqual(status, 1, "valued --all must not run a wipe");
+      const envelope = JSON.parse(stderr.find((line) => line.trim().startsWith("{")) ?? "{}");
+      assert.strictEqual(envelope.error?.code ?? envelope.code, "VALIDATION_ERROR");
+      assert.match(envelope.error ?? "", /boolean flag/);
+      // The user asked for a full wipe; a journal-only downgrade would
+      // silently destroy less than asked. Nothing may be touched.
+      assert.strictEqual(readStore(artifactsDir).entries.length, 5);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
     }
   });
 

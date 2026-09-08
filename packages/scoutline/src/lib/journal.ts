@@ -462,3 +462,124 @@ export function buildNoteEntry(input: NoteInput): JournalLogEntry {
     ...(input.tags !== undefined && input.tags.length > 0 ? { tags: input.tags } : {}),
   };
 }
+
+// ---------------------------------------------------------------------------
+// T5 — recall (the scoring engine; DESIGN D4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Tokenize text for recall scoring: lowercase, split on non-word runs
+ * (underscore stays a word char so snake_case identifiers keep their
+ * atoms), drop empties. Deterministic — no stopwords, no stemming.
+ */
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9_]+/)
+    .filter((token) => token.length > 0);
+}
+
+/** The recall corpus of one full journal entry: query + skeleton text tokens. */
+function journalEntryTokens(entry: JournalLogEntry): string[] {
+  return [
+    ...tokenize(entry.query),
+    ...entry.skeleton.results.flatMap((row) => [
+      ...tokenize(row.url),
+      ...tokenize(row.title),
+    ]),
+  ];
+}
+
+/** One scored recall result row (the data-envelope identity set). */
+export interface JournalRecallResult {
+  readonly requestId: string;
+  readonly timestamp: number;
+  readonly capability: JournalableCapability;
+  /** Query-token overlap count against the entry's corpus. */
+  readonly score: number;
+  /** The newest ask: the entry timestamp, or a later repeat marker's. */
+  lastAsked: number;
+  readonly saveRef?: string;
+  readonly query: string;
+  /** The skeleton rows the entry recorded (per-result context). */
+  readonly results: readonly SkeletonItem[];
+}
+
+export interface JournalRecallOptions {
+  /** Upper bound on entry timestamps (INCLUSIVE: ≤, boundary-pinned). */
+  readonly asOf?: number;
+  readonly capability?: JournalableCapability;
+  readonly limit?: number;
+}
+
+/**
+ * Pure scoring over the log (DESIGN D4): tokenize the recall text,
+ * score each FULL journal entry by query-token overlap against its
+ * query + skeleton text, rank score DESC → recency DESC (lastAsked,
+ * then requestId for full determinism). Repeat markers are NEVER
+ * scored as separate results — they resolve to their referenced entry
+ * and advance its `lastAsked` (only markers at/below `asOf` count).
+ * Save entries are not text-searched (flags-only args); a save
+ * surfaces only through its skeleton's `saveRef`. The log alone is
+ * read: no master files, no cache, no network — ever.
+ */
+export function buildJournalRecall(
+  log: readonly unknown[],
+  text: string,
+  options: JournalRecallOptions,
+): JournalRecallResult[] {
+  const querySet = new Set(tokenize(text));
+  const byId = new Map<string, { row: JournalRecallResult; lastAsked: number }>();
+
+  for (const raw of log) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const entry = raw as Record<string, unknown>;
+    if (entry.kind !== "journal") continue; // saves never text-searched
+    if (entry.repeatOf !== undefined) {
+      // Repeat marker: resolve, never score separately.
+      const target = byId.get(entry.repeatOf as string);
+      const markerTime = typeof entry.timestamp === "number" ? entry.timestamp : 0;
+      if (
+        target !== undefined &&
+        markerTime > target.lastAsked &&
+        (options.asOf === undefined || markerTime <= options.asOf)
+      ) {
+        target.lastAsked = markerTime;
+      }
+      continue;
+    }
+    const journal = asJournalEntry(raw) as JournalLogEntry | undefined;
+    if (journal === undefined || "repeatOf" in journal) continue;
+    const full: JournalLogEntry = journal;
+    if (options.capability !== undefined && full.capability !== options.capability) continue;
+    if (options.asOf !== undefined && full.timestamp > options.asOf) continue;
+    let score = 0;
+    for (const token of journalEntryTokens(full)) {
+      if (querySet.has(token)) score += 1;
+    }
+    if (score === 0) continue;
+    byId.set(full.requestId, {
+      row: {
+        requestId: full.requestId,
+        timestamp: full.timestamp,
+        capability: full.capability,
+        score,
+        lastAsked: full.timestamp,
+        ...(full.saveRef !== undefined ? { saveRef: full.saveRef } : {}),
+        query: full.query,
+        results: full.skeleton.results,
+      },
+      lastAsked: full.timestamp,
+    });
+  }
+
+  return [...byId.values()]
+    .map(({ row, lastAsked }) => ({ ...row, lastAsked }))
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.lastAsked - a.lastAsked ||
+        (a.requestId < b.requestId ? -1 : a.requestId > b.requestId ? 1 : 0),
+    )
+    .slice(0, options.limit ?? Infinity);
+}

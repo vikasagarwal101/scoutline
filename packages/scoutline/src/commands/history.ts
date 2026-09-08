@@ -25,6 +25,8 @@
 import type { CommandResult, TextOutputMode } from "../command-invocation.js";
 import { FileError } from "../lib/errors.js";
 import type { ArtifactsLog, SaveLogEntry } from "../lib/artifacts.js";
+import { buildJournalRecall } from "../lib/journal.js";
+import type { JournalRecallResult, JournalableCapability } from "../lib/journal.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -416,6 +418,10 @@ Options:
           observation (see \`scoutline history note --help\`). Not
           suppressed by config "journal": false — that switch governs
           the always-on recording, and note is opt-in by construction.
+  recall  Re-find past research from journal skeletons: lexical token
+          overlap over recorded queries + skeletons, ranked by score
+          then recency (see \`scoutline history recall --help\`). No
+          network, no cache reads, no master files — pure log scoring.
 
 Exit codes:
   0  Success (including the empty fail-open cases)
@@ -436,6 +442,8 @@ export const HISTORY_NOTE_HELP = `History note - Write an explicit journal entry
 Usage:
   scoutline history note --capability <search|read|research> <text>
                           [--url <url> [--title <title>]]... [--tags a,b,c]
+  scoutline history recall <text> [--limit N] [--as-of <date>]
+                           [--capability <search|read|research>]
 
 Records hand-written work or observations into the research journal —
 the re-homed \`journal record\`: the same kind:"journal" entry the
@@ -477,3 +485,130 @@ Examples:
     --url https://example.com/changelog
   scoutline history note --capability research "open question on quotas"
 `;
+
+export const HISTORY_RECALL_HELP = `History recall - Re-find past research from the journal skeletons
+
+Usage:
+  scoutline history recall <text> [--limit N] [--as-of <date>] \\
+                           [--capability <search|read|research>]
+
+Lexical recollection over the recorded journal corpus: token overlap
+between your recall text and each journal entry's query + skeleton
+text (titles/urls/citations), ranked score DESC then recency DESC.
+Repeat markers never appear as separate results - they resolve to the
+entry they repeat and advance its lastAsked. Saved --save artifacts
+are never text-searched (their args are flags-only); a save surfaces
+only through its cross-linked skeleton (saveRef). No network, no
+response-cache reads, no master files are ever opened - recall is
+pure scoring over the log (no re-fetch, ever).
+
+Options:
+  <text>                The recall text (required, positional).
+  --limit N             Keep the top N ranked results.
+  --as-of <date>        Temporal boundary: entries with timestamp
+                        <= date. Accepts ISO-8601 or epoch-ms.
+  --capability <name>   Restrict the corpus to one capability.
+
+An empty or missing journal recalls an empty list (exit 0) with one
+stderr orientation line.
+
+Exit codes:
+  0  Success (including the empty fail-open cases)
+  1  Missing text; invalid --limit/--as-of/--capability values
+     (VALIDATION_ERROR)
+
+Examples:
+  scoutline history recall "rust vs go"
+  scoutline history recall "quota design" --capability research --limit 5
+  scoutline history recall "mcp transport" --as-of 2026-09-01T00:00:00Z
+`;
+
+/** T5 (`history recall`, DESIGN D4): the recall command. Pure scoring
+ * over the read log — `readLog` is the only I/O (fail-open, missing
+ * store = empty). Zero network, zero cache reads, masters never
+ * opened. The empty-JOURNAL case emits ONE orientation notice (the
+ * existing notice seam — stderr, stdout stays data-only). */
+export async function historyRecallCommand(input: {
+  readonly readLog: () => Promise<import("../lib/artifacts.js").ReadLogResult>;
+  readonly notice: (message: string) => void;
+  readonly text: string;
+  readonly asOf?: number;
+  readonly capability?: JournalableCapability;
+  readonly limit?: number;
+}): Promise<CommandResult> {
+  const { log } = await input.readLog();
+  const results = buildJournalRecall(log.entries as readonly unknown[], input.text, {
+    ...(input.asOf !== undefined ? { asOf: input.asOf } : {}),
+    ...(input.capability !== undefined ? { capability: input.capability } : {}),
+    ...(input.limit !== undefined ? { limit: input.limit } : {}),
+  });
+  // Orientation notice ONLY when the journal never had any full
+  // journal entry — a non-match over a live journal is honest
+  // silence (first-time UX, PRD AC4).
+  const hasJournalEntry = log.entries.some(
+    (entry) =>
+      (entry as unknown as Record<string, unknown>).kind === "journal" &&
+      (entry as unknown as Record<string, unknown>).repeatOf === undefined,
+  );
+  if (!hasJournalEntry) {
+    input.notice(
+      "journal is empty — entries appear as you run search/read/research (or history note).",
+    );
+  }
+  return {
+    kind: "data",
+    data: {
+      schemaVersion: 1,
+      query: input.text,
+      total: results.length,
+      results: results.map((result: JournalRecallResult) => ({
+        requestId: result.requestId,
+        capability: result.capability,
+        score: result.score,
+        timestamp: result.timestamp,
+        lastAsked: result.lastAsked,
+        ...(result.saveRef !== undefined ? { saveRef: result.saveRef } : {}),
+        query: result.query,
+        results: result.results,
+      })),
+    },
+    presentations: {
+      compact: renderRecallCompact(results),
+      markdown: renderRecallMarkdown(results),
+      refs: results.map((result) => result.requestId).join("\n"),
+      tty: renderRecallCompact(results),
+    },
+  };
+}
+
+function renderRecallCompact(results: readonly JournalRecallResult[]): string {
+  if (results.length === 0) return "no matching journal entries";
+  return results
+    .map(
+      (result) =>
+        `${result.score}  ${new Date(result.lastAsked).toISOString()}  ${result.capability}  ${result.query}` +
+        (result.saveRef !== undefined ? `  (saved: ${result.saveRef})` : ""),
+    )
+    .join("\n");
+}
+
+function renderRecallMarkdown(results: readonly JournalRecallResult[]): string {
+  if (results.length === 0) return "No matching journal entries.";
+  const lines = ["# Journal recall", ""];
+  for (const result of results) {
+    lines.push(
+      `## ${result.query} (${result.capability}, score ${result.score})`,
+      "",
+      `- requestId: ${result.requestId}`,
+      `- recorded: ${new Date(result.timestamp).toISOString()}`,
+      `- lastAsked: ${new Date(result.lastAsked).toISOString()}`,
+      ...(result.saveRef !== undefined ? [`- saveRef: ${result.saveRef}`] : []),
+      "",
+    );
+    for (const row of result.results) {
+      lines.push(`- [${row.title}](${row.url})`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}

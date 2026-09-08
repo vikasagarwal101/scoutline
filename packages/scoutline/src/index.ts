@@ -3871,6 +3871,29 @@ export async function handleHistory(
   }
   const commandFilter = typeof rawCommand === "string" ? rawCommand : undefined;
 
+  // T6b (DESIGN D5): `--kind save|journal` narrows the list to one
+  // entry kind (strict union — anything else is VALIDATION_ERROR, the
+  // family's fail-loud gate class); `--repeats` is the boolean opt-in
+  // that surfaces repeat-marker rows (markers skipped by default).
+  const rawKind = flags.kind;
+  if (rawKind === true) {
+    throw new ValidationError(
+      "--kind requires a value.",
+      "Pass an entry kind: save or journal.",
+    );
+  }
+  let kindFilter: "save" | "journal" | undefined;
+  if (rawKind !== undefined) {
+    if (rawKind !== "save" && rawKind !== "journal") {
+      throw new ValidationError(
+        `Invalid --kind value "${rawKind}".`,
+        "--kind must be save or journal.",
+      );
+    }
+    kindFilter = rawKind;
+  }
+  const repeats = flags.repeats === true;
+
   let requestId: string | undefined;
   if (subcommand === "show") {
     requestId = positional[1];
@@ -3910,6 +3933,8 @@ export async function handleHistory(
         ...(sinceDays !== undefined ? { sinceDays } : {}),
         ...(limit !== undefined ? { limit } : {}),
         ...(commandFilter !== undefined ? { command: commandFilter } : {}),
+        ...(kindFilter !== undefined ? { kind: kindFilter } : {}),
+        ...(repeats ? { repeats: true } : {}),
         ...(requestId !== undefined ? { requestId } : {}),
       }),
     outputMode,

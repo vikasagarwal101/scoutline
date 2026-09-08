@@ -220,7 +220,7 @@ describe("history: buildHistoryListReport (pure)", () => {
 // next column, and data rows must align with the header.
 describe("history: text-mode list rendering (column separators)", () => {
   it("keeps a one-space separator when a column value exactly fills its width", async () => {
-    const requestId = "20260829T120000Z-0001"; // 21 chars — exactly the column width
+    const requestId = "20260829T120000Z-0001"; // 21 chars
     const result = await historyCommand({
       subcommand: "list",
       readLog: async () => ({ log: { version: 1, entries: [entry({ requestId })] } }),
@@ -235,16 +235,18 @@ describe("history: text-mode list rendering (column separators)", () => {
     assert.ok(header, "header line must exist");
     assert.ok(row, "data row must exist");
     // Data row aligns with the header: requestId column, then separator.
+    // T6b widened the id column 21 → 30 to hold the `(repeat <id>)`
+    // marker annotation — the separator invariant survives the widening.
     assert.strictEqual(row.slice(0, 21), requestId);
-    assert.strictEqual(row[21], " ", "the exactly-full requestId must still be followed by a space");
+    assert.strictEqual(row[21], " ", "the requestId is followed by column padding");
     assert.strictEqual(header.slice(0, 21), "requestId".padEnd(21));
-    assert.strictEqual(header[21], " ");
-    assert.ok(header.startsWith("requestId".padEnd(21) + " "), "header aligned with data rows");
-    // The timestamp column (ISO width 24, starts at 22) also ends in a space.
+    assert.ok(header.startsWith("requestId".padEnd(30) + " "), "header aligned with data rows");
+    // The timestamp column (ISO width 24, starts at 31 after T6b's
+    // kind-column table widening) also ends in a space.
     const timestamp = new Date(NOW).toISOString();
     assert.strictEqual(timestamp.length, 24);
-    assert.ok(row.slice(22).startsWith(timestamp), `timestamp column misaligned: ${row}`);
-    assert.strictEqual(row[22 + 24], " ", "the exactly-full timestamp must still be followed by a space");
+    assert.ok(row.slice(31).startsWith(timestamp), `timestamp column misaligned: ${row}`);
+    assert.strictEqual(row[31 + 24], " ", "the exactly-full timestamp must still be followed by a space");
   });
 
   // Issue #108 review finding 1: a cache-served run renders `zai (cache)`

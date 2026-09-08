@@ -29,7 +29,7 @@
 
 import type { CommandResult, TextOutputMode } from "../command-invocation.js";
 import { FileError } from "../lib/errors.js";
-import type { ArtifactsLog, SaveLogEntry } from "../lib/artifacts.js";
+import type { ArtifactsLog, LogEntryKind, SaveLogEntry } from "../lib/artifacts.js";
 import { clearArtifactsLog } from "../lib/artifacts.js";
 import { buildJournalRecall } from "../lib/journal.js";
 import type { JournalRecallResult, JournalableCapability } from "../lib/journal.js";
@@ -42,7 +42,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** One list row: the inventory view of a log entry. */
 export interface HistoryEntrySummary {
-  readonly requestId: string;
+  readonly requestId?: string;
   readonly timestamp: number;
   /** Save entries: the command; journal entries: the capability (T2a review nit — journal rows have no command). */
   readonly command: string;
@@ -51,6 +51,8 @@ export interface HistoryEntrySummary {
   readonly artifactFormat: string;
   readonly kind: SaveLogEntry["kind"];
   readonly exportPath?: string;
+  /** T6b `--repeats` rows only: the full entry a repeat marker repeats. */
+  readonly repeatOf?: string;
 }
 
 /** `history list` data-mode envelope. */
@@ -82,6 +84,12 @@ export interface HistoryStatsReport {
   readonly masterBytes: number;
   readonly oldest?: number;
   readonly newest?: number;
+  /**
+   * T6b (DESIGN D5): the journal kind split into full skeleton entries
+   * vs repeat markers. Absent when the store holds no journal rows;
+   * the parts sum to `byKind.journal`.
+   */
+  readonly journalSplit?: { readonly full: number; readonly marker: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +100,10 @@ export interface HistoryListOptions {
   readonly sinceDays?: number;
   readonly limit?: number;
   readonly command?: string;
+  /** T6b: filter to one entry kind. */
+  readonly kind?: LogEntryKind;
+  /** T6b: include repeat-marker rows (skipped by default — D5 ruling). */
+  readonly repeats?: boolean;
   readonly now: () => number;
 }
 
@@ -100,9 +112,23 @@ function toSummary(entry: SaveLogEntry): HistoryEntrySummary {
   // T2a review nit: journal entries (kind === "journal") carry the
   // capability + provider + skeleton shape, NOT command/artifactFormat —
   // projecting those undefined fields crashed formatHistoryList's padEnd.
-  // Minimal per-kind projection here; the full list widening is T6b.
   if (entry.kind === "journal") {
-    const journal = entry as unknown as { capability: string; provider: { mode: string } };
+    const journal = entry as unknown as {
+      capability: string;
+      repeatOf?: string;
+    };
+    // T6b `--repeats` marker row: no requestId of its own — the row is
+    // the repeat annotation (repeatOf), everything else per-kind.
+    if (journal.repeatOf !== undefined) {
+      return {
+        timestamp: entry.timestamp,
+        command: journal.capability,
+        provider: entry.provider,
+        artifactFormat: "-",
+        kind: entry.kind,
+        repeatOf: journal.repeatOf,
+      };
+    }
     return {
       requestId: entry.requestId,
       timestamp: entry.timestamp,
@@ -147,19 +173,29 @@ export function buildHistoryListReport(log: ArtifactsLog, options: HistoryListOp
       ? utcDayFloor(options.now()) - (options.sinceDays - 1) * DAY_MS
       : undefined;
   const kept = log.entries.filter((entry) => {
-    // T2b review F1 (DESIGN D5 ruled end-state, pulled forward): repeat
-    // markers are skipped by default — they have no requestId of their
-    // own, so they are not inventory rows (list --repeats opt-in is T6b).
+    // T2b review F1 (DESIGN D5 ruled end-state): repeat markers are
+    // skipped by default — they have no requestId of their own, so they
+    // are not inventory rows. T6b `--repeats` opts in.
     if (entry.kind === "journal" && (entry as unknown as { repeatOf?: string }).repeatOf !== undefined) {
-      return false;
+      // T6b: kind and repeats compose — `--kind save --repeats` never
+      // surfaces markers (the kind gate runs first).
+      if (options.kind !== undefined && options.kind !== "journal") return false;
+      return options.repeats === true;
     }
+    if (options.kind !== undefined && entry.kind !== options.kind) return false;
     if (options.command !== undefined && entry.command !== options.command) return false;
     if (cutoff !== undefined && entry.timestamp < cutoff) return false;
     return true;
   });
-  const ordered = [...kept].sort((a, b) =>
-    b.timestamp - a.timestamp || (a.requestId < b.requestId ? 1 : a.requestId > b.requestId ? -1 : 0),
-  );
+  // Marker rows have no requestId: sort BEFORE projecting so id-based
+  // tiebreaks compare raw entries (markers order by timestamp against
+  // their siblings; requestIds only ever tiebreak full entries).
+  const ordered = [...kept].sort((a, b) => {
+    if (b.timestamp !== a.timestamp) return b.timestamp - a.timestamp;
+    const aId = a.requestId ?? "";
+    const bId = b.requestId ?? "";
+    return aId < bId ? 1 : aId > bId ? -1 : 0;
+  });
   const sliced = options.limit !== undefined ? ordered.slice(0, options.limit) : ordered;
   return {
     schemaVersion: 1,
@@ -235,14 +271,19 @@ export async function buildHistoryStatsReport(
   let masterBytes = 0;
   let oldest: number | undefined;
   let newest: number | undefined;
+  let journalFull = 0;
+  let journalMarker = 0;
   for (const entry of log.entries) {
     // T2a NIT 2: journal rows count under their CAPABILITY (they carry
     // no command); save rows keep the command. Same for artifactFormat
     // (journal rows have none — counted as "-" to keep the fold total).
     if (entry.kind === "journal") {
-      const capability = (entry as unknown as { capability: string }).capability;
-      byCommand[capability] = (byCommand[capability] ?? 0) + 1;
+      const journal = entry as unknown as { capability: string; repeatOf?: string };
+      byCommand[journal.capability] = (byCommand[journal.capability] ?? 0) + 1;
       byArtifactFormat["-"] = (byArtifactFormat["-"] ?? 0) + 1;
+      // T6b (DESIGN D5): the journal kind splits full vs marker.
+      if (journal.repeatOf !== undefined) journalMarker += 1;
+      else journalFull += 1;
     } else {
       byCommand[entry.command] = (byCommand[entry.command] ?? 0) + 1;
       byArtifactFormat[entry.artifactFormat] =
@@ -264,6 +305,11 @@ export async function buildHistoryStatsReport(
     byArtifactFormat,
     byKind,
     masterBytes,
+    // Absent on a store with no journal rows — split keys exist only
+    // when the kind they describe does (empty-store stays zeros-shape).
+    ...(journalFull + journalMarker > 0
+      ? { journalSplit: { full: journalFull, marker: journalMarker } }
+      : {}),
     ...(oldest !== undefined ? { oldest } : {}),
     ...(newest !== undefined ? { newest } : {}),
   };
@@ -282,10 +328,14 @@ function formatHistoryList(report: HistoryListReport): string {
   // every non-final column pads to width+1 so an exactly-full value (the
   // 21-char requestId) still leaves a one-space separator — columns can
   // no longer run together under a wide timestamp or id.
+  // T6b: the table gains a kind column (after format, before provider)
+  // — every text presentation renders this one table, so one column
+  // set covers compact/markdown/refs/tty. The id column widens to hold
+  // the T6b `--repeats` marker annotation `(repeat <requestId>)`.
   const pad = (cell: string, width: number): string => cell.padEnd(width + 1);
-  const columns = ([id, saved, command, format]: [string, string, string, string]): string =>
-    pad(id, 21) + pad(saved, 24) + pad(command, 10) + pad(format, 10);
-  const header = columns(["requestId", "saved (UTC)", "command", "format"]) + "provider";
+  const columns = ([id, saved, command, format, kind]: [string, string, string, string, string]): string =>
+    pad(id, 30) + pad(saved, 24) + pad(command, 10) + pad(format, 10) + pad(kind, 8);
+  const header = columns(["requestId", "saved (UTC)", "command", "format", "kind"]) + "provider";
   const lines = [
     `history: ${report.entries.length} of ${report.total} saved artifact(s)`,
     header,
@@ -307,12 +357,17 @@ function formatHistoryList(report: HistoryListReport): string {
             routing.servedFrom === "cache"
               ? `${routing.effective} (cache)`
               : (routing.effective ?? "-");
+    // T6b `--repeats` marker row: its own row shape — the requestId
+    // column holds the repeat annotation (repeatOf names the full
+    // entry), so the row stays addressable in a scan.
+    const id = row.repeatOf !== undefined ? `(repeat ${row.repeatOf})` : row.requestId ?? "";
     lines.push(
       columns([
-        row.requestId,
+        id,
         formatTimestamp(row.timestamp),
         row.command,
         row.artifactFormat,
+        row.kind,
       ]) + provider,
     );
   }
@@ -325,6 +380,11 @@ function formatHistoryStats(report: HistoryStatsReport): string {
     `commands: ${Object.entries(report.byCommand).map(([k, v]) => `${k}=${v}`).join(" ") || "(none)"}`,
     `formats: ${Object.entries(report.byArtifactFormat).map(([k, v]) => `${k}=${v}`).join(" ") || "(none)"}`,
     `kinds: ${Object.entries(report.byKind).map(([k, v]) => `${k}=${v}`).join(" ") || "(none)"}`,
+    // T6b (DESIGN D5): journal full-vs-marker split line — only when
+    // the store holds journal rows (matches the envelope's absence rule).
+    ...(report.journalSplit !== undefined
+      ? [`journal: ${report.journalSplit.full} full, ${report.journalSplit.marker} marker`]
+      : []),
   ];
   if (report.oldest !== undefined && report.newest !== undefined) {
     lines.push(`span: ${formatTimestamp(report.oldest)} → ${formatTimestamp(report.newest)}`);
@@ -358,6 +418,10 @@ export interface HistoryCommandDependencies {
   readonly sinceDays?: number;
   readonly limit?: number;
   readonly command?: string;
+  /** T6b: filter to one entry kind. */
+  readonly kind?: LogEntryKind;
+  /** T6b: include repeat-marker rows (skipped by default — D5 ruling). */
+  readonly repeats?: boolean;
   readonly requestId?: string;
 }
 
@@ -376,6 +440,8 @@ export async function historyCommand(deps: HistoryCommandDependencies): Promise<
       ...(deps.sinceDays !== undefined ? { sinceDays: deps.sinceDays } : {}),
       ...(deps.limit !== undefined ? { limit: deps.limit } : {}),
       ...(deps.command !== undefined ? { command: deps.command } : {}),
+      ...(deps.kind !== undefined ? { kind: deps.kind } : {}),
+      ...(deps.repeats === true ? { repeats: true } : {}),
       now: deps.now,
     });
     return { kind: "data", data: report, presentations: historyPresentations(report) };
@@ -467,6 +533,7 @@ stats / note / recall; clear MUTATES)
 
 Usage:
   scoutline history list [--since N] [--limit N] [--command <name>]
+                         [--kind <save|journal>] [--repeats]
   scoutline history show <requestId>
   scoutline history stats
   scoutline history note --capability <search|read|research> <text>
@@ -484,11 +551,16 @@ ignored with a stderr notice.
 Options:
   list    Saved runs, newest first. --since N keeps the last N UTC days
           (today inclusive); --limit N slices the newest N; --command
-          filters by command name.
+          filters by command name; --kind narrows to save or journal
+          entries; --repeats also lists warm-repeat markers (skipped
+          by default — markers render as their own row naming the
+          entry they repeat). The table's kind column marks each row.
   show    One saved run: the metadata record joined with the report
           content by requestId.
   stats   Counts by command, artifact format, and entry kind, plus the
-          total master bytes and oldest/newest span.
+          total master bytes and oldest/newest span. Journal rows also
+          split into full entries vs repeat markers (journal: N full,
+          M marker).
   note    Write an explicit journal entry: hand-supplied work record or
           observation (see \`scoutline history note --help\`). Not
           suppressed by config "journal": false — that switch governs
@@ -509,6 +581,7 @@ Exit codes:
 Examples:
   scoutline search "rust vs go" --save report.json
   scoutline history list --limit 5
+  scoutline history list --kind journal --repeats
   scoutline history show 20260829T142233Z-7f3a
   scoutline history stats
   scoutline history note --capability search "compared rust vs go" \\

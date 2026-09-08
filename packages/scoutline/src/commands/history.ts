@@ -173,18 +173,24 @@ export function buildHistoryListReport(log: ArtifactsLog, options: HistoryListOp
       ? utcDayFloor(options.now()) - (options.sinceDays - 1) * DAY_MS
       : undefined;
   const kept = log.entries.filter((entry) => {
-    // T2b review F1 (DESIGN D5 ruled end-state): repeat markers are
-    // skipped by default — they have no requestId of their own, so they
-    // are not inventory rows. T6b `--repeats` opts in.
-    if (entry.kind === "journal" && (entry as unknown as { repeatOf?: string }).repeatOf !== undefined) {
-      // T6b: kind and repeats compose — `--kind save --repeats` never
-      // surfaces markers (the kind gate runs first).
-      if (options.kind !== undefined && options.kind !== "journal") return false;
+    // `--command` deliberately matches the RENDERED command column: the
+    // command for save entries, the CAPABILITY for journal rows (markers
+    // included — they carry capability, not command; the stats fold has
+    // folded journal rows under capability since T2a). T6b review F1:
+    // every filter gate runs BEFORE the repeats decision so marker rows
+    // are windowed/kind/command-filtered exactly like their siblings.
+    const journal = entry.kind === "journal" ? (entry as unknown as { capability: string; repeatOf?: string }) : undefined;
+    if (options.command !== undefined && (journal?.capability ?? entry.command) !== options.command) {
+      return false;
+    }
+    if (cutoff !== undefined && entry.timestamp < cutoff) return false;
+    if (options.kind !== undefined && entry.kind !== options.kind) return false;
+    if (journal?.repeatOf !== undefined) {
+      // T2b review F1 (DESIGN D5 ruled end-state): repeat markers are
+      // skipped by default — no requestId, not inventory rows. T6b
+      // `--repeats` opts in (kind gate already passed above).
       return options.repeats === true;
     }
-    if (options.kind !== undefined && entry.kind !== options.kind) return false;
-    if (options.command !== undefined && entry.command !== options.command) return false;
-    if (cutoff !== undefined && entry.timestamp < cutoff) return false;
     return true;
   });
   // Marker rows have no requestId: sort BEFORE projecting so id-based

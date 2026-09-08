@@ -19,7 +19,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -32,7 +32,6 @@ import { main } from "../dist/index.js";
 import { appendLogEntry, writeArtifact } from "../dist/lib/artifacts.js";
 import { runProcess } from "./helpers/run-process.js";
 
-const DAY = 24 * 60 * 60 * 1000;
 const NOW = 1_800_000_000_000;
 const fixedNow = () => NOW;
 
@@ -451,6 +450,55 @@ describe("T6b: main() flag dispatch", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // T6b review F1 (MEDIUM): --repeats marker rows must respect the
+  // --since window and the --command filter like every other row —
+  // the repeats decision runs AFTER the gates, not before.
+  it("--repeats + --since: marker outside the window excluded, inside included", async () => {
+    // NOW = 1_800_000_000_000 (2027-01-15). `--since 1` floors to the
+    // current UTC day start: NOW-3d is outside, NOW is inside.
+    const entries = [
+      fullJournal("20260908T120000Z-0002", { capability: "read" }),
+      marker("20260908T120000Z-0002", { timestamp: NOW - 3 * 24 * 60 * 60 * 1000 }),
+    ];
+    const outside = buildHistoryListReport(
+      { version: 1, entries },
+      { now: fixedNow, repeats: true, sinceDays: 1 },
+    );
+    assert.deepStrictEqual(
+      outside.entries.map((e) => e.requestId),
+      ["20260908T120000Z-0002"],
+      "old marker excluded by --since even under --repeats",
+    );
+    assert.strictEqual(outside.total, 1);
+    const inside = buildHistoryListReport(
+      { version: 1, entries: [fullJournal("20260908T120000Z-0002"), marker("20260908T120000Z-0002")] },
+      { now: fixedNow, repeats: true, sinceDays: 1 },
+    );
+    assert.strictEqual(inside.total, 2, "same-window marker included");
+  });
+
+  it("--repeats + --command: marker filtered under its capability (the rendered command value)", async () => {
+    const entries = [
+      fullJournal("20260908T120000Z-0002", { capability: "read" }),
+      marker("20260908T120000Z-0002", { capability: "search" }),
+    ];
+    const report = buildHistoryListReport(
+      { version: 1, entries },
+      { now: fixedNow, repeats: true, command: "read" },
+    );
+    assert.deepStrictEqual(
+      report.entries.map((e) => e.requestId),
+      ["20260908T120000Z-0002"],
+      "search-capability marker excluded under --command read",
+    );
+    const both = buildHistoryListReport(
+      { version: 1, entries },
+      { now: fixedNow, repeats: true, command: "search" },
+    );
+    assert.strictEqual(both.total, 1, "capability match includes the marker");
+    assert.ok(both.entries[0].repeatOf !== undefined);
   });
 });
 

@@ -83,9 +83,10 @@ import {
   historyCommand,
   historyClearCommand,
   historyRecallCommand,
+  historyExportCommand,
   HISTORY_HELP,
   HISTORY_NOTE_HELP,
-  HISTORY_RECALL_HELP, HISTORY_CLEAR_HELP,
+  HISTORY_RECALL_HELP, HISTORY_CLEAR_HELP, HISTORY_EXPORT_HELP,
 } from "./commands/history.js";
 import { handleFetch, FETCH_HELP } from "./commands/fetch.js";
 import { handleArchive, parseArchiveArgs, ARCHIVE_HELP } from "./commands/archive.js";
@@ -3795,6 +3796,9 @@ export async function handleHistory(
   if (subcommand === "clear") {
     return handleHistoryClear(args, outputMode, deps, historyLock);
   }
+  if (subcommand === "export") {
+    return handleHistoryExport(args, outputMode, deps);
+  }
 
   if (flags.help || flags.h) {
     deps.invocation.writeStdout(HISTORY_HELP);
@@ -3817,7 +3821,7 @@ export async function handleHistory(
   ) {
     throw new ValidationError(
       `Unknown history subcommand "${subcommand}".`,
-      "Valid subcommands: list, show, stats, note, recall, clear.",
+      "Valid subcommands: list, show, stats, note, recall, export, clear.",
     );
   }
 
@@ -4262,6 +4266,97 @@ async function handleHistoryClear(
               },
             }
           : {}),
+      }),
+    outputMode,
+    now,
+    deps.secrets,
+  );
+}
+
+/**
+ * T6c (`history export`, PRD AC5 / DESIGN D5): the dossier renderer.
+ * Pure markdown over the filtered FULL journal entries — readLog is
+ * the only content I/O; saveRef'd masters get an EXISTENCE stat only
+ * (content never read). Zero network, zero cache reads (owner: no
+ * re-fetch, ever). Fail-open: a missing store is a header-only
+ * dossier, exit 0. `--since` is the ONLY flag (strict known-flag set,
+ * the clear convention) — no output writing; the dossier is stdout
+ * data (no family precedent for read-only commands writing documents
+ * to disk; the `--out` door stays shut — YAGNI).
+ */
+async function handleHistoryExport(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+): Promise<number> {
+  const { flags, positional } = parseArgs(args);
+
+  if (flags.help || flags.h) {
+    deps.invocation.writeStdout(HISTORY_EXPORT_HELP);
+    return 0;
+  }
+
+  // `--since <date>`: ISO-8601 or epoch-ms, the INCLUSIVE lower bound
+  // on entry timestamps (recall's --as-of parser class; invalid dates
+  // are VALIDATION_ERROR, never silently "forever").
+  let since: number | undefined;
+  const rawSince = flags["since"];
+  if (rawSince !== undefined) {
+    if (rawSince === true) {
+      throw new ValidationError(
+        "--since requires a value.",
+        "Pass an ISO-8601 date or epoch-ms, e.g. --since 2026-09-01.",
+      );
+    }
+    const str = String(rawSince);
+    const parsed = /^\d+$/.test(str) ? Number(str) : Date.parse(str);
+    if (!Number.isFinite(parsed)) {
+      throw new ValidationError(
+        `Invalid --since value "${str}".`,
+        "Pass an ISO-8601 date or epoch-ms, e.g. --since 2026-09-01.",
+      );
+    }
+    since = parsed;
+  }
+
+  // Strict flag set + no positionals — export takes no identity args
+  // (the family-convention gate BEFORE the store is read).
+  const known = new Set(["help", "h", "since"]);
+  const unknown = Object.keys(flags).filter((key) => !known.has(key));
+  if (unknown.length > 0 || positional.length > 1) {
+    const detail = positional.length > 1 ? `"${positional[1]}"` : `--${unknown[0]}`;
+    throw new ValidationError(
+      `Unexpected argument ${detail} for history export.`,
+      "Valid form: scoutline history export [--since <date>].",
+    );
+  }
+
+  const dir = resolveArtifactsDir(deps.env);
+  const now = deps.now ?? Date.now;
+  return invokeCommand(
+    deps.invocation,
+    (context) =>
+      historyExportCommand({
+        readLog: () => readLog(dir),
+        // Existence check ONLY: stat the saveRef'd master path — never
+        // open it, never fetch anything (the read-only ceiling).
+        masterExists: async (saveRequestId) => {
+          const save = (await readLog(dir)).log.entries.find(
+            (entry) =>
+              (entry as unknown as Record<string, unknown>).kind === "save" &&
+              (entry as unknown as { requestId?: string }).requestId === saveRequestId,
+          );
+          if (save === undefined) return false;
+          try {
+            await fs.stat(path.join(dir, (save as { masterPath: string }).masterPath));
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        notice: context.notice,
+        now,
+        ...(since !== undefined ? { since } : {}),
       }),
     outputMode,
     now,

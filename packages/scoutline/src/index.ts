@@ -79,7 +79,13 @@ import {
   DEFAULT_USAGE_WINDOW_DAYS,
   MAX_USAGE_WINDOW_DAYS,
 } from "./commands/usage.js";
-import { historyCommand, HISTORY_HELP, HISTORY_NOTE_HELP } from "./commands/history.js";
+import {
+  historyCommand,
+  historyRecallCommand,
+  HISTORY_HELP,
+  HISTORY_NOTE_HELP,
+  HISTORY_RECALL_HELP,
+} from "./commands/history.js";
 import { handleFetch, FETCH_HELP } from "./commands/fetch.js";
 import { handleArchive, parseArchiveArgs, ARCHIVE_HELP } from "./commands/archive.js";
 import { handleWatch } from "./commands/watch.js";
@@ -3773,12 +3779,23 @@ export async function handleHistory(
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
+  const subcommand = positional[0];
+  // Subcommands with their own arg surfaces dispatch BEFORE the generic
+  // --help check so `<subcommand> --help` renders the SUBCOMMAND's help
+  // (T4's in-handler help check was shadowed by the generic check; T5
+  // surfaces the gap — recall's flags live nowhere in HISTORY_HELP).
+  if (subcommand === "note") {
+    return handleHistoryNote(args, outputMode, deps);
+  }
+  if (subcommand === "recall") {
+    return handleHistoryRecall(args, outputMode, deps);
+  }
+
   if (flags.help || flags.h) {
     deps.invocation.writeStdout(HISTORY_HELP);
     return 0;
   }
 
-  const subcommand = positional[0];
   if (subcommand === undefined) {
     // Bare `scoutline history` is a discovery affordance, not an error.
     deps.invocation.writeStdout(HISTORY_HELP);
@@ -3789,13 +3806,14 @@ export async function handleHistory(
   // BEFORE the unknown-subcommand guard so `note` owns its own arg
   // surface (--capability/--url/--title/--tags), which the list/show/
   // stats surface never parses.
-  if (subcommand === "note") {
-    return handleHistoryNote(args, outputMode, deps);
-  }
-  if (subcommand !== "list" && subcommand !== "show" && subcommand !== "stats") {
+  if (
+    subcommand !== "list" &&
+    subcommand !== "show" &&
+    subcommand !== "stats"
+  ) {
     throw new ValidationError(
       `Unknown history subcommand "${subcommand}".`,
-      "Valid subcommands: list, show, stats, note.",
+      "Valid subcommands: list, show, stats, note, recall.",
     );
   }
 
@@ -4037,6 +4055,121 @@ async function handleHistoryNote(
       })),
     outputMode,
     deps.now,
+    deps.secrets,
+  );
+}
+
+/**
+ * T5 (`history recall`, PRD AC4 / DESIGN D4): lexical recollection over
+ * the recorded journal corpus. Pure scoring over `readLog` — the ONLY
+ * I/O — so recall makes zero network calls, opens zero master files,
+ * and never touches the response cache (owner: no re-fetch, ever).
+ * Fail-open on a missing store (empty results, exit 0, one stderr
+ * orientation line via the notice seam). The store is never written.
+ */
+async function handleHistoryRecall(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+): Promise<number> {
+  const { flags, positional } = parseArgs(args);
+
+  if (flags.help || flags.h) {
+    deps.invocation.writeStdout(HISTORY_RECALL_HELP);
+    return 0;
+  }
+
+  // Recall text: the positional (after the subcommand token), required.
+  const text = positional[1];
+  if (text === undefined || text.length === 0) {
+    throw new ValidationError(
+      "history recall requires the recall text.",
+      "Pass what to re-find as the positional argument, e.g. history recall \"rust vs go\".",
+    );
+  }
+
+  // --limit N: the family's strict decimal gate (same class as list's
+  // --since/--limit — Number() alone would admit "1e3" spellings).
+  let limit: number | undefined;
+  const rawLimit = flags.limit;
+  if (rawLimit !== undefined) {
+    if (rawLimit === true) {
+      throw new ValidationError(
+        "--limit requires a value.",
+        "Pass a positive integer, e.g. --limit 20.",
+      );
+    }
+    const str = String(rawLimit);
+    if (!/^\d+$/.test(str) || Number(str) < 1) {
+      throw new ValidationError(
+        `Invalid --limit value "${str}".`,
+        "--limit must be a positive integer, e.g. --limit 20.",
+      );
+    }
+    limit = Number(str);
+  }
+
+  // --capability <search|read|research>: the journal surface's own
+  // capability union (recall cannot invent one); fail-open 0 on a
+  // corpus with no match for it.
+  let capability: "search" | "read" | "research" | undefined;
+  const rawCapability = flags.capability;
+  if (rawCapability !== undefined) {
+    if (rawCapability === true) {
+      throw new ValidationError(
+        "--capability requires a value.",
+        "Pass one of: search, read, research.",
+      );
+    }
+    if (rawCapability !== "search" && rawCapability !== "read" && rawCapability !== "research") {
+      throw new ValidationError(
+        `Invalid --capability value "${rawCapability}".`,
+        "Pass one of: search, read, research.",
+      );
+    }
+    capability = rawCapability;
+  }
+
+  // --as-of <date>: ISO-8601 or epoch-ms; the INCLUSIVE upper bound on
+  // entry timestamps (boundary-pinned: ≤, not <). Invalid dates are
+  // VALIDATION_ERROR, never silently "now".
+  let asOf: number | undefined;
+  const rawAsOf = flags["as-of"];
+  if (rawAsOf !== undefined) {
+    if (rawAsOf === true) {
+      throw new ValidationError(
+        "--as-of requires a value.",
+        "Pass an ISO-8601 date or epoch-ms, e.g. --as-of 2026-09-01T00:00:00Z.",
+      );
+    }
+    const str = String(rawAsOf);
+    const parsed = /^\d+$/.test(str)
+      ? Number(str)
+      : Date.parse(str);
+    if (!Number.isFinite(parsed)) {
+      throw new ValidationError(
+        `Invalid --as-of value "${str}".`,
+        "Pass an ISO-8601 date or epoch-ms, e.g. --as-of 2026-09-01T00:00:00Z.",
+      );
+    }
+    asOf = parsed;
+  }
+
+  const dir = resolveArtifactsDir(deps.env);
+  const now = deps.now ?? Date.now;
+  return invokeCommand(
+    deps.invocation,
+    (context) =>
+      historyRecallCommand({
+        readLog: () => readLog(dir),
+        notice: context.notice,
+        text,
+        ...(asOf !== undefined ? { asOf } : {}),
+        ...(capability !== undefined ? { capability } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+      }),
+    outputMode,
+    now,
     deps.secrets,
   );
 }

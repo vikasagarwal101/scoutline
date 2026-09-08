@@ -215,12 +215,14 @@ describe("scoutline package — root export and metadata", () => {
     );
   });
 
-  it("manifest files allowlist is exactly [bin, dist]", async () => {
+  it("manifest files allowlist is exactly [bin, dist, skills]", async () => {
     const pkg = await loadPackageJson();
+    // skills/ joined the allowlist when the agent skill moved into the
+    // package (see tests/skill-shipping.test.js for the shipping pins).
     assert.deepStrictEqual(
       pkg.files,
-      ["bin", "dist"],
-      'package.json "files" allowlist must be exactly ["bin", "dist"]',
+      ["bin", "dist", "skills"],
+      'package.json "files" allowlist must be exactly ["bin", "dist", "skills"]',
     );
   });
 });

@@ -502,7 +502,7 @@ When a command fails, Scoutline writes a JSON error envelope to stderr (data-onl
 ```
 ├── docs/                   # User, contributor, and maintainer guides
 ├── packages/scoutline/     # npm package source
-├── skills/scoutline/       # Agent skill (SKILL.md)
+│   └── skills/scoutline/   # packages/scoutline/skills/scoutline — agent skill (SKILL.md), shipped in the package
 └── .claude-plugin/         # Claude Code marketplace config
 ```
 

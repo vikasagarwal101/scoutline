@@ -10,7 +10,7 @@
       "name": "scoutline",
       "description": "Scoutline source investigation tools",
       "skills": [
-        "./skills/scoutline"
+        "./packages/scoutline/skills/scoutline"
       ],
       "strict": false
     }

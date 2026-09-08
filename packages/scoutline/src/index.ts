@@ -3978,12 +3978,14 @@ async function handleHistoryNote(
       rows.push({ url, title });
     }
   }
-  // Read skeletons are EXACTLY one row (the T3 validator tooth): a
-  // read note with 2+ --url rows would write an entry its own store
-  // rejects — validate here for the command's own error wording.
-  if (rawCapability === "read" && rows.length > 1) {
+  // Read skeletons are EXACTLY one row (the T3 validator tooth). A
+  // read note with 0 or 2+ --url rows would write an entry its own
+  // store rejects — and one invalid entry blanks EVERY later history
+  // read (whole-log fail-open). Reject at the command layer: the
+  // MUST-FIX log-blanking write hole.
+  if (rawCapability === "read" && rows.length !== 1) {
     throw new ValidationError(
-      "history note --capability read takes at most one --url row.",
+      "history note --capability read requires exactly one --url row.",
       "A read skeleton is the single {url,title} fetch identity.",
     );
   }

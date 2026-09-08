@@ -23,7 +23,8 @@
 - **Code Mode** - TypeScript tool chaining for agent automation
 - **Provider selection** - Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, or Spider.cloud
 - **Usage ledger** - Local 90-day call-usage history per provider and capability (`scoutline usage`), counters only
-- **Saved artifacts** - Durable clean reports from any provider-backed run (`--save`), content + request id only, plus a credential-free `scoutline history` inventory (list/show/stats)
+- **Saved artifacts** - Durable clean reports from any provider-backed run (`--save`), content + request id only, plus a credential-free `scoutline history` inventory (list/show/stats/recall/export/note/clear)
+- **Research journal** - Always-on local memory of every `search`/`read`/`research` call: thin skeletons (query, provider, url+title identity, content hash) recorded under `~/.scoutline/artifacts/` and re-found offline via `history recall`; opt out per call (`--no-journal`) or globally (`journal: false`)
 
 ## Quick Start
 
@@ -252,6 +253,44 @@ output is byte-identical to previous releases.
 
 Any provider-backed command (`search`, `read`, `crawl`, `map`, `research`, `repo`, `vision`) accepts `--save [<path>]`: after a successful run it writes a durable **clean report** — content plus a request id, nothing else — while stdout stays byte-identical. The master copy always lands in the artifact store (`~/.scoutline/artifacts/`, override `SCOUTLINE_ARTIFACTS_DIR`); `--save <path>` additionally writes an export copy (refused on an existing target unless `--save-force`). Reports are redacted through the same seam as stdout and never touched by `cache clear` or TTLs. `scoutline history list/show/stats` is the credential-free, fail-open inventory over the store's `index.json` metadata log, joined to reports by request id.
 
+### Research Journal (always-on, local-only)
+
+Every `search`, `read`, and `research` call — batch-driven ops included —
+appends a thin **journal entry** to the same store: query, provider,
+timestamp, a content hash, and the **skeleton** of the result (search:
+url+title list; read: url+title; research: citations). Result bodies are
+never recorded — they live in the 24h response cache or in an explicit
+`--save` artifact — and a warm repeat (cache hit) appends only a tiny
+**repeat marker**. Entries are self-contained forever: `cache clear` never
+touches them and nothing is ever re-fetched. Journaling changes no
+provider-call volume; savings come from using `history recall` instead of
+re-running searches.
+
+```bash
+scoutline history recall "rust async"              # offline re-find over skeletons
+scoutline history recall "rust" --capability search --limit 5
+scoutline history recall "state of ai" --as-of 2026-08-01   # what the journal knew then
+scoutline history note "decided on tavily for finance"       # explicit entry
+scoutline history export                            # markdown dossier, provenance-cited
+scoutline history list --kind journal               # both kinds; --repeats shows markers
+scoutline history clear                             # clears journal entries only
+scoutline history clear --all                       # also wipes --save artifacts + masters
+```
+
+**Privacy**: the journal is local-only (`~/.scoutline/artifacts/`, mode
+0600, never uploaded), and query text passes the configured-secrets
+redaction seam before it is written. Disclosure is one prompt in
+`scoutline init` (default: enabled, writing `"journal": true`); users who
+never run init get the enabled default too. Escape hatches: `--no-journal`
+on any single `search`/`read`/`research` call (rejected as
+`UNSUPPORTED_OPTION` everywhere else), `scoutline config set journal false`
+(or the init re-config menu) to stop entirely.
+
+Scale note: the journal shares `index.json` with `--save` and appends
+rewrite the whole log under a write lock. Measured appends stay well under
+100ms through ~20k entries; segmented-log/compaction is the named future
+policy for larger journals.
+
 ## Capability Matrix
 
 The matrix below is generated from the production provider registry
@@ -368,7 +407,7 @@ scoutline doctor --help       # Provider diagnostics
 scoutline quota --help        # Plan usage
 scoutline cache --help        # Local cache inspection, clearing, and pruning
 scoutline usage --help        # Local call-usage history (usage.json ledger)
-scoutline history --help      # Saved-artifact inventory (list/show/stats)
+scoutline history --help      # Saved artifacts + research journal (list/show/stats/recall/export/note/clear)
 ```
 
 ### Examples
@@ -428,6 +467,11 @@ scoutline search "rust vs go" --save report.json   # master copy + export copy
 scoutline search "rust vs go" --save --save-format markdown  # master only
 scoutline history list --limit 5                   # newest saves, from the log
 scoutline history show 20260829T142233Z-7f3a       # metadata + report, joined
+
+# Research journal - recall past work instead of re-searching (offline)
+scoutline history recall "rust async" --limit 5    # scored re-find over skeletons
+scoutline history export                          # cited markdown dossier
+scoutline search "rust async" --no-journal         # skip journaling one call
 
 # Config - inspect and change settings (scriptable, always redacted)
 scoutline config get                  # full config dump (credentials masked)

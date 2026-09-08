@@ -743,6 +743,9 @@ Options:
                          history show")
   --timeout <s>          Polling timeout in seconds (default: 300)
   --no-cache             Bypass the response cache for this invocation
+  --no-journal           Skip the research journal entry for this one call
+                         (journaling is on by default; see
+                         \`scoutline history --help\`)
 
 Local context (steer the report from a local notes file; the two
 source flags are mutually exclusive):

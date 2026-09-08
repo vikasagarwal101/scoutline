@@ -956,6 +956,9 @@ Options:
                       \`--context-stdin\`.
   --context-stdin     Same as \`--context\`, reading the notes from
                       standard input (no value; pipe the file in).
+  --no-journal        Skip the research journal entry for this one call
+                      (journaling is on by default; see
+                      \`scoutline history --help\`).
 
   Under fan-out every arm runs every sub-query — one stderr notice
   states the math: N sub-queries × M arms = N×M billable searches. In

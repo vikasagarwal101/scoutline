@@ -758,7 +758,10 @@ Options:
   stats   Counts by command, artifact format, and entry kind, plus the
           total master bytes and oldest/newest span. Journal rows also
           split into full entries vs repeat markers (journal: N full,
-          M marker).
+          M marker). Note: journal rows have no command, so the
+          commands/ fold counts them under their capability
+          (search/read/research) — the key set mixes commands and
+          capabilities.
   note    Write an explicit journal entry: hand-supplied work record or
           observation (see \`scoutline history note --help\`). Not
           suppressed by config "journal": false — that switch governs

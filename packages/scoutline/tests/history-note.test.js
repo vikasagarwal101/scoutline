@@ -318,13 +318,13 @@ describe("T4: arg validation (existing history subcommand conventions)", () => {
 });
 
 describe("T4: help surfaces", () => {
-  it("history help lists `note`; identity line still read-only (T6a flips it)", async () => {
+  it("history help lists `note`; identity no longer read-only (T6a flipped it — clear MUTATES)", async () => {
     const { adapter, stdout } = makeAdapter();
     const status = await main(["history", "--help"], noteDeps(adapter));
     assert.strictEqual(status, 0);
     const help = stdout.join("");
     assert.ok(help.includes("note"), "history help must list note");
-    assert.ok(help.includes("Read-only"), "identity line flips in T6a, not here");
+    assert.ok(!/Read-only/.test(help), "T6a flipped the identity: clear is history's first mutating op");
   });
 
   it("history note --help renders (exit 0, does not write)", async () => {

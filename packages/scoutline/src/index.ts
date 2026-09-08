@@ -81,10 +81,11 @@ import {
 } from "./commands/usage.js";
 import {
   historyCommand,
+  historyClearCommand,
   historyRecallCommand,
   HISTORY_HELP,
   HISTORY_NOTE_HELP,
-  HISTORY_RECALL_HELP,
+  HISTORY_RECALL_HELP, HISTORY_CLEAR_HELP,
 } from "./commands/history.js";
 import { handleFetch, FETCH_HELP } from "./commands/fetch.js";
 import { handleArchive, parseArchiveArgs, ARCHIVE_HELP } from "./commands/archive.js";
@@ -244,8 +245,8 @@ Commands:
   cache    Inspect or clear the local cache (stats / clear)
   usage    Report local call-usage history (usage.json ledger,
            credential-free)
-  history  Inventory of saved --save artifacts (list / show / stats,
-           credential-free)
+  history  Saved --save artifacts + research journal (list / show /
+           stats / note / recall; clear MUTATES, credential-free)
   fetch    Direct, binary-safe HTTP client (evidentiary GET + API,
            credential-free)
   archive  Internet Archive Wayback Machine (CDX index + snapshot
@@ -3776,6 +3777,7 @@ export async function handleHistory(
   args: string[],
   outputMode: OutputMode,
   deps: HandlerDependencies,
+  historyLock?: { timeoutMs?: number; setTimeout?: typeof setTimeout },
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
@@ -3789,6 +3791,9 @@ export async function handleHistory(
   }
   if (subcommand === "recall") {
     return handleHistoryRecall(args, outputMode, deps);
+  }
+  if (subcommand === "clear") {
+    return handleHistoryClear(args, outputMode, deps, historyLock);
   }
 
   if (flags.help || flags.h) {
@@ -3812,7 +3817,7 @@ export async function handleHistory(
   ) {
     throw new ValidationError(
       `Unknown history subcommand "${subcommand}".`,
-      "Valid subcommands: list, show, stats, note, recall.",
+      "Valid subcommands: list, show, stats, note, recall, clear.",
     );
   }
 
@@ -4166,6 +4171,72 @@ async function handleHistoryRecall(
         ...(asOf !== undefined ? { asOf } : {}),
         ...(capability !== undefined ? { capability } : {}),
         ...(limit !== undefined ? { limit } : {}),
+      }),
+    outputMode,
+    now,
+    deps.secrets,
+  );
+}
+
+/**
+ * T6a (`history clear`, PRD AC7 / DESIGN D5): the valve — history's
+ * first MUTATING subcommand. Bare clear rewrites the log to remove the
+ * JOURNAL kind only (full entries + repeat markers; the fast-refilling
+ * layer); `--all` extends the wipe to save entries AND their master
+ * files. The rewrite runs inside the artifacts write lock via
+ * `clearArtifactsLog`; a corrupt pre-state reads fail-open EMPTY so the
+ * clear still succeeds. `--all` is the ONLY accepted flag — everything
+ * else is VALIDATION_ERROR BEFORE any mutation. Journaling and the
+ * response cache are untouched (cache clear is a different command).
+ */
+async function handleHistoryClear(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+  lock?: { timeoutMs?: number; setTimeout?: typeof setTimeout },
+): Promise<number> {
+  const { flags, positional } = parseArgs(args);
+
+  if (flags.help || flags.h) {
+    deps.invocation.writeStdout(HISTORY_CLEAR_HELP);
+    return 0;
+  }
+
+  // `--all` is the ONLY accepted flag; every other flag (and any
+  // positional beyond the subcommand) is a family-convention
+  // VALIDATION_ERROR BEFORE the store is touched.
+  const all = flags.all === true;
+  const known = new Set(["help", "h", "all"]);
+  const unknown = Object.keys(flags).filter((key) => !known.has(key));
+  if (unknown.length > 0 || positional.length > 1) {
+    const detail =
+      positional.length > 1
+        ? `"${positional[1]}"`
+        : `--${unknown[0]}`;
+    throw new ValidationError(
+      `Unexpected argument ${detail} for history clear.`,
+      "Valid form: scoutline history clear [--all].",
+    );
+  }
+
+  const dir = resolveArtifactsDir(deps.env);
+  const now = deps.now ?? Date.now;
+  return invokeCommand(
+    deps.invocation,
+    (context) =>
+      historyClearCommand({
+        dir,
+        all,
+        now,
+        notice: context.notice,
+        ...(lock !== undefined
+          ? {
+              lock: {
+                ...(lock.timeoutMs !== undefined ? { timeoutMs: lock.timeoutMs } : {}),
+                ...(lock.setTimeout !== undefined ? { setTimeout: lock.setTimeout } : {}),
+              },
+            }
+          : {}),
       }),
     outputMode,
     now,

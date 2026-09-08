@@ -664,6 +664,64 @@ describe("review r3: export --since Date-range validation (macroscope)", () => {
   });
 });
 
+describe("cubic P2: duplicate save requestIds resolve FIRST-wins (pre-refactor entries.find contract)", () => {
+  // Two save entries sharing one requestId; only the FIRST entry's
+  // masterPath is stat'd. Pin via observable existence behavior:
+  // case A first-save master on disk → pointer renders WITHOUT
+  // "(missing)"; case B (order swapped) → "(missing)".
+  const DUP = FIXTURES.eNew.saveRef;
+
+  it("first save entry's masterPath wins when its master exists", async () => {
+    const artifactsDir = makeTempDir("scoutline-export-dup-first-");
+    try {
+      writeFileSync(join(artifactsDir, "first-wins.json"), "{}", "utf8");
+      await seedStore(artifactsDir, [
+        FIXTURES.eNew,
+        saveEntry({ requestId: DUP, masterPath: "first-wins.json" }),
+        saveEntry({ requestId: DUP, masterPath: "not-on-disk.json" }),
+      ]);
+      const { adapter, stdout, stderr } = makeAdapter();
+      const status = await main(
+        ["history", "export"],
+        exportDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const envelope = JSON.parse(stdout[0]);
+      assert.ok(
+        !envelope.markdown.includes(`${DUP} (missing)`),
+        `first save's master (on disk) must win, got last-wins: ${JSON.stringify(envelope.markdown.match(/saved artifact: .*/))}`,
+      );
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("order swapped: first save's missing masterPath still wins", async () => {
+    const artifactsDir = makeTempDir("scoutline-export-dup-swapped-");
+    try {
+      writeFileSync(join(artifactsDir, "second-wins.json"), "{}", "utf8");
+      await seedStore(artifactsDir, [
+        FIXTURES.eNew,
+        saveEntry({ requestId: DUP, masterPath: "not-on-disk.json" }),
+        saveEntry({ requestId: DUP, masterPath: "second-wins.json" }),
+      ]);
+      const { adapter, stdout, stderr } = makeAdapter();
+      const status = await main(
+        ["history", "export"],
+        exportDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const envelope = JSON.parse(stdout[0]);
+      assert.ok(
+        envelope.markdown.includes(`${DUP} (missing)`),
+        `first save's master (missing) must win over later existing save: ${JSON.stringify(envelope.markdown.match(/saved artifact: .*/))}`,
+      );
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("review r3: export masterExists reads the log ONCE (greptile/macroscope P1)", () => {
   it("exporting N saveRef'd entries performs ONE log read total, not one per entry (read-count pin)", async () => {
     const artifactsDir = makeTempDir("scoutline-export-onepass-");

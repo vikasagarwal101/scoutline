@@ -1366,6 +1366,71 @@ function makeResearchDescriptor(id, log, options = {}) {
   };
 }
 
+describe("T3: read skeleton validator tooth (direct pin)", () => {
+  it("a hand-written 2-row read journal entry fails validation → whole-log fail-open (read skeletons are EXACTLY one row)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-readtooth-");
+    try {
+      // Good search entry first, so the pin proves the read entry alone
+      // blanks the log (the fail-open semantic), not an empty log.
+      await appendJournalEntry(artifactsDir, {
+        kind: "journal",
+        requestId: "20260908T000000Z-0001",
+        timestamp: 1800000000000,
+        capability: "search",
+        provider: { mode: "single", effective: "zai", servedFrom: "live" },
+        query: "q",
+        contentHash: "a".repeat(64),
+        cacheKey: "v2.json",
+        skeleton: { results: [{ url: "https://x", title: "t" }] },
+      });
+      // The tooth: capability "read" with TWO rows.
+      await appendJournalEntry(artifactsDir, {
+        kind: "journal",
+        requestId: "20260908T000001Z-0002",
+        timestamp: 1800000001000,
+        capability: "read",
+        provider: { mode: "single", effective: "zai", servedFrom: "live" },
+        query: "https://example.com",
+        contentHash: "b".repeat(64),
+        cacheKey: "v2.read.json",
+        skeleton: {
+          results: [
+            { url: "https://example.com", title: "one" },
+            { url: "https://example.com/2", title: "two" },
+          ],
+        },
+      });
+      const { log, notice } = await readLog(artifactsDir);
+      assert.strictEqual(log.entries.length, 0, "2-row read skeleton must fail open (whole log)");
+      assert.ok(notice !== undefined && notice.length > 0, "corruption notice surfaced");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("a 1-row read entry validates (the tooth does not over-bite)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-readtooth-ok-");
+    try {
+      await appendJournalEntry(artifactsDir, {
+        kind: "journal",
+        requestId: "20260908T000000Z-0003",
+        timestamp: 1800000000000,
+        capability: "read",
+        provider: { mode: "single", effective: "zai", servedFrom: "live" },
+        query: "https://example.com",
+        contentHash: "c".repeat(64),
+        cacheKey: "v2.read.json",
+        skeleton: { results: [{ url: "https://example.com", title: "t" }] },
+      });
+      const { log, notice } = await readLog(artifactsDir);
+      assert.strictEqual(log.entries.length, 1);
+      assert.strictEqual(notice, undefined);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("T3: read journaling (main-driven)", () => {
   it("cache MISS on read → ONE full entry: capability read, query = the URL, skeleton {url,title} from the read envelope", async () => {
     const artifactsDir = makeTempDir("scoutline-journal-read-");
@@ -1657,6 +1722,51 @@ describe("T3: research journaling (main-driven)", () => {
       } finally {
         rmSync(artifactsDir, { recursive: true, force: true });
       }
+    }
+  });
+
+  it("research redaction: fake secret in query text AND token in citation URL appear in NEITHER the entry nor the log file", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-research-redact-");
+    const SECRET = "sk-research-secret-query-token-4d7b2";
+    const TOKEN = "tok-research-8a41f2c9b7de";
+    const log = [];
+    const { adapter, stderr } = makeAdapter();
+    try {
+      const status = await main(
+        ["--provider", "tavily", "research", `api keys ${SECRET}`],
+        hermeticMainDeps({
+          invocation: adapter,
+          env: {
+            SCOUTLINE_ARTIFACTS_DIR: artifactsDir,
+            TAVILY_API_KEY: "tv",
+            EXA_API_KEY: TOKEN,
+            Z_AI_API_KEY: SECRET,
+          },
+          providerDescriptors: [
+            makeResearchDescriptor("tavily", log, {
+              result: {
+                schemaVersion: 1,
+                query: `api keys ${SECRET}`,
+                model: "auto",
+                report: "Report from tavily",
+                sources: [
+                  { title: "leaky", url: `https://example.com/doc?token=${TOKEN}` },
+                ],
+              },
+            }),
+          ],
+        }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const raw = readFileSync(join(artifactsDir, "index.json"), "utf8");
+      assert.ok(!raw.includes(SECRET), "fake secret leaked into the log via research query text");
+      assert.ok(!raw.includes(TOKEN), "url token leaked into the log via citation url");
+      const store = JSON.parse(raw);
+      const entry = store.entries[0];
+      assert.ok(!JSON.stringify(entry.query).includes(SECRET));
+      assert.ok(!JSON.stringify(entry.skeleton).includes(TOKEN));
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
     }
   });
 

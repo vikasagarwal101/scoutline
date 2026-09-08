@@ -455,8 +455,10 @@ Options:
   <text>  The note itself: the query (search) or URL (read/research)
           plus any observation text (required, positional).
   --url <url>
-          One skeleton row. Repeat for multi-row skeletons. Without
-          --url the skeleton is an empty list (a bare observation).
+          One skeleton row. Repeat for multi-row skeletons (search,
+          research); a read note takes EXACTLY one. Without --url the
+          skeleton is an empty list (a bare observation; invalid for
+          read).
   --title <title>
           Title for the preceding --url row; defaults to the url
           itself. Belongs to the nearest preceding --url.
@@ -466,7 +468,7 @@ Options:
 Exit codes:
   0  Note recorded
   1  Missing/invalid --capability, missing text, a valueless --url or
-     --title, more than one --url on a read note (VALIDATION_ERROR)
+     --title, a read note without exactly one --url (VALIDATION_ERROR)
 
 Examples:
   scoutline history note --capability search "compared rust vs go" \\

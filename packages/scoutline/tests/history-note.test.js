@@ -104,10 +104,10 @@ describe("T4: history note — the explicit write (main-driven)", () => {
         skeletonContentHash(entry.skeleton),
       );
       // Hand-written, not provider-served: sentinel provider, minted ids.
+      // servedFrom is ABSENT (NIT 1): a note asserts no serve.
       assert.deepStrictEqual(entry.provider, {
         mode: "single",
         effective: "note",
-        servedFrom: "live",
       });
       assert.ok(typeof entry.requestId === "string" && entry.requestId.length > 0);
       assert.ok(typeof entry.timestamp === "number");
@@ -291,9 +291,30 @@ describe("T4: arg validation (existing history subcommand conventions)", () => {
     assert.strictEqual(envelope.error?.code ?? envelope.code, "VALIDATION_ERROR");
   });
 
-  it("--url without --capability read/research is fine on search too (url+title rows are the search skeleton shape)", async () => {
-    // No pin — search skeletons ARE url+title lists; documented behavior.
+  it("MUST-FIX (log-blanking write hole): read note WITHOUT --url → VALIDATION_ERROR exit 1, NOTHING written — a zero-row read skeleton would fail the store validator and blank every later history read", async () => {
+    const artifactsDir = makeTempDir("scoutline-note-readhole-");
+    const { adapter, stderr } = makeAdapter();
+    try {
+      const status = await main(
+        ["history", "note", "--capability", "read", "observed without a url"],
+        noteDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
+      );
+      assert.strictEqual(status, 1, "zero-row read note must be rejected at the CLI, not written");
+      const envelope = JSON.parse(stderr.find((line) => line.trim().startsWith("{")) ?? "{}");
+      assert.strictEqual(envelope.error?.code ?? envelope.code, "VALIDATION_ERROR");
+      const indexFile = join(artifactsDir, "index.json");
+      if (existsSync(indexFile)) {
+        assert.deepStrictEqual(
+          JSON.parse(readFileSync(indexFile, "utf8")).entries,
+          [],
+          "no entry may land for a rejected read note",
+        );
+      }
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
   });
+
 });
 
 describe("T4: help surfaces", () => {
@@ -366,7 +387,7 @@ describe("T4: mutation evidence (run manually with the named scratch-break)", ()
       // happened. The CLI exposes no --provider on note; this pin holds
       // the line structurally.
       assert.strictEqual(entry.provider.effective, "note");
-      assert.strictEqual(entry.provider.servedFrom, "live");
+      assert.strictEqual(entry.provider.servedFrom, undefined, "a note asserts no serve (NIT 1)");
       // And the entry still passes the store validator (readLog clean):
       const { readLog } = await import("../dist/lib/artifacts.js");
       const { log, notice } = await readLog(artifactsDir);

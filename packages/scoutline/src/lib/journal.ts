@@ -409,15 +409,15 @@ export function buildJournalEntry(input: JournalInput): JournalLogEntry {
  * T4 (`history note`, DESIGN D5): the sentinel provider a hand-written
  * note carries. A note records work NO provider served, so the routing
  * must not read as a served run — `effective:"note"` is deliberately
- * outside the Provider registry ids, `servedFrom:"live"` satisfies the
- * validator union, and the shape is NOT hand-choosable from the CLI:
- * the command exposes no `--provider`, and a smuggled real id would
- * assert a provider call that never happened (mutation-pinned).
+ * outside the Provider registry ids, and `servedFrom` stays ABSENT
+ * (neither "live" nor "cache": asserting a serve would claim a provider
+ * call that never happened). The shape is NOT hand-choosable from the
+ * CLI: the command exposes no `--provider`, and a smuggled real id is
+ * mutation-pinned against.
  */
 export const NOTE_PROVIDER_ROUTING: ProviderRouting = Object.freeze({
   mode: "single",
   effective: "note",
-  servedFrom: "live",
 });
 
 export interface NoteInput {

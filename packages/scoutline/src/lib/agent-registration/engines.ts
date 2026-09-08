@@ -155,6 +155,105 @@ export async function markerBlockInsert(
   await atomicReplaceFile(filePath, next);
 }
 
+export interface JsonArrayInsertOptions {
+  filePath: string;
+  /** Absolute pointer path appended to the target's JSON array (opencode instructions). */
+  element: string;
+}
+
+function jsonInsertError(cause: string): Error {
+  const error = new Error(`scoutline: opencode.json mutation produced invalid JSON — original restored (${cause})`);
+  error.name = "AgentRegistrationJsonError";
+  return error;
+}
+
+/**
+ * JSON array insert (opencode `instructions`, DESIGN D2): locate the array,
+ * skip if the element is already present (idempotent), surgically insert
+ * `,\n    "<element>"` before the closing `]` as TEXT (preserves all other
+ * formatting); empty array inserts without the leading comma; absent key
+ * inserts a new top-level `"instructions": ["<element>"]`; then JSON.parse
+ * validates — failure restores the original bytes and rejects (init-time
+ * registration exits non-zero; refresh contexts catch and degrade).
+ */
+export async function jsonArrayInsert(
+  options: JsonArrayInsertOptions,
+): Promise<void> {
+  const { filePath, element } = options;
+  let existed = true;
+  let original: string;
+  try {
+    original = await fs.readFile(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    existed = false;
+    original = "";
+  }
+
+  let next: string;
+  // String/escape-aware scan from the `[` after the "instructions" key:
+  // walk chars tracking in-string state (backslash-escape handling) and
+  // bracket depth to the array's true matching close. A naive [^\]]* regex
+  // breaks on `]` inside strings and on nested arrays.
+  const findInstructionsClose = (): { openAt: number; closeAt: number } | null => {
+    const keyIndex = original.indexOf('"instructions"');
+    if (keyIndex === -1) return null;
+    const openAt = original.indexOf("[", keyIndex + '"instructions"'.length);
+    if (openAt === -1) return null;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = openAt; i < original.length; i += 1) {
+      const ch = original[i]!;
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === "\\") escaped = true;
+        else if (ch === '"') inString = false;
+      } else if (ch === '"') {
+        inString = true;
+      } else if (ch === "[") {
+        depth += 1;
+      } else if (ch === "]") {
+        depth -= 1;
+        if (depth === 0) return { openAt, closeAt: i };
+      }
+    }
+    return null;
+  };
+  const arrayRange = findInstructionsClose();
+  // Idempotency scoped to the instructions array: only early-return when the
+  // array's own inner text contains the element (absent key → proceed below).
+  if (arrayRange) {
+    const inner = original.slice(arrayRange.openAt + 1, arrayRange.closeAt);
+    if (inner.includes(`"${element}"`)) return; // idempotent: search before mutate
+    const insertAt = arrayRange.closeAt; // before `]`
+    if (inner.trim() === "") {
+      // Empty array: no leading comma.
+      next = `${original.slice(0, insertAt)}\n    "${element}"\n  ${original.slice(insertAt)}`;
+    } else {
+      next = `${original.slice(0, insertAt)},\n    "${element}"${original.slice(insertAt)}`;
+    }
+  } else if (original === "" || original.trim() === "{}") {
+    // Absent key on a missing or empty object: mint the whole document.
+    next = `{\n  "instructions": ["${element}"]\n}`;
+  } else {
+    // Absent key: insert a new top-level instructions element. Naive text
+    // insertion could still produce unparseable JSON — validation below
+    // catches that too (e.g. the original was already broken).
+    next = original.replace(/\}\s*$/, `,\n  "instructions": ["${element}"]\n}`);
+  }
+
+  try {
+    JSON.parse(next);
+  } catch (error) {
+    if (existed) await fs.writeFile(filePath, original, "utf8");
+    throw jsonInsertError((error as Error).message);
+  }
+
+  await backupIfPreExisting(filePath, existed, false);
+  await atomicReplaceFile(filePath, next);
+}
+
 export function backupPathFor(filePath: string): string {
   return `${filePath}.scoutline-bak`;
 }

@@ -398,6 +398,8 @@ Usage:
   scoutline history stats
   scoutline history note --capability <search|read|research> <text>
                           [--url <url> [--title <title>]]... [--tags a,b]
+  scoutline history recall <text> [--limit N] [--as-of <date>]
+                           [--capability <search|read|research>]
 
 Reads the artifact store (default ~/.scoutline/artifacts/, override with
 SCOUTLINE_ARTIFACTS_DIR) without touching Providers, credentials, or the
@@ -442,8 +444,6 @@ export const HISTORY_NOTE_HELP = `History note - Write an explicit journal entry
 Usage:
   scoutline history note --capability <search|read|research> <text>
                           [--url <url> [--title <title>]]... [--tags a,b,c]
-  scoutline history recall <text> [--limit N] [--as-of <date>]
-                           [--capability <search|read|research>]
 
 Records hand-written work or observations into the research journal —
 the re-homed \`journal record\`: the same kind:"journal" entry the

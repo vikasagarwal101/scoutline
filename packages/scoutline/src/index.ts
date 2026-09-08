@@ -3801,11 +3801,10 @@ export async function handleHistory(
     deps.invocation.writeStdout(HISTORY_HELP);
     return 0;
   }
-  // T4 (`history note`, DESIGN D5): the explicit, hand-written journal
-  // entry — seed 07's `journal record` re-homed onto `history`. Branches
-  // BEFORE the unknown-subcommand guard so `note` owns its own arg
-  // surface (--capability/--url/--title/--tags), which the list/show/
-  // stats surface never parses.
+  // list / show / stats share this surface (--since/--limit/--command
+  // + the show positional). Subcommands with their own arg surfaces
+  // (`note` T4, `recall` T5) dispatch ABOVE, before the generic
+  // --help check, so each renders its own help.
   if (
     subcommand !== "list" &&
     subcommand !== "show" &&

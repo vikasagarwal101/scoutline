@@ -17,10 +17,10 @@
  *   3. `--since <date>` lower bound: timestamp ≥ since (INCLUSIVE;
  *      off-by-one mutation pin).
  *   4. Same log → byte-identical output (deterministic rendering).
- *   5. ZERO network, ZERO cache reads, masters never opened for
- *      CONTENT — saveRef renders as a pointer, and only an existence
- *      stat on the master path is allowed I/O beyond the log read.
- *   6. Read-only: store byte-identical after export.
+ *   5. ZERO network, ZERO cache reads (spies); the saveRef'd --save
+ *      master is read from disk when present and its body inlines in a
+ *      ```json fence (a LOCAL read only — never re-fetched, review
+ *      batch 3). Read-only: store byte-identical after export.
  *   7. Provider renders per family conventions incl. `zai (cache)`
  *      when servedFrom === "cache" (#108 distinction).
  *   8. Fail-open: missing/empty store → header-only dossier, exit 0,
@@ -182,7 +182,7 @@ const FROZEN_DOSSIER = [
   "# Research journal export",
   "",
   "## Launch Notes",
-  "- query: https://blog.z.ai/launch",
+  "- query: https://blog\\.z\\.ai/launch",
   "- capability: read",
   "- provider: zai (cache)",
   "- recorded: 2026-09-08T11:00:00.000Z",
@@ -190,8 +190,8 @@ const FROZEN_DOSSIER = [
   "- tags: -",
   "- saved artifact: 20260908T110000Z-save1 (missing)",
   "",
-  "- https://blog.z.ai/launch — Launch Notes",
-  "  `{url:https://blog.z.ai/launch, at:2026-09-08T11:00:00.000Z, contentHash:184f12f754c2e4f936cb8eb01da9b9b088a8685964193ed2caa3077b03d7355d}`",
+  "- https://blog\\.z\\.ai/launch — Launch Notes",
+  "  `{url:https://blog\\.z\\.ai/launch, at:2026-09-08T11:00:00.000Z, contentHash:184f12f754c2e4f936cb8eb01da9b9b088a8685964193ed2caa3077b03d7355d}`",
   "",
   "## Go Documentation",
   "- query: rust vs go",
@@ -202,10 +202,10 @@ const FROZEN_DOSSIER = [
   "- tags: -",
   "- saved artifact: -",
   "",
-  "- https://go.dev/doc — Go Documentation",
-  "  `{url:https://go.dev/doc, at:2026-09-08T10:00:00.000Z, contentHash:8c55660565250c6c0c421d399df51667b52cacac55a94f4e582f0535d140f13e}`",
-  "- https://www.rust-lang.org — Rust Programming Language",
-  "  `{url:https://www.rust-lang.org, at:2026-09-08T10:00:00.000Z, contentHash:8c55660565250c6c0c421d399df51667b52cacac55a94f4e582f0535d140f13e}`",
+  "- https://go\\.dev/doc — Go Documentation",
+  "  `{url:https://go\\.dev/doc, at:2026-09-08T10:00:00.000Z, contentHash:8c55660565250c6c0c421d399df51667b52cacac55a94f4e582f0535d140f13e}`",
+  "- https://www\\.rust\\-lang\\.org — Rust Programming Language",
+  "  `{url:https://www\\.rust\\-lang\\.org, at:2026-09-08T10:00:00.000Z, contentHash:8c55660565250c6c0c421d399df51667b52cacac55a94f4e582f0535d140f13e}`",
   "",
   "2 finding(s)",
 ].join("\n");
@@ -352,11 +352,11 @@ describe("T6c: --since boundary (lower bound, INCLUSIVE ≥)", () => {
   });
 });
 
-describe("T6c: I/O honesty (zero network, zero cache reads, masters never opened, read-only)", () => {
+describe("T6c: I/O honesty (zero network, zero cache reads, read-only)", () => {
   before(() => armFetchSpy());
   after(() => disarmFetchSpy());
 
-  it("export makes ZERO network calls, ZERO cache reads, never opens masters for content (spies); store byte-identical", async () => {
+  it("export makes ZERO network calls and ZERO cache reads; store byte-identical", async () => {
     const artifactsDir = makeTempDir("scoutline-export-io-");
     const { adapter, stdout, stderr } = makeAdapter();
     // Cache-read tripwire: counting caches whose .get THROWS — the
@@ -375,16 +375,14 @@ describe("T6c: I/O honesty (zero network, zero cache reads, masters never opened
         FIXTURES.eNew,
         saveEntry({ requestId: FIXTURES.eNew.saveRef, timestamp: FIXTURES.eNew.timestamp, masterPath: `${FIXTURES.eNew.saveRef}.json` }),
       ]);
-      // Master-open-for-content tripwire: the save's master exists but
-      // is chmod 0o000 — any content read during export surfaces as
-      // EACCES and fails the run (existence stat is allowed; it opens
-      // nothing — mode bits do not affect stat).
-      const masterPath = join(artifactsDir, `${FIXTURES.eNew.saveRef}.json`);
-      // Sentinel body: a readFile-for-content leak surfaces verbatim in
-      // the dossier (master content must never reach the render).
-      writeFileSync(masterPath, JSON.stringify({ body: "MASTER-BODY-SENTINEL-NEVER-RENDER" }), "utf8");
-      const { chmodSync } = await import("node:fs");
-      chmodSync(masterPath, 0o000);
+      // Review batch 3 (issue 3): the saveRef'd --save master IS read
+      // from disk and its body inlines in the dossier — a LOCAL read
+      // only (never re-fetched: no network, no response-cache reads).
+      writeFileSync(
+        join(artifactsDir, `${FIXTURES.eNew.saveRef}.json`),
+        JSON.stringify({ body: "MASTER-BODY-SENTINEL-INLINED" }),
+        "utf8",
+      );
       const before = readFileSync(join(artifactsDir, "index.json"), "utf8");
       const status = await main(
         ["history", "export"],
@@ -403,18 +401,14 @@ describe("T6c: I/O honesty (zero network, zero cache reads, masters never opened
       assert.strictEqual(fetchAttempts.length, 0, `fetch spy fired: ${JSON.stringify(fetchAttempts)}`);
       const envelope = parseEnvelope(stdout);
       assert.strictEqual(envelope.total, 1);
-      assert.ok(envelope.markdown.includes(FIXTURES.eNew.saveRef), "saveRef rendered as pointer");
-      // The master exists on disk (unreadable 0o000 — stat still sees
-      // it): the pointer must render WITHOUT "(missing)". A
-      // readFile-for-content probe instead of a stat surfaces EACCES
-      // here and renders "(missing)" — the body-fetch mutation pin.
+      assert.ok(envelope.markdown.includes(FIXTURES.eNew.saveRef), "saveRef rendered");
       assert.ok(
         !envelope.markdown.includes(`${FIXTURES.eNew.saveRef} (missing)`),
-        "existence probe must be a stat, not a content read (chmod'd master exists)",
+        "present master must not render (missing)",
       );
       assert.ok(
-        !envelope.markdown.includes("MASTER-BODY-SENTINEL-NEVER-RENDER"),
-        "master body content leaked into the dossier (content must never be read)",
+        envelope.markdown.includes("MASTER-BODY-SENTINEL-INLINED"),
+        "present master's body inlines in the dossier (local read)",
       );
       // Read-only: store byte-identical after export.
       const after = readFileSync(join(artifactsDir, "index.json"), "utf8");
@@ -522,6 +516,13 @@ describe("T6c: help surfaces", () => {
     assert.ok(help.includes("scoutline history export [--since <date>]"), "HISTORY_HELP Usage must carry the export line");
     assert.ok(help.includes("export"), "HISTORY_HELP roster carries export");
     assert.ok(!help.includes("read-only inventory"), "identity wording updated for export");
+    // Options roster has a dedicated export entry (issue 6 — the roster
+    // must not silently drop the subcommand; pin the exact location).
+    assert.match(
+      help,
+      /Options:[\s\S]*?\n  export  /,
+      "HISTORY_HELP Options roster carries an export entry",
+    );
 
     const h2 = makeAdapter();
     const s2 = await main(["history", "export", "--help"], exportDeps(h2.adapter));
@@ -726,8 +727,17 @@ describe("review r3: export masterExists reads the log ONCE (greptile/macroscope
   it("exporting N saveRef'd entries performs ONE log read total, not one per entry (read-count pin)", async () => {
     const artifactsDir = makeTempDir("scoutline-export-onepass-");
     try {
+      writeFileSync(
+        join(artifactsDir, "20260908T110000Z-save1.json"),
+        JSON.stringify({ body: "ONE-PASS-BODY-SENTINEL" }),
+        "utf8",
+      );
       await seedStore(artifactsDir, [
-        saveEntry({ requestId: "20260908T110000Z-save1", timestamp: FIXTURES.eNew.timestamp }),
+        saveEntry({
+          requestId: "20260908T110000Z-save1",
+          timestamp: FIXTURES.eNew.timestamp,
+          masterPath: "20260908T110000Z-save1.json",
+        }),
         FIXTURES.eOld,
         FIXTURES.eNew,
       ]);
@@ -751,6 +761,108 @@ describe("review r3: export masterExists reads the log ONCE (greptile/macroscope
       assert.strictEqual(envelope.total, 2);
       assert.strictEqual(readCalls, 1, `export must read the log exactly once (got ${readCalls})`);
       assert.ok(envelope.markdown.includes("20260908T110000Z-save1"), "saveRef still resolves");
+      // Review batch 3 (issue 3): a present master's body inlines — the
+      // one-pass seam must still serve the fence (read-count unchanged).
+      assert.ok(
+        /```json\n[\s\S]*ONE-PASS-BODY-SENTINEL[\s\S]*\n```/.test(envelope.markdown),
+        "inlined body renders inside a ```json fence",
+      );
+      assert.ok(
+        !envelope.markdown.includes("}\n\n```"),
+        "single trailing newline of the master body is trimmed before the closing fence",
+      );
+      assert.strictEqual(stderr.filter((l) => l.trim().length > 0).length, 0, "stderr clean on success");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review batch 3 (PR #111): saveRef'd master body inlines in a ```json
+// fence (issue 3); prose fields are markdown-escaped (issues 4/8).
+// ---------------------------------------------------------------------------
+
+describe("review batch 3: saveRef'd master body inlines when present (issue 3)", () => {
+  it("present master: pointer line stays bare + body follows in a ```json fence after the section rows", async () => {
+    const artifactsDir = makeTempDir("scoutline-export-inline-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      const masterBody = `{\n  "body": "INLINE-SENTINEL-3"\n}\n`;
+      writeFileSync(join(artifactsDir, "s-inline.json"), masterBody, "utf8");
+      await seedStore(artifactsDir, [
+        fullEntry({
+          requestId: "r-inline",
+          timestamp: T0 - H,
+          query: "inline probe",
+          skeleton: { results: [{ url: "https://example.com/i", title: "Inline Row" }] },
+          saveRef: "s-inline",
+        }),
+        saveEntry({ requestId: "s-inline", timestamp: T0 - H, masterPath: "s-inline.json" }),
+      ]);
+      const status = await main(
+        ["history", "export"],
+        exportDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const envelope = parseEnvelope(stdout);
+      assert.strictEqual(envelope.total, 1);
+      const markdown = envelope.markdown;
+      assert.ok(markdown.includes("- saved artifact: s-inline\n"), "pointer line stays the bare saveRef");
+      assert.ok(!markdown.includes("s-inline (missing)"), "present master is not annotated missing");
+      // Fence shape: blank line, ```json, trimmed body, ```, blank line.
+      assert.ok(
+        markdown.includes("```json\n{\n  \"body\": \"INLINE-SENTINEL-3\"\n}\n```"),
+        `body inlines trimmed inside the fence: ${JSON.stringify(markdown)}`,
+      );
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("review batch 3: dossier prose is markdown-escaped (issues 4/8)", () => {
+  it("hostile row title cannot forge headings/bullets/links; backtick urls cannot break provenance spans", async () => {
+    const artifactsDir = makeTempDir("scoutline-export-escape-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      await seedStore(artifactsDir, [
+        fullEntry({
+          requestId: "r-hostile",
+          timestamp: T0 - H,
+          query: "escape probe",
+          skeleton: {
+            results: [
+              { url: "https://example.com/x", title: "# Fake Section\n- injected" },
+              { url: "https://example.com/a`b", title: "t](http://evil" },
+            ],
+          },
+        }),
+      ]);
+      const status = await main(
+        ["history", "export"],
+        exportDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const lines = parseEnvelope(stdout).markdown.split("\n");
+      // Heading: escaped, single line — the injected newline dies.
+      const heading = lines.find((l) => l.startsWith("## ") && l.includes("Fake"));
+      assert.strictEqual(
+        heading,
+        "## \\# Fake Section \\- injected",
+        `heading escaped on one line: ${JSON.stringify(heading)}`,
+      );
+      assert.ok(!lines.includes("- injected"), "no forged bullet line survives");
+      // Row bullet: the `](` cannot close a link early.
+      assert.ok(
+        lines.some((l) => l.includes("t\\]\\(http://evil")),
+        `title link-break escaped: ${JSON.stringify(lines)}`,
+      );
+      // Provenance span: the backtick in the url is escaped, span intact.
+      const span = lines.find((l) => l.includes("url:https://example\\.com/a"));
+      assert.ok(span !== undefined, "provenance span renders");
+      assert.ok(span.includes("a\\`b"), `backtick escaped inside the span: ${JSON.stringify(span)}`);
+      assert.ok(span.startsWith("  `") && span.endsWith("}`"), "span delimiters intact");
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
     }

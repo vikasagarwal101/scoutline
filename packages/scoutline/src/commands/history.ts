@@ -508,7 +508,10 @@ export async function historyClearCommand(input: {
     ...(input.lock?.setTimeout !== undefined ? { setTimeout: input.lock.setTimeout } : {}),
   });
   if (result.notice !== undefined) input.notice(result.notice);
-  const mastersDeleted = input.all ? result.removedByKind.save ?? 0 : 0;
+  // Review batch 3 (issue 7): the honest unlink count from the sweep —
+  // orphan masters add, vanished/failed unlinks subtract (it can differ
+  // from removedByKind.save in BOTH directions).
+  const mastersDeleted = input.all ? result.mastersDeleted ?? 0 : 0;
   const report: HistoryClearReport = {
     schemaVersion: 1,
     generatedAt: input.now(),
@@ -550,8 +553,12 @@ export interface HistoryExportSection {
   readonly rows: readonly { readonly url: string; readonly title: string }[];
   readonly tags: readonly string[];
   readonly saveRef?: string;
-  /** Existence-stat verdict on the saveRef'd master: true/false, or absent when the save entry itself is gone from the log. */
-  readonly saveMasterOnDisk?: boolean;
+  /**
+   * Verdict on the saveRef'd master (review batch 3): the master's body
+   * text when read from disk; false when absent/unreadable; absent when
+   * the save entry itself is not in the log.
+   */
+  readonly saveMaster?: string | boolean;
 }
 
 /** `history export` data-mode envelope. */
@@ -568,8 +575,14 @@ export interface HistoryExportReport {
   readonly sectionsOrder: readonly string[];
 }
 
-/** Existence probe for a saveRef'd master (stat only — content is never read). */
-export type MasterExists = (requestId: string) => Promise<boolean | undefined>;
+/**
+ * Seam for the export dossier's saveRef resolution (review batch 3):
+ * the master's body text when the saveRef'd --save master was read from
+ * disk; `false` when absent/unreadable; `undefined` when the save entry
+ * itself is not in the log. Body inclusion is a LOCAL read of the file
+ * the log already points at — never a re-fetch (no network, no cache).
+ */
+export type MasterExists = (requestId: string) => Promise<boolean | string | undefined>;
 
 /**
  * Render the export dossier (T6c, PRD AC5): pure markdown over the
@@ -578,12 +591,12 @@ export type MasterExists = (requestId: string) => Promise<boolean | undefined>;
  * `{url, at, contentHash}` per skeleton row (`at` = entry timestamp
  * ISO, `contentHash` = the ENTRY's hash). Repeat markers are NEVER
  * sections (the list default-skip ruling, DESIGN D5); save entries are
- * not findings either — a save surfaces only as its skeleton's
- * `saveRef` pointer, annotated by an EXISTENCE check (stat only: the
- * master's content is never read, never fetched). Sections order
- * newest-first (timestamp desc, requestId desc) — derived from entry
- * fields, not append order, so the same set renders byte-identically
- * regardless of append sequence.
+ * not findings either — a save surfaces as its skeleton's `saveRef`
+ * pointer, and the saveRef'd master's body inlines when present (read
+ * from disk only — never re-fetched: no network, no response-cache
+ * reads). Sections order newest-first (timestamp desc, requestId desc)
+ * — derived from entry fields, not append order, so the same set
+ * renders byte-identically regardless of append sequence.
  */
 export async function buildHistoryExportReport(
   log: ArtifactsLog,
@@ -609,9 +622,9 @@ export async function buildHistoryExportReport(
     };
     if (journal.repeatOf !== undefined) continue; // markers are never sections
     if (options.since !== undefined && entry.timestamp < options.since) continue;
-    let saveMasterOnDisk: boolean | undefined;
+    let saveMaster: string | boolean | undefined;
     if (journal.saveRef !== undefined && options.masterExists !== undefined) {
-      saveMasterOnDisk = await options.masterExists(journal.saveRef);
+      saveMaster = await options.masterExists(journal.saveRef);
     }
     sections.push({
       requestId: journal.requestId ?? "",
@@ -623,7 +636,7 @@ export async function buildHistoryExportReport(
       rows: journal.skeleton.results,
       tags: journal.tags ?? [],
       ...(journal.saveRef !== undefined ? { saveRef: journal.saveRef } : {}),
-      ...(saveMasterOnDisk !== undefined ? { saveMasterOnDisk } : {}),
+      ...(saveMaster !== undefined ? { saveMaster } : {}),
     });
   }
   sections.sort((a, b) => b.timestamp - a.timestamp || (a.requestId < b.requestId ? 1 : -1));
@@ -648,6 +661,29 @@ function formatExportProvider(provider: SaveLogEntry["provider"]): string {
   return routing.effective ?? "-";
 }
 
+/**
+ * Markdown-escape a journal-sourced prose value (review batch 3, issues
+ * 4/8): the render interpolates redacted-but-otherwise-unfiltered log
+ * strings (queries, row titles/urls), so a hostile entry must not forge
+ * headings/bullets/fences or break code spans and links. Backslash
+ * first in the alternation; newlines collapse so headings and bullets
+ * die. Deliberate ceiling: ids/enums/hashes/timestamps (requestId,
+ * capability, provider, recorded, contentHash) are structural, not
+ * prose — they stay unescaped; the inlined master body rides its
+ * ```json fence verbatim by design.
+ */
+const escMd = (s: string): string =>
+  s.replace(/[\\`*_{}\[\]()#+.!|<>~-]/g, "\\$&").replace(/\r?\n/g, " ");
+
+/**
+ * One master body inside its fence: a single trailing newline (the
+ * atomicReplaceFile convention) is trimmed so the closing fence sits
+ * tight against the body's last line.
+ */
+function renderMasterBody(body: string): string[] {
+  return ["", "```json", body.replace(/\n$/, ""), "```", ""];
+}
+
 /** The deterministic markdown renderer (frozen byte-exact by tests). */
 function renderHistoryExportDossier(
   sections: readonly HistoryExportSection[],
@@ -661,17 +697,17 @@ function renderHistoryExportDossier(
     const firstRow = section.rows[0];
     const title = firstRow !== undefined && firstRow.title.length > 0 ? firstRow.title : section.query;
     lines.push(
-      `## ${title || section.capability}`,
-      `- query: ${section.query}`,
+      `## ${escMd(title || section.capability)}`,
+      `- query: ${escMd(section.query)}`,
       `- capability: ${section.capability}`,
       `- provider: ${section.provider}`,
       `- recorded: ${new Date(section.timestamp).toISOString()}`,
       `- requestId: ${section.requestId}`,
-      `- tags: ${section.tags.length > 0 ? section.tags.join(",") : "-"}`,
+      `- tags: ${section.tags.length > 0 ? escMd(section.tags.join(",")) : "-"}`,
       `- saved artifact: ${
         section.saveRef === undefined
           ? "-"
-          : section.saveMasterOnDisk === false
+          : section.saveMaster === false
             ? `${section.saveRef} (missing)`
             : section.saveRef
       }`,
@@ -679,8 +715,14 @@ function renderHistoryExportDossier(
     );
     const at = new Date(section.timestamp).toISOString();
     for (const row of section.rows) {
-      lines.push(`- ${row.url} — ${row.title}`);
-      lines.push(`  \`{url:${row.url}, at:${at}, contentHash:${section.contentHash}}\``);
+      lines.push(`- ${escMd(row.url)} — ${escMd(row.title)}`);
+      lines.push(`  \`{url:${escMd(row.url)}, at:${at}, contentHash:${section.contentHash}}\``);
+    }
+    // Review batch 3 (issue 3): the saveRef'd --save master is read
+    // from disk when present and its body inlines verbatim in a fence
+    // (a LOCAL read — never re-fetched; no network, no cache reads).
+    if (typeof section.saveMaster === "string") {
+      lines.push(...renderMasterBody(section.saveMaster));
     }
     lines.push("");
   }
@@ -689,11 +731,12 @@ function renderHistoryExportDossier(
 }
 
 /**
- * T6c: the export command. Read-only: `readLog` + existence stats on
- * saveRef'd masters are the ONLY I/O — zero network, zero cache reads,
- * master CONTENT never opened (owner: no re-fetch, ever). Fail-open on
- * a missing store (header-only dossier, exit 0); a corrupt log's
- * read-notice rides the stderr notice seam.
+ * T6c: the export command. Read-only over the network: `readLog` and a
+ * LOCAL read of saveRef'd --save masters are the ONLY I/O — zero
+ * network, zero cache reads, no re-fetch ever (the master's body is the
+ * durable local copy the log already points at). Fail-open on a missing
+ * store (header-only dossier, exit 0); a corrupt log's read-notice
+ * rides the stderr notice seam.
  */
 export async function historyExportCommand(input: {
   readonly readLog: () => Promise<import("../lib/artifacts.js").ReadLogResult>;
@@ -775,6 +818,11 @@ Options:
           overlap over recorded queries + skeletons, ranked by score
           then recency (see \`scoutline history recall --help\`). No
           network, no cache reads, no master files — pure log scoring.
+  export  Markdown dossier of journal findings, newest first: one
+          section per full entry with a {url, at, contentHash}
+          provenance line per skeleton row; a saveRef'd --save
+          master's body is inlined when present (see \`scoutline
+          history export --help\`).
   clear   The valve (MUTATES the store; see \`scoutline history clear
           --help\`): bare clear removes the journal kind only — the
           fast-refilling layer. --save artifacts need \`--all\`.
@@ -905,13 +953,15 @@ export async function historyRecallCommand(input: {
   });
   // Orientation notice ONLY when the journal never had any full
   // journal entry — a non-match over a live journal is honest
-  // silence (first-time UX, PRD AC4).
+  // silence (first-time UX, PRD AC4). Review batch 3 (issue 10): a
+  // fail-open read notice already told the real story (corrupt store),
+  // so the orientation claim must not fire on top of it.
   const hasJournalEntry = log.entries.some(
     (entry) =>
       (entry as unknown as Record<string, unknown>).kind === "journal" &&
       (entry as unknown as Record<string, unknown>).repeatOf === undefined,
   );
-  if (!hasJournalEntry) {
+  if (!hasJournalEntry && notice === undefined) {
     input.notice(
       "journal is empty — entries appear as you run search/read/research (or history note).",
     );
@@ -957,8 +1007,11 @@ function renderRecallMarkdown(results: readonly JournalRecallResult[]): string {
   if (results.length === 0) return "No matching journal entries.";
   const lines = ["# Journal recall", ""];
   for (const result of results) {
+    // Review batch 3 (issues 4/8): journal-sourced prose rides the
+    // same escMd as the export dossier — the link-destination parens
+    // are the break-recall-links case. Ids/enums/numbers stay bare.
     lines.push(
-      `## ${result.query} (${result.capability}, score ${result.score})`,
+      `## ${escMd(result.query)} (${result.capability}, score ${result.score})`,
       "",
       `- requestId: ${result.requestId}`,
       `- recorded: ${new Date(result.timestamp).toISOString()}`,
@@ -967,7 +1020,7 @@ function renderRecallMarkdown(results: readonly JournalRecallResult[]): string {
       "",
     );
     for (const row of result.results) {
-      lines.push(`- [${row.title}](${row.url})`);
+      lines.push(`- [${escMd(row.title)}](${escMd(row.url)})`);
     }
     lines.push("");
   }
@@ -1018,9 +1071,9 @@ skeletons), newest first. Each section carries the entry identity
 provenance line \`{url, at, contentHash}\` per skeleton row — the cited
 identity of every source, never its content. Repeat markers are never
 sections (same ruling as list default). A cross-linked --save artifact
-appears only as its saveRef pointer, annotated by an existence check;
-master content is NEVER read and NOTHING is fetched (no re-fetch, ever
-— no network, no response-cache reads, no master opens). Same log
+appears as its saveRef pointer, annotated by existence, and the
+saveRef'd master's body inlines when present — read from disk only,
+never re-fetched (no network, no response-cache reads). Same log
 renders byte-identical output.
 
 Options:

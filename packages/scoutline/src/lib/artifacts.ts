@@ -599,6 +599,9 @@ export async function clearArtifactsLog(
 ): Promise<ClearArtifactsLogResult> {
   let removedByKind: Record<string, number> = {};
   let kept = 0;
+  // Review batch 3 (issue 7): honest master-unlink count — a vanished
+  // file rejects and is NOT counted; a failed unlink is not counted.
+  let mastersDeleted = 0;
   let notice: string | undefined;
   try {
     await withAsyncFileLock(
@@ -637,7 +640,15 @@ export async function clearArtifactsLog(
             if (name === ARTIFACTS_LOG_FILENAME || name.endsWith(".lock") || name.includes(".tmp.")) {
               continue;
             }
-            await fs.unlink(path.join(dir, name)).catch(() => {});
+            // A vanished file rejects and is NOT counted (accurate); a
+            // failed unlink is not counted either.
+            // A vanished file rejects and is NOT counted (accurate); a
+            // failed unlink is not counted either.
+            await fs.unlink(path.join(dir, name))
+              .then(() => {
+                mastersDeleted += 1;
+              })
+              .catch(() => {});
           }
         }
       },
@@ -663,7 +674,13 @@ export async function clearArtifactsLog(
     }
     throw error;
   }
-  return { removed: Object.values(removedByKind).reduce((a, b) => a + b, 0), removedByKind, kept, notice };
+  return {
+    removed: Object.values(removedByKind).reduce((a, b) => a + b, 0),
+    removedByKind,
+    kept,
+    ...(options.all ? { mastersDeleted } : {}),
+    notice,
+  };
 }
 
 /** `clearArtifactsLog` outcome: what the valve removed and what stayed. */
@@ -674,6 +691,12 @@ export interface ClearArtifactsLogResult {
   readonly removedByKind: Readonly<Record<string, number>>;
   /** Entries that survived the clear. */
   readonly kept: number;
+  /**
+   * Master files actually unlinked by the `--all` sweep (review batch
+   * 3, issue 7) — orphans add, vanished/failed unlinks subtract.
+   * Present only under `--all`; a bare clear never sets it.
+   */
+  readonly mastersDeleted?: number;
   /** The fail-open read notice (corrupt pre-state), for stderr. */
   readonly notice?: string;
 }

@@ -36,8 +36,24 @@ export interface SearchSkeleton {
   readonly results: readonly SkeletonItem[];
 }
 
-/** The skeleton payload by capability (read/research bodies arrive in T3). */
-export type JournalSkeleton = SearchSkeleton;
+/**
+ * Read skeleton (D2, T3): the single {url,title} identity of the fetch —
+ * `finalUrl` when the Provider rewrote the URL, else the requested url.
+ */
+export interface ReadSkeleton {
+  readonly results: readonly [SkeletonItem];
+}
+
+/**
+ * Research skeleton (D2, T3): the citations block — the url+title list
+ * of the report's sources.
+ */
+export interface ResearchSkeleton {
+  readonly results: readonly SkeletonItem[];
+}
+
+/** The skeleton payload by capability (T3 completes the union). */
+export type JournalSkeleton = SearchSkeleton | ReadSkeleton | ResearchSkeleton;
 
 /** The full journal entry (PRD AC2, ruling-locked field set). */
 export interface JournalLogEntry {
@@ -125,6 +141,43 @@ export function buildSearchSkeleton(
 }
 
 /**
+ * Read skeleton builder (T3): the single {url,title} identity of the
+ * fetch. Accepts the normalized reader envelope (content shape carries
+ * url/finalUrl/title; extract shape carries url/finalUrl — title null
+ * there renders the url as the row's title so the skeleton stays
+ * self-contained). `finalUrl` wins when the Provider rewrote the URL.
+ */
+export function buildReadSkeleton(result: {
+  readonly url?: string;
+  readonly finalUrl?: string;
+  readonly title?: string | null;
+}): ReadSkeleton {
+  const url =
+    typeof result.finalUrl === "string" && result.finalUrl.length > 0
+      ? result.finalUrl
+      : typeof result.url === "string"
+        ? result.url
+        : "";
+  const title = typeof result.title === "string" && result.title.length > 0 ? result.title : url;
+  return { results: [{ url, title }] };
+}
+
+/**
+ * Research skeleton builder (T3): the citations block — the url+title
+ * list of the report's sources, in citation order.
+ */
+export function buildResearchSkeleton(
+  sources: readonly { readonly url?: string; readonly title?: string }[],
+): ResearchSkeleton {
+  return {
+    results: sources.map((source) => ({
+      url: typeof source.url === "string" ? source.url : "",
+      title: typeof source.title === "string" ? source.title : "",
+    })),
+  };
+}
+
+/**
  * Structural guard for one journal record (the widened T1 body check).
  * T2b splits the dispatch: a record carrying `repeatOf` is a REPEAT
  * MARKER (the tiny shape — exactly {kind, timestamp, capability,
@@ -175,6 +228,10 @@ export function asJournalEntry(value: unknown): JournalLogEntry | JournalRepeatM
   }
   const skeleton = e.skeleton as Record<string, unknown>;
   if (!Array.isArray(skeleton.results)) return undefined;
+  // T3 per-capability skeleton teeth: read is EXACTLY one row (the
+  // single fetch identity); search/research carry a list. A read entry
+  // with two rows is a wrong-capability write and fails validation.
+  if (e.capability === "read" && skeleton.results.length !== 1) return undefined;
   for (const item of skeleton.results) {
     if (typeof item !== "object" || item === null) return undefined;
     const row = item as Record<string, unknown>;

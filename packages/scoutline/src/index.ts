@@ -120,8 +120,11 @@ import {
 import {
   buildJournalEntry,
   buildSearchSkeleton,
+  buildReadSkeleton,
+  buildResearchSkeleton,
   appendJournalEntry,
   type JournalableCapability,
+  type JournalSkeleton,
 } from "./lib/journal.js";
 import { buildJournalCacheKeyMap, buildJournalRepeatMarker } from "./lib/journal.js";
 import { applyBudget, type LadderRule } from "./lib/output-budget.js";
@@ -1927,6 +1930,22 @@ async function handleRead(
       effective: providerId,
     },
   });
+  // History-journal merge T3: read journaling on the same always-on
+  // seam (T2a pattern). The read skeleton is the fetch identity —
+  // url/finalUrl/title off the result envelope — captured into a thunk
+  // read after dispatch resolves. `read` has no fan-out mode, so no
+  // fanoutRouting here.
+  let journalReadIdentity:
+    | { readonly url?: string; readonly finalUrl?: string; readonly title?: string | null }
+    | undefined;
+  const journal =
+    deps.journal === undefined
+      ? undefined
+      : createJournalHook(deps, {
+          journal: deps.journal,
+          query: url,
+          readIdentity: () => journalReadIdentity,
+        });
   const readOptions = {
     format: flags.format as "markdown" | "text",
     noImages: flags["no-images"] === true,
@@ -1989,6 +2008,18 @@ async function handleRead(
           );
         },
       );
+      // T3: feed the journal hook's read-identity thunk from the
+      // dispatch result BEFORE the budget projects it — the skeleton
+      // records the fetch identity, not the trimmed projection.
+      const r = outcome.result;
+      if (r.kind === "data") {
+        const env = r.data as Record<string, unknown>;
+        journalReadIdentity = {
+          url: typeof env.url === "string" ? env.url : undefined,
+          finalUrl: typeof env.finalUrl === "string" ? env.finalUrl : undefined,
+          title: typeof env.title === "string" ? env.title : null,
+        };
+      }
       // Output Budget T4 (ADR-0007): whole-envelope budgeting at the
       // handler seam — AFTER the reader projection above (which is the
       // identity without the flag). Content reads walk READ_LADDER
@@ -2029,6 +2060,7 @@ async function handleRead(
     deps.now,
     deps.secrets,
     save,
+    journal,
   );
 }
 
@@ -2441,6 +2473,21 @@ async function handleResearch(
       effective: providerId,
     },
   });
+  // History-journal merge T3: research journaling on the same always-on
+  // seam. The research skeleton is the citations block — the sources
+  // url+title list off the result envelope — captured into a thunk read
+  // after dispatch resolves. `research` has no fan-out mode.
+  let journalCitations:
+    | readonly { readonly url?: string; readonly title?: string }[]
+    | undefined;
+  const journal =
+    deps.journal === undefined
+      ? undefined
+      : createJournalHook(deps, {
+          journal: deps.journal,
+          query,
+          citations: () => journalCitations,
+        });
   const executionDeps: ExecutionDependencies = {
     cache: deps.researchCache,
     sleep: deps.researchSleep,
@@ -2568,6 +2615,22 @@ async function handleResearch(
       // citations block (`sources`, url+title per citation) survives
       // longest (never-cut by omission). Presentations rebuilt from
       // the projection so text modes reflect the budget.
+      // T3: feed the journal hook's citations thunk from the dispatch
+      // result BEFORE the budget projects it — the skeleton records
+      // the citations, not the trimmed report.
+      const rr = outcome.result;
+      if (rr.kind === "data") {
+        const env = rr.data as Record<string, unknown>;
+        if (Array.isArray(env.sources)) {
+          journalCitations = env.sources.map((src) => {
+            const c = src as Record<string, unknown>;
+            return {
+              url: typeof c.url === "string" ? c.url : "",
+              title: typeof c.title === "string" ? c.title : "",
+            };
+          });
+        }
+      }
       const budgeted = await applyCommandOutputBudget(outcome.result, maxChars, {
         ladder: RESEARCH_LADDER,
         command: "research",
@@ -2603,6 +2666,7 @@ async function handleResearch(
     deps.now,
     deps.secrets,
     save,
+    journal,
   );
 }
 
@@ -4446,6 +4510,34 @@ function createSaveArtifactHook(
  * serving capture says the run went live (a cache miss — invoke()
  * resolved); T2b adds the repeat-marker branch for servedFrom "cache".
  */
+/**
+ * T3: per-capability skeleton dispatch. Search builds from the result
+ * rows; read from the fetch identity ({url,finalUrl,title} of the read
+ * envelope); research from the citations (sources list). Returns
+ * undefined when the capability's thunk is absent — the hook skips
+ * (never writes a malformed skeleton).
+ */
+function buildSkeletonForCapability(
+  capability: JournalableCapability,
+  meta: {
+    readonly resultRows?: () => readonly { url?: string; title?: string }[] | undefined;
+    readonly readIdentity?: () =>
+      | { readonly url?: string; readonly finalUrl?: string; readonly title?: string | null }
+      | undefined;
+    readonly citations?: () =>
+      | readonly { readonly url?: string; readonly title?: string }[]
+      | undefined;
+  },
+): JournalSkeleton | undefined {
+  if (capability === "search") return buildSearchSkeleton(meta.resultRows?.() ?? []);
+  if (capability === "read") {
+    const identity = meta.readIdentity?.();
+    return identity === undefined ? undefined : buildReadSkeleton(identity);
+  }
+  const citations = meta.citations?.();
+  return citations === undefined ? undefined : buildResearchSkeleton(citations);
+}
+
 function createJournalHook(
   deps: HandlerDependencies,
   meta: {
@@ -4453,6 +4545,17 @@ function createJournalHook(
     readonly query: string;
     /** Result rows for the skeleton — a thunk; the rows exist only after dispatch (T3 supplies its own per-capability thunk). */
     readonly resultRows?: () => readonly { url?: string; title?: string }[] | undefined;
+    /**
+     * T3: read/research skeletons are not result-row lists — read needs
+     * the fetch's {url,finalUrl,title} identity, research the citations.
+     * Thunks; the capability dispatch below picks the right one.
+     */
+    readonly readIdentity?: () =>
+      | { readonly url?: string; readonly finalUrl?: string; readonly title?: string | null }
+      | undefined;
+    readonly citations?: () =>
+      | readonly { readonly url?: string; readonly title?: string }[]
+      | undefined;
     /** Must-fix 3: the fan-out plan's routing, when this run is fan-out mode. */
     readonly fanoutRouting?: FanoutProviderRouting;
   },
@@ -4490,10 +4593,7 @@ function createJournalHook(
         }
         // journal-cold fallthrough: the full entry below.
       }
-      const skeleton =
-        capability === "search"
-          ? buildSearchSkeleton(meta.resultRows?.() ?? [])
-          : undefined;
+      const skeleton = buildSkeletonForCapability(capability, meta);
       if (skeleton === undefined) return;
       const entry = buildJournalEntry({
         capability,
@@ -4535,11 +4635,8 @@ function createJournalHook(
         return;
       }
     }
-    const skeleton =
-      capability === "search"
-        ? buildSearchSkeleton(meta.resultRows?.() ?? [])
-        : undefined;
-    if (skeleton === undefined) return; // T3: read/research skeletons
+    const skeleton = buildSkeletonForCapability(capability, meta);
+    if (skeleton === undefined) return;
     const entry = buildJournalEntry({
       capability,
       provider,

@@ -692,7 +692,7 @@ describe("T2a: history list renders journal entries without TypeError", () => {
 });
 
 describe("T2a-fix: batch-driven ops journal per their own capability (must-fix 1)", () => {
-  it("batch of [search, read] → exactly the search op journals (read is T3)", async () => {
+  it("batch of [search, read] → each op journals under its OWN capability (T3 completes the pair)", async () => {
     const artifactsDir = makeTempDir("scoutline-journal-batch-");
     const cacheDir = makeTempDir("scoutline-journal-batch-cache-");
     const { adapter, stdout, stderr } = makeAdapter();
@@ -771,10 +771,18 @@ describe("T2a-fix: batch-driven ops journal per their own capability (must-fix 1
       assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
       const store = readJournalEntries(artifactsDir);
       const journals = store.entries.filter((e) => e.kind === "journal");
-      assert.strictEqual(journals.length, 1, "exactly the search op journals");
-      assert.strictEqual(journals[0].capability, "search");
-      assert.strictEqual(journals[0].query, "rust vs go");
-      assert.ok(journals[0].skeleton.results.length > 0);
+      // T3: read journals too now — the pin is per-op capability
+      // correctness, not a search-only count.
+      assert.deepStrictEqual(
+        journals.map((e) => e.capability).sort(),
+        ["read", "search"],
+        "both ops journal, each under its own capability",
+      );
+      const searchEntry = journals.find((e) => e.capability === "search");
+      const readEntry = journals.find((e) => e.capability === "read");
+      assert.strictEqual(searchEntry.query, "rust vs go");
+      assert.ok(searchEntry.skeleton.results.length > 0);
+      assert.strictEqual(readEntry.query, "https://example.com");
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
       rmSync(cacheDir, { recursive: true, force: true });
@@ -1267,6 +1275,551 @@ describe("T2a NIT 3: --no-journal rejection matrix — derived enumeration pin",
           (status === 1 && envelope.error?.message?.includes("--no-journal")),
         `${command} --no-journal must reject UNSUPPORTED_OPTION (got status=${status})`,
       );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3 — read + research journaling (capability-driven seam extension)
+// ---------------------------------------------------------------------------
+
+/** Reader descriptor double (the save-artifact T4 nested `{fetch}` shape). */
+function makeReaderDescriptor(id, log, options = {}) {
+  const { result } = options;
+  return {
+    id,
+    isConfigured: () => true,
+    capabilities: () => new Set(["reader"]),
+    create: () => ({
+      id,
+      reader: {
+        fetch: {
+          kind: "reader-fetch",
+          validate() {},
+          cacheIdentity(request) {
+            return {
+              provider: id,
+              capability: "reader",
+              credentialFingerprint: `fp-${id}`,
+              request,
+              legacyCandidates: [],
+            };
+          },
+          decodeCached: (v) => (v !== null && typeof v === "object" && v.schemaVersion === 1 ? v : null),
+          async invoke(request) {
+            log.push(`${id}:${request.url}`);
+            return (
+              result ?? {
+                schemaVersion: 1,
+                url: request.url,
+                finalUrl: request.url,
+                title: `t-${id}`,
+                content: `read by ${id}`,
+                contentFormat: "markdown",
+              }
+            );
+          },
+        },
+      },
+    }),
+  };
+}
+
+/** Research descriptor double (mirrors save-artifact's tavily shape). */
+function makeResearchDescriptor(id, log, options = {}) {
+  const { result } = options;
+  return {
+    id,
+    isConfigured: (env) => typeof env.TAVILY_API_KEY === "string" && env.TAVILY_API_KEY.length > 0,
+    capabilities: () => new Set(["research"]),
+    create: () => ({
+      id,
+      research: {
+        run: {
+          kind: "research-run",
+          validate() {},
+          cacheIdentity(request) {
+            return {
+              provider: id,
+              capability: "research",
+              credentialFingerprint: `fp-${id}`,
+              request,
+              legacyCandidates: [],
+            };
+          },
+          decodeCached: (v) => (v !== null && typeof v === "object" && v.schemaVersion === 1 ? v : null),
+          async invoke(request) {
+            log.push(`${id}:${request.query}`);
+            return (
+              result ?? {
+                schemaVersion: 1,
+                query: request.query,
+                model: "auto",
+                report: `Report from ${id}`,
+                sources: [{ title: `${id} source`, url: `https://example.com/${id}-source` }],
+              }
+            );
+          },
+        },
+      },
+    }),
+  };
+}
+
+describe("T3: read journaling (main-driven)", () => {
+  it("cache MISS on read → ONE full entry: capability read, query = the URL, skeleton {url,title} from the read envelope", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-read-");
+    const log = [];
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      const status = await main(
+        ["read", "https://example.com/doc"],
+        journalDeps(adapter, log, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          providerDescriptors: [makeReaderDescriptor("zai", log)],
+        }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      assert.strictEqual(log.length, 1, "provider invoked once (cache miss)");
+      const store = readJournalEntries(artifactsDir);
+      assert.strictEqual(store.entries.length, 1, "exactly one entry");
+      const entry = store.entries[0];
+      assert.strictEqual(entry.kind, "journal");
+      assert.strictEqual(entry.capability, "read", "capability field names the surface");
+      assert.strictEqual(entry.query, "https://example.com/doc");
+      assert.strictEqual(entry.provider.mode, "single");
+      assert.strictEqual(entry.provider.effective, "zai");
+      assert.strictEqual(entry.provider.servedFrom, "live");
+      // Read skeleton: EXACTLY one {url,title} row (the fetch identity).
+      assert.deepStrictEqual(entry.skeleton, {
+        results: [{ url: "https://example.com/doc", title: "t-zai" }],
+      });
+      assert.strictEqual(
+        entry.contentHash,
+        skeletonContentHash({
+          results: [{ url: "https://example.com/doc", title: "t-zai" }],
+        }),
+      );
+      assert.strictEqual(entry.cacheRef, undefined);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("read cache HIT → ONE tiny repeat marker (capability read) pointing at the prior full entry", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-read-hit-");
+    const seen = [];
+    const responseCache = createInMemoryResponseCache();
+    const deps = () =>
+      journalDeps(makeAdapter().adapter, seen, {
+        env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+        readerCache: responseCache,
+        providerDescriptors: [makeReaderDescriptor("zai", seen)],
+      });
+    const s1 = await main(["read", "https://example.com/doc"], deps());
+    const s2 = await main(["read", "https://example.com/doc"], deps());
+    assert.deepStrictEqual([s1, s2], [0, 0]);
+    assert.strictEqual(seen.length, 1, "run 2 served from cache");
+    const store = readJournalEntries(artifactsDir);
+    assert.strictEqual(store.entries.length, 2, "full entry + marker");
+    const [full, marker] = store.entries;
+    assert.strictEqual(full.capability, "read");
+    assert.deepStrictEqual(Object.keys(marker).sort(), [
+      "capability",
+      "kind",
+      "provider",
+      "repeatOf",
+      "timestamp",
+    ]);
+    assert.strictEqual(marker.capability, "read");
+    assert.strictEqual(marker.repeatOf, full.requestId);
+    assert.strictEqual(marker.provider.servedFrom, "cache");
+  });
+
+  it("read marker written ONLY on a cache hit: after cache expiry a live MISS with a still-resolvable map key writes a FULL entry (mutation pin: marker-on-miss)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-read-missfull-");
+    const seen = [];
+    const cacheStore = new Map();
+    const responseCache = {
+      async get(key) {
+        return cacheStore.has(key) ? cacheStore.get(key) : null;
+      },
+      async set(key, value) {
+        cacheStore.set(key, value);
+      },
+    };
+    const deps = (cache) =>
+      journalDeps(makeAdapter().adapter, seen, {
+        env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+        ...(cache === undefined ? {} : { readerCache: cache }),
+        providerDescriptors: [makeReaderDescriptor("zai", seen)],
+      });
+    await main(["read", "https://example.com/doc"], deps(responseCache)); // miss → FULL
+    await main(["read", "https://example.com/doc"], deps(responseCache)); // hit → MARKER
+    cacheStore.clear(); // 24h TTL expiry: next run is a LIVE miss
+    await main(["read", "https://example.com/doc"], deps(responseCache)); // miss again → FULL
+    assert.strictEqual(seen.length, 2, "two live invokes, one cache hit");
+    const store = readJournalEntries(artifactsDir);
+    assert.deepStrictEqual(
+      store.entries.map((e) => (e.repeatOf !== undefined ? "MARKER" : "FULL")),
+      ["FULL", "MARKER", "FULL"],
+      "a live read miss NEVER writes a marker even when the map holds the key",
+    );
+  });
+
+  it("--no-journal on read + config journal:false on read → NO entry (switches honored on the new surface)", async () => {
+    const cases = [
+      ["flag", ["read", "https://example.com/doc", "--no-journal"], {}],
+      [
+        "config",
+        ["read", "https://example.com/doc"],
+        { loadScoutlineConfig: async () => ({ version: 1, providers: {}, journal: false }) },
+      ],
+    ];
+    for (const [name, argv, extra] of cases) {
+      const artifactsDir = makeTempDir(`scoutline-journal-read-off-${name}-`);
+      const log = [];
+      const { adapter } = makeAdapter();
+      try {
+        const status = await main(
+          argv,
+          journalDeps(adapter, log, {
+            env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+            providerDescriptors: [makeReaderDescriptor("zai", log)],
+            ...extra,
+          }),
+        );
+        assert.strictEqual(status, 0);
+        assert.strictEqual(log.length, 1, "the read itself ran");
+        const indexFile = join(artifactsDir, "index.json");
+        if (existsSync(indexFile)) {
+          const store = JSON.parse(readFileSync(indexFile, "utf8"));
+          assert.deepStrictEqual(
+            store.entries.filter((e) => e.kind === "journal"),
+            [],
+            `${name}: no journal entry`,
+          );
+        }
+      } finally {
+        rmSync(artifactsDir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("read entries land 0600 (stat pin)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-read-mode-");
+    const log = [];
+    const { adapter } = makeAdapter();
+    try {
+      await main(
+        ["read", "https://example.com/doc"],
+        journalDeps(adapter, log, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          providerDescriptors: [makeReaderDescriptor("zai", log)],
+        }),
+      );
+      const mode = statSync(join(artifactsDir, "index.json")).mode & 0o777;
+      assert.strictEqual(mode, 0o600, "index.json must be 0600");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("read redaction: token in URL query param absent from the entry and the log", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-read-redact-");
+    const TOKEN = "tok-read-8a41f2c9b7de";
+    const log = [];
+    const { adapter, stderr } = makeAdapter();
+    try {
+      const status = await main(
+        ["read", `https://example.com/doc?token=${TOKEN}`],
+        hermeticMainDeps({
+          invocation: adapter,
+          env: {
+            SCOUTLINE_ARTIFACTS_DIR: artifactsDir,
+            EXA_API_KEY: TOKEN,
+          },
+          providerDescriptors: [makeReaderDescriptor("zai", log)],
+        }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const raw = readFileSync(join(artifactsDir, "index.json"), "utf8");
+      assert.ok(!raw.includes(TOKEN), "url token leaked into the log");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("T3: research journaling (main-driven)", () => {
+  const RESEARCH_ENV = { TAVILY_API_KEY: "tv" };
+
+  it("cache MISS on research → ONE full entry: capability research, query text, skeleton = the citations block", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-research-");
+    const log = [];
+    const { adapter, stderr } = makeAdapter();
+    try {
+      const status = await main(
+        ["--provider", "tavily", "research", "scoutline state"],
+        journalDeps(adapter, log, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir, ...RESEARCH_ENV },
+          providerDescriptors: [makeResearchDescriptor("tavily", log)],
+        }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      assert.strictEqual(log.length, 1, "provider invoked once");
+      const store = readJournalEntries(artifactsDir);
+      assert.strictEqual(store.entries.length, 1);
+      const entry = store.entries[0];
+      assert.strictEqual(entry.kind, "journal");
+      assert.strictEqual(entry.capability, "research");
+      assert.strictEqual(entry.query, "scoutline state");
+      assert.strictEqual(entry.provider.mode, "single");
+      assert.strictEqual(entry.provider.effective, "tavily");
+      assert.strictEqual(entry.provider.servedFrom, "live");
+      // Research skeleton: the citations (sources) url+title list.
+      assert.deepStrictEqual(entry.skeleton, {
+        results: [{ url: "https://example.com/tavily-source", title: "tavily source" }],
+      });
+      assert.strictEqual(
+        entry.contentHash,
+        skeletonContentHash({
+          results: [{ url: "https://example.com/tavily-source", title: "tavily source" }],
+        }),
+      );
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("research cache HIT → ONE tiny repeat marker (capability research)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-research-hit-");
+    const seen = [];
+    const responseCache = createInMemoryResponseCache();
+    const deps = () =>
+      journalDeps(makeAdapter().adapter, seen, {
+        env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir, ...RESEARCH_ENV },
+        researchCache: responseCache,
+        providerDescriptors: [makeResearchDescriptor("tavily", seen)],
+      });
+    const s1 = await main(["--provider", "tavily", "research", "scoutline state"], deps());
+    const s2 = await main(["--provider", "tavily", "research", "scoutline state"], deps());
+    assert.deepStrictEqual([s1, s2], [0, 0]);
+    assert.strictEqual(seen.length, 1, "run 2 served from cache");
+    const store = readJournalEntries(artifactsDir);
+    assert.strictEqual(store.entries.length, 2, "full entry + marker");
+    const [full, marker] = store.entries;
+    assert.strictEqual(full.capability, "research");
+    assert.deepStrictEqual(Object.keys(marker).sort(), [
+      "capability",
+      "kind",
+      "provider",
+      "repeatOf",
+      "timestamp",
+    ]);
+    assert.strictEqual(marker.capability, "research");
+    assert.strictEqual(marker.repeatOf, full.requestId);
+    assert.strictEqual(marker.provider.servedFrom, "cache");
+  });
+
+  it("--no-journal on research + config journal:false on research → NO entry", async () => {
+    const cases = [
+      ["flag", ["--provider", "tavily", "research", "scoutline state", "--no-journal"], {}],
+      [
+        "config",
+        ["--provider", "tavily", "research", "scoutline state"],
+        { loadScoutlineConfig: async () => ({ version: 1, providers: {}, journal: false }) },
+      ],
+    ];
+    for (const [name, argv, extra] of cases) {
+      const artifactsDir = makeTempDir(`scoutline-journal-research-off-${name}-`);
+      const log = [];
+      const { adapter } = makeAdapter();
+      try {
+        const status = await main(
+          argv,
+          journalDeps(adapter, log, {
+            env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir, ...RESEARCH_ENV },
+            providerDescriptors: [makeResearchDescriptor("tavily", log)],
+            ...extra,
+          }),
+        );
+        assert.strictEqual(status, 0);
+        const indexFile = join(artifactsDir, "index.json");
+        if (existsSync(indexFile)) {
+          const store = JSON.parse(readFileSync(indexFile, "utf8"));
+          assert.deepStrictEqual(
+            store.entries.filter((e) => e.kind === "journal"),
+            [],
+            `${name}: no journal entry`,
+          );
+        }
+      } finally {
+        rmSync(artifactsDir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("research entries land 0600 (stat pin)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-research-mode-");
+    const log = [];
+    const { adapter } = makeAdapter();
+    try {
+      await main(
+        ["--provider", "tavily", "research", "scoutline state"],
+        journalDeps(adapter, log, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir, ...RESEARCH_ENV },
+          providerDescriptors: [makeResearchDescriptor("tavily", log)],
+        }),
+      );
+      const mode = statSync(join(artifactsDir, "index.json")).mode & 0o777;
+      assert.strictEqual(mode, 0o600, "index.json must be 0600");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("T3: batch read/research ops journal (per-op capability)", () => {
+  it("batch of [read] → the read op journals its own entry (search already pinned in T2a)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-batch-read-");
+    const cacheDir = makeTempDir("scoutline-journal-batch-read-cache-");
+    const log = [];
+    const { adapter, stderr } = makeAdapter();
+    const readDesc = makeReaderDescriptor("zai", log);
+    const manifest = {
+      schemaVersion: 1,
+      operations: [{ name: "op-read", command: "read", input: { url: "https://example.com" } }],
+    };
+    const manifestDir = makeTempDir("scoutline-journal-batch-read-manifest-");
+    const manifestFile = join(manifestDir, "manifest.json");
+    writeFileSync(manifestFile, JSON.stringify(manifest), "utf8");
+    try {
+      const status = await main(
+        ["batch", manifestFile],
+        hermeticMainDeps({
+          invocation: adapter,
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir, SCOUTLINE_CACHE_DIR: cacheDir },
+          providerDescriptors: [readDesc],
+          loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+        }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const store = readJournalEntries(artifactsDir);
+      const journals = store.entries.filter((e) => e.kind === "journal");
+      assert.strictEqual(journals.length, 1, "the read op journals");
+      assert.strictEqual(journals[0].capability, "read");
+      assert.strictEqual(journals[0].query, "https://example.com");
+      assert.deepStrictEqual(journals[0].skeleton, {
+        results: [{ url: "https://example.com", title: "t-zai" }],
+      });
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+      rmSync(cacheDir, { recursive: true, force: true });
+      rmSync(manifestDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("T3: journal-write failure contract (carry-over pin from T2a review)", () => {
+  it("an injected journal append failure FAILS the command — exit 1, no stdout (never a silent skip)", async () => {
+    // SCOUTLINE_ARTIFACTS_DIR points at a FILE's parent with the dir path
+    // occupied by a regular file: the locked append cannot create
+    // index.json under it → the write throws → invokeCommand's catch owns
+    // the error envelope.
+    const blockedParent = makeTempDir("scoutline-journal-fail-parent-");
+    const fileDir = join(blockedParent, "not-a-dir");
+    writeFileSync(fileDir, "x");
+    const log = [];
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      const status = await main(
+        ["read", "https://example.com/doc"],
+        journalDeps(adapter, log, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: fileDir },
+          providerDescriptors: [makeReaderDescriptor("zai", log)],
+        }),
+      );
+      assert.strictEqual(status, 1, "journal write failure must fail the command");
+      assert.deepStrictEqual(stdout, [], "stdout must stay empty when the journal write fails");
+      const envelope = JSON.parse(stderr.at(-1));
+      assert.strictEqual(envelope.success, false);
+    } finally {
+      rmSync(blockedParent, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("T3: history surfaces render read + research journal rows", () => {
+  it("history list/show/stats over read + research journal rows — exit 0, kind column values, capability counts", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-hist-rr-");
+    const readLog = [];
+    const researchLog = [];
+    const readRun = makeAdapter();
+    const researchRun = makeAdapter();
+    try {
+      const r1 = await main(
+        ["read", "https://example.com/doc"],
+        journalDeps(readRun.adapter, readLog, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          providerDescriptors: [makeReaderDescriptor("zai", readLog)],
+        }),
+      );
+      assert.strictEqual(r1, 0, `stderr=${JSON.stringify(readRun.stderr)}`);
+      const r2 = await main(
+        ["--provider", "tavily", "research", "scoutline state"],
+        journalDeps(researchRun.adapter, researchLog, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir, TAVILY_API_KEY: "tv" },
+          providerDescriptors: [makeResearchDescriptor("tavily", researchLog)],
+        }),
+      );
+      assert.strictEqual(r2, 0, `stderr=${JSON.stringify(researchRun.stderr)}`);
+
+      const list = makeAdapter();
+      const listStatus = await main(
+        ["history", "list"],
+        hermeticMainDeps({
+          invocation: list.adapter,
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+        }),
+      );
+      assert.strictEqual(listStatus, 0, `stderr=${JSON.stringify(list.stderr)}`);
+      const listEnvelope = JSON.parse(list.stdout[0]);
+      assert.strictEqual(listEnvelope.entries.length, 2);
+
+      const show = makeAdapter();
+      const store = readJournalEntries(artifactsDir);
+      const readId = store.entries.find((e) => e.capability === "read").requestId;
+      const showStatus = await main(
+        ["history", "show", readId],
+        hermeticMainDeps({
+          invocation: show.adapter,
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+        }),
+      );
+      assert.strictEqual(showStatus, 0, `stderr=${JSON.stringify(show.stderr)}`);
+      const showEnvelope = JSON.parse(show.stdout[0]);
+      assert.strictEqual(showEnvelope.entry.kind, "journal");
+      assert.strictEqual(showEnvelope.entry.capability, "read");
+
+      const stats = makeAdapter();
+      const statsStatus = await main(
+        ["history", "stats"],
+        hermeticMainDeps({
+          invocation: stats.adapter,
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+        }),
+      );
+      assert.strictEqual(statsStatus, 0, `stderr=${JSON.stringify(stats.stderr)}`);
+      const statsEnvelope = JSON.parse(stats.stdout[0]);
+      assert.strictEqual(statsEnvelope.byCommand.read, 1);
+      assert.strictEqual(statsEnvelope.byCommand.research, 1);
+      assert.strictEqual(statsEnvelope.byKind.journal, 2);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
     }
   });
 });

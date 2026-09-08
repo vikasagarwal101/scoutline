@@ -200,6 +200,11 @@ function asJournalRepeatMarker(value: unknown): JournalRepeatMarker | undefined 
   const e = value as Record<string, unknown>;
   if (typeof e.repeatOf !== "string" || e.repeatOf.length === 0) return undefined;
   if (typeof e.timestamp !== "number" || !Number.isFinite(e.timestamp)) return undefined;
+  // T2b review F2: same Date-range guard full entries get (artifacts.ts)
+  // — a finite-but-out-of-range ms value would throw RangeError in the
+  // history renders (new Date(ms).toISOString()); fail validation here
+  // so the whole-log fail-open path applies instead.
+  if (!Number.isFinite(new Date(e.timestamp).getTime())) return undefined;
   if (e.capability !== "search" && e.capability !== "read" && e.capability !== "research") {
     return undefined;
   }

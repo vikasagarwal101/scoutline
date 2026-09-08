@@ -4387,7 +4387,14 @@ async function handleHistoryExport(
   for (const entry of memoized.log.entries) {
     const e = entry as unknown as Record<string, unknown>;
     if (e.kind === "save" && typeof e.requestId === "string" && typeof e.masterPath === "string") {
-      saveEntriesById.set(e.requestId as string, { masterPath: e.masterPath as string });
+      // FIRST match wins, matching the pre-refactor `entries.find()`
+      // contract (review batch 2: .set() per entry had flipped this to
+      // last-wins). Duplicates are rare — newRequestId has a random
+      // tail and writeArtifact refuses overwrites — but the selection
+      // semantics are pinned.
+      if (!saveEntriesById.has(e.requestId as string)) {
+        saveEntriesById.set(e.requestId as string, { masterPath: e.masterPath as string });
+      }
     }
   }
   return invokeCommand(

@@ -621,11 +621,14 @@ export async function clearArtifactsLog(
             kept += 1;
           }
         }
-        await atomicReplaceFile(
-          path.join(dir, ARTIFACTS_LOG_FILENAME),
-          `${JSON.stringify({ version: ARTIFACTS_LOG_VERSION, entries: keptEntries }, null, 2)}\n`,
-        );
         if (options.all) {
+          // Review batch 1: sweep-then-rewrite. The master sweep runs
+          // BEFORE the filtered-log rewrite so a sweep failure throws
+          // with the log byte-untouched — entries are never discarded
+          // while their masters survive (the old order reported success
+          // and dropped entries behind unremovable files; retrying the
+          // clear then completes the wipe).
+          //
           // Full wipe sweeps the DIRECTORY, not just logged masters: an
           // orphan master (pre-clear corruption, manual file) would
           // otherwise survive the wipe. Bare clear never reaches here —
@@ -636,21 +639,54 @@ export async function clearArtifactsLog(
           // corrupt the atomic-replace contract (the rename then lands
           // a master the wipe cannot see). Temp files orphaned by a
           // crash are harmless leftovers, not store content.
-          for (const name of await fs.readdir(dir)) {
-            if (name === ARTIFACTS_LOG_FILENAME || name.endsWith(".lock") || name.includes(".tmp.")) {
+          //
+          // Review batch 1 (cubic): logged `--save` export copies placed
+          // INSIDE the artifacts dir are spared — full resolved-path
+          // compare (never basenames), so an unrelated file that happens
+          // to share a name still goes. Unlogged files remain in scope:
+          // the wipe must leave no orphans (T6a orphan pin).
+          const spared = new Set(
+            current.log.entries
+              .filter((entry) => entry.exportPath !== undefined)
+              .map((entry) => path.resolve(dir, entry.exportPath as string)),
+          );
+          const failed: { readonly path: string; readonly code: string }[] = [];
+          for (const dirent of await fs.readdir(dir, { withFileTypes: true })) {
+            if (
+              dirent.name === ARTIFACTS_LOG_FILENAME ||
+              dirent.name.endsWith(".lock") ||
+              dirent.name.includes(".tmp.") ||
+              dirent.isDirectory()
+            ) {
               continue;
             }
-            // A vanished file rejects and is NOT counted (accurate); a
-            // failed unlink is not counted either.
-            // A vanished file rejects and is NOT counted (accurate); a
-            // failed unlink is not counted either.
-            await fs.unlink(path.join(dir, name))
-              .then(() => {
-                mastersDeleted += 1;
-              })
-              .catch(() => {});
+            if (spared.has(path.resolve(dir, dirent.name))) continue;
+            try {
+              await fs.unlink(path.join(dir, dirent.name));
+              mastersDeleted += 1;
+            } catch (error) {
+              // A vanished file is already gone — not a failure, not
+              // counted. Any other unlink rejection fails the wipe.
+              if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+              failed.push({
+                path: path.join(dir, dirent.name),
+                code: (error as NodeJS.ErrnoException).code ?? "unknown",
+              });
+            }
+          }
+          if (failed.length > 0) {
+            throw new FileError(
+              `history clear --all could not delete ${failed.length} file(s): ${failed
+                .map((f) => `${f.path} (${f.code})`)
+                .join("; ")}`,
+              "Fix the file permissions (or close the program holding the files), then retry: scoutline history clear --all.",
+            );
           }
         }
+        await atomicReplaceFile(
+          path.join(dir, ARTIFACTS_LOG_FILENAME),
+          `${JSON.stringify({ version: ARTIFACTS_LOG_VERSION, entries: keptEntries }, null, 2)}\n`,
+        );
       },
       {
         timeoutMs: options.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
@@ -670,6 +706,17 @@ export async function clearArtifactsLog(
       throw new FileError(
         error instanceof LockTimeoutError ? `${error.label} create-lock timed out` : error.message,
         "Another scoutline process holds the artifacts-write lock; try again once it finishes.",
+      );
+    }
+    // Review batch 1: a lock-creation I/O failure (read-only artifacts
+    // dir → EACCES on the wx-open of `artifacts-write.lock`) used to
+    // surface as a bare errno error — exit 1, but an UNKNOWN-shaped
+    // envelope. Same seam, same typed contract: wrap the errno into the
+    // FileError the CLI boundary documents.
+    if (error instanceof Error && "code" in error) {
+      throw new FileError(
+        `Artifacts log clear could not create the artifacts-write lock (${(error as NodeJS.ErrnoException).code ?? "unknown"}): ${error.message}`,
+        "Fix the permissions on the artifacts directory, then retry: scoutline history clear --all.",
       );
     }
     throw error;

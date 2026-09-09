@@ -666,22 +666,28 @@ function formatExportProvider(provider: SaveLogEntry["provider"]): string {
  * 4/8): the render interpolates redacted-but-otherwise-unfiltered log
  * strings (queries, row titles/urls), so a hostile entry must not forge
  * headings/bullets/fences or break code spans and links. Backslash
- * first in the alternation; newlines collapse so headings and bullets
- * die. Deliberate ceiling: ids/enums/hashes/timestamps (requestId,
+ * first in the alternation; CR/LF sequences collapse (bare `\r`
+ * included) so headings and bullets die. Deliberate ceiling: ids/enums/hashes/timestamps (requestId,
  * capability, provider, recorded, contentHash) are structural, not
  * prose — they stay unescaped; the inlined master body rides its
  * ```json fence verbatim by design.
  */
 const escMd = (s: string): string =>
-  s.replace(/[\\`*_{}\[\]()#+.!|<>~-]/g, "\\$&").replace(/\r?\n/g, " ");
+  s.replace(/[\\`*_{}\[\]()#+.!|<>~-]/g, "\\$&").replace(/[\r\n]+/g, " ");
 
 /**
  * One master body inside its fence: a single trailing newline (the
  * atomicReplaceFile convention) is trimmed so the closing fence sits
- * tight against the body's last line.
+ * tight against the body's last line. The fence is one backtick longer
+ * than the body's longest backtick run (min 3, CommonMark rules) so a
+ * body containing ``` lines cannot close the wrapper early and inject
+ * dossier markdown.
  */
 function renderMasterBody(body: string): string[] {
-  return ["", "```json", body.replace(/\n$/, ""), "```", ""];
+  const fence = "`".repeat(
+    Math.max(3, (body.match(/`+/g)?.reduce((m, s) => Math.max(m, s.length), 0) ?? 0) + 1),
+  );
+  return ["", `${fence}json`, body.replace(/\n$/, ""), fence, ""];
 }
 
 /** The deterministic markdown renderer (frozen byte-exact by tests). */

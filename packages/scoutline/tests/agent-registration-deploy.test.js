@@ -581,12 +581,22 @@ describe("main() wiring (DESIGN D5/D6)", () => {
     }
   });
 
-  it("init --unregister is parsed at the dispatch surface — it does not fall into the interactive wizard", async () => {
+  it("init --unregister is parsed at the dispatch surface — it does not fall into the interactive wizard", async (t) => {
     // GROUND: D6 "src/index.ts — stamp check in main() + --unregister
     // parse". Surface pin only: the flag must be recognized (non-interactive
     // reversal path), not silently swallowed by the wizard. Exit code and
     // output content are the unregister ticket's contract.
-    const { deps, stderr } = makeDeps();
+    // Hermetic (D7): without injected roots + check, both the reversal and
+    // the pre-dispatch stamp check resolve the production home (~/.claude,
+    // ~/.codex, ...) and real config root — pin temp roots/store/no-op so
+    // even a parse regression cannot touch the developer's real HOME.
+    const home = await mkTemp(t);
+    const configRoot = await mkTemp(t);
+    const { deps, stderr } = makeDeps({
+      agentRegistrationRoots: { home, configRoot },
+      agentRegistrationCheck: async () => ({ refreshed: false }),
+      initConfigStore: createDefaultConfigStore({ filePath: path.join(configRoot, "config.json") }),
+    });
     await main(["init", "--unregister"], deps);
 
     assert.doesNotMatch(
@@ -599,6 +609,10 @@ describe("main() wiring (DESIGN D5/D6)", () => {
   it("init --unregister never issues a wizard prompt", async (t) => {
     // GROUND: D6 surface pin, TTY side — unregister is non-interactive by
     // construction; any prompt attempt is a parse leak into the wizard.
+    // Hermetic (D7): pin the reversal roots to temp dirs and keep the
+    // pre-dispatch stamp check off the real home — the disk scan must never
+    // touch the developer's real HOME.
+    const home = await mkTemp(t);
     const configRoot = await mkTemp(t);
     let promptAttempts = 0;
     const refuse = () => {
@@ -607,6 +621,8 @@ describe("main() wiring (DESIGN D5/D6)", () => {
     };
     const prompts = { checkbox: refuse, select: refuse, confirm: refuse, password: refuse, input: refuse };
     const { deps } = makeDeps({
+      agentRegistrationRoots: { home, configRoot },
+      agentRegistrationCheck: async () => ({ refreshed: false }),
       initPrompts: prompts,
       initConfigStore: createDefaultConfigStore({ filePath: path.join(configRoot, "config.json") }),
     });

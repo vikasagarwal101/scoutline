@@ -739,7 +739,8 @@ async function runFreshFlow(deps: InitDependencies): Promise<number> {
       "",
       "Welcome to scoutline onboarding.",
       "This wizard writes ~/.scoutline/config.json with mode 0600.",
-      "You can cancel at any time with Ctrl+C — nothing is written until the end.",
+      "You can cancel at any time with Ctrl+C — agent tool registration",
+      "applies immediately, everything else is written only at the end.",
       "",
     ].join("\n"),
   );

@@ -20,6 +20,7 @@ import type { ExecutionDependencies } from "../lib/execution.js";
 import { executeCachedOperation } from "../lib/execution.js";
 import { OUTPUT_MODES } from "../lib/output.js";
 import { ValidationError } from "../lib/errors.js";
+import { rejectSmuggledMaxChars } from "../lib/output-budget.js";
 
 // ---------------------------------------------------------------------------
 // Option and dependency types
@@ -93,6 +94,10 @@ export async function map(
   _context?: CommandContext,
 ): Promise<CommandResult> {
   validateUrl(url);
+  // Issue #105: `maxChars` is not a map option — the CLI rejects
+  // `--max-chars` on map at parse time (UNSUPPORTED_OPTION); a smuggled
+  // value fails loud here too.
+  rejectSmuggledMaxChars(options, "map");
 
   const request = buildMapRequest(url, options);
 

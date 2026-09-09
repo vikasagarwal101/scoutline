@@ -25,6 +25,8 @@
  * persisted verbatim when compaction fires).
  */
 
+import { ValidationError } from "./errors.js";
+
 /** One ordered step of a budget ladder. */
 export interface LadderRule<T = unknown> {
   readonly name: string;
@@ -38,6 +40,22 @@ export interface LadderRule<T = unknown> {
 /** Ordered shrinking rules; earlier rules are cheaper losses. */
 export type BudgetLadder<T = unknown> = readonly LadderRule<T>[];
 
+/**
+ * Issue #105 (ADR-0007 follow-up): `--max-chars` is owned by the
+ * dispatcher seam (`applyCommandOutputBudget` + ladder) on every
+ * surface. A deep-import caller passing `maxChars` to a command handler
+ * or Explorer entry point must fail loud — the retired per-field
+ * truncation is gone, and silently ignoring the option (or silently
+ * applying a second, undeclared budgeting system) is the accept-and-drop
+ * class. Presence throws; the value is irrelevant.
+ */
+export function rejectSmuggledMaxChars(options: unknown, fnName: string): void {
+  if (options !== null && typeof options === "object" && "maxChars" in options) {
+    throw new ValidationError(
+      `maxChars is not a ${fnName} option — the dispatcher seam owns --max-chars (whole-envelope Output Budget via applyCommandOutputBudget + ladder)`,
+    );
+  }
+}
 /**
  * Envelope-key the walk stamps after the FIRST rule application: ladder
  * rules strip a leading omission marker only when this key is present —

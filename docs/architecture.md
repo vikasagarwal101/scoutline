@@ -52,7 +52,7 @@ inject descriptor lists explicitly through optional parameters.
 | `brave` | `BRAVE_SEARCH_API_KEY` | `https://api.search.brave.com` | Direct-HTTP transport (`X-Subscription-Token`); Search (web/news/video + `--content-size high` → LLM Context), Quota, Diagnostics. No Reader/Crawl/Map/Research/Vision |
 | `firecrawl` | `FIRECRAWL_API_KEY` | `https://api.firecrawl.dev` (v2) | Direct-HTTP transport; Search, Reader, Crawl (async), Map, Quota (credits), Diagnostics. Credit-based; no Research (`/deep-research` deprecated) |
 | `parallel` | `PARALLEL_API_KEY` | `https://api.parallel.ai` | Direct-HTTP transport; Search, Research, Reader, Diagnostics |
-| `perplexity` | `PERPLEXITY_API_KEY` | `https://api.perplexity.ai` | Direct-HTTP transport; Search (`/search`), Research (`/chat/completions` sonar-deep-research), Diagnostics |
+| `perplexity` | `PERPLEXITY_API_KEY` | `https://api.perplexity.ai` | Direct-HTTP transport; Search (`/search`), Research (`/v1/agent` preset `high`), Diagnostics |
 | `jina` | `JINA_API_KEY` (optional, keyless supported) | `https://r.jina.ai`, `https://s.jina.ai`, `https://deepsearch.jina.ai` | Direct-HTTP transport; Search, Reader, Research, Quota (rate-limit telemetry), Diagnostics |
 | `you` | `YDC_API_KEY` (alias `YOU_API_KEY`) | `https://ydc-index.io`, `https://api.you.com` | Direct-HTTP transport (`X-API-Key`); Search, Reader, Research, Diagnostics. Dual host: search/reader on ydc-index.io, research on api.you.com; no quota capability |
 | `linkup` | `LINKUP_API_KEY` | `https://api.linkup.so` | Direct-HTTP transport; Search, Reader, Research, Quota (credits balance, limit unknown), Diagnostics |
@@ -656,6 +656,13 @@ Key boundaries:
   and `--domain` natively; Exa Agent create accepts only `query` +
   `effort`, so those three options are warn-and-stripped before
   transport (so Provider fallback can still succeed via Exa).
+  Perplexity research is synchronous on the Agent API (`POST /v1/agent`,
+  preset `high` — the `sonar-deep-research` successor, #107): no state
+  file, and `model` / `--output-length` / `--citation-format` /
+  `--domain` reject as `UNSUPPORTED_OPTION` (the preset owns them).
+  Perplexity reports embed preset-native `[web:n]` inline citations
+  (not `[n]`); `sources[]` maps from the response's `search_results`
+  output items, unioned across search rounds and deduped by URL.
 - **Local context steering is handler-local by default.**
   `research --context <path> | --context-stdin
   [--context-mode organize|bias|both]` reads the source exactly once in

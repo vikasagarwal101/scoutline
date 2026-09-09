@@ -358,6 +358,10 @@ export async function repoTree(
   _context?: CommandContext,
 ): Promise<CommandResult> {
   validateRepo(repo);
+  // Issue #105: `maxChars` is not a repoTree option — Tree is never
+  // character-limited; a smuggled value fails loud (loud-retirement
+  // contract shared with repoSearch/repoRead/repoBrief).
+  rejectSmuggledMaxChars(options, "repoTree");
   if (options.depth !== undefined) {
     const depthValue = Number(options.depth);
     if (!Number.isFinite(depthValue) || depthValue < 1) {

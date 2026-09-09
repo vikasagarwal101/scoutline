@@ -50,8 +50,7 @@ export type BudgetLadder<T = unknown> = readonly LadderRule<T>[];
  * class. Presence throws; the value is irrelevant.
  */
 export function rejectSmuggledMaxChars(options: unknown, fnName: string): void {
-  const smuggled = (options as { maxChars?: unknown } | undefined)?.maxChars;
-  if (smuggled !== undefined) {
+  if (options !== null && typeof options === "object" && "maxChars" in options) {
     throw new ValidationError(
       `maxChars is not a ${fnName} option — the dispatcher seam owns --max-chars (whole-envelope Output Budget via applyCommandOutputBudget + ladder)`,
     );

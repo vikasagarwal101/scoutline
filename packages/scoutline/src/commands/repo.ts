@@ -37,7 +37,7 @@ import type {
 } from "../capabilities/repository.js";
 import type { ExecutionDependencies } from "../lib/execution.js";
 import { OUTPUT_MODES } from "../lib/output.js";
-import type { LadderRule } from "../lib/output-budget.js";
+import { rejectSmuggledMaxChars, type LadderRule } from "../lib/output-budget.js";
 import { explorerSearch, explorerReadFile, explorerTree } from "./repository-explorer.js";
 import { ValidationError } from "../lib/errors.js";
 import { configuredSecrets, redactCredentialString } from "../lib/redact.js";
@@ -261,7 +261,6 @@ export function parseBriefMaxChars(raw: unknown): number | undefined {
 
 export interface RepoSearchOptions {
   language?: "en" | "zh";
-  maxChars?: number;
   noCache?: boolean;
 }
 
@@ -272,7 +271,6 @@ export interface RepoTreeOptions {
 }
 
 export interface RepoReadOptions {
-  maxChars?: number;
   noCache?: boolean;
 }
 
@@ -334,11 +332,14 @@ export async function repoSearch(
   if (options.language && options.language !== "en" && options.language !== "zh") {
     throw new ValidationError('Language must be "en" or "zh"');
   }
+  // Issue #105: `maxChars` is not a repoSearch option (ADR-0007 retired
+  // the Explorer's per-field projection); a smuggled value fails loud.
+  rejectSmuggledMaxChars(options, "repoSearch");
 
   const result = await explorerSearch(
     deps.capability,
     { repository: repo, query, language: options.language },
-    { noCache: options.noCache, maxChars: options.maxChars },
+    { noCache: options.noCache },
     deps.execution,
   );
   return { kind: "data", data: result };
@@ -386,11 +387,14 @@ export async function repoRead(
   _context?: CommandContext,
 ): Promise<CommandResult> {
   validateRepo(repo);
+  // Issue #105: `maxChars` is not a repoRead option (ADR-0007 retired
+  // the Explorer's per-field projection); a smuggled value fails loud.
+  rejectSmuggledMaxChars(options, "repoRead");
 
   const result = await explorerReadFile(
     deps.capability,
     { repository: repo, path },
-    { noCache: options.noCache, maxChars: options.maxChars },
+    { noCache: options.noCache },
     deps.execution,
   );
   return { kind: "data", data: result };
@@ -519,15 +523,8 @@ export async function repoBrief(
   // whole-envelope budget is consumed ONCE at the dispatcher seam
   // (index.ts parseBriefMaxChars → applyCommandOutputBudget +
   // BRIEF_LADDER). A direct caller passing it here would get a silent
-  // no-op; reject loudly instead.
-  // Structural read (the option is intentionally absent from the
-  // interface): detect a legacy/direct caller passing it anyway.
-  const smuggledMaxChars = (options as { maxChars?: unknown }).maxChars;
-  if (smuggledMaxChars !== undefined) {
-    throw new ValidationError(
-      "maxChars is not a repoBrief option — the dispatcher seam owns --max-chars (applyCommandOutputBudget + BRIEF_LADDER)",
-    );
-  }
+  // no-op; reject loudly instead (issue #105 unified guard).
+  rejectSmuggledMaxChars(options, "repoBrief");
 
   const focus =
     options.focus === undefined ? [...REPO_BRIEF_FOCUS] : [...new Set(options.focus)];

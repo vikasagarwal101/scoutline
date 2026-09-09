@@ -30,6 +30,7 @@ import type {
 import { invokeCommand } from "../command-invocation.js";
 import type { OutputMode } from "../lib/output.js";
 import { ValidationError } from "../lib/errors.js";
+import { rejectSmuggledMaxChars } from "../lib/output-budget.js";
 import type { HandlerDependencies } from "../index.js";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
@@ -1012,6 +1013,11 @@ export async function handleWatch(
   isolated = false,
 ): Promise<number> {
   const { subcommand, positional, flags, showHelp } = parseWatchArgs(args);
+
+  // Issue #105: watch flags arrive as raw kebab keys; `--max-chars` is
+  // rejected at CLI parse time (UNSUPPORTED_OPTION) and fails loud here
+  // for deep importers too — never accepted and dropped.
+  rejectSmuggledMaxChars({ maxChars: flags["max-chars"] }, "handleWatch");
 
   if (showHelp || subcommand === undefined) {
     deps.invocation.writeStdout(WATCH_HELP);

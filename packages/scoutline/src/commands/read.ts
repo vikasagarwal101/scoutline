@@ -655,9 +655,10 @@ Options:
                      paragraphs trim, bottom sections drop; url/title never
                      cut; headings are never cut mid-value but whole
                      sections (heading included) can drop at crush budgets;
-                     extract reads trim field values only; full untrimmed
-                     page saved to the artifacts store — recover
-                     via "scoutline history show")
+                     extract reads trim field values only; when the budget
+                     fires, the full untrimmed page is saved to the
+                     artifacts store — recover via
+                     "scoutline history show")
   (byte-exact PDF/raw retrieval: see "scoutline fetch --help")
   --full-envelope Silently accepted and ignored. The envelope is always
                   returned at schema-version-1 (deprecation: D3).

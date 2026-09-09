@@ -29,7 +29,7 @@ import type { ExecutionDependencies } from "../lib/execution.js";
 import { executeCachedOperation } from "../lib/execution.js";
 import { OUTPUT_MODES } from "../lib/output.js";
 import { ValidationError } from "../lib/errors.js";
-import { wasBudgetWalked, type LadderRule } from "../lib/output-budget.js";
+import { wasBudgetWalked, rejectSmuggledMaxChars, type LadderRule } from "../lib/output-budget.js";
 
 // ---------------------------------------------------------------------------
 // Option and dependency types
@@ -46,7 +46,6 @@ export interface CrawlOptions {
   readonly contentSize?: "medium" | "high";
   readonly timeout?: number;
   readonly noCache?: boolean;
-  readonly maxChars?: number;
 }
 
 /**
@@ -70,24 +69,8 @@ function validateUrl(url: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Projection helpers
+// Request building
 // ---------------------------------------------------------------------------
-
-/**
- * Apply `--max-chars` truncation to a single page's content. Mirrors the
- * reader's truncation contract: slice to `max - 1`, trim trailing
- * whitespace, append `…`.
- */
-function truncateContent(
-  content: string,
-  max?: number,
-): { text: string; originalLen: number; truncated: boolean } {
-  const originalLen = content.length;
-  if (!max || max <= 0 || originalLen <= max) {
-    return { text: content, originalLen, truncated: false };
-  }
-  return { text: content.slice(0, max - 1).trimEnd() + "…", originalLen, truncated: true };
-}
 
 /**
  * Build the Provider-neutral CrawlRequest from CrawlOptions. Only fields
@@ -109,29 +92,18 @@ function buildCrawlRequest(url: string, options: CrawlOptions): CrawlRequest {
 }
 
 /**
- * Project a CrawlPage into the output envelope shape. When `--max-chars`
- * is set, each page gains `truncated` and `originalContentLength`.
+ * Project a CrawlPage into the output envelope shape. ADR-0007 + issue
+ * #105: the per-page `--max-chars` truncation is deleted — whole-envelope
+ * budgeting lives at the handler seam (index.ts, CRAWL_LADDER).
  */
 interface ProjectedPage {
   readonly url: string;
   readonly content: string;
   readonly contentFormat: "markdown" | "text";
-  readonly truncated?: boolean;
-  readonly originalContentLength?: number;
 }
 
-function projectPage(page: CrawlPage, maxChars?: number): ProjectedPage {
-  if (!maxChars || maxChars <= 0) {
-    return { url: page.url, content: page.content, contentFormat: page.contentFormat };
-  }
-  const { text, originalLen, truncated } = truncateContent(page.content, maxChars);
-  return {
-    url: page.url,
-    content: text,
-    contentFormat: page.contentFormat,
-    truncated,
-    originalContentLength: originalLen,
-  };
+function projectPage(page: CrawlPage): ProjectedPage {
+  return { url: page.url, content: page.content, contentFormat: page.contentFormat };
 }
 
 function buildCrawlPresentations(
@@ -236,6 +208,9 @@ export async function crawl(
   _context?: CommandContext,
 ): Promise<CommandResult> {
   validateUrl(url);
+  // Issue #105: `maxChars` is not a crawl option (ADR-0007 retired the
+  // per-page projection); a smuggled value fails loud.
+  rejectSmuggledMaxChars(options, "crawl");
 
   const request = buildCrawlRequest(url, options);
 
@@ -246,9 +221,10 @@ export async function crawl(
     deps.execution,
   );
 
-  // Projection: apply --max-chars per page. The cache stores full content;
-  // truncation state is recomputed on every read.
-  const projectedPages = result.pages.map((page) => projectPage(page, options.maxChars));
+  // Projection: field-narrowing only. The cache stores full content and
+  // the envelope carries it verbatim — whole-envelope budgeting (when a
+  // CLI budget fires) runs at the handler seam (index.ts, CRAWL_LADDER).
+  const projectedPages = result.pages.map((page) => projectPage(page));
 
   const envelope: Record<string, unknown> = {
     schemaVersion: 1,

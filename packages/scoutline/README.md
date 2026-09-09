@@ -348,7 +348,7 @@ Provider selection, and `doctor`.
 | `read` (Reader) | Yes | **No** | Yes | Yes | No | Yes | Yes | No | Yes | Yes | Yes | Yes | Parallel (Extract API), Jina, You.com, Linkup, and Spider.cloud add Reader support |
 | `crawl` | **No** | **No** | Yes | No | No | Yes (async) | No | No | No | No | No | Yes (sync) | Tavily sync; Firecrawl async (resumable after Ctrl-C) |
 | `map` | **No** | **No** | Yes | No | No | Yes | No | No | No | No | No | Yes | URL-set discovery; no per-page content |
-| `research` | **No** | **No** | Yes | Yes | **No** | **No** | Yes | Yes | Yes | Yes | Yes | No | Tavily, Exa, Parallel, Perplexity `sonar-deep-research`, Jina DeepSearch, You.com, and Linkup research report synthesis |
+| `research` | **No** | **No** | Yes | Yes | **No** | **No** | Yes | Yes | Yes | Yes | Yes | No | Tavily, Exa, Parallel, Perplexity (Agent API `high` preset), Jina DeepSearch, You.com, and Linkup research report synthesis |
 | `repo search` / `repo read` / `repo tree` / `repo brief` | Yes | **No** | **No** | **No** | **No** | **No** | **No** | **No** | **No** | No | Participates in selection; only Z.AI supplies `repository-exploration` |
 | `tools`, `tool`, `call` (Raw tools) | Yes | No | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
 | `code` (Code Mode) | Yes | No | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |

@@ -22,7 +22,7 @@ import type {
 import type { ResponseCache } from "../lib/cache.js";
 import type { RetryPolicy } from "../lib/execution.js";
 import { executeSearch } from "../lib/execution.js";
-import type { LadderRule } from "../lib/output-budget.js";
+import { rejectSmuggledMaxChars, type LadderRule } from "../lib/output-budget.js";
 import { canonicalUrl } from "../lib/url.js";
 import type { ProviderDescriptor, ProviderId } from "../providers/types.js";
 import { formatSearchResultsPretty, type SearchResultLike } from "../lib/tty.js";
@@ -383,6 +383,11 @@ export async function search(
   deps: SearchExecutionDependencies,
   context?: CommandContext,
 ): Promise<CommandResult> {
+  // Issue #105: `maxChars` is not a search option — the dispatcher seam
+  // owns `--max-chars` (SEARCH_LADDER whole-envelope budget); a smuggled
+  // value must fail loud, not silently no-budget.
+  rejectSmuggledMaxChars(options, "search");
+
   const { capability, cache, sleep, random, retryPolicy, consume, now } = deps;
 
   // Split query on `|` if --merge is set. Empty fragments are dropped.

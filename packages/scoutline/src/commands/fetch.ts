@@ -20,6 +20,7 @@ import type { CommandResult, TextOutputMode } from "../command-invocation.js";
 import { invokeCommand } from "../command-invocation.js";
 import type { OutputMode } from "../lib/output.js";
 import { ValidationError, FileError, TimeoutError, NetworkError, ApiError } from "../lib/errors.js";
+import { rejectSmuggledMaxChars } from "../lib/output-budget.js";
 import { isPdfBuffer, extractPdfText, repairPdf } from "../lib/pdf.js";
 import type { HandlerDependencies } from "../index.js";
 
@@ -295,6 +296,9 @@ export async function executeFetch(
   options: FetchOptions = {},
 ): Promise<FetchResultData> {
   validateFetchUrl(url);
+  // Issue #105: `maxChars` is not an executeFetch option — the CLI
+  // rejects `--max-chars` on fetch at parse time; fail loud here too.
+  rejectSmuggledMaxChars(options, "executeFetch");
 
   const method = options.method ?? "GET";
   const validMethods = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"];

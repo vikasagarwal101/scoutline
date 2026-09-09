@@ -20,6 +20,7 @@ import type { CommandResult, TextOutputMode } from "../command-invocation.js";
 import { invokeCommand } from "../command-invocation.js";
 import type { OutputMode } from "../lib/output.js";
 import { ValidationError, TimeoutError, NetworkError } from "../lib/errors.js";
+import { rejectSmuggledMaxChars } from "../lib/output-budget.js";
 import type { HandlerDependencies } from "../index.js";
 import {
   readBoundedResponseBody,
@@ -201,6 +202,7 @@ export async function executeArchiveCdx(
   if (!urlOrPattern || urlOrPattern.trim().length === 0) {
     throw new ValidationError("URL or pattern is required for archive cdx.");
   }
+  rejectSmuggledMaxChars(options, "executeArchiveCdx");
 
   const queryParams = new URLSearchParams({
     url: urlOrPattern,
@@ -342,6 +344,7 @@ export async function executeArchiveGet(
   if (!url || url.trim().length === 0) {
     throw new ValidationError("URL is required for archive get.");
   }
+  rejectSmuggledMaxChars(options, "executeArchiveGet");
 
   if (options.at !== undefined && options.at !== "best" && !/^\d{4,14}$/.test(options.at)) {
     throw new ValidationError(
@@ -881,6 +884,9 @@ export async function executeArchiveDiff(
   if (!url || url.trim().length === 0) {
     throw new ValidationError("URL is required for archive diff.");
   }
+  // Guard BEFORE the --since validation so a smuggled maxChars reports
+  // as the smuggle, not as a missing --since.
+  rejectSmuggledMaxChars(options, "executeArchiveDiff");
   if (typeof options.since !== "string") {
     throw new ValidationError(
       "--since is required for archive diff.",

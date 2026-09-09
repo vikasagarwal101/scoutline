@@ -38,7 +38,7 @@ import { OUTPUT_MODES } from "../lib/output.js";
 import { TimeoutError, ValidationError } from "../lib/errors.js";
 import { buildBiasAppend, slug } from "../lib/context-file.js";
 import type { ContextSourceContent, ParsedContextText } from "../lib/context-file.js";
-import type { LadderRule } from "../lib/output-budget.js";
+import { rejectSmuggledMaxChars, type LadderRule } from "../lib/output-budget.js";
 
 // ---------------------------------------------------------------------------
 // Option and dependency types
@@ -532,13 +532,9 @@ export async function research(
   // Output Budget whole-branch review M3: the option field is GONE from
   // ResearchOptions (the T4 per-field truncation was removed), so a
   // typed caller cannot pass it — but a JS deep importer still can.
-  // Fail loud instead of silently no-budgeting (repoBrief guards the
-  // same way; the CLI applies the budget at the handler seam).
-  if ((options as Record<string, unknown>).maxChars !== undefined) {
-    throw new ValidationError(
-      "--max-chars is applied by the CLI as a whole-envelope Output Budget; research() does not accept it",
-    );
-  }
+  // Fail loud instead of silently no-budgeting (issue #105 unified
+  // guard; the CLI applies the budget at the handler seam).
+  rejectSmuggledMaxChars(options, "research");
 
   const contextInput = deps.context;
   // Local-context plan, Ticket 3 (DESIGN D2.5/D5): under bias/both the

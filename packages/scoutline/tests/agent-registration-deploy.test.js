@@ -680,6 +680,10 @@ describe("lazy refresh (DESIGN D5, PRD AC-7)", () => {
     await fs.mkdir(path.join(home, ".claude"), { recursive: true });
     await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9" });
     const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    if (process.getuid?.() === 0) {
+      t.skip("chmod-based EACCES does not block root (CAP_DAC_OVERRIDE)");
+      return;
+    }
     await fs.chmod(claudeMd, 0o000);
     try {
       await assert.rejects(
@@ -829,7 +833,10 @@ describe("main() wiring (DESIGN D5/D6)", () => {
       configPath,
       JSON.stringify({ version: 1, providers: { zai: { apiKey: "k" } }, agentRules: { claude: true } }),
     );
-    const { deps } = makeDeps({ agentRegistrationRoots: { home, configRoot } });
+    const { deps } = makeDeps({
+      agentRegistrationRoots: { home, configRoot },
+      agentRegistrationCheck: async () => ({ refreshed: false }),
+    });
     const code = await main(["init", "--unregister"], deps);
     assert.equal(code, 0);
     const cleared = JSON.parse(await fs.readFile(configPath, "utf8"));

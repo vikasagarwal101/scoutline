@@ -116,8 +116,11 @@ async function writeMixedLog(dir, count) {
     // cacheKeys are unique per index, so same-cacheKey repeats can't be
     // modeled here; upgrade to shared cacheKeys/queries if lastAsked
     // fidelity ever matters.
-    if (i % 7 === 0) {
-      entries.push(markerEntry(i, lastFullId ?? undefined));
+    // Row 0 has no prior full entry — a marker there has repeatOf
+    // undefined, and the validator reads that as a full entry missing
+    // required fields. Only emit markers once a full entry exists.
+    if (i % 7 === 0 && lastFullId !== null) {
+      entries.push(markerEntry(i, lastFullId));
     } else {
       const e = fullEntry(i);
       lastFullId = e.requestId;

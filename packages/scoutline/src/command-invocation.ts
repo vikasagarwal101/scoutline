@@ -183,14 +183,40 @@ export async function invokeCommand(
     // existing catch below (notices flushed, one error envelope, stdout
     // suppressed). With no hook this is a no-op.
     if (save !== undefined) {
-      await save({ result, resolvedSecrets, now, notice: context.notice });
-    }
-    // History-journal merge T2a: the always-on journal hook runs BESIDE
-    // the save hook at the same seam — AFTER it, so the save hook has
-    // already stamped its requestId into the shared capture cell for the
-    // saveRef cross-link. Same failure contract (rides the catch below);
-    // without a hook this is a no-op, byte-identical to the pre-T2a seam.
-    if (journal !== undefined) {
+      // Cluster F (cubic P2): capture the save failure but don't rethrow
+      // yet — the always-on journal hook must still run, so a
+      // provider-verified run leaves a journal row recording the attempt
+      // even when saving the artifact fails.
+      let saveThrew = false;
+      let saveError: unknown;
+      try {
+        await save({ result, resolvedSecrets, now, notice: context.notice });
+      } catch (error) {
+        saveThrew = true;
+        saveError = error;
+      }
+      // History-journal merge T2a: the always-on journal hook runs BESIDE
+      // the save hook at the same seam — AFTER it, so the save hook has
+      // already stamped its requestId into the shared capture cell for the
+      // saveRef cross-link. Rethrow precedence:
+      // - save succeeded, journal failed → rethrow (unchanged contract:
+      //   rides the catch below — notices, one error envelope, no stdout).
+      // - save failed → the save error rethrows below; a journal error
+      //   would only mask it, so it degrades to a stderr notice instead.
+      if (journal !== undefined) {
+        try {
+          await journal({ result, resolvedSecrets, now, notice: context.notice });
+        } catch (journalError) {
+          if (!saveThrew) {
+            throw journalError;
+          }
+          context.notice("journal write failed after save failure");
+        }
+      }
+      if (saveThrew) {
+        throw saveError;
+      }
+    } else if (journal !== undefined) {
       await journal({ result, resolvedSecrets, now, notice: context.notice });
     }
   } catch (error) {

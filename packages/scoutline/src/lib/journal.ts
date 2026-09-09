@@ -12,7 +12,7 @@
  * append), `newRequestId`, and `redactSecrets` at the write seam
  * (query text and skeleton URLs pass it — PRD AC9, pinned E2E).
  */
-import { createHash } from "node:crypto";
+import { createHash, randomBytes as cryptoRandomBytes } from "node:crypto";
 import { join } from "node:path";
 import { atomicReplaceFile } from "./config-store.js";
 import {
@@ -28,6 +28,7 @@ import {
   ARTIFACTS_LOG_VERSION,
   ARTIFACTS_LOG_LOCK_IDENTITY,
   type ProviderRouting,
+  type RandomBytesSource,
   type AppendLogEntryOptions,
   type ArtifactsLog,
   type SaveLogEntry,
@@ -374,10 +375,13 @@ export function buildJournalRepeatMarker(input: {
 export interface AppendJournalEntryOptions extends AppendLogEntryOptions {}
 
 /**
- * Append one journal entry under the artifacts write lock — a thin
- * composition over {@link appendLogEntry} (the log IS index.json; the
- * lock, the atomic replace, and the 0600 discipline are inherited).
- * Strictly append-only: nothing here ever rewrites an existing entry.
+ * Append one journal entry under the artifacts write lock — the same
+ * read-then-append critical section {@link appendLogEntry} runs (the
+ * log IS index.json; the lock, the atomic replace, and the 0600
+ * discipline are inherited), plus a requestId collision remint: a
+ * caller-minted id that already exists in the log gets a fresh 4-hex
+ * tail. Strictly append-only: nothing here ever rewrites an existing
+ * entry.
  *
  * Callers that know they are in the cache-hit path should use
  * {@link appendJournalEntryMaybeRepeat} instead: its read-check-append
@@ -389,9 +393,65 @@ export async function appendJournalEntry(
   entry: JournalLogEntry | JournalRepeatMarker,
   options: AppendJournalEntryOptions = {},
 ): Promise<string | undefined> {
-  // The union log type rides appendLogEntry's SaveLogEntry signature;
-  // journal entries pass the same asLogEntry dispatch at read time.
-  return appendLogEntry(dir, entry as unknown as Parameters<typeof appendLogEntry>[1], options);
+  let notice: string | undefined;
+  await withAsyncFileLock(
+    dir,
+    ARTIFACTS_LOG_LOCK_IDENTITY,
+    async () => {
+      const current = await readLog(dir);
+      notice = current.notice;
+      const resolved = remintJournalCollision(current, entry);
+      const next: ArtifactsLog = {
+        version: ARTIFACTS_LOG_VERSION,
+        entries: [...current.log.entries, resolved as unknown as SaveLogEntry],
+      };
+      await atomicReplaceFile(
+        join(dir, ARTIFACTS_LOG_FILENAME),
+        `${JSON.stringify(next, null, 2)}\n`,
+      );
+    },
+    {
+      timeoutMs: options.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
+      staleMs: options.staleMs ?? DEFAULT_LOCK_STALE_MS,
+      setTimeout: options.setTimeout,
+      timeoutLabel: "Artifacts log write",
+    },
+  );
+  return notice;
+}
+
+/**
+ * Markers carry no requestId (shape-pinned), so only full entries can
+ * collide. `buildJournalRecall` keys rows by requestId last-wins, so
+ * an appended entry reusing an existing id would silently orphan the
+ * earlier row — remint the 4-hex tail (newRequestId's 2 random bytes
+ * collide with p≈2^-16 per same-second pair) until the id is free.
+ * Bounded at 8 remints: per-retry draws are independent and tiny, so
+ * an unbounded loop buys nothing.
+ */
+const MAX_REQUEST_ID_REMINTS = 8;
+
+function remintJournalCollision(
+  current: Awaited<ReturnType<typeof readLog>>,
+  entry: JournalLogEntry | JournalRepeatMarker,
+): JournalLogEntry | JournalRepeatMarker {
+  if (!("requestId" in entry)) return entry;
+  const taken = new Set(
+    current.log.entries.flatMap((e) =>
+      typeof e === "object" &&
+      e !== null &&
+      typeof (e as { requestId?: unknown }).requestId === "string"
+        ? [(e as { requestId: string }).requestId]
+        : [],
+    ),
+  );
+  if (!taken.has(entry.requestId)) return entry;
+  let minted = entry.requestId;
+  for (let attempts = 0; attempts < MAX_REQUEST_ID_REMINTS; attempts += 1) {
+    minted = remintRequestId(entry.requestId);
+    if (!taken.has(minted)) return { ...entry, requestId: minted };
+  }
+  return { ...entry, requestId: minted };
 }
 
 /**
@@ -408,6 +468,25 @@ export async function appendJournalEntry(
  * cacheKey map resolves to a prior full entry, the marker builder is
  * called with that requestId and the result is appended instead.
  */
+/**
+ * Swap a request id's 4-hex tail for a fresh mint (same timestamp
+ * prefix — newRequestId already produced it from the caller's injected
+ * clock, and re-minting the timestamp would defeat the same-second
+ * collision check). Used under the log lock when an appended journal
+ * entry collides with an existing requestId: `buildJournalRecall`
+ * keys rows by requestId last-wins, so a colliding append would
+ * orphan the earlier entry.
+ */
+export function remintRequestId(
+  id: string,
+  randomBytes: RandomBytesSource = cryptoRandomBytes,
+): string {
+  const tail = Array.from(randomBytes(2), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return `${id.slice(0, -4)}${tail}`;
+}
+
 export async function appendJournalEntryMaybeRepeat(
   dir: string,
   fullEntry: JournalLogEntry,
@@ -423,8 +502,14 @@ export async function appendJournalEntryMaybeRepeat(
       notice = current.notice;
       const map = buildJournalCacheKeyMapFromLog(current.log);
       const prior = fullEntry.cacheKey ? map.get(fullEntry.cacheKey) : undefined;
+      // Markers carry no requestId (shape-pinned), so the collision
+      // remint only ever bites on the full-entry branch. The log read
+      // and the write share this lock critical section, so the check
+      // is race-free.
       const entry =
-        prior !== undefined ? makeMarker(prior) : fullEntry;
+        prior !== undefined
+          ? makeMarker(prior)
+          : remintJournalCollision(current, fullEntry);
       const next: ArtifactsLog = {
         version: ARTIFACTS_LOG_VERSION,
         entries: [...current.log.entries, entry as unknown as SaveLogEntry],

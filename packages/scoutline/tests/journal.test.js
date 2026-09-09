@@ -61,9 +61,12 @@ import {
   skeletonContentHash,
   normalizeSkeleton,
   buildJournalCacheKeyMap,
+  buildJournalRecall,
   buildJournalRepeatMarker,
+  remintRequestId,
 } from "../dist/lib/journal.js";
 import { readLog } from "../dist/lib/artifacts.js";
+import { buildProviderCacheKey } from "../dist/lib/cache.js";
 import { CommandOptionUnsupportedError } from "../dist/lib/errors.js";
 
 function makeTempDir(prefix) {
@@ -88,7 +91,7 @@ function makeAdapter() {
 
 /** Counting search descriptor double (the save-artifact T4 shape). */
 function makeSearchDescriptor(id, log, options = {}) {
-  const { result } = options;
+  const { result, invokeThrows } = options;
   return {
     id,
     isConfigured: () => true,
@@ -108,6 +111,7 @@ function makeSearchDescriptor(id, log, options = {}) {
         },
         async invoke(request) {
           log.push(`${id}:${request.query}`);
+          if (invokeThrows !== undefined) throw invokeThrows;
           return result ?? [{ title: `t-${id}`, url: `https://${id}/r`, summary: "s" }];
         },
       },
@@ -320,6 +324,116 @@ describe("T2a: always-on journal writer unit pins", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("PR #111 cluster C: requestId collision remint under the log lock", () => {
+  // Fixed colliding id: buildJournalRecall keys rows by requestId
+  // last-wins, so a second append with this id would orphan the first
+  // entry's row entirely.
+  const COLLIDING_ID = "20260909T120000Z-beef";
+
+  function collidingFullEntry(overrides = {}) {
+    return {
+      kind: "journal",
+      requestId: COLLIDING_ID,
+      timestamp: 1,
+      capability: "search",
+      provider: { mode: "single", effective: "zai", servedFrom: "live" },
+      query: "second entry",
+      contentHash: "c".repeat(64),
+      cacheKey: "key-collision",
+      skeleton: { results: [] },
+      ...overrides,
+    };
+  }
+
+  async function seedLog(dir, entries) {
+    await appendJournalEntry(dir, entries[0]);
+    for (const entry of entries.slice(1)) await appendJournalEntry(dir, entry);
+  }
+
+  it("appendJournalEntry: pre-seeded log holds the same requestId → appended entry gets a REMINTED tail; the seeded entry keeps its id and both stay queryable", async () => {
+    const dir = makeTempDir("scoutline-journal-collision-");
+    try {
+      const seeded = {
+        kind: "journal",
+        requestId: COLLIDING_ID,
+        timestamp: 1,
+        capability: "search",
+        provider: { mode: "single", effective: "zai", servedFrom: "live" },
+        query: "first entry",
+        contentHash: "b".repeat(64),
+        cacheKey: "key-first",
+        skeleton: { results: [] },
+      };
+      await seedLog(dir, [seeded]);
+      await appendJournalEntry(dir, collidingFullEntry());
+      const { log, notice } = await readLog(dir);
+      assert.strictEqual(log.entries.length, 2);
+      assert.strictEqual(notice, undefined, "remint is a normal append, not a corruption reset");
+      const [first, second] = log.entries;
+      assert.strictEqual(first.requestId, COLLIDING_ID, "seeded entry byte-untouched (append-only)");
+      assert.notStrictEqual(second.requestId, COLLIDING_ID, "colliding append reminted");
+      assert.ok(second.requestId.startsWith("20260909T120000Z-"), "timestamp prefix preserved");
+      assert.match(second.requestId, /^20260909T120000Z-[0-9a-f]{4}$/, "tail is 4 lowercase hex");
+      // The recall consequence: both rows survive (no last-wins orphan).
+      const recalls = buildJournalRecall(await readLog(dir).then((r) => r.log.entries), "first second", {});
+      assert.strictEqual(recalls.length, 2, "both entries queryable — no last-wins orphan");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("appendJournalEntryMaybeRepeat: cache-cold full entry colliding with a seeded id → reminted full entry; marker branch NEVER remints (markers carry no requestId)", async () => {
+    const dir = makeTempDir("scoutline-journal-collision-mr-");
+    try {
+      const seeded = {
+        kind: "journal",
+        requestId: COLLIDING_ID,
+        timestamp: 1,
+        capability: "search",
+        provider: { mode: "single", effective: "zai", servedFrom: "live" },
+        query: "first entry",
+        contentHash: "b".repeat(64),
+        cacheKey: "key-first",
+        skeleton: { results: [] },
+      };
+      // Same cacheKey as the seeded entry → the marker branch fires,
+      // proving the remint check does not disturb marker writes.
+      const markerSource = collidingFullEntry({ cacheKey: "key-first" });
+      await seedLog(dir, [seeded]);
+      await appendJournalEntryMaybeRepeat(dir, markerSource, (repeatOf) =>
+        buildJournalRepeatMarker({
+          capability: "search",
+          provider: { mode: "single", effective: "zai", servedFrom: "cache" },
+          repeatOf,
+          now: () => 2,
+        }),
+      );
+      const { log } = await readLog(dir);
+      assert.strictEqual(log.entries.length, 2);
+      const [first, marker] = log.entries;
+      assert.strictEqual(first.requestId, COLLIDING_ID);
+      assert.deepStrictEqual(
+        Object.keys(marker).sort(),
+        ["capability", "kind", "provider", "repeatOf", "timestamp"],
+        "marker shape untouched — tiny ruling-locked shape",
+      );
+      assert.strictEqual(marker.repeatOf, COLLIDING_ID);
+      assert.strictEqual(marker.requestId, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("remintRequestId swaps ONLY the 4-hex tail; injectable randomBytes keeps the mint hermetic", async () => {
+    assert.strictEqual(
+      remintRequestId(COLLIDING_ID, () => new Uint8Array([0x12, 0x34])),
+      "20260909T120000Z-1234",
+    );
+    // Random default: still a valid shape.
+    assert.match(remintRequestId(COLLIDING_ID), /^20260909T120000Z-[0-9a-f]{4}$/);
   });
 });
 
@@ -592,28 +706,6 @@ describe("T2a: always-on search journaling (main-driven)", () => {
       assert.ok(!JSON.stringify(entry.skeleton).includes(TOKEN));
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
-    }
-  });
-
-  it("--no-journal on every other command → UNSUPPORTED_OPTION at parse (command-local pattern)", async () => {
-    const cases = ["crawl", "map", "fetch", "history", "config", "doctor"];
-    for (const command of cases) {
-      const { adapter, stderr } = makeAdapter();
-      const argv = [command];
-      argv.push("--no-journal");
-      const deps = hermeticMainDeps({
-        invocation: adapter,
-        env: {},
-        loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
-      });
-      const status = await main(argv, deps);
-      assert.strictEqual(status, 1, `${command} --no-journal must exit 1`);
-      const envelope = JSON.parse(stderr.find((line) => line.trim().startsWith("{")) ?? "{}");
-      assert.strictEqual(
-        envelope.error?.code ?? envelope.code,
-        "UNSUPPORTED_OPTION",
-        `${command} --no-journal must reject UNSUPPORTED_OPTION, stderr=${JSON.stringify(stderr)}`,
-      );
     }
   });
 
@@ -1170,6 +1262,75 @@ describe("T2b: warm-cache repeat markers (main-driven)", () => {
     }
   });
 
+  it("fanout: one arm cache-hit + one arm FAILED after a cache miss → FULL entry, never a repeat marker (failed arm's speculative cache stamp is cleared)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-fanout-failarm-");
+    try {
+      const seen = [];
+      const cacheStore = new Map();
+      const inMemoryCache = {
+        async get(key) {
+          return cacheStore.has(key) ? cacheStore.get(key) : null;
+        },
+        async set(key, value) {
+          cacheStore.set(key, value);
+        },
+      };
+      // brave's invoke always rejects (plain Error — terminal, never
+      // retried); zai is a normal serving descriptor.
+      const arms = [
+        makeSearchDescriptor("zai", seen),
+        makeSearchDescriptor("brave", seen, {
+          invokeThrows: new Error("brave transport exploded"),
+        }),
+      ];
+      const deps = () =>
+        hermeticMainDeps({
+          invocation: makeAdapter().adapter,
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          providerDescriptors: arms,
+          configFanout: true,
+          loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+          searchCache: inMemoryCache,
+        });
+      // Run 1: both arms miss → zai serves live, brave fails. FULL entry
+      // (bug pin: before the fix, brave's speculative "cache" stamp kept
+      // the arm cell reading all-cache → marker for an incomplete run).
+      const s1 = await main(["search", "rust vs go"], deps());
+      assert.strictEqual(s1, 0, "fan-out survives one failed arm (allSettled drop)");
+      // Run 2: warm zai's cache ONLY (expire brave's slot — it never
+      // wrote one, but pre-warm+expire keeps the reasoning explicit).
+      cacheStore.clear();
+      await cacheStore.set(
+        buildProviderCacheKey({
+          provider: "zai",
+          capability: "search",
+          credentialFingerprint: "fp-zai",
+          request: { query: "rust vs go" },
+        }),
+        [{ title: "t-zai", url: "https://zai/warm", summary: "s" }],
+      );
+      const s2 = await main(["search", "rust vs go"], deps());
+      assert.strictEqual(s2, 0);
+      assert.strictEqual(seen.filter((e) => e.startsWith("brave:")).length, 2,
+        "brave invoked live once per run (both runs miss its slot)");
+      const store = readJournalEntries(artifactsDir);
+      assert.deepStrictEqual(
+        store.entries.map((e) => (e.repeatOf !== undefined ? "MARKER" : "FULL")),
+        ["FULL", "FULL"],
+        "cache-hit-arm + failed-arm runs journal FULL entries, never markers",
+      );
+      const [first, second] = store.entries;
+      assert.strictEqual(first.provider.mode, "fanout");
+      assert.ok(Array.isArray(first.skeleton?.results), "full entry carries skeleton");
+      assert.strictEqual(first.query, "rust vs go");
+      assert.strictEqual(second.provider.mode, "fanout");
+      assert.ok(second.requestId !== undefined && second.skeleton !== undefined,
+        "second run is a FULL entry (kind journal, requestId + skeleton), NOT a marker");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
   it("marker-vs-full discriminator: a full entry NEVER carries repeatOf; a marker NEVER carries skeleton/query/cacheKey — mixed log stays readable and countable", async () => {
     const artifactsDir = makeTempDir("scoutline-journal-mixed-");
     try {
@@ -1224,21 +1385,6 @@ describe("T2a NIT 3: --no-journal rejection matrix — derived enumeration pin",
         `journalable command "${journalable}" missing from the accept set`,
       );
     }
-  });
-
-  it("a future accept-set entry without dispatch fails the pin (mutation guard)", () => {
-    // Simulates the drift the pin exists to catch: adding a command to
-    // ACCEPT_NO_JOURNAL_COMMANDS (accepting --no-journal) without adding
-    // it to dispatch — or vice versa — fails by omission.
-    const simulatedAccept = new Set(ACCEPT_NO_JOURNAL_COMMANDS);
-    simulatedAccept.add("transmogrify");
-    const simulatedDispatch = new Set(DISPATCHED_COMMANDS);
-    const notDispatched = [...simulatedAccept].filter((c) => !simulatedDispatch.has(c));
-    assert.deepEqual(
-      notDispatched,
-      ["transmogrify"],
-      "an accept-set entry with no dispatch site must be exactly the omission",
-    );
   });
 
   it("--no-journal rejects on every non-accept dispatched command (matrix rows)", async () => {
@@ -2162,24 +2308,20 @@ describe("review batch 1: fixes (PR #111)", () => {
       // --max-chars is a post-envelope budget; the read identity must
       // survive it for the skeleton.
       const status = await main(
-        ["read", "https://example.com/doc", "--max-chars", "50"],
+        ["read", "https://example.com/doc", "--max-chars", "2000"],
         journalDeps(adapter, log, {
           env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
           providerDescriptors: [makeReaderDescriptor("zai", log)],
         }),
       );
-      // May fail on budget floor for tiny content, but a SUCCESS must
-      // journal the identity.
-      if (status === 0) {
-        const store = readJournalEntries(artifactsDir);
-        assert.ok(store.entries.length >= 1);
-        const readEntry = store.entries.find((e) => e.kind === "journal" && e.capability === "read");
-        assert.ok(readEntry, "read entry present");
-        assert.ok(readEntry.skeleton.results[0].url.length > 0);
-      } else {
-        // Budget refusal — not a regression pin, just skip.
-        assert.ok(true);
-      }
+      // --max-chars 2000 is floor-safe: status is deterministically 0,
+      // and a success must journal the identity.
+      assert.strictEqual(status, 0, `read must succeed within budget: stderr=${JSON.stringify(stderr)}`);
+      const store = readJournalEntries(artifactsDir);
+      assert.ok(store.entries.length >= 1);
+      const readEntry = store.entries.find((e) => e.kind === "journal" && e.capability === "read");
+      assert.ok(readEntry, "read entry present");
+      assert.ok(readEntry.skeleton.results[0].url.length > 0);
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
     }

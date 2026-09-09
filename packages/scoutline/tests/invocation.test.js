@@ -1433,6 +1433,102 @@ describe("invokeCommand — quota routed through the seam (P4-03)", () => {
   });
 });
 
+describe("invokeCommand — hook error precedence (cluster F, cubic P2)", () => {
+  /**
+   * Hook double that records call order and can be scripted to throw.
+   * Mirrors createRecordingAdapter's recording style.
+   */
+  function makeHook(name, events, throwWith) {
+    return async (hookContext) => {
+      events.push([name]);
+      if (throwWith !== undefined) {
+        throw throwWith;
+      }
+      void hookContext;
+    };
+  }
+
+  it("runs the journal hook even when the save hook throws", async () => {
+    const { adapter, stderr, stdout } = createRecordingAdapter();
+    const events = [];
+    const boom = new ScoutlineError("artifact exists", "FILE_ERROR", { exitCode: 4 });
+    const status = await invokeCommand(
+      adapter,
+      async () => ({ kind: "data", data: { run: 1 } }),
+      "data",
+      undefined,
+      undefined,
+      makeHook("save", events, boom),
+      makeHook("journal", events),
+    );
+    assert.deepStrictEqual(events, [["save"], ["journal"]], "journal must run after save throws");
+    assert.strictEqual(status, 4, "the save error's exit code is preserved");
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.code, "FILE_ERROR");
+    assert.match(parsed.error, /artifact exists/);
+    assert.deepStrictEqual(stdout, [], "stdout suppressed on save failure");
+  });
+
+  it("rethrows a journal error when the save hook succeeded (unchanged contract)", async () => {
+    const { adapter, stderr } = createRecordingAdapter();
+    const events = [];
+    const journalBoom = new Error("disk full");
+    const status = await invokeCommand(
+      adapter,
+      async () => ({ kind: "data", data: {} }),
+      "data",
+      undefined,
+      undefined,
+      makeHook("save", events),
+      makeHook("journal", events, journalBoom),
+    );
+    assert.deepStrictEqual(events, [["save"], ["journal"]]);
+    assert.strictEqual(status, 1);
+    const parsed = JSON.parse(stderr[stderr.length - 1]);
+    assert.strictEqual(parsed.error, "disk full");
+  });
+
+  it("degrades a journal error to a notice when the save hook also failed", async () => {
+    const { adapter, stderr } = createRecordingAdapter();
+    const events = [];
+    const saveBoom = new ScoutlineError("disk error", "FILE_ERROR", { exitCode: 4 });
+    const status = await invokeCommand(
+      adapter,
+      async () => ({ kind: "data", data: {} }),
+      "data",
+      undefined,
+      undefined,
+      makeHook("save", events, saveBoom),
+      makeHook("journal", events, new Error("journal io")),
+    );
+    assert.deepStrictEqual(events, [["save"], ["journal"]]);
+    assert.strictEqual(status, 4, "save error wins");
+    assert.strictEqual(stderr.length, 2, "notice + one error envelope");
+    assert.strictEqual(stderr[0], "journal write failed after save failure");
+    const parsed = JSON.parse(stderr[1]);
+    assert.strictEqual(parsed.code, "FILE_ERROR");
+    assert.match(parsed.error, /disk error/);
+  });
+
+  it("runs a journal-only invocation and its failure rides the outer catch", async () => {
+    const { adapter, stderr, stdout } = createRecordingAdapter();
+    const events = [];
+    const status = await invokeCommand(
+      adapter,
+      async () => ({ kind: "data", data: {} }),
+      "data",
+      undefined,
+      undefined,
+      undefined,
+      makeHook("journal", events, new Error("journal alone")),
+    );
+    assert.deepStrictEqual(events, [["journal"]]);
+    assert.strictEqual(status, 1);
+    assert.match(JSON.parse(stderr[stderr.length - 1]).error, /journal alone/);
+    assert.deepStrictEqual(stdout, []);
+  });
+});
+
 describe("node adapter readBytesBounded — bounded stdin read", () => {
   it("stops consuming at the chunk that crosses maxBytes", async () => {
     let yielded = 0;

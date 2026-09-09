@@ -337,8 +337,9 @@ invokes a model:
 - `search` → summaries trim, then source/date drop, then lowest-ranked
   results drop; URLs and titles are never cut;
 - `read` (content read) → later paragraphs trim first, bottom sections
-  drop late; headings never cut; sets `truncated: true` and preserves
-  `originalContentLength`;
+  drop late; headings are never cut mid-value, but whole sections
+  (headings included) can drop at crush budgets; sets `truncated: true`
+  and preserves `originalContentLength`;
 - `read --extract <mode>` → trims field **values** only; field names and
   URLs are never dropped. The extract envelope reports `originalItemCount`;
 - `crawl` → page contents trim, trailing pages drop late; page URLs never

@@ -703,11 +703,14 @@ export async function clearArtifactsLog(
           // save writes its temp file BEFORE appending the log entry
           // and renames after, so deleting one mid-save would corrupt
           // the atomic-replace contract (the rename then lands a master
-          // the wipe cannot see). Both temp classes are covered: names
-          // CONTAINING `.tmp.` and names ENDING `.tmp` (the
-          // atomicReplaceFile / atomicPlaceNoClobber staging shape
-          // `.<basename>.<pid>.<uuid>.tmp`). Temp files orphaned by a
-          // crash are harmless leftovers, not store content.
+          // the wipe cannot see). Two protected classes: names
+          // CONTAINING `.tmp.` (process temps) and DOT-PREFIXED names
+          // ENDING `.tmp` — the atomicReplaceFile /
+          // atomicPlaceNoClobber staging shape
+          // `.<basename>.<pid>.<uuid>.tmp` is always dot-prefixed, so a
+          // plain user file ending `.tmp` is NOT staging and goes under
+          // the documented full wipe. Temp files orphaned by a crash
+          // are harmless leftovers, not store content.
           //
           // Review batch 1 (cubic): logged `--save` export copies placed
           // INSIDE the artifacts dir are spared — full resolved-path
@@ -725,7 +728,7 @@ export async function clearArtifactsLog(
               dirent.name === ARTIFACTS_LOG_FILENAME ||
               dirent.name.endsWith(".lock") ||
               dirent.name.includes(".tmp.") ||
-              dirent.name.endsWith(".tmp") ||
+              (dirent.name.startsWith(".") && dirent.name.endsWith(".tmp")) ||
               dirent.isDirectory()
             ) {
               continue;

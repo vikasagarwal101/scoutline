@@ -33,6 +33,7 @@ import {
   type ArtifactsLog,
   type SaveLogEntry,
 } from "./artifacts.js";
+import { FileError } from "./errors.js";
 import { redactSecrets } from "./redact.js";
 
 /** Capabilities that journal (PRD AC3); the seam is capability-driven so T3 extends, not rewrites. */
@@ -393,6 +394,30 @@ export async function appendJournalEntry(
   entry: JournalLogEntry | JournalRepeatMarker,
   options: AppendJournalEntryOptions = {},
 ): Promise<string | undefined> {
+  return appendUnderArtifactsLock(
+    dir,
+    (current) => remintJournalCollision(current, entry),
+    options,
+  );
+}
+
+/**
+ * The ONE locked read-then-append persistence shape both journal append
+ * seams share (cluster γ Fix 2): acquire the artifacts write lock, read
+ * the log (capturing `notice` for the caller), let `resolveEntry`
+ * decide the record — passthrough, marker-vs-full, or remint — then
+ * append strictly at the tail under the atomic replace. Behavior is
+ * byte-identical to the inline shape both callers carried: same lock
+ * identity, same timeout/stale resolution, same
+ * `JSON.stringify(next, null, 2)` serialization.
+ */
+async function appendUnderArtifactsLock(
+  dir: string,
+  resolveEntry: (
+    current: Awaited<ReturnType<typeof readLog>>,
+  ) => JournalLogEntry | JournalRepeatMarker,
+  options: AppendJournalEntryOptions,
+): Promise<string | undefined> {
   let notice: string | undefined;
   await withAsyncFileLock(
     dir,
@@ -400,7 +425,7 @@ export async function appendJournalEntry(
     async () => {
       const current = await readLog(dir);
       notice = current.notice;
-      const resolved = remintJournalCollision(current, entry);
+      const resolved = resolveEntry(current);
       const next: ArtifactsLog = {
         version: ARTIFACTS_LOG_VERSION,
         entries: [...current.log.entries, resolved as unknown as SaveLogEntry],
@@ -427,7 +452,9 @@ export async function appendJournalEntry(
  * earlier row — remint the 4-hex tail (newRequestId's 2 random bytes
  * collide with p≈2^-16 per same-second pair) until the id is free.
  * Bounded at 8 remints: per-retry draws are independent and tiny, so
- * an unbounded loop buys nothing.
+ * an unbounded loop buys nothing. Exhaustion is astronomically
+ * unlikely (8 independent 16-bit draws) and FAILS the append —
+ * appending a possibly-still-taken id would orphan the earlier row.
  */
 const MAX_REQUEST_ID_REMINTS = 8;
 
@@ -446,28 +473,19 @@ function remintJournalCollision(
     ),
   );
   if (!taken.has(entry.requestId)) return entry;
-  let minted = entry.requestId;
   for (let attempts = 0; attempts < MAX_REQUEST_ID_REMINTS; attempts += 1) {
-    minted = remintRequestId(entry.requestId);
+    const minted = remintRequestId(entry.requestId);
     if (!taken.has(minted)) return { ...entry, requestId: minted };
   }
-  return { ...entry, requestId: minted };
+  // Astronomically unlikely (8 independent 16-bit draws all colliding);
+  // fail the append rather than write an id that may orphan an earlier
+  // row. Nothing is written — the throw precedes the atomic replace.
+  throw new FileError(
+    `Unable to mint unique journal requestId after ${MAX_REQUEST_ID_REMINTS} attempts`,
+    "Retry the command; the journal persists. Clear the journal (scoutline history clear) if this recurs.",
+  );
 }
 
-/**
- * Append under the write lock, but ATOMICALLY decide whether to write a
- * full entry or a tiny repeat marker based on whether the current log
- * already has a full entry whose cacheKey matches.
- *
- * The read-check-append runs as one critical section under the
- * artifacts-write lock — two concurrent cache hits after `history clear`
- * never both write a full entry under the same cacheKey (the check-then-
- * act race the plan calls out).
- *
- * The pre-built full entry is the "journal-cold" default. If the
- * cacheKey map resolves to a prior full entry, the marker builder is
- * called with that requestId and the result is appended instead.
- */
 /**
  * Swap a request id's 4-hex tail for a fresh mint (same timestamp
  * prefix — newRequestId already produced it from the caller's injected
@@ -487,46 +505,39 @@ export function remintRequestId(
   return `${id.slice(0, -4)}${tail}`;
 }
 
+/**
+ * Append under the write lock, but ATOMICALLY decide whether to write a
+ * full entry or a tiny repeat marker based on whether the current log
+ * already has a full entry whose cacheKey matches.
+ *
+ * The read-check-append runs as one critical section under the
+ * artifacts-write lock — two concurrent cache hits after `history clear`
+ * never both write a full entry under the same cacheKey (the check-then-
+ * act race the plan calls out).
+ *
+ * The pre-built full entry is the "journal-cold" default. If the
+ * cacheKey map resolves to a prior full entry, the marker builder is
+ * called with that requestId and the result is appended instead.
+ */
 export async function appendJournalEntryMaybeRepeat(
   dir: string,
   fullEntry: JournalLogEntry,
   makeMarker: (repeatOf: string) => JournalRepeatMarker,
   options: AppendJournalEntryOptions = {},
 ): Promise<string | undefined> {
-  let notice: string | undefined;
-  await withAsyncFileLock(
+  return appendUnderArtifactsLock(
     dir,
-    ARTIFACTS_LOG_LOCK_IDENTITY,
-    async () => {
-      const current = await readLog(dir);
-      notice = current.notice;
+    (current) => {
       const map = buildJournalCacheKeyMapFromLog(current.log);
       const prior = fullEntry.cacheKey ? map.get(fullEntry.cacheKey) : undefined;
       // Markers carry no requestId (shape-pinned), so the collision
       // remint only ever bites on the full-entry branch. The log read
       // and the write share this lock critical section, so the check
       // is race-free.
-      const entry =
-        prior !== undefined
-          ? makeMarker(prior)
-          : remintJournalCollision(current, fullEntry);
-      const next: ArtifactsLog = {
-        version: ARTIFACTS_LOG_VERSION,
-        entries: [...current.log.entries, entry as unknown as SaveLogEntry],
-      };
-      await atomicReplaceFile(
-        join(dir, ARTIFACTS_LOG_FILENAME),
-        `${JSON.stringify(next, null, 2)}\n`,
-      );
+      return prior !== undefined ? makeMarker(prior) : remintJournalCollision(current, fullEntry);
     },
-    {
-      timeoutMs: options.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
-      staleMs: options.staleMs ?? DEFAULT_LOCK_STALE_MS,
-      setTimeout: options.setTimeout,
-      timeoutLabel: "Artifacts log write",
-    },
+    options,
   );
-  return notice;
 }
 
 export interface JournalInput {

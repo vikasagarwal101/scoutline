@@ -6050,12 +6050,18 @@ export async function main(
       const roots =
         dependencies.agentRegistrationRoots ??
         (() => ({ home: os.homedir(), configRoot: resolveConfigRoot() }))();
-      const store = dependencies.initConfigStore ?? createDefaultConfigStore();
+      // Config cleanup stays within the SAME root the reversal scans
+      // (production: identical to ambient; injected roots: no ambient
+      // touch — the store and path both honor roots.configRoot).
+      const unregisterConfigPath = configFilePath(roots.configRoot);
+      const store =
+        dependencies.initConfigStore ??
+        createDefaultConfigStore({ filePath: unregisterConfigPath });
       try {
         await unregisterAgentTools({
           home: roots.home,
           configRoot: roots.configRoot,
-          configFilePath: configFilePath(),
+          configFilePath: unregisterConfigPath,
           // Route through the store's own captured options — passing the
           // production configFilePath() here would override a test-injected
           // temp path and write outside the injected roots.

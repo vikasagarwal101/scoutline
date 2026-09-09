@@ -173,6 +173,34 @@ describe("RULE_TEXT (AC-9)", () => {
 });
 
 describe("line insert engine (D2 — claude @rules/, gemini @ import)", () => {
+  it("CRLF pre-existing file round-trips byte-identically through register + unregister (no stranded \\r)", async (t) => {
+    // GROUND: the strip's newline swallow takes the FOLLOWING newline first —
+    // eating backwards through a CRLF file's own \r\n strands a lone \r
+    // (macroscope round 2). Both the append and splice placements must
+    // restore the exact original bytes.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-crlf-"));
+    t.after(async () => fs.rm(dir, { recursive: true, force: true }));
+    const original = "# my notes\r\nsecond line\r\n";
+    const pointer = "@rules/scoutline.md";
+
+    // Append placement (convention absent).
+    const appended = path.join(dir, "CLAUDE-append.md");
+    await fs.writeFile(appended, original, "binary");
+    await lineInsert({ filePath: appended, line: pointer });
+    await stripManagedRegion(appended, pointer);
+    assert.equal((await fs.readFile(appended, "binary")).toString("binary"), original,
+      "CRLF append placement must round-trip byte-identically");
+
+    // Splice placement (convention present between CRLF lines).
+    const spliced = path.join(dir, "CLAUDE-splice.md");
+    const withConv = "# my notes\r\n@rules/other.md\r\nsecond line\r\n";
+    await fs.writeFile(spliced, withConv, "binary");
+    await lineInsert({ filePath: spliced, line: pointer, convention: /^@rules\// });
+    await stripManagedRegion(spliced, pointer);
+    assert.equal((await fs.readFile(spliced, "binary")).toString("binary"), withConv,
+      "CRLF splice placement must round-trip byte-identically");
+  });
+
   it("appends a marker-wrapped pointer line at file end, preserving prior bytes exactly", async (t) => {
     const home = await mkHome(t);
     const file = path.join(home, "CLAUDE.md");

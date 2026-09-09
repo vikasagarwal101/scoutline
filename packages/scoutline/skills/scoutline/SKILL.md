@@ -599,8 +599,9 @@ model):
 
 - absent / zero / negative → no budget;
 - content read → later paragraphs trim first, bottom sections drop late;
-  headings never cut; sets `truncated: true` and preserves
-  `originalContentLength`;
+  headings are never cut mid-value, but whole sections (headings
+  included) can drop at crush budgets; sets `truncated: true` and
+  preserves `originalContentLength`;
 - extract read → trims field **values** only; field names and URLs are never
   dropped. Extract reports `originalItemCount`.
 

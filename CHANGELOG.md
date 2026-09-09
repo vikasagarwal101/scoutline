@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Docs correction (issue #106): `read --max-chars` heading-survival wording.** `read --help`, the ladder docstring, `docs/troubleshooting.md`, and `skills/scoutline/SKILL.md` no longer claim "headings never cut" without qualification. True semantics: headings are never cut mid-value, but at crush budgets the drop rule removes whole trailing sections — headings included; the full untrimmed page remains recoverable via `scoutline history show <ref>`. No behavior change.
 - **`--max-chars` is now a whole-envelope Output Budget** (ADR-0007): on every ladder surface — `search`, `read`, `crawl`, `research`, `repo search`, `repo read`, and `repo brief` — the flag means "fit everything this command prints in ~N characters," applied by a deterministic per-command priority ladder (URLs, titles, and citations are never cut; `--max-summary` and `--count` still compose underneath/before the budget). This replaces the previous per-field truncation on read/crawl/research/repo surfaces and the total-excerpt budget on `repo search`. Batch manifests inherit the same semantics: per-op `maxChars` on read/crawl/research/repo search/read/brief ops budgets that op's whole envelope (the batch envelope itself is never budgeted).
 - **`repo brief --max-chars` now consumes the flag once on the assembled brief envelope** instead of forwarding it verbatim to every underlying search and read probe (the tree probe was never character-limited and remains so).
 - **`repo tree --max-chars` now rejects with `UNSUPPORTED_OPTION`** instead of silently accepting and dropping the flag, and repo `--max-chars` parsing is strict everywhere: fractional or trailing-junk values (e.g. `500x`) fail with `VALIDATION_ERROR` instead of being silently `parseInt`-truncated. Every command without a budget ladder (`vision`, `map`, `batch`, `tools`, `tool`, `call`, `doctor`, `quota`, `code`, `cache`, `usage`, `history`, `init`, `config`, `fetch`, `archive`, and `repo tree`) rejects `--max-chars` at parse time — no surface accepts and drops it.
@@ -41,6 +42,10 @@ All notable changes to this project will be documented in this file.
   - Every shared-file mutation (pointer line, marker block, JSON array entry) is idempotent, atomic, and byte-preserving outside the managed region; the first mutation of a pre-existing file mints a `<file>.scoutline-bak` backup. A single `agent-registration.json` stamp under the config root drives a lazy refresh on version or rule-text drift — no re-prompt, and a failed refresh degrades to a stderr notice that never fails the invoked command.
   - `scoutline init --unregister` fully reverses the registration (owned files removed, pointer lines/marker blocks/array entries stripped in place, stamp and `agentRules` cleared, backups deleted). The `.scoutline-bak` backups are a disaster-recovery-only escape hatch — never restored from; user edits survive byte-for-byte.
   - The shipped skill's `SKILL.md` frontmatter description is tightened to a progressive-disclosure budget (agent tools load name+description before the body); body content is unchanged.
+
+### Fixed
+
+- **`scoutline --help` now lists `config`** (get / set / unset, credential-free) alongside the other 21 commands — the row had been missing since the command family shipped (PR #33). A new structural pin (`tests/help-surface.test.js`) ties the MAIN_HELP Commands block to `DISPATCHED_COMMANDS` in both directions, so a dispatched command can never again ship without a help row (and vice versa).
 
 ## [0.20.0] - 2026-09-04
 

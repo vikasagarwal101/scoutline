@@ -167,7 +167,7 @@ async function loadPersistedAgentRules(configRoot: string): Promise<AgentRulesCh
       await fs.readFile(path.join(configRoot, "config.json"), "utf8"),
     );
     const rules = (parsed as { agentRules?: AgentRulesChoice } | null)?.agentRules;
-    if (rules === null || typeof rules !== "object") return undefined;
+    if (rules === null || typeof rules !== "object" || Array.isArray(rules)) return undefined;
     // Mirror the config store's strict agentRules shape: a non-boolean
     // entry means the file is corrupt (the store would refuse it), so the
     // choices are treated as unconfigured rather than half-applied.

@@ -643,6 +643,10 @@ describe("lazy refresh (DESIGN D5, PRD AC-7)", () => {
     // flakes in a root container, swap for an immutable-parent sentinel file.
     const rulesDir = path.join(home, ".claude", "rules");
     const skillsDir = path.join(home, ".claude", "skills");
+    if (process.getuid?.() === 0) {
+      t.skip("chmod-based EACCES does not block root (CAP_DAC_OVERRIDE)");
+      return;
+    }
     await fs.chmod(rulesDir, 0o500);
     await fs.chmod(skillsDir, 0o500);
     const notices = [];

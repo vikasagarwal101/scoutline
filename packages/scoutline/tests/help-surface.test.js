@@ -55,7 +55,7 @@ function extractCommandRows(help) {
   const end = help.indexOf("\n\nProvider selection");
   assert.ok(end > 0, "Commands block is bounded by the Provider selection prose");
   const block = help.slice(help.indexOf("Commands:"), end);
-  return [...new Set(Array.from(block.matchAll(COMMAND_ROW), (m) => m[1]))];
+  return Array.from(block.matchAll(COMMAND_ROW), (m) => m[1]);
 }
 
 describe("MAIN_HELP Commands block mirrors the dispatched surface (#104)", () => {

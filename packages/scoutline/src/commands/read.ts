@@ -48,7 +48,7 @@ import { executeReaderOperation } from "../lib/execution.js";
 import { OUTPUT_MODES } from "../lib/output.js";
 import { ValidationError } from "../lib/errors.js";
 import { extract, isExtractMode, type ExtractMode } from "../lib/extract.js";
-import { wasBudgetWalked, type LadderRule } from "../lib/output-budget.js";
+import { wasBudgetWalked, rejectSmuggledMaxChars, type LadderRule } from "../lib/output-budget.js";
 
 // ---------------------------------------------------------------------------
 // Option and dependency types
@@ -63,7 +63,6 @@ export interface ReadOptions {
   noGfm?: boolean;
   keepImgDataUrl?: boolean;
   withImagesSummary?: boolean;
-  maxChars?: number;
   /**
    * Silently accepted and ignored at v1 (core-flows D3). The envelope
    * is always returned. Retained on the options type so callers and
@@ -115,28 +114,8 @@ function validateExtractMode(mode: ExtractMode | undefined): void {
 }
 
 // ---------------------------------------------------------------------------
-// Projection helpers
+// Request building
 // ---------------------------------------------------------------------------
-
-/**
- * Apply `--max-chars` truncation to content. Mirrors the v0.2 contract:
- * slice to `max - 1`, trim trailing whitespace, and append `…`. Returns
- * the original text and `truncated: false` when no truncation occurs.
- */
-function truncateContent(
-  content: string,
-  max?: number,
-): {
-  text: string;
-  originalLen: number;
-  truncated: boolean;
-} {
-  const originalLen = content.length;
-  if (!max || max <= 0 || originalLen <= max) {
-    return { text: content, originalLen, truncated: false };
-  }
-  return { text: content.slice(0, max - 1).trimEnd() + "…", originalLen, truncated: true };
-}
 
 /**
  * Build the Provider-neutral ReaderFetchRequest from ReadOptions. Built
@@ -502,7 +481,8 @@ export function budgetedContentPresentations(content: string): {
  *        budgeting happens at the handler seam (index.ts, READ_EXTRACT_LADDER).
  *      - Otherwise, whole-envelope `--max-chars` budgeting at the
  *        handler seam (index.ts, READ_LADDER); the legacy per-field
- *        `truncateContent` projection is retired by ADR-0007.
+ *        `truncateContent` projection is deleted (ADR-0007, issue #105)
+ *        and a smuggled `maxChars` fails loud.
  *   4. Set presentations so text-oriented modes (compact/markdown/
  *      refs/tty) emit `content` directly for content reads. Extract
  *      reads omit presentations; text modes then fall back to JSON
@@ -530,6 +510,9 @@ export async function read(
       "read no longer supports --raw/--pdf/--pdf-repair: Reader content is provider-normalized. For byte-exact retrieval use `scoutline fetch <url> --raw` (verbatim body) or `scoutline fetch <url> --pdf text` / `--pdf raw` (add `--pdf-repair` for damaged PDFs); see `scoutline fetch --help`.",
     );
   }
+  // Issue #105: `maxChars` is not a read option (ADR-0007 retired the
+  // per-field projection); a smuggled value fails loud.
+  rejectSmuggledMaxChars(options, "read");
 
   // 2. Build the Provider-neutral request. Only fields that affect
   //    the Provider request or the cache identity appear here;
@@ -558,12 +541,12 @@ export async function read(
   // (`contentFormat: markdown|text`). Client-side relabeling or
   // reconstruction of provider-normalized content is intentionally
   // absent — byte-exact retrieval is `fetch`'s contract.
-  // ADR-0007 (T4): whole-envelope `--max-chars` budgeting lives at the
-  // handler seam (index.ts, READ_LADDER) — applied AFTER this return.
-  // Without the flag this envelope is byte-identical to the pre-T4
-  // shape (truncateContent with no max is the identity).
-  const { text, originalLen, truncated } = truncateContent(result.content, options.maxChars);
-  const envelope = buildContentEnvelope(result, text, originalLen, truncated);
+  // ADR-0007 (T4) + issue #105: whole-envelope `--max-chars` budgeting
+  // lives at the handler seam (index.ts, READ_LADDER) — applied AFTER
+  // this return. The per-field `truncateContent` projection is deleted;
+  // `truncated`/`originalContentLength` stay constant here and the
+  // ladder stamps real truncation when a budget fires.
+  const envelope = buildContentEnvelope(result, result.content, result.content.length, false);
 
   // 4. Presentations: text-oriented modes emit `content` directly for
   //    content reads (D4 — Reader content is naturally prose). All
@@ -573,10 +556,10 @@ export async function read(
     kind: "data",
     data: envelope,
     presentations: {
-      compact: text,
-      markdown: text,
-      refs: text,
-      tty: text,
+      compact: result.content,
+      markdown: result.content,
+      refs: result.content,
+      tty: result.content,
     },
   };
 }

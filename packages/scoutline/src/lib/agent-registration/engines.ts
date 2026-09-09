@@ -353,7 +353,11 @@ export async function stripManagedRegion(filePath: string, expectedContent: stri
   let original: string;
   try {
     original = await fs.readFile(filePath, "utf8");
-  } catch {
+  } catch (error) {
+    // Only absence is the expected pre-registration state; an unreadable
+    // file (EACCES etc.) must surface, not silently pass as "already
+    // clean" — the caller reports the failed reversal.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     return; // absent — nothing to strip
   }
   let stripped = original;
@@ -404,7 +408,10 @@ export async function jsonArrayRemove(options: {
   let original: string;
   try {
     original = await fs.readFile(filePath, "utf8");
-  } catch {
+  } catch (error) {
+    // Mirror stripManagedRegion: ENOENT is absence; other I/O errors
+    // propagate so a failed removal is reported, never assumed done.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     return; // absent — nothing to remove
   }
 

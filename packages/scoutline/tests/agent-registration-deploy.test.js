@@ -646,6 +646,36 @@ describe("lazy refresh (DESIGN D5, PRD AC-7)", () => {
       "at least one non-empty stderr notice must be emitted for the failed refresh",
     );
   });
+  it("an unreadable shared file fails the reversal loudly — never silently 'clean'", async (t) => {
+    // GROUND: reversal readers treat only ENOENT as the expected
+    // pre-registration state; an EACCES (or other I/O) read error must
+    // PROPAGATE so `init --unregister` reports the failed reversal instead
+    // of claiming success while the region stays in place.
+    // ponytail: chmod-based EACCES fails open under root — same caveat as
+    // the refresh-failure pin; swap for an immutable-parent sentinel if a
+    // root container ever flakes this.
+    const { unregisterAgentTools, registerAgentTools } = await loadDeploy();
+    const home = await mkTemp(t, "scoutline-agent-home-");
+    const configRoot = await mkTemp(t, "scoutline-agent-cfg-");
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9" });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    await fs.chmod(claudeMd, 0o000);
+    try {
+      await assert.rejects(
+        () =>
+          unregisterAgentTools({
+            home,
+            configRoot,
+            configFilePath: path.join(configRoot, "config.json"),
+          }),
+        /EACCES|permission/i,
+        "an unreadable shared file must reject the reversal, not pass as already-clean",
+      );
+    } finally {
+      await fs.chmod(claudeMd, 0o600);
+    }
+  });
 });
 
 describe("main() wiring (DESIGN D5/D6)", () => {

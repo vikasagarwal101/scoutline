@@ -104,6 +104,13 @@ The fresh flow:
   - offers to import a provider key already present in env (the
     wizard notes that env precedence means the env value keeps
     winning at runtime)
+  - runs the agent-registration step: for every agent tool detected
+    under your home directory (claude, opencode, codex, gemini,
+    qwen, copilot), asks once (default yes) whether to register
+    scoutline — a thin always-loaded rules file plus the full agent
+    skill copied into that tool's home. Choices persist to the
+    additive agentRules config key; undetected tools never prompt;
+    detected-but-unsupported homes (cursor) print an honest notice.
   - shows the registry-derived provider checklist (all 12 built-in
     Providers, rendered in registry order) with NO pre-checked
     defaults — every provider has equal weight
@@ -123,7 +130,17 @@ Run it inside a real TTY, or set up credentials via the documented
 environment variables instead.
 
 Options:
-  --help   Show this help
+  --help          Show this help
+  --unregister    Reverse agent registration in every detected agent
+                  tool home: owned rule files and skill copies are
+                  removed, marker blocks, pointer lines, and JSON
+                  array entries are stripped in place, the
+                  agent-registration.json stamp and agentRules config
+                  key are cleared, and per-file .scoutline-bak
+                  backups are deleted (those backups exist for
+                  disaster recovery after an engine bug — unregister
+                  never restores from them; your edits to shared
+                  files are preserved byte-for-byte).
 
 Exit codes:
   0  Onboarding completed, re-config applied, or already-onboarded

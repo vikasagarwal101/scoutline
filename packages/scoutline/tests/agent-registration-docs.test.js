@@ -46,24 +46,19 @@ const AC9_RULE_TEXT =
   "load the `scoutline` agent skill — it is the working guide.";
 
 const readme = fs.readFile(new URL("../README.md", import.meta.url), "utf8");
-const architecture = fs.readFile(
-  new URL("../../../docs/architecture.md", import.meta.url),
-  "utf8",
-);
-const skill = fs.readFile(
-  new URL("../skills/scoutline/SKILL.md", import.meta.url),
-  "utf8",
-);
-const changelog = fs.readFile(
-  new URL("../../../CHANGELOG.md", import.meta.url),
-  "utf8",
-);
+const architecture = fs.readFile(new URL("../../../docs/architecture.md", import.meta.url), "utf8");
+const skill = fs.readFile(new URL("../skills/scoutline/SKILL.md", import.meta.url), "utf8");
+const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url), "utf8");
 
 // Body of SKILL.md after the frontmatter fence, byte-pinned. The
 // frontmatter tightening (AC-10) must be a frontmatter-only diff;
 // this is the diff pin that catches any body edit.
-const SKILL_BODY_SHA256 =
-  "3fb307200e6b6cf64a2f805abc978efa4b331e12f756fed03c7d7cb448f9b90c";
+// Rebaselined at the journaling integration (merge of origin/main
+// 6898a8e into feat/agent-registration): the journaling stream's
+// body edits (history/journal documentation) are absorbed here —
+// verified the integrated body is byte-identical to origin/main's
+// body, i.e. the agent stream still contributes zero body delta.
+const SKILL_BODY_SHA256 = "0093c36dc2326e511264ec977f3c56551ee5850da4ad558579338c69a146d791";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure
@@ -144,7 +139,11 @@ describe("SKILL.md frontmatter (PRD AC-10)", () => {
 describe("init help (PRD AC-12 — init family)", () => {
   it("documents the agent-registration wizard step", () => {
     assert.match(INIT_HELP, /agent/i, "INIT_HELP must mention the agent step");
-    assert.match(INIT_HELP, /regist/i, "INIT_HELP must describe registering with detected agent tools");
+    assert.match(
+      INIT_HELP,
+      /regist/i,
+      "INIT_HELP must describe registering with detected agent tools",
+    );
   });
 
   it("documents --unregister in the Options block", () => {
@@ -169,10 +168,7 @@ describe("README section (PRD AC-12)", () => {
     // uninstall mechanic. Docs must say so.
     const text = await readme;
     assert.match(text, /disaster recovery/i, "README must label backups disaster-recovery-only");
-    assert.ok(
-      text.includes(".scoutline-bak"),
-      "README must name the .scoutline-bak backup suffix",
-    );
+    assert.ok(text.includes(".scoutline-bak"), "README must name the .scoutline-bak backup suffix");
   });
 });
 
@@ -197,7 +193,10 @@ describe("CHANGELOG [Unreleased] (PRD AC-12 — APPEND, section exists)", () => 
   it("appends the agent-registration entry into the existing Unreleased block", async () => {
     const text = await changelog;
     const start = text.indexOf("## [Unreleased]");
-    assert.ok(start >= 0, "CHANGELOG must already have an [Unreleased] section (append, never create)");
+    assert.ok(
+      start >= 0,
+      "CHANGELOG must already have an [Unreleased] section (append, never create)",
+    );
     const next = text.indexOf("## [", start + 1);
     const section = text.slice(start, next === -1 ? text.length : next);
     assert.match(section, /agent/i, "Unreleased must carry the agent-registration entry");

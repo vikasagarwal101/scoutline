@@ -408,6 +408,7 @@ describe("wizard agent step: fresh onboarding path (DESIGN D4)", () => {
     assert.deepEqual(JSON.parse(await read(path.join(configRoot, "config.json"))), {
       version: 1,
       fallbackEnabled: true,
+      journal: true, // integration (PR #111): wizard journal confirm answered yes by the harness
       providers: {
         zai: {
           apiKey: "zai-secret",
@@ -415,7 +416,7 @@ describe("wizard agent step: fresh onboarding path (DESIGN D4)", () => {
           verification: { status: "verified", checkedAt: FIXED_NOW },
         },
       },
-      agentRules: { claude: true },
+      agentRules: { claude: true }, // agent overlay survives beside the journal key (coexistence)
     });
   });
 

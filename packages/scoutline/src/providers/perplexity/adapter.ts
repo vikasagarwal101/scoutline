@@ -330,7 +330,7 @@ export class PerplexityAdapter implements ProviderAdapter {
             const response = await fetchPerplexityAgent(apiKey, query, transport, signal);
             // A failed run (error non-null / status != "completed") must
             // throw, never cache an empty report as a success.
-            if (response.error) {
+            if (response.error || response.status !== "completed") {
               throw new ApiError("Perplexity research run failed", 502);
             }
 

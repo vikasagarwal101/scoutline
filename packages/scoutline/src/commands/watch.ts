@@ -30,6 +30,7 @@ import type {
 import { invokeCommand } from "../command-invocation.js";
 import type { OutputMode } from "../lib/output.js";
 import { ValidationError } from "../lib/errors.js";
+import { rejectSmuggledMaxChars } from "../lib/output-budget.js";
 import type { HandlerDependencies } from "../index.js";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
@@ -1013,10 +1014,22 @@ export async function handleWatch(
 ): Promise<number> {
   const { subcommand, positional, flags, showHelp } = parseWatchArgs(args);
 
+  // Issue #105: watch flags arrive as raw kebab keys; `--max-chars` is
+  // rejected at CLI parse time (UNSUPPORTED_OPTION — explicit --help
+  // stays exempt, isHelpInvocation parity) and fails loud here for
+  // deep importers too — never accepted and dropped. Gated on !showHelp
+  // so `watch --help` with a stray flag still renders docs, while a
+  // bare invocation carrying the flag (no subcommand, no --help) still
+  // fails loud instead of slipping into the help branch below.
+  if (flags["max-chars"] !== undefined && !showHelp) {
+    rejectSmuggledMaxChars({ maxChars: flags["max-chars"] }, "handleWatch");
+  }
+
   if (showHelp || subcommand === undefined) {
     deps.invocation.writeStdout(WATCH_HELP);
     return 0;
   }
+
 
   // Parse-time guard (plan T4): fires for every subcommand INCLUDING the
   // not-yet-live ones — the statefulness rationale applies to the whole

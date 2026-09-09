@@ -466,7 +466,10 @@ describe("research() — maxChars is not an option (review M3)", () => {
   it("a JS deep importer passing maxChars fails loud, not silent no-budget", async () => {
     await assert.rejects(
       research("q", { maxChars: 500 }, { capability: {}, execution: {} }),
-      (err) => err instanceof Error && /does not accept it/.test(err.message),
+      (err) =>
+        err instanceof Error &&
+        err.name === "ValidationError" &&
+        /^maxChars is not an? \S+ option — the dispatcher seam owns --max-chars/.test(err.message),
     );
   });
 });

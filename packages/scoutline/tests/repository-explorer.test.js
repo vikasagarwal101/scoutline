@@ -4,7 +4,7 @@
  * Drives the Explorer with a deterministic fake RepositoryCapability
  * so canonical path handling, request defaults, BFS depth/order/
  * deduplication, Provider-derived child safety, mid-BFS failure,
- * Search/File `--max-chars` projection, and the source-boundary
+ * maxChars smuggle-guard rejection, and the source-boundary
  * contract can all be asserted without touching a concrete Adapter,
  * MCP/UTCP transport, or process globals.
  *
@@ -19,8 +19,8 @@
  *     requests each canonical directory at most once, expands only
  *     directories while `level < depth`, and never returns partial
  *     success after a mid-BFS failure;
- *   - Search total-budget and File content-budget projection with the
- *     exact ellipsis rule and pre-projection original-length metadata;
+ *   - maxChars smuggle guards (deep-import reach rejects the retired
+ *     option loud — ADR-0007, issue #105);
  *   - explicit empty Search excerpts and empty directory entries are
  *     valid with the fake capability;
  *   - a static source-boundary assertion proving the Explorer imports
@@ -1112,7 +1112,7 @@ describe("explorerTree — unsafe Provider children fail the whole tree", () => 
 // `--max-chars` projection — Search total budget
 // ---------------------------------------------------------------------------
 
-describe("explorerSearch — total-budget projection over excerpts[].text", () => {
+describe("explorerSearch — maxChars smuggle guard (issue #105)", () => {
   function buildResult(excerpts) {
     const originalTextLength = excerpts.reduce((n, e) => n + e.text.length, 0);
     return {
@@ -1126,387 +1126,114 @@ describe("explorerSearch — total-budget projection over excerpts[].text", () =
     };
   }
 
-  for (const [label, maxChars] of [
-    ["absent", undefined],
-    ["zero", 0],
-    ["negative", -1],
-  ]) {
-    it(`${label}: no truncation; original result returned`, async () => {
-      const original = buildResult([{ text: "aaaa" }, { text: "bbbb" }]);
-      const cap = makeFakeCapability({ search: () => clone(original) });
-      const out = await explorerSearch(
-        cap,
-        { repository: "owner/repo", query: "q" },
-        { maxChars },
-        makeFakeDeps(),
+  it("no maxChars: the normalized Adapter result is returned verbatim", async () => {
+    const original = buildResult([{ text: "aaaa" }, { text: "bbbbbbbb" }]);
+    const cap = makeFakeCapability({ search: () => clone(original) });
+    const out = await explorerSearch(
+      cap,
+      { repository: "owner/repo", query: "q" },
+      { noCache: false },
+      makeFakeDeps(),
+    );
+    assert.deepStrictEqual(out, original);
+  });
+
+  it("a smuggled maxChars rejects loud — the retired per-field projection is deleted (ADR-0007, issue #105)", async () => {
+    for (const [label, maxChars] of [
+      ["positive", 10],
+      ["zero", 0],
+      ["negative", -1],
+      ["NaN", NaN],
+      ["Infinity", Infinity],
+    ]) {
+      const cap = makeFakeCapability({
+        search: () => {
+          throw new Error(`${label}: capability must not be reached`);
+        },
+      });
+      await assert.rejects(
+        explorerSearch(
+          cap,
+          { repository: "owner/repo", query: "q" },
+          /** @type {any} */ ({ maxChars }),
+          makeFakeDeps(),
+        ),
+        (err) =>
+          err instanceof Error &&
+          err.name === "ValidationError" &&
+          /^maxChars is not an? \S+ option — the dispatcher seam owns --max-chars/.test(err.message),
       );
-      assert.deepStrictEqual(out, original);
-      assert.strictEqual(out.truncated, false);
-    });
-  }
-
-  it("budget larger than total: no truncation", async () => {
-    const original = buildResult([{ text: "aaaa" }, { text: "bbbb" }]);
-    const cap = makeFakeCapability({ search: () => clone(original) });
-    const out = await explorerSearch(
-      cap,
-      { repository: "owner/repo", query: "q" },
-      { maxChars: 1000 },
-      makeFakeDeps(),
-    );
-    assert.deepStrictEqual(out.excerpts, [{ text: "aaaa" }, { text: "bbbb" }]);
-    assert.strictEqual(out.truncated, false);
-  });
-
-  it("budget exactly fits all excerpts: no truncation", async () => {
-    const original = buildResult([{ text: "aaaa" }, { text: "bbbb" }]); // total 8
-    const cap = makeFakeCapability({ search: () => clone(original) });
-    const out = await explorerSearch(
-      cap,
-      { repository: "owner/repo", query: "q" },
-      { maxChars: 8 },
-      makeFakeDeps(),
-    );
-    assert.deepStrictEqual(out.excerpts, [{ text: "aaaa" }, { text: "bbbb" }]);
-    assert.strictEqual(out.truncated, false);
-  });
-
-  it("budget truncates only the final retained excerpt; later excerpts omitted", async () => {
-    // Total 4 + 8 + 8 = 20. Budget 10. First fits (4), second truncated.
-    const original = buildResult([{ text: "aaaa" }, { text: "bbbbbbbb" }, { text: "cccccccc" }]);
-    const cap = makeFakeCapability({ search: () => clone(original) });
-    const out = await explorerSearch(
-      cap,
-      { repository: "owner/repo", query: "q" },
-      { maxChars: 10 },
-      makeFakeDeps(),
-    );
-    // First kept whole, second truncated to remaining=6:
-    //   "bbbbbbbb".slice(0, 5).trimEnd() + "…" = "bbbbb…"
-    // Third omitted.
-    assert.deepStrictEqual(out.excerpts, [{ text: "aaaa" }, { text: "bbbbb…" }]);
-    assert.strictEqual(out.truncated, true);
-    // originalTextLength reports the FULL pre-projection value
-    // (4 + 8 + 8 = 20), not just the retained excerpts.
-    assert.strictEqual(out.originalTextLength, 20);
-  });
-
-  it("budget = 1 truncates the first excerpt to a single ellipsis", async () => {
-    const original = buildResult([{ text: "aaaa" }]);
-    const cap = makeFakeCapability({ search: () => clone(original) });
-    const out = await explorerSearch(
-      cap,
-      { repository: "owner/repo", query: "q" },
-      { maxChars: 1 },
-      makeFakeDeps(),
-    );
-    // text.slice(0, 1-1).trimEnd() + "…" = "" + "…" = "…"
-    assert.deepStrictEqual(out.excerpts, [{ text: "…" }]);
-    assert.strictEqual(out.truncated, true);
-    assert.strictEqual(out.originalTextLength, 4);
-  });
-
-  it("budget exactly fits the first excerpt; the second is omitted (truncated=true)", async () => {
-    // Total 4 + 4 = 8. Budget 4. First fits exactly; second is
-    // omitted because remaining == 0.
-    const original = buildResult([{ text: "aaaa" }, { text: "bbbb" }]);
-    const cap = makeFakeCapability({ search: () => clone(original) });
-    const out = await explorerSearch(
-      cap,
-      { repository: "owner/repo", query: "q" },
-      { maxChars: 4 },
-      makeFakeDeps(),
-    );
-    assert.deepStrictEqual(out.excerpts, [{ text: "aaaa" }]);
-    assert.strictEqual(out.truncated, true);
-    assert.strictEqual(out.originalTextLength, 8);
-  });
-
-  it("metadata outside the budget is preserved verbatim", async () => {
-    const original = {
-      schemaVersion: 1,
-      repository: "Owner/Repo",
-      query: "Auth Flow",
-      language: "zh",
-      excerpts: [{ text: "abcdefgh" }],
-      truncated: false,
-      originalTextLength: 8,
-    };
-    const cap = makeFakeCapability({ search: () => clone(original) });
-    const out = await explorerSearch(
-      cap,
-      { repository: "Owner/Repo", query: "Auth Flow", language: "zh" },
-      { maxChars: 3 },
-      makeFakeDeps(),
-    );
-    assert.strictEqual(out.repository, "Owner/Repo");
-    assert.strictEqual(out.query, "Auth Flow");
-    assert.strictEqual(out.language, "zh");
-    assert.strictEqual(out.schemaVersion, 1);
-    // original length is the FULL pre-projection value.
-    assert.strictEqual(out.originalTextLength, 8);
-  });
-
-  it("does not mutate the Adapter result object", async () => {
-    const original = buildResult([{ text: "aaaa" }, { text: "bbbbbbbb" }, { text: "cccccccc" }]);
-    const snapshot = clone(original);
-    const cap = makeFakeCapability({ search: () => original });
-    await explorerSearch(
-      cap,
-      { repository: "owner/repo", query: "q" },
-      { maxChars: 10 },
-      makeFakeDeps(),
-    );
-    assert.deepStrictEqual(original, snapshot);
-  });
-
-  it("maxChars = NaN preserves the shipped !max no-limit behavior (no truncation)", async () => {
-    // The shipped `truncateText` rule uses `!max || max <= 0` to
-    // mean "no limit". `!NaN` is true, so NaN is treated as no
-    // limit. The Explorer's projection guard must match.
-    const original = buildResult([{ text: "aaaa" }, { text: "bbbbbbbb" }]);
-    const cap = makeFakeCapability({ search: () => clone(original) });
-    const out = await explorerSearch(
-      cap,
-      { repository: "owner/repo", query: "q" },
-      { maxChars: NaN },
-      makeFakeDeps(),
-    );
-    assert.deepStrictEqual(out, original);
-    assert.strictEqual(out.truncated, false);
-    assert.deepStrictEqual(
-      out.excerpts.map((e) => e.text),
-      ["aaaa", "bbbbbbbb"],
-    );
-  });
-
-  it("maxChars = Infinity is naturally unlimited (loop fits every excerpt)", async () => {
-    const original = buildResult([{ text: "aaaa" }, { text: "bbbbbbbb" }]);
-    const cap = makeFakeCapability({ search: () => clone(original) });
-    const out = await explorerSearch(
-      cap,
-      { repository: "owner/repo", query: "q" },
-      { maxChars: Infinity },
-      makeFakeDeps(),
-    );
-    assert.deepStrictEqual(out, original);
-    assert.strictEqual(out.truncated, false);
+    }
   });
 });
 
-// ---------------------------------------------------------------------------
-// `--max-chars` projection — File content budget
-// ---------------------------------------------------------------------------
+describe("explorerReadFile — maxChars smuggle guard (issue #105)", () => {
+  const original = {
+    schemaVersion: 1,
+    repository: "owner/repo",
+    path: "src/index.ts",
+    content: "abcdefghij",
+    truncated: false,
+    originalContentLength: 10,
+  };
 
-describe("explorerReadFile — content-budget projection", () => {
-  for (const [label, maxChars] of [
-    ["absent", undefined],
-    ["zero", 0],
-    ["negative", -1],
-  ]) {
-    it(`${label}: no truncation; original result returned`, async () => {
-      const original = {
-        schemaVersion: 1,
-        repository: "owner/repo",
-        path: "src/index.ts",
-        content: "export const x = 1;\n",
-        truncated: false,
-        originalContentLength: 20,
-      };
-      const cap = makeFakeCapability({ readFile: () => clone(original) });
-      const out = await explorerReadFile(
-        cap,
-        { repository: "owner/repo", path: "src/index.ts" },
-        { maxChars },
-        makeFakeDeps(),
-      );
-      assert.deepStrictEqual(out, original);
-    });
-  }
-
-  it("content shorter than budget: no truncation", async () => {
-    const original = {
-      schemaVersion: 1,
-      repository: "owner/repo",
-      path: "src/index.ts",
-      content: "short",
-      truncated: false,
-      originalContentLength: 5,
-    };
+  it("no maxChars: the normalized Adapter result is returned verbatim", async () => {
     const cap = makeFakeCapability({ readFile: () => clone(original) });
     const out = await explorerReadFile(
       cap,
       { repository: "owner/repo", path: "src/index.ts" },
-      { maxChars: 100 },
-      makeFakeDeps(),
-    );
-    assert.strictEqual(out.content, "short");
-    assert.strictEqual(out.truncated, false);
-    assert.strictEqual(out.originalContentLength, 5);
-  });
-
-  it("content exactly equal to budget: no truncation", async () => {
-    const original = {
-      schemaVersion: 1,
-      repository: "owner/repo",
-      path: "src/index.ts",
-      content: "abcdef",
-      truncated: false,
-      originalContentLength: 6,
-    };
-    const cap = makeFakeCapability({ readFile: () => clone(original) });
-    const out = await explorerReadFile(
-      cap,
-      { repository: "owner/repo", path: "src/index.ts" },
-      { maxChars: 6 },
-      makeFakeDeps(),
-    );
-    assert.strictEqual(out.content, "abcdef");
-    assert.strictEqual(out.truncated, false);
-  });
-
-  it("content longer than budget: existing ellipsis rule", async () => {
-    const original = {
-      schemaVersion: 1,
-      repository: "owner/repo",
-      path: "src/index.ts",
-      content: "abcdefghij",
-      truncated: false,
-      originalContentLength: 10,
-    };
-    const cap = makeFakeCapability({ readFile: () => clone(original) });
-    const out = await explorerReadFile(
-      cap,
-      { repository: "owner/repo", path: "src/index.ts" },
-      { maxChars: 5 },
-      makeFakeDeps(),
-    );
-    // content.slice(0, 5-1).trimEnd() + "…" = "abcd…"
-    assert.strictEqual(out.content, "abcd…");
-    assert.strictEqual(out.truncated, true);
-    assert.strictEqual(out.originalContentLength, 10);
-  });
-
-  it("budget = 1 yields a single ellipsis", async () => {
-    const original = {
-      schemaVersion: 1,
-      repository: "owner/repo",
-      path: "src/index.ts",
-      content: "abcdefghij",
-      truncated: false,
-      originalContentLength: 10,
-    };
-    const cap = makeFakeCapability({ readFile: () => clone(original) });
-    const out = await explorerReadFile(
-      cap,
-      { repository: "owner/repo", path: "src/index.ts" },
-      { maxChars: 1 },
-      makeFakeDeps(),
-    );
-    assert.strictEqual(out.content, "…");
-    assert.strictEqual(out.truncated, true);
-    assert.strictEqual(out.originalContentLength, 10);
-  });
-
-  it("does not mutate the Adapter result object", async () => {
-    const original = {
-      schemaVersion: 1,
-      repository: "owner/repo",
-      path: "src/index.ts",
-      content: "abcdefghij",
-      truncated: false,
-      originalContentLength: 10,
-    };
-    const snapshot = clone(original);
-    const cap = makeFakeCapability({ readFile: () => original });
-    await explorerReadFile(
-      cap,
-      { repository: "owner/repo", path: "src/index.ts" },
-      { maxChars: 5 },
-      makeFakeDeps(),
-    );
-    assert.deepStrictEqual(original, snapshot);
-  });
-
-  it("maxChars = NaN preserves the shipped !max no-limit behavior (no truncation)", async () => {
-    const original = {
-      schemaVersion: 1,
-      repository: "owner/repo",
-      path: "src/index.ts",
-      content: "abcdefghij",
-      truncated: false,
-      originalContentLength: 10,
-    };
-    const cap = makeFakeCapability({ readFile: () => clone(original) });
-    const out = await explorerReadFile(
-      cap,
-      { repository: "owner/repo", path: "src/index.ts" },
-      { maxChars: NaN },
+      { noCache: false },
       makeFakeDeps(),
     );
     assert.deepStrictEqual(out, original);
-    assert.strictEqual(out.truncated, false);
     assert.strictEqual(out.content, "abcdefghij");
   });
 
-  it("maxChars = Infinity is naturally unlimited", async () => {
-    const original = {
-      schemaVersion: 1,
-      repository: "owner/repo",
-      path: "src/index.ts",
-      content: "abcdefghij",
-      truncated: false,
-      originalContentLength: 10,
-    };
-    const cap = makeFakeCapability({ readFile: () => clone(original) });
-    const out = await explorerReadFile(
-      cap,
-      { repository: "owner/repo", path: "src/index.ts" },
-      { maxChars: Infinity },
-      makeFakeDeps(),
-    );
-    assert.deepStrictEqual(out, original);
-    assert.strictEqual(out.truncated, false);
+  it("a smuggled maxChars rejects loud — the retired content budget is deleted (ADR-0007, issue #105)", async () => {
+    for (const maxChars of [5, 1, 0, NaN, Infinity]) {
+      const cap = makeFakeCapability({
+        readFile: () => {
+          throw new Error("capability must not be reached");
+        },
+      });
+      await assert.rejects(
+        explorerReadFile(
+          cap,
+          { repository: "owner/repo", path: "src/index.ts" },
+          /** @type {any} */ ({ maxChars }),
+          makeFakeDeps(),
+        ),
+        (err) =>
+          err instanceof Error &&
+          err.name === "ValidationError" &&
+          /^maxChars is not an? \S+ option/.test(err.message),
+      );
+    }
   });
 });
 
-// ---------------------------------------------------------------------------
-// explorerTree is never character-limited
-// ---------------------------------------------------------------------------
-
-describe("explorerTree — never character-limited", () => {
-  it("smuggling { maxChars: 1 } at runtime has no effect: long names and paths are preserved verbatim", async () => {
-    // Tree options type intentionally omits maxChars. A caller could
-    // still smuggle one in at runtime (TS does not enforce at runtime).
-    // The Explorer never reads maxChars for Tree, so a tiny smuggled
-    // budget must NOT truncate entry names, entry paths, or any other
-    // Tree field. The long strings below would survive only if the
-    // projection never runs.
-    // ADR-0007 AC-6 (T4): the CLI now REJECTS `repo tree --max-chars`
-    // with UNSUPPORTED_OPTION at parse (see tests/output-budget-t4.test.js);
-    // this pin guards the Explorer's defensive backstop beneath that.
-    const longName = "x".repeat(500);
-    const longPath = longName; // root listing: path === name
+describe("explorerTree — maxChars smuggle guard (issue #105)", () => {
+  it("a smuggled { maxChars: 1 } rejects loud — Tree was never character-limited and never silently ignores options", async () => {
+    // Pre-#105 this pinned the defensive backstop (smuggle had no
+    // effect). Issue #105 unified the honesty strategy: presence fails
+    // loud on every Explorer entry point, same as search/read.
     const cap = makeFakeCapability({
-      listDirectory: (req) => ({
-        repository: req.repository,
-        path: req.path,
-        entries: [{ name: longName, path: longPath, kind: "file" }],
-      }),
+      listDirectory: () => {
+        throw new Error("capability must not be reached");
+      },
     });
-    const out = await explorerTree(
-      cap,
-      { repository: "owner/repo" },
-      /** @type {any} */ ({ maxChars: 1 }),
-      makeFakeDeps(),
+    await assert.rejects(
+      explorerTree(
+        cap,
+        { repository: "owner/repo" },
+        /** @type {any} */ ({ maxChars: 1 }),
+        makeFakeDeps(),
+      ),
+      (err) =>
+        err instanceof Error &&
+        err.name === "ValidationError" &&
+        /^maxChars is not an? \S+ option/.test(err.message),
     );
-    assert.strictEqual(out.snapshots.length, 1);
-    assert.strictEqual(out.snapshots[0].entries.length, 1);
-    assert.strictEqual(out.snapshots[0].entries[0].name, longName);
-    assert.strictEqual(out.snapshots[0].entries[0].path, longPath);
-    // And the top-level envelope is unchanged.
-    assert.strictEqual(out.path, "");
-    assert.strictEqual(out.depth, 1);
   });
 });
 

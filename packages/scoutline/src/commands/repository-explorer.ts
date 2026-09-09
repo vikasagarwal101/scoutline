@@ -54,7 +54,7 @@ import {
   type RetryPolicy,
 } from "../lib/execution.js";
 import { ValidationError } from "../lib/errors.js";
-import { wasBudgetWalked, type LadderRule } from "../lib/output-budget.js";
+import { wasBudgetWalked, rejectSmuggledMaxChars, type LadderRule } from "../lib/output-budget.js";
 
 // ---------------------------------------------------------------------------
 // Repository-path canonicalizer (DESIGN.md §18, technical plan
@@ -397,110 +397,6 @@ function assertValidRepositoryDirectoryListing(
 }
 
 // ---------------------------------------------------------------------------
-// Local `--max-chars` projection (DESIGN.md §18, technical plan).
-//
-// Projection is post-execution: it runs on the normalized result
-// returned by shared execution. It is the only step that consumes
-// `--max-chars`. `--max-chars` never enters the canonical request,
-// the cache identity, or the cache itself. Tree is never
-// character-limited.
-// ---------------------------------------------------------------------------
-
-/**
- * Apply the Search `--max-chars` budget. The budget is a single
- * total character count consumed by `excerpts[].text` in Provider
- * order. Absent, `NaN`, zero, or negative means no truncation
- * (matches the shipped `!max || max <= 0` rule). `Infinity` is
- * naturally unlimited (the loop fits every excerpt). Whole
- * excerpts are kept while they fit; the final retained excerpt is
- * truncated with the existing rule
- * `text.slice(0, remaining - 1).trimEnd() + "…"`; later excerpts
- * are omitted. Metadata (`repository`, `query`, `language`,
- * `originalTextLength`) is outside the budget. `originalTextLength`
- * reports the full pre-projection value; `truncated` is set if the
- * projection omitted or truncated any excerpt, OR if the Provider
- * flagged its own truncation.
- *
- * The input result is never mutated.
- */
-function projectSearchResult(
-  result: RepositorySearchResult,
-  maxChars: number | undefined,
-): RepositorySearchResult {
-  if (!maxChars || maxChars <= 0) {
-    return result;
-  }
-
-  let remaining = maxChars;
-  const projectedExcerpts: { text: string }[] = [];
-  let projectionTruncated = false;
-
-  for (const excerpt of result.excerpts) {
-    if (remaining <= 0) {
-      projectionTruncated = true;
-      break;
-    }
-    if (excerpt.text.length <= remaining) {
-      projectedExcerpts.push({ text: excerpt.text });
-      remaining -= excerpt.text.length;
-    } else {
-      const truncatedText = excerpt.text.slice(0, remaining - 1).trimEnd() + "…";
-      projectedExcerpts.push({ text: truncatedText });
-      remaining = 0;
-      projectionTruncated = true;
-    }
-  }
-
-  if (!projectionTruncated) {
-    return result;
-  }
-
-  return {
-    schemaVersion: 1,
-    repository: result.repository,
-    query: result.query,
-    language: result.language,
-    excerpts: projectedExcerpts,
-    truncated: true,
-    originalTextLength: result.originalTextLength,
-  };
-}
-
-/**
- * Apply the File `--max-chars` budget to `content`. Absent, `NaN`,
- * zero, or negative means no truncation (matches the shipped
- * `!max || max <= 0` rule). `Infinity` is naturally unlimited.
- * Content shorter than or equal to the budget is returned
- * unchanged. Otherwise the content is truncated with the existing
- * rule `content.slice(0, max - 1).trimEnd() + "…"`. `truncated` is
- * set if the projection truncated the content or if the Provider
- * flagged its own truncation. `originalContentLength` reports the
- * full pre-projection value.
- *
- * The input result is never mutated.
- */
-function projectFileResult(
-  result: RepositoryFileResult,
-  maxChars: number | undefined,
-): RepositoryFileResult {
-  if (!maxChars || maxChars <= 0) {
-    return result;
-  }
-  if (result.content.length <= maxChars) {
-    return result;
-  }
-  const truncatedContent = result.content.slice(0, maxChars - 1).trimEnd() + "…";
-  return {
-    schemaVersion: 1,
-    repository: result.repository,
-    path: result.path,
-    content: truncatedContent,
-    truncated: true,
-    originalContentLength: result.originalContentLength,
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Breadth-first traversal (DESIGN.md §18).
 //
 // Deterministic BFS that preserves Provider sibling order,
@@ -725,14 +621,14 @@ export interface ExplorerTreeRequest {
 
 /**
  * Options for Search and File. `noCache` and `retryPolicy` are
- * forwarded to `executeRepositoryOperation`. `maxChars` is
- * post-execution projection only and never enters the canonical
- * request or cache identity.
+ * forwarded to `executeRepositoryOperation`. Issue #105: `maxChars` is
+ * intentionally absent — the retired per-field projection is deleted and
+ * a smuggled value fails loud; the whole-envelope budget runs at the
+ * dispatcher seam.
  */
 export interface ExplorerOptions {
   readonly noCache?: boolean;
   readonly retryPolicy?: RetryPolicy;
-  readonly maxChars?: number;
 }
 
 /**
@@ -748,8 +644,10 @@ export interface ExplorerTreeOptions {
  * Provider-neutral Repository Search (DESIGN.md §18, PRD FR-081,
  * FR-083). Applies the `language` default, validates `repository`
  * (at-least-one-slash) and `query` (non-whitespace), constructs the
- * canonical request, delegates to shared execution, and applies the
- * `--max-chars` budget to `excerpts[].text` only.
+ * canonical request, delegates to shared execution, and returns the
+ * normalized result verbatim (issue #105: the per-field `--max-chars`
+ * projection is deleted; the whole-envelope budget runs at the
+ * dispatcher seam).
  *
  * Defaults and canonicalization precede `operation.validate` /
  * `operation.cacheIdentity`. The Provider sees the canonical
@@ -763,6 +661,7 @@ export async function explorerSearch(
 ): Promise<RepositorySearchResult> {
   assertRepositoryString(request.repository);
   assertSearchQuery(request.query);
+  rejectSmuggledMaxChars(options, "explorerSearch");
   const language = normalizeSearchLanguage(request.language);
 
   const canonicalRequest: RepositorySearchRequest = {
@@ -778,14 +677,15 @@ export async function explorerSearch(
     dependencies,
   );
 
-  return projectSearchResult(result, options.maxChars);
+  return result;
 }
 
 /**
  * Provider-neutral Repository File read (DESIGN.md §18, PRD FR-086).
  * Canonicalizes the File path (root rejected, leading `./` and `/`
  * stripped, unsafe segments throw), delegates to shared execution,
- * and applies the `--max-chars` budget to `content` only.
+ * and returns the normalized result verbatim (issue #105: the
+ * per-field `--max-chars` content budget is deleted).
  */
 export async function explorerReadFile(
   capability: RepositoryCapability,
@@ -794,6 +694,7 @@ export async function explorerReadFile(
   dependencies: ExecutionDependencies,
 ): Promise<RepositoryFileResult> {
   assertRepositoryString(request.repository);
+  rejectSmuggledMaxChars(options, "explorerReadFile");
   const canonicalPath = canonicalizeRepositoryPath(request.path, "file");
 
   const canonicalRequest: RepositoryFileRequest = {
@@ -808,7 +709,7 @@ export async function explorerReadFile(
     dependencies,
   );
 
-  return projectFileResult(result, options.maxChars);
+  return result;
 }
 
 /**
@@ -826,6 +727,7 @@ export async function explorerTree(
   dependencies: ExecutionDependencies,
 ): Promise<RepositoryTreeResult> {
   assertRepositoryString(request.repository);
+  rejectSmuggledMaxChars(options, "explorerTree");
   const canonicalPath = canonicalizeRepositoryPath(request.path, "directory");
   const depth = projectTreeDepth(request.depth);
 

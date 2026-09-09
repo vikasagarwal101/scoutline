@@ -4,14 +4,23 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { createPerplexityDescriptor, PerplexityAdapter } from "../dist/providers/perplexity/adapter.js";
+import {
+  createPerplexityDescriptor,
+  PerplexityAdapter,
+} from "../dist/providers/perplexity/adapter.js";
 import {
   resolvePerplexityApiKey,
   requirePerplexityApiKey,
   isPerplexityConfigured,
 } from "../dist/providers/perplexity/credentials.js";
-import { ApiError, AuthError, ConfigurationError, TimeoutError, UnsupportedOptionError } from "../dist/lib/errors.js";
-import { fetchPerplexityChat } from "../dist/providers/perplexity/client.js";
+import {
+  ApiError,
+  AuthError,
+  ConfigurationError,
+  TimeoutError,
+  UnsupportedOptionError,
+} from "../dist/lib/errors.js";
+import { fetchPerplexityAgent } from "../dist/providers/perplexity/client.js";
 
 const TEST_KEY = "perplexity-test-api-key";
 
@@ -49,25 +58,26 @@ describe("Perplexity Descriptor & Adapter", () => {
       return {
         ok: true,
         status: 200,
-        text: async () => JSON.stringify({
-          id: "test-id",
-          results: [
-            {
-              title: "Modules: ECMAScript modules | Node.js",
-              url: "https://nodejs.org/api/esm.html",
-              snippet: "ECMAScript modules are the official standard format.",
-              date: "2025-06-15",
-              last_updated: "2025-07-01",
-            },
-            {
-              title: "ES Modules Guide",
-              url: "https://example.com/esm",
-              snippet: "A guide to ES modules.",
-              date: null,
-              last_updated: "2025-06-20",
-            },
-          ],
-        }),
+        text: async () =>
+          JSON.stringify({
+            id: "test-id",
+            results: [
+              {
+                title: "Modules: ECMAScript modules | Node.js",
+                url: "https://nodejs.org/api/esm.html",
+                snippet: "ECMAScript modules are the official standard format.",
+                date: "2025-06-15",
+                last_updated: "2025-07-01",
+              },
+              {
+                title: "ES Modules Guide",
+                url: "https://example.com/esm",
+                snippet: "A guide to ES modules.",
+                date: null,
+                last_updated: "2025-06-20",
+              },
+            ],
+          }),
       };
     };
 
@@ -92,12 +102,13 @@ describe("Perplexity Descriptor & Adapter", () => {
     const fakeFetch = async () => ({
       ok: true,
       status: 200,
-      text: async () => JSON.stringify({
-        results: [
-          { title: "Has URL", url: "https://example.com/a", snippet: "with url" },
-          { title: "No URL", snippet: "no url field" },
-        ],
-      }),
+      text: async () =>
+        JSON.stringify({
+          results: [
+            { title: "Has URL", url: "https://example.com/a", snippet: "with url" },
+            { title: "No URL", snippet: "no url field" },
+          ],
+        }),
     });
 
     const adapter = new PerplexityAdapter(
@@ -140,29 +151,72 @@ describe("Perplexity Descriptor & Adapter", () => {
     assert.equal(captured.search_context_size, "high");
   });
 
-  it("invokes research via sonar-deep-research model", async () => {
+  it("invokes research via the Agent API high preset", async () => {
     const fakeFetch = async (url, init) => {
-      assert.ok(url.includes("/chat/completions"), "research must use chat completions");
+      assert.ok(url.includes("/v1/agent"), "research must hit the Agent API endpoint");
+      assert.ok(
+        !url.includes("/chat/completions"),
+        "research must not use the deprecated chat completions surface",
+      );
+      assert.ok(
+        init.headers["Authorization"].includes(TEST_KEY),
+        "Authorization header carries the API key",
+      );
       const body = JSON.parse(init.body);
-      assert.equal(body.model, "sonar-deep-research");
+      assert.equal(body.preset, "high");
+      assert.equal(body.input, "AI search engines");
+      assert.equal(body.model, undefined, "preset replaces the model field");
+      assert.equal(body.messages, undefined, "input replaces the messages field");
       return {
         ok: true,
         status: 200,
-        text: async () => JSON.stringify({
-          choices: [
-            {
-              message: {
-                role: "assistant",
-                content: "Comprehensive research report on AI search.",
+        text: async () =>
+          JSON.stringify({
+            id: "resp_test-1234",
+            model: "openai/gpt-5.6-sol",
+            object: "response",
+            status: "completed",
+            error: null,
+            output: [
+              {
+                type: "search_results",
+                queries: ["AI search engines 2026"],
+                results: [
+                  {
+                    id: 1,
+                    title: "AI Search Study",
+                    url: "https://example.com/study",
+                    date: "2025-01-01",
+                    last_updated: null,
+                    snippet: "A study.",
+                    source: "web",
+                  },
+                  {
+                    id: 2,
+                    title: "Search Engine Analysis",
+                    url: "https://example.com/analysis",
+                    date: null,
+                    last_updated: null,
+                    snippet: "An analysis.",
+                    source: "web",
+                  },
+                ],
               },
-            },
-          ],
-          search_results: [
-            { title: "AI Search Study", url: "https://example.com/study", date: "2025-01-01" },
-            { title: "Search Engine Analysis", url: "https://example.com/analysis" },
-          ],
-          citations: ["https://fallback.com"],
-        }),
+              {
+                type: "message",
+                id: "msg_test-5678",
+                role: "assistant",
+                status: "completed",
+                content: [
+                  {
+                    type: "output_text",
+                    text: "Comprehensive research report on AI search.",
+                    annotations: [],
+                  },
+                ],
+              },
+            ],
+          }),
       };
     };
 
@@ -173,22 +227,61 @@ describe("Perplexity Descriptor & Adapter", () => {
 
     adapter.research.run.validate({ query: "AI search engines" });
     const res = await adapter.research.run.invoke({ query: "AI search engines" });
-    assert.equal(res.report, "Comprehensive research report on AI search.");
-    assert.equal(res.model, "sonar-deep-research");
-    // search_results[] used for sources (preferred over citations[])
-    assert.equal(res.sources.length, 2);
-    assert.equal(res.sources[0].title, "AI Search Study");
-    assert.equal(res.sources[0].url, "https://example.com/study");
+    // Normalized envelope is byte-compatible: exactly these five fields,
+    // nothing from the Agent API trace (queries, usage, output ids) leaks.
+    assert.deepEqual(res, {
+      schemaVersion: 1,
+      query: "AI search engines",
+      model: "openai/gpt-5.6-sol",
+      report: "Comprehensive research report on AI search.",
+      sources: [
+        { title: "AI Search Study", url: "https://example.com/study" },
+        { title: "Search Engine Analysis", url: "https://example.com/analysis" },
+      ],
+    });
   });
 
-  it("research falls back to citations[] when no search_results", async () => {
+  it("research unions and dedupes sources across search rounds (the payload demands it)", async () => {
     const fakeFetch = async () => ({
       ok: true,
       status: 200,
-      text: async () => JSON.stringify({
-        choices: [{ message: { content: "Report text." } }],
-        citations: ["https://source1.com", "https://source2.com"],
-      }),
+      text: async () =>
+        JSON.stringify({
+          status: "completed",
+          error: null,
+          // model absent — the envelope falls back to the preset name
+          output: [
+            {
+              type: "search_results",
+              results: [
+                {
+                  id: 1,
+                  title: "Round One Study",
+                  url: "https://example.com/study",
+                  source: "web",
+                },
+              ],
+            },
+            {
+              type: "search_results",
+              results: [
+                {
+                  id: 1,
+                  title: "Duplicate URL from a later round",
+                  url: "https://example.com/study",
+                  source: "web",
+                },
+                { id: 2, url: "https://example.com/round-two", source: "web" },
+              ],
+            },
+            {
+              type: "message",
+              role: "assistant",
+              status: "completed",
+              content: [{ type: "output_text", text: "Report text." }],
+            },
+          ],
+        }),
     });
 
     const adapter = new PerplexityAdapter(
@@ -197,9 +290,71 @@ describe("Perplexity Descriptor & Adapter", () => {
     );
 
     const res = await adapter.research.run.invoke({ query: "test" });
-    assert.equal(res.sources.length, 2);
-    assert.equal(res.sources[0].title, "Source 1");
-    assert.equal(res.sources[0].url, "https://source1.com");
+    assert.equal(res.model, "high");
+    assert.deepEqual(res.sources, [
+      { title: "Round One Study", url: "https://example.com/study" },
+      { title: "Source 2", url: "https://example.com/round-two" },
+    ]);
+  });
+
+  it("research rejects a failed agent run instead of caching an empty report", async () => {
+    const fakeFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          status: "failed",
+          error: { code: "server_error", message: "Run failed" },
+          output: [],
+        }),
+    });
+
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "test" }),
+      (err) => err instanceof ApiError,
+    );
+  });
+  it("research rejects a non-completed agent run with null error instead of caching an empty report", async () => {
+    const fakeFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          status: "incomplete",
+          error: null,
+          output: [],
+        }),
+    });
+
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "test" }),
+      (err) => err instanceof ApiError,
+    );
+  });
+
+  it("research cache identity is request-based — no transport or endpoint fields", () => {
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: TEST_KEY } },
+      { transport: { fetch: async () => ({}) } },
+    );
+
+    const identity = adapter.research.run.cacheIdentity({ query: "  AI search  " });
+    assert.equal(identity.provider, "perplexity");
+    assert.equal(identity.capability, "research");
+    assert.equal(identity.operation, "research-fetch");
+    assert.equal(typeof identity.credentialFingerprint, "string");
+    assert.equal(identity.credentialFingerprint.length, 64);
+    assert.deepEqual(identity.request, { query: "AI search" });
   });
 });
 
@@ -409,10 +564,7 @@ describe("Perplexity Diagnostics — probe (6.7.a)", () => {
       status: 200,
       text: async () => JSON.stringify({ results: [] }),
     });
-    const adapter = new PerplexityAdapter(
-      { env: {} },
-      { transport: { fetch: fakeFetch } },
-    );
+    const adapter = new PerplexityAdapter({ env: {} }, { transport: { fetch: fakeFetch } });
     await assert.rejects(
       () => adapter.diagnostics.invoke({ probe: true }),
       (e) => e instanceof ConfigurationError,
@@ -421,11 +573,35 @@ describe("Perplexity Diagnostics — probe (6.7.a)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Transport — research status-timeout help (#51)
+// Transport — Agent API research (#107; research status-timeout help #51)
 // ---------------------------------------------------------------------------
 
-describe("Perplexity Transport — research status-timeout help (#51)", () => {
-  it("maps 504 on a research chat call to TimeoutError with research timeout help", async () => {
+describe("Perplexity Transport — Agent API research (#107)", () => {
+  it("posts preset high + input to /v1/agent with bearer auth", async () => {
+    let capturedUrl;
+    let capturedInit;
+    const fakeFetch = async (url, init) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ status: "completed", error: null, output: [] }),
+      };
+    };
+
+    const res = await fetchPerplexityAgent(TEST_KEY, "q", { fetch: fakeFetch });
+    assert.ok(capturedUrl.includes("/v1/agent"), "agent transport must hit /v1/agent");
+    assert.ok(
+      !capturedUrl.includes("/chat/completions"),
+      "agent transport must not use the deprecated chat completions surface",
+    );
+    assert.equal(capturedInit.headers["Authorization"], `Bearer ${TEST_KEY}`);
+    assert.deepEqual(JSON.parse(capturedInit.body), { preset: "high", input: "q" });
+    assert.equal(res.status, "completed");
+  });
+
+  it("maps 504 on a research agent call to TimeoutError with research timeout help", async () => {
     const fakeFetch = async () => ({
       ok: false,
       status: 504,
@@ -433,7 +609,7 @@ describe("Perplexity Transport — research status-timeout help (#51)", () => {
     });
 
     await assert.rejects(
-      () => fetchPerplexityChat(TEST_KEY, "q", "sonar-deep-research", { fetch: fakeFetch }),
+      () => fetchPerplexityAgent(TEST_KEY, "q", { fetch: fakeFetch }),
       (err) =>
         err instanceof TimeoutError &&
         typeof err.help === "string" &&
@@ -441,7 +617,7 @@ describe("Perplexity Transport — research status-timeout help (#51)", () => {
     );
   });
 
-  it("maps 408 on a research chat call to TimeoutError with research timeout help", async () => {
+  it("maps 408 on a research agent call to TimeoutError with research timeout help", async () => {
     const fakeFetch = async () => ({
       ok: false,
       status: 408,
@@ -449,28 +625,11 @@ describe("Perplexity Transport — research status-timeout help (#51)", () => {
     });
 
     await assert.rejects(
-      () => fetchPerplexityChat(TEST_KEY, "q", "sonar-deep-research", { fetch: fakeFetch }),
+      () => fetchPerplexityAgent(TEST_KEY, "q", { fetch: fakeFetch }),
       (err) =>
         err instanceof TimeoutError &&
         typeof err.help === "string" &&
         err.help.includes("PERPLEXITY_RESEARCH_TIMEOUT"),
-    );
-  });
-
-  it("keeps plain timeout help for 504 on a non-research chat call (guard)", async () => {
-    const fakeFetch = async () => ({
-      ok: false,
-      status: 504,
-      text: async () => JSON.stringify({ message: "Gateway Timeout" }),
-    });
-
-    await assert.rejects(
-      () => fetchPerplexityChat(TEST_KEY, "q", "sonar", { fetch: fakeFetch }),
-      (err) =>
-        err instanceof TimeoutError &&
-        typeof err.help === "string" &&
-        err.help.includes("PERPLEXITY_TIMEOUT") &&
-        !err.help.includes("PERPLEXITY_RESEARCH_TIMEOUT"),
     );
   });
 });

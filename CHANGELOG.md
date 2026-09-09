@@ -27,6 +27,12 @@ All notable changes to this project will be documented in this file.
   - One-shot comparison of a Wayback snapshot against the live page. `--since` (ISO date, ISO datetime, or duration like `30d`) resolves the newest CDX capture at or before the target instant — never a nearest-after substitution; no qualifying capture is a `VALIDATION_ERROR` pointing at `archive cdx` to inspect coverage.
   - Both sides compare through the raw bytes (snapshot via Wayback `id_` verbatim replay, live via a real HTTP fetch) and a deterministic section-diff engine: heading-anchored `{added, removed, changed}`; non-HTML bytes degrade to a sha256 hash-only verdict over raw bytes; a permanent redirect to a different final URL reports `moved`.
 
+- **Agent Registration (`scoutline init` + lazy refresh + `init --unregister`)**:
+  - `init` now offers, per detected agent tool home (claude, opencode, codex, gemini, qwen, copilot), a one-time confirm (default yes) to register scoutline: a thin always-loaded rules file plus the full agent skill deployed to that tool's native skills home. Choices persist to the additive `agentRules` config key; undetected tools never prompt; detected-but-unsupported homes (cursor) print an honest notice.
+  - Every shared-file mutation (pointer line, marker block, JSON array entry) is idempotent, atomic, and byte-preserving outside the managed region; the first mutation of a pre-existing file mints a `<file>.scoutline-bak` backup. A single `agent-registration.json` stamp under the config root drives a lazy refresh on version or rule-text drift — no re-prompt, and a failed refresh degrades to a stderr notice that never fails the invoked command.
+  - `scoutline init --unregister` fully reverses the registration (owned files removed, pointer lines/marker blocks/array entries stripped in place, stamp and `agentRules` cleared, backups deleted). The `.scoutline-bak` backups are a disaster-recovery-only escape hatch — never restored from; user edits survive byte-for-byte.
+  - The shipped skill's `SKILL.md` frontmatter description is tightened to a progressive-disclosure budget (agent tools load name+description before the body); body content is unchanged.
+
 ## [0.20.0] - 2026-09-04
 
 ### Added

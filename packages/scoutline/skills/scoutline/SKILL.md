@@ -2,28 +2,14 @@
 name: scoutline
 description: |
   Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com,
-  Linkup, and Spider.cloud CLI
-  providing:
-  - Fetch: direct evidentiary HTTP/REST retrieval with MD5/SHA-256 digests, disk streaming, and PDF processing
-  - Archive: temporal CDX indexing, verbatim snapshot replay, and snapshot-vs-live section diffing
-    via Wayback Machine
-  - Watch: keyless page monitoring — add/list/remove targets, cron ticks (0/1/2 exit contract),
-    and JSONL/RSS change feeds
-  - Vision: image/video analysis, OCR, UI-to-code, error diagnosis (GLM-5V-Turbo)
-  - Search: real-time web search with domain/recency/topic filtering
-  - Reader: web page to markdown extraction (Z.AI, Tavily, Exa, Firecrawl, Parallel, Jina,
-    You.com, Linkup, or Spider.cloud)
-  - Crawl: multi-page website traversal (Tavily, Firecrawl, or Spider.cloud)
-  - Map: URL-set discovery without fetching pages (Tavily, Firecrawl, or Spider.cloud)
-  - Research: asynchronous deep research with citations (Tavily, Exa, Parallel, Perplexity, Jina,
-    You.com, or Linkup)
-  - Repo: GitHub code search and reading via ZRead (Z.AI)
-  - Tools: MCP tool discovery, schemas, and raw calls (Z.AI)
-  - Code: TypeScript tool chaining (Z.AI)
-  - Provider selection: --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider> for shared
-    capabilities, repo, read, crawl, map, and research
-  Use for visual content analysis, web search, page reading, multi-page
-  site traversal, deep research, or GitHub exploration.
+  Linkup, and Spider.cloud CLI for: web search (multi-provider, domain/recency/topic
+  filters), reading pages to markdown, evidentiary HTTP fetch with MD5/SHA-256 digests,
+  Wayback archive lookups and snapshot-vs-live diffing, keyless page monitoring,
+  image/video vision analysis, multi-page site crawls, URL-set mapping, deep research
+  with citations, GitHub repo exploration, and raw MCP tool calls. Select per command
+  with --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|
+  you|linkup|spider>; always-on provider fallback reroutes to the next configured
+  supplier when one is unavailable.
 ---
 
 # Scoutline

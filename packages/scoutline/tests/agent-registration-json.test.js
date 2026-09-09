@@ -372,3 +372,21 @@ describe('top-level key location (A6 — nested "instructions" decoys)', () => {
     assert.deepEqual(parsed.mcp.instructions, ["nested.md"], "nested array untouched");
   });
 });
+
+
+describe("invalid pre-existing JSON (PR #116 round 2)", () => {
+  it("a parse failure leaves the untouched file byte-identical — no rollback rewrite", async (t) => {
+    // GROUND: validation precedes every write, so the failed insert must
+    // not rewrite "original" back (a utf8 round-trip could mangle
+    // non-UTF-8 bytes, and the write itself is unguarded I/O).
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-badjson-"));
+    t.after(async () => fs.rm(dir, { recursive: true, force: true }));
+    const file = path.join(dir, "opencode.json");
+    // Invalid JSON carrying a non-UTF-8 byte sequence.
+    const raw = Buffer.from([0x7b, 0x22, 0x61, 0x22, 0x3a, 0x20, 0xff, 0x7d]); // {"a": ÿ}
+    await fs.writeFile(file, raw);
+    await assert.rejects(() => jsonArrayInsert({ filePath: file, element: "/x/SKILL.md" }));
+    const after = await fs.readFile(file);
+    assert.ok(after.equals(raw), "the file must be byte-identical after the failed insert");
+  });
+});

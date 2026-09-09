@@ -797,6 +797,26 @@ describe("main() wiring (DESIGN D5/D6)", () => {
     );
   });
 
+  it("init --unregister clears agentRules inside the injected config root (no ambient touch)", async (t) => {
+    // GROUND (macroscope round 2): the unregister branch's default store
+    // and configFilePath must honor agentRegistrationRoots.configRoot —
+    // config cleanup stays within the root the reversal scans instead of
+    // resolving the ambient ~/.scoutline/config.json.
+    const home = await mkTemp(t);
+    const configRoot = await mkTemp(t);
+    const configPath = path.join(configRoot, "config.json");
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({ version: 1, providers: { zai: { apiKey: "k" } }, agentRules: { claude: true } }),
+    );
+    const { deps } = makeDeps({ agentRegistrationRoots: { home, configRoot } });
+    const code = await main(["init", "--unregister"], deps);
+    assert.equal(code, 0);
+    const cleared = JSON.parse(await fs.readFile(configPath, "utf8"));
+    assert.equal(cleared.agentRules, undefined, "agentRules cleared inside the injected root");
+    assert.deepEqual(Object.keys(cleared.providers), ["zai"], "providers survive the clear");
+  });
+
   it("init --unregister never issues a wizard prompt", async (t) => {
     // GROUND: D6 surface pin, TTY side — unregister is non-interactive by
     // construction; any prompt attempt is a parse leak into the wizard.

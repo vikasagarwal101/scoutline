@@ -319,7 +319,9 @@ export async function jsonArrayInsert(options: JsonArrayInsertOptions): Promise<
   try {
     JSON.parse(next);
   } catch (error) {
-    if (existed) await fs.writeFile(filePath, original, "utf8");
+    // No rollback write: nothing has touched the file yet (validation
+    // precedes every write), and rewriting "original" back through a
+    // utf8 round-trip could itself mangle non-UTF-8 bytes.
     throw jsonInsertError((error as Error).message);
   }
 
@@ -378,8 +380,11 @@ export async function stripManagedRegion(filePath: string, expectedContent: stri
     let to = end + END_MARKER.length;
     // Swallow ONE newline boundary the insertion joined with, so an
     // untouched file returns byte-identical to its pre-registration bytes.
-    if (from > 0 && stripped[from - 1] === "\n") from -= 1;
-    else if (stripped[to] === "\n") to += 1;
+    // FOLLOWING newline first: on a CRLF file the preceding "\r\n" is the
+    // file's own line ending — eating backwards through it strands a lone
+    // "\r" — while the newline AFTER our region is always one we joined.
+    if (stripped[to] === "\n") to += 1;
+    else if (from > 0 && stripped[from - 1] === "\n") from -= 1;
     stripped = stripped.slice(0, from) + stripped.slice(to);
     searchFrom = Math.max(0, from - 1);
   }

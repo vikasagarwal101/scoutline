@@ -165,6 +165,7 @@ import {
   configFilePath,
   atomicReplaceFile,
   readConfig,
+  resolveConfigRoot,
   resolveConfigRootPure,
   resolveEnvFromConfig,
   setConfigValue,
@@ -214,6 +215,7 @@ import {
   type InitDependencies,
   type InitPrompts,
 } from "./commands/init.js";
+import { checkAgentRegistration, unregisterAgentTools } from "./lib/agent-registration/deploy.js";
 import pkg from "../package.json" with { type: "json" };
 const { version: VERSION } = pkg;
 
@@ -5353,6 +5355,17 @@ export interface MainDependencies {
   readonly env: NodeJS.ProcessEnv;
   readonly now?: () => number;
   /**
+   * Optional injectable agent-registration stamp check (agent
+   * registration D5/D6). Production wires `checkAgentRegistration` from
+   * `src/lib/agent-registration/deploy.js` against `os.homedir()`, the
+   * ambient config root (resolveConfigRoot reads process.env directly),
+   * and the package version; tests inject doubles so dispatch runs stay
+   * hermetic. Invoked exactly once per CLI run, before command dispatch;
+   * a rejection is caught and degraded to a stderr notice so a broken
+   * refresh never breaks the invoked command.
+   */
+  readonly agentRegistrationCheck?: () => Promise<{ refreshed: boolean }>;
+  /**
    * Injectable Provider registry. Production defaults to the static
    * built-in descriptors; tests pass doubles to route Search through a
    * fake Adapter without touching real transports.
@@ -5482,6 +5495,14 @@ export interface MainDependencies {
    * user's real config root.
    */
   readonly initConfigStore?: InitDependencies["configStore"];
+  /**
+   * Optional injectable agent-registration home/config roots (agent
+   * registration D4/D6). Production defaults to `os.homedir()` +
+   * `resolveConfigRoot()`; the init wizard's agent step and the
+   * `init --unregister` disk-scan consume it. Tests inject temp roots so
+   * neither surface ever probes the real HOME.
+   */
+  readonly agentRegistrationRoots?: { home: string; configRoot: string };
   /**
    * Optional injectable verification-promotion store (T3b). Production
    * wires `createDefaultVerificationPromoter()` (real read-modify-write
@@ -5741,6 +5762,30 @@ export async function main(
 
   const command = rest[0] ?? "";
   const commandArgs = rest.slice(1);
+
+  // Lazy agent-registration stamp check (agent registration D5/D6):
+  // fires exactly once per CLI run, before command dispatch. Stamp-absent
+  // runs are zero-cost no-ops; drift refreshes the registered tools. A
+  // rejection is degraded to a stderr notice so a broken refresh never
+  // breaks the invoked command.
+  const agentRegistrationCheck =
+    dependencies.agentRegistrationCheck ??
+    (() =>
+      checkAgentRegistration({
+        home: os.homedir(),
+        configRoot: resolveConfigRoot(),
+        version: VERSION,
+        writeStderr: (value) => invocation.writeStderr(value),
+      }));
+  try {
+    await agentRegistrationCheck();
+  } catch (error) {
+    invocation.writeStderr(
+      `scoutline: agent registration check failed — ${
+        error instanceof Error ? error.message : String(error)
+      } (command continues)\n`,
+    );
+  }
   // Hoisted above the save guards and the credential-free short-circuits:
   // a command-help invocation (`<cmd> --help`) is documentation, not a
   // run, so the pre-dispatch save guards must not refuse it even when the
@@ -5995,6 +6040,47 @@ export async function main(
   // (T3a ticket): the command's code lands now, but its public docs
   // (MAIN_HELP Commands list, README setup, skills/) wait for T3b.
   if (command === "init") {
+    // Help precedence: `init --unregister --help` is documentation, not a
+    // run — the isHelpInvocation binding (computed above, reused by the
+    // save guards) must win over the reversal.
+    if (commandArgs.includes("--unregister") && !isHelpInvocation) {
+      // Agent registration D2/D4: non-interactive disk-scan reversal —
+      // never falls into the wizard (the parse pin from the deploy
+      // module's wiring tests). Failures degrade to a stderr notice and
+      // a non-zero exit; ENOENT during the scan is the expected
+      // pre-registration state, never fatal.
+      const roots =
+        dependencies.agentRegistrationRoots ??
+        (() => ({ home: os.homedir(), configRoot: resolveConfigRoot() }))();
+      // Config cleanup stays within the SAME root the reversal scans
+      // (production: identical to ambient; injected roots: no ambient
+      // touch — the store and path both honor roots.configRoot).
+      const unregisterConfigPath = configFilePath(roots.configRoot);
+      const store =
+        dependencies.initConfigStore ??
+        createDefaultConfigStore({ filePath: unregisterConfigPath });
+      try {
+        await unregisterAgentTools({
+          home: roots.home,
+          configRoot: roots.configRoot,
+          configFilePath: unregisterConfigPath,
+          // Route through the store's own captured options — passing the
+          // production configFilePath() here would override a test-injected
+          // temp path and write outside the injected roots.
+          inspectConfig: () => store.inspect(),
+          writeConfig: (config) => store.write(config),
+        });
+        invocation.writeStdout(`scoutline: agent registration removed\n`);
+        return 0;
+      } catch (error) {
+        invocation.writeStderr(
+          `scoutline: init --unregister failed — ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+        return 1;
+      }
+    }
     const initDeps: InitDependencies = {
       descriptors: providerDescriptors,
       prompts: dependencies.initPrompts ?? createInquirerPrompts(),
@@ -6004,6 +6090,11 @@ export async function main(
       stdinIsTTY: invocation.stdinIsTTY,
       writeStderr: (value) => invocation.writeStderr(value),
       writeStdout: (value) => invocation.writeStdout(value),
+      // Production default mirrors the --unregister branch: without a
+      // fallback the wizard agent step would be test-only dead code.
+      agentRegistrationRoots:
+        dependencies.agentRegistrationRoots ??
+        { home: os.homedir(), configRoot: resolveConfigRoot() },
     };
     try {
       return await handleInitWithHelp(commandArgs, initDeps);

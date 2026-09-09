@@ -932,6 +932,36 @@ place; there is no append-only history, so `scoutline usage` reporting
 requires new capture. Completing the handler wiring and adding a
 retained ledger remain open follow-ups.
 
+## Agent Registration
+
+`src/lib/agent-registration/` registers scoutline with agent tools detected
+under the user's home: a thin always-loaded rules file (per-tool home, exact
+location from the registry rows in `registry.ts`) plus the full skill copied
+into each tool's native skills home. `src/commands/init.ts` runs the
+per-detected-tool confirm step in both the fresh onboarding and reconfig
+paths; choices persist to the additive `agentRules` config key and are
+honored by every later refresh. Shared-file mutations (pointer lines in
+`CLAUDE.md`/`GEMINI.md`, marker blocks in `AGENTS.md`/`QWEN.md`, array
+entries in `opencode.json`) are idempotent, atomic (tmp+rename), and
+byte-preserving outside the managed region; the first mutation of a
+pre-existing file mints a `<file>.scoutline-bak` backup.
+
+A single stamp file `<config root>/agent-registration.json`
+(`{version, tools, ruleTextHash}`) drives the lazy refresh: any CLI run
+compares the stamped version and `ruleTextHash` against the current package
+values and re-copies the skill plus rewrites drifted rule files through the
+same engines when either differs — never re-prompting. A missing stamp is a
+no-op: stamp-absent runs are byte-identical to pre-feature behavior, and a
+failed refresh degrades to a stderr notice that never fails the invoked
+command.
+
+`scoutline init --unregister` reverses the disk scan: owned files removed,
+pointer lines, marker blocks, and array entries stripped in place, stamp and
+`agentRules` cleared. The `.scoutline-bak` backups are deleted; they exist
+for disaster recovery only (manual escape hatch after an engine bug) and are
+never restored from — user edits to shared files survive byte-for-byte
+through region stripping.
+
 ## Boundaries
 
 - The CLI does not own the web-search, reader, ZRead, vision, quota, crawl, map, or research implementations; it adapts their transport contracts.

@@ -81,6 +81,35 @@ imported env key will keep overriding the saved key.
 
 Run `scoutline init --help` for the full lifecycle and exit-code reference.
 
+### Agent Registration
+
+During `scoutline init`, every agent tool detected under your home directory
+(claude, opencode, codex, gemini, qwen, copilot) gets a confirm prompt
+(default yes) to register scoutline. Registering writes two things per tool:
+
+- a **thin rules file** (always loaded — identity, one-line capability
+  surface, and a pointer to the full skill), and
+- the **full agent skill** copied into that tool's native skills home.
+
+Choices persist to the additive `agentRules` config key; undetected tools
+never prompt, and a version or rule-text drift triggers a silent lazy
+refresh on the next CLI run (no re-prompt). Every shared-file mutation is
+idempotent, atomic, and byte-preserving outside the managed region.
+
+Reversal is first-class:
+
+```bash
+scoutline init --unregister
+```
+
+It removes owned rule files and skill copies, strips pointer lines, marker
+blocks, and JSON array entries in place, clears the stamp and `agentRules`
+config key, and deletes the per-file `.scoutline-bak` backups. Those
+backups are a **disaster recovery** escape hatch only — minted once on the
+first mutation of a pre-existing file so you can manually recover if an
+engine bug ever corrupts a file. Unregister never restores from them: your
+own edits to shared files are preserved byte-for-byte by region stripping.
+
 ## Installation
 
 ### As an Agent Skill

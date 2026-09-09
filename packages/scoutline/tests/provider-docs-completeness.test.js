@@ -36,7 +36,7 @@ const architecture = fs.readFile(
   "utf8",
 );
 const skill = fs.readFile(
-  new URL("../../../skills/scoutline/SKILL.md", import.meta.url),
+  new URL("../skills/scoutline/SKILL.md", import.meta.url),
   "utf8",
 );
 

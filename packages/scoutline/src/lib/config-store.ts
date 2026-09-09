@@ -51,6 +51,17 @@ export interface ScoutlineConfig {
    * fields) — the documented drop trade-off.
    */
   readonly routing?: Readonly<Record<string, readonly ProviderId[]>>;
+  /**
+   * Per-agent-tool registration choices from the init wizard's agent
+   * step (agent registration D4/D6): tool id → registered. Absent on
+   * configs written by older binaries and on configs from users who
+   * never saw the agent step. Strictly validated at load time — a
+   * non-object value or a non-boolean entry is corrupt config (the
+   * `fanout` boolean precedent). Tool-id KEYS are deliberately not
+   * validated: an id minted by a newer binary must not corrupt an older
+   * binary's config.
+   */
+  readonly agentRules?: Readonly<Record<string, boolean>>;
 }
 
 export interface ConfigStoreOptions {
@@ -147,6 +158,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * `agentRules` strictness (agent registration D6): absent or an object
+ * whose every VALUE is a boolean. Keys are not validated — a tool id
+ * minted by a newer binary must not corrupt this binary's config.
+ */
+function isValidAgentRules(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!isRecord(value)) return false;
+  return Object.values(value).every((entry) => typeof entry === "boolean");
+}
+
 function parseVerification(value: unknown): ProviderVerification | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value)) throw corruptConfig();
@@ -203,7 +225,8 @@ function parseConfig(contents: string): ParsedConfig {
     (parsed.fallbackEnabled !== undefined && typeof parsed.fallbackEnabled !== "boolean") ||
     (parsed.fanout !== undefined && typeof parsed.fanout !== "boolean") ||
     (parsed.hintShown !== undefined && typeof parsed.hintShown !== "boolean") ||
-    (parsed.providers !== undefined && !isRecord(parsed.providers))
+    (parsed.providers !== undefined && !isRecord(parsed.providers)) ||
+    !isValidAgentRules(parsed.agentRules)
   ) {
     throw corruptConfig();
   }
@@ -233,6 +256,7 @@ function parseConfig(contents: string): ParsedConfig {
       ...(parsed.fanout !== undefined ? { fanout: parsed.fanout as boolean } : {}),
       providers,
       ...(parsed.hintShown !== undefined ? { hintShown: parsed.hintShown as boolean } : {}),
+    ...(parsed.agentRules !== undefined ? { agentRules: parsed.agentRules as Record<string, boolean> } : {}),
       ...(routing !== undefined ? { routing } : {}),
     },
     warnings,

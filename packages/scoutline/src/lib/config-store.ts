@@ -82,6 +82,13 @@ export interface AtomicReplaceOptions {
   readonly platform?: NodeJS.Platform;
   readonly randomId?: () => string;
   readonly rename?: typeof fs.rename;
+  /**
+   * Skip the forced 0700 chmod of the containing directory. Set for
+   * writes into directories we do NOT own (agent-tool homes): the
+   * force-mode is scoutline's own-config hardening and must not strip
+   * group/shared access from ~/.codex, ~/.claude/rules, etc.
+   */
+  readonly preserveDirectoryMode?: boolean;
 }
 
 export interface WriteConfigOptions extends ConfigStoreOptions {
@@ -424,7 +431,9 @@ export async function atomicReplaceFile(
   const platform = options.platform ?? process.platform;
   const root = path.dirname(filePath);
   await fs.mkdir(root, { recursive: true, mode: 0o700 });
-  if (platform !== "win32") await fs.chmod(root, 0o700);
+  if (platform !== "win32" && !options.preserveDirectoryMode) {
+    await fs.chmod(root, 0o700);
+  }
 
   const randomId = options.randomId ?? randomUUID;
   let tempPath: string | undefined;

@@ -19,7 +19,8 @@
   "types": "./dist/index.d.ts",
   "files": [
     "bin",
-    "dist"
+    "dist",
+    "skills"
   ],
   "scripts": {
     "build": "node scripts/generate-minimax-vision-revisions.mjs && tsc",

@@ -64,6 +64,15 @@ import type { DiagnosticOptions, DiagnosticsCapability } from "../capabilities/d
 import type { ProviderDescriptor, ProviderId } from "../providers/types.js";
 import { PROVIDER_CAPABILITIES, PROVIDER_IDS } from "../providers/types.js";
 import { AuthError, ApiError, NetworkError } from "../lib/errors.js";
+import { CLI_VERSION } from "../lib/artifacts.js";
+import { AGENT_TOOLS } from "../lib/agent-registration/registry.js";
+import { registerAgentTools } from "../lib/agent-registration/deploy.js";
+
+/** Agent-registration home/config roots (injectable for hermetic tests). */
+export interface AgentRegistrationRoots {
+  home: string;
+  configRoot: string;
+}
 
 // ---------------------------------------------------------------------------
 // Public constants
@@ -97,6 +106,13 @@ The fresh flow:
   - offers to import a provider key already present in env (the
     wizard notes that env precedence means the env value keeps
     winning at runtime)
+  - runs the agent-registration step: for every agent tool detected
+    under your home directory (claude, opencode, codex, gemini,
+    qwen, copilot), asks once (default yes) whether to register
+    scoutline — a thin always-loaded rules file plus the full agent
+    skill copied into that tool's home. Choices persist to the
+    additive agentRules config key; undetected tools never prompt;
+    detected-but-unsupported homes (cursor) print an honest notice.
   - shows the registry-derived provider checklist (all 12 built-in
     Providers, rendered in registry order) with NO pre-checked
     defaults — every provider has equal weight
@@ -121,7 +137,17 @@ Run it inside a real TTY, or set up credentials via the documented
 environment variables instead.
 
 Options:
-  --help   Show this help
+  --help          Show this help
+  --unregister    Reverse agent registration in every detected agent
+                  tool home: owned rule files and skill copies are
+                  removed, marker blocks, pointer lines, and JSON
+                  array entries are stripped in place, the
+                  agent-registration.json stamp and agentRules config
+                  key are cleared, and per-file .scoutline-bak
+                  backups are deleted (those backups exist for
+                  disaster recovery after an engine bug — unregister
+                  never restores from them; your edits to shared
+                  files are preserved byte-for-byte).
 
 Exit codes:
   0  Onboarding completed, re-config applied, or already-onboarded
@@ -480,6 +506,12 @@ export interface InitDependencies {
   readonly writeStderr: (value: string) => void;
   /** Final-summary sink (the only stdout write in the wizard). */
   readonly writeStdout: (value: string) => void;
+  /**
+   * Agent-registration home/config roots (agent registration D4).
+   * Production wires `os.homedir()` + `resolveConfigRoot()`; tests inject
+   * temp roots so the agent step never probes the real HOME.
+   */
+  readonly agentRegistrationRoots?: AgentRegistrationRoots;
 }
 
 // ---------------------------------------------------------------------------
@@ -614,13 +646,101 @@ export async function runFreshOnboarding(deps: InitDependencies): Promise<number
   }
 
   if (inspection.status === "valid" && isAlreadyOnboarded(inspection.config)) {
-    return runReconfigMenu(deps, inspection.config, inspection.filePath);
+    const code = await runAgentRegistrationStep(deps);
+    if (code !== 0) return code;
+    // The agent step persists its own writes (agentRules, registration);
+    // hand the menu the POST-step config or every mutating menu action
+    // re-persists the stale pre-step object and silently drops agentRules
+    // (the fresh-flow sibling below re-inspects for the same reason).
+    const freshInspection = await deps.configStore.inspect();
+    return runReconfigMenu(
+      deps,
+      freshInspection.status === "valid" ? freshInspection.config : inspection.config,
+      inspection.filePath,
+    );
   }
 
   // Absent OR valid+empty → fresh-onboarding flow. The fresh flow writes
   // a complete config (replacing any empty valid file) and resets the
   // env-only hint marker so a later switch to env-only usage re-hints.
   return runFreshFlow(deps);
+}
+
+/**
+ * Agent-registration wizard step (agent registration D4, PRD AC-6).
+ * Runs ONCE after config state detection, independent of fresh-vs-
+ * reconfig dispatch — reconfig users reach it without choosing
+ * rerun-full. Per DETECTED tool row with engines: one confirm prompt
+ * (default yes); notice-only rows (cursor) print their notice, never
+ * prompt. Choices + registration are persisted IMMEDIATELY — the step
+ * owns its persistence, so a later wizard cancel is a config-flow
+ * cancel, not an agent-unregister. Undetected tools never prompt and
+ * nothing is written.
+ */
+async function runAgentRegistrationStep(deps: InitDependencies): Promise<number> {
+  const roots = deps.agentRegistrationRoots;
+  if (roots === undefined) return 0; // seam not wired — no agent step
+
+  const detected = AGENT_TOOLS.filter((row) => row.detect(roots.home));
+  // DESIGN D4: prompt where `detect` is true AND agentRules[id] is UNSET —
+  // a still-deployed tool with a persisted choice never re-prompts and its
+  // registration is left untouched (choices never re-prompt, T4 refresh
+  // contract).
+  const priorInspection = await deps.configStore.inspect();
+  const priorChoices =
+    priorInspection.status === "valid" ? priorInspection.config.agentRules : undefined;
+  const choices: Record<string, boolean> = {};
+  const registered: string[] = [];
+  for (const row of detected) {
+    if (row.unsupportedNotice !== undefined) {
+      deps.writeStderr(`${row.unsupportedNotice}\n`);
+      continue; // notice-only row: no prompt, no files, no stamp entry
+    }
+    if (priorChoices?.[row.id] !== undefined) continue; // choice already recorded
+    let answer: boolean;
+    try {
+      answer = await deps.prompts.confirm(
+        `Register scoutline with ${row.id}? (writes rules + skill to ${row.id}'s config)`,
+        true,
+      );
+    } catch {
+      // Prompt cancel (Ctrl+C / closed stream): a config-flow cancel —
+      // nothing registered, nothing persisted, exit 1.
+      return 1;
+    }
+    choices[row.id] = answer;
+    if (answer) registered.push(row.id);
+  }
+  if (Object.keys(choices).length === 0) return 0; // nothing new to register
+
+  // All-declined: persist the choices below but never mint a registration
+  // stamp over an empty tool set — an empty stamp would look registered
+  // while committing refresh to a no-op forever.
+  if (registered.length > 0) {
+    await registerAgentTools({
+      home: roots.home,
+      configRoot: roots.configRoot,
+      tools: registered,
+      version: CLI_VERSION,
+    });
+  }
+
+  // Persist agentRules NOW (merge under any existing config) so a later
+  // wizard cancel cannot un-register an accepted tool.
+  const inspection = await deps.configStore.inspect();
+  const agentRules = { ...(inspection.status === "valid" ? inspection.config.agentRules : undefined), ...choices };
+  await deps.configStore.write(
+    {
+      version: 1,
+      fallbackEnabled: true,
+      ...(inspection.status === "valid"
+        ? inspection.config
+        : { providers: {} }),
+      agentRules,
+    },
+    { filePath: inspection.filePath },
+  );
+  return 0;
 }
 
 /**
@@ -638,7 +758,8 @@ async function runFreshFlow(deps: InitDependencies): Promise<number> {
       "",
       "Welcome to scoutline onboarding.",
       "This wizard writes ~/.scoutline/config.json with mode 0600.",
-      "You can cancel at any time with Ctrl+C — nothing is written until the end.",
+      "You can cancel at any time with Ctrl+C — agent tool registration",
+      "applies immediately, everything else is written only at the end.",
       "",
     ].join("\n"),
   );
@@ -656,6 +777,12 @@ async function runFreshFlow(deps: InitDependencies): Promise<number> {
         "Each will be offered as an import candidate in the per-provider flow.\n",
     );
   }
+
+  // Agent-registration step (agent registration D4): runs before the
+  // provider checklist; its persistence is immediate, so the cancel
+  // below is a config-flow cancel, not an agent-unregister.
+  const agentCode = await runAgentRegistrationStep(deps);
+  if (agentCode !== 0) return agentCode;
 
   // Step 1 — provider checklist. Choices come from the registry (equal
   // weight; none pre-checked). Env-key providers surface that hint in
@@ -700,7 +827,18 @@ async function runFreshFlow(deps: InitDependencies): Promise<number> {
   // replaces the live file atomically or leaves it untouched. The
   // `hintShown` field is deliberately OMITTED from buildConfig so the
   // written file does not carry the marker — a fresh write clears it.
-  const config: ScoutlineConfig = buildConfig(onboardings, fallbackEnabled, journalEnabled);
+  // The agent step (run at flow start) persisted its own agentRules; a
+  // fresh-flow rewrite must not drop them (agent registration D4), and
+  // main's journaling flow contributes journalEnabled (buildConfig arg).
+  const inspectionNow = await deps.configStore.inspect();
+  const agentRules =
+    inspectionNow.status === "valid" && inspectionNow.config.agentRules !== undefined
+      ? inspectionNow.config.agentRules
+      : undefined;
+  const config: ScoutlineConfig = {
+    ...buildConfig(onboardings, fallbackEnabled, journalEnabled),
+    ...(agentRules !== undefined ? { agentRules } : {}),
+  };
   try {
     await deps.configStore.write(config);
   } catch (error) {

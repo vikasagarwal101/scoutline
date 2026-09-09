@@ -10,7 +10,7 @@
  *   - Pack (`npm pack --dry-run --json`) the `bin` and current `dist`
  *     directories while excluding `tests/`, fixtures, local planning
  *     artifacts (`docs/plans/`), and credential-shaped files. The
- *     package manifest explicitly lists `"files": ["bin", "dist"]`,
+ *     package manifest explicitly lists `"files": ["bin", "dist", "skills"]`,
  *     so anything outside that allowlist must be rejected.
  *   - Pin `mmx-cli` to exactly `1.0.16` (no range prefix), preserving
  *     the P2-04 MiniMax SDK isolation contract.
@@ -215,12 +215,14 @@ describe("scoutline package — root export and metadata", () => {
     );
   });
 
-  it("manifest files allowlist is exactly [bin, dist]", async () => {
+  it("manifest files allowlist is exactly [bin, dist, skills]", async () => {
     const pkg = await loadPackageJson();
+    // skills/ joined the allowlist when the agent skill moved into the
+    // package (see tests/skill-shipping.test.js for the shipping pins).
     assert.deepStrictEqual(
       pkg.files,
-      ["bin", "dist"],
-      'package.json "files" allowlist must be exactly ["bin", "dist"]',
+      ["bin", "dist", "skills"],
+      'package.json "files" allowlist must be exactly ["bin", "dist", "skills"]',
     );
   });
 });

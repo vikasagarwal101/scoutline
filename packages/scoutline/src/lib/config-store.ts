@@ -60,6 +60,17 @@ export interface ScoutlineConfig {
    * fields) — the documented drop trade-off.
    */
   readonly routing?: Readonly<Record<string, readonly ProviderId[]>>;
+  /**
+   * Per-agent-tool registration choices from the init wizard's agent
+   * step (agent registration D4/D6): tool id → registered. Absent on
+   * configs written by older binaries and on configs from users who
+   * never saw the agent step. Strictly validated at load time — a
+   * non-object value or a non-boolean entry is corrupt config (the
+   * `fanout` boolean precedent). Tool-id KEYS are deliberately not
+   * validated: an id minted by a newer binary must not corrupt an older
+   * binary's config.
+   */
+  readonly agentRules?: Readonly<Record<string, boolean>>;
 }
 
 export interface ConfigStoreOptions {
@@ -71,6 +82,13 @@ export interface AtomicReplaceOptions {
   readonly platform?: NodeJS.Platform;
   readonly randomId?: () => string;
   readonly rename?: typeof fs.rename;
+  /**
+   * Skip the forced 0700 chmod of the containing directory. Set for
+   * writes into directories we do NOT own (agent-tool homes): the
+   * force-mode is scoutline's own-config hardening and must not strip
+   * group/shared access from ~/.codex, ~/.claude/rules, etc.
+   */
+  readonly preserveDirectoryMode?: boolean;
 }
 
 export interface WriteConfigOptions extends ConfigStoreOptions {
@@ -169,6 +187,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * `agentRules` strictness (agent registration D6): absent or an object
+ * whose every VALUE is a boolean. Keys are not validated — a tool id
+ * minted by a newer binary must not corrupt this binary's config.
+ */
+function isValidAgentRules(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!isRecord(value)) return false;
+  return Object.values(value).every((entry) => typeof entry === "boolean");
+}
+
 function parseVerification(value: unknown): ProviderVerification | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value)) throw corruptConfig();
@@ -225,7 +254,8 @@ function parseConfig(contents: string): ParsedConfig {
     (parsed.fallbackEnabled !== undefined && typeof parsed.fallbackEnabled !== "boolean") ||
     (parsed.fanout !== undefined && typeof parsed.fanout !== "boolean") ||
     (parsed.hintShown !== undefined && typeof parsed.hintShown !== "boolean") ||
-    (parsed.providers !== undefined && !isRecord(parsed.providers))
+    (parsed.providers !== undefined && !isRecord(parsed.providers)) ||
+    !isValidAgentRules(parsed.agentRules)
   ) {
     throw corruptConfig();
   }
@@ -271,6 +301,7 @@ function parseConfig(contents: string): ParsedConfig {
       ...(journal !== undefined ? { journal } : {}),
       providers,
       ...(parsed.hintShown !== undefined ? { hintShown: parsed.hintShown as boolean } : {}),
+    ...(parsed.agentRules !== undefined ? { agentRules: parsed.agentRules as Record<string, boolean> } : {}),
       ...(routing !== undefined ? { routing } : {}),
     },
     warnings,
@@ -400,7 +431,9 @@ export async function atomicReplaceFile(
   const platform = options.platform ?? process.platform;
   const root = path.dirname(filePath);
   await fs.mkdir(root, { recursive: true, mode: 0o700 });
-  if (platform !== "win32") await fs.chmod(root, 0o700);
+  if (platform !== "win32" && !options.preserveDirectoryMode) {
+    await fs.chmod(root, 0o700);
+  }
 
   const randomId = options.randomId ?? randomUUID;
   let tempPath: string | undefined;

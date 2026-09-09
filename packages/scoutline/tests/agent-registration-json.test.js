@@ -18,7 +18,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { AGENT_TOOLS } from "../dist/lib/agent-registration/registry.js";
-import { jsonArrayInsert } from "../dist/lib/agent-registration/engines.js";
+import { jsonArrayInsert, jsonArrayRemove } from "../dist/lib/agent-registration/engines.js";
 
 const SKILL_POINTER = "/home/dev/.config/opencode/skills/scoutline/SKILL.md";
 
@@ -45,10 +45,7 @@ describe("opencode registry row (D1 — jsonArray pointer)", () => {
     const home = await mkHome(t);
     const row = tool("opencode");
     assert.equal(row.pointer.kind, "jsonArray");
-    assert.equal(
-      row.pointer.target(home),
-      path.join(home, ".config", "opencode", "opencode.json"),
-    );
+    assert.equal(row.pointer.target(home), path.join(home, ".config", "opencode", "opencode.json"));
   });
 });
 
@@ -71,17 +68,20 @@ describe("JSON array insert engine (D2 — opencode instructions)", () => {
     assert.equal(parsed.theme, "dark", "unrelated scalar untouched");
     assert.deepEqual(parsed.keybinds, ["a", "b"], "unrelated array untouched");
     assert.equal(parsed.model, "xyz", "unrelated trailing key untouched");
-    assert.deepEqual(parsed.instructions, [
-      "https://example.com/a.md",
-      "https://example.com/b.md",
-      SKILL_POINTER,
-    ], "skill pointer appended to instructions");
+    assert.deepEqual(
+      parsed.instructions,
+      ["https://example.com/a.md", "https://example.com/b.md", SKILL_POINTER],
+      "skill pointer appended to instructions",
+    );
     // Formatting pin: outside the inserted element the bytes are identical.
-    assert.ok(after.startsWith(original.slice(0, original.indexOf('"instructions"'))), "bytes before the array untouched");
+    assert.ok(
+      after.startsWith(original.slice(0, original.indexOf('"instructions"'))),
+      "bytes before the array untouched",
+    );
     assert.ok(after.endsWith('"model":"xyz"}'), "bytes after the array untouched");
     assert.ok(
       after.includes(`,\n    "${SKILL_POINTER}"`),
-      "inserted as D2's ,\\n    \"<path>\" text form before ]",
+      'inserted as D2\'s ,\\n    "<path>" text form before ]',
     );
   });
 
@@ -96,12 +96,18 @@ describe("JSON array insert engine (D2 — opencode instructions)", () => {
     const parsed = JSON.parse(after);
     assert.deepEqual(parsed.instructions, [SKILL_POINTER]);
     assert.equal(parsed.theme, "dark");
-    assert.ok(!after.includes(`,${JSON.stringify(SKILL_POINTER)}`), "no leading comma before the element");
-    assert.ok(!after.includes(`, ${JSON.stringify(SKILL_POINTER)}`), "no leading comma before the element (spaced)");
+    assert.ok(
+      !after.includes(`,${JSON.stringify(SKILL_POINTER)}`),
+      "no leading comma before the element",
+    );
+    assert.ok(
+      !after.includes(`, ${JSON.stringify(SKILL_POINTER)}`),
+      "no leading comma before the element (spaced)",
+    );
     assert.ok(after.includes(`"${SKILL_POINTER}"`), "element present");
   });
 
-  it("absent instructions key: a new top-level \"instructions\": [\"<path>\"] element is inserted", async (t) => {
+  it('absent instructions key: a new top-level "instructions": ["<path>"] element is inserted', async (t) => {
     const home = await mkHome(t);
     const file = path.join(home, "opencode.json");
     const original = '{"theme":"dark","model":"big"}';
@@ -111,10 +117,17 @@ describe("JSON array insert engine (D2 — opencode instructions)", () => {
 
     const after = await read(file);
     const parsed = JSON.parse(after);
-    assert.deepEqual(parsed.instructions, [SKILL_POINTER], "instructions created with exactly the skill pointer");
+    assert.deepEqual(
+      parsed.instructions,
+      [SKILL_POINTER],
+      "instructions created with exactly the skill pointer",
+    );
     assert.equal(parsed.theme, "dark", "existing keys preserved");
     assert.equal(parsed.model, "big", "existing keys preserved");
-    assert.ok(after.startsWith(original.slice(0, original.length - 1)), "existing bytes before the new element untouched");
+    assert.ok(
+      after.startsWith(original.slice(0, original.length - 1)),
+      "existing bytes before the new element untouched",
+    );
   });
 
   it("writes atomically — no tmp residue survives in the directory", async (t) => {
@@ -144,7 +157,11 @@ describe("JSON array insert engine (D2 — opencode instructions)", () => {
 
     await jsonArrayInsert({ filePath: file, element: SKILL_POINTER });
 
-    assert.equal(await read(`${file}.scoutline-bak`), original, "backup holds the exact pre-mutation bytes");
+    assert.equal(
+      await read(`${file}.scoutline-bak`),
+      original,
+      "backup holds the exact pre-mutation bytes",
+    );
   });
 
   it("idempotency check is scoped to the instructions array — the element appearing under another key does not block the insert", async (t) => {
@@ -155,7 +172,11 @@ describe("JSON array insert engine (D2 — opencode instructions)", () => {
     await jsonArrayInsert({ filePath: file, element: SKILL_POINTER });
 
     const parsed = JSON.parse(await read(file));
-    assert.deepEqual(parsed.instructions, [SKILL_POINTER], "empty instructions array must still receive the pointer");
+    assert.deepEqual(
+      parsed.instructions,
+      [SKILL_POINTER],
+      "empty instructions array must still receive the pointer",
+    );
   });
 
   it("string/escape-aware array scan: a ] inside a string value does not terminate the array", async (t) => {
@@ -166,7 +187,11 @@ describe("JSON array insert engine (D2 — opencode instructions)", () => {
     await jsonArrayInsert({ filePath: file, element: SKILL_POINTER });
 
     const parsed = JSON.parse(await read(file));
-    assert.deepEqual(parsed.instructions, ["docs/[draft]*.md", SKILL_POINTER], "registers successfully with entries parsed");
+    assert.deepEqual(
+      parsed.instructions,
+      ["docs/[draft]*.md", SKILL_POINTER],
+      "registers successfully with entries parsed",
+    );
   });
 
   it("nested arrays: the element is appended to the outer array with the inner array intact", async (t) => {
@@ -248,5 +273,102 @@ describe("idempotency (D2 search-before-mutate; TASKS T3 bullet 3)", () => {
     await jsonArrayInsert({ filePath: absentFile, element: SKILL_POINTER });
     assert.equal(await read(absentFile), absentOnce);
     assert.equal(JSON.parse(absentOnce).instructions.length, 1);
+  });
+});
+
+describe("empty-object mint recognizes internal whitespace (A1)", () => {
+  for (const [name, fixture] of [
+    ["`{ }` (inner space)", "{ }"],
+    ["`{\\n}` (inner newline)", "{\n}"],
+  ]) {
+    it(`mint branch fires for ${name}: registration succeeds, doc valid, idempotent, unregister removes the element`, async (t) => {
+      const home = await mkHome(t);
+      const file = path.join(home, "opencode.json");
+      await fs.writeFile(file, fixture);
+
+      await jsonArrayInsert({ filePath: file, element: SKILL_POINTER });
+
+      const once = await read(file);
+      assert.deepEqual(
+        JSON.parse(once).instructions,
+        [SKILL_POINTER],
+        "minted document is valid JSON carrying the pointer",
+      );
+
+      await jsonArrayInsert({ filePath: file, element: SKILL_POINTER });
+      assert.equal(await read(file), once, "double-run idempotent");
+
+      await jsonArrayRemove({ filePath: file, element: SKILL_POINTER });
+      const after = await read(file);
+      assert.deepEqual(
+        JSON.parse(after).instructions,
+        [],
+        "unregister removed the element and the file stays valid JSON",
+      );
+    });
+  }
+});
+
+describe("JSON-safe element encoding (A5 — escape-requiring elements)", () => {
+  it("a Windows-style backslash path inserts as valid JSON and removal round-trips to the original bytes", async (t) => {
+    const home = await mkHome(t);
+    const file = path.join(home, "opencode.json");
+    const winPath = "C:\\Users\\dev\\.config\\opencode\\skills\\scoutline\\SKILL.md";
+    const original = '{"instructions":["https://example.com/a.md"]}';
+    await fs.writeFile(file, original);
+
+    await jsonArrayInsert({ filePath: file, element: winPath });
+
+    const after = await read(file);
+    assert.deepEqual(
+      JSON.parse(after).instructions,
+      ["https://example.com/a.md", winPath],
+      "backslash path survives as a proper JSON string element",
+    );
+
+    await jsonArrayRemove({ filePath: file, element: winPath });
+
+    assert.equal(await read(file), original, "removal restores the original bytes exactly");
+  });
+});
+
+describe('top-level key location (A6 — nested "instructions" decoys)', () => {
+  it('a nested object with its own "instructions" value does not hijack the insert', async (t) => {
+    const home = await mkHome(t);
+    const file = path.join(home, "opencode.json");
+    await fs.writeFile(
+      file,
+      '{"mcp":{"instructions":"see [docs] here"},"instructions":["https://example.com/a.md"]}',
+    );
+
+    await jsonArrayInsert({ filePath: file, element: SKILL_POINTER });
+
+    const parsed = JSON.parse(await read(file));
+    assert.deepEqual(
+      parsed.instructions,
+      ["https://example.com/a.md", SKILL_POINTER],
+      "pointer appended to the TOP-LEVEL array",
+    );
+    assert.equal(parsed.mcp.instructions, "see [docs] here", "nested value untouched");
+  });
+
+  it("the same decoy does not hijack removal", async (t) => {
+    const home = await mkHome(t);
+    const file = path.join(home, "opencode.json");
+    await fs.writeFile(
+      file,
+      '{"mcp":{"instructions":["nested.md"]},"instructions":["https://example.com/a.md"]}',
+    );
+    await jsonArrayInsert({ filePath: file, element: SKILL_POINTER });
+
+    await jsonArrayRemove({ filePath: file, element: SKILL_POINTER });
+
+    const parsed = JSON.parse(await read(file));
+    assert.deepEqual(
+      parsed.instructions,
+      ["https://example.com/a.md"],
+      "removed from the TOP-LEVEL array",
+    );
+    assert.deepEqual(parsed.mcp.instructions, ["nested.md"], "nested array untouched");
   });
 });

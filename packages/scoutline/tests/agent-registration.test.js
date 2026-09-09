@@ -19,7 +19,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { AGENT_TOOLS, RULE_TEXT } from "../dist/lib/agent-registration/registry.js";
-import { lineInsert, markerBlockInsert } from "../dist/lib/agent-registration/engines.js";
+import {
+  lineInsert,
+  markerBlockInsert,
+  stripManagedRegion,
+} from "../dist/lib/agent-registration/engines.js";
 
 const POINTER_LINE = "@rules/scoutline.md";
 const START = "<!-- scoutline:start -->";
@@ -59,10 +63,15 @@ const RULE_TEXT_EXPECTED =
 
 describe("agent tool registry (D1)", () => {
   it("covers exactly the six tool rows plus the notice-only cursor row", () => {
-    assert.deepEqual(
-      AGENT_TOOLS.map((row) => row.id).sort(),
-      ["claude", "codex", "copilot", "cursor", "gemini", "opencode", "qwen"],
-    );
+    assert.deepEqual(AGENT_TOOLS.map((row) => row.id).sort(), [
+      "claude",
+      "codex",
+      "copilot",
+      "cursor",
+      "gemini",
+      "opencode",
+      "qwen",
+    ]);
   });
 
   it("detect probes the documented home directory per tool — present/absent", async (t) => {
@@ -135,7 +144,10 @@ describe("agent tool registry (D1)", () => {
 
     // Copilot: pointer-free thin rules file + native skills home (D3).
     const copilot = tool("copilot");
-    assert.equal(copilot.rulesFile(home), j(".copilot", "instructions", "scoutline.instructions.md"));
+    assert.equal(
+      copilot.rulesFile(home),
+      j(".copilot", "instructions", "scoutline.instructions.md"),
+    );
     assert.ok(copilot.skillHome, "copilot must have a skill home");
     assert.ok(copilot.skillHome(home).includes(path.join(".copilot", "skills")));
 
@@ -147,7 +159,10 @@ describe("agent tool registry (D1)", () => {
       assert.ok(skillHome.startsWith(home), `${id} skillHome must live under the injected home`);
       assert.ok(skillHome.includes("skills"), `${id} skillHome must be a skills home`);
     }
-    assert.ok(!tool("gemini").skillHome(home).includes("antigravity"), "gemini uses the documented global home, not the legacy antigravity dir");
+    assert.ok(
+      !tool("gemini").skillHome(home).includes("antigravity"),
+      "gemini uses the documented global home, not the legacy antigravity dir",
+    );
   });
 });
 
@@ -169,7 +184,10 @@ describe("line insert engine (D2 — claude @rules/, gemini @ import)", () => {
     const after = await read(file);
     assert.ok(after.startsWith(original), "bytes before the insertion must be untouched");
     assert.ok(after.includes(START) && after.includes(END), "pointer line must be marker-wrapped");
-    assert.ok(after.includes(`\n${POINTER_LINE}\n`), "pointer line must be present as its own line");
+    assert.ok(
+      after.includes(`\n${POINTER_LINE}\n`),
+      "pointer line must be present as its own line",
+    );
   });
 
   it("places the pointer under the existing rules list when the convention is present", async (t) => {
@@ -184,8 +202,14 @@ describe("line insert engine (D2 — claude @rules/, gemini @ import)", () => {
     const lastConvention = after.indexOf("@rules/second.md\n");
     const inserted = after.indexOf(`@rules/${"scoutline.md"}`);
     assert.ok(inserted > lastConvention, "pointer must land after the last convention line");
-    assert.ok(after.indexOf("trailing user text") > inserted, "trailing bytes must survive below the insertion");
-    assert.ok(after.startsWith("# Gemini\n\n@rules/other.md\n"), "bytes above the insertion untouched");
+    assert.ok(
+      after.indexOf("trailing user text") > inserted,
+      "trailing bytes must survive below the insertion",
+    );
+    assert.ok(
+      after.startsWith("# Gemini\n\n@rules/other.md\n"),
+      "bytes above the insertion untouched",
+    );
   });
 
   it("is idempotent — re-run yields a byte-identical file (zero-diff pin)", async (t) => {
@@ -213,7 +237,10 @@ describe("marker block engine (D2 — codex AGENTS.md, qwen QWEN.md; AC-5)", () 
     const after = await read(file);
     assert.ok(after.startsWith(original), "pre-existing bytes must be preserved verbatim");
     assert.ok(after.includes(START) && after.includes(END), "block must be marker-wrapped (AC-5)");
-    assert.ok(after.includes("<!-- scoutline:v9.9.9-test -->"), "block must carry the version stamp (AC-5)");
+    assert.ok(
+      after.includes("<!-- scoutline:v9.9.9-test -->"),
+      "block must carry the version stamp (AC-5)",
+    );
     assert.ok(after.includes(RULE_TEXT), "block must carry the rule text");
     assert.ok(after.indexOf(END) > after.indexOf(START), "markers must be ordered");
   });
@@ -227,7 +254,10 @@ describe("marker block engine (D2 — codex AGENTS.md, qwen QWEN.md; AC-5)", () 
     const after = await read(file);
     assert.ok(after.includes(START) && after.includes(RULE_TEXT) && after.includes(END));
     const backup = await fs.readdir(home);
-    assert.ok(!backup.some((n) => n.endsWith(".scoutline-bak")), "a file we create must not be backed up");
+    assert.ok(
+      !backup.some((n) => n.endsWith(".scoutline-bak")),
+      "a file we create must not be backed up",
+    );
   });
 
   it("is idempotent — re-run at the same version yields a byte-identical file (zero-diff pin)", async (t) => {
@@ -265,6 +295,76 @@ describe("marker block engine (D2 — codex AGENTS.md, qwen QWEN.md; AC-5)", () 
   });
 });
 
+describe("foreign marker-pair protection (A2/A3 — marker block engine)", () => {
+  it("register beside a pre-existing foreign pair: our block appended, foreign bytes untouched, backup still minted", async (t) => {
+    const home = await mkHome(t);
+    const file = path.join(home, "AGENTS.md");
+    const foreignPair = "<!-- scoutline:start -->\nuser's own managed note\n<!-- scoutline:end -->\n";
+    await fs.writeFile(file, foreignPair);
+
+    await markerBlockInsert({ filePath: file, content: RULE_TEXT, version: "9.9.9-test" });
+
+    const after = await read(file);
+    assert.ok(after.startsWith(foreignPair), "foreign pair bytes preserved verbatim at the head of the file");
+    assert.ok(
+      after.includes(`<!-- scoutline:v9.9.9-test -->`) && after.includes(RULE_TEXT),
+      "our block appended after the foreign content",
+    );
+    assert.equal(
+      await read(`${file}.scoutline-bak`),
+      foreignPair,
+      "a foreign pair must NOT suppress the disaster-recovery backup (A3)",
+    );
+  });
+
+  it("version-bump refresh on a foreign+ours file rewrites only OUR region", async (t) => {
+    const home = await mkHome(t);
+    const file = path.join(home, "AGENTS.md");
+    const foreignPair = "<!-- scoutline:start -->\nuser's own managed note\n<!-- scoutline:end -->\n";
+    await fs.writeFile(file, foreignPair);
+    await markerBlockInsert({ filePath: file, content: RULE_TEXT, version: "1.0.0" });
+    const before = await read(file);
+
+    await markerBlockInsert({ filePath: file, content: RULE_TEXT, version: "2.0.0" });
+    const after = await read(file);
+
+    assert.ok(after.includes("<!-- scoutline:v2.0.0 -->"), "our stamp updated");
+    assert.ok(!after.includes("v1.0.0"), "old stamp gone");
+    assert.ok(after.startsWith(foreignPair), "foreign pair still byte-untouched");
+    assert.equal(
+      after.slice(foreignPair.length),
+      before.slice(foreignPair.length).replace("v1.0.0", "v2.0.0"),
+      "only our region changed — bytes outside it identical",
+    );
+  });
+});
+
+describe("pre-existing unwrapped pointer line (A4 — user-owned, hands off)", () => {
+  it("register is a NO-OP on a file already carrying the unwrapped pointer line", async (t) => {
+    const home = await mkHome(t);
+    const file = path.join(home, "CLAUDE.md");
+    const original = "# My rules\n\n@rules/scoutline.md\nsome user note\n";
+    await fs.writeFile(file, original);
+
+    await lineInsert({ filePath: file, line: POINTER_LINE });
+
+    assert.equal(await read(file), original, "register must not rewrite user-owned bytes (no wrap-upgrade)");
+    const siblings = await fs.readdir(home);
+    assert.ok(!siblings.some((n) => n.endsWith(".scoutline-bak")), "no mutation → no backup minted");
+  });
+
+  it("unregister leaves the unwrapped line and its file alone", async (t) => {
+    const home = await mkHome(t);
+    const file = path.join(home, "CLAUDE.md");
+    const original = "# My rules\n\n@rules/scoutline.md\n";
+    await fs.writeFile(file, original);
+
+    await stripManagedRegion(file, POINTER_LINE);
+
+    assert.equal(await read(file), original, "unregister must not touch a file with no managed region");
+  });
+});
+
 describe("first-mutation backup rail (D2)", () => {
   it("mints <file>.scoutline-bak with the exact pre-mutation bytes on first mutation", async (t) => {
     const home = await mkHome(t);
@@ -291,7 +391,11 @@ describe("first-mutation backup rail (D2)", () => {
       1,
       "backup count must stay bounded at one per file",
     );
-    assert.equal(await read(`${file}.scoutline-bak`), original, "backup must still be the original snapshot");
+    assert.equal(
+      await read(`${file}.scoutline-bak`),
+      original,
+      "backup must still be the original snapshot",
+    );
   });
 
   it("no backup minted on refresh of a file we created (create-then-bump)", async (t) => {

@@ -90,10 +90,7 @@ export async function deploySkills(options: {
 
 async function writeStamp(configRoot: string, stamp: RegistrationStamp): Promise<void> {
   await fs.mkdir(configRoot, { recursive: true });
-  await atomicReplaceFile(
-    path.join(configRoot, STAMP_NAME),
-    JSON.stringify(stamp, null, 2),
-  );
+  await atomicReplaceFile(path.join(configRoot, STAMP_NAME), JSON.stringify(stamp, null, 2));
 }
 
 export async function readAgentRegistrationStamp(
@@ -159,10 +156,30 @@ export async function registerAgentTools(options: {
 }
 
 /**
+ * Persisted wizard choices from `<configRoot>/config.json`, used when the
+ * caller omits `agentRules` (the production default closure in index.ts).
+ * Absent/corrupt config is tolerated exactly like the stamp read — never
+ * fatal to the command being invoked.
+ */
+async function loadPersistedAgentRules(configRoot: string): Promise<AgentRulesChoice | undefined> {
+  try {
+    const parsed: unknown = JSON.parse(
+      await fs.readFile(path.join(configRoot, "config.json"), "utf8"),
+    );
+    const rules = (parsed as { agentRules?: AgentRulesChoice } | null)?.agentRules;
+    return rules !== null && typeof rules === "object" ? rules : undefined;
+  } catch {
+    return undefined; // absent or unreadable — never fatal to the command
+  }
+}
+
+/**
  * Lazy stamp check (DESIGN D5): stamp-absent runs are zero-cost no-ops;
  * a `!==` drift (version or ruleTextHash) refreshes the registered tools —
  * skill always re-copied, rule files only when the text drifted. Honors
- * `agentRules` (opted-out tools are skipped entirely). Refresh failures are
+ * `agentRules` (opted-out tools are skipped entirely) — when the option is
+ * omitted, the choices persisted in `<configRoot>/config.json` are loaded so
+ * a production opt-out survives drift refreshes. Refresh failures are
  * per-tool stderr notices, never fatal.
  */
 export async function checkAgentRegistration(options: {
@@ -176,6 +193,8 @@ export async function checkAgentRegistration(options: {
   const stamp = await readAgentRegistrationStamp(configRoot);
   if (stamp === undefined) return { refreshed: false };
 
+  const agentRules = options.agentRules ?? (await loadPersistedAgentRules(configRoot));
+
   const tools = Array.isArray(stamp.tools) ? stamp.tools : [];
   const versionDrifted = stamp.version !== version;
   const textDrifted = tools.length > 0 && stamp.ruleTextHash !== computeRuleTextHash();
@@ -183,7 +202,7 @@ export async function checkAgentRegistration(options: {
 
   let refreshed = false;
   for (const id of tools) {
-    if (options.agentRules !== undefined && options.agentRules[id] === false) continue;
+    if (agentRules?.[id] === false) continue;
     try {
       await deploySkills({ home, tools: [id] });
       if (textDrifted) {

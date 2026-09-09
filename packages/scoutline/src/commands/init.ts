@@ -697,21 +697,33 @@ async function runAgentRegistrationStep(deps: InitDependencies): Promise<number>
       continue; // notice-only row: no prompt, no files, no stamp entry
     }
     if (priorChoices?.[row.id] !== undefined) continue; // choice already recorded
-    const answer = await deps.prompts.confirm(
-      `Register scoutline with ${row.id}? (writes rules + skill to ${row.id}'s config)`,
-      true,
-    );
+    let answer: boolean;
+    try {
+      answer = await deps.prompts.confirm(
+        `Register scoutline with ${row.id}? (writes rules + skill to ${row.id}'s config)`,
+        true,
+      );
+    } catch {
+      // Prompt cancel (Ctrl+C / closed stream): a config-flow cancel —
+      // nothing registered, nothing persisted, exit 1.
+      return 1;
+    }
     choices[row.id] = answer;
     if (answer) registered.push(row.id);
   }
   if (Object.keys(choices).length === 0) return 0; // nothing new to register
 
-  await registerAgentTools({
-    home: roots.home,
-    configRoot: roots.configRoot,
-    tools: registered,
-    version: CLI_VERSION,
-  });
+  // All-declined: persist the choices below but never mint a registration
+  // stamp over an empty tool set — an empty stamp would look registered
+  // while committing refresh to a no-op forever.
+  if (registered.length > 0) {
+    await registerAgentTools({
+      home: roots.home,
+      configRoot: roots.configRoot,
+      tools: registered,
+      version: CLI_VERSION,
+    });
+  }
 
   // Persist agentRules NOW (merge under any existing config) so a later
   // wizard cancel cannot un-register an accepted tool.

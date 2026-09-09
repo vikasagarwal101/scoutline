@@ -6038,7 +6038,10 @@ export async function main(
   // (T3a ticket): the command's code lands now, but its public docs
   // (MAIN_HELP Commands list, README setup, skills/) wait for T3b.
   if (command === "init") {
-    if (commandArgs.includes("--unregister")) {
+    // Help precedence: `init --unregister --help` is documentation, not a
+    // run — the isHelpInvocation binding (computed above, reused by the
+    // save guards) must win over the reversal.
+    if (commandArgs.includes("--unregister") && !isHelpInvocation) {
       // Agent registration D2/D4: non-interactive disk-scan reversal —
       // never falls into the wizard (the parse pin from the deploy
       // module's wiring tests). Failures degrade to a stderr notice and

@@ -235,33 +235,41 @@ describe("library maxChars smuggle guards (issue #105)", () => {
       );
     }
   });
-it("explicitly-present maxChars: undefined rejects too — presence, not value (read + crawl)", async () => {
-  const readDeps = {
-    capability: { fetch: fakeOp("reader-fetch", READ_RESULT) },
-    execution: execution(),
-  };
-  await assert.rejects(
-    read("https://example.com/", { maxChars: undefined }, readDeps),
-    isValidationError,
-  );
-  const crawlDeps = {
-    capability: { fetch: fakeOp("crawl-fetch", CRAWL_RESULT) },
-    execution: execution(),
-  };
-  await assert.rejects(
-    crawl("https://example.com/", { maxChars: undefined }, crawlDeps),
-    isValidationError,
-  );
-});
-
-it("watch help invocations render documentation even with a stray --max-chars (isHelpInvocation parity)", async () => {
-  const out = [];
-  const status = await handleWatch(["--help", "--max-chars", "500"], "data", {
-    invocation: { writeStdout: (v) => out.push(v) },
+  it("explicitly-present maxChars: undefined rejects too — presence, not value (read + crawl)", async () => {
+    const readDeps = {
+      capability: { fetch: fakeOp("reader-fetch", READ_RESULT) },
+      execution: execution(),
+    };
+    await assert.rejects(
+      read("https://example.com/", { maxChars: undefined }, readDeps),
+      isValidationError,
+    );
+    const crawlDeps = {
+      capability: { fetch: fakeOp("crawl-fetch", CRAWL_RESULT) },
+      execution: execution(),
+    };
+    await assert.rejects(
+      crawl("https://example.com/", { maxChars: undefined }, crawlDeps),
+      isValidationError,
+    );
   });
-  assert.equal(status, 0);
-  assert.ok(out.join("").includes("scoutline watch"), "help rendered");
-});
+
+  it("watch help invocations render documentation even with a stray --max-chars (isHelpInvocation parity)", async () => {
+    const out = [];
+    const status = await handleWatch(["--help", "--max-chars", "500"], "data", {
+      invocation: { writeStdout: (v) => out.push(v) },
+    });
+    assert.equal(status, 0);
+    assert.ok(out.join("").includes("scoutline watch"), "help rendered");
+  });
+
+  it("bare invocation carrying --max-chars fails loud — no subcommand, no --help, no silent help exit 0", async () => {
+    await assert.rejects(
+      handleWatch(["--max-chars", "500"], "data", {}),
+      (err) => isValidationError(err) && GUARD_MESSAGE.test(err.message),
+      "bare watch invocation with --max-chars must reject, not fall into the help branch",
+    );
+  });
 
   it("absence stays byte-identical: read()/crawl() without maxChars return the full envelope", async () => {
     const readOut = await read(

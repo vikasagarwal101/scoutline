@@ -16,6 +16,10 @@
  *      stderr. readLog NEVER throws.
  *   4. Orphan rule: a master file with no log entry is invisible to log
  *      readers — the log is the listing truth, never a directory scan.
+ *   5. T1 kind widening (history-journal merge): journal entries validate
+ *      their own base shape (requestId/timestamp rules identical to save)
+ *      and are KEPT by readLog with no notice; kinds other than
+ *      save/journal still fail the whole log open (fail-loud preserved).
  *
  * Hermeticity: every path lives inside a withTempDir tmp dir. Nothing reads
  * process.env; nothing touches ~/.scoutline; no wall-clock entry data.
@@ -330,7 +334,7 @@ describe("readLog", () => {
       const { readLog } = await import("../dist/lib/artifacts.js");
 
       const badEntries = [
-        { ...saveEntry(), kind: "journal" }, // unknown kind
+        { ...saveEntry(), kind: "daily-digest" }, // genuinely unknown kind (T1 flip: "journal" is a KNOWN kind now)
         { ...saveEntry(), requestId: "" }, // empty requestId
         { ...saveEntry(), timestamp: "2026-08-29" }, // non-epoch timestamp
         { ...saveEntry(), timestamp: 1e21 }, // finite but outside the Date range — toISOString would throw RangeError later
@@ -339,6 +343,7 @@ describe("readLog", () => {
         { ...saveEntry(), provider: { mode: "single" } }, // missing effective
         { ...saveEntry(), provider: { mode: "fanout", arms: [] } }, // empty arms
         { ...saveEntry(), provider: { mode: "sideways", arms: ["zai"] } }, // unknown mode
+        { ...saveEntry(), provider: { mode: "single", effective: "zai", servedFrom: "banana" } }, // invalid servedFrom enum (#108 review)
         { ...saveEntry(), artifactFormat: "yaml" }, // invalid format
         { ...saveEntry(), cliVersion: 1 }, // non-string version
         { ...saveEntry(), masterPath: "../escape.json" }, // path escape
@@ -362,6 +367,78 @@ describe("readLog", () => {
           /does not match the log schema/,
           `body: ${body}`,
         );
+      }
+    });
+  });
+});
+
+// T1 (history-journal merge) — kind widening. The journal body fields
+// (capability/query/skeleton/...) arrive with the T2a/T3 writers; T1 pins
+// the READER side only: journal entries with the shared base shape
+// (requestId/timestamp rules identical to save) validate and are KEPT;
+// unknown kinds still fail the whole log open; base-rule violations on a
+// journal entry fail the same way they do for save.
+describe("kind widening — journal entries", () => {
+  /** Minimal journal entry; overrides replace top-level keys.
+   *  T2a: the widened body check validates the FULL shape — the
+   *  fixture carries the writer's field set (capability, query,
+   *  contentHash, cacheKey, provider, skeleton). */
+  function journalEntry(overrides = {}) {
+    return {
+      kind: "journal",
+      requestId: "20260829T150000Z-0a1b",
+      timestamp: NOW_BASE + 3_600_000,
+      capability: "search",
+      provider: { mode: "single", effective: "zai", servedFrom: "live" },
+      query: "rust vs go",
+      contentHash: "a".repeat(64),
+      cacheKey: "v2.search.zai.fp-zai.0f.json",
+      skeleton: { results: [{ url: "https://z.ai/r", title: "t-zai" }] },
+      ...overrides,
+    };
+  }
+
+  it("KEEPS a well-formed journal entry beside save entries, no notice", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const { readLog } = await import("../dist/lib/artifacts.js");
+
+      const save = saveEntry();
+      const journal = journalEntry({ query: "rust vs go", capability: "search" });
+      await fs.writeFile(
+        path.join(dir, "index.json"),
+        JSON.stringify({ version: 1, entries: [save, journal] }),
+      );
+
+      const { log, notice } = await readLog(dir);
+      assert.strictEqual(notice, undefined, "journal entries are not corruption");
+      assert.deepStrictEqual(log.entries, [save, journal]);
+    });
+  });
+
+  it("base-rule violations on a journal entry fail the whole log open — identical rules to save", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const { readLog } = await import("../dist/lib/artifacts.js");
+
+      const badJournalEntries = [
+        journalEntry({ requestId: "" }),
+        journalEntry({ requestId: 7 }),
+        journalEntry({ timestamp: "2026-08-29" }),
+        journalEntry({ timestamp: 1e21 }),
+        journalEntry({ timestamp: Number.NaN }),
+        "not-even-an-object",
+      ];
+      for (const bad of badJournalEntries) {
+        await fs.writeFile(
+          path.join(dir, "index.json"),
+          JSON.stringify({ version: 1, entries: [saveEntry(), bad] }),
+        );
+        const { log, notice } = await readLog(dir);
+        assert.deepStrictEqual(
+          log,
+          { version: 1, entries: [] },
+          `one bad journal entry (${JSON.stringify(bad)}) must fail the WHOLE log open`,
+        );
+        assert.match(String(notice), /does not match the log schema/);
       }
     });
   });

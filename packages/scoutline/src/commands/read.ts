@@ -638,6 +638,9 @@ then zai):
 Options:
   --format <f>    Output format: markdown (default), text
   --no-images     Remove images from output
+  --no-journal    Skip the research journal entry for this one call
+                  (journaling is on by default; see
+                  \`scoutline history --help\`)
   --no-cache      Bypass the response cache for this invocation
   --with-links    Include links summary
   --with-images-summary  Include images summary

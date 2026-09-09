@@ -79,11 +79,19 @@ import {
   DEFAULT_USAGE_WINDOW_DAYS,
   MAX_USAGE_WINDOW_DAYS,
 } from "./commands/usage.js";
-import { historyCommand, HISTORY_HELP } from "./commands/history.js";
+import {
+  historyCommand,
+  historyClearCommand,
+  historyRecallCommand,
+  historyExportCommand,
+  HISTORY_HELP,
+  HISTORY_NOTE_HELP,
+  HISTORY_RECALL_HELP, HISTORY_CLEAR_HELP, HISTORY_EXPORT_HELP,
+} from "./commands/history.js";
 import { handleFetch, FETCH_HELP } from "./commands/fetch.js";
 import { handleArchive, parseArchiveArgs, ARCHIVE_HELP } from "./commands/archive.js";
 import { handleWatch } from "./commands/watch.js";
-import { cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
+import { buildProviderCacheKey, cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
 import type { PruneSelectors, PruneCachesResult } from "./lib/cache.js";
 import { parseBatchManifest } from "./lib/batch-manifest.js";
 import type { AllowedBatchCommand } from "./lib/batch-manifest.js";
@@ -104,17 +112,30 @@ import {
 import { isOutputMode, OUTPUT_MODES, type OutputMode } from "./lib/output.js";
 import { formatErrorOutput, formatSuccessOutput } from "./lib/output.js";
 import {
-  appendLogEntry,
   atomicPlaceNoClobber,
   CLI_VERSION,
   newRequestId,
   readLog,
   resolveArtifactsDir,
-  writeArtifact,
+  writeArtifactWithLogEntry,
   type ArtifactFormat,
+  type FanoutProviderRouting,
   type ProviderRouting,
   type SaveLogEntry,
+  type SingleProviderRouting,
 } from "./lib/artifacts.js";
+import {
+  buildJournalEntry,
+  buildNoteEntry,
+  buildSearchSkeleton,
+  buildReadSkeleton,
+  buildResearchSkeleton,
+  appendJournalEntry,
+  appendJournalEntryMaybeRepeat,
+  type JournalableCapability,
+  type JournalSkeleton,
+} from "./lib/journal.js";
+import { buildJournalCacheKeyMap, buildJournalRepeatMarker } from "./lib/journal.js";
 import { applyBudget, type LadderRule } from "./lib/output-budget.js";
 import { persistCompaction } from "./lib/output-budget-persistence.js";
 import {
@@ -225,7 +246,8 @@ Commands:
   cache    Inspect or clear the local cache (stats / clear)
   usage    Report local call-usage history (usage.json ledger,
            credential-free)
-  history  Inventory of saved --save artifacts (list / show / stats,
+  history  Saved --save artifacts + research journal (list / show /
+           stats / note / recall / export; clear MUTATES,
            credential-free)
   fetch    Direct, binary-safe HTTP client (evidentiary GET + API,
            credential-free)
@@ -464,6 +486,22 @@ export const REJECT_MAX_CHARS_COMMANDS: ReadonlySet<string> = new Set([
   "fetch",
   "archive",
   "watch",
+]);
+
+/**
+ * History-journal merge T2a — the `--no-journal` per-call escape ships
+ * on exactly the journalable capabilities (search/read/research; ADR
+ * -0008's `--no-fallback` idiom). Every OTHER command rejects it at
+ * parse time with UNSUPPORTED_OPTION — the `--max-chars`
+ * command-local pattern, NOT `--save`'s global accept-and-drop: a
+ * privacy off-switch accepted-and-dropped somewhere would be a silent
+ * no-op. `read`/`research` ACCEPT the flag in T2a; their journaling
+ * itself arrives in T3 — the SURFACE ships with the switch.
+ */
+export const ACCEPT_NO_JOURNAL_COMMANDS: ReadonlySet<string> = new Set([
+  "search",
+  "read",
+  "research",
 ]);
 
 /**
@@ -870,6 +908,27 @@ export interface HandlerDependencies {
    * every other run is byte-identical to pre-T4.
    */
   readonly save?: SaveHookInput;
+  /**
+   * History-journal merge T2a: present when this run will journal
+   * (journalable command, not a help run, journaling not switched off
+   * via config `"journal": false` or `--no-journal`). The journalable
+   * handlers turn it into an invokeCommand journal hook beside the
+   * save hook via createJournalHook; read/research (T3) consume the
+   * SAME field — the seam is capability-driven, not command-hardcoded.
+   * Shares the ServingCapture cell with {@link save} when both wired,
+   * which is how the saveRef cross-link works.
+   */
+  readonly journal?: JournalHookInput;
+  /**
+   * History-journal merge T2a must-fix 1: batch-driven ops journal per
+   * their OWN capability (PRD AC3 — no exclusion branch). The top-level
+   * wiring above sets `journal` directly for single commands; for the
+   * batch noun (not in ACCEPT_NO_JOURNAL_COMMANDS) main sets this
+   * switch instead and the batch runner builds a per-op journal input
+   * keyed on the op's command (config switch only — no per-op flag in
+   * v1; `--no-journal` on the batch COMMAND itself stays rejected).
+   */
+  readonly journalBatchEnabled?: boolean;
   readonly searchCache: ResponseCache;
   readonly searchSleep: (ms: number) => Promise<void>;
   readonly searchRandom: () => number;
@@ -957,6 +1016,14 @@ export interface HandlerDependencies {
    * When absent, the dispatcher uses the production function.
    */
   readonly pruneCaches?: (selectors: PruneSelectors) => Promise<PruneCachesResult>;
+  /**
+   * Review r3 (P1): injectable artifacts-log read for the history
+   * handlers. Production wires the real `readLog`; tests inject a
+   * counting spy. handleHistoryExport memoizes ONE read per invocation
+   * through this seam — the save-entry index and the renderer consume
+   * the same result, so export never rescans the log per row.
+   */
+  readonly readArtifactsLog?: typeof readLog;
 }
 
 async function handleVision(
@@ -1452,6 +1519,39 @@ async function handleSearch(
     args: searchSaveArgs,
     provider: searchProviderRouting,
   });
+  // History-journal merge T2a: the always-on journal hook beside the
+  // save hook — wired whenever main handed a journal input (journalable
+  // command, journaling on). The result rows for the skeleton come from
+  // the dispatch result inside the behavior; when BOTH hooks are wired
+  // they share the same capture cell (saveRef cross-link). Fan-out runs
+  // journal too (review must-fix 3): the hook records the plan's
+  // {mode:"fanout", arms} routing — no silent skip of an always-on
+  // surface. The rows/fanout routing both arrive via thunks read AFTER
+  // dispatch resolves.
+  let journalRows: readonly { url?: string; title?: string }[] | undefined;
+  // Fan-out arm-race fix: stamp one serving cell per PLANNED arm on the
+  // shared capture BEFORE any arm runs, so the descriptor wrappers can
+  // record each arm's live/cache truth independently (a delayed
+  // cache-hit arm can no longer overwrite a live arm's servedFrom).
+  if (fanoutPlan.mode === "fanout" && deps.journal !== undefined) {
+    installFanoutArmCells(deps.journal.capture, fanoutPlan.arms);
+  }
+  const journal =
+    deps.journal === undefined
+      ? undefined
+      : createJournalHook(deps, {
+          journal: deps.journal,
+          query: positional.join(" "),
+          resultRows: () => journalRows,
+          fanoutRouting:
+            fanoutPlan.mode === "fanout"
+              ? {
+                  mode: "fanout" as const,
+                  ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+                  arms: fanoutPlan.arms,
+                }
+              : undefined,
+        });
   const query = positional.join(" ");
 
   const fieldsRaw = flags.fields as string | undefined;
@@ -1684,7 +1784,7 @@ async function handleSearch(
       };
 
       if (fanoutPlan.mode === "fanout") {
-        return applyOutputBudget(applyContextWrapper(await executeFanoutPlan(
+        const fanoutResult = await executeFanoutPlan(
             fanoutPlan,
             {
               descriptors: deps.providerDescriptors,
@@ -1705,8 +1805,15 @@ async function handleSearch(
               secrets: deps.secrets,
             },
             context,
-          ),
-        ));
+          );
+        // T2a must-fix 3: the fan-out rows feed the journal skeleton the
+        // same way the single path's outcome does below. Rows come from
+        // the PRE-projection merge — `--fields` filtering must not blank
+        // the journal's url/title identities.
+        if (fanoutResult.kind === "data" && Array.isArray(fanoutResult.rawRows)) {
+          journalRows = fanoutResult.rawRows;
+        }
+        return applyOutputBudget(applyContextWrapper(fanoutResult));
       }
       const outcome = await executeWithFallback(
         {
@@ -1743,12 +1850,25 @@ async function handleSearch(
           );
         },
       );
+      // T2a: capture the final (post-merge, post-count) result rows for
+      // the journal skeleton BEFORE the budget projects them — the hook
+      // reads this cell after the behavior resolves. Rows come from the
+      // PRE-projection result: `--fields` filtering must not blank the
+      // journal skeleton's url/title identities.
+      if (
+        deps.journal !== undefined &&
+        outcome.result.kind === "data" &&
+        Array.isArray(outcome.result.rawRows)
+      ) {
+        journalRows = outcome.result.rawRows;
+      }
       return applyOutputBudget(applyContextWrapper(outcome.result));
     },
     outputMode,
     deps.now,
     deps.secrets,
     save,
+    journal,
   );
 }
 
@@ -1839,6 +1959,22 @@ async function handleRead(
       effective: providerId,
     },
   });
+  // History-journal merge T3: read journaling on the same always-on
+  // seam (T2a pattern). The read skeleton is the fetch identity —
+  // url/finalUrl/title off the result envelope — captured into a thunk
+  // read after dispatch resolves. `read` has no fan-out mode, so no
+  // fanoutRouting here.
+  let journalReadIdentity:
+    | { readonly url?: string; readonly finalUrl?: string; readonly title?: string | null }
+    | undefined;
+  const journal =
+    deps.journal === undefined
+      ? undefined
+      : createJournalHook(deps, {
+          journal: deps.journal,
+          query: url,
+          readIdentity: () => journalReadIdentity,
+        });
   const readOptions = {
     format: flags.format as "markdown" | "text",
     noImages: flags["no-images"] === true,
@@ -1901,6 +2037,18 @@ async function handleRead(
           );
         },
       );
+      // T3: feed the journal hook's read-identity thunk from the
+      // dispatch result BEFORE the budget projects it — the skeleton
+      // records the fetch identity, not the trimmed projection.
+      const r = outcome.result;
+      if (r.kind === "data") {
+        const env = r.data as Record<string, unknown>;
+        journalReadIdentity = {
+          url: typeof env.url === "string" ? env.url : undefined,
+          finalUrl: typeof env.finalUrl === "string" ? env.finalUrl : undefined,
+          title: typeof env.title === "string" ? env.title : null,
+        };
+      }
       // Output Budget T4 (ADR-0007): whole-envelope budgeting at the
       // handler seam — AFTER the reader projection above (which is the
       // identity without the flag). Content reads walk READ_LADDER
@@ -1941,6 +2089,7 @@ async function handleRead(
     deps.now,
     deps.secrets,
     save,
+    journal,
   );
 }
 
@@ -2353,6 +2502,21 @@ async function handleResearch(
       effective: providerId,
     },
   });
+  // History-journal merge T3: research journaling on the same always-on
+  // seam. The research skeleton is the citations block — the sources
+  // url+title list off the result envelope — captured into a thunk read
+  // after dispatch resolves. `research` has no fan-out mode.
+  let journalCitations:
+    | readonly { readonly url?: string; readonly title?: string }[]
+    | undefined;
+  const journal =
+    deps.journal === undefined
+      ? undefined
+      : createJournalHook(deps, {
+          journal: deps.journal,
+          query,
+          citations: () => journalCitations,
+        });
   const executionDeps: ExecutionDependencies = {
     cache: deps.researchCache,
     sleep: deps.researchSleep,
@@ -2480,6 +2644,22 @@ async function handleResearch(
       // citations block (`sources`, url+title per citation) survives
       // longest (never-cut by omission). Presentations rebuilt from
       // the projection so text modes reflect the budget.
+      // T3: feed the journal hook's citations thunk from the dispatch
+      // result BEFORE the budget projects it — the skeleton records
+      // the citations, not the trimmed report.
+      const rr = outcome.result;
+      if (rr.kind === "data") {
+        const env = rr.data as Record<string, unknown>;
+        if (Array.isArray(env.sources)) {
+          journalCitations = env.sources.map((src) => {
+            const c = src as Record<string, unknown>;
+            return {
+              url: typeof c.url === "string" ? c.url : "",
+              title: typeof c.title === "string" ? c.title : "",
+            };
+          });
+        }
+      }
       const budgeted = await applyCommandOutputBudget(outcome.result, maxChars, {
         ladder: RESEARCH_LADDER,
         command: "research",
@@ -2515,6 +2695,7 @@ async function handleResearch(
     deps.now,
     deps.secrets,
     save,
+    journal,
   );
 }
 
@@ -3617,24 +3798,50 @@ export async function handleHistory(
   args: string[],
   outputMode: OutputMode,
   deps: HandlerDependencies,
+  historyLock?: { timeoutMs?: number; setTimeout?: typeof setTimeout },
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
+
+  const subcommand = positional[0];
+  // Subcommands with their own arg surfaces dispatch BEFORE the generic
+  // --help check so `<subcommand> --help` renders the SUBCOMMAND's help
+  // (T4's in-handler help check was shadowed by the generic check; T5
+  // surfaces the gap — recall's flags live nowhere in HISTORY_HELP).
+  if (subcommand === "note") {
+    return handleHistoryNote(args, outputMode, deps);
+  }
+  if (subcommand === "recall") {
+    return handleHistoryRecall(args, outputMode, deps);
+  }
+  if (subcommand === "clear") {
+    return handleHistoryClear(args, outputMode, deps, historyLock);
+  }
+  if (subcommand === "export") {
+    return handleHistoryExport(args, outputMode, deps);
+  }
 
   if (flags.help || flags.h) {
     deps.invocation.writeStdout(HISTORY_HELP);
     return 0;
   }
 
-  const subcommand = positional[0];
   if (subcommand === undefined) {
     // Bare `scoutline history` is a discovery affordance, not an error.
     deps.invocation.writeStdout(HISTORY_HELP);
     return 0;
   }
-  if (subcommand !== "list" && subcommand !== "show" && subcommand !== "stats") {
+  // list / show / stats share this surface (--since/--limit/--command
+  // + the show positional). Subcommands with their own arg surfaces
+  // (`note` T4, `recall` T5) dispatch ABOVE, before the generic
+  // --help check, so each renders its own help.
+  if (
+    subcommand !== "list" &&
+    subcommand !== "show" &&
+    subcommand !== "stats"
+  ) {
     throw new ValidationError(
       `Unknown history subcommand "${subcommand}".`,
-      "Valid subcommands: list, show, stats.",
+      "Valid subcommands: list, show, stats, note, recall, export, clear.",
     );
   }
 
@@ -3688,6 +3895,29 @@ export async function handleHistory(
   }
   const commandFilter = typeof rawCommand === "string" ? rawCommand : undefined;
 
+  // T6b (DESIGN D5): `--kind save|journal` narrows the list to one
+  // entry kind (strict union — anything else is VALIDATION_ERROR, the
+  // family's fail-loud gate class); `--repeats` is the boolean opt-in
+  // that surfaces repeat-marker rows (markers skipped by default).
+  const rawKind = flags.kind;
+  if (rawKind === true) {
+    throw new ValidationError(
+      "--kind requires a value.",
+      "Pass an entry kind: save or journal.",
+    );
+  }
+  let kindFilter: "save" | "journal" | undefined;
+  if (rawKind !== undefined) {
+    if (rawKind !== "save" && rawKind !== "journal") {
+      throw new ValidationError(
+        `Invalid --kind value "${rawKind}".`,
+        "--kind must be save or journal.",
+      );
+    }
+    kindFilter = rawKind;
+  }
+  const repeats = flags.repeats === true;
+
   let requestId: string | undefined;
   if (subcommand === "show") {
     requestId = positional[1];
@@ -3727,10 +3957,477 @@ export async function handleHistory(
         ...(sinceDays !== undefined ? { sinceDays } : {}),
         ...(limit !== undefined ? { limit } : {}),
         ...(commandFilter !== undefined ? { command: commandFilter } : {}),
+        ...(kindFilter !== undefined ? { kind: kindFilter } : {}),
+        ...(repeats ? { repeats: true } : {}),
         ...(requestId !== undefined ? { requestId } : {}),
       }),
     outputMode,
     deps.now,
+    deps.secrets,
+  );
+}
+
+/**
+ * T4 (`history note`, PRD AC6 / DESIGN D5): the explicit write. Builds
+ * ONE full journal entry from hand-supplied fields through the SAME
+ * write-seam discipline the always-on path uses — redaction over query
+ * + skeleton rows, contentHash over the normalized skeleton, minted
+ * requestId — then appends under the write lock (append-only, 0600,
+ * log-only: no master file). The provider is a sentinel (`"note"`): a
+ * note records work no Provider served, and the routing is not
+ * hand-choosable. Config `"journal": false` does NOT suppress an
+ * explicit note — the kill-switch governs the ALWAYS-ON posture only;
+ * `note` is opt-in by construction.
+ */
+async function handleHistoryNote(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+): Promise<number> {
+  const { flags, positional } = parseArgs(args);
+
+  if (flags.help || flags.h) {
+    deps.invocation.writeStdout(HISTORY_NOTE_HELP);
+    return 0;
+  }
+
+  // --capability <search|read|research> — required, enum-gated (the
+  // journal surface's own capability union; note cannot invent one).
+  const rawCapability = flags.capability;
+  if (rawCapability === undefined || rawCapability === true) {
+    throw new ValidationError(
+      "history note requires --capability.",
+      "Pass one of: search, read, research.",
+    );
+  }
+  if (
+    rawCapability !== "search" &&
+    rawCapability !== "read" &&
+    rawCapability !== "research"
+  ) {
+    throw new ValidationError(
+      `Invalid --capability value "${rawCapability}".`,
+      "Pass one of: search, read, research.",
+    );
+  }
+
+  // Positional text: the hand-written query (search) or URL
+  // (read/research) — exactly one, non-empty.
+  const text = positional[1];
+  if (text === undefined || text.length === 0) {
+    throw new ValidationError(
+      "history note requires the note text.",
+      "Pass the observation or query as the positional argument.",
+    );
+  }
+  if (positional.length > 2) {
+    throw new ValidationError(
+      "history note accepts exactly one positional note text; quote multi-word notes.",
+      "Multi-word notes must be passed as a single quoted argument, e.g. history note \"rust vs go comparison\".",
+    );
+  }
+
+  // --url / --title: repeatable pairs (search: the result list; read:
+  // exactly one row; research: the citations). parseArgs keeps the LAST
+  // value of a repeated flag, so collect pairs from the raw stream —
+  // a note's skeleton is ordered rows, not a last-wins map.
+  const rows: { url: string; title: string }[] = [];
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === "--url") {
+      const url = args[i + 1];
+      if (url === undefined || url.length === 0 || url.startsWith("-")) {
+        throw new ValidationError("--url requires a value.", "Pass the row url after --url.");
+      }
+      // Title: the NEXT --title between this --url and the next --url
+      // (the pairing grammar); absent → the url is its own title (the
+      // buildReadSkeleton self-containment idiom).
+      let title = url;
+      for (let j = i + 2; j < args.length && args[j] !== "--url"; j++) {
+        if (args[j] === "--title") {
+          const value = args[j + 1];
+          if (value === undefined || value.length === 0 || value.startsWith("-")) {
+            throw new ValidationError("--title requires a value.", "Pass the row title after --title.");
+          }
+          title = value;
+          break;
+        }
+      }
+      rows.push({ url, title });
+    }
+  }
+  // Read skeletons are EXACTLY one row (the T3 validator tooth). A
+  // read note with 0 or 2+ --url rows would write an entry its own
+  // store rejects — and one invalid entry blanks EVERY later history
+  // read (whole-log fail-open). Reject at the command layer: the
+  // MUST-FIX log-blanking write hole.
+  if (rawCapability === "read" && rows.length !== 1) {
+    throw new ValidationError(
+      "history note --capability read requires exactly one --url row.",
+      "A read skeleton is the single {url,title} fetch identity.",
+    );
+  }
+
+  // --tags a,b,c — comma-separated, trimmed, empties dropped.
+  let tags: string[] | undefined;
+  const rawTags = flags.tags;
+  if (rawTags !== undefined) {
+    if (rawTags === true) {
+      throw new ValidationError("--tags requires a value.", "Pass a comma-separated list, e.g. --tags followup,reading.");
+    }
+    tags = String(rawTags)
+      .split(",")
+      .map((tag) => tag.trim())
+      .filter((tag) => tag.length > 0);
+  }
+
+  const dir = resolveArtifactsDir(deps.env);
+  const now = deps.now ?? Date.now;
+  const entry = buildNoteEntry({
+    capability: rawCapability,
+    query: text,
+    rows,
+    now,
+    secrets: deps.secrets,
+    ...(tags !== undefined && tags.length > 0 ? { tags } : {}),
+  });
+
+  return invokeCommand(
+    deps.invocation,
+    () =>
+      appendJournalEntry(dir, entry).then((notice) => ({
+        kind: "data" as const,
+        data: {
+          schemaVersion: 1,
+          requestId: entry.requestId,
+          timestamp: entry.timestamp,
+          capability: entry.capability,
+          query: entry.query,
+          tags: entry.tags ?? [],
+          rowCount: entry.skeleton.results.length,
+        },
+        presentations: {
+          compact: `journal note recorded: ${entry.requestId} (${entry.capability})`,
+          markdown: `journal note recorded: ${entry.requestId} (${entry.capability})`,
+          refs: entry.requestId,
+          tty: `journal note recorded: ${entry.requestId} (${entry.capability})`,
+        },
+      })),
+    outputMode,
+    deps.now,
+    deps.secrets,
+  );
+}
+
+/**
+ * T5 (`history recall`, PRD AC4 / DESIGN D4): lexical recollection over
+ * the recorded journal corpus. Pure scoring over `readLog` — the ONLY
+ * I/O — so recall makes zero network calls, opens zero master files,
+ * and never touches the response cache (owner: no re-fetch, ever).
+ * Fail-open on a missing store (empty results, exit 0, one stderr
+ * orientation line via the notice seam). The store is never written.
+ */
+async function handleHistoryRecall(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+): Promise<number> {
+  const { flags, positional } = parseArgs(args);
+
+  if (flags.help || flags.h) {
+    deps.invocation.writeStdout(HISTORY_RECALL_HELP);
+    return 0;
+  }
+
+  // Recall text: the positional (after the subcommand token), required.
+  const text = positional[1];
+  if (text === undefined || text.length === 0) {
+    throw new ValidationError(
+      "history recall requires the recall text.",
+      "Pass what to re-find as the positional argument, e.g. history recall \"rust vs go\".",
+    );
+  }
+  // Review round (macroscope): extra positionals were silently dropped
+  // (`recall rust go` searched only "rust") — the note guard's class.
+  if (positional.length > 2) {
+    throw new ValidationError(
+      "history recall accepts exactly one positional recall text; quote multi-word queries.",
+      "Multi-word recall text must be passed as a single quoted argument, e.g. history recall \"rust vs go\".",
+    );
+  }
+
+  // --limit N: the family's strict decimal gate (same class as list's
+  // --since/--limit — Number() alone would admit "1e3" spellings).
+  let limit: number | undefined;
+  const rawLimit = flags.limit;
+  if (rawLimit !== undefined) {
+    if (rawLimit === true) {
+      throw new ValidationError(
+        "--limit requires a value.",
+        "Pass a positive integer, e.g. --limit 20.",
+      );
+    }
+    const str = String(rawLimit);
+    if (!/^\d+$/.test(str) || Number(str) < 1) {
+      throw new ValidationError(
+        `Invalid --limit value "${str}".`,
+        "--limit must be a positive integer, e.g. --limit 20.",
+      );
+    }
+    limit = Number(str);
+  }
+
+  // --capability <search|read|research>: the journal surface's own
+  // capability union (recall cannot invent one); fail-open 0 on a
+  // corpus with no match for it.
+  let capability: "search" | "read" | "research" | undefined;
+  const rawCapability = flags.capability;
+  if (rawCapability !== undefined) {
+    if (rawCapability === true) {
+      throw new ValidationError(
+        "--capability requires a value.",
+        "Pass one of: search, read, research.",
+      );
+    }
+    if (rawCapability !== "search" && rawCapability !== "read" && rawCapability !== "research") {
+      throw new ValidationError(
+        `Invalid --capability value "${rawCapability}".`,
+        "Pass one of: search, read, research.",
+      );
+    }
+    capability = rawCapability;
+  }
+
+  // --as-of <date>: ISO-8601 or epoch-ms; the INCLUSIVE upper bound on
+  // entry timestamps (boundary-pinned: ≤, not <). Invalid dates are
+  // VALIDATION_ERROR, never silently "now".
+  let asOf: number | undefined;
+  const rawAsOf = flags["as-of"];
+  if (rawAsOf !== undefined) {
+    if (rawAsOf === true) {
+      throw new ValidationError(
+        "--as-of requires a value.",
+        "Pass an ISO-8601 date or epoch-ms, e.g. --as-of 2026-09-01T00:00:00Z.",
+      );
+    }
+    const str = String(rawAsOf);
+    const parsed = /^\d+$/.test(str)
+      ? Number(str)
+      : Date.parse(str);
+    if (!Number.isFinite(parsed)) {
+      throw new ValidationError(
+        `Invalid --as-of value "${str}".`,
+        "Pass an ISO-8601 date or epoch-ms, e.g. --as-of 2026-09-01T00:00:00Z.",
+      );
+    }
+    asOf = parsed;
+  }
+
+  const dir = resolveArtifactsDir(deps.env);
+  const now = deps.now ?? Date.now;
+  return invokeCommand(
+    deps.invocation,
+    (context) =>
+      historyRecallCommand({
+        readLog: () => readLog(dir),
+        notice: context.notice,
+        text,
+        ...(asOf !== undefined ? { asOf } : {}),
+        ...(capability !== undefined ? { capability } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+      }),
+    outputMode,
+    now,
+    deps.secrets,
+  );
+}
+
+/**
+ * T6a (`history clear`, PRD AC7 / DESIGN D5): the valve — history's
+ * first MUTATING subcommand. Bare clear rewrites the log to remove the
+ * JOURNAL kind only (full entries + repeat markers; the fast-refilling
+ * layer); `--all` extends the wipe to save entries AND their master
+ * files. The rewrite runs inside the artifacts write lock via
+ * `clearArtifactsLog`; a corrupt pre-state reads fail-open EMPTY so the
+ * clear still succeeds. `--all` is the ONLY accepted flag — everything
+ * else is VALIDATION_ERROR BEFORE any mutation. Journaling and the
+ * response cache are untouched (cache clear is a different command).
+ */
+async function handleHistoryClear(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+  lock?: { timeoutMs?: number; setTimeout?: typeof setTimeout },
+): Promise<number> {
+  const { flags, positional } = parseArgs(args);
+
+  if (flags.help || flags.h) {
+    deps.invocation.writeStdout(HISTORY_CLEAR_HELP);
+    return 0;
+  }
+
+  // `--all` is the ONLY accepted flag; every other flag (and any
+  // positional beyond the subcommand) is a family-convention
+  // VALIDATION_ERROR BEFORE the store is touched. `--all` is boolean —
+  // parseArgs binds the next non-dash token as its value, so `--all
+  // stray` must not silently degrade to journal scope.
+  if (flags.all !== undefined && flags.all !== true) {
+    throw new ValidationError(
+      "--all is a boolean flag and takes no value.",
+      "Valid form: scoutline history clear [--all].",
+    );
+  }
+  const all = flags.all === true;
+  const known = new Set(["help", "h", "all"]);
+  const unknown = Object.keys(flags).filter((key) => !known.has(key));
+  if (unknown.length > 0 || positional.length > 1) {
+    const detail =
+      positional.length > 1
+        ? `"${positional[1]}"`
+        : `--${unknown[0]}`;
+    throw new ValidationError(
+      `Unexpected argument ${detail} for history clear.`,
+      "Valid form: scoutline history clear [--all].",
+    );
+  }
+
+  const dir = resolveArtifactsDir(deps.env);
+  const now = deps.now ?? Date.now;
+  return invokeCommand(
+    deps.invocation,
+    (context) =>
+      historyClearCommand({
+        dir,
+        all,
+        now,
+        notice: context.notice,
+        ...(lock !== undefined
+          ? {
+              lock: {
+                ...(lock.timeoutMs !== undefined ? { timeoutMs: lock.timeoutMs } : {}),
+                ...(lock.setTimeout !== undefined ? { setTimeout: lock.setTimeout } : {}),
+              },
+            }
+          : {}),
+      }),
+    outputMode,
+    now,
+    deps.secrets,
+  );
+}
+
+/**
+ * T6c (`history export`, PRD AC5 / DESIGN D5): the dossier renderer.
+ * Pure markdown over the filtered FULL journal entries — readLog is
+ * the only content I/O; saveRef'd masters get an EXISTENCE stat only
+ * (content never read). Zero network, zero cache reads (owner: no
+ * re-fetch, ever). Fail-open: a missing store is a header-only
+ * dossier, exit 0. `--since` is the ONLY flag (strict known-flag set,
+ * the clear convention) — no output writing; the dossier is stdout
+ * data (no family precedent for read-only commands writing documents
+ * to disk; the `--out` door stays shut — YAGNI).
+ */
+async function handleHistoryExport(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+): Promise<number> {
+  const { flags, positional } = parseArgs(args);
+
+  if (flags.help || flags.h) {
+    deps.invocation.writeStdout(HISTORY_EXPORT_HELP);
+    return 0;
+  }
+
+  // `--since <date>`: ISO-8601 or epoch-ms, the INCLUSIVE lower bound
+  // on entry timestamps (recall's --as-of parser class; invalid dates
+  // are VALIDATION_ERROR, never silently "forever").
+  let since: number | undefined;
+  const rawSince = flags["since"];
+  if (rawSince !== undefined) {
+    if (rawSince === true) {
+      throw new ValidationError(
+        "--since requires a value.",
+        "Pass an ISO-8601 date or epoch-ms, e.g. --since 2026-09-01.",
+      );
+    }
+    const str = String(rawSince);
+    const parsed = /^\d+$/.test(str) ? Number(str) : Date.parse(str);
+    // Reject finite-but-out-of-Date-range values too: the renderer's
+    // new Date(since).toISOString() would throw a raw RangeError on
+    // them — the documented contract is VALIDATION_ERROR (review r3).
+    if (
+      !Number.isFinite(parsed) ||
+      parsed < -8_640_000_000_000_000 ||
+      parsed > 8_640_000_000_000_000
+    ) {
+      throw new ValidationError(
+        `Invalid --since value "${str}".`,
+        "Pass an ISO-8601 date or epoch-ms, e.g. --since 2026-09-01.",
+      );
+    }
+    since = parsed;
+  }
+
+  // Strict flag set + no positionals — export takes no identity args
+  // (the family-convention gate BEFORE the store is read).
+  const known = new Set(["help", "h", "since"]);
+  const unknown = Object.keys(flags).filter((key) => !known.has(key));
+  if (unknown.length > 0 || positional.length > 1) {
+    const detail = positional.length > 1 ? `"${positional[1]}"` : `--${unknown[0]}`;
+    throw new ValidationError(
+      `Unexpected argument ${detail} for history export.`,
+      "Valid form: scoutline history export [--since <date>].",
+    );
+  }
+
+  const dir = resolveArtifactsDir(deps.env);
+  const now = deps.now ?? Date.now;
+  const readArtifactsLog = deps.readArtifactsLog ?? readLog;
+  // Review r3 (P1): ONE memoized log read per export — the save-entry
+  // index below and the renderer consume the same ReadLogResult, so a
+  // saveRef'd export performs 1 read total, not 1 per row (the old
+  // per-call `readLog(dir)` inside masterExists made export O(N²) in
+  // log reads). Content stays read-only over the network — the only
+  // other I/O is LOCAL master reads (the log already points at them).
+  const memoized = await readArtifactsLog(dir);
+  const saveEntriesById = new Map<string, { readonly masterPath: string }>();
+  for (const entry of memoized.log.entries) {
+    const e = entry as unknown as Record<string, unknown>;
+    if (e.kind === "save" && typeof e.requestId === "string" && typeof e.masterPath === "string") {
+      // FIRST match wins, matching the pre-refactor `entries.find()`
+      // contract (review batch 2: .set() per entry had flipped this to
+      // last-wins). Duplicates are rare — newRequestId has a random
+      // tail and writeArtifact refuses overwrites — but the selection
+      // semantics are pinned.
+      if (!saveEntriesById.has(e.requestId as string)) {
+        saveEntriesById.set(e.requestId as string, { masterPath: e.masterPath as string });
+      }
+    }
+  }
+  return invokeCommand(
+    deps.invocation,
+    (context) =>
+      historyExportCommand({
+        readLog: () => Promise.resolve(memoized),
+        // Review batch 3 (issue 3): read the saveRef'd master's body
+        // from disk when present (the durable local copy the log
+        // points at — never a network/cache re-fetch). Absent or
+        // unreadable both degrade to the dossier's (missing) note.
+        masterExists: async (saveRequestId) => {
+          const save = saveEntriesById.get(saveRequestId);
+          if (save === undefined) return false;
+          try {
+            return await fs.readFile(path.join(dir, save.masterPath), "utf8");
+          } catch {
+            return false;
+          }
+        },
+        notice: context.notice,
+        now,
+        ...(since !== undefined ? { since } : {}),
+      }),
+    outputMode,
+    now,
     deps.secrets,
   );
 }
@@ -3884,13 +4581,68 @@ async function handleCode(
 const REPORT_SCHEMA_VERSION = 1;
 
 /** Observation cell: the provider whose invoke() actually resolved. */
-interface ServingCapture {
+export interface ServingCapture {
   servedProvider?: ProviderId;
+  /**
+   * Issue #108: where the serving bytes came from. `"live"` = the
+   * recorded invoke() resolved (set by the invoke wrapper); `"cache"` =
+   * the serving attempt returned without ever invoking (set by the
+   * cacheIdentity wrapper when the subsequent cache consult hits).
+   * Unset = no save-capable attempt observed (non-capable commands,
+   * pre-run failures) — the save hook then records `"live"`, matching
+   * pre-#108 entries' implicit assumption.
+   */
+  servedFrom?: "live" | "cache";
+  /**
+   * History-journal merge T2a: the response-cache key of the serving
+   * attempt's request (stamped beside servedFrom by the cacheIdentity
+   * wrapper — it is the per-attempt hook that knows the identity). The
+   * journal entry records cacheKey per PRD AC2; unset = no capable
+   * attempt observed.
+   */
+  cacheKey?: string;
+  /**
+   * T2a saveRef cross-link cell: the save hook (which runs FIRST in
+   * invokeCommand) stamps its requestId here; the journal hook reads
+   * it — same-run `--save` + journaling links both entries (PRD AC10).
+   */
+  savedRequestId?: string;
+  /**
+   * Fan-out arm-race fix: one serving cell per PLANNED arm, keyed by
+   * provider id. handleSearch attaches the cells (from the resolved
+   * fan-out plan) BEFORE the arms run; the descriptor wrappers look the
+   * cell up at create() time and stamp it alongside the shared cell. A
+   * delayed cache-hit arm can therefore never overwrite a live arm's
+   * servedFrom: each arm owns its cell. Absent on the single-provider
+   * path (and on batch ops, which already use per-op capture cells).
+   *
+   * Review round (cubic, wave-2): a `--merge` arm runs MULTIPLE
+   * sub-queries through the SAME cell (the grid is arm × sub-query),
+   * so the cell is a per-ARM aggregate, not a per-attempt record —
+   * `servedFrom === "cache"` may only stand when every sub-query on
+   * the arm was cache-served. `failed` is the sticky latch: once any
+   * sub-query's invoke threw, later speculative "cache" re-stamps are
+   * suppressed so the journal hook never reads a partially-failed arm
+   * as all-cache (a repeat marker for an INCOMPLETE combined result).
+   */
+  armServing?: ReadonlyMap<string, { servedFrom?: "live" | "cache"; failed?: boolean }>;
 }
 
 /** What main hands the save-capable handlers when a save will happen. */
 interface SaveHookInput {
   readonly request: SaveRequest;
+  readonly capture: ServingCapture;
+}
+
+/**
+ * History-journal merge T2a — what main hands the journalable handlers
+ * when this run will journal (journalable command + not a help run +
+ * journaling not switched off). Mirrors SaveHookInput's shape: the
+ * SAME capture cell the save path uses, so provider honesty and the
+ * cache resolution inherit the #108 fix for free.
+ */
+interface JournalHookInput {
+  readonly capability: JournalableCapability;
   readonly capture: ServingCapture;
 }
 
@@ -3907,13 +4659,40 @@ function withCaptureInvoke(
   id: ProviderId,
   capture: ServingCapture,
 ): Record<string, unknown> {
+  const armCell =
+    capture.armServing !== undefined ? capture.armServing.get(id) : undefined;
   const invoke = slot.invoke as (...args: unknown[]) => Promise<unknown>;
   const wrapped: Record<string, unknown> = {
     ...slot,
     invoke: async (...args: unknown[]) => {
-      const outcome = await invoke(...args);
-      capture.servedProvider = id;
-      return outcome;
+      try {
+        const outcome = await invoke(...args);
+        capture.servedProvider = id;
+        capture.servedFrom = "live";
+        if (armCell !== undefined) armCell.servedFrom = "live";
+        return outcome;
+      } catch (error) {
+        // Review round (cubic): a fan-out arm that FAILED after a cache
+        // miss must not keep the cacheIdentity wrapper's speculative
+        // "cache" stamp — the journal hook's everyArmIsCache would then
+        // read {one cache-hit arm + one failed arm} as all-cache-served
+        // and emit a tiny repeat marker for an INCOMPLETE combined
+        // result. Only the arm cell is cleared: the shared cell keeps
+        // its last-write-standing contract (a later failed candidate's
+        // invoke throw writes nothing, so the server's stamp survives).
+        // Review round (cubic, wave-2): the clear alone is not sticky —
+        // a --merge grid runs several sub-queries through this same
+        // arm cell, and a later sub-query's speculative cacheIdentity
+        // re-stamp would resurrect "cache" after the clear. Latch
+        // `failed`; the cacheIdentity wrapper below refuses to
+        // re-stamp once it is set, so the suppression survives any
+        // later re-stamp attempt regardless of sub-query interleaving.
+        if (armCell !== undefined) {
+          armCell.servedFrom = undefined;
+          armCell.failed = true;
+        }
+        throw error;
+      }
     },
   };
   // Review fixup: a CACHE-HIT attempt never reaches invoke() — the shared
@@ -3924,11 +4703,71 @@ function withCaptureInvoke(
   // attempt immediately before the cache consult, and it is the last
   // per-attempt hook of the attempt that serves, so capturing here names
   // the serving provider in both the live and cache-hit paths.
+  //
+  // Issue #108 origin split: cacheIdentity runs before the CACHE consult
+  // too, so it cannot yet know whether THIS attempt serves from cache.
+  // Speculatively mark `servedFrom: "cache"`; if the cache misses, the
+  // same attempt's invoke() runs immediately after and overwrites to
+  // `"live"`. A fallback sequence (cache-miss candidate, then a live or
+  // cache-hit server later in the plan) leaves the SERVER's last write
+  // standing — every write after the serving attempt belongs to a later
+  // failed candidate, so its invoke throw path cannot clobber the value.
+  // A `--no-cache` run never gets a cache-served value: its invoke
+  // always runs and stamps `"live"`.
   const cacheIdentity = slot.cacheIdentity;
   if (typeof cacheIdentity === "function") {
     wrapped.cacheIdentity = (...args: unknown[]) => {
       capture.servedProvider = id;
-      return (cacheIdentity as (...a: unknown[]) => unknown).apply(slot, args);
+      capture.servedFrom = "cache";
+      // Review round (cubic, wave-2): speculative ONLY while the arm has
+      // neither gone live nor failed. A --merge grid runs several
+      // sub-queries through this same arm cell: once any sub-query's
+      // invoke threw, the failed latch above must keep the cell unset so
+      // a later cache-hit sub-query cannot resurrect "cache" (marker for
+      // an incomplete combined result); once any sub-query went LIVE the
+      // cell keeps "live" (fresh content this run is never an all-cache
+      // repeat). All-cache idempotence: re-stamping "cache" over "cache"
+      // is suppressed too — the value is already correct.
+      if (armCell !== undefined && armCell.failed !== true && armCell.servedFrom === undefined) {
+        armCell.servedFrom = "cache";
+      }
+      // T2a: the identity IS the request the cache key is derived from
+      // (executeSearch/executeCachedOperation feed it straight into
+      // buildProviderCacheKey) — recompute the key here so the journal
+      // records the exact cache partition the serving attempt used.
+      const identity = (
+        cacheIdentity as (...a: unknown[]) => unknown
+      ).apply(slot, args) as {
+        provider?: string;
+        capability?: string;
+        credentialFingerprint?: string;
+        request?: unknown;
+        operation?: unknown;
+      } | null;
+      if (
+        identity !== null &&
+        typeof identity === "object" &&
+        typeof identity.provider === "string" &&
+        typeof identity.capability === "string" &&
+        typeof identity.credentialFingerprint === "string"
+      ) {
+        // Reader/repository identities carry an `operation` field and the
+        // shared executors namespace their keys `${capability}-${operation}`
+        // (src/lib/execution.ts) — mirror that so the journal cacheKey
+        // identifies the real response-cache partition. Search/quota
+        // identities have no operation field and keep the bare capability.
+        const opNamespace =
+          typeof identity.operation === "string"
+            ? `${identity.capability}-${identity.operation}`
+            : identity.capability;
+        capture.cacheKey = buildProviderCacheKey({
+          provider: identity.provider as ProviderId,
+          capability: opNamespace,
+          credentialFingerprint: identity.credentialFingerprint,
+          request: identity.request,
+        });
+      }
+      return identity;
     };
   }
   return wrapped;
@@ -3994,6 +4833,35 @@ function captureServingDescriptors(
   }));
 }
 
+/**
+ * Fan-out wiring (PRD AC2 + arm-race fix): build a stable per-arm
+ * serving map from the resolved fan-out plan and install it on the
+ * shared capture cell. Each descriptor wrapper looks its arm cell up
+ * at create() time so a delayed cache-hit arm cannot overwrite the live
+ * arm's servedFrom. Returns the same descriptor list — the wrappers
+ * resolve the arm cell on demand via `capture.armServing`.
+ */
+function installFanoutArmCells(
+  capture: ServingCapture,
+  fanoutArms: readonly ProviderId[],
+): void {
+  const cells = new Map<string, { servedFrom?: "live" | "cache"; failed?: boolean }>();
+  for (const armId of fanoutArms) cells.set(armId, {});
+  capture.armServing = cells;
+}
+
+/**
+ * T2a must-fix 1: the batch runner's per-op wrapper — same behavior as
+ * {@link captureServingDescriptors}, exported because each batch op owns
+ * its own ServingCapture cell (concurrent ops must not cross-stamp).
+ */
+export function captureServingDescriptorsForOp(
+  descriptors: readonly ProviderDescriptor[],
+  capture: ServingCapture,
+): readonly ProviderDescriptor[] {
+  return captureServingDescriptors(descriptors, capture);
+}
+
 /** Wiring built in main only when a save will actually happen. */
 interface SaveWiring {
   readonly descriptors: readonly ProviderDescriptor[];
@@ -4003,9 +4871,11 @@ interface SaveWiring {
 function buildSaveWiring(
   request: SaveRequest | undefined,
   descriptors: readonly ProviderDescriptor[],
+  /** T2a: a journaling run's capture cell — shared so saveRef links one run's two entries. */
+  existingCapture?: ServingCapture,
 ): SaveWiring | undefined {
   if (request === undefined) return undefined;
-  const capture: ServingCapture = {};
+  const capture: ServingCapture = existingCapture ?? {};
   return {
     descriptors: captureServingDescriptors(descriptors, capture),
     input: { request, capture },
@@ -4153,6 +5023,11 @@ function createSaveArtifactHook(
     try {
       const dir = resolveArtifactsDir(deps.env);
       const requestId = newRequestId(now());
+      // T2a saveRef cross-link: stamp this requestId into the shared
+      // capture cell — the journal hook (running after this hook in the
+      // same invokeCommand) reads it so the journal entry of the SAME
+      // run carries saveRef (PRD AC10).
+      capture.savedRequestId = requestId;
       const data = result.kind === "data" ? result.data : result.text;
       const redactedData = redactSecrets(data, resolvedSecrets);
       const content =
@@ -4163,7 +5038,12 @@ function createSaveArtifactHook(
               null,
               2,
             )}\n`;
-      const masterPath = await writeArtifact(dir, requestId, content, { format: request.format });
+      // PR #111 A2: the master target is computed here (the same rule
+      // writeArtifact used — `<requestId>.<extension>`) so the entry's
+      // masterPath and the file the combined write lays down cannot
+      // drift apart.
+      const extension = request.format === "markdown" ? "md" : "json";
+      const masterPath = path.join(dir, `${requestId}.${extension}`);
       const provider: ProviderRouting =
         meta.provider.mode === "fanout"
           ? meta.provider
@@ -4172,6 +5052,20 @@ function createSaveArtifactHook(
               // The executor's actual server wins over the pre-run
               // resolution when runtime fallback switched providers (D5).
               effective: capture.servedProvider ?? meta.provider.effective,
+              // Issue #108: distinguish "the effective provider served
+              // live" from "the effective provider's on-disk cache served
+              // (possibly while the provider was unreachable)". Capture
+              // unset (non-capable command, pre-run failure) records
+              // "live" — the pre-#108 entry's implicit assumption.
+              servedFrom: capture.servedFrom ?? "live",
+              // Issue #108: unpinned runs previously logged no
+              // `requested`, so a cache-served defaulted run was
+              // indistinguishable from a pinned live one. Record the
+              // defaulted request (pre-run effective) alongside the
+              // capture-derived effective.
+              ...(meta.provider.requested === undefined
+                ? { requested: meta.provider.effective }
+                : {}),
             };
       const entry: SaveLogEntry = {
         kind: "save",
@@ -4184,9 +5078,17 @@ function createSaveArtifactHook(
         artifactFormat: request.format,
         cliVersion: CLI_VERSION,
         masterPath: path.basename(masterPath),
-        ...(request.exportPath !== undefined ? { exportPath: request.exportPath } : {}),
+        // PR #111 A2: the log carries the ABSOLUTE export path — a
+        // relative --save value is resolved against THIS process's cwd,
+        // so history reads and `--all` sweeps never reinterpret it in
+        // another working directory.
+        ...(request.exportPath !== undefined
+          ? { exportPath: path.resolve(request.exportPath) }
+          : {}),
       };
-      const logNotice = await appendLogEntry(dir, entry);
+      const logNotice = await writeArtifactWithLogEntry(dir, requestId, content, entry, {
+        format: request.format,
+      });
       if (logNotice !== undefined) notice(logNotice);
       if (request.exportPath !== undefined) {
         // Write-time exists-recheck: closes the T3 pre-dispatch race
@@ -4227,6 +5129,220 @@ function createSaveArtifactHook(
         "Check the artifacts directory and export path, then retry.",
       );
     }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// History-journal merge T2a — the ALWAYS-ON journal hook at the same
+// invocation seam (command-invocation.ts) as the save hook. The seam
+// COMPOSES: main passes an extra `journal` hook and invokeCommand runs
+// it after the save hook inside the same try, so a journal write
+// failure rides the existing catch (notices flushed, one error
+// envelope, stdout suppressed) — identical failure contract to saves.
+// The hook is capability-driven ({@link JournalableCapability}), so
+// T3's read/research wiring extends the SAME seam, never rewrites it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build one run's journal hook. Returns undefined unless main wired a
+ * journal input ({@link JournalHookInput}) — the always-on posture is
+ * main's decision (config kill-switch + `--no-journal` resolved
+ * there), keeping this builder trivially inert in every non-journaling
+ * run. Miss/hit distinction: T2a writes the FULL entry when the
+ * serving capture says the run went live (a cache miss — invoke()
+ * resolved); T2b adds the repeat-marker branch for servedFrom "cache".
+ */
+/**
+ * T3: per-capability skeleton dispatch. Search builds from the result
+ * rows; read from the fetch identity ({url,finalUrl,title} of the read
+ * envelope); research from the citations (sources list). Returns
+ * undefined when the capability's thunk is absent — the hook skips
+ * (never writes a malformed skeleton).
+ */
+function buildSkeletonForCapability(
+  capability: JournalableCapability,
+  meta: {
+    readonly resultRows?: () => readonly { url?: string; title?: string }[] | undefined;
+    readonly readIdentity?: () =>
+      | { readonly url?: string; readonly finalUrl?: string; readonly title?: string | null }
+      | undefined;
+    readonly citations?: () =>
+      | readonly { readonly url?: string; readonly title?: string }[]
+      | undefined;
+  },
+): JournalSkeleton | undefined {
+  if (capability === "search") return buildSearchSkeleton(meta.resultRows?.() ?? []);
+  if (capability === "read") {
+    const identity = meta.readIdentity?.();
+    return identity === undefined ? undefined : buildReadSkeleton(identity);
+  }
+  const citations = meta.citations?.();
+  return citations === undefined ? undefined : buildResearchSkeleton(citations);
+}
+
+function createJournalHook(
+  deps: HandlerDependencies,
+  meta: {
+    readonly journal: JournalHookInput;
+    readonly query: string;
+    /** Result rows for the skeleton — a thunk; the rows exist only after dispatch (T3 supplies its own per-capability thunk). */
+    readonly resultRows?: () => readonly { url?: string; title?: string }[] | undefined;
+    /**
+     * T3: read/research skeletons are not result-row lists — read needs
+     * the fetch's {url,finalUrl,title} identity, research the citations.
+     * Thunks; the capability dispatch below picks the right one.
+     */
+    readonly readIdentity?: () =>
+      | { readonly url?: string; readonly finalUrl?: string; readonly title?: string | null }
+      | undefined;
+    readonly citations?: () =>
+      | readonly { readonly url?: string; readonly title?: string }[]
+      | undefined;
+    /** Must-fix 3: the fan-out plan's routing, when this run is fan-out mode. */
+    readonly fanoutRouting?: FanoutProviderRouting;
+  },
+): SaveHook {
+  const { capability, capture } = meta.journal;
+  return async ({ resolvedSecrets, now }) => {
+    const artifactsDir = resolveArtifactsDir(deps.env);
+    // Must-fix 3: fan-out runs journal with the plan's routing — the
+    // capture cell tracks per-arm invokes but no single server, so the
+    // entry records {mode:"fanout", arms} faithfully (the same shape
+    // the save hook logs). A fan-out run with no resolved invoke wrote
+    // nothing (failed before any arm served) — nothing to journal.
+    const fanout = meta.fanoutRouting;
+    if (fanout !== undefined) {
+      // Fan-out arm-race (review batch 1): the shared capture cell can
+      // be overwritten by a delayed cache-hit arm, dropping the live
+      // arm's servedFrom. The descriptor wrappers now stamp per-arm
+      // cells (captured in the same wrapper pass as the shared cell);
+      // a fan-out is a "live" journal-write when ANY arm ran live (the
+      // combined result was freshly generated) and only an ALL-arms-
+      // cache-hit with a resolvable map key writes a marker.
+      const armMap = capture.armServing;
+      // Review round (cubic, wave-2): "cache" on an arm cell is the
+      // per-arm AGGREGATE — every sub-query cache-served, none live,
+      // none failed. A --merge arm whose sub-query failed keeps its
+      // cell unset (the wrapper's failed latch), so a later cache-hit
+      // sub-query on that arm can never swing everyArmIsCache back to
+      // all-cache: an incomplete combined result journals FULL.
+      const everyArmIsCache =
+        armMap !== undefined &&
+        armMap.size > 0 &&
+        [...armMap.values()].every((c) => c.servedFrom === "cache");
+      const anyArmObserved =
+        armMap !== undefined && armMap.size > 0;
+      if (!anyArmObserved) return;
+      // NIT 1: no cacheKey → skip (a poison empty-string entry would
+      // fail the validator and blank the whole log on next read).
+      if (capture.cacheKey === undefined) return;
+      // A cache-served fan-out that ALSO saw a live arm is a fresh
+      // generation — journal a FULL entry (the marker rule below would
+      // be wrong: a combined result is not a repeat of any prior).
+      if (everyArmIsCache) {
+        // T2b: warm-cache re-ask → tiny repeat marker when the map
+        // resolves a prior full entry; journal-cold → full entry.
+        const skeleton = buildSkeletonForCapability(capability, meta);
+        if (skeleton === undefined) return;
+        const entry = buildJournalEntry({
+          capability,
+          provider: fanout,
+          query: meta.query,
+          cacheKey: capture.cacheKey,
+          skeleton,
+          now,
+          secrets: resolvedSecrets,
+          ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
+        });
+        await appendJournalEntryMaybeRepeat(
+          artifactsDir,
+          entry,
+          (repeatOf) =>
+            buildJournalRepeatMarker({
+              capability,
+              provider: fanout,
+              repeatOf,
+              // Warm-cache --save: the save hook already stamped the
+              // master's requestId into the shared capture cell — keep
+              // the same-run saveRef cross-link on the marker (PRD AC10).
+              ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
+              now,
+            }),
+        );
+        return;
+      }
+      const skeleton = buildSkeletonForCapability(capability, meta);
+      if (skeleton === undefined) return;
+      const entry = buildJournalEntry({
+        capability,
+        provider: fanout,
+        query: meta.query,
+        cacheKey: capture.cacheKey,
+        skeleton,
+        now,
+        secrets: resolvedSecrets,
+        ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
+      });
+      await appendJournalEntry(artifactsDir, entry);
+      return;
+    }
+    if (capture.servedProvider === undefined) return;
+    // NIT 1: skip rather than poison — an undefined cacheKey cannot
+    // satisfy the validator, and an empty string would blank history.
+    if (capture.cacheKey === undefined) return;
+    const provider: SingleProviderRouting = {
+      mode: "single",
+      effective: capture.servedProvider,
+      // T2b: servedFrom carries the capture's truth — "live" for a
+      // fresh generation, "cache" when the response cache served (the
+      // #108 honesty; the marker/full branch below rides it).
+      servedFrom: capture.servedFrom ?? "live",
+    };
+    // T2b (PRD AC2 Variant B): a cache-served run is a warm re-ask —
+    // write the tiny repeat marker when the cacheKey map resolves a
+    // prior FULL journal entry; journal-cold-but-cache-warm (cleared
+    // journal or pre-journal cache) writes ONE full entry instead.
+    if (capture.servedFrom === "cache") {
+      const skeleton = buildSkeletonForCapability(capability, meta);
+      if (skeleton === undefined) return;
+      const entry = buildJournalEntry({
+        capability,
+        provider,
+        query: meta.query,
+        cacheKey: capture.cacheKey,
+        skeleton,
+        now,
+        secrets: resolvedSecrets,
+        ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
+      });
+      await appendJournalEntryMaybeRepeat(
+        artifactsDir,
+        entry,
+        (repeatOf) =>
+          buildJournalRepeatMarker({
+            capability,
+            provider,
+            repeatOf,
+            // Same-run saveRef cross-link (PRD AC10), single path.
+            ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
+            now,
+          }),
+      );
+      return;
+    }
+    const skeleton = buildSkeletonForCapability(capability, meta);
+    if (skeleton === undefined) return;
+    const entry = buildJournalEntry({
+      capability,
+      provider,
+      query: meta.query,
+      cacheKey: capture.cacheKey,
+      skeleton,
+      now,
+      secrets: resolvedSecrets,
+      ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
+    });
+    await appendJournalEntry(artifactsDir, entry);
   };
 }
 
@@ -4463,6 +5579,14 @@ export interface MainDependencies {
    * falls back to the production function so the seam stays opt-in.
    */
   readonly pruneCaches?: (selectors: PruneSelectors) => Promise<PruneCachesResult>;
+  /**
+   * Review r3 (P1): injectable artifacts-log read for the history
+   * handlers. Production wires the real `readLog`; tests inject a
+   * counting spy. handleHistoryExport memoizes ONE read per invocation
+   * through this seam — the save-entry index and the renderer consume
+   * the same result, so export never rescans the log per row.
+   */
+  readonly readArtifactsLog?: typeof readLog;
 }
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -4649,6 +5773,27 @@ export async function main(
     return 1;
   }
 
+  // History-journal merge T2a — `--no-journal` is command-local (the
+  // --max-chars pattern above): rejected at parse time on every command
+  // outside the three journalable surfaces, so no accept-and-drop hole
+  // exists for a privacy flag. Uses raw argv like the max-chars gate;
+  // help invocations stay exempt (documentation, not a run).
+  if (
+    !isHelpInvocation &&
+    !ACCEPT_NO_JOURNAL_COMMANDS.has(command) &&
+    collectLongFlagValues(rest, "no-journal").length > 0
+  ) {
+    invocation.writeStderr(
+      formatErrorOutput(
+        new CommandOptionUnsupportedError(command, "--no-journal"),
+        outputMode,
+        envSecrets,
+      ),
+    );
+    return 1;
+  }
+  const noJournal = !isHelpInvocation && collectLongFlagValues(rest, "no-journal").length > 0;
+
   // PB-T1/PB-T2 — Quota snapshot store + consumption sink.
   //
   // Constructed once here so `buildHandlerDeps` can close over
@@ -4783,6 +5928,10 @@ export async function main(
     // function from `src/lib/cache.js`; tests inject a double so the
     // dispatcher contract can be exercised without touching disk.
     pruneCaches: dependencies.pruneCaches,
+    // Review r3 (P1): history handlers read the artifacts log through
+    // this seam. Production wires the real readLog; tests inject a
+    // counting spy (export's read-count pin).
+    readArtifactsLog: dependencies.readArtifactsLog,
     // PB-T5: verification records are NOT threaded here. They are
     // derived from `config` AFTER it is loaded (the credentialed
     // path); `buildHandlerDeps` runs once BEFORE config load (the
@@ -5012,6 +6161,18 @@ export async function main(
     } else if (inspection.status === "absent") {
       config = { version: 1, providers: {} };
     } else {
+      // Review round (cubic, wave-2): readConfig's default onWarning
+      // prints these to stderr, but the production inspectConfig path
+      // silently DROPPED them — a malformed non-boolean `journal` then
+      // enabled journaling with no user-visible notice. Forward one
+      // concise stderr line per warning through the same advisory
+      // channel the env-only hint uses (stdout stays data-only). The
+      // injected loadScoutlineConfig path returns a bare config with
+      // no warnings, so this loop is production-only by construction.
+      for (const warning of inspection.warnings) {
+        invocation.writeStderr(`⚠️  config: ${warning.message}
+`);
+      }
       config = inspection.config;
     }
   }
@@ -5203,18 +6364,67 @@ export async function main(
   // flow ONLY into handler execution; quota refresh and every other
   // consumer keep the original list. Without a save this is the identical
   // deps object and the whole path is byte-identical to pre-T4.
+  //
+  // History-journal merge T2a: the journal wiring builds FIRST when this
+  // run will journal (journalable command + not help + journaling on —
+  // the always-on posture, ADR-0008), so its capture-wrapped descriptors
+  // underpin BOTH hooks: a save on a journaling run wraps the ALREADY
+  // wrapped descriptors and shares the journal capture cell (the saveRef
+  // cross-link). A save without journaling keeps the exact pre-T2a wiring.
+  // History-journal merge T2a: journaling fires on the journalable
+  // commands (search/read/research) unless switched off — per-call
+  // `--no-journal` or config `"journal": false` (absent/unset = ON,
+  // the inverted fanout idiom). The capture cell is shared with any
+  // same-run save wiring below.
+  const journalCapture: ServingCapture | undefined =
+    !isHelpInvocation &&
+    ACCEPT_NO_JOURNAL_COMMANDS.has(command) &&
+    !noJournal &&
+    (config as { journal?: unknown }).journal !== false
+      ? {}
+      : undefined;
+  const journalingDescriptors =
+    journalCapture === undefined
+      ? providerDescriptors
+      : captureServingDescriptors(providerDescriptors, journalCapture);
+  const journalWiring =
+    journalCapture === undefined
+      ? undefined
+      : { capability: command as JournalableCapability, capture: journalCapture };
   const saveWiring =
     saveRequest === undefined || isHelpInvocation
       ? undefined
-      : buildSaveWiring(saveRequest, providerDescriptors);
+      : buildSaveWiring(saveRequest, journalingDescriptors, journalCapture);
   const handlerDepsWithSave: HandlerDependencies =
-    saveWiring === undefined
-      ? handlerDepsWithSelection
-      : {
-          ...handlerDepsWithSelection,
-          providerDescriptors: saveWiring.descriptors,
-          save: saveWiring.input,
-        };
+    saveWiring === undefined && journalWiring === undefined
+      ? command === "batch" &&
+          !isHelpInvocation &&
+          (config as { journal?: unknown }).journal !== false
+        ? // T2a must-fix 1: the batch noun journals PER-OP — the runner
+          // wraps the descriptors around each op's OWN capture cell and
+          // builds the op's journal input from its own command. The
+          // unwrapped descriptors flow through here deliberately.
+        {
+            ...handlerDepsWithSelection,
+            journalBatchEnabled: true,
+          }
+        : handlerDepsWithSelection
+      : saveWiring === undefined
+        ? {
+            ...handlerDepsWithSelection,
+            providerDescriptors: journalingDescriptors,
+            journal: journalWiring,
+          }
+        : {
+            ...handlerDepsWithSelection,
+            providerDescriptors: saveWiring.descriptors,
+            save: saveWiring.input,
+            // A save on a journaling run shares the journal's capture
+            // cell (the descriptors are already journal-wrapped, and
+            // buildSaveWiring wraps them AGAIN around the same cell) —
+            // one cell, both hooks, the saveRef cross-link works.
+            ...(journalWiring === undefined ? {} : { journal: journalWiring }),
+          };
   let exitCode: number;
   let commandRecognized = false;
   try {
@@ -5249,7 +6459,10 @@ export async function main(
         break;
       case "batch":
         commandRecognized = true;
-        exitCode = await handleBatch(commandArgs, outputMode, handlerDepsWithSelection);
+        // T2a must-fix 1: batch rides handlerDepsWithSave so the
+        // journalBatchEnabled switch flows into the runner (no save
+        // wiring exists for batch — the flag is the only extra field).
+        exitCode = await handleBatch(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "tools":
         commandRecognized = true;

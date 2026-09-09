@@ -14,6 +14,8 @@
  *     `AuthError`/`ApiError`/`NetworkError`.
  *   - Credit-cost disclosure before any paid-provider probe.
  *   - Fallback preference question.
+ *   - Journaling disclosure confirm (history-journal merge T7, PRD
+ *     AC9 / ADR-0008): default enabled, writes top-level `"journal"`.
  *   - Atomic config write (T1 `writeConfig` primitive) + redacted summary.
  *
  * T3b additions:
@@ -84,8 +86,8 @@ The wizard walks you through recording API keys in
   - ABSENT (no config yet): the fresh-onboarding flow runs.
   - VALID + ALREADY-ONBOARDED: a re-config menu runs (edit a key,
     add a Provider, remove a Provider, change the fallback
-    preference, edit the routing table, re-run the full wizard, or
-    cancel). Editing a key
+    preference, change journaling, edit the routing table, re-run
+    the full wizard, or cancel). Editing a key
     resets that Provider's verification to "unverified".
   - VALID + EMPTY: the fresh-onboarding flow runs.
   - CORRUPT: the wizard offers to back up the live file and rewrite
@@ -107,6 +109,11 @@ The fresh flow:
     or network (offer save-unverified). No false-precise subtypes.
   - asks the fallback preference (route automatically when the
     selected provider is unavailable)
+  - asks the journaling preference (keep a local research journal of
+    search/read/research skeletons — queries + result identity only,
+    local file 0600, never uploaded; default yes. Journaling changes
+    no provider-call volume: savings come from using
+    \`history recall\` instead of re-running searches)
   - writes ~/.scoutline/config.json atomically with mode 0600
 
 Non-interactive terminals: init refuses before any prompt and exits.
@@ -673,12 +680,27 @@ async function runFreshFlow(deps: InitDependencies): Promise<number> {
     return 1;
   }
 
+  // Step 2b — journaling disclosure (PRD AC9 / ADR-0008): the ONE-TIME
+  // confirm, default enabled. The copy is honest about what changes
+  // provider-call volume (nothing — the cache does that alone; savings
+  // come from using `history recall` instead of re-running searches).
+  let journalEnabled = true;
+  try {
+    journalEnabled = await deps.prompts.confirm(
+      "Keep a local research journal (search/read/research queries + result identities; stored locally, never uploaded)? [Y/n]",
+      true,
+    );
+  } catch {
+    // Cancel on the journal prompt is still a cancel.
+    return 1;
+  }
+
   // Step 3 — atomic write (T1 primitive). Build the final config and
   // commit. No partial writes ever reach disk: `writeConfig` either
   // replaces the live file atomically or leaves it untouched. The
   // `hintShown` field is deliberately OMITTED from buildConfig so the
   // written file does not carry the marker — a fresh write clears it.
-  const config: ScoutlineConfig = buildConfig(onboardings, fallbackEnabled);
+  const config: ScoutlineConfig = buildConfig(onboardings, fallbackEnabled, journalEnabled);
   try {
     await deps.configStore.write(config);
   } catch (error) {
@@ -690,7 +712,7 @@ async function runFreshFlow(deps: InitDependencies): Promise<number> {
   // Step 4 — redacted summary on stdout (data-only contract). The
   // summary line is the ONLY write to stdout in the wizard; it lists
   // provider ids and their verification status, never the keys.
-  deps.writeStdout(`${formatSummary(onboardings, fallbackEnabled)}\n`);
+  deps.writeStdout(`${formatSummary(onboardings, fallbackEnabled, journalEnabled)}\n`);
   return 0;
 }
 
@@ -826,6 +848,7 @@ type ReconfigChoice =
   | "add-provider"
   | "remove-provider"
   | "change-fallback"
+  | "change-journal"
   | "edit-routing"
   | "rerun-full"
   | "cancel";
@@ -946,6 +969,11 @@ async function promptReconfigAction(
     description: "Toggle the Provider-fallback flag (currently consulted at runtime)",
   });
   choices.push({
+    value: "change-journal",
+    name: "Change journaling",
+    description: "Toggle always-on research journaling (search/read/research skeletons)",
+  });
+  choices.push({
     value: "edit-routing",
     name: "Edit routing table",
     description: "Set per-capability provider preferences (search: tavily,brave)",
@@ -983,6 +1011,9 @@ async function applyReconfigAction(
   if (action === "change-fallback") {
     return changeFallback(deps, config);
   }
+  if (action === "change-journal") {
+    return changeJournal(deps, config);
+  }
   if (action === "edit-routing") {
     return editRouting(deps, config);
   }
@@ -1016,6 +1047,35 @@ async function changeFallback(
       fallbackEnabled: next,
       // hintShown is intentionally preserved (re-config does not reset it;
       // only a fresh-write or re-init does).
+      ...(config.hintShown !== undefined ? { hintShown: config.hintShown } : {}),
+    };
+    return persistConfig(deps, updated);
+  } catch {
+    return "loop";
+  }
+}
+
+/**
+ * Toggle journaling (history-journal merge T7 / ADR-0008): confirm with
+ * the CURRENT effective value as default (absent = enabled, the
+ * always-on posture), persist top-level `journal`.
+ */
+async function changeJournal(
+  deps: InitDependencies,
+  config: ScoutlineConfig,
+): Promise<"written" | "loop" | "cancel" | "write-error"> {
+  const current = config.journal ?? true;
+  try {
+    const next = await deps.prompts.confirm(
+      `Keep a local research journal (search/read/research queries + result identities; stored locally, never uploaded)? [${
+        current ? "Y/n" : "y/N"
+      }]`,
+      current,
+    );
+    const updated: ScoutlineConfig = {
+      ...config,
+      providers: { ...config.providers },
+      journal: next,
       ...(config.hintShown !== undefined ? { hintShown: config.hintShown } : {}),
     };
     return persistConfig(deps, updated);
@@ -1621,6 +1681,7 @@ async function validateAndCollect(
 function buildConfig(
   onboardings: readonly ProviderOnboarding[],
   fallbackEnabled: boolean,
+  journalEnabled: boolean,
 ): ScoutlineConfig {
   const providers: Partial<Record<ProviderId, ProviderConfig>> = {};
   for (const onboarding of onboardings) {
@@ -1633,6 +1694,10 @@ function buildConfig(
   return {
     version: 1,
     fallbackEnabled,
+    // PRD AC9: the choice writes top-level "journal" (the `fanout`
+    // idiom). Always written by the wizard — including explicit false
+    // — so the on-disk record matches what was confirmed.
+    journal: journalEnabled,
     providers,
   };
 }
@@ -1645,11 +1710,14 @@ function buildConfig(
 function formatSummary(
   onboardings: readonly ProviderOnboarding[],
   fallbackEnabled: boolean,
+  journalEnabled: boolean,
 ): string {
   if (onboardings.length === 0) {
     return (
       "scoutline onboarding complete with no providers configured. " +
-      "Re-run `scoutline init` to add one."
+      `Re-run \`scoutline init\` to add one. (journal=${
+        journalEnabled ? "true" : "false"
+      })`
     );
   }
   const lines = onboardings.map((onboarding) => {
@@ -1658,6 +1726,7 @@ function formatSummary(
     return `${meta.label} (${onboarding.providerId}): ${status}`;
   });
   lines.push(`fallbackEnabled=${fallbackEnabled ? "true" : "false"}`);
+  lines.push(`journal=${journalEnabled ? "true" : "false"}`);
   lines.push("Wrote ~/.scoutline/config.json (mode 0600).");
   return lines.join("\n");
 }

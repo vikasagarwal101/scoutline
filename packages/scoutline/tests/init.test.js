@@ -417,6 +417,8 @@ describe("init fresh-onboarding happy path: multi-provider, atomic write", () =>
       script.queuePassword("tvly-secret");
       // Fallback preference: default Yes.
       script.queueConfirm(true);
+      // Journal prompt: default Yes (T7).
+      script.queueConfirm(true);
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -445,6 +447,7 @@ describe("init fresh-onboarding happy path: multi-provider, atomic write", () =>
       assert.deepStrictEqual(written, {
         version: 1,
         fallbackEnabled: true,
+        journal: true,
         providers: {
           zai: {
             apiKey: "zai-secret",
@@ -484,6 +487,8 @@ describe("init fresh-onboarding happy path: multi-provider, atomic write", () =>
       script.queuePassword("candidate-secret");
 
       // Single fallback confirm.
+      script.queueConfirm(true);
+      // Journal prompt (T7).
       script.queueConfirm(true);
 
       const realStore = await import("../dist/lib/config-store.js");
@@ -549,6 +554,7 @@ describe("init validation classification: honest broad taxonomy", () => {
       // After auth failure: re-prompt with another password.
       script.queuePassword("correct-secret");
       script.queueConfirm(true); // fallback
+      script.queueConfirm(true); // journal (T7)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -601,6 +607,7 @@ describe("init validation classification: honest broad taxonomy", () => {
       // Network-error → offer save-unverified (default Yes).
       script.queueConfirm(true);
       script.queueConfirm(true); // fallback
+      script.queueConfirm(true); // journal (T7)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -647,6 +654,7 @@ describe("init validation classification: honest broad taxonomy", () => {
       script.queuePassword("tvly-maybe-good");
       script.queueConfirm(false); // decline save-unverified
       script.queueConfirm(true); // fallback default
+      script.queueConfirm(true); // journal (T7)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -742,6 +750,7 @@ describe("init credit-cost disclosure: shown before paid probes, absent for free
       script.queueConfirm(true);
       script.queuePassword("tvly-key");
       script.queueConfirm(true);
+      script.queueConfirm(true); // journal (T7)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -777,6 +786,7 @@ describe("init credit-cost disclosure: shown before paid probes, absent for free
       script.queueConfirm(true);
       script.queuePassword("zai-key");
       script.queueConfirm(true);
+      script.queueConfirm(true); // journal (T7)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -929,6 +939,7 @@ describe("init zero-provider confirmation: default No returns to checklist", () 
       script.queueConfirm(true);
       script.queuePassword("zai-key");
       script.queueConfirm(true);
+      script.queueConfirm(true); // journal (T7)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -966,6 +977,9 @@ describe("init zero-provider confirmation: default No returns to checklist", () 
       // preference so the user's preference is captured even with no
       // providers configured.
       script.queueConfirm(false);
+      // Journal prompt (T7) — decline so the minimal write pins
+      // journal:false (the confirm is honored, not ignored).
+      script.queueConfirm(false);
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -989,6 +1003,7 @@ describe("init zero-provider confirmation: default No returns to checklist", () 
       assert.deepStrictEqual(written, {
         version: 1,
         fallbackEnabled: false,
+        journal: false,
         providers: {},
       });
       assert.match(stdoutChunks[0], /no providers configured/i);
@@ -1017,6 +1032,7 @@ describe("init registration link: hyperlink + literal URL both rendered", () => 
       script.queueConfirm(false);
       // Fallback still asked.
       script.queueConfirm(true);
+      script.queueConfirm(true); // journal (T7)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -1064,6 +1080,7 @@ describe("init env-key import: candidate offered when ambient env has a key", ()
       script.queueConfirm(true);
       // Fallback.
       script.queueConfirm(true);
+      script.queueConfirm(true); // journal (T7)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -1119,6 +1136,7 @@ describe("init env-key import: candidate offered when ambient env has a key", ()
       script.queueConfirm(true);
       script.queuePassword("manual-key");
       script.queueConfirm(true);
+      script.queueConfirm(true); // journal (T7)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -1451,6 +1469,114 @@ describe("init re-config: change-fallback persists the new preference", () => {
 });
 
 // ---------------------------------------------------------------------------
+// T7 — Journal disclosure prompt (PRD AC9 / ADR-0008)
+// ---------------------------------------------------------------------------
+
+describe("init journal prompt (T7): one-time disclosure, default enabled", () => {
+  function minimalFreshScript(script) {
+    script.queueCheckbox(["zai"]);
+    script.queueConfirm(true); // has key
+    script.queuePassword("zai-key");
+    script.queueConfirm(true); // fallback
+    return script;
+  }
+
+  function realStoreAdapter(filePath) {
+    const realStorePromise = import("../dist/lib/config-store.js");
+    return {
+      async inspect() {
+        const realStore = await realStorePromise;
+        return realStore.inspectConfig({ filePath });
+      },
+      async write(config, options) {
+        const realStore = await realStorePromise;
+        await realStore.writeConfig(config, { filePath, ...options });
+      },
+    };
+  }
+
+  it("default Yes writes top-level journal:true; summary line surfaces it", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const zai = makeFakeDescriptor({ id: "zai", behaviour: "resolve" });
+      const script = minimalFreshScript(createScriptedPrompts());
+      script.queueConfirm(true); // journal: keep (default Yes)
+
+      const { deps, stdoutChunks } = createInitDeps({
+        descriptors: [zai.descriptor],
+        prompts: script.prompts,
+        configStore: realStoreAdapter(filePath),
+      });
+      const status = await handleInitWithHelp([], deps);
+      assert.strictEqual(status, 0);
+      const written = JSON.parse(await fs.readFile(filePath, "utf8"));
+      assert.strictEqual(written.journal, true);
+      // The disclosure was a journal confirm (wizard-visible contract).
+      const confirmMessages = script.calls.confirm.map((c) => c.message).join("\n");
+      assert.match(confirmMessages, /journal/i);
+      assert.match(stdoutChunks[0], /journal=true/);
+    });
+  });
+
+  it("declining writes journal:false (the privacy off-switch honored at disclosure time)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const zai = makeFakeDescriptor({ id: "zai", behaviour: "resolve" });
+      const script = minimalFreshScript(createScriptedPrompts());
+      script.queueConfirm(false); // journal: no
+
+      const { deps } = createInitDeps({
+        descriptors: [zai.descriptor],
+        prompts: script.prompts,
+        configStore: realStoreAdapter(filePath),
+      });
+      const status = await handleInitWithHelp([], deps);
+      assert.strictEqual(status, 0);
+      const written = JSON.parse(await fs.readFile(filePath, "utf8"));
+      assert.strictEqual(written.journal, false);
+    });
+  });
+
+  it("cancel on the journal prompt writes nothing (exit 1)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const zai = makeFakeDescriptor({ id: "zai", behaviour: "resolve" });
+      const script = minimalFreshScript(createScriptedPrompts());
+      script.queueConfirmCancel(); // journal prompt: Ctrl+C
+
+      const { deps } = createInitDeps({
+        descriptors: [zai.descriptor],
+        prompts: script.prompts,
+        configStore: realStoreAdapter(filePath),
+      });
+      const status = await handleInitWithHelp([], deps);
+      assert.strictEqual(status, 1);
+      await assert.rejects(fs.readFile(filePath, "utf8"));
+    });
+  });
+
+  it("re-config 'Change journaling' toggles an existing config (absent = default Yes)", async () => {
+    const initial = { version: 1, providers: { zai: { apiKey: "key" } } };
+    const store = createFakeConfigStore({ initial });
+    const script = createScriptedPrompts();
+    script.queueSelect("change-journal");
+    script.queueConfirm(false); // journal: no
+    script.queueSelect("cancel");
+
+    const { deps } = createInitDeps({
+      descriptors: [],
+      prompts: script.prompts,
+      configStore: store,
+    });
+    const status = await handleInitWithHelp([], deps);
+    assert.strictEqual(status, 0);
+    const writes = store.getWrites();
+    assert.strictEqual(writes.length, 1);
+    assert.strictEqual(writes[0].config.journal, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // T3b — Re-config menu: remove-provider
 // ---------------------------------------------------------------------------
 
@@ -1543,6 +1669,7 @@ describe("init corrupt-config repair: backup + rewrite (T3b)", () => {
       script.queueConfirm(true);
       script.queuePassword("fresh-key");
       script.queueConfirm(true);
+      script.queueConfirm(true); // journal (T7)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -1599,6 +1726,7 @@ describe("init env-import: stale-env-after-import warning (T3b edge case)", () =
       // Accept env import.
       script.queueConfirm(true);
       script.queueConfirm(true); // fallback
+      script.queueConfirm(true); // journal (T7)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {

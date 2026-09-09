@@ -25,6 +25,7 @@
 - **Research** — Asynchronous deep research with cited sources
 - **Vision** — Analyze images, screenshots, diagrams, charts, and videos
 - **Repo** — Search and read GitHub repository code
+- **Research journal** — Always-on local memory of every `search`/`read`/`research` call: thin skeletons (query, provider, url+title identity, content hash) recorded to `~/.scoutline/artifacts/` and re-found offline via `history recall`; opt out per call (`--no-journal`) or globally (`journal: false`)
 - **Tools** — MCP tool discovery, schemas, and raw calls
 - **Code Mode** — TypeScript tool chaining for agent automation
 - **Provider selection** — Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, or Spider.cloud
@@ -313,6 +314,23 @@ manifest, `{filename}`/`{filepath}` prompt substitution, sanitized per-input
 result files plus `summary.json` under `--out` (required for more than one
 input; the directory is created if missing), and distribution across
 eligible vision providers (`--concurrency` default 1).
+
+### Research Journal (always-on, local-only)
+
+Every `search`, `read`, and `research` call — batch-driven ops included — appends a thin **journal entry** to the same artifact store as `--save`: query, provider, timestamp, a content hash, and the **skeleton** of the result (search: url+title list; read: url+title; research: citations). Bodies are never recorded — they live in the 24h response cache or in an explicit `--save` artifact — and a warm repeat (cache hit) appends only a tiny **repeat marker** — unless the journal holds no prior full entry under that cache key (journal-cold, e.g. after `history clear`), in which case the hit records a full entry instead. Entries are self-contained forever: `cache clear` never touches them, and nothing is ever re-fetched. Journaling changes no provider-call volume; the savings come from using `history recall` instead of re-running searches.
+
+```bash
+scoutline history recall "rust async"              # offline re-find over recorded skeletons
+scoutline history recall "rust" --capability search --limit 5
+scoutline history recall "state of ai" --as-of 2026-08-01   # what the journal knew then
+scoutline history note --capability search "decided on tavily for finance"  # explicit entry
+scoutline history export                            # markdown dossier, provenance-cited
+scoutline history list --kind journal               # journal entries only; --repeats shows markers
+scoutline history clear                             # clears journal entries only
+scoutline history clear --all                       # also wipes --save artifacts + masters
+```
+
+**Privacy**: the journal is local-only (`~/.scoutline/artifacts/` — the directory is created 0700 and the files inside 0600, never uploaded), and query text passes the configured-secrets redaction seam before it is written. Disclosure is one prompt in `scoutline init` (default: enabled, writing `"journal": true`); users who never run init get the enabled default too. Escape hatches: `--no-journal` on any single `search`/`read`/`research` call (rejected as `UNSUPPORTED_OPTION` everywhere else), or `config set journal false` / the init re-config menu to switch it off entirely.
 
 ### Capability Matrix
 

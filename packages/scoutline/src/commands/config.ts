@@ -91,6 +91,7 @@ function valueAtPath(config: ScoutlineConfig, path: string): unknown {
   if (trimmed.startsWith("routing.")) return config.routing?.[trimmed.slice("routing.".length)];
   if (trimmed === "fallbackEnabled") return config.fallbackEnabled;
   if (trimmed === "fanout") return config.fanout;
+  if (trimmed === "journal") return config.journal;
   const providerMatch = /^providers\.([a-z0-9-]+)(?:\.[A-Za-z0-9-]+)*$/.exec(trimmed);
   if (providerMatch?.[1]) return config.providers[providerMatch[1] as keyof typeof config.providers];
   return undefined;
@@ -130,7 +131,7 @@ export async function configGetCommand(
       ? unknownConfigKeyError(path)
       : new ValidationError(
           `Unknown config key "${path}".`,
-          'Valid keys: routing, routing.<capability>, fallbackEnabled, fanout, providers.<id>. Run "scoutline config --help".',
+          'Valid keys: routing, routing.<capability>, fallbackEnabled, fanout, journal, providers.<id>. Run "scoutline config --help".',
         );
   }
   const raw = valueAtPath(config, path);
@@ -207,6 +208,12 @@ Keys:
                              or the routing.search subset when routed).
                              Remove the standing switch with
                              \`scoutline config unset fanout\`.
+  journal                     true|false — the always-on research journaling
+                             switch (default true: every search/read/research
+                             call records a local skeleton entry). Set false
+                             to stop journaling entirely; remove the explicit
+                             switch (back to default-on) with
+                             \`scoutline config unset journal\`.
   providers.<id>              Provider configuration (view only; credential
                              values are always masked).
 
@@ -219,8 +226,8 @@ Behaviour:
         provider's environment variable (API keys never belong in command
         arguments).
   unset Removes a routing capability (and the table when the last entry
-        goes), the whole routing table, the fallbackEnabled switch, or
-        the fanout switch.
+        goes), the whole routing table, the fallbackEnabled switch, the
+        fanout switch, or the journal switch.
 
 Routing semantics: when no --provider / SCOUTLINE_PROVIDER pin exists,
 the routed list orders provider selection for that capability — the
@@ -238,6 +245,7 @@ Examples:
   scoutline config set routing.search tavily,brave
   scoutline config set fallbackEnabled false
   scoutline config set fanout true
+  scoutline config set journal false
   scoutline config unset routing.search
   scoutline config unset fanout
   scoutline config --help

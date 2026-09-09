@@ -472,6 +472,30 @@ describe("configuredSecrets — credential discovery from environment", () => {
     assert.ok(!secrets.includes(E_KEY));
   });
 
+  it("surfaces the v3 provider credentials (LINKUP/SPIDER/YDC/YOU) — review batch 1", () => {
+    const LINKUP = "lk-live-v3-a1";
+    const SPIDER = "sp-live-v3-b2";
+    const YDC = "yd-live-v3-c3";
+    const YOU = "yo-live-v3-d4";
+    const secrets = configuredSecrets({
+      LINKUP_API_KEY: LINKUP,
+      SPIDER_API_KEY: SPIDER,
+      YDC_API_KEY: YDC,
+      YOU_API_KEY: YOU,
+    });
+    for (const [name, value] of [
+      ["LINKUP_API_KEY", LINKUP],
+      ["SPIDER_API_KEY", SPIDER],
+      ["YDC_API_KEY", YDC],
+      ["YOU_API_KEY", YOU],
+    ]) {
+      assert.ok(
+        secrets.includes(value),
+        `configuredSecrets must include the ${name} value so it is redacted at every outward boundary`,
+      );
+    }
+  });
+
   it("redacts an EXA_API_KEY leaked into an error message via redactCredentialString", () => {
     const leaked = `Exa request failed: EXA_API_KEY=${E_KEY}`;
     const redacted = redactCredentialString(leaked);

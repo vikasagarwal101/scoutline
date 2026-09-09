@@ -216,11 +216,14 @@ function buildExtractEnvelope(
 // ---------------------------------------------------------------------------
 
 /**
- * Content-read ladder: url/title/headings never cut (by omission — no
- * rule touches them); the LAST paragraphs trim first (highest
- * paragraph index = cheapest loss); the BOTTOM sections drop late.
- * `content` is markdown prose — sections are `#{1,6}` heading blocks;
- * within a surviving section the trim walks paragraphs from the end.
+ * Content-read ladder: url/title never cut (envelope fields — no rule
+ * touches them); headings are never cut MID-VALUE (no rule rewrites a
+ * heading line), but the drop rule removes whole trailing sections —
+ * headings included — at crush budgets. The LAST paragraphs trim
+ * first (highest paragraph index = cheapest loss); the BOTTOM
+ * sections drop late. `content` is markdown prose — sections are
+ * `#{1,6}` heading blocks; within a surviving section the trim walks
+ * paragraphs from the end.
  */
 const trimLastParagraphsRule: LadderRule = {
   name: "trim-last-paragraphs",
@@ -234,8 +237,9 @@ const trimLastParagraphsRule: LadderRule = {
     // so the fixpoint bleeds every body before drop-bottom-sections
     // destroys whole trailing sections. Heading LINES are never trim
     // candidates (fix-round B): /^#{1,6}\s/ lines are skipped even
-    // when a heading is the document's last line — "headings never
-    // cut" holds at every budget.
+    // when a heading is the document's last line — no heading is ever
+    // cut mid-value (the DROP rule can still remove a heading together
+    // with its whole section at crush budgets).
     // Fix-round R2: fence-aware trim — never touch fenced code lines
     // (rewriting ```ts to …```typ corrupts the fence) and never trim
     // heading lines: ATX (incl. up to 3 leading spaces), Setext
@@ -648,10 +652,13 @@ Options:
   --keep-img-data-url  Keep image data URLs in output
   --timeout <s>   Request timeout in seconds (default: 20)
   --max-chars <n> Fit the whole printed output in ~<n> chars (later
-                     paragraphs trim, bottom sections drop; url/title/headings
-                     never cut; extract reads trim field values only; full
-                     untrimmed page saved to the artifacts store — recover
-                     via "scoutline history show")
+                     paragraphs trim, bottom sections drop; url/title never
+                     cut; headings are never cut mid-value but whole
+                     sections (heading included) can drop at crush budgets;
+                     extract reads trim field values only; when the budget
+                     fires, the full untrimmed page is saved to the
+                     artifacts store — recover via
+                     "scoutline history show")
   (byte-exact PDF/raw retrieval: see "scoutline fetch --help")
   --full-envelope Silently accepted and ignored. The envelope is always
                   returned at schema-version-1 (deprecation: D3).

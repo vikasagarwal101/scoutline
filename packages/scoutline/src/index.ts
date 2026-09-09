@@ -260,6 +260,8 @@ Commands:
            snapshot ring + change log, credential-free)
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
   init     Interactive onboarding wizard (writes ~/.scoutline/config.json)
+  config   Manage ~/.scoutline/config.json keys (get / set / unset,
+           credential-free)
 
 Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER, then zai):
   --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>   Select the active Provider for shared capabilities  SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
@@ -431,12 +433,12 @@ const SAVE_CAPABLE_COMMANDS: ReadonlySet<string> = new Set([
 
 /**
  * ADR-0007 D5 — every command the dispatcher routes (below): the
- * exhaustive 21-command surface. Exported so the rejection-matrix test
+ * exhaustive 22-command surface. Exported so the rejection-matrix test
  * derives its enumeration from the dispatcher's own partition instead
  * of a hand-maintained list that drifts when a command is added — a
  * future command without a ladder or a rejection row fails the
- * enumeration pin by omission. (`config` is dispatched but absent from
- * MAIN_HELP's Commands list — the audit's omission catch.)
+ * enumeration pin by omission. (tests/help-surface.test.js pins the
+ * reverse direction: every entry carries a MAIN_HELP Commands row.)
  */
 export const DISPATCHED_COMMANDS: ReadonlySet<string> = new Set([
   "vision",

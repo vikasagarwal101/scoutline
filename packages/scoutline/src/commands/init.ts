@@ -687,7 +687,7 @@ async function runFreshFlow(deps: InitDependencies): Promise<number> {
   let journalEnabled = true;
   try {
     journalEnabled = await deps.prompts.confirm(
-      "Keep a local research journal? [Y/n]",
+      "Keep a local research journal (search/read/research queries + result identities; stored locally, never uploaded)? [Y/n]",
       true,
     );
   } catch {
@@ -1067,7 +1067,7 @@ async function changeJournal(
   const current = config.journal ?? true;
   try {
     const next = await deps.prompts.confirm(
-      `Keep a local research journal (search/read/research skeletons)? [${
+      `Keep a local research journal (search/read/research queries + result identities; stored locally, never uploaded)? [${
         current ? "Y/n" : "y/N"
       }]`,
       current,

@@ -94,7 +94,20 @@ export interface RoutingConfigWarning {
   readonly message: string;
 }
 
-export type AnyConfigWarning = ConfigWarning | RoutingConfigWarning;
+/**
+ * Malformed top-level field warning: a non-boolean `journal` value in
+ * config.json. Warn-and-drop like UNKNOWN_PROVIDER — never a load
+ * failure (journaling falls back to the enabled default).
+ */
+export interface MalformedJournalWarning {
+  readonly code: "MALFORMED_JOURNAL";
+  readonly message: string;
+}
+
+export type AnyConfigWarning =
+  | ConfigWarning
+  | RoutingConfigWarning
+  | MalformedJournalWarning;
 
 export type ConfigInspection =
   | { readonly status: "absent"; readonly filePath: string }
@@ -216,19 +229,24 @@ function parseConfig(contents: string): ParsedConfig {
   ) {
     throw corruptConfig();
   }
+  const providers: Partial<Record<ProviderId, ProviderConfig>> = {};
+  const warnings: AnyConfigWarning[] = [];
+
   // Review r3: `journal` loads LENIENTLY (the documented "non-boolean
-  // never fails config load" contract): a malformed value is IGNORED —
-  // field dropped, journaling falls back to the enabled default — the
-  // same posture as the lenient `providers` entries. A whole-file
-  // corruption throw here would lock a user out of every command over
-  // a one-field typo.
+  // never fails config load" contract): a malformed value is dropped
+  // with a MALFORMED_JOURNAL warning — journaling falls back to the
+  // enabled default, the same posture as the lenient `providers`
+  // entries. A whole-file corruption throw here would lock a user out
+  // of every command over a one-field typo.
   let journal: boolean | undefined;
   if (typeof parsed.journal === "boolean") {
     journal = parsed.journal;
+  } else if (parsed.journal !== undefined) {
+    warnings.push({
+      code: "MALFORMED_JOURNAL",
+      message: `Ignoring non-boolean "journal" in config.json; journaling stays enabled.`,
+    });
   }
-
-  const providers: Partial<Record<ProviderId, ProviderConfig>> = {};
-  const warnings: AnyConfigWarning[] = [];
   for (const [providerId, value] of Object.entries(parsed.providers ?? {})) {
     if (!(PROVIDER_IDS as readonly string[]).includes(providerId)) {
       warnings.push({

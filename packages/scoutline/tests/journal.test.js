@@ -52,7 +52,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { main, DISPATCHED_COMMANDS, ACCEPT_NO_JOURNAL_COMMANDS } from "../dist/index.js";
+import {
+  main,
+  DISPATCHED_COMMANDS,
+  ACCEPT_NO_JOURNAL_COMMANDS,
+  captureServingDescriptorsForOp,
+} from "../dist/index.js";
 import { createInMemoryResponseCache, hermeticMainDeps } from "./helpers/hermetic-main.js";
 import {
   appendJournalEntry,
@@ -155,10 +160,7 @@ describe("T2b unit pins: repeat-marker validation + cacheKey map", () => {
       });
       const { log, notice } = await readLog(artifactsDir);
       assert.strictEqual(log.entries.length, 0, "smuggled marker dropped");
-      assert.ok(
-        notice !== undefined && notice.length > 0,
-        "corruption notice surfaced",
-      );
+      assert.ok(notice !== undefined && notice.length > 0, "corruption notice surfaced");
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
     }
@@ -385,7 +387,7 @@ describe("PR #111 cluster C: requestId collision remint under the log lock", () 
     }
   });
 
-  it("appendJournalEntryMaybeRepeat: cache-cold full entry colliding with a seeded id → reminted full entry; marker branch NEVER remints (markers carry no requestId)", async () => {
+  it("appendJournalEntryMaybeRepeat: MATCHING cacheKey → marker branch fires; markers carry no requestId, so the remint check never disturbs marker writes", async () => {
     const dir = makeTempDir("scoutline-journal-collision-mr-");
     try {
       const seeded = {
@@ -422,6 +424,59 @@ describe("PR #111 cluster C: requestId collision remint under the log lock", () 
       );
       assert.strictEqual(marker.repeatOf, COLLIDING_ID);
       assert.strictEqual(marker.requestId, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("appendJournalEntryMaybeRepeat: NON-matching cacheKey → FULL-entry branch, colliding requestId remints under the lock (no marker written)", async () => {
+    const dir = makeTempDir("scoutline-journal-collision-mr-full-");
+    try {
+      const seeded = {
+        kind: "journal",
+        requestId: COLLIDING_ID,
+        timestamp: 1,
+        capability: "search",
+        provider: { mode: "single", effective: "zai", servedFrom: "live" },
+        query: "first entry",
+        contentHash: "b".repeat(64),
+        cacheKey: "key-first",
+        skeleton: { results: [] },
+      };
+      // DIFFERENT cacheKey than the seed → journal-cold → the full-entry
+      // branch fires, and the colliding requestId remints before append.
+      const fullSource = collidingFullEntry({ cacheKey: "key-other" });
+      await seedLog(dir, [seeded]);
+      await appendJournalEntryMaybeRepeat(dir, fullSource, (repeatOf) =>
+        buildJournalRepeatMarker({
+          capability: "search",
+          provider: { mode: "single", effective: "zai", servedFrom: "cache" },
+          repeatOf,
+          now: () => 2,
+        }),
+      );
+      const { log, notice } = await readLog(dir);
+      assert.strictEqual(log.entries.length, 2);
+      assert.strictEqual(notice, undefined, "remint is a normal append, not a corruption reset");
+      const [first, second] = log.entries;
+      assert.strictEqual(
+        first.requestId,
+        COLLIDING_ID,
+        "seeded entry byte-untouched (append-only)",
+      );
+      assert.notStrictEqual(
+        second.requestId,
+        COLLIDING_ID,
+        "full-entry branch reminted the collision",
+      );
+      assert.ok(second.requestId.startsWith("20260909T120000Z-"), "timestamp prefix preserved");
+      assert.match(second.requestId, /^20260909T120000Z-[0-9a-f]{4}$/, "tail is 4 lowercase hex");
+      assert.strictEqual(
+        second.repeatOf,
+        undefined,
+        "no marker written — full entry on the cold key",
+      );
+      assert.strictEqual(second.cacheKey, "key-other", "appended entry keeps its own cacheKey");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -616,6 +671,55 @@ describe("T2a: always-on search journaling (main-driven)", () => {
     }
   });
 
+  it("malformed non-boolean config `journal` → MALFORMED_JOURNAL warning reaches stderr on the PRODUCTION inspectConfig path; journaling stays enabled (wave-2 config warning forwarding)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-malformed-");
+    const configDir = makeTempDir("scoutline-journal-malformed-cfg-");
+    const log = [];
+    const { adapter, stderr } = makeAdapter();
+    try {
+      // Real config substrate: main() must run the production
+      // inspectConfig branch — loadScoutlineConfig is explicitly
+      // undefined (hermeticMainDeps would otherwise default an
+      // injected loader and skip the branch under test), and
+      // SCOUTLINE_CONFIG_DIR points at a crafted config.json the same
+      // way main-config-hermetic.test.js drives ambient config.
+      writeFileSync(
+        join(configDir, "config.json"),
+        JSON.stringify({ version: 1, providers: {}, journal: "yes" }),
+      );
+      const prev = process.env.SCOUTLINE_CONFIG_DIR;
+      process.env.SCOUTLINE_CONFIG_DIR = configDir;
+      let status;
+      try {
+        status = await main(
+          ["search", "rust vs go"],
+          journalDeps(adapter, log, {
+            env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+            loadScoutlineConfig: undefined,
+          }),
+        );
+      } finally {
+        if (prev === undefined) delete process.env.SCOUTLINE_CONFIG_DIR;
+        else process.env.SCOUTLINE_CONFIG_DIR = prev;
+      }
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      assert.strictEqual(log.length, 1, "the search itself ran");
+      assert.ok(
+        stderr.some((l) => l.includes('⚠️  config: Ignoring non-boolean "journal"')),
+        `MALFORMED_JOURNAL warning forwarded to stderr; stderr=${JSON.stringify(stderr)}`,
+      );
+      // The dropped malformed value falls back to the enabled default:
+      // visible AND recording. (The defect was the silently dropped
+      // warning, not the enabled default itself.)
+      const store = readJournalEntries(artifactsDir);
+      assert.strictEqual(store.entries.length, 1, "journaling stayed enabled");
+      assert.strictEqual(store.entries[0].kind, "journal");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  });
+
   it("--save + journaling → BOTH entries written, journal entry carries saveRef cross-link", async () => {
     const artifactsDir = makeTempDir("scoutline-journal-save-");
     const exportDir = makeTempDir("scoutline-journal-save-export-");
@@ -709,7 +813,7 @@ describe("T2a: always-on search journaling (main-driven)", () => {
     }
   });
 
-  it("fanout search miss → journal entry with mode:\"fanout\" routing (must-fix 3 — no silent skip of an always-on surface)", async () => {
+  it('fanout search miss → journal entry with mode:"fanout" routing (must-fix 3 — no silent skip of an always-on surface)', async () => {
     const artifactsDir = makeTempDir("scoutline-journal-fanout-");
     const log = [];
     const { adapter, stdout, stderr } = makeAdapter();
@@ -1182,18 +1286,14 @@ describe("T2b: warm-cache repeat markers (main-driven)", () => {
         assert.strictEqual(s2, 0);
         assert.strictEqual(seen.length, 1, "second run served from cache");
         const after = readFileSync(join(artifactsDir, "index.json"), "utf8");
-        assert.strictEqual(
-          after,
-          before,
-          `${name}: no marker, no full entry under the off switch`,
-        );
+        assert.strictEqual(after, before, `${name}: no marker, no full entry under the off switch`);
       } finally {
         rmSync(artifactsDir, { recursive: true, force: true });
       }
     }
   });
 
-  it("fanout cache hit → marker with the fanout provider shape {mode:\"fanout\", arms} (mirrors T2a fanout handling)", async () => {
+  it('fanout cache hit → marker with the fanout provider shape {mode:"fanout", arms} (mirrors T2a fanout handling)', async () => {
     const artifactsDir = makeTempDir("scoutline-journal-mk-fanout-");
     try {
       const seen = [];
@@ -1311,8 +1411,11 @@ describe("T2b: warm-cache repeat markers (main-driven)", () => {
       );
       const s2 = await main(["search", "rust vs go"], deps());
       assert.strictEqual(s2, 0);
-      assert.strictEqual(seen.filter((e) => e.startsWith("brave:")).length, 2,
-        "brave invoked live once per run (both runs miss its slot)");
+      assert.strictEqual(
+        seen.filter((e) => e.startsWith("brave:")).length,
+        2,
+        "brave invoked live once per run (both runs miss its slot)",
+      );
       const store = readJournalEntries(artifactsDir);
       assert.deepStrictEqual(
         store.entries.map((e) => (e.repeatOf !== undefined ? "MARKER" : "FULL")),
@@ -1324,11 +1427,149 @@ describe("T2b: warm-cache repeat markers (main-driven)", () => {
       assert.ok(Array.isArray(first.skeleton?.results), "full entry carries skeleton");
       assert.strictEqual(first.query, "rust vs go");
       assert.strictEqual(second.provider.mode, "fanout");
-      assert.ok(second.requestId !== undefined && second.skeleton !== undefined,
-        "second run is a FULL entry (kind journal, requestId + skeleton), NOT a marker");
+      assert.ok(
+        second.requestId !== undefined && second.skeleton !== undefined,
+        "second run is a FULL entry (kind journal, requestId + skeleton), NOT a marker",
+      );
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
     }
+  });
+
+  it("fanout --merge grid: SAME arm — one sub-query fails live, a later sub-query cache-hits → FULL entry, never a marker (wave-2 sticky failed latch)", async () => {
+    const artifactsDir = makeTempDir("scoutline-journal-fanout-mergelatch-");
+    try {
+      const seen = [];
+      const cacheStore = new Map();
+      const inMemoryCache = {
+        async get(key) {
+          return cacheStore.has(key) ? cacheStore.get(key) : null;
+        },
+        async set(key, value) {
+          cacheStore.set(key, value);
+        },
+      };
+      // zai's invoke ALWAYS throws: sub-query "alpha" cache-misses →
+      // invoke fails (arm cell cleared + `failed` latched), sub-query
+      // "beta" is pre-warmed → cache-hit without an invoke. brave serves
+      // both sub-queries live, so the grid's combined result is fresh
+      // AND incomplete — the exact shape that must journal FULL.
+      const arms = [
+        makeSearchDescriptor("zai", seen, {
+          invokeThrows: new Error("zai merge transport exploded"),
+        }),
+        makeSearchDescriptor("brave", seen),
+      ];
+      const deps = () =>
+        hermeticMainDeps({
+          invocation: makeAdapter().adapter,
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+          providerDescriptors: arms,
+          configFanout: true,
+          loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+          searchCache: inMemoryCache,
+        });
+      // Pre-warm zai's "beta" sub-query slot ONLY.
+      await cacheStore.set(
+        buildProviderCacheKey({
+          provider: "zai",
+          capability: "search",
+          credentialFingerprint: "fp-zai",
+          request: { query: "beta" },
+        }),
+        [{ title: "t-zai-beta", url: "https://zai/beta", summary: "s" }],
+      );
+      const status = await main(["search", "alpha | beta", "--merge"], deps());
+      assert.strictEqual(
+        status,
+        0,
+        "fan-out survives the partially failed zai arm (allSettled drop)",
+      );
+      assert.ok(
+        seen.filter((e) => e.startsWith("zai:")).every((e) => e === "zai:alpha"),
+        "zai's cache-hit sub-query never invoked; only the failing one did",
+      );
+      const store = readJournalEntries(artifactsDir);
+      assert.strictEqual(store.entries.length, 1, "exactly one journal entry");
+      const [entry] = store.entries;
+      assert.strictEqual(
+        entry.repeatOf,
+        undefined,
+        "never a repeat marker for the incomplete merge grid",
+      );
+      assert.strictEqual(entry.provider.mode, "fanout");
+      assert.ok(Array.isArray(entry.skeleton?.results), "FULL entry carries the skeleton");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("merge-grid latch unit pin: after a sub-query's invoke failure, a LATER sub-query's speculative cacheIdentity re-stamp stays suppressed (arm cell never reads cache → FULL entry, never marker)", async () => {
+    const seen = [];
+    // End-to-end the fail→re-stamp ordering is not expressible:
+    // runFanoutArm starts every sub-query synchronously, so all
+    // speculative stamps land before any invoke can reject. Pin the
+    // wrapper seam directly — the exact interleaving the latch exists
+    // for (whatever the scheduler does, the latch must hold).
+    const descriptor = makeSearchDescriptor("zai", seen, {
+      invokeThrows: new Error("sub-query transport exploded"),
+    });
+    // Hand-built fan-out capture: armServing is normally installed by
+    // the (unexported) installFanoutArmCells; the wrapper only needs
+    // the map present to resolve its arm cell at create() time.
+    const capture = {};
+    capture.armServing = new Map([["zai", {}]]);
+    const [wrapped] = captureServingDescriptorsForOp([descriptor], capture);
+    const slot = wrapped.create({ env: {} }).search;
+
+    // Sub-query A: speculative stamp lands, then the failed invoke
+    // clears the arm cell and latches `failed`.
+    slot.cacheIdentity({ query: "alpha" });
+    assert.strictEqual(
+      capture.armServing.get("zai").servedFrom,
+      "cache",
+      "speculative cache stamp lands at sub-query start",
+    );
+    await assert.rejects(() => slot.invoke({ query: "alpha" }));
+    assert.strictEqual(
+      capture.armServing.get("zai").servedFrom,
+      undefined,
+      "invoke failure clears the arm cell",
+    );
+    assert.strictEqual(capture.armServing.get("zai").failed, true, "failure latches stickily");
+
+    // Sub-query B (cache-hit): its speculative re-stamp is exactly the
+    // resurrection path — suppressed, so the journal hook's
+    // everyArmIsCache keeps reading this arm as not-cache (FULL entry,
+    // never a repeat marker for the incomplete grid).
+    slot.cacheIdentity({ query: "beta" });
+    assert.strictEqual(
+      capture.armServing.get("zai").servedFrom,
+      undefined,
+      "later speculative re-stamp suppressed by the failed latch",
+    );
+
+    // Shared-cell contract untouched (last-write-standing: the failed
+    // invoke writes nothing to the shared cell).
+    assert.strictEqual(capture.servedProvider, "zai");
+    assert.strictEqual(capture.servedFrom, "cache");
+
+    // Sibling gate: an arm that already went LIVE keeps "live" — a
+    // later cache-hit sub-query's speculative stamp cannot clobber
+    // fresh-generation truth either.
+    const liveDescriptor = makeSearchDescriptor("brave", seen);
+    const liveCapture = {};
+    liveCapture.armServing = new Map([["brave", {}]]);
+    const [liveWrapped] = captureServingDescriptorsForOp([liveDescriptor], liveCapture);
+    const liveSlot = liveWrapped.create({ env: {} }).search;
+    await liveSlot.invoke({ query: "alpha" });
+    assert.strictEqual(liveCapture.armServing.get("brave").servedFrom, "live");
+    liveSlot.cacheIdentity({ query: "beta" });
+    assert.strictEqual(
+      liveCapture.armServing.get("brave").servedFrom,
+      "live",
+      "speculative re-stamp cannot clobber a live arm cell",
+    );
   });
 
   it("marker-vs-full discriminator: a full entry NEVER carries repeatOf; a marker NEVER carries skeleton/query/cacheKey — mixed log stays readable and countable", async () => {
@@ -1454,7 +1695,8 @@ function makeReaderDescriptor(id, log, options = {}) {
               legacyCandidates: [],
             };
           },
-          decodeCached: (v) => (v !== null && typeof v === "object" && v.schemaVersion === 1 ? v : null),
+          decodeCached: (v) =>
+            v !== null && typeof v === "object" && v.schemaVersion === 1 ? v : null,
           async invoke(request) {
             log.push(`${id}:${request.url}`);
             return (
@@ -1496,7 +1738,8 @@ function makeResearchDescriptor(id, log, options = {}) {
               legacyCandidates: [],
             };
           },
-          decodeCached: (v) => (v !== null && typeof v === "object" && v.schemaVersion === 1 ? v : null),
+          decodeCached: (v) =>
+            v !== null && typeof v === "object" && v.schemaVersion === 1 ? v : null,
           async invoke(request) {
             log.push(`${id}:${request.query}`);
             return (
@@ -1898,9 +2141,7 @@ describe("T3: research journaling (main-driven)", () => {
                 query: `api keys ${SECRET}`,
                 model: "auto",
                 report: "Report from tavily",
-                sources: [
-                  { title: "leaky", url: `https://example.com/doc?token=${TOKEN}` },
-                ],
+                sources: [{ title: "leaky", url: `https://example.com/doc?token=${TOKEN}` }],
               },
             }),
           ],
@@ -2196,16 +2437,17 @@ describe("review r3: recall tokenize is Unicode-aware (coderabbit major)", () =>
     const artifactsDir = makeTempDir("scoutline-recall-accent-");
     const { adapter, stdout, stderr } = makeAdapter();
     try {
-      await r3Seed(artifactsDir, [
-        r3FullEntry({ requestId: "r-acc-1", query: "café opened" }),
-      ]);
+      await r3Seed(artifactsDir, [r3FullEntry({ requestId: "r-acc-1", query: "café opened" })]);
       const status = await main(
         ["history", "recall", "café"],
         r3RecallDeps(adapter, { artifactsDir }),
       );
       assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
       const envelope = r3Envelope(stdout);
-      assert.deepStrictEqual(envelope.results.map((r) => r.requestId), ["r-acc-1"]);
+      assert.deepStrictEqual(
+        envelope.results.map((r) => r.requestId),
+        ["r-acc-1"],
+      );
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
     }
@@ -2232,7 +2474,10 @@ describe("review batch 1: fixes (PR #111)", () => {
       assert.strictEqual(entry.skeleton.results[0].title, "t-zai");
       // The --fields projection stripped the stdout copy, not the journal.
       const rawJournal = readFileSync(join(artifactsDir, "index.json"), "utf8");
-      assert.ok(!rawJournal.includes('"summary"'), "journal skeleton must not carry the projected field");
+      assert.ok(
+        !rawJournal.includes('"summary"'),
+        "journal skeleton must not carry the projected field",
+      );
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
     }
@@ -2291,7 +2536,11 @@ describe("review batch 1: fixes (PR #111)", () => {
       assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
       const store = readJournalEntries(artifactsDir);
       const journals = store.entries.filter((e) => e.kind === "journal");
-      assert.strictEqual(journals.length, 1, `expected one journal entry, got ${JSON.stringify(journals)}`);
+      assert.strictEqual(
+        journals.length,
+        1,
+        `expected one journal entry, got ${JSON.stringify(journals)}`,
+      );
       assert.strictEqual(journals[0].repeatOf, undefined, "must be a full entry, not a marker");
       assert.strictEqual(journals[0].provider.mode, "fanout");
       assert.ok(journals[0].skeleton.results.length > 0);
@@ -2316,7 +2565,11 @@ describe("review batch 1: fixes (PR #111)", () => {
       );
       // --max-chars 2000 is floor-safe: status is deterministically 0,
       // and a success must journal the identity.
-      assert.strictEqual(status, 0, `read must succeed within budget: stderr=${JSON.stringify(stderr)}`);
+      assert.strictEqual(
+        status,
+        0,
+        `read must succeed within budget: stderr=${JSON.stringify(stderr)}`,
+      );
       const store = readJournalEntries(artifactsDir);
       assert.ok(store.entries.length >= 1);
       const readEntry = store.entries.find((e) => e.kind === "journal" && e.capability === "read");
@@ -2427,7 +2680,10 @@ describe("review batch 1: fixes (PR #111)", () => {
       assert.ok(store.entries.some((e) => e.kind === "save"));
       // Warm-cache hit run with --save → marker with saveRef.
       const a2 = makeAdapter();
-      const s2 = await main(["search", "rust vs go", "--save", exportTarget, "--save-force"], mkDeps(a2.adapter));
+      const s2 = await main(
+        ["search", "rust vs go", "--save", exportTarget, "--save-force"],
+        mkDeps(a2.adapter),
+      );
       assert.strictEqual(s2, 0);
       store = readJournalEntries(artifactsDir);
       const markers = store.entries.filter((e) => e.kind === "journal" && e.repeatOf !== undefined);

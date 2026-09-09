@@ -419,18 +419,40 @@ describe("T6a: blast-radius honesty (cache untouched, journaling still on)", () 
     const before = makeAdapter();
     const mid = makeAdapter();
     const after = makeAdapter();
+    // resolveCacheRoot (cache.ts) reads process.env.SCOUTLINE_CACHE_DIR
+    // directly — the clearDeps env NEVER reaches it — so the hermetic
+    // pin is a process.env set/restore, not a deps pass-through. The
+    // prior value is restored in finally.
+    const priorCacheDir = process.env.SCOUTLINE_CACHE_DIR;
     try {
       seedMixedStore(artifactsDir);
-      await main(["cache", "stats"], clearDeps(before.adapter, { env: { SCOUTLINE_CACHE_DIR: cacheDir } }));
-      await main(
+      process.env.SCOUTLINE_CACHE_DIR = cacheDir;
+      const beforeStatus = await main(
+        ["cache", "stats"],
+        clearDeps(before.adapter, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir, SCOUTLINE_CACHE_DIR: cacheDir },
+        }),
+      );
+      assert.strictEqual(beforeStatus, 0, `stderr=${JSON.stringify(before.stderr)}`);
+      const clearStatus = await main(
         ["history", "clear", "--all"],
         clearDeps(mid.adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
       );
-      await main(["cache", "stats"], clearDeps(after.adapter, { env: { SCOUTLINE_CACHE_DIR: cacheDir } }));
+      assert.strictEqual(clearStatus, 0, `stderr=${JSON.stringify(mid.stderr)}`);
+      const afterStatus = await main(
+        ["cache", "stats"],
+        clearDeps(after.adapter, {
+          env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir, SCOUTLINE_CACHE_DIR: cacheDir },
+        }),
+      );
+      assert.strictEqual(afterStatus, 0, `stderr=${JSON.stringify(after.stderr)}`);
       const beforeStats = JSON.parse(before.stdout[0]);
       const afterStats = JSON.parse(after.stdout[0]);
       assert.deepStrictEqual(afterStats, beforeStats, "cache must be untouched by history clear");
     } finally {
+      if (priorCacheDir === undefined) delete process.env.SCOUTLINE_CACHE_DIR;
+      else process.env.SCOUTLINE_CACHE_DIR = priorCacheDir;
+      rmSync(cacheDir, { recursive: true, force: true });
       rmSync(artifactsDir, { recursive: true, force: true });
     }
   });
@@ -560,16 +582,20 @@ describe("review r3: history clear --all wording (coderabbit/cubic)", () => {
 // ---------------------------------------------------------------------------
 
 describe("review r3: --all sweep spares atomic-replace temporaries (macroscope/cubic)", () => {
-  it("a temp ENDING in `.tmp` (atomicReplaceFile staging shape) also survives; masters still go", async () => {
+  it("a DOT-PREFIXED temp ENDING in `.tmp` (atomicReplaceFile staging shape) survives; a plain user `.tmp` file goes", async () => {
     const artifactsDir = makeTempDir("scoutline-clear-tmp-suffix-");
     const { adapter, stdout, stderr } = makeAdapter();
     try {
       seedMixedStore(artifactsDir);
       // The atomicReplaceFile / atomicPlaceNoClobber staging name:
       // `.<basename>.<pid>.<uuid>.tmp` — no ".tmp." substring, so this
-      // only survives if the sweep spares the .tmp SUFFIX class.
+      // only survives if the sweep spares the DOT-PREFIXED .tmp-suffix
+      // staging class. A plain user file ending .tmp is NOT staging —
+      // it is store content and goes under the documented full wipe.
       const tmpName = ".index.json.4242.0f1e2d3c-4b5a-6789-abcd-ef0123456789.tmp";
       writeFileSync(join(artifactsDir, tmpName), "{}\n");
+      const plainTmpName = "notes.tmp";
+      writeFileSync(join(artifactsDir, plainTmpName), "user notes\n");
       const status = await main(
         ["history", "clear", "--all"],
         clearDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
@@ -577,6 +603,7 @@ describe("review r3: --all sweep spares atomic-replace temporaries (macroscope/c
       assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
       const leftovers = readdirSync(artifactsDir);
       assert.ok(leftovers.includes(tmpName), `in-flight save temp must survive: ${JSON.stringify(leftovers)}`);
+      assert.ok(!leftovers.includes(plainTmpName), "plain user .tmp file is store content — the full wipe deletes it");
       assert.ok(!leftovers.includes("s-1.json"), "logged master still deleted");
       assert.ok(!leftovers.includes("s-2.md"), "logged master still deleted");
     } finally {

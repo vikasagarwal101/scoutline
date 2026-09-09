@@ -4615,8 +4615,17 @@ export interface ServingCapture {
    * delayed cache-hit arm can therefore never overwrite a live arm's
    * servedFrom: each arm owns its cell. Absent on the single-provider
    * path (and on batch ops, which already use per-op capture cells).
+   *
+   * Review round (cubic, wave-2): a `--merge` arm runs MULTIPLE
+   * sub-queries through the SAME cell (the grid is arm × sub-query),
+   * so the cell is a per-ARM aggregate, not a per-attempt record —
+   * `servedFrom === "cache"` may only stand when every sub-query on
+   * the arm was cache-served. `failed` is the sticky latch: once any
+   * sub-query's invoke threw, later speculative "cache" re-stamps are
+   * suppressed so the journal hook never reads a partially-failed arm
+   * as all-cache (a repeat marker for an INCOMPLETE combined result).
    */
-  armServing?: ReadonlyMap<string, { servedFrom?: "live" | "cache" }>;
+  armServing?: ReadonlyMap<string, { servedFrom?: "live" | "cache"; failed?: boolean }>;
 }
 
 /** What main hands the save-capable handlers when a save will happen. */
@@ -4671,7 +4680,17 @@ function withCaptureInvoke(
         // result. Only the arm cell is cleared: the shared cell keeps
         // its last-write-standing contract (a later failed candidate's
         // invoke throw writes nothing, so the server's stamp survives).
-        if (armCell !== undefined) armCell.servedFrom = undefined;
+        // Review round (cubic, wave-2): the clear alone is not sticky —
+        // a --merge grid runs several sub-queries through this same
+        // arm cell, and a later sub-query's speculative cacheIdentity
+        // re-stamp would resurrect "cache" after the clear. Latch
+        // `failed`; the cacheIdentity wrapper below refuses to
+        // re-stamp once it is set, so the suppression survives any
+        // later re-stamp attempt regardless of sub-query interleaving.
+        if (armCell !== undefined) {
+          armCell.servedFrom = undefined;
+          armCell.failed = true;
+        }
         throw error;
       }
     },
@@ -4700,7 +4719,18 @@ function withCaptureInvoke(
     wrapped.cacheIdentity = (...args: unknown[]) => {
       capture.servedProvider = id;
       capture.servedFrom = "cache";
-      if (armCell !== undefined) armCell.servedFrom = "cache";
+      // Review round (cubic, wave-2): speculative ONLY while the arm has
+      // neither gone live nor failed. A --merge grid runs several
+      // sub-queries through this same arm cell: once any sub-query's
+      // invoke threw, the failed latch above must keep the cell unset so
+      // a later cache-hit sub-query cannot resurrect "cache" (marker for
+      // an incomplete combined result); once any sub-query went LIVE the
+      // cell keeps "live" (fresh content this run is never an all-cache
+      // repeat). All-cache idempotence: re-stamping "cache" over "cache"
+      // is suppressed too — the value is already correct.
+      if (armCell !== undefined && armCell.failed !== true && armCell.servedFrom === undefined) {
+        armCell.servedFrom = "cache";
+      }
       // T2a: the identity IS the request the cache key is derived from
       // (executeSearch/executeCachedOperation feed it straight into
       // buildProviderCacheKey) — recompute the key here so the journal
@@ -4815,7 +4845,7 @@ function installFanoutArmCells(
   capture: ServingCapture,
   fanoutArms: readonly ProviderId[],
 ): void {
-  const cells = new Map<string, { servedFrom?: "live" | "cache" }>();
+  const cells = new Map<string, { servedFrom?: "live" | "cache"; failed?: boolean }>();
   for (const armId of fanoutArms) cells.set(armId, {});
   capture.armServing = cells;
 }
@@ -5190,6 +5220,12 @@ function createJournalHook(
       // combined result was freshly generated) and only an ALL-arms-
       // cache-hit with a resolvable map key writes a marker.
       const armMap = capture.armServing;
+      // Review round (cubic, wave-2): "cache" on an arm cell is the
+      // per-arm AGGREGATE — every sub-query cache-served, none live,
+      // none failed. A --merge arm whose sub-query failed keeps its
+      // cell unset (the wrapper's failed latch), so a later cache-hit
+      // sub-query on that arm can never swing everyArmIsCache back to
+      // all-cache: an incomplete combined result journals FULL.
       const everyArmIsCache =
         armMap !== undefined &&
         armMap.size > 0 &&
@@ -6125,6 +6161,18 @@ export async function main(
     } else if (inspection.status === "absent") {
       config = { version: 1, providers: {} };
     } else {
+      // Review round (cubic, wave-2): readConfig's default onWarning
+      // prints these to stderr, but the production inspectConfig path
+      // silently DROPPED them — a malformed non-boolean `journal` then
+      // enabled journaling with no user-visible notice. Forward one
+      // concise stderr line per warning through the same advisory
+      // channel the env-only hint uses (stdout stays data-only). The
+      // injected loadScoutlineConfig path returns a bare config with
+      // no warnings, so this loop is production-only by construction.
+      for (const warning of inspection.warnings) {
+        invocation.writeStderr(`⚠️  config: ${warning.message}
+`);
+      }
       config = inspection.config;
     }
   }

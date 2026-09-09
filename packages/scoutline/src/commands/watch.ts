@@ -1014,15 +1014,20 @@ export async function handleWatch(
 ): Promise<number> {
   const { subcommand, positional, flags, showHelp } = parseWatchArgs(args);
 
-  // Issue #105: watch flags arrive as raw kebab keys; `--max-chars` is
-  // rejected at CLI parse time (UNSUPPORTED_OPTION) and fails loud here
-  // for deep importers too — never accepted and dropped.
-  rejectSmuggledMaxChars({ maxChars: flags["max-chars"] }, "handleWatch");
-
   if (showHelp || subcommand === undefined) {
     deps.invocation.writeStdout(WATCH_HELP);
     return 0;
   }
+
+  // Issue #105: watch flags arrive as raw kebab keys; `--max-chars` is
+  // rejected at CLI parse time (UNSUPPORTED_OPTION — help invocations
+  // exempt, isHelpInvocation parity) and fails loud here for deep
+  // importers too — never accepted and dropped. Runs AFTER the help
+  // branch so `watch --help` with a stray flag still renders docs.
+  if (flags["max-chars"] !== undefined) {
+    rejectSmuggledMaxChars({ maxChars: flags["max-chars"] }, "handleWatch");
+  }
+
 
   // Parse-time guard (plan T4): fires for every subcommand INCLUDING the
   // not-yet-live ones — the statefulness rationale applies to the whole

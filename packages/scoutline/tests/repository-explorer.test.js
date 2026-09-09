@@ -4,7 +4,7 @@
  * Drives the Explorer with a deterministic fake RepositoryCapability
  * so canonical path handling, request defaults, BFS depth/order/
  * deduplication, Provider-derived child safety, mid-BFS failure,
- * Search/File `--max-chars` projection, and the source-boundary
+ * maxChars smuggle-guard rejection, and the source-boundary
  * contract can all be asserted without touching a concrete Adapter,
  * MCP/UTCP transport, or process globals.
  *
@@ -19,8 +19,8 @@
  *     requests each canonical directory at most once, expands only
  *     directories while `level < depth`, and never returns partial
  *     success after a mid-BFS failure;
- *   - Search total-budget and File content-budget projection with the
- *     exact ellipsis rule and pre-projection original-length metadata;
+ *   - maxChars smuggle guards (deep-import reach rejects the retired
+ *     option loud — ADR-0007, issue #105);
  *   - explicit empty Search excerpts and empty directory entries are
  *     valid with the fake capability;
  *   - a static source-boundary assertion proving the Explorer imports

@@ -25,7 +25,7 @@ import { crawl } from "../dist/commands/crawl.js";
 import { search } from "../dist/commands/search.js";
 import { map } from "../dist/commands/map.js";
 import { research } from "../dist/commands/research.js";
-import { repoSearch, repoRead, repoBrief } from "../dist/commands/repo.js";
+import { repoSearch, repoRead, repoBrief, repoTree } from "../dist/commands/repo.js";
 import {
   explorerSearch,
   explorerReadFile,
@@ -190,6 +190,15 @@ const SMUGGLE_CALLS = [
         execution(),
       ),
   ],
+  [
+    "repoTree",
+    () =>
+      repoTree(
+        "owner/repo",
+        { maxChars: 500 },
+        { capability: { listDirectory: fakeOp("repository-list-directory", {}) } },
+      ),
+  ],
   ["executeFetch", () => executeFetch("https://example.com/", { maxChars: 500 })],
   ["executeArchiveCdx", () => executeArchiveCdx("https://example.com/", { maxChars: 500 })],
   ["executeArchiveGet", () => executeArchiveGet("https://example.com/", { maxChars: 500 })],
@@ -226,6 +235,33 @@ describe("library maxChars smuggle guards (issue #105)", () => {
       );
     }
   });
+it("explicitly-present maxChars: undefined rejects too — presence, not value (read + crawl)", async () => {
+  const readDeps = {
+    capability: { fetch: fakeOp("reader-fetch", READ_RESULT) },
+    execution: execution(),
+  };
+  await assert.rejects(
+    read("https://example.com/", { maxChars: undefined }, readDeps),
+    isValidationError,
+  );
+  const crawlDeps = {
+    capability: { fetch: fakeOp("crawl-fetch", CRAWL_RESULT) },
+    execution: execution(),
+  };
+  await assert.rejects(
+    crawl("https://example.com/", { maxChars: undefined }, crawlDeps),
+    isValidationError,
+  );
+});
+
+it("watch help invocations render documentation even with a stray --max-chars (isHelpInvocation parity)", async () => {
+  const out = [];
+  const status = await handleWatch(["--help", "--max-chars", "500"], "data", {
+    invocation: { writeStdout: (v) => out.push(v) },
+  });
+  assert.equal(status, 0);
+  assert.ok(out.join("").includes("scoutline watch"), "help rendered");
+});
 
   it("absence stays byte-identical: read()/crawl() without maxChars return the full envelope", async () => {
     const readOut = await read(

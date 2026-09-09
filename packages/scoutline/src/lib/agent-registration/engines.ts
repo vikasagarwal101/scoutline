@@ -90,7 +90,7 @@ export async function lineInsert(options: LineInsertOptions): Promise<void> {
   }
 
   await backupIfPreExisting(filePath, existed, hasManagedRegion);
-  await atomicReplaceFile(filePath, next);
+  await atomicReplaceFile(filePath, next, { preserveDirectoryMode: true });
 }
 
 export interface MarkerBlockInsertOptions {
@@ -174,7 +174,7 @@ export async function markerBlockInsert(options: MarkerBlockInsertOptions): Prom
   }
 
   await backupIfPreExisting(filePath, existed, hasManagedRegion);
-  await atomicReplaceFile(filePath, next);
+  await atomicReplaceFile(filePath, next, { preserveDirectoryMode: true });
 }
 
 export interface JsonArrayInsertOptions {
@@ -296,7 +296,20 @@ export async function jsonArrayInsert(options: JsonArrayInsertOptions): Promise<
   // array's own inner text contains the element (absent key → proceed below).
   if (arrayRange) {
     const inner = original.slice(arrayRange.openAt + 1, arrayRange.closeAt);
-    if (inner.includes(encoded)) return; // idempotent: search before mutate
+    let alreadyPresent = inner.includes(encoded);
+    if (alreadyPresent) {
+      // Raw-text hit: confirm it is a DIRECT member, not a copy nested in
+      // a sub-array — a nested ["<element>"] is foreign structure.
+      try {
+        const members: unknown[] = JSON.parse(
+          original.slice(arrayRange.openAt, arrayRange.closeAt + 1),
+        );
+        alreadyPresent = Array.isArray(members) && members.some((member) => member === element);
+      } catch {
+        alreadyPresent = false; // unparseable region — validation path decides
+      }
+    }
+    if (alreadyPresent) return; // idempotent: search before mutate
     const insertAt = arrayRange.closeAt; // before `]`
     if (inner.trim() === "") {
       // Empty array: no leading comma, and a ONE-LINE single element so
@@ -326,7 +339,7 @@ export async function jsonArrayInsert(options: JsonArrayInsertOptions): Promise<
   }
 
   await backupIfPreExisting(filePath, existed, false);
-  await atomicReplaceFile(filePath, next);
+  await atomicReplaceFile(filePath, next, { preserveDirectoryMode: true });
 }
 
 export function backupPathFor(filePath: string): string {
@@ -394,7 +407,7 @@ export async function stripManagedRegion(filePath: string, expectedContent: stri
     await fs.rm(filePath, { force: true });
     return;
   }
-  await atomicReplaceFile(filePath, stripped);
+  await atomicReplaceFile(filePath, stripped, { preserveDirectoryMode: true });
 }
 
 /**
@@ -425,9 +438,34 @@ export async function jsonArrayRemove(options: {
   const { openAt, closeAt } = arrayRange;
 
   const needle = JSON.stringify(element); // quoted + escaped (Windows paths etc.)
-  // Find the element as a whole JSON string token inside the array.
+  // Find the element as a whole JSON string token inside the array — but
+  // only as a DIRECT member: a copy nested in a sub-array is foreign
+  // structure and must not be spliced at the wrong level. The match is
+  // tested BEFORE scanner state updates (the needle opens with a quote).
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
   for (let i = openAt + 1; i < closeAt; i += 1) {
-    if (!original.startsWith(needle, i)) continue;
+    const ch = original[i]!;
+    if (!inString && depth === 0 && original.startsWith(needle, i)) {
+      // top-level match — fall through to the splice below
+    } else if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    } else if (ch === '"') {
+      inString = true;
+      continue;
+    } else if (ch === "[" || ch === "{") {
+      depth += 1;
+      continue;
+    } else if (ch === "]" || ch === "}") {
+      depth -= 1;
+      continue;
+    } else {
+      continue;
+    }
     // Splice back through any whitespace before the element; if a comma
     // sits before that whitespace (the appended-entry form
     // `,\n    "<element>"` jsonArrayInsert writes), swallow the comma too
@@ -445,7 +483,7 @@ export async function jsonArrayRemove(options: {
       } catch {
         return;
       }
-      await atomicReplaceFile(filePath, candidate);
+      await atomicReplaceFile(filePath, candidate, { preserveDirectoryMode: true });
       return;
     }
     let f = from;
@@ -457,7 +495,7 @@ export async function jsonArrayRemove(options: {
     } catch {
       return; // never leave broken JSON behind; file untouched
     }
-    await atomicReplaceFile(filePath, candidate);
+    await atomicReplaceFile(filePath, candidate, { preserveDirectoryMode: true });
     return;
   }
   // Element absent — no-op.

@@ -390,3 +390,36 @@ describe("invalid pre-existing JSON (PR #116 round 2)", () => {
     assert.ok(after.equals(raw), "the file must be byte-identical after the failed insert");
   });
 });
+
+
+describe("nested-array decoys (PR #116 round 3)", () => {
+  it("a nested [\"<element>\"] copy is not top-level membership: insert still adds, removal never splices the nested copy", async (t) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-nested-"));
+    t.after(async () => fs.rm(dir, { recursive: true, force: true }));
+    const element = "/skills/scoutline/SKILL.md";
+    const file = path.join(dir, "opencode.json");
+
+    // Nested copy only: insert must ADD the top-level entry.
+    const nested = JSON.stringify({ instructions: [[element]] }, null, 2);
+    await fs.writeFile(file, nested);
+    await jsonArrayInsert({ filePath: file, element });
+    const added = JSON.parse(await fs.readFile(file, "utf8"));
+    assert.deepEqual(added.instructions, [[element], element],
+      "the nested copy must not satisfy top-level membership");
+
+    // Removal with ONLY the nested copy present: no-op, file untouched.
+    const file2 = path.join(dir, "opencode2.json");
+    await fs.writeFile(file2, nested);
+    const before = await fs.readFile(file2);
+    await jsonArrayRemove({ filePath: file2, element });
+    assert.ok((await fs.readFile(file2)).equals(before),
+      "a nested-only copy must never be spliced at the wrong level");
+
+    // Removal after a real top-level insert: only the top-level entry goes.
+    await jsonArrayInsert({ filePath: file, element: element });
+    await jsonArrayRemove({ filePath: file, element });
+    const removed = JSON.parse(await fs.readFile(file, "utf8"));
+    assert.deepEqual(removed.instructions, [[element]],
+      "removal takes only the top-level entry, nested structure survives");
+  });
+});

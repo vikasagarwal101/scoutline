@@ -108,7 +108,7 @@ async function writeDedicatedRules(home: string, id: string): Promise<void> {
   const rulesFile = toolRow(id)?.rulesFile?.(home);
   if (rulesFile === undefined) return;
   await fs.mkdir(path.dirname(rulesFile), { recursive: true });
-  await atomicReplaceFile(rulesFile, RULE_TEXT);
+  await atomicReplaceFile(rulesFile, RULE_TEXT, { preserveDirectoryMode: true });
 }
 
 /** Hook the tool's shared config surface through its pointer engine (D2). */

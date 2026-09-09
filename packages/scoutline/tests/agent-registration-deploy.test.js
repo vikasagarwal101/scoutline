@@ -295,6 +295,26 @@ describe("registration stamp (DESIGN D5)", () => {
   });
 });
 
+describe("foreign directory modes are preserved (PR #116 round 3)", () => {
+  it("registering never chmods agent-tool home directories we do not own", async (t) => {
+    // GROUND: atomicReplaceFile force-chmods its containing dir to 0700 —
+    // correct for scoutline's own config root, wrong for ~/.codex,
+    // ~/.claude/rules etc. (group/shared-agent installs would lose
+    // access). Agent-registration writes pass preserveDirectoryMode.
+    const { registerAgentTools } = await loadDeploy();
+    const home = await mkTemp(t, "scoutline-agent-home-");
+    const configRoot = await mkTemp(t, "scoutline-agent-cfg-");
+    await fs.mkdir(path.join(home, ".codex"), { recursive: true, mode: 0o755 });
+    await fs.chmod(path.join(home, ".codex"), 0o755);
+    await fs.mkdir(path.join(home, ".claude", "rules"), { recursive: true, mode: 0o755 });
+    await fs.chmod(path.join(home, ".claude", "rules"), 0o755);
+    await registerAgentTools({ home, configRoot, tools: ["codex", "claude"], version: "9.9.9" });
+    const mode = (p) => fs.stat(p).then((st) => st.mode & 0o777);
+    assert.equal(await mode(path.join(home, ".codex")), 0o755, "~/.codex mode must be untouched");
+    assert.equal(await mode(path.join(home, ".claude", "rules")), 0o755, "~/.claude/rules mode must be untouched");
+  });
+});
+
 describe("lazy refresh (DESIGN D5, PRD AC-7)", () => {
   it("stamp absent → zero-cost no-op: no files touched, nothing written to stderr", async (t) => {
     // GROUND: D5 "skip entirely if no stamp exists — zero cost for non-users".

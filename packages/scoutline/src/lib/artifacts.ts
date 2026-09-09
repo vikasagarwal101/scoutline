@@ -36,7 +36,7 @@ import {
   type ConfigRootEnvironment,
   type ConfigRootPlatform,
 } from "./config-store.js";
-import { FileError } from "./errors.js";
+import { FileError, ScoutlineError } from "./errors.js";
 import {
   DEFAULT_LOCK_STALE_MS,
   DEFAULT_LOCK_TIMEOUT_MS,
@@ -199,10 +199,7 @@ export async function writeArtifact(
  * the export TOCTOU the exists-recheck could only narrow (check and
  * place are one atomic step now).
  */
-export async function atomicPlaceNoClobber(
-  filePath: string,
-  contents: string,
-): Promise<boolean> {
+export async function atomicPlaceNoClobber(filePath: string, contents: string): Promise<boolean> {
   const root = path.dirname(filePath);
   // Harden only directories WE created (review r5, race-closed r7): a
   // pre-mkdir stat goes stale if a concurrent creator makes `root` first,
@@ -217,7 +214,10 @@ export async function atomicPlaceNoClobber(
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
   if (created && process.platform !== "win32") await fs.chmod(root, 0o700);
-  const tempPath = path.join(root, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
+  const tempPath = path.join(
+    root,
+    `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
   const handle = await fs.open(tempPath, "wx", 0o600);
   let closed = false;
   try {
@@ -412,7 +412,8 @@ function asLogEntry(value: unknown): SaveLogEntry | undefined {
   if (typeof provider !== "object" || provider === null) return undefined;
   if (provider.mode === "single") {
     if (typeof provider.effective !== "string" || provider.effective.length === 0) return undefined;
-    if (provider.requested !== undefined && typeof provider.requested !== "string") return undefined;
+    if (provider.requested !== undefined && typeof provider.requested !== "string")
+      return undefined;
     // Issue #108 review: servedFrom is schema-optional but, when present,
     // enum-constrained — a persisted "banana" must fail the entry guard
     // (fail-open whole-log semantics) rather than flow into history
@@ -432,7 +433,8 @@ function asLogEntry(value: unknown): SaveLogEntry | undefined {
     ) {
       return undefined;
     }
-    if (provider.requested !== undefined && typeof provider.requested !== "string") return undefined;
+    if (provider.requested !== undefined && typeof provider.requested !== "string")
+      return undefined;
   } else {
     return undefined;
   }
@@ -563,6 +565,70 @@ export async function appendLogEntry(
   return notice;
 }
 
+/**
+ * The save hook's ONE critical section (PR #111 review batch 1, cubic P2):
+ * master write + log append under a single `artifacts-write` hold. The old
+ * writeArtifact → appendLogEntry sequence took the lock twice, leaving a
+ * crash/kill window between the holds — a written master with no log
+ * entry, invisible to `history` and swept as an orphan by
+ * `history clear --all`. The entry is CONSTRUCTED BY THE CALLER (it needs
+ * the requestId, routing, args — hook-owned facts) with `masterPath`
+ * already the bare filename; the target `<requestId>.<ext>` is computed
+ * exactly as {@link writeArtifact} does, and the caller precomputes the
+ * same path for `entry.masterPath` (keep the two in lockstep — the
+ * duplication is pinned by tests/save-artifact.test.js). The no-force
+ * existence refusal keeps its {@link FileError} contract; the append
+ * mirrors {@link appendLogEntry} exactly (same fail-open read, same
+ * notice, same 2-space JSON shape). An I/O failure INSIDE the section can
+ * still leave the master written and unlogged — it surfaces as the save
+ * hook's FILE_ERROR and a retry rewrites both; the closed window is the
+ * crash between the two old lock holds.
+ */
+export async function writeArtifactWithLogEntry(
+  dir: string,
+  requestId: string,
+  content: string,
+  entry: SaveLogEntry,
+  options: WriteArtifactOptions = {},
+): Promise<string | undefined> {
+  const extension = options.format === "markdown" ? "md" : "json";
+  const target = path.join(dir, `${requestId}.${extension}`);
+  const refuse = (): FileError =>
+    new FileError(
+      `Refusing to overwrite existing artifact: ${target}`,
+      "Pass --save-force to overwrite the existing artifact.",
+    );
+  let notice: string | undefined;
+  await withAsyncFileLock(
+    dir,
+    ARTIFACTS_LOG_LOCK_IDENTITY,
+    async () => {
+      if (!options.force && (await entryExists(target))) throw refuse();
+      await atomicReplaceFile(target, content);
+      const current = await readLog(dir);
+      notice = current.notice;
+      const next: ArtifactsLog = {
+        version: ARTIFACTS_LOG_VERSION,
+        entries: [...current.log.entries, entry],
+      };
+      await atomicReplaceFile(
+        path.join(dir, ARTIFACTS_LOG_FILENAME),
+        `${JSON.stringify(next, null, 2)}\n`,
+      );
+    },
+    {
+      timeoutMs: options.lock?.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
+      staleMs: options.lock?.staleMs ?? DEFAULT_LOCK_STALE_MS,
+      setTimeout: options.lock?.setTimeout,
+      timeoutLabel: "Artifacts master write + log append",
+    },
+  );
+  // PR #111 A2 fixup: resolve with the LOG notice (appendLogEntry's
+  // contract — the readLog reset notice, when a corrupt pre-state was
+  // replaced), never the master path; the caller already knows the path.
+  return notice;
+}
+
 // ---------------------------------------------------------------------------
 // T6a (history-journal merge DESIGN D5): `history clear` — the store's
 // first sanctioned REWRITE seam. Bare clear is the journal-kind valve
@@ -633,11 +699,14 @@ export async function clearArtifactsLog(
           // orphan master (pre-clear corruption, manual file) would
           // otherwise survive the wipe. Bare clear never reaches here —
           // save masters stay byte-untouched under the journal valve.
-          // Review r3: `.tmp.` process temporaries are SPARED — an
-          // in-flight save writes its temp file BEFORE appending the
-          // log entry and renames after, so deleting one mid-save would
-          // corrupt the atomic-replace contract (the rename then lands
-          // a master the wipe cannot see). Temp files orphaned by a
+          // Review r3: process temporaries are SPARED — an in-flight
+          // save writes its temp file BEFORE appending the log entry
+          // and renames after, so deleting one mid-save would corrupt
+          // the atomic-replace contract (the rename then lands a master
+          // the wipe cannot see). Both temp classes are covered: names
+          // CONTAINING `.tmp.` and names ENDING `.tmp` (the
+          // atomicReplaceFile / atomicPlaceNoClobber staging shape
+          // `.<basename>.<pid>.<uuid>.tmp`). Temp files orphaned by a
           // crash are harmless leftovers, not store content.
           //
           // Review batch 1 (cubic): logged `--save` export copies placed
@@ -656,6 +725,7 @@ export async function clearArtifactsLog(
               dirent.name === ARTIFACTS_LOG_FILENAME ||
               dirent.name.endsWith(".lock") ||
               dirent.name.includes(".tmp.") ||
+              dirent.name.endsWith(".tmp") ||
               dirent.isDirectory()
             ) {
               continue;
@@ -708,6 +778,16 @@ export async function clearArtifactsLog(
         "Another scoutline process holds the artifacts-write lock; try again once it finishes.",
       );
     }
+    // A typed error thrown INSIDE the critical section (the --all
+    // sweep's FileError) already carries the public contract — re-throw
+    // as-is. The errno wrap below is for RAW I/O failures (lock
+    // creation) only; re-wrapping here used to clobber the sweep's
+    // "could not delete N file(s)" message with a false lock sentence.
+    // ponytail: the sweep-failure path is not hermetically reachable on
+    // Linux (an undeletable file needs an unwritable dir, which fails
+    // lock creation before the sweep runs); add an fs-injection seam if
+    // it ever needs a direct pin.
+    if (error instanceof ScoutlineError) throw error;
     // Review batch 1: a lock-creation I/O failure (read-only artifacts
     // dir → EACCES on the wx-open of `artifacts-write.lock`) used to
     // surface as a bare errno error — exit 1, but an UNKNOWN-shaped

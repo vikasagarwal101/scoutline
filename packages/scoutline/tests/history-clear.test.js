@@ -412,17 +412,21 @@ describe("T6a: corrupt pre-state + validation + lock (main-driven)", () => {
 describe("T6a: blast-radius honesty (cache untouched, journaling still on)", () => {
   it("clearing does NOT touch the response cache: cache stats unchanged after clear", async () => {
     const artifactsDir = makeTempDir("scoutline-clear-cachepin-");
+    // Cache root is governed by SCOUTLINE_CACHE_DIR (resolveCacheRootPure),
+    // not SCOUTLINE_ARTIFACTS_DIR — pin it to an isolated temp dir so the
+    // stats comparison is about a hermetic root, never the real one.
+    const cacheDir = makeTempDir("scoutline-clear-cachepin-cache-");
     const before = makeAdapter();
     const mid = makeAdapter();
     const after = makeAdapter();
     try {
       seedMixedStore(artifactsDir);
-      await main(["cache", "stats"], clearDeps(before.adapter));
+      await main(["cache", "stats"], clearDeps(before.adapter, { env: { SCOUTLINE_CACHE_DIR: cacheDir } }));
       await main(
         ["history", "clear", "--all"],
         clearDeps(mid.adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
       );
-      await main(["cache", "stats"], clearDeps(after.adapter));
+      await main(["cache", "stats"], clearDeps(after.adapter, { env: { SCOUTLINE_CACHE_DIR: cacheDir } }));
       const beforeStats = JSON.parse(before.stdout[0]);
       const afterStats = JSON.parse(after.stdout[0]);
       assert.deepStrictEqual(afterStats, beforeStats, "cache must be untouched by history clear");
@@ -556,6 +560,30 @@ describe("review r3: history clear --all wording (coderabbit/cubic)", () => {
 // ---------------------------------------------------------------------------
 
 describe("review r3: --all sweep spares atomic-replace temporaries (macroscope/cubic)", () => {
+  it("a temp ENDING in `.tmp` (atomicReplaceFile staging shape) also survives; masters still go", async () => {
+    const artifactsDir = makeTempDir("scoutline-clear-tmp-suffix-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      seedMixedStore(artifactsDir);
+      // The atomicReplaceFile / atomicPlaceNoClobber staging name:
+      // `.<basename>.<pid>.<uuid>.tmp` — no ".tmp." substring, so this
+      // only survives if the sweep spares the .tmp SUFFIX class.
+      const tmpName = ".index.json.4242.0f1e2d3c-4b5a-6789-abcd-ef0123456789.tmp";
+      writeFileSync(join(artifactsDir, tmpName), "{}\n");
+      const status = await main(
+        ["history", "clear", "--all"],
+        clearDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const leftovers = readdirSync(artifactsDir);
+      assert.ok(leftovers.includes(tmpName), `in-flight save temp must survive: ${JSON.stringify(leftovers)}`);
+      assert.ok(!leftovers.includes("s-1.json"), "logged master still deleted");
+      assert.ok(!leftovers.includes("s-2.md"), "logged master still deleted");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
   it("a `.tmp.` temp file present during --all survives the sweep; logged masters + orphans still go", async () => {
     const artifactsDir = makeTempDir("scoutline-clear-tmp-");
     const { adapter, stdout, stderr } = makeAdapter();

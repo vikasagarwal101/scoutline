@@ -194,7 +194,7 @@ import {
   type InitDependencies,
   type InitPrompts,
 } from "./commands/init.js";
-import { checkAgentRegistration } from "./lib/agent-registration/deploy.js";
+import { checkAgentRegistration, unregisterAgentTools } from "./lib/agent-registration/deploy.js";
 import pkg from "../package.json" with { type: "json" };
 const { version: VERSION } = pkg;
 
@@ -4378,6 +4378,14 @@ export interface MainDependencies {
    */
   readonly initConfigStore?: InitDependencies["configStore"];
   /**
+   * Optional injectable agent-registration home/config roots (agent
+   * registration D4/D6). Production defaults to `os.homedir()` +
+   * `resolveConfigRoot()`; the init wizard's agent step and the
+   * `init --unregister` disk-scan consume it. Tests inject temp roots so
+   * neither surface ever probes the real HOME.
+   */
+  readonly agentRegistrationRoots?: { home: string; configRoot: string };
+  /**
    * Optional injectable verification-promotion store (T3b). Production
    * wires `createDefaultVerificationPromoter()` (real read-modify-write
    * against `~/.scoutline/config.json`); tests inject an in-memory
@@ -4882,11 +4890,36 @@ export async function main(
   // (MAIN_HELP Commands list, README setup, skills/) wait for T3b.
   if (command === "init") {
     if (commandArgs.includes("--unregister")) {
-      // Surface parse only (D6): consuming the flag here guarantees
-      // `--unregister` never falls into the interactive wizard. Exit
-      // code, output content, and reversal semantics are T5's contract.
-      invocation.writeStderr("scoutline: init --unregister is not implemented yet\n");
-      return 0;
+      // Agent registration D2/D4: non-interactive disk-scan reversal —
+      // never falls into the wizard (the parse pin from the deploy
+      // module's wiring tests). Failures degrade to a stderr notice and
+      // a non-zero exit; ENOENT during the scan is the expected
+      // pre-registration state, never fatal.
+      const roots =
+        dependencies.agentRegistrationRoots ??
+        (() => ({ home: os.homedir(), configRoot: resolveConfigRoot() }))();
+      const store = dependencies.initConfigStore ?? createDefaultConfigStore();
+      try {
+        await unregisterAgentTools({
+          home: roots.home,
+          configRoot: roots.configRoot,
+          configFilePath: configFilePath(),
+          // Route through the store's own captured options — passing the
+          // production configFilePath() here would override a test-injected
+          // temp path and write outside the injected roots.
+          inspectConfig: () => store.inspect(),
+          writeConfig: (config) => store.write(config),
+        });
+        invocation.writeStdout(`scoutline: agent registration removed\n`);
+        return 0;
+      } catch (error) {
+        invocation.writeStderr(
+          `scoutline: init --unregister failed — ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+        return 1;
+      }
     }
     const initDeps: InitDependencies = {
       descriptors: providerDescriptors,
@@ -4897,6 +4930,11 @@ export async function main(
       stdinIsTTY: invocation.stdinIsTTY,
       writeStderr: (value) => invocation.writeStderr(value),
       writeStdout: (value) => invocation.writeStdout(value),
+      // Production default mirrors the --unregister branch: without a
+      // fallback the wizard agent step would be test-only dead code.
+      agentRegistrationRoots:
+        dependencies.agentRegistrationRoots ??
+        { home: os.homedir(), configRoot: resolveConfigRoot() },
     };
     try {
       return await handleInitWithHelp(commandArgs, initDeps);

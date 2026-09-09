@@ -2,9 +2,16 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-import { atomicReplaceFile } from "../config-store.js";
+import { atomicReplaceFile, inspectConfig, writeConfig } from "../config-store.js";
 import { resolveSkillSourceDir } from "../skill-source.js";
-import { jsonArrayInsert, lineInsert, markerBlockInsert } from "./engines.js";
+import {
+  backupPathFor,
+  jsonArrayInsert,
+  jsonArrayRemove,
+  lineInsert,
+  markerBlockInsert,
+  stripManagedRegion,
+} from "./engines.js";
 import { AGENT_TOOLS, RULE_TEXT, type AgentTool } from "./registry.js";
 
 /** Stamp file recording the last registration (DESIGN D5). */
@@ -139,9 +146,14 @@ export async function registerAgentTools(options: {
     await writePointer(home, id, version);
   }
   await deploySkills({ home, tools });
+  // Union with the existing stamp (D5 refresh iterates stamp.tools): a
+  // later wizard visit registering a NEW tool must never erase previously
+  // registered tools from the stamp.
+  const priorStamp = await readAgentRegistrationStamp(configRoot);
+  const stampTools = [...new Set([...(priorStamp?.tools ?? []), ...tools])];
   await writeStamp(configRoot, {
     version,
-    tools: [...tools],
+    tools: stampTools,
     ruleTextHash: computeRuleTextHash(),
   });
 }
@@ -193,4 +205,78 @@ export async function checkAgentRegistration(options: {
     });
   }
   return { refreshed };
+}
+
+/**
+ * Disk-scan reversal (DESIGN D2, `init --unregister`):
+ *  - owned rules files + skill copies unlinked by fixed registry path;
+ *  - shared surfaces stripped of our marker regions / exact array
+ *    entries — NEVER restored from the `.scoutline-bak` (a user who
+ *    edited the file since registration would lose their edits);
+ *  - every backup we minted is deleted (the escape hatch is spent);
+ *  - the stamp is removed;
+ *  - `agentRules` is cleared through the config store, preserving the
+ *    rest of the config (providers survive).
+ *
+ * Nothing registered → a clean no-op (no config minting). Throws never:
+ * per-surface ENOENT is the expected pre-registration state.
+ */
+export async function unregisterAgentTools(options: {
+  home: string;
+  configRoot: string;
+  configFilePath: string;
+  inspectConfig?: (o: { filePath: string }) => Promise<{
+    status: "absent" | "valid" | "corrupt";
+    config?: import("../config-store.js").ScoutlineConfig;
+  }>;
+  writeConfig?: (
+    config: import("../config-store.js").ScoutlineConfig,
+    o: { filePath: string },
+  ) => Promise<void>;
+}): Promise<void> {
+  const { home, configRoot } = options;
+  const inspect = options.inspectConfig ?? inspectConfig;
+  const write = options.writeConfig ?? writeConfig;
+
+  for (const row of AGENT_TOOLS) {
+    const rulesFile = row.rulesFile?.(home);
+    if (rulesFile !== undefined) {
+      await fs.rm(rulesFile, { force: true });
+      await fs.rm(backupPathFor(rulesFile), { force: true });
+    }
+    const dest = skillDest(home, row.id);
+    if (dest !== undefined) {
+      await fs.rm(dest, { recursive: true, force: true });
+    }
+    const pointer = row.pointer?.target?.(home);
+    if (pointer !== undefined) {
+      if (row.pointer?.kind === "jsonArray") {
+        await jsonArrayRemove({
+          filePath: pointer,
+          element: `${dest ?? ""}/SKILL.md`,
+        });
+      } else if (row.pointer?.kind === "line") {
+        // Strip only OUR region: the marker pair's inner text must be our
+        // pointer line (a user-authored pair is foreign content, kept).
+        const line = LINE_POINTERS[row.id];
+        await stripManagedRegion(pointer, line ?? RULE_TEXT);
+      } else {
+        await stripManagedRegion(pointer, RULE_TEXT);
+      }
+      await fs.rm(backupPathFor(pointer), { force: true });
+    }
+  }
+
+  await fs.rm(path.join(configRoot, STAMP_NAME), { force: true });
+
+  // agentRules cleared through the store; a corrupt/absent config is a
+  // no-op (nothing to clear, nothing minted — the safe re-run).
+  const inspection = await inspect({ filePath: options.configFilePath });
+  if (inspection.status === "valid" && inspection.config?.agentRules !== undefined) {
+    const { agentRules: _cleared, ...rest } = inspection.config;
+    void _cleared;
+    await write(rest as import("../config-store.js").ScoutlineConfig, {
+      filePath: options.configFilePath,
+    });
+  }
 }

@@ -82,7 +82,7 @@ export async function lineInsert(options: LineInsertOptions): Promise<void> {
     if (insertAt === -1) {
       next = original.endsWith("\n") || original === ""
         ? `${original}${wrapped}\n`
-        : `${original}\n${wrapped}\n`;
+        : `${original}\n${wrapped}`;
     } else {
       lines.splice(insertAt, 0, wrapped);
       next = lines.join("\n");
@@ -90,7 +90,7 @@ export async function lineInsert(options: LineInsertOptions): Promise<void> {
   } else {
     next = original.endsWith("\n") || original === ""
       ? `${original}${wrapped}\n`
-      : `${original}\n${wrapped}\n`;
+      : `${original}\n${wrapped}`;
   }
 
   await backupIfPreExisting(filePath, existed, original.includes(START_MARKER));
@@ -137,18 +137,21 @@ export async function markerBlockInsert(
   let next: string;
   if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
     // Region rewrite: replace markers-and-body in place, keep everything
-    // else — a trailing newline after END_MARKER belongs to the block.
+    // else. A trailing newline after END_MARKER belongs to the block — but
+    // only when the file itself ended with one (a no-EOL original must not
+    // gain a newline through a rewrite; the strip must restore exact bytes).
     const before = original.slice(0, startIndex);
     let after = original.slice(endIndex + END_MARKER.length);
     if (after.startsWith("\n")) after = after.slice(1);
     const glue = (part: string) => (part === "" || part.endsWith("\n") ? part : `${part}\n`);
-    next = `${glue(before)}${block}${after === "" ? after : `${after}`}`;
+    const tail = after === "" && !original.endsWith("\n") ? block.slice(0, -1) : block;
+    next = `${glue(before)}${tail}${after}`;
   } else if (original === "") {
     next = block;
   } else if (original.endsWith("\n")) {
     next = `${original}${block}`;
   } else {
-    next = `${original}\n${block}`;
+    next = `${original}\n${block.slice(0, -1)}`;
   }
 
   await backupIfPreExisting(filePath, existed, original.includes(START_MARKER));
@@ -228,8 +231,9 @@ export async function jsonArrayInsert(
     if (inner.includes(`"${element}"`)) return; // idempotent: search before mutate
     const insertAt = arrayRange.closeAt; // before `]`
     if (inner.trim() === "") {
-      // Empty array: no leading comma.
-      next = `${original.slice(0, insertAt)}\n    "${element}"\n  ${original.slice(insertAt)}`;
+      // Empty array: no leading comma, and a ONE-LINE single element so
+      // removal restores the bare `[]` byte-exactly (AC-8 reversal symmetry).
+      next = `${original.slice(0, insertAt)}"${element}"${original.slice(insertAt)}`;
     } else {
       next = `${original.slice(0, insertAt)},\n    "${element}"${original.slice(insertAt)}`;
     }
@@ -256,4 +260,152 @@ export async function jsonArrayInsert(
 
 export function backupPathFor(filePath: string): string {
   return `${filePath}.scoutline-bak`;
+}
+
+// ---------------------------------------------------------------------------
+// Reversal engines (DESIGN D2: `init --unregister` disk-scan).
+// NEVER restore from the `.scoutline-bak` — a user who edited the file
+// since registration would lose their edits. Marker-strip always,
+// restore never. The backup is disaster recovery only; unregister
+// deletes it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove OUR managed region(s) from a file, preserving every other byte —
+ * including marker pairs whose inner content is not ours (a user-authored
+ * `<!-- scoutline:start --> … <!-- scoutline:end -->` block is foreign
+ * user content; DESIGN D2 strips inserted regions by OUR markers AND our
+ * content, never by markers alone). Deletes the file outright when nothing
+ * survives the strip (registration itself created it). No-op on ENOENT.
+ * Used by line AND block pointers — both wrap their bytes in the same
+ * marker pair.
+ */
+export async function stripManagedRegion(
+  filePath: string,
+  expectedContent: string,
+): Promise<void> {
+  let original: string;
+  try {
+    original = await fs.readFile(filePath, "utf8");
+  } catch {
+    return; // absent — nothing to strip
+  }
+  let stripped = original;
+  // Loop: multiple non-nested regions are tolerated; foreign pairs (inner
+  // content not ours) are skipped, not stripped — keep scanning past them.
+  let searchFrom = 0;
+  for (;;) {
+    const start = stripped.indexOf(START_MARKER, searchFrom);
+    if (start === -1) break;
+    const end = stripped.indexOf(END_MARKER, start);
+    if (end === -1) break; // malformed — leave the rest untouched
+    const inner = stripped
+      .slice(start + START_MARKER.length, end)
+      .replace(/<!--[^>]*-->/g, ""); // version-stamp comments are ours, not content
+    if (inner.trim() !== expectedContent.trim()) {
+      searchFrom = end + END_MARKER.length; // foreign pair — hands off
+      continue;
+    }
+    let from = start;
+    let to = end + END_MARKER.length;
+    // Swallow ONE newline boundary the insertion joined with, so an
+    // untouched file returns byte-identical to its pre-registration bytes.
+    if (from > 0 && stripped[from - 1] === "\n") from -= 1;
+    else if (stripped[to] === "\n") to += 1;
+    stripped = stripped.slice(0, from) + stripped.slice(to);
+    searchFrom = Math.max(0, from - 1);
+  }
+  if (stripped.trim() === "") {
+    // Nothing user-owned survives — the registration itself created this
+    // file; its pre-registration state is absence.
+    await fs.rm(filePath, { force: true });
+    return;
+  }
+  await atomicReplaceFile(filePath, stripped);
+}
+
+/**
+ * Remove `element` from the `instructions` array of a JSON file by exact
+ * string match (D2 symmetry with `jsonArrayInsert`). No-op on ENOENT or
+ * when the element is absent. String-aware scan (same walker as insert)
+ * so a `]` inside a string cannot confuse it. Re-validates JSON before
+ * writing; a parse failure after removal leaves the file untouched.
+ */
+export async function jsonArrayRemove(options: {
+  filePath: string;
+  element: string;
+}): Promise<void> {
+  const { filePath, element } = options;
+  let original: string;
+  try {
+    original = await fs.readFile(filePath, "utf8");
+  } catch {
+    return; // absent — nothing to remove
+  }
+
+  const keyIndex = original.indexOf('"instructions"');
+  if (keyIndex === -1) return;
+  const openAt = original.indexOf("[", keyIndex + '"instructions"'.length);
+  if (openAt === -1) return;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let closeAt = -1;
+  for (let i = openAt; i < original.length; i += 1) {
+    const ch = original[i]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') {
+      inString = true;
+    } else if (ch === "[") {
+      depth += 1;
+    } else if (ch === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        closeAt = i;
+        break;
+      }
+    }
+  }
+  if (closeAt === -1) return;
+
+  const needle = `"${element}"`;
+  // Find the element as a whole JSON string token inside the array.
+  for (let i = openAt + 1; i < closeAt; i += 1) {
+    if (!original.startsWith(needle, i)) continue;
+    // Splice back through any whitespace before the element; if a comma
+    // sits before that whitespace (the appended-entry form
+    // `,\n    "<element>"` jsonArrayInsert writes), swallow the comma too
+    // so an untouched file reverses to its pre-registration bytes.
+    let from = i;
+    const inner = original.slice(openAt + 1, closeAt);
+    if (inner.trim() === needle) {
+      // The element is the array's ONLY member: restore a bare `[]` —
+      // splicing the token alone would leave whitespace residue inside our
+      // own region (and re-registration's empty-array fast path would see a
+      // non-empty array).
+      const candidate = `${original.slice(0, openAt + 1)}${original.slice(closeAt)}`;
+      try {
+        JSON.parse(candidate);
+      } catch {
+        return;
+      }
+      await atomicReplaceFile(filePath, candidate);
+      return;
+    }
+    let f = from;
+    while (f > openAt + 1 && /\s/.test(original[f - 1]!)) f -= 1;
+    if (original[f - 1] === ",") from = f - 1;
+    const candidate = original.slice(0, from) + original.slice(i + needle.length);
+    try {
+      JSON.parse(candidate);
+    } catch {
+      return; // never leave broken JSON behind; file untouched
+    }
+    await atomicReplaceFile(filePath, candidate);
+    return;
+  }
+  // Element absent — no-op.
 }

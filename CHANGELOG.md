@@ -37,6 +37,10 @@ All notable changes to this project will be documented in this file.
   - One-shot comparison of a Wayback snapshot against the live page. `--since` (ISO date, ISO datetime, or duration like `30d`) resolves the newest CDX capture at or before the target instant — never a nearest-after substitution; no qualifying capture is a `VALIDATION_ERROR` pointing at `archive cdx` to inspect coverage.
   - Both sides compare through the raw bytes (snapshot via Wayback `id_` verbatim replay, live via a real HTTP fetch) and a deterministic section-diff engine: heading-anchored `{added, removed, changed}`; non-HTML bytes degrade to a sha256 hash-only verdict over raw bytes; a permanent redirect to a different final URL reports `moved`.
 
+### Fixed
+
+- **`scoutline --help` now lists `config`** (get / set / unset, credential-free) alongside the other 21 commands — the row had been missing since the command family shipped (PR #33). A new structural pin (`tests/help-surface.test.js`) ties the MAIN_HELP Commands block to `DISPATCHED_COMMANDS` in both directions, so a dispatched command can never again ship without a help row (and vice versa).
+
 ## [0.20.0] - 2026-09-04
 
 ### Added

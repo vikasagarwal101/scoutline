@@ -112,13 +112,12 @@ import {
 import { isOutputMode, OUTPUT_MODES, type OutputMode } from "./lib/output.js";
 import { formatErrorOutput, formatSuccessOutput } from "./lib/output.js";
 import {
-  appendLogEntry,
   atomicPlaceNoClobber,
   CLI_VERSION,
   newRequestId,
   readLog,
   resolveArtifactsDir,
-  writeArtifact,
+  writeArtifactWithLogEntry,
   type ArtifactFormat,
   type FanoutProviderRouting,
   type ProviderRouting,
@@ -4147,6 +4146,14 @@ async function handleHistoryRecall(
       "Pass what to re-find as the positional argument, e.g. history recall \"rust vs go\".",
     );
   }
+  // Review round (macroscope): extra positionals were silently dropped
+  // (`recall rust go` searched only "rust") — the note guard's class.
+  if (positional.length > 2) {
+    throw new ValidationError(
+      "history recall accepts exactly one positional recall text; quote multi-word queries.",
+      "Multi-word recall text must be passed as a single quoted argument, e.g. history recall \"rust vs go\".",
+    );
+  }
 
   // --limit N: the family's strict decimal gate (same class as list's
   // --since/--limit — Number() alone would admit "1e3" spellings).
@@ -4649,11 +4656,24 @@ function withCaptureInvoke(
   const wrapped: Record<string, unknown> = {
     ...slot,
     invoke: async (...args: unknown[]) => {
-      const outcome = await invoke(...args);
-      capture.servedProvider = id;
-      capture.servedFrom = "live";
-      if (armCell !== undefined) armCell.servedFrom = "live";
-      return outcome;
+      try {
+        const outcome = await invoke(...args);
+        capture.servedProvider = id;
+        capture.servedFrom = "live";
+        if (armCell !== undefined) armCell.servedFrom = "live";
+        return outcome;
+      } catch (error) {
+        // Review round (cubic): a fan-out arm that FAILED after a cache
+        // miss must not keep the cacheIdentity wrapper's speculative
+        // "cache" stamp — the journal hook's everyArmIsCache would then
+        // read {one cache-hit arm + one failed arm} as all-cache-served
+        // and emit a tiny repeat marker for an INCOMPLETE combined
+        // result. Only the arm cell is cleared: the shared cell keeps
+        // its last-write-standing contract (a later failed candidate's
+        // invoke throw writes nothing, so the server's stamp survives).
+        if (armCell !== undefined) armCell.servedFrom = undefined;
+        throw error;
+      }
     },
   };
   // Review fixup: a CACHE-HIT attempt never reaches invoke() — the shared
@@ -4988,7 +5008,12 @@ function createSaveArtifactHook(
               null,
               2,
             )}\n`;
-      const masterPath = await writeArtifact(dir, requestId, content, { format: request.format });
+      // PR #111 A2: the master target is computed here (the same rule
+      // writeArtifact used — `<requestId>.<extension>`) so the entry's
+      // masterPath and the file the combined write lays down cannot
+      // drift apart.
+      const extension = request.format === "markdown" ? "md" : "json";
+      const masterPath = path.join(dir, `${requestId}.${extension}`);
       const provider: ProviderRouting =
         meta.provider.mode === "fanout"
           ? meta.provider
@@ -5023,9 +5048,17 @@ function createSaveArtifactHook(
         artifactFormat: request.format,
         cliVersion: CLI_VERSION,
         masterPath: path.basename(masterPath),
-        ...(request.exportPath !== undefined ? { exportPath: request.exportPath } : {}),
+        // PR #111 A2: the log carries the ABSOLUTE export path — a
+        // relative --save value is resolved against THIS process's cwd,
+        // so history reads and `--all` sweeps never reinterpret it in
+        // another working directory.
+        ...(request.exportPath !== undefined
+          ? { exportPath: path.resolve(request.exportPath) }
+          : {}),
       };
-      const logNotice = await appendLogEntry(dir, entry);
+      const logNotice = await writeArtifactWithLogEntry(dir, requestId, content, entry, {
+        format: request.format,
+      });
       if (logNotice !== undefined) notice(logNotice);
       if (request.exportPath !== undefined) {
         // Write-time exists-recheck: closes the T3 pre-dispatch race

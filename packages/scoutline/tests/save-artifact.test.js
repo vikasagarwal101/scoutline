@@ -30,7 +30,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { main } from "../dist/index.js";
 import { TimeoutError } from "../dist/lib/errors.js";
 import { createInMemoryResponseCache, hermeticMainDeps } from "./helpers/hermetic-main.js";
@@ -166,10 +166,11 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
       const { masterName, requestId, report, store } = readStore(artifactsDir);
       // The owner ruling: exactly three keys, in any order — and none of
       // the metadata keys the log owns.
-      assert.deepStrictEqual(
-        [...Object.keys(report)].sort(),
-        ["requestId", "result", "schemaVersion"],
-      );
+      assert.deepStrictEqual([...Object.keys(report)].sort(), [
+        "requestId",
+        "result",
+        "schemaVersion",
+      ]);
       assert.strictEqual(report.schemaVersion, 1);
       assert.strictEqual(report.requestId, requestId);
       // `result` is the same value the data-mode stdout path serialized.
@@ -187,10 +188,18 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
         store.entries.map((e) => e.kind),
         ["save", "journal"],
       );
-      assert.deepStrictEqual(store.entries.map((e) => e.requestId), [
-        requestId,
+      // Review round 3 (cubic P3): the old assertion compared
+      // store.entries[1].requestId against itself — vacuous. The journal
+      // entry mints its OWN requestId: pin that it exists and differs.
+      assert.ok(
+        store.entries[1].requestId.length > 0,
+        "the journal entry carries its own requestId",
+      );
+      assert.notStrictEqual(
         store.entries[1].requestId,
-      ]);
+        requestId,
+        "journal requestId is distinct from the save's",
+      );
       assert.strictEqual(store.entries[0].exportPath, exportTarget);
       assert.strictEqual(store.entries[1].saveRef, requestId);
       // The stderr notice carries the requestId + both destinations.
@@ -259,7 +268,11 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
       );
       assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
       const { masterName } = readStore(artifactsDir);
-      for (const file of [join(artifactsDir, masterName), exportTarget, join(artifactsDir, "index.json")]) {
+      for (const file of [
+        join(artifactsDir, masterName),
+        exportTarget,
+        join(artifactsDir, "index.json"),
+      ]) {
         const text = readFileSync(file, "utf8");
         assert.ok(!text.includes(SECRET_VALUE), `credential value leaked into ${file}`);
         assert.ok(!text.includes(SECRET_KEY_VALUE), `credential-shaped field leaked into ${file}`);
@@ -320,9 +333,16 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
       assert.match(envelope.help, /--save-force/);
       // The refused write leaves the winner byte-identical.
       assert.strictEqual(readFileSync(exportTarget, "utf8"), "mid-run");
-      // D6 write order: master and log entry persist; only the export failed.
+      // D6 write order: master and log entry persist; only the export
+      // failed. Cluster F (cubic P2): the always-on journal hook now
+      // runs even when the save hook threw — the completed provider run
+      // leaves its journal row (saveRef cross-link intact).
       const { store } = readStore(artifactsDir);
-      assert.strictEqual(store.entries.length, 1);
+      assert.strictEqual(store.entries.length, 2);
+      assert.deepStrictEqual(
+        store.entries.map((e) => e.kind),
+        ["save", "journal"],
+      );
       assert.strictEqual(store.entries[0].exportPath, exportTarget);
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
@@ -451,12 +471,16 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
       assert.ok(log.includes("tavily"), "tavily was attempted");
       assert.strictEqual(log.at(-1), "zai", "zai served after tavily failed");
       const { store } = readStore(artifactsDir);
-      assert.deepStrictEqual(store.entries[0].provider, {
-        mode: "single",
-        requested: "tavily",
-        effective: "zai",
-        servedFrom: "live",
-      }, "nested {fetch:{invoke}} operations must be captured, not just direct-invoke slots");
+      assert.deepStrictEqual(
+        store.entries[0].provider,
+        {
+          mode: "single",
+          requested: "tavily",
+          effective: "zai",
+          servedFrom: "live",
+        },
+        "nested {fetch:{invoke}} operations must be captured, not just direct-invoke slots",
+      );
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
     }
@@ -512,12 +536,16 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
       const run1 = saveEntries[0];
       assert.strictEqual(run1.provider.servedFrom, "live", "run 1: zai served live");
       const run2 = saveEntries[1];
-      assert.deepStrictEqual(run2.provider, {
-        mode: "single",
-        requested: "tavily",
-        effective: "zai",
-        servedFrom: "cache",
-      }, "the cache-served provider must be recorded as effective");
+      assert.deepStrictEqual(
+        run2.provider,
+        {
+          mode: "single",
+          requested: "tavily",
+          effective: "zai",
+          servedFrom: "cache",
+        },
+        "the cache-served provider must be recorded as effective",
+      );
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
     }
@@ -534,7 +562,8 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
     // Research-shaped descriptor double (mirrors async-fallback.test.js).
     const researchDescriptor = {
       id: "tavily",
-      isConfigured: (env) => typeof env.TAVILY_API_KEY === "string" && env.TAVILY_API_KEY.length > 0,
+      isConfigured: (env) =>
+        typeof env.TAVILY_API_KEY === "string" && env.TAVILY_API_KEY.length > 0,
       capabilities: () => new Set(["research"]),
       create: () => ({
         id: "tavily",
@@ -574,9 +603,20 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
     try {
       const status = await main(
         [
-          "research", "scoutline state", "--provider", "tavily", "--save",
-          "--model", "pro", "--output-length", "long",
-          "--citation-format", "mla", "--domain", "example.com", "--no-cache",
+          "research",
+          "scoutline state",
+          "--provider",
+          "tavily",
+          "--save",
+          "--model",
+          "pro",
+          "--output-length",
+          "long",
+          "--citation-format",
+          "mla",
+          "--domain",
+          "example.com",
+          "--no-cache",
         ],
         deps,
       );
@@ -625,7 +665,10 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
         baseDeps(adapter, log, {
           env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
           configFanout: true,
-          providerDescriptors: [makeSaveSearchDescriptor("zai", log), makeSaveSearchDescriptor("brave", log)],
+          providerDescriptors: [
+            makeSaveSearchDescriptor("zai", log),
+            makeSaveSearchDescriptor("brave", log),
+          ],
         }),
       );
       assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
@@ -684,10 +727,11 @@ describe("save-artifacts T4: the --save hook at the invocation seam", () => {
       );
       assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
       const exported = JSON.parse(readFileSync(exportTarget, "utf8"));
-      assert.deepStrictEqual(
-        [...Object.keys(exported)].sort(),
-        ["requestId", "result", "schemaVersion"],
-      );
+      assert.deepStrictEqual([...Object.keys(exported)].sort(), [
+        "requestId",
+        "result",
+        "schemaVersion",
+      ]);
       const { store } = readStore(artifactsDir);
       assert.strictEqual(store.entries[0].exportPath, exportTarget);
     } finally {
@@ -757,7 +801,12 @@ function decodeReaderFetchResult(value) {
 }
 
 /** Reader double whose cacheIdentity mirrors the zai adapter: real v2 key + one legacy candidate. */
-function makeProvenanceReaderDescriptor(id, { down = false, warm = "none" } = {}, cache = null, invokeLog = null) {
+function makeProvenanceReaderDescriptor(
+  id,
+  { down = false, warm = "none" } = {},
+  cache = null,
+  invokeLog = null,
+) {
   return {
     id,
     isConfigured: () => true,
@@ -770,7 +819,11 @@ function makeProvenanceReaderDescriptor(id, { down = false, warm = "none" } = {}
           validate() {},
           cacheIdentity(request) {
             const legacyArgs = { url: request.url };
-            const legacyKey = buildLegacyReaderCacheKey(PROVENANCE_API_KEY, PROVENANCE_READER_TOOL, legacyArgs);
+            const legacyKey = buildLegacyReaderCacheKey(
+              PROVENANCE_API_KEY,
+              PROVENANCE_READER_TOOL,
+              legacyArgs,
+            );
             if (warm === "legacy" && cache) {
               cache.set(legacyKey, {
                 title: "Cached docs",
@@ -894,12 +947,16 @@ describe("save entries distinguish served-live vs served-from-cache (issue #108)
       "cached body from zai (v2 key)",
       "stdout served zai's cached body",
     );
-    assert.deepStrictEqual(out.entry.provider, {
-      mode: "single",
-      requested: "zai",
-      effective: "zai",
-      servedFrom: "cache",
-    }, "entry must say zai's cache served while zai was never contacted");
+    assert.deepStrictEqual(
+      out.entry.provider,
+      {
+        mode: "single",
+        requested: "zai",
+        effective: "zai",
+        servedFrom: "cache",
+      },
+      "entry must say zai's cache served while zai was never contacted",
+    );
   });
 
   it("variant B: zai legacy v0.2 read-through warm + zai unreachable — entry pins servedFrom:'cache'", async () => {
@@ -911,12 +968,16 @@ describe("save entries distinguish served-live vs served-from-cache (issue #108)
       "cached body from zai (legacy key)",
       "stdout served zai's legacy-cached body",
     );
-    assert.deepStrictEqual(out.entry.provider, {
-      mode: "single",
-      requested: "zai",
-      effective: "zai",
-      servedFrom: "cache",
-    }, "entry must say zai's cache served (legacy read-through) while zai was never contacted");
+    assert.deepStrictEqual(
+      out.entry.provider,
+      {
+        mode: "single",
+        requested: "zai",
+        effective: "zai",
+        servedFrom: "cache",
+      },
+      "entry must say zai's cache served (legacy read-through) while zai was never contacted",
+    );
   });
 
   it("control: cold cache + zai unreachable — live tavily fallback pins servedFrom:'live'", async () => {
@@ -927,12 +988,16 @@ describe("save entries distinguish served-live vs served-from-cache (issue #108)
     // before tavily serves live.
     assert.ok(out.invokeLog.includes("zai"), "control: zai must be attempted (and fail)");
     assert.ok(out.invokeLog.includes("tavily"), "control: tavily must serve live");
-    assert.deepStrictEqual(out.entry.provider, {
-      mode: "single",
-      requested: "zai",
-      effective: "tavily",
-      servedFrom: "live",
-    }, "live fallback attributes the actual server with servedFrom:'live'");
+    assert.deepStrictEqual(
+      out.entry.provider,
+      {
+        mode: "single",
+        requested: "zai",
+        effective: "tavily",
+        servedFrom: "live",
+      },
+      "live fallback attributes the actual server with servedFrom:'live'",
+    );
   });
 });
 
@@ -961,5 +1026,46 @@ describe("review r3: save+journal pin has teeth (cubic P3)", () => {
     assert.ok(entry.requestId.length > 0, "journal entry mints its own requestId");
     assert.notStrictEqual(entry.requestId, runId, "journal id is distinct from the run's");
     assert.strictEqual(entry.saveRef, runId, "saveRef is the cross-link");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review batch 1 (PR #111, macroscope cubic P2): the log's exportPath must
+// be ABSOLUTE — a relative --save value is resolved against the invoking
+// process's cwd at save time, so a later `history` read or a
+// `history clear --all` sweep never re-resolves it in some other working
+// directory. The stderr notice keeps the relative form the user typed.
+// ---------------------------------------------------------------------------
+describe("review A2: a relative --save path is logged absolute", () => {
+  it("resolves the relative export target against cwd for the log; the notice keeps the relative form", async () => {
+    const artifactsDir = makeTempDir("scoutline-save-a2-relative-artifacts-");
+    const exportDir = makeTempDir("scoutline-save-a2-relative-export-");
+    // A path relative to THIS cwd that lands inside the throwaway export
+    // dir: no chdir, nothing written to the repo working tree.
+    const relativeTarget = relative(process.cwd(), join(exportDir, "report.json"));
+    const log = [];
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      const status = await main(
+        ["search", "q", "--save", relativeTarget],
+        baseDeps(adapter, log, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const { requestId, store } = readStore(artifactsDir);
+      const saveEntry = store.entries.find((e) => e.kind === "save");
+      assert.strictEqual(
+        saveEntry.exportPath,
+        resolve(relativeTarget),
+        "the log carries the cwd-resolved ABSOLUTE path",
+      );
+      assert.strictEqual(saveEntry.exportPath, join(exportDir, "report.json"));
+      // The user-facing notice still shows the relative form.
+      const notice = stderr.find((line) => line.includes(requestId));
+      assert.ok(notice, `no notice carrying the requestId; stderr=${JSON.stringify(stderr)}`);
+      assert.ok(notice.includes(relativeTarget), `notice must show the relative form: ${notice}`);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+      rmSync(exportDir, { recursive: true, force: true });
+    }
   });
 });

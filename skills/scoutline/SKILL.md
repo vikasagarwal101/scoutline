@@ -248,12 +248,12 @@ the full result kept. Escape hatches: `--no-journal` on a single call,
 
 ```bash
 scoutline search "x" --save report.md --save-format markdown
-scoutline history list --since 7 --command search
+scoutline history list --since 7 --command search         # --since N = day count
 scoutline history show 20260829T142233Z-7f3a
 scoutline history recall "rust async runtimes"            # offline re-find
 scoutline history recall "rust" --capability search --as-of 2026-08-01
 scoutline history note --capability search "decision: tavily for finance queries"
-scoutline history export                                    # cited markdown dossier
+scoutline history export --since 2026-09-01                # cited markdown dossier (--since = ISO date)
 scoutline history clear                                     # journal entries only
 scoutline search "x" --no-journal                           # skip this one call
 ```
@@ -431,7 +431,7 @@ npx scoutline@0.20.0 quota --all-providers
 
 # Research journal — recall past work instead of re-searching (offline, no provider call)
 npx scoutline@0.20.0 history recall "rust async" --limit 5
-npx scoutline@0.20.0 history export --since 7
+npx scoutline@0.20.0 history export --since 2026-09-01
 
 # Local cache inspection, clearing, and pruning
 npx scoutline@0.20.0 cache stats                 # inventory both subdirectories

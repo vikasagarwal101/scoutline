@@ -820,9 +820,12 @@ and `kind:"journal"` (always-on research memory). Every `search` /
 default. A cache miss appends ONE full journal entry: `{kind, requestId,
 timestamp, capability, provider (with servedFrom: live|cache — issue
 #108), query|url, contentHash (sha256 of the normalized skeleton),
-cacheKey, skeleton}` — the skeleton is the thin, self-contained identity
+cacheKey, skeleton, saveRef?}` — the skeleton is the thin, self-contained identity
 of the result (search: url+title list; read: url+title; research:
-citations), never the body. A cache hit appends a tiny repeat marker
+citations), never the body. `saveRef` is present only when the same run
+used `--save`: it is the saved artifact's requestId, resolvable to the
+artifact through the save entry (offline recovery of the full result —
+no re-fetch). A cache hit appends a tiny repeat marker
 `{kind, timestamp, capability, provider, repeatOf}` instead; a
 journal-cold-but-cache-warm hit (no prior full entry with that cacheKey)
 writes the full entry once. The log is strictly append-only — no entry

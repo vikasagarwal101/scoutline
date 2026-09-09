@@ -70,10 +70,11 @@ describe("MAIN_HELP Commands block mirrors the dispatched surface (#104)", () =>
     const dispatched = [...DISPATCHED_COMMANDS].sort();
     const missing = dispatched.filter((c) => !rows.includes(c));
     const phantom = rows.filter((r) => !dispatched.includes(r));
+    const duplicated = rows.filter((r, i) => rows.indexOf(r) !== i);
     assert.deepEqual(
       rows,
       dispatched,
-      `Commands rows must equal DISPATCHED_COMMANDS (missing: [${missing}] phantom: [${phantom}])`,
+      `Commands rows must equal DISPATCHED_COMMANDS (missing: [${missing}] phantom: [${phantom}] duplicated: [${duplicated}])`,
     );
   });
 });

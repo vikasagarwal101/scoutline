@@ -3,7 +3,8 @@
  *
  * Two endpoints:
  *   - POST /search — dedicated Search API (ranked results with snippets + dates)
- *   - POST /chat/completions — Sonar chat completions (research via sonar-deep-research)
+ *   - POST /v1/agent — Agent API (research via the "high" preset; replaces
+ *     the Sonar chat-completions surface sunset on 2026-09-27, #107)
  */
 
 import pkg from "../../../package.json" with { type: "json" };
@@ -57,10 +58,12 @@ export interface PerplexitySearchParams {
 }
 
 // ---------------------------------------------------------------------------
-// Sonar Chat Completions types — POST /chat/completions
+// Agent API types — POST /v1/agent (Sonar chat-completions successor, #107)
 // ---------------------------------------------------------------------------
 
-export interface PerplexitySearchResultEntry {
+/** One ranked source inside a `search_results` output item. */
+export interface PerplexityAgentSearchResult {
+  readonly id?: number;
   readonly title?: string;
   readonly url?: string;
   readonly date?: string | null;
@@ -69,19 +72,23 @@ export interface PerplexitySearchResultEntry {
   readonly source?: string;
 }
 
-export interface PerplexityChoice {
-  readonly message?: {
-    readonly role?: string;
-    readonly content?: string;
-  };
+/**
+ * One typed item of the Agent API `output[]` trace. `search_results`
+ * items carry `results[]` (the sources of one search round); `message`
+ * items carry `content[]` (the answer text as `output_text` parts).
+ */
+export interface PerplexityAgentOutputItem {
+  readonly type?: string;
+  readonly results?: readonly PerplexityAgentSearchResult[];
+  readonly content?: readonly { readonly type?: string; readonly text?: string }[];
 }
 
-export interface PerplexityChatResponse {
+export interface PerplexityAgentResponse {
   readonly id?: string;
   readonly model?: string;
-  readonly choices?: readonly PerplexityChoice[];
-  readonly citations?: readonly string[];
-  readonly search_results?: readonly PerplexitySearchResultEntry[];
+  readonly status?: string;
+  readonly error?: unknown;
+  readonly output?: readonly PerplexityAgentOutputItem[];
 }
 
 // ---------------------------------------------------------------------------
@@ -94,11 +101,18 @@ function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
 }
 
 function resolveResearchTimeoutMs(env: NodeJS.ProcessEnv): number {
-  const raw = parseInt(env.PERPLEXITY_RESEARCH_TIMEOUT || String(DEFAULT_DEEPSEARCH_TIMEOUT_MS), 10);
+  const raw = parseInt(
+    env.PERPLEXITY_RESEARCH_TIMEOUT || String(DEFAULT_DEEPSEARCH_TIMEOUT_MS),
+    10,
+  );
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_DEEPSEARCH_TIMEOUT_MS;
 }
 
-function mapStatusError(status: number, timeoutMs: number, timeoutHelp: string = TIMEOUT_HELP_TEXT): Error {
+function mapStatusError(
+  status: number,
+  timeoutMs: number,
+  timeoutHelp: string = TIMEOUT_HELP_TEXT,
+): Error {
   if (status === 401 || status === 403) {
     return new AuthError("Perplexity authentication failed", "PERPLEXITY_API_KEY");
   }
@@ -136,7 +150,8 @@ export async function fetchPerplexitySearch(
   const url = `${BASE_URL}/search`;
   const body: Record<string, unknown> = { query };
   if (params.max_results !== undefined) body.max_results = params.max_results;
-  if (params.search_context_size !== undefined) body.search_context_size = params.search_context_size;
+  if (params.search_context_size !== undefined)
+    body.search_context_size = params.search_context_size;
   if (params.search_domain_filter) body.search_domain_filter = params.search_domain_filter;
   if (params.search_recency_filter) body.search_recency_filter = params.search_recency_filter;
 
@@ -148,7 +163,7 @@ export async function fetchPerplexitySearch(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
         "User-Agent": USER_AGENT,
       },
       body: JSON.stringify(body),
@@ -180,32 +195,32 @@ export async function fetchPerplexitySearch(
 }
 
 // ---------------------------------------------------------------------------
-// Sonar Chat Completions — POST /chat/completions
+// Agent API — POST /v1/agent (research via preset "high", #107)
 // ---------------------------------------------------------------------------
 
-export async function fetchPerplexityChat(
+/**
+ * Preset that replaces `sonar-deep-research` per Perplexity's official
+ * Sonar → Agent API migration mapping. `high` = expert-level reasoning,
+ * exhaustive source coverage, web_search + fetch_url tools.
+ */
+const AGENT_RESEARCH_PRESET = "high";
+
+export async function fetchPerplexityAgent(
   apiKey: string,
   prompt: string,
-  model: string = "sonar",
   deps: PerplexityTransportDeps = {},
   externalSignal?: AbortSignal,
-): Promise<PerplexityChatResponse> {
+): Promise<PerplexityAgentResponse> {
   const fetchFn = deps.fetch || globalThis.fetch;
   const setTimer = deps.setTimeout || globalThis.setTimeout;
   const clearTimer = deps.clearTimeout || globalThis.clearTimeout;
   const env = deps.env || process.env;
-  const isResearch = model.includes("deep-research");
-  const timeoutMs = isResearch ? resolveResearchTimeoutMs(env) : resolveTimeoutMs(env);
+  const timeoutMs = resolveResearchTimeoutMs(env);
 
-  const url = `${BASE_URL}/chat/completions`;
+  const url = `${BASE_URL}/v1/agent`;
   const body = {
-    model,
-    messages: [
-      {
-        role: "user",
-        content: prompt,
-      },
-    ],
+    preset: AGENT_RESEARCH_PRESET,
+    input: prompt,
   };
 
   const controller = new AbortController();
@@ -220,7 +235,7 @@ export async function fetchPerplexityChat(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
         "User-Agent": USER_AGENT,
       },
       body: JSON.stringify(body),
@@ -228,15 +243,11 @@ export async function fetchPerplexityChat(
     });
 
     if (!response.ok) {
-      throw mapStatusError(
-        response.status,
-        timeoutMs,
-        isResearch ? RESEARCH_TIMEOUT_HELP_TEXT : TIMEOUT_HELP_TEXT,
-      );
+      throw mapStatusError(response.status, timeoutMs, RESEARCH_TIMEOUT_HELP_TEXT);
     }
 
     const text = await response.text();
-    return JSON.parse(text) as PerplexityChatResponse;
+    return JSON.parse(text) as PerplexityAgentResponse;
   } catch (err: unknown) {
     if (err instanceof AuthError || err instanceof ApiError || err instanceof TimeoutError) {
       throw err;
@@ -245,10 +256,7 @@ export async function fetchPerplexityChat(
       throw new ApiError("Perplexity returned a malformed JSON response", 500);
     }
     if (err instanceof Error && err.name === "AbortError") {
-      throw new TimeoutError(
-        timeoutMs,
-        isResearch ? RESEARCH_TIMEOUT_HELP_TEXT : TIMEOUT_HELP_TEXT,
-      );
+      throw new TimeoutError(timeoutMs, RESEARCH_TIMEOUT_HELP_TEXT);
     }
     throw new NetworkError(
       `Perplexity request failed: ${err instanceof Error ? err.message : String(err)}`,

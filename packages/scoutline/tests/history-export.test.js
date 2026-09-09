@@ -729,7 +729,9 @@ describe("review r3: export masterExists reads the log ONCE (greptile/macroscope
     try {
       writeFileSync(
         join(artifactsDir, "20260908T110000Z-save1.json"),
-        JSON.stringify({ body: "ONE-PASS-BODY-SENTINEL" }),
+        // Trailing newline included: the trim-before-fence path must be
+        // exercised for real, or the `!includes("}\n\n```")` pin is vacuous.
+        `${JSON.stringify({ body: "ONE-PASS-BODY-SENTINEL" })}\n`,
         "utf8",
       );
       await seedStore(artifactsDir, [
@@ -863,6 +865,94 @@ describe("review batch 3: dossier prose is markdown-escaped (issues 4/8)", () =>
       assert.ok(span !== undefined, "provenance span renders");
       assert.ok(span.includes("a\\`b"), `backtick escaped inside the span: ${JSON.stringify(span)}`);
       assert.ok(span.startsWith("  `") && span.endsWith("}`"), "span delimiters intact");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review batch (PR #111 cluster B): the master-body fence grows to one
+// backtick past the body's longest backtick run so hostile bodies can't
+// close the ```json wrapper and inject dossier markdown; escMd kills
+// bare CR too.
+// ---------------------------------------------------------------------------
+
+describe("cluster B: master-body fence escapes embedded backtick runs", () => {
+  it("body containing a ``` fence line cannot close the wrapper (no injected markdown escapes)", async () => {
+    const artifactsDir = makeTempDir("scoutline-export-fence-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      const masterBody = [
+        "{",
+        '  "body": "```js",',
+        '  "evil": "# INJECTED\\n- bullet"',
+        "}",
+        "",
+      ].join("\n");
+      writeFileSync(join(artifactsDir, "s-fence.json"), masterBody, "utf8");
+      await seedStore(artifactsDir, [
+        fullEntry({
+          requestId: "r-fence",
+          timestamp: T0 - H,
+          query: "fence probe",
+          skeleton: { results: [] },
+          saveRef: "s-fence",
+        }),
+        saveEntry({ requestId: "s-fence", timestamp: T0 - H, masterPath: "s-fence.json" }),
+      ]);
+      const status = await main(
+        ["history", "export"],
+        exportDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const markdown = parseEnvelope(stdout).markdown;
+      // The wrapper opens with a 4-backtick fence (body's longest run
+      // is 3) and only a matching 4-run closes it; the body's ```js
+      // line stays inert inside.
+      assert.ok(
+        markdown.includes("````json\n") && markdown.includes("\n````\n"),
+        `wrapper fence is 4 backticks: ${JSON.stringify(markdown)}`,
+      );
+      // "INJECTED" survives only INSIDE the wrapper fence: split on the
+      // closing 4-run and nothing may follow in the rendered dossier.
+      const after = markdown.slice(markdown.indexOf("\n````\n") + "\n````\n".length);
+      assert.ok(!after.includes("INJECTED"), `nothing injected after the wrapper: ${JSON.stringify(after)}`);
+      // The escaped title inside the fence also proves escMd never
+      // touched the body (raw ```js preserved as data, not markdown).
+      assert.ok(markdown.includes("```js"), "body's inner fence renders verbatim inside the wrapper");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("escMd collapses bare CR (no LF): hostile value cannot forge a line", async () => {
+    const artifactsDir = makeTempDir("scoutline-export-cr-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      await seedStore(artifactsDir, [
+        fullEntry({
+          requestId: "r-cr",
+          timestamp: T0 - H,
+          query: "cr probe",
+          skeleton: {
+            results: [{ url: "https://example.com/cr", title: "# CR INJECTED\r- bare carriage bullet" }],
+          },
+        }),
+      ]);
+      const status = await main(
+        ["history", "export"],
+        exportDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const lines = parseEnvelope(stdout).markdown.split("\n");
+      const heading = lines.find((l) => l.startsWith("## ") && l.includes("CR"));
+      assert.strictEqual(
+        heading,
+        "## \\# CR INJECTED \\- bare carriage bullet",
+        `bare CR collapsed onto one escaped line: ${JSON.stringify(heading)}`,
+      );
+      assert.ok(!lines.includes("- bare carriage bullet"), "no forged bullet line survives");
     } finally {
       rmSync(artifactsDir, { recursive: true, force: true });
     }

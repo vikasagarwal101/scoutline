@@ -579,6 +579,73 @@ describe("review r3: --all sweep spares atomic-replace temporaries (macroscope/c
 });
 
 // ---------------------------------------------------------------------------
+// Review batch 1 (PR #111): --all failure honesty + export-copy sparing.
+// ---------------------------------------------------------------------------
+
+describe("review batch 1: --all wipe failure honesty (macroscope/greptile/cubic)", () => {
+  it("read-only artifacts dir: exit 1 FILE_ERROR; log and masters byte-intact (skipped as root)", async (t) => {
+    if (process.getuid?.() === 0) return t.skip("root ignores directory write bits");
+    const { chmod } = await import("node:fs/promises");
+    const artifactsDir = makeTempDir("scoutline-clear-ro-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      seedMixedStore(artifactsDir);
+      const logBefore = readFileSync(join(artifactsDir, "index.json"));
+      const masterBefore = readFileSync(join(artifactsDir, "s-1.json"));
+      await chmod(artifactsDir, 0o555);
+      const status = await main(
+        ["history", "clear", "--all"],
+        clearDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
+      );
+      assert.strictEqual(status, 1, "a wipe that cannot delete must not exit 0");
+      assert.deepStrictEqual(stdout, [], "no success stdout past a failed wipe");
+      const envelope = JSON.parse(stderr.at(-1));
+      assert.strictEqual(envelope.code, "FILE_ERROR");
+      // Store intact: the log is byte-identical and both masters survive.
+      assert.ok(logBefore.equals(readFileSync(join(artifactsDir, "index.json"))));
+      assert.ok(masterBefore.equals(readFileSync(join(artifactsDir, "s-1.json"))));
+      assert.ok(existsSync(join(artifactsDir, "s-2.md")));
+      assert.strictEqual(readStore(artifactsDir).entries.length, 5);
+    } finally {
+      await chmod(artifactsDir, 0o700).catch(() => {});
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("review batch 1: --all spares logged export copies inside the artifacts dir (cubic)", () => {
+  it("a save entry's exportPath file inside the store survives the sweep; entry removed, master deleted", async () => {
+    const artifactsDir = makeTempDir("scoutline-clear-export-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      const exportName = "export-copy.md";
+      makeStore(artifactsDir, [
+        fullEntry({ requestId: "j-1", cacheKey: "key-1" }),
+        saveEntry({
+          requestId: "s-1",
+          masterPath: "s-1.json",
+          exportPath: join(artifactsDir, exportName),
+        }),
+      ]);
+      writeFileSync(join(artifactsDir, exportName), "# export copy\n");
+      const status = await main(
+        ["history", "clear", "--all"],
+        clearDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      assert.ok(existsSync(join(artifactsDir, exportName)), "logged export copy survives the sweep");
+      assert.ok(!existsSync(join(artifactsDir, "s-1.json")), "logged master still deleted");
+      assert.deepStrictEqual(readStore(artifactsDir).entries, []);
+      const envelope = JSON.parse(stdout[0]);
+      assert.strictEqual(envelope.removed, 2);
+      assert.strictEqual(envelope.mastersDeleted, 1, "export copy is not a master; not counted");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Review batch 3 (PR #111): honest mastersDeleted (issue 7).
 // ---------------------------------------------------------------------------
 

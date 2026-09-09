@@ -319,28 +319,28 @@ describe("Perplexity Descriptor & Adapter", () => {
       (err) => err instanceof ApiError,
     );
   });
-it("research rejects a non-completed agent run with null error instead of caching an empty report", async () => {
-  const fakeFetch = async () => ({
-    ok: true,
-    status: 200,
-    text: async () =>
-      JSON.stringify({
-        status: "incomplete",
-        error: null,
-        output: [],
-      }),
+  it("research rejects a non-completed agent run with null error instead of caching an empty report", async () => {
+    const fakeFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          status: "incomplete",
+          error: null,
+          output: [],
+        }),
+    });
+
+    const adapter = new PerplexityAdapter(
+      { env: { PERPLEXITY_API_KEY: TEST_KEY } },
+      { transport: { fetch: fakeFetch } },
+    );
+
+    await assert.rejects(
+      () => adapter.research.run.invoke({ query: "test" }),
+      (err) => err instanceof ApiError,
+    );
   });
-
-  const adapter = new PerplexityAdapter(
-    { env: { PERPLEXITY_API_KEY: TEST_KEY } },
-    { transport: { fetch: fakeFetch } },
-  );
-
-  await assert.rejects(
-    () => adapter.research.run.invoke({ query: "test" }),
-    (err) => err instanceof ApiError,
-  );
-});
 
   it("research cache identity is request-based — no transport or endpoint fields", () => {
     const adapter = new PerplexityAdapter(

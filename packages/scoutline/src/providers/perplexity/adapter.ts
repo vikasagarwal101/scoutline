@@ -8,10 +8,12 @@
  * structured results with titles, URLs, snippets, and dates — far richer
  * than mapping chat completions to citations.
  *
- * Research uses the Sonar Chat Completions endpoint with the
- * `sonar-deep-research` model, which is designed for comprehensive
- * report synthesis. The response includes `search_results[]` with
- * structured source data (title, url, date, snippet).
+ * Research uses the Agent API (POST /v1/agent) with the `high`
+ * preset — the official successor to `sonar-deep-research` on the
+ * Sonar chat-completions endpoint (sunset 2026-09-27, #107). The
+ * response carries an `output[]` trace: `message` items hold the
+ * report text, `search_results` items hold structured sources
+ * (title, url, date, snippet) — one item per search round.
  *
  * Reader is intentionally omitted: Perplexity does not offer a
  * dedicated webpage extraction API.
@@ -22,10 +24,10 @@
  *     results[].url     -> url
  *     results[].snippet -> summary
  *     results[].date    -> date
- *   Research (/chat/completions):
- *     choices[0].message.content -> report
- *     search_results[].title/url -> sources[]
- *     citations[] (fallback)     -> sources[]
+ *   Research (/v1/agent, preset "high"):
+ *     output[].message.content[].text -> report
+ *     output[].search_results.results[] -> sources[] (union across
+ *       search rounds, deduped by URL, first occurrence wins)
  *
  * Control mapping (SearchControls → Search API params):
  *   domain      -> search_domain_filter: [domain]
@@ -74,7 +76,8 @@ import { requirePerplexityApiKey, isPerplexityConfigured } from "./credentials.j
 import { applySearchTopic } from "../../lib/search-topic.js";
 import {
   fetchPerplexitySearch,
-  fetchPerplexityChat,
+  fetchPerplexityAgent,
+  type PerplexityAgentResponse,
   type PerplexitySearchParams,
   type PerplexityTransportDeps,
 } from "./client.js";
@@ -136,7 +139,9 @@ function normalizePerplexityError(error: unknown): Error {
   return new ApiError("Perplexity request failed", 500);
 }
 
-function mapRecencyToFilter(recency: SearchRecency): PerplexitySearchParams["search_recency_filter"] {
+function mapRecencyToFilter(
+  recency: SearchRecency,
+): PerplexitySearchParams["search_recency_filter"] {
   switch (recency) {
     case "oneDay":
       return "day";
@@ -176,6 +181,46 @@ function mapSearchControls(controls?: SearchControls): PerplexitySearchParams | 
 
 export interface PerplexityAdapterDependencies {
   readonly transport?: PerplexityTransportDeps;
+}
+
+/**
+ * Collect the report text from an Agent API `output[]` trace: every
+ * `message` item's `output_text` content parts, joined. The `high`
+ * preset emits one final message; the join keeps the mapping total if
+ * the trace ever carries more.
+ */
+function collectAgentReportText(response: PerplexityAgentResponse): string {
+  const parts: string[] = [];
+  for (const item of response.output ?? []) {
+    if (item.type !== "message") continue;
+    for (const content of item.content ?? []) {
+      if (content.type === "output_text" && content.text) parts.push(content.text);
+    }
+  }
+  return parts.join("\n\n");
+}
+
+/**
+ * Collect sources from an Agent API `output[]` trace: every
+ * `search_results` item's `results[]`, unioned across search rounds
+ * and deduped by URL (first occurrence wins — earlier rounds rank
+ * higher). Entries without a usable URL are skipped.
+ */
+function collectAgentSources(response: PerplexityAgentResponse): { title: string; url: string }[] {
+  const sources: { title: string; url: string }[] = [];
+  const seen = new Set<string>();
+  for (const item of response.output ?? []) {
+    if (item.type !== "search_results") continue;
+    for (const entry of item.results ?? []) {
+      if (!entry.url || seen.has(entry.url)) continue;
+      seen.add(entry.url);
+      sources.push({
+        title: entry.title || `Source ${sources.length + 1}`,
+        url: entry.url,
+      });
+    }
+  }
+  return sources;
 }
 
 export class PerplexityAdapter implements ProviderAdapter {
@@ -251,15 +296,11 @@ export class PerplexityAdapter implements ProviderAdapter {
           if (!request.query || request.query.trim().length === 0) {
             throw new ValidationError("Research query must not be empty");
           }
-          // Perplexity research always runs the sonar-deep-research
-          // model; model, outputLength, citationFormat, and domain have
-          // no faithful mapping.
-          for (const option of [
-            "model",
-            "outputLength",
-            "citationFormat",
-            "domain",
-          ] as const) {
+          // Perplexity research always runs the Agent API "high"
+          // preset; model, outputLength, citationFormat, and domain have
+          // no faithful mapping (domain/outputLength become mappable
+          // via web_search filters / max_output_tokens if ever needed).
+          for (const option of ["model", "outputLength", "citationFormat", "domain"] as const) {
             if (request[option] !== undefined) {
               throw new UnsupportedOptionError("perplexity", "research", option);
             }
@@ -286,41 +327,21 @@ export class PerplexityAdapter implements ProviderAdapter {
           const query = request.query.trim();
 
           try {
-            const response = await fetchPerplexityChat(
-              apiKey,
-              query,
-              "sonar-deep-research",
-              transport,
-              signal,
-            );
-            const content = response.choices?.[0]?.message?.content || "";
-
-            // Prefer search_results[] (structured sources with titles)
-            // over citations[] (bare URLs). Fall back to citations[] when
-            // search_results[] has no usable URLs.
-            const sources: { title: string; url: string }[] = [];
-            if (response.search_results) {
-              for (const entry of response.search_results) {
-                if (entry.url) {
-                  sources.push({
-                    title: entry.title || `Source ${sources.length + 1}`,
-                    url: entry.url,
-                  });
-                }
-              }
-            }
-            if (sources.length === 0 && response.citations) {
-              for (const url of response.citations) {
-                sources.push({ title: `Source ${sources.length + 1}`, url });
-              }
+            const response = await fetchPerplexityAgent(apiKey, query, transport, signal);
+            // A failed run (error non-null / status != "completed") must
+            // throw, never cache an empty report as a success.
+            if (response.error) {
+              throw new ApiError("Perplexity research run failed", 502);
             }
 
             return {
               schemaVersion: 1,
               query,
-              model: "sonar-deep-research",
-              report: content,
-              sources,
+              // Echo the model the preset actually ran; fall back to the
+              // preset name when the response omits it.
+              model: response.model || "high",
+              report: collectAgentReportText(response),
+              sources: collectAgentSources(response),
             };
           } catch (error) {
             throw normalizePerplexityError(error);

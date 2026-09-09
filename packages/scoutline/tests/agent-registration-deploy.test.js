@@ -267,24 +267,31 @@ describe("registration stamp (DESIGN D5)", () => {
 
     // Marker block in the codex shared file, user bytes preserved above it.
     const agents = await read(path.join(home, ".codex", "AGENTS.md"));
-    assert.ok(agents.startsWith("# codex user notes\n"), "user bytes before the block must survive");
+    assert.ok(
+      agents.startsWith("# codex user notes\n"),
+      "user bytes before the block must survive",
+    );
     assert.ok(agents.includes("<!-- scoutline:start -->"), "codex block must be marker-wrapped");
     assert.ok(agents.includes(RULE_TEXT), "codex block must carry the rule text");
 
     // opencode instructions array entry; file must still be valid JSON.
-    const opencodeConfig = JSON.parse(await read(path.join(home, ".config", "opencode", "opencode.json")));
+    const opencodeConfig = JSON.parse(
+      await read(path.join(home, ".config", "opencode", "opencode.json")),
+    );
     assert.ok(
       Array.isArray(opencodeConfig.instructions) &&
-        opencodeConfig.instructions.some((entry) => typeof entry === "string" && entry.includes("scoutline")),
+        opencodeConfig.instructions.some(
+          (entry) => typeof entry === "string" && entry.includes("scoutline"),
+        ),
       "opencode instructions array must carry our entry",
     );
 
     // Copilot is pointer-free: nothing under ~/.copilot except the rules file
     // and the skills tree.
-    assert.deepEqual(
-      (await fs.readdir(path.join(home, ".copilot"))).sort(),
-      ["instructions", "skills"],
-    );
+    assert.deepEqual((await fs.readdir(path.join(home, ".copilot"))).sort(), [
+      "instructions",
+      "skills",
+    ]);
   });
 });
 
@@ -296,7 +303,11 @@ describe("lazy refresh (DESIGN D5, PRD AC-7)", () => {
     const configRoot = await mkTemp(t);
     const notices = [];
 
-    assert.equal(await readAgentRegistrationStamp(configRoot), undefined, "absent stamp reads as undefined");
+    assert.equal(
+      await readAgentRegistrationStamp(configRoot),
+      undefined,
+      "absent stamp reads as undefined",
+    );
     const result = await checkAgentRegistration({
       home,
       configRoot,
@@ -307,7 +318,11 @@ describe("lazy refresh (DESIGN D5, PRD AC-7)", () => {
     assert.equal(result.refreshed, false);
     assert.deepEqual(await fs.readdir(home), [], "no skill home may be created without a stamp");
     assert.deepEqual(notices, [], "stamp-absent runs emit zero stderr bytes");
-    assert.equal(await readAgentRegistrationStamp(configRoot), undefined, "no stamp may be minted by a check");
+    assert.equal(
+      await readAgentRegistrationStamp(configRoot),
+      undefined,
+      "no stamp may be minted by a check",
+    );
   });
 
   it("version-LOWER stamp (downgrade) refreshes: skill re-copied, stamp rewritten to current, tools preserved", async (t) => {
@@ -324,18 +339,39 @@ describe("lazy refresh (DESIGN D5, PRD AC-7)", () => {
     await fs.writeFile(destSkill, "STALE BYTES");
     await fs.writeFile(rulesFile, "STALE RULES\n");
     // Version-only drift: hash still current — isolates the version trigger.
-    await writeStamp(configRoot, { version: "0.0.1", tools: ["claude"], ruleTextHash: computeRuleTextHash() });
-
-    const result = await checkAgentRegistration({ home, configRoot, version: "9.9.9", writeStderr: () => {} });
-
-    assert.equal(result.refreshed, true, "a version-LOWER stamp must refresh");
-    assert.deepEqual(await fs.readFile(destSkill), sourceSkill, "skill must be re-copied from source");
-    assert.equal(await read(rulesFile), "STALE RULES\n", "version-only drift must NOT rewrite rule files (AC-7: rewrite only when text drifted)");
-    assert.deepEqual(JSON.parse(await read(path.join(configRoot, STAMP_NAME))), {
-      version: "9.9.9",
+    await writeStamp(configRoot, {
+      version: "0.0.1",
       tools: ["claude"],
       ruleTextHash: computeRuleTextHash(),
-    }, "stamp must be rewritten to current values with tools preserved");
+    });
+
+    const result = await checkAgentRegistration({
+      home,
+      configRoot,
+      version: "9.9.9",
+      writeStderr: () => {},
+    });
+
+    assert.equal(result.refreshed, true, "a version-LOWER stamp must refresh");
+    assert.deepEqual(
+      await fs.readFile(destSkill),
+      sourceSkill,
+      "skill must be re-copied from source",
+    );
+    assert.equal(
+      await read(rulesFile),
+      "STALE RULES\n",
+      "version-only drift must NOT rewrite rule files (AC-7: rewrite only when text drifted)",
+    );
+    assert.deepEqual(
+      JSON.parse(await read(path.join(configRoot, STAMP_NAME))),
+      {
+        version: "9.9.9",
+        tools: ["claude"],
+        ruleTextHash: computeRuleTextHash(),
+      },
+      "stamp must be rewritten to current values with tools preserved",
+    );
   });
 
   it("ruleTextHash-mismatch stamp rewrites rules through the same engines: dedicated wholesale, marker in-region, pointer lines byte-unchanged, skill re-copied", async (t) => {
@@ -369,24 +405,50 @@ describe("lazy refresh (DESIGN D5, PRD AC-7)", () => {
     // Hash-only drift: version still current — isolates the text trigger.
     await writeStamp(configRoot, { version: "9.9.9", tools, ruleTextHash: "deadbeef" });
 
-    const result = await checkAgentRegistration({ home, configRoot, version: "9.9.9", writeStderr: () => {} });
+    const result = await checkAgentRegistration({
+      home,
+      configRoot,
+      version: "9.9.9",
+      writeStderr: () => {},
+    });
 
     assert.equal(result.refreshed, true, "a ruleTextHash-mismatch stamp must refresh");
     // Dedicated files replaced wholesale with the current text.
-    assert.equal(await read(RULES_FILE.claude(home)), RULE_TEXT, "claude rules file must be replaced wholesale");
-    assert.equal(await read(RULES_FILE.opencode(home)), RULE_TEXT, "opencode rules file must be replaced wholesale");
+    assert.equal(
+      await read(RULES_FILE.claude(home)),
+      RULE_TEXT,
+      "claude rules file must be replaced wholesale",
+    );
+    assert.equal(
+      await read(RULES_FILE.opencode(home)),
+      RULE_TEXT,
+      "opencode rules file must be replaced wholesale",
+    );
     // Marker region rewritten IN-REGION: user prefix intact, old text gone.
     const agents = await read(agentsPath);
-    assert.ok(agents.startsWith("# codex user notes\n"), "bytes outside the marker region must be preserved");
+    assert.ok(
+      agents.startsWith("# codex user notes\n"),
+      "bytes outside the marker region must be preserved",
+    );
     assert.ok(agents.includes(RULE_TEXT), "marker region must carry the current rule text");
     assert.ok(!agents.includes("OLD REGION TEXT"), "old region text must not linger");
     // Pointer lines byte-unchanged.
-    assert.equal(await read(claudeMdPath), claudeMdBefore, "claude pointer surface must be byte-identical");
-    assert.equal(await read(opencodeJsonPath), opencodeJsonBefore, "opencode pointer surface must be byte-identical");
+    assert.equal(
+      await read(claudeMdPath),
+      claudeMdBefore,
+      "claude pointer surface must be byte-identical",
+    );
+    assert.equal(
+      await read(opencodeJsonPath),
+      opencodeJsonBefore,
+      "opencode pointer surface must be byte-identical",
+    );
     const opencodeConfig = JSON.parse(opencodeJsonBefore);
     assert.ok(
       Array.isArray(opencodeConfig.instructions) &&
-        opencodeConfig.instructions.some((entry) => typeof entry === "string" && entry.includes("scoutline")),
+        opencodeConfig.instructions.some(
+          (entry) => typeof entry === "string" && entry.includes("scoutline"),
+        ),
       "opencode array entry must survive the refresh",
     );
     // Skill re-copied even on hash-only drift.
@@ -412,11 +474,20 @@ describe("lazy refresh (DESIGN D5, PRD AC-7)", () => {
     const stampPath = path.join(configRoot, STAMP_NAME);
     const stampBefore = await read(stampPath);
 
-    const result = await checkAgentRegistration({ home, configRoot, version: "9.9.9", writeStderr: () => {} });
+    const result = await checkAgentRegistration({
+      home,
+      configRoot,
+      version: "9.9.9",
+      writeStderr: () => {},
+    });
 
     assert.equal(result.refreshed, false, "no drift → no refresh");
     assert.equal(await read(destSkill), "STALE BYTES", "skill must NOT be re-copied without drift");
-    assert.equal(await read(rulesFile), "STALE RULES\n", "rules must NOT be rewritten without drift");
+    assert.equal(
+      await read(rulesFile),
+      "STALE RULES\n",
+      "rules must NOT be rewritten without drift",
+    );
     assert.equal(await read(stampPath), stampBefore, "stamp must not be rewritten without drift");
   });
 
@@ -433,7 +504,11 @@ describe("lazy refresh (DESIGN D5, PRD AC-7)", () => {
     const sourceSkill = await sourceSkillBytes();
     await fs.writeFile(claudeSkill, "STALE BYTES");
     await fs.writeFile(codexSkill, "STALE BYTES");
-    await writeStamp(configRoot, { version: "0.0.1", tools: ["claude", "codex"], ruleTextHash: computeRuleTextHash() });
+    await writeStamp(configRoot, {
+      version: "0.0.1",
+      tools: ["claude", "codex"],
+      ruleTextHash: computeRuleTextHash(),
+    });
 
     const result = await checkAgentRegistration({
       home,
@@ -444,8 +519,90 @@ describe("lazy refresh (DESIGN D5, PRD AC-7)", () => {
     });
 
     assert.equal(result.refreshed, true, "drifted tools that are still opted in must refresh");
-    assert.equal(await read(claudeSkill), "STALE BYTES", "opted-out tool's skill must be left alone");
-    assert.deepEqual(await fs.readFile(codexSkill), sourceSkill, "opted-in tool's skill must be re-copied");
+    assert.equal(
+      await read(claudeSkill),
+      "STALE BYTES",
+      "opted-out tool's skill must be left alone",
+    );
+    assert.deepEqual(
+      await fs.readFile(codexSkill),
+      sourceSkill,
+      "opted-in tool's skill must be re-copied",
+    );
+  });
+
+  it("production refresh (agentRules option omitted) honors the persisted config.json opt-out", async (t) => {
+    // GROUND: bot-review — the production default closure in main() calls
+    // checkAgentRegistration WITHOUT agentRules, so a persisted `false`
+    // choice never fired: a user who opted out was still refreshed on
+    // drift. When the option is omitted the module must load the persisted
+    // choices from <configRoot>/config.json itself.
+    const { checkAgentRegistration, computeRuleTextHash, registerAgentTools } = await loadDeploy();
+    const home = await mkTemp(t);
+    const configRoot = await mkTemp(t);
+    await registerAgentTools({ home, configRoot, tools: ["claude", "codex"], version: "9.9.9" });
+    const claudeSkill = path.join(skillDest(home, "claude"), "SKILL.md");
+    const codexSkill = path.join(skillDest(home, "codex"), "SKILL.md");
+    const sourceSkill = await sourceSkillBytes();
+    await fs.writeFile(claudeSkill, "STALE BYTES");
+    await fs.writeFile(codexSkill, "STALE BYTES");
+    await fs.writeFile(
+      path.join(configRoot, "config.json"),
+      JSON.stringify({ version: 1, providers: {}, agentRules: { claude: false } }),
+    );
+    await writeStamp(configRoot, {
+      version: "0.0.1",
+      tools: ["claude", "codex"],
+      ruleTextHash: computeRuleTextHash(),
+    });
+
+    const result = await checkAgentRegistration({
+      home,
+      configRoot,
+      version: "9.9.9",
+      writeStderr: () => {},
+    });
+
+    assert.equal(result.refreshed, true, "opted-in drifted tools must still refresh");
+    assert.equal(
+      await read(claudeSkill),
+      "STALE BYTES",
+      "the persisted opt-out must be honored without an explicit agentRules option",
+    );
+    assert.deepEqual(await fs.readFile(codexSkill), sourceSkill, "the opted-in tool must re-copy");
+  });
+
+  it("a corrupt config.json never breaks the production refresh — treated as unconfigured, never fatal", async (t) => {
+    // GROUND: the persisted-choices load must tolerate absent/corrupt config
+    // exactly like the stamp read — a broken config.json must neither throw
+    // nor silently opt every tool out.
+    const { checkAgentRegistration, computeRuleTextHash, registerAgentTools } = await loadDeploy();
+    const home = await mkTemp(t);
+    const configRoot = await mkTemp(t);
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9" });
+    const destSkill = path.join(skillDest(home, "claude"), "SKILL.md");
+    const sourceSkill = await sourceSkillBytes();
+    await fs.writeFile(destSkill, "STALE BYTES");
+    await fs.writeFile(path.join(configRoot, "config.json"), "{corrupt");
+    await writeStamp(configRoot, {
+      version: "0.0.1",
+      tools: ["claude"],
+      ruleTextHash: computeRuleTextHash(),
+    });
+
+    const result = await checkAgentRegistration({
+      home,
+      configRoot,
+      version: "9.9.9",
+      writeStderr: () => {},
+    });
+
+    assert.equal(result.refreshed, true, "corrupt config must not throw nor opt the tool out");
+    assert.deepEqual(
+      await fs.readFile(destSkill),
+      sourceSkill,
+      "the tool must refresh as unconfigured",
+    );
   });
 
   it("refresh failure is a stderr notice, never a thrown error", async (t) => {
@@ -455,7 +612,11 @@ describe("lazy refresh (DESIGN D5, PRD AC-7)", () => {
     const home = await mkTemp(t);
     const configRoot = await mkTemp(t);
     await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9" });
-    await writeStamp(configRoot, { version: "0.0.1", tools: ["claude"], ruleTextHash: computeRuleTextHash() });
+    await writeStamp(configRoot, {
+      version: "0.0.1",
+      tools: ["claude"],
+      ruleTextHash: computeRuleTextHash(),
+    });
 
     // Make every write under the claude home fail (read+execute only).
     // ponytail: chmod-based EACCES fails open under root — if this test ever
@@ -619,7 +780,13 @@ describe("main() wiring (DESIGN D5/D6)", () => {
       promptAttempts += 1;
       throw new Error("wizard prompt must not run for --unregister");
     };
-    const prompts = { checkbox: refuse, select: refuse, confirm: refuse, password: refuse, input: refuse };
+    const prompts = {
+      checkbox: refuse,
+      select: refuse,
+      confirm: refuse,
+      password: refuse,
+      input: refuse,
+    };
     const { deps } = makeDeps({
       agentRegistrationRoots: { home, configRoot },
       agentRegistrationCheck: async () => ({ refreshed: false }),
@@ -633,10 +800,56 @@ describe("main() wiring (DESIGN D5/D6)", () => {
     assert.equal(promptAttempts, 0, "--unregister must be consumed before any wizard prompt");
   });
 
-  it("plain init still refuses non-TTY exactly as before (regression pin)", async () => {
+  it("init --unregister --help prints help — the destructive reversal never fires on a help invocation", async (t) => {
+    // GROUND: bot-review High — the --unregister branch ran its disk-scan
+    // reversal even when --help was present; the isHelpInvocation binding
+    // must win (documentation, not a run). Hermetic (D7, sibling pattern):
+    // temp roots + no-op check + tmp store; a pre-registered agentRules must
+    // survive untouched.
+    const home = await mkTemp(t);
+    const configRoot = await mkTemp(t);
+    const configPath = path.join(configRoot, "config.json");
+    await fs.mkdir(configRoot, { recursive: true });
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({ version: 1, providers: {}, agentRules: { claude: true } }),
+    );
+    const { deps, stdout, stderr } = makeDeps({
+      agentRegistrationRoots: { home, configRoot },
+      agentRegistrationCheck: async () => ({ refreshed: false }),
+      initConfigStore: createDefaultConfigStore({ filePath: configPath }),
+    });
+    deps.invocation.stdinIsTTY = true;
+
+    const code = await main(["init", "--unregister", "--help"], deps);
+
+    assert.equal(code, 0, "help must exit 0");
+    assert.match(
+      stdout.join(""),
+      /--unregister\s+Reverse agent registration/,
+      "INIT_HELP must be printed (its Options section documents --unregister)",
+    );
+    assert.doesNotMatch(stdout.join(""), /agent registration removed/, "no removal success notice");
+    assert.doesNotMatch(stderr.join(""), /--unregister failed/, "no reversal failure notice");
+    assert.deepEqual(
+      JSON.parse(await read(configPath)).agentRules,
+      { claude: true },
+      "the injected config must not be mutated by the help invocation",
+    );
+  });
+
+  it("plain init still refuses non-TTY exactly as before (regression pin)", async (t) => {
     // Regression guard for the parse: unchanged init dispatch. Green today
     // by design — it pins that adding --unregister did not alter plain init.
-    const { deps, stderr } = makeDeps();
+    // Hermetic (D7): pin roots + no-op check so main()'s pre-dispatch stamp
+    // check can never resolve the real HOME/config root (sibling of the
+    // --unregister wiring tests' injections).
+    const home = await mkTemp(t);
+    const configRoot = await mkTemp(t);
+    const { deps, stderr } = makeDeps({
+      agentRegistrationRoots: { home, configRoot },
+      agentRegistrationCheck: async () => ({ refreshed: false }),
+    });
     const code = await main(["init"], deps);
     assert.equal(code, 1);
     assert.match(stderr.join(""), /requires an interactive terminal/);

@@ -336,10 +336,7 @@ describe("agentRules config key (DESIGN D6: additive optional key + validator)",
     // as `fanout` being a non-boolean (config-store parseConfig precedent).
     const dir = await mkTemp(t, "scoutline-agent-config-");
     const filePath = path.join(dir, "config.json");
-    await fs.writeFile(
-      filePath,
-      '{"version":1,"providers":{},"agentRules":"yes-to-all"}',
-    );
+    await fs.writeFile(filePath, '{"version":1,"providers":{},"agentRules":"yes-to-all"}');
     const inspection = await inspectConfig({ filePath });
     assert.equal(inspection.status, "corrupt", "a string agentRules must be rejected, not dropped");
   });
@@ -349,10 +346,7 @@ describe("agentRules config key (DESIGN D6: additive optional key + validator)",
     // validated, not silently accepted.
     const dir = await mkTemp(t, "scoutline-agent-config-");
     const filePath = path.join(dir, "config.json");
-    await fs.writeFile(
-      filePath,
-      '{"version":1,"providers":{},"agentRules":{"claude":"yes"}}',
-    );
+    await fs.writeFile(filePath, '{"version":1,"providers":{},"agentRules":{"claude":"yes"}}');
     const inspection = await inspectConfig({ filePath });
     assert.equal(inspection.status, "corrupt", "a non-boolean agentRules value must be rejected");
   });
@@ -397,7 +391,11 @@ describe("wizard agent step: fresh onboarding path (DESIGN D4)", () => {
     const agentCall = script.confirmCalls[agentConfirm];
     assert.equal(agentCall.defaultYes, true, "the agent-rules confirm must default to yes");
     // Registration actually happened (wired through the T4 deploy module).
-    assert.equal(await read(RULES_FILE.claude(home)), RULE_TEXT, "claude rules file must be written");
+    assert.equal(
+      await read(RULES_FILE.claude(home)),
+      RULE_TEXT,
+      "claude rules file must be written",
+    );
     assert.ok(
       (await fs.stat(path.join(skillDest(home, "claude"), "SKILL.md"))).isFile(),
       "the skill must be deployed to the claude skillHome",
@@ -443,7 +441,11 @@ describe("wizard agent step: fresh onboarding path (DESIGN D4)", () => {
     assert.equal(status, 1, "checkbox cancel is still a fresh-flow cancel (exit 1)");
     const config = JSON.parse(await read(path.join(configRoot, "config.json")));
     assert.deepEqual(config.agentRules, { claude: true }, "agentRules must already be persisted");
-    assert.equal(await read(RULES_FILE.claude(home)), RULE_TEXT, "registration must already be on disk");
+    assert.equal(
+      await read(RULES_FILE.claude(home)),
+      RULE_TEXT,
+      "registration must already be on disk",
+    );
   });
 
   it("six detected tools get one confirm each (each naming its tool, all default yes); opt-outs are recorded but never registered; undetected tools are absent entirely", async (t) => {
@@ -491,7 +493,10 @@ describe("wizard agent step: fresh onboarding path (DESIGN D4)", () => {
       "opted-out opencode must get no instructions entry",
     );
     await assertAbsent(RULES_FILE.gemini(home), "opted-out gemini must get no rules file");
-    await assertAbsent(path.join(home, ".gemini", "GEMINI.md"), "opted-out gemini must get no pointer");
+    await assertAbsent(
+      path.join(home, ".gemini", "GEMINI.md"),
+      "opted-out gemini must get no pointer",
+    );
     // Opted-in tools are registered.
     for (const id of ["claude", "codex", "qwen", "copilot"]) {
       assert.ok(
@@ -550,7 +555,11 @@ describe("wizard agent step: already-onboarded reconfig path (DESIGN D4)", () =>
     assert.ok(agentConfirm < menuSelect, "the agent step must run before the re-config menu");
     // The step persisted its choice + registered, providers untouched.
     const config = JSON.parse(await read(configPath));
-    assert.deepEqual(config.agentRules, { claude: true }, "agentRules must persist on the reconfig path");
+    assert.deepEqual(
+      config.agentRules,
+      { claude: true },
+      "agentRules must persist on the reconfig path",
+    );
     assert.deepEqual(
       config.providers,
       { zai: { apiKey: "prior-key" } },
@@ -603,6 +612,85 @@ describe("wizard agent step: already-onboarded reconfig path (DESIGN D4)", () =>
       { zai: { apiKey: "prior-key" } },
       "providers must survive the menu action",
     );
+  });
+
+  it("a thrown confirm (Ctrl+C at the agent prompt) cancels the agent step: exit 1, no registration files, no agentRules persisted", async (t) => {
+    // GROUND: bot-review — deps.prompts.confirm was unwrapped, so a prompt
+    // throw propagated out of the wizard as an infrastructure crash instead
+    // of the documented cancel contract (exit 1, nothing written).
+    const home = await mkHome(t, ["claude"]);
+    const configRoot = await mkTemp(t, "scoutline-agent-cfg-");
+    const configPath = path.join(configRoot, "config.json");
+    await fs.mkdir(configRoot, { recursive: true });
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({ version: 1, providers: { zai: { apiKey: "prior-key" } } }),
+    );
+    const script = createRecordingPrompts({
+      confirmHandler: (message) => {
+        if (message.includes("Register scoutline")) throw new Error("cancel");
+        return true;
+      },
+    });
+
+    const { deps } = createWizardDeps({
+      prompts: script.prompts,
+      configFilePath: configPath,
+      home,
+      configRoot,
+      descriptors: [fakeZaiDescriptor()],
+    });
+    const status = await handleInitWithHelp([], deps);
+
+    assert.equal(status, 1, "a cancelled agent prompt must exit 1");
+    await assertAbsent(RULES_FILE.claude(home), "no rules file may be written on cancel");
+    await assertAbsent(skillDest(home, "claude"), "no skill copy may be written on cancel");
+    assert.equal(
+      JSON.parse(await read(configPath)).agentRules,
+      undefined,
+      "no agentRules may persist on cancel",
+    );
+    await assertAbsent(path.join(configRoot, STAMP_NAME), "no stamp may be minted on cancel");
+  });
+
+  it("all-declined: agentRules persist but NO stamp is minted (no empty-tools registration)", async (t) => {
+    // GROUND: bot-review — registerAgentTools ran even when every detected
+    // tool declined, minting a stamp with tools: []. The guard must skip
+    // registration entirely while the choices below still persist
+    // (choices never re-prompt).
+    const home = await mkHome(t, ["claude"]);
+    const configRoot = await mkTemp(t, "scoutline-agent-cfg-");
+    const configPath = path.join(configRoot, "config.json");
+    await fs.mkdir(configRoot, { recursive: true });
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({ version: 1, providers: { zai: { apiKey: "prior-key" } } }),
+    );
+    const script = createRecordingPrompts({
+      confirmHandler: confirmByTool({ claude: false }),
+      selectAnswer: "cancel", // exit the re-config menu without changes
+    });
+
+    const { deps } = createWizardDeps({
+      prompts: script.prompts,
+      configFilePath: configPath,
+      home,
+      configRoot,
+      descriptors: [fakeZaiDescriptor()],
+    });
+    const status = await handleInitWithHelp([], deps);
+
+    assert.equal(status, 0, "menu cancel exits 0 — the declined step itself must not fail");
+    assert.deepEqual(
+      JSON.parse(await read(configPath)).agentRules,
+      { claude: false },
+      "the declined choice must still persist",
+    );
+    await assertAbsent(
+      path.join(configRoot, STAMP_NAME),
+      "an all-declined step must not mint a stamp",
+    );
+    await assertAbsent(skillDest(home, "claude"), "a declined tool gets no skill copy");
   });
 
   it("a tool whose agentRules choice is already set is NOT re-prompted; a newly detected tool registers alongside it without erasing it from the stamp (D4: prompt where detect true AND agentRules[id] unset)", async (t) => {
@@ -686,7 +774,10 @@ describe("undetected tools and the cursor notice-only row (DESIGN D1, AC-6)", ()
 
     assert.equal(status, 1);
     assert.equal(script.confirmCalls.length, 0, "no detected tools → no agent confirms");
-    await assertAbsent(path.join(configRoot, "config.json"), "nothing to persist when no tool is detected");
+    await assertAbsent(
+      path.join(configRoot, "config.json"),
+      "nothing to persist when no tool is detected",
+    );
     await assertAbsent(path.join(configRoot, STAMP_NAME), "no registration → no stamp");
     assert.deepEqual(await findBackups(home), [], "no backups may be minted");
   });
@@ -921,10 +1012,7 @@ describe("init --unregister: disk-scan reversal (DESIGN D2, PRD AC-8)", () => {
     const claudeMd = path.join(home, ".claude", "CLAUDE.md");
     await fs.mkdir(path.dirname(claudeMd), { recursive: true });
     const original =
-      "# my notes\n" +
-      "<!-- scoutline:start -->\n" +
-      "not ours\n" +
-      "<!-- scoutline:end -->\n";
+      "# my notes\n" + "<!-- scoutline:start -->\n" + "not ours\n" + "<!-- scoutline:end -->\n";
     await fs.writeFile(claudeMd, original);
     const configPath = path.join(configRoot, "config.json");
     await fs.mkdir(configRoot, { recursive: true });
@@ -1020,7 +1108,11 @@ describe("backup boundedness: two refresh cycles → one untouched backup; unreg
     const agentsPath = path.join(home, ".codex", "AGENTS.md");
     const bakPath = `${agentsPath}.scoutline-bak`;
     const minted = await fs.stat(bakPath);
-    assert.deepEqual(await findBackups(home), [bakPath], "first mutation of a pre-existing file mints exactly one backup");
+    assert.deepEqual(
+      await findBackups(home),
+      [bakPath],
+      "first mutation of a pre-existing file mints exactly one backup",
+    );
 
     // Two refresh cycles (version-only drift each time — refreshes touch
     // only our marker region, never minting a new backup).
@@ -1040,7 +1132,11 @@ describe("backup boundedness: two refresh cycles → one untouched backup; unreg
     }
 
     const afterRefreshes = await fs.stat(bakPath);
-    assert.deepEqual(await findBackups(home), [bakPath], "two refresh cycles → still exactly one backup");
+    assert.deepEqual(
+      await findBackups(home),
+      [bakPath],
+      "two refresh cycles → still exactly one backup",
+    );
     assert.equal(
       afterRefreshes.mtimeMs,
       minted.mtimeMs,

@@ -39,6 +39,15 @@ export interface ScoutlineConfig {
    * pre-fan-out behavior); true → tier-3 activation per DESIGN D1.
    */
   readonly fanout?: boolean;
+  /**
+   * Always-on research journaling kill-switch (history-journal merge,
+   * ADR-0008). Absent/undefined/true → journaling enabled (the
+   * `fanout` idiom inverted: the feature is on by default); explicit
+   * false → no journal entries are written. Loaded LENIENTLY: a
+   * non-boolean value is ignored (field dropped, default-on applies)
+   * and never fails config load.
+   */
+  readonly journal?: boolean;
   readonly providers: Partial<Record<ProviderId, ProviderConfig>>;
   readonly hintShown?: boolean;
   /**
@@ -96,7 +105,20 @@ export interface RoutingConfigWarning {
   readonly message: string;
 }
 
-export type AnyConfigWarning = ConfigWarning | RoutingConfigWarning;
+/**
+ * Malformed top-level field warning: a non-boolean `journal` value in
+ * config.json. Warn-and-drop like UNKNOWN_PROVIDER — never a load
+ * failure (journaling falls back to the enabled default).
+ */
+export interface MalformedJournalWarning {
+  readonly code: "MALFORMED_JOURNAL";
+  readonly message: string;
+}
+
+export type AnyConfigWarning =
+  | ConfigWarning
+  | RoutingConfigWarning
+  | MalformedJournalWarning;
 
 export type ConfigInspection =
   | { readonly status: "absent"; readonly filePath: string }
@@ -230,9 +252,24 @@ function parseConfig(contents: string): ParsedConfig {
   ) {
     throw corruptConfig();
   }
-
   const providers: Partial<Record<ProviderId, ProviderConfig>> = {};
   const warnings: AnyConfigWarning[] = [];
+
+  // Review r3: `journal` loads LENIENTLY (the documented "non-boolean
+  // never fails config load" contract): a malformed value is dropped
+  // with a MALFORMED_JOURNAL warning — journaling falls back to the
+  // enabled default, the same posture as the lenient `providers`
+  // entries. A whole-file corruption throw here would lock a user out
+  // of every command over a one-field typo.
+  let journal: boolean | undefined;
+  if (typeof parsed.journal === "boolean") {
+    journal = parsed.journal;
+  } else if (parsed.journal !== undefined) {
+    warnings.push({
+      code: "MALFORMED_JOURNAL",
+      message: `Ignoring non-boolean "journal" in config.json; journaling stays enabled.`,
+    });
+  }
   for (const [providerId, value] of Object.entries(parsed.providers ?? {})) {
     if (!(PROVIDER_IDS as readonly string[]).includes(providerId)) {
       warnings.push({
@@ -254,6 +291,7 @@ function parseConfig(contents: string): ParsedConfig {
         ? { fallbackEnabled: parsed.fallbackEnabled as boolean }
         : {}),
       ...(parsed.fanout !== undefined ? { fanout: parsed.fanout as boolean } : {}),
+      ...(journal !== undefined ? { journal } : {}),
       providers,
       ...(parsed.hintShown !== undefined ? { hintShown: parsed.hintShown as boolean } : {}),
     ...(parsed.agentRules !== undefined ? { agentRules: parsed.agentRules as Record<string, boolean> } : {}),
@@ -511,6 +549,19 @@ const KEY_FALLBACK_ENABLED: ConfigKeyDescriptor = {
   describe: "boolean — always-on provider fallback switch",
 };
 
+/**
+ * History-journal merge (T7, ADR-0008): the journaling kill-switch is
+ * a settable config key exactly like `fanout` — a documented global
+ * escape hatch must be scriptable, not wizard-only.
+ */
+const KEY_JOURNAL: ConfigKeyDescriptor = {
+  path: "journal",
+  gettable: true,
+  settable: true,
+  credential: false,
+  describe: "boolean — always-on research journaling switch (default true)",
+};
+
 /** The mandated fan-out cost warning (search-fanout DESIGN D7, verbatim). */
 export const FANOUT_COST_SENTENCE =
   "every search will bill ALL configured search providers — N arms = N billable calls";
@@ -631,6 +682,7 @@ export function resolveConfigKey(path: string): ConfigKeyDescriptor | null {
   const trimmed = path.trim();
   if (trimmed === "fallbackEnabled") return KEY_FALLBACK_ENABLED;
   if (trimmed === "fanout") return KEY_FANOUT;
+  if (trimmed === "journal") return KEY_JOURNAL;
   if (trimmed === "routing") return KEY_ROUTING_TABLE;
   if (trimmed.startsWith("routing.")) {
     // Capability-validated: `routing.serch` must not resolve — get/set/
@@ -817,7 +869,7 @@ export async function setConfigValue(
   return serializeConfigWrite(options, async () => {
     const current = await readConfig(options);
     let next: ScoutlineConfig;
-    if (key === KEY_FALLBACK_ENABLED || key === KEY_FANOUT) {
+    if (key === KEY_FALLBACK_ENABLED || key === KEY_FANOUT || key === KEY_JOURNAL) {
       const lowered = value.trim().toLowerCase();
       if (lowered !== "true" && lowered !== "false") {
         throw new ValidationError(
@@ -828,7 +880,9 @@ export async function setConfigValue(
       next =
         key === KEY_FALLBACK_ENABLED
           ? { ...current, fallbackEnabled: lowered === "true" }
-          : { ...current, fanout: lowered === "true" };
+          : key === KEY_FANOUT
+            ? { ...current, fanout: lowered === "true" }
+            : { ...current, journal: lowered === "true" };
     } else {
       const { capability, ids } = parseRoutingValue(path, value);
       const routing = { ...current.routing, [capability]: ids };
@@ -905,6 +959,13 @@ export async function unsetConfigValue(
       }
       const { fanout: _fo, ...rest } = current;
       void _fo;
+      next = rest;
+    } else if (trimmed === "journal") {
+      if (current.journal === undefined) {
+        throw new ValidationError('"journal" is not set.', "Nothing to unset.");
+      }
+      const { journal: _jo, ...rest } = current;
+      void _jo;
       next = rest;
     } else {
       throw new ValidationError(

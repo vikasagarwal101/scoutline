@@ -15,8 +15,8 @@
  * never rewrites data.
  *
  * `compaction.ref` = the master's requestId; a log entry is MANDATORY
- * per artifact (kind "save" — the discriminator is reserved for seed-07
- * journaling; asSaveLogEntry drops any new kind), because `history
+ * per artifact (kind "save"; the log's per-kind dispatch — asLogEntry —
+ * validates "journal" entries too since the history-journal merge), because `history
  * show` sees only LOGGED artifacts. The log's `args` field is the
  * caller's allow-list — presentation-flag-free by contract, so
  * `--max-chars` never appears there; compaction facts live only in the

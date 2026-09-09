@@ -812,6 +812,53 @@ crash-window orphan master is invisible. `cache clear`, TTLs, and LRU
 eviction never touch it; `history` is credential-free and fail-open (the
 `usage` precedent).
 
+### Research journal (history-journal merge, ADR-0008)
+
+The store's log carries TWO entry kinds: `kind:"save"` (`--save` runs)
+and `kind:"journal"` (always-on research memory). Every `search` /
+`read` / `research` call — batch-driven ops included — journals by
+default. A cache miss appends ONE full journal entry: `{kind, requestId,
+timestamp, capability, provider (with servedFrom: live|cache — issue
+#108), query|url, contentHash (sha256 of the normalized skeleton),
+cacheKey, skeleton, saveRef?}` — the skeleton is the thin, self-contained identity
+of the result (search: url+title list; read: url+title; research:
+citations), never the body. `saveRef` is present only when the same run
+used `--save`: it is the saved artifact's requestId, resolvable to the
+artifact through the save entry (offline recovery of the full result —
+no re-fetch). A cache hit appends a tiny repeat marker
+`{kind, timestamp, capability, provider, repeatOf}` instead; a
+journal-cold-but-cache-warm hit (no prior full entry with that cacheKey)
+writes the full entry once. The log is strictly append-only — no entry
+is ever rewritten (an in-place counter bump was explicitly rejected).
+
+Switches: per-call `--no-journal` (accepted on exactly the three
+journalable commands, `UNSUPPORTED_OPTION` everywhere else) and
+top-level config `"journal": false` (the `fanout` idiom inverted —
+absent means ON). Disclosure is one `scoutline init` confirm (default
+enabled); the wizard, `config set/unset journal`, and the runtime all
+read/write the same flag. Query text passes `redactSecrets` at the write
+seam; entries inherit the store's 0600 discipline.
+
+Consumption stays inside `history`: `recall "<text>"` scores token
+overlap over recorded queries + skeletons (local-only, never network,
+never cache reads; `--as-of`/`--capability`/`--limit`; markers resolve
+to their referenced entry rather than scoring separately), `export`
+renders a cited markdown dossier (repeat markers never become
+sections), `note` is the explicit write, `clear` (the family's only
+mutating subcommand) clears the journal kind by default and `--all`
+extends to save entries + masters. `list --kind` filters and `--repeats`
+opts into marker rows (skipped by default); `stats` splits journal rows
+into full entries vs markers. Note: `stats` `byCommand` folds journal
+rows under their capability keys, so the key set mixes commands and
+capabilities.
+
+Scale: the log IS `index.json`, and every append re-reads and rewrites
+the whole file under the write lock. Measured (T6d probe, synthetic
+production-shaped logs): ~42ms append / ~59ms recall at 10k entries,
+~475ms / ~611ms at 100k — appends cross the ~100ms UX band around
+20-25k entries. Segmented-log / compaction is the named future policy;
+age/count pruning is also future, not shipped.
+
 `src/lib/tool-cache.ts` owns the tool-discovery cache I/O against the
 `tools/` sibling. It is consumed by `ZaiMcpClient`; the response cache
 never touches it. The LRU eviction loop in `src/lib/cache.ts` scans

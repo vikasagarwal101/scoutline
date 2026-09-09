@@ -900,3 +900,42 @@ describe("fanoutCostNotice: keyless postures", () => {
     assert.ok(!notice.toLowerCase().includes("no provider bills"), notice);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review round 3 (PR #111): `journal` load behavior is LENIENT — a
+// non-boolean value is ignored (field dropped, load falls back to the
+// enabled default), matching the documented contract and the lenient
+// providers idiom, NOT a whole-file corruption.
+// ---------------------------------------------------------------------------
+
+describe("review r3: config journal leniency (cubic P2/P3)", () => {
+  it("non-boolean journal value is IGNORED at load: no corruption, field omitted → default-on", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const { readConfig } = await import("../dist/lib/config-store.js");
+      const filePath = path.join(dir, "config.json");
+      await fs.writeFile(
+        filePath,
+        JSON.stringify({ version: 1, providers: {}, journal: "yes" }, null, 2),
+        "utf8",
+      );
+      const config = await readConfig({ filePath });
+      assert.strictEqual(config.journal, undefined, "non-boolean dropped, no corruption thrown");
+    });
+  });
+
+  it("boolean journal values survive load verbatim (true and false)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const { readConfig } = await import("../dist/lib/config-store.js");
+      for (const journal of [true, false]) {
+        const filePath = path.join(dir, `config-${String(journal)}.json`);
+        await fs.writeFile(
+          filePath,
+          JSON.stringify({ version: 1, providers: {}, journal }, null, 2),
+          "utf8",
+        );
+        const config = await readConfig({ filePath });
+        assert.strictEqual(config.journal, journal);
+      }
+    });
+  });
+});

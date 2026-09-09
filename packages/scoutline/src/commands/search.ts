@@ -447,7 +447,7 @@ export async function search(
       ? formattedResults.map((r) => filterFields(r, options.fields))
       : formattedResults;
 
-  return { kind: "data", data, presentations };
+  return { kind: "data", data, presentations, rawRows: formattedResults };
 }
 
 // ---------------------------------------------------------------------------
@@ -872,7 +872,7 @@ export async function executeFanoutPlan(
     options.searchOptions.fields && options.searchOptions.fields.length > 0
       ? merged.map((r) => filterFields(r, options.searchOptions.fields))
       : merged;
-  return { kind: "data", data, presentations };
+  return { kind: "data", data, presentations, rawRows: merged };
 }
 
 // Help text
@@ -956,6 +956,9 @@ Options:
                       \`--context-stdin\`.
   --context-stdin     Same as \`--context\`, reading the notes from
                       standard input (no value; pipe the file in).
+  --no-journal        Skip the research journal entry for this one call
+                      (journaling is on by default; see
+                      \`scoutline history --help\`).
 
   Under fan-out every arm runs every sub-query — one stderr notice
   states the math: N sub-queries × M arms = N×M billable searches. In

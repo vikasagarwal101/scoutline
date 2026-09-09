@@ -36,12 +36,14 @@ import {
   type ConfigRootEnvironment,
   type ConfigRootPlatform,
 } from "./config-store.js";
-import { FileError } from "./errors.js";
+import { FileError, ScoutlineError } from "./errors.js";
 import {
   DEFAULT_LOCK_STALE_MS,
   DEFAULT_LOCK_TIMEOUT_MS,
+  LockTimeoutError,
   withAsyncFileLock,
 } from "./async-file-lock.js";
+import { asJournalEntry } from "./journal.js";
 import pkg from "../../package.json" with { type: "json" };
 
 /** Report format of a saved artifact (spec: `--save-format json|markdown`). */
@@ -197,10 +199,7 @@ export async function writeArtifact(
  * the export TOCTOU the exists-recheck could only narrow (check and
  * place are one atomic step now).
  */
-export async function atomicPlaceNoClobber(
-  filePath: string,
-  contents: string,
-): Promise<boolean> {
+export async function atomicPlaceNoClobber(filePath: string, contents: string): Promise<boolean> {
   const root = path.dirname(filePath);
   // Harden only directories WE created (review r5, race-closed r7): a
   // pre-mkdir stat goes stale if a concurrent creator makes `root` first,
@@ -215,7 +214,10 @@ export async function atomicPlaceNoClobber(
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
   if (created && process.platform !== "win32") await fs.chmod(root, 0o700);
-  const tempPath = path.join(root, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
+  const tempPath = path.join(
+    root,
+    `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
   const handle = await fs.open(tempPath, "wx", 0o600);
   let closed = false;
   try {
@@ -277,19 +279,32 @@ export const ARTIFACTS_LOG_FILENAME = "index.json";
 export const ARTIFACTS_LOG_VERSION = 1;
 
 /** Fixed lock identity serializing every index.json append (cache-write precedent). */
-const ARTIFACTS_LOG_LOCK_IDENTITY = "artifacts-write";
+export const ARTIFACTS_LOG_LOCK_IDENTITY = "artifacts-write";
 
 /** CLI version stamped into each entry (the src/index.ts pkg-import idiom). */
 export const CLI_VERSION: string = pkg.version;
 
-/** Entry kind discriminator — "save" now; seed-07 journaling adds "journal" later. */
-export type LogEntryKind = "save";
+/**
+ * Entry kind discriminator — "save" masters plus "journal" (history-journal
+ * merge D1): journal entries are LOG-ONLY (no master file); their body
+ * fields arrive with the T2a/T3 writers. A kind outside this union still
+ * fails the whole-log open — the fail-loud path is load-bearing.
+ */
+export type LogEntryKind = "save" | "journal";
 
 /** Single-provider routing: what was requested and what actually served. */
 export interface SingleProviderRouting {
   readonly mode: "single";
   readonly requested?: string;
   readonly effective: string;
+  /**
+   * Where the serving bytes came from (issue #108): "live" = the effective
+   * provider was actually contacted; "cache" = served from that provider's
+   * on-disk response cache (v2 partitioned or v0.2 legacy read-through),
+   * possibly while the provider was unreachable. Optional so pre-#108
+   * entries stay valid; save entries always set it.
+   */
+  readonly servedFrom?: "live" | "cache";
 }
 
 /** Fan-out routing (ADR-0004): ordered arms; no single effective exists. */
@@ -350,16 +365,32 @@ function emptyLog(): ArtifactsLog {
 }
 
 /**
- * Structural guard for one entry: every field of the {@link SaveLogEntry}
- * shape is type-checked BEFORE the cast, and `masterPath` must be a bare
- * filename (no path separators, no dot segments) so a hostile persisted
- * entry cannot steer `history show`'s `path.join(dir, masterPath)` read
- * outside the artifacts dir (review fixup: the unvalidated-entry hole).
+ * Structural guard for one entry (history-journal merge D1): per-kind
+ * dispatch over {@link LogEntryKind}. The BASE rules — kind known,
+ * requestId non-empty string, timestamp a finite in-Date-range number —
+ * are shared by every kind; the body check is per-kind. `save` keeps
+ * every field of the {@link SaveLogEntry} shape type-checked BEFORE the
+ * cast, and `masterPath` must be a bare filename (no path separators,
+ * no dot segments) so a hostile persisted entry cannot steer `history
+ * show`'s `path.join(dir, masterPath)` read outside the artifacts dir
+ * (review fixup: the unvalidated-entry hole). `journal` entries are
+ * LOG-ONLY (no master) and validate their FULL body through
+ * `asJournalEntry` (capability enum, contentHash shape, provider
+ * routing, skeleton rows, tags, saveRef) — an entry is kept only when
+ * the whole body validates. Any other kind still returns undefined —
+ * the fail-loud whole-log path is load-bearing.
  */
-function asSaveLogEntry(value: unknown): SaveLogEntry | undefined {
+function asLogEntry(value: unknown): SaveLogEntry | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const e = value as Record<string, unknown>;
-  if (e.kind !== "save") return undefined;
+  if (e.kind !== "save" && e.kind !== "journal") return undefined;
+  // T2b repeat markers are the one journal shape WITHOUT a requestId —
+  // dispatch to the journal validator BEFORE the base requestId rule so
+  // `repeatOf` presence routes to the marker check (which enforces its
+  // own tiny field set); everything else keeps the base rules.
+  if (e.kind === "journal" && e.repeatOf !== undefined) {
+    return asJournalEntry(value) as SaveLogEntry | undefined;
+  }
   if (typeof e.requestId !== "string" || e.requestId.length === 0) return undefined;
   if (typeof e.timestamp !== "number" || !Number.isFinite(e.timestamp)) return undefined;
   // Reject finite-but-out-of-Date-range values: history list/stats render
@@ -367,13 +398,33 @@ function asSaveLogEntry(value: unknown): SaveLogEntry | undefined {
   // entry must fail validation here so the log fails open instead (review
   // fixup).
   if (!Number.isFinite(new Date(e.timestamp).getTime())) return undefined;
+  // Journal entries (T2a): full body validation — capability enum,
+  // redacted query, sha256 contentHash, cacheKey, provider restricted
+  // to SingleProviderRouting (fanout has no single server), and the
+  // skeleton shape per the writer's contract (search: url+title list;
+  // read/research bodies arrive in T3, validated when written). Return
+  // BEFORE the save-body checks below, which would reject their absent
+  // master fields — the widening's whole point.
+  if (e.kind === "journal") return asJournalEntry(value) as SaveLogEntry | undefined;
   if (typeof e.command !== "string" || e.command.length === 0) return undefined;
   if (typeof e.args !== "object" || e.args === null || Array.isArray(e.args)) return undefined;
   const provider = e.provider as Record<string, unknown> | undefined;
   if (typeof provider !== "object" || provider === null) return undefined;
   if (provider.mode === "single") {
     if (typeof provider.effective !== "string" || provider.effective.length === 0) return undefined;
-    if (provider.requested !== undefined && typeof provider.requested !== "string") return undefined;
+    if (provider.requested !== undefined && typeof provider.requested !== "string")
+      return undefined;
+    // Issue #108 review: servedFrom is schema-optional but, when present,
+    // enum-constrained — a persisted "banana" must fail the entry guard
+    // (fail-open whole-log semantics) rather than flow into history
+    // reports unvalidated.
+    if (
+      provider.servedFrom !== undefined &&
+      provider.servedFrom !== "live" &&
+      provider.servedFrom !== "cache"
+    ) {
+      return undefined;
+    }
   } else if (provider.mode === "fanout") {
     if (
       !Array.isArray(provider.arms) ||
@@ -382,7 +433,8 @@ function asSaveLogEntry(value: unknown): SaveLogEntry | undefined {
     ) {
       return undefined;
     }
-    if (provider.requested !== undefined && typeof provider.requested !== "string") return undefined;
+    if (provider.requested !== undefined && typeof provider.requested !== "string")
+      return undefined;
   } else {
     return undefined;
   }
@@ -415,7 +467,7 @@ function asArtifactsLog(value: unknown): { log: ArtifactsLog; corruptEntry: bool
   const entries: SaveLogEntry[] = [];
   let corruptEntry = false;
   for (const raw of candidate.entries) {
-    const entry = asSaveLogEntry(raw);
+    const entry = asLogEntry(raw);
     if (entry === undefined) {
       corruptEntry = true;
       continue;
@@ -511,4 +563,270 @@ export async function appendLogEntry(
     },
   );
   return notice;
+}
+
+/**
+ * The save hook's ONE critical section (PR #111 review batch 1, cubic P2):
+ * master write + log append under a single `artifacts-write` hold. The old
+ * writeArtifact → appendLogEntry sequence took the lock twice, leaving a
+ * crash/kill window between the holds — a written master with no log
+ * entry, invisible to `history` and swept as an orphan by
+ * `history clear --all`. The entry is CONSTRUCTED BY THE CALLER (it needs
+ * the requestId, routing, args — hook-owned facts) with `masterPath`
+ * already the bare filename; the target `<requestId>.<ext>` is computed
+ * exactly as {@link writeArtifact} does, and the caller precomputes the
+ * same path for `entry.masterPath` (keep the two in lockstep — the
+ * duplication is pinned by tests/save-artifact.test.js). The no-force
+ * existence refusal keeps its {@link FileError} contract; the append
+ * mirrors {@link appendLogEntry} exactly (same fail-open read, same
+ * notice, same 2-space JSON shape). An I/O failure INSIDE the section can
+ * still leave the master written and unlogged — it surfaces as the save
+ * hook's FILE_ERROR and a retry rewrites both; the closed window is the
+ * crash between the two old lock holds.
+ */
+export async function writeArtifactWithLogEntry(
+  dir: string,
+  requestId: string,
+  content: string,
+  entry: SaveLogEntry,
+  options: WriteArtifactOptions = {},
+): Promise<string | undefined> {
+  const extension = options.format === "markdown" ? "md" : "json";
+  const target = path.join(dir, `${requestId}.${extension}`);
+  const refuse = (): FileError =>
+    new FileError(
+      `Refusing to overwrite existing artifact: ${target}`,
+      "Pass --save-force to overwrite the existing artifact.",
+    );
+  let notice: string | undefined;
+  await withAsyncFileLock(
+    dir,
+    ARTIFACTS_LOG_LOCK_IDENTITY,
+    async () => {
+      if (!options.force && (await entryExists(target))) throw refuse();
+      await atomicReplaceFile(target, content);
+      const current = await readLog(dir);
+      notice = current.notice;
+      const next: ArtifactsLog = {
+        version: ARTIFACTS_LOG_VERSION,
+        entries: [...current.log.entries, entry],
+      };
+      await atomicReplaceFile(
+        path.join(dir, ARTIFACTS_LOG_FILENAME),
+        `${JSON.stringify(next, null, 2)}\n`,
+      );
+    },
+    {
+      timeoutMs: options.lock?.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
+      staleMs: options.lock?.staleMs ?? DEFAULT_LOCK_STALE_MS,
+      setTimeout: options.lock?.setTimeout,
+      timeoutLabel: "Artifacts master write + log append",
+    },
+  );
+  // PR #111 A2 fixup: resolve with the LOG notice (appendLogEntry's
+  // contract — the readLog reset notice, when a corrupt pre-state was
+  // replaced), never the master path; the caller already knows the path.
+  return notice;
+}
+
+// ---------------------------------------------------------------------------
+// T6a (history-journal merge DESIGN D5): `history clear` — the store's
+// first sanctioned REWRITE seam. Bare clear is the journal-kind valve
+// (the fast-refilling layer); `--all` extends to saves + their masters.
+// ---------------------------------------------------------------------------
+
+/** Lock options for {@link clearArtifactsLog} (tests shrink timings). */
+export interface ClearArtifactsLogOptions {
+  readonly timeoutMs?: number;
+  readonly staleMs?: number;
+  /** Injectable timer so lock retries resolve faster than the 500ms sleep. */
+  readonly setTimeout?: typeof setTimeout;
+  /** `--all`: also remove save entries AND delete their master files. */
+  readonly all?: boolean;
+}
+
+/**
+ * `history clear` (T6a): rewrite `<dir>/index.json` in place under the
+ * SAME `artifacts-write` lock every append uses, so a clear never
+ * interleaves with a concurrent append (the rewrite is read-filter-write
+ * INSIDE the critical section — the whole-log consistency append relies
+ * on). Read side rides the fail-open {@link readLog} contract: a corrupt
+ * or unrecognized pre-state reads as EMPTY, so clear "removes nothing"
+ * and writes back a valid empty log — the wipe still succeeds.
+ *
+ * Bare clear keeps every non-journal entry (saves + their masters are
+ * byte-untouched); `--all` removes save entries too and unlinks their
+ * master files (a master that vanished is fine; an `--all` sweep also
+ * leaves no logged master behind — no orphans).
+ */
+export async function clearArtifactsLog(
+  dir: string,
+  options: ClearArtifactsLogOptions = {},
+): Promise<ClearArtifactsLogResult> {
+  let removedByKind: Record<string, number> = {};
+  let kept = 0;
+  // Review batch 3 (issue 7): honest master-unlink count — a vanished
+  // file rejects and is NOT counted; a failed unlink is not counted.
+  let mastersDeleted = 0;
+  let notice: string | undefined;
+  try {
+    await withAsyncFileLock(
+      dir,
+      ARTIFACTS_LOG_LOCK_IDENTITY,
+      async () => {
+        const current = await readLog(dir);
+        notice = current.notice;
+        const keptEntries: SaveLogEntry[] = [];
+        for (const entry of current.log.entries) {
+          // Bare clear = the journal valve: remove kind:"journal" (full
+          // entries + markers), keep everything else. --all removes all.
+          if (options.all || entry.kind === "journal") {
+            removedByKind[entry.kind] = (removedByKind[entry.kind] ?? 0) + 1;
+          } else {
+            keptEntries.push(entry);
+            kept += 1;
+          }
+        }
+        if (options.all) {
+          // Review batch 1: sweep-then-rewrite. The master sweep runs
+          // BEFORE the filtered-log rewrite so a sweep failure throws
+          // with the log byte-untouched — entries are never discarded
+          // while their masters survive (the old order reported success
+          // and dropped entries behind unremovable files; retrying the
+          // clear then completes the wipe).
+          //
+          // Full wipe sweeps the DIRECTORY, not just logged masters: an
+          // orphan master (pre-clear corruption, manual file) would
+          // otherwise survive the wipe. Bare clear never reaches here —
+          // save masters stay byte-untouched under the journal valve.
+          // Review r3: process temporaries are SPARED — an in-flight
+          // save writes its temp file BEFORE appending the log entry
+          // and renames after, so deleting one mid-save would corrupt
+          // the atomic-replace contract (the rename then lands a master
+          // the wipe cannot see). Two protected classes: names
+          // CONTAINING `.tmp.` (process temps) and DOT-PREFIXED names
+          // ENDING `.tmp` — the atomicReplaceFile /
+          // atomicPlaceNoClobber staging shape
+          // `.<basename>.<pid>.<uuid>.tmp` is always dot-prefixed, so a
+          // plain user file ending `.tmp` is NOT staging and goes under
+          // the documented full wipe. Temp files orphaned by a crash
+          // are harmless leftovers, not store content.
+          //
+          // Review batch 1 (cubic): logged `--save` export copies placed
+          // INSIDE the artifacts dir are spared — full resolved-path
+          // compare (never basenames), so an unrelated file that happens
+          // to share a name still goes. Unlogged files remain in scope:
+          // the wipe must leave no orphans (T6a orphan pin).
+          const spared = new Set(
+            current.log.entries
+              .filter((entry) => entry.exportPath !== undefined)
+              .map((entry) => path.resolve(dir, entry.exportPath as string)),
+          );
+          const failed: { readonly path: string; readonly code: string }[] = [];
+          for (const dirent of await fs.readdir(dir, { withFileTypes: true })) {
+            if (
+              dirent.name === ARTIFACTS_LOG_FILENAME ||
+              dirent.name.endsWith(".lock") ||
+              dirent.name.includes(".tmp.") ||
+              (dirent.name.startsWith(".") && dirent.name.endsWith(".tmp")) ||
+              dirent.isDirectory()
+            ) {
+              continue;
+            }
+            if (spared.has(path.resolve(dir, dirent.name))) continue;
+            try {
+              await fs.unlink(path.join(dir, dirent.name));
+              mastersDeleted += 1;
+            } catch (error) {
+              // A vanished file is already gone — not a failure, not
+              // counted. Any other unlink rejection fails the wipe.
+              if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+              failed.push({
+                path: path.join(dir, dirent.name),
+                code: (error as NodeJS.ErrnoException).code ?? "unknown",
+              });
+            }
+          }
+          if (failed.length > 0) {
+            throw new FileError(
+              `history clear --all could not delete ${failed.length} file(s): ${failed
+                .map((f) => `${f.path} (${f.code})`)
+                .join("; ")}`,
+              "Fix the file permissions (or close the program holding the files), then retry: scoutline history clear --all.",
+            );
+          }
+        }
+        await atomicReplaceFile(
+          path.join(dir, ARTIFACTS_LOG_FILENAME),
+          `${JSON.stringify({ version: ARTIFACTS_LOG_VERSION, entries: keptEntries }, null, 2)}\n`,
+        );
+      },
+      {
+        timeoutMs: options.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
+        staleMs: options.staleMs ?? DEFAULT_LOCK_STALE_MS,
+        setTimeout: options.setTimeout,
+        timeoutLabel: "Artifacts log clear",
+      },
+    );
+  } catch (error) {
+    // Lock-acquire timeout is a typed FILE_ERROR (the cache-prune seam
+    // precedent): a bare LockTimeoutError would surface through the
+    // dispatcher boundary as UNKNOWN_ERROR.
+    if (
+      error instanceof LockTimeoutError ||
+      (error instanceof Error && error.message.endsWith("create-lock timed out"))
+    ) {
+      throw new FileError(
+        error instanceof LockTimeoutError ? `${error.label} create-lock timed out` : error.message,
+        "Another scoutline process holds the artifacts-write lock; try again once it finishes.",
+      );
+    }
+    // A typed error thrown INSIDE the critical section (the --all
+    // sweep's FileError) already carries the public contract — re-throw
+    // as-is. The errno wrap below is for RAW I/O failures (lock
+    // creation) only; re-wrapping here used to clobber the sweep's
+    // "could not delete N file(s)" message with a false lock sentence.
+    // ponytail: the sweep-failure path is not hermetically reachable on
+    // Linux (an undeletable file needs an unwritable dir, which fails
+    // lock creation before the sweep runs); add an fs-injection seam if
+    // it ever needs a direct pin.
+    if (error instanceof ScoutlineError) throw error;
+    // Review batch 1: a lock-creation I/O failure (read-only artifacts
+    // dir → EACCES on the wx-open of `artifacts-write.lock`) used to
+    // surface as a bare errno error — exit 1, but an UNKNOWN-shaped
+    // envelope. Same seam, same typed contract: wrap the errno into the
+    // FileError the CLI boundary documents.
+    if (error instanceof Error && "code" in error) {
+      throw new FileError(
+        `Artifacts log clear could not create the artifacts-write lock (${(error as NodeJS.ErrnoException).code ?? "unknown"}): ${error.message}`,
+        "Fix the permissions on the artifacts directory, then retry: scoutline history clear --all.",
+      );
+    }
+    throw error;
+  }
+  return {
+    removed: Object.values(removedByKind).reduce((a, b) => a + b, 0),
+    removedByKind,
+    kept,
+    ...(options.all ? { mastersDeleted } : {}),
+    notice,
+  };
+}
+
+/** `clearArtifactsLog` outcome: what the valve removed and what stayed. */
+export interface ClearArtifactsLogResult {
+  /** Total entries removed (all kinds). */
+  readonly removed: number;
+  /** Removed counts by entry kind. */
+  readonly removedByKind: Readonly<Record<string, number>>;
+  /** Entries that survived the clear. */
+  readonly kept: number;
+  /**
+   * Master files actually unlinked by the `--all` sweep (review batch
+   * 3, issue 7) — orphans add, vanished/failed unlinks subtract.
+   * Present only under `--all`; a bare clear never sets it.
+   */
+  readonly mastersDeleted?: number;
+  /** The fail-open read notice (corrupt pre-state), for stderr. */
+  readonly notice?: string;
 }

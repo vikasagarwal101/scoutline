@@ -24,6 +24,15 @@ export interface DataCommandResult<T = unknown> {
   readonly data: T;
   readonly presentations?: CommandPresentations;
   readonly exitCode?: number;
+  /**
+   * Pre-projection (pre-`--fields`) rows for capabilities whose journal
+   * skeleton must preserve url+title identities even when the user
+   * projects away those fields in the command output.
+   *
+   * Only the search command populates this; every other command leaves
+   * it absent (undefined is not `unknown`-assignable but it's optional).
+   */
+  readonly rawRows?: readonly { url?: string; title?: string }[];
 }
 
 export interface TextCommandResult {
@@ -147,6 +156,7 @@ export async function invokeCommand(
   now: () => number = Date.now,
   secrets?: string[],
   save?: SaveHook,
+  journal?: SaveHook,
 ): Promise<number> {
   const notices: string[] = [];
 
@@ -173,7 +183,41 @@ export async function invokeCommand(
     // existing catch below (notices flushed, one error envelope, stdout
     // suppressed). With no hook this is a no-op.
     if (save !== undefined) {
-      await save({ result, resolvedSecrets, now, notice: context.notice });
+      // Cluster F (cubic P2): capture the save failure but don't rethrow
+      // yet — the always-on journal hook must still run, so a
+      // provider-verified run leaves a journal row recording the attempt
+      // even when saving the artifact fails.
+      let saveThrew = false;
+      let saveError: unknown;
+      try {
+        await save({ result, resolvedSecrets, now, notice: context.notice });
+      } catch (error) {
+        saveThrew = true;
+        saveError = error;
+      }
+      // History-journal merge T2a: the always-on journal hook runs BESIDE
+      // the save hook at the same seam — AFTER it, so the save hook has
+      // already stamped its requestId into the shared capture cell for the
+      // saveRef cross-link. Rethrow precedence:
+      // - save succeeded, journal failed → rethrow (unchanged contract:
+      //   rides the catch below — notices, one error envelope, no stdout).
+      // - save failed → the save error rethrows below; a journal error
+      //   would only mask it, so it degrades to a stderr notice instead.
+      if (journal !== undefined) {
+        try {
+          await journal({ result, resolvedSecrets, now, notice: context.notice });
+        } catch (journalError) {
+          if (!saveThrew) {
+            throw journalError;
+          }
+          context.notice("journal write failed after save failure");
+        }
+      }
+      if (saveThrew) {
+        throw saveError;
+      }
+    } else if (journal !== undefined) {
+      await journal({ result, resolvedSecrets, now, notice: context.notice });
     }
   } catch (error) {
     for (const notice of notices) {

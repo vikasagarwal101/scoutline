@@ -219,6 +219,13 @@ export function configuredSecrets(env: NodeJS.ProcessEnv = process.env): string[
     env.PARALLEL_API_KEY,
     env.PERPLEXITY_API_KEY,
     env.JINA_API_KEY,
+    // v3 providers (#78): their literal credentials ride the same
+    // literal-value pass — a secret embedded in query text or skeleton
+    // URLs must not reach the always-on journal unredacted.
+    env.LINKUP_API_KEY,
+    env.SPIDER_API_KEY,
+    env.YDC_API_KEY,
+    env.YOU_API_KEY,
   ];
   return normalizeSecrets(candidates.filter((c): c is string => typeof c === "string"));
 }

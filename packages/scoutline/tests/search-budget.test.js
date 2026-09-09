@@ -610,7 +610,10 @@ describe("zero-diff: without --max-chars, byte-identical output", () => {
   it("single provider: no flag → identical stdout/stderr, store dir stays empty", async (t) => {
     await withTempDir(t, async (dir) => {
       const { status, stdout, stderr } = await runMain(
-        ["--provider", "tavily", "search", "q"],
+        // --no-journal (T2a): this zero-diff pin is about the BUDGET
+        // surface; the always-on journal entry would otherwise populate
+        // the store dir on every search run.
+        ["--provider", "tavily", "search", "q", "--no-journal"],
         {
           artifactsDir: dir,
           extraDeps: {
@@ -632,8 +635,11 @@ describe("zero-diff: without --max-chars, byte-identical output", () => {
   it("fan-out: no flag → byte-identical to the pre-T3 shape (mergedFrom, no compaction)", async (t) => {
     await withTempDir(t, async (dir) => {
       const shared = src("Shared", "https://e/shared", "s".repeat(30));
+      // --no-journal (T2a fix): the fan-out run now ALWAYS-ON journals
+      // (must-fix 3); this budget zero-diff pin isolates the budget
+      // surface, so it opts out of the journal for the run.
       const { status, stdout } = await runMain(
-        ["--provider", "tavily,exa", "search", "q"],
+        ["--provider", "tavily,exa", "search", "q", "--no-journal"],
         {
           artifactsDir: dir,
           extraDeps: {
@@ -663,10 +669,17 @@ describe("zero-diff: without --max-chars, byte-identical output", () => {
       });
       assert.equal(a.status, 0);
       const { log: logA } = await readLog(dir);
-      assert.equal(logA.entries.length, 1, "one save-hook entry, no budget artifact");
+      // T2a: the always-on journal entry sits beside the save entry.
+      assert.deepEqual(
+        logA.entries.map((e) => e.kind),
+        ["save", "journal"],
+        "save + always-on journal, no budget artifact",
+      );
 
       const b = await runMain(
-        ["--provider", "tavily", "search", "q", "--max-chars", "800"],
+        // --no-journal (T2a): keeps this budget-surface pin isolated
+        // from the always-on journal entry (run A left 2 entries).
+        ["--provider", "tavily", "search", "q", "--max-chars", "800", "--no-journal"],
         {
           artifactsDir: dir,
           extraDeps: { providerDescriptors: [makeDescriptor("tavily", { q: fiveSources() })] },
@@ -674,7 +687,7 @@ describe("zero-diff: without --max-chars, byte-identical output", () => {
       );
       assert.equal(b.status, 0);
       const { log: logB } = await readLog(dir);
-      assert.equal(logB.entries.length, 2, "budget artifact appends its own entry");
+      assert.equal(logB.entries.length, 3, "budget artifact appends its own entry (2 from A + 1 budget)");
       const data = parseData(b.stdout);
       assert.ok(data.compaction, "budget run stamps compaction");
     });

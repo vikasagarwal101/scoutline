@@ -220,7 +220,7 @@ describe("history: buildHistoryListReport (pure)", () => {
 // next column, and data rows must align with the header.
 describe("history: text-mode list rendering (column separators)", () => {
   it("keeps a one-space separator when a column value exactly fills its width", async () => {
-    const requestId = "20260829T120000Z-0001"; // 21 chars — exactly the column width
+    const requestId = "20260829T120000Z-0001"; // 21 chars
     const result = await historyCommand({
       subcommand: "list",
       readLog: async () => ({ log: { version: 1, entries: [entry({ requestId })] } }),
@@ -235,16 +235,178 @@ describe("history: text-mode list rendering (column separators)", () => {
     assert.ok(header, "header line must exist");
     assert.ok(row, "data row must exist");
     // Data row aligns with the header: requestId column, then separator.
+    // T6b widened the id column 21 → 30 to hold the `(repeat <id>)`
+    // marker annotation — the separator invariant survives the widening.
     assert.strictEqual(row.slice(0, 21), requestId);
-    assert.strictEqual(row[21], " ", "the exactly-full requestId must still be followed by a space");
+    assert.strictEqual(row[21], " ", "the requestId is followed by column padding");
     assert.strictEqual(header.slice(0, 21), "requestId".padEnd(21));
-    assert.strictEqual(header[21], " ");
-    assert.ok(header.startsWith("requestId".padEnd(21) + " "), "header aligned with data rows");
-    // The timestamp column (ISO width 24, starts at 22) also ends in a space.
+    assert.ok(header.startsWith("requestId".padEnd(30) + " "), "header aligned with data rows");
+    // The timestamp column (ISO width 24, starts at 31 after T6b's
+    // kind-column table widening) also ends in a space.
     const timestamp = new Date(NOW).toISOString();
     assert.strictEqual(timestamp.length, 24);
-    assert.ok(row.slice(22).startsWith(timestamp), `timestamp column misaligned: ${row}`);
-    assert.strictEqual(row[22 + 24], " ", "the exactly-full timestamp must still be followed by a space");
+    assert.ok(row.slice(31).startsWith(timestamp), `timestamp column misaligned: ${row}`);
+    assert.strictEqual(row[31 + 24], " ", "the exactly-full timestamp must still be followed by a space");
+  });
+
+  // Issue #108 review finding 1: a cache-served run renders `zai (cache)`
+  // in the provider column — bare `zai` reads "zai served live" during an
+  // outage zai was never contacted in. Live and fan-out rows are unchanged.
+  it("renders servedFrom cache as `effective (cache)`; live and fanout rows unchanged", async () => {
+    const deps = (entries) => ({
+      subcommand: "list",
+      readLog: async () => ({ log: { version: 1, entries } }),
+      readMaster: async () => undefined,
+      masterSizeOf: async () => 0,
+      notice: () => {},
+      now: fixedNow,
+    });
+    const result = await historyCommand(
+      deps([
+        entry({ requestId: "20260829T120000Z-0001" }),
+        entry({
+          requestId: "20260829T120000Z-0002",
+          provider: { mode: "single", effective: "zai", servedFrom: "cache" },
+        }),
+        entry({
+          requestId: "20260829T120000Z-0003",
+          provider: { mode: "fanout", arms: ["zai", "tavily"] },
+        }),
+      ]),
+    );
+    const lines = result.presentations.compact.split("\n");
+    // Newest-first ordering (timestamp desc, requestId desc on ties) puts
+    // the fanout row first (0003), then cache (0002), then bare live (0001).
+    assert.ok(
+      lines[2].endsWith("fanout(zai+tavily)"),
+      `fanout row unchanged: ${lines[2]}`,
+    );
+    assert.ok(
+      lines[3].endsWith("zai (cache)"),
+      `cache-served row renders the qualifier: ${lines[3]}`,
+    );
+    // Entry without servedFrom (pre-#108 entry) renders bare effective.
+    assert.ok(lines[4].endsWith("zai"), `live row renders bare effective: ${lines[4]}`);
+  });
+});
+
+describe("history: repeat markers in the log (T2b review F1/F2)", () => {
+  /** Full journal entry fixture (validated shape). */
+  const fullJournal = (requestId, ts = NOW) => ({
+    kind: "journal",
+    requestId,
+    timestamp: ts,
+    capability: "search",
+    provider: { mode: "single", effective: "zai", servedFrom: "live" },
+    query: "rust vs go",
+    contentHash: "a".repeat(64),
+    cacheKey: "v2.search.zai.fp.json",
+    skeleton: { results: [{ url: "https://zai/r", title: "t-zai" }] },
+  });
+
+  /** Repeat-marker fixture (tiny shape — no requestId of its own). */
+  const marker = (repeatOf, ts = NOW + 1) => ({
+    kind: "journal",
+    timestamp: ts,
+    capability: "search",
+    provider: { mode: "single", effective: "zai", servedFrom: "cache" },
+    repeatOf,
+  });
+
+  // F1 (HIGH): the mainline flow (search twice → list) used to crash —
+  // toSummary projected the marker's absent requestId into padEnd.
+  it("F1: history list EXITS 0 over a full+marker log, lists the full entry, SKIPS the marker row by default (D5 ruled end-state; --repeats opt-in is T6b)", async () => {
+    const result = await historyCommand({
+      subcommand: "list",
+      readLog: async () => ({
+        log: { version: 1, entries: [fullJournal("20260908T000000Z-0001"), marker("20260908T000000Z-0001")] },
+      }),
+      readMaster: async () => undefined,
+      masterSizeOf: async () => 0,
+      notice: () => {},
+      now: fixedNow,
+    });
+    assert.strictEqual(result.exitCode ?? 0, 0);
+    // Data envelope: the full entry is the ONLY row; markers are not
+    // inventory (they have no id of their own to show or join).
+    assert.strictEqual(result.data.total, 1, "marker not counted in total");
+    assert.deepStrictEqual(
+      result.data.entries.map((e) => e.requestId),
+      ["20260908T000000Z-0001"],
+    );
+    // Text rendering: header + the one full row, no crash, no marker row.
+    const lines = result.presentations.compact.split("\n");
+    assert.strictEqual(lines.length, 3, `one header + one row: ${JSON.stringify(lines)}`);
+    assert.ok(lines[2].startsWith("20260908T000000Z-0001"), "full entry row present");
+    assert.ok(!lines.join("\n").includes("(cache)"), "marker row skipped entirely");
+  });
+
+  it("F1: buildHistoryListReport (pure) skips markers — total counts full entries only", () => {
+    const report = buildHistoryListReport(
+      { version: 1, entries: [fullJournal("20260908T000000Z-0001"), marker("20260908T000000Z-0001")] },
+      { now: fixedNow },
+    );
+    assert.strictEqual(report.total, 1);
+    assert.deepStrictEqual(
+      report.entries.map((e) => e.requestId),
+      ["20260908T000000Z-0001"],
+    );
+  });
+
+  it("F1: history show renders the FULL journal entry clean (marker's repeatOf resolves to it; markers have no own id to show)", async () => {
+    const result = await historyCommand({
+      subcommand: "show",
+      requestId: "20260908T000000Z-0001",
+      readLog: async () => ({
+        log: { version: 1, entries: [fullJournal("20260908T000000Z-0001"), marker("20260908T000000Z-0001")] },
+      }),
+      readMaster: async () => undefined,
+      masterSizeOf: async () => 0,
+      notice: () => {},
+      now: fixedNow,
+    });
+    assert.strictEqual(result.exitCode ?? 0, 0);
+    assert.strictEqual(result.data.entry.kind, "journal");
+  });
+
+  it("F1: history stats renders clean over a marker-containing log (marker counted in byKind only, not double-counted as a command row)", async () => {
+    const result = await historyCommand({
+      subcommand: "stats",
+      readLog: async () => ({
+        log: { version: 1, entries: [fullJournal("20260908T000000Z-0001"), marker("20260908T000000Z-0001")] },
+      }),
+      readMaster: async () => undefined,
+      masterSizeOf: async () => 0,
+      notice: () => {},
+      now: fixedNow,
+    });
+    assert.strictEqual(result.exitCode ?? 0, 0);
+    assert.strictEqual(result.data.total, 2, "stats keeps counting every entry");
+    assert.strictEqual(result.data.byKind.journal, 2);
+  });
+
+  // F2 (LOW): a marker timestamp outside Date range (finite but invalid
+  // ms) must fail VALIDATION (whole-log fail-open) — history stats used to
+  // hit RangeError in new Date(ts).toISOString() via the span render.
+  it("F2: marker timestamp 1e300 fails validation → whole-log fail-open (empty log + notice), stats does not crash", async () => {
+    const dir = makeTempDir("scoutline-history-f2-");
+    try {
+      const { appendJournalEntry } = await import("../dist/lib/journal.js");
+      // Direct write of an out-of-range marker (the writer's now() is
+      // injectable but the guard under test is the validator's).
+      await appendJournalEntry(dir, {
+        kind: "journal",
+        timestamp: 1e300,
+        capability: "search",
+        provider: { mode: "single", effective: "zai", servedFrom: "cache" },
+        repeatOf: "20260908T000000Z-0001",
+      });
+      const { log, notice } = await import("../dist/lib/artifacts.js").then((m) => m.readLog(dir));
+      assert.strictEqual(log.entries.length, 0, "out-of-range marker dropped (fail-open)");
+      assert.ok(notice !== undefined && notice.length > 0, "corruption notice surfaced");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

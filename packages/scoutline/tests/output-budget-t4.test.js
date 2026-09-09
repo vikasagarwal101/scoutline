@@ -964,7 +964,14 @@ describe("output modes + zero-diff (T4)", () => {
       const data = parseData(stdout);
       assert.ok(!("compaction" in data));
       assert.equal(data.content, threeSections(), "full content, byte-identical");
-      assert.deepEqual(await fs.readdir(dir), [], "no budget → no store writes");
+      // History-journal merge T3: read/research journal ALWAYS-ON now, so
+      // index.json legitimately appears. The zero-diff claim is about
+      // COMPACTION artifacts — no master/compaction files may exist.
+      assert.deepEqual(
+        (await fs.readdir(dir)).filter((f) => f !== "index.json"),
+        [],
+        "no budget → no compaction store writes (journal index.json aside)",
+      );
 
       const crawl = [
         makeAsyncProvider({
@@ -1023,7 +1030,11 @@ describe("output modes + zero-diff (T4)", () => {
       const rData = parseData(r.stdout);
       assert.ok(!("compaction" in rData));
       assert.equal(rData.content, "hello world", "no legacy per-field truncation without flag");
-      assert.deepEqual(await fs.readdir(dir), [], "still no store writes");
+      assert.deepEqual(
+        (await fs.readdir(dir)).filter((f) => f !== "index.json"),
+        [],
+        "still no compaction store writes (journal index.json aside, T3)",
+      );
     });
   });
 

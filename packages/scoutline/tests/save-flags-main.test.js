@@ -444,7 +444,8 @@ describe("save-artifacts T3: --save/--save-format/--save-force global flags", ()
         "master and export must be byte-identical in content",
       );
       const store = JSON.parse(readFileSync(join(artifactsDir, "index.json"), "utf8"));
-      assert.strictEqual(store.entries.length, 1);
+      // T2a: the always-on journal entry sits beside the save entry.
+      assert.deepStrictEqual(store.entries.map((e) => e.kind), ["save", "journal"]);
       assert.strictEqual(store.entries[0].exportPath, target);
     } finally {
       rmSync(dir, { recursive: true, force: true });

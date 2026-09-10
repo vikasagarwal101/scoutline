@@ -12,6 +12,9 @@ import { fileURLToPath } from "node:url";
 import * as path from "node:path";
 import { runProcess } from "./helpers/run-process.js";
 import { main } from "../dist/index.js";
+import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+
+useTempConfigDir();
 
 const TEST_KEY = "test-key";
 const BASE_ENV = { Z_AI_API_KEY: TEST_KEY };

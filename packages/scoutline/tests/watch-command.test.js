@@ -26,6 +26,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { main } from "../dist/index.js";
 import { WATCH_HELP, parseWatchArgs } from "../dist/commands/watch.js";
+import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+
+useTempConfigDir();
 import {
   addTarget,
   appendChangeLog,

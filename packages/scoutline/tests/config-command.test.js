@@ -220,7 +220,16 @@ function makeInvocation() {
 
 async function withTempConfig(t, initialConfig, run) {
   const dir = await fsMod.mkdtemp(pathMod.join(osMod.tmpdir(), "scoutline-config-cmd-"));
+  // main()'s default quota store resolves its state file through the
+  // AMBIENT process.env (createDefaultQuotaStore -> stateFilePath), not
+  // deps.env — pin the runner-style SCOUTLINE_CONFIG_DIR injection there
+  // too, or a direct `node --test` run touches the real ~/.scoutline
+  // (issue #119 resolver guard).
+  const savedConfigDir = process.env.SCOUTLINE_CONFIG_DIR;
+  process.env.SCOUTLINE_CONFIG_DIR = dir;
   t.after(async () => {
+    if (savedConfigDir === undefined) delete process.env.SCOUTLINE_CONFIG_DIR;
+    else process.env.SCOUTLINE_CONFIG_DIR = savedConfigDir;
     await fsMod.rm(dir, { recursive: true, force: true });
   });
   const { writeConfig } = await import("../dist/lib/config-store.js");

@@ -29,6 +29,9 @@ import { resolveProviderId, resolveEffectiveProvider } from "../dist/providers/s
 import { ValidationError } from "../dist/lib/errors.js";
 import { createInMemoryQuotaStore } from "../dist/lib/quota-store.js";
 import { main } from "../dist/index.js";
+import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+
+useTempConfigDir();
 
 // ---------------------------------------------------------------------------
 // Fixtures — raw QuotaCategory[] matching each provider's live shape

@@ -23,6 +23,9 @@ import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { readFixture } from "./helpers/fixtures.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
+import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+
+useTempConfigDir();
 
 // ---------------------------------------------------------------------------
 // Fake SearchCapability + execution dependencies

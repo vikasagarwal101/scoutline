@@ -52,8 +52,21 @@ import { main } from "../dist/index.js";
 import { TimeoutError } from "../dist/lib/errors.js";
 import { RESEARCH_HELP } from "../dist/commands/research.js";
 import { computeAsyncJobStateHash } from "../dist/lib/async-job-state.js";
+import { redactSecrets, configuredSecrets } from "../dist/lib/redact.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
+
+// #120: fixture provider credentials must be long and carry non-hex
+// characters so they can never collide with a randomized mkdtemp
+// suffix (full [a-zA-Z0-9]) or appear inside a sha256 hex digest.
+const TAVILY_FIXTURE_KEY = "test-tavily-research-fixture-key-zq7v3n";
+const EXA_FIXTURE_KEY = "test-exa-research-fixture-key-m2w8yk";
+const RESEARCH_TEST_ENV = { TAVILY_API_KEY: TAVILY_FIXTURE_KEY, EXA_API_KEY: EXA_FIXTURE_KEY };
+// main() redacts success output with configuredSecrets(deps.env); the
+// expected side of pinned envelope assertions must pass through the
+// IDENTICAL function + secret list so the comparison is immune by
+// construction no matter what the random temp path contains (#120).
+const redactAsOutput = (env, value) => redactSecrets(value, configuredSecrets(env));
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -162,7 +175,7 @@ async function runResearch(argv, { providers, stdin, env, captureResume = false 
   const resumes = [];
   const deps = hermeticMainDeps({
     invocation: io.adapter,
-    env: env ?? { TAVILY_API_KEY: "tv", EXA_API_KEY: "exa" },
+    env: env ?? RESEARCH_TEST_ENV,
     providerDescriptors: providers.map((p) => p.descriptor),
     researchCache: cache,
   });
@@ -554,13 +567,60 @@ describe("research --context organize — D4 re-mapping (Ticket 2)", () => {
         `sources heading must be filtered upstream, got ${JSON.stringify(parsed.sections)}`,
       );
       // Envelope field shape (D5) — counts only, never content.
-      assert.deepStrictEqual(parsed.context, {
-        source: "file",
-        path: notesPath,
-        sha256: sha256of(notesText),
-        mode: "organize",
-        derived: { headings: 2, questions: 1, terms: 4 },
+      assert.deepStrictEqual(
+        parsed.context,
+        redactAsOutput(RESEARCH_TEST_ENV, {
+          source: "file",
+          path: notesPath,
+          sha256: sha256of(notesText),
+          mode: "organize",
+          derived: { headings: 2, questions: 1, terms: 4 },
+        }),
+      );
+    });
+  });
+
+  it("envelope path pin is immune to a configured secret colliding with the temp path (#120)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const notesPath = path.join(dir, "notes.md");
+      const notesText = "# Alpha Notes\nWhat is beta?\n";
+      await fs.writeFile(notesPath, notesText, "utf8");
+      // The collision that used to flake: the mkdtemp suffix IS the
+      // configured secret, so the runtime redaction rewrites the path
+      // that crosses stdout. The pin compares redact-both-sides and
+      // must hold anyway.
+      const collidingEnv = { TAVILY_API_KEY: path.basename(dir), EXA_API_KEY: EXA_FIXTURE_KEY };
+      const tavily = makeResearchProvider({
+        id: "tavily",
+        envVar: "TAVILY_API_KEY",
+        ok: researchOk("## Alpha\n\nbody"),
       });
+      const r = await runResearch(
+        ["--provider", "tavily", "research", "collision pin", "--context", notesPath],
+        { providers: [tavily], env: collidingEnv },
+      );
+      assert.strictEqual(r.status, 0);
+      const parsed = JSON.parse(r.stdout[0]);
+      // The old mutation is real: the emitted path is redacted...
+      assert.ok(
+        parsed.context.path.includes("[REDACTED]"),
+        "collision must actually redact the path",
+      );
+      assert.ok(
+        !parsed.context.path.includes(path.basename(dir)),
+        "colliding suffix must not survive",
+      );
+      // ...and the redact-both-sides pin still matches.
+      assert.deepStrictEqual(
+        parsed.context,
+        redactAsOutput(collidingEnv, {
+          source: "file",
+          path: notesPath,
+          sha256: sha256of(notesText),
+          mode: "organize",
+          derived: { headings: 1, questions: 1, terms: 3 },
+        }),
+      );
     });
   });
 
@@ -638,13 +698,16 @@ describe("research --context organize — D4 re-mapping (Ticket 2)", () => {
       // appended in original order — structurally identical output.
       assert.deepStrictEqual(parsedB.sections, parsedA.sections);
       // The field is still present with zeroed counts.
-      assert.deepStrictEqual(parsedB.context, {
-        source: "file",
-        path: emptyPath,
-        sha256: sha256of(""),
-        mode: "organize",
-        derived: { headings: 0, questions: 0, terms: 0 },
-      });
+      assert.deepStrictEqual(
+        parsedB.context,
+        redactAsOutput(RESEARCH_TEST_ENV, {
+          source: "file",
+          path: emptyPath,
+          sha256: sha256of(""),
+          mode: "organize",
+          derived: { headings: 0, questions: 0, terms: 0 },
+        }),
+      );
     });
   });
 });
@@ -672,7 +735,7 @@ describe("research --context-stdin — read once across fallback (Ticket 2)", ()
       {
         providers: [tavily, exa],
         stdin: stdinText,
-        env: { TAVILY_API_KEY: "tv", EXA_API_KEY: "exa" },
+        env: RESEARCH_TEST_ENV,
       },
     );
 

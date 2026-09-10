@@ -359,8 +359,10 @@ export function backupPathFor(filePath: string): string {
  * including marker pairs whose inner content is not ours (a user-authored
  * `<!-- scoutline:start --> … <!-- scoutline:end -->` block is foreign
  * user content; DESIGN D2 strips inserted regions by OUR markers AND our
- * content, never by markers alone). Deletes the file outright when nothing
- * survives the strip (registration itself created it). No-op on ENOENT.
+ * content, never by markers alone). Deletes the file outright only when it
+ * is byte-empty after the strip (the registration itself created it); a
+ * whitespace-only survivor is user-owned bytes and is written back
+ * verbatim (#123). No-op on ENOENT.
  * Used by line AND block pointers — both wrap their bytes in the same
  * marker pair.
  */
@@ -401,9 +403,11 @@ export async function stripManagedRegion(filePath: string, expectedContent: stri
     stripped = stripped.slice(0, from) + stripped.slice(to);
     searchFrom = Math.max(0, from - 1);
   }
-  if (stripped.trim() === "") {
-    // Nothing user-owned survives — the registration itself created this
-    // file; its pre-registration state is absence.
+  if (stripped === "") {
+    // Byte-empty — the registration itself created this file (its
+    // pre-registration state is absence). A whitespace-only survivor is
+    // user-owned content, not absence: it must be written back verbatim
+    // below, never deleted (#123).
     await fs.rm(filePath, { force: true });
     return;
   }

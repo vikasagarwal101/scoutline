@@ -426,6 +426,54 @@ describe("pre-existing unwrapped pointer line (A4 — user-owned, hands off)", (
   });
 });
 
+describe("stripManagedRegion whitespace survivor (#123)", () => {
+  it("keeps a pre-existing whitespace-only file byte-identical through register + unregister", async (t) => {
+    const home = await mkHome(t);
+    const file = path.join(home, "CLAUDE.md");
+    const original = " \n"; // user-owned whitespace bytes — content, not absence
+    await fs.writeFile(file, original);
+
+    await lineInsert({ filePath: file, line: POINTER_LINE });
+    await stripManagedRegion(file, POINTER_LINE);
+
+    await fs.access(file); // must survive — the strip must not delete it
+    assert.equal(
+      await read(file),
+      original,
+      "whitespace-only user file must survive unregister byte-identically",
+    );
+  });
+
+  it("still deletes a byte-empty survivor — a file the registration itself created", async (t) => {
+    const home = await mkHome(t);
+    const file = path.join(home, "QWEN.md");
+
+    await lineInsert({ filePath: file, line: POINTER_LINE }); // mints the file
+    assert.equal(await read(file), `${START}\n${POINTER_LINE}\n${END}\n`);
+    await stripManagedRegion(file, POINTER_LINE);
+
+    await assert.rejects(() => fs.access(file), { code: "ENOENT" });
+  });
+
+  it("survives a whitespace-only file without trailing newline (accepted edge, bytes pinned as-is)", async (t) => {
+    const home = await mkHome(t);
+    const file = path.join(home, "CLAUDE.md");
+    const original = "  "; // two spaces, no trailing newline
+    await fs.writeFile(file, original);
+
+    await lineInsert({ filePath: file, line: POINTER_LINE });
+    await stripManagedRegion(file, POINTER_LINE);
+
+    await fs.access(file);
+    // ACCEPTED EDGE (#123 triage): a no-EOL file gains one glue "\n" at
+    // insert time; the strip's swallow-one-newline heuristic (engines.ts,
+    // following-newline-first) restores the original bytes here, so the
+    // round-trip below is byte-exact. If the heuristic ever eats the other
+    // boundary this pin is the documented place to revisit.
+    assert.equal(await read(file), original, "no-EOL whitespace file must survive unregister");
+  });
+});
+
 describe("first-mutation backup rail (D2)", () => {
   it("mints <file>.scoutline-bak with the exact pre-mutation bytes on first mutation", async (t) => {
     const home = await mkHome(t);

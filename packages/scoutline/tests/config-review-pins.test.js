@@ -106,7 +106,10 @@ describe("hermetic quota-store singleton exit cleanup (cubic)", () => {
       );
       const result = spawnSync(process.execPath, [child], {
         encoding: "utf8",
-        env: { ...process.env, TMPDIR: dir },
+        // TMPDIR covers POSIX; TEMP/TMP are what os.tmpdir() honors on
+        // Windows — set all three so the private dir is the child's
+        // tmpdir everywhere (cubic wave 3).
+        env: { ...process.env, TMPDIR: dir, TEMP: dir, TMP: dir },
       });
       assert.strictEqual(result.status, 0, `consumer failed: ${result.stderr}`);
       const created = result.stdout

@@ -93,27 +93,32 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   //   2. Outside that context, ALSO require at least one credential-like
   //      character (digit, hyphen, underscore, uppercase letter). Pure
   //      lowercase 8+ char runs like "subscription" / "understanding" are
-  //      too common in English prose to redact blindly. The character
-  //      class is wrapped in `(?-i:...)` so it stays case-SENSITIVE even
-  //      though the keyword alternation is matched case-insensitively
-  //      via the `/i` flag.
+  //      too common in English prose to redact blindly. The credential
+  //      check runs in a separate case-SENSITIVE regex tested in a replace
+  //      callback — `(?-i:...)` inline modifier groups are V8 7.3+ (Node
+  //      24 accepts, Node 22 runtimes reject at compile time; engines
+  //      promises >=22).
+  const CREDENTIAL_CHAR = /[^a-z\s]/; // case-sensitive by design (no /i) — any non-lowercase-letter char: uppercase, digit, punctuation
   result = result.replace(
     /(Authorization\s*:\s*)(?:Bearer|Token|ApiKey)\s+[^\s]{8,}/gi,
     (_match, prefix: string) => prefix + REDACTED,
   );
   result = result.replace(
-    /(?:Bearer|Token|ApiKey)\s+(?=[^\s]*(?-i:[^a-z\s]))[^\s]{8,}/gi,
-    REDACTED,
+    /(?:Bearer|Token|ApiKey)\s+([^\s]{8,})/gi,
+    (match, value: string) => (CREDENTIAL_CHAR.test(value) ? REDACTED : match),
   );
   // Same two-pass approach for Basic. The Authorization-context pass
   // covers `Authorization: Basic …` regardless of value composition; the
-  // outside-context pass requires a credential-like character to keep
-  // prose like `Basic understanding` untouched.
+  // outside-context pass requires a credential-like character (same
+  // case-sensitive CREDENTIAL_CHAR check) to keep prose like
+  // `Basic understanding` untouched.
   result = result.replace(
     /(Authorization\s*:\s*)Basic\s+\S+/gi,
     (_match, prefix: string) => prefix + REDACTED,
   );
-  result = result.replace(/Basic\s+(?=\S*(?-i:[^a-z\s]))\S{8,}/gi, REDACTED);
+  result = result.replace(/Basic\s+(\S{8,})/gi, (match, value: string) =>
+    CREDENTIAL_CHAR.test(value) ? REDACTED : match,
+  );
   // Honor RFC 7235 quoted-string values in Digest parameters. The value
   // span may be either a bare token `[^\s,]+` or a quoted string
   // `"[^"]*"`, and the comma-separated param list must consume every

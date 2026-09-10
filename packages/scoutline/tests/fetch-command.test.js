@@ -18,6 +18,9 @@ import {
 } from "../dist/commands/fetch.js";
 import { main } from "../dist/index.js";
 import { FileError } from "../dist/lib/errors.js";
+import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+
+useTempConfigDir();
 
 function makeAdapter() {
   const stdout = [];

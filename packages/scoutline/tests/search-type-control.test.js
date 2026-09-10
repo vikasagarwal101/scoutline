@@ -19,6 +19,9 @@ import { describe, it } from "node:test";
 
 import { main, parseAndValidateType } from "../dist/index.js";
 import { search } from "../dist/commands/search.js";
+import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+
+useTempConfigDir();
 
 // --- fake capability + execution deps (mirror search.test.js helpers) ---
 

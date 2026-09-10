@@ -31,6 +31,9 @@ import {
 import { main } from "../dist/index.js";
 import { appendLogEntry, writeArtifact } from "../dist/lib/artifacts.js";
 import { runProcess } from "./helpers/run-process.js";
+import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+
+useTempConfigDir();
 
 const DAY = 24 * 60 * 60 * 1000;
 // Fixed clock (numeric instant — no calendar-date fixture, so nothing ages).

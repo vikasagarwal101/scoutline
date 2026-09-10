@@ -141,15 +141,18 @@ describe("main() config hermeticity (#73)", () => {
       ...extra,
     });
 
-    // Control: config.routing says zai-first
+    // Control: config.routing says zai-first. withAmbientConfigDir keeps
+    // main()'s ambient quota-store resolve off the real ~/.scoutline (#119).
     invokeLog.length = 0;
-    const control = await main(["search", "q"], baseDeps({}));
+    const control = await withAmbientConfigDir(() => main(["search", "q"], baseDeps({})));
     assert.strictEqual(control, 0);
     assert.strictEqual(invokeLog[0], "zai", `config.routing should order zai first; got ${invokeLog[0]}`);
 
     // Injected deps.routing says tavily-first and must WIN over config.routing
     invokeLog.length = 0;
-    const injected = await main(["search", "q"], baseDeps({ routing: { search: ["tavily", "zai"] } }));
+    const injected = await withAmbientConfigDir(() =>
+      main(["search", "q"], baseDeps({ routing: { search: ["tavily", "zai"] } })),
+    );
     assert.strictEqual(injected, 0);
     assert.strictEqual(invokeLog[0], "tavily", `deps.routing must beat config.routing; got ${invokeLog[0]}`);
   });

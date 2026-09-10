@@ -26,6 +26,9 @@ import {
 } from "../dist/commands/search.js";
 import { main } from "../dist/index.js";
 import { ValidationError, UnsupportedOptionError } from "../dist/lib/errors.js";
+import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+
+useTempConfigDir();
 
 // ---------------------------------------------------------------------------
 // canonicalUrl — identity-only normalization (DESIGN D4, ADR-0004 §5)

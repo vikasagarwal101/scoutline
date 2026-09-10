@@ -156,7 +156,28 @@ export function resolveConfigRootPure(
   return env.SCOUTLINE_CONFIG_DIR || path.join(platform.homedir, ".scoutline");
 }
 
+/**
+ * Test-isolation guard (issue #119): `node --test` sets NODE_TEST_CONTEXT
+ * in every spawned test child, so a bare default-root resolve there means
+ * the caller FORGOT dependency injection and is about to touch the real
+ * `~/.scoutline` — fail loud instead. Lives only on this ambient-env seam;
+ * `resolveConfigRootPure` stays total/pure. `SCOUTLINE_NO_TEST_GUARD=1`
+ * is the documented escape hatch for suites deliberately exercising the
+ * default path. Note the shell convention: ANY non-empty value bypasses
+ * (JS truthiness) — `=0` does NOT re-arm the guard; unset it (or set it
+ * empty) to re-arm.
+ */
 export function resolveConfigRoot(): string {
+  if (
+    process.env.NODE_TEST_CONTEXT &&
+    !process.env.SCOUTLINE_CONFIG_DIR &&
+    !process.env.SCOUTLINE_NO_TEST_GUARD
+  ) {
+    throw new ConfigurationError(
+      "Refusing resolve default root under test context: set SCOUTLINE_CONFIG_DIR isolated directory (or SCOUTLINE_NO_TEST_GUARD=1 bypass).",
+      "Inject SCOUTLINE_CONFIG_DIR in test (hermeticMainDeps or temp dir); direct node --test runs ~/.scoutline.",
+    );
+  }
   return resolveConfigRootPure(
     { SCOUTLINE_CONFIG_DIR: process.env.SCOUTLINE_CONFIG_DIR },
     { homedir: os.homedir() },
@@ -488,8 +509,22 @@ export async function writeConfig(
     ((warning: AnyConfigWarning) => process.stderr.write(`Warning: ${warning.message}\n`));
   for (const warning of parsed.warnings) onWarning(warning);
   const payload = `${JSON.stringify(parsed.config, null, 2)}\n`;
+  const filePath = options.filePath ?? configFilePath();
+  // Single-generation .bak (issue #119): the previous config survives on
+  // disk before the atomic replace, so a botched write or a bad set/unset
+  // is one rename away from recovery. Best-effort by contract — ENOENT on
+  // the first write (nothing to back up) or any failure must never fail
+  // the write itself. The rotation rides the same atomic replace as the
+  // main write (options.atomic), so it is rename-atomic and 0600 by
+  // construction: a crash mid-rotation can never leave a truncated .bak.
   try {
-    await atomicReplaceFile(options.filePath ?? configFilePath(), payload, options.atomic);
+    const contents = await fs.readFile(filePath);
+    await atomicReplaceFile(`${filePath}.bak`, contents, options.atomic);
+  } catch {
+    // best-effort backup; the write proceeds regardless
+  }
+  try {
+    await atomicReplaceFile(filePath, payload, options.atomic);
   } catch {
     throw new ConfigurationError(
       "Unable to write config.json",

@@ -40,6 +40,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../dist/index.js";
 import { appendJournalEntry } from "../dist/lib/journal.js";
+import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+
+useTempConfigDir();
 
 function makeTempDir(prefix) {
   return mkdtempSync(join(tmpdir(), prefix));

@@ -24,6 +24,9 @@ import { resolveEnvFromConfig } from "../dist/lib/config-store.js";
 import { configuredSecrets } from "../dist/lib/redact.js";
 import { loadConfig, getApiKey } from "../dist/lib/config.js";
 import { ConfigurationError, NetworkError } from "../dist/lib/errors.js";
+import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+
+useTempConfigDir();
 
 // ---------------------------------------------------------------------------
 // Test doubles

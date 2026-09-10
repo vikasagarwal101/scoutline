@@ -32,6 +32,9 @@ import { main } from "../dist/index.js";
 import { handleInitWithHelp, INIT_HELP } from "../dist/commands/init.js";
 import { AuthError, ApiError, NetworkError } from "../dist/lib/errors.js";
 import { withTempDir } from "./helpers/temp-dir.js";
+import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+
+useTempConfigDir();
 
 // ---------------------------------------------------------------------------
 // Test doubles

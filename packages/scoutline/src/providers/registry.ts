@@ -27,14 +27,13 @@ import { createJinaDescriptor } from "./jina/adapter.js";
 import { createLinkupDescriptor } from "./linkup/adapter.js";
 import { createYouDescriptor } from "./you/adapter.js";
 import { createSpiderDescriptor } from "./spider/adapter.js";
-// arXiv, OpenAlex, Crossref, and PubMed ship their real adapters
-// (science verticals); the remaining science seats still import the
-// stub factories from types.js until their adapter tickets land.
+// The science verticals ship their real adapters; none of the seats
+// still import the stub factories from types.js.
 import { createArxivDescriptor } from "./arxiv/adapter.js";
 import { createOpenalexDescriptor } from "./openalex/adapter.js";
 import { createCrossrefDescriptor } from "./crossref/adapter.js";
 import { createPubmedDescriptor } from "./pubmed/adapter.js";
-import { createEuropepmcDescriptor } from "./types.js";
+import { createEuropepmcDescriptor } from "./europepmc/adapter.js";
 import type { ProviderDescriptor, ProviderId } from "./types.js";
 import {
   getProviderDescriptor as lookupProviderDescriptor,

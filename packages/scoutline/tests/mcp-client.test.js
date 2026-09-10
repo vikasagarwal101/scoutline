@@ -2024,11 +2024,12 @@ describe("ZaiMcpClient — probe provenance gate (#128)", () => {
    * SHOULD NOT run cannot hide behind an inconclusive answer) and records
    * every request body it sees.
    */
+  // Closed fetch mock: answers every api.z.ai request 401-in-200 and records
+  // request bodies; any other URL throws (unexpected fetch = test bug, never
+  // real network). `recordingAuthRejectionFetch(seenBodies)` IS the handler.
   function recordingAuthRejectionFetch(seenBodies) {
-    return () => async (input, init) => {
+    return async (input, init) => {
       if (!urlOf(input).includes("api.z.ai")) {
-        // Closed mock (review minor): an unexpected URL is a bug in the
-        // test, not something to silently send to the real network.
         throw new Error(`unexpected non-probe fetch in #128 suite: ${urlOf(input)}`);
       }
       seenBodies.push(String(init?.body ?? ""));
@@ -2059,7 +2060,7 @@ describe("ZaiMcpClient — probe provenance gate (#128)", () => {
       disableRetry: true,
     });
     const real = globalThis.fetch;
-    const recorder = recordingAuthRejectionFetch(seenBodies)(real);
+    const recorder = recordingAuthRejectionFetch(seenBodies);
     globalThis.fetch = recorder;
     try {
       await assert.rejects(client.listTools(), (err) => {
@@ -2099,7 +2100,7 @@ describe("ZaiMcpClient — probe provenance gate (#128)", () => {
       disableRetry: true,
     });
     const real = globalThis.fetch;
-    globalThis.fetch = recordingAuthRejectionFetch(seenBodies)(real);
+    globalThis.fetch = recordingAuthRejectionFetch(seenBodies);
     try {
       await assert.rejects(client.listTools(), (err) => {
         assert.strictEqual(err.code, "AUTH_ERROR", `got ${err.code} (${err.message})`);

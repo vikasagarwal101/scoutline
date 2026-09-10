@@ -91,6 +91,7 @@ import {
 import { handleFetch, FETCH_HELP } from "./commands/fetch.js";
 import { handleArchive, parseArchiveArgs, ARCHIVE_HELP } from "./commands/archive.js";
 import { handleWatch } from "./commands/watch.js";
+import { handleScience } from "./commands/science.js";
 import { buildProviderCacheKey, cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
 import type { PruneSelectors, PruneCachesResult } from "./lib/cache.js";
 import { parseBatchManifest } from "./lib/batch-manifest.js";
@@ -258,6 +259,9 @@ Commands:
   watch    Keyless page monitoring (add / list / remove targets, run
            monitoring ticks, read the change feed — a persistent
            snapshot ring + change log, credential-free)
+  science Search and retrieve scholarly works (search / get; bare
+           DOI, PMID, arXiv ids; keyless scholarly suppliers:
+           openalex, arxiv, crossref, pubmed, europepmc)
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
   init     Interactive onboarding wizard (writes ~/.scoutline/config.json)
   config   Manage ~/.scoutline/config.json keys (get / set / unset,
@@ -311,6 +315,7 @@ Help:
   scoutline fetch --help
   scoutline archive --help
   scoutline watch --help
+  scoutline science --help
   scoutline init --help
 `.trim();
 
@@ -463,6 +468,7 @@ export const DISPATCHED_COMMANDS: ReadonlySet<string> = new Set([
   "fetch",
   "archive",
   "watch",
+  "science",
 ]);
 
 /**
@@ -6182,6 +6188,26 @@ export async function main(
         outputMode,
         buildHandlerDeps(env, envSecrets, true),
         isolated,
+      );
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
+  // `science` is credential-free like archive/watch: the five scholarly
+  // suppliers are keyless, so missing or unconfigured
+  // ~/.scoutline/config.json never blocks a literature search (the
+  // archive precedent — dispatch BEFORE the credentialed config load).
+  // TODO(T10): the interim single-supplier default becomes the D5
+  // fan-out across all enabled science suppliers.
+  if (command === "science") {
+    try {
+      return await handleScience(
+        commandArgs,
+        outputMode,
+        buildHandlerDeps(env, envSecrets, true),
+        { explicitProvider: provider },
       );
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));

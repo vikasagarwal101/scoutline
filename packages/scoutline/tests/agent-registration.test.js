@@ -24,6 +24,13 @@ import {
   markerBlockInsert,
   stripManagedRegion,
 } from "../dist/lib/agent-registration/engines.js";
+import {
+  checkAgentRegistration,
+  computeRuleTextHash,
+  readAgentRegistrationStamp,
+  registerAgentTools,
+  unregisterAgentTools,
+} from "../dist/lib/agent-registration/deploy.js";
 
 const POINTER_LINE = "@rules/scoutline.md";
 const START = "<!-- scoutline:start -->";
@@ -393,6 +400,54 @@ describe("pre-existing unwrapped pointer line (A4 — user-owned, hands off)", (
   });
 });
 
+describe("stripManagedRegion whitespace survivor (#123)", () => {
+  it("keeps a pre-existing whitespace-only file byte-identical through register + unregister", async (t) => {
+    const home = await mkHome(t);
+    const file = path.join(home, "CLAUDE.md");
+    const original = " \n"; // user-owned whitespace bytes — content, not absence
+    await fs.writeFile(file, original);
+
+    await lineInsert({ filePath: file, line: POINTER_LINE });
+    await stripManagedRegion(file, POINTER_LINE);
+
+    await fs.access(file); // must survive — the strip must not delete it
+    assert.equal(
+      await read(file),
+      original,
+      "whitespace-only user file must survive unregister byte-identically",
+    );
+  });
+
+  it("still deletes a byte-empty survivor — a file the registration itself created", async (t) => {
+    const home = await mkHome(t);
+    const file = path.join(home, "QWEN.md");
+
+    await lineInsert({ filePath: file, line: POINTER_LINE }); // mints the file
+    assert.equal(await read(file), `${START}\n${POINTER_LINE}\n${END}\n`);
+    await stripManagedRegion(file, POINTER_LINE);
+
+    await assert.rejects(() => fs.access(file), { code: "ENOENT" });
+  });
+
+  it("survives a whitespace-only file without trailing newline (accepted edge, bytes pinned as-is)", async (t) => {
+    const home = await mkHome(t);
+    const file = path.join(home, "CLAUDE.md");
+    const original = "  "; // two spaces, no trailing newline
+    await fs.writeFile(file, original);
+
+    await lineInsert({ filePath: file, line: POINTER_LINE });
+    await stripManagedRegion(file, POINTER_LINE);
+
+    await fs.access(file);
+    // ACCEPTED EDGE (#123 triage): a no-EOL file gains one glue "\n" at
+    // insert time; the strip's swallow-one-newline heuristic (engines.ts,
+    // following-newline-first) restores the original bytes here, so the
+    // round-trip below is byte-exact. If the heuristic ever eats the other
+    // boundary this pin is the documented place to revisit.
+    assert.equal(await read(file), original, "no-EOL whitespace file must survive unregister");
+  });
+});
+
 describe("first-mutation backup rail (D2)", () => {
   it("mints <file>.scoutline-bak with the exact pre-mutation bytes on first mutation", async (t) => {
     const home = await mkHome(t);
@@ -437,6 +492,348 @@ describe("first-mutation backup rail (D2)", () => {
     assert.ok(
       !names.some((n) => n.endsWith(".scoutline-bak")),
       "refresh of our own block must never mint a backup — nothing pre-existing to protect",
+    );
+  });
+});
+
+describe("partial refresh failure (issue #122)", () => {
+  it("keeps the stamp drifted when one tool fails — the failed tool self-heals on the next run", async (t) => {
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+
+    await registerAgentTools({ home, configRoot, tools: ["claude", "codex"], version: "9.9.9" });
+
+    // Sabotage codex only: replace its home dir with a regular file so the
+    // skill deploy's mkdir under <home>/.codex fails with ENOTDIR
+    // (root-safe sabotage — no chmod, works in root containers).
+    const codexHome = path.join(home, ".codex");
+    await fs.rm(codexHome, { recursive: true, force: true });
+    await fs.writeFile(codexHome, "not a directory");
+
+    const notices = [];
+    const first = await checkAgentRegistration({
+      home,
+      configRoot,
+      version: "9.9.10",
+      writeStderr: (value) => notices.push(value),
+    });
+
+    assert.equal(first.refreshed, true, "claude refreshed — the run is still a refresh");
+    assert.ok(
+      notices.some((n) => n.includes("codex")),
+      "the failing tool's stderr notice must be emitted",
+    );
+    assert.deepEqual(
+      await readAgentRegistrationStamp(configRoot),
+      { version: "9.9.9", tools: ["claude", "codex"], ruleTextHash: computeRuleTextHash() },
+      "a partial failure must NOT rewrite the stamp — the drift must survive so the failed tool retries",
+    );
+
+    // Self-heal: restore the codex home and re-run at the same new version.
+    await fs.rm(codexHome, { force: true });
+    const second = await checkAgentRegistration({
+      home,
+      configRoot,
+      version: "9.9.10",
+      writeStderr: (value) => notices.push(value),
+    });
+
+    assert.equal(second.refreshed, true, "the surviving drift must trigger the retry");
+    await fs.access(path.join(home, ".codex", "skills", "scoutline", "SKILL.md"));
+    assert.deepEqual(
+      await readAgentRegistrationStamp(configRoot),
+      { version: "9.9.10", tools: ["claude", "codex"], ruleTextHash: computeRuleTextHash() },
+      "an all-tools-clean refresh writes the new stamp",
+    );
+  });
+});
+
+describe("pointer convention wiring (#121)", () => {
+  it("claude pointer lands under the existing rules list at register level, not EOF", async (t) => {
+    // Documented design intent (plan 19, line 48): the claude pointer
+    // belongs in the Shared Rules list in ~/.claude/CLAUDE.md, not the
+    // file end. Dead-wiring regression guard at the registerAgentTools
+    // surface (the HIGH seam), not just the engine.
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    const original =
+      "# My rules\n\nintro user text\n\n@rules/other.md\n@rules/second.md\n\ntrailing user text\n";
+    await fs.writeFile(claudeMd, original);
+
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+
+    const after = await read(claudeMd);
+    const inserted = after.indexOf(`${START}\n@rules/scoutline.md\n${END}`);
+    assert.ok(inserted !== -1, "marker-wrapped pointer must be present");
+    assert.ok(
+      inserted > after.lastIndexOf("@rules/second.md"),
+      "pointer must land AFTER the last @rules/ line",
+    );
+    assert.ok(
+      inserted < after.indexOf("trailing user text"),
+      "pointer must NOT land at EOF — user content stays below",
+    );
+    assert.ok(
+      after.startsWith("# My rules\n\nintro user text\n\n"),
+      "bytes above the insertion untouched",
+    );
+  });
+
+  it("gemini pointer lands under the existing @import rules list at register level", async (t) => {
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".gemini"), { recursive: true });
+    const geminiMd = path.join(home, ".gemini", "GEMINI.md");
+    const original = "# Gemini rules\n\n@~/.gemini/rules/other.md\n\ntrailing user text\n";
+    await fs.writeFile(geminiMd, original);
+
+    await registerAgentTools({ home, configRoot, tools: ["gemini"], version: "9.9.9-test" });
+
+    const after = await read(geminiMd);
+    const inserted = after.indexOf(`${START}\n@~/.gemini/rules/scoutline.md\n${END}`);
+    assert.ok(inserted !== -1, "marker-wrapped gemini pointer must be present");
+    assert.ok(
+      inserted > after.lastIndexOf("@~/.gemini/rules/other.md"),
+      "gemini pointer must land AFTER the last @…/rules/ import line",
+    );
+    assert.ok(
+      inserted < after.indexOf("trailing user text"),
+      "gemini pointer must NOT land at EOF",
+    );
+  });
+
+  it("no convention-matching line → pointer lands at EOF (fallback unchanged), register level", async (t) => {
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    const original = "# My rules\n\nsome user content\n";
+    await fs.writeFile(claudeMd, original);
+
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+
+    const after = await read(claudeMd);
+    assert.ok(after.startsWith(original), "bytes above the insertion untouched");
+    assert.ok(
+      after.endsWith(`${START}\n@rules/scoutline.md\n${END}\n`),
+      "pointer must land at EOF when no convention line exists",
+    );
+  });
+
+  it("exactly the claude and gemini rows carry a pointer convention (extension boundary)", () => {
+    const carrying = AGENT_TOOLS.filter((row) => row.pointer?.convention !== undefined).map(
+      (row) => row.id,
+    );
+    assert.deepEqual(carrying.sort(), ["claude", "gemini"]);
+
+    const claudeConvention = tool("claude").pointer.convention;
+    const geminiConvention = tool("gemini").pointer.convention;
+    assert.ok(claudeConvention instanceof RegExp, "claude convention must be a RegExp");
+    assert.ok(geminiConvention instanceof RegExp, "gemini convention must be a RegExp");
+    // claude: the bare @rules/ include it deploys matches; a home-anchored
+    // @import line does not.
+    assert.ok(claudeConvention.test("@rules/scoutline.md"));
+    assert.ok(!claudeConvention.test("@~/.gemini/rules/other.md"));
+    // gemini: the home-anchored @import it deploys matches; claude-style
+    // bare relative lines and prose do not.
+    assert.ok(geminiConvention.test("@~/.gemini/rules/scoutline.md"));
+    assert.ok(!geminiConvention.test("@rules/other.md"));
+    assert.ok(!geminiConvention.test("see @ rules folder"));
+  });
+
+  it("re-register is a byte-identical zero diff under the under-list placement", async (t) => {
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    await fs.writeFile(claudeMd, "# My rules\n\n@rules/other.md\ntrailing text\n");
+
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+    const once = await read(claudeMd);
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+
+    assert.equal(await read(claudeMd), once, "re-registration must be a zero diff");
+  });
+
+  it("unregister restores the byte-identical pre-registration file (both directions guarded)", async (t) => {
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    const original = "# My rules\n\n@rules/other.md\n\ntrailing user text\n";
+    await fs.writeFile(claudeMd, original);
+
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+    assert.notEqual(await read(claudeMd), original, "registration must have mutated the file");
+
+    await unregisterAgentTools({
+      home,
+      configRoot,
+      configFilePath: path.join(configRoot, "config.json"),
+    });
+
+    assert.equal(
+      await read(claudeMd),
+      original,
+      "unregister must restore the exact pre-registration bytes",
+    );
+  });
+});
+
+describe("convention placement vs foreign marker spans (PR #126 review)", () => {
+  const GITNEXUS_BLOCK = [
+    "# My rules",
+    "",
+    "<!-- gitnexus:start -->",
+    "@rules/gitnexus.md",
+    "<!-- gitnexus:end -->",
+    "",
+  ].join("\n");
+
+  it("never splices the pointer inside a foreign marker block — EOF when the only convention match is span-owned", async (t) => {
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    await fs.writeFile(claudeMd, GITNEXUS_BLOCK);
+
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+
+    const after = await read(claudeMd);
+    const wrapped = `${START}\n${POINTER_LINE}\n${END}`;
+    const at = after.indexOf(wrapped);
+    const spanStart = after.indexOf("<!-- gitnexus:start -->");
+    const spanEnd = after.indexOf("<!-- gitnexus:end -->");
+    assert.ok(at !== -1, "pointer must be present");
+    assert.ok(
+      !(at > spanStart && at < spanEnd),
+      "pointer must NOT land inside the foreign marker span",
+    );
+    assert.ok(
+      after.startsWith(GITNEXUS_BLOCK),
+      "EOF fallback: the foreign block stays byte-identical above the pointer",
+    );
+  });
+
+  it("unregister round-trips a foreign scoutline-flavored pair byte-identically — no orphaned pointer", async (t) => {
+    // Foreign pair using OUR marker names: stripManagedRegion skips the
+    // whole pair (inner content not ours), so a pointer spliced inside it
+    // by the convention scan would orphan on unregister.
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    const original =
+      "# My rules\n\n<!-- scoutline:start -->\nuser's own managed note\n@rules/other.md\n<!-- scoutline:end -->\n\ntrailing\n";
+    await fs.writeFile(claudeMd, original);
+
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+    assert.notEqual(await read(claudeMd), original, "registration must have mutated the file");
+
+    await unregisterAgentTools({
+      home,
+      configRoot,
+      configFilePath: path.join(configRoot, "config.json"),
+    });
+
+    assert.equal(
+      await read(claudeMd),
+      original,
+      "unregister must restore the exact pre-registration bytes — no pointer orphaned inside the foreign pair",
+    );
+  });
+
+  it("a convention match outside any span still wins placement (skip, not disable)", async (t) => {
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    const original =
+      "# My rules\n\n@rules/real.md\n\n<!-- gitnexus:start -->\n@rules/gitnexus.md\n<!-- gitnexus:end -->\n\ntrailing\n";
+    await fs.writeFile(claudeMd, original);
+
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+
+    const after = await read(claudeMd);
+    const inserted = after.indexOf(`${START}\n${POINTER_LINE}\n${END}`);
+    assert.ok(inserted !== -1, "pointer must be present");
+    assert.ok(
+      inserted > after.indexOf("@rules/real.md") &&
+        inserted < after.indexOf("<!-- gitnexus:start -->"),
+      "pointer lands after the LAST span-free match — before the foreign block",
+    );
+  });
+
+  it("a match between an outer span and a nested inner span is still span-owned (nesting depth)", async (t) => {
+    // inSpan-boolean regression: closing the INNER span re-enabled matches
+    // while the OUTER span was still open (PR #126 review, wave 2).
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    const original = [
+      "<!-- team:start -->",
+      "@rules/outer-zone.md",
+      "<!-- gitnexus:start -->",
+      "@rules/inner.md",
+      "<!-- gitnexus:end -->",
+      "tail",
+      "<!-- team:end -->",
+      "",
+    ].join("\n");
+    await fs.writeFile(claudeMd, original);
+
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+
+    const after = await read(claudeMd);
+    const wrapped = `${START}\n${POINTER_LINE}\n${END}`;
+    const at = after.indexOf(wrapped);
+    const outerStart = after.indexOf("<!-- team:start -->");
+    const outerEnd = after.indexOf("<!-- team:end -->");
+    assert.ok(at !== -1, "pointer must be present");
+    assert.ok(
+      !(at > outerStart && at < outerEnd),
+      "pointer must NOT land inside the outer span (nesting depth, not boolean)",
+    );
+    assert.ok(
+      after.startsWith(original),
+      "no span-free match exists — EOF fallback keeps the whole nested fixture above the pointer",
+    );
+  });
+
+  it("a start marker with inline version metadata still opens a recognized span", async (t) => {
+    // markerBlockInsert writes `<!-- scoutline:start --><!-- scoutline:v… -->`
+    // — the span scan must recognize it, or an unclosed depth leaves every
+    // match above the block suppressed (PR #126 review, wave 2).
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    const original = [
+      "# My rules",
+      "",
+      "@rules/real.md",
+      "",
+      "<!-- scoutline:start --><!-- scoutline:v1.2.3 -->",
+      "@rules/stamped.md",
+      "<!-- scoutline:end -->",
+      "",
+      "trailing",
+      "",
+    ].join("\n");
+    await fs.writeFile(claudeMd, original);
+
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+
+    const after = await read(claudeMd);
+    const inserted = after.indexOf(`${START}\n${POINTER_LINE}\n${END}`);
+    assert.ok(inserted !== -1, "pointer must be present");
+    assert.ok(
+      inserted > after.indexOf("@rules/real.md") &&
+        inserted < after.indexOf("<!-- scoutline:start --><!-- scoutline:v1.2.3 -->"),
+      "span-free match above the version-stamped block still wins — the stamped start line closes the span",
     );
   });
 });

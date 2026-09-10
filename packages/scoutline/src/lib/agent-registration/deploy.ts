@@ -120,7 +120,7 @@ async function writePointer(home: string, id: string, version: string): Promise<
   if (pointer.kind === "line") {
     const line = LINE_POINTERS[id];
     if (line === undefined) throw new Error(`scoutline: no pointer line registered for ${id}`);
-    await lineInsert({ filePath: target, line });
+    await lineInsert({ filePath: target, line, convention: pointer.convention });
   } else if (pointer.kind === "block") {
     await markerBlockInsert({ filePath: target, content: RULE_TEXT, version });
   } else {
@@ -208,6 +208,7 @@ export async function checkAgentRegistration(options: {
   if (!versionDrifted && !textDrifted) return { refreshed: false };
 
   let refreshed = false;
+  let failed = false;
   for (const id of tools) {
     if (agentRules?.[id] === false) continue;
     try {
@@ -218,12 +219,16 @@ export async function checkAgentRegistration(options: {
       }
       refreshed = true;
     } catch (error) {
+      failed = true;
       writeStderr(
         `scoutline: agent registration refresh failed for ${id} — ${error instanceof Error ? error.message : String(error)} (command continues)`,
       );
     }
   }
-  if (refreshed) {
+  // A partial failure must not stamp every tool fresh (issue #122): leave the
+  // stamp drifted so the next run retries the tool that failed. The return
+  // value still reports `refreshed` for the tools that did refresh.
+  if (refreshed && !failed) {
     await writeStamp(configRoot, {
       version,
       tools,

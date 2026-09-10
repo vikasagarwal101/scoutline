@@ -31,6 +31,8 @@ export type AgentToolId =
 export interface PointerSpec {
   kind: "line" | "block" | "jsonArray";
   target?: (home: string) => string;
+  /** Line kind only: convention locating the existing rules list (lineInsert). */
+  convention?: RegExp;
 }
 
 export interface AgentTool {
@@ -66,7 +68,11 @@ export const AGENT_TOOLS: AgentTool[] = [
     id: "claude",
     detect: dirProbe(".claude"),
     rulesFile: (home) => path.join(home, ".claude", "rules", "scoutline.md"),
-    pointer: { kind: "line", target: (home) => path.join(home, ".claude", "CLAUDE.md") },
+    pointer: {
+      kind: "line",
+      target: (home) => path.join(home, ".claude", "CLAUDE.md"),
+      convention: /^@rules\//,
+    },
     skillHome: (home) => path.join(home, ".claude", "skills"),
   },
   {
@@ -89,7 +95,13 @@ export const AGENT_TOOLS: AgentTool[] = [
     id: "gemini",
     detect: dirProbe(".gemini"),
     rulesFile: (home) => path.join(home, ".gemini", "rules", "scoutline.md"),
-    pointer: { kind: "line", target: (home) => path.join(home, ".gemini", "GEMINI.md") },
+    pointer: {
+      kind: "line",
+      target: (home) => path.join(home, ".gemini", "GEMINI.md"),
+      // Tight: only an `@<path>/rules/` import counts — a bare `@rules/…`
+      // (claude's shape) or prose never triggers the under-list splice.
+      convention: /^@\S*\/rules\//,
+    },
     // Documented global skills home — antigravity/skills/ is legacy back-compat.
     skillHome: (home) => path.join(home, ".gemini", "config", "skills", "scoutline"),
   },

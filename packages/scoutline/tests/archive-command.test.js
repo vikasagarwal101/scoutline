@@ -15,6 +15,9 @@ import {
 } from "../dist/commands/archive.js";
 import { main } from "../dist/index.js";
 import { NetworkError, ValidationError } from "../dist/lib/errors.js";
+import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+
+useTempConfigDir();
 
 function makeAdapter() {
   const stdout = [];

@@ -8,7 +8,24 @@
  * omitted triples get an in-memory cache + no-op sleep + deterministic
  * random, and `configFanout` defaults to `false`. Explicit caller
  * values always win.
+ *
+ * #119: `main()` also constructs `createDefaultQuotaStore()`
+ * unconditionally, and the store's eager `stateFilePath()` resolve trips
+ * the resolver guard under NODE_TEST_CONTEXT. An omitted `quotaStore`
+ * gets a process-level lazy singleton pointed at an isolated temp dir —
+ * lazy (one mkdtemp per test process, not per call) and never written
+ * (callers asserting on consumption inject `consume` or `quotaState`).
+ * The pre-dispatch agent-registration check has the same ambient seam
+ * (`resolveConfigRoot()` + `os.homedir()`), so an omitted
+ * `agentRegistrationCheck` defaults to a no-op — same isolation rule as
+ * `loadScoutlineConfig` (#73).
  */
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { createDefaultQuotaStore } from "../../dist/lib/quota-store.js";
+
 export const HERMETIC_CAPABILITIES = Object.freeze([
   "search",
   "reader",
@@ -32,6 +49,14 @@ export function createInMemoryResponseCache() {
 
 const noopSleep = async () => {};
 const stableRandom = () => 0.5;
+
+let hermeticQuotaStore;
+function defaultHermeticQuotaStore() {
+  hermeticQuotaStore ??= createDefaultQuotaStore({
+    filePath: join(mkdtempSync(join(tmpdir(), "scoutline-hermetic-quota-")), "state.json"),
+  });
+  return hermeticQuotaStore;
+}
 
 function firstDefined(deps, suffix) {
   for (const cap of HERMETIC_CAPABILITIES) {
@@ -69,8 +94,13 @@ export function hermeticMainDeps(partial = {}) {
     // #73: config isolation default — env:{} is NOT isolation; main()
     // falls back to the real config file without this.
     loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+    // #119: the default check resolves the ambient config root + real
+    // home; its failure degrades to a stderr notice that pollutes
+    // main()-driven assertions. No-op keeps the run hermetic.
+    agentRegistrationCheck: async () => {},
     ...partial,
   };
   if (deps.configFanout === undefined) deps.configFanout = false;
+  if (deps.quotaStore === undefined) deps.quotaStore = defaultHermeticQuotaStore();
   return fillOmittedTriples(deps);
 }

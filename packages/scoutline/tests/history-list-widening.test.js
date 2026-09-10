@@ -31,6 +31,9 @@ import {
 import { main } from "../dist/index.js";
 import { appendLogEntry, writeArtifact } from "../dist/lib/artifacts.js";
 import { runProcess } from "./helpers/run-process.js";
+import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+
+useTempConfigDir();
 
 const NOW = 1_800_000_000_000;
 const fixedNow = () => NOW;

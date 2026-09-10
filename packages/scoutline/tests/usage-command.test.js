@@ -37,6 +37,9 @@ import { defaultResponseCache } from "../dist/lib/cache.js";
 import { usageDayKey } from "../dist/lib/usage-ledger.js";
 import { runProcess } from "./helpers/run-process.js";
 import { withTempDir } from "./helpers/temp-dir.js";
+import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+
+useTempConfigDir();
 
 // ---------------------------------------------------------------------------
 // Fixtures

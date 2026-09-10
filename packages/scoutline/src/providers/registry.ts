@@ -31,8 +31,8 @@ import { createSpiderDescriptor } from "./spider/adapter.js";
 // science seats still import the stub factories from types.js until
 // their adapter tickets land.
 import { createArxivDescriptor } from "./arxiv/adapter.js";
+import { createOpenalexDescriptor } from "./openalex/adapter.js";
 import {
-  createOpenalexDescriptor,
   createCrossrefDescriptor,
   createPubmedDescriptor,
   createEuropepmcDescriptor,

@@ -681,3 +681,88 @@ describe("pointer convention wiring (#121)", () => {
     );
   });
 });
+
+describe("convention placement vs foreign marker spans (PR #126 review)", () => {
+  const GITNEXUS_BLOCK = [
+    "# My rules",
+    "",
+    "<!-- gitnexus:start -->",
+    "@rules/gitnexus.md",
+    "<!-- gitnexus:end -->",
+    "",
+  ].join("\n");
+
+  it("never splices the pointer inside a foreign marker block — EOF when the only convention match is span-owned", async (t) => {
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    await fs.writeFile(claudeMd, GITNEXUS_BLOCK);
+
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+
+    const after = await read(claudeMd);
+    const wrapped = `${START}\n${POINTER_LINE}\n${END}`;
+    const at = after.indexOf(wrapped);
+    const spanStart = after.indexOf("<!-- gitnexus:start -->");
+    const spanEnd = after.indexOf("<!-- gitnexus:end -->");
+    assert.ok(at !== -1, "pointer must be present");
+    assert.ok(
+      !(at > spanStart && at < spanEnd),
+      "pointer must NOT land inside the foreign marker span",
+    );
+    assert.ok(
+      after.startsWith(GITNEXUS_BLOCK),
+      "EOF fallback: the foreign block stays byte-identical above the pointer",
+    );
+  });
+
+  it("unregister round-trips a foreign scoutline-flavored pair byte-identically — no orphaned pointer", async (t) => {
+    // Foreign pair using OUR marker names: stripManagedRegion skips the
+    // whole pair (inner content not ours), so a pointer spliced inside it
+    // by the convention scan would orphan on unregister.
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    const original =
+      "# My rules\n\n<!-- scoutline:start -->\nuser's own managed note\n@rules/other.md\n<!-- scoutline:end -->\n\ntrailing\n";
+    await fs.writeFile(claudeMd, original);
+
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+    assert.notEqual(await read(claudeMd), original, "registration must have mutated the file");
+
+    await unregisterAgentTools({
+      home,
+      configRoot,
+      configFilePath: path.join(configRoot, "config.json"),
+    });
+
+    assert.equal(
+      await read(claudeMd),
+      original,
+      "unregister must restore the exact pre-registration bytes — no pointer orphaned inside the foreign pair",
+    );
+  });
+
+  it("a convention match outside any span still wins placement (skip, not disable)", async (t) => {
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    const original =
+      "# My rules\n\n@rules/real.md\n\n<!-- gitnexus:start -->\n@rules/gitnexus.md\n<!-- gitnexus:end -->\n\ntrailing\n";
+    await fs.writeFile(claudeMd, original);
+
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+
+    const after = await read(claudeMd);
+    const inserted = after.indexOf(`${START}\n${POINTER_LINE}\n${END}`);
+    assert.ok(inserted !== -1, "pointer must be present");
+    assert.ok(
+      inserted > after.indexOf("@rules/real.md") &&
+        inserted < after.indexOf("<!-- gitnexus:start -->"),
+      "pointer lands after the LAST span-free match — before the foreign block",
+    );
+  });
+});

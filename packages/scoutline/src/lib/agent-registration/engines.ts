@@ -7,6 +7,10 @@ import { atomicReplaceFile } from "../config-store.js";
 export const START_MARKER = "<!-- scoutline:start -->";
 export const END_MARKER = "<!-- scoutline:end -->";
 
+/** Generic managed-span markers — ours AND foreign tools' (e.g. gitnexus). */
+const MARKER_SPAN_START = /^\s*<!--\s*[\w.-]+:start\s*-->\s*$/;
+const MARKER_SPAN_END = /^\s*<!--\s*[\w.-]+:end\s*-->\s*$/;
+
 /**
  * Shared mutation rails (DESIGN D2):
  *  - search-before-mutate idempotency;
@@ -39,7 +43,8 @@ export interface LineInsertOptions {
 /**
  * Line insert (claude `@rules/`, gemini `@` import in GEMINI.md):
  * marker-wrapped single line appended under the existing rules list when
- * the convention matches, else at file end. Bytes outside the wrapped line
+ * the convention matches (matches INSIDE marker-owned spans are skipped —
+ * ours and foreign tools' `<!-- x:start/end -->` pairs), else at file end. Bytes outside the wrapped line
  * are preserved verbatim; re-running is a zero diff. A pre-existing
  * UNWRAPPED pointer line is user-owned content — registration is a no-op
  * (never rewritten into the wrapped form).
@@ -67,8 +72,23 @@ export async function lineInsert(options: LineInsertOptions): Promise<void> {
   if (convention) {
     const lines = original.split("\n");
     let insertAt = -1;
+    // Marker-owned spans (`<!-- x:start -->` … `<!-- x:end -->`, ours AND
+    // foreign tools') are user/other-tool territory: a convention match
+    // inside one must not drag our pointer into a block stripManagedRegion
+    // will not revisit — a foreign `scoutline` pair is skipped whole at
+    // strip, orphaning a nested pointer (PR #126 review).
+    let inSpan = false;
     for (let i = lines.length - 1; i >= 0; i -= 1) {
-      if (convention.test(lines[i]!)) {
+      const line = lines[i]!;
+      if (MARKER_SPAN_END.test(line)) {
+        inSpan = true; // backward scan: crossing an end marker enters the span
+        continue;
+      }
+      if (MARKER_SPAN_START.test(line)) {
+        inSpan = false;
+        continue;
+      }
+      if (!inSpan && convention.test(line)) {
         insertAt = i + 1;
         break;
       }

@@ -96,20 +96,29 @@ function isEnoentError(err: unknown): boolean {
 /**
  * Ownership-safe stale-lock break (review fixup): unlink the lock at
  * `lockPath` ONLY if it still refers to the exact file that was statted
- * as stale — the statted `ino`/`dev` pair. A naked `fs.unlink(lockPath)`
- * can race a second waiter that already broke the same stale lock and
- * re-acquired it: the newcomer's fresh lock would be destroyed and two
- * holders end up inside the critical section. The re-stat narrows the
- * race to the unavoidable unlink-by-name window (Node has no
- * unlink-by-inode); the statted-inode verification is what keeps the
- * common crash-recovery path from destroying a live successor's lock.
+ * as stale — the statted `ino`/`dev`/`mtimeMs` triple. A naked
+ * `fs.unlink(lockPath)` can race a second waiter that already broke the
+ * same stale lock and re-acquired it: the newcomer's fresh lock would be
+ * destroyed and two holders end up inside the critical section. The
+ * re-stat narrows the race to the unavoidable unlink-by-name window
+ * (Node has no unlink-by-inode); the statted-inode verification is what
+ * keeps the common crash-recovery path from destroying a live
+ * successor's lock.
+ *
+ * `mtimeMs` is part of the identity triple because some filesystems
+ * (notably overlayfs on CI runners) REUSE inode numbers aggressively: an
+ * unlinked lock immediately recreated by a successor can receive the
+ * same ino+dev, defeating the inode guard alone (observed on GitHub
+ * Actions 2026-09-10: the successor's lock was unlinked and the test
+ * read ENOENT). A successor is always written at or after the stale
+ * lock's mtime, so an mtime newer than the statted one means "not ours".
  *
  * Exported for tests (they must be able to pin the not-ours-don't-touch
  * branch without staging a real multi-process race).
  */
 export async function breakStaleLock(
   lockPath: string,
-  statted: { readonly ino: number; readonly dev: number },
+  statted: { readonly ino: number; readonly dev: number; readonly mtimeMs: number },
 ): Promise<void> {
   let current: Awaited<ReturnType<typeof fs.stat>>;
   try {
@@ -119,6 +128,7 @@ export async function breakStaleLock(
     throw error;
   }
   if (current.ino !== statted.ino || current.dev !== statted.dev) return;
+  if (current.mtimeMs > statted.mtimeMs) return; // same inode number, newer write — a reused inode holding a successor's lock
   await fs.unlink(lockPath).catch(() => {});
 }
 

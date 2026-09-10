@@ -131,15 +131,19 @@ export class ZaiCodeModeClient {
 
   async close(timeoutMs: number = 2000): Promise<void> {
     if (this.client) {
-      // 5.2: capture the timeout timer so it can be unref()'d (does not
-      // keep the event loop alive) and cleared after the race completes.
-      // Matches the closeWithBound pattern in providers/zai/repository.ts.
+      // 5.2: capture the timeout timer so it is cleared after the race
+      // completes. NO unref(): an unref'd fallback timer lets the event
+      // loop drain in a quiet process while close() is still awaited —
+      // the await never resolves and the runner dies with "Promise
+      // resolution is still pending but the event loop has already
+      // resolved" (GitHub Actions 2-core runners, 2026-09-10; reproduced
+      // in a bare script: await close(100) with a hanging client never
+      // returns). The timer is bounded by timeoutMs and cleared in the
+      // finally block the moment either race arm settles, so the worst
+      // case loop-hold equals the timeout.
       let timer: NodeJS.Timeout | undefined;
       const timeoutPromise = new Promise<void>((resolve) => {
         timer = setTimeout(() => resolve(), timeoutMs);
-        if (timer && typeof timer === "object" && "unref" in timer) {
-          (timer as { unref: () => void }).unref();
-        }
       });
       try {
         await Promise.race([

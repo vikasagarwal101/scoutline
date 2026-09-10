@@ -163,7 +163,9 @@ export function resolveConfigRootPure(
  * `~/.scoutline` — fail loud instead. Lives only on this ambient-env seam;
  * `resolveConfigRootPure` stays total/pure. `SCOUTLINE_NO_TEST_GUARD=1`
  * is the documented escape hatch for suites deliberately exercising the
- * default path.
+ * default path. Note the shell convention: ANY non-empty value bypasses
+ * (JS truthiness) — `=0` does NOT re-arm the guard; unset it (or set it
+ * empty) to re-arm.
  */
 export function resolveConfigRoot(): string {
   if (

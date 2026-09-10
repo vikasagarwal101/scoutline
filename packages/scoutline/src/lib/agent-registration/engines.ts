@@ -8,6 +8,15 @@ export const START_MARKER = "<!-- scoutline:start -->";
 export const END_MARKER = "<!-- scoutline:end -->";
 
 /**
+ * Generic managed-span markers — ours AND foreign tools' (e.g. gitnexus),
+ * matched ANYWHERE in a line so a start marker carrying inline metadata
+ * (`<!-- scoutline:start --><!-- scoutline:v1 -->`) still opens a span.
+ * A marker-bearing line is a boundary, never convention-matchable content.
+ */
+const MARKER_SPAN_START = /<!--\s*[\w.-]+:start\s*-->/;
+const MARKER_SPAN_END = /<!--\s*[\w.-]+:end\s*-->/;
+
+/**
  * Shared mutation rails (DESIGN D2):
  *  - search-before-mutate idempotency;
  *  - `<file>.scoutline-bak` copy ONLY on first mutation of a PRE-EXISTING file
@@ -39,7 +48,8 @@ export interface LineInsertOptions {
 /**
  * Line insert (claude `@rules/`, gemini `@` import in GEMINI.md):
  * marker-wrapped single line appended under the existing rules list when
- * the convention matches, else at file end. Bytes outside the wrapped line
+ * the convention matches (matches INSIDE marker-owned spans are skipped —
+ * ours and foreign tools' `<!-- x:start/end -->` pairs), else at file end. Bytes outside the wrapped line
  * are preserved verbatim; re-running is a zero diff. A pre-existing
  * UNWRAPPED pointer line is user-owned content — registration is a no-op
  * (never rewritten into the wrapped form).
@@ -67,8 +77,26 @@ export async function lineInsert(options: LineInsertOptions): Promise<void> {
   if (convention) {
     const lines = original.split("\n");
     let insertAt = -1;
+    // Marker-owned spans (`<!-- x:start -->` … `<!-- x:end -->`, ours AND
+    // foreign tools', possibly nested) are user/other-tool territory: a
+    // convention match inside one must not drag our pointer into a block
+    // stripManagedRegion will not revisit — a foreign `scoutline` pair is
+    // skipped whole at strip, orphaning a nested pointer (PR #126 review).
+    // Depth, not boolean: a line stays excluded until EVERY enclosing span
+    // has closed; malformed surplus end markers pin the depth above zero
+    // (fail toward EOF), surplus starts clamp at zero.
+    let spanDepth = 0;
     for (let i = lines.length - 1; i >= 0; i -= 1) {
-      if (convention.test(lines[i]!)) {
+      const line = lines[i]!;
+      if (MARKER_SPAN_END.test(line)) {
+        spanDepth += 1; // backward scan: crossing an end marker enters a span
+        continue;
+      }
+      if (MARKER_SPAN_START.test(line)) {
+        spanDepth = Math.max(0, spanDepth - 1);
+        continue;
+      }
+      if (spanDepth === 0 && convention.test(line)) {
         insertAt = i + 1;
         break;
       }
@@ -359,8 +387,10 @@ export function backupPathFor(filePath: string): string {
  * including marker pairs whose inner content is not ours (a user-authored
  * `<!-- scoutline:start --> … <!-- scoutline:end -->` block is foreign
  * user content; DESIGN D2 strips inserted regions by OUR markers AND our
- * content, never by markers alone). Deletes the file outright when nothing
- * survives the strip (registration itself created it). No-op on ENOENT.
+ * content, never by markers alone). Deletes the file outright only when it
+ * is byte-empty after the strip (the registration itself created it); a
+ * whitespace-only survivor is user-owned bytes and is written back
+ * verbatim (#123). No-op on ENOENT.
  * Used by line AND block pointers — both wrap their bytes in the same
  * marker pair.
  */
@@ -401,9 +431,11 @@ export async function stripManagedRegion(filePath: string, expectedContent: stri
     stripped = stripped.slice(0, from) + stripped.slice(to);
     searchFrom = Math.max(0, from - 1);
   }
-  if (stripped.trim() === "") {
-    // Nothing user-owned survives — the registration itself created this
-    // file; its pre-registration state is absence.
+  if (stripped === "") {
+    // Byte-empty — the registration itself created this file (its
+    // pre-registration state is absence). A whitespace-only survivor is
+    // user-owned content, not absence: it must be written back verbatim
+    // below, never deleted (#123).
     await fs.rm(filePath, { force: true });
     return;
   }

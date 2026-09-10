@@ -513,11 +513,13 @@ export async function writeConfig(
   // Single-generation .bak (issue #119): the previous config survives on
   // disk before the atomic replace, so a botched write or a bad set/unset
   // is one rename away from recovery. Best-effort by contract — ENOENT on
-  // the first write (nothing to back up) or any copy failure must never
-  // fail the write itself.
+  // the first write (nothing to back up) or any failure must never fail
+  // the write itself. The rotation rides the same atomic replace as the
+  // main write (options.atomic), so it is rename-atomic and 0600 by
+  // construction: a crash mid-rotation can never leave a truncated .bak.
   try {
-    await fs.copyFile(filePath, `${filePath}.bak`);
-    if (process.platform !== "win32") await fs.chmod(`${filePath}.bak`, 0o600);
+    const contents = await fs.readFile(filePath);
+    await atomicReplaceFile(`${filePath}.bak`, contents, options.atomic);
   } catch {
     // best-effort backup; the write proceeds regardless
   }

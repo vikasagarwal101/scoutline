@@ -18,16 +18,24 @@ import { join } from "node:path";
 import { after, before } from "node:test";
 
 export function useTempConfigDir() {
-  let previous;
+  // State-guarded after(): if mkdtempSync throws, `pinned` stays false
+  // and `dir` stays undefined, so after() no-ops instead of masking the
+  // original before() failure with ERR_INVALID_ARG_TYPE from
+  // rmSync(undefined).
+  let pinned = false;
   let dir;
+  let previous;
   before(() => {
     dir = mkdtempSync(join(tmpdir(), "scoutline-test-config-"));
     previous = process.env.SCOUTLINE_CONFIG_DIR;
     process.env.SCOUTLINE_CONFIG_DIR = dir;
+    pinned = true;
   });
   after(() => {
-    if (previous === undefined) delete process.env.SCOUTLINE_CONFIG_DIR;
-    else process.env.SCOUTLINE_CONFIG_DIR = previous;
-    rmSync(dir, { recursive: true, force: true });
+    if (pinned) {
+      if (previous === undefined) delete process.env.SCOUTLINE_CONFIG_DIR;
+      else process.env.SCOUTLINE_CONFIG_DIR = previous;
+    }
+    if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
   });
 }

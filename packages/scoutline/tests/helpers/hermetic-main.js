@@ -20,7 +20,7 @@
  * `agentRegistrationCheck` defaults to a no-op — same isolation rule as
  * `loadScoutlineConfig` (#73).
  */
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -50,13 +50,22 @@ export function createInMemoryResponseCache() {
 const noopSleep = async () => {};
 const stableRandom = () => 0.5;
 
+let hermeticQuotaDir;
 let hermeticQuotaStore;
 function defaultHermeticQuotaStore() {
+  hermeticQuotaDir ??= mkdtempSync(join(tmpdir(), "scoutline-hermetic-quota-"));
   hermeticQuotaStore ??= createDefaultQuotaStore({
-    filePath: join(mkdtempSync(join(tmpdir(), "scoutline-hermetic-quota-")), "state.json"),
+    filePath: join(hermeticQuotaDir, "state.json"),
   });
   return hermeticQuotaStore;
 }
+
+// Exit handlers are sync-only; rmSync(force) tolerates an already-removed
+// dir. Registered at module scope but a no-op until the lazy singleton
+// has actually created its dir, so non-consumers pay nothing.
+process.on("exit", () => {
+  if (hermeticQuotaDir !== undefined) rmSync(hermeticQuotaDir, { recursive: true, force: true });
+});
 
 function firstDefined(deps, suffix) {
   for (const cap of HERMETIC_CAPABILITIES) {

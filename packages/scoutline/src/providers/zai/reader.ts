@@ -339,11 +339,13 @@ async function invokeReaderFetch<Result>(
  */
 async function closeWithBound(client: ZaiAdapterClientPort, timeoutMs: number): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
+  // NO unref() on the fallback timer: in a quiet process the unref'd
+  // timer lets the event loop drain while the await is still pending —
+  // close() never resolves (observed on CI 2026-09-10; see mcp-client
+  // close 5.1 for the full note). Bounded by timeoutMs, cleared in the
+  // finally block as soon as the race settles.
   const timeoutPromise = new Promise<void>((resolve) => {
     timer = setTimeout(() => resolve(), timeoutMs);
-    if (timer && typeof timer === "object" && "unref" in timer) {
-      (timer as { unref: () => void }).unref();
-    }
   });
   try {
     await Promise.race([client.close().catch(() => undefined), timeoutPromise]);

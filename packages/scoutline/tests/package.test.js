@@ -18,10 +18,10 @@
  *     generated tarball, expose its `bin` executable, and import its
  *     root `main` export without performing side effects. This is the
  *     NFR-001 / NFR-003 install-safety gate; the install uses
- *     `--offline --ignore-scripts --no-audit --no-fund` and relies on
- *     the surrounding `npm install`/`npm ci` of the package itself
- *     having already populated the local npm cache. The test NEVER
- *     contacts the npm registry.
+ *     `--prefer-offline --ignore-scripts --no-audit --no-fund` —
+ *     tarballs from the ci-primed cache, registry contact only for the
+ *     small packument metadata npm needs to resolve a tarball dep's
+ *     tree (see installTarballOffline).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -122,10 +122,19 @@ function packToDir(destDir) {
 }
 
 /**
- * Install a local tarball into `destDir` using offline-only npm. This
- * relies on the local cache having been populated by the preceding
- * `npm ci` / `npm install` of the package itself; no registry contact
- * occurs.
+ * Install a local tarball into `destDir` using npm with `--prefer-offline`.
+ *
+ * Why not `--offline`: npm resolves a tarball dependency's tree from
+ * REGISTRY PACKUMENTS (metadata documents), which `npm ci` never fetches —
+ * ci resolves from the lockfile by integrity. On a fresh CI runner cache
+ * (tarballs only, no packuments) `npm install <tgz> --offline` fails
+ * ENOTCACHED for the metadata request even when every tarball is cached;
+ * dev machines passed only because historical installs left packuments
+ * behind (2026-09-10, first CI run). `--prefer-offline` serves every
+ * tarball from cache and uses the network only for the small packument
+ * documents — the install round-trip is real-world install verification
+ * and legitimately needs those. Everything else in this suite stays
+ * fully offline (npm pack, allowlist, bin/main import checks).
  */
 function installTarballOffline(tarballPath, destDir) {
   return new Promise((resolve, reject) => {
@@ -142,7 +151,7 @@ function installTarballOffline(tarballPath, destDir) {
       "npm",
       [
         "install",
-        "--offline",
+        "--prefer-offline",
         "--ignore-scripts",
         "--no-audit",
         "--no-fund",
@@ -161,8 +170,8 @@ function installTarballOffline(tarballPath, destDir) {
       if (code !== 0) {
         reject(
           new Error(
-            `npm install --offline exited ${code}: ${stderr || stdout}\n` +
-              `Ensure the local npm cache is populated (run \`npm ci\` first).`,
+            `npm install --prefer-offline exited ${code}: ${stderr || stdout}\n` +
+              `Tarballs come from the npm ci-primed cache; only small registry metadata goes to the network.`,
           ),
         );
         return;

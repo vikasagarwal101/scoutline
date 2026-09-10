@@ -27,8 +27,11 @@ import { createJinaDescriptor } from "./jina/adapter.js";
 import { createLinkupDescriptor } from "./linkup/adapter.js";
 import { createYouDescriptor } from "./you/adapter.js";
 import { createSpiderDescriptor } from "./spider/adapter.js";
+// arXiv ships its real adapter (science Atom vertical); the remaining
+// science seats still import the stub factories from types.js until
+// their adapter tickets land.
+import { createArxivDescriptor } from "./arxiv/adapter.js";
 import {
-  createArxivDescriptor,
   createOpenalexDescriptor,
   createCrossrefDescriptor,
   createPubmedDescriptor,

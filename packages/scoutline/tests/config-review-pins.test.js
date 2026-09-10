@@ -90,13 +90,13 @@ describe("hermetic quota-store singleton exit cleanup (cubic)", () => {
         `
         import { readdirSync } from "node:fs";
         import { tmpdir } from "node:os";
-        const seen = new Set(
-          readdirSync(tmpdir()).filter((n) => n.startsWith("scoutline-hermetic-quota-")),
-        );
+        // TMPDIR is this test's private dir, so the only
+        // scoutline-hermetic-quota-* entries here are this child's own —
+        // a global /tmp count would race other test workers (cubic wave 2).
         const { hermeticMainDeps } = await import(${JSON.stringify(HERMETIC_MAIN_URL)});
         hermeticMainDeps();
-        const created = readdirSync(tmpdir()).filter(
-          (n) => n.startsWith("scoutline-hermetic-quota-") && !seen.has(n),
+        const created = readdirSync(tmpdir()).filter((n) =>
+          n.startsWith("scoutline-hermetic-quota-"),
         );
         if (created.length !== 1) {
           throw new Error("expected exactly one hermetic quota dir, got: " + JSON.stringify(created));
@@ -104,7 +104,10 @@ describe("hermetic quota-store singleton exit cleanup (cubic)", () => {
         console.log("CREATED:" + created[0]);
       `,
       );
-      const result = spawnSync(process.execPath, [child], { encoding: "utf8" });
+      const result = spawnSync(process.execPath, [child], {
+        encoding: "utf8",
+        env: { ...process.env, TMPDIR: dir },
+      });
       assert.strictEqual(result.status, 0, `consumer failed: ${result.stderr}`);
       const created = result.stdout
         .split("\n")
@@ -115,7 +118,7 @@ describe("hermetic quota-store singleton exit cleanup (cubic)", () => {
         `expected the child to report its singleton dir; stdout: ${result.stdout}`,
       );
       assert.strictEqual(
-        existsSync(path.join(os.tmpdir(), created)),
+        existsSync(path.join(dir, created)),
         false,
         `hermetic quota dir leaked after exit: ${created}`,
       );

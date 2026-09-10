@@ -208,6 +208,7 @@ export async function checkAgentRegistration(options: {
   if (!versionDrifted && !textDrifted) return { refreshed: false };
 
   let refreshed = false;
+  let failed = false;
   for (const id of tools) {
     if (agentRules?.[id] === false) continue;
     try {
@@ -218,12 +219,16 @@ export async function checkAgentRegistration(options: {
       }
       refreshed = true;
     } catch (error) {
+      failed = true;
       writeStderr(
         `scoutline: agent registration refresh failed for ${id} — ${error instanceof Error ? error.message : String(error)} (command continues)`,
       );
     }
   }
-  if (refreshed) {
+  // A partial failure must not stamp every tool fresh (issue #122): leave the
+  // stamp drifted so the next run retries the tool that failed. The return
+  // value still reports `refreshed` for the tools that did refresh.
+  if (refreshed && !failed) {
     await writeStamp(configRoot, {
       version,
       tools,

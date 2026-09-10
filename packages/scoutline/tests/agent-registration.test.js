@@ -24,6 +24,12 @@ import {
   markerBlockInsert,
   stripManagedRegion,
 } from "../dist/lib/agent-registration/engines.js";
+import {
+  checkAgentRegistration,
+  computeRuleTextHash,
+  readAgentRegistrationStamp,
+  registerAgentTools,
+} from "../dist/lib/agent-registration/deploy.js";
 
 const POINTER_LINE = "@rules/scoutline.md";
 const START = "<!-- scoutline:start -->";
@@ -188,8 +194,11 @@ describe("line insert engine (D2 — claude @rules/, gemini @ import)", () => {
     await fs.writeFile(appended, original, "binary");
     await lineInsert({ filePath: appended, line: pointer });
     await stripManagedRegion(appended, pointer);
-    assert.equal((await fs.readFile(appended, "binary")).toString("binary"), original,
-      "CRLF append placement must round-trip byte-identically");
+    assert.equal(
+      (await fs.readFile(appended, "binary")).toString("binary"),
+      original,
+      "CRLF append placement must round-trip byte-identically",
+    );
 
     // Splice placement (convention present between CRLF lines).
     const spliced = path.join(dir, "CLAUDE-splice.md");
@@ -197,8 +206,11 @@ describe("line insert engine (D2 — claude @rules/, gemini @ import)", () => {
     await fs.writeFile(spliced, withConv, "binary");
     await lineInsert({ filePath: spliced, line: pointer, convention: /^@rules\// });
     await stripManagedRegion(spliced, pointer);
-    assert.equal((await fs.readFile(spliced, "binary")).toString("binary"), withConv,
-      "CRLF splice placement must round-trip byte-identically");
+    assert.equal(
+      (await fs.readFile(spliced, "binary")).toString("binary"),
+      withConv,
+      "CRLF splice placement must round-trip byte-identically",
+    );
   });
 
   it("appends a marker-wrapped pointer line at file end, preserving prior bytes exactly", async (t) => {
@@ -317,9 +329,14 @@ describe("marker block engine (D2 — codex AGENTS.md, qwen QWEN.md; AC-5)", () 
       before,
       "only the version stamp may differ — bytes outside the block identical",
     );
-    assert.equal(after.slice(0, after.indexOf(START)), before.slice(0, before.indexOf(START)), 'bytes before the block unchanged');
-    const stripBlock = (s) => s.replace(s.slice(s.indexOf(START), s.indexOf(END) + END.length + 1), '');
-    assert.equal(stripBlock(after), stripBlock(before), 'bytes after the block unchanged');
+    assert.equal(
+      after.slice(0, after.indexOf(START)),
+      before.slice(0, before.indexOf(START)),
+      "bytes before the block unchanged",
+    );
+    const stripBlock = (s) =>
+      s.replace(s.slice(s.indexOf(START), s.indexOf(END) + END.length + 1), "");
+    assert.equal(stripBlock(after), stripBlock(before), "bytes after the block unchanged");
   });
 });
 
@@ -327,13 +344,17 @@ describe("foreign marker-pair protection (A2/A3 — marker block engine)", () =>
   it("register beside a pre-existing foreign pair: our block appended, foreign bytes untouched, backup still minted", async (t) => {
     const home = await mkHome(t);
     const file = path.join(home, "AGENTS.md");
-    const foreignPair = "<!-- scoutline:start -->\nuser's own managed note\n<!-- scoutline:end -->\n";
+    const foreignPair =
+      "<!-- scoutline:start -->\nuser's own managed note\n<!-- scoutline:end -->\n";
     await fs.writeFile(file, foreignPair);
 
     await markerBlockInsert({ filePath: file, content: RULE_TEXT, version: "9.9.9-test" });
 
     const after = await read(file);
-    assert.ok(after.startsWith(foreignPair), "foreign pair bytes preserved verbatim at the head of the file");
+    assert.ok(
+      after.startsWith(foreignPair),
+      "foreign pair bytes preserved verbatim at the head of the file",
+    );
     assert.ok(
       after.includes(`<!-- scoutline:v9.9.9-test -->`) && after.includes(RULE_TEXT),
       "our block appended after the foreign content",
@@ -348,7 +369,8 @@ describe("foreign marker-pair protection (A2/A3 — marker block engine)", () =>
   it("version-bump refresh on a foreign+ours file rewrites only OUR region", async (t) => {
     const home = await mkHome(t);
     const file = path.join(home, "AGENTS.md");
-    const foreignPair = "<!-- scoutline:start -->\nuser's own managed note\n<!-- scoutline:end -->\n";
+    const foreignPair =
+      "<!-- scoutline:start -->\nuser's own managed note\n<!-- scoutline:end -->\n";
     await fs.writeFile(file, foreignPair);
     await markerBlockInsert({ filePath: file, content: RULE_TEXT, version: "1.0.0" });
     const before = await read(file);
@@ -376,9 +398,16 @@ describe("pre-existing unwrapped pointer line (A4 — user-owned, hands off)", (
 
     await lineInsert({ filePath: file, line: POINTER_LINE });
 
-    assert.equal(await read(file), original, "register must not rewrite user-owned bytes (no wrap-upgrade)");
+    assert.equal(
+      await read(file),
+      original,
+      "register must not rewrite user-owned bytes (no wrap-upgrade)",
+    );
     const siblings = await fs.readdir(home);
-    assert.ok(!siblings.some((n) => n.endsWith(".scoutline-bak")), "no mutation → no backup minted");
+    assert.ok(
+      !siblings.some((n) => n.endsWith(".scoutline-bak")),
+      "no mutation → no backup minted",
+    );
   });
 
   it("unregister leaves the unwrapped line and its file alone", async (t) => {
@@ -389,7 +418,11 @@ describe("pre-existing unwrapped pointer line (A4 — user-owned, hands off)", (
 
     await stripManagedRegion(file, POINTER_LINE);
 
-    assert.equal(await read(file), original, "unregister must not touch a file with no managed region");
+    assert.equal(
+      await read(file),
+      original,
+      "unregister must not touch a file with no managed region",
+    );
   });
 });
 
@@ -437,6 +470,58 @@ describe("first-mutation backup rail (D2)", () => {
     assert.ok(
       !names.some((n) => n.endsWith(".scoutline-bak")),
       "refresh of our own block must never mint a backup — nothing pre-existing to protect",
+    );
+  });
+});
+
+describe("partial refresh failure (issue #122)", () => {
+  it("keeps the stamp drifted when one tool fails — the failed tool self-heals on the next run", async (t) => {
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+
+    await registerAgentTools({ home, configRoot, tools: ["claude", "codex"], version: "9.9.9" });
+
+    // Sabotage codex only: replace its home dir with a regular file so the
+    // skill deploy's mkdir under <home>/.codex fails with ENOTDIR
+    // (root-safe sabotage — no chmod, works in root containers).
+    const codexHome = path.join(home, ".codex");
+    await fs.rm(codexHome, { recursive: true, force: true });
+    await fs.writeFile(codexHome, "not a directory");
+
+    const notices = [];
+    const first = await checkAgentRegistration({
+      home,
+      configRoot,
+      version: "9.9.10",
+      writeStderr: (value) => notices.push(value),
+    });
+
+    assert.equal(first.refreshed, true, "claude refreshed — the run is still a refresh");
+    assert.ok(
+      notices.some((n) => n.includes("codex")),
+      "the failing tool's stderr notice must be emitted",
+    );
+    assert.deepEqual(
+      await readAgentRegistrationStamp(configRoot),
+      { version: "9.9.9", tools: ["claude", "codex"], ruleTextHash: computeRuleTextHash() },
+      "a partial failure must NOT rewrite the stamp — the drift must survive so the failed tool retries",
+    );
+
+    // Self-heal: restore the codex home and re-run at the same new version.
+    await fs.rm(codexHome, { force: true });
+    const second = await checkAgentRegistration({
+      home,
+      configRoot,
+      version: "9.9.10",
+      writeStderr: (value) => notices.push(value),
+    });
+
+    assert.equal(second.refreshed, true, "the surviving drift must trigger the retry");
+    await fs.access(path.join(home, ".codex", "skills", "scoutline", "SKILL.md"));
+    assert.deepEqual(
+      await readAgentRegistrationStamp(configRoot),
+      { version: "9.9.10", tools: ["claude", "codex"], ruleTextHash: computeRuleTextHash() },
+      "an all-tools-clean refresh writes the new stamp",
     );
   });
 });

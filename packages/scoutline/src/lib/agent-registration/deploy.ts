@@ -120,7 +120,7 @@ async function writePointer(home: string, id: string, version: string): Promise<
   if (pointer.kind === "line") {
     const line = LINE_POINTERS[id];
     if (line === undefined) throw new Error(`scoutline: no pointer line registered for ${id}`);
-    await lineInsert({ filePath: target, line });
+    await lineInsert({ filePath: target, line, convention: pointer.convention });
   } else if (pointer.kind === "block") {
     await markerBlockInsert({ filePath: target, content: RULE_TEXT, version });
   } else {

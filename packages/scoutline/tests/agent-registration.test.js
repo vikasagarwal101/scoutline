@@ -29,6 +29,7 @@ import {
   computeRuleTextHash,
   readAgentRegistrationStamp,
   registerAgentTools,
+  unregisterAgentTools,
 } from "../dist/lib/agent-registration/deploy.js";
 
 const POINTER_LINE = "@rules/scoutline.md";
@@ -570,6 +571,140 @@ describe("partial refresh failure (issue #122)", () => {
       await readAgentRegistrationStamp(configRoot),
       { version: "9.9.10", tools: ["claude", "codex"], ruleTextHash: computeRuleTextHash() },
       "an all-tools-clean refresh writes the new stamp",
+    );
+  });
+});
+
+describe("pointer convention wiring (#121)", () => {
+  it("claude pointer lands under the existing rules list at register level, not EOF", async (t) => {
+    // Documented design intent (plan 19, line 48): the claude pointer
+    // belongs in the Shared Rules list in ~/.claude/CLAUDE.md, not the
+    // file end. Dead-wiring regression guard at the registerAgentTools
+    // surface (the HIGH seam), not just the engine.
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    const original =
+      "# My rules\n\nintro user text\n\n@rules/other.md\n@rules/second.md\n\ntrailing user text\n";
+    await fs.writeFile(claudeMd, original);
+
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+
+    const after = await read(claudeMd);
+    const inserted = after.indexOf(`${START}\n@rules/scoutline.md\n${END}`);
+    assert.ok(inserted !== -1, "marker-wrapped pointer must be present");
+    assert.ok(
+      inserted > after.lastIndexOf("@rules/second.md"),
+      "pointer must land AFTER the last @rules/ line",
+    );
+    assert.ok(
+      inserted < after.indexOf("trailing user text"),
+      "pointer must NOT land at EOF — user content stays below",
+    );
+    assert.ok(
+      after.startsWith("# My rules\n\nintro user text\n\n"),
+      "bytes above the insertion untouched",
+    );
+  });
+
+  it("gemini pointer lands under the existing @import rules list at register level", async (t) => {
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".gemini"), { recursive: true });
+    const geminiMd = path.join(home, ".gemini", "GEMINI.md");
+    const original = "# Gemini rules\n\n@~/.gemini/rules/other.md\n\ntrailing user text\n";
+    await fs.writeFile(geminiMd, original);
+
+    await registerAgentTools({ home, configRoot, tools: ["gemini"], version: "9.9.9-test" });
+
+    const after = await read(geminiMd);
+    const inserted = after.indexOf(`${START}\n@~/.gemini/rules/scoutline.md\n${END}`);
+    assert.ok(inserted !== -1, "marker-wrapped gemini pointer must be present");
+    assert.ok(
+      inserted > after.lastIndexOf("@~/.gemini/rules/other.md"),
+      "gemini pointer must land AFTER the last @…/rules/ import line",
+    );
+    assert.ok(
+      inserted < after.indexOf("trailing user text"),
+      "gemini pointer must NOT land at EOF",
+    );
+  });
+
+  it("no convention-matching line → pointer lands at EOF (fallback unchanged), register level", async (t) => {
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    const original = "# My rules\n\nsome user content\n";
+    await fs.writeFile(claudeMd, original);
+
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+
+    const after = await read(claudeMd);
+    assert.ok(after.startsWith(original), "bytes above the insertion untouched");
+    assert.ok(
+      after.endsWith(`${START}\n@rules/scoutline.md\n${END}\n`),
+      "pointer must land at EOF when no convention line exists",
+    );
+  });
+
+  it("exactly the claude and gemini rows carry a pointer convention (extension boundary)", () => {
+    const carrying = AGENT_TOOLS.filter((row) => row.pointer?.convention !== undefined).map(
+      (row) => row.id,
+    );
+    assert.deepEqual(carrying.sort(), ["claude", "gemini"]);
+
+    const claudeConvention = tool("claude").pointer.convention;
+    const geminiConvention = tool("gemini").pointer.convention;
+    assert.ok(claudeConvention instanceof RegExp, "claude convention must be a RegExp");
+    assert.ok(geminiConvention instanceof RegExp, "gemini convention must be a RegExp");
+    // claude: the bare @rules/ include it deploys matches; a home-anchored
+    // @import line does not.
+    assert.ok(claudeConvention.test("@rules/scoutline.md"));
+    assert.ok(!claudeConvention.test("@~/.gemini/rules/other.md"));
+    // gemini: the home-anchored @import it deploys matches; claude-style
+    // bare relative lines and prose do not.
+    assert.ok(geminiConvention.test("@~/.gemini/rules/scoutline.md"));
+    assert.ok(!geminiConvention.test("@rules/other.md"));
+    assert.ok(!geminiConvention.test("see @ rules folder"));
+  });
+
+  it("re-register is a byte-identical zero diff under the under-list placement", async (t) => {
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    await fs.writeFile(claudeMd, "# My rules\n\n@rules/other.md\ntrailing text\n");
+
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+    const once = await read(claudeMd);
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+
+    assert.equal(await read(claudeMd), once, "re-registration must be a zero diff");
+  });
+
+  it("unregister restores the byte-identical pre-registration file (both directions guarded)", async (t) => {
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    const original = "# My rules\n\n@rules/other.md\n\ntrailing user text\n";
+    await fs.writeFile(claudeMd, original);
+
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+    assert.notEqual(await read(claudeMd), original, "registration must have mutated the file");
+
+    await unregisterAgentTools({
+      home,
+      configRoot,
+      configFilePath: path.join(configRoot, "config.json"),
+    });
+
+    assert.equal(
+      await read(claudeMd),
+      original,
+      "unregister must restore the exact pre-registration bytes",
     );
   });
 });

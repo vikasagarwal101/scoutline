@@ -1365,13 +1365,28 @@ describe("executeWithFallback — production registry carries credential hint en
       you: ["YDC_API_KEY", "YOU_API_KEY"],
       linkup: ["LINKUP_API_KEY"],
       spider: ["SPIDER_API_KEY"],
+      // Science seats (T2): keyless trio carries no credential model;
+      // openalex/pubmed accept an optional free key.
+      arxiv: [],
+      openalex: ["OPENALEX_API_KEY"],
+      crossref: [],
+      pubmed: ["NCBI_API_KEY"],
+      europepmc: [],
     };
     for (const descriptor of BUILT_IN_PROVIDER_DESCRIPTORS) {
       const vars = descriptor.credentialEnvVars;
       assert.ok(
-        Array.isArray(vars) && vars.length > 0,
-        `descriptor "${descriptor.id}" must expose a non-empty credentialEnvVars array`,
+        Array.isArray(vars),
+        `descriptor "${descriptor.id}" must expose a credentialEnvVars array`,
       );
+      // Science seats (T2) are keyless-first: the trio carries an
+      // EMPTY list by design; every other provider must stay non-empty.
+      if (!["arxiv", "crossref", "europepmc"].includes(descriptor.id)) {
+        assert.ok(
+          vars.length > 0,
+          `descriptor "${descriptor.id}" must expose a non-empty credentialEnvVars array`,
+        );
+      }
       assert.deepStrictEqual(
         vars,
         expected[descriptor.id],
@@ -1391,9 +1406,11 @@ describe("executeWithFallback — production registry carries credential hint en
     //
     // Jina is excluded because it supports keyless access and is
     // always configured — including it would let the executor succeed
-    // via Jina instead of surfacing the zai ConfigurationError.
+    // via Jina instead of surfacing the zai ConfigurationError. The
+    // five science seats (T2) are keyless-always too — same exclusion.
+    const keylessIds = new Set(["jina", "arxiv", "openalex", "crossref", "pubmed", "europepmc"]);
     const credentialRequiredDescriptors = BUILT_IN_PROVIDER_DESCRIPTORS.filter(
-      (d) => d.id !== "jina",
+      (d) => !keylessIds.has(d.id),
     );
     let caught;
     try {
@@ -1426,7 +1443,7 @@ describe("executeWithFallback — production registry carries credential hint en
   it("an unconfigured minimax effective surfaces a ConfigurationError naming MINIMAX_API_KEY", async () => {
     // Sibling coverage for the second built-in whose descriptor
     // lives outside src/providers/types.ts.
-    // Jina excluded (keyless — always configured).
+    // Jina + science seats excluded (keyless — always configured).
     const credentialRequiredDescriptors = BUILT_IN_PROVIDER_DESCRIPTORS.filter(
       (d) => d.id !== "jina",
     );
@@ -2125,6 +2142,11 @@ const ALL_PROVIDER_CAPABILITIES = [
   "crawl",
   "map",
   "research",
+  // GROUND: T2 — the ProviderCapability union widens with the two
+  // science caps; `science.cite` stays OUT in v1 (D1). adapterSlotFor
+  // must map both to the `science` slot or the never-guard fails.
+  "science.search",
+  "science.get",
 ];
 
 describe("ProviderCapability dispatch is exhaustive (4.5)", () => {
@@ -2142,7 +2164,9 @@ describe("ProviderCapability dispatch is exhaustive (4.5)", () => {
           ? "vision"
           : cap === "repository-exploration"
             ? "repository"
-            : cap,
+            : cap.startsWith("science.")
+              ? "science"
+              : cap,
       });
       const cap2 = captureStderr();
       // The attempt callback is never reached in this test because the
@@ -2166,4 +2190,58 @@ describe("ProviderCapability dispatch is exhaustive (4.5)", () => {
       assert.ok(true, `preflight completed for ${cap}`);
     });
   }
+
+  // GROUND: T2 — `adapterSlotFor` (src/lib/provider-fallback.ts) gains
+  // `case "science.search": case "science.get": return "science";` —
+  // the slot is checked against the adapter handle at preflight, so a
+  // descriptor that supplies `adapter.science` must be eligible and one
+  // that supplies a different slot must be incapable.
+  it("science.search / science.get map to the `science` adapter slot (not the never-guard throw)", async () => {
+    for (const cap of ["science.search", "science.get"]) {
+      const scienceDescriptor = makeDescriptor("zai", {
+        capabilities: [cap],
+        configured: true,
+        adapterHandle: "science",
+      });
+      const outcome = await executeWithFallback(
+        {
+          capabilityId: cap,
+          commandLabel: "science",
+          effectiveProvider: "zai",
+          descriptors: [scienceDescriptor],
+          env: {},
+          fallbackEnabled: false,
+          writeStderr: () => {},
+        },
+        async () => "ok",
+      );
+      assert.strictEqual(outcome.result, "ok", `${cap} must reach the attempt via the science slot`);
+      assert.strictEqual(outcome.provider, "zai");
+      assert.strictEqual(outcome.fellBack, false);
+    }
+  });
+
+  it("a science capability with a mismatched adapter handle is incapable, not eligible", async () => {
+    const mismatch = makeDescriptor("zai", {
+      capabilities: ["science.search"],
+      configured: true,
+      adapterHandle: "search",
+    });
+    const cap2 = captureStderr();
+    await assert.rejects(
+      executeWithFallback(
+        {
+          capabilityId: "science.search",
+          commandLabel: "science",
+          effectiveProvider: "zai",
+          descriptors: [mismatch],
+          env: {},
+          fallbackEnabled: false,
+          writeStderr: cap2.writeStderr,
+        },
+        async () => "should not run",
+      ),
+      (err) => err.name === "UnsupportedCapabilityError",
+    );
+  });
 });

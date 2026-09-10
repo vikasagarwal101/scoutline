@@ -453,6 +453,40 @@ describe("config routing key", () => {
     assert.strictEqual(result.config.routing, undefined);
     assert.deepStrictEqual(result.warnings, []);
   });
+
+  // GROUND: T2 dead-letter pin (DESIGN D5 ruling) — routing.science.* is
+  // an unknown capability on purpose: config set rejects it and lenient
+  // load warn-drops it; the science executor never reads routing.
+  it("routing.science.search is rejected as an unknown capability by strict set (science routing dead letter)", async () => {
+    const result = await inspect({
+      version: 1,
+      providers: {},
+      routing: { "science.search": ["openalex"], search: ["tavily"] },
+    });
+    assert.strictEqual(result.status, "valid");
+    assert.strictEqual(result.config.routing["science.search"], undefined);
+    assert.deepStrictEqual(result.config.routing.search, ["tavily"]);
+    const dropped = result.warnings.some(
+      (w) => w.code === "UNKNOWN_CAPABILITY" && /science\.search/.test(w.message),
+    );
+    assert.ok(dropped, "load must warn about the dropped science.search routing key");
+  });
+
+  it("routing.science.get in config.json is warn-dropped by lenient load (science routing dead letter)", async () => {
+    const result = await inspect({
+      version: 1,
+      providers: {},
+      routing: { "science.get": ["openalex"], search: ["tavily"] },
+    });
+    assert.strictEqual(result.status, "valid");
+    // The science entry is gone; the valid search entry survives.
+    assert.strictEqual(result.config.routing["science.get"], undefined);
+    assert.deepStrictEqual(result.config.routing.search, ["tavily"]);
+    const dropped = result.warnings.some(
+      (w) => w.code === "UNKNOWN_CAPABILITY" && /science\.get/.test(w.message),
+    );
+    assert.ok(dropped, "load must warn about the dropped science routing key");
+  });
 });
 
 // ===========================================================================
@@ -634,6 +668,22 @@ describe("config key registry", () => {
       await assert.rejects(
         () => setConfigValue("routing.serch", "tavily", { filePath }),
         (error) => error.name === "ValidationError",
+      );
+    });
+  });
+
+  // GROUND: T2 dead-letter pin (DESIGN D5) — config set rejects
+  // routing.science.* as an unknown capability.
+  it("routing set rejects routing.science.search as an unknown capability (science routing dead letter)", async (t) => {
+    await withConfig(t, { version: 1, providers: {} }, async (filePath) => {
+      const { setConfigValue } = await import("../dist/lib/config-store.js");
+      await assert.rejects(
+        () => setConfigValue("routing.science.search", "openalex", { filePath }),
+        (error) => {
+          assert.strictEqual(error.name, "ValidationError");
+          assert.match(error.message, /science\.search|Use one of/i);
+          return true;
+        },
       );
     });
   });

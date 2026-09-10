@@ -171,16 +171,34 @@ Exit codes:
  */
 interface ProviderPromptMeta {
   readonly label: string;
-  readonly envVar: string;
+  /**
+   * Canonical env-var name. Optional: the keyless science suppliers
+   * (arxiv, crossref, europepmc) have no credential model, so no env
+   * var to advertise. Renderers must guard on absence
+   * (`getDetectedEnvVar` / the non-TTY example line).
+   */
+  readonly envVar?: string;
   readonly envAliases?: readonly string[];
-  readonly registrationUrl: string;
+  /**
+   * Registration page. Optional for the same reason — a keyless
+   * supplier has no key page, and `renderRegistrationLine` must not
+   * emit a broken hyperlink when the field is absent.
+   */
+  readonly registrationUrl?: string;
   /**
    * True when the probe is billable (~1 credit). Z.AI and MiniMax probe
    * through free endpoints (tool discovery / raw quota probe); the other
    * four charge ~1 credit per probe. Surfaced before the user enters a
-   * key so they can opt out before the charge occurs.
+   * key so they can opt out before the charge occurs. Keyless science
+   * suppliers probe keyless — always false for them.
    */
   readonly probeCostsCredit: boolean;
+  /**
+   * Keyless-economics note rendered in the checklist description
+   * column. Present for the five science suppliers (keyless by
+   * default); absent for keyed-only providers.
+   */
+  readonly keylessNote?: string;
 }
 
 const PROVIDER_PROMPT_META: Record<ProviderId, ProviderPromptMeta> = {
@@ -258,6 +276,40 @@ const PROVIDER_PROMPT_META: Record<ProviderId, ProviderPromptMeta> = {
     // The validation probe rides GET /data/credits, a free read.
     probeCostsCredit: false,
   },
+  // Science suppliers — keyless by default. The trio (arxiv, crossref,
+  // europepmc) carries no credential model at all; openalex and pubmed
+  // accept an optional free key. T2 owns the rows and the minimum
+  // keyless branch; the keyed opt-in question flow is T11.
+  arxiv: {
+    label: "arXiv",
+    probeCostsCredit: false,
+    keylessNote: "no key required — keyless scholarly index; free probe",
+  },
+  openalex: {
+    label: "OpenAlex",
+    envVar: "OPENALEX_API_KEY",
+    registrationUrl: "https://openalex.org/users/me",
+    probeCostsCredit: false,
+    keylessNote:
+      "keyless 1000 credits/day (~100 searches; doi:get free); free key recommended",
+  },
+  crossref: {
+    label: "Crossref",
+    probeCostsCredit: false,
+    keylessNote: "no key required — keyless scholarly index; free probe",
+  },
+  pubmed: {
+    label: "PubMed",
+    envVar: "NCBI_API_KEY",
+    registrationUrl: "https://www.ncbi.nlm.nih.gov/account/settings/profile/",
+    probeCostsCredit: false,
+    keylessNote: "works keyless at 3 r/s; free key at 10 r/s",
+  },
+  europepmc: {
+    label: "Europe PMC",
+    probeCostsCredit: false,
+    keylessNote: "no key required — keyless scholarly index; free probe",
+  },
 };
 
 /**
@@ -298,6 +350,11 @@ function hyperlink(text: string, url: string): string {
  */
 function renderRegistrationLine(id: ProviderId): string {
   const meta = providerMeta(id);
+  // Keyless suppliers carry no registration URL — no broken hyperlink,
+  // just the keyless note (rendered by the checklist description too).
+  if (meta.registrationUrl === undefined) {
+    return `${meta.label}: ${meta.keylessNote ?? "no key required"}`;
+  }
   return `${meta.label}: ${hyperlink("Get an API key", meta.registrationUrl)}\n  ${meta.registrationUrl}`;
 }
 
@@ -525,6 +582,11 @@ export interface InitDependencies {
  */
 interface ProviderOnboarding {
   readonly providerId: ProviderId;
+  /**
+   * The API key. Empty string for keyless onboarding (science seats):
+   * the wizard records the onboarded flag + verification but writes no
+   * `apiKey` to the config (see {@link buildConfig}).
+   */
   readonly apiKey: string;
   readonly verification: ProviderVerification;
 }
@@ -552,6 +614,8 @@ function getDetectedEnvVar(
   meta: ProviderPromptMeta,
   env: NodeJS.ProcessEnv,
 ): string | undefined {
+  // Keyless suppliers carry no env-var hint to detect.
+  if (meta.envVar === undefined) return undefined;
   const vars = [meta.envVar, ...(meta.envAliases ?? [])];
   for (const name of vars) {
     const value = env[name];
@@ -597,7 +661,7 @@ function formatNonTTYRefuse(
   descriptors: readonly ProviderDescriptor[],
 ): string {
   const example = descriptors[0];
-  const exampleVar = example ? providerMeta(example.id).envVar : "Z_AI_API_KEY";
+  const exampleVar = (example && providerMeta(example.id).envVar) ?? "Z_AI_API_KEY";
   const detected = descriptors
     .map((d) => {
       const activeVar = getDetectedEnvVar(providerMeta(d.id), env);
@@ -1549,6 +1613,9 @@ async function collectProviderOnboardings(
     const choices: InitChoice<ProviderId>[] = deps.descriptors.map((descriptor) => {
       const meta = providerMeta(descriptor.id);
       const hints: string[] = [];
+      if (meta.keylessNote !== undefined) {
+        hints.push(meta.keylessNote);
+      }
       if (envKeyProviders.includes(descriptor.id)) {
         const activeVar = getDetectedEnvVar(meta, deps.env) ?? meta.envVar;
         hints.push(`env $${activeVar} present (importable)`);
@@ -1627,6 +1694,27 @@ async function onboardSingleProvider(
     // The checklist is registry-derived, so this is unreachable unless
     // the caller passed a divergent `descriptors` list.
     deps.writeStderr(`Provider "${providerId}" is not in the registry; skipping.\n`);
+    return "skip";
+  }
+
+  // Keyless suppliers (the science seats): no key entry, no
+  // registration link, no password prompt. The keyless diagnostics
+  // probe IS the verify-then-save validation — one probe, then record
+  // without an apiKey. Keyed opt-in for openalex/pubmed is a later
+  // wizard question (T11); the minimum branch ships here so the rows
+  // are onboarding-functional the moment they land.
+  if (meta.envVar === undefined) {
+    const outcome = await probeProviderOnce(descriptor, deps.env);
+    if (outcome.status === "verified") {
+      return {
+        providerId,
+        apiKey: "",
+        verification: { status: "verified", checkedAt: deps.now() },
+      };
+    }
+    deps.writeStderr(
+      `${meta.label}: keyless probe failed (${outcome.message}); skipping.\n`,
+    );
     return "skip";
   }
 
@@ -1724,7 +1812,7 @@ async function validateAndCollect(
     }
     const ephemeralEnv = buildEphemeralProbeEnv(
       deps.env,
-      meta.envVar,
+      meta.envVar ?? "",
       candidate,
       meta.envAliases,
     );
@@ -1823,11 +1911,18 @@ function buildConfig(
 ): ScoutlineConfig {
   const providers: Partial<Record<ProviderId, ProviderConfig>> = {};
   for (const onboarding of onboardings) {
-    providers[onboarding.providerId] = {
-      apiKey: onboarding.apiKey,
-      onboarded: true,
-      verification: onboarding.verification,
-    };
+    // Keyless onboarding (empty apiKey) records the seat without a key.
+    providers[onboarding.providerId] =
+      onboarding.apiKey.length > 0
+        ? {
+            apiKey: onboarding.apiKey,
+            onboarded: true,
+            verification: onboarding.verification,
+          }
+        : {
+            onboarded: true,
+            verification: onboarding.verification,
+          };
   }
   return {
     version: 1,

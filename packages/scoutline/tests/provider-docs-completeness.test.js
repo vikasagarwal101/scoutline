@@ -16,6 +16,10 @@ import * as fs from "node:fs/promises";
 import { PROVIDER_IDS } from "../dist/providers/types.js";
 
 /** Display labels used as capability-matrix column headers (registry order). */
+// GROUND: T2 — five science labels land in this map in the SAME commit
+// as the architecture.md/SKILL.md matrix columns they derive from
+// (data columns, not prose — the no-prose ruling is unaffected; T9
+// adds the prose sections).
 const PROVIDER_MATRIX_LABELS = {
   zai: "Z.AI",
   minimax: "MiniMax",
@@ -29,6 +33,11 @@ const PROVIDER_MATRIX_LABELS = {
   you: "You.com",
   linkup: "Linkup",
   spider: "Spider.cloud",
+  arxiv: "arXiv",
+  openalex: "OpenAlex",
+  crossref: "Crossref",
+  pubmed: "PubMed",
+  europepmc: "Europe PMC",
 };
 
 const architecture = fs.readFile(

@@ -36,6 +36,14 @@ import type { ReaderRawResponse } from "../capabilities/reader.js";
 
 /** Fallbacks when the corresponding env var is unset. */
 const FALLBACK_TIMEOUT_MS = 30_000;
+/**
+ * #117 / PR #125 review — upper bound for the failure-path auth probe.
+ * The probe runs only after initialization already failed, so it must
+ * not add the full request timeout to that failure; auth rejections
+ * answer fast, and a slow/unreachable probe endpoint is simply
+ * inconclusive (null → today's error shape).
+ */
+const PROBE_TIMEOUT_MS = 5_000;
 const FALLBACK_RETRY_BASE_MS = 500;
 const FALLBACK_RETRY_MAX_MS = 8_000;
 const FALLBACK_RETRY_JITTER_MS = 250;
@@ -274,9 +282,20 @@ export class ZaiMcpClient {
             clientInfo: { name: "scoutline-auth-probe", version: "0.0.0" },
           },
         }),
-        signal: AbortSignal.timeout(this.timeoutMs),
+        // PR #125 review: the probe must never delay an already-failing
+        // command by the full request timeout — auth rejections answer
+        // fast, so a short bound keeps classification quality while
+        // capping the added latency on inconclusive probes.
+        signal: AbortSignal.timeout(Math.min(PROBE_TIMEOUT_MS, this.timeoutMs)),
       });
+      // PR #125 review: undici retains the connection until the body is
+      // consumed or cancelled — release it on every exit that does not
+      // read the body.
+      const releaseBody = async () => {
+        await response.body?.cancel().catch(() => {});
+      };
       if (response.status === 401 || response.status === 403) {
+        await releaseBody();
         return response.status;
       }
       if (response.status === 200) {
@@ -286,7 +305,9 @@ export class ZaiMcpClient {
         if (typeof body?.code === "number" && (body.code === 401 || body.code === 403)) {
           return body.code;
         }
+        return null;
       }
+      await releaseBody();
       return null;
     } catch {
       // Best-effort diagnostics on an already-failing path: a failed probe

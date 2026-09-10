@@ -1826,6 +1826,107 @@ describe("ZaiMcpClient — failure-path auth probe (#117)", () => {
     );
   });
 
+  it("probe latency is bounded (~5s cap, not the full request timeout) — PR #125 review", async () => {
+    // A hanging probe endpoint that honors init.signal exactly like real
+    // fetch (rejects on abort, never resolves otherwise). Against the
+    // pre-fix code the probe waited the FULL configured timeout (30s
+    // default); the fix caps it at min(5000, timeoutMs).
+    const fake = new FakeUtcpClient({
+      discoveredTools: [],
+      registerManualResult: { success: false, errors: ["Unrecognized keys: code,msg,success"] },
+    });
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      // No Z_AI_TIMEOUT → default 30000ms request timeout; the probe bound
+      // must NOT inherit it wholesale.
+      env: { Z_AI_API_KEY: "expired-dummy-key", Z_AI_VISION_MCP: "0" },
+      noCache: true,
+      disableRetry: true,
+    });
+    await withMockFetch(
+      (real) =>
+      (input, init) =>
+        new Promise((_resolve, reject) => {
+          if (!urlOf(input).includes("api.z.ai")) {
+            // Not reached in this test (UTCP is faked); keep the pass-through.
+            real(input, init).then(_resolve, reject);
+            return;
+          }
+          init?.signal?.addEventListener("abort", () => {
+            reject(new Error("This operation was aborted"));
+          });
+          // Otherwise: hang like an unreachable endpoint.
+        }),
+      async () => {
+        const started = Date.now();
+        await assert.rejects(client.listTools(), (err) => {
+          // Probe inconclusive → today's opaque shape, just bounded sooner.
+          assert.strictEqual(err.code, "API_ERROR", `got ${err.code} (${err.message})`);
+          return true;
+        });
+        const elapsed = Date.now() - started;
+        assert.ok(
+          elapsed < 6000,
+          `probe must be bounded at ~5s even under a 30s request timeout, took ${elapsed}ms`,
+        );
+        assert.ok(
+          elapsed >= 4000,
+          `probe aborted suspiciously early (${elapsed}ms) — bound collapsed?`,
+        );
+      },
+    );
+    await client.close().catch(() => {});
+  });
+
+  it("probe cancels the unread response body on every non-consumed exit — PR #125 review", async () => {
+    // undici retains the connection until the body is consumed or
+    // cancelled; the 401/403 early return and the non-200 fallthrough
+    // must release it. Record body.cancel() on the returned Response.
+    async function runOnce(status) {
+      const fake = new FakeUtcpClient({
+        discoveredTools: [],
+        registerManualResult: { success: false, errors: ["Unrecognized keys: code,msg,success"] },
+      });
+      const client = new ZaiMcpClient({
+        utcpFactory: async () => fake,
+        env: { Z_AI_API_KEY: "expired-dummy-key", Z_AI_VISION_MCP: "0" },
+        noCache: true,
+        disableRetry: true,
+      });
+      let cancelled = false;
+      await withMockFetch(
+        (real) => async (input, init) => {
+          if (!urlOf(input).includes("api.z.ai")) return real(input, init);
+          const stream = new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("{}"));
+            },
+          });
+          const response = new Response(stream, {
+            status,
+            headers: { "content-type": "application/json" },
+          });
+          const origCancel = response.body.cancel.bind(response.body);
+          response.body.cancel = async () => {
+            cancelled = true;
+            return origCancel();
+          };
+          return response;
+        },
+        async () => {
+          await assert.rejects(client.listTools());
+        },
+      );
+      await client.close().catch(() => {});
+      return cancelled;
+    }
+
+    // 401/403 auth branch: classified AUTH_ERROR with the body unread.
+    assert.ok(await runOnce(401), "401 branch must cancel the unread body");
+    // Non-200/401/403 fallthrough: inconclusive probe, body unread.
+    assert.ok(await runOnce(503), "non-200 fallthrough must cancel the unread body");
+  });
+
   it("CLI envelope carries AUTH_ERROR/401/exit 1 end-to-end through main()", async () => {
     const stdout = [];
     const stderr = [];

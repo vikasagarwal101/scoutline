@@ -67,6 +67,9 @@ import { OUTPUT_MODES } from "../dist/lib/output.js";
 import { UnsupportedCapabilityError } from "../dist/lib/errors.js";
 import { configuredSecrets } from "../dist/lib/redact.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
+import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+
+useTempConfigDir();
 
 // ---------------------------------------------------------------------------
 // Offline hermeticity: clear ambient Provider credentials for this file

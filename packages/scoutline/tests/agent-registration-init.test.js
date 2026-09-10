@@ -51,6 +51,9 @@ import { handleInitWithHelp, createDefaultConfigStore } from "../dist/commands/i
 import { inspectConfig, writeConfig } from "../dist/lib/config-store.js";
 import { RULE_TEXT, AGENT_TOOLS } from "../dist/lib/agent-registration/registry.js";
 import { START_MARKER, END_MARKER } from "../dist/lib/agent-registration/engines.js";
+import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+
+useTempConfigDir();
 import {
   registerAgentTools,
   checkAgentRegistration,

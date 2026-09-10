@@ -40,6 +40,9 @@ import { RULE_TEXT } from "../dist/lib/agent-registration/registry.js";
 import { resolveSkillSourceDir } from "../dist/lib/skill-source.js";
 import { createDefaultConfigStore } from "../dist/commands/init.js";
 import { main } from "../dist/index.js";
+import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+
+useTempConfigDir();
 
 // Lazy loader: keeps every test individually red (module-not-found surfaces
 // per-test, not as a dead file) until the implementation lands.

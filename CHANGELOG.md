@@ -49,6 +49,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - **`scoutline --help` now lists `config`** (get / set / unset, credential-free) alongside the other 21 commands — the row had been missing since the command family shipped (PR #33). A new structural pin (`tests/help-surface.test.js`) ties the MAIN_HELP Commands block to `DISPATCHED_COMMANDS` in both directions, so a dispatched command can never again ship without a help row (and vice versa).
+- **Secret-bleed test flake eliminated (issue #120)**: the research `--context` suite now uses long, distinctive fixture provider keys and pins envelope path assertions redact-both-sides (expected value through the same `configuredSecrets` redaction as stdout), so a fixture secret colliding with a randomized temp-directory name can no longer flip an assertion. Tests-only; no product change.
 
 ## [0.20.0] - 2026-09-04
 

@@ -18,8 +18,11 @@ import * as fs from "node:fs/promises";
 import { SEARCH_HELP } from "../dist/commands/search.js";
 import { runProcess } from "./helpers/run-process.js";
 
+// GROUND: T2 — the --provider enumeration widens 12→17 with the five
+// science ids (PRD AC-9b). Pinned here as a literal so a widening that
+// misses any of the four surfaces fails loudly.
 const PROVIDER_ENUM =
-  "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>";
+  "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|arxiv|openalex|crossref|pubmed|europepmc>";
 const PROVIDER_LIST_TAIL =
   "Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, or Spider.cloud";
 
@@ -134,12 +137,12 @@ describe("You.com docs — CLI help enumerations", () => {
     });
     assert.equal(result.code, 0);
     assert.ok(
-      result.stdout.includes("all 12 Providers"),
-      "main help must count 12 providers",
+      result.stdout.includes("all 17 Providers"),
+      "main help must count 17 providers",
     );
     assert.ok(
-      result.stdout.includes("perplexity|jina|you|linkup|spider>"),
-      "main help must list you in --provider",
+      result.stdout.includes("perplexity|jina|you|linkup|spider|arxiv|openalex|crossref|pubmed|europepmc>"),
+      "main help must list the science suppliers in --provider",
     );
     assert.ok(
       result.stdout.includes("You.com advertises search, reader, and research"),

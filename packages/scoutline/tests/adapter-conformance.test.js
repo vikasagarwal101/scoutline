@@ -1030,7 +1030,10 @@ describe("AbortSignal — new research invokes honour pre-aborted signal (2.6)",
 // ---------------------------------------------------------------------------
 
 describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
-  it("contains exactly [zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider] in that order", () => {
+  it("contains exactly [zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, arxiv, openalex, crossref, pubmed, europepmc] in that order", () => {
+    // GROUND: T2 — the five science ids append in the D2 listing order
+    // (openalex-first is the executor arm order, NOT the registry
+    // insertion order).
     assert.deepStrictEqual(
       BUILT_IN_PROVIDER_DESCRIPTORS.map((d) => d.id),
       [
@@ -1046,6 +1049,11 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
         "you",
         "linkup",
         "spider",
+        "arxiv",
+        "openalex",
+        "crossref",
+        "pubmed",
+        "europepmc",
       ],
     );
   });
@@ -1140,34 +1148,37 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
   });
 
   it("getConfiguredProviderDescriptors filters by configured credentials", () => {
+    // Keyless-always set: jina (keyless Reader) plus the five science
+    // seats (keyless suppliers, T2). Every keyed pin appends them.
+    const KEYLESS_ALWAYS = ["jina", "arxiv", "openalex", "crossref", "pubmed", "europepmc"];
     const onlyZai = getConfiguredProviderDescriptors({ Z_AI_API_KEY: "k" });
     assert.deepStrictEqual(
       onlyZai.map((d) => d.id),
-      ["zai", "jina"],
+      ["zai", ...KEYLESS_ALWAYS],
     );
 
     const onlyMm = getConfiguredProviderDescriptors({ MINIMAX_API_KEY: "k" });
     assert.deepStrictEqual(
       onlyMm.map((d) => d.id),
-      ["minimax", "jina"],
+      ["minimax", ...KEYLESS_ALWAYS],
     );
 
     const onlyTv = getConfiguredProviderDescriptors({ TAVILY_API_KEY: "k" });
     assert.deepStrictEqual(
       onlyTv.map((d) => d.id),
-      ["tavily", "jina"],
+      ["tavily", ...KEYLESS_ALWAYS],
     );
 
     const onlyBrave = getConfiguredProviderDescriptors({ BRAVE_SEARCH_API_KEY: "k" });
     assert.deepStrictEqual(
       onlyBrave.map((d) => d.id),
-      ["brave", "jina"],
+      ["brave", ...KEYLESS_ALWAYS],
     );
 
     const onlyExa = getConfiguredProviderDescriptors({ EXA_API_KEY: "k" });
     assert.deepStrictEqual(
       onlyExa.map((d) => d.id),
-      ["exa", "jina"],
+      ["exa", ...KEYLESS_ALWAYS],
     );
 
     const both = getConfiguredProviderDescriptors({
@@ -1176,7 +1187,7 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     });
     assert.deepStrictEqual(
       both.map((d) => d.id),
-      ["zai", "minimax", "jina"],
+      ["zai", "minimax", ...KEYLESS_ALWAYS],
     );
 
     const all = getConfiguredProviderDescriptors({
@@ -1188,14 +1199,15 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
     });
     assert.deepStrictEqual(
       all.map((d) => d.id),
-      ["zai", "minimax", "tavily", "exa", "brave", "jina"],
+      ["zai", "minimax", "tavily", "exa", "brave", ...KEYLESS_ALWAYS],
     );
 
-    // Jina is always configured (keyless access supported)
+    // Jina (keyless Reader) and the science seats (keyless suppliers)
+    // are always configured.
     const neither = getConfiguredProviderDescriptors({});
     assert.deepStrictEqual(
       neither.map((d) => d.id),
-      ["jina"],
+      [...KEYLESS_ALWAYS],
     );
   });
 

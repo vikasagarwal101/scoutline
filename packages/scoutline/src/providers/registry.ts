@@ -26,7 +26,15 @@ import { createPerplexityDescriptor } from "./perplexity/adapter.js";
 import { createJinaDescriptor } from "./jina/adapter.js";
 import { createLinkupDescriptor } from "./linkup/adapter.js";
 import { createYouDescriptor } from "./you/adapter.js";
-import { createSpiderDescriptor } from "./spider/adapter.js";import type { ProviderDescriptor, ProviderId } from "./types.js";
+import { createSpiderDescriptor } from "./spider/adapter.js";
+import {
+  createArxivDescriptor,
+  createOpenalexDescriptor,
+  createCrossrefDescriptor,
+  createPubmedDescriptor,
+  createEuropepmcDescriptor,
+} from "./types.js";
+import type { ProviderDescriptor, ProviderId } from "./types.js";
 import {
   getProviderDescriptor as lookupProviderDescriptor,
   getConfiguredProviderDescriptors as lookupConfigured,
@@ -51,6 +59,14 @@ export const BUILT_IN_PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [
   createYouDescriptor(),
   createLinkupDescriptor(),
   createSpiderDescriptor(),
+  // Science suppliers (T2 seats; adapters arrive per-supplier later).
+  // D2 listing order — openalex-first is the executor fan-out ARM
+  // order, NOT the registry insertion order.
+  createArxivDescriptor(),
+  createOpenalexDescriptor(),
+  createCrossrefDescriptor(),
+  createPubmedDescriptor(),
+  createEuropepmcDescriptor(),
 ];
 
 /**

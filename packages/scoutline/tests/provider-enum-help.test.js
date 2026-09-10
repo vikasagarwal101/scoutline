@@ -17,6 +17,10 @@ import { MAP_HELP } from "../dist/commands/map.js";
 import { QUOTA_HELP } from "../dist/commands/quota.js";
 import { DOCTOR_HELP } from "../dist/commands/doctor.js";
 import { SEARCH_HELP } from "../dist/commands/search.js";
+// GROUND: T2 — research.ts:~767 carries a hand-written 12-id pipe list
+// inside RESEARCH_HELP (unlike read/crawl/map/quota which derive at
+// runtime). This row widens it 12→17 in the same commit as the source.
+import { RESEARCH_HELP } from "../dist/commands/research.js";
 
 const PIPE_ENUM = `(zai | ${PROVIDER_IDS.slice(1).join(" | ")})`;
 const COMMA_ENUM = `(${PROVIDER_IDS.join(", ")})`;
@@ -39,6 +43,15 @@ describe("command help provider enumerations match the registry (#82)", () => {
     assert.ok(
       QUOTA_HELP.replace(/\s+/g, " ").includes(PIPE_ENUM.replace(/\s+/g, " ")),
       `QUOTA_HELP must list the full registry (${PIPE_ENUM}); the wrapped enum may be stale or malformed`,
+    );
+  });
+
+  it("research lists the full registry in its Common Options pipe list (T2: 12→17)", () => {
+    // GROUND: T2 — RESEARCH_HELP's --provider line is hand-written, so
+    // it cannot derive from PROVIDER_IDS; this row is the drift guard.
+    assert.ok(
+      RESEARCH_HELP.includes(PIPE_ENUM),
+      `RESEARCH_HELP must list the full registry (${PIPE_ENUM}); the hand-written enum may be stale`,
     );
   });
 

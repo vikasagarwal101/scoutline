@@ -58,7 +58,10 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // body edits (history/journal documentation) are absorbed here —
 // verified the integrated body is byte-identical to origin/main's
 // body, i.e. the agent stream still contributes zero body delta.
-const SKILL_BODY_SHA256 = "784e8e5a2a60bf864428f0cdd4c1e815b03c5bdd8f25d625d3d9fc8f8f511dfc";
+// Rebaselined again at the science seat registration: the capability
+// matrix gained five provider COLUMNS (data columns, registry-derived —
+// the T2 same-commit docs edit). No agent-facing body copy changed.
+const SKILL_BODY_SHA256 = "3fb9487d4e46e8c85cdb5bd07f8d13cf94579714a7d6bde3bbdaaf655069892e";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

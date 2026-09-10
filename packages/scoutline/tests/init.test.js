@@ -1222,6 +1222,211 @@ describe("init provider checklist: registry-derived, equal weight", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Science providers in the init wizard (T2: PROVIDER_PROMPT_META rows +
+// optional-field renderer guards + minimum keyless branch; AC-9 wording
+// stays owner-flagged, keyed opt-in flow is T11)
+// ---------------------------------------------------------------------------
+
+describe("init checklist: science provider rows (T2 prompt-meta rows)", () => {
+  it("five science providers appear in the checklist with labels and keyless notes", async () => {
+    // GROUND: T2 — init.ts PROVIDER_PROMPT_META gains five rows (the
+    // Record is total over ProviderId, so a missing row fails closed
+    // in providerMeta). Building the checklist calls providerMeta for
+    // every registry provider.
+    const { BUILT_IN_PROVIDER_DESCRIPTORS } = await import("../dist/providers/registry.js");
+    const script = createScriptedPrompts();
+    script.queueCheckboxCancel();
+    const store = createFakeConfigStore();
+    const { deps } = createInitDeps({
+      descriptors: BUILT_IN_PROVIDER_DESCRIPTORS,
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    await handleInitWithHelp([], deps);
+
+    const call = script.calls.checkbox[0];
+    assert.ok(call, "checkbox was invoked");
+    const expectedLabels = {
+      arxiv: "arXiv",
+      openalex: "OpenAlex",
+      crossref: "Crossref",
+      pubmed: "PubMed",
+      europepmc: "Europe PMC",
+    };
+    for (const [id, label] of Object.entries(expectedLabels)) {
+      const choice = call.choices.find((c) => c.value === id);
+      assert.ok(choice, `${id} must be offered in the init checklist`);
+      assert.strictEqual(choice.name, label, `${id} label must be ${label}`);
+      assert.strictEqual(choice.checked, false, `${id} must not be pre-checked`);
+    }
+  });
+
+  it("keyless trio rows render the keyless note and free probe in the checklist description", async () => {
+    // GROUND: T2 trio row shape — label, no envVar, no registrationUrl,
+    // probeCostsCredit: false, keylessNote "no key required" (rendered
+    // in the checklist description).
+    const { BUILT_IN_PROVIDER_DESCRIPTORS } = await import("../dist/providers/registry.js");
+    const script = createScriptedPrompts();
+    script.queueCheckboxCancel();
+    const store = createFakeConfigStore();
+    const { deps } = createInitDeps({
+      descriptors: BUILT_IN_PROVIDER_DESCRIPTORS,
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    await handleInitWithHelp([], deps);
+
+    const call = script.calls.checkbox[0];
+    for (const id of ["arxiv", "crossref", "europepmc"]) {
+      const choice = call.choices.find((c) => c.value === id);
+      assert.ok(choice, `${id} choice must exist`);
+      assert.match(
+        choice.description,
+        /no key required/i,
+        `${id} description must render the keyless note`,
+      );
+      assert.match(choice.description, /free/i, `${id} probe must be described as free`);
+    }
+  });
+
+  it("openalex and pubmed rows describe keyless-with-upgrade economics", async () => {
+    // GROUND: T2 row copy (REVISED 2026-09-10 economics — the prior
+    // "100k/day, 10x" literal is stale): openalex keylessNote names the
+    // metered keyless budget and recommends the free key; pubmed
+    // keylessNote names the 3 r/s vs 10 r/s rates.
+    const { BUILT_IN_PROVIDER_DESCRIPTORS } = await import("../dist/providers/registry.js");
+    const script = createScriptedPrompts();
+    script.queueCheckboxCancel();
+    const store = createFakeConfigStore();
+    const { deps } = createInitDeps({
+      descriptors: BUILT_IN_PROVIDER_DESCRIPTORS,
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    await handleInitWithHelp([], deps);
+
+    const call = script.calls.checkbox[0];
+    const openalex = call.choices.find((c) => c.value === "openalex");
+    assert.ok(openalex, "openalex choice must exist");
+    assert.match(openalex.description, /1000 credits\/day/i, "openalex must state the keyless budget");
+    assert.match(openalex.description, /free key recommended/i, "openalex must recommend the free key");
+    const pubmed = call.choices.find((c) => c.value === "pubmed");
+    assert.ok(pubmed, "pubmed choice must exist");
+    assert.match(pubmed.description, /3 r\/s/i, "pubmed must state the keyless rate");
+    assert.match(pubmed.description, /10 r\/s/i, "pubmed must state the keyed rate");
+  });
+});
+
+describe("init wizard: minimum keyless branch for keyless science suppliers (T2)", () => {
+  it("selecting arxiv skips key entry and verify-saves via the keyless probe (no password prompt, no registration link)", async (t) => {
+    // GROUND: T2/T11 boundary ruling — the minimum keyless wizard
+    // branch implied by the trio rows (skip key entry, keyless
+    // diagnostics probe as verify-then-save validation) is T2 scope.
+    // A keyless provider selected in the checklist must NOT receive
+    // ask-key / password prompts; the keyless diagnostics probe is the
+    // verify step.
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const arxiv = makeFakeDescriptor({
+        id: "arxiv",
+        credentialEnvVars: [],
+        canonicalEnvVar: "__ARXIV_NONE__",
+        behaviour: "resolve",
+      });
+
+      const script = createScriptedPrompts();
+      script.queueCheckbox(["arxiv"]);
+      // Fallback + journal confirms still apply after onboarding.
+      script.queueConfirm(true);
+      script.queueConfirm(true);
+
+      const realStore = await import("../dist/lib/config-store.js");
+      const store = {
+        async inspect() {
+          return realStore.inspectConfig({ filePath });
+        },
+        async write(config, options) {
+          await realStore.writeConfig(config, { filePath, ...options });
+        },
+      };
+      const { deps, stderrChunks } = createInitDeps({
+        descriptors: [arxiv.descriptor],
+        prompts: script.prompts,
+        configStore: store,
+      });
+
+      const status = await handleInitWithHelp([], deps);
+      assert.strictEqual(status, 0);
+      // No key prompt: the confirm queue only saw fallback+journal.
+      assert.equal(
+        script.calls.confirm.filter((c) => /API key/i.test(c.message)).length,
+        0,
+        "keyless provider must not be asked for a key",
+      );
+      assert.equal(script.calls.password.length, 0, "keyless provider must not prompt for a password");
+      assert.ok(!/Get an API key/i.test(stderrChunks.join("")), "no registration link for a keyless provider");
+      // The keyless probe ran exactly once (verify-then-save).
+      assert.equal(arxiv.invokes.length, 1, "keyless provider runs one diagnostics probe");
+      // Written config carries the keyless onboarding without a key.
+      const written = JSON.parse(await fs.readFile(filePath, "utf8"));
+      assert.ok(written.providers.arxiv, "arxiv provider record must be written");
+      assert.equal(written.providers.arxiv.apiKey, undefined, "no apiKey for keyless onboarding");
+    });
+  });
+
+  it("keyless probe failure skips the supplier: one probe, skip notice on stderr, nothing saved", async (t) => {
+    // Missing-pin fix: the failure path (probe fails -> writeStderr
+    // "keyless probe failed (...); skipping." -> return "skip", nothing
+    // saved) was implemented but unpinned; a mutation saving unverified
+    // or falling through to the key prompt shipped green.
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const arxiv = makeFakeDescriptor({
+        id: "arxiv",
+        credentialEnvVars: [],
+        canonicalEnvVar: "__ARXIV_NONE__",
+        behaviour: "network",
+      });
+
+      const script = createScriptedPrompts();
+      script.queueCheckbox(["arxiv"]);
+      // Fallback + journal confirms still run after the skipped onboarding.
+      script.queueConfirm(true);
+      script.queueConfirm(true);
+
+      const realStore = await import("../dist/lib/config-store.js");
+      const store = {
+        async inspect() {
+          return realStore.inspectConfig({ filePath });
+        },
+        async write(config, options) {
+          await realStore.writeConfig(config, { filePath, ...options });
+        },
+      };
+      const { deps, stderrChunks } = createInitDeps({
+        descriptors: [arxiv.descriptor],
+        prompts: script.prompts,
+        configStore: store,
+      });
+
+      const status = await handleInitWithHelp([], deps);
+      assert.strictEqual(status, 0);
+      assert.equal(arxiv.invokes.length, 1, "one keyless probe attempt, then skip");
+      assert.match(stderrChunks.join(""), /keyless probe failed/);
+      const written = JSON.parse(await fs.readFile(filePath, "utf8"));
+      assert.equal(
+        written.providers?.arxiv,
+        undefined,
+        "failed keyless probe must not write a provider record",
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Dispatcher integration: main(["init", "--help"]) in-process
 // ---------------------------------------------------------------------------
 

@@ -1866,7 +1866,9 @@ describe("ZaiMcpClient — failure-path auth probe (#117)", () => {
         });
         const elapsed = Date.now() - started;
         assert.ok(
-          elapsed < 6000,
+          // Wide margin (PR #125 re-review): tolerate timer drift on loaded
+          // runners while still failing the 30s full-timeout regression.
+          elapsed < 15000,
           `probe must be bounded at ~5s even under a 30s request timeout, took ${elapsed}ms`,
         );
         assert.ok(

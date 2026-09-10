@@ -24,7 +24,7 @@ import {
   TimeoutError,
   ValidationError,
 } from "./errors.js";
-import { loadConfig, getMcpEndpoints } from "./config.js";
+import { loadConfig, getApiKey, getMcpEndpoints } from "./config.js";
 import { buildCacheKey, readCache, writeCache } from "./cache.js";
 import { readToolCache, writeToolCache, type ToolCacheConfig } from "./tool-cache.js";
 import { redactSecrets, configuredSecrets } from "./redact.js";
@@ -36,6 +36,14 @@ import type { ReaderRawResponse } from "../capabilities/reader.js";
 
 /** Fallbacks when the corresponding env var is unset. */
 const FALLBACK_TIMEOUT_MS = 30_000;
+/**
+ * #117 / PR #125 review — upper bound for the failure-path auth probe.
+ * The probe runs only after initialization already failed, so it must
+ * not add the full request timeout to that failure; auth rejections
+ * answer fast, and a slow/unreachable probe endpoint is simply
+ * inconclusive (null → today's error shape).
+ */
+const PROBE_TIMEOUT_MS = 5_000;
 const FALLBACK_RETRY_BASE_MS = 500;
 const FALLBACK_RETRY_MAX_MS = 8_000;
 const FALLBACK_RETRY_JITTER_MS = 250;
@@ -174,21 +182,40 @@ export class ZaiMcpClient {
     } catch (error) {
       this.initPromise = null;
 
+      // NFR-001 + Fixup C — B8: a missing or invalid credential surfaces
+      // as ConfigurationError (exit 3). The dispatched handler must fail
+      // fast, BEFORE making any real network call — including the #117
+      // probe below. Propagating the typed ConfigurationError directly
+      // also keeps the public envelope's `code` field correct — wrapping
+      // it as ApiError would lie about the failure class.
+      if (error instanceof ConfigurationError) {
+        throw error;
+      }
+
       if (error instanceof ApiError) {
+        // #117 — this branch is the registerManual failure: UTCP collects
+        // per-server discovery failures (and typed factory rejections)
+        // into an opaque ApiError whose message no longer carries the
+        // Provider's body — frequently a 200-wrapped auth rejection
+        // ({"code":401,...}) whose VALUES zod dropped (only keys
+        // survive), so no message-based classifier can ever see it. One
+        // cheap authenticated probe against the endpoint the client was
+        // going to use recovers the real status. Runs ONLY on this
+        // already-failed path — success never pays for it — and its own
+        // failure must never mask the original error.
+        const probedStatus = await this.probeAuthStatusOnFailure();
+        if (probedStatus !== null) {
+          // NFR-006: the probe body was read for classification only; the
+          // public message is static credential guidance, never body text.
+          throw new AuthError(
+            "Z.AI MCP authentication failed: token expired or incorrect — check Z_AI_API_KEY, the configured API key, or GLM Coding Plan status",
+            "Z_AI_API_KEY",
+          );
+        }
         // A factory may reject with a typed ApiError whose message embeds a
         // raw Provider body. Preserve only the status used for retry
         // classification and replace the message at this outward boundary.
         throw new ApiError("MCP initialization failed", error.statusCode ?? 500);
-      }
-
-      // NFR-001 + Fixup C — B8: a missing or invalid credential surfaces
-      // as ConfigurationError (exit 3). The dispatched handler must fail
-      // fast, BEFORE making any real network call. Propagating the typed
-      // ConfigurationError directly also keeps the public envelope's
-      // `code` field correct — wrapping it as ApiError would lie about
-      // the failure class.
-      if (error instanceof ConfigurationError) {
-        throw error;
       }
 
       if (error instanceof Error) {
@@ -214,6 +241,78 @@ export class ZaiMcpClient {
       }
 
       throw new ApiError("MCP initialization failed", 500);
+    }
+  }
+
+  /**
+   * #117 — classify the real HTTP status behind an initialization failure
+   * with ONE cheap authenticated `initialize` against the MCP endpoint the
+   * client was going to use (the same request and Bearer credential the
+   * registration template carries).
+   *
+   * Z.AI rejects bad credentials as a JSON body (`{"code":401,...}`)
+   * inside HTTP 200, and UTCP's registration error collection drops the
+   * body's values, so the status must be re-read here. Classification
+   * reads the HTTP status and the body's numeric `code` field ONLY — no
+   * byte of the body ever reaches the public error message (NFR-006).
+   *
+   * Returns 401/403 when the failure is an auth rejection, `null` when
+   * the probe is inconclusive (any other status, unreachable endpoint,
+   * unparsable body, missing credential) so the caller keeps today's
+   * error shape. Runs exclusively on the already-failed init path.
+   */
+  private async probeAuthStatusOnFailure(): Promise<number | null> {
+    try {
+      const env = this.options.env ?? process.env;
+      const apiKey = getApiKey(env);
+      const response = await fetch(getMcpEndpoints().WEB_SEARCH, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "scoutline-auth-probe",
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-03-26",
+            capabilities: {},
+            clientInfo: { name: "scoutline-auth-probe", version: "0.0.0" },
+          },
+        }),
+        // PR #125 review: the probe must never delay an already-failing
+        // command by the full request timeout — auth rejections answer
+        // fast, so a short bound keeps classification quality while
+        // capping the added latency on inconclusive probes.
+        signal: AbortSignal.timeout(Math.min(PROBE_TIMEOUT_MS, this.timeoutMs)),
+      });
+      // PR #125 review: undici retains the connection until the body is
+      // consumed or cancelled — release it on every exit that does not
+      // read the body.
+      const releaseBody = async () => {
+        await response.body?.cancel().catch(() => {});
+      };
+      if (response.status === 401 || response.status === 403) {
+        await releaseBody();
+        return response.status;
+      }
+      if (response.status === 200) {
+        // Z.AI wraps auth rejections in HTTP 200 (issue #117): classify
+        // from the body's numeric `code` only — never its message text.
+        const body = (await response.json().catch(() => null)) as { code?: unknown } | null;
+        if (typeof body?.code === "number" && (body.code === 401 || body.code === 403)) {
+          return body.code;
+        }
+        return null;
+      }
+      await releaseBody();
+      return null;
+    } catch {
+      // Best-effort diagnostics on an already-failing path: a failed probe
+      // must never mask the original initialization error.
+      return null;
     }
   }
 

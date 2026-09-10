@@ -28,6 +28,8 @@ import { FakeUtcpClient } from "./helpers/fake-utcp-client.js";
 import { readFixture } from "./helpers/fixtures.js";
 import { formatErrorOutput } from "../dist/lib/output.js";
 import { ApiError } from "../dist/lib/errors.js";
+import { main } from "../dist/index.js";
+import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 
 // P6-08A: install a test-local fake credential so the init path's
 // ambient `getApiKey()` lookup (reached through `buildMcpCallTemplate`)
@@ -420,21 +422,35 @@ describe("ZaiMcpClient — init path raw-body scrubbing (Fixup D — B2-remainin
   // Disable the on-disk tool cache and redirect the response cache into a
   // temp dir so listTools() always reaches init() instead of being
   // short-circuited by a stale entry. Mirrors the first describe block.
+  //
+  // #117: these init-failure paths now run the failure-path auth probe,
+  // which issues one real fetch. Mock fetch for the whole suite with a
+  // NON-auth answer (HTTP 200, no auth `code`) so the probe stays
+  // inconclusive and today's ApiError envelope — what these tests pin —
+  // is preserved without any network access.
   let tempDir;
   let originalCacheDir;
   let originalToolCache;
+  let originalFetch;
   before(async () => {
     originalCacheDir = process.env.ZAI_CACHE_DIR;
     originalToolCache = process.env.ZAI_MCP_TOOL_CACHE;
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), TEMP_PREFIX));
     process.env.ZAI_CACHE_DIR = tempDir;
     process.env.ZAI_MCP_TOOL_CACHE = "0";
+    originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) =>
+      new Response(JSON.stringify({ healthy: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
   });
   after(async () => {
     if (originalCacheDir === undefined) delete process.env.ZAI_CACHE_DIR;
     else process.env.ZAI_CACHE_DIR = originalCacheDir;
     if (originalToolCache === undefined) delete process.env.ZAI_MCP_TOOL_CACHE;
     else process.env.ZAI_MCP_TOOL_CACHE = originalToolCache;
+    if (originalFetch !== undefined) globalThis.fetch = originalFetch;
     if (tempDir) {
       await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -1573,5 +1589,383 @@ describe("ZaiMcpClient — instance-level env resolution (1.7)", () => {
       3,
       "ZAI_MCP_RETRY_COUNT=2 must produce exactly 3 attempts (1 initial + 2 retries)",
     );
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// #117 — failure-path direct-initialize auth probe.
+//
+// Z.AI rejects bad credentials as a JSON body ({"code":401,"msg":"token
+// expired or incorrect"}) carried inside HTTP 200. UTCP's registerManual
+// collects the per-server discovery failure, but zod drops the body's
+// VALUES (only the keys survive into `result.errors`), so the auth signal
+// never reaches any message-based classifier and the CLI surfaces an
+// opaque API_ERROR 500 ("MCP initialization failed").
+//
+// The fix: on the ALREADY-FAILED init path only, issue ONE cheap
+// authenticated `initialize` against the endpoint the client was going
+// to use and classify the real status. 401/403 — HTTP-level or
+// 200-wrapped in the body's `code` — becomes an AuthError with
+// credential guidance; every other outcome keeps today's ApiError
+// envelope. The probe body is used for classification ONLY: no byte of
+// it is copied into the public message (NFR-006).
+//
+// The first test mirrors the triage's byte-exact fetch-interceptor repro
+// against the REAL UtcpClient (no factory injection), so the
+// registerManual → swallowed-errors → probe path runs exactly as in
+// production. The success-path test pins that the probe never runs when
+// initialization succeeds (zero cost on success).
+// ---------------------------------------------------------------------------
+
+describe("ZaiMcpClient — failure-path auth probe (#117)", () => {
+  let tempDir;
+  let configTempDir;
+  let originalCacheDir;
+  let originalToolCache;
+  let originalConfigDir;
+
+  before(async () => {
+    originalCacheDir = process.env.ZAI_CACHE_DIR;
+    originalToolCache = process.env.ZAI_MCP_TOOL_CACHE;
+    originalConfigDir = process.env.SCOUTLINE_CONFIG_DIR;
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), TEMP_PREFIX));
+    configTempDir = await fs.mkdtemp(path.join(os.tmpdir(), TEMP_PREFIX));
+    process.env.ZAI_CACHE_DIR = tempDir;
+    // Tool cache off so listTools()/discovery always reaches init().
+    process.env.ZAI_MCP_TOOL_CACHE = "0";
+    // Defensive config isolation for the main() e2e (journal/artifacts).
+    process.env.SCOUTLINE_CONFIG_DIR = configTempDir;
+  });
+
+  after(async () => {
+    if (originalCacheDir === undefined) delete process.env.ZAI_CACHE_DIR;
+    else process.env.ZAI_CACHE_DIR = originalCacheDir;
+    if (originalToolCache === undefined) delete process.env.ZAI_MCP_TOOL_CACHE;
+    else process.env.ZAI_MCP_TOOL_CACHE = originalToolCache;
+    if (originalConfigDir === undefined) delete process.env.SCOUTLINE_CONFIG_DIR;
+    else process.env.SCOUTLINE_CONFIG_DIR = originalConfigDir;
+    for (const dir of [tempDir, configTempDir]) {
+      if (dir) await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  /** Patch globalThis.fetch for `fn`; restore after (mirrors zai-adapter.test.js). */
+  async function withMockFetch(makeHandler, fn) {
+    const real = globalThis.fetch;
+    globalThis.fetch = makeHandler(real);
+    try {
+      return await fn();
+    } finally {
+      globalThis.fetch = real;
+    }
+  }
+
+  function urlOf(input) {
+    return String(input instanceof URL ? input : (input?.url ?? input));
+  }
+
+  // Byte-exact Z.AI auth rejection (issue #117's curl-observed shape):
+  // HTTP 200 wrapping the provider's {"code":401,...} body.
+  const AUTH_REJECTION_BODY = JSON.stringify({
+    code: 401,
+    msg: "token expired or incorrect",
+    success: false,
+  });
+
+  /** A fetch handler answering every api.z.ai request with `body` at `status`. */
+  const zaiFetch = (body, status) => (real) => async (input, init) => {
+    if (!urlOf(input).includes("api.z.ai")) return real(input, init);
+    return new Response(body, { status, headers: { "content-type": "application/json" } });
+  };
+
+  const PROBE_ENV = {
+    Z_AI_API_KEY: "expired-dummy-key",
+    Z_AI_VISION_MCP: "0",
+    ZAI_MCP_RETRY_COUNT: "0",
+  };
+
+  it("401-in-200 registration failure classifies as AUTH_ERROR with credential guidance (red pin)", async () => {
+    await withMockFetch(zaiFetch(AUTH_REJECTION_BODY, 200), async () => {
+      const client = new ZaiMcpClient({ env: PROBE_ENV, noCache: true });
+      try {
+        await assert.rejects(client.listTools(), (err) => {
+          assert.strictEqual(
+            err.code,
+            "AUTH_ERROR",
+            `expected AUTH_ERROR, got ${err.code} (${err.message})`,
+          );
+          assert.strictEqual(err.statusCode, 401);
+          assert.match(err.message, /token expired or incorrect/);
+          assert.match(err.message, /Z_AI_API_KEY/);
+          // Sanitization: the message is static guidance, not the body.
+          assert.ok(!err.message.includes('"code"'), `raw body leaked: ${err.message}`);
+          assert.ok(!err.message.includes("success"), `raw body keys leaked: ${err.message}`);
+          return true;
+        });
+      } finally {
+        await client.close().catch(() => {});
+      }
+    });
+  });
+
+  it("probe classifies even when UTCP swallowed the detail (zod keys-only error)", async () => {
+    // The triage-proven insufficiency: result.errors carries only the
+    // body's KEYS ("Unrecognized keys: code,msg,success") — the values
+    // (401, "token expired") are gone. The probe must still classify.
+    const fake = new FakeUtcpClient({
+      discoveredTools: [],
+      registerManualResult: { success: false, errors: ["Unrecognized keys: code,msg,success"] },
+    });
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      noCache: true,
+      disableRetry: true,
+    });
+    await withMockFetch(zaiFetch(AUTH_REJECTION_BODY, 200), async () => {
+      await assert.rejects(client.listTools(), (err) => {
+        assert.strictEqual(err.code, "AUTH_ERROR", `got ${err.code} (${err.message})`);
+        assert.strictEqual(err.statusCode, 401);
+        return true;
+      });
+    });
+    await client.close().catch(() => {});
+  });
+
+  it("non-auth failure keeps today's opaque API_ERROR 500 envelope", async () => {
+    await withMockFetch(
+      zaiFetch(JSON.stringify({ code: 500, msg: "internal error", success: false }), 200),
+      async () => {
+        const client = new ZaiMcpClient({ env: PROBE_ENV, noCache: true });
+        try {
+          await assert.rejects(client.listTools(), (err) => {
+            assert.strictEqual(err.code, "API_ERROR", `got ${err.code} (${err.message})`);
+            assert.strictEqual(err.statusCode, 500);
+            assert.strictEqual(err.message, "MCP initialization failed");
+            return true;
+          });
+        } finally {
+          await client.close().catch(() => {});
+        }
+      },
+    );
+  });
+
+  it("HTTP-level 401 (not body-wrapped) also classifies as AUTH_ERROR", async () => {
+    await withMockFetch(zaiFetch("Unauthorized", 401), async () => {
+      const client = new ZaiMcpClient({ env: PROBE_ENV, noCache: true });
+      try {
+        await assert.rejects(client.listTools(), (err) => {
+          assert.strictEqual(err.code, "AUTH_ERROR", `got ${err.code} (${err.message})`);
+          assert.strictEqual(err.statusCode, 401);
+          return true;
+        });
+      } finally {
+        await client.close().catch(() => {});
+      }
+    });
+  });
+
+  it("success path never issues the probe (zero auth-probe requests)", async () => {
+    // Minimal StreamableHTTP MCP fake (triage's preload-fakemcp shape) so
+    // the REAL UtcpClient registers successfully end-to-end hermetically.
+    const PROTOCOL = "2025-03-26";
+    const rpcResult = (id, result) =>
+      new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    const requestBodies = [];
+    await withMockFetch(
+      (real) => async (input, init) => {
+        const url = urlOf(input);
+        if (!url.includes("api.z.ai")) return real(input, init);
+        const body = (() => {
+          try {
+            return JSON.parse(init?.body ?? "null");
+          } catch {
+            return null;
+          }
+        })();
+        requestBodies.push(String(init?.body ?? ""));
+        if (body?.method === "initialize") {
+          return rpcResult(body.id, {
+            protocolVersion: PROTOCOL,
+            capabilities: { tools: {} },
+            serverInfo: { name: "fake-zai", version: "0.0.0" },
+          });
+        }
+        if (body?.method === "tools/list") {
+          return rpcResult(body.id, {
+            tools: [
+              {
+                name: "web_search_prime",
+                description: "fake",
+                inputSchema: { type: "object", properties: {}, required: [] },
+              },
+            ],
+          });
+        }
+        return new Response(null, { status: 202 });
+      },
+      async () => {
+        const client = new ZaiMcpClient({ env: PROBE_ENV, noCache: true });
+        try {
+          const tools = await client.listTools();
+          assert.ok(Array.isArray(tools) && tools.length >= 1, "expected discovered tools");
+          const probeRequests = requestBodies.filter((b) => b.includes("scoutline-auth-probe"));
+          assert.strictEqual(
+            probeRequests.length,
+            0,
+            "the auth probe must never run on the success path",
+          );
+        } finally {
+          await client.close().catch(() => {});
+        }
+      },
+    );
+  });
+
+  it("probe latency is bounded (~5s cap, not the full request timeout) — PR #125 review", async () => {
+    // A hanging probe endpoint that honors init.signal exactly like real
+    // fetch (rejects on abort, never resolves otherwise). Against the
+    // pre-fix code the probe waited the FULL configured timeout (30s
+    // default); the fix caps it at min(5000, timeoutMs).
+    const fake = new FakeUtcpClient({
+      discoveredTools: [],
+      registerManualResult: { success: false, errors: ["Unrecognized keys: code,msg,success"] },
+    });
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      // No Z_AI_TIMEOUT → default 30000ms request timeout; the probe bound
+      // must NOT inherit it wholesale.
+      env: { Z_AI_API_KEY: "expired-dummy-key", Z_AI_VISION_MCP: "0" },
+      noCache: true,
+      disableRetry: true,
+    });
+    await withMockFetch(
+      (real) =>
+      (input, init) =>
+        new Promise((_resolve, reject) => {
+          if (!urlOf(input).includes("api.z.ai")) {
+            // Not reached in this test (UTCP is faked); keep the pass-through.
+            real(input, init).then(_resolve, reject);
+            return;
+          }
+          init?.signal?.addEventListener("abort", () => {
+            reject(new Error("This operation was aborted"));
+          });
+          // Otherwise: hang like an unreachable endpoint.
+        }),
+      async () => {
+        const started = Date.now();
+        await assert.rejects(client.listTools(), (err) => {
+          // Probe inconclusive → today's opaque shape, just bounded sooner.
+          assert.strictEqual(err.code, "API_ERROR", `got ${err.code} (${err.message})`);
+          return true;
+        });
+        const elapsed = Date.now() - started;
+        assert.ok(
+          // Wide margin (PR #125 re-review): tolerate timer drift on loaded
+          // runners while still failing the 30s full-timeout regression.
+          elapsed < 15000,
+          `probe must be bounded at ~5s even under a 30s request timeout, took ${elapsed}ms`,
+        );
+        assert.ok(
+          elapsed >= 4000,
+          `probe aborted suspiciously early (${elapsed}ms) — bound collapsed?`,
+        );
+      },
+    );
+    await client.close().catch(() => {});
+  });
+
+  it("probe cancels the unread response body on every non-consumed exit — PR #125 review", async () => {
+    // undici retains the connection until the body is consumed or
+    // cancelled; the 401/403 early return and the non-200 fallthrough
+    // must release it. Record body.cancel() on the returned Response.
+    async function runOnce(status) {
+      const fake = new FakeUtcpClient({
+        discoveredTools: [],
+        registerManualResult: { success: false, errors: ["Unrecognized keys: code,msg,success"] },
+      });
+      const client = new ZaiMcpClient({
+        utcpFactory: async () => fake,
+        env: { Z_AI_API_KEY: "expired-dummy-key", Z_AI_VISION_MCP: "0" },
+        noCache: true,
+        disableRetry: true,
+      });
+      let cancelled = false;
+      await withMockFetch(
+        (real) => async (input, init) => {
+          if (!urlOf(input).includes("api.z.ai")) return real(input, init);
+          const stream = new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("{}"));
+            },
+          });
+          const response = new Response(stream, {
+            status,
+            headers: { "content-type": "application/json" },
+          });
+          const origCancel = response.body.cancel.bind(response.body);
+          response.body.cancel = async () => {
+            cancelled = true;
+            return origCancel();
+          };
+          return response;
+        },
+        async () => {
+          await assert.rejects(client.listTools());
+        },
+      );
+      await client.close().catch(() => {});
+      return cancelled;
+    }
+
+    // 401/403 auth branch: classified AUTH_ERROR with the body unread.
+    assert.ok(await runOnce(401), "401 branch must cancel the unread body");
+    // Non-200/401/403 fallthrough: inconclusive probe, body unread.
+    assert.ok(await runOnce(503), "non-200 fallthrough must cancel the unread body");
+  });
+
+  it("CLI envelope carries AUTH_ERROR/401/exit 1 end-to-end through main()", async () => {
+    const stdout = [];
+    const stderr = [];
+    const invocation = {
+      stdoutIsTTY: false,
+      stdinIsTTY: false,
+      environmentOutputMode: "data",
+      readStdin: async () => "",
+      writeStdout: (v) => stdout.push(v),
+      writeStderr: (v) => stderr.push(v),
+      runQuietly: async (op) => op(),
+      setExitCode: () => {},
+    };
+    await withMockFetch(zaiFetch(AUTH_REJECTION_BODY, 200), async () => {
+      const status = await main(
+        ["search", "#117 auth probe"],
+        hermeticMainDeps({ invocation, env: PROBE_ENV }),
+      );
+      assert.strictEqual(status, 1, "AuthError exit code must be 1");
+      assert.deepStrictEqual(stdout, [], "no stdout data on failure");
+      const errLine = stderr
+        .map((chunk) => String(chunk))
+        .find((line) => line.trim().startsWith('{"success":false'));
+      assert.ok(errLine, `expected an error envelope on stderr, got: ${stderr.join(" | ")}`);
+      const envelope = JSON.parse(errLine);
+      assert.strictEqual(envelope.success, false);
+      assert.strictEqual(envelope.code, "AUTH_ERROR");
+      assert.strictEqual(envelope.statusCode, 401);
+      const allStderr = stderr.join("");
+      assert.ok(
+        !allStderr.includes(AUTH_REJECTION_BODY),
+        "raw provider body reached the public envelope",
+      );
+      assert.ok(
+        !allStderr.includes("expired-dummy-key"),
+        "credential reached the public envelope",
+      );
+    });
   });
 });

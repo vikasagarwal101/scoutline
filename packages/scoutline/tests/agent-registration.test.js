@@ -765,4 +765,75 @@ describe("convention placement vs foreign marker spans (PR #126 review)", () => 
       "pointer lands after the LAST span-free match — before the foreign block",
     );
   });
+
+  it("a match between an outer span and a nested inner span is still span-owned (nesting depth)", async (t) => {
+    // inSpan-boolean regression: closing the INNER span re-enabled matches
+    // while the OUTER span was still open (PR #126 review, wave 2).
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    const original = [
+      "<!-- team:start -->",
+      "@rules/outer-zone.md",
+      "<!-- gitnexus:start -->",
+      "@rules/inner.md",
+      "<!-- gitnexus:end -->",
+      "tail",
+      "<!-- team:end -->",
+      "",
+    ].join("\n");
+    await fs.writeFile(claudeMd, original);
+
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+
+    const after = await read(claudeMd);
+    const wrapped = `${START}\n${POINTER_LINE}\n${END}`;
+    const at = after.indexOf(wrapped);
+    const outerStart = after.indexOf("<!-- team:start -->");
+    const outerEnd = after.indexOf("<!-- team:end -->");
+    assert.ok(at !== -1, "pointer must be present");
+    assert.ok(
+      !(at > outerStart && at < outerEnd),
+      "pointer must NOT land inside the outer span (nesting depth, not boolean)",
+    );
+    assert.ok(
+      after.startsWith(original),
+      "no span-free match exists — EOF fallback keeps the whole nested fixture above the pointer",
+    );
+  });
+
+  it("a start marker with inline version metadata still opens a recognized span", async (t) => {
+    // markerBlockInsert writes `<!-- scoutline:start --><!-- scoutline:v… -->`
+    // — the span scan must recognize it, or an unclosed depth leaves every
+    // match above the block suppressed (PR #126 review, wave 2).
+    const home = await mkHome(t);
+    const configRoot = await mkHome(t);
+    await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    const original = [
+      "# My rules",
+      "",
+      "@rules/real.md",
+      "",
+      "<!-- scoutline:start --><!-- scoutline:v1.2.3 -->",
+      "@rules/stamped.md",
+      "<!-- scoutline:end -->",
+      "",
+      "trailing",
+      "",
+    ].join("\n");
+    await fs.writeFile(claudeMd, original);
+
+    await registerAgentTools({ home, configRoot, tools: ["claude"], version: "9.9.9-test" });
+
+    const after = await read(claudeMd);
+    const inserted = after.indexOf(`${START}\n${POINTER_LINE}\n${END}`);
+    assert.ok(inserted !== -1, "pointer must be present");
+    assert.ok(
+      inserted > after.indexOf("@rules/real.md") &&
+        inserted < after.indexOf("<!-- scoutline:start --><!-- scoutline:v1.2.3 -->"),
+      "span-free match above the version-stamped block still wins — the stamped start line closes the span",
+    );
+  });
 });

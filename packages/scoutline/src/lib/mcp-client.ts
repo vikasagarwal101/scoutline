@@ -44,6 +44,30 @@ const FALLBACK_TIMEOUT_MS = 30_000;
  * inconclusive (null → today's error shape).
  */
 const PROBE_TIMEOUT_MS = 5_000;
+/**
+ * #128 — provenance sentinel stamped on the ApiError constructed when
+ * registerManual reports failure (`result.success === false`). The
+ * failure-path auth probe is allowed to classify ONLY this error class;
+ * factory/transport-thrown ApiErrors stay untagged so they fail fast
+ * with the original error and zero probe network requests.
+ */
+const REGISTRATION_FAILURE = Symbol("zaiMcpRegistrationFailure");
+
+/** Build the registerManual-failure ApiError carrying the probe sentinel. */
+function newRegistrationFailureError(): ApiError {
+  const error = new ApiError("MCP tool registration failed", 500);
+  Object.defineProperty(error, REGISTRATION_FAILURE, { value: true });
+  return error;
+}
+
+/** True only for errors built by {@link newRegistrationFailureError}. */
+function isRegistrationFailureError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as Record<symbol, unknown>)[REGISTRATION_FAILURE] === true
+  );
+}
 const FALLBACK_RETRY_BASE_MS = 500;
 const FALLBACK_RETRY_MAX_MS = 8_000;
 const FALLBACK_RETRY_JITTER_MS = 250;
@@ -175,7 +199,9 @@ export class ZaiMcpClient {
       if (!result.success) {
         // Registration errors may carry raw Provider response bodies.
         // Never copy them into either the public error or process stderr.
-        throw new ApiError("MCP tool registration failed", 500);
+        // #128: the error carries the probe provenance sentinel — the
+        // ONLY ApiError class probeAuthStatusOnFailure may classify.
+        throw newRegistrationFailureError();
       }
 
       this.isInitialized = true;
@@ -193,17 +219,23 @@ export class ZaiMcpClient {
       }
 
       if (error instanceof ApiError) {
-        // #117 — this branch is the registerManual failure: UTCP collects
-        // per-server discovery failures (and typed factory rejections)
-        // into an opaque ApiError whose message no longer carries the
-        // Provider's body — frequently a 200-wrapped auth rejection
-        // ({"code":401,...}) whose VALUES zod dropped (only keys
-        // survive), so no message-based classifier can ever see it. One
-        // cheap authenticated probe against the endpoint the client was
-        // going to use recovers the real status. Runs ONLY on this
+        // #117 — the registerManual failure arrives here as an opaque
+        // ApiError whose message no longer carries the Provider's body —
+        // frequently a 200-wrapped auth rejection ({"code":401,...})
+        // whose VALUES zod dropped (only keys survive), so no
+        // message-based classifier can ever see it. One cheap
+        // authenticated probe against the endpoint the client was going
+        // to use recovers the real status. Runs ONLY on this
         // already-failed path — success never pays for it — and its own
         // failure must never mask the original error.
-        const probedStatus = await this.probeAuthStatusOnFailure();
+        // #128 — provenance gate: ONLY the registerManual-failure class
+        // (sentinel-tagged) may probe; a factory/transport-thrown
+        // ApiError keeps its own status and fails fast with zero probe
+        // network requests, because a 401/403 probe answer would say
+        // nothing about that failure's cause.
+        const probedStatus = isRegistrationFailureError(error)
+          ? await this.probeAuthStatusOnFailure()
+          : null;
         if (probedStatus !== null) {
           // NFR-006: the probe body was read for classification only; the
           // public message is static credential guidance, never body text.

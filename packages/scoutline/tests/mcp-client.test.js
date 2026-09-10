@@ -1969,3 +1969,153 @@ describe("ZaiMcpClient — failure-path auth probe (#117)", () => {
     });
   });
 });
+
+
+// ---------------------------------------------------------------------------
+// #128 — probe provenance gate.
+//
+// The ApiError branch of _doInit's catch covers two shapes: (a) the
+// registerManual failure (`result.success === false`) converted into
+// ApiError("MCP tool registration failed") — the production class the
+// #117 probe exists to classify; and (b) factory/transport-thrown
+// ApiErrors, where a 401/403 probe answer says nothing about the actual
+// failure and the probe is pure added latency + noise. The fix tags the
+// registerManual-failure ApiError with a provenance sentinel and gates
+// the probe on it: shape (a) probes (unchanged), shape (b) fails fast
+// with the original error and ZERO probe network requests.
+// ---------------------------------------------------------------------------
+
+describe("ZaiMcpClient — probe provenance gate (#128)", () => {
+  let tempDir;
+  let configTempDir;
+  let originalCacheDir;
+  let originalToolCache;
+  let originalConfigDir;
+
+  before(async () => {
+    originalCacheDir = process.env.ZAI_CACHE_DIR;
+    originalToolCache = process.env.ZAI_MCP_TOOL_CACHE;
+    originalConfigDir = process.env.SCOUTLINE_CONFIG_DIR;
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), TEMP_PREFIX));
+    configTempDir = await fs.mkdtemp(path.join(os.tmpdir(), TEMP_PREFIX));
+    process.env.ZAI_CACHE_DIR = tempDir;
+    process.env.ZAI_MCP_TOOL_CACHE = "0";
+    process.env.SCOUTLINE_CONFIG_DIR = configTempDir;
+  });
+
+  after(async () => {
+    if (originalCacheDir === undefined) delete process.env.ZAI_CACHE_DIR;
+    else process.env.ZAI_CACHE_DIR = originalCacheDir;
+    if (originalToolCache === undefined) delete process.env.ZAI_MCP_TOOL_CACHE;
+    else process.env.ZAI_MCP_TOOL_CACHE = originalToolCache;
+    if (originalConfigDir === undefined) delete process.env.SCOUTLINE_CONFIG_DIR;
+    else process.env.SCOUTLINE_CONFIG_DIR = originalConfigDir;
+    for (const dir of [tempDir, configTempDir]) {
+      if (dir) await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  function urlOf(input) {
+    return String(input instanceof URL ? input : (input?.url ?? input));
+  }
+
+  /**
+   * Fetch double that would happily answer 401-in-200 (so a probe that
+   * SHOULD NOT run cannot hide behind an inconclusive answer) and records
+   * every request body it sees.
+   */
+  // Closed fetch mock: answers every api.z.ai request 401-in-200 and records
+  // request bodies; any other URL throws (unexpected fetch = test bug, never
+  // real network). `recordingAuthRejectionFetch(seenBodies)` IS the handler.
+  function recordingAuthRejectionFetch(seenBodies) {
+    return async (input, init) => {
+      if (!urlOf(input).includes("api.z.ai")) {
+        throw new Error(`unexpected non-probe fetch in #128 suite: ${urlOf(input)}`);
+      }
+      seenBodies.push(String(init?.body ?? ""));
+      return new Response(
+        JSON.stringify({ code: 401, msg: "token expired or incorrect", success: false }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+  }
+
+  const PROBE_ENV = {
+    Z_AI_API_KEY: "expired-dummy-key",
+    Z_AI_VISION_MCP: "0",
+    ZAI_MCP_RETRY_COUNT: "0",
+  };
+
+  it("factory-thrown ApiError NEVER probes — original error surfaces, zero network", async () => {
+    // Shape (b): the injected factory rejects with a typed ApiError.
+    // RED at base: the probe fires today, sees the 401-in-200 double, and
+    // replaces the factory failure with AuthError.
+    const seenBodies = [];
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => {
+        throw new ApiError("factory transport construction failed", 503);
+      },
+      env: PROBE_ENV,
+      noCache: true,
+      disableRetry: true,
+    });
+    const real = globalThis.fetch;
+    const recorder = recordingAuthRejectionFetch(seenBodies);
+    globalThis.fetch = recorder;
+    try {
+      await assert.rejects(client.listTools(), (err) => {
+        assert.strictEqual(
+          err.code,
+          "API_ERROR",
+          `factory ApiError must surface untouched, got ${err.code} (${err.message})`,
+        );
+        assert.strictEqual(err.statusCode, 503, "factory status must be preserved");
+        assert.strictEqual(err.message, "MCP initialization failed");
+        return true;
+      });
+      assert.strictEqual(
+        seenBodies.length,
+        0,
+        `probe must not issue ANY network request for a factory-thrown ApiError, saw: ${seenBodies.join(" | ")}`,
+      );
+    } finally {
+      globalThis.fetch = real;
+      await client.close().catch(() => {});
+    }
+  });
+
+  it("registerManual-failure ApiError still probes exactly once and classifies (regression)", async () => {
+    // Shape (a): the registerManual failure — the class the probe exists
+    // for. Must keep today's behavior: exactly one probe request, which
+    // the 401-in-200 double classifies into AUTH_ERROR.
+    const seenBodies = [];
+    const fake = new FakeUtcpClient({
+      discoveredTools: [],
+      registerManualResult: { success: false, errors: ["Unrecognized keys: code,msg,success"] },
+    });
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      env: PROBE_ENV,
+      noCache: true,
+      disableRetry: true,
+    });
+    const real = globalThis.fetch;
+    globalThis.fetch = recordingAuthRejectionFetch(seenBodies);
+    try {
+      await assert.rejects(client.listTools(), (err) => {
+        assert.strictEqual(err.code, "AUTH_ERROR", `got ${err.code} (${err.message})`);
+        assert.strictEqual(err.statusCode, 401);
+        return true;
+      });
+      const probeRequests = seenBodies.filter((b) => b.includes("scoutline-auth-probe"));
+      assert.strictEqual(
+        probeRequests.length,
+        1,
+        `registerManual failure must trigger exactly one probe, saw ${seenBodies.length} requests`,
+      );
+    } finally {
+      globalThis.fetch = real;
+      await client.close().catch(() => {});
+    }
+  });
+});

@@ -48,6 +48,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Agent registration: a partial refresh failure no longer stamps all tools as refreshed** (#122) — when one registered tool's drift refresh fails, the stamp stays drifted so the next command run retries the failed tool instead of silently skipping it forever.
 - **`scoutline --help` now lists `config`** (get / set / unset, credential-free) alongside the other 21 commands — the row had been missing since the command family shipped (PR #33). A new structural pin (`tests/help-surface.test.js`) ties the MAIN_HELP Commands block to `DISPATCHED_COMMANDS` in both directions, so a dispatched command can never again ship without a help row (and vice versa).
 
 ## [0.20.0] - 2026-09-04

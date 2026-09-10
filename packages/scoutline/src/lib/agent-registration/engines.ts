@@ -7,9 +7,14 @@ import { atomicReplaceFile } from "../config-store.js";
 export const START_MARKER = "<!-- scoutline:start -->";
 export const END_MARKER = "<!-- scoutline:end -->";
 
-/** Generic managed-span markers — ours AND foreign tools' (e.g. gitnexus). */
-const MARKER_SPAN_START = /^\s*<!--\s*[\w.-]+:start\s*-->\s*$/;
-const MARKER_SPAN_END = /^\s*<!--\s*[\w.-]+:end\s*-->\s*$/;
+/**
+ * Generic managed-span markers — ours AND foreign tools' (e.g. gitnexus),
+ * matched ANYWHERE in a line so a start marker carrying inline metadata
+ * (`<!-- scoutline:start --><!-- scoutline:v1 -->`) still opens a span.
+ * A marker-bearing line is a boundary, never convention-matchable content.
+ */
+const MARKER_SPAN_START = /<!--\s*[\w.-]+:start\s*-->/;
+const MARKER_SPAN_END = /<!--\s*[\w.-]+:end\s*-->/;
 
 /**
  * Shared mutation rails (DESIGN D2):
@@ -73,22 +78,25 @@ export async function lineInsert(options: LineInsertOptions): Promise<void> {
     const lines = original.split("\n");
     let insertAt = -1;
     // Marker-owned spans (`<!-- x:start -->` … `<!-- x:end -->`, ours AND
-    // foreign tools') are user/other-tool territory: a convention match
-    // inside one must not drag our pointer into a block stripManagedRegion
-    // will not revisit — a foreign `scoutline` pair is skipped whole at
-    // strip, orphaning a nested pointer (PR #126 review).
-    let inSpan = false;
+    // foreign tools', possibly nested) are user/other-tool territory: a
+    // convention match inside one must not drag our pointer into a block
+    // stripManagedRegion will not revisit — a foreign `scoutline` pair is
+    // skipped whole at strip, orphaning a nested pointer (PR #126 review).
+    // Depth, not boolean: a line stays excluded until EVERY enclosing span
+    // has closed; malformed surplus end markers pin the depth above zero
+    // (fail toward EOF), surplus starts clamp at zero.
+    let spanDepth = 0;
     for (let i = lines.length - 1; i >= 0; i -= 1) {
       const line = lines[i]!;
       if (MARKER_SPAN_END.test(line)) {
-        inSpan = true; // backward scan: crossing an end marker enters the span
+        spanDepth += 1; // backward scan: crossing an end marker enters a span
         continue;
       }
       if (MARKER_SPAN_START.test(line)) {
-        inSpan = false;
+        spanDepth = Math.max(0, spanDepth - 1);
         continue;
       }
-      if (!inSpan && convention.test(line)) {
+      if (spanDepth === 0 && convention.test(line)) {
         insertAt = i + 1;
         break;
       }

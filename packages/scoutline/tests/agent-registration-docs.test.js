@@ -65,7 +65,10 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // section (usage, controls, keyless posture) and the matrix gained the
 // Science ROW (the sanctioned per-ticket docs edit; see the science
 // docs tests).
-const SKILL_BODY_SHA256 = "977330157b746273beb5102bd43fde6b70019c87a9a0dbc30f74a4c810e8e484";
+// Rebaselined at the science review round 3: the Commands index table
+// gained its missing `science` row (cubic finding — every top-level
+// command must be indexed). No other body copy changed.
+const SKILL_BODY_SHA256 = "fa36c24589235add310c1907d3fd66e3a7fc223eba414839f7b224d2b25431ae";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

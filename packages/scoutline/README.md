@@ -142,9 +142,9 @@ npx scoutline --help
 ## Provider Selection
 
 Shared commands (`search`, `vision`, `quota`, `doctor`, `repo`) accept a global
-`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|arxiv|openalex|crossref|pubmed|europepmc>` flag. Resolution precedence:
+`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>` flag. Resolution precedence:
 
-1. Explicit `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|arxiv|openalex|crossref|pubmed|europepmc>` on the command line
+1. Explicit `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>` on the command line
 2. `SCOUTLINE_PROVIDER` environment variable
 3. Per-capability **routing table** (`config.json` `routing` key; the first
    configured, capable provider in the list wins — over quota ranking)
@@ -327,13 +327,13 @@ policy for larger journals.
 
 The matrix below is generated from the production provider registry
 (`packages/scoutline/src/providers/registry.ts`) and reflects the
-release-shipped capability advertisements for the shared-capability
-providers (the five keyless science suppliers — arXiv, OpenAlex,
-Crossref, PubMed, Europe PMC — serve only `scoutline science ...` and
-`doctor`; see the Science section) in registry order
-`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider]`. The
-exact same `descriptor.capabilities()` set drives executor preflight,
-Provider selection, and `doctor`.
+release-shipped capability advertisements; the registry order is
+`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, arxiv, openalex, crossref, pubmed, europepmc]`.
+The matrix columns cover the shared-capability providers — the five
+keyless science suppliers (arXiv, OpenAlex, Crossref, PubMed, Europe
+PMC) serve only `scoutline science ...` and `doctor` (see the Science
+section). The exact same `descriptor.capabilities()` set drives
+executor preflight, Provider selection, and `doctor`.
 
 | Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina | You.com | Linkup | Spider.cloud | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|

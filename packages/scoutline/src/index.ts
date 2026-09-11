@@ -278,7 +278,7 @@ Commands:
            credential-free)
 
 Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER, then zai):
-  --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|arxiv|openalex|crossref|pubmed|europepmc>   Select the active Provider for shared capabilities  SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
+  --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>   Select the active Provider for shared capabilities (science suppliers pin only within "scoutline science ...")  SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
 
 Shared capabilities accept --provider. The 'repo', 'read', 'crawl', 'map',
 and 'research' commands participate in Provider selection: Z.AI
@@ -5851,7 +5851,9 @@ export async function main(
           // SCOUTLINE_CONFIG_DIR sees its recorded usage in the root the
           // `usage` command reports from (review P2).
           createUsageLedgerSink({
-            filePath: resolveUsageLedgerPath(resolveConfigRootPure(env, { homedir: os.homedir() })),
+            filePath: resolveUsageLedgerPath(
+              resolveConfigRootPure(env, { homedir: os.homedir() }),
+            ),
           }),
         )
       : undefined);

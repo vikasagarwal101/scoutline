@@ -275,12 +275,12 @@ describe("science docs — CONTEXT.md glossary (TASKS T9: terms ship with the fe
     const language = text.slice(start, end);
     assert.match(
       language,
-      /^\*\*Science Capability\*\*$/m,
+      /^\*\*Science Capability\*\*:?$/m,
       "CONTEXT.md Language must define **Science Capability**",
     );
     assert.match(
       language,
-      /^\*\*ScienceWork\*\*$/m,
+      /^\*\*ScienceWork\*\*:?$/m,
       "CONTEXT.md Language must define **ScienceWork**",
     );
     assert.match(

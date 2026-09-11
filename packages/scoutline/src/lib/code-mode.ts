@@ -84,7 +84,14 @@ export class ZaiCodeModeClient {
     this.options = options;
     const raw = (options.env ?? process.env).Z_AI_TIMEOUT;
     const parsed = raw === undefined || raw === "" ? NaN : parseInt(raw, 10);
-    this.timeoutMs = Number.isFinite(parsed) ? parsed : FALLBACK_TIMEOUT_MS;
+    // PR #142 round 3 (macroscope): only supported positive delays —
+    // a parseable-but-invalid value ("-1", above-u32) would otherwise
+    // reach AbortSignal.timeout, whose throw degrades the failure-path
+    // probe to inconclusive (generic ApiError instead of AuthError).
+    this.timeoutMs =
+      Number.isFinite(parsed) && parsed > 0 && parsed <= 0xffffffff
+        ? parsed
+        : FALLBACK_TIMEOUT_MS;
   }
 
   static getPromptTemplate(): string {

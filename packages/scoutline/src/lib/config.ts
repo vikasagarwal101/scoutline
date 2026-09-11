@@ -65,8 +65,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZaiConfig {
     baseUrl,
     timeout: parseInt(env.Z_AI_TIMEOUT || "30000", 10),
     visionModel: env.Z_AI_VISION_MODEL || "glm-5.3-flash",
-    temperature: parseFloat(env.Z_AI_TEMPERATURE || "0.8"),
-    topP: parseFloat(env.Z_AI_TOP_P || "0.6"),
+    temperature: parseFloat(env.Z_AI_TEMPERATURE || "1"), // #136: glm-5.3-flash documented recipe
+    topP: parseFloat(env.Z_AI_TOP_P || "0.95"), // #136: glm-5.3-flash documented recipe
     maxTokens: parseInt(env.Z_AI_MAX_TOKENS || "32768", 10),
   };
 }

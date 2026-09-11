@@ -239,8 +239,8 @@ scoutline --no-fallback --provider minimax read https://example.com
 | `Z_AI_BASE_URL` | Mode-specific URL | Overrides the API base URL. |
 | `Z_AI_TIMEOUT` | `30000` | Request timeout in milliseconds. |
 | `Z_AI_VISION_MODEL` | `glm-5.3-flash` | Vision model name. |
-| `Z_AI_TEMPERATURE` | `0.8` | Vision generation temperature. |
-| `Z_AI_TOP_P` | `0.6` | Vision generation top-p value. |
+| `Z_AI_TEMPERATURE` | `1` | Vision generation temperature (glm-5.3-flash documented recipe). |
+| `Z_AI_TOP_P` | `0.95` | Vision generation top-p value (glm-5.3-flash documented recipe). |
 | `Z_AI_MAX_TOKENS` | `32768` | Vision response token limit. |
 | `SCOUTLINE_PROVIDER` | (none) | Selects the effective Provider (`zai`, `minimax`, `tavily`, `exa`, `brave`, `firecrawl`, `parallel`, `perplexity`, `jina`, `you`, `linkup`, or `spider`) for shared capabilities. |
 | `SCOUTLINE_NO_FALLBACK` | (unset) | When set to a non-empty value, restores the strict single-provider, fail-loud behavior for shared capabilities — `--no-fallback` on the CLI is the per-invocation equivalent. |

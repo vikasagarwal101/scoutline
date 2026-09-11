@@ -33,6 +33,8 @@ export interface VisionRequest {
   model: string;
   messages: Message[];
   thinking?: { type: string };
+  /** #136: glm-5.3-flash documented recipe — reasoning_effort: "max". */
+  reasoning_effort?: string;
   stream: boolean;
   temperature: number;
   top_p: number;
@@ -146,6 +148,16 @@ async function withRetry<T>(
 /**
  * Z.AI API client
  */
+/**
+ * Models that document the `reasoning_effort` parameter: GLM-5.2 and
+ * above (glm-5.2, glm-5.3, glm-5.3-flash...). Z_AI_VISION_MODEL keeps
+ * older vision models selectable and they REJECT the parameter (the
+ * request fails after withRetry), so the wire gates it (PR #142
+ * review). Widen the range when Z.AI ships newer supported families —
+ * omitting the param on an unknown model is the safe direction.
+ */
+const REASONING_EFFORT_MODEL_RE = /^glm-5\.[2-9]/;
+
 export class ZaiApiClient {
   private config: ZaiConfig;
 
@@ -245,7 +257,16 @@ export class ZaiApiClient {
       this.request<VisionResponse>("/chat/completions", {
         model: this.config.visionModel,
         messages,
+        // #136 remainder: the documented glm-5.3-flash recipe —
+        // thinking.type only supports "enabled"; reasoning_effort max
+        // completes the recommended settings (temperature 1 / top_p 0.95
+        // arrive through config defaults).
+        // PR #142 review: the effort field is documented ONLY for
+        // GLM-5.2+ models, so it is gated by the configured vision model.
         thinking: { type: "enabled" },
+        ...(REASONING_EFFORT_MODEL_RE.test(this.config.visionModel.toLowerCase())
+          ? { reasoning_effort: "max" }
+          : {}),
         stream: false,
         temperature: this.config.temperature,
         top_p: this.config.topP,

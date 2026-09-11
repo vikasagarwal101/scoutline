@@ -27,17 +27,31 @@ import { ApiError, AuthError } from "../dist/lib/errors.js";
 // suites.
 const FAKE_TEST_API_KEY = "test-fake-code-mode-key-DO-NOT-USE";
 const savedCreds = { Z_AI_API_KEY: undefined, ZAI_API_KEY: undefined };
+let savedFetch;
 before(() => {
   savedCreds.Z_AI_API_KEY = process.env.Z_AI_API_KEY;
   savedCreds.ZAI_API_KEY = process.env.ZAI_API_KEY;
   process.env.Z_AI_API_KEY = FAKE_TEST_API_KEY;
   delete process.env.ZAI_API_KEY;
+  // #135: registerManual failures now trigger the failure-path auth
+  // probe (issue #117 pattern). Stub fetch file-wide with an
+  // inconclusive answer (200, no numeric 401/403 body code) so the
+  // legacy registration-failure tests below stay offline AND keep
+  // asserting the sanitized ApiError shape. Tests that assert probe
+  // classification install their own fetch double via withMockFetch.
+  savedFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ healthy: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
 });
 after(() => {
   for (const [key, value] of Object.entries(savedCreds)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
+  if (savedFetch !== undefined) globalThis.fetch = savedFetch;
 });
 
 const RAW_BODY = '{"error":"RAW_CODE_MODE_BODY","detail":"<html>secret</html>"}';
@@ -268,6 +282,394 @@ describe("ZaiCodeModeClient — init registration raw-body scrubbing (Fixup D �
     } finally {
       await client.close().catch(() => {});
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #135 — auth classification for Code Mode init failures (the #117/#128
+// pattern mirrored from ZaiMcpClient). registerManual reports failure as
+// an opaque sentinel-tagged ApiError whose message never carried the
+// Provider body (zod drops the values); one bounded failure-path probe
+// against the MCP endpoint recovers the real status. 401/403 —
+// HTTP-level or Z.AI's 200-wrapped {"code":401,...} — surfaces as
+// AUTH_ERROR with credential guidance; everything else keeps the
+// sanitized ApiError.
+// ---------------------------------------------------------------------------
+
+describe("ZaiCodeModeClient — failure-path auth probe (issue #135)", () => {
+  /** Patch globalThis.fetch for `fn`; restore after. */
+  async function withMockFetch(makeHandler, fn) {
+    const real = globalThis.fetch;
+    globalThis.fetch = makeHandler(real);
+    try {
+      return await fn();
+    } finally {
+      globalThis.fetch = real;
+    }
+  }
+
+  function urlOf(input) {
+    return String(input instanceof URL ? input : (input?.url ?? input));
+  }
+
+  // Byte-exact Z.AI auth rejection (issue #117's curl-observed shape):
+  // HTTP 200 wrapping the provider's {"code":401,...} body.
+  const AUTH_REJECTION_BODY = JSON.stringify({
+    code: 401,
+    msg: "token expired or incorrect",
+    success: false,
+  });
+
+  /** A fetch handler answering every api.z.ai request with `body` at `status`. */
+  const zaiFetch = (body, status) => () => async (input, init) => {
+    if (!urlOf(input).includes("api.z.ai")) {
+      throw new Error(`unexpected non-probe fetch in #135 suite: ${urlOf(input)}`);
+    }
+    return new Response(body, { status, headers: { "content-type": "application/json" } });
+  };
+
+  const PROBE_ENV = { Z_AI_API_KEY: "expired-dummy-key" };
+
+  /** Fake UTCP client whose registerManual always reports failure. */
+  function registrationFailureFake() {
+    return {
+      registerManual() {
+        return Promise.resolve({
+          success: false,
+          errors: ["Unrecognized keys: code,msg,success"],
+        });
+      },
+      callToolChain() {
+        return Promise.reject(new Error("should not reach callToolChain"));
+      },
+      getAllToolsTypeScriptInterfaces() {
+        return Promise.reject(new Error("should not reach getAllInterfaces"));
+      },
+      close() {
+        return Promise.resolve();
+      },
+    };
+  }
+
+  it("401-in-200 registration failure classifies as AUTH_ERROR with credential guidance (red pin)", async () => {
+    await withMockFetch(zaiFetch(AUTH_REJECTION_BODY, 200), async () => {
+      const client = new ZaiCodeModeClient({
+        env: PROBE_ENV,
+        clientFactory: async () => registrationFailureFake(),
+      });
+      try {
+        await assert.rejects(client.callToolChain("code"), (err) => {
+          assert.strictEqual(
+            err.code,
+            "AUTH_ERROR",
+            `expected AUTH_ERROR, got ${err.code} (${err.message})`,
+          );
+          assert.strictEqual(err.statusCode, 401, `expected 401, got ${err.statusCode}`);
+          assert.match(err.message, /token expired or incorrect/);
+          assert.match(err.message, /Z_AI_API_KEY/);
+          // Sanitization: the message is static guidance, not the body.
+          assert.ok(!err.message.includes('"code"'), `raw body leaked: ${err.message}`);
+          assert.ok(!err.message.includes("success"), `raw body keys leaked: ${err.message}`);
+          return true;
+        });
+      } finally {
+        await client.close().catch(() => {});
+      }
+    });
+  });
+
+  it("HTTP-401 registration failure classifies as AUTH_ERROR (probe reads the status)", async () => {
+    await withMockFetch(zaiFetch("Unauthorized", 401), async () => {
+      const client = new ZaiCodeModeClient({
+        env: PROBE_ENV,
+        clientFactory: async () => registrationFailureFake(),
+      });
+      try {
+        await assert.rejects(client.callToolChain("code"), (err) => {
+          assert.strictEqual(err.code, "AUTH_ERROR");
+          assert.strictEqual(err.statusCode, 401);
+          return true;
+        });
+      } finally {
+        await client.close().catch(() => {});
+      }
+    });
+  });
+
+  it("probe inconclusive (200, no numeric code) keeps the sanitized API_ERROR envelope", async () => {
+    await withMockFetch(zaiFetch(JSON.stringify({ healthy: true }), 200), async () => {
+      const client = new ZaiCodeModeClient({
+        env: PROBE_ENV,
+        clientFactory: async () => registrationFailureFake(),
+      });
+      try {
+        await assert.rejects(client.callToolChain("code"), (err) => {
+          assert.strictEqual(err.code, "API_ERROR");
+          assert.strictEqual(err.statusCode, 500);
+          assert.ok(!err.message.includes("healthy"), `body text leaked: ${err.message}`);
+          return true;
+        });
+      } finally {
+        await client.close().catch(() => {});
+      }
+    });
+  });
+
+  it("factory-thrown ApiError NEVER probes — original status surfaces, zero network (#128 parity)", async () => {
+    // A factory/transport-thrown ApiError is NOT the registerManual-failure
+    // class (no sentinel): it must fail fast with its own status preserved
+    // and issue zero probe network requests — a 401/403 probe answer would
+    // say nothing about that failure's cause.
+    const seenBodies = [];
+    const client = new ZaiCodeModeClient({
+      env: PROBE_ENV,
+      clientFactory: async () => {
+        throw new ApiError("factory transport construction failed", 503);
+      },
+    });
+    const real = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      if (!urlOf(input).includes("api.z.ai")) {
+        throw new Error(`unexpected fetch in #135 no-probe test: ${urlOf(input)}`);
+      }
+      seenBodies.push(String(init?.body ?? ""));
+      return new Response(AUTH_REJECTION_BODY, {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    try {
+      await assert.rejects(client.callToolChain("code"), (err) => {
+        assert.strictEqual(err.code, "API_ERROR");
+        assert.strictEqual(err.statusCode, 503, `original status preserved, got ${err.statusCode}`);
+        assert.ok(
+          !err.message.includes("factory transport"),
+          `original message leaked: ${err.message}`,
+        );
+        return true;
+      });
+      assert.strictEqual(
+        seenBodies.length,
+        0,
+        "no probe request may fire for a factory-thrown ApiError",
+      );
+    } finally {
+      globalThis.fetch = real;
+      await client.close().catch(() => {});
+    }
+  });
+
+  it("probe timeout bound resolves from the injected env — Z_AI_TIMEOUT honored, junk never NaN (PR #142 review)", async () => {
+    // The probe's AbortSignal.timeout argument must derive from the SAME
+    // resolved environment the registration template uses: an injected
+    // { Z_AI_TIMEOUT: "1000" } caps the probe at 1s, and a junk value
+    // falls back to the 30s default (min→5s probe cap) instead of NaN —
+    // AbortSignal.timeout(NaN) throws and would silently disable the
+    // probe via the catch-all null.
+    const delays = [];
+    const origTimeout = AbortSignal.timeout;
+    AbortSignal.timeout = (ms) => {
+      delays.push(ms);
+      return origTimeout(ms);
+    };
+    try {
+      await withMockFetch(zaiFetch(AUTH_REJECTION_BODY, 200), async () => {
+        const envBounded = new ZaiCodeModeClient({
+          env: { Z_AI_API_KEY: "expired-dummy-key", Z_AI_TIMEOUT: "1000" },
+          clientFactory: async () => registrationFailureFake(),
+        });
+        try {
+          await assert.rejects(envBounded.callToolChain("code"), (err) => {
+            assert.strictEqual(err.code, "AUTH_ERROR");
+            return true;
+          });
+        } finally {
+          await envBounded.close().catch(() => {});
+        }
+
+        const envJunk = new ZaiCodeModeClient({
+          env: { Z_AI_API_KEY: "expired-dummy-key", Z_AI_TIMEOUT: "not-a-number" },
+          clientFactory: async () => registrationFailureFake(),
+        });
+        try {
+          // Must surface the sanitized error, not a TypeError from a
+          // NaN probe bound.
+          await assert.rejects(envJunk.callToolChain("code"), (err) => {
+            assert.strictEqual(err.code, "AUTH_ERROR");
+            return true;
+          });
+        } finally {
+          await envJunk.close().catch(() => {});
+        }
+      });
+    } finally {
+      AbortSignal.timeout = origTimeout;
+    }
+    assert.ok(
+      delays.includes(1000),
+      `env-resolved Z_AI_TIMEOUT=1000 must bound the probe, got ${JSON.stringify(delays)}`,
+    );
+    assert.ok(
+      delays.includes(5000),
+      `junk Z_AI_TIMEOUT must fall back to the 30s default (5s probe cap), got ${JSON.stringify(delays)}`,
+    );
+  });
+
+  it("concurrent callers share ONE in-flight failed init (single-flight holds during the probe, PR #142 round 2)", async () => {
+    // The failure-path probe can take up to PROBE_TIMEOUT_MS; the
+    // single-flight guard (initPromise) must stay armed for that whole
+    // window so a second caller awaits the SAME failing init instead of
+    // starting a fresh registration + probe (macroscope: initPromise was
+    // cleared at catch-entry, before the probe await).
+    let registerCalls = 0;
+    const fake = {
+      registerManual() {
+        registerCalls += 1;
+        return Promise.resolve({ success: false, errors: ["Unrecognized keys: code,msg,success"] });
+      },
+      callToolChain() { return Promise.reject(new Error("should not reach callToolChain")); },
+      getAllToolsTypeScriptInterfaces() { return Promise.reject(new Error("should not reach getAllInterfaces")); },
+      close() { return Promise.resolve(); },
+    };
+    let probeCalls = 0;
+    let releaseProbe;
+    const gate = new Promise((resolve) => { releaseProbe = resolve; });
+    const real = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      if (!urlOf(input).includes("api.z.ai")) {
+        throw new Error(`unexpected fetch in single-flight test: ${urlOf(input)}`);
+      }
+      probeCalls += 1;
+      await gate; // hold the probe in flight while the second caller arrives
+      return new Response(AUTH_REJECTION_BODY, {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    const client = new ZaiCodeModeClient({
+      env: PROBE_ENV,
+      clientFactory: async () => fake,
+    });
+    try {
+      const first = client.callToolChain("code").then(
+        () => "ok",
+        (err) => err.code,
+      );
+      // Let the first init reach its parked probe (registration failed,
+      // probe fetch issued, gate held) BEFORE the second caller arrives.
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.strictEqual(probeCalls, 1, "first init must be parked in its probe");
+      // The second caller arrives while the probe is still in flight —
+      // it must join the SAME failing init, not start a fresh one.
+      const second = client.getAllInterfaces().then(
+        () => "ok",
+        (err) => err.code,
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      releaseProbe();
+      const [a, b] = await Promise.all([first, second]);
+      assert.strictEqual(a, "AUTH_ERROR");
+      assert.strictEqual(b, "AUTH_ERROR");
+      assert.strictEqual(registerCalls, 1, `one registration, got ${registerCalls}`);
+      assert.strictEqual(probeCalls, 1, `one probe, got ${probeCalls}`);
+    } finally {
+      globalThis.fetch = real;
+      await client.close().catch(() => {});
+    }
+  });
+
+  it("invalid-but-parseable Z_AI_TIMEOUT never degrades probe classification (PR #142 round 3)", async () => {
+    // "-1" or an above-u32 delay survives Number.isFinite and reaches
+    // AbortSignal.timeout, which throws — the probe's catch-all then
+    // returns null and a REAL 401/403 surfaces as the generic ApiError
+    // instead of AuthError (macroscope). The resolved timeout must be a
+    // supported positive delay.
+    const delays = [];
+    const origTimeout = AbortSignal.timeout;
+    AbortSignal.timeout = (ms) => {
+      delays.push(ms);
+      return origTimeout(ms);
+    };
+    try {
+      await withMockFetch(zaiFetch(AUTH_REJECTION_BODY, 200), async () => {
+        const negative = new ZaiCodeModeClient({
+          env: { Z_AI_API_KEY: "expired-dummy-key", Z_AI_TIMEOUT: "-1" },
+          clientFactory: async () => registrationFailureFake(),
+        });
+        try {
+          await assert.rejects(negative.callToolChain("code"), (err) => {
+            assert.strictEqual(err.code, "AUTH_ERROR", `got ${err.code} (${err.message})`);
+            return true;
+          });
+        } finally {
+          await negative.close().catch(() => {});
+        }
+
+        const huge = new ZaiCodeModeClient({
+          env: { Z_AI_API_KEY: "expired-dummy-key", Z_AI_TIMEOUT: "9007199254740991" },
+          clientFactory: async () => registrationFailureFake(),
+        });
+        try {
+          await assert.rejects(huge.callToolChain("code"), (err) => {
+            assert.strictEqual(err.code, "AUTH_ERROR");
+            return true;
+          });
+        } finally {
+          await huge.close().catch(() => {});
+        }
+      });
+    } finally {
+      AbortSignal.timeout = origTimeout;
+    }
+    assert.ok(
+      delays.every((ms) => Number.isInteger(ms) && ms > 0 && ms <= 0xffffffff),
+      `every AbortSignal.timeout delay must be a supported positive delay, got ${JSON.stringify(delays)}`,
+    );
+  });
+
+  it("probe cancels the unread response body on every non-consumed exit", async () => {
+    // undici retains the connection until the body is consumed or
+    // cancelled; the 401/403 early return and the non-200 fallthrough
+    // must release it. Record body.cancel() on the returned Response.
+    async function runOnce(status) {
+      const client = new ZaiCodeModeClient({
+        env: PROBE_ENV,
+        clientFactory: async () => registrationFailureFake(),
+      });
+      let cancelled = false;
+      await withMockFetch(
+        () => async (input) => {
+          if (!urlOf(input).includes("api.z.ai")) {
+            throw new Error(`unexpected fetch in #135 cancel test: ${urlOf(input)}`);
+          }
+          const stream = new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("{}"));
+            },
+          });
+          const response = new Response(stream, {
+            status,
+            headers: { "content-type": "application/json" },
+          });
+          const origCancel = response.body.cancel.bind(response.body);
+          response.body.cancel = async () => {
+            cancelled = true;
+            return origCancel();
+          };
+          return response;
+        },
+        async () => {
+          await assert.rejects(client.callToolChain("code"));
+        },
+      );
+      await client.close().catch(() => {});
+      return cancelled;
+    }
+
+    assert.ok(await runOnce(401), "401 branch must cancel the unread body");
+    assert.ok(await runOnce(503), "non-200 fallthrough must cancel the unread body");
   });
 });
 

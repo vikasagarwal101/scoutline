@@ -192,6 +192,9 @@ describe("formatErrorOutput", () => {
     assert.strictEqual(parsed.cause, undefined);
   });
 
+  // #134 fixture-secret classification: BENIGN — pure formatErrorOutput
+  // unit test; no main() dispatch, no stdout redaction boundary over a
+  // randomized path (literals are long distinctive non-colliding values).
   it("omits raw response bodies, authorization data, and known credentials", () => {
     const err = {
       message: "Request failed",

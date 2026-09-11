@@ -24,6 +24,12 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { readFixture } from "./helpers/fixtures.js";
+// #134 fixture-secret classification: BENIGN. The main()-driven quota
+// dispatch tests use short "k" credentials, but their rendered envelopes
+// are quota dashboards (numbers, statuses, provider ids) with no
+// mkdtemp-randomized path anywhere near a literal pin — no #120 collision
+// space (the suite never mkdtemps at all).
+
 
 // Modules under test (built to dist/).
 import { buildQuotaWindow, quotaFailureFromError } from "../dist/capabilities/quota.js";

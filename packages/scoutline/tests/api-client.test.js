@@ -37,6 +37,80 @@ function redirectResponse(location) {
   };
 }
 
+describe("ZaiApiClient — visionComplete request shape (#136 remainder)", () => {
+  let originalFetch;
+  let calls;
+
+  beforeEach(() => {
+    originalFetch = global.fetch;
+    calls = [];
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  const okResponse = {
+    ok: true,
+    status: 200,
+    json: async () => ({ id: "", created: 0, model: "", choices: [], usage: {} }),
+  };
+
+  function clientWithVisionModel(visionModel) {
+    return new ZaiApiClient({
+      apiKey: TEST_KEY,
+      mode: "ZAI",
+      baseUrl: "https://api.z.ai/test",
+      timeout: 5000,
+      visionModel,
+      temperature: 1,
+      topP: 0.95,
+      maxTokens: 100,
+    });
+  }
+
+  it("sends the documented glm-5.3-flash recipe: reasoning_effort max + thinking enabled", async () => {
+    global.fetch = async (url, options) => {
+      calls.push({ url: String(url), body: JSON.parse(options.body) });
+      return okResponse;
+    };
+
+    await clientWithVisionModel("glm-5.3-flash").visionComplete([
+      { role: "user", content: "describe" },
+    ]);
+
+    assert.strictEqual(calls.length, 1);
+    const body = calls[0].body;
+    // docs.z.ai/guides/vlm/glm-5.3-flash Recommended Settings:
+    // temperature 1, top_p 0.95, reasoning_effort max; thinking.type
+    // only supports "enabled".
+    assert.strictEqual(body.reasoning_effort, "max");
+    assert.deepStrictEqual(body.thinking, { type: "enabled" });
+    assert.strictEqual(body.stream, false);
+  });
+
+  it("omits reasoning_effort for pre-GLM-5.2 vision models (PR #142 review)", async () => {
+    // Z_AI_VISION_MODEL keeps older models selectable, and Z.AI documents
+    // reasoning_effort ONLY for GLM-5.2+ (glm-4.6v/4.5v, GLM-5/5.1 reject
+    // the parameter) — sending it unconditionally breaks those requests
+    // after withRetry. The wire must gate the parameter by model.
+    global.fetch = async (url, options) => {
+      calls.push({ url: String(url), body: JSON.parse(options.body) });
+      return okResponse;
+    };
+
+    await clientWithVisionModel("glm-4.6v").visionComplete([
+      { role: "user", content: "describe" },
+    ]);
+
+    assert.strictEqual(calls.length, 1);
+    const body = calls.at(-1).body;
+    assert.strictEqual(body.reasoning_effort, undefined, "pre-5.2 model must not receive reasoning_effort");
+    // The rest of the recipe still applies.
+    assert.deepStrictEqual(body.thinking, { type: "enabled" });
+  });
+});
+
 describe("ZaiApiClient — redirect handling (1.2)", () => {
   let originalFetch;
   let calls;

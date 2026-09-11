@@ -247,6 +247,32 @@ describe("vision model default", () => {
   });
 });
 
+describe("vision generation-param defaults (#136 remainder)", () => {
+  it("temperature and top-p default to the glm-5.3-flash documented recipe", () => {
+    // docs.z.ai/guides/vlm/glm-5.3-flash Recommended Settings:
+    // temperature 1, top_p 0.95 (reasoning_effort max and thinking.type
+    // enabled live on the wire client, not config). The model was
+    // designed for these values; the pre-#136 0.8/0.6 defaults predate
+    // the GLM-5 series.
+    const config = loadConfig({ Z_AI_API_KEY: "k" });
+    assert.strictEqual(config.temperature, 1);
+    assert.strictEqual(config.topP, 0.95);
+    // max_tokens stays the deliberate 32k output bound (the documented
+    // 1M context is a ceiling, not a generation recommendation).
+    assert.strictEqual(config.maxTokens, 32768);
+  });
+
+  it("Z_AI_TEMPERATURE / Z_AI_TOP_P still override the defaults", () => {
+    const config = loadConfig({
+      Z_AI_API_KEY: "k",
+      Z_AI_TEMPERATURE: "0.2",
+      Z_AI_TOP_P: "0.4",
+    });
+    assert.strictEqual(config.temperature, 0.2);
+    assert.strictEqual(config.topP, 0.4);
+  });
+});
+
 describe("missing credential through the CLI", () => {
   it("scoutline quota with no key returns one structured error, exit 3, and no transport", async () => {
     // Pin to zai (which requires a key) so the config gate fires with

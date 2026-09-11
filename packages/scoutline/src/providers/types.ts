@@ -29,6 +29,7 @@ import type { ReaderCapability } from "../capabilities/reader.js";
 import type { CrawlCapability } from "../capabilities/crawl.js";
 import type { MapCapability } from "../capabilities/map.js";
 import type { ResearchCapability } from "../capabilities/research.js";
+import type { ScienceCapability } from "../capabilities/science.js";
 import type { MiniMaxTransportDeps } from "./minimax/coding-plan-client.js";
 
 // ---------------------------------------------------------------------------
@@ -51,7 +52,13 @@ export const PROVIDER_IDS = [
   "jina",
   "you",
   "linkup",
-  "spider",] as const;
+  "spider",
+  "arxiv",
+  "openalex",
+  "crossref",
+  "pubmed",
+  "europepmc",
+] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 /**
@@ -92,7 +99,9 @@ export type ProviderCapability =
   | "reader"
   | "crawl"
   | "map"
-  | "research";
+  | "research"
+  | "science.search"
+  | "science.get";
 
 /**
  * Runtime mirror of {@link ProviderCapability} for validation surfaces
@@ -157,6 +166,14 @@ export interface ProviderAdapter {
   readonly crawl?: CrawlCapability;
   readonly map?: MapCapability;
   readonly research?: ResearchCapability;
+  /**
+   * Science capability slot. The five scholarly suppliers (arxiv,
+   * openalex, crossref, pubmed, europepmc) expose search+get through
+   * this single slot; `adapterSlotFor` maps both `science.search` and
+   * `science.get` here. Adapters ship in later tickets; the seat exists
+   * now so the preflight slot check has a named target.
+   */
+  readonly science?: ScienceCapability;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,13 +237,21 @@ export interface ProviderDescriptor {
 export const PROVIDER_FALLBACK_CREDENTIAL_MESSAGE = "Set the required API key.";
 
 /**
- * Built-in Provider registry. Phase 2 leaves this empty; P2-05 wires
- * the real Z.AI and MiniMax descriptors once both Adapters exist. Tests
- * inject descriptor lists explicitly through `getProviderDescriptor` and
- * `getConfiguredProviderDescriptors`; the production registry is static
- * and never accepts package names, file paths, or dynamic imports.
+ * Built-in Provider registry (types-module stub). The production list
+ * lives in `registry.ts` (real Adapter factories, no circular import);
+ * this module-level list carries ONLY the adapter-less science seats so
+ * `getProviderDescriptor` here can resolve them without importing the
+ * adapter modules (which import this module). Tests inject descriptor
+ * lists explicitly through the optional `descriptors` parameter;
+ * production wiring uses `providers/registry.ts`.
  */
-export const BUILT_IN_PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [];
+export const BUILT_IN_PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [
+  createArxivDescriptor(),
+  createOpenalexDescriptor(),
+  createCrossrefDescriptor(),
+  createPubmedDescriptor(),
+  createEuropepmcDescriptor(),
+];
 
 /**
  * Look up a descriptor by ID. Throws when the ID is unknown. The
@@ -509,4 +534,94 @@ export function createMiniMaxDescriptor(
       throw new Error("MiniMax Search Adapter is not yet implemented; arrives in P2-04.");
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Science supplier descriptor factories (stub seats)
+// ---------------------------------------------------------------------------
+
+/**
+ * Capabilities every science supplier advertises: the two v1 science
+ * operations plus `diagnostics` (the keyless probe doctor runs against
+ * every always-configured supplier). `quota` is deliberately absent —
+ * the quota dashboard's `isConfigured(env, "quota")` filter must never
+ * list science suppliers (DESIGN D2/PRD AC-5). `science.cite` stays
+ * unadvertised in v1 (D1).
+ */
+const SCIENCE_SEAT_CAPABILITIES: ReadonlySet<ProviderCapability> = new Set([
+  "science.search",
+  "science.get",
+  "diagnostics",
+]);
+
+/**
+ * Shared capability-aware `isConfigured` body for the science seats —
+ * the Jina pattern inverted: keyless-true ONLY for the science set.
+ *
+ * - No `capabilityId` (doctor's no-capability form): true — the
+ *   supplier serves keyless.
+ * - `science.search` / `science.get` / `diagnostics`: true keyless.
+ * - `quota` and every non-science capability: false (with or without
+ *   the optional env key), so the quota dashboard filter
+ *   (quota.ts `isConfigured(env, "quota")`) and non-science selection
+ *   loops never list science suppliers.
+ */
+function scienceSeatIsConfigured(
+  capabilityId: ProviderCapability | undefined,
+): boolean {
+  // Keyless by default: the optional key (openalex/pubmed) lifts rate
+  // limits but never widens the capability set — `quota` stays false
+  // with or without a key.
+  if (capabilityId === undefined) return true;
+  return SCIENCE_SEAT_CAPABILITIES.has(capabilityId);
+}
+
+/**
+ * Build a science supplier stub Descriptor. The seat is registered now
+ * (T2); the real Adapter with the `science` slot arrives per-supplier
+ * in later tickets. `create()` throws until then — matching the
+ * phase-2 stub pattern for Z.AI/MiniMax.
+ */
+function createScienceSeatDescriptor(
+  id: (typeof PROVIDER_IDS)[number],
+  optionalEnvVar?: string,
+): ProviderDescriptor {
+  return {
+    id,
+    credentialEnvVars: optionalEnvVar === undefined ? [] : [optionalEnvVar],
+    isConfigured: (_env, capabilityId) => scienceSeatIsConfigured(capabilityId),
+    capabilities() {
+      return SCIENCE_SEAT_CAPABILITIES;
+    },
+    create() {
+      throw new Error(
+        `${id} science Adapter is not yet implemented; arrives in the adapter tickets.`,
+      );
+    },
+  };
+}
+
+/** arXiv supplier seat. Keyless — no credential model exists. */
+export function createArxivDescriptor(): ProviderDescriptor {
+  return createScienceSeatDescriptor("arxiv");
+}
+
+/** OpenAlex supplier seat. Keyless; optional `OPENALEX_API_KEY` upgrade. */
+export function createOpenalexDescriptor(): ProviderDescriptor {
+  return createScienceSeatDescriptor("openalex", "OPENALEX_API_KEY");
+}
+
+/** Crossref supplier seat. Keyless (mailto is politeness, not a credential). */
+export function createCrossrefDescriptor(): ProviderDescriptor {
+  return createScienceSeatDescriptor("crossref");
+}
+
+/** PubMed supplier seat. Keyless 3 r/s; free `NCBI_API_KEY` lifts to 10 r/s. */
+export function createPubmedDescriptor(): ProviderDescriptor {
+  return createScienceSeatDescriptor("pubmed", "NCBI_API_KEY");
+}
+
+/** Europe PMC supplier seat. Keyless — no credential model exists. */
+export function createEuropepmcDescriptor(): ProviderDescriptor {
+  return createScienceSeatDescriptor("europepmc");
 }

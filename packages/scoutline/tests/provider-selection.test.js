@@ -282,6 +282,19 @@ describe("ProviderDescriptor double", () => {
     assert.deepStrictEqual(none, []);
   });
 
+  it("selection re-exports the REAL registry: the default lookup's create() does not throw (ruling)", () => {
+    // GROUND: ruling — selection.ts used to re-export the descriptor
+    // helpers from types.js, whose module-level list carries the
+    // adapter-less science stub seats; a default-lookup consumer got
+    // a descriptor whose create() threw "not yet implemented". The
+    // re-export now sources registry.js (real adapter factories).
+    const zai = getProviderDescriptor("zai");
+    assert.doesNotThrow(() => zai.create({ env: {} }), "zai create() is the real adapter");
+    const crossref = getProviderDescriptor("crossref");
+    const adapter = crossref.create({ env: {} });
+    assert.ok(adapter.science, "science seat create() returns a real adapter, not a stub throw");
+  });
+
   it("getProviderDescriptor returns the descriptor for the given id", () => {
     const a = makeDouble("zai", ["search"], () => true).descriptor;
     const b = makeDouble("minimax", ["search"], () => true).descriptor;

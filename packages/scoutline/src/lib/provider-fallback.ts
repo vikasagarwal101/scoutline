@@ -204,6 +204,9 @@ function adapterSlotFor(capabilityId: ProviderCapability): keyof ProviderAdapter
       return "diagnostics";
     case "repository-exploration":
       return "repository";
+    case "science.search":
+    case "science.get":
+      return "science";
     case "vision.interpret-image":
     case "vision.ui-artifact":
     case "vision.extract-text":

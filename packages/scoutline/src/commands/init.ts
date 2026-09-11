@@ -171,16 +171,34 @@ Exit codes:
  */
 interface ProviderPromptMeta {
   readonly label: string;
-  readonly envVar: string;
+  /**
+   * Canonical env-var name. Optional: the keyless science suppliers
+   * (arxiv, crossref, europepmc) have no credential model, so no env
+   * var to advertise. Renderers must guard on absence
+   * (`getDetectedEnvVar` / the non-TTY example line).
+   */
+  readonly envVar?: string;
   readonly envAliases?: readonly string[];
-  readonly registrationUrl: string;
+  /**
+   * Registration page. Optional for the same reason — a keyless
+   * supplier has no key page, and `renderRegistrationLine` must not
+   * emit a broken hyperlink when the field is absent.
+   */
+  readonly registrationUrl?: string;
   /**
    * True when the probe is billable (~1 credit). Z.AI and MiniMax probe
    * through free endpoints (tool discovery / raw quota probe); the other
    * four charge ~1 credit per probe. Surfaced before the user enters a
-   * key so they can opt out before the charge occurs.
+   * key so they can opt out before the charge occurs. Keyless science
+   * suppliers probe keyless — always false for them.
    */
   readonly probeCostsCredit: boolean;
+  /**
+   * Keyless-economics note rendered in the checklist description
+   * column. Present for the five science suppliers (keyless by
+   * default); absent for keyed-only providers.
+   */
+  readonly keylessNote?: string;
 }
 
 const PROVIDER_PROMPT_META: Record<ProviderId, ProviderPromptMeta> = {
@@ -258,6 +276,39 @@ const PROVIDER_PROMPT_META: Record<ProviderId, ProviderPromptMeta> = {
     // The validation probe rides GET /data/credits, a free read.
     probeCostsCredit: false,
   },
+  // Science suppliers — keyless by default. The trio (arxiv, crossref,
+  // europepmc) carries no credential model at all; openalex and pubmed
+  // accept an optional free key. T2 owns the rows and the minimum
+  // keyless branch; the keyed opt-in question flow is T11.
+  arxiv: {
+    label: "arXiv",
+    probeCostsCredit: false,
+    keylessNote: "no key required — keyless scholarly index; free probe",
+  },
+  openalex: {
+    label: "OpenAlex",
+    envVar: "OPENALEX_API_KEY",
+    registrationUrl: "https://openalex.org/users/me",
+    probeCostsCredit: false,
+    keylessNote: "keyless 1000 credits/day (~100 searches; doi:get free); free key recommended",
+  },
+  crossref: {
+    label: "Crossref",
+    probeCostsCredit: false,
+    keylessNote: "no key required — keyless scholarly index; free probe",
+  },
+  pubmed: {
+    label: "PubMed",
+    envVar: "NCBI_API_KEY",
+    registrationUrl: "https://www.ncbi.nlm.nih.gov/account/settings/profile/",
+    probeCostsCredit: false,
+    keylessNote: "works keyless at 3 r/s; free key at 10 r/s",
+  },
+  europepmc: {
+    label: "Europe PMC",
+    probeCostsCredit: false,
+    keylessNote: "no key required — keyless scholarly index; free probe",
+  },
 };
 
 /**
@@ -275,6 +326,15 @@ function providerMeta(id: ProviderId): ProviderPromptMeta {
   }
   return meta;
 }
+
+/**
+ * The keyed science suppliers (science verticals T11). Unlike the keyless
+ * trio (no credential model at all) these accept an OPTIONAL free key —
+ * keyless operation works without any wizard step, so the fresh flow does
+ * NOT key-onboard them in the per-provider loop. Instead ONE opt-in
+ * question (after the loop) offers the keyed upgrade; "no" writes nothing.
+ */
+const KEYED_SCIENCE_IDS: readonly ProviderId[] = ["openalex", "pubmed"];
 
 // ---------------------------------------------------------------------------
 // Hyperlink rendering
@@ -298,6 +358,11 @@ function hyperlink(text: string, url: string): string {
  */
 function renderRegistrationLine(id: ProviderId): string {
   const meta = providerMeta(id);
+  // Keyless suppliers carry no registration URL — no broken hyperlink,
+  // just the keyless note (rendered by the checklist description too).
+  if (meta.registrationUrl === undefined) {
+    return `${meta.label}: ${meta.keylessNote ?? "no key required"}`;
+  }
   return `${meta.label}: ${hyperlink("Get an API key", meta.registrationUrl)}\n  ${meta.registrationUrl}`;
 }
 
@@ -525,6 +590,11 @@ export interface InitDependencies {
  */
 interface ProviderOnboarding {
   readonly providerId: ProviderId;
+  /**
+   * The API key. Empty string for keyless onboarding (science seats):
+   * the wizard records the onboarded flag + verification but writes no
+   * `apiKey` to the config (see {@link buildConfig}).
+   */
   readonly apiKey: string;
   readonly verification: ProviderVerification;
 }
@@ -548,10 +618,9 @@ function isAlreadyOnboarded(config: ScoutlineConfig): boolean {
  * Return the first non-blank env var name configured for `meta` (canonical
  * envVar preferred, followed by any envAliases in declaration order).
  */
-function getDetectedEnvVar(
-  meta: ProviderPromptMeta,
-  env: NodeJS.ProcessEnv,
-): string | undefined {
+function getDetectedEnvVar(meta: ProviderPromptMeta, env: NodeJS.ProcessEnv): string | undefined {
+  // Keyless suppliers carry no env-var hint to detect.
+  if (meta.envVar === undefined) return undefined;
   const vars = [meta.envVar, ...(meta.envAliases ?? [])];
   for (const name of vars) {
     const value = env[name];
@@ -597,7 +666,7 @@ function formatNonTTYRefuse(
   descriptors: readonly ProviderDescriptor[],
 ): string {
   const example = descriptors[0];
-  const exampleVar = example ? providerMeta(example.id).envVar : "Z_AI_API_KEY";
+  const exampleVar = (example && providerMeta(example.id).envVar) ?? "Z_AI_API_KEY";
   const detected = descriptors
     .map((d) => {
       const activeVar = getDetectedEnvVar(providerMeta(d.id), env);
@@ -728,14 +797,15 @@ async function runAgentRegistrationStep(deps: InitDependencies): Promise<number>
   // Persist agentRules NOW (merge under any existing config) so a later
   // wizard cancel cannot un-register an accepted tool.
   const inspection = await deps.configStore.inspect();
-  const agentRules = { ...(inspection.status === "valid" ? inspection.config.agentRules : undefined), ...choices };
+  const agentRules = {
+    ...(inspection.status === "valid" ? inspection.config.agentRules : undefined),
+    ...choices,
+  };
   await deps.configStore.write(
     {
       version: 1,
       fallbackEnabled: true,
-      ...(inspection.status === "valid"
-        ? inspection.config
-        : { providers: {} }),
+      ...(inspection.status === "valid" ? inspection.config : { providers: {} }),
       agentRules,
     },
     { filePath: inspection.filePath },
@@ -1006,28 +1076,56 @@ async function runReconfigMenu(
   config: ScoutlineConfig,
   filePath: string,
 ): Promise<number> {
-  const configuredIds = Object.keys(config.providers).filter((id) => {
-    const provider = config.providers[id as ProviderId];
-    return provider && typeof provider.apiKey === "string" && provider.apiKey.trim().length > 0;
-  }) as ProviderId[];
+  // Keyed and keyless rows are BOTH manageable (review): keyless
+  // science seats (onboarded, no key) show up in the status line and
+  // in remove-provider; they stay out of key-edit (nothing to edit)
+  // and add-provider eligibility (already present).
+  const splitConfiguredRows = (source: ScoutlineConfig): ProviderId[] => {
+    const ids: ProviderId[] = [];
+    for (const id of Object.keys(source.providers)) {
+      const provider = source.providers[id as ProviderId];
+      if (provider) ids.push(id as ProviderId);
+    }
+    return ids;
+  };
+  const allConfiguredIds = splitConfiguredRows(config);
+  const keyedIds = allConfiguredIds.filter((id) => {
+    const provider = config.providers[id];
+    return (
+      provider !== undefined &&
+      typeof provider.apiKey === "string" &&
+      provider.apiKey.trim().length > 0
+    );
+  });
+  const keylessIds = allConfiguredIds.filter((id) => !keyedIds.includes(id));
 
   const fallbackLine =
     config.fallbackEnabled === undefined
       ? "fallback: default (true)"
       : `fallback: ${config.fallbackEnabled ? "enabled" : "disabled"}`;
 
+  const configuredLine =
+    allConfiguredIds.length === 0
+      ? "none"
+      : [
+          keyedIds.length > 0 ? keyedIds.join(", ") : null,
+          keylessIds.length > 0 ? `keyless: ${keylessIds.join(", ")}` : null,
+        ]
+          .filter((part) => part !== null)
+          .join("; ");
+
   deps.writeStderr(
     [
       "",
       `scoutline is already set up at ${filePath}.`,
-      `Providers configured: ${configuredIds.length === 0 ? "none" : configuredIds.join(", ")}.`,
+      `Providers configured: ${configuredLine}.`,
       fallbackLine,
       "",
     ].join("\n"),
   );
 
   for (;;) {
-    const action = await promptReconfigAction(deps, configuredIds);
+    const action = await promptReconfigAction(deps, keyedIds, keylessIds);
     if (action === null) {
       // Cancel on the menu itself.
       return 1;
@@ -1044,7 +1142,7 @@ async function runReconfigMenu(
     }
 
     // Mutating actions: each returns the next config (or null on cancel).
-    const next = await applyReconfigAction(deps, action, config, configuredIds);
+    const next = await applyReconfigAction(deps, action, config, keyedIds, keylessIds);
     if (next === "write-error") {
       return 1;
     }
@@ -1059,13 +1157,21 @@ async function runReconfigMenu(
     }
     // next === "written": the action mutated and persisted the config.
     // Re-render the menu so the user can take another action.
-    configuredIds.length = 0;
     const fresh = await deps.configStore.inspect();
     if (fresh.status === "valid") {
-      for (const id of Object.keys(fresh.config.providers)) {
-        const provider = fresh.config.providers[id as ProviderId];
-        if (provider && typeof provider.apiKey === "string" && provider.apiKey.trim().length > 0) {
-          configuredIds.push(id as ProviderId);
+      const freshIds = splitConfiguredRows(fresh.config);
+      keyedIds.length = 0;
+      keylessIds.length = 0;
+      for (const id of freshIds) {
+        const provider = fresh.config.providers[id];
+        if (
+          provider !== undefined &&
+          typeof provider.apiKey === "string" &&
+          provider.apiKey.trim().length > 0
+        ) {
+          keyedIds.push(id);
+        } else {
+          keylessIds.push(id);
         }
       }
       // Mirror mutations into the local `config` reference so the next
@@ -1081,15 +1187,18 @@ async function runReconfigMenu(
  */
 async function promptReconfigAction(
   deps: InitDependencies,
-  configuredIds: readonly ProviderId[],
+  keyedIds: readonly ProviderId[],
+  keylessIds: readonly ProviderId[],
 ): Promise<ReconfigChoice | null> {
   const choices: InitChoice<ReconfigChoice>[] = [];
-  if (configuredIds.length > 0) {
+  if (keyedIds.length > 0) {
     choices.push({
       value: "edit-key",
       name: "Edit a provider key",
       description: "Replace an existing API key (resets verification to unverified)",
     });
+  }
+  if (keyedIds.length + keylessIds.length > 0) {
     choices.push({
       value: "remove-provider",
       name: "Remove a provider",
@@ -1144,7 +1253,8 @@ async function applyReconfigAction(
   deps: InitDependencies,
   action: Exclude<ReconfigChoice, "cancel" | "rerun-full">,
   config: ScoutlineConfig,
-  configuredIds: readonly ProviderId[],
+  keyedIds: readonly ProviderId[],
+  keylessIds: readonly ProviderId[],
 ): Promise<"written" | "loop" | "cancel" | "write-error"> {
   if (action === "change-fallback") {
     return changeFallback(deps, config);
@@ -1156,13 +1266,13 @@ async function applyReconfigAction(
     return editRouting(deps, config);
   }
   if (action === "add-provider") {
-    return addProvider(deps, config, configuredIds);
+    return addProvider(deps, config, keyedIds, keylessIds);
   }
   if (action === "remove-provider") {
-    return removeProvider(deps, config, configuredIds);
+    return removeProvider(deps, config, keyedIds, keylessIds);
   }
   // edit-key
-  return editProviderKey(deps, config, configuredIds);
+  return editProviderKey(deps, config, keyedIds);
 }
 
 /**
@@ -1258,7 +1368,9 @@ async function editRouting(
       if (line.length === 0) break;
       const sep = line.indexOf(":");
       if (sep <= 0) {
-        deps.writeStderr(`  \u26a0\ufe0f  skipped "${line}" \u2014 expected "capability: provider1,provider2"\n`);
+        deps.writeStderr(
+          `  \u26a0\ufe0f  skipped "${line}" \u2014 expected "capability: provider1,provider2"\n`,
+        );
         continue;
       }
       // Capability keys are canonical lowercase ids; accept mixed-case
@@ -1302,8 +1414,7 @@ async function editRouting(
 
   const { routing: _oldRouting, ...rest } = config;
   void _oldRouting;
-  const updated: ScoutlineConfig =
-    Object.keys(routing).length > 0 ? { ...rest, routing } : rest;
+  const updated: ScoutlineConfig = Object.keys(routing).length > 0 ? { ...rest, routing } : rest;
   return persistConfig(deps, updated);
 }
 
@@ -1315,9 +1426,13 @@ async function editRouting(
 async function addProvider(
   deps: InitDependencies,
   config: ScoutlineConfig,
-  configuredIds: readonly ProviderId[],
+  keyedIds: readonly ProviderId[],
+  keylessIds: readonly ProviderId[],
 ): Promise<"written" | "loop" | "cancel" | "write-error"> {
-  const available = deps.descriptors.map((d) => d.id).filter((id) => !configuredIds.includes(id));
+  // Eligibility excludes BOTH row kinds (review): a keyless science
+  // seat already in the config must not be re-onboarded either.
+  const seated = new Set<ProviderId>([...keyedIds, ...keylessIds]);
+  const available = deps.descriptors.map((d) => d.id).filter((id) => !seated.has(id));
   if (available.length === 0) {
     deps.writeStderr("Every built-in provider is already configured.\n");
     return "loop";
@@ -1340,6 +1455,48 @@ async function addProvider(
     deps.writeStderr(`Provider "${providerId}" is not in the registry.\n`);
     return "loop";
   }
+  const meta = providerMeta(providerId);
+  // Keyless-by-default science seats WITH an upgrade env var
+  // (openalex/pubmed, review): onboardSingleProvider's keyless branch
+  // only fires for envVar-less suppliers, so the plain keyed flow made
+  // reconfig unable to add them keyless. Offer the keyless default
+  // first — mirroring the fresh flow's "keyless already active"
+  // posture — and fall through to the keyed ask when declined.
+  if (meta.envVar !== undefined && descriptor.capabilities().has("science.search")) {
+    let keyless = false;
+    try {
+      keyless = await deps.prompts.confirm(
+        `Add ${meta.label} keyless (no key; active immediately, lower rate limits)? [Y/n]`,
+        true,
+      );
+    } catch {
+      return "loop";
+    }
+    if (keyless) {
+      const outcome = await probeProviderOnce(descriptor, deps.env);
+      if (outcome.status === "verified") {
+        const updated: ScoutlineConfig = {
+          ...config,
+          providers: {
+            ...config.providers,
+            [providerId]: {
+              onboarded: true,
+              verification: { status: "verified", checkedAt: deps.now() },
+            },
+          },
+          ...(config.hintShown !== undefined ? { hintShown: config.hintShown } : {}),
+        };
+        const status = persistConfig(deps, updated);
+        if ((await status) === "written") {
+          deps.writeStdout(`${meta.label}: added keyless (verification: verified).\n`);
+        }
+        return status;
+      }
+      deps.writeStderr(
+        `${meta.label}: keyless probe failed (${outcome.message}); falling through to the keyed flow.\n`,
+      );
+    }
+  }
   // Reuse the T3a per-provider flow against an empty envKeyProviders so
   // the import offer is skipped (the user is ADDING; we do not auto-pull
   // from env here). The probe runs against the ephemeral candidate.
@@ -1354,11 +1511,19 @@ async function addProvider(
     ...config,
     providers: {
       ...config.providers,
-      [providerId]: {
-        apiKey: onboarding.apiKey,
-        onboarded: true,
-        verification: onboarding.verification,
-      },
+      // Keyless adds (a science seat picked here) persist without an
+      // apiKey field — the same shape buildConfig writes (review).
+      [providerId]:
+        onboarding.apiKey.length > 0
+          ? {
+              apiKey: onboarding.apiKey,
+              onboarded: true,
+              verification: onboarding.verification,
+            }
+          : {
+              onboarded: true,
+              verification: onboarding.verification,
+            },
     },
     ...(config.hintShown !== undefined ? { hintShown: config.hintShown } : {}),
   };
@@ -1378,15 +1543,20 @@ async function addProvider(
 async function removeProvider(
   deps: InitDependencies,
   config: ScoutlineConfig,
-  configuredIds: readonly ProviderId[],
+  keyedIds: readonly ProviderId[],
+  keylessIds: readonly ProviderId[],
 ): Promise<"written" | "loop" | "cancel" | "write-error"> {
-  if (configuredIds.length === 0) {
+  // Removable set includes keyless rows (review) — a science seat can
+  // be dropped from the config even though it holds no key.
+  const removable: ProviderId[] = [...keyedIds, ...keylessIds];
+  const keylessSet = new Set<ProviderId>(keylessIds);
+  if (removable.length === 0) {
     deps.writeStderr("No providers are configured.\n");
     return "loop";
   }
-  const choices: InitChoice<ProviderId | undefined>[] = configuredIds.map((id) => ({
+  const choices: InitChoice<ProviderId | undefined>[] = removable.map((id) => ({
     value: id,
-    name: providerMeta(id).label,
+    name: keylessSet.has(id) ? `${providerMeta(id).label} (keyless)` : providerMeta(id).label,
   }));
   choices.push({ value: undefined, name: "Back" });
   let providerId: ProviderId | undefined;
@@ -1549,6 +1719,9 @@ async function collectProviderOnboardings(
     const choices: InitChoice<ProviderId>[] = deps.descriptors.map((descriptor) => {
       const meta = providerMeta(descriptor.id);
       const hints: string[] = [];
+      if (meta.keylessNote !== undefined) {
+        hints.push(meta.keylessNote);
+      }
       if (envKeyProviders.includes(descriptor.id)) {
         const activeVar = getDetectedEnvVar(meta, deps.env) ?? meta.envVar;
         hints.push(`env $${activeVar} present (importable)`);
@@ -1595,8 +1768,15 @@ async function collectProviderOnboardings(
     }
 
     // Step 1b — per-provider ask-key-first → hidden input → single probe.
+    // The keyed science suppliers (openalex, pubmed) are DEFERRED here:
+    // they never hit the keyless branch (they carry an envVar) and never
+    // run ask-key-first in this loop — the ONE opt-in question below owns
+    // their keyed upgrade, so a "no" leaves keyless operation untouched.
     const onboardings: ProviderOnboarding[] = [];
     for (const providerId of selected) {
+      if (KEYED_SCIENCE_IDS.includes(providerId)) {
+        continue;
+      }
       const onboarding = await onboardSingleProvider(deps, providerId, envKeyProviders);
       if (onboarding === null) {
         return null;
@@ -1605,6 +1785,37 @@ async function collectProviderOnboardings(
         continue;
       }
       onboardings.push(onboarding);
+    }
+
+    // Step 1c — keyed science opt-in (science verticals T11). ONE question
+    // for the whole keyed pair: "no" writes nothing (keyless needs no
+    // config step and is already active); "yes" runs the standard
+    // ask-key-first flow for exactly the selected keyed suppliers. Trio
+    // and non-science selections never see it.
+    const keyedSelected = selected.filter((id) => KEYED_SCIENCE_IDS.includes(id));
+    if (keyedSelected.length > 0) {
+      let optIn = false;
+      try {
+        optIn = await deps.prompts.confirm(
+          "Enable the keyed providers (free keys; higher rate limits and coverage)? " +
+            "Keyless access is already active. [y/N]",
+          false,
+        );
+      } catch {
+        return null;
+      }
+      if (optIn) {
+        for (const providerId of keyedSelected) {
+          const onboarding = await onboardSingleProvider(deps, providerId, envKeyProviders);
+          if (onboarding === null) {
+            return null;
+          }
+          if (onboarding === "skip") {
+            continue;
+          }
+          onboardings.push(onboarding);
+        }
+      }
     }
     return onboardings;
   }
@@ -1627,6 +1838,25 @@ async function onboardSingleProvider(
     // The checklist is registry-derived, so this is unreachable unless
     // the caller passed a divergent `descriptors` list.
     deps.writeStderr(`Provider "${providerId}" is not in the registry; skipping.\n`);
+    return "skip";
+  }
+
+  // Keyless suppliers (the science seats): no key entry, no
+  // registration link, no password prompt. The keyless diagnostics
+  // probe IS the verify-then-save validation — one probe, then record
+  // without an apiKey. Keyed opt-in for openalex/pubmed is a later
+  // wizard question (T11); the minimum branch ships here so the rows
+  // are onboarding-functional the moment they land.
+  if (meta.envVar === undefined) {
+    const outcome = await probeProviderOnce(descriptor, deps.env);
+    if (outcome.status === "verified") {
+      return {
+        providerId,
+        apiKey: "",
+        verification: { status: "verified", checkedAt: deps.now() },
+      };
+    }
+    deps.writeStderr(`${meta.label}: keyless probe failed (${outcome.message}); skipping.\n`);
     return "skip";
   }
 
@@ -1724,7 +1954,7 @@ async function validateAndCollect(
     }
     const ephemeralEnv = buildEphemeralProbeEnv(
       deps.env,
-      meta.envVar,
+      meta.envVar ?? "",
       candidate,
       meta.envAliases,
     );
@@ -1823,11 +2053,18 @@ function buildConfig(
 ): ScoutlineConfig {
   const providers: Partial<Record<ProviderId, ProviderConfig>> = {};
   for (const onboarding of onboardings) {
-    providers[onboarding.providerId] = {
-      apiKey: onboarding.apiKey,
-      onboarded: true,
-      verification: onboarding.verification,
-    };
+    // Keyless onboarding (empty apiKey) records the seat without a key.
+    providers[onboarding.providerId] =
+      onboarding.apiKey.length > 0
+        ? {
+            apiKey: onboarding.apiKey,
+            onboarded: true,
+            verification: onboarding.verification,
+          }
+        : {
+            onboarded: true,
+            verification: onboarding.verification,
+          };
   }
   return {
     version: 1,
@@ -1853,9 +2090,7 @@ function formatSummary(
   if (onboardings.length === 0) {
     return (
       "scoutline onboarding complete with no providers configured. " +
-      `Re-run \`scoutline init\` to add one. (journal=${
-        journalEnabled ? "true" : "false"
-      })`
+      `Re-run \`scoutline init\` to add one. (journal=${journalEnabled ? "true" : "false"})`
     );
   }
   const lines = onboardings.map((onboarding) => {

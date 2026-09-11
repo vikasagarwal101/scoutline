@@ -1620,7 +1620,7 @@ describe("T2a NIT 3: --no-journal rejection matrix — derived enumeration pin",
       );
     }
     // And the journalable commands are all present:
-    for (const journalable of ["search", "read", "research"]) {
+    for (const journalable of ["search", "read", "research", "science"]) {
       assert.ok(
         ACCEPT_NO_JOURNAL_COMMANDS.has(journalable),
         `journalable command "${journalable}" missing from the accept set`,

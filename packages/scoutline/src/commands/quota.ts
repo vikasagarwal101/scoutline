@@ -475,6 +475,8 @@ Options:
                     when any Provider fails.
   --provider <id>   Pin a single Provider (zai | minimax | tavily | exa |
                     brave | firecrawl | parallel | perplexity | jina | you | linkup | spider) instead of the multi-Provider default.
+                    (Science suppliers pin only "scoutline science ...";
+                    none of them advertise quota.)
 Examples:
   scoutline quota                  # every configured Provider
   scoutline quota --provider zai   # only zai

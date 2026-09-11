@@ -16,6 +16,8 @@ import * as fs from "node:fs/promises";
 import { PROVIDER_IDS } from "../dist/providers/types.js";
 
 /** Display labels used as capability-matrix column headers (registry order). */
+// Science supplier seats added alongside the capability-matrix columns
+// in architecture.md and SKILL.md.
 const PROVIDER_MATRIX_LABELS = {
   zai: "Z.AI",
   minimax: "MiniMax",
@@ -29,16 +31,15 @@ const PROVIDER_MATRIX_LABELS = {
   you: "You.com",
   linkup: "Linkup",
   spider: "Spider.cloud",
+  arxiv: "arXiv",
+  openalex: "OpenAlex",
+  crossref: "Crossref",
+  pubmed: "PubMed",
+  europepmc: "Europe PMC",
 };
 
-const architecture = fs.readFile(
-  new URL("../../../docs/architecture.md", import.meta.url),
-  "utf8",
-);
-const skill = fs.readFile(
-  new URL("../skills/scoutline/SKILL.md", import.meta.url),
-  "utf8",
-);
+const architecture = fs.readFile(new URL("../../../docs/architecture.md", import.meta.url), "utf8");
+const skill = fs.readFile(new URL("../skills/scoutline/SKILL.md", import.meta.url), "utf8");
 
 function expectedMatrixHeader() {
   const labels = PROVIDER_IDS.map((id) => {

@@ -36,8 +36,8 @@ import {
 import { FileError } from "./errors.js";
 import { redactSecrets } from "./redact.js";
 
-/** Capabilities that journal (PRD AC3); the seam is capability-driven so T3 extends, not rewrites. */
-export type JournalableCapability = "search" | "read" | "research";
+/** Capabilities that journal (PRD AC3); the seam is capability-driven so T3 extends, not rewrites. Science verticals (T7): the science NOUN is one capability — the search/get distinction lives in the skeleton shape (result list vs single row), matching the search-vs-read precedent. */
+export type JournalableCapability = "search" | "read" | "research" | "science";
 
 /** One skeleton row: the identity of a result, never its content. */
 export interface SkeletonItem {
@@ -207,7 +207,7 @@ export function asJournalEntry(value: unknown): JournalLogEntry | JournalRepeatM
   if (e.repeatOf !== undefined) return asJournalRepeatMarker(value);
   if (typeof e.requestId !== "string" || e.requestId.length === 0) return undefined;
   if (typeof e.timestamp !== "number" || !Number.isFinite(e.timestamp)) return undefined;
-  if (e.capability !== "search" && e.capability !== "read" && e.capability !== "research") {
+  if (e.capability !== "search" && e.capability !== "read" && e.capability !== "research" && e.capability !== "science") {
     return undefined;
   }
   if (typeof e.query !== "string") return undefined;
@@ -278,7 +278,7 @@ function asJournalRepeatMarker(value: unknown): JournalRepeatMarker | undefined 
   // history renders (new Date(ms).toISOString()); fail validation here
   // so the whole-log fail-open path applies instead.
   if (!Number.isFinite(new Date(e.timestamp).getTime())) return undefined;
-  if (e.capability !== "search" && e.capability !== "read" && e.capability !== "research") {
+  if (e.capability !== "search" && e.capability !== "read" && e.capability !== "research" && e.capability !== "science") {
     return undefined;
   }
   if (e.requestId !== undefined) return undefined;

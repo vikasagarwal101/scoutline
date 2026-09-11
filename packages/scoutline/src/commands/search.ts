@@ -147,9 +147,7 @@ const dropSourceDateRule: LadderRule = {
 
 const dropLowestRankRule: LadderRule = {
   name: "drop-lowest-rank",
-  apply: budgetedResults((results) =>
-    results.length <= 1 ? results : results.slice(0, -1),
-  ),
+  apply: budgetedResults((results) => (results.length <= 1 ? results : results.slice(0, -1))),
 };
 
 /** The search Output Budget ladder (ordered; see ADR-0007 T3). */
@@ -286,9 +284,7 @@ function renderTextFormat(
     const occBadge = r.occurrences && r.occurrences > 1 ? ` ×${r.occurrences}` : "";
     if (mode === "compact") {
       lines.push(
-        r.title && r.url
-          ? `${r.title}${occBadge} — ${r.url}`
-          : r.url || r.title || r.summary || "",
+        r.title && r.url ? `${r.title}${occBadge} — ${r.url}` : r.url || r.title || r.summary || "",
       );
     } else if (mode === "markdown") {
       if (r.title && r.url) {
@@ -811,9 +807,10 @@ export async function executeFanoutPlan(
   // (one client per arm, no fallback chain).
   const settled = await Promise.allSettled(
     arms.map((armId) =>
-      runFanoutArm(armId, subQueries, options).then(
-        (results): FanoutArmSuccess => ({ arm: armId, results }),
-      ),
+      runFanoutArm(armId, subQueries, options).then((results): FanoutArmSuccess => ({
+        arm: armId,
+        results,
+      })),
     ),
   );
 
@@ -841,7 +838,9 @@ export async function executeFanoutPlan(
   if (successes.length === 0) {
     const last = failures[failures.length - 1];
     if (last) throw last.error;
-    throw new Error("Fan-out produced no successes and no failures; plan was empty after filtering.");
+    throw new Error(
+      "Fan-out produced no successes and no failures; plan was empty after filtering.",
+    );
   }
 
   // Build the (arm × sub-query) grid for mergeResults. Each success

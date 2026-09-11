@@ -26,8 +26,11 @@ import type { QuotaState } from "../lib/quota-store.js";
 import { rankProvidersForCapability } from "../lib/quota-mapping.js";
 
 // Re-export descriptor helpers at the selection boundary so command
-// Modules need only a single import.
-export { getProviderDescriptor, getConfiguredProviderDescriptors } from "./types.js";
+// Modules need only a single import. Source is registry.js (ruling):
+// the REAL adapter descriptors — types.js carries the adapter-less
+// stub seats (circular-import break), so re-exporting from it let
+// selection consumers resolve a descriptor whose create() throws.
+export { getProviderDescriptor, getConfiguredProviderDescriptors } from "./registry.js";
 
 /**
  * Accepted Provider IDs shown in the help message when validation fails.

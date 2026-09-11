@@ -47,6 +47,11 @@ import { createExaDescriptor } from "../dist/providers/exa/adapter.js";
 import { createBraveDescriptor } from "../dist/providers/brave/adapter.js";
 import { createFirecrawlDescriptor } from "../dist/providers/firecrawl/adapter.js";
 import { createSpiderDescriptor } from "../dist/providers/spider/adapter.js";
+import { createArxivDescriptor } from "../dist/providers/arxiv/adapter.js";
+import { createOpenalexDescriptor } from "../dist/providers/openalex/adapter.js";
+import { createCrossrefDescriptor } from "../dist/providers/crossref/adapter.js";
+import { createPubmedDescriptor } from "../dist/providers/pubmed/adapter.js";
+import { createEuropepmcDescriptor } from "../dist/providers/europepmc/adapter.js";
 import { ParallelAdapter } from "../dist/providers/parallel/adapter.js";
 import { PerplexityAdapter } from "../dist/providers/perplexity/adapter.js";
 import { JinaAdapter } from "../dist/providers/jina/adapter.js";
@@ -84,6 +89,19 @@ function jsonResponse(payload, status = 200) {
     status,
     text: async () => JSON.stringify(payload),
     json: async () => payload,
+    headers: { get: () => null },
+  };
+}
+
+/** Response double for an XML/text body (arXiv Atom, PubMed efetch). */
+function xmlResponse(text) {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => {
+      throw new Error("body is XML, not JSON");
+    },
+    text: async () => text,
     headers: { get: () => null },
   };
 }
@@ -139,9 +157,7 @@ function tmpStateDir() {
 // Per-provider responders: minimal raw shapes that normalize successfully.
 // ---------------------------------------------------------------------------
 
-const ZAI_SEARCH_RAW = [
-  { title: "Result", link: "https://example.test/one", content: "Summary." },
-];
+const ZAI_SEARCH_RAW = [{ title: "Result", link: "https://example.test/one", content: "Summary." }];
 const ZAI_READER_RAW = { title: "Page", url: PAGE_URL, content: "# Page body" };
 
 const TAVILY_SEARCH_RAW = {
@@ -262,7 +278,13 @@ const YOU_SEARCH_RAW = {
   },
 };
 const YOU_CONTENTS_RAW = [
-  { url: PAGE_URL, title: "Page", markdown: "# Page body", html: "<h1>Page body</h1>", status: 200 },
+  {
+    url: PAGE_URL,
+    title: "Page",
+    markdown: "# Page body",
+    html: "<h1>Page body</h1>",
+    status: 200,
+  },
 ];
 const YOU_RESEARCH_RAW = {
   output: {
@@ -318,6 +340,112 @@ const SPIDER_LINKS_RAW = [
     links: ["https://example.test/one", PAGE_URL, "https://example.test/two"],
   },
 ];
+
+// Science fixtures — minimal real-shape supplier payloads, enough for
+// every consumed row to observe its control on the wire and normalize
+// (TASKS T8 "controls-conformance rows 5x4"; DESIGN D7 table + value
+// translation table; PRD AC-6 "every ScienceControls member is
+// wire-consumed or rejected per supplier").
+const ARXIV_SEARCH_ATOM = [
+  '<?xml version="1.0" encoding="UTF-8"?>',
+  '<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">',
+  "<title>ArXiv Query</title>",
+  "<id>http://arxiv.org/api/x</id>",
+  "<updated>2026-01-01T00:00:00Z</updated>",
+  "<entry>",
+  "<id>http://arxiv.org/abs/2401.12345v1</id>",
+  "<updated>2024-01-22T09:00:00Z</updated>",
+  "<published>2024-01-22T09:00:00Z</published>",
+  "<title>Conformance Fixture</title>",
+  "<summary>Fixture summary.</summary>",
+  "<author><name>A. Author</name></author>",
+  '<link href="http://arxiv.org/abs/2401.12345v1" rel="alternate" type="text/html"/>',
+  '<link title="pdf" href="http://arxiv.org/pdf/2401.12345v1" rel="related" type="application/pdf"/>',
+  '<arxiv:primary_category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>',
+  "</entry>",
+  "</feed>",
+].join("\n");
+
+const OPENALEX_SEARCH_RAW = {
+  results: [
+    {
+      id: "https://openalex.org/W1",
+      doi: "https://doi.org/10.1/example",
+      title: "Conformance Fixture",
+      publication_year: 2020,
+      authorships: [{ author: { display_name: "A. Author" } }],
+      primary_location: {
+        landing_page_url: "https://example.test/openalex",
+        source: { display_name: "Some Venue" },
+      },
+      cited_by_count: 5,
+      type: "article",
+    },
+  ],
+};
+
+const CROSSREF_SEARCH_RAW = {
+  message: {
+    items: [
+      {
+        DOI: "10.1/example",
+        title: ["Conformance Fixture"],
+        URL: "https://example.test/crossref",
+        author: [{ given: "A.", family: "Author" }],
+        "container-title": ["Some Venue"],
+        "is-referenced-by-count": 5,
+        issued: { "date-parts": [[2020]] },
+        type: "journal-article",
+      },
+      // Junk tier: filtered by the default component junk filter (AC-4)
+      // and irrelevant to every control row (it never carries a control).
+      { DOI: "10.1/fig", title: ["Figure"], URL: "https://example.test/fig", type: "component" },
+    ],
+  },
+};
+
+const PUBMED_SEARCH_RAW = {
+  esearchresult: { count: "1", idlist: ["36959025"] },
+};
+
+const PUBMED_ARTICLE_XML = [
+  '<?xml version="1.0" ?>',
+  "<PubmedArticleSet>",
+  '<PubmedArticle><MedlineCitation Status="MEDLINE" Owner="NLM"><PMID Version="1">36959025</PMID>',
+  '<Article PubModel="Print-Electronic"><Journal><JournalIssue><PubDate><Year>2020</Year></PubDate></JournalIssue>',
+  "<Title>Some Venue</Title></Journal>",
+  "<ArticleTitle>Conformance Fixture</ArticleTitle>",
+  '<ELocationID EIdType="doi" ValidYN="Y">10.1/example</ELocationID>',
+  '<AuthorList CompleteYN="Y"><Author ValidYN="Y"><LastName>Author</LastName><ForeName>A.</ForeName></Author></AuthorList>',
+  '<PublicationTypeList><PublicationType UI="D016428">Journal Article</PublicationType></PublicationTypeList>',
+  "</Article></MedlineCitation></PubmedArticle>",
+  "</PubmedArticleSet>",
+].join("");
+
+const EUROPEPMC_SEARCH_RAW = {
+  resultList: {
+    result: [
+      {
+        id: "1",
+        source: "MED",
+        pmid: "36959025",
+        doi: "10.1/example",
+        title: "Conformance Fixture",
+        authorString: "Author A.;",
+        journalTitle: "Some Venue",
+        firstPublicationDate: "2020-01-01",
+        citedByCount: 5,
+        isOpenAccess: "Y",
+        language: "eng",
+        abstractText: "Fixture abstract.",
+      },
+    ],
+  },
+};
+
+/** Science search base query (distinct from the web SEARCH_QUERY so science rows are traceable). */
+const SCIENCE_SEARCH_QUERY = "science conformance query";
+
 const RESPONDERS = {
   zai: null, // MCP seam, not fetch
   minimax(url, method) {
@@ -440,6 +568,23 @@ const RESPONDERS = {
     if (url.endsWith("/links")) return jsonResponse(SPIDER_LINKS_RAW);
     return jsonResponse({});
   },
+  // Science suppliers: one minimal endpoint each (keyless wire).
+  arxiv() {
+    return xmlResponse(ARXIV_SEARCH_ATOM);
+  },
+  openalex() {
+    return jsonResponse(OPENALEX_SEARCH_RAW);
+  },
+  crossref() {
+    return jsonResponse(CROSSREF_SEARCH_RAW);
+  },
+  pubmed(url) {
+    if (url.includes("efetch.fcgi")) return xmlResponse(PUBMED_ARTICLE_XML);
+    return jsonResponse(PUBMED_SEARCH_RAW);
+  },
+  europepmc() {
+    return jsonResponse(EUROPEPMC_SEARCH_RAW);
+  },
 };
 
 const ENV_BY_PROVIDER = {
@@ -455,6 +600,14 @@ const ENV_BY_PROVIDER = {
   you: { YDC_API_KEY: "k" },
   linkup: { LINKUP_API_KEY: "k" },
   spider: { SPIDER_API_KEY: "k" },
+  // Science suppliers are keyless by default (D2) — every conformance
+  // row rides the keyless partition (""). openalex/pubmed keyed rows
+  // are not needed for control mapping.
+  arxiv: {},
+  openalex: {},
+  crossref: {},
+  pubmed: {},
+  europepmc: {},
 };
 
 /** Research transports need a zero poll interval + no-op lock timers. */
@@ -496,6 +649,12 @@ function makeHarness(provider, capability) {
   const { fetch, calls } = makeCaptureFetch(RESPONDERS[provider]);
   const timerDelays = [];
   const transport = { fetch };
+  if (["openalex", "pubmed"].includes(provider)) {
+    // Science credential seam: openalex/pubmed clients resolve their
+    // key from the transport's env (the adapter passes { ...transport,
+    // env }). Keyless rows ride "" (D4b keyless partition).
+    transport.env = ENV_BY_PROVIDER[provider];
+  }
   if (capability === "research") {
     transport.env = transportEnv(provider);
     Object.assign(transport, NO_OP_TIMERS);
@@ -531,9 +690,7 @@ function makeHarness(provider, capability) {
       };
     case "exa":
       return {
-        adapter: createExaDescriptor({ transport, researchStateFile: stateFile }).create(
-          context,
-        ),
+        adapter: createExaDescriptor({ transport, researchStateFile: stateFile }).create(context),
         calls,
         timerDelays,
       };
@@ -577,6 +734,28 @@ function makeHarness(provider, capability) {
       };
     case "spider":
       return { adapter: createSpiderDescriptor({ transport }).create(context), calls, timerDelays };
+    case "arxiv":
+      return { adapter: createArxivDescriptor({ transport }).create(context), calls, timerDelays };
+    case "openalex":
+      return {
+        adapter: createOpenalexDescriptor({ transport }).create(context),
+        calls,
+        timerDelays,
+      };
+    case "crossref":
+      return {
+        adapter: createCrossrefDescriptor({ transport }).create(context),
+        calls,
+        timerDelays,
+      };
+    case "pubmed":
+      return { adapter: createPubmedDescriptor({ transport }).create(context), calls, timerDelays };
+    case "europepmc":
+      return {
+        adapter: createEuropepmcDescriptor({ transport }).create(context),
+        calls,
+        timerDelays,
+      };
     default:
       throw new Error(`unknown provider ${provider}`);
   }
@@ -593,10 +772,14 @@ function getCapability(adapter, capability) {
   if (capability === "research") return adapter.research.run;
   if (capability === "crawl") return adapter.crawl.fetch;
   if (capability === "map") return adapter.map.fetch;
+  if (capability === "science") return adapter.science.search;
   throw new Error(`unknown capability ${capability}`);
 }
 
 function buildRequest(row) {
+  if (row.capability === "science") {
+    return { query: SCIENCE_SEARCH_QUERY, controls: row.input };
+  }
   if (row.capability === "search") {
     return { query: SEARCH_QUERY, controls: row.input };
   }
@@ -654,10 +837,14 @@ function applyCheck(actual, row) {
 }
 
 function isUnsupportedOptionErrorFor(row) {
+  // Science rows use the noun capability ("science") for harness
+  // routing; the adapters' UnsupportedOptionError carries the op-joined
+  // form ("science.search") — normalize before comparing.
+  const expectedCapability = row.capability === "science" ? "science.search" : row.capability;
   return (err) =>
     err instanceof UnsupportedOptionError &&
     err.provider === row.provider &&
-    err.capability === row.capability &&
+    err.capability === expectedCapability &&
     err.option === row.control;
 }
 
@@ -733,7 +920,10 @@ async function runRow(row) {
     capability.validate(request); // must NOT throw
     const writes = [];
     const realWrite = process.stderr.write.bind(process.stderr);
-    process.stderr.write = (chunk) => { writes.push(String(chunk)); return true; };
+    process.stderr.write = (chunk) => {
+      writes.push(String(chunk));
+      return true;
+    };
     try {
       // Production sequence: the shared executor computes the cache
       // identity (where the disclosure fires) before invoking.
@@ -754,7 +944,11 @@ async function runRow(row) {
       `${row.provider} ${row.capability} ${row.control}: documented-strip requires the control to stay off the wire`,
     );
     assert.ok(
-      writes.some((w) => /ignoring unsupported option/i.test(w) && w.toLowerCase().includes(row.absentToken.toLowerCase())),
+      writes.some(
+        (w) =>
+          /ignoring unsupported option/i.test(w) &&
+          w.toLowerCase().includes(row.absentToken.toLowerCase()),
+      ),
       `${row.provider} ${row.capability} ${row.control}: documented-strip requires the stderr disclosure naming the stripped option; got ${JSON.stringify(writes)}`,
     );
     return;
@@ -2735,6 +2929,222 @@ const ROWS = [
     input: { instructions: "skip forms" },
     expect: "rejected",
   },
+
+  // ----- science suppliers / science.search — 5 x 4 (TASKS T8
+  // "controls-conformance rows 5x4"; DESIGN D7 table + round-2 value
+  // translation table; PRD AC-6 "every ScienceControls member is
+  // wire-consumed or rejected per supplier"). Controls: author, year,
+  // venue, type. The D7 translation-table COLUMNS live in each
+  // adapter's own test file; these rows pin consumed-vs-rejected per
+  // supplier plus the wire literal for the base value (T1: "T8
+  // conformance pins the four controls, not the component value" —
+  // `--type component` rejection is parse-level, T6/D6, pinned in the
+  // command tests).
+  {
+    provider: "arxiv",
+    capability: "science",
+    control: "author",
+    input: { author: "Vaswani" },
+    expect: "rejected",
+  },
+  {
+    provider: "arxiv",
+    capability: "science",
+    control: "year",
+    input: { year: "2018:2022" },
+    expect: "rejected",
+  },
+  {
+    provider: "arxiv",
+    capability: "science",
+    control: "venue",
+    input: { venue: "Nature" },
+    expect: "rejected",
+  },
+  {
+    provider: "arxiv",
+    capability: "science",
+    control: "type",
+    input: { type: "article" },
+    expect: "rejected",
+  },
+
+  {
+    provider: "openalex",
+    capability: "science",
+    control: "author",
+    input: { author: "Vaswani" },
+    expect: "consumed",
+    on: "query",
+    path: "filter",
+    includes: "raw_author_name.search:Vaswani",
+  },
+  {
+    provider: "openalex",
+    capability: "science",
+    control: "year",
+    input: { year: "2018:2022" },
+    expect: "consumed",
+    on: "query",
+    path: "filter",
+    includes: "from_publication_date:2018-01-01",
+  },
+  {
+    provider: "openalex",
+    capability: "science",
+    control: "venue",
+    input: { venue: "Nature" },
+    expect: "rejected",
+  },
+  {
+    provider: "openalex",
+    capability: "science",
+    control: "type",
+    input: { type: "article" },
+    expect: "consumed",
+    on: "query",
+    path: "filter",
+    includes: "type:article",
+  },
+  {
+    provider: "openalex",
+    capability: "science",
+    control: "type",
+    input: { type: "conference-paper" },
+    expect: "rejected",
+    // Value-dependent: openalex vocabulary carries no conference-paper
+    // (D10 probe-closure).
+  },
+
+  {
+    provider: "crossref",
+    capability: "science",
+    control: "author",
+    input: { author: "Vaswani" },
+    expect: "consumed",
+    on: "query",
+    path: "query.author",
+    equals: "Vaswani",
+  },
+  {
+    provider: "crossref",
+    capability: "science",
+    control: "year",
+    input: { year: "2018:2022" },
+    expect: "consumed",
+    on: "query",
+    path: "filter",
+    includes: "from-pub-date:2018",
+  },
+  {
+    provider: "crossref",
+    capability: "science",
+    control: "venue",
+    input: { venue: "Nature" },
+    expect: "consumed",
+    on: "query",
+    path: "query.container-title",
+    equals: "Nature",
+  },
+  {
+    provider: "crossref",
+    capability: "science",
+    control: "type",
+    input: { type: "article" },
+    expect: "consumed",
+    on: "query",
+    path: "filter",
+    includes: "type:journal-article",
+  },
+
+  {
+    provider: "pubmed",
+    capability: "science",
+    control: "author",
+    input: { author: "Vaswani" },
+    expect: "consumed",
+    // eutils term grammar composes onto the esearch `term` param.
+    on: "query",
+    path: "term",
+    includes: "Vaswani[AU]",
+  },
+  {
+    provider: "pubmed",
+    capability: "science",
+    control: "year",
+    input: { year: "2018:2022" },
+    expect: "consumed",
+    on: "query",
+    path: "mindate",
+    equals: "2018",
+  },
+  {
+    provider: "pubmed",
+    capability: "science",
+    control: "venue",
+    input: { venue: "Nature" },
+    expect: "rejected",
+  },
+  {
+    provider: "pubmed",
+    capability: "science",
+    control: "type",
+    input: { type: "article" },
+    expect: "consumed",
+    on: "query",
+    path: "term",
+    includes: "journal article[pt]",
+  },
+  {
+    provider: "pubmed",
+    capability: "science",
+    control: "type",
+    input: { type: "conference-paper" },
+    expect: "consumed",
+    on: "query",
+    path: "term",
+    includes: "congress[pt]",
+    // Value-dependent row pinning the D7 pubmed column's
+    // conference-paper cell (congress).
+  },
+
+  {
+    provider: "europepmc",
+    capability: "science",
+    control: "author",
+    input: { author: "Vaswani" },
+    expect: "consumed",
+    on: "query",
+    path: "query",
+    includes: 'AUTH:"Vaswani"',
+  },
+  {
+    provider: "europepmc",
+    capability: "science",
+    control: "year",
+    input: { year: "2018:2022" },
+    expect: "consumed",
+    on: "query",
+    path: "query",
+    includes: "PUB_YEAR:[2018 TO 2022]",
+  },
+  {
+    provider: "europepmc",
+    capability: "science",
+    control: "venue",
+    input: { venue: "Nature" },
+    expect: "rejected",
+  },
+  {
+    provider: "europepmc",
+    capability: "science",
+    control: "type",
+    input: { type: "article" },
+    expect: "consumed",
+    on: "query",
+    path: "query",
+    includes: 'PUB_TYPE:"Journal Article"',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2782,7 +3192,19 @@ describe("controls class-guard — table integrity", () => {
       "contentSize",
       "timeout",
     ];
-    const MAP_CONTROLS = ["limit", "depth", "breadth", "selectPaths", "excludePaths", "instructions"];
+    const MAP_CONTROLS = [
+      "limit",
+      "depth",
+      "breadth",
+      "selectPaths",
+      "excludePaths",
+      "instructions",
+    ];
+    // TASKS T8 "controls-conformance rows 5x4 (COVERAGE map extended)" —
+    // exactly the four ScienceControls members per science supplier;
+    // value-dependent rows beyond the four are extra (documented in the
+    // row's comment), not coverage-mandated.
+    const SCIENCE_CONTROLS = ["author", "year", "venue", "type"];
     const COVERAGE = {
       zai: { search: SEARCH_CONTROLS, reader: READER_CONTROLS },
       minimax: { search: SEARCH_CONTROLS },
@@ -2812,6 +3234,11 @@ describe("controls class-guard — table integrity", () => {
         crawl: CRAWL_CONTROLS,
         map: MAP_CONTROLS,
       },
+      arxiv: { science: SCIENCE_CONTROLS },
+      openalex: { science: SCIENCE_CONTROLS },
+      crossref: { science: SCIENCE_CONTROLS },
+      pubmed: { science: SCIENCE_CONTROLS },
+      europepmc: { science: SCIENCE_CONTROLS },
     };
     for (const [provider, capabilities] of Object.entries(COVERAGE)) {
       for (const [capability, controls] of Object.entries(capabilities)) {
@@ -2835,8 +3262,7 @@ describe("controls class-guard — table integrity", () => {
 
 describe("controls class-guard — reject or consume, never silently drop", () => {
   for (const row of ROWS) {
-    const variant =
-      row.note ? ` [${JSON.stringify(row.input[row.control])}]` : "";
+    const variant = row.note ? ` [${JSON.stringify(row.input[row.control])}]` : "";
     it(`${row.expect} | ${row.provider} ${row.capability} ${row.control}${variant}`, async () => {
       await runRow(row);
     });

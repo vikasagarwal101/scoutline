@@ -26,7 +26,15 @@ import { createPerplexityDescriptor } from "./perplexity/adapter.js";
 import { createJinaDescriptor } from "./jina/adapter.js";
 import { createLinkupDescriptor } from "./linkup/adapter.js";
 import { createYouDescriptor } from "./you/adapter.js";
-import { createSpiderDescriptor } from "./spider/adapter.js";import type { ProviderDescriptor, ProviderId } from "./types.js";
+import { createSpiderDescriptor } from "./spider/adapter.js";
+// The science verticals ship their real adapters; none of the seats
+// still import the stub factories from types.js.
+import { createArxivDescriptor } from "./arxiv/adapter.js";
+import { createOpenalexDescriptor } from "./openalex/adapter.js";
+import { createCrossrefDescriptor } from "./crossref/adapter.js";
+import { createPubmedDescriptor } from "./pubmed/adapter.js";
+import { createEuropepmcDescriptor } from "./europepmc/adapter.js";
+import type { ProviderDescriptor, ProviderId } from "./types.js";
 import {
   getProviderDescriptor as lookupProviderDescriptor,
   getConfiguredProviderDescriptors as lookupConfigured,
@@ -51,6 +59,15 @@ export const BUILT_IN_PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [
   createYouDescriptor(),
   createLinkupDescriptor(),
   createSpiderDescriptor(),
+  // Science suppliers (T2 seats) — real adapters ship here; the stub
+  // seats live in types.ts's BUILT_IN_PROVIDER_DESCRIPTORS.
+  // D2 listing order — openalex-first is the executor fan-out ARM
+  // order, NOT the registry insertion order.
+  createArxivDescriptor(),
+  createOpenalexDescriptor(),
+  createCrossrefDescriptor(),
+  createPubmedDescriptor(),
+  createEuropepmcDescriptor(),
 ];
 
 /**

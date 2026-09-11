@@ -1222,6 +1222,211 @@ describe("init provider checklist: registry-derived, equal weight", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Science providers in the init wizard (T2: PROVIDER_PROMPT_META rows +
+// optional-field renderer guards + minimum keyless branch; AC-9 wording
+// stays owner-flagged, keyed opt-in flow is T11)
+// ---------------------------------------------------------------------------
+
+describe("init checklist: science provider rows (T2 prompt-meta rows)", () => {
+  it("five science providers appear in the checklist with labels and keyless notes", async () => {
+    // GROUND: T2 — init.ts PROVIDER_PROMPT_META gains five rows (the
+    // Record is total over ProviderId, so a missing row fails closed
+    // in providerMeta). Building the checklist calls providerMeta for
+    // every registry provider.
+    const { BUILT_IN_PROVIDER_DESCRIPTORS } = await import("../dist/providers/registry.js");
+    const script = createScriptedPrompts();
+    script.queueCheckboxCancel();
+    const store = createFakeConfigStore();
+    const { deps } = createInitDeps({
+      descriptors: BUILT_IN_PROVIDER_DESCRIPTORS,
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    await handleInitWithHelp([], deps);
+
+    const call = script.calls.checkbox[0];
+    assert.ok(call, "checkbox was invoked");
+    const expectedLabels = {
+      arxiv: "arXiv",
+      openalex: "OpenAlex",
+      crossref: "Crossref",
+      pubmed: "PubMed",
+      europepmc: "Europe PMC",
+    };
+    for (const [id, label] of Object.entries(expectedLabels)) {
+      const choice = call.choices.find((c) => c.value === id);
+      assert.ok(choice, `${id} must be offered in the init checklist`);
+      assert.strictEqual(choice.name, label, `${id} label must be ${label}`);
+      assert.strictEqual(choice.checked, false, `${id} must not be pre-checked`);
+    }
+  });
+
+  it("keyless trio rows render the keyless note and free probe in the checklist description", async () => {
+    // GROUND: T2 trio row shape — label, no envVar, no registrationUrl,
+    // probeCostsCredit: false, keylessNote "no key required" (rendered
+    // in the checklist description).
+    const { BUILT_IN_PROVIDER_DESCRIPTORS } = await import("../dist/providers/registry.js");
+    const script = createScriptedPrompts();
+    script.queueCheckboxCancel();
+    const store = createFakeConfigStore();
+    const { deps } = createInitDeps({
+      descriptors: BUILT_IN_PROVIDER_DESCRIPTORS,
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    await handleInitWithHelp([], deps);
+
+    const call = script.calls.checkbox[0];
+    for (const id of ["arxiv", "crossref", "europepmc"]) {
+      const choice = call.choices.find((c) => c.value === id);
+      assert.ok(choice, `${id} choice must exist`);
+      assert.match(
+        choice.description,
+        /no key required/i,
+        `${id} description must render the keyless note`,
+      );
+      assert.match(choice.description, /free/i, `${id} probe must be described as free`);
+    }
+  });
+
+  it("openalex and pubmed rows describe keyless-with-upgrade economics", async () => {
+    // GROUND: T2 row copy (REVISED 2026-09-10 economics — the prior
+    // "100k/day, 10x" literal is stale): openalex keylessNote names the
+    // metered keyless budget and recommends the free key; pubmed
+    // keylessNote names the 3 r/s vs 10 r/s rates.
+    const { BUILT_IN_PROVIDER_DESCRIPTORS } = await import("../dist/providers/registry.js");
+    const script = createScriptedPrompts();
+    script.queueCheckboxCancel();
+    const store = createFakeConfigStore();
+    const { deps } = createInitDeps({
+      descriptors: BUILT_IN_PROVIDER_DESCRIPTORS,
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    await handleInitWithHelp([], deps);
+
+    const call = script.calls.checkbox[0];
+    const openalex = call.choices.find((c) => c.value === "openalex");
+    assert.ok(openalex, "openalex choice must exist");
+    assert.match(openalex.description, /1000 credits\/day/i, "openalex must state the keyless budget");
+    assert.match(openalex.description, /free key recommended/i, "openalex must recommend the free key");
+    const pubmed = call.choices.find((c) => c.value === "pubmed");
+    assert.ok(pubmed, "pubmed choice must exist");
+    assert.match(pubmed.description, /3 r\/s/i, "pubmed must state the keyless rate");
+    assert.match(pubmed.description, /10 r\/s/i, "pubmed must state the keyed rate");
+  });
+});
+
+describe("init wizard: minimum keyless branch for keyless science suppliers (T2)", () => {
+  it("selecting arxiv skips key entry and verify-saves via the keyless probe (no password prompt, no registration link)", async (t) => {
+    // GROUND: T2/T11 boundary ruling — the minimum keyless wizard
+    // branch implied by the trio rows (skip key entry, keyless
+    // diagnostics probe as verify-then-save validation) is T2 scope.
+    // A keyless provider selected in the checklist must NOT receive
+    // ask-key / password prompts; the keyless diagnostics probe is the
+    // verify step.
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const arxiv = makeFakeDescriptor({
+        id: "arxiv",
+        credentialEnvVars: [],
+        canonicalEnvVar: "__ARXIV_NONE__",
+        behaviour: "resolve",
+      });
+
+      const script = createScriptedPrompts();
+      script.queueCheckbox(["arxiv"]);
+      // Fallback + journal confirms still apply after onboarding.
+      script.queueConfirm(true);
+      script.queueConfirm(true);
+
+      const realStore = await import("../dist/lib/config-store.js");
+      const store = {
+        async inspect() {
+          return realStore.inspectConfig({ filePath });
+        },
+        async write(config, options) {
+          await realStore.writeConfig(config, { filePath, ...options });
+        },
+      };
+      const { deps, stderrChunks } = createInitDeps({
+        descriptors: [arxiv.descriptor],
+        prompts: script.prompts,
+        configStore: store,
+      });
+
+      const status = await handleInitWithHelp([], deps);
+      assert.strictEqual(status, 0);
+      // No key prompt: the confirm queue only saw fallback+journal.
+      assert.equal(
+        script.calls.confirm.filter((c) => /API key/i.test(c.message)).length,
+        0,
+        "keyless provider must not be asked for a key",
+      );
+      assert.equal(script.calls.password.length, 0, "keyless provider must not prompt for a password");
+      assert.ok(!/Get an API key/i.test(stderrChunks.join("")), "no registration link for a keyless provider");
+      // The keyless probe ran exactly once (verify-then-save).
+      assert.equal(arxiv.invokes.length, 1, "keyless provider runs one diagnostics probe");
+      // Written config carries the keyless onboarding without a key.
+      const written = JSON.parse(await fs.readFile(filePath, "utf8"));
+      assert.ok(written.providers.arxiv, "arxiv provider record must be written");
+      assert.equal(written.providers.arxiv.apiKey, undefined, "no apiKey for keyless onboarding");
+    });
+  });
+
+  it("keyless probe failure skips the supplier: one probe, skip notice on stderr, nothing saved", async (t) => {
+    // Missing-pin fix: the failure path (probe fails -> writeStderr
+    // "keyless probe failed (...); skipping." -> return "skip", nothing
+    // saved) was implemented but unpinned; a mutation saving unverified
+    // or falling through to the key prompt shipped green.
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const arxiv = makeFakeDescriptor({
+        id: "arxiv",
+        credentialEnvVars: [],
+        canonicalEnvVar: "__ARXIV_NONE__",
+        behaviour: "network",
+      });
+
+      const script = createScriptedPrompts();
+      script.queueCheckbox(["arxiv"]);
+      // Fallback + journal confirms still run after the skipped onboarding.
+      script.queueConfirm(true);
+      script.queueConfirm(true);
+
+      const realStore = await import("../dist/lib/config-store.js");
+      const store = {
+        async inspect() {
+          return realStore.inspectConfig({ filePath });
+        },
+        async write(config, options) {
+          await realStore.writeConfig(config, { filePath, ...options });
+        },
+      };
+      const { deps, stderrChunks } = createInitDeps({
+        descriptors: [arxiv.descriptor],
+        prompts: script.prompts,
+        configStore: store,
+      });
+
+      const status = await handleInitWithHelp([], deps);
+      assert.strictEqual(status, 0);
+      assert.equal(arxiv.invokes.length, 1, "one keyless probe attempt, then skip");
+      assert.match(stderrChunks.join(""), /keyless probe failed/);
+      const written = JSON.parse(await fs.readFile(filePath, "utf8"));
+      assert.equal(
+        written.providers?.arxiv,
+        undefined,
+        "failed keyless probe must not write a provider record",
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Dispatcher integration: main(["init", "--help"]) in-process
 // ---------------------------------------------------------------------------
 
@@ -1888,9 +2093,250 @@ describe("init re-config: routing editor", () => {
     script.queueInputCancel();
     script.queueSelect("cancel");
 
-    const { deps } = createInitDeps({ descriptors: [], prompts: script.prompts, configStore: store });
+    const { deps } = createInitDeps({
+      descriptors: [],
+      prompts: script.prompts,
+      configStore: store,
+    });
     const status = await handleInitWithHelp([], deps);
     assert.strictEqual(status, 0);
+    assert.strictEqual(store.getWrites().length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Re-config menu: keyless science rows (onboarded true, no usable
+// apiKey). Review pins: keyless rows are VISIBLE in the status line,
+// REMOVABLE via remove-provider (choice name carries " (keyless)"),
+// EXCLUDED from add-provider eligibility, and never offered for
+// key-editing; a keyless ADD persists a row without an apiKey field.
+// ---------------------------------------------------------------------------
+
+describe("init re-config: keyless rows are visible, removable, and out of add/edit flows", () => {
+  function keylessArxivConfig() {
+    return { version: 1, providers: { arxiv: { onboarded: true } } };
+  }
+
+  function keylessFakeDescriptor(id, canonicalEnvVar) {
+    return makeFakeDescriptor({
+      id,
+      credentialEnvVars: [],
+      canonicalEnvVar,
+      behaviour: "resolve",
+    });
+  }
+
+  it("status line shows keyless rows after the keyed list; edit-key is not offered when no keyed rows exist", async () => {
+    const script = createScriptedPrompts();
+    const store = createFakeConfigStore({ initial: keylessArxivConfig() });
+    script.queueSelect("cancel");
+    const { deps, stderrChunks } = createInitDeps({
+      descriptors: [],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+
+    assert.strictEqual(status, 0);
+    // GROUND: review (a) — a keyless science seat must appear in the
+    // reconfig status line as "keyless: <ids>"; the pre-fix defect
+    // rendered an empty configured set ("none") for it.
+    assert.match(stderrChunks.join(""), /Providers configured: keyless: arxiv\./);
+    // GROUND: review (d) — edit-key requires a keyed row; with only
+    // keyless rows the choice must not be offered at all.
+    const menu = script.calls.select.find((c) => /What would you like to do\?/.test(c.message));
+    assert.ok(menu, "reconfig menu rendered");
+    assert.equal(
+      menu.choices.some((choice) => choice.value === "edit-key"),
+      false,
+      "edit-key must not be offered for a keyless-only config",
+    );
+    assert.strictEqual(store.getWrites().length, 0);
+  });
+
+  it("remove-provider lists the keyless row with the (keyless) suffix and removal deletes it", async () => {
+    const store = createFakeConfigStore({ initial: keylessArxivConfig() });
+    const script = createScriptedPrompts();
+    script.queueSelect("remove-provider");
+    script.queueSelect("arxiv");
+    script.queueConfirm(true); // confirm removal
+    script.queueSelect("cancel"); // menu loops back → exit
+
+    const { deps, stdoutChunks } = createInitDeps({
+      descriptors: [],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+
+    assert.strictEqual(status, 0);
+    // GROUND: review (b) — the remove choice names the row kind so the
+    // user can tell a keyless seat from a keyed one before deleting.
+    const removePrompt = script.calls.select.find((c) => /Remove which provider\?/.test(c.message));
+    assert.ok(removePrompt, "remove prompt rendered");
+    const arxivChoice = removePrompt.choices.find((choice) => choice.value === "arxiv");
+    assert.ok(arxivChoice, "keyless row is offered for removal");
+    assert.match(arxivChoice.name, /arXiv \(keyless\)/);
+    const writes = store.getWrites();
+    assert.strictEqual(writes.length, 1);
+    assert.ok(
+      !writes[0].config.providers.arxiv,
+      "the keyless row is deleted from the written config",
+    );
+    assert.match(stdoutChunks.join(""), /arXiv: removed/i);
+  });
+
+  it("add-provider does not offer an already-seated keyless row", async () => {
+    const store = createFakeConfigStore({ initial: keylessArxivConfig() });
+    const script = createScriptedPrompts();
+    script.queueSelect("add-provider");
+    script.queueSelectCancel(); // back out of the add flow
+    script.queueSelect("cancel"); // menu loops back → exit
+
+    const arxiv = keylessFakeDescriptor("arxiv", "__ARXIV_NONE__");
+    const zai = makeFakeDescriptor({ id: "zai" });
+    const { deps } = createInitDeps({
+      descriptors: [arxiv.descriptor, zai.descriptor],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+
+    assert.strictEqual(status, 0);
+    // GROUND: review (c) — eligibility excludes BOTH row kinds; a
+    // keyless seat already in the config must not be re-onboarded.
+    const addPrompt = script.calls.select.find((c) => /Add which provider\?/.test(c.message));
+    assert.ok(addPrompt, "add prompt rendered");
+    assert.equal(
+      addPrompt.choices.some((choice) => choice.value === "arxiv"),
+      false,
+      "keyless arxiv must not be offered for adding",
+    );
+    assert.ok(
+      addPrompt.choices.some((choice) => choice.value === "zai"),
+      "unseated providers stay eligible",
+    );
+    assert.strictEqual(store.getWrites().length, 0);
+  });
+
+  it("add-provider offers the keyless default for openalex/pubmed (review round 6)", async () => {
+    // GROUND: review round 6 — reconfig's add-provider walked the
+    // KEYED flow for the keyless-by-default science seats with an
+    // upgrade env var (openalex/pubmed), so declining the key
+    // skipped the add entirely. The keyless confirm now precedes the
+    // keyed ask; answering yes probes keyless and writes the row
+    // without an apiKey.
+    const store = createFakeConfigStore({
+      initial: { version: 1, providers: { arxiv: { onboarded: true } } },
+    });
+    const script = createScriptedPrompts();
+    script.queueSelect("add-provider");
+    script.queueSelect("openalex");
+    script.queueConfirm(true); // keyless default: yes
+    script.queueSelect("cancel"); // menu loops back → exit
+    const openalexFake = {
+      id: "openalex",
+      credentialEnvVars: ["OPENALEX_API_KEY"],
+      isConfigured: () => false,
+      capabilities: () => new Set(["science.search", "science.get", "diagnostics"]),
+      create: () => ({ diagnostics: { async invoke() { return undefined; } } }),
+    };
+    const { deps, stdoutChunks } = createInitDeps({
+      descriptors: [openalexFake],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+
+    assert.strictEqual(status, 0);
+    const confirm = script.calls.confirm.find((c) => /keyless/.test(c.message));
+    assert.ok(confirm, "the keyless-default confirm fired before any key ask");
+    const writes = store.getWrites();
+    assert.strictEqual(writes.length, 1, "one write");
+    assert.ok(writes[0].config.providers.openalex, "openalex row written");
+    assert.strictEqual(
+      writes[0].config.providers.openalex.apiKey,
+      undefined,
+      "keyless add persists without an apiKey",
+    );
+    assert.match(stdoutChunks.join(""), /OpenAlex: added keyless/);
+  });
+
+  it("adding a keyless provider persists the row WITHOUT an apiKey field", async () => {
+    const store = createFakeConfigStore({ initial: keylessArxivConfig() });
+    const script = createScriptedPrompts();
+    script.queueSelect("add-provider");
+    script.queueSelect("crossref"); // unseated keyless supplier
+    // No key prompts on the keyless branch: the diagnostics probe IS
+    // the verify step. The menu loops back → cancel.
+    script.queueSelect("cancel");
+
+    const arxiv = keylessFakeDescriptor("arxiv", "__ARXIV_NONE__");
+    const crossref = keylessFakeDescriptor("crossref", "__CROSSREF_NONE__");
+    const { deps, stdoutChunks } = createInitDeps({
+      descriptors: [arxiv.descriptor, crossref.descriptor],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+
+    assert.strictEqual(status, 0);
+    assert.equal(script.calls.password.length, 0, "keyless add prompts for no key");
+    assert.equal(crossref.invokes.length, 1, "one keyless probe (verify-then-save)");
+    const writes = store.getWrites();
+    assert.strictEqual(writes.length, 1);
+    const row = writes[0].config.providers.crossref;
+    // GROUND: review — a keyless ADD must persist the same shape the
+    // fresh-flow keyless branch writes: onboarded, verified, no apiKey.
+    assert.ok(row, "crossref record written");
+    assert.equal(row.apiKey, undefined, "keyless add persists without an apiKey field");
+    assert.equal(row.onboarded, true);
+    assert.equal(row.verification?.status, "verified");
+    assert.ok(writes[0].config.providers.arxiv, "the seated keyless row is undisturbed");
+    assert.match(stdoutChunks.join(""), /Crossref: added/i);
+  });
+
+  it("edit-key lists only keyed rows — a keyless row is never offered for key editing", async () => {
+    const store = createFakeConfigStore({
+      initial: {
+        version: 1,
+        providers: { zai: { apiKey: "zai-key" }, arxiv: { onboarded: true } },
+      },
+    });
+    const script = createScriptedPrompts();
+    script.queueSelect("edit-key");
+    script.queueSelectCancel(); // back out of key editing
+    script.queueSelect("cancel");
+
+    const { deps } = createInitDeps({
+      descriptors: [],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+
+    assert.strictEqual(status, 0);
+    // GROUND: review (d) — edit-key lists ONLY keyed rows; there is
+    // nothing to edit on a keyless seat.
+    const editPrompt = script.calls.select.find((c) =>
+      /Edit which provider's key\?/.test(c.message),
+    );
+    assert.ok(editPrompt, "edit-key prompt rendered");
+    assert.ok(
+      editPrompt.choices.some((choice) => choice.value === "zai"),
+      "keyed row is editable",
+    );
+    assert.equal(
+      editPrompt.choices.some((choice) => choice.value === "arxiv"),
+      false,
+      "keyless row must not be offered for key editing",
+    );
     assert.strictEqual(store.getWrites().length, 0);
   });
 });

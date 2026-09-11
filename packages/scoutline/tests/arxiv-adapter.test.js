@@ -291,6 +291,19 @@ describe("arxiv search invoke — Atom parse + ScienceWork mapping (TASKS T3; DE
     assert.equal(cdata.summary, "We study naïve sets & prove a theorem.");
   });
 
+  it("out-of-range numeric references stay literal instead of throwing RangeError (review round 6)", async () => {
+    // Review: String.fromCodePoint THROWS on values above 0x10FFFF —
+    // a malformed entity in one entry must not fail the whole invoke.
+    const hostile = ARXIV_ATOM_FEED.replace(
+      "<title>Attention Is All You Need</title>",
+      "<title>Beyond &#x110000; and &#x2FFFFFFFFFFF; the limit</title>",
+    );
+    assert.notEqual(hostile, ARXIV_ATOM_FEED, "fixture splice must land");
+    const { adapter } = makeAdapter(hostile);
+    const works = await adapter.science.search.invoke({ query: "attention" });
+    assert.equal(works[0].title, "Beyond &#x110000; and &#x2FFFFFFFFFFF; the limit");
+  });
+
   it("handles CDATA, unicode, per-element namespace redeclaration, and arxiv:doi (entry 2)", async () => {
     const { adapter } = makeAdapter();
     const works = await adapter.science.search.invoke({ query: "wieferich" });

@@ -236,13 +236,23 @@ describe("quota authority — five always-unknown rows (T2 round-5 bullet; D5 pr
   });
 });
 
-describe("RESEARCH_HELP provider enumeration widens 12→17 (T2 literal-surfaces bullet; PRD AC-9b)", () => {
-  it("RESEARCH_HELP carries the full 17-id pipe list (hand-written list in research.ts must not stay at 12)", () => {
+describe("RESEARCH_HELP provider enumeration (T2 literal surface; review rounds 3/6 ruling)", () => {
+  it("RESEARCH_HELP lists the 12 shared-capability suppliers — science ids are not research-eligible", () => {
+    // T2 originally widened the hand-written list 12→17 (PRD AC-9b
+    // literal-surfaces bullet). The review ruling reversed that for
+    // capability-gated commands: science suppliers advertise
+    // science.* only, so advertising them on research invited a
+    // guaranteed-failing pin (or a credit-consuming reroute under
+    // fallback). Same ruling as SEARCH_HELP/quota/map.
     const expected =
-      "(zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | you | linkup | spider | arxiv | openalex | crossref | pubmed | europepmc)";
+      "(zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | you | linkup | spider)";
     assert.ok(
       RESEARCH_HELP.includes(expected),
-      `RESEARCH_HELP --provider list must be the 17-id pipe list: ${expected}`,
+      `RESEARCH_HELP --provider list must be the 12-id shared list: ${expected}`,
+    );
+    assert.ok(
+      !RESEARCH_HELP.includes("| arxiv |"),
+      "science-only ids must not appear in the research --provider list",
     );
   });
 });

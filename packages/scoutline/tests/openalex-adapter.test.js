@@ -452,6 +452,34 @@ describe("openalex get — DOI and PMID identifiers (TASKS T4; DESIGN D10 ruling
     );
   });
 
+  it("a hostile huge inverted-index position neither hangs nor corrupts the abstract (review round 6)", async () => {
+    // Review: positions were used as array indexes — a value like 1e9
+    // allocated a billion-slot sparse array and pinned the process.
+    // Collection + sort must stay bounded and simply drop unsafe slots.
+    const hostile = {
+      ...WORK_DEEP_LEARNING,
+      abstract_inverted_index: {
+        Attention: [0, 1_000_000_000],
+        All: [1],
+        Beyond: [Number.MAX_SAFE_INTEGER + 1],
+      },
+    };
+    const { adapter } = makeAdapter({ meta: {}, results: [hostile] });
+    const works = await adapter.science.search.invoke({ query: "deep" });
+    // A huge-but-safe position is kept (sorted, bounded work — no
+    // billion-slot array); an unsafe (non-integer-representable)
+    // position is dropped outright.
+    assert.equal(
+      works[0].summary,
+      "Attention All Attention",
+      "huge-but-safe positions reconstruct in order without hanging",
+    );
+    assert.ok(
+      !works[0].summary.includes("Beyond"),
+      "unsafe positions are dropped",
+    );
+  });
+
   it("get percent-encodes URL-delimiter characters in the DOI route (review)", async () => {
     // Review: a DOI suffix containing `?` or `#` truncated or rerouted
     // the entity path via `new URL`. The route must carry them

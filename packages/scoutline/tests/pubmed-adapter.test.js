@@ -486,6 +486,37 @@ describe("pubmed search invoke — XML mapping to ScienceWork (TASKS T4c; PRD AC
     );
   });
 
+  it("PubmedBookArticle records parse — book PMIDs no longer vanish (review round 6)", async () => {
+    // Review: eutils emits <PubmedBookArticle> for book-oriented PMIDs;
+    // the block matcher dropped them, so searches omitted ids esearch
+    // returned and direct gets 404'd.
+    const bookXml = `<?xml version="1.0" ?>
+<PubmedArticleSet>
+<PubmedBookArticle><PMID Version="1">31687970</PMID><Article><ArticleTitle>Genome Editing Handbook.</ArticleTitle></Article></PubmedBookArticle>
+</PubmedArticleSet>`;
+    const { adapter } = makeAdapter({
+      esearch: { header: { type: "esearch", version: "0.3" }, esearchresult: { count: "1", idlist: ["31687970"] } },
+      efetch: bookXml,
+    });
+    const works = await adapter.science.search.invoke({ query: "handbook" });
+    assert.equal(works.length, 1, "the book record parses");
+    assert.equal(works[0].title, "Genome Editing Handbook.");
+    assert.ok(works[0].url.includes("31687970"), "PMID-addressed url");
+  });
+
+  it("nested inline markup is stripped from titles and abstracts (review round 6)", async () => {
+    // Review: eutils titles carry <i>/<b>/<sub> markup — surfacing it
+    // literally in ScienceWork fields is markup leakage, not fidelity.
+    const marked = PMID_FULL_XML.replace(
+      "<ArticleTitle>T Cells Remember SARS-CoV-2 in Rituximab-Treated Pemphigus Vulgaris.</ArticleTitle>",
+      "<ArticleTitle>Gene <i>ABC</i> and the <sub>2</sub> splice variant.</ArticleTitle>",
+    );
+    assert.notEqual(marked, PMID_FULL_XML, "fixture splice must land");
+    const { adapter } = makeAdapter({ efetch: marked });
+    const works = await adapter.science.search.invoke({ query: "gene" });
+    assert.equal(works[0].title, "Gene ABC and the 2 splice variant.");
+  });
+
   it("a structured abstract joins EVERY labeled AbstractText section (review)", async () => {
     // Review: multi-section abstracts previously kept only the FIRST
     // <AbstractText> block — the labeled sections after it were lost.

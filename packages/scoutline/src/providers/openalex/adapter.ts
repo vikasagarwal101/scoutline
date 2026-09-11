@@ -143,15 +143,21 @@ function reconstructAbstract(
   index: Record<string, number[]> | null | undefined,
 ): string | undefined {
   if (index === null || index === undefined) return undefined;
-  const slots: string[] = [];
+  // Positions are collected, never used as array indexes (review):
+  // a hostile/huge position (e.g. 1e9) would allocate and scan a
+  // sparse array of that length, pinning the process.
+  const slots = new Map<number, string>();
   for (const [word, positions] of Object.entries(index)) {
     for (const position of positions) {
-      slots[position] = word;
+      if (Number.isSafeInteger(position) && position >= 0) slots.set(position, word);
     }
   }
+  const text = [...slots.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, word]) => word)
+    .join(" ");
   // An EMPTY inverted index reconstructs to "" — that is an absent
-  // abstract (AC-7c), not an empty-string summary (review).
-  const text = slots.filter((s) => s !== undefined).join(" ");
+  // abstract (AC-7c), not an empty-string summary.
   return text === "" ? undefined : text;
 }
 

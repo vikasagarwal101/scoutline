@@ -85,14 +85,24 @@ function decodeXmlEntities(text: string): string {
   return text.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);/g, (whole, body: string) => {
     if (body.startsWith("#x") || body.startsWith("#X")) {
       const code = Number.parseInt(body.slice(2), 16);
-      return Number.isNaN(code) ? whole : String.fromCodePoint(code);
+      return isSafeCodePoint(code) ? String.fromCodePoint(code) : whole;
     }
     if (body.startsWith("#")) {
       const code = Number.parseInt(body.slice(1), 10);
-      return Number.isNaN(code) ? whole : String.fromCodePoint(code);
+      return isSafeCodePoint(code) ? String.fromCodePoint(code) : whole;
     }
     return XML_ENTITIES[body] ?? whole;
   });
+}
+
+/**
+ * A numeric reference is only decodable inside the Unicode code-point
+ * range (review): `String.fromCodePoint` THROWS RangeError on out-of-
+ * range values, which would fail the whole invoke — malformed refs
+ * stay literal instead.
+ */
+function isSafeCodePoint(code: number): boolean {
+  return !Number.isNaN(code) && code >= 0 && code <= 0x10ffff;
 }
 
 /** Inner text of a matched element: CDATA stays literal, plain text is entity-decoded. */

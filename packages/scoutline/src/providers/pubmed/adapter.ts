@@ -151,26 +151,43 @@ function decodeXmlEntities(text: string): string {
   return text.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);/g, (whole, body: string) => {
     if (body.startsWith("#x") || body.startsWith("#X")) {
       const code = Number.parseInt(body.slice(2), 16);
-      return Number.isNaN(code) ? whole : String.fromCodePoint(code);
+      return isSafeCodePoint(code) ? String.fromCodePoint(code) : whole;
     }
     if (body.startsWith("#")) {
       const code = Number.parseInt(body.slice(1), 10);
-      return Number.isNaN(code) ? whole : String.fromCodePoint(code);
+      return isSafeCodePoint(code) ? String.fromCodePoint(code) : whole;
     }
     return XML_ENTITIES[body] ?? whole;
   });
 }
 
+/**
+ * A numeric reference is only decodable inside the Unicode code-point
+ * range (review): `String.fromCodePoint` THROWS RangeError on out-of-
+ * range values, which would fail the whole invoke — malformed refs
+ * stay literal instead.
+ */
+function isSafeCodePoint(code: number): boolean {
+  return !Number.isNaN(code) && code >= 0 && code <= 0x10ffff;
+}
+
 /** Inner text of a matched element: CDATA stays literal, plain text is entity-decoded. */
 function innerText(raw: string): string {
   const stripped = stripCdata(raw);
-  return stripped === raw ? decodeXmlEntities(stripped) : stripped;
+  if (stripped !== raw) return stripped;
+  // Nested inline markup (review): eutils titles/abstracts carry
+  // `<i>`/`<b>`/`<sub>` tags — strip them BEFORE entity decoding so
+  // `Gene <i>ABC</i>` surfaces as `Gene ABC`, not literal markup.
+  return decodeXmlEntities(stripped.replace(/<[^>]*>/g, ""));
 }
 
 /** `<PubmedArticle>…</PubmedArticle>` blocks, in document order. */
 function pubmedArticleBlocks(xml: string): string[] {
   const out: string[] = [];
-  const re = /<PubmedArticle(?:\s[^>]*)?>([\s\S]*?)<\/PubmedArticle>/gi;
+  // Book records ride `<PubmedBookArticle>` (review): eutils emits
+  // them for book-oriented PMIDs — dropping them made searches omit
+  // ids esearch returned and gets 404.
+  const re = /<Pubmed(?:Book)?Article(?:\s[^>]*)?>([\s\S]*?)<\/Pubmed(?:Book)?Article>/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(xml)) !== null) {
     if (m[0] !== undefined) out.push(m[0]);

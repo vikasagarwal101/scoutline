@@ -787,10 +787,10 @@ Usage:
                          [--kind <save|journal>] [--repeats]
   scoutline history show <requestId>
   scoutline history stats
-  scoutline history note --capability <search|read|research> <text>
+  scoutline history note --capability <search|read|research|science> <text>
                           [--url <url> [--title <title>]]... [--tags a,b]
   scoutline history recall <text> [--limit N] [--as-of <date>]
-                           [--capability <search|read|research>]
+                           [--capability <search|read|research|science>]
   scoutline history export [--since <date>]
   scoutline history clear [--all]
 
@@ -853,7 +853,7 @@ Examples:
 export const HISTORY_NOTE_HELP = `History note - Write an explicit journal entry
 
 Usage:
-  scoutline history note --capability <search|read|research> <text>
+  scoutline history note --capability <search|read|research|science> <text>
                           [--url <url> [--title <title>]]... [--tags a,b,c]
 
 Records hand-written work or observations into the research journal —
@@ -867,7 +867,7 @@ hand-choosable. Notes ignore the always-on escape hatches — config
 governs automatic recording; note is opt-in by construction).
 
 Options:
-  --capability <search|read|research>
+  --capability <search|read|research|science>
           The capability the note records (required). Drives the
           skeleton shape: search = url+title list; read = exactly one
           {url,title} row; research = citations list.
@@ -901,7 +901,7 @@ export const HISTORY_RECALL_HELP = `History recall - Re-find past research from 
 
 Usage:
   scoutline history recall <text> [--limit N] [--as-of <date>] \\
-                           [--capability <search|read|research>]
+                           [--capability <search|read|research|science>]
 
 Lexical recollection over the recorded journal corpus: token overlap
 between your recall text and each journal entry's query + skeleton

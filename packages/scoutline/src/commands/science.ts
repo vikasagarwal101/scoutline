@@ -617,7 +617,7 @@ function unionScienceWorks(first: ScienceWork, later: ScienceWork): ScienceWork 
     if (key === "identifiers") continue;
     if (merged[key] === undefined) merged[key] = value;
   }
-  const ids = { ...(first.identifiers ?? {}), ...(later.identifiers ?? {}) };
+  const ids = { ...(later.identifiers ?? {}), ...(first.identifiers ?? {}) };
   if (Object.keys(ids).length > 0) merged.identifiers = ids;
   return merged as unknown as ScienceWork;
 }
@@ -850,8 +850,9 @@ export async function handleScience(
         // Parallel arms, one client per arm (the search fan-out
         // orchestration shape). allSettled: a later arm's failure must
         // not discard an earlier arm's already-merged works.
+        const armIdentities: unknown[] = [];
         const settled = await Promise.allSettled(
-          arms.map(async (arm) => {
+          arms.map(async (arm, index) => {
             const capability = arm.create({ env: deps.env }).science?.search;
             if (capability === undefined) {
               throw new ValidationError(
@@ -864,10 +865,12 @@ export async function handleScience(
             // execution layer, so the supplier's (capture-wrapped)
             // cacheIdentity is consulted HERE — pre-invoke, matching
             // execution.ts step 2. Science identities use `supplier`
-            // (not `provider`); the journal cacheKey is derived from
-            // the first arm's captured identity in the hook thunk.
-            if (deps.journal !== undefined && journalIdentity === undefined) {
-              journalIdentity = capability.cacheIdentity?.(request);
+            // (not `provider`); per-arm identities are captured here
+            // and the journal cacheKey is derived from the FIRST
+            // FULFILLED arm below (review: a failed first arm must
+            // not stamp the journal's provider partition).
+            if (deps.journal !== undefined) {
+              armIdentities[index] = capability.cacheIdentity?.(request);
             }
             return await capability.invoke(request);
           }),
@@ -880,6 +883,17 @@ export async function handleScience(
         const works = settled.flatMap((outcome) =>
           outcome.status === "fulfilled" ? outcome.value : [],
         );
+        // Journal partition follows the FIRST FULFILLED arm in D5
+        // order (review) — the identity of an arm that failed must
+        // not produce a cache key for the wrong provider partition.
+        if (deps.journal !== undefined) {
+          for (let i = 0; i < settled.length; i += 1) {
+            if (settled[i]?.status === "fulfilled") {
+              journalIdentity = armIdentities[i];
+              break;
+            }
+          }
+        }
         // Fail only when EVERY arm rejected (review): a fulfilled arm
         // may validly return an empty result set — an empty-but-
         // successful fan-out with one failed sibling still succeeds,

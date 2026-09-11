@@ -1455,6 +1455,48 @@ async function addProvider(
     deps.writeStderr(`Provider "${providerId}" is not in the registry.\n`);
     return "loop";
   }
+  const meta = providerMeta(providerId);
+  // Keyless-by-default science seats WITH an upgrade env var
+  // (openalex/pubmed, review): onboardSingleProvider's keyless branch
+  // only fires for envVar-less suppliers, so the plain keyed flow made
+  // reconfig unable to add them keyless. Offer the keyless default
+  // first — mirroring the fresh flow's "keyless already active"
+  // posture — and fall through to the keyed ask when declined.
+  if (meta.envVar !== undefined && descriptor.capabilities().has("science.search")) {
+    let keyless = false;
+    try {
+      keyless = await deps.prompts.confirm(
+        `Add ${meta.label} keyless (no key; active immediately, lower rate limits)? [Y/n]`,
+        true,
+      );
+    } catch {
+      return "loop";
+    }
+    if (keyless) {
+      const outcome = await probeProviderOnce(descriptor, deps.env);
+      if (outcome.status === "verified") {
+        const updated: ScoutlineConfig = {
+          ...config,
+          providers: {
+            ...config.providers,
+            [providerId]: {
+              onboarded: true,
+              verification: { status: "verified", checkedAt: deps.now() },
+            },
+          },
+          ...(config.hintShown !== undefined ? { hintShown: config.hintShown } : {}),
+        };
+        const status = persistConfig(deps, updated);
+        if ((await status) === "written") {
+          deps.writeStdout(`${meta.label}: added keyless (verification: verified).\n`);
+        }
+        return status;
+      }
+      deps.writeStderr(
+        `${meta.label}: keyless probe failed (${outcome.message}); falling through to the keyed flow.\n`,
+      );
+    }
+  }
   // Reuse the T3a per-provider flow against an empty envKeyProviders so
   // the import offer is skipped (the user is ADDING; we do not auto-pull
   // from env here). The probe runs against the ephemeral candidate.

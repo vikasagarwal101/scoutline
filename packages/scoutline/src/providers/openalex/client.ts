@@ -96,6 +96,13 @@ function normalizeTransportError(error: unknown, timeoutMs: number): Error {
  * and DOI-legal punctuation readable.
  */
 function encodePathSegment(segment: string): string {
+  // Dot-only segments are double-encoded (review): `new URL`
+  // normalizes an unencoded `..` away (`/works/../x` → `/works/x`),
+  // silently addressing the WRONG entity. %252E survives URL parsing
+  // as the literal segment `..`.
+  if (segment === "." || segment === "..") {
+    return segment.replaceAll(".", "%252E");
+  }
   return segment.replace(/[?#%]/g, (c) => encodeURIComponent(c));
 }
 

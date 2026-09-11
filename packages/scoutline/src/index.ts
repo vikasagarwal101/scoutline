@@ -3986,10 +3986,15 @@ async function handleHistoryNote(
       "Pass one of: search, read, research.",
     );
   }
-  if (rawCapability !== "search" && rawCapability !== "read" && rawCapability !== "research") {
+  if (
+    rawCapability !== "search" &&
+    rawCapability !== "read" &&
+    rawCapability !== "research" &&
+    rawCapability !== "science"
+  ) {
     throw new ValidationError(
       `Invalid --capability value "${rawCapability}".`,
-      "Pass one of: search, read, research.",
+      "Pass one of: search, read, research, science.",
     );
   }
 
@@ -4167,7 +4172,7 @@ async function handleHistoryRecall(
   // --capability <search|read|research>: the journal surface's own
   // capability union (recall cannot invent one); fail-open 0 on a
   // corpus with no match for it.
-  let capability: "search" | "read" | "research" | undefined;
+  let capability: "search" | "read" | "research" | "science" | undefined;
   const rawCapability = flags.capability;
   if (rawCapability !== undefined) {
     if (rawCapability === true) {
@@ -4176,10 +4181,15 @@ async function handleHistoryRecall(
         "Pass one of: search, read, research.",
       );
     }
-    if (rawCapability !== "search" && rawCapability !== "read" && rawCapability !== "research") {
+    if (
+      rawCapability !== "search" &&
+      rawCapability !== "read" &&
+      rawCapability !== "research" &&
+      rawCapability !== "science"
+    ) {
       throw new ValidationError(
         `Invalid --capability value "${rawCapability}".`,
-        "Pass one of: search, read, research.",
+        "Pass one of: search, read, research, science.",
       );
     }
     capability = rawCapability;

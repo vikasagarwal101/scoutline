@@ -2222,6 +2222,50 @@ describe("init re-config: keyless rows are visible, removable, and out of add/ed
     assert.strictEqual(store.getWrites().length, 0);
   });
 
+  it("add-provider offers the keyless default for openalex/pubmed (review round 6)", async () => {
+    // GROUND: review round 6 — reconfig's add-provider walked the
+    // KEYED flow for the keyless-by-default science seats with an
+    // upgrade env var (openalex/pubmed), so declining the key
+    // skipped the add entirely. The keyless confirm now precedes the
+    // keyed ask; answering yes probes keyless and writes the row
+    // without an apiKey.
+    const store = createFakeConfigStore({
+      initial: { version: 1, providers: { arxiv: { onboarded: true } } },
+    });
+    const script = createScriptedPrompts();
+    script.queueSelect("add-provider");
+    script.queueSelect("openalex");
+    script.queueConfirm(true); // keyless default: yes
+    script.queueSelect("cancel"); // menu loops back → exit
+    const openalexFake = {
+      id: "openalex",
+      credentialEnvVars: ["OPENALEX_API_KEY"],
+      isConfigured: () => false,
+      capabilities: () => new Set(["science.search", "science.get", "diagnostics"]),
+      create: () => ({ diagnostics: { async invoke() { return undefined; } } }),
+    };
+    const { deps, stdoutChunks } = createInitDeps({
+      descriptors: [openalexFake],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+
+    assert.strictEqual(status, 0);
+    const confirm = script.calls.confirm.find((c) => /keyless/.test(c.message));
+    assert.ok(confirm, "the keyless-default confirm fired before any key ask");
+    const writes = store.getWrites();
+    assert.strictEqual(writes.length, 1, "one write");
+    assert.ok(writes[0].config.providers.openalex, "openalex row written");
+    assert.strictEqual(
+      writes[0].config.providers.openalex.apiKey,
+      undefined,
+      "keyless add persists without an apiKey",
+    );
+    assert.match(stdoutChunks.join(""), /OpenAlex: added keyless/);
+  });
+
   it("adding a keyless provider persists the row WITHOUT an apiKey field", async () => {
     const store = createFakeConfigStore({ initial: keylessArxivConfig() });
     const script = createScriptedPrompts();

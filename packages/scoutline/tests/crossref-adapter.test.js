@@ -474,6 +474,20 @@ describe("crossref get — DOI identifier only (TASKS T4b; DESIGN D10 ruling 3; 
     );
   });
 
+  it("get double-encodes dot-only path segments so `..` cannot traverse (review round 6)", async () => {
+    // Review: `new URL` normalizes an unencoded `..` segment away —
+    // /works/10.1234/../work addressed /works/work. The segment must
+    // survive as %252E-encoded.
+    const { adapter, calls } = makeAdapter(CROSSREF_WORK_RESPONSE);
+    await adapter.science.get.invoke({ identifier: "10.1234/../work" });
+    assert.equal(calls.length, 1);
+    assert.equal(
+      new URL(calls[0].url).pathname,
+      "/works/10.1234/%252E%252E/work",
+      "dot-only segments ride double-encoded",
+    );
+  });
+
   it("get percent-encodes URL-delimiter characters in the DOI path (review)", async () => {
     // Review: a DOI suffix containing `?` or `#` was truncated into the
     // query/fragment by `new URL` — the wire addressed the WRONG

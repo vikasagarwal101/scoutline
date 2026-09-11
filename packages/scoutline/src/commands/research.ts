@@ -763,7 +763,7 @@ source flags are mutually exclusive):
                         different mode is a fresh (paid) job.
 
 Common Options:
-  --provider <id>            Override the active Provider (zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | you | linkup | spider | arxiv | openalex | crossref | pubmed | europepmc)
+  --provider <id>            Override the active Provider (zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | you | linkup | spider)
   --output-format <mode>     One of: ${OUTPUT_MODE_LIST} (default: data)
   -O <mode>                  Alias for --output-format
 

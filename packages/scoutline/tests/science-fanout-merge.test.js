@@ -313,6 +313,36 @@ describe("T10 merge: DOI-first dedup identity", () => {
     assert.equal(parsed[0].url, "https://example.org/oa");
   });
 
+  it("identifier subfields keep the FIRST arm's value on conflict (review round 6)", async () => {
+    // GROUND: D12 field-wise union fills MISSING subfields — a later
+    // arm's conflicting pmid must not overwrite the first arm's
+    // (first-arm-wins governs identifiers like every other field),
+    // while genuinely-missing subfields ARE filled.
+    const { descriptors, byId } = scienceFive({
+      openalex: {
+        searchWorks: () => [
+          { title: "Canonical", url: "https://example.org/oa", identifiers: { doi: "10.1234/abc", pmid: "11111111" } },
+        ],
+      },
+      crossref: {
+        searchWorks: () => [
+          { title: "Crossref copy", url: "https://example.org/cr", identifiers: { doi: "10.1234/abc", pmid: "99999999" } },
+        ],
+      },
+      arxiv: { searchWorks: () => [] },
+      pubmed: { searchWorks: () => [] },
+      europepmc: { searchWorks: () => [] },
+    });
+    void byId;
+    const { status, stdout } = await runMain(["science", "search", "dedup"], {
+      descriptors,
+    });
+    assert.equal(status, 0);
+    const parsed = JSON.parse(stdout.join(""));
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].identifiers.pmid, "11111111", "first arm's pmid survives the merge");
+  });
+
   it("DOI identity applies even when urls differ (doi beats url as identity)", async () => {
     // GROUND: DESIGN D5 — dedup identity is identifiers.doi FIRST;
     // two works sharing a DOI but NOT a url still dedup. The inverse

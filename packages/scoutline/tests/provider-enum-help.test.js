@@ -37,17 +37,26 @@ const SHARED_PIPE_ENUM = `(zai | ${SHARED_PROVIDER_IDS.slice(1).join(" | ")})`;
 const COMMA_ENUM = `(${PROVIDER_IDS.join(", ")})`;
 
 describe("command help provider enumerations match the registry (#82)", () => {
-  it("read/crawl/map list the full registry, pipe-separated", () => {
+  it("read/crawl list the full registry, pipe-separated", () => {
     for (const [name, help] of [
       ["READ_HELP", READ_HELP],
       ["CRAWL_HELP", CRAWL_HELP],
-      ["MAP_HELP", MAP_HELP],
     ]) {
       assert.ok(
         help.includes(PIPE_ENUM),
         `${name} must list the full registry (${PIPE_ENUM}); got the --provider line wrong or stale`,
       );
     }
+  });
+
+  it("map lists the shared-capability suppliers (review round 6)", () => {
+    // Review ruling extended to map: science suppliers advertise no
+    // mapping capability — advertising them invited a guaranteed
+    // UNSUPPORTED_CAPABILITY pin.
+    assert.ok(
+      MAP_HELP.includes(SHARED_PIPE_ENUM),
+      `MAP_HELP must list the shared-capability suppliers (${SHARED_PIPE_ENUM})`,
+    );
   });
 
   it("quota lists the shared-capability suppliers in its pin-flag enumeration (review)", () => {
@@ -57,12 +66,13 @@ describe("command help provider enumerations match the registry (#82)", () => {
     );
   });
 
-  it("research lists the full registry in its Common Options pipe list (T2: 12→17)", () => {
-    // GROUND: T2 — RESEARCH_HELP's --provider line is hand-written, so
-    // it cannot derive from PROVIDER_IDS; this row is the drift guard.
+  it("research lists the shared-capability suppliers in its Common Options pipe list (review round 6)", () => {
+    // RESEARCH_HELP's --provider line is hand-written; this row is the
+    // drift guard. Science suppliers advertise no research capability —
+    // the list stops at the shared suppliers.
     assert.ok(
-      RESEARCH_HELP.includes(PIPE_ENUM),
-      `RESEARCH_HELP must list the full registry (${PIPE_ENUM}); the hand-written enum may be stale`,
+      RESEARCH_HELP.includes(SHARED_PIPE_ENUM),
+      `RESEARCH_HELP must list the shared-capability suppliers (${SHARED_PIPE_ENUM}); the hand-written enum may be stale`,
     );
   });
 

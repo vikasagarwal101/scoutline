@@ -612,6 +612,24 @@ describe("T5: envelope shape + validation (family conventions)", () => {
     }
   });
 
+  it("--capability science is accepted (review round 6): science journals are recallable", async () => {
+    // Review: science rows ARE journaled (JournalableCapability
+    // includes "science") — the recall filter must accept the same
+    // union. Fail-open 0 on an empty corpus, exit 1 never.
+    const artifactsDir = makeTempDir("scoutline-recall-sci-");
+    try {
+      const { adapter, stderr } = makeAdapter();
+      const status = await main(
+        ["history", "recall", "q", "--capability", "science"],
+        recallDeps(adapter, { env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir }, now: fixedNow }),
+      );
+      assert.strictEqual(status, 0, "science capability is valid (empty corpus, fail-open)");
+      assert.ok(!stderr.join("").includes("VALIDATION_ERROR"));
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
   it("invalid --limit / --as-of / --capability values → VALIDATION_ERROR (exit 1)", async () => {
     const artifactsDir = makeTempDir("scoutline-recall-badflags-");
     try {

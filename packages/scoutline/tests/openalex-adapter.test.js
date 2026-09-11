@@ -44,11 +44,7 @@ import { createHash } from "node:crypto";
 
 import { createOpenalexDescriptor } from "../dist/providers/openalex/adapter.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "../dist/providers/registry.js";
-import {
-  QuotaError,
-  UnsupportedOptionError,
-  ValidationError,
-} from "../dist/lib/errors.js";
+import { QuotaError, UnsupportedOptionError, ValidationError } from "../dist/lib/errors.js";
 
 // ---------------------------------------------------------------------------
 // Fixture — real-shape OpenAlex works JSON (PRD AC-7d verbatim wire
@@ -180,13 +176,16 @@ describe("openalex registry wiring — T2 stub seat flips to the real adapter", 
     const seat = BUILT_IN_PROVIDER_DESCRIPTORS.find((d) => d.id === "openalex");
     assert.ok(seat, "openalex descriptor must be in BUILT_IN_PROVIDER_DESCRIPTORS");
     const adapter = seat.create({ env: {} });
-    assert.ok(adapter.science, "openalex adapter must expose the science slot (ProviderAdapter.science)");
+    assert.ok(
+      adapter.science,
+      "openalex adapter must expose the science slot (ProviderAdapter.science)",
+    );
     assert.ok(adapter.science.search, "science.search capability must exist");
     assert.ok(adapter.science.get, "science.get capability must exist");
     assert.ok(adapter.diagnostics, "diagnostics capability must exist (D2 round-3)");
   });
 
-  it("openalex upgrade key model: credentialEnvVars is exactly [\"OPENALEX_API_KEY\"] (D2)", () => {
+  it('openalex upgrade key model: credentialEnvVars is exactly ["OPENALEX_API_KEY"] (D2)', () => {
     // GROUND: DESIGN D2 credentialEnvVars bullet — openalex carries the
     // optional OPENALEX_API_KEY upgrade; keyless trio carry [].
     const { descriptor } = makeAdapter();
@@ -215,9 +214,7 @@ describe("openalex search validate/invoke — controls on the wire (TASKS T4; DE
     assert.throws(
       () => adapter.science.search.validate({ query: "attention", controls: { venue: "Nature" } }),
       (e) =>
-        e instanceof UnsupportedOptionError &&
-        e.provider === "openalex" &&
-        e.option === "venue",
+        e instanceof UnsupportedOptionError && e.provider === "openalex" && e.option === "venue",
       "controls.venue must be rejected",
     );
     assert.equal(calls.length, 0, "validation must reject before any transport call");
@@ -240,23 +237,18 @@ describe("openalex search validate/invoke — controls on the wire (TASKS T4; DE
       "https://api.openalex.org/works",
       "OpenAlex wire base URL (DESIGN D2 supplier table)",
     );
-    assert.ok(
-      decodedUrl(calls[0].url).includes("attention"),
-      "query rides the wire",
-    );
+    assert.ok(decodedUrl(calls[0].url).includes("attention"), "query rides the wire");
     const wire = decodedUrl(calls[0].url);
     assert.ok(
       wire.includes("raw_author_name.search:Vaswani"),
       "author control maps to raw_author_name.search (D7)",
     );
     assert.ok(
-      wire.includes("from_publication_date:2018") && wire.includes("to_publication_date:2022-12-31"),
+      wire.includes("from_publication_date:2018") &&
+        wire.includes("to_publication_date:2022-12-31"),
       "year range maps to from/to publication date (D7)",
     );
-    assert.ok(
-      wire.includes("type:article"),
-      "type control maps to type filter (D7)",
-    );
+    assert.ok(wire.includes("type:article"), "type control maps to type filter (D7)");
   });
 
   it("single-year control maps to the same-year from/to pair", async () => {
@@ -269,7 +261,10 @@ describe("openalex search validate/invoke — controls on the wire (TASKS T4; DE
     });
     const wire = decodedUrl(calls[0].url);
     assert.ok(wire.includes("from_publication_date:2020"), "single year → from");
-    assert.ok(wire.includes("to_publication_date:2020-12-31"), "single year → to (closed form, full year)");
+    assert.ok(
+      wire.includes("to_publication_date:2020-12-31"),
+      "single year → to (closed form, full year)",
+    );
   });
 
   it("an empty query and a reversed year range throw ValidationError through the adapter's validate", () => {
@@ -282,7 +277,8 @@ describe("openalex search validate/invoke — controls on the wire (TASKS T4; DE
       (e) => e instanceof ValidationError,
     );
     assert.throws(
-      () => adapter.science.search.validate({ query: "attention", controls: { year: "2022:2018" } }),
+      () =>
+        adapter.science.search.validate({ query: "attention", controls: { year: "2022:2018" } }),
       (e) => e instanceof ValidationError,
       "reversed range is rejected at validate (PRD AC-7b)",
     );
@@ -328,11 +324,13 @@ describe("openalex type-VALUE mapping (TASKS T4; DESIGN D7 translation table; PR
     // Honest UNSUPPORTED_OPTION, never silent narrowing (PRD AC-3).
     const { adapter, calls } = makeAdapter();
     assert.throws(
-      () => adapter.science.search.validate({ query: "attention", controls: { type: "conference-paper" } }),
+      () =>
+        adapter.science.search.validate({
+          query: "attention",
+          controls: { type: "conference-paper" },
+        }),
       (e) =>
-        e instanceof UnsupportedOptionError &&
-        e.provider === "openalex" &&
-        e.option === "type",
+        e instanceof UnsupportedOptionError && e.provider === "openalex" && e.option === "type",
       "conference-paper must be rejected for openalex",
     );
     assert.equal(calls.length, 0, "rejection happens at validate, before transport");
@@ -440,6 +438,20 @@ describe("openalex get — DOI and PMID identifiers (TASKS T4; DESIGN D10 ruling
     assert.equal(work.identifiers?.doi, "10.1038/nature12373");
   });
 
+  it("get percent-encodes URL-delimiter characters in the DOI route (review)", async () => {
+    // Review: a DOI suffix containing `?` or `#` truncated or rerouted
+    // the entity path via `new URL`. The route must carry them
+    // percent-encoded; the `doi:` prefix colon stays readable.
+    const { adapter, calls } = makeAdapter(WORK_DEEP_LEARNING);
+    await adapter.science.get.invoke({ identifier: "10.1038/nature12373?fig#1" });
+    assert.equal(calls.length, 1);
+    assert.equal(
+      new URL(calls[0].url).pathname,
+      "/works/doi:10.1038/nature12373%3Ffig%231",
+      "DOI route delimiters must ride percent-encoded",
+    );
+  });
+
   it("get by numeric PMID: ids.pmid filter on the wire, pmid identifier normalized (D10 ruling 3)", async () => {
     // GROUND: DESIGN D10 ruling 3 — `filter=ids.pmid:23903748` verified
     // live (count=1, correct record); PMID routes to openalex. The
@@ -478,8 +490,8 @@ describe("openalex get — DOI and PMID identifiers (TASKS T4; DESIGN D10 ruling
 // Cache identity — keyless "" and keyed SHA-256 re-partition (AC-6b)
 // ---------------------------------------------------------------------------
 
-describe("openalex cache identity — keyless \"\" and keyed re-partition (TASKS T4; DESIGN D1 + D4b note; PRD AC-6b)", () => {
-  it("keyless: supplier openalex, capability science.search, fingerprint \"\", request echoed", () => {
+describe('openalex cache identity — keyless "" and keyed re-partition (TASKS T4; DESIGN D1 + D4b note; PRD AC-6b)', () => {
+  it('keyless: supplier openalex, capability science.search, fingerprint "", request echoed', () => {
     // GROUND: DESIGN D4b note — keyless `""` fingerprint is the seed-18
     // Q4 ruling (keyless responses are user-independent).
     const { adapter } = makeAdapter();
@@ -500,8 +512,14 @@ describe("openalex cache identity — keyless \"\" and keyed re-partition (TASKS
     const keyed = makeAdapter(OPENALEX_SEARCH_RESPONSE, { OPENALEX_API_KEY: key }).adapter;
     const keyless = makeAdapter(OPENALEX_SEARCH_RESPONSE, {}).adapter;
     const expected = createHash("sha256").update(key).digest("hex");
-    assert.equal(keyed.science.search.cacheIdentity({ query: "attention" }).credentialFingerprint, expected);
-    assert.equal(keyless.science.search.cacheIdentity({ query: "attention" }).credentialFingerprint, "");
+    assert.equal(
+      keyed.science.search.cacheIdentity({ query: "attention" }).credentialFingerprint,
+      expected,
+    );
+    assert.equal(
+      keyless.science.search.cacheIdentity({ query: "attention" }).credentialFingerprint,
+      "",
+    );
     assert.notEqual(
       keyed.science.search.cacheIdentity({ query: "attention" }).credentialFingerprint,
       keyless.science.search.cacheIdentity({ query: "attention" }).credentialFingerprint,
@@ -509,7 +527,7 @@ describe("openalex cache identity — keyless \"\" and keyed re-partition (TASKS
     );
   });
 
-  it("get identity: capability science.get, fingerprint \"\", identifier echoed", () => {
+  it('get identity: capability science.get, fingerprint "", identifier echoed', () => {
     const { adapter } = makeAdapter();
     const identity = adapter.science.get.cacheIdentity({ identifier: "10.1038/nature12373" });
     assert.equal(identity.supplier, "openalex");
@@ -535,7 +553,10 @@ describe("openalex wire politeness — house USER_AGENT + keyless mailto (TASKS 
     assert.equal(calls.length, 1);
     const headers = calls[0].init?.headers ?? {};
     const ua = headers["User-Agent"];
-    assert.ok(typeof ua === "string" && ua.startsWith("scoutline/"), "house USER_AGENT on the wire");
+    assert.ok(
+      typeof ua === "string" && ua.startsWith("scoutline/"),
+      "house USER_AGENT on the wire",
+    );
     const wireUrl = new URL(calls[0].url);
     assert.ok(
       typeof wireUrl.searchParams.get("mailto") === "string" &&
@@ -598,6 +619,18 @@ describe("openalex diagnostics — keyless bounded probe (TASKS T4; DESIGN D2 ro
       typeof wireUrl.searchParams.get("mailto") === "string" &&
         wireUrl.searchParams.get("mailto") !== "",
       "keyless probe carries the mailto politeness param",
+    );
+    // Review: the works API request parameter is `per-page` —
+    // `per_page` is response metadata the server ignores.
+    assert.equal(
+      wireUrl.searchParams.get("per-page"),
+      "1",
+      "bounded probe rides the per-page request parameter",
+    );
+    assert.equal(
+      wireUrl.searchParams.get("per_page"),
+      null,
+      "per_page (response-metadata name) must NOT be sent",
     );
   });
 

@@ -58,7 +58,7 @@ function elementText(block: string, tag: string): string | undefined {
   const re = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, "i");
   const m = re.exec(block);
   if (!m || m[1] === undefined) return undefined;
-  return stripCdata(m[1]);
+  return innerText(m[1]);
 }
 
 /** Strip a CDATA wrapper when present, returning plain text. */
@@ -66,6 +66,39 @@ function stripCdata(text: string): string {
   const m = /^<!\[CDATA\[([\s\S]*)\]\]>$/s.exec(text.trim());
   if (!m || m[1] === undefined) return text;
   return m[1];
+}
+
+/**
+ * Decode the predefined XML entities plus numeric character references
+ * (review): `&amp;` and friends in a title/summary previously surfaced
+ * literally. CDATA content is literal text — it never passes through
+ * here.
+ */
+const XML_ENTITIES: Readonly<Record<string, string>> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+};
+function decodeXmlEntities(text: string): string {
+  return text.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);/g, (whole, body: string) => {
+    if (body.startsWith("#x") || body.startsWith("#X")) {
+      const code = Number.parseInt(body.slice(2), 16);
+      return Number.isNaN(code) ? whole : String.fromCodePoint(code);
+    }
+    if (body.startsWith("#")) {
+      const code = Number.parseInt(body.slice(1), 10);
+      return Number.isNaN(code) ? whole : String.fromCodePoint(code);
+    }
+    return XML_ENTITIES[body] ?? whole;
+  });
+}
+
+/** Inner text of a matched element: CDATA stays literal, plain text is entity-decoded. */
+function innerText(raw: string): string {
+  const stripped = stripCdata(raw);
+  return stripped === raw ? decodeXmlEntities(stripped) : stripped;
 }
 
 /** Attribute value of the first `<tag ...>` in `block`; undefined when absent. */
@@ -83,7 +116,7 @@ function elementTextAll(block: string, tag: string): string[] {
   const re = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, "gi");
   let m: RegExpExecArray | null;
   while ((m = re.exec(block)) !== null) {
-    if (m[1] !== undefined) out.push(stripCdata(m[1]).trim());
+    if (m[1] !== undefined) out.push(innerText(m[1]).trim());
   }
   return out;
 }
@@ -146,7 +179,7 @@ function yearFromTimestamp(text: string | undefined): number | undefined {
  * fields stay absent (never null, never fabricated).
  */
 function parseEntry(block: string): ScienceWork {
-  const title = stripCdata(elementText(block, "title") ?? "").trim();
+  const title = (elementText(block, "title") ?? "").trim();
   const idText = elementText(block, "id");
   const links = linkElements(block);
   const alternate = links.find((l) => l.rel === undefined || l.rel === "alternate");
@@ -167,7 +200,7 @@ function parseEntry(block: string): ScienceWork {
     identifiers,
     authors,
     year: yearFromTimestamp(elementText(block, "published")),
-    summary: summary !== undefined ? stripCdata(summary).trim() : undefined,
+    summary: summary !== undefined ? summary.trim() : undefined,
     updated: elementText(block, "updated")?.trim(),
     ...(pdf?.href !== undefined ? { pdfUrl: pdf.href } : {}),
     ...(primaryCategory !== undefined ? { type: primaryCategory } : {}),
@@ -243,10 +276,7 @@ function arxivCacheIdentity(
 interface ArxivScienceSearchCapability {
   validate(request: ScienceSearchRequest): void;
   cacheIdentity(request: ScienceSearchRequest): ScienceCacheIdentity;
-  invoke(
-    request: ScienceSearchRequest,
-    signal?: AbortSignal,
-  ): Promise<readonly ScienceWork[]>;
+  invoke(request: ScienceSearchRequest, signal?: AbortSignal): Promise<readonly ScienceWork[]>;
 }
 
 /** Local science get contract — see the module header. */
@@ -351,9 +381,7 @@ const ARXIV_CAPABILITIES: ReadonlySet<ProviderCapability> = new Set([
  * capabilities (D2 ruling, inverting the Jina keyless pattern).
  * `create()` is side-effect-free; transport runs per capability call.
  */
-export function createArxivDescriptor(
-  dependencies?: ArxivAdapterDependencies,
-): ArxivDescriptor {
+export function createArxivDescriptor(dependencies?: ArxivAdapterDependencies): ArxivDescriptor {
   const transport = dependencies?.transport;
   return {
     id: "arxiv",

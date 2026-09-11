@@ -51,17 +51,19 @@ function mapStatusError(status: number, timeoutMs: number): Error {
     return new TimeoutError(timeoutMs);
   }
   if (status === 429) {
-    return new QuotaError("Crossref rate-limited — keyless budget; a free key raises the limit (see `scoutline init`)");
+    return new QuotaError("Crossref rate-limited — keyless service; retry later");
   }
   return new ApiError("Crossref request failed", status);
 }
 
 /** Same transport-error normalization contract as the arXiv/OpenAlex clients. */
 function normalizeTransportError(error: unknown, timeoutMs: number): Error {
-  if (error instanceof AuthError ||
+  if (
+    error instanceof AuthError ||
     error instanceof ApiError ||
     error instanceof QuotaError ||
-    error instanceof TimeoutError) {
+    error instanceof TimeoutError
+  ) {
     return error;
   }
   if (error instanceof Error && error.name === "AbortError") {
@@ -78,6 +80,16 @@ function normalizeTransportError(error: unknown, timeoutMs: number): Error {
  * Returns the parsed JSON document. No internal retry — shared
  * execution owns retry policy.
  */
+/**
+ * Percent-encode one entity-route path segment, preserving `/` at the
+ * caller. Encodes the URL-delimiter characters (`?`, `#`) and a stray
+ * `%` (keeps the segment unambiguous); leaves the DOI-legal punctuation
+ * (`: . - _ ~`) readable.
+ */
+function encodePathSegment(segment: string): string {
+  return segment.replace(/[?#%]/g, (c) => encodeURIComponent(c));
+}
+
 export async function fetchCrossrefJson(
   params: Record<string, string>,
   deps: CrossrefTransportDeps = {},
@@ -87,9 +99,21 @@ export async function fetchCrossrefJson(
   const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
-  const url = new URL(`${CROSSREF_WORKS_URL}${path ? `/${path.replace(/^\/+/, "")}` : ""}`);
+  // Entity-route path segments are percent-encoded (review): a DOI
+  // suffix containing `?` or `#` would otherwise be truncated into the
+  // query/fragment by `new URL`. `/` separators are preserved.
+  const url = new URL(
+    `${CROSSREF_WORKS_URL}${
+      path ? `/${path.replace(/^\/+/, "").split("/").map(encodePathSegment).join("/")}` : ""
+    }`,
+  );
   for (const [key, value] of Object.entries(params)) {
     url.searchParams.set(key, value);
+  }
+  // A pre-aborted caller signal must not reach the transport (review):
+  // reject before the fetch is invoked at all.
+  if (signal?.aborted) {
+    throw new TimeoutError(DEFAULT_TIMEOUT_MS);
   }
   const controller = new AbortController();
   const timeoutId = setT(() => controller.abort(), DEFAULT_TIMEOUT_MS);

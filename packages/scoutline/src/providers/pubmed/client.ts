@@ -51,9 +51,7 @@ export interface PubmedCredentials {
   readonly apiKey?: string;
 }
 
-export function resolvePubmedCredentials(
-  env: NodeJS.ProcessEnv,
-): PubmedCredentials {
+export function resolvePubmedCredentials(env: NodeJS.ProcessEnv): PubmedCredentials {
   const apiKey = env["NCBI_API_KEY"];
   return apiKey === undefined || apiKey === "" ? {} : { apiKey };
 }
@@ -71,17 +69,21 @@ function mapStatusError(status: number, timeoutMs: number): Error {
     return new TimeoutError(timeoutMs);
   }
   if (status === 429) {
-    return new QuotaError("PubMed rate-limited — keyless budget; a free key raises the limit (see `scoutline init`)");
+    return new QuotaError(
+      "PubMed rate-limited — keyless budget; a free key raises the limit (see `scoutline init`)",
+    );
   }
   return new ApiError("PubMed request failed", status);
 }
 
 /** Same transport-error normalization contract as the arXiv/OpenAlex clients. */
 function normalizeTransportError(error: unknown, timeoutMs: number): Error {
-  if (error instanceof AuthError ||
+  if (
+    error instanceof AuthError ||
     error instanceof ApiError ||
     error instanceof QuotaError ||
-    error instanceof TimeoutError) {
+    error instanceof TimeoutError
+  ) {
     return error;
   }
   if (error instanceof Error && error.name === "AbortError") {
@@ -118,6 +120,11 @@ async function eutilsRequest(
   }
   // eutils consumes the key as a query param, never a header.
   if (apiKey !== undefined) url.searchParams.set("api_key", apiKey);
+  // A pre-aborted caller signal must not reach the transport (review):
+  // reject before the fetch is invoked at all.
+  if (signal?.aborted) {
+    throw new TimeoutError(DEFAULT_TIMEOUT_MS);
+  }
   const controller = new AbortController();
   const timeoutId = setT(() => controller.abort(), DEFAULT_TIMEOUT_MS);
   const abortWithExternal = () => controller.abort();

@@ -247,10 +247,7 @@ function crossrefCacheIdentity(
 interface CrossrefScienceSearchCapability {
   validate(request: ScienceSearchRequest): void;
   cacheIdentity(request: ScienceSearchRequest): ScienceCacheIdentity;
-  invoke(
-    request: ScienceSearchRequest,
-    signal?: AbortSignal,
-  ): Promise<readonly ScienceWork[]>;
+  invoke(request: ScienceSearchRequest, signal?: AbortSignal): Promise<readonly ScienceWork[]>;
 }
 
 /** Local science get contract — see the module header. */
@@ -281,7 +278,9 @@ function createCrossrefScienceCapability(options: {
     async invoke(request, signal) {
       search.validate(request);
       const doc = await fetchCrossrefJson(buildSearchParams(request), deps, signal);
-      return crossrefItems(doc).filter((w) => !isComponentJunk(w)).map(mapWork);
+      return crossrefItems(doc)
+        .filter((w) => !isComponentJunk(w))
+        .map(mapWork);
     },
   };
 
@@ -298,6 +297,15 @@ function createCrossrefScienceCapability(options: {
       const work = crossrefMessage(doc);
       if (work === undefined) {
         throw new ApiError(`Crossref returned no work for ${request.identifier}`, 404);
+      }
+      // Direct gets obey the same junk policy as searches (review): a
+      // component DOI resolves to a component record — reject it with
+      // the 404 no-work behavior instead of returning the component.
+      if (isComponentJunk(work)) {
+        throw new ApiError(
+          `Crossref returned no work for ${request.identifier} (component record)`,
+          404,
+        );
       }
       return mapWork(work);
     },

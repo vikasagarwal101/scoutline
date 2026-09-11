@@ -64,7 +64,7 @@ function mapStatusError(status: number, timeoutMs: number): Error {
     return new TimeoutError(timeoutMs);
   }
   if (status === 429) {
-    return new QuotaError("arXiv rate-limited — keyless budget; a free key raises the limit (see `scoutline init`)");
+    return new QuotaError("arXiv rate-limited — keyless service; retry later");
   }
   return new ApiError("arXiv request failed", status);
 }
@@ -76,10 +76,12 @@ function mapStatusError(status: number, timeoutMs: number): Error {
  * transient NetworkError. No raw provider body crosses the seam.
  */
 function normalizeTransportError(error: unknown, timeoutMs: number): Error {
-  if (error instanceof AuthError ||
+  if (
+    error instanceof AuthError ||
     error instanceof ApiError ||
     error instanceof QuotaError ||
-    error instanceof TimeoutError) {
+    error instanceof TimeoutError
+  ) {
     return error;
   }
   if (error instanceof Error && error.name === "AbortError") {
@@ -109,6 +111,11 @@ export async function fetchArxivQuery(
   if (params.start !== undefined) url.searchParams.set("start", String(params.start));
   if (params.max_results !== undefined) {
     url.searchParams.set("max_results", String(params.max_results));
+  }
+  // A pre-aborted caller signal must not reach the transport (review):
+  // reject before the fetch is invoked at all.
+  if (signal?.aborted) {
+    throw new TimeoutError(DEFAULT_TIMEOUT_MS);
   }
   const controller = new AbortController();
   const timeoutId = setT(() => controller.abort(), DEFAULT_TIMEOUT_MS);

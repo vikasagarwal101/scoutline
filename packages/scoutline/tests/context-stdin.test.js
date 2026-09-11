@@ -42,8 +42,21 @@ import * as path from "node:path";
 
 import { main } from "../dist/index.js";
 import { MAX_CONTEXT_BYTES } from "../dist/lib/context-file.js";
+import { redactSecrets, configuredSecrets } from "../dist/lib/redact.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
+
+// #133 (same class as #120): fixture provider credentials must be long and
+// carry non-hex characters so they can never collide with a randomized
+// mkdtemp suffix (full [a-zA-Z0-9]) or appear inside a sha256 hex digest.
+const TAVILY_FIXTURE_KEY = "test-tavily-stdin-fixture-key-p4n8cs";
+const EXA_FIXTURE_KEY = "test-exa-stdin-fixture-key-t9k2wd";
+const RESEARCH_STDIN_ENV = { TAVILY_API_KEY: TAVILY_FIXTURE_KEY, EXA_API_KEY: EXA_FIXTURE_KEY };
+// main() redacts success output with configuredSecrets(deps.env); the
+// expected side of pinned envelope assertions must pass through the
+// IDENTICAL function + secret list so the comparison is immune by
+// construction no matter what the random temp path contains (#133).
+const redactAsOutput = (env, value) => redactSecrets(value, configuredSecrets(env));
 
 // ---------------------------------------------------------------------------
 // Test doubles (tests/search-context.test.js / research-context.test.js
@@ -167,7 +180,7 @@ async function runResearch(argv, { providers, stdin = "" } = {}) {
     argv,
     hermeticMainDeps({
       invocation: io.adapter,
-      env: { TAVILY_API_KEY: "tv", EXA_API_KEY: "exa" },
+      env: RESEARCH_STDIN_ENV,
       providerDescriptors: providers.map((p) => p.descriptor),
       loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
     }),
@@ -508,13 +521,16 @@ describe("D6 privacy snapshot suite (Ticket 5, AC4 consolidated)", () => {
       assert.deepStrictEqual(withCtx.invokes[0], plain.invokes[0]);
       assert.deepStrictEqual(withCtx.invokes[0], { query });
       const parsed = JSON.parse(rB.stdout[0]);
-      assert.deepStrictEqual(parsed.context, {
-        source: "file",
-        path: notesPath,
-        sha256: sha256of(PRIVACY_TEXT),
-        mode: "organize",
-        derived: { headings: 1, questions: 1, terms: 5 },
-      });
+      assert.deepStrictEqual(
+        parsed.context,
+        redactAsOutput(RESEARCH_STDIN_ENV, {
+          source: "file",
+          path: notesPath,
+          sha256: sha256of(PRIVACY_TEXT),
+          mode: "organize",
+          derived: { headings: 1, questions: 1, terms: 5 },
+        }),
+      );
       assertNoMarkerIn("the envelope context field", [JSON.stringify(parsed.context)]);
       assertNoMarkerIn("stderr", rB.stderr);
     });

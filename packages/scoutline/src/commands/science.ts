@@ -35,11 +35,7 @@
  * with a stderr note; `--no-fallback` fails strict.
  */
 
-import type {
-  CommandResult,
-  SaveHook,
-  TextOutputMode,
-} from "../command-invocation.js";
+import type { CommandResult, SaveHook, TextOutputMode } from "../command-invocation.js";
 import { invokeCommand } from "../command-invocation.js";
 import type {
   ScienceControls,
@@ -83,9 +79,7 @@ const D5_ARM_ORDER = ["openalex", "arxiv", "crossref", "pubmed", "europepmc"] as
  * only. `science get` routes by identifier kind through this table
  * over the D5 arm order.
  */
-const ID_TYPE_SUPPLIERS: Readonly<
-  Record<"doi" | "pmid" | "arxiv", readonly string[]>
-> = {
+const ID_TYPE_SUPPLIERS: Readonly<Record<"doi" | "pmid" | "arxiv", readonly string[]>> = {
   doi: ["openalex", "crossref", "pubmed", "europepmc"],
   pmid: ["openalex", "europepmc", "pubmed"],
   arxiv: ["arxiv"],
@@ -115,9 +109,7 @@ Search options:
   --venue <name>     Filter by venue (journal/proceedings name)
   --type <type>      Filter by work type: article, preprint,
                      conference-paper, chapter, dataset, review, other
-  --provider <id>    Pin one supplier (${D5_ARM_ORDER.join(
-    ", ",
-  )}); "all" is the default fan-out
+  --provider <id>    Pin one supplier (${D5_ARM_ORDER.join(", ")}); "all" is the default fan-out
 
 Identifier grammar (get):
   DOI    10.1038/nature12373      (bare — no "doi:" prefix)
@@ -219,7 +211,8 @@ const dropLastWorkRule: LadderRule = {
   apply: (envelope) => {
     const rows = Array.isArray(envelope)
       ? envelope
-      : envelope !== null && typeof envelope === "object" &&
+      : envelope !== null &&
+          typeof envelope === "object" &&
           Array.isArray((envelope as { results?: unknown[] }).results)
         ? (envelope as { results: unknown[] }).results
         : undefined;
@@ -276,15 +269,11 @@ async function applyScienceOutputBudget(
     {
       command: "science",
       args: {
-        ...(options.explicitProvider !== undefined
-          ? { provider: options.explicitProvider }
-          : {}),
+        ...(options.explicitProvider !== undefined ? { provider: options.explicitProvider } : {}),
       },
       provider: {
         mode: "single",
-        ...(options.explicitProvider !== undefined
-          ? { requested: options.explicitProvider }
-          : {}),
+        ...(options.explicitProvider !== undefined ? { requested: options.explicitProvider } : {}),
         effective: "science",
       },
       outputFormat: options.outputMode,
@@ -300,11 +289,30 @@ async function applyScienceOutputBudget(
   );
   const projected = outcome.projection as { results: unknown };
   const projection: unknown = isSearch ? projected.results : outcome.projection;
+  // Rebuild the text presentations from the projection (review, R5
+  // search.ts precedent): without this, a text output mode prints the
+  // ORIGINAL unbudgeted render while the data envelope carries the
+  // projected one. Field defaults keep the renderers from printing
+  // `undefined` under an aggressive ladder step.
+  const projectedText = isSearch
+    ? renderWorksText(
+        (projection as readonly Partial<ScienceWork>[]).map((w) => ({
+          title: "",
+          url: "",
+          ...w,
+        })) as readonly ScienceWork[],
+      )
+    : renderWorkText({
+        title: "",
+        url: "",
+        ...(projection as Partial<ScienceWork>),
+      } as ScienceWork);
   return {
     ...result,
     data: isSearch
       ? { results: projection, compaction }
       : { ...(projection as Record<string, unknown>), compaction },
+    presentations: sciencePresentations(projectedText),
   };
 }
 
@@ -391,8 +399,21 @@ function buildScienceControls(
 ): ScienceControls | undefined {
   const type = parseScienceType(flags.type);
   const controls: ScienceControls = {};
-  if (typeof flags.author === "string") controls.author = flags.author;
-  if (typeof flags.venue === "string") controls.venue = flags.venue;
+  // Value-required gates (review): a valueless `--author`/`--venue`
+  // parses as boolean `true` — silently omitting it broadens the
+  // search instead of erroring. Reject like `--year`/`--type` do.
+  if (flags.author !== undefined) {
+    if (typeof flags.author !== "string") {
+      throw new ValidationError("--author requires a value.");
+    }
+    controls.author = flags.author;
+  }
+  if (flags.venue !== undefined) {
+    if (typeof flags.venue !== "string") {
+      throw new ValidationError("--venue requires a value.");
+    }
+    controls.venue = flags.venue;
+  }
   if (type !== undefined) controls.type = type;
   if (flags.year !== undefined) {
     if (typeof flags.year !== "string") {
@@ -451,7 +472,6 @@ function scienceDescriptorIndex(
   );
 }
 
-
 /**
  * Resolve the D5 arm set for a science capability (T10): an explicit
  * `--provider <id>` pin narrows the set to that ONE supplier (eligible
@@ -473,7 +493,11 @@ function resolveScienceArms(
     opts.explicitProvider !== undefined && opts.explicitProvider !== "all"
       ? byId.get(opts.explicitProvider)
       : undefined;
-  if (opts.explicitProvider !== undefined && opts.explicitProvider !== "all" && pinned === undefined) {
+  if (
+    opts.explicitProvider !== undefined &&
+    opts.explicitProvider !== "all" &&
+    pinned === undefined
+  ) {
     throw new ValidationError(
       `Unknown provider "${opts.explicitProvider}".`,
       `Science suppliers: ${D5_ARM_ORDER.join(", ")}.`,
@@ -559,11 +583,7 @@ function resolveScienceArms(
         `Science suppliers: ${D5_ARM_ORDER.join(", ")}.`,
       );
     }
-    throw new UnsupportedOptionError(
-      "science",
-      capabilityId,
-      Object.keys(controls).join(", "),
-    );
+    throw new UnsupportedOptionError("science", capabilityId, Object.keys(controls).join(", "));
   }
   return accepting;
 }
@@ -804,8 +824,7 @@ export async function handleScience(
       );
     }
     const controls = buildScienceControls(flags);
-    const request: ScienceSearchRequest =
-      controls !== undefined ? { query, controls } : { query };
+    const request: ScienceSearchRequest = controls !== undefined ? { query, controls } : { query };
 
     // Output Budget parse (strict positive-integer gate; valueless
     // flag wording per the T4 surfaces).
@@ -855,9 +874,9 @@ export async function handleScience(
         );
         // Deterministic failure: if every arm rejected, surface the
         // FIRST arm's (D5 order) error — never a silent all-fail.
-        const firstRejected = settled.find(
-          (outcome) => outcome.status === "rejected",
-        ) as PromiseRejectedResult | undefined;
+        const firstRejected = settled.find((outcome) => outcome.status === "rejected") as
+          | PromiseRejectedResult
+          | undefined;
         const works = settled.flatMap((outcome) =>
           outcome.status === "fulfilled" ? outcome.value : [],
         );
@@ -952,20 +971,19 @@ export async function handleScience(
       const kind = parseScienceIdentifier(identifier);
       const byId = scienceDescriptorIndex(deps.providerDescriptors);
       const pinnedId =
-        explicitProvider !== undefined && explicitProvider !== "all"
-          ? explicitProvider
-          : undefined;
+        explicitProvider !== undefined && explicitProvider !== "all" ? explicitProvider : undefined;
       if (pinnedId !== undefined && !byId.has(pinnedId)) {
         throw new ValidationError(
           `Unknown provider "${pinnedId}".`,
           `Science suppliers: ${D5_ARM_ORDER.join(", ")}.`,
         );
       }
-      const ordered = pinnedId !== undefined
-        ? [pinnedId]
-        : kind !== null
-          ? D5_ARM_ORDER.filter((id) => ID_TYPE_SUPPLIERS[kind].includes(id))
-          : [];
+      const ordered =
+        pinnedId !== undefined
+          ? [pinnedId]
+          : kind !== null
+            ? D5_ARM_ORDER.filter((id) => ID_TYPE_SUPPLIERS[kind].includes(id))
+            : [];
       const arms: ScienceDescriptorLike[] = [];
       for (const id of ordered) {
         const descriptor = byId.get(id);

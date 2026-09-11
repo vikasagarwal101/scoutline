@@ -2093,9 +2093,206 @@ describe("init re-config: routing editor", () => {
     script.queueInputCancel();
     script.queueSelect("cancel");
 
-    const { deps } = createInitDeps({ descriptors: [], prompts: script.prompts, configStore: store });
+    const { deps } = createInitDeps({
+      descriptors: [],
+      prompts: script.prompts,
+      configStore: store,
+    });
     const status = await handleInitWithHelp([], deps);
     assert.strictEqual(status, 0);
+    assert.strictEqual(store.getWrites().length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Re-config menu: keyless science rows (onboarded true, no usable
+// apiKey). Review pins: keyless rows are VISIBLE in the status line,
+// REMOVABLE via remove-provider (choice name carries " (keyless)"),
+// EXCLUDED from add-provider eligibility, and never offered for
+// key-editing; a keyless ADD persists a row without an apiKey field.
+// ---------------------------------------------------------------------------
+
+describe("init re-config: keyless rows are visible, removable, and out of add/edit flows", () => {
+  function keylessArxivConfig() {
+    return { version: 1, providers: { arxiv: { onboarded: true } } };
+  }
+
+  function keylessFakeDescriptor(id, canonicalEnvVar) {
+    return makeFakeDescriptor({
+      id,
+      credentialEnvVars: [],
+      canonicalEnvVar,
+      behaviour: "resolve",
+    });
+  }
+
+  it("status line shows keyless rows after the keyed list; edit-key is not offered when no keyed rows exist", async () => {
+    const script = createScriptedPrompts();
+    const store = createFakeConfigStore({ initial: keylessArxivConfig() });
+    script.queueSelect("cancel");
+    const { deps, stderrChunks } = createInitDeps({
+      descriptors: [],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+
+    assert.strictEqual(status, 0);
+    // GROUND: review (a) — a keyless science seat must appear in the
+    // reconfig status line as "keyless: <ids>"; the pre-fix defect
+    // rendered an empty configured set ("none") for it.
+    assert.match(stderrChunks.join(""), /Providers configured: keyless: arxiv\./);
+    // GROUND: review (d) — edit-key requires a keyed row; with only
+    // keyless rows the choice must not be offered at all.
+    const menu = script.calls.select.find((c) => /What would you like to do\?/.test(c.message));
+    assert.ok(menu, "reconfig menu rendered");
+    assert.equal(
+      menu.choices.some((choice) => choice.value === "edit-key"),
+      false,
+      "edit-key must not be offered for a keyless-only config",
+    );
+    assert.strictEqual(store.getWrites().length, 0);
+  });
+
+  it("remove-provider lists the keyless row with the (keyless) suffix and removal deletes it", async () => {
+    const store = createFakeConfigStore({ initial: keylessArxivConfig() });
+    const script = createScriptedPrompts();
+    script.queueSelect("remove-provider");
+    script.queueSelect("arxiv");
+    script.queueConfirm(true); // confirm removal
+    script.queueSelect("cancel"); // menu loops back → exit
+
+    const { deps, stdoutChunks } = createInitDeps({
+      descriptors: [],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+
+    assert.strictEqual(status, 0);
+    // GROUND: review (b) — the remove choice names the row kind so the
+    // user can tell a keyless seat from a keyed one before deleting.
+    const removePrompt = script.calls.select.find((c) => /Remove which provider\?/.test(c.message));
+    assert.ok(removePrompt, "remove prompt rendered");
+    const arxivChoice = removePrompt.choices.find((choice) => choice.value === "arxiv");
+    assert.ok(arxivChoice, "keyless row is offered for removal");
+    assert.match(arxivChoice.name, /arXiv \(keyless\)/);
+    const writes = store.getWrites();
+    assert.strictEqual(writes.length, 1);
+    assert.ok(
+      !writes[0].config.providers.arxiv,
+      "the keyless row is deleted from the written config",
+    );
+    assert.match(stdoutChunks.join(""), /arXiv: removed/i);
+  });
+
+  it("add-provider does not offer an already-seated keyless row", async () => {
+    const store = createFakeConfigStore({ initial: keylessArxivConfig() });
+    const script = createScriptedPrompts();
+    script.queueSelect("add-provider");
+    script.queueSelectCancel(); // back out of the add flow
+    script.queueSelect("cancel"); // menu loops back → exit
+
+    const arxiv = keylessFakeDescriptor("arxiv", "__ARXIV_NONE__");
+    const zai = makeFakeDescriptor({ id: "zai" });
+    const { deps } = createInitDeps({
+      descriptors: [arxiv.descriptor, zai.descriptor],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+
+    assert.strictEqual(status, 0);
+    // GROUND: review (c) — eligibility excludes BOTH row kinds; a
+    // keyless seat already in the config must not be re-onboarded.
+    const addPrompt = script.calls.select.find((c) => /Add which provider\?/.test(c.message));
+    assert.ok(addPrompt, "add prompt rendered");
+    assert.equal(
+      addPrompt.choices.some((choice) => choice.value === "arxiv"),
+      false,
+      "keyless arxiv must not be offered for adding",
+    );
+    assert.ok(
+      addPrompt.choices.some((choice) => choice.value === "zai"),
+      "unseated providers stay eligible",
+    );
+    assert.strictEqual(store.getWrites().length, 0);
+  });
+
+  it("adding a keyless provider persists the row WITHOUT an apiKey field", async () => {
+    const store = createFakeConfigStore({ initial: keylessArxivConfig() });
+    const script = createScriptedPrompts();
+    script.queueSelect("add-provider");
+    script.queueSelect("crossref"); // unseated keyless supplier
+    // No key prompts on the keyless branch: the diagnostics probe IS
+    // the verify step. The menu loops back → cancel.
+    script.queueSelect("cancel");
+
+    const arxiv = keylessFakeDescriptor("arxiv", "__ARXIV_NONE__");
+    const crossref = keylessFakeDescriptor("crossref", "__CROSSREF_NONE__");
+    const { deps, stdoutChunks } = createInitDeps({
+      descriptors: [arxiv.descriptor, crossref.descriptor],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+
+    assert.strictEqual(status, 0);
+    assert.equal(script.calls.password.length, 0, "keyless add prompts for no key");
+    assert.equal(crossref.invokes.length, 1, "one keyless probe (verify-then-save)");
+    const writes = store.getWrites();
+    assert.strictEqual(writes.length, 1);
+    const row = writes[0].config.providers.crossref;
+    // GROUND: review — a keyless ADD must persist the same shape the
+    // fresh-flow keyless branch writes: onboarded, verified, no apiKey.
+    assert.ok(row, "crossref record written");
+    assert.equal(row.apiKey, undefined, "keyless add persists without an apiKey field");
+    assert.equal(row.onboarded, true);
+    assert.equal(row.verification?.status, "verified");
+    assert.ok(writes[0].config.providers.arxiv, "the seated keyless row is undisturbed");
+    assert.match(stdoutChunks.join(""), /Crossref: added/i);
+  });
+
+  it("edit-key lists only keyed rows — a keyless row is never offered for key editing", async () => {
+    const store = createFakeConfigStore({
+      initial: {
+        version: 1,
+        providers: { zai: { apiKey: "zai-key" }, arxiv: { onboarded: true } },
+      },
+    });
+    const script = createScriptedPrompts();
+    script.queueSelect("edit-key");
+    script.queueSelectCancel(); // back out of key editing
+    script.queueSelect("cancel");
+
+    const { deps } = createInitDeps({
+      descriptors: [],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+
+    assert.strictEqual(status, 0);
+    // GROUND: review (d) — edit-key lists ONLY keyed rows; there is
+    // nothing to edit on a keyless seat.
+    const editPrompt = script.calls.select.find((c) =>
+      /Edit which provider's key\?/.test(c.message),
+    );
+    assert.ok(editPrompt, "edit-key prompt rendered");
+    assert.ok(
+      editPrompt.choices.some((choice) => choice.value === "zai"),
+      "keyed row is editable",
+    );
+    assert.equal(
+      editPrompt.choices.some((choice) => choice.value === "arxiv"),
+      false,
+      "keyless row must not be offered for key editing",
+    );
     assert.strictEqual(store.getWrites().length, 0);
   });
 });

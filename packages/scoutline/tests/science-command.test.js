@@ -265,18 +265,22 @@ describe("science noun dispatch + help", () => {
 
 describe("science search — parse-level rejections before any supplier invoke", () => {
   async function assertRejectedAtParse(argv, expectedCode, messagePattern, label) {
-    // Env-honest pin (AGENTS.md): today `science` is not dispatched, so
-    // every one of these exits 1/VALIDATION_ERROR as "Unknown command"
-    // — a false green. The message pattern (flag/option name) is what
-    // separates a genuine parse-level rejection from the dispatcher's
-    // unknown-command error; without it the test pins nothing.
+    // Env-honest pin (AGENTS.md): `science` IS dispatched (the
+    // credential-free arm in index.ts), so a parse-level rejection is
+    // the handler's own ValidationError — the doesNotMatch guard below
+    // keeps the row honest against the dispatcher's unknown-command
+    // error, and the message pattern is what pins each flag's wording.
     const { descriptors } = scienceFive();
     const { status, stdout, stderr } = await runMain(argv, { descriptors });
     assert.equal(status, 1, `${label}: exit 1`);
     assert.deepEqual(stdout, [], `${label}: data-only stdout — nothing on stdout`);
     const err = parseStderr(stderr);
     assert.equal(err.code, expectedCode, `${label}: error code`);
-    assert.doesNotMatch(err.error, /Unknown command/, `${label}: not the dispatcher's unknown-command error`);
+    assert.doesNotMatch(
+      err.error,
+      /Unknown command/,
+      `${label}: not the dispatcher's unknown-command error`,
+    );
     assert.match(err.error, messagePattern, `${label}: message names the offending flag/value`);
     return err;
   }
@@ -332,6 +336,29 @@ describe("science search — parse-level rejections before any supplier invoke",
     );
   });
 
+  it("--author without a value is rejected at parse", async () => {
+    // GROUND: value-required gate (review) — a valueless `--author`
+    // parses as boolean true and must reject exactly like `--year`
+    // does, never silently broaden the search.
+    await assertRejectedAtParse(
+      ["science", "search", "attention", "--author"],
+      "VALIDATION_ERROR",
+      /--author requires a value/,
+      "valueless --author",
+    );
+  });
+
+  it("--venue without a value is rejected at parse", async () => {
+    // GROUND: same value-required gate — valueless `--venue` rejects
+    // at parse with the flag-naming message, like `--author`.
+    await assertRejectedAtParse(
+      ["science", "search", "attention", "--venue"],
+      "VALIDATION_ERROR",
+      /--venue requires a value/,
+      "valueless --venue",
+    );
+  });
+
   it("missing query fails VALIDATION_ERROR (archive cdx required-positional precedent)", async () => {
     // GROUND: TASKS T6 handler bullet — search takes <query>;
     // DESIGN D1 empty-query rejection mirrored at command parse.
@@ -352,6 +379,18 @@ describe("science search — parse-level rejections before any supplier invoke",
     await runMain(["science", "search", "attention", "--type", "component"], {
       descriptors,
     });
+    for (const id of D5_ARM_ORDER) {
+      assert.equal(byId[id].calls.search.length, 0, `${id}.invoke must not run`);
+    }
+  });
+
+  it("valueless --author/--venue rejections also fire before ANY supplier invoke", async () => {
+    // GROUND: parse-time teeth for the value-required gates — a
+    // resolver that defers the boolean-true rejection to invoke time
+    // (or drops the flag silently) fails here.
+    const { descriptors, byId } = scienceFive();
+    await runMain(["science", "search", "attention", "--author"], { descriptors });
+    await runMain(["science", "search", "attention", "--venue"], { descriptors });
     for (const id of D5_ARM_ORDER) {
       assert.equal(byId[id].calls.search.length, 0, `${id}.invoke must not run`);
     }
@@ -820,6 +859,50 @@ describe("science output budget — SCIENCE_LADDER partition (D6b, AC-5d)", () =
       );
     });
   });
+
+  it("a text output mode prints the BUDGETED view: presentations rebuilt from the projection", async (t) => {
+    // GROUND: review R5 (search.ts precedent) — when --max-chars
+    // compaction fires, the text presentations are REBUILT from the
+    // projected envelope (applyScienceOutputBudget). Pre-fix defect:
+    // a text mode printed the ORIGINAL unbudgeted render while only
+    // the data envelope carried the projection. The compaction notice
+    // must fire on the same run.
+    await withTempDir(t, async (dir) => {
+      const bigSummary = "s".repeat(5000);
+      const works = [1, 2, 3].map((i) => ({
+        title: `work-${i}-title`,
+        url: `https://example.org/work-${i}`,
+        summary: bigSummary,
+        authors: ["A", "B", "C"],
+        venue: "Some Venue",
+      }));
+      // T10 flip: zero the sibling arms so the fan-out default yields
+      // exactly these works (budget assertions unchanged).
+      const { descriptors } = scienceFive({
+        openalex: { searchWorks: () => works },
+        arxiv: { searchWorks: () => [] },
+        crossref: { searchWorks: () => [] },
+        pubmed: { searchWorks: () => [] },
+        europepmc: { searchWorks: () => [] },
+      });
+      const budgeted = await runMain(
+        ["--output-format", "compact", "science", "search", "q", "--max-chars", "600"],
+        { descriptors, artifactsDir: dir },
+      );
+      assert.equal(budgeted.status, 0);
+      const text = budgeted.stdout.join("");
+      assert.ok(
+        !text.includes(bigSummary),
+        "text view must not carry summary mass the ladder trimmed",
+      );
+      assert.match(text, /work-1-title/, "text view still renders the projected rows");
+      assert.match(
+        budgeted.stderr.join(""),
+        /output budget: 600 chars/,
+        "the compaction notice fires",
+      );
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -870,5 +953,76 @@ describe("science joins the --no-journal accept set (T7 flip)", () => {
       false,
       "never the T2a UNSUPPORTED_OPTION rejection",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `science get` provider-fallback kill-switch — persisted config consult
+// (T10 precedence: --no-fallback flag > SCOUTLINE_NO_FALLBACK env >
+// config fallbackEnabled === false > default true). runMain injects an
+// env WITHOUT SCOUTLINE_NO_FALLBACK, so these rows exercise exactly the
+// config tier (env-honest per AGENTS.md).
+// ---------------------------------------------------------------------------
+
+describe("science get fallback honors persisted config.fallbackEnabled (T10 precedence)", () => {
+  function openalexDownDescriptors() {
+    return scienceFive({
+      openalex: {
+        getWork: () => {
+          throw new ApiError("openalex down", 503);
+        },
+      },
+    });
+  }
+
+  it("fallbackEnabled:false config fails STRICT on the first supplier error — no reroute, no reroute notice", async (t) => {
+    // GROUND: T10 kill-switch precedence — the wizard's persisted
+    // `config.fallbackEnabled === false` must be consulted by the
+    // science arm (after the --no-fallback flag and the env var, both
+    // absent here). The effective arm's own error surfaces; the walk
+    // never advances to the next DOI-serving supplier. Pre-fix defect:
+    // the config tier was ignored, so this rerouted with a notice.
+    await withTempDir(t, async (dir) => {
+      const { descriptors, byId } = openalexDownDescriptors();
+      const { status, stdout, stderr } = await runMain(["science", "get", "10.1038/nature12373"], {
+        descriptors,
+        artifactsDir: dir,
+        loadScoutlineConfig: async () => ({
+          version: 1,
+          providers: {},
+          fallbackEnabled: false,
+        }),
+      });
+      assert.equal(status, 1);
+      assert.deepEqual(stdout, [], "strict failure keeps stdout empty");
+      const err = parseStderr(stderr);
+      assert.equal(err.code, "API_ERROR", "the effective arm's own error surfaces");
+      assert.match(err.error, /openalex down/);
+      assert.equal(byId.openalex.calls.get.length, 1, "first arm attempted");
+      assert.equal(byId.crossref.calls.get.length, 0, "no reroute to the next supplier");
+      assert.ok(!/rerouting/.test(stderr.join("")), "no reroute stderr notice");
+    });
+  });
+
+  it("default config still reroutes: openalex failure falls through to crossref with the stderr notice", async (t) => {
+    // GROUND: AC-5b — with fallbackEnabled absent (the always-on
+    // default), the same supplier error reroutes to the next
+    // DOI-serving arm in the D5 order, and the reroute notice names
+    // BOTH the failed supplier and the reroute target.
+    await withTempDir(t, async (dir) => {
+      const { descriptors, byId } = openalexDownDescriptors();
+      const { status, stdout, stderr } = await runMain(["science", "get", "10.1038/nature12373"], {
+        descriptors,
+        artifactsDir: dir,
+        loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+      });
+      assert.equal(status, 0);
+      assert.equal(byId.openalex.calls.get.length, 1, "first arm attempted");
+      assert.equal(byId.crossref.calls.get.length, 1, "rerouted to the next DOI arm");
+      const parsed = JSON.parse(stdout.join(""));
+      assert.equal(parsed.title, "work-from-crossref", "the reroute target served the work");
+      assert.match(stderr.join(""), /openalex get failed/);
+      assert.match(stderr.join(""), /rerouting to crossref/);
+    });
   });
 });

@@ -131,19 +131,40 @@ function elementText(block: string, tag: string): string | undefined {
   const re = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, "i");
   const m = re.exec(block);
   if (!m || m[1] === undefined) return undefined;
-  return stripCdata(m[1]);
+  return innerText(m[1]);
 }
 
 /**
- * Attribute value of the first `<tag ...>` in `block`; undefined when
- * absent or the attribute is missing.
+ * Decode the predefined XML entities plus numeric character references
+ * (review): `&amp;` and friends in a title/abstract previously surfaced
+ * literally. CDATA content is literal text — it never passes through
+ * here.
  */
-function elementAttribute(block: string, tag: string, attr: string): string | undefined {
-  const re = new RegExp(`<${tag}(?:\\s[^>]*)?>`, "i");
-  const open = re.exec(block);
-  if (!open) return undefined;
-  const attrMatch = new RegExp(`${attr}="([^"]*)"`).exec(open[0]);
-  return attrMatch ? attrMatch[1] : undefined;
+const XML_ENTITIES: Readonly<Record<string, string>> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+};
+function decodeXmlEntities(text: string): string {
+  return text.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);/g, (whole, body: string) => {
+    if (body.startsWith("#x") || body.startsWith("#X")) {
+      const code = Number.parseInt(body.slice(2), 16);
+      return Number.isNaN(code) ? whole : String.fromCodePoint(code);
+    }
+    if (body.startsWith("#")) {
+      const code = Number.parseInt(body.slice(1), 10);
+      return Number.isNaN(code) ? whole : String.fromCodePoint(code);
+    }
+    return XML_ENTITIES[body] ?? whole;
+  });
+}
+
+/** Inner text of a matched element: CDATA stays literal, plain text is entity-decoded. */
+function innerText(raw: string): string {
+  const stripped = stripCdata(raw);
+  return stripped === raw ? decodeXmlEntities(stripped) : stripped;
 }
 
 /** `<PubmedArticle>…</PubmedArticle>` blocks, in document order. */
@@ -180,10 +201,8 @@ function authorDisplayName(authorBlock: string): string | undefined {
  */
 function parsePubmedArticle(block: string): ScienceWork {
   const pmid = elementText(block, "PMID");
-  const doiElement = /<ELocationID[^>]*EIdType="doi"[^>]*>([\s\S]*?)<\/ELocationID>/i.exec(
-    block,
-  );
-  const doi = doiElement !== null ? stripCdata(doiElement[1] ?? "").trim() : undefined;
+  const doiElement = /<ELocationID[^>]*EIdType="doi"[^>]*>([\s\S]*?)<\/ELocationID>/i.exec(block);
+  const doi = doiElement !== null ? innerText(doiElement[1] ?? "").trim() : undefined;
 
   const out: ScienceWork = {
     title: (elementText(block, "ArticleTitle") ?? "").trim(),
@@ -217,8 +236,14 @@ function parsePubmedArticle(block: string): ScienceWork {
   const venue = elementText(block, "Title");
   if (venue !== undefined && venue.trim() !== "") out.venue = venue.trim();
 
-  const summary = elementText(block, "AbstractText");
-  if (summary !== undefined && summary.trim() !== "") out.summary = summary.trim();
+  // Multi-section abstracts (review): a structured abstract carries
+  // SEVERAL labeled <AbstractText> blocks — join them all instead of
+  // keeping only the first.
+  const summary = [...block.matchAll(/<AbstractText(?:\s[^>]*)?>([\s\S]*?)<\/AbstractText>/gi)]
+    .map((match) => innerText(match[1] ?? "").trim())
+    .filter((text) => text !== "")
+    .join(" ");
+  if (summary !== "") out.summary = summary;
 
   const publicationType = elementText(block, "PublicationType");
   if (publicationType !== undefined && publicationType.trim() !== "") {
@@ -307,10 +332,7 @@ function pubmedCacheIdentity(
 interface PubmedScienceSearchCapability {
   validate(request: ScienceSearchRequest): void;
   cacheIdentity(request: ScienceSearchRequest): ScienceCacheIdentity;
-  invoke(
-    request: ScienceSearchRequest,
-    signal?: AbortSignal,
-  ): Promise<readonly ScienceWork[]>;
+  invoke(request: ScienceSearchRequest, signal?: AbortSignal): Promise<readonly ScienceWork[]>;
 }
 
 /** Local science get contract — see the module header. */
@@ -338,7 +360,10 @@ function createPubmedScienceCapability(options: {
    * `db=pubmed retmode=xml` is pinned by the wire-shape deviation
    * (efetch json carries no records).
    */
-  async function fetchRecords(ids: string[], signal?: AbortSignal): Promise<readonly ScienceWork[]> {
+  async function fetchRecords(
+    ids: string[],
+    signal?: AbortSignal,
+  ): Promise<readonly ScienceWork[]> {
     const xml = await fetchPubmedEfetch(
       { db: "pubmed", retmode: "xml", id: ids.join(",") },
       deps,
@@ -459,9 +484,7 @@ const PUBMED_CAPABILITIES: ReadonlySet<ProviderCapability> = new Set([
  * side-effect-free; transport and credential resolution run per
  * capability call.
  */
-export function createPubmedDescriptor(
-  dependencies?: PubmedAdapterDependencies,
-): PubmedDescriptor {
+export function createPubmedDescriptor(dependencies?: PubmedAdapterDependencies): PubmedDescriptor {
   const transport = dependencies?.transport;
   return {
     id: "pubmed",

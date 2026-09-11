@@ -57,11 +57,7 @@ import assert from "node:assert/strict";
 
 import { createPubmedDescriptor } from "../dist/providers/pubmed/adapter.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "../dist/providers/registry.js";
-import {
-  QuotaError,
-  UnsupportedOptionError,
-  ValidationError,
-} from "../dist/lib/errors.js";
+import { QuotaError, UnsupportedOptionError, ValidationError } from "../dist/lib/errors.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures — real-shape eutils responses.
@@ -100,7 +96,7 @@ const ESEARCH_ZERO = {
 const PMID_FULL_XML = `<?xml version="1.0" ?>
 <!DOCTYPE PubmedArticleSet PUBLIC "-//NLM//DTD PubMedArticle, 1st January 2025//EN" "https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd">
 <PubmedArticleSet>
-<PubmedArticle><MedlineCitation Status="MEDLINE" Owner="NLM"><PMID Version="1">36959025</PMID><DateCompleted><Year>2022</Year><Month>05</Month><Day>12</Day></DateCompleted><Article PubModel="Print-Electronic"><Journal><ISSN IssnType="Electronic">1523-1747</ISSN><JournalIssue CitedMedium="Internet"><Volume>143</Volume><Issue>8</Issue><PubDate><Year>2023</Year><Month>Aug</Month></PubDate></JournalIssue><Title>The Journal of investigative dermatology</Title><ISOAbbreviation>J Invest Dermatol</ISOAbbreviation></Journal><ArticleTitle>T Cells Remember SARS-CoV-2 in Rituximab-Treated Pemphigus Vulgaris.</ArticleTitle><ELocationID EIdType="doi" ValidYN="Y">10.1016/j.jid.2023.02.002</ELocationID><AuthorList CompleteYN="Y"><Author ValidYN="Y"><LastName>Croitoru</LastName><ForeName>David O</ForeName><Initials>DO</Initials></Author><Author ValidYN="Y"><LastName>Piguet</LastName><ForeName>Vincent</ForeName><Initials>V</Initials></Author></AuthorList><Language>eng</Language><PublicationTypeList><PublicationType UI="D016428">Journal Article</PublicationType></PublicationTypeList></Article><MedlineJournalInfo><Country>United States</Country><MedlineTA>J Invest Dermatol</MedlineTA></MedlineJournalInfo></MedlineCitation></PubmedArticle>
+<PubmedArticle><MedlineCitation Status="MEDLINE" Owner="NLM"><PMID Version="1">36959025</PMID><DateCompleted><Year>2022</Year><Month>05</Month><Day>12</Day></DateCompleted><Article PubModel="Print-Electronic"><Journal><ISSN IssnType="Electronic">1523-1747</ISSN><JournalIssue CitedMedium="Internet"><Volume>143</Volume><Issue>8</Issue><PubDate><Year>2023</Year><Month>Aug</Month></PubDate></JournalIssue><Title>The Journal of investigative dermatology</Title><ISOAbbreviation>J Invest Dermatol</ISOAbbreviation></Journal><ArticleTitle>T Cells Remember SARS-CoV-2 in Rituximab-Treated Pemphigus Vulgaris.</ArticleTitle><Abstract><AbstractText>Rituximab-treated pemphigus vulgaris patients mount SARS-CoV-2-specific T cell responses &amp; form durable memory.</AbstractText></Abstract><ELocationID EIdType="doi" ValidYN="Y">10.1016/j.jid.2023.02.002</ELocationID><AuthorList CompleteYN="Y"><Author ValidYN="Y"><LastName>Croitoru</LastName><ForeName>David O</ForeName><Initials>DO</Initials></Author><Author ValidYN="Y"><LastName>Piguet</LastName><ForeName>Vincent</ForeName><Initials>V</Initials></Author></AuthorList><Language>eng</Language><PublicationTypeList><PublicationType UI="D016428">Journal Article</PublicationType></PublicationTypeList></Article><MedlineJournalInfo><Country>United States</Country><MedlineTA>J Invest Dermatol</MedlineTA></MedlineJournalInfo></MedlineCitation></PubmedArticle>
 <PubmedArticle><MedlineCitation Status="PubMed" Owner="NLM"><PMID Version="1">31687970</PMID><Article PubModel="Print"><Journal><JournalIssue CitedMedium="Print"><Volume>93</Volume><PubDate><Year>2019</Year><Month>Oct</Month></PubDate></JournalIssue><Title>Environmental research</Title></Journal><ArticleTitle>Graph attention networks: a survey.</ArticleTitle><AuthorList CompleteYN="Y"><Author ValidYN="Y"><LastName>Kim</LastName><ForeName>Soo</ForeName><Initials>S</Initials></Author></AuthorList><Language>eng</Language><PublicationTypeList><PublicationType UI="D016428">Journal Article</PublicationType></PublicationTypeList></Article></MedlineCitation></PubmedArticle>
 </PubmedArticleSet>`;
 
@@ -140,10 +136,7 @@ function decodedUrl(url) {
  */
 function makeAdapter(responses = {}, env = {}) {
   const calls = [];
-  const {
-    esearch = ESEARCH_TWO,
-    efetch = PMID_FULL_XML,
-  } = responses;
+  const { esearch = ESEARCH_TWO, efetch = PMID_FULL_XML } = responses;
   const descriptor = createPubmedDescriptor({
     transport: {
       fetch: async (url, init) => {
@@ -235,18 +228,29 @@ describe("pubmed search invoke — two-step esearch→efetch composition (TASKS 
     const wire1 = decodedUrl(calls[0].url);
     const u1 = new URL(calls[0].url);
     assert.equal(u1.searchParams.get("db"), "pubmed", "esearch db=pubmed");
-    assert.equal(u1.searchParams.get("retmode"), "json", "esearch retmode=json (PRD wire evidence)");
-    assert.ok(
-      wire1.includes("attention"),
-      "query rides the esearch term",
+    assert.equal(
+      u1.searchParams.get("retmode"),
+      "json",
+      "esearch retmode=json (PRD wire evidence)",
     );
+    assert.ok(wire1.includes("attention"), "query rides the esearch term");
     const u2 = new URL(calls[1].url);
     assert.equal(u2.searchParams.get("db"), "pubmed", "efetch db=pubmed");
-    assert.equal(u2.searchParams.get("retmode"), "xml", "efetch retmode=xml — the record-carrying mode (deviation pin)");
+    assert.equal(
+      u2.searchParams.get("retmode"),
+      "xml",
+      "efetch retmode=xml — the record-carrying mode (deviation pin)",
+    );
     const idParam = u2.searchParams.get("id") ?? "";
     assert.ok(
-      idParam.split(",").map((s) => s.trim()).includes("36959025") &&
-        idParam.split(",").map((s) => s.trim()).includes("31687970"),
+      idParam
+        .split(",")
+        .map((s) => s.trim())
+        .includes("36959025") &&
+        idParam
+          .split(",")
+          .map((s) => s.trim())
+          .includes("31687970"),
       "efetch carries BOTH esearch-returned ids (idlist consumed)",
     );
   });
@@ -260,10 +264,7 @@ describe("pubmed search invoke — two-step esearch→efetch composition (TASKS 
     const works = await adapter.science.search.invoke({ query: "nonexistenttermxyz" });
     assert.deepEqual(works, []);
     assert.equal(calls.length, 1, "no efetch when the idlist is empty");
-    assert.ok(
-      decodedUrl(calls[0].url).includes("esearch.fcgi"),
-      "the one call is esearch",
-    );
+    assert.ok(decodedUrl(calls[0].url).includes("esearch.fcgi"), "the one call is esearch");
   });
 });
 
@@ -331,10 +332,7 @@ describe("pubmed controls — D7 pubmed column (TASKS T4c; DESIGN D7; PRD AC-3)"
     const { adapter, calls } = makeAdapter();
     assert.throws(
       () => adapter.science.search.validate({ query: "attention", controls: { venue: "Nature" } }),
-      (e) =>
-        e instanceof UnsupportedOptionError &&
-        e.provider === "pubmed" &&
-        e.option === "venue",
+      (e) => e instanceof UnsupportedOptionError && e.provider === "pubmed" && e.option === "venue",
     );
     await assert.rejects(
       adapter.science.search.invoke({ query: "attention", controls: { venue: "Nature" } }),
@@ -353,7 +351,8 @@ describe("pubmed controls — D7 pubmed column (TASKS T4c; DESIGN D7; PRD AC-3)"
       (e) => e instanceof ValidationError,
     );
     assert.throws(
-      () => adapter.science.search.validate({ query: "attention", controls: { year: "2022:2018" } }),
+      () =>
+        adapter.science.search.validate({ query: "attention", controls: { year: "2022:2018" } }),
       (e) => e instanceof ValidationError,
       "reversed range is rejected at validate (PRD AC-7b)",
     );
@@ -398,10 +397,7 @@ describe("pubmed type-VALUE mapping (TASKS T4c; DESIGN D7 translation table; PRD
     const { adapter, calls } = makeAdapter();
     assert.throws(
       () => adapter.science.search.validate({ query: "x", controls: { type: "bogus" } }),
-      (e) =>
-        e instanceof UnsupportedOptionError &&
-        e.provider === "pubmed" &&
-        e.option === "type",
+      (e) => e instanceof UnsupportedOptionError && e.provider === "pubmed" && e.option === "type",
     );
     await assert.rejects(
       adapter.science.search.invoke({ query: "x", controls: { type: "bogus" } }),
@@ -425,10 +421,16 @@ describe("pubmed search invoke — XML mapping to ScienceWork (TASKS T4c; PRD AC
     // (the house-visible identity for a pubmed-sourced work).
     const { adapter } = makeAdapter();
     const works = await adapter.science.search.invoke({ query: "attention" });
-    const w = works.find((x) => x.title === "T Cells Remember SARS-CoV-2 in Rituximab-Treated Pemphigus Vulgaris.");
+    const w = works.find(
+      (x) => x.title === "T Cells Remember SARS-CoV-2 in Rituximab-Treated Pemphigus Vulgaris.",
+    );
     assert.ok(w, "full record present");
     assert.equal(w.identifiers?.pmid, "36959025", "PMID → identifiers.pmid");
-    assert.equal(w.identifiers?.doi, "10.1016/j.jid.2023.02.002", "ELocationID doi → identifiers.doi");
+    assert.equal(
+      w.identifiers?.doi,
+      "10.1016/j.jid.2023.02.002",
+      "ELocationID doi → identifiers.doi",
+    );
     assert.deepEqual(
       w.authors,
       ["Croitoru DO", "Piguet V"],
@@ -437,24 +439,39 @@ describe("pubmed search invoke — XML mapping to ScienceWork (TASKS T4c; PRD AC
     assert.equal(w.year, 2023, "PubDate Year → year");
     assert.equal(w.venue, "The Journal of investigative dermatology", "Journal Title → venue");
     assert.equal(w.language, "eng", "Language → language");
+    // Review: XML entities decode — the wire carries `&amp;`, the
+    // normalized field carries `&`.
+    assert.equal(
+      w.summary,
+      "Rituximab-treated pemphigus vulgaris patients mount SARS-CoV-2-specific T cell responses & form durable memory.",
+      "AbstractText → summary with entities decoded",
+    );
     assert.ok(
       typeof w.url === "string" && w.url.includes("36959025"),
       "url is PMID-addressed (pubmed landing identity)",
     );
     // type: the record's first PublicationType (journal article).
-    assert.ok(
-      typeof w.type === "string" && w.type.length > 0,
-      "PublicationType → type",
-    );
+    assert.ok(typeof w.type === "string" && w.type.length > 0, "PublicationType → type");
   });
 
   it("AbstractText maps to summary when present; record without abstract stays honestly absent", async () => {
     // GROUND: PRD AC-7c — "summary honestly absent when the supplier
     // carries none". The fixture's second record (PMID 31687970) has NO
     // AbstractText and NO ELocationID doi — absent stays absent, never
-    // undefined-valued and never fabricated.
+    // undefined-valued and never fabricated. The first record carries
+    // a single AbstractText (review: present-case must be positively
+    // asserted — the fixture previously lacked any AbstractText, so
+    // only the absent branch ran).
     const { adapter } = makeAdapter();
     const works = await adapter.science.search.invoke({ query: "graph attention" });
+    const full = works.find(
+      (x) => x.title === "T Cells Remember SARS-CoV-2 in Rituximab-Treated Pemphigus Vulgaris.",
+    );
+    assert.ok(full, "record with an AbstractText is present");
+    assert.ok(
+      typeof full.summary === "string" && full.summary.includes("T cell responses"),
+      "AbstractText present → summary populated",
+    );
     const w = works.find((x) => x.title === "Graph attention networks: a survey.");
     assert.ok(w, "abstractless record present");
     assert.equal(
@@ -462,7 +479,35 @@ describe("pubmed search invoke — XML mapping to ScienceWork (TASKS T4c; PRD AC
       false,
       "no AbstractText → summary honestly absent (AC-7c)",
     );
-    assert.equal(Object.hasOwn(w, "identifiers"), false, "no doi → identifiers key absent (pmid absent too)");
+    assert.equal(
+      Object.hasOwn(w, "identifiers"),
+      false,
+      "no doi → identifiers key absent (pmid absent too)",
+    );
+  });
+
+  it("a structured abstract joins EVERY labeled AbstractText section (review)", async () => {
+    // Review: multi-section abstracts previously kept only the FIRST
+    // <AbstractText> block — the labeled sections after it were lost.
+    const structured = PMID_FULL_XML.replace(
+      /<Abstract>[\s\S]*?<\/Abstract>/,
+      "<Abstract>" +
+        '<AbstractText Label="BACKGROUND">T cells respond to rituximab.</AbstractText>' +
+        '<AbstractText Label="CONCLUSIONS">Memory persists &amp; protects.</AbstractText>' +
+        "</Abstract>",
+    );
+    assert.notEqual(structured, PMID_FULL_XML, "fixture splice must land");
+    const { adapter } = makeAdapter({ efetch: structured });
+    const works = await adapter.science.search.invoke({ query: "attention" });
+    const w = works.find(
+      (x) => x.title === "T Cells Remember SARS-CoV-2 in Rituximab-Treated Pemphigus Vulgaris.",
+    );
+    assert.ok(w, "structured record present");
+    assert.equal(
+      w.summary,
+      "T cells respond to rituximab. Memory persists & protects.",
+      "all AbstractText sections join, in order, entities decoded",
+    );
   });
 
   it("citationCount is honestly absent — eutils carries no citation signal on this wire", () => {
@@ -498,12 +543,12 @@ describe("pubmed get — PMID and DOI, never arXiv (TASKS T4c; DESIGN D10 ruling
       u.origin + u.pathname,
       "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
     );
-    assert.ok(
-      decodedUrl(calls[0].url).includes("36959025"),
-      "the PMID addresses the efetch call",
-    );
+    assert.ok(decodedUrl(calls[0].url).includes("36959025"), "the PMID addresses the efetch call");
     assert.equal(work.identifiers?.pmid, "36959025");
-    assert.equal(work.title, "T Cells Remember SARS-CoV-2 in Rituximab-Treated Pemphigus Vulgaris.");
+    assert.equal(
+      work.title,
+      "T Cells Remember SARS-CoV-2 in Rituximab-Treated Pemphigus Vulgaris.",
+    );
   });
 
   it("get by bare DOI: resolved via an id lookup step, one normalized work", async () => {
@@ -522,13 +567,13 @@ describe("pubmed get — PMID and DOI, never arXiv (TASKS T4c; DESIGN D10 ruling
       },
     });
     const work = await adapter.science.get.invoke({ identifier: "10.1016/j.jid.2023.02.002" });
-    assert.ok(work.identifiers?.pmid === "36959025" || work.identifiers?.doi === "10.1016/j.jid.2023.02.002");
+    assert.ok(
+      work.identifiers?.pmid === "36959025" ||
+        work.identifiers?.doi === "10.1016/j.jid.2023.02.002",
+    );
     assert.equal(calls.length, 2, "DOI get resolves through the two-step (lookup, then record)");
     const wire = decodedUrl(calls[0].url);
-    assert.ok(
-      wire.includes("10.1016/j.jid.2023.02.002"),
-      "the DOI rides the lookup call's wire",
-    );
+    assert.ok(wire.includes("10.1016/j.jid.2023.02.002"), "the DOI rides the lookup call's wire");
   });
 
   it("validate rejects arXiv ids (UnsupportedOptionError); out-of-grammar throws ValidationError; PMID passes", () => {
@@ -541,9 +586,7 @@ describe("pubmed get — PMID and DOI, never arXiv (TASKS T4c; DESIGN D10 ruling
     assert.throws(
       () => adapter.science.get.validate({ identifier: "2401.12345" }),
       (e) =>
-        e instanceof UnsupportedOptionError &&
-        e.provider === "pubmed" &&
-        e.option === "identifier",
+        e instanceof UnsupportedOptionError && e.provider === "pubmed" && e.option === "identifier",
       "arXiv id does not route to pubmed (D10 ruling 3)",
     );
     assert.throws(
@@ -570,7 +613,7 @@ describe("pubmed get — PMID and DOI, never arXiv (TASKS T4c; DESIGN D10 ruling
 // ---------------------------------------------------------------------------
 
 describe("pubmed cache identity — one logical identity per query (TASKS T4c; DESIGN D4 + D4b note; PRD AC-6b/AC-8b note)", () => {
-  it("search identity: supplier pubmed, capability science.search, fingerprint \"\", request echoed", () => {
+  it('search identity: supplier pubmed, capability science.search, fingerprint "", request echoed', () => {
     // GROUND: DESIGN D4 — "PubMed two-step = ONE cache identity (the
     // logical query); adapter composes esearch+efetch internally" + D4b
     // note — keyless "" fingerprint (user-independent). AC-8b note: the
@@ -584,7 +627,7 @@ describe("pubmed cache identity — one logical identity per query (TASKS T4c; D
     assert.deepEqual(identity.request, request);
   });
 
-  it("keyed upgrade re-partitions: NCBI_API_KEY present → SHA-256 hex fingerprint, not \"\"", () => {
+  it('keyed upgrade re-partitions: NCBI_API_KEY present → SHA-256 hex fingerprint, not ""', () => {
     // GROUND: PRD AC-6b — "constant empty credentialFingerprint when
     // keyless; keyed upgrades re-partition" + DESIGN D4b note ("When a
     // key IS present, fingerprint = SHA-256 of the key, house method").

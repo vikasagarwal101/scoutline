@@ -40,9 +40,7 @@ export interface OpenalexCredentials {
   readonly apiKey?: string;
 }
 
-export function resolveOpenalexCredentials(
-  env: NodeJS.ProcessEnv,
-): OpenalexCredentials {
+export function resolveOpenalexCredentials(env: NodeJS.ProcessEnv): OpenalexCredentials {
   const apiKey = env["OPENALEX_API_KEY"];
   return apiKey === undefined || apiKey === "" ? {} : { apiKey };
 }
@@ -60,17 +58,21 @@ function mapStatusError(status: number, timeoutMs: number): Error {
     return new TimeoutError(timeoutMs);
   }
   if (status === 429) {
-    return new QuotaError("OpenAlex rate-limited — keyless budget; a free key raises the limit (see `scoutline init`)");
+    return new QuotaError(
+      "OpenAlex rate-limited — keyless budget; a free key raises the limit (see `scoutline init`)",
+    );
   }
   return new ApiError("OpenAlex request failed", status);
 }
 
 /** Same transport-error normalization contract as the arXiv client. */
 function normalizeTransportError(error: unknown, timeoutMs: number): Error {
-  if (error instanceof AuthError ||
+  if (
+    error instanceof AuthError ||
     error instanceof ApiError ||
     error instanceof QuotaError ||
-    error instanceof TimeoutError) {
+    error instanceof TimeoutError
+  ) {
     return error;
   }
   if (error instanceof Error && error.name === "AbortError") {
@@ -81,12 +83,22 @@ function normalizeTransportError(error: unknown, timeoutMs: number): Error {
 
 /**
  * Core GET. `params` carries OpenAlex-native query parameters (search,
- * filter, per_page — the Adapter maps Provider-neutral science
+ * filter, per-page — the Adapter maps Provider-neutral science
  * requests into these); `path` addresses an entity route for
  * identifier-addressed gets (e.g. `doi:10.1038/...`). Returns the
  * parsed JSON document. No internal retry — shared execution owns
  * retry policy.
  */
+/**
+ * Percent-encode one entity-route path segment, preserving `/` at the
+ * caller. Encodes the URL-delimiter characters (`?`, `#`) and a stray
+ * `%` (keeps the segment unambiguous); leaves the `doi:` prefix colon
+ * and DOI-legal punctuation readable.
+ */
+function encodePathSegment(segment: string): string {
+  return segment.replace(/[?#%]/g, (c) => encodeURIComponent(c));
+}
+
 export async function fetchOpenalexJson(
   params: Record<string, string>,
   deps: OpenalexTransportDeps & { readonly env?: NodeJS.ProcessEnv } = {},
@@ -97,7 +109,15 @@ export async function fetchOpenalexJson(
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
   const { apiKey } = resolveOpenalexCredentials(deps.env ?? {});
-  const url = new URL(`${OPENALEX_WORKS_URL}${path ? `/${path.replace(/^\/+/, "")}` : ""}`);
+  // Entity-route path segments are percent-encoded (review): a DOI
+  // suffix containing `?` or `#` would otherwise be truncated into the
+  // query/fragment by `new URL`. `/` separators are preserved, and the
+  // `doi:` prefix colon stays readable.
+  const url = new URL(
+    `${OPENALEX_WORKS_URL}${
+      path ? `/${path.replace(/^\/+/, "").split("/").map(encodePathSegment).join("/")}` : ""
+    }`,
+  );
   for (const [key, value] of Object.entries(params)) {
     url.searchParams.set(key, value);
   }
@@ -107,6 +127,11 @@ export async function fetchOpenalexJson(
     url.searchParams.set("api_key", apiKey);
   } else {
     url.searchParams.set("mailto", OPENALEX_MAILTO);
+  }
+  // A pre-aborted caller signal must not reach the transport (review):
+  // reject before the fetch is invoked at all.
+  if (signal?.aborted) {
+    throw new TimeoutError(DEFAULT_TIMEOUT_MS);
   }
   const controller = new AbortController();
   const timeoutId = setT(() => controller.abort(), DEFAULT_TIMEOUT_MS);

@@ -48,6 +48,7 @@ import assert from "node:assert/strict";
 import { createCrossrefDescriptor } from "../dist/providers/crossref/adapter.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "../dist/providers/registry.js";
 import {
+  ApiError,
   QuotaError,
   UnsupportedOptionError,
   ValidationError,
@@ -113,7 +114,7 @@ const CROSSREF_SEARCH_RESPONSE = {
   message: {
     "total-results": 3,
     "items-per-page": 20,
-    "query": { "search-terms": "deep learning", "start-index": 0 },
+    query: { "search-terms": "deep learning", "start-index": 0 },
     items: [WORK_JOURNAL_ARTICLE, WORK_COMPONENT, WORK_PREPRINT],
   },
 };
@@ -175,7 +176,10 @@ describe("crossref registry wiring — T2 stub seat flips to the real adapter", 
     const seat = BUILT_IN_PROVIDER_DESCRIPTORS.find((d) => d.id === "crossref");
     assert.ok(seat, "crossref descriptor must be in BUILT_IN_PROVIDER_DESCRIPTORS");
     const adapter = seat.create({ env: {} });
-    assert.ok(adapter.science, "crossref adapter must expose the science slot (ProviderAdapter.science)");
+    assert.ok(
+      adapter.science,
+      "crossref adapter must expose the science slot (ProviderAdapter.science)",
+    );
     assert.ok(adapter.science.search, "science.search capability must exist");
     assert.ok(adapter.science.get, "science.get capability must exist");
     assert.ok(adapter.diagnostics, "diagnostics capability must exist (D2 round-3)");
@@ -200,10 +204,7 @@ describe("crossref registry wiring — T2 stub seat flips to the real adapter", 
       false,
       "quota dashboard filter must never list science suppliers (AC-5)",
     );
-    assert.equal(
-      descriptor.isConfigured({}, "science.search"),
-      true,
-    );
+    assert.equal(descriptor.isConfigured({}, "science.search"), true);
   });
 });
 
@@ -283,7 +284,8 @@ describe("crossref search validate/invoke — all four controls on the wire (TAS
       (e) => e instanceof ValidationError,
     );
     assert.throws(
-      () => adapter.science.search.validate({ query: "attention", controls: { year: "2022:2018" } }),
+      () =>
+        adapter.science.search.validate({ query: "attention", controls: { year: "2022:2018" } }),
       (e) => e instanceof ValidationError,
       "reversed range is rejected at validate (PRD AC-7b)",
     );
@@ -332,9 +334,7 @@ describe("crossref type-VALUE mapping (TASKS T4b; DESIGN D7 translation table; P
     assert.throws(
       () => adapter.science.search.validate({ query: "x", controls: { type: "bogus" } }),
       (e) =>
-        e instanceof UnsupportedOptionError &&
-        e.provider === "crossref" &&
-        e.option === "type",
+        e instanceof UnsupportedOptionError && e.provider === "crossref" && e.option === "type",
     );
     await assert.rejects(
       adapter.science.search.invoke({ query: "x", controls: { type: "bogus" } }),
@@ -371,7 +371,11 @@ describe("crossref search invoke — JSON mapping to ScienceWork (TASKS T4b; PRD
     );
     assert.equal(w.year, 2015, "issued.date-parts[0][0] → year");
     assert.equal(w.venue, "Nature", "container-title[0] → venue");
-    assert.equal(w.citationCount, 44913, "is-referenced-by-count → citationCount (AC-7d verbatim pin)");
+    assert.equal(
+      w.citationCount,
+      44913,
+      "is-referenced-by-count → citationCount (AC-7d verbatim pin)",
+    );
     assert.equal(w.type, "journal-article", "type rides through on the record");
     // AC-7c honesty teeth: Crossref carries no abstracts — summary is
     // honestly absent, never undefined-valued and never fabricated.
@@ -383,7 +387,7 @@ describe("crossref search invoke — JSON mapping to ScienceWork (TASKS T4b; PRD
     assert.equal(Object.hasOwn(w, "pdfUrl"), false, "no pdf link in fixture → pdfUrl key absent");
   });
 
-  it("component junk filter: type:\"component\" records NEVER surface (default filter, nothing more)", async () => {
+  it('component junk filter: type:"component" records NEVER surface (default filter, nothing more)', async () => {
     // GROUND: TASKS T4b "component junk filter"; PRD AC-4 — "type:
     // component results never surface (default junk filter)"; AC-8 —
     // the default filter is exactly the component drop (full junk-tier
@@ -453,6 +457,37 @@ describe("crossref get — DOI identifier only (TASKS T4b; DESIGN D10 ruling 3; 
     );
   });
 
+  it("get by a component DOI obeys the junk policy — ApiError 404, never the component record (review)", async () => {
+    // Review: the direct-get path bypassed the search-side
+    // isComponentJunk filter, so `science get` on a component DOI
+    // returned the component. Same policy, same 404 no-work behavior.
+    const { adapter } = makeAdapter({
+      status: "ok",
+      "message-type": "work",
+      "message-version": "1.0.0",
+      message: WORK_COMPONENT,
+    });
+    await assert.rejects(
+      adapter.science.get.invoke({ identifier: "10.1038/nature12373.fig1" }),
+      (e) => e instanceof ApiError && e.statusCode === 404,
+      "component DOI get must be the 404 no-work error",
+    );
+  });
+
+  it("get percent-encodes URL-delimiter characters in the DOI path (review)", async () => {
+    // Review: a DOI suffix containing `?` or `#` was truncated into the
+    // query/fragment by `new URL` — the wire addressed the WRONG
+    // resource. The path must carry the characters percent-encoded.
+    const { adapter, calls } = makeAdapter(CROSSREF_WORK_RESPONSE);
+    await adapter.science.get.invoke({ identifier: "10.1038/nature12373?fig#1" });
+    assert.equal(calls.length, 1);
+    assert.equal(
+      new URL(calls[0].url).pathname,
+      "/works/10.1038/nature12373%3Ffig%231",
+      "DOI path delimiters must ride percent-encoded",
+    );
+  });
+
   it("validate rejects PMID and arXiv ids (UnsupportedOptionError); out-of-grammar throws ValidationError", () => {
     // GROUND: DESIGN D10 ruling 3 — "PMID routes to openalex +
     // europepmc + pubmed" (crossref is NOT in the PMID set); DOI to
@@ -473,9 +508,7 @@ describe("crossref get — DOI identifier only (TASKS T4b; DESIGN D10 ruling 3; 
     );
     assert.throws(
       () => adapter.science.get.validate({ identifier: "2401.12345" }),
-      (e) =>
-        e instanceof UnsupportedOptionError &&
-        e.provider === "crossref",
+      (e) => e instanceof UnsupportedOptionError && e.provider === "crossref",
       "arXiv id does not route to crossref (D10 ruling 3)",
     );
     assert.throws(
@@ -490,8 +523,8 @@ describe("crossref get — DOI identifier only (TASKS T4b; DESIGN D10 ruling 3; 
 // Cache identity — always keyless "" (no key model exists, D2)
 // ---------------------------------------------------------------------------
 
-describe("crossref cache identity — always keyless \"\" (TASKS T4b; DESIGN D1 + D4b note; PRD AC-6b)", () => {
-  it("search identity: supplier crossref, capability science.search, fingerprint \"\", request echoed", () => {
+describe('crossref cache identity — always keyless "" (TASKS T4b; DESIGN D1 + D4b note; PRD AC-6b)', () => {
+  it('search identity: supplier crossref, capability science.search, fingerprint "", request echoed', () => {
     // GROUND: DESIGN D4b note — keyless `""` fingerprint is the seed-18
     // Q4 ruling (keyless responses are user-independent). Crossref has
     // no key model at all (D2 table), so the fingerprint is ALWAYS ""
@@ -505,7 +538,7 @@ describe("crossref cache identity — always keyless \"\" (TASKS T4b; DESIGN D1 
     assert.deepEqual(identity.request, request);
   });
 
-  it("get identity: capability science.get, fingerprint \"\", identifier echoed", () => {
+  it('get identity: capability science.get, fingerprint "", identifier echoed', () => {
     const { adapter } = makeAdapter();
     const identity = adapter.science.get.cacheIdentity({ identifier: "10.1038/nature12373" });
     assert.equal(identity.supplier, "crossref");
@@ -533,7 +566,10 @@ describe("crossref wire politeness — house USER_AGENT carrying mailto (TASKS T
     assert.equal(calls.length, 1);
     const headers = calls[0].init?.headers ?? {};
     const ua = headers["User-Agent"];
-    assert.ok(typeof ua === "string" && ua.startsWith("scoutline/"), "house USER_AGENT on the wire");
+    assert.ok(
+      typeof ua === "string" && ua.startsWith("scoutline/"),
+      "house USER_AGENT on the wire",
+    );
     assert.ok(
       typeof ua === "string" && ua.includes("mailto:"),
       "UA carries the mailto contact — polite pool (T4b pin)",

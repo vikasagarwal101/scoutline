@@ -57,6 +57,7 @@ import assert from "node:assert/strict";
 import { createEuropepmcDescriptor } from "../dist/providers/europepmc/adapter.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "../dist/providers/registry.js";
 import {
+  ApiError,
   QuotaError,
   UnsupportedOptionError,
   ValidationError,
@@ -228,7 +229,7 @@ describe("europepmc controls — D7 europepmc column (TASKS T5; DESIGN D7; PRD A
     assert.ok(wire.includes("attention"), "query rides the wire");
     assert.ok(
       wire.includes('AUTH:"Vaswani"'),
-      "author control maps to AUTH:\"…\" (D7 europepmc column)",
+      'author control maps to AUTH:"…" (D7 europepmc column)',
     );
     assert.ok(
       wire.includes("PUB_YEAR:[2018 TO 2022]"),
@@ -236,7 +237,7 @@ describe("europepmc controls — D7 europepmc column (TASKS T5; DESIGN D7; PRD A
     );
     assert.ok(
       wire.includes('PUB_TYPE:"Journal Article"'),
-      "type control maps to PUB_TYPE:\"…\" with the D7 round-2 wire literal",
+      'type control maps to PUB_TYPE:"…" with the D7 round-2 wire literal',
     );
   });
 
@@ -249,10 +250,7 @@ describe("europepmc controls — D7 europepmc column (TASKS T5; DESIGN D7; PRD A
       controls: { year: "2020" },
     });
     const wire = decodedUrl(calls[0].url);
-    assert.ok(
-      wire.includes("PUB_YEAR:2020"),
-      "single year → PUB_YEAR:2020 (closed form)",
-    );
+    assert.ok(wire.includes("PUB_YEAR:2020"), "single year → PUB_YEAR:2020 (closed form)");
   });
 
   it("venue is REJECTED at validate with UnsupportedOptionError, before any transport call", async () => {
@@ -264,9 +262,7 @@ describe("europepmc controls — D7 europepmc column (TASKS T5; DESIGN D7; PRD A
     assert.throws(
       () => adapter.science.search.validate({ query: "attention", controls: { venue: "Nature" } }),
       (e) =>
-        e instanceof UnsupportedOptionError &&
-        e.provider === "europepmc" &&
-        e.option === "venue",
+        e instanceof UnsupportedOptionError && e.provider === "europepmc" && e.option === "venue",
     );
     await assert.rejects(
       adapter.science.search.invoke({ query: "attention", controls: { venue: "Nature" } }),
@@ -285,7 +281,8 @@ describe("europepmc controls — D7 europepmc column (TASKS T5; DESIGN D7; PRD A
       (e) => e instanceof ValidationError,
     );
     assert.throws(
-      () => adapter.science.search.validate({ query: "attention", controls: { year: "2022:2018" } }),
+      () =>
+        adapter.science.search.validate({ query: "attention", controls: { year: "2022:2018" } }),
       (e) => e instanceof ValidationError,
       "reversed range is rejected at validate (PRD AC-7b)",
     );
@@ -333,9 +330,7 @@ describe("europepmc type-VALUE mapping (TASKS T5; DESIGN D7 translation table; P
     assert.throws(
       () => adapter.science.search.validate({ query: "x", controls: { type: "bogus" } }),
       (e) =>
-        e instanceof UnsupportedOptionError &&
-        e.provider === "europepmc" &&
-        e.option === "type",
+        e instanceof UnsupportedOptionError && e.provider === "europepmc" && e.option === "type",
     );
     await assert.rejects(
       adapter.science.search.invoke({ query: "x", controls: { type: "bogus" } }),
@@ -361,10 +356,7 @@ describe("europepmc search invoke — JSON mapping to ScienceWork (TASKS T5; PRD
     assert.equal(works.length, 2, "both records mapped");
 
     const w = works[0];
-    assert.equal(
-      w.title,
-      "T Cells Remember SARS-CoV-2 in Rituximab-Treated Pemphigus Vulgaris.",
-    );
+    assert.equal(w.title, "T Cells Remember SARS-CoV-2 in Rituximab-Treated Pemphigus Vulgaris.");
     assert.equal(w.identifiers?.pmid, "36959025", "pmid → identifiers.pmid");
     assert.equal(w.identifiers?.doi, "10.1016/j.jid.2023.02.002", "doi → identifiers.doi");
     assert.deepEqual(
@@ -375,7 +367,7 @@ describe("europepmc search invoke — JSON mapping to ScienceWork (TASKS T5; PRD
     assert.equal(
       w.year,
       2023,
-      "firstPublicationDate \"2023-03-16\" → year 2023 (TASKS T5 pin; NOT the pubYear string)",
+      'firstPublicationDate "2023-03-16" → year 2023 (TASKS T5 pin; NOT the pubYear string)',
     );
     assert.equal(w.venue, "The Journal of investigative dermatology", "journalTitle → venue");
     assert.equal(
@@ -413,7 +405,7 @@ describe("europepmc search invoke — JSON mapping to ScienceWork (TASKS T5; PRD
     );
     assert.equal(w.identifiers?.doi, "10.1101/2020.11.30.402601");
     assert.deepEqual(w.authors, ["Kim S"], "single-author authorString splits to one entry");
-    assert.equal(w.year, 2020, "firstPublicationDate \"2020-11-30\" → year 2020");
+    assert.equal(w.year, 2020, 'firstPublicationDate "2020-11-30" → year 2020');
   });
 
   it("an empty result list maps to an empty array", async () => {
@@ -500,11 +492,57 @@ describe("europepmc get — DOI and PMID identifiers, never arXiv (TASKS T5; DES
   it("get with an unresolvable id (hitCount 0) fails loud, never an empty result", async () => {
     // GROUND: PRD AC-2 — science get returns ONE work or fails; a
     // zero-record lookup is a 404-class error, not an empty array.
+    // Review: pin the ApiError + status, not any rejection — a
+    // NetworkError would have satisfied the old instanceof-Error match.
     const { adapter } = makeAdapter(EPMC_EMPTY_RESPONSE);
     await assert.rejects(
       adapter.science.get.invoke({ identifier: "10.9999/nonexistent.doi" }),
-      (e) => e instanceof Error,
+      (e) => e instanceof ApiError && e.statusCode === 404,
+      "zero-record lookup must be ApiError 404",
     );
+  });
+
+  it('isOpenAccess "N" maps to openAccess false — a known false is preserved, not dropped (review)', async () => {
+    // Review: omitting the "N" case loses a real supplier value; only a
+    // genuinely absent isOpenAccess may leave openAccess unset.
+    const { adapter } = makeAdapter(EPMC_SEARCH_RESPONSE);
+    const works = await adapter.science.search.invoke({ query: "attention" });
+    const preprint = works.find((w) => w.identifiers?.doi === WORK_PREPRINT.doi);
+    assert.ok(preprint, "preprint record must be present");
+    assert.equal(
+      Object.hasOwn(preprint, "openAccess"),
+      true,
+      'isOpenAccess "N" must produce an openAccess key',
+    );
+    assert.equal(preprint.openAccess, false, 'isOpenAccess "N" → openAccess false');
+  });
+
+  it("a record with neither DOI nor PMID keeps its source/id landing URL (review)", async () => {
+    // Review: workUrl dropped the valid source/id identity and returned
+    // "" — the Europe PMC article URL is still constructible.
+    const bare = {
+      id: "PPR426789",
+      source: "PPR",
+      title: "No doi, no pmid.",
+      authorString: "Kim S;",
+      firstPublicationDate: "2020-11-30",
+    };
+    const { adapter } = makeAdapter({
+      ...EPMC_SEARCH_RESPONSE,
+      resultList: { result: [bare] },
+    });
+    const works = await adapter.science.search.invoke({ query: "attention" });
+    assert.equal(works[0].url, "https://europepmc.org/article/PPR/PPR426789");
+  });
+
+  it("every wire call requests resultType=core so abstractText rides the response (review)", async () => {
+    // Review: the default lite result set omits abstractText, so the
+    // adapter could never populate ScienceWork.summary on live calls.
+    const { adapter, calls } = makeAdapter(EPMC_SEARCH_RESPONSE);
+    await adapter.science.search.invoke({ query: "attention" });
+    assert.equal(calls.length, 1);
+    const decoded = decodedUrl(calls[0].url);
+    assert.match(decoded, /resultType=core/, "search wire must carry resultType=core");
   });
 });
 
@@ -512,8 +550,8 @@ describe("europepmc get — DOI and PMID identifiers, never arXiv (TASKS T5; DES
 // Cache identity — always keyless "" (no key model exists, D2)
 // ---------------------------------------------------------------------------
 
-describe("europepmc cache identity — always keyless \"\" (TASKS T5; DESIGN D1 + D4b note; PRD AC-6b)", () => {
-  it("search identity: supplier europepmc, capability science.search, fingerprint \"\", request echoed", () => {
+describe('europepmc cache identity — always keyless "" (TASKS T5; DESIGN D1 + D4b note; PRD AC-6b)', () => {
+  it('search identity: supplier europepmc, capability science.search, fingerprint "", request echoed', () => {
     // GROUND: DESIGN D4b note — keyless `""` fingerprint is the seed-18
     // Q4 ruling (keyless responses are user-independent). EuropePMC has
     // no key model at all (D2 table), so the fingerprint is ALWAYS "" —
@@ -528,7 +566,7 @@ describe("europepmc cache identity — always keyless \"\" (TASKS T5; DESIGN D1 
     assert.deepEqual(identity.request, request);
   });
 
-  it("get identity: capability science.get, fingerprint \"\", identifier echoed", () => {
+  it('get identity: capability science.get, fingerprint "", identifier echoed', () => {
     const { adapter } = makeAdapter();
     const identity = adapter.science.get.cacheIdentity({ identifier: "36959025" });
     assert.equal(identity.supplier, "europepmc");

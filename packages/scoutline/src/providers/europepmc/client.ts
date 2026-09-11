@@ -50,17 +50,19 @@ function mapStatusError(status: number, timeoutMs: number): Error {
     return new TimeoutError(timeoutMs);
   }
   if (status === 429) {
-    return new QuotaError("Europe PMC rate-limited — keyless budget; a free key raises the limit (see `scoutline init`)");
+    return new QuotaError("Europe PMC rate-limited — keyless service; retry later");
   }
   return new ApiError("Europe PMC request failed", status);
 }
 
 /** Same transport-error normalization contract as the arXiv/OpenAlex/Crossref clients. */
 function normalizeTransportError(error: unknown, timeoutMs: number): Error {
-  if (error instanceof AuthError ||
+  if (
+    error instanceof AuthError ||
     error instanceof ApiError ||
     error instanceof QuotaError ||
-    error instanceof TimeoutError) {
+    error instanceof TimeoutError
+  ) {
     return error;
   }
   if (error instanceof Error && error.name === "AbortError") {
@@ -90,6 +92,15 @@ export async function fetchEuropepmcJson(
     url.searchParams.set(key, value);
   }
   url.searchParams.set("format", "json");
+  // `core` result type (review): the default `lite` set omits
+  // `abstractText`, so the adapter could never populate
+  // `ScienceWork.summary`. `core` keeps the abstract in every record.
+  url.searchParams.set("resultType", "core");
+  // A pre-aborted caller signal must not reach the transport (review):
+  // reject before the fetch is invoked at all.
+  if (signal?.aborted) {
+    throw new TimeoutError(DEFAULT_TIMEOUT_MS);
+  }
   const controller = new AbortController();
   const timeoutId = setT(() => controller.abort(), DEFAULT_TIMEOUT_MS);
   const abortWithExternal = () => controller.abort();

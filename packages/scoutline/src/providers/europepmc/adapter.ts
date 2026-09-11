@@ -146,6 +146,16 @@ function workUrl(work: EuropepmcWorkWire): string {
   if (typeof work.pmid === "string" && work.pmid !== "") {
     return `https://europepmc.org/article/MED/${work.pmid}`;
   }
+  // Source/id landing fallback (review): a record with neither DOI nor
+  // PMID still carries a valid Europe PMC identity — never drop to "".
+  if (
+    typeof work.source === "string" &&
+    work.source !== "" &&
+    typeof work.id === "string" &&
+    work.id !== ""
+  ) {
+    return `https://europepmc.org/article/${work.source}/${work.id}`;
+  }
   return "";
 }
 
@@ -175,7 +185,11 @@ function mapWork(work: EuropepmcWorkWire): ScienceWork {
     out.summary = work.abstractText;
   }
   if (typeof work.citedByCount === "number") out.citationCount = work.citedByCount;
-  if (work.isOpenAccess === "Y") out.openAccess = true;
+  // Map BOTH Y and N (review): a known-false `isOpenAccess: "N"` is a
+  // real value, not an absent one — omitting it would lose it.
+  if (work.isOpenAccess === "Y" || work.isOpenAccess === "N") {
+    out.openAccess = work.isOpenAccess === "Y";
+  }
   if (typeof work.language === "string" && work.language !== "") out.language = work.language;
   return out;
 }
@@ -185,9 +199,7 @@ function europepmcResults(doc: unknown): EuropepmcWorkWire[] {
   const resultList = isRecord(doc) ? doc["resultList"] : undefined;
   const result = isRecord(resultList) ? resultList["result"] : undefined;
   if (!Array.isArray(result)) return [];
-  return result
-    .map(toEuropepmcWork)
-    .filter((r): r is EuropepmcWorkWire => r !== undefined);
+  return result.map(toEuropepmcWork).filter((r): r is EuropepmcWorkWire => r !== undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -247,10 +259,7 @@ function europepmcCacheIdentity(
 interface EuropepmcScienceSearchCapability {
   validate(request: ScienceSearchRequest): void;
   cacheIdentity(request: ScienceSearchRequest): ScienceCacheIdentity;
-  invoke(
-    request: ScienceSearchRequest,
-    signal?: AbortSignal,
-  ): Promise<readonly ScienceWork[]>;
+  invoke(request: ScienceSearchRequest, signal?: AbortSignal): Promise<readonly ScienceWork[]>;
 }
 
 /** Local science get contract — see the module header. */
@@ -297,9 +306,7 @@ function createEuropepmcScienceCapability(options: {
       // first record maps (AC-2: one work or fail).
       const kind = parseScienceIdentifier(request.identifier);
       const query =
-        kind === "pmid"
-          ? `EXT_ID:${request.identifier} AND SRC:MED`
-          : `DOI:${request.identifier}`;
+        kind === "pmid" ? `EXT_ID:${request.identifier} AND SRC:MED` : `DOI:${request.identifier}`;
       const doc = await fetchEuropepmcJson({ query }, deps, signal);
       const first = europepmcResults(doc)[0];
       if (first === undefined) {

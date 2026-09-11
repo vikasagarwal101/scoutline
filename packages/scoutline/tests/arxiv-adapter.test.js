@@ -38,6 +38,7 @@ import { createArxivDescriptor } from "../dist/providers/arxiv/adapter.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "../dist/providers/registry.js";
 import {
   QuotaError,
+  TimeoutError,
   UnsupportedOptionError,
   ValidationError,
 } from "../dist/lib/errors.js";
@@ -141,7 +142,10 @@ describe("arxiv registry wiring — T2 stub seat flips to the real adapter", () 
     const seat = BUILT_IN_PROVIDER_DESCRIPTORS.find((d) => d.id === "arxiv");
     assert.ok(seat, "arxiv descriptor must be in BUILT_IN_PROVIDER_DESCRIPTORS");
     const adapter = seat.create({ env: {} });
-    assert.ok(adapter.science, "arxiv adapter must expose the science slot (ProviderAdapter.science)");
+    assert.ok(
+      adapter.science,
+      "arxiv adapter must expose the science slot (ProviderAdapter.science)",
+    );
     assert.ok(adapter.science.search, "science.search capability must exist");
     assert.ok(adapter.science.get, "science.get capability must exist");
     assert.ok(adapter.diagnostics, "diagnostics capability must exist (D2 round-3)");
@@ -150,7 +154,11 @@ describe("arxiv registry wiring — T2 stub seat flips to the real adapter", () 
   it("arxiv stays keyless: credentialEnvVars is empty (no key model exists, D2 table)", () => {
     const { descriptor } = makeAdapter();
     assert.deepEqual(descriptor.credentialEnvVars, []);
-    assert.equal(descriptor.isConfigured({}), true, "keyless supplier is configured with an empty env");
+    assert.equal(
+      descriptor.isConfigured({}),
+      true,
+      "keyless supplier is configured with an empty env",
+    );
   });
 });
 
@@ -173,10 +181,7 @@ describe("arxiv search validate — full control rejection (TASKS T3; DESIGN D7;
             query: "attention",
             controls: { [option]: option === "year" ? "2020" : "x" },
           }),
-        (e) =>
-          e instanceof UnsupportedOptionError &&
-          e.provider === "arxiv" &&
-          e.option === option,
+        (e) => e instanceof UnsupportedOptionError && e.provider === "arxiv" && e.option === option,
         `controls.${option} must be rejected`,
       );
     }
@@ -264,6 +269,28 @@ describe("arxiv search invoke — Atom parse + ScienceWork mapping (TASKS T3; DE
     assert.equal(works[0].identifiers?.arxivId, "cs/0501001");
   });
 
+  it("XML entities decode in plain-text fields; CDATA content stays literal (review)", async () => {
+    // Review: `&amp;` and friends in a NON-CDATA title/summary
+    // previously surfaced literally in ScienceWork fields. CDATA
+    // content is literal text and must never be decoded.
+    const feed = ARXIV_ATOM_FEED.replace(
+      "<title>Attention Is All You Need</title>",
+      "<title>Attention &amp; Memory Are All You Need</title>",
+    ).replace(
+      /<summary>  The dominant[\s\S]*?<\/summary>/,
+      "<summary>Recurrent nets &lt;span&gt;fail&lt;/span&gt; at &#x201C;scale&#x201D;.</summary>",
+    );
+    assert.notEqual(feed, ARXIV_ATOM_FEED, "fixture splice must land");
+    const { adapter } = makeAdapter(feed);
+    const works = await adapter.science.search.invoke({ query: "attention" });
+    assert.equal(works[0].title, "Attention & Memory Are All You Need");
+    assert.equal(works[0].summary, "Recurrent nets <span>fail</span> at “scale”.");
+    // The CDATA entry (entry 2) keeps its literal `&` characters.
+    const cdata = works[1];
+    assert.ok(cdata.title.includes(" & "), "CDATA title keeps its literal ampersand");
+    assert.equal(cdata.summary, "We study naïve sets & prove a theorem.");
+  });
+
   it("handles CDATA, unicode, per-element namespace redeclaration, and arxiv:doi (entry 2)", async () => {
     const { adapter } = makeAdapter();
     const works = await adapter.science.search.invoke({ query: "wieferich" });
@@ -271,7 +298,11 @@ describe("arxiv search invoke — Atom parse + ScienceWork mapping (TASKS T3; DE
     assert.equal(w.title, "Wieferich primes & the “abc” conjecture — an étale café");
     assert.equal(w.summary, "We study naïve sets & prove a theorem.");
     assert.deepEqual(w.authors, ["José García"]);
-    assert.equal(w.identifiers?.doi, "10.1000/example.2401.12345", "arxiv:doi with locally redeclared xmlns");
+    assert.equal(
+      w.identifiers?.doi,
+      "10.1000/example.2401.12345",
+      "arxiv:doi with locally redeclared xmlns",
+    );
     assert.equal(w.identifiers?.arxivId, "2401.12345");
     assert.equal(w.identifiers?.pmid, undefined);
     assert.equal(w.year, 2024);
@@ -339,7 +370,7 @@ describe("arxiv get — validate, cache identity, invoke (TASKS T3; DESIGN D1/D6
 // ---------------------------------------------------------------------------
 
 describe("arxiv cache identity — empty credentialFingerprint (TASKS T3; DESIGN D1 + D4b note)", () => {
-  it("search identity: supplier arxiv, capability science.search, fingerprint \"\", request echoed", () => {
+  it('search identity: supplier arxiv, capability science.search, fingerprint "", request echoed', () => {
     // GROUND: TASKS T3 "cache identity (empty fingerprint)"; D2 table —
     // arXiv has NO key model, so the fingerprint is always "".
     const { adapter } = makeAdapter();
@@ -351,7 +382,7 @@ describe("arxiv cache identity — empty credentialFingerprint (TASKS T3; DESIGN
     assert.deepEqual(identity.request, request);
   });
 
-  it("get identity: capability science.get, fingerprint \"\", identifier echoed", () => {
+  it('get identity: capability science.get, fingerprint "", identifier echoed', () => {
     const { adapter } = makeAdapter();
     const identity = adapter.science.get.cacheIdentity({ identifier: "1706.03762" });
     assert.equal(identity.supplier, "arxiv");
@@ -400,7 +431,6 @@ describe("arxiv diagnostics — keyless bounded probe (TASKS T3; DESIGN D2 round
 // ---------------------------------------------------------------------------
 // 429 pin — keyless rate-limit must surface as QuotaError, not ApiError (D4b)
 // ---------------------------------------------------------------------------
-
 describe("arXiv 429 — keyless rate limit maps to QuotaError (DESIGN D4b honest class)", () => {
   it("a 429 response rejects with QuotaError and statusCode 429 on search invoke", async () => {
     const descriptor = createArxivDescriptor({
@@ -413,5 +443,29 @@ describe("arXiv 429 — keyless rate limit maps to QuotaError (DESIGN D4b honest
       adapter.science.search.invoke({ query: "x" }),
       (e) => e instanceof QuotaError && e.statusCode === 429,
     );
+  });
+
+  it("a pre-aborted caller signal rejects before the transport is invoked (review)", async () => {
+    // Review: the abort chained into the timeout controller but the
+    // fetch was still invoked — the request nominally reached the
+    // transport after cancellation. The client must reject first.
+    let fetchCalls = 0;
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async () => {
+          fetchCalls += 1;
+          return xmlResponse(ARXIV_ATOM_FEED);
+        },
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      adapter.science.search.invoke({ query: "x" }, controller.signal),
+      (e) => e instanceof TimeoutError,
+      "pre-aborted signal rejects with TimeoutError",
+    );
+    assert.equal(fetchCalls, 0, "transport fetch must never be invoked");
   });
 });

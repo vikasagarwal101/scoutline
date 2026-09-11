@@ -3,7 +3,7 @@
  *
  * Keyless bounded probe (DESIGN D2 round-3 ruling): doctor probes
  * every always-configured science supplier, so the OpenAlex probe is
- * ONE minimal keyless wire call on the works endpoint (`per_page=1`)
+ * ONE minimal keyless wire call on the works endpoint (`per-page=1`)
  * — never a full search. The politeness posture applies to it too:
  * house UA plus the `mailto=` param whenever no api_key is present.
  * When `diagOptions.probe` is false, `invoke` resolves immediately
@@ -31,8 +31,10 @@ export function createOpenalexDiagnosticsCapability(
     async invoke(diagOptions: DiagnosticOptions): Promise<void> {
       if (!diagOptions.probe) return;
       try {
-        // One minimal keyless wire call on the works endpoint.
-        await fetchOpenalexJson({ per_page: "1" }, { ...transport, env });
+        // One minimal keyless wire call on the works endpoint. The
+        // request parameter is `per-page` (review) — `per_page` is only
+        // response metadata the server ignores.
+        await fetchOpenalexJson({ "per-page": "1" }, { ...transport, env });
       } catch (error) {
         throw normalizeProbeError(error);
       }

@@ -202,13 +202,15 @@ describe("architecture.md local surfaces (PRD AC-12)", () => {
   });
 });
 
-describe("CHANGELOG [Unreleased] (PRD AC-12 — APPEND, section exists)", () => {
-  it("appends the agent-registration entry into the existing Unreleased block", async () => {
+describe("CHANGELOG newest section (PRD AC-12 — APPEND; release-lock relaxed to newest-section form)", () => {
+  it("the agent-registration entry lives in the newest CHANGELOG section", async () => {
     const text = await changelog;
-    const start = text.indexOf("## [Unreleased]");
+    // Release-lock form: the newest section with CONTENT (released > the
+    // empty [Unreleased] stub created at version cut).
+    const start = text.search(/^## \[\d/m);
     assert.ok(
       start >= 0,
-      "CHANGELOG must already have an [Unreleased] section (append, never create)",
+      "CHANGELOG must have a released version section",
     );
     const next = text.indexOf("## [", start + 1);
     const section = text.slice(start, next === -1 ? text.length : next);

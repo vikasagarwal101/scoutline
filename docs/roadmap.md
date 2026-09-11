@@ -26,6 +26,15 @@ features next; features that reverse a written decision (ADR) last.
 
 ### Studied seeds — contract-extending
 
+- **GLM-OCR: supersede the vision-model OCR path**
+  (`docs/plans/v2/20-glm-ocr-supersede-vision-ocr.md`) — purpose-built
+  0.9B OCR model (SOTA OmniDocBench 94.6) via the `layout_parsing`
+  endpoint; empirically NOT covered by the GLM Coding Plan (PAYG $0.03);
+  grill resolves the supersession-vs-cost tension before plan flesh-out.
+- **Science-vertical search commands**
+  (`docs/plans/v2/18-science-verticals.md`) — **SHIPPED** (PR #139); the
+  seed is retained for reference. Deferred follow-ups: #140 (cache/retry
+  plan gap), #141 (DOI-in-skeleton).
 
 - **`compare` command** (`docs/plans/v2/03-compare-command.md`) —
   *shelved (product decision 2026-08-15)*: superseded by multi-provider
@@ -35,9 +44,10 @@ features next; features that reverse a written decision (ADR) last.
 
 - **`--stream` streaming output** (`docs/plans/v2/17-streaming-output.md`)
   — JSONL event stream (start/progress/data/warning/error/complete) on
-  stdout; non-streaming contract unchanged when absent. Jina DeepSearch's
-  SSE parser is the in-codebase transport precedent; `--stream` stays out
-  of the cache key like `--output-format`. Effort: medium.
+  stdout; non-streaming contract unchanged when absent. Tavily + Exa
+  research SSE documented; Perplexity Agent API typed SSE now available
+  (PR #114 unblocked it); Jina deferred (credits). Plan audit-corrected
+  and pickup-ready at `docs/plans/streaming-output/`. Effort: medium.
 
 ### Studied seeds — ADR-gated (start with a superseding ADR, not code)
 
@@ -49,14 +59,6 @@ features next; features that reverse a written decision (ADR) last.
   local multi-step research: plan → fan-out search → read top hits →
   deterministic evidence extraction → `EvidencePack` envelope;
   agent-synthesis by default, `--synthesize` (Z.AI chat) as the escape hatch.
-- **Research journal + provenance**
-  (`docs/plans/v2/07-research-journal.md`) — append-only local research
-  memory with provenance hashes; `journal recall` / `journal export`.
-- **`watch` monitoring** (`docs/plans/v2/09-watch-monitoring.md`) — snapshot
-  and diff URLs, site maps, or queries; cron-friendly exit codes.
-- **Output Budget** — shipped as the `--max-chars` whole-envelope
-  evolution (ADR-0007); the seed doc
-  (`docs/plans/v2/10-token-budget-output.md`) is superseded.
 - **Selection strategies** (`docs/plans/v2/11-selection-strategies.md`) —
   `--strategy cheapest|freshest|diverse` extending the quota-aware ranking.
 

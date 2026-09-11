@@ -363,7 +363,7 @@ describe("science does NOT join batch in v1 (documented non-goal, pinned)", () =
 // CHANGELOG [Unreleased] bullet (TASKS T8; PRD AC-10c + AC-10c fix)
 // ---------------------------------------------------------------------------
 
-describe("CHANGELOG [Unreleased] carries the science feature bullet (AC-10c)", () => {
+describe("CHANGELOG newest section carries the science feature bullet (AC-10c; release-lock relaxed)", () => {
   const changelog = readFileSync(
     fileURLToPath(new URL("../../../CHANGELOG.md", import.meta.url)),
     "utf8",
@@ -375,20 +375,22 @@ describe("CHANGELOG [Unreleased] carries the science feature bullet (AC-10c)", (
     // disappearance trap, twice)".
     assert.ok(
       /^## \[Unreleased\]$/m.test(changelog),
-      "CHANGELOG must have a [Unreleased] section",
+      "CHANGELOG must have a section (the newest — released or unreleased)",
     );
   });
 
-  it("the Unreleased block carries a science command bullet naming the science noun", () => {
+  it("the newest section carries a science command bullet naming the science noun", () => {
     // GROUND: TASKS T8 "CHANGELOG `[Unreleased]` created-if-missing +
     // bullet (chained)" / PRD AC-10c "CHANGELOG `[Unreleased]` bullet
     // lands in the same commit as the behavior". The bullet names the
     // science command (the shipped behavior: search+get across five
     // scholarly suppliers).
-    const start = changelog.search(/^## \[Unreleased\]$/m);
-    const end = changelog.search(/^## \[\d/m); // next released version heading
-    const section = changelog.slice(start, end === -1 ? undefined : end);
-    assert.ok(start !== -1, "[Unreleased] found");
+    // Release-lock form: extract the newest RELEASED section (the empty
+    // [Unreleased] stub above it carries nothing).
+    const start = changelog.search(/^## \[\d/m);
+    const end = start === -1 ? undefined : changelog.indexOf("## [", start + 1);
+    const section = changelog.slice(start, end === -1 || end === undefined ? undefined : end);
+    assert.ok(start !== -1, "a released version section exists");
     assert.match(
       section,
       /science/i,

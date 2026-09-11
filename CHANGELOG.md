@@ -1,8 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+No changes yet.
+
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.21.0] - 2026-09-12
+
 
 ### Changed
 

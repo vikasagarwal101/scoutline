@@ -209,7 +209,8 @@ function parsePubmedArticle(block: string): ScienceWork {
   }
   if (authors.length > 0) out.authors = authors;
 
-  const yearText = elementText(block, "Year");
+  const pubDate = /<PubDate(?:\s[^>]*)?>([\s\S]*?)<\/PubDate>/i.exec(block);
+  const yearText = pubDate !== null ? elementText(pubDate[0], "Year") : undefined;
   const year = yearText !== undefined ? /^(\d{4})/.exec(yearText.trim()) : null;
   if (year !== null) out.year = Number(year[1]);
 

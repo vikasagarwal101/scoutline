@@ -33,6 +33,7 @@
 
 import type {
   CommandResult,
+  SaveHook,
   TextOutputMode,
 } from "../command-invocation.js";
 import { invokeCommand } from "../command-invocation.js";
@@ -50,6 +51,15 @@ import { ValidationError } from "../lib/errors.js";
 import type { OutputMode } from "../lib/output.js";
 import type { HandlerDependencies } from "../index.js";
 import { parseBriefMaxChars } from "./repo.js";
+import { resolveArtifactsDir } from "../lib/artifacts.js";
+import { buildProviderCacheKey } from "../lib/cache.js";
+import type { ProviderId } from "../providers/types.js";
+import {
+  appendJournalEntry,
+  buildJournalEntry,
+  buildSearchSkeleton,
+  type JournalSkeleton,
+} from "../lib/journal.js";
 
 // ---------------------------------------------------------------------------
 // D5 arm order (executor-side rule, NOT the registry listing order)
@@ -404,10 +414,14 @@ interface ScienceDescriptorLike {
     science?: {
       search?: {
         validate(request: ScienceSearchRequest): void;
+        /** Present on every real supplier adapter; test doubles may omit it. */
+        cacheIdentity?(request: ScienceSearchRequest): unknown;
         invoke(request: ScienceSearchRequest): Promise<readonly ScienceWork[]>;
       };
       get?: {
         validate(request: ScienceGetRequest): void;
+        /** Present on every real supplier adapter; test doubles may omit it. */
+        cacheIdentity?(request: ScienceGetRequest): unknown;
         invoke(request: ScienceGetRequest): Promise<ScienceWork>;
       };
     };
@@ -557,6 +571,98 @@ export interface HandleScienceOptions {
   readonly explicitProvider?: string;
 }
 
+/**
+ * T7: derive the journal entry's cacheKey from a supplier science
+ * cache identity. Science identities are `{supplier, capability:
+ * "science.search"|"science.get", credentialFingerprint, request}` —
+ * the `supplier`/`capability` naming differs from the
+ * provider-capability identities the capture wrapper keys off, so the
+ * journal derives the SAME partitioned-key shape the supplier's
+ * response cache will use once the executor consults it (T10):
+ * `buildProviderCacheKey` over the identity, namespace verbatim.
+ */
+function scienceCacheKey(identity: unknown): string | undefined {
+  if (identity === null || typeof identity !== "object") return undefined;
+  const record = identity as {
+    supplier?: unknown;
+    capability?: unknown;
+    credentialFingerprint?: unknown;
+    request?: unknown;
+  };
+  if (
+    typeof record.supplier !== "string" ||
+    typeof record.capability !== "string" ||
+    typeof record.credentialFingerprint !== "string"
+  ) {
+    return undefined;
+  }
+  return buildProviderCacheKey({
+    provider: record.supplier as ProviderId,
+    capability: record.capability,
+    credentialFingerprint: record.credentialFingerprint,
+    request: record.request,
+  });
+}
+
+/**
+ * T7 journal hook — the science twin of main's `createJournalHook`,
+ * scoped to the interim direct-invoke executor: the supplier
+ * capability is invoked directly (no response-cache consult yet —
+ * T10's executor adds that seam), so every completed run served LIVE
+ * and journals ONE full entry. Facts, all read AFTER dispatch
+ * resolves (thunks, matching the search precedent):
+ *   - query: what the USER passed verbatim — the search query or the
+ *     get identifier (AC-12: journaled identity = user-visible
+ *     identity, never a supplier-munged form).
+ *   - provider: the interim single-arm pin
+ *     {mode:"single", effective:<served supplier>, servedFrom:"live"}
+ *     from the capture cell; once T10 fans out, the arm routing takes
+ *     over per the fan-out journal rules.
+ *   - cacheKey/skeleton: the supplier's own science cacheIdentity
+ *     recomputed through the capture wrapper's key derivation, and the
+ *     url+title skeleton — the merged result-set list (search) or the
+ *     single-work row (get).
+ * Runs where no supplier resolved (pre-dispatch failures threw before
+ * this hook could exist) journal nothing; a capture without a
+ * cacheKey skips rather than poisons the log (validator NIT 1).
+ */
+function createScienceJournalHook(
+  deps: HandlerDependencies,
+  meta: {
+    readonly journal: NonNullable<HandlerDependencies["journal"]>;
+    readonly query: string;
+    readonly resultRows: () => readonly ScienceWork[] | undefined;
+    /** The science cache key, derived from the supplier identity (thunk — resolved post-dispatch). */
+    readonly cacheKey: () => string | undefined;
+  },
+): SaveHook {
+  const { capability, capture } = meta.journal;
+  return async ({ resolvedSecrets, now }) => {
+    const servedProvider = capture.servedProvider;
+    if (servedProvider === undefined) return;
+    const cacheKey = meta.cacheKey() ?? capture.cacheKey;
+    if (cacheKey === undefined) return;
+    const works = meta.resultRows();
+    if (works === undefined) return;
+    const skeleton = buildSearchSkeleton(works);
+    const entry = buildJournalEntry({
+      capability,
+      provider: {
+        mode: "single",
+        effective: servedProvider,
+        servedFrom: "live",
+      },
+      query: meta.query,
+      cacheKey,
+      skeleton,
+      now,
+      secrets: resolvedSecrets,
+      ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
+    });
+    await appendJournalEntry(resolveArtifactsDir(deps.env), entry);
+  };
+}
+
 export async function handleScience(
   args: string[],
   outputMode: OutputMode,
@@ -618,10 +724,21 @@ export async function handleScience(
       throw new ValidationError("--max-chars requires a value.");
     }
     const maxChars = rawMaxChars === undefined ? undefined : parseBriefMaxChars(rawMaxChars);
+    let journalRows: readonly ScienceWork[] | undefined;
+    let journalIdentity: unknown;
     return invokeCommand(
       deps.invocation,
       async (context) => {
+        // T7: the direct-invoke executor bypasses the shared execution
+        // layer, so the supplier's (capture-wrapped) cacheIdentity is
+        // consulted HERE — pre-invoke, matching execution.ts step 2.
+        // The capture wrapper stamps servedProvider/servedFrom from
+        // the invoke; science identities use `supplier` (not
+        // `provider`), so the journal cacheKey is derived from the
+        // captured identity in the hook thunk below.
+        if (deps.journal !== undefined) journalIdentity = capability.cacheIdentity?.(request);
         const works = await capability.invoke(request);
+        journalRows = works;
         const result: CommandResult = {
           kind: "data",
           data: works,
@@ -638,6 +755,15 @@ export async function handleScience(
       outputMode,
       deps.now,
       deps.secrets,
+      undefined,
+      deps.journal === undefined
+        ? undefined
+        : createScienceJournalHook(deps, {
+            journal: deps.journal,
+            query,
+            resultRows: () => journalRows,
+            cacheKey: () => scienceCacheKey(journalIdentity),
+          }),
     );
   }
 
@@ -671,10 +797,15 @@ export async function handleScience(
     throw new ValidationError("--max-chars requires a value.");
   }
   const maxChars = rawMaxChars === undefined ? undefined : parseBriefMaxChars(rawMaxChars);
+  let journalWork: ScienceWork | undefined;
+  let journalIdentity: unknown;
   return invokeCommand(
     deps.invocation,
     async (context) => {
+      // T7: same pre-invoke cacheIdentity consult as search above.
+      if (deps.journal !== undefined) journalIdentity = capability.cacheIdentity?.(request);
       const work = await capability.invoke(request);
+      journalWork = work;
       const result: CommandResult = {
         kind: "data",
         data: work,
@@ -691,5 +822,15 @@ export async function handleScience(
     outputMode,
     deps.now,
     deps.secrets,
+    undefined,
+    deps.journal === undefined
+      ? undefined
+      : createScienceJournalHook(deps, {
+          journal: deps.journal,
+          query: identifier,
+          // Single-work identity (AC-11 amendment 2): exactly one row.
+          resultRows: () => (journalWork === undefined ? undefined : [journalWork]),
+          cacheKey: () => scienceCacheKey(journalIdentity),
+        }),
   );
 }

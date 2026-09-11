@@ -672,6 +672,65 @@ describe("lazy refresh (DESIGN D5, PRD AC-7)", () => {
       notices.length >= 1 && notices.every((n) => typeof n === "string" && n.length > 0),
       "at least one non-empty stderr notice must be emitted for the failed refresh",
     );
+    assert.ok(
+      notices.some((n) => /refresh failed for claude/.test(n)),
+      `the per-tool notice must name the failing tool, got ${JSON.stringify(notices)}`,
+    );
+    // #130: total failure must be distinguishable from partial — exactly one
+    // top-level summary line, not just N per-tool notices.
+    const summaries = notices.filter((n) => /refresh failed for all 1 registered tool/.test(n));
+    assert.strictEqual(
+      summaries.length,
+      1,
+      `all-fail must emit exactly one summary notice, got ${JSON.stringify(notices)}`,
+    );
+    assert.match(summaries[0], /registration may be partially modified or deleted; next run retries/);
+  });
+
+  it("a partial refresh failure emits no all-fail summary (#130)", async (t) => {
+    // GROUND: #130 — the summary line is reserved for TOTAL failure; a run
+    // where some tools refreshed must keep the per-tool notices only.
+    const { checkAgentRegistration, computeRuleTextHash, registerAgentTools } = await loadDeploy();
+    const home = await mkTemp(t);
+    const configRoot = await mkTemp(t);
+    await registerAgentTools({ home, configRoot, tools: ["claude", "codex"], version: "9.9.9" });
+    await writeStamp(configRoot, {
+      version: "0.0.1",
+      tools: ["claude", "codex"],
+      ruleTextHash: computeRuleTextHash(),
+    });
+
+    // Only claude's home is unwritable; codex refreshes normally.
+    const rulesDir = path.join(home, ".claude", "rules");
+    const skillsDir = path.join(home, ".claude", "skills");
+    if (process.getuid?.() === 0) {
+      t.skip("chmod-based EACCES does not block root (CAP_DAC_OVERRIDE)");
+      return;
+    }
+    await fs.chmod(rulesDir, 0o500);
+    await fs.chmod(skillsDir, 0o500);
+    const notices = [];
+    try {
+      const result = await checkAgentRegistration({
+        home,
+        configRoot,
+        version: "9.9.9",
+        writeStderr: (value) => notices.push(value),
+      });
+      assert.equal(result.refreshed, true, "the healthy tool must refresh");
+    } finally {
+      await fs.chmod(rulesDir, 0o700);
+      await fs.chmod(skillsDir, 0o700);
+    }
+    assert.equal(
+      notices.filter((n) => /refresh failed for all/.test(n)).length,
+      0,
+      `partial failure must not emit the all-fail summary, got ${JSON.stringify(notices)}`,
+    );
+    assert.ok(
+      notices.some((n) => /refresh failed for claude/.test(n)),
+      `the failing tool must still be noticed, got ${JSON.stringify(notices)}`,
+    );
   });
   it("an unreadable shared file fails the reversal loudly — never silently 'clean'", async (t) => {
     // GROUND: reversal readers treat only ENOENT as the expected

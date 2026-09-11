@@ -45,6 +45,17 @@ import { MAX_CONTEXT_BYTES } from "../dist/lib/context-file.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 
+// #133 (same class as #120): fixture provider credentials must be long and
+// carry non-hex characters so they can never collide with a randomized
+// mkdtemp suffix (full [a-zA-Z0-9]) or appear inside a sha256 hex digest.
+// That key construction is the ONLY collision defense pinned assertions
+// rely on: expected envelope sides are asserted RAW, so the comparison
+// also detects a regression where main() redacts (or leaks) a context
+// field — redacting both sides the same way would cancel that pin.
+const TAVILY_FIXTURE_KEY = "test-tavily-stdin-fixture-key-p4n8cs";
+const EXA_FIXTURE_KEY = "test-exa-stdin-fixture-key-t9k2wd";
+const RESEARCH_STDIN_ENV = { TAVILY_API_KEY: TAVILY_FIXTURE_KEY, EXA_API_KEY: EXA_FIXTURE_KEY };
+
 // ---------------------------------------------------------------------------
 // Test doubles (tests/search-context.test.js / research-context.test.js
 // patterns)
@@ -167,7 +178,7 @@ async function runResearch(argv, { providers, stdin = "" } = {}) {
     argv,
     hermeticMainDeps({
       invocation: io.adapter,
-      env: { TAVILY_API_KEY: "tv", EXA_API_KEY: "exa" },
+      env: RESEARCH_STDIN_ENV,
       providerDescriptors: providers.map((p) => p.descriptor),
       loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
     }),
@@ -508,6 +519,9 @@ describe("D6 privacy snapshot suite (Ticket 5, AC4 consolidated)", () => {
       assert.deepStrictEqual(withCtx.invokes[0], plain.invokes[0]);
       assert.deepStrictEqual(withCtx.invokes[0], { query });
       const parsed = JSON.parse(rB.stdout[0]);
+      // Raw expected side (see fixture-key note above): the long non-hex keys
+      // make the temp path collision-free by construction, so raw equality
+      // both holds and pins that main() did NOT redact the path.
       assert.deepStrictEqual(parsed.context, {
         source: "file",
         path: notesPath,

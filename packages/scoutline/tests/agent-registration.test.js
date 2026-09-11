@@ -184,16 +184,23 @@ describe("line insert engine (D2 — claude @rules/, gemini @ import)", () => {
     // GROUND: the strip's newline swallow takes the FOLLOWING newline first —
     // eating backwards through a CRLF file's own \r\n strands a lone \r
     // (macroscope round 2). Both the append and splice placements must
-    // restore the exact original bytes.
+    // restore the exact original bytes — and (#131) the inserted region
+    // itself must use the file's own CRLF glue, not LF.
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-crlf-"));
     t.after(async () => fs.rm(dir, { recursive: true, force: true }));
     const original = "# my notes\r\nsecond line\r\n";
     const pointer = "@rules/scoutline.md";
+    const crlfRegion = `${START}\r\n${pointer}\r\n${END}`;
 
     // Append placement (convention absent).
     const appended = path.join(dir, "CLAUDE-append.md");
     await fs.writeFile(appended, original, "binary");
     await lineInsert({ filePath: appended, line: pointer });
+    assert.equal(
+      (await fs.readFile(appended, "binary")).toString("binary"),
+      `${original}${crlfRegion}\r\n`,
+      "append placement must write a CRLF-glued managed region (#131)",
+    );
     await stripManagedRegion(appended, pointer);
     assert.equal((await fs.readFile(appended, "binary")).toString("binary"), original,
       "CRLF append placement must round-trip byte-identically");
@@ -203,9 +210,61 @@ describe("line insert engine (D2 — claude @rules/, gemini @ import)", () => {
     const withConv = "# my notes\r\n@rules/other.md\r\nsecond line\r\n";
     await fs.writeFile(spliced, withConv, "binary");
     await lineInsert({ filePath: spliced, line: pointer, convention: /^@rules\// });
+    assert.equal(
+      (await fs.readFile(spliced, "binary")).toString("binary"),
+      `# my notes\r\n@rules/other.md\r\n${crlfRegion}\r\nsecond line\r\n`,
+      "splice placement must write a CRLF-glued managed region (#131)",
+    );
     await stripManagedRegion(spliced, pointer);
     assert.equal((await fs.readFile(spliced, "binary")).toString("binary"), withConv,
       "CRLF splice placement must round-trip byte-identically");
+
+    // No trailing EOL: the strip's backward swallow must consume the whole
+    // CRLF pair the insertion joined — swallowing a lone \n would strand \r.
+    const noEol = path.join(dir, "CLAUDE-noeol.md");
+    const noEolOriginal = "# my notes\r\nsecond line";
+    await fs.writeFile(noEol, noEolOriginal, "binary");
+    await lineInsert({ filePath: noEol, line: pointer });
+    assert.equal(
+      (await fs.readFile(noEol, "binary")).toString("binary"),
+      `${noEolOriginal}\r\n${crlfRegion}`,
+      "a no-EOL CRLF file must be joined with a full CRLF pair (#131)",
+    );
+    await stripManagedRegion(noEol, pointer);
+    assert.equal((await fs.readFile(noEol, "binary")).toString("binary"), noEolOriginal,
+      "no-EOL CRLF round-trip must restore exact bytes (no stranded \\r)");
+  });
+
+  it("recognizes a legacy LF-glued managed region in a CRLF file — no duplicate (#131)", async (t) => {
+    // GROUND: the #131 EOL fix changes the glue form; a region written by the
+    // previous code (LF glue inside a CRLF file) is still OURS — the
+    // idempotency probe must span both forms or re-registration appends a
+    // second block.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-crlf-legacy-"));
+    t.after(async () => fs.rm(dir, { recursive: true, force: true }));
+    const pointer = "@rules/scoutline.md";
+    const file = path.join(dir, "CLAUDE.md");
+    const legacy = `# my notes\r\n${START}\n${pointer}\n${END}\n`;
+    await fs.writeFile(file, legacy, "binary");
+
+    await lineInsert({ filePath: file, line: pointer });
+
+    assert.equal((await fs.readFile(file, "binary")).toString("binary"), legacy,
+      "a legacy LF-glued managed region must be recognized — no duplicate append");
+  });
+
+  it("an unwrapped CRLF pointer line is user-owned — registration no-op (#131)", async (t) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-crlf-unwrapped-"));
+    t.after(async () => fs.rm(dir, { recursive: true, force: true }));
+    const pointer = "@rules/scoutline.md";
+    const file = path.join(dir, "CLAUDE.md");
+    const original = "# my notes\r\n@rules/scoutline.md\r\n";
+    await fs.writeFile(file, original, "binary");
+
+    await lineInsert({ filePath: file, line: pointer });
+
+    assert.equal((await fs.readFile(file, "binary")).toString("binary"), original,
+      "an unwrapped user-owned pointer on a CRLF file must not be wrapped or duplicated");
   });
 
   it("appends a marker-wrapped pointer line at file end, preserving prior bytes exactly", async (t) => {

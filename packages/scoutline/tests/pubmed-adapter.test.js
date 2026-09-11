@@ -13,9 +13,9 @@
  *     PLAN DEVIATION (RED-agent finding, probe-verified 2026-09-11 against
  *     the live eutils wire — D10's own verify-at-implementation duty):
  *     efetch `retmode=json` returns ONLY the bare id list ("36959025\n"),
- *     not records; esummary `retmode=json` carries no ArticleTitle and no
- *     full AuthorList, so neither JSON endpoint can fill required
- *     ScienceWork.title. The ONLY record-carrying second step is
+ *     not records; esummary `retmode=json` DOES carry title, authors,
+ *     venue, and pubtype but NO AbstractText, so neither JSON endpoint
+ *     is record-complete. The ONLY record-complete second step is
  *     efetch `retmode=xml` (PubmedArticleSet). Tests below pin
  *     esearch(retmode=json) → efetch(retmode=xml) — two calls, both on the
  *     D2 base. esearch's JSON envelope matches the PRD verbatim wire
@@ -58,6 +58,7 @@ import assert from "node:assert/strict";
 import { createPubmedDescriptor } from "../dist/providers/pubmed/adapter.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "../dist/providers/registry.js";
 import {
+  QuotaError,
   UnsupportedOptionError,
   ValidationError,
 } from "../dist/lib/errors.js";
@@ -649,5 +650,24 @@ describe("pubmed diagnostics — keyless bounded probe (TASKS T4c; DESIGN D2 rou
     });
     const adapter = descriptor.create({ env: {} });
     await assert.rejects(adapter.diagnostics.invoke({ probe: true }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 429 pin — keyless rate-limit must surface as QuotaError, not ApiError (D4b)
+// ---------------------------------------------------------------------------
+
+describe("PubMed 429 — keyless rate limit maps to QuotaError (DESIGN D4b honest class)", () => {
+  it("a 429 response rejects with QuotaError and statusCode 429 on search invoke", async () => {
+    const descriptor = createPubmedDescriptor({
+      transport: {
+        fetch: async () => ({ ok: false, status: 429, text: async () => "" }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      adapter.science.search.invoke({ query: "x" }),
+      (e) => e instanceof QuotaError && e.statusCode === 429,
+    );
   });
 });

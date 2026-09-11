@@ -57,6 +57,7 @@ import assert from "node:assert/strict";
 import { createEuropepmcDescriptor } from "../dist/providers/europepmc/adapter.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "../dist/providers/registry.js";
 import {
+  QuotaError,
   UnsupportedOptionError,
   ValidationError,
 } from "../dist/lib/errors.js";
@@ -603,5 +604,24 @@ describe("europepmc diagnostics — keyless bounded probe (TASKS T5; DESIGN D2 r
     });
     const adapter = descriptor.create({ env: {} });
     await assert.rejects(adapter.diagnostics.invoke({ probe: true }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 429 pin — keyless rate-limit must surface as QuotaError, not ApiError (D4b)
+// ---------------------------------------------------------------------------
+
+describe("Europe PMC 429 — keyless rate limit maps to QuotaError (DESIGN D4b honest class)", () => {
+  it("a 429 response rejects with QuotaError and statusCode 429 on search invoke", async () => {
+    const descriptor = createEuropepmcDescriptor({
+      transport: {
+        fetch: async () => ({ ok: false, status: 429, text: async () => "" }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      adapter.science.search.invoke({ query: "x" }),
+      (e) => e instanceof QuotaError && e.statusCode === 429,
+    );
   });
 });

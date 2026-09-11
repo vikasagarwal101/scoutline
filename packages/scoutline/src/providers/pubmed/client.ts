@@ -7,10 +7,11 @@
  *     verbatim wire evidence: `{"esearchresult":{"count":…,"idlist":[…]}}`).
  *     Consumed as JSON.
  *   - `efetch.fcgi` with `retmode=xml` — the record-carrying step
- *     (PubmedArticleSet XML). efetch `retmode=json` returns only the bare
- *     id list and esummary JSON carries no ArticleTitle/full AuthorList
- *     (live eutils probe 2026-09-11), so XML is the only record mode.
- *     Consumed as TEXT via `text()`; the Adapter owns parsing.
+ *     (PubmedArticleSet XML). efetch `retmode=json` returns only the
+ *     bare id list, and esummary `retmode=json` — though it does carry
+ *     title/authors/venue/pubtype — carries no AbstractText (live
+ *     eutils probe 2026-09-11), so XML is the only record-complete
+ *     mode. Consumed as TEXT via `text()`; the Adapter owns parsing.
  *
  * Credential model (DESIGN D2 + D4b note): keyless 3 r/s by default; a
  * free `NCBI_API_KEY` lifts the rate limit to 10 r/s. eutils consumes
@@ -27,7 +28,7 @@
  *     and the raw efetch XML string.
  */
 import pkg from "../../../package.json" with { type: "json" };
-import { ApiError, AuthError, NetworkError, TimeoutError } from "../../lib/errors.js";
+import { ApiError, AuthError, NetworkError, QuotaError, TimeoutError } from "../../lib/errors.js";
 import type { ProviderQuotaFetch } from "../types.js";
 import { getGlobalFetch } from "../types.js";
 
@@ -69,12 +70,18 @@ function mapStatusError(status: number, timeoutMs: number): Error {
   if (status === 408 || status === 504) {
     return new TimeoutError(timeoutMs);
   }
+  if (status === 429) {
+    return new QuotaError("PubMed rate-limited — keyless budget; a free key raises the limit (see `scoutline init`)");
+  }
   return new ApiError("PubMed request failed", status);
 }
 
 /** Same transport-error normalization contract as the arXiv/OpenAlex clients. */
 function normalizeTransportError(error: unknown, timeoutMs: number): Error {
-  if (error instanceof AuthError || error instanceof ApiError || error instanceof TimeoutError) {
+  if (error instanceof AuthError ||
+    error instanceof ApiError ||
+    error instanceof QuotaError ||
+    error instanceof TimeoutError) {
     return error;
   }
   if (error instanceof Error && error.name === "AbortError") {

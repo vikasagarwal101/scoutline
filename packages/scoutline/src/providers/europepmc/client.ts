@@ -19,7 +19,7 @@
  *     parsing. This module returns the parsed JSON document as unknown.
  */
 import pkg from "../../../package.json" with { type: "json" };
-import { ApiError, AuthError, NetworkError, TimeoutError } from "../../lib/errors.js";
+import { ApiError, AuthError, NetworkError, QuotaError, TimeoutError } from "../../lib/errors.js";
 import type { ProviderQuotaFetch } from "../types.js";
 import { getGlobalFetch } from "../types.js";
 
@@ -49,12 +49,18 @@ function mapStatusError(status: number, timeoutMs: number): Error {
   if (status === 408 || status === 504) {
     return new TimeoutError(timeoutMs);
   }
+  if (status === 429) {
+    return new QuotaError("Europe PMC rate-limited — keyless budget; a free key raises the limit (see `scoutline init`)");
+  }
   return new ApiError("Europe PMC request failed", status);
 }
 
 /** Same transport-error normalization contract as the arXiv/OpenAlex/Crossref clients. */
 function normalizeTransportError(error: unknown, timeoutMs: number): Error {
-  if (error instanceof AuthError || error instanceof ApiError || error instanceof TimeoutError) {
+  if (error instanceof AuthError ||
+    error instanceof ApiError ||
+    error instanceof QuotaError ||
+    error instanceof TimeoutError) {
     return error;
   }
   if (error instanceof Error && error.name === "AbortError") {

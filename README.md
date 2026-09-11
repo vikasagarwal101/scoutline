@@ -358,6 +358,25 @@ scoutline history clear --all                       # also wipes --save artifact
 
 `--content-size` is a deliberate per-provider overload: `high` maps to Z.AI `content_size`, Tavily `search_depth=advanced`, Brave's LLM Context endpoint (extracted passages joined into summaries), and Parallel AI's per-result excerpt budget; Exa accepts it; You.com maps it to an extraction mode (`full_page`/`highlights`); Firecrawl returns scraped markdown summaries (+1 credit/result); MiniMax and Jina reject it (`UNSUPPORTED_OPTION`); Linkup maps it to a `depth` search parameter (`high` -> `deep`); Spider.cloud pins the markdown `return_format` (the canonical payload is the observation).
 
+## Science
+
+Keyless scholarly literature search and retrieval across five suppliers —
+arXiv, OpenAlex, Crossref, PubMed, and Europe PMC. No API key is required:
+the command dispatches credential-free (optional `OPENALEX_API_KEY` /
+`NCBI_API_KEY` unlock higher rate limits).
+
+```bash
+scoutline science search "graph transformers" --year 2020:2024
+scoutline science search "attention" --author Vaswani --provider crossref
+scoutline science get 10.1038/nature12373
+```
+
+`science search <query>` fans out across all five suppliers by default
+(`--provider <id>` pins one) and merges a deduplicated work list, with
+`--author`, `--year`, `--venue`, and `--type` filters consumed only where
+the supplier wire supports them. `science get <identifier>` fetches one
+work by bare DOI, numeric PMID, or arXiv id.
+
 ## Usage
 
 The CLI is self-documenting. Use `--help` at any level:

@@ -61,7 +61,11 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // Rebaselined again at the science seat registration: the capability
 // matrix gained five provider COLUMNS (data columns, registry-derived —
 // the T2 same-commit docs edit). No agent-facing body copy changed.
-const SKILL_BODY_SHA256 = "3fb9487d4e46e8c85cdb5bd07f8d13cf94579714a7d6bde3bbdaaf655069892e";
+// Rebaselined at the science docs pass: SKILL.md gained a Science
+// section (usage, controls, keyless posture) and the matrix gained the
+// Science ROW (the sanctioned per-ticket docs edit; see the science
+// docs tests).
+const SKILL_BODY_SHA256 = "977330157b746273beb5102bd43fde6b70019c87a9a0dbc30f74a4c810e8e484";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

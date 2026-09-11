@@ -254,18 +254,45 @@ scoutline search "x" --no-journal                           # skip this one call
 | Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision chart` |
 | Two-image diff, video | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision diff`, `vision video` |
 | Quota (normalized) | Yes | Yes | Yes | **No** (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | **No** | **No** | Yes (rate-limit telemetry, not spend) | **No** | Yes (credit balance, not spend) | Yes (credit balance, not spend) | No | No | No | No | No | `scoutline quota [--all-providers]` |
-| Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes (single-scrape probe) | Yes | Yes | Yes | Yes | Yes | Yes | Yes (keyless probe; adapter ships in a follow-up ticket) | Yes (keyless probe; adapter ships in a follow-up ticket) | Yes (keyless probe; adapter ships in a follow-up ticket) | Yes (keyless probe; adapter ships in a follow-up ticket) | Yes (keyless probe; adapter ships in a follow-up ticket) | `scoutline doctor [--no-tools] [--available]`; every row carries `availability` (`ok`/`exhausted`/`error`/`unconfigured`), rows sort healthy-first, and `availableProviders` lists the `ok` providers in registry order |
+| Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes (single-scrape probe) | Yes | Yes | Yes | Yes | Yes | Yes | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | `scoutline doctor [--no-tools] [--available]`; every row carries `availability` (`ok`/`exhausted`/`error`/`unconfigured`), rows sort healthy-first, and `availableProviders` lists the `ok` providers in registry order |
 | Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes (rejects Z.AI-only options) | Yes (rejects Z.AI-only options) | **No** (UNSUPPORTED_CAPABILITY) | Yes (returns page titles) | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes | Yes (rejects Z.AI-only options plus `--format text`) | Yes (renders JavaScript; rejects `--format text` and `--no-images`) | Yes (rejects Z.AI-only options) | No | No | No | No | No | `scoutline read` |
 | Repository exploration (search/read/tree/brief) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | No | No | No | No | No | `scoutline repo ...` |
 | Crawl | **No** | **No** | Yes | **No** | **No** | Yes (async; resumable after Ctrl-C) | **No** | **No** | **No** | **No** | **No** | Yes (sync) | No | No | No | No | No | `scoutline crawl` |
 | Map | **No** | **No** | Yes | **No** | **No** | Yes | **No** | **No** | **No** | **No** | **No** | Yes | No | No | No | No | No | `scoutline map` |
 | Research (4-250 credits) | **No** | **No** | Yes | Yes | **No** | **No** (`/deep-research` deprecated) | Yes | Yes | Yes | Yes | Yes | **No** | No | No | No | No | No | `scoutline research` |
+| Science (scholarly search/get) | No | No | No | No | No | No | No | No | No | No | No | No | Yes | Yes | Yes | Yes | Yes | `scoutline science search <query>` / `scoutline science get <identifier>`; keyless — no API key required; controls `--author`/`--year`/`--venue`/`--type` consumed only where the supplier wire supports them |
 | Raw tools | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline tools`, `tool`, `call` |
 | Code Mode | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline code ...` |
 
 Vision results are never cached. Z.AI image limits are JPG/JPEG/PNG ≤5 MiB.
 Search result count is applied locally after normalization and is never sent
 to the active Provider.
+
+## Science
+
+Keyless scholarly literature search and retrieval across five
+suppliers: arXiv, OpenAlex, Crossref, PubMed, and Europe PMC. No API
+key is required for any of them — `scoutline science` dispatches
+credential-free. Optional `OPENALEX_API_KEY` and `NCBI_API_KEY`
+environment variables unlock higher rate limits but are never required.
+
+```bash
+scoutline science search "graph transformers" --year 2020:2024
+scoutline science search "attention" --author Vaswani --provider crossref
+scoutline science get 10.1038/nature12373
+```
+
+- `science search <query>` — merged, deduplicated works across the
+  suppliers (default fan-out; `--provider <id>` pins one).
+  Controls: `--author <name>`, `--year <y|y:y>` (e.g. `2020` or
+  `2018:2022`), `--venue <name>`, `--type <article|preprint|
+  conference-paper|chapter|dataset|review|other>`. Each control is
+  consumed only on suppliers whose wire supports it and rejected with
+  `UNSUPPORTED_OPTION` elsewhere (never silently dropped).
+- `science get <identifier>` — fetch one work by bare DOI
+  (`10.1038/nature12373`), numeric PMID (`31672840`), or arXiv id
+  (`2401.12345`); the identifier grammar routes to the suppliers that
+  can serve it.
 
 ## Batch (manifest runner)
 

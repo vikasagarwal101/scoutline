@@ -57,7 +57,7 @@ inject descriptor lists explicitly through optional parameters.
 | `you` | `YDC_API_KEY` (alias `YOU_API_KEY`) | `https://ydc-index.io`, `https://api.you.com` | Direct-HTTP transport (`X-API-Key`); Search, Reader, Research, Diagnostics. Dual host: search/reader on ydc-index.io, research on api.you.com; no quota capability |
 | `linkup` | `LINKUP_API_KEY` | `https://api.linkup.so` | Direct-HTTP transport; Search, Reader, Research, Quota (credits balance, limit unknown), Diagnostics |
 | `spider` | `SPIDER_API_KEY` | `https://api.spider.cloud` | Direct-HTTP transport (Bearer); Search, Reader, Crawl (synchronous one-shot), Map, Quota (credits remaining, limit unknown), Diagnostics |
-| `arxiv` | none (keyless) | https://export.arxiv.org/api/query | Science supplier seat — Atom XML; Science search/get, Diagnostics (keyless probe). Adapter ships in a follow-up ticket |
+| `arxiv` | none (keyless) | https://export.arxiv.org/api/query | Science supplier seat — Atom XML; Science search/get, Diagnostics (keyless probe) |
 | `openalex` | `OPENALEX_API_KEY` (optional; keyless supported) | https://api.openalex.org/works | Science supplier seat — JSON; Science search/get, Diagnostics (keyless probe). Keyless 1000 credits/day |
 | `crossref` | none (keyless; `mailto` is politeness) | https://api.crossref.org/works | Science supplier seat — JSON; Science search/get, Diagnostics (keyless probe) |
 | `pubmed` | `NCBI_API_KEY` (optional; keyless 3/s vs 10/s keyed) | https://eutils.ncbi.nlm.nih.gov/entrez/eutils/ | Science supplier seat — esearch+efetch JSON; Science search/get, Diagnostics (keyless probe) |
@@ -99,12 +99,13 @@ for the rationale and the accepted async double-charge risk.
 | Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
 | Image diff / video | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision diff`, `vision video` |
 | `quota` | Yes | Yes | Yes | No (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | No | Yes (credit balance, not spend) | Yes (credit balance, not spend) | No | No | No | No | No | `scoutline quota` |
-| `diagnostics` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes (keyless probe; adapter ships in a follow-up ticket) | Yes (keyless probe; adapter ships in a follow-up ticket) | Yes (keyless probe; adapter ships in a follow-up ticket) | Yes (keyless probe; adapter ships in a follow-up ticket) | Yes (keyless probe; adapter ships in a follow-up ticket) | `scoutline doctor` |
+| `diagnostics` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | `scoutline doctor` |
 | Reader | Yes | Falls back (zai/tavily/exa/firecrawl/parallel/jina/you/linkup/spider) | Yes (Z.AI-only options are rejected) | Yes (rejects Z.AI-only options) | Falls back (zai/tavily/exa/firecrawl/parallel/jina/you/linkup/spider) | Yes (returns page titles) | Yes | Falls back (zai/tavily/exa/firecrawl/parallel/jina/you/linkup/spider) | Yes | Yes (rejects Z.AI-only options plus `--format text`) | Yes (renders JavaScript; rejects Z.AI-only options plus `--format text` and `--no-images`) | Yes (rejects Z.AI-only options) | No | No | No | No | No | `scoutline read` |
 | Repository exploration | Yes | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | No | No | No | No | No | `scoutline repo ...` |
 | Crawl | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes (async; resumable after Ctrl-C) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes (sync) | No | No | No | No | No | `scoutline crawl` |
 | Map | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes | No | No | No | No | No | `scoutline map` |
 | Research | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) | Yes (4-250 credits per request) | Yes | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) (`/deep-research` deprecated) | Yes | Yes | Yes | Yes | Yes | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) | No | No | No | No | No | `scoutline research` |
+| Science (`science.search` / `science.get`) | No | No | No | No | No | No | No | No | No | No | No | No | Yes (search/get; controls per wire) | Yes (search/get; controls per wire) | Yes (search/get; controls per wire) | Yes (search/get; controls per wire) | Yes (search/get; controls per wire) | `scoutline science` |
 | Raw tools | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline tools`, `tool`, `call` |
 | Code Mode | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline code ...` |
 
@@ -276,6 +277,30 @@ Tavily connectivity uses a raw single-attempt quota probe against the
 Tavily account endpoint that authenticates without a generative request.
 Brave connectivity uses a single-query web-search probe. Unconfigured
 Providers (including Brave) are listed but skipped.
+
+### Science
+
+The Science capability is a credential-free vertical over five keyless
+scholarly suppliers — arXiv, OpenAlex, Crossref, PubMed, and Europe PMC.
+It declares two capability ids: `science.search` (query scholarly works
+across suppliers, with optional `--author`, `--year`, `--venue`, and
+`--type` controls consumed only on suppliers whose wire supports them)
+and `science.get` (fetch one work by bare DOI, numeric PMID, or arXiv
+identifier).
+
+Science is keyless by default: no credential is required, and the
+command dispatches before config load. `OPENALEX_API_KEY` and
+`NCBI_API_KEY` are optional upgrade tiers (higher rate limits), never
+requirements. Unlike the shared Search capability, science suppliers do
+not participate in Provider fallback or quota-ranked selection; a
+supplier is pinned with `--provider <id>` or the default fan-out runs
+across all five.
+
+```bash
+scoutline science search "graph transformers" --year 2020:2024
+scoutline science search "attention" --author Vaswani --provider crossref
+scoutline science get 10.1038/nature12373
+```
 
 ## Repository Exploration (P6)
 

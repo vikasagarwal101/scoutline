@@ -580,6 +580,55 @@ describe("ZaiCodeModeClient — failure-path auth probe (issue #135)", () => {
     }
   });
 
+  it("invalid-but-parseable Z_AI_TIMEOUT never degrades probe classification (PR #142 round 3)", async () => {
+    // "-1" or an above-u32 delay survives Number.isFinite and reaches
+    // AbortSignal.timeout, which throws — the probe's catch-all then
+    // returns null and a REAL 401/403 surfaces as the generic ApiError
+    // instead of AuthError (macroscope). The resolved timeout must be a
+    // supported positive delay.
+    const delays = [];
+    const origTimeout = AbortSignal.timeout;
+    AbortSignal.timeout = (ms) => {
+      delays.push(ms);
+      return origTimeout(ms);
+    };
+    try {
+      await withMockFetch(zaiFetch(AUTH_REJECTION_BODY, 200), async () => {
+        const negative = new ZaiCodeModeClient({
+          env: { Z_AI_API_KEY: "expired-dummy-key", Z_AI_TIMEOUT: "-1" },
+          clientFactory: async () => registrationFailureFake(),
+        });
+        try {
+          await assert.rejects(negative.callToolChain("code"), (err) => {
+            assert.strictEqual(err.code, "AUTH_ERROR", `got ${err.code} (${err.message})`);
+            return true;
+          });
+        } finally {
+          await negative.close().catch(() => {});
+        }
+
+        const huge = new ZaiCodeModeClient({
+          env: { Z_AI_API_KEY: "expired-dummy-key", Z_AI_TIMEOUT: "9007199254740991" },
+          clientFactory: async () => registrationFailureFake(),
+        });
+        try {
+          await assert.rejects(huge.callToolChain("code"), (err) => {
+            assert.strictEqual(err.code, "AUTH_ERROR");
+            return true;
+          });
+        } finally {
+          await huge.close().catch(() => {});
+        }
+      });
+    } finally {
+      AbortSignal.timeout = origTimeout;
+    }
+    assert.ok(
+      delays.every((ms) => Number.isInteger(ms) && ms > 0 && ms <= 0xffffffff),
+      `every AbortSignal.timeout delay must be a supported positive delay, got ${JSON.stringify(delays)}`,
+    );
+  });
+
   it("probe cancels the unread response body on every non-consumed exit", async () => {
     // undici retains the connection until the body is consumed or
     // cancelled; the 401/403 early return and the non-200 fallthrough

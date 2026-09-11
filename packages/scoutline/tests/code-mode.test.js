@@ -459,6 +459,62 @@ describe("ZaiCodeModeClient — failure-path auth probe (issue #135)", () => {
     }
   });
 
+  it("probe timeout bound resolves from the injected env — Z_AI_TIMEOUT honored, junk never NaN (PR #142 review)", async () => {
+    // The probe's AbortSignal.timeout argument must derive from the SAME
+    // resolved environment the registration template uses: an injected
+    // { Z_AI_TIMEOUT: "1000" } caps the probe at 1s, and a junk value
+    // falls back to the 30s default (min→5s probe cap) instead of NaN —
+    // AbortSignal.timeout(NaN) throws and would silently disable the
+    // probe via the catch-all null.
+    const delays = [];
+    const origTimeout = AbortSignal.timeout;
+    AbortSignal.timeout = (ms) => {
+      delays.push(ms);
+      return origTimeout(ms);
+    };
+    try {
+      await withMockFetch(zaiFetch(AUTH_REJECTION_BODY, 200), async () => {
+        const envBounded = new ZaiCodeModeClient({
+          env: { Z_AI_API_KEY: "expired-dummy-key", Z_AI_TIMEOUT: "1000" },
+          clientFactory: async () => registrationFailureFake(),
+        });
+        try {
+          await assert.rejects(envBounded.callToolChain("code"), (err) => {
+            assert.strictEqual(err.code, "AUTH_ERROR");
+            return true;
+          });
+        } finally {
+          await envBounded.close().catch(() => {});
+        }
+
+        const envJunk = new ZaiCodeModeClient({
+          env: { Z_AI_API_KEY: "expired-dummy-key", Z_AI_TIMEOUT: "not-a-number" },
+          clientFactory: async () => registrationFailureFake(),
+        });
+        try {
+          // Must surface the sanitized error, not a TypeError from a
+          // NaN probe bound.
+          await assert.rejects(envJunk.callToolChain("code"), (err) => {
+            assert.strictEqual(err.code, "AUTH_ERROR");
+            return true;
+          });
+        } finally {
+          await envJunk.close().catch(() => {});
+        }
+      });
+    } finally {
+      AbortSignal.timeout = origTimeout;
+    }
+    assert.ok(
+      delays.includes(1000),
+      `env-resolved Z_AI_TIMEOUT=1000 must bound the probe, got ${JSON.stringify(delays)}`,
+    );
+    assert.ok(
+      delays.includes(5000),
+      `junk Z_AI_TIMEOUT must fall back to the 30s default (5s probe cap), got ${JSON.stringify(delays)}`,
+    );
+  });
+
   it("probe cancels the unread response body on every non-consumed exit", async () => {
     // undici retains the connection until the body is consumed or
     // cancelled; the 401/403 early return and the non-200 fallthrough

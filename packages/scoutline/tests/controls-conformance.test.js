@@ -8,6 +8,10 @@
  *              option, and invoke() re-throws it BEFORE any transport
  *              access (zero wire calls).
  *   consumed — invoke() resolves and the control is observable either
+ *
+ * #134 fixture-secret classification: BENIGN. Adapter-level class-guard
+ * suite (validate/invoke against fake transports; never drives main(), no
+ * stdout redaction boundary) — outside the #120 collision class.
  *              on the outgoing request (body / query / header / MCP
  *              args, captured at the injected transport seam) or in
  *              the returned normalized content.

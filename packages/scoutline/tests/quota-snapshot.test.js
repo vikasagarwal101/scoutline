@@ -29,6 +29,10 @@ import assert from "node:assert/strict";
 import { buildQuotaDashboard, quota } from "../dist/commands/quota.js";
 import { buildDiagnosticsReport, doctorExitCode } from "../dist/commands/doctor.js";
 import { formatQuotaDashboard } from "../dist/lib/tty.js";
+// #134 fixture-secret classification: BENIGN. Quota-store/dashboard unit
+// suite (never drives main(); no stdout redaction boundary, no rendered
+// randomized paths under literal pins) — outside the #120 collision class.
+
 import { createInMemoryQuotaStore } from "../dist/lib/quota-store.js";
 import { DEFAULT_QUOTA_STALE_THRESHOLD_MS } from "../dist/lib/quota-store.js";
 import { UnsupportedCapabilityError, ScoutlineError } from "../dist/lib/errors.js";

@@ -2,6 +2,12 @@
  * Multi-Provider Search Fan-Out tests — Ticket 1.
  *
  * Scope of THIS ticket: pure helpers only.
+ *
+ * #134 fixture-secret classification: BENIGN. Short "k" credentials
+ * appear only in pure-resolver unit tests (resolveFanoutPlan — no main(),
+ * no boundary); the main()-driven fan-out/toggle tests pin fixture URLs
+ * and stderr notices, and their mkdtemp roots are config dirs never
+ * rendered (the toggle test runs env: {} — no secrets at all).
  *   - `canonicalUrl` (DESIGN D4, ADR-0004 §5): identity-only normalization;
  *     never throws; malformed passes through verbatim.
  *   - `parseProviderIds` (additive sibling of `parseProviderId`): comma-

@@ -78,7 +78,7 @@ const TYPE_WIRE_LITERALS: Readonly<Record<string, string>> = Object.freeze({
 /** Year control "2020" | "2018:2022" → from/to publication-date pair. */
 function yearFilterPair(year: string): { from: string; to: string } {
   const [from, to] = year.split(":");
-  return { from: `${from}-01-01`, to: `${to ?? from}-01-01` };
+  return { from: `${from}-01-01`, to: `${to ?? from}-12-31` };
 }
 
 /** Search filters (D7 table) as one `filter=` param string. */

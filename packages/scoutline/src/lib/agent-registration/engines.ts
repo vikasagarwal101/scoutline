@@ -50,9 +50,11 @@ export interface LineInsertOptions {
  * marker-wrapped single line appended under the existing rules list when
  * the convention matches (matches INSIDE marker-owned spans are skipped —
  * ours and foreign tools' `<!-- x:start/end -->` pairs), else at file end. Bytes outside the wrapped line
- * are preserved verbatim; re-running is a zero diff. A pre-existing
- * UNWRAPPED pointer line is user-owned content — registration is a no-op
- * (never rewritten into the wrapped form).
+ * are preserved verbatim; re-running is a zero diff. The managed region
+ * follows the FILE's own line ending (#131) — a CRLF file gets CRLF glue,
+ * and idempotency recognizes regions written with either glue form. A
+ * pre-existing UNWRAPPED pointer line is user-owned content — registration
+ * is a no-op (never rewritten into the wrapped form).
  */
 export async function lineInsert(options: LineInsertOptions): Promise<void> {
   const { filePath, line, convention } = options;
@@ -66,16 +68,24 @@ export async function lineInsert(options: LineInsertOptions): Promise<void> {
     original = "";
   }
 
-  const wrapped = `${START_MARKER}\n${line}\n${END_MARKER}`;
-  const hasManagedRegion = original.includes(wrapped);
+  // The file's OWN line ending governs the managed region (#131): detect it
+  // from the first line break so a CRLF file gets CRLF glue instead of a
+  // mixed-EOL managed block.
+  const eol = original.match(/\r?\n/)?.[0] ?? "\n";
+  const wrapped = `${START_MARKER}${eol}${line}${eol}${END_MARKER}`;
+  // Idempotency spans BOTH glue forms: a region written before the EOL fix
+  // (LF glue inside a CRLF file) is still our managed region — re-running
+  // must never append a second block.
+  const hasManagedRegion =
+    original.includes(wrapped) || original.includes(`${START_MARKER}\n${line}\n${END_MARKER}`);
 
   if (hasManagedRegion) return; // idempotent: search before mutate
   // Pre-existing UNWRAPPED pointer line: user-owned — hands off entirely.
-  if (original.split("\n").includes(line)) return;
+  if (original.split(eol).includes(line)) return;
 
   let next: string;
   if (convention) {
-    const lines = original.split("\n");
+    const lines = original.split(eol);
     let insertAt = -1;
     // Marker-owned spans (`<!-- x:start -->` … `<!-- x:end -->`, ours AND
     // foreign tools', possibly nested) are user/other-tool territory: a
@@ -103,18 +113,18 @@ export async function lineInsert(options: LineInsertOptions): Promise<void> {
     }
     if (insertAt === -1) {
       next =
-        original.endsWith("\n") || original === ""
-          ? `${original}${wrapped}\n`
-          : `${original}\n${wrapped}`;
+        original.endsWith(eol) || original === ""
+          ? `${original}${wrapped}${eol}`
+          : `${original}${eol}${wrapped}`;
     } else {
       lines.splice(insertAt, 0, wrapped);
-      next = lines.join("\n");
+      next = lines.join(eol);
     }
   } else {
     next =
-      original.endsWith("\n") || original === ""
-        ? `${original}${wrapped}\n`
-        : `${original}\n${wrapped}`;
+      original.endsWith(eol) || original === ""
+        ? `${original}${wrapped}${eol}`
+        : `${original}${eol}${wrapped}`;
   }
 
   await backupIfPreExisting(filePath, existed, hasManagedRegion);
@@ -423,10 +433,13 @@ export async function stripManagedRegion(filePath: string, expectedContent: stri
     let to = end + END_MARKER.length;
     // Swallow ONE newline boundary the insertion joined with, so an
     // untouched file returns byte-identical to its pre-registration bytes.
-    // FOLLOWING newline first: on a CRLF file the preceding "\r\n" is the
+    // FOLLOWING boundary first: on a CRLF file the preceding "\r\n" is the
     // file's own line ending — eating backwards through it strands a lone
-    // "\r" — while the newline AFTER our region is always one we joined.
-    if (stripped[to] === "\n") to += 1;
+    // "\r" — while the boundary AFTER our region is always one we joined.
+    // CRLF pairs are swallowed whole in both directions (#131).
+    if (stripped[to] === "\r" && stripped[to + 1] === "\n") to += 2;
+    else if (stripped[to] === "\n") to += 1;
+    else if (from >= 2 && stripped[from - 1] === "\n" && stripped[from - 2] === "\r") from -= 2;
     else if (from > 0 && stripped[from - 1] === "\n") from -= 1;
     stripped = stripped.slice(0, from) + stripped.slice(to);
     searchFrom = Math.max(0, from - 1);

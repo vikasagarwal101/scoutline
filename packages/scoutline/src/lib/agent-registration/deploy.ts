@@ -187,7 +187,9 @@ async function loadPersistedAgentRules(configRoot: string): Promise<AgentRulesCh
  * `agentRules` (opted-out tools are skipped entirely) — when the option is
  * omitted, the choices persisted in `<configRoot>/config.json` are loaded so
  * a production opt-out survives drift refreshes. Refresh failures are
- * per-tool stderr notices, never fatal.
+ * per-tool stderr notices, never fatal; when EVERY attempted tool failed,
+ * one additional summary notice distinguishes total from partial failure
+ * (#130).
  */
 export async function checkAgentRegistration(options: {
   home: string;
@@ -209,8 +211,11 @@ export async function checkAgentRegistration(options: {
 
   let refreshed = false;
   let failed = false;
+  let attempted = 0;
+  let failures = 0;
   for (const id of tools) {
     if (agentRules?.[id] === false) continue;
+    attempted += 1;
     try {
       await deploySkills({ home, tools: [id] });
       if (textDrifted) {
@@ -220,10 +225,23 @@ export async function checkAgentRegistration(options: {
       refreshed = true;
     } catch (error) {
       failed = true;
+      failures += 1;
       writeStderr(
         `scoutline: agent registration refresh failed for ${id} — ${error instanceof Error ? error.message : String(error)} (command continues)`,
       );
     }
+  }
+  // Total failure must not read as partial (#130): N per-tool notices alone
+  // are indistinguishable from "some tools failed, others refreshed" — one
+  // summary line names the all-fail case. Opted-out tools are not attempts,
+  // so a fully opted-out stamp stays quiet. The wording must not promise
+  // "unchanged": deploySkills rm's the existing skill dir before the copy,
+  // and rule/pointer writes can fail after earlier writes, so a failed
+  // refresh may leave registrations partially modified or deleted.
+  if (attempted > 0 && failures === attempted) {
+    writeStderr(
+      `scoutline: agent registration refresh failed for all ${attempted} registered tool${attempted === 1 ? "" : "s"} — registration may be partially modified or deleted; next run retries (command continues)`,
+    );
   }
   // A partial failure must not stamp every tool fresh (issue #122): leave the
   // stamp drifted so the next run retries the tool that failed. The return

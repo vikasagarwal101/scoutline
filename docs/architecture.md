@@ -60,7 +60,7 @@ inject descriptor lists explicitly through optional parameters.
 | `arxiv` | none (keyless) | https://export.arxiv.org/api/query | Science supplier seat — Atom XML; Science search/get, Diagnostics (keyless probe) |
 | `openalex` | `OPENALEX_API_KEY` (optional; keyless supported) | https://api.openalex.org/works | Science supplier seat — JSON; Science search/get, Diagnostics (keyless probe). Keyless 1000 credits/day |
 | `crossref` | none (keyless; `mailto` is politeness) | https://api.crossref.org/works | Science supplier seat — JSON; Science search/get, Diagnostics (keyless probe) |
-| `pubmed` | `NCBI_API_KEY` (optional; keyless 3/s vs 10/s keyed) | https://eutils.ncbi.nlm.nih.gov/entrez/eutils/ | Science supplier seat — esearch+efetch JSON; Science search/get, Diagnostics (keyless probe) |
+| `pubmed` | `NCBI_API_KEY` (optional; keyless 3/s vs 10/s keyed) | https://eutils.ncbi.nlm.nih.gov/entrez/eutils/ | Science supplier seat — esearch JSON + efetch XML; Science search/get, Diagnostics (keyless probe) |
 | `europepmc` | none (keyless) | https://www.ebi.ac.uk/europepmc/webservices/rest/search | Science supplier seat — JSON; Science search/get, Diagnostics (keyless probe) |
 
 Each Adapter exposes only the Capabilities the base release actually supports.

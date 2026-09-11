@@ -37,6 +37,7 @@ import assert from "node:assert/strict";
 import { createArxivDescriptor } from "../dist/providers/arxiv/adapter.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "../dist/providers/registry.js";
 import {
+  QuotaError,
   UnsupportedOptionError,
   ValidationError,
 } from "../dist/lib/errors.js";
@@ -393,5 +394,24 @@ describe("arxiv diagnostics — keyless bounded probe (TASKS T3; DESIGN D2 round
     });
     const adapter = descriptor.create({ env: {} });
     await assert.rejects(adapter.diagnostics.invoke({ probe: true }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 429 pin — keyless rate-limit must surface as QuotaError, not ApiError (D4b)
+// ---------------------------------------------------------------------------
+
+describe("arXiv 429 — keyless rate limit maps to QuotaError (DESIGN D4b honest class)", () => {
+  it("a 429 response rejects with QuotaError and statusCode 429 on search invoke", async () => {
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async () => ({ ok: false, status: 429, text: async () => "" }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      adapter.science.search.invoke({ query: "x" }),
+      (e) => e instanceof QuotaError && e.statusCode === 429,
+    );
   });
 });

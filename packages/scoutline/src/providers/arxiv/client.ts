@@ -16,7 +16,7 @@
  *     parsing. This module returns the raw XML string.
  */
 import pkg from "../../../package.json" with { type: "json" };
-import { ApiError, AuthError, NetworkError, TimeoutError } from "../../lib/errors.js";
+import { ApiError, AuthError, NetworkError, QuotaError, TimeoutError } from "../../lib/errors.js";
 import type { ProviderQuotaFetch } from "../types.js";
 import { getGlobalFetch } from "../types.js";
 
@@ -63,6 +63,9 @@ function mapStatusError(status: number, timeoutMs: number): Error {
   if (status === 408 || status === 504) {
     return new TimeoutError(timeoutMs);
   }
+  if (status === 429) {
+    return new QuotaError("arXiv rate-limited — keyless budget; a free key raises the limit (see `scoutline init`)");
+  }
   return new ApiError("arXiv request failed", status);
 }
 
@@ -73,7 +76,10 @@ function mapStatusError(status: number, timeoutMs: number): Error {
  * transient NetworkError. No raw provider body crosses the seam.
  */
 function normalizeTransportError(error: unknown, timeoutMs: number): Error {
-  if (error instanceof AuthError || error instanceof ApiError || error instanceof TimeoutError) {
+  if (error instanceof AuthError ||
+    error instanceof ApiError ||
+    error instanceof QuotaError ||
+    error instanceof TimeoutError) {
     return error;
   }
   if (error instanceof Error && error.name === "AbortError") {

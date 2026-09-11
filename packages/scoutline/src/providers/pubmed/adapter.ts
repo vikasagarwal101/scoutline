@@ -9,9 +9,10 @@
  * `efetch.fcgi retmode=xml` (the PubmedArticleSet records). PLAN
  * DEVIATION (probe-verified 2026-09-11, live eutils wire): D2's
  * "efetch JSON" and D10 ruling 3's "esummary direct" do not carry
- * records — efetch retmode=json returns only the bare id list and
- * esummary json lacks ArticleTitle/full AuthorList — so the
- * record-carrying step is efetch retmode=xml. An empty esearch
+ * records — efetch retmode=json returns only the bare id list, and
+ * esummary retmode=json, while it does carry title/authors/venue/
+ * pubtype, carries NO AbstractText — so efetch retmode=xml is the
+ * only record-complete second step. An empty esearch
  * idlist short-circuits to NO second call (the 3 r/s keyless budget
  * is not spent on a zero-record efetch).
  *

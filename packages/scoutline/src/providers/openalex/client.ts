@@ -62,6 +62,15 @@ function mapStatusError(status: number, timeoutMs: number): Error {
       "OpenAlex rate-limited — keyless budget; a free key raises the limit (see `scoutline init`)",
     );
   }
+  if (status === 503) {
+    // Remedy (owner ruling): anonymous search may be paused under load —
+    // the free key via `scoutline init` restores it. The class stays
+    // ApiError (the mapping pin) — only the message carries the remedy.
+    return new ApiError(
+      "OpenAlex request failed (anonymous search may be paused under load — a free API key via `scoutline init` restores it)",
+      status,
+    );
+  }
   return new ApiError("OpenAlex request failed", status);
 }
 

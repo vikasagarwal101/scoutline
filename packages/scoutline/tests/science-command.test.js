@@ -55,11 +55,14 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { main, REJECT_MAX_CHARS_COMMANDS } from "../dist/index.js";
-import { ApiError } from "../dist/lib/errors.js";
+import { createArxivDescriptor } from "../dist/providers/arxiv/adapter.js";
+import { ApiError, UnsupportedOptionError } from "../dist/lib/errors.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
@@ -181,20 +184,34 @@ function makeInvocation() {
   };
 }
 
-async function runMain(argv, { descriptors, artifactsDir, loadScoutlineConfig } = {}) {
+async function runMain(argv, { descriptors, artifactsDir, loadScoutlineConfig, env } = {}) {
   const { adapter, stdout, stderr } = makeInvocation();
-  const status = await main(argv, {
-    ...hermeticMainDeps({
-      invocation: adapter,
-      env: {
-        ...(artifactsDir !== undefined ? { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } : {}),
-      },
-      now: () => NOW,
-      ...(descriptors !== undefined ? { providerDescriptors: descriptors } : {}),
-      ...(loadScoutlineConfig !== undefined ? { loadScoutlineConfig } : {}),
-    }),
-  });
-  return { status, stdout, stderr };
+  // Hermeticity (deep-review fix): every science main() journals by
+  // default, so the call MUST carry an isolated artifacts + config
+  // root — otherwise the run writes REAL entries into
+  // ~/.scoutline/artifacts (measured: 38 entries per three-file run).
+  // Callers that read the journal back pass their own `artifactsDir`;
+  // the helper owns and cleans up only the default it creates.
+  const ownsDir = artifactsDir === undefined;
+  const dir = artifactsDir ?? mkdtempSync(join(tmpdir(), "scoutline-sci-cmd-"));
+  try {
+    const status = await main(argv, {
+      ...hermeticMainDeps({
+        invocation: adapter,
+        env: {
+          SCOUTLINE_ARTIFACTS_DIR: dir,
+          SCOUTLINE_CONFIG_DIR: dir,
+          ...(env !== undefined ? env : {}),
+        },
+        now: () => NOW,
+        ...(descriptors !== undefined ? { providerDescriptors: descriptors } : {}),
+        ...(loadScoutlineConfig !== undefined ? { loadScoutlineConfig } : {}),
+      }),
+    });
+    return { status, stdout, stderr };
+  } finally {
+    if (ownsDir) rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function parseStderr(stderr) {
@@ -514,6 +531,9 @@ describe("science envelope shape — data CommandResult, data-only stdout", () =
     // T10 flip: pin the failing arm — an unpinned fan-out deliberately
     // continues past a failed arm when others serve; the single-arm
     // failure contract is the pin.
+    // Ruling-round update: a pinned-search invoke failure now REROUTES
+    // under the default (see the pinned-search reroute describe); the
+    // strict fail-loud contract is pinned here under the kill-switch.
     const { descriptors } = scienceFive({
       openalex: {
         searchWorks: () => {
@@ -522,7 +542,7 @@ describe("science envelope shape — data CommandResult, data-only stdout", () =
       },
     });
     const { status, stdout, stderr } = await runMain(
-      ["science", "search", "q", "--provider", "openalex"],
+      ["science", "search", "q", "--provider", "openalex", "--no-fallback"],
       { descriptors },
     );
     assert.equal(status, 1);
@@ -599,6 +619,26 @@ describe("resolver (T10 fan-out semantics — interim pins flipped in-ticket)", 
       assert.equal(byId[id].calls.search.length, 1, `${id} runs in the pinned fan-out`);
     }
     assert.equal(JSON.parse(stdout.join("")).length, 5);
+  });
+
+  it("multiple positionals join with spaces into the query (review)", async () => {
+    // GROUND: deep-review finding — `const query = positional[0]`
+    // silently dropped every word after the first; the main search
+    // command joins positionals (`positional.join(" ")`). The JOINED
+    // text is the request.query every arm sees (and what journals).
+    const { descriptors, byId } = scienceFive();
+    const { status } = await runMain(["science", "search", "attention", "mechanism"], {
+      descriptors,
+    });
+    assert.equal(status, 0);
+    for (const id of D5_ARM_ORDER) {
+      assert.equal(byId[id].calls.search.length, 1, `${id} invoked once`);
+      assert.equal(
+        byId[id].calls.search[0].query,
+        "attention mechanism",
+        `${id} must receive the joined query`,
+      );
+    }
   });
 
   it("fanout-empty-success: a rejected sibling does not fail an EMPTY-but-fulfilled fan-out (review)", async () => {
@@ -1008,6 +1048,106 @@ describe("science joins the --no-journal accept set (T7 flip)", () => {
 // (openalex/pubmed keyed opt-in) must reach the supplier adapters.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// SCOUTLINE_PROVIDER env pin (ruling): --provider flag > env > fan-out.
+// ---------------------------------------------------------------------------
+
+describe("SCOUTLINE_PROVIDER narrows the science arm set (ruling)", () => {
+  it("env=crossref with no flag runs ONLY crossref", async () => {
+    const { descriptors, byId } = scienceFive();
+    const { status } = await runMain(["science", "search", "q"], {
+      descriptors,
+      env: { SCOUTLINE_PROVIDER: "crossref" },
+    });
+    assert.equal(status, 0);
+    assert.equal(byId.crossref.calls.search.length, 1, "the env pin selects crossref");
+    for (const id of D5_ARM_ORDER) {
+      if (id === "crossref") continue;
+      assert.equal(byId[id].calls.search.length, 0, `${id} not consulted under the env pin`);
+    }
+  });
+
+  it("no env and no flag fans out across all five suppliers", async () => {
+    const { descriptors, byId } = scienceFive();
+    const { status } = await runMain(["science", "search", "q"], { descriptors });
+    assert.equal(status, 0);
+    for (const id of D5_ARM_ORDER) {
+      assert.equal(byId[id].calls.search.length, 1, `${id} runs in the default fan-out`);
+    }
+  });
+
+  it("the --provider flag OVERRIDES the env pin when both are present", async () => {
+    const { descriptors, byId } = scienceFive();
+    const { status } = await runMain(["science", "search", "q", "--provider", "arxiv"], {
+      descriptors,
+      env: { SCOUTLINE_PROVIDER: "crossref" },
+    });
+    assert.equal(status, 0);
+    assert.equal(byId.arxiv.calls.search.length, 1, "the flag pin wins");
+    assert.equal(byId.crossref.calls.search.length, 0, "the env pin is overridden");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pinned-search reroute (ruling): a one-arm search run whose pinned
+// supplier fails at INVOKE time reroutes to the next D5-order arm
+// under the default; the kill-switch fails strict. Ruling-out at
+// validate (UNSUPPORTED_OPTION) is never a reroute (pinned elsewhere).
+// ---------------------------------------------------------------------------
+
+describe("pinned-search invoke failure reroutes (ruling)", () => {
+  it("default: pinned openalex failure reroutes to the next D5 arm with the stderr notice", async () => {
+    const { descriptors, byId } = scienceFive({
+      openalex: {
+        searchWorks: () => {
+          throw new ApiError("openalex exploded", 503);
+        },
+      },
+    });
+    const { status, stdout, stderr } = await runMain(
+      ["science", "search", "q", "--provider", "openalex"],
+      { descriptors },
+    );
+    assert.equal(status, 0, "the reroute serves the search");
+    assert.equal(byId.openalex.calls.search.length, 1, "the pinned arm was attempted");
+    assert.equal(byId.arxiv.calls.search.length, 1, "rerouted to the next D5-order arm");
+    const parsed = JSON.parse(stdout.join(""));
+    assert.deepEqual(
+      parsed.map((w) => w.title),
+      ["search-from-arxiv"],
+      "the reroute target's works serve the run",
+    );
+    assert.match(
+      stderr.join(""),
+      /openalex search failed \(openalex exploded\) — rerouting to arxiv/,
+      "the get-path notice format",
+    );
+  });
+
+  it("kill-switch (--no-fallback): the pinned failure surfaces strict, no reroute", async () => {
+    const { descriptors, byId } = scienceFive({
+      openalex: {
+        searchWorks: () => {
+          throw new ApiError("openalex exploded", 503);
+        },
+      },
+    });
+    const { status, stdout, stderr } = await runMain(
+      ["science", "search", "q", "--provider", "openalex", "--no-fallback"],
+      { descriptors },
+    );
+    assert.equal(status, 1, "strict failure");
+    assert.deepEqual(stdout, [], "data-only stdout contract");
+    const err = parseStderr(stderr);
+    assert.equal(err.code, "API_ERROR");
+    assert.match(err.error, /openalex exploded/);
+    for (const id of D5_ARM_ORDER) {
+      if (id === "openalex") continue;
+      assert.equal(byId[id].calls.search.length, 0, `${id} never invoked — no reroute`);
+    }
+  });
+});
+
 describe("science arm applies file-configured supplier credentials (review)", () => {
   it("a stored openalex apiKey reaches the science adapters through create({ env })", async () => {
     // GROUND: review round 4 — the science arm passed the RAW env to
@@ -1046,6 +1186,52 @@ describe("science arm applies file-configured supplier credentials (review)", ()
     });
     assert.equal(status, 0, "a throwing loader degrades to the raw env, exit 0");
     assert.equal(byId.openalex.calls.createEnvs.at(-1)?.OPENALEX_API_KEY, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `science get` mismatched pin (deep-review pin): pinning a supplier
+// that does not serve the identifier TYPE fails UNSUPPORTED_OPTION
+// naming the identifier — never a silent reroute to a serving sibling.
+// ---------------------------------------------------------------------------
+
+describe("science get mismatched pin — UNSUPPORTED_OPTION, never reroutes", () => {
+  it("`science get <DOI> --provider arxiv` fails UNSUPPORTED_OPTION naming the identifier", async () => {
+    // GROUND: D10 ruling 3 identifier routing + PRD AC-5b — a PINNED
+    // supplier that cannot serve the request's identifier type rejects
+    // outright; the REAL arxiv descriptor's validate() throws BEFORE
+    // the invoke try/catch, so the walk cannot "fall back" to a
+    // DOI-serving sibling. The pinned arm is the real adapter; the
+    // siblings are the recording fakes (they must never be consulted).
+    const { descriptors, byId } = scienceFive();
+    const realArxiv = createArxivDescriptor({
+      transport: { fetch: async () => ({ ok: true, status: 200, text: async () => "" }) },
+    });
+    const mixed = [realArxiv, ...descriptors.filter((d) => d.id !== "arxiv")];
+    const { status, stdout, stderr } = await runMain(
+      ["science", "get", "10.1038/nature12373", "--provider", "arxiv"],
+      { descriptors: mixed },
+    );
+    assert.equal(status, 1, "mismatched pin fails");
+    assert.deepEqual(stdout, [], "data-only stdout contract");
+    const err = parseStderr(stderr);
+    assert.equal(err.code, "UNSUPPORTED_OPTION", "error class is UNSUPPORTED_OPTION");
+    assert.match(err.error, /arxiv.*identifier/s, "message names arxiv and the identifier option");
+    for (const id of D5_ARM_ORDER) {
+      if (id === "arxiv") continue;
+      assert.equal(byId[id].calls.get.length, 0, `${id}.get never invoked — no reroute`);
+    }
+  });
+
+  it("the real arxiv validate seam throws UnsupportedOptionError for a bare DOI (unit pin)", async () => {
+    const realArxiv = createArxivDescriptor({
+      transport: { fetch: async () => ({ ok: true, status: 200, text: async () => "" }) },
+    });
+    const capability = realArxiv.create({ env: {} }).science.get;
+    assert.throws(
+      () => capability.validate({ identifier: "10.1038/nature12373" }),
+      (e) => e instanceof UnsupportedOptionError && e.provider === "arxiv" && e.option === "identifier",
+    );
   });
 });
 

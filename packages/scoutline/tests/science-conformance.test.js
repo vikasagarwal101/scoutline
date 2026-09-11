@@ -52,7 +52,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -159,15 +161,26 @@ function parseErrorEnvelope(stderr) {
 
 async function runMain(argv, descriptors) {
   const { adapter, stdout, stderr } = makeInvocation();
-  const status = await main(argv, {
-    ...hermeticMainDeps({
-      invocation: adapter,
-      env: {},
-      ...(descriptors !== undefined ? { providerDescriptors: descriptors } : {}),
-      now: () => NOW,
-    }),
-  });
-  return { status, stdout, stderr };
+  // Hermeticity (deep-review fix): a bare env lets the default-on
+  // journal write REAL entries into ~/.scoutline/artifacts. Pin an
+  // isolated artifacts + config root per call.
+  const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-conf-"));
+  try {
+    const status = await main(argv, {
+      ...hermeticMainDeps({
+        invocation: adapter,
+        env: {
+          SCOUTLINE_ARTIFACTS_DIR: dir,
+          SCOUTLINE_CONFIG_DIR: dir,
+        },
+        ...(descriptors !== undefined ? { providerDescriptors: descriptors } : {}),
+        now: () => NOW,
+      }),
+    });
+    return { status, stdout, stderr };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 // ---------------------------------------------------------------------------

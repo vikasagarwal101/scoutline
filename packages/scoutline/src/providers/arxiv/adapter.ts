@@ -302,6 +302,21 @@ interface ArxivScienceCapability {
   readonly get: ArxivScienceGetCapability;
 }
 
+/**
+ * Compose the arXiv `search_query` term for a free-text query.
+ *
+ * A bare `all:<multi-word>` applies the `all:` field prefix to only the
+ * FIRST token and lets the rest ride the parser's default operator,
+ * which OR-floods the result set (deep-review finding). Wrapping the
+ * whole query in a quoted phrase makes it ONE `all:` operand. arXiv's
+ * grammar has no escape for an embedded `"`, so those are folded to
+ * spaces; whitespace is collapsed so the phrase stays a single token.
+ */
+function arxivSearchTerm(query: string): string {
+  const phrase = query.trim().replace(/"/g, " ").replace(/\s+/g, " ").trim();
+  return `all:"${phrase}"`;
+}
+
 function createArxivScienceCapability(options: {
   readonly transport?: ArxivTransportDeps;
 }): ArxivScienceCapability {
@@ -315,7 +330,7 @@ function createArxivScienceCapability(options: {
     async invoke(request, signal) {
       search.validate(request);
       const xml = await fetchArxivQuery(
-        { search_query: `all:${request.query.trim()}`, start: 0, max_results: 25 },
+        { search_query: arxivSearchTerm(request.query), start: 0, max_results: 25 },
         transport,
         signal,
       );

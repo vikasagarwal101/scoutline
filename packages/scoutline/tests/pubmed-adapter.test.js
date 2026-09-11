@@ -450,6 +450,10 @@ describe("pubmed search invoke — XML mapping to ScienceWork (TASKS T4c; PRD AC
       typeof w.url === "string" && w.url.includes("36959025"),
       "url is PMID-addressed (pubmed landing identity)",
     );
+    // Deep-review pin: the eutils `pt` vocabulary surfaces VERBATIM —
+    // the fixture's first PublicationType is the literal "Journal
+    // Article" (not normalized, not dropped).
+    assert.equal(w.type, "Journal Article", "PublicationType → type, verbatim vocabulary");
     // type: the record's first PublicationType (journal article).
     assert.ok(typeof w.type === "string" && w.type.length > 0, "PublicationType → type");
   });

@@ -44,7 +44,7 @@ import { createHash } from "node:crypto";
 
 import { createOpenalexDescriptor } from "../dist/providers/openalex/adapter.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "../dist/providers/registry.js";
-import { QuotaError, UnsupportedOptionError, ValidationError } from "../dist/lib/errors.js";
+import { ApiError, AuthError, QuotaError, TimeoutError, UnsupportedOptionError, ValidationError } from "../dist/lib/errors.js";
 
 // ---------------------------------------------------------------------------
 // Fixture — real-shape OpenAlex works JSON (PRD AC-7d verbatim wire
@@ -695,6 +695,66 @@ describe("openalex diagnostics — keyless bounded probe (TASKS T4; DESIGN D2 ro
 // ---------------------------------------------------------------------------
 // 429 pin — keyless rate-limit must surface as QuotaError, not ApiError (D4b)
 // ---------------------------------------------------------------------------
+
+describe("OpenAlex non-429 status mapping (deep-review pin — current mapping, as-is)", () => {
+  // PENDING (owner ruling): the 429 REMEDY message ("a free key raises
+  // the limit") is owner-ruled out of scope here; this describe pins
+  // only the honest-class mapping of the OTHER statuses so a future
+  // change cannot silently reclassify them.
+  function statusDescriptor(status) {
+    return createOpenalexDescriptor({
+      transport: {
+        fetch: async () => ({ ok: false, status, text: async () => "" }),
+      },
+    });
+  }
+
+  it("a 503 response rejects with ApiError and statusCode 503 (5xx → ApiError, not QuotaError)", async () => {
+    const adapter = statusDescriptor(503).create({ env: {} });
+    await assert.rejects(
+      adapter.science.search.invoke({ query: "x" }),
+      (e) => e instanceof ApiError && e.statusCode === 503,
+      "5xx keeps the documented ApiError class with the real status",
+    );
+  });
+
+  it("the 503 message carries the ruling remedy text", async () => {
+    // Owner ruling: anonymous search may be paused under load — the
+    // free API key via `scoutline init` restores it.
+    const adapter = statusDescriptor(503).create({ env: {} });
+    await assert.rejects(adapter.science.search.invoke({ query: "x" }), (e) => {
+      assert.ok(e instanceof ApiError);
+      assert.match(
+        e.message,
+        /anonymous search may be paused under load/,
+        "the remedy rides the message",
+      );
+      assert.match(e.message, /scoutline init/, "the remedy names the init path");
+      return true;
+    });
+  });
+
+  it("a 500 response rejects with ApiError (generic server error, real status preserved)", async () => {
+    const adapter = statusDescriptor(500).create({ env: {} });
+    await assert.rejects(
+      adapter.science.search.invoke({ query: "x" }),
+      (e) => e instanceof ApiError && e.statusCode === 500,
+    );
+  });
+
+  it("401 → AuthError; 504 → TimeoutError — the neighboring documented classes stay put", async () => {
+    const auth = statusDescriptor(401).create({ env: {} });
+    await assert.rejects(
+      auth.science.search.invoke({ query: "x" }),
+      (e) => e instanceof AuthError,
+    );
+    const slow = statusDescriptor(504).create({ env: {} });
+    await assert.rejects(
+      slow.science.search.invoke({ query: "x" }),
+      (e) => e instanceof TimeoutError,
+    );
+  });
+});
 
 describe("OpenAlex 429 — keyless rate limit maps to QuotaError (DESIGN D4b honest class)", () => {
   it("a 429 response rejects with QuotaError and statusCode 429 on search invoke", async () => {

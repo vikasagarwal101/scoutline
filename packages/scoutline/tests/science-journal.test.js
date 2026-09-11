@@ -35,6 +35,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { main, ACCEPT_NO_JOURNAL_COMMANDS } from "../dist/index.js";
+import { ApiError } from "../dist/lib/errors.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 import {
   appendJournalEntry,
@@ -98,6 +99,7 @@ function makeScienceDescriptor(id, opts = {}) {
             }),
             async invoke(request) {
               calls.search.push(request);
+              if (opts.searchThrows !== undefined) throw opts.searchThrows;
               return searchWorks;
             },
           },
@@ -111,6 +113,7 @@ function makeScienceDescriptor(id, opts = {}) {
             }),
             async invoke(request) {
               calls.get.push(request);
+              if (opts.getThrows !== undefined) throw opts.getThrows;
               return getWork;
             },
           },
@@ -152,6 +155,121 @@ async function readJournalEntries(artifactsDir) {
   const { log, notice } = await readLog(artifactsDir);
   return { entries: log.entries, notice };
 }
+
+// ---------------------------------------------------------------------------
+// --save on science (ruling): the science command joins the
+// save-capable set — a save run writes the artifact master + log
+// entry, and the SAME run's journal entry carries the saveRef
+// cross-link (the T2a contract the other save-capable handlers have).
+// ---------------------------------------------------------------------------
+
+describe("science --save writes the artifact and cross-links the journal (ruling)", () => {
+  it("science search --save: master + save log entry + journaled saveRef", async () => {
+    const dir = makeTempDir("scoutline-scijr-save-");
+    try {
+      const { status, stderr } = await runMain(["science", "search", "attention", "--save"], {
+        descriptors: scienceFive().descriptors,
+        artifactsDir: dir,
+      });
+      assert.equal(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const { log } = await readLog(dir);
+      const saveEntries = log.entries.filter((e) => e.kind === "save");
+      const journalEntries = log.entries.filter((e) => e.kind === "journal");
+      assert.equal(saveEntries.length, 1, "exactly ONE save entry");
+      assert.equal(saveEntries[0].command, "science", "the save entry names the science command");
+      assert.match(saveEntries[0].masterPath, /\.json$/, "json master by default");
+      assert.equal(journalEntries.length, 1, "the journal entry of the SAME run");
+      assert.equal(
+        journalEntries[0].saveRef,
+        saveEntries[0].requestId,
+        "saveRef cross-links the journal entry to the save (T2a)",
+      );
+      assert.ok(existsSync(join(dir, saveEntries[0].masterPath)), "the master file exists");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Journal cacheKey follows the SERVING supplier (deep-review pin): a
+// failed first arm must not stamp the entry's provider partition —
+// after a get reroute the key derives from the supplier that SERVED;
+// after a search first-arm failure, from the first FULFILLED arm.
+// The cacheKey format embeds the supplier id
+// (`v2.science.get.<supplier>..<hash>.json`), so membership is the pin.
+// ---------------------------------------------------------------------------
+
+describe("science journal cacheKey follows the serving supplier (review)", () => {
+  it("get reroute (openalex fails → crossref serves): cacheKey derives from crossref", async () => {
+    const dir = makeTempDir("scoutline-scijr-reroute-");
+    try {
+      const { descriptors, byId } = scienceFive({
+        openalex: { getThrows: new ApiError("openalex down", 503) },
+      });
+      const { status, stderr } = await runMain(["science", "get", "10.1038/nature12373"], {
+        descriptors,
+        artifactsDir: dir,
+      });
+      assert.equal(status, 0, `reroute serves; stderr=${JSON.stringify(stderr)}`);
+      assert.equal(byId.openalex.calls.get.length, 1, "openalex was attempted first");
+      assert.equal(byId.crossref.calls.get.length, 1, "rerouted to crossref");
+      const { entries, notice } = await readJournalEntries(dir);
+      assert.strictEqual(notice, undefined);
+      assert.strictEqual(entries.length, 1);
+      const entry = entries[0];
+      assert.match(
+        entry.cacheKey,
+        /\.crossref\./,
+        `cacheKey must derive from the SERVING supplier (crossref); got ${entry.cacheKey}`,
+      );
+      assert.doesNotMatch(
+        entry.cacheKey,
+        /\.openalex\./,
+        "the failed first arm must not stamp the journal partition",
+      );
+      assert.strictEqual(entry.provider.effective, "crossref");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("search first-arm failure: cacheKey follows the first FULFILLED arm (arxiv), not failed openalex", async () => {
+    const dir = makeTempDir("scoutline-scijr-firstful-");
+    try {
+      const { descriptors, byId } = scienceFive({
+        openalex: { searchThrows: new ApiError("openalex down", 503) },
+        arxiv: { searchWorks: [{ title: "from-arxiv", url: "https://example.org/arxiv" }] },
+        crossref: { searchWorks: [] },
+        pubmed: { searchWorks: [] },
+        europepmc: { searchWorks: [] },
+      });
+      const { status, stdout, stderr } = await runMain(["science", "search", "attention"], {
+        descriptors,
+        artifactsDir: dir,
+      });
+      assert.equal(status, 0, "empty-but-fulfilled fan-out succeeds");
+      assert.equal(byId.openalex.calls.search.length, 1, "the failing first arm ran");
+      assert.deepEqual(
+        JSON.parse(stdout.join("")).map((w) => w.title),
+        ["from-arxiv"],
+        "the merged set is the fulfilled arms' works",
+      );
+      const { entries, notice } = await readJournalEntries(dir);
+      assert.strictEqual(notice, undefined);
+      assert.strictEqual(entries.length, 1);
+      const entry = entries[0];
+      assert.match(
+        entry.cacheKey,
+        /\.arxiv\./,
+        `cacheKey must follow the first FULFILLED arm (arxiv); got ${entry.cacheKey}`,
+      );
+      assert.doesNotMatch(entry.cacheKey, /\.openalex\./);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // The widened journalable set (TASKS T7 first bullet)

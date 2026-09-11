@@ -51,6 +51,7 @@ import { UnsupportedOptionError, ValidationError } from "../lib/errors.js";
 import type { OutputMode } from "../lib/output.js";
 import type { HandlerDependencies } from "../index.js";
 import { parseBriefMaxChars } from "./repo.js";
+import { createSaveArtifactHook } from "../lib/save-artifacts.js";
 import { resolveArtifactsDir } from "../lib/artifacts.js";
 import { buildProviderCacheKey } from "../lib/cache.js";
 import type { ProviderId } from "../providers/types.js";
@@ -650,6 +651,85 @@ function mergeScienceWorks(works: readonly ScienceWork[]): ScienceWork[] {
   return [...order.map((key) => byKey.get(key) as ScienceWork), ...keyless];
 }
 
+/**
+ * Pinned-search reroute walk (ruling): a one-arm search run whose
+ * pinned supplier SUCCEEDS returns undefined (the caller proceeds to
+ * the fan-out path with its single arm). When the pinned supplier
+ * FAILS at invoke time, the walk reroutes to the next D5-order
+ * science.search-accepting supplier with the get-path's "X failed —
+ * rerouting to Y" stderr notice, and returns the serving arm's works
+ * plus its journal identity (so the hook's cacheKey follows the
+ * SERVING supplier, never the failed pin).
+ *
+ * Validation rejections (UnsupportedOptionError — e.g. a control the
+ * pin doesn't consume) are NOT reroutes: validate() runs first here
+ * and throws before any invoke can fail. A one-element `descriptors`
+ * list with an unreachable pin surfaces its own error, same as the
+ * get path's effective-arm behavior.
+ */
+async function runScienceSearchWithReroute(
+  pinned: ScienceDescriptorLike,
+  options: {
+    readonly request: ScienceSearchRequest;
+    readonly capabilityId: "science.search";
+    readonly env: NodeJS.ProcessEnv;
+    readonly descriptors: readonly unknown[];
+    readonly notice: (message: string) => void;
+    readonly journal: boolean;
+  },
+): Promise<{ readonly works: readonly ScienceWork[]; readonly identity: unknown; readonly armId: string } | undefined> {
+  const { request, env, descriptors, notice, journal } = options;
+  const capability = pinned.create({ env }).science?.search;
+  if (capability === undefined) {
+    throw new ValidationError(
+      `Provider "${pinned.id}" does not provide science search.`,
+      `Science suppliers: ${D5_ARM_ORDER.join(", ")}.`,
+    );
+  }
+  capability.validate(request);
+  const identity = journal ? capability.cacheIdentity?.(request) : undefined;
+  try {
+    return { works: await capability.invoke(request), identity, armId: pinned.id };
+  } catch (error) {
+    // eligible = configured + capable + validating, D5 order, pin first
+    const order = [pinned.id, ...D5_ARM_ORDER.filter((id) => id !== pinned.id)];
+    const byId = scienceDescriptorIndex(descriptors);
+    for (const id of order.slice(1)) {
+      const next = byId.get(id);
+      if (next === undefined) continue;
+      if (!next.isConfigured(env, "science.search")) continue;
+      if (!next.capabilities().has("science.search")) continue;
+      const nextCapability = next.create({ env }).science?.search;
+      if (nextCapability === undefined) continue;
+      try {
+        nextCapability.validate(request);
+      } catch {
+        continue; // a rejecting arm is excluded, never the reroute target
+      }
+      const nextIdentity = journal ? nextCapability.cacheIdentity?.(request) : undefined;
+      try {
+        const works = await nextCapability.invoke(request);
+        notice(
+          `scoutline: ${pinned.id} search failed (${
+            error instanceof Error ? error.message : String(error)
+          }) — rerouting to ${next.id}.`,
+        );
+        return { works, identity: nextIdentity, armId: next.id };
+      } catch (nextError) {
+        notice(
+          `scoutline: ${next.id} search failed (${
+            nextError instanceof Error ? nextError.message : String(nextError)
+          }) — dropped from this reroute walk.`,
+        );
+        continue;
+      }
+    }
+    // No eligible reroute arm served: the PINNED supplier's own error
+    // surfaces (get-path effective-arm behavior).
+    throw error;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Presentation helpers
 // ---------------------------------------------------------------------------
@@ -805,9 +885,37 @@ export async function handleScience(
 
   // `--provider` pin for this run: the global flag was extracted by
   // extractGlobalOptions, but it also parses command-locally — accept
-  // both spellings (command-local overrides when both appear).
+  // both spellings (command-local overrides when both appear). With no
+  // flag anywhere, SCOUTLINE_PROVIDER narrows the run to ONE supplier
+  // (ruling: flag > env > fan-out); an unset/empty env fans out across
+  // all five.
   const flagProvider = typeof flags.provider === "string" ? flags.provider : undefined;
-  const explicitProvider = flagProvider ?? options.explicitProvider;
+  const envProvider =
+    typeof deps.env.SCOUTLINE_PROVIDER === "string" && deps.env.SCOUTLINE_PROVIDER.trim() !== ""
+      ? deps.env.SCOUTLINE_PROVIDER
+      : undefined;
+  const explicitProvider = flagProvider ?? options.explicitProvider ?? envProvider;
+  // --save on science (ruling): the save hook beside the journal hook,
+  // same invocation seam as every save-capable handler. Provider
+  // routing is the pre-run pin or the D5 first arm; the hook's capture
+  // override replaces `effective` with the supplier that ACTUALLY
+  // served (the same cell the journal uses — saveRef cross-links).
+  const saveHook = createSaveArtifactHook(deps, {
+    command: "science",
+    outputMode,
+    args: {
+      ...(explicitProvider !== undefined ? { provider: explicitProvider } : {}),
+      ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+    },
+    provider: {
+      mode: "single",
+      ...(explicitProvider !== undefined ? { requested: explicitProvider } : {}),
+      effective:
+        explicitProvider !== undefined && explicitProvider !== "all"
+          ? (explicitProvider as ProviderId)
+          : "openalex",
+    },
+  });
 
   const selectionOpts: SupplierSelection = {
     ...(explicitProvider !== undefined ? { explicitProvider } : {}),
@@ -816,8 +924,12 @@ export async function handleScience(
   };
 
   if (subcommand === "search") {
-    const query = positional[0];
-    if (query === undefined || query.trim() === "") {
+    // Multiple positionals join with spaces (deep-review fix; the main
+    // search command's `positional.join(" ")` idiom). Taking only
+    // positional[0] silently dropped every word after the first, and
+    // the JOINED text is what gets journaled.
+    const query = positional.join(" ");
+    if (query.trim() === "") {
       throw new ValidationError(
         "Query is required for science search.",
         'Example: scoutline science search "graph transformers" --year 2020:2024.',
@@ -847,6 +959,45 @@ export async function handleScience(
         // classifyError continue path.
         const arms = resolveScienceArms("science.search", selectionOpts, request, context.notice);
         journalArms = arms.map((arm) => arm.id);
+        // Pinned-search reroute (ruling): a one-arm run is a get-style
+        // walk, not a fan-out — if the pinned supplier FAILS at invoke
+        // time and fallback is on, reroute to the next D5-order arm
+        // that accepts the request (the get-path's semantics + stderr
+        // notice). Ruling out (UnsupportedOptionError at validate) is
+        // never a reroute: validate() runs first and throws before any
+        // invoke can fail.
+        if (arms.length === 1 && deps.fallbackEnabled !== false) {
+          const served = await runScienceSearchWithReroute(
+            arms[0] as ScienceDescriptorLike,
+            {
+              request,
+              capabilityId: "science.search",
+              env: selectionOpts.env,
+              descriptors: selectionOpts.descriptors,
+              notice: context.notice,
+              journal: deps.journal !== undefined,
+            },
+          );
+          if (served !== undefined) {
+            journalRows = served.works;
+            if (deps.journal !== undefined) {
+              journalIdentity = served.identity;
+            }
+            journalArms = [served.armId];
+            const single: CommandResult = {
+              kind: "data",
+              data: served.works,
+              presentations: sciencePresentations(renderWorksText(served.works)),
+            };
+            return applyScienceOutputBudget(single, maxChars, {
+              subcommand: "search",
+              context,
+              deps,
+              outputMode,
+              ...(explicitProvider !== undefined ? { explicitProvider } : {}),
+            });
+          }
+        }
         // Parallel arms, one client per arm (the search fan-out
         // orchestration shape). allSettled: a later arm's failure must
         // not discard an earlier arm's already-merged works.
@@ -944,7 +1095,7 @@ export async function handleScience(
       outputMode,
       deps.now,
       deps.secrets,
-      undefined,
+      saveHook,
       deps.journal === undefined
         ? undefined
         : createScienceJournalHook(deps, {
@@ -1079,7 +1230,7 @@ export async function handleScience(
     outputMode,
     deps.now,
     deps.secrets,
-    undefined,
+    saveHook,
     deps.journal === undefined
       ? undefined
       : createScienceJournalHook(deps, {

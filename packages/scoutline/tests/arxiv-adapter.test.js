@@ -269,6 +269,28 @@ describe("arxiv search invoke — Atom parse + ScienceWork mapping (TASKS T3; DE
     assert.equal(works[0].identifiers?.arxivId, "cs/0501001");
   });
 
+  it("multi-word queries compose ONE quoted all: operand — no implicit-OR flood (review)", async () => {
+    // GROUND: deep-review finding — a bare `all:attention mechanism`
+    // field-prefixes only the FIRST token and lets the rest ride the
+    // parser's default operator, OR-flooding the result set. The whole
+    // query must ride the wire as a single quoted `all:` phrase.
+    const { adapter, calls } = makeAdapter();
+    await adapter.science.search.invoke({ query: "attention mechanism" });
+    assert.equal(calls.length, 1);
+    assert.equal(
+      new URL(calls[0].url).searchParams.get("search_query"),
+      'all:"attention mechanism"',
+      "the joined query is one quoted all: operand",
+    );
+    // Single-word queries keep the same (harmless) quoted form.
+    const { adapter: single, calls: singleCalls } = makeAdapter();
+    await single.science.search.invoke({ query: "attention" });
+    assert.equal(
+      new URL(singleCalls[0].url).searchParams.get("search_query"),
+      'all:"attention"',
+    );
+  });
+
   it("XML entities decode in plain-text fields; CDATA content stays literal (review)", async () => {
     // Review: `&amp;` and friends in a NON-CDATA title/summary
     // previously surfaced literally in ScienceWork fields. CDATA

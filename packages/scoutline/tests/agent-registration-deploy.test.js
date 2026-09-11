@@ -684,7 +684,7 @@ describe("lazy refresh (DESIGN D5, PRD AC-7)", () => {
       1,
       `all-fail must emit exactly one summary notice, got ${JSON.stringify(notices)}`,
     );
-    assert.match(summaries[0], /registration unchanged; next run retries/);
+    assert.match(summaries[0], /registration may be partially modified or deleted; next run retries/);
   });
 
   it("a partial refresh failure emits no all-fail summary (#130)", async (t) => {

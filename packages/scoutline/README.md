@@ -187,7 +187,7 @@ selected provider does not advertise the capability (for example,
 MiniMax does not advertise `repository-exploration` or `reader`) or
 fails at runtime, Scoutline emits a stderr notice and silently
 reroutes to the next eligible configured provider in registry order
-`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider]`. Pass `--no-fallback`
+`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, arxiv, openalex, crossref, pubmed, europepmc]`. Pass `--no-fallback`
 (or set `SCOUTLINE_NO_FALLBACK=1`) to restore the previous strict
 single-provider, fail-loud behavior for scripting or cost-sensitive
 workflows. See
@@ -328,7 +328,7 @@ policy for larger journals.
 The matrix below is generated from the production provider registry
 (`packages/scoutline/src/providers/registry.ts`) and reflects the
 release-shipped capability advertisements for every built-in provider
-in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider]`. The
+in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, arxiv, openalex, crossref, pubmed, europepmc]`. The
 exact same `descriptor.capabilities()` set drives executor preflight,
 Provider selection, and `doctor`.
 
@@ -425,6 +425,26 @@ Help text, `doctor`, and the Adapter's descriptor metadata all derive
 from the same registry, so once a mapping is promoted it appears on
 every runtime surface automatically — there is no second support list
 to update.
+
+## Science
+
+Keyless scholarly literature search and retrieval across five suppliers —
+arXiv, OpenAlex, Crossref, PubMed, and Europe PMC. No API key is required:
+the command dispatches credential-free (optional `OPENALEX_API_KEY` /
+`NCBI_API_KEY` unlock higher rate limits).
+
+```bash
+scoutline science search "graph transformers" --year 2020:2024
+scoutline science search "attention" --author Vaswani --provider crossref
+scoutline science get 10.1038/nature12373
+```
+
+`science search <query>` fans out across all five suppliers by default
+(`--provider <id>` pins one) and merges a deduplicated work list, with
+`--author`, `--year`, `--venue`, and `--type` filters consumed only where
+the supplier wire supports them (rejected with `UNSUPPORTED_OPTION`
+elsewhere — never silently dropped). `science get <identifier>` fetches
+one work by bare DOI, numeric PMID, or arXiv id.
 
 ## Usage
 

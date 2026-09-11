@@ -470,6 +470,23 @@ scoutline --provider spider quota
 scoutline doctor --provider spider
 ```
 
+## Science Settings
+
+The five scholarly suppliers (arXiv, OpenAlex, Crossref, PubMed, Europe PMC)
+are keyless by default: `scoutline science search` and
+`scoutline science get` dispatch credential-free, before config load. Two
+optional upgrade tiers exist — neither is ever required.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `OPENALEX_API_KEY` | (none — keyless) | Optional OpenAlex tier; raises the keyless ~1000 credits/day ceiling. |
+| `NCBI_API_KEY` | (none — keyless) | Optional PubMed tier; 10 requests/s keyed vs 3/s keyless. |
+
+- arXiv, Crossref, and Europe PMC have no credential tier at all —
+  Crossref's `mailto` is a politeness parameter, not billing.
+- Science suppliers never participate in quota-ranked selection (see the
+  Quota Capability Mapping rows below); the keys change rate limits only.
+
 ## Output Modes
 
 The default is data-only output for pipelines and agents. When stdout is interactive, the CLI automatically uses a TTY-oriented presentation unless an explicit mode is supplied.
@@ -800,6 +817,11 @@ Authority and score are kept on separate axes. A provider is either:
 | `spider` | always-unknown | Credit remaining balance (limit unknown); not a percentage-bounded plan signal. |
 | `exa`, `parallel`, `perplexity` | always-unknown | Advertise no `quota` capability; nothing to map. |
 | `you` | always-unknown | Advertises no `quota` capability; You.com exposes no spend endpoint. Nothing to map. |
+| `arxiv` | always-unknown | Keyless scholarly index; no spend signal exists. Excluded from quota-snapshot availability ranking in v1. |
+| `openalex` | always-unknown | Keyless-by-default scholarly index; no spend signal exists (the optional API key is a rate-limit tier, not billing). |
+| `crossref` | always-unknown | Keyless scholarly index (`mailto` is politeness, not billing); no spend signal exists. |
+| `pubmed` | always-unknown | Keyless scholarly index (rate-limited, not metered); no spend signal exists. |
+| `europepmc` | always-unknown | Keyless scholarly index; no spend signal exists. |
 
 ### Capability → category table
 

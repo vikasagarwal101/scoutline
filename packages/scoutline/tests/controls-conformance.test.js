@@ -157,9 +157,7 @@ function tmpStateDir() {
 // Per-provider responders: minimal raw shapes that normalize successfully.
 // ---------------------------------------------------------------------------
 
-const ZAI_SEARCH_RAW = [
-  { title: "Result", link: "https://example.test/one", content: "Summary." },
-];
+const ZAI_SEARCH_RAW = [{ title: "Result", link: "https://example.test/one", content: "Summary." }];
 const ZAI_READER_RAW = { title: "Page", url: PAGE_URL, content: "# Page body" };
 
 const TAVILY_SEARCH_RAW = {
@@ -280,7 +278,13 @@ const YOU_SEARCH_RAW = {
   },
 };
 const YOU_CONTENTS_RAW = [
-  { url: PAGE_URL, title: "Page", markdown: "# Page body", html: "<h1>Page body</h1>", status: 200 },
+  {
+    url: PAGE_URL,
+    title: "Page",
+    markdown: "# Page body",
+    html: "<h1>Page body</h1>",
+    status: 200,
+  },
 ];
 const YOU_RESEARCH_RAW = {
   output: {
@@ -407,13 +411,13 @@ const PUBMED_SEARCH_RAW = {
 const PUBMED_ARTICLE_XML = [
   '<?xml version="1.0" ?>',
   "<PubmedArticleSet>",
-  "<PubmedArticle><MedlineCitation Status=\"MEDLINE\" Owner=\"NLM\"><PMID Version=\"1\">36959025</PMID>",
-  "<Article PubModel=\"Print-Electronic\"><Journal><JournalIssue><PubDate><Year>2020</Year></PubDate></JournalIssue>",
+  '<PubmedArticle><MedlineCitation Status="MEDLINE" Owner="NLM"><PMID Version="1">36959025</PMID>',
+  '<Article PubModel="Print-Electronic"><Journal><JournalIssue><PubDate><Year>2020</Year></PubDate></JournalIssue>',
   "<Title>Some Venue</Title></Journal>",
   "<ArticleTitle>Conformance Fixture</ArticleTitle>",
-  "<ELocationID EIdType=\"doi\" ValidYN=\"Y\">10.1/example</ELocationID>",
-  "<AuthorList CompleteYN=\"Y\"><Author ValidYN=\"Y\"><LastName>Author</LastName><ForeName>A.</ForeName></Author></AuthorList>",
-  "<PublicationTypeList><PublicationType UI=\"D016428\">Journal Article</PublicationType></PublicationTypeList>",
+  '<ELocationID EIdType="doi" ValidYN="Y">10.1/example</ELocationID>',
+  '<AuthorList CompleteYN="Y"><Author ValidYN="Y"><LastName>Author</LastName><ForeName>A.</ForeName></Author></AuthorList>',
+  '<PublicationTypeList><PublicationType UI="D016428">Journal Article</PublicationType></PublicationTypeList>',
   "</Article></MedlineCitation></PubmedArticle>",
   "</PubmedArticleSet>",
 ].join("");
@@ -439,8 +443,8 @@ const EUROPEPMC_SEARCH_RAW = {
   },
 };
 
-/** Science search base query (different from the web SEARCH_QUERY). */
-const SCIENCE_SEARCH_QUERY = "conformance query";
+/** Science search base query (distinct from the web SEARCH_QUERY so science rows are traceable). */
+const SCIENCE_SEARCH_QUERY = "science conformance query";
 
 const RESPONDERS = {
   zai: null, // MCP seam, not fetch
@@ -686,9 +690,7 @@ function makeHarness(provider, capability) {
       };
     case "exa":
       return {
-        adapter: createExaDescriptor({ transport, researchStateFile: stateFile }).create(
-          context,
-        ),
+        adapter: createExaDescriptor({ transport, researchStateFile: stateFile }).create(context),
         calls,
         timerDelays,
       };
@@ -735,13 +737,25 @@ function makeHarness(provider, capability) {
     case "arxiv":
       return { adapter: createArxivDescriptor({ transport }).create(context), calls, timerDelays };
     case "openalex":
-      return { adapter: createOpenalexDescriptor({ transport }).create(context), calls, timerDelays };
+      return {
+        adapter: createOpenalexDescriptor({ transport }).create(context),
+        calls,
+        timerDelays,
+      };
     case "crossref":
-      return { adapter: createCrossrefDescriptor({ transport }).create(context), calls, timerDelays };
+      return {
+        adapter: createCrossrefDescriptor({ transport }).create(context),
+        calls,
+        timerDelays,
+      };
     case "pubmed":
       return { adapter: createPubmedDescriptor({ transport }).create(context), calls, timerDelays };
     case "europepmc":
-      return { adapter: createEuropepmcDescriptor({ transport }).create(context), calls, timerDelays };
+      return {
+        adapter: createEuropepmcDescriptor({ transport }).create(context),
+        calls,
+        timerDelays,
+      };
     default:
       throw new Error(`unknown provider ${provider}`);
   }
@@ -906,7 +920,10 @@ async function runRow(row) {
     capability.validate(request); // must NOT throw
     const writes = [];
     const realWrite = process.stderr.write.bind(process.stderr);
-    process.stderr.write = (chunk) => { writes.push(String(chunk)); return true; };
+    process.stderr.write = (chunk) => {
+      writes.push(String(chunk));
+      return true;
+    };
     try {
       // Production sequence: the shared executor computes the cache
       // identity (where the disclosure fires) before invoking.
@@ -927,7 +944,11 @@ async function runRow(row) {
       `${row.provider} ${row.capability} ${row.control}: documented-strip requires the control to stay off the wire`,
     );
     assert.ok(
-      writes.some((w) => /ignoring unsupported option/i.test(w) && w.toLowerCase().includes(row.absentToken.toLowerCase())),
+      writes.some(
+        (w) =>
+          /ignoring unsupported option/i.test(w) &&
+          w.toLowerCase().includes(row.absentToken.toLowerCase()),
+      ),
       `${row.provider} ${row.capability} ${row.control}: documented-strip requires the stderr disclosure naming the stripped option; got ${JSON.stringify(writes)}`,
     );
     return;
@@ -3171,7 +3192,14 @@ describe("controls class-guard — table integrity", () => {
       "contentSize",
       "timeout",
     ];
-    const MAP_CONTROLS = ["limit", "depth", "breadth", "selectPaths", "excludePaths", "instructions"];
+    const MAP_CONTROLS = [
+      "limit",
+      "depth",
+      "breadth",
+      "selectPaths",
+      "excludePaths",
+      "instructions",
+    ];
     // TASKS T8 "controls-conformance rows 5x4 (COVERAGE map extended)" —
     // exactly the four ScienceControls members per science supplier;
     // value-dependent rows beyond the four are extra (documented in the
@@ -3234,8 +3262,7 @@ describe("controls class-guard — table integrity", () => {
 
 describe("controls class-guard — reject or consume, never silently drop", () => {
   for (const row of ROWS) {
-    const variant =
-      row.note ? ` [${JSON.stringify(row.input[row.control])}]` : "";
+    const variant = row.note ? ` [${JSON.stringify(row.input[row.control])}]` : "";
     it(`${row.expect} | ${row.provider} ${row.capability} ${row.control}${variant}`, async () => {
       await runRow(row);
     });

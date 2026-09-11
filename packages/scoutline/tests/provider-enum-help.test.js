@@ -7,6 +7,13 @@
  * shipping a stale enumeration. Separator style is per-command
  * convention: pipe-separated in read/crawl/map/quota, comma-separated
  * in doctor.
+ *
+ * Review ruling (science verticals): capability-gated commands
+ * (search, quota) list only the suppliers that can actually serve
+ * them — the five keyless science seats advertise science.* +
+ * diagnostics only, so they pin `--provider` solely inside
+ * `scoutline science ...`. Those commands pin the SHARED enum below,
+ * not the full registry.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -17,12 +24,16 @@ import { MAP_HELP } from "../dist/commands/map.js";
 import { QUOTA_HELP } from "../dist/commands/quota.js";
 import { DOCTOR_HELP } from "../dist/commands/doctor.js";
 import { SEARCH_HELP } from "../dist/commands/search.js";
-// GROUND: T2 — research.ts:~767 carries a hand-written 12-id pipe list
-// inside RESEARCH_HELP (unlike read/crawl/map/quota which derive at
-// runtime). This row widens it 12→17 in the same commit as the source.
+// research.ts:~767 carries a hand-written id pipe list inside
+// RESEARCH_HELP (as read/crawl/map/quota do — none derive the enum at
+// runtime; all are hand-written and test-pinned). This row is the
+// drift guard widened in the same commit as the source.
 import { RESEARCH_HELP } from "../dist/commands/research.js";
 
+const SCIENCE_SEAT_IDS = new Set(["arxiv", "openalex", "crossref", "pubmed", "europepmc"]);
+const SHARED_PROVIDER_IDS = PROVIDER_IDS.filter((id) => !SCIENCE_SEAT_IDS.has(id));
 const PIPE_ENUM = `(zai | ${PROVIDER_IDS.slice(1).join(" | ")})`;
+const SHARED_PIPE_ENUM = `(zai | ${SHARED_PROVIDER_IDS.slice(1).join(" | ")})`;
 const COMMA_ENUM = `(${PROVIDER_IDS.join(", ")})`;
 
 describe("command help provider enumerations match the registry (#82)", () => {
@@ -39,10 +50,10 @@ describe("command help provider enumerations match the registry (#82)", () => {
     }
   });
 
-  it("quota lists the full registry in its pin-flag enumeration", () => {
+  it("quota lists the shared-capability suppliers in its pin-flag enumeration (review)", () => {
     assert.ok(
-      QUOTA_HELP.replace(/\s+/g, " ").includes(PIPE_ENUM.replace(/\s+/g, " ")),
-      `QUOTA_HELP must list the full registry (${PIPE_ENUM}); the wrapped enum may be stale or malformed`,
+      QUOTA_HELP.replace(/\s+/g, " ").includes(SHARED_PIPE_ENUM.replace(/\s+/g, " ")),
+      `QUOTA_HELP must list the shared-capability suppliers (${SHARED_PIPE_ENUM}); the wrapped enum may be stale or malformed`,
     );
   });
 
@@ -81,10 +92,10 @@ describe("command help provider enumerations match the registry (#82)", () => {
 });
 
 describe("provider-count strings match the registry (#83)", () => {
-  it("SEARCH_HELP counts the full registry", () => {
+  it("SEARCH_HELP counts the search-capable suppliers (review)", () => {
     assert.ok(
-      SEARCH_HELP.includes(`all ${PROVIDER_IDS.length} Providers`),
-      `SEARCH_HELP must say "all ${PROVIDER_IDS.length} Providers" — the count string drifted from the registry`,
+      SEARCH_HELP.includes(`all ${SHARED_PROVIDER_IDS.length} Providers`),
+      `SEARCH_HELP must say "all ${SHARED_PROVIDER_IDS.length} Providers" — the count string drifted from the search-capable set`,
     );
   });
 });

@@ -228,7 +228,7 @@ npx scoutline --help
 
 ## Provider Selection
 
-Shared commands accept `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|arxiv|openalex|crossref|pubmed|europepmc>`. Resolution precedence:
+Shared commands accept `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>`. (Science suppliers accept `--provider` only within `scoutline science ...`.) Resolution precedence:
 
 1. Explicit `--provider` flag
 2. `SCOUTLINE_PROVIDER` environment variable

@@ -89,17 +89,14 @@ describe("readConfig", () => {
       await fs.writeFile(filePath, "{not-json");
       const { readConfig } = await import("../dist/lib/config-store.js");
 
-      await assert.rejects(
-        readConfig({ filePath }),
-        (error) => {
-          assert.ok(error instanceof ConfigurationError);
-          assert.strictEqual(error.code, "CONFIGURATION_ERROR");
-          assert.strictEqual(error.exitCode, 3);
-          assert.match(error.message, /config\.json is corrupt/i);
-          assert.match(error.help, /scoutline init/i);
-          return true;
-        },
-      );
+      await assert.rejects(readConfig({ filePath }), (error) => {
+        assert.ok(error instanceof ConfigurationError);
+        assert.strictEqual(error.code, "CONFIGURATION_ERROR");
+        assert.strictEqual(error.exitCode, 3);
+        assert.match(error.message, /config\.json is corrupt/i);
+        assert.match(error.help, /scoutline init/i);
+        return true;
+      });
     });
   });
 
@@ -109,15 +106,12 @@ describe("readConfig", () => {
       await fs.writeFile(filePath, JSON.stringify({ version: 2, providers: {} }));
       const { readConfig } = await import("../dist/lib/config-store.js");
 
-      await assert.rejects(
-        readConfig({ filePath }),
-        (error) => {
-          assert.ok(error instanceof ConfigurationError);
-          assert.match(error.message, /unsupported config version 2/i);
-          assert.match(error.help, /upgrade scoutline/i);
-          return true;
-        },
-      );
+      await assert.rejects(readConfig({ filePath }), (error) => {
+        assert.ok(error instanceof ConfigurationError);
+        assert.match(error.message, /unsupported config version 2/i);
+        assert.match(error.help, /upgrade scoutline/i);
+        return true;
+      });
     });
   });
 
@@ -175,15 +169,12 @@ describe("readConfig", () => {
       await fs.mkdir(filePath);
       const { readConfig } = await import("../dist/lib/config-store.js");
 
-      await assert.rejects(
-        readConfig({ filePath }),
-        (error) => {
-          assert.ok(error instanceof ConfigurationError);
-          assert.match(error.message, /unable to read config\.json/i);
-          assert.match(error.help, /scoutline init/i);
-          return true;
-        },
-      );
+      await assert.rejects(readConfig({ filePath }), (error) => {
+        assert.ok(error instanceof ConfigurationError);
+        assert.match(error.message, /unable to read config\.json/i);
+        assert.match(error.help, /scoutline init/i);
+        return true;
+      });
     });
   });
 });
@@ -454,10 +445,11 @@ describe("config routing key", () => {
     assert.deepStrictEqual(result.warnings, []);
   });
 
-  // GROUND: T2 dead-letter pin (DESIGN D5 ruling) — routing.science.* is
-  // an unknown capability on purpose: config set rejects it and lenient
-  // load warn-drops it; the science executor never reads routing.
-  it("routing.science.search is rejected as an unknown capability by strict set (science routing dead letter)", async () => {
+  // Science routing dead letter (DESIGN D5 ruling) — routing.science.* is
+  // an unknown capability on purpose: lenient load warn-drops it; strict
+  // set rejects it (covered separately below); the science executor
+  // never reads routing.
+  it("routing.science.search is warn-dropped by lenient load, not stored (science routing dead letter)", async () => {
     const result = await inspect({
       version: 1,
       providers: {},
@@ -545,8 +537,7 @@ describe("config key registry", () => {
       const filePath = path.join(blocker, "config.json");
       await assert.rejects(
         () => setConfigValue("fallbackEnabled", "true", { filePath }),
-        (error) =>
-          error.name === "ConfigurationError" && error.help.includes("permissions"),
+        (error) => error.name === "ConfigurationError" && error.help.includes("permissions"),
       );
       // A validation failure inside the locked section stays a
       // ValidationError, never the lock/ConfigurationError wrap.
@@ -620,21 +611,17 @@ describe("config key registry", () => {
   });
 
   it("unset fallbackEnabled removes the switch; absent switch fails", async (t) => {
-    await withConfig(
-      t,
-      { version: 1, providers: {}, fallbackEnabled: false },
-      async (filePath) => {
-        const { unsetConfigValue, readConfig } = await import("../dist/lib/config-store.js");
-        const updated = await unsetConfigValue("fallbackEnabled", { filePath });
-        assert.strictEqual(updated.fallbackEnabled, undefined);
-        const reread = await readConfig({ filePath, onWarning: () => {} });
-        assert.strictEqual(reread.fallbackEnabled, undefined);
-        await assert.rejects(
-          () => unsetConfigValue("fallbackEnabled", { filePath }),
-          (error) => error.name === "ValidationError" && error.message.includes("not set"),
-        );
-      },
-    );
+    await withConfig(t, { version: 1, providers: {}, fallbackEnabled: false }, async (filePath) => {
+      const { unsetConfigValue, readConfig } = await import("../dist/lib/config-store.js");
+      const updated = await unsetConfigValue("fallbackEnabled", { filePath });
+      assert.strictEqual(updated.fallbackEnabled, undefined);
+      const reread = await readConfig({ filePath, onWarning: () => {} });
+      assert.strictEqual(reread.fallbackEnabled, undefined);
+      await assert.rejects(
+        () => unsetConfigValue("fallbackEnabled", { filePath }),
+        (error) => error.name === "ValidationError" && error.message.includes("not set"),
+      );
+    });
   });
 
   it("routing set parses a strict comma list and persists", async (t) => {

@@ -328,6 +328,15 @@ function providerMeta(id: ProviderId): ProviderPromptMeta {
   return meta;
 }
 
+/**
+ * The keyed science suppliers (science verticals T11). Unlike the keyless
+ * trio (no credential model at all) these accept an OPTIONAL free key —
+ * keyless operation works without any wizard step, so the fresh flow does
+ * NOT key-onboard them in the per-provider loop. Instead ONE opt-in
+ * question (after the loop) offers the keyed upgrade; "no" writes nothing.
+ */
+const KEYED_SCIENCE_IDS: readonly ProviderId[] = ["openalex", "pubmed"];
+
 // ---------------------------------------------------------------------------
 // Hyperlink rendering
 // ---------------------------------------------------------------------------
@@ -1662,8 +1671,15 @@ async function collectProviderOnboardings(
     }
 
     // Step 1b — per-provider ask-key-first → hidden input → single probe.
+    // The keyed science suppliers (openalex, pubmed) are DEFERRED here:
+    // they never hit the keyless branch (they carry an envVar) and never
+    // run ask-key-first in this loop — the ONE opt-in question below owns
+    // their keyed upgrade, so a "no" leaves keyless operation untouched.
     const onboardings: ProviderOnboarding[] = [];
     for (const providerId of selected) {
+      if (KEYED_SCIENCE_IDS.includes(providerId)) {
+        continue;
+      }
       const onboarding = await onboardSingleProvider(deps, providerId, envKeyProviders);
       if (onboarding === null) {
         return null;
@@ -1672,6 +1688,37 @@ async function collectProviderOnboardings(
         continue;
       }
       onboardings.push(onboarding);
+    }
+
+    // Step 1c — keyed science opt-in (science verticals T11). ONE question
+    // for the whole keyed pair: "no" writes nothing (keyless needs no
+    // config step and is already active); "yes" runs the standard
+    // ask-key-first flow for exactly the selected keyed suppliers. Trio
+    // and non-science selections never see it.
+    const keyedSelected = selected.filter((id) => KEYED_SCIENCE_IDS.includes(id));
+    if (keyedSelected.length > 0) {
+      let optIn = false;
+      try {
+        optIn = await deps.prompts.confirm(
+          "Enable the keyed providers (free keys; higher rate limits and coverage)? " +
+            "Keyless access is already active. [y/N]",
+          false,
+        );
+      } catch {
+        return null;
+      }
+      if (optIn) {
+        for (const providerId of keyedSelected) {
+          const onboarding = await onboardSingleProvider(deps, providerId, envKeyProviders);
+          if (onboarding === null) {
+            return null;
+          }
+          if (onboarding === "skip") {
+            continue;
+          }
+          onboardings.push(onboarding);
+        }
+      }
     }
     return onboardings;
   }

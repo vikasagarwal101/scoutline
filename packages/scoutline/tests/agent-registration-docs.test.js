@@ -68,7 +68,10 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // Rebaselined at the science review round 3: the Commands index table
 // gained its missing `science` row (cubic finding — every top-level
 // command must be indexed). No other body copy changed.
-const SKILL_BODY_SHA256 = "fa36c24589235add310c1907d3fd66e3a7fc223eba414839f7b224d2b25431ae";
+// Rebaselined at the ruling round: the journal paragraph's capability
+// list gained `science`, and the Which-provider-when table gained the
+// five-supplier science row (owner ruling text edits).
+const SKILL_BODY_SHA256 = "a23e7ee2513b165d624c0cd2308cc30f066797bfa7ee1d30b9394e6d1b46f4cc";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

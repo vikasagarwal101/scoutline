@@ -221,7 +221,7 @@ redacted through the same seam as stdout and never touched by cache
 operations. `history list|show|stats` is the credential-free, fail-open
 inventory over that log.
 
-Every `search` / `read` / `research` call — batch ops included — also
+Every `search` / `read` / `research` / `science` call — batch ops included — also
 records a thin journal entry (skeleton: query, provider, url+title
 identity, content hash) into the same store, permanently and locally
 (0600, never uploaded, secrets redacted). Warm repeats (cache hits) record
@@ -472,6 +472,7 @@ npx scoutline@0.20.0 config get routing
 | You.com | Search/reader/research; no quota endpoint. |
 | Linkup | Research priced by reasoning depth ($0.25-$2.50/query); quota reports the prepaid USD balance. |
 | Spider.cloud | Crawl/map (sync) plus search/reader; credit-based. |
+| arXiv, OpenAlex, Crossref, PubMed, Europe PMC | `scoutline science search` / `science get` only — keyless scholarly lookups (five suppliers, DOI-deduped merge; `--provider` pins one). |
 
 ## Repository Exploration
 

@@ -161,16 +161,27 @@ function makeInvocation() {
 
 async function runMain(argv, { descriptors, artifactsDir } = {}) {
   const { adapter, stdout, stderr } = makeInvocation();
-  const status = await main(argv, {
-    ...hermeticMainDeps({
-      invocation: adapter,
-      env: {
-        ...(artifactsDir !== undefined ? { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } : {}),
-      },
-      ...(descriptors !== undefined ? { providerDescriptors: descriptors } : {}),
-    }),
-  });
-  return { status, stdout, stderr };
+  // Hermeticity (deep-review fix): default-isolate the artifacts +
+  // config root — journaling-on would otherwise write into the real
+  // ~/.scoutline/artifacts. Callers reading the journal pass their own
+  // `artifactsDir`; only the helper-created dir is cleaned up.
+  const ownsDir = artifactsDir === undefined;
+  const dir = artifactsDir ?? mkdtempSync(join(tmpdir(), "scoutline-sci-fanout-"));
+  try {
+    const status = await main(argv, {
+      ...hermeticMainDeps({
+        invocation: adapter,
+        env: {
+          SCOUTLINE_ARTIFACTS_DIR: dir,
+          SCOUTLINE_CONFIG_DIR: dir,
+        },
+        ...(descriptors !== undefined ? { providerDescriptors: descriptors } : {}),
+      }),
+    });
+    return { status, stdout, stderr };
+  } finally {
+    if (ownsDir) rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /**

@@ -290,8 +290,7 @@ const PROVIDER_PROMPT_META: Record<ProviderId, ProviderPromptMeta> = {
     envVar: "OPENALEX_API_KEY",
     registrationUrl: "https://openalex.org/users/me",
     probeCostsCredit: false,
-    keylessNote:
-      "keyless 1000 credits/day (~100 searches; doi:get free); free key recommended",
+    keylessNote: "keyless 1000 credits/day (~100 searches; doi:get free); free key recommended",
   },
   crossref: {
     label: "Crossref",
@@ -619,10 +618,7 @@ function isAlreadyOnboarded(config: ScoutlineConfig): boolean {
  * Return the first non-blank env var name configured for `meta` (canonical
  * envVar preferred, followed by any envAliases in declaration order).
  */
-function getDetectedEnvVar(
-  meta: ProviderPromptMeta,
-  env: NodeJS.ProcessEnv,
-): string | undefined {
+function getDetectedEnvVar(meta: ProviderPromptMeta, env: NodeJS.ProcessEnv): string | undefined {
   // Keyless suppliers carry no env-var hint to detect.
   if (meta.envVar === undefined) return undefined;
   const vars = [meta.envVar, ...(meta.envAliases ?? [])];
@@ -801,14 +797,15 @@ async function runAgentRegistrationStep(deps: InitDependencies): Promise<number>
   // Persist agentRules NOW (merge under any existing config) so a later
   // wizard cancel cannot un-register an accepted tool.
   const inspection = await deps.configStore.inspect();
-  const agentRules = { ...(inspection.status === "valid" ? inspection.config.agentRules : undefined), ...choices };
+  const agentRules = {
+    ...(inspection.status === "valid" ? inspection.config.agentRules : undefined),
+    ...choices,
+  };
   await deps.configStore.write(
     {
       version: 1,
       fallbackEnabled: true,
-      ...(inspection.status === "valid"
-        ? inspection.config
-        : { providers: {} }),
+      ...(inspection.status === "valid" ? inspection.config : { providers: {} }),
       agentRules,
     },
     { filePath: inspection.filePath },
@@ -1079,28 +1076,56 @@ async function runReconfigMenu(
   config: ScoutlineConfig,
   filePath: string,
 ): Promise<number> {
-  const configuredIds = Object.keys(config.providers).filter((id) => {
-    const provider = config.providers[id as ProviderId];
-    return provider && typeof provider.apiKey === "string" && provider.apiKey.trim().length > 0;
-  }) as ProviderId[];
+  // Keyed and keyless rows are BOTH manageable (review): keyless
+  // science seats (onboarded, no key) show up in the status line and
+  // in remove-provider; they stay out of key-edit (nothing to edit)
+  // and add-provider eligibility (already present).
+  const splitConfiguredRows = (source: ScoutlineConfig): ProviderId[] => {
+    const ids: ProviderId[] = [];
+    for (const id of Object.keys(source.providers)) {
+      const provider = source.providers[id as ProviderId];
+      if (provider) ids.push(id as ProviderId);
+    }
+    return ids;
+  };
+  const allConfiguredIds = splitConfiguredRows(config);
+  const keyedIds = allConfiguredIds.filter((id) => {
+    const provider = config.providers[id];
+    return (
+      provider !== undefined &&
+      typeof provider.apiKey === "string" &&
+      provider.apiKey.trim().length > 0
+    );
+  });
+  const keylessIds = allConfiguredIds.filter((id) => !keyedIds.includes(id));
 
   const fallbackLine =
     config.fallbackEnabled === undefined
       ? "fallback: default (true)"
       : `fallback: ${config.fallbackEnabled ? "enabled" : "disabled"}`;
 
+  const configuredLine =
+    allConfiguredIds.length === 0
+      ? "none"
+      : [
+          keyedIds.length > 0 ? keyedIds.join(", ") : null,
+          keylessIds.length > 0 ? `keyless: ${keylessIds.join(", ")}` : null,
+        ]
+          .filter((part) => part !== null)
+          .join("; ");
+
   deps.writeStderr(
     [
       "",
       `scoutline is already set up at ${filePath}.`,
-      `Providers configured: ${configuredIds.length === 0 ? "none" : configuredIds.join(", ")}.`,
+      `Providers configured: ${configuredLine}.`,
       fallbackLine,
       "",
     ].join("\n"),
   );
 
   for (;;) {
-    const action = await promptReconfigAction(deps, configuredIds);
+    const action = await promptReconfigAction(deps, keyedIds, keylessIds);
     if (action === null) {
       // Cancel on the menu itself.
       return 1;
@@ -1117,7 +1142,7 @@ async function runReconfigMenu(
     }
 
     // Mutating actions: each returns the next config (or null on cancel).
-    const next = await applyReconfigAction(deps, action, config, configuredIds);
+    const next = await applyReconfigAction(deps, action, config, keyedIds, keylessIds);
     if (next === "write-error") {
       return 1;
     }
@@ -1132,13 +1157,21 @@ async function runReconfigMenu(
     }
     // next === "written": the action mutated and persisted the config.
     // Re-render the menu so the user can take another action.
-    configuredIds.length = 0;
     const fresh = await deps.configStore.inspect();
     if (fresh.status === "valid") {
-      for (const id of Object.keys(fresh.config.providers)) {
-        const provider = fresh.config.providers[id as ProviderId];
-        if (provider && typeof provider.apiKey === "string" && provider.apiKey.trim().length > 0) {
-          configuredIds.push(id as ProviderId);
+      const freshIds = splitConfiguredRows(fresh.config);
+      keyedIds.length = 0;
+      keylessIds.length = 0;
+      for (const id of freshIds) {
+        const provider = fresh.config.providers[id];
+        if (
+          provider !== undefined &&
+          typeof provider.apiKey === "string" &&
+          provider.apiKey.trim().length > 0
+        ) {
+          keyedIds.push(id);
+        } else {
+          keylessIds.push(id);
         }
       }
       // Mirror mutations into the local `config` reference so the next
@@ -1154,15 +1187,18 @@ async function runReconfigMenu(
  */
 async function promptReconfigAction(
   deps: InitDependencies,
-  configuredIds: readonly ProviderId[],
+  keyedIds: readonly ProviderId[],
+  keylessIds: readonly ProviderId[],
 ): Promise<ReconfigChoice | null> {
   const choices: InitChoice<ReconfigChoice>[] = [];
-  if (configuredIds.length > 0) {
+  if (keyedIds.length > 0) {
     choices.push({
       value: "edit-key",
       name: "Edit a provider key",
       description: "Replace an existing API key (resets verification to unverified)",
     });
+  }
+  if (keyedIds.length + keylessIds.length > 0) {
     choices.push({
       value: "remove-provider",
       name: "Remove a provider",
@@ -1217,7 +1253,8 @@ async function applyReconfigAction(
   deps: InitDependencies,
   action: Exclude<ReconfigChoice, "cancel" | "rerun-full">,
   config: ScoutlineConfig,
-  configuredIds: readonly ProviderId[],
+  keyedIds: readonly ProviderId[],
+  keylessIds: readonly ProviderId[],
 ): Promise<"written" | "loop" | "cancel" | "write-error"> {
   if (action === "change-fallback") {
     return changeFallback(deps, config);
@@ -1229,13 +1266,13 @@ async function applyReconfigAction(
     return editRouting(deps, config);
   }
   if (action === "add-provider") {
-    return addProvider(deps, config, configuredIds);
+    return addProvider(deps, config, keyedIds, keylessIds);
   }
   if (action === "remove-provider") {
-    return removeProvider(deps, config, configuredIds);
+    return removeProvider(deps, config, keyedIds, keylessIds);
   }
   // edit-key
-  return editProviderKey(deps, config, configuredIds);
+  return editProviderKey(deps, config, keyedIds);
 }
 
 /**
@@ -1331,7 +1368,9 @@ async function editRouting(
       if (line.length === 0) break;
       const sep = line.indexOf(":");
       if (sep <= 0) {
-        deps.writeStderr(`  \u26a0\ufe0f  skipped "${line}" \u2014 expected "capability: provider1,provider2"\n`);
+        deps.writeStderr(
+          `  \u26a0\ufe0f  skipped "${line}" \u2014 expected "capability: provider1,provider2"\n`,
+        );
         continue;
       }
       // Capability keys are canonical lowercase ids; accept mixed-case
@@ -1375,8 +1414,7 @@ async function editRouting(
 
   const { routing: _oldRouting, ...rest } = config;
   void _oldRouting;
-  const updated: ScoutlineConfig =
-    Object.keys(routing).length > 0 ? { ...rest, routing } : rest;
+  const updated: ScoutlineConfig = Object.keys(routing).length > 0 ? { ...rest, routing } : rest;
   return persistConfig(deps, updated);
 }
 
@@ -1388,9 +1426,13 @@ async function editRouting(
 async function addProvider(
   deps: InitDependencies,
   config: ScoutlineConfig,
-  configuredIds: readonly ProviderId[],
+  keyedIds: readonly ProviderId[],
+  keylessIds: readonly ProviderId[],
 ): Promise<"written" | "loop" | "cancel" | "write-error"> {
-  const available = deps.descriptors.map((d) => d.id).filter((id) => !configuredIds.includes(id));
+  // Eligibility excludes BOTH row kinds (review): a keyless science
+  // seat already in the config must not be re-onboarded either.
+  const seated = new Set<ProviderId>([...keyedIds, ...keylessIds]);
+  const available = deps.descriptors.map((d) => d.id).filter((id) => !seated.has(id));
   if (available.length === 0) {
     deps.writeStderr("Every built-in provider is already configured.\n");
     return "loop";
@@ -1427,11 +1469,19 @@ async function addProvider(
     ...config,
     providers: {
       ...config.providers,
-      [providerId]: {
-        apiKey: onboarding.apiKey,
-        onboarded: true,
-        verification: onboarding.verification,
-      },
+      // Keyless adds (a science seat picked here) persist without an
+      // apiKey field — the same shape buildConfig writes (review).
+      [providerId]:
+        onboarding.apiKey.length > 0
+          ? {
+              apiKey: onboarding.apiKey,
+              onboarded: true,
+              verification: onboarding.verification,
+            }
+          : {
+              onboarded: true,
+              verification: onboarding.verification,
+            },
     },
     ...(config.hintShown !== undefined ? { hintShown: config.hintShown } : {}),
   };
@@ -1451,15 +1501,20 @@ async function addProvider(
 async function removeProvider(
   deps: InitDependencies,
   config: ScoutlineConfig,
-  configuredIds: readonly ProviderId[],
+  keyedIds: readonly ProviderId[],
+  keylessIds: readonly ProviderId[],
 ): Promise<"written" | "loop" | "cancel" | "write-error"> {
-  if (configuredIds.length === 0) {
+  // Removable set includes keyless rows (review) — a science seat can
+  // be dropped from the config even though it holds no key.
+  const removable: ProviderId[] = [...keyedIds, ...keylessIds];
+  const keylessSet = new Set<ProviderId>(keylessIds);
+  if (removable.length === 0) {
     deps.writeStderr("No providers are configured.\n");
     return "loop";
   }
-  const choices: InitChoice<ProviderId | undefined>[] = configuredIds.map((id) => ({
+  const choices: InitChoice<ProviderId | undefined>[] = removable.map((id) => ({
     value: id,
-    name: providerMeta(id).label,
+    name: keylessSet.has(id) ? `${providerMeta(id).label} (keyless)` : providerMeta(id).label,
   }));
   choices.push({ value: undefined, name: "Back" });
   let providerId: ProviderId | undefined;
@@ -1759,9 +1814,7 @@ async function onboardSingleProvider(
         verification: { status: "verified", checkedAt: deps.now() },
       };
     }
-    deps.writeStderr(
-      `${meta.label}: keyless probe failed (${outcome.message}); skipping.\n`,
-    );
+    deps.writeStderr(`${meta.label}: keyless probe failed (${outcome.message}); skipping.\n`);
     return "skip";
   }
 
@@ -1995,9 +2048,7 @@ function formatSummary(
   if (onboardings.length === 0) {
     return (
       "scoutline onboarding complete with no providers configured. " +
-      `Re-run \`scoutline init\` to add one. (journal=${
-        journalEnabled ? "true" : "false"
-      })`
+      `Re-run \`scoutline init\` to add one. (journal=${journalEnabled ? "true" : "false"})`
     );
   }
   const lines = onboardings.map((onboarding) => {

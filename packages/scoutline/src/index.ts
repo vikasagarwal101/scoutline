@@ -49,10 +49,7 @@ import {
   parseBriefDepth,
   parseBriefMaxChars,
 } from "./commands/repo.js";
-import {
-  REPO_SEARCH_LADDER,
-  REPO_READ_LADDER,
-} from "./commands/repository-explorer.js";
+import { REPO_SEARCH_LADDER, REPO_READ_LADDER } from "./commands/repository-explorer.js";
 import type { RepoBriefFocus } from "./capabilities/repository.js";
 import { listTools, showTool, callTool, TOOLS_HELP, CALL_HELP } from "./commands/tools.js";
 import { doctor, buildDiagnosticsReport, DOCTOR_HELP } from "./commands/doctor.js";
@@ -86,22 +83,26 @@ import {
   historyExportCommand,
   HISTORY_HELP,
   HISTORY_NOTE_HELP,
-  HISTORY_RECALL_HELP, HISTORY_CLEAR_HELP, HISTORY_EXPORT_HELP,
+  HISTORY_RECALL_HELP,
+  HISTORY_CLEAR_HELP,
+  HISTORY_EXPORT_HELP,
 } from "./commands/history.js";
 import { handleFetch, FETCH_HELP } from "./commands/fetch.js";
 import { handleArchive, parseArchiveArgs, ARCHIVE_HELP } from "./commands/archive.js";
 import { handleWatch } from "./commands/watch.js";
 import { handleScience } from "./commands/science.js";
-import { buildProviderCacheKey, cacheStats, clearAllCaches, parsePruneDuration, pruneCaches } from "./lib/cache.js";
+import {
+  buildProviderCacheKey,
+  cacheStats,
+  clearAllCaches,
+  parsePruneDuration,
+  pruneCaches,
+} from "./lib/cache.js";
 import type { PruneSelectors, PruneCachesResult } from "./lib/cache.js";
 import { parseBatchManifest } from "./lib/batch-manifest.js";
 import type { AllowedBatchCommand } from "./lib/batch-manifest.js";
 import { assignBatchProviders } from "./lib/batch-assign.js";
-import {
-  BATCH_MAX_CONCURRENCY,
-  runBatch,
-  type BatchOperationHandler,
-} from "./lib/batch-runner.js";
+import { BATCH_MAX_CONCURRENCY, runBatch, type BatchOperationHandler } from "./lib/batch-runner.js";
 import { isExtractMode, type ExtractMode } from "./lib/extract.js";
 import {
   runCodeFile,
@@ -193,7 +194,11 @@ import {
   createQuotaStoreConsumptionSink,
   type ConsumptionSink,
 } from "./lib/consumption.js";
-import { createUsageLedgerSink, readUsageLedger, resolveUsageLedgerPath } from "./lib/usage-ledger.js";
+import {
+  createUsageLedgerSink,
+  readUsageLedger,
+  resolveUsageLedgerPath,
+} from "./lib/usage-ledger.js";
 import {
   classifyCredentialState,
   formatEnvOnlyHint,
@@ -204,7 +209,12 @@ import {
 import { resolveProviderId, resolveEffectiveProvider } from "./providers/selection.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "./providers/registry.js";
 import { PROVIDER_IDS } from "./providers/types.js";
-import type { ProviderAdapter, ProviderContext, ProviderDescriptor, ProviderId } from "./providers/types.js";
+import type {
+  ProviderAdapter,
+  ProviderContext,
+  ProviderDescriptor,
+  ProviderId,
+} from "./providers/types.js";
 import { executeWithFallback, type FallbackOutcome } from "./lib/provider-fallback.js";
 import type { SearchCapability } from "./capabilities/search.js";
 import type { ExecutionDependencies } from "./lib/execution.js";
@@ -227,7 +237,7 @@ Usage: scoutline <command> [args] [options]
 
 Commands:
   vision   Image and video analysis (Z.AI; MiniMax for interpret-image)
-  search   Real-time web search (shared: all 17 Providers; --topic
+  search   Real-time web search (shared: all 12 Providers; --topic
            honored by every Provider)
   read     Fetch and parse web pages (Provider Capability; Z.AI, Tavily,
            Exa, Firecrawl, Parallel, Jina, You.com, Linkup, and Spider.cloud supply it)  crawl    Crawl a website from a starting URL (Provider Capability;
@@ -535,18 +545,14 @@ const SOURCE_TEXT = readFileSync(new URL(import.meta.url), "utf8");
 const MAIN_MATCH = SOURCE_TEXT.match(/^export async function main\(/m);
 const DISPATCH_SURFACE_SOURCE = MAIN_MATCH === null ? "" : SOURCE_TEXT.slice(MAIN_MATCH.index);
 export const SWITCH_CASES = new Set(
-  [
-    ...DISPATCH_SURFACE_SOURCE.matchAll(
-      /case "([a-z-]+)":\s*\n\s*commandRecognized = true;/g,
-    ),
-  ].map((m) => m[1]),
+  [...DISPATCH_SURFACE_SOURCE.matchAll(/case "([a-z-]+)":\s*\n\s*commandRecognized = true;/g)].map(
+    (m) => m[1],
+  ),
 );
 export const IF_ARMS = new Set(
-  [
-    ...DISPATCH_SURFACE_SOURCE.matchAll(
-      /^\s*if \(command === "([a-z-]+)"\) \{$/gm,
-    ),
-  ].map((m) => m[1]),
+  [...DISPATCH_SURFACE_SOURCE.matchAll(/^\s*if \(command === "([a-z-]+)"\) \{$/gm)].map(
+    (m) => m[1],
+  ),
 );
 
 function extractGlobalOptions(args: string[]): {
@@ -1062,13 +1068,7 @@ async function handleVision(
   // — per-op provider assignment happens inside the runner (D1, D4),
   // never at this seam.
   if (command === "batch") {
-    return vision.handleVisionBatch(
-      positional.slice(1),
-      flags,
-      outputMode,
-      deps,
-      BATCH_HANDLERS,
-    );
+    return vision.handleVisionBatch(positional.slice(1), flags, outputMode, deps, BATCH_HANDLERS);
   }
 
   // Map the subcommand to its Vision operation. Unknown subcommands are
@@ -1656,10 +1656,7 @@ async function handleSearch(
         // backslash-trimmed non-empty) purely for the notice — the
         // capped stream itself is authoritative for the join.
         const uncappedSet = new Set(
-          [
-            ...parsed.headings.filter((h) => h.length <= 60),
-            ...parsed.questions,
-          ]
+          [...parsed.headings.filter((h) => h.length <= 60), ...parsed.questions]
             .map((value) => value.replace(/\\+$/, ""))
             .filter((value) => value.length > 0),
         );
@@ -1734,9 +1731,7 @@ async function handleSearch(
       // budget; the stamped `compaction` payload field survives every
       // output mode including -O data. Without the flag this is the
       // identity function — the zero-diff invariant.
-      const applyOutputBudget = async (
-        result: CommandResult,
-      ): Promise<CommandResult> => {
+      const applyOutputBudget = async (result: CommandResult): Promise<CommandResult> => {
         if (maxChars === undefined || result.kind !== "data") return result;
         // `--context` wraps the payload as {context, results}; budget
         // the wrapper wholesale (context participates in measurement,
@@ -1798,27 +1793,27 @@ async function handleSearch(
 
       if (fanoutPlan.mode === "fanout") {
         const fanoutResult = await executeFanoutPlan(
-            fanoutPlan,
-            {
-              descriptors: deps.providerDescriptors,
-              env: deps.env,
-              query: dispatchQuery,
-              searchOptions,
-              dependencies: {
-                cache: deps.searchCache,
-                sleep: deps.searchSleep,
-                random: deps.searchRandom,
-                retryPolicy: undefined,
-                // PB-T2 parity (review fix, PR #36): thread the configured
-                // consumption sink + clock so each arm's executeSearch
-                // bills the arm's provider through local quota accounting.
-                ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
-                ...(deps.now !== undefined ? { now: deps.now } : {}),
-              },
-              secrets: deps.secrets,
+          fanoutPlan,
+          {
+            descriptors: deps.providerDescriptors,
+            env: deps.env,
+            query: dispatchQuery,
+            searchOptions,
+            dependencies: {
+              cache: deps.searchCache,
+              sleep: deps.searchSleep,
+              random: deps.searchRandom,
+              retryPolicy: undefined,
+              // PB-T2 parity (review fix, PR #36): thread the configured
+              // consumption sink + clock so each arm's executeSearch
+              // bills the arm's provider through local quota accounting.
+              ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+              ...(deps.now !== undefined ? { now: deps.now } : {}),
             },
-            context,
-          );
+            secrets: deps.secrets,
+          },
+          context,
+        );
         // T2a must-fix 3: the fan-out rows feed the journal skeleton the
         // same way the single path's outcome does below. Rows come from
         // the PRE-projection merge — `--fields` filtering must not blank
@@ -2243,8 +2238,7 @@ async function handleCrawl(
           // trimmed carry `truncated: true` + `originalContentLength`
           // from the pre-budget envelope, so short pages stay bleedable
           // (in-rule stamps cost more than their halvings saved).
-          const rawPages =
-            (r.data as { pages?: { content?: string }[] }).pages ?? [];
+          const rawPages = (r.data as { pages?: { content?: string }[] }).pages ?? [];
           // R5: stamp truth flags by comparing against the RAW page — a
           // projected page whose content differs from its pre-budget
           // original was trimmed by the ladder; a page that merely
@@ -2519,9 +2513,7 @@ async function handleResearch(
   // seam. The research skeleton is the citations block — the sources
   // url+title list off the result envelope — captured into a thunk read
   // after dispatch resolves. `research` has no fan-out mode.
-  let journalCitations:
-    | readonly { readonly url?: string; readonly title?: string }[]
-    | undefined;
+  let journalCitations: readonly { readonly url?: string; readonly title?: string }[] | undefined;
   const journal =
     deps.journal === undefined
       ? undefined
@@ -2695,10 +2687,7 @@ async function handleResearch(
           return {
             ...r,
             data: projection,
-            presentations: rebuildBudgetedResearchPresentations(
-              e.sections ?? [],
-              e.sources ?? [],
-            ),
+            presentations: rebuildBudgetedResearchPresentations(e.sections ?? [], e.sources ?? []),
           } as CommandResult;
         },
       });
@@ -2811,10 +2800,7 @@ async function handleRepo(
     // so `--depth 1.5` and `--max-chars 500x` are errors, not silently
     // truncated to 1 and 500.
     if (!repo) {
-      throw new ValidationError(
-        "Missing repo",
-        "Usage: scoutline repo brief <owner/repo>",
-      );
+      throw new ValidationError("Missing repo", "Usage: scoutline repo brief <owner/repo>");
     }
     // `--no-focus` is meaningless for brief (focus is opt-in via
     // `--focus <list>`) and must fail even when combined with a valid
@@ -3446,9 +3432,7 @@ async function handleConfig(
   // SCOUTLINE_CONFIG_DIR) — never directly against process.env, so the
   // handler never reads or writes outside the invocation's environment.
   const configOptions = {
-    filePath: configFilePath(
-      resolveConfigRootPure(deps.env, { homedir: os.homedir() }),
-    ),
+    filePath: configFilePath(resolveConfigRootPure(deps.env, { homedir: os.homedir() })),
     onWarning,
   };
 
@@ -3648,8 +3632,7 @@ export async function handleCache(
       // value through `deps.provider`; direct/in-process callers still
       // pass the flag in `args`. Consult both so the selector works via
       // `main` AND via `handleCache(args, ...)` (review P1).
-      const providerSelector =
-        typeof provider === "string" ? provider : deps.provider;
+      const providerSelector = typeof provider === "string" ? provider : deps.provider;
       const capabilitySelector = typeof capability === "string" ? capability : undefined;
       // Build the selector shape the lib expects. Undefined flags are
       // omitted so the lib's optional-field contract is preserved. The
@@ -3671,10 +3654,7 @@ export async function handleCache(
       return invokeCommand(
         deps.invocation,
         () =>
-          cachePruneCommand(
-            { prune: (s) => runPrune(s) as Promise<CachePruneReport> },
-            selectors,
-          ),
+          cachePruneCommand({ prune: (s) => runPrune(s) as Promise<CachePruneReport> }, selectors),
         outputMode,
         deps.now,
         deps.secrets,
@@ -3847,11 +3827,7 @@ export async function handleHistory(
   // + the show positional). Subcommands with their own arg surfaces
   // (`note` T4, `recall` T5) dispatch ABOVE, before the generic
   // --help check, so each renders its own help.
-  if (
-    subcommand !== "list" &&
-    subcommand !== "show" &&
-    subcommand !== "stats"
-  ) {
+  if (subcommand !== "list" && subcommand !== "show" && subcommand !== "stats") {
     throw new ValidationError(
       `Unknown history subcommand "${subcommand}".`,
       "Valid subcommands: list, show, stats, note, recall, export, clear.",
@@ -3914,10 +3890,7 @@ export async function handleHistory(
   // that surfaces repeat-marker rows (markers skipped by default).
   const rawKind = flags.kind;
   if (rawKind === true) {
-    throw new ValidationError(
-      "--kind requires a value.",
-      "Pass an entry kind: save or journal.",
-    );
+    throw new ValidationError("--kind requires a value.", "Pass an entry kind: save or journal.");
   }
   let kindFilter: "save" | "journal" | undefined;
   if (rawKind !== undefined) {
@@ -4013,11 +3986,7 @@ async function handleHistoryNote(
       "Pass one of: search, read, research.",
     );
   }
-  if (
-    rawCapability !== "search" &&
-    rawCapability !== "read" &&
-    rawCapability !== "research"
-  ) {
+  if (rawCapability !== "search" && rawCapability !== "read" && rawCapability !== "research") {
     throw new ValidationError(
       `Invalid --capability value "${rawCapability}".`,
       "Pass one of: search, read, research.",
@@ -4036,7 +4005,7 @@ async function handleHistoryNote(
   if (positional.length > 2) {
     throw new ValidationError(
       "history note accepts exactly one positional note text; quote multi-word notes.",
-      "Multi-word notes must be passed as a single quoted argument, e.g. history note \"rust vs go comparison\".",
+      'Multi-word notes must be passed as a single quoted argument, e.g. history note "rust vs go comparison".',
     );
   }
 
@@ -4059,7 +4028,10 @@ async function handleHistoryNote(
         if (args[j] === "--title") {
           const value = args[j + 1];
           if (value === undefined || value.length === 0 || value.startsWith("-")) {
-            throw new ValidationError("--title requires a value.", "Pass the row title after --title.");
+            throw new ValidationError(
+              "--title requires a value.",
+              "Pass the row title after --title.",
+            );
           }
           title = value;
           break;
@@ -4085,7 +4057,10 @@ async function handleHistoryNote(
   const rawTags = flags.tags;
   if (rawTags !== undefined) {
     if (rawTags === true) {
-      throw new ValidationError("--tags requires a value.", "Pass a comma-separated list, e.g. --tags followup,reading.");
+      throw new ValidationError(
+        "--tags requires a value.",
+        "Pass a comma-separated list, e.g. --tags followup,reading.",
+      );
     }
     tags = String(rawTags)
       .split(",")
@@ -4156,7 +4131,7 @@ async function handleHistoryRecall(
   if (text === undefined || text.length === 0) {
     throw new ValidationError(
       "history recall requires the recall text.",
-      "Pass what to re-find as the positional argument, e.g. history recall \"rust vs go\".",
+      'Pass what to re-find as the positional argument, e.g. history recall "rust vs go".',
     );
   }
   // Review round (macroscope): extra positionals were silently dropped
@@ -4164,7 +4139,7 @@ async function handleHistoryRecall(
   if (positional.length > 2) {
     throw new ValidationError(
       "history recall accepts exactly one positional recall text; quote multi-word queries.",
-      "Multi-word recall text must be passed as a single quoted argument, e.g. history recall \"rust vs go\".",
+      'Multi-word recall text must be passed as a single quoted argument, e.g. history recall "rust vs go".',
     );
   }
 
@@ -4223,9 +4198,7 @@ async function handleHistoryRecall(
       );
     }
     const str = String(rawAsOf);
-    const parsed = /^\d+$/.test(str)
-      ? Number(str)
-      : Date.parse(str);
+    const parsed = /^\d+$/.test(str) ? Number(str) : Date.parse(str);
     if (!Number.isFinite(parsed)) {
       throw new ValidationError(
         `Invalid --as-of value "${str}".`,
@@ -4293,10 +4266,7 @@ async function handleHistoryClear(
   const known = new Set(["help", "h", "all"]);
   const unknown = Object.keys(flags).filter((key) => !known.has(key));
   if (unknown.length > 0 || positional.length > 1) {
-    const detail =
-      positional.length > 1
-        ? `"${positional[1]}"`
-        : `--${unknown[0]}`;
+    const detail = positional.length > 1 ? `"${positional[1]}"` : `--${unknown[0]}`;
     throw new ValidationError(
       `Unexpected argument ${detail} for history clear.`,
       "Valid form: scoutline history clear [--all].",
@@ -4446,7 +4416,12 @@ async function handleHistoryExport(
 }
 
 export { handleFetch, fetchCommand, executeFetch, FETCH_HELP } from "./commands/fetch.js";
-export { handleArchive, archiveCdxCommand, archiveGetCommand, ARCHIVE_HELP } from "./commands/archive.js";
+export {
+  handleArchive,
+  archiveCdxCommand,
+  archiveGetCommand,
+  ARCHIVE_HELP,
+} from "./commands/archive.js";
 
 async function handleQuota(
   args: string[],
@@ -4672,8 +4647,7 @@ function withCaptureInvoke(
   id: ProviderId,
   capture: ServingCapture,
 ): Record<string, unknown> {
-  const armCell =
-    capture.armServing !== undefined ? capture.armServing.get(id) : undefined;
+  const armCell = capture.armServing !== undefined ? capture.armServing.get(id) : undefined;
   const invoke = slot.invoke as (...args: unknown[]) => Promise<unknown>;
   const wrapped: Record<string, unknown> = {
     ...slot,
@@ -4748,9 +4722,7 @@ function withCaptureInvoke(
       // (executeSearch/executeCachedOperation feed it straight into
       // buildProviderCacheKey) — recompute the key here so the journal
       // records the exact cache partition the serving attempt used.
-      const identity = (
-        cacheIdentity as (...a: unknown[]) => unknown
-      ).apply(slot, args) as {
+      const identity = (cacheIdentity as (...a: unknown[]) => unknown).apply(slot, args) as {
         provider?: string;
         capability?: string;
         credentialFingerprint?: string;
@@ -4822,11 +4794,7 @@ function captureAdapterInvoke(
         typeof operation === "object" &&
         typeof (operation as Record<string, unknown>).invoke === "function"
       ) {
-        nested[nestedKey] = withCaptureInvoke(
-          operation as Record<string, unknown>,
-          id,
-          capture,
-        );
+        nested[nestedKey] = withCaptureInvoke(operation as Record<string, unknown>, id, capture);
         nestedTouched = true;
       }
     }
@@ -4854,10 +4822,7 @@ function captureServingDescriptors(
  * arm's servedFrom. Returns the same descriptor list — the wrappers
  * resolve the arm cell on demand via `capture.armServing`.
  */
-function installFanoutArmCells(
-  capture: ServingCapture,
-  fanoutArms: readonly ProviderId[],
-): void {
+function installFanoutArmCells(capture: ServingCapture, fanoutArms: readonly ProviderId[]): void {
   const cells = new Map<string, { servedFrom?: "live" | "cache"; failed?: boolean }>();
   for (const armId of fanoutArms) cells.set(armId, {});
   capture.armServing = cells;
@@ -4995,9 +4960,7 @@ async function applyCommandOutputBudget(
   // cannot stamp it in-rule (the stamp's own size defeats the engine's
   // shrink check on first pass). Stamped here, post-walk, once.
   const stamped =
-    "truncated" in data && data.truncated !== true
-      ? { ...data, truncated: true }
-      : data;
+    "truncated" in data && data.truncated !== true ? { ...data, truncated: true } : data;
   // The rebuild's second argument carries the PRE-BUDGET envelope as
   // `.data` (raw lengths, provider flags) — the stamped projection is
   // the FIRST argument. Crawl's seam uses the raw pages for truth metadata.
@@ -5243,8 +5206,7 @@ function createJournalHook(
         armMap !== undefined &&
         armMap.size > 0 &&
         [...armMap.values()].every((c) => c.servedFrom === "cache");
-      const anyArmObserved =
-        armMap !== undefined && armMap.size > 0;
+      const anyArmObserved = armMap !== undefined && armMap.size > 0;
       if (!anyArmObserved) return;
       // NIT 1: no cacheKey → skip (a poison empty-string entry would
       // fail the validator and blank the whole log on next read).
@@ -5267,20 +5229,17 @@ function createJournalHook(
           secrets: resolvedSecrets,
           ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
         });
-        await appendJournalEntryMaybeRepeat(
-          artifactsDir,
-          entry,
-          (repeatOf) =>
-            buildJournalRepeatMarker({
-              capability,
-              provider: fanout,
-              repeatOf,
-              // Warm-cache --save: the save hook already stamped the
-              // master's requestId into the shared capture cell — keep
-              // the same-run saveRef cross-link on the marker (PRD AC10).
-              ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
-              now,
-            }),
+        await appendJournalEntryMaybeRepeat(artifactsDir, entry, (repeatOf) =>
+          buildJournalRepeatMarker({
+            capability,
+            provider: fanout,
+            repeatOf,
+            // Warm-cache --save: the save hook already stamped the
+            // master's requestId into the shared capture cell — keep
+            // the same-run saveRef cross-link on the marker (PRD AC10).
+            ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
+            now,
+          }),
         );
         return;
       }
@@ -5328,18 +5287,15 @@ function createJournalHook(
         secrets: resolvedSecrets,
         ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
       });
-      await appendJournalEntryMaybeRepeat(
-        artifactsDir,
-        entry,
-        (repeatOf) =>
-          buildJournalRepeatMarker({
-            capability,
-            provider,
-            repeatOf,
-            // Same-run saveRef cross-link (PRD AC10), single path.
-            ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
-            now,
-          }),
+      await appendJournalEntryMaybeRepeat(artifactsDir, entry, (repeatOf) =>
+        buildJournalRepeatMarker({
+          capability,
+          provider,
+          repeatOf,
+          // Same-run saveRef cross-link (PRD AC10), single path.
+          ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
+          now,
+        }),
       );
       return;
     }
@@ -5869,8 +5825,7 @@ export async function main(
   // Shared execution awaits `record()` per invoke attempt, so the write
   // is on the critical path before the result returns outward —
   // surviving the bin's immediate `process.exit(status)`.
-  const quotaRefreshEnabled =
-    !loadScoutlineConfig && !dependencies.providerDescriptors;
+  const quotaRefreshEnabled = !loadScoutlineConfig && !dependencies.providerDescriptors;
   const quotaStore = dependencies.quotaStore ?? createDefaultQuotaStore();
   // Production records consumption through BOTH sinks (usage-ledger
   // DESIGN D3): the PB-T1 quota-store snapshot store (unchanged,
@@ -5896,9 +5851,7 @@ export async function main(
           // SCOUTLINE_CONFIG_DIR sees its recorded usage in the root the
           // `usage` command reports from (review P2).
           createUsageLedgerSink({
-            filePath: resolveUsageLedgerPath(
-              resolveConfigRootPure(env, { homedir: os.homedir() }),
-            ),
+            filePath: resolveUsageLedgerPath(resolveConfigRootPure(env, { homedir: os.homedir() })),
           }),
         )
       : undefined);
@@ -6101,9 +6054,10 @@ export async function main(
       writeStdout: (value) => invocation.writeStdout(value),
       // Production default mirrors the --unregister branch: without a
       // fallback the wizard agent step would be test-only dead code.
-      agentRegistrationRoots:
-        dependencies.agentRegistrationRoots ??
-        { home: os.homedir(), configRoot: resolveConfigRoot() },
+      agentRegistrationRoots: dependencies.agentRegistrationRoots ?? {
+        home: os.homedir(),
+        configRoot: resolveConfigRoot(),
+      },
     };
     try {
       return await handleInitWithHelp(commandArgs, initDeps);
@@ -6143,7 +6097,12 @@ export async function main(
       // the body prints directly. An explicit -O still wins.
       const fetchOutputMode =
         forceRaw && outputFormat === undefined ? ("compact" as OutputMode) : outputMode;
-      return await handleFetch(commandArgs, fetchOutputMode, buildHandlerDeps(env, envSecrets, true), forceRaw);
+      return await handleFetch(
+        commandArgs,
+        fetchOutputMode,
+        buildHandlerDeps(env, envSecrets, true),
+        forceRaw,
+      );
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
       return getErrorExitCode(error);
@@ -6169,7 +6128,12 @@ export async function main(
         forceRaw && outputFormat === undefined && archiveSubcommand === "get"
           ? ("compact" as OutputMode)
           : outputMode;
-      return await handleArchive(commandArgs, archiveOutputMode, buildHandlerDeps(env, envSecrets, true), forceRaw);
+      return await handleArchive(
+        commandArgs,
+        archiveOutputMode,
+        buildHandlerDeps(env, envSecrets, true),
+        forceRaw,
+      );
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
       return getErrorExitCode(error);
@@ -6206,45 +6170,50 @@ export async function main(
   // default (the D5 arm order) with DOI-dedup merge.
   if (command === "science") {
     try {
+      // One fail-open config consult (review) shared by BOTH kill-switch
+      // reads below (journal + provider fallback): science dispatches
+      // credential-free BEFORE the shared config load (the archive
+      // precedent), so an injected loader that throws or an unreadable
+      // file degrades to the always-on defaults (journal on, fallback
+      // on) and never blocks the keyless run — the credential-free
+      // contract pins a throwing loader to exit 0, and the config
+      // warnings the credentialed path prints are not worth a consult.
+      let scienceConfig: { journal?: unknown; fallbackEnabled?: unknown } | undefined;
+      try {
+        if (loadScoutlineConfig) {
+          scienceConfig = (await loadScoutlineConfig()) as {
+            journal?: unknown;
+            fallbackEnabled?: unknown;
+          };
+        } else {
+          const inspection = await inspectConfig();
+          scienceConfig = inspection.status === "valid" ? inspection.config : undefined;
+        }
+      } catch {
+        scienceConfig = undefined; // fail-open: absent/unreadable = defaults
+      }
       // T7 journal wiring: journaling is decided the same way the
       // credentialed path below decides it — journalable command, not
-      // a help run, not `--no-journal`, not config `"journal": false`.
-      // Science dispatches credential-free BEFORE the shared config
-      // load (the archive precedent), so the kill-switch check reads
-      // the config through a FAIL-OPEN consult here: an injected
-      // loader that throws or an unreadable file degrades to
-      // journaling-on (absent = on, the inverted-fanout idiom) and
-      // never blocks the keyless run — the credential-free contract
-      // pins a throwing loader to exit 0, and the config warnings the
-      // credentialed path prints are not worth a second consult.
+      // a help run, not `--no-journal`, not config `"journal": false`
+      // (an invalid/absent config degrades to journaling-on).
       let scienceJournaling = !isHelpInvocation && !noJournal;
       if (scienceJournaling) {
-        try {
-          if (loadScoutlineConfig) {
-            const scienceConfig = await loadScoutlineConfig();
-            scienceJournaling = (scienceConfig as { journal?: unknown }).journal !== false;
-          } else {
-            const inspection = await inspectConfig();
-            scienceJournaling =
-              inspection.status !== "valid" ||
-              (inspection.config as { journal?: unknown }).journal !== false;
-          }
-        } catch {
-          scienceJournaling = true; // fail-open: absent/unreadable = on
-        }
+        scienceJournaling = scienceConfig?.journal !== false;
       }
       // The capture-wrapped descriptors record which supplier actually
       // served (servedFrom/cacheKey from the supplier's own
       // cacheIdentity); the journal input is consumed by handleScience
       // through the same deps.journal seam search/read/research use.
       const scienceCapture: ServingCapture | undefined = scienceJournaling ? {} : undefined;
-      // T10: `science get` fallback honors the kill-switch (flag or
-      // SCOUTLINE_NO_FALLBACK env — same precedence as the credentialed
-      // path below, minus the config consult the credential-free arm
-      // never runs); `true` is the always-on default.
+      // T10: `science get` fallback honors the kill-switch with the
+      // SAME precedence as the credentialed path (review): the
+      // `--no-fallback` flag, then SCOUTLINE_NO_FALLBACK env, then the
+      // persisted `config.fallbackEnabled` (the wizard's Step-5
+      // preference); `true` is the always-on default.
       const scienceFallback = !(
         noFallback ||
-        (typeof env.SCOUTLINE_NO_FALLBACK === "string" && env.SCOUTLINE_NO_FALLBACK.length > 0)
+        (typeof env.SCOUTLINE_NO_FALLBACK === "string" && env.SCOUTLINE_NO_FALLBACK.length > 0) ||
+        scienceConfig?.fallbackEnabled === false
       );
       const scienceDeps = buildHandlerDeps(env, envSecrets, scienceFallback);
       return await handleScience(
@@ -6254,10 +6223,7 @@ export async function main(
           ? scienceDeps
           : {
               ...scienceDeps,
-              providerDescriptors: captureServingDescriptors(
-                providerDescriptors,
-                scienceCapture,
-              ),
+              providerDescriptors: captureServingDescriptors(providerDescriptors, scienceCapture),
               journal: { capability: "science", capture: scienceCapture },
             },
         { explicitProvider: provider },
@@ -6279,9 +6245,7 @@ export async function main(
   // `saveRequest` is the typed seam ticket T4 consumes to perform the
   // actual write; in T3 it stays inert (nothing on this path writes).
   const saveRequest =
-    extracted.save !== undefined && SAVE_CAPABLE_COMMANDS.has(command)
-      ? extracted.save
-      : undefined;
+    extracted.save !== undefined && SAVE_CAPABLE_COMMANDS.has(command) ? extracted.save : undefined;
   if (saveRequest !== undefined && !isHelpInvocation) {
     try {
       await assertExportTargetAcceptable(saveRequest);
@@ -6381,8 +6345,7 @@ export async function main(
   // Dedicated trigger-detection tests run via subprocess (the real
   // binary) or via `main()` without injecting either, optionally
   // pointed at a temp `SCOUTLINE_CONFIG_DIR`.
-  const triggerDetectionEnabled =
-    !loadScoutlineConfig && !dependencies.providerDescriptors;
+  const triggerDetectionEnabled = !loadScoutlineConfig && !dependencies.providerDescriptors;
   if (triggerDetectionEnabled && !isHelpInvocation && !isObservational) {
     const state = classifyCredentialState({
       descriptors: providerDescriptors,
@@ -6422,7 +6385,7 @@ export async function main(
   // Ticket 4. Read leniently: an absent or non-boolean field simply means
   // fan-out stays off.
   const configFanout =
-    dependencies.configFanout ?? ((config as { fanout?: unknown }).fanout === true);
+    dependencies.configFanout ?? (config as { fanout?: unknown }).fanout === true;
   const handlerDeps = buildHandlerDeps(
     resolvedEnv,
     secrets,
@@ -6570,13 +6533,13 @@ export async function main(
   const handlerDepsWithSave: HandlerDependencies =
     saveWiring === undefined && journalWiring === undefined
       ? command === "batch" &&
-          !isHelpInvocation &&
-          (config as { journal?: unknown }).journal !== false
+        !isHelpInvocation &&
+        (config as { journal?: unknown }).journal !== false
         ? // T2a must-fix 1: the batch noun journals PER-OP — the runner
           // wraps the descriptors around each op's OWN capture cell and
           // builds the op's journal input from its own command. The
           // unwrapped descriptors flow through here deliberately.
-        {
+          {
             ...handlerDepsWithSelection,
             journalBatchEnabled: true,
           }

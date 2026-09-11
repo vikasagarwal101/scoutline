@@ -33,6 +33,8 @@ export interface VisionRequest {
   model: string;
   messages: Message[];
   thinking?: { type: string };
+  /** #136: glm-5.3-flash documented recipe — reasoning_effort: "max". */
+  reasoning_effort?: string;
   stream: boolean;
   temperature: number;
   top_p: number;
@@ -245,7 +247,12 @@ export class ZaiApiClient {
       this.request<VisionResponse>("/chat/completions", {
         model: this.config.visionModel,
         messages,
+        // #136 remainder: the documented glm-5.3-flash recipe —
+        // thinking.type only supports "enabled"; reasoning_effort max
+        // completes the recommended settings (temperature 1 / top_p 0.95
+        // arrive through config defaults).
         thinking: { type: "enabled" },
+        reasoning_effort: "max",
         stream: false,
         temperature: this.config.temperature,
         top_p: this.config.topP,

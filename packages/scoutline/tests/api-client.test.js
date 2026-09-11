@@ -37,6 +37,43 @@ function redirectResponse(location) {
   };
 }
 
+describe("ZaiApiClient — visionComplete request shape (#136 remainder)", () => {
+  let originalFetch;
+  let calls;
+
+  beforeEach(() => {
+    originalFetch = global.fetch;
+    calls = [];
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("sends the documented glm-5.3-flash recipe: reasoning_effort max + thinking enabled", async () => {
+    global.fetch = async (url, options) => {
+      calls.push({ url: String(url), body: JSON.parse(options.body) });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ id: "", created: 0, model: "", choices: [], usage: {} }),
+      };
+    };
+
+    const client = makeClient();
+    await client.visionComplete([{ role: "user", content: "describe" }]);
+
+    assert.strictEqual(calls.length, 1);
+    const body = calls[0].body;
+    // docs.z.ai/guides/vlm/glm-5.3-flash Recommended Settings:
+    // temperature 1, top_p 0.95, reasoning_effort max; thinking.type
+    // only supports "enabled".
+    assert.strictEqual(body.reasoning_effort, "max");
+    assert.deepStrictEqual(body.thinking, { type: "enabled" });
+    assert.strictEqual(body.stream, false);
+  });
+});
+
 describe("ZaiApiClient — redirect handling (1.2)", () => {
   let originalFetch;
   let calls;

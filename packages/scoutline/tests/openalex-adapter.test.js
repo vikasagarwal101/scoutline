@@ -250,7 +250,7 @@ describe("openalex search validate/invoke — controls on the wire (TASKS T4; DE
       "author control maps to raw_author_name.search (D7)",
     );
     assert.ok(
-      wire.includes("from_publication_date:2018") && wire.includes("to_publication_date:2022"),
+      wire.includes("from_publication_date:2018") && wire.includes("to_publication_date:2022-12-31"),
       "year range maps to from/to publication date (D7)",
     );
     assert.ok(
@@ -269,7 +269,7 @@ describe("openalex search validate/invoke — controls on the wire (TASKS T4; DE
     });
     const wire = decodedUrl(calls[0].url);
     assert.ok(wire.includes("from_publication_date:2020"), "single year → from");
-    assert.ok(wire.includes("to_publication_date:2020"), "single year → to (closed form)");
+    assert.ok(wire.includes("to_publication_date:2020-12-31"), "single year → to (closed form, full year)");
   });
 
   it("an empty query and a reversed year range throw ValidationError through the adapter's validate", () => {

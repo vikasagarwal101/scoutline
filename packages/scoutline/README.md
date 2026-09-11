@@ -327,8 +327,11 @@ policy for larger journals.
 
 The matrix below is generated from the production provider registry
 (`packages/scoutline/src/providers/registry.ts`) and reflects the
-release-shipped capability advertisements for every built-in provider
-in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, arxiv, openalex, crossref, pubmed, europepmc]`. The
+release-shipped capability advertisements for the shared-capability
+providers (the five keyless science suppliers — arXiv, OpenAlex,
+Crossref, PubMed, Europe PMC — serve only `scoutline science ...` and
+`doctor`; see the Science section) in registry order
+`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider]`. The
 exact same `descriptor.capabilities()` set drives executor preflight,
 Provider selection, and `doctor`.
 

@@ -59,7 +59,8 @@ export const BUILT_IN_PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [
   createYouDescriptor(),
   createLinkupDescriptor(),
   createSpiderDescriptor(),
-  // Science suppliers (T2 seats; adapters arrive per-supplier later).
+  // Science suppliers (T2 seats) — real adapters ship here; the stub
+  // seats live in types.ts's BUILT_IN_PROVIDER_DESCRIPTORS.
   // D2 listing order — openalex-first is the executor fan-out ARM
   // order, NOT the registry insertion order.
   createArxivDescriptor(),

@@ -818,10 +818,10 @@ Authority and score are kept on separate axes. A provider is either:
 | `exa`, `parallel`, `perplexity` | always-unknown | Advertise no `quota` capability; nothing to map. |
 | `you` | always-unknown | Advertises no `quota` capability; You.com exposes no spend endpoint. Nothing to map. |
 | `arxiv` | always-unknown | Keyless scholarly index; no spend signal exists. Excluded from quota-snapshot availability ranking in v1. |
-| `openalex` | always-unknown | Keyless-by-default scholarly index; no spend signal exists (the optional API key is a rate-limit tier, not billing). |
-| `crossref` | always-unknown | Keyless scholarly index (`mailto` is politeness, not billing); no spend signal exists. |
-| `pubmed` | always-unknown | Keyless scholarly index (rate-limited, not metered); no spend signal exists. |
-| `europepmc` | always-unknown | Keyless scholarly index; no spend signal exists. |
+| `openalex` | always-unknown | Keyless-by-default scholarly index; no spend signal exists (the optional API key is a rate-limit tier, not billing). Excluded from quota-snapshot availability ranking in v1. |
+| `crossref` | always-unknown | Keyless scholarly index (`mailto` is politeness, not billing); no spend signal exists. Excluded from quota-snapshot availability ranking in v1. |
+| `pubmed` | always-unknown | Keyless scholarly index (rate-limited, not metered); no spend signal exists. Excluded from quota-snapshot availability ranking in v1. |
+| `europepmc` | always-unknown | Keyless scholarly index; no spend signal exists. Excluded from quota-snapshot availability ranking in v1. |
 
 ### Capability → category table
 

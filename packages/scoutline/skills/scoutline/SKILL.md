@@ -327,6 +327,7 @@ input).
 | vision | Analyze images, screenshots, videos (incl. `batch`) | `--help` for 9 subcommands |
 | batch | Manifest of operations run across providers (distribution by default) | `--help` for manifest + flags |
 | search | Real-time web search | `--help` for filtering options (incl. `--topic`) and local context |
+| science | Keyless scholarly search/get across five suppliers | `--help` for search/get and controls |
 | read | Fetch web pages as markdown (nine providers) | `--help` for format options |
 | fetch | Direct evidentiary HTTP retrieval (credential-free) | `--help` for `--out`/`--md5`/`--sha256`/`--pdf`/`-X`/`--data` |
 | archive | Wayback CDX indexing, verbatim snapshot replay, snapshot-vs-live diff (credential-free) | `--help` for `cdx`/`get` (`--at`, `--raw`) and `diff` (`--since`) |

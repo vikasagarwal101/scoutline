@@ -182,7 +182,7 @@ moved, error) that survives snapshot rotation and feeds both the
 JSONL and RSS surfaces.
 _Avoid_: history (that is the `--save` artifacts inventory), feed
 
-**Science Capability**
+**Science Capability**:
 The credential-free scholarly vertical (`scoutline science search` /
 `scoutline science get`) served by five keyless suppliers — arXiv,
 OpenAlex, Crossref, PubMed, and Europe PMC. It is distinct from the
@@ -191,7 +191,7 @@ selection, and no required credential (optional `OPENALEX_API_KEY` /
 `NCBI_API_KEY` are rate-limit tiers, not billing).
 _Avoid_: academic search, paper search (those describe the domain, not the Capability)
 
-**ScienceWork**
+**ScienceWork**:
 The normalized scholarly result record a science supplier's search or get
 returns — title, authors, venue, year, persistent identifiers
 (DOI/PMID/arXiv id), and optional links/abstract. One ScienceWork is one

@@ -192,14 +192,7 @@ describe("executeWithFallback — candidate plan ordering", () => {
     // appear in registry order. The original `tavily` does NOT
     // reappear at its registry slot because the plan is
     // deduplicated by id and the first occurrence wins.
-    assert.deepStrictEqual(visited, [
-      "tavily",
-      "zai",
-      "minimax",
-      "exa",
-      "brave",
-      "firecrawl",
-    ]);
+    assert.deepStrictEqual(visited, ["tavily", "zai", "minimax", "exa", "brave", "firecrawl"]);
     assert.strictEqual(result.provider, "firecrawl");
     assert.strictEqual(result.fellBack, true);
     assert.strictEqual(result.result, "ok");
@@ -468,7 +461,7 @@ describe("executeWithFallback — error classification table", () => {
       ["AuthError", () => new AuthError("nope")],
       [
         "ConfigurationError",
-        () => new ConfigurationError("Provider \"zai\" is not configured. Set the required API key."),
+        () => new ConfigurationError('Provider "zai" is not configured. Set the required API key.'),
       ],
       ["QuotaError", () => new QuotaError()],
     ];
@@ -479,18 +472,16 @@ describe("executeWithFallback — error classification table", () => {
           return "ok";
         },
       });
-      assert.strictEqual(
-        result.provider,
-        "tavily",
-        `${label} must continue to the next candidate`,
-      );
+      assert.strictEqual(result.provider, "tavily", `${label} must continue to the next candidate`);
       assert.strictEqual(result.fellBack, true, `${label} must count as a fallback`);
       // The switch notice names the error code in parentheses. The
       // exact code string depends on the constructor; we assert
       // the "<p> failed (<code>) for search — trying <next>"
       // shape and that the per-candidate line exists.
       assert.ok(
-        lines.some((l) => l.startsWith("⚠ zai failed (") && l.endsWith("for search — trying minimax")),
+        lines.some(
+          (l) => l.startsWith("⚠ zai failed (") && l.endsWith("for search — trying minimax"),
+        ),
         `${label} must emit the zai switch notice, got: ${JSON.stringify(lines)}`,
       );
       assert.ok(
@@ -1268,7 +1259,10 @@ describe("executeWithFallback — credential hint (Ticket 02 flag)", () => {
     }
     assert.ok(caught instanceof ConfigurationError);
     assert.match(caught.message, /Set Z_AI_API_KEY\./);
-    assert.ok(!/Set the required API key\./.test(caught.message), "must not use the generic fallback");
+    assert.ok(
+      !/Set the required API key\./.test(caught.message),
+      "must not use the generic fallback",
+    );
   });
 
   it("surfaces a multi-env-var credential hint with 'or' on the unconfigured effective", async () => {
@@ -1443,9 +1437,11 @@ describe("executeWithFallback — production registry carries credential hint en
   it("an unconfigured minimax effective surfaces a ConfigurationError naming MINIMAX_API_KEY", async () => {
     // Sibling coverage for the second built-in whose descriptor
     // lives outside src/providers/types.ts.
-    // Jina + science seats excluded (keyless — always configured).
+    // Jina + science seats excluded (keyless — always configured;
+    // same keylessIds set as the zai sibling above).
+    const keylessIds = new Set(["jina", "arxiv", "openalex", "crossref", "pubmed", "europepmc"]);
     const credentialRequiredDescriptors = BUILT_IN_PROVIDER_DESCRIPTORS.filter(
-      (d) => d.id !== "jina",
+      (d) => !keylessIds.has(d.id),
     );
     let caught;
     try {
@@ -1768,7 +1764,8 @@ describe("executeWithFallback — --type video routes via UnsupportedOptionError
     const brave = createBraveDescriptor().create({ env: {} }).search;
     assert.throws(
       () => exa.validate({ query: "q", controls: { type: "video" } }),
-      (err) => err instanceof UnsupportedOptionError && err.provider === "exa" && err.option === "type",
+      (err) =>
+        err instanceof UnsupportedOptionError && err.provider === "exa" && err.option === "type",
       "Exa must reject controls.type",
     );
     // Brave accepts `type: "video"` — but only at the validator; a
@@ -1917,7 +1914,10 @@ describe("executeWithFallback — vision supports(operation) guard (Fix 4)", () 
     // `continue`, so a switch notice fires naming the next
     // candidate and the summary notice credits the winner.
     assert.ok(
-      lines.some((l) => l === `⚠ fake-advertises does not support 'vision.interpret-image' — trying fake-accepts`),
+      lines.some(
+        (l) =>
+          l === `⚠ fake-advertises does not support 'vision.interpret-image' — trying fake-accepts`,
+      ),
       `expected advertised-supports-unsupported notice, got: ${JSON.stringify(lines)}`,
     );
     assert.ok(
@@ -2034,9 +2034,7 @@ describe("executeWithFallback — per-handler coverage (Ticket 02 ticket)", () =
         assert.strictEqual(result.provider, "zai");
         assert.strictEqual(result.fellBack, true);
         assert.ok(
-          lines.some(
-            (l) => l === `⚠ minimax does not support '${capabilityId}' — skipping`,
-          ),
+          lines.some((l) => l === `⚠ minimax does not support '${capabilityId}' — skipping`),
           `expected minimax skip notice, got: ${JSON.stringify(lines)}`,
         );
       });
@@ -2065,8 +2063,7 @@ describe("executeWithFallback — per-handler coverage (Ticket 02 ticket)", () =
         assert.ok(
           lines.some(
             (l) =>
-              l.startsWith("⚠ zai failed (") &&
-              l.endsWith(`for ${commandLabel} — trying tavily`),
+              l.startsWith("⚠ zai failed (") && l.endsWith(`for ${commandLabel} — trying tavily`),
           ),
           `expected zai switch notice, got: ${JSON.stringify(lines)}`,
         );
@@ -2215,7 +2212,11 @@ describe("ProviderCapability dispatch is exhaustive (4.5)", () => {
         },
         async () => "ok",
       );
-      assert.strictEqual(outcome.result, "ok", `${cap} must reach the attempt via the science slot`);
+      assert.strictEqual(
+        outcome.result,
+        "ok",
+        `${cap} must reach the attempt via the science slot`,
+      );
       assert.strictEqual(outcome.provider, "zai");
       assert.strictEqual(outcome.fellBack, false);
     }

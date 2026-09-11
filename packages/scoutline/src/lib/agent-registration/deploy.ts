@@ -234,10 +234,13 @@ export async function checkAgentRegistration(options: {
   // Total failure must not read as partial (#130): N per-tool notices alone
   // are indistinguishable from "some tools failed, others refreshed" — one
   // summary line names the all-fail case. Opted-out tools are not attempts,
-  // so a fully opted-out stamp stays quiet.
+  // so a fully opted-out stamp stays quiet. The wording must not promise
+  // "unchanged": deploySkills rm's the existing skill dir before the copy,
+  // and rule/pointer writes can fail after earlier writes, so a failed
+  // refresh may leave registrations partially modified or deleted.
   if (attempted > 0 && failures === attempted) {
     writeStderr(
-      `scoutline: agent registration refresh failed for all ${attempted} registered tool${attempted === 1 ? "" : "s"} — registration unchanged; next run retries (command continues)`,
+      `scoutline: agent registration refresh failed for all ${attempted} registered tool${attempted === 1 ? "" : "s"} — registration may be partially modified or deleted; next run retries (command continues)`,
     );
   }
   // A partial failure must not stamp every tool fresh (issue #122): leave the

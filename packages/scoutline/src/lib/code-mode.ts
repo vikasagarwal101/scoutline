@@ -116,7 +116,11 @@ export class ZaiCodeModeClient {
       }
       this.isInitialized = true;
     } catch (error) {
-      this.initPromise = null;
+      // PR #142 round 2 (macroscope): the single-flight guard stays armed
+      // for the WHOLE failure path — including the auth probe's await —
+      // and is cleared in the finally below, once _doInit has fully
+      // settled. Clearing it here would let a concurrent caller start a
+      // duplicate registration + probe while this one is still pending.
 
       if (error instanceof ApiError) {
         // #135 — the registerManual failure arrives here as an opaque
@@ -182,6 +186,11 @@ export class ZaiCodeModeClient {
       }
 
       throw new ApiError("Code Mode initialization failed", 500);
+    } finally {
+      // Cleared only once the attempt has fully settled (success or
+      // classified failure) — the retry-on-next-call semantics are
+      // unchanged; only the in-flight window is closed.
+      this.initPromise = null;
     }
   }
 

@@ -515,6 +515,71 @@ describe("ZaiCodeModeClient — failure-path auth probe (issue #135)", () => {
     );
   });
 
+  it("concurrent callers share ONE in-flight failed init (single-flight holds during the probe, PR #142 round 2)", async () => {
+    // The failure-path probe can take up to PROBE_TIMEOUT_MS; the
+    // single-flight guard (initPromise) must stay armed for that whole
+    // window so a second caller awaits the SAME failing init instead of
+    // starting a fresh registration + probe (macroscope: initPromise was
+    // cleared at catch-entry, before the probe await).
+    let registerCalls = 0;
+    const fake = {
+      registerManual() {
+        registerCalls += 1;
+        return Promise.resolve({ success: false, errors: ["Unrecognized keys: code,msg,success"] });
+      },
+      callToolChain() { return Promise.reject(new Error("should not reach callToolChain")); },
+      getAllToolsTypeScriptInterfaces() { return Promise.reject(new Error("should not reach getAllInterfaces")); },
+      close() { return Promise.resolve(); },
+    };
+    let probeCalls = 0;
+    let releaseProbe;
+    const gate = new Promise((resolve) => { releaseProbe = resolve; });
+    const real = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      if (!urlOf(input).includes("api.z.ai")) {
+        throw new Error(`unexpected fetch in single-flight test: ${urlOf(input)}`);
+      }
+      probeCalls += 1;
+      await gate; // hold the probe in flight while the second caller arrives
+      return new Response(AUTH_REJECTION_BODY, {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    const client = new ZaiCodeModeClient({
+      env: PROBE_ENV,
+      clientFactory: async () => fake,
+    });
+    try {
+      const first = client.callToolChain("code").then(
+        () => "ok",
+        (err) => err.code,
+      );
+      // Let the first init reach its parked probe (registration failed,
+      // probe fetch issued, gate held) BEFORE the second caller arrives.
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.strictEqual(probeCalls, 1, "first init must be parked in its probe");
+      // The second caller arrives while the probe is still in flight —
+      // it must join the SAME failing init, not start a fresh one.
+      const second = client.getAllInterfaces().then(
+        () => "ok",
+        (err) => err.code,
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      releaseProbe();
+      const [a, b] = await Promise.all([first, second]);
+      assert.strictEqual(a, "AUTH_ERROR");
+      assert.strictEqual(b, "AUTH_ERROR");
+      assert.strictEqual(registerCalls, 1, `one registration, got ${registerCalls}`);
+      assert.strictEqual(probeCalls, 1, `one probe, got ${probeCalls}`);
+    } finally {
+      globalThis.fetch = real;
+      await client.close().catch(() => {});
+    }
+  });
+
   it("probe cancels the unread response body on every non-consumed exit", async () => {
     // undici retains the connection until the body is consumed or
     // cancelled; the 401/403 early return and the non-200 fallthrough

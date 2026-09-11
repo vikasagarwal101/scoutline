@@ -438,6 +438,20 @@ describe("openalex get — DOI and PMID identifiers (TASKS T4; DESIGN D10 ruling
     assert.equal(work.identifiers?.doi, "10.1038/nature12373");
   });
 
+  it("an EMPTY abstract_inverted_index leaves summary absent, not empty-string (review)", async () => {
+    // GROUND: AC-7c — absent supplier fields stay absent. An empty
+    // index reconstructs to "" and must be treated as NO abstract
+    // (the old guard only rejected undefined and wrote summary: "").
+    const emptyIndex = { ...WORK_DEEP_LEARNING, abstract_inverted_index: {} };
+    const { adapter } = makeAdapter({ meta: {}, results: [emptyIndex] });
+    const works = await adapter.science.search.invoke({ query: "deep" });
+    assert.equal(
+      Object.hasOwn(works[0], "summary"),
+      false,
+      "empty inverted index → summary honestly absent (AC-7c)",
+    );
+  });
+
   it("get percent-encodes URL-delimiter characters in the DOI route (review)", async () => {
     // Review: a DOI suffix containing `?` or `#` truncated or rerouted
     // the entity path via `new URL`. The route must carry them
@@ -457,7 +471,10 @@ describe("openalex get — DOI and PMID identifiers (TASKS T4; DESIGN D10 ruling
     // live (count=1, correct record); PMID routes to openalex. The
     // pubmed URL form of ids.pmid normalizes to the bare numeric PMID
     // (round-trips the AC-4b grammar).
-    const { adapter, calls } = makeAdapter(WORK_BY_PMID);
+    // Wrapped in the live response envelope (review): the real API
+    // answers a filter query with { meta, results }; the DOI fixture
+    // stays bare (the bare-record fallback is itself pinned).
+    const { adapter, calls } = makeAdapter({ meta: {}, results: [WORK_BY_PMID] });
     const work = await adapter.science.get.invoke({ identifier: "23903748" });
     assert.equal(calls.length, 1, "exactly one wire call for get");
     const href = decodedUrl(calls[0].url);

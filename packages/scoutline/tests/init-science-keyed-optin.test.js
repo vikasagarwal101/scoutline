@@ -57,6 +57,10 @@ function makeFakeDescriptor({ id, credentialEnvVars = [], behaviour = "resolve" 
     id,
     credentialEnvVars,
     isConfigured: (env) => {
+      // Keyless suppliers (no canonical env var) are ALWAYS configured —
+      // the keyless-always-active contract the real descriptors carry
+      // (review: the old shape returned false for the trio).
+      if (canonicalEnvVar === undefined) return true;
       const v = env[canonicalEnvVar];
       return typeof v === "string" && v.trim().length > 0;
     },
@@ -286,7 +290,9 @@ describe("init wizard: keyed science opt-in question (T11)", () => {
       for (const id of ["arxiv", "crossref", "europepmc"]) {
         assert.equal(science[id].invokes.length, 1, `${id}: one keyless probe`);
         assert.ok(
-          science[id].invokes.every((inv) => inv.env.OPENALEX_API_KEY === undefined),
+          science[id].invokes.every(
+            (inv) => inv.env.OPENALEX_API_KEY === undefined && inv.env.NCBI_API_KEY === undefined,
+          ),
           `${id}: probed without any keyed candidate`,
         );
       }

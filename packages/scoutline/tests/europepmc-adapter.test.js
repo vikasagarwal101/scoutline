@@ -535,6 +535,22 @@ describe("europepmc get — DOI and PMID identifiers, never arXiv (TASKS T5; DES
     assert.equal(works[0].url, "https://europepmc.org/article/PPR/PPR426789");
   });
 
+  it("control values are escaped inside quoted query terms (review)", async () => {
+    // Review: a literal `"` or `\\` in --author previously broke out of
+    // the `AUTH:"…"` phrase and corrupted the composed query.
+    const { adapter, calls } = makeAdapter(EPMC_SEARCH_RESPONSE);
+    await adapter.science.search.invoke({
+      query: "attention",
+      controls: { author: 'O"Brien \\ Witt' },
+    });
+    assert.equal(calls.length, 1);
+    const decoded = decodedUrl(calls[0].url);
+    assert.ok(
+      decoded.includes('AUTH:"O\\"Brien \\\\ Witt"'),
+      `quote and backslash must be backslash-escaped inside the quoted term; got ${decoded}`,
+    );
+  });
+
   it("every wire call requests resultType=core so abstractText rides the response (review)", async () => {
     // Review: the default lite result set omits abstractText, so the
     // adapter could never populate ScienceWork.summary on live calls.

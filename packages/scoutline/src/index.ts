@@ -6180,13 +6180,10 @@ export async function main(
       // on) and never blocks the keyless run — the credential-free
       // contract pins a throwing loader to exit 0, and the config
       // warnings the credentialed path prints are not worth a consult.
-      let scienceConfig: { journal?: unknown; fallbackEnabled?: unknown } | undefined;
+      let scienceConfig: ScoutlineConfig | undefined;
       try {
         if (loadScoutlineConfig) {
-          scienceConfig = (await loadScoutlineConfig()) as {
-            journal?: unknown;
-            fallbackEnabled?: unknown;
-          };
+          scienceConfig = await loadScoutlineConfig();
         } else {
           const inspection = await inspectConfig();
           scienceConfig = inspection.status === "valid" ? inspection.config : undefined;
@@ -6217,7 +6214,22 @@ export async function main(
         (typeof env.SCOUTLINE_NO_FALLBACK === "string" && env.SCOUTLINE_NO_FALLBACK.length > 0) ||
         scienceConfig?.fallbackEnabled === false
       );
-      const scienceDeps = buildHandlerDeps(env, envSecrets, scienceFallback);
+      // File-configured Science credentials (review): the credential-
+      // free arm never runs the credentialed env resolution, so a key
+      // stored via `scoutline init` (the openalex/pubmed keyed opt-in)
+      // was invisible to the science suppliers. Resolve through the
+      // SAME seam the credentialed path uses — an env value always
+      // wins over the file key, and a missing/invalid config degrades
+      // to the raw env (the fail-open posture is unchanged).
+      const scienceEnv =
+        scienceConfig !== undefined
+          ? resolveEnvFromConfig(env, scienceConfig, providerDescriptors)
+          : env;
+      const scienceDeps = buildHandlerDeps(
+        scienceEnv,
+        configuredSecrets(scienceEnv),
+        scienceFallback,
+      );
       return await handleScience(
         commandArgs,
         outputMode,

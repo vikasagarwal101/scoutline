@@ -97,14 +97,15 @@ const TYPE_UNION = [
  * recorded; `configured`/`caps` shape the resolver's eligibility walk.
  */
 function makeScienceDescriptor(id, opts = {}) {
-  const calls = { create: 0, search: [], get: [] };
+  const calls = { create: 0, search: [], get: [], createEnvs: [] };
   const descriptor = {
     id,
     isConfigured: (_env, capabilityId) =>
       opts.configured === undefined ? true : opts.configured(capabilityId),
     capabilities: () => new Set(opts.caps ?? ["science.search", "science.get"]),
-    create() {
+    create(context) {
       calls.create += 1;
+      calls.createEnvs.push(context?.env);
       return {
         id,
         science: {
@@ -144,7 +145,7 @@ function makeScienceDescriptor(id, opts = {}) {
         },
       };
     },
-    credentialEnvVars: [],
+    credentialEnvVars: opts.credentialEnvVars ?? [],
   };
   return { descriptor, calls };
 }
@@ -229,10 +230,9 @@ describe("science noun dispatch + help", () => {
 
   it("unknown science subcommand fails VALIDATION_ERROR naming the valid subcommands", async () => {
     // GROUND: archive precedent — "Unknown archive subcommand" shape.
-    const { status, stdout, stderr } = await runMain(
-      ["science", "transmogrify", "x"],
-      { descriptors: scienceFive().descriptors },
-    );
+    const { status, stdout, stderr } = await runMain(["science", "transmogrify", "x"], {
+      descriptors: scienceFive().descriptors,
+    });
     assert.equal(status, 1);
     assert.deepEqual(stdout, [], "data-only stdout contract — nothing on stdout");
     const err = parseStderr(stderr);
@@ -495,10 +495,9 @@ describe("science envelope shape — data CommandResult, data-only stdout", () =
     const { descriptors } = scienceFive({
       openalex: { getWork: () => work },
     });
-    const { status, stdout } = await runMain(
-      ["science", "get", "10.1038/nature12373"],
-      { descriptors },
-    );
+    const { status, stdout } = await runMain(["science", "get", "10.1038/nature12373"], {
+      descriptors,
+    });
     assert.equal(status, 0);
     const parsed = JSON.parse(stdout.join(""));
     assert.equal(typeof parsed, "object");
@@ -562,7 +561,13 @@ describe("resolver (T10 fan-out semantics — interim pins flipped in-ticket)", 
     assert.equal(parsed.length, 5, "merged across all five arms");
     assert.deepEqual(
       parsed.map((w) => w.title).sort(),
-      ["search-from-arxiv", "search-from-crossref", "search-from-europepmc", "search-from-openalex", "search-from-pubmed"],
+      [
+        "search-from-arxiv",
+        "search-from-crossref",
+        "search-from-europepmc",
+        "search-from-openalex",
+        "search-from-pubmed",
+      ],
       "fan-out output: every arm's works merged — never a single-arm result",
     );
   });
@@ -572,10 +577,9 @@ describe("resolver (T10 fan-out semantics — interim pins flipped in-ticket)", 
     // T6: a pin is single-arm by design); D5 "`--provider openalex`
     // pins directly (bare id — no new grammar)".
     const { descriptors, byId } = scienceFive();
-    const { status } = await runMain(
-      ["science", "search", "q", "--provider", "crossref"],
-      { descriptors },
-    );
+    const { status } = await runMain(["science", "search", "q", "--provider", "crossref"], {
+      descriptors,
+    });
     assert.equal(status, 0);
     assert.equal(byId.crossref.calls.search.length, 1, "pinned supplier invoked");
     assert.equal(byId.openalex.calls.search.length, 0, "other arms not consulted");
@@ -587,15 +591,45 @@ describe("resolver (T10 fan-out semantics — interim pins flipped in-ticket)", 
     // interim "treated as the no-pin default" to the actual fan-out:
     // every arm invokes, one merged result set.
     const { descriptors, byId } = scienceFive();
-    const { status, stdout } = await runMain(
-      ["science", "search", "q", "--provider", "all"],
-      { descriptors },
-    );
+    const { status, stdout } = await runMain(["science", "search", "q", "--provider", "all"], {
+      descriptors,
+    });
     assert.equal(status, 0, "--provider all must not fail as an unknown provider");
     for (const id of D5_ARM_ORDER) {
       assert.equal(byId[id].calls.search.length, 1, `${id} runs in the pinned fan-out`);
     }
     assert.equal(JSON.parse(stdout.join("")).length, 5);
+  });
+
+  it("fanout-empty-success: a rejected sibling does not fail an EMPTY-but-fulfilled fan-out (review)", async () => {
+    // GROUND: review round 4 — "fail only when every arm rejects". A
+    // fulfilled arm may validly return zero works; the old
+    // `works.length === 0 && firstRejected` condition failed the whole
+    // command even though a supplier completed successfully. The failed
+    // sibling is disclosed per-arm on stderr; the command succeeds
+    // with the (empty) merged set.
+    const five = scienceFive({
+      openalex: {
+        searchWorks: () => {
+          throw new ApiError("openalex down", 503);
+        },
+      },
+      arxiv: { searchWorks: () => [] },
+      crossref: { searchWorks: () => [] },
+      pubmed: { searchWorks: () => [] },
+      europepmc: { searchWorks: () => [] },
+    });
+    const result = await runMain(["science", "search", "q"], {
+      descriptors: five.descriptors,
+    });
+    assert.equal(result.status, 0, "empty-but-fulfilled fan-out succeeds");
+    assert.equal(five.byId.openalex.calls.search.length, 1, "the failing arm was attempted");
+    assert.deepEqual(JSON.parse(result.stdout.join("")), [], "merged set is honestly empty");
+    assert.match(
+      result.stderr.join(""),
+      /openalex arm failed/,
+      "the failed sibling is disclosed per-arm",
+    );
   });
 
   it("fanout-skip-unconfigured: an unconfigured arm is excluded; the fan-out proceeds on the remaining enabled arms", async () => {
@@ -616,10 +650,12 @@ describe("resolver (T10 fan-out semantics — interim pins flipped in-ticket)", 
     }
     const parsed = JSON.parse(stdout.join(""));
     assert.equal(parsed.length, 4);
-    assert.deepEqual(
-      parsed.map((w) => w.title).sort(),
-      ["search-from-arxiv", "search-from-crossref", "search-from-europepmc", "search-from-pubmed"],
-    );
+    assert.deepEqual(parsed.map((w) => w.title).sort(), [
+      "search-from-arxiv",
+      "search-from-crossref",
+      "search-from-europepmc",
+      "search-from-pubmed",
+    ]);
   });
 
   it("fanout-skip-incapable: a supplier not advertising science.search is excluded from the fan-out", async () => {
@@ -655,11 +691,7 @@ describe("resolver (T10 fan-out semantics — interim pins flipped in-ticket)", 
       const { descriptors, byId } = scienceFive();
       const { status } = await runMain(["science", "get", identifier], { descriptors });
       assert.equal(status, 0, `${identifier}: exit 0`);
-      assert.equal(
-        byId[expected].calls.get.length,
-        1,
-        `${identifier}: routed to ${expected}`,
-      );
+      assert.equal(byId[expected].calls.get.length, 1, `${identifier}: routed to ${expected}`);
       for (const id of D5_ARM_ORDER) {
         if (id !== expected) {
           assert.equal(byId[id].calls.get.length, 0, `${identifier}: ${id} not consulted`);
@@ -682,12 +714,19 @@ describe("science controls thread from CLI flags into the capability request", (
     const { descriptors, byId } = scienceFive();
     const { status } = await runMain(
       [
-        "science", "search", "attention mechanism",
-        "--provider", "crossref",
-        "--author", "Vaswani",
-        "--year", "2018:2022",
-        "--venue", "Nature",
-        "--type", "review",
+        "science",
+        "search",
+        "attention mechanism",
+        "--provider",
+        "crossref",
+        "--author",
+        "Vaswani",
+        "--year",
+        "2018:2022",
+        "--venue",
+        "Nature",
+        "--type",
+        "review",
       ],
       { descriptors },
     );
@@ -793,10 +832,10 @@ describe("science output budget — SCIENCE_LADDER partition (D6b, AC-5d)", () =
         "unbudgeted run prints the full envelope",
       );
 
-      const budgeted = await runMain(
-        ["science", "search", "q", "--max-chars", "600"],
-        { descriptors, artifactsDir: dir },
-      );
+      const budgeted = await runMain(["science", "search", "q", "--max-chars", "600"], {
+        descriptors,
+        artifactsDir: dir,
+      });
       assert.equal(budgeted.status, 0, "--max-chars must be accepted, not UNSUPPORTED_OPTION");
       const out = budgeted.stdout.join("");
       assert.ok(out.length < full.stdout.join("").length, "budgeted envelope is smaller");
@@ -846,9 +885,16 @@ describe("science output budget — SCIENCE_LADDER partition (D6b, AC-5d)", () =
         ["science", "get", "10.1038/nature12373", "--max-chars", "600"],
         { descriptors, artifactsDir: dir },
       );
-      assert.equal(budgeted.status, 0, "--max-chars must be accepted on get, not UNSUPPORTED_OPTION");
+      assert.equal(
+        budgeted.status,
+        0,
+        "--max-chars must be accepted on get, not UNSUPPORTED_OPTION",
+      );
       const out = budgeted.stdout.join("");
-      assert.ok(out.length < full.stdout.join("").length, "budgeted single-work envelope is smaller");
+      assert.ok(
+        out.length < full.stdout.join("").length,
+        "budgeted single-work envelope is smaller",
+      );
       assert.ok(!out.includes(bigSummary), "summary mass was trimmed/dropped");
       const parsed = JSON.parse(out);
       assert.match(parsed.title, /^work-title$/, "title survives verbatim");
@@ -940,10 +986,9 @@ describe("science joins the --no-journal accept set (T7 flip)", () => {
     // escape-switch matrix (kill-switch, help exemption, entry
     // append pins) lives in tests/science-journal.test.js.
     const { descriptors, byId } = scienceFive();
-    const { status, stdout, stderr } = await runMain(
-      ["science", "search", "q", "--no-journal"],
-      { descriptors },
-    );
+    const { status, stdout, stderr } = await runMain(["science", "search", "q", "--no-journal"], {
+      descriptors,
+    });
     assert.equal(status, 0, "--no-journal must be accepted on science after T7");
     assert.equal(byId.openalex.calls.search.length, 1, "the search itself ran");
     assert.ok(stdout.length > 0, "data envelope still emitted");
@@ -953,6 +998,54 @@ describe("science joins the --no-journal accept set (T7 flip)", () => {
       false,
       "never the T2a UNSUPPORTED_OPTION rejection",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `science get` file-configured credentials (review round 4) — the
+// credential-free arm resolves stored keys through the credentialed
+// seam (resolveEnvFromConfig): a key persisted by `scoutline init`
+// (openalex/pubmed keyed opt-in) must reach the supplier adapters.
+// ---------------------------------------------------------------------------
+
+describe("science arm applies file-configured supplier credentials (review)", () => {
+  it("a stored openalex apiKey reaches the science adapters through create({ env })", async () => {
+    // GROUND: review round 4 — the science arm passed the RAW env to
+    // every adapter, so a key stored via the init keyed opt-in was
+    // invisible to the science suppliers. The arm now resolves through
+    // resolveEnvFromConfig (env wins over the file key — that seam's
+    // own contract, pinned in config-store tests).
+    const { descriptors, byId } = scienceFive({
+      openalex: { credentialEnvVars: ["OPENALEX_API_KEY"] },
+    });
+    const { status } = await runMain(["science", "get", "10.1038/nature12373"], {
+      descriptors,
+      loadScoutlineConfig: async () => ({
+        version: 1,
+        providers: { openalex: { apiKey: "stored-openalex-key" } },
+      }),
+    });
+    assert.equal(status, 0);
+    const openalexEnv = byId.openalex.calls.createEnvs.at(-1);
+    assert.equal(
+      openalexEnv?.OPENALEX_API_KEY,
+      "stored-openalex-key",
+      "the file key must reach the openalex adapter env",
+    );
+    const arxivEnv = byId.arxiv.calls.createEnvs.at(-1);
+    assert.equal(arxivEnv?.OPENALEX_API_KEY, undefined, "keyless suppliers see no injected key");
+  });
+
+  it("no config (fail-open posture) keeps the raw env untouched", async () => {
+    const { descriptors, byId } = scienceFive();
+    const { status } = await runMain(["science", "get", "10.1038/nature12373"], {
+      descriptors,
+      loadScoutlineConfig: async () => {
+        throw new Error("unreadable config");
+      },
+    });
+    assert.equal(status, 0, "a throwing loader degrades to the raw env, exit 0");
+    assert.equal(byId.openalex.calls.createEnvs.at(-1)?.OPENALEX_API_KEY, undefined);
   });
 });
 

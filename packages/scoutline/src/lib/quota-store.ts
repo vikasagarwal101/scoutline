@@ -36,11 +36,18 @@
  */
 
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 
 import type { QuotaCategory, QuotaWindow } from "../capabilities/quota.js";
 import type { ProviderId } from "../providers/types.js";
-import { atomicReplaceFile, resolveConfigRoot, type AtomicReplaceOptions } from "./config-store.js";
+import {
+  atomicReplaceFile,
+  resolveConfigRoot,
+  resolveConfigRootPure,
+  type AtomicReplaceOptions,
+  type ConfigRootEnvironment,
+} from "./config-store.js";
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -106,6 +113,16 @@ export function stateFilePath(root: string = resolveConfigRoot()): string {
 
 export interface QuotaStoreOptions {
   readonly filePath?: string;
+  /**
+   * #132 — env view the state path resolves from when `filePath` is
+   * omitted. When supplied, `stateFilePath()` resolves through the PURE
+   * resolver over this view (mirroring the usage-ledger sink), so a
+   * caller threading its invocation env (`main()` passes `deps.env`)
+   * sees that env's config root instead of ambient `process.env`.
+   * When omitted, the ambient guarded resolver (`resolveConfigRoot`,
+   * the #119 fence) is kept verbatim.
+   */
+  readonly env?: ConfigRootEnvironment;
   readonly now?: () => number;
   readonly onWarning?: (warning: QuotaStoreWarning) => void;
   readonly atomic?: AtomicReplaceOptions;
@@ -547,7 +564,18 @@ function withFileLock<T>(filePath: string, operation: () => Promise<T>): Promise
  * last-write-wins.
  */
 export function createDefaultQuotaStore(options: QuotaStoreOptions = {}): QuotaStore {
-  const filePath = options.filePath ?? stateFilePath();
+  // #132: env-aware path resolution. An injected env view resolves
+  // through the PURE resolver (no #119 guard — the caller explicitly
+  // owns the environment); the omitted-env default keeps the ambient
+  // guarded resolver verbatim so bare ambient callers still fail loud
+  // under test context.
+  const filePath =
+    options.filePath ??
+    stateFilePath(
+      options.env === undefined
+        ? resolveConfigRoot()
+        : resolveConfigRootPure(options.env, { homedir: os.homedir() }),
+    );
   const now = options.now ?? Date.now;
   const onWarning = options.onWarning ?? defaultWarningSink;
 

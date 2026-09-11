@@ -5687,7 +5687,12 @@ export async function main(
   // is on the critical path before the result returns outward —
   // surviving the bin's immediate `process.exit(status)`.
   const quotaRefreshEnabled = !loadScoutlineConfig && !dependencies.providerDescriptors;
-  const quotaStore = dependencies.quotaStore ?? createDefaultQuotaStore();
+  // #132: deps.env plumbed into the default quota store — the state path
+  // resolves from the SAME injected env the usage-ledger sink below reads
+  // (resolveConfigRootPure over MainDependencies.env), not ambient
+  // process.env. Closes the env asymmetry that made every main()-driven
+  // test without a `quotaStore` injection read the ambient config root.
+  const quotaStore = dependencies.quotaStore ?? createDefaultQuotaStore({ env });
   // Production records consumption through BOTH sinks (usage-ledger
   // DESIGN D3): the PB-T1 quota-store snapshot store (unchanged,
   // including scaffold-before-snapshot + harvest reconcile) and the usage ledger

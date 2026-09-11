@@ -880,7 +880,14 @@ export async function handleScience(
         const works = settled.flatMap((outcome) =>
           outcome.status === "fulfilled" ? outcome.value : [],
         );
-        if (works.length === 0 && firstRejected !== undefined) {
+        // Fail only when EVERY arm rejected (review): a fulfilled arm
+        // may validly return an empty result set — an empty-but-
+        // successful fan-out with one failed sibling still succeeds,
+        // with the sibling's failure disclosed per-arm on stderr.
+        if (
+          firstRejected !== undefined &&
+          settled.every((outcome) => outcome.status === "rejected")
+        ) {
           throw firstRejected.reason;
         }
         // D5 visible narrowing — never a silent drop: an arm that
@@ -1014,7 +1021,11 @@ export async function handleScience(
         // T7: the direct-invoke executor bypasses the shared execution
         // layer, so the supplier's (capture-wrapped) cacheIdentity is
         // consulted HERE — pre-invoke, matching execution.ts step 2.
-        if (deps.journal !== undefined && journalIdentity === undefined) {
+        // REPLACED per attempt (review): retaining the first supplier's
+        // identity would journal the fingerprint of a supplier that
+        // failed and rerouted; the loop breaks on success, so the last
+        // assignment is always the arm that actually served.
+        if (deps.journal !== undefined) {
           journalIdentity = capability.cacheIdentity?.(request);
         }
         try {

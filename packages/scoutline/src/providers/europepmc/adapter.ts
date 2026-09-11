@@ -86,11 +86,20 @@ function yearTerm(year: string): string {
   return to !== undefined ? `PUB_YEAR:[${from} TO ${to}]` : `PUB_YEAR:${from}`;
 }
 
-/** Compose the EuropePMC query string for one search (D7 europepmc column). */
+/**
+ * Compose the EuropePMC query string for one search (D7 europepmc column).
+ * Control values interpolated into quoted terms are backslash-escaped
+ * (review): a literal `"` or `\` in `--author` must not break out of the
+ * `AUTH:"…"` phrase.
+ */
+function quotedTerm(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
 function buildQuery(query: ScienceSearchRequest): string {
   const terms: string[] = [query.query.trim()];
   const controls = query.controls ?? {};
-  if (controls.author !== undefined) terms.push(`AUTH:"${controls.author}"`);
+  if (controls.author !== undefined) terms.push(`AUTH:${quotedTerm(controls.author)}`);
   if (controls.year !== undefined) terms.push(yearTerm(controls.year));
   if (controls.type !== undefined) {
     terms.push(`PUB_TYPE:"${TYPE_WIRE_LITERALS[controls.type]}"`);

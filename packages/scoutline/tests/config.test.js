@@ -231,6 +231,22 @@ describe("timeout precedence and default", () => {
   });
 });
 
+describe("vision model default", () => {
+  it("defaults to the documented current Z.AI vision model (#136)", () => {
+    const config = loadConfig({ Z_AI_API_KEY: "k" });
+    assert.strictEqual(
+      config.visionModel,
+      "glm-5.3-flash",
+      "the default must stay the documented current vision model — glm-5v-turbo is undocumented",
+    );
+  });
+
+  it("Z_AI_VISION_MODEL still overrides the default", () => {
+    const config = loadConfig({ Z_AI_API_KEY: "k", Z_AI_VISION_MODEL: "custom-vision-model" });
+    assert.strictEqual(config.visionModel, "custom-vision-model");
+  });
+});
+
 describe("missing credential through the CLI", () => {
   it("scoutline quota with no key returns one structured error, exit 3, and no transport", async () => {
     // Pin to zai (which requires a key) so the config gate fires with

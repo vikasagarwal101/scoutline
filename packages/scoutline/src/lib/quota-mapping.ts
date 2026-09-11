@@ -302,6 +302,9 @@ export const TAVILY_CAPABILITY_TO_ENDPOINT: Readonly<
   quota: undefined,
   diagnostics: undefined,
   "repository-exploration": undefined,
+  // Science capabilities are not Tavily endpoint categories.
+  "science.search": undefined,
+  "science.get": undefined,
 };
 
 /**
@@ -508,6 +511,39 @@ export const PROVIDER_AUTHORITY_POLICIES: readonly ProviderAuthorityPolicy[] = [
     kind: "always-unknown",
     reason:
       "Spider.cloud exposes GET /data/credits as an exact credit remaining balance (limit unknown); not a percentage-bounded plan signal.",
+  },
+  // Science suppliers (D5 pre-merge exclusion): keyless scholarly
+  // indexes with no spend signal — excluded from quota-snapshot
+  // availability ranking in v1; no CAPABILITY_MAPPING rows exist.
+  {
+    provider: "arxiv",
+    kind: "always-unknown",
+    reason:
+      "arXiv is a keyless scholarly index; no spend signal exists.",
+  },
+  {
+    provider: "openalex",
+    kind: "always-unknown",
+    reason:
+      "OpenAlex is a keyless-by-default scholarly index; no spend signal exists.",
+  },
+  {
+    provider: "crossref",
+    kind: "always-unknown",
+    reason:
+      "Crossref is a keyless scholarly index (mailto is politeness, not billing); no spend signal exists.",
+  },
+  {
+    provider: "pubmed",
+    kind: "always-unknown",
+    reason:
+      "PubMed is a keyless scholarly index (rate-limited, not metered); no spend signal exists.",
+  },
+  {
+    provider: "europepmc",
+    kind: "always-unknown",
+    reason:
+      "Europe PMC is a keyless scholarly index; no spend signal exists.",
   },
 ];
 

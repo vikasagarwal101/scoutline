@@ -221,7 +221,7 @@ redacted through the same seam as stdout and never touched by cache
 operations. `history list|show|stats` is the credential-free, fail-open
 inventory over that log.
 
-Every `search` / `read` / `research` call — batch ops included — also
+Every `search` / `read` / `research` / `science` call — batch ops included — also
 records a thin journal entry (skeleton: query, provider, url+title
 identity, content hash) into the same store, permanently and locally
 (0600, never uploaded, secrets redacted). Warm repeats (cache hits) record
@@ -246,26 +246,53 @@ scoutline search "x" --no-journal                           # skip this one call
 
 ## Capability Matrix
 
-| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Spider.cloud | Command |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Search | Yes | Yes (no domain/recency/content-size/location) | Yes (no location) | Yes (no location) | Yes (web/news/video; `--content-size high` → LLM Context) | Yes (no location; `--content-size high` = markdown, +1 credit/result) | Yes (domain, recency, location, content-size via `advanced_settings`; topic via keyword) | Yes (domain, recency, content-size; topic via keyword) | Yes (domain, location; rejects recency/content-size; topic via keyword) | Yes | Yes | Yes | `scoutline search` |
-| General single-image interpretation | Yes | Yes (JPG/JPEG/PNG/WebP ≤50 MiB) | No | No | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
-| Specialized Vision (UI-to-code, OCR, error diagnosis, diagram) | Yes | Available (live-attested; conformance-gated) | No | No | No | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `vision extract-text`, `vision diagnose-error`, `vision diagram` |
-| Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | No | No | No | No | No | No | No | No | No | No | `scoutline vision chart` |
-| Two-image diff, video | Yes | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision diff`, `vision video` |
-| Quota (normalized) | Yes | Yes | Yes | **No** (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | **No** | **No** | Yes (rate-limit telemetry, not spend) | **No** | Yes (credit balance, not spend) | Yes (credit balance, not spend) | `scoutline quota [--all-providers]` |
-| Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes (single-scrape probe) | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor [--no-tools] [--available]`; every row carries `availability` (`ok`/`exhausted`/`error`/`unconfigured`), rows sort healthy-first, and `availableProviders` lists the `ok` providers in registry order |
-| Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes (rejects Z.AI-only options) | Yes (rejects Z.AI-only options) | **No** (UNSUPPORTED_CAPABILITY) | Yes (returns page titles) | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes | Yes (rejects Z.AI-only options plus `--format text`) | Yes (renders JavaScript; rejects `--format text` and `--no-images`) | Yes (rejects Z.AI-only options) | `scoutline read` |
-| Repository exploration (search/read/tree/brief) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | `scoutline repo ...` |
-| Crawl | **No** | **No** | Yes | **No** | **No** | Yes (async; resumable after Ctrl-C) | **No** | **No** | **No** | **No** | **No** | Yes (sync) | `scoutline crawl` |
-| Map | **No** | **No** | Yes | **No** | **No** | Yes | **No** | **No** | **No** | **No** | **No** | Yes | `scoutline map` |
-| Research (4-250 credits) | **No** | **No** | Yes | Yes | **No** | **No** (`/deep-research` deprecated) | Yes | Yes | Yes | Yes | Yes | **No** | `scoutline research` |
-| Raw tools | Yes | No | No | No | No | No | No | No | No | No | No | No | `scoutline tools`, `tool`, `call` |
-| Code Mode | Yes | No | No | No | No | No | No | No | No | No | No | No | `scoutline code ...` |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Spider.cloud | arXiv | OpenAlex | Crossref | PubMed | Europe PMC | Command |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Search | Yes | Yes (no domain/recency/content-size/location) | Yes (no location) | Yes (no location) | Yes (web/news/video; `--content-size high` → LLM Context) | Yes (no location; `--content-size high` = markdown, +1 credit/result) | Yes (domain, recency, location, content-size via `advanced_settings`; topic via keyword) | Yes (domain, recency, content-size; topic via keyword) | Yes (domain, location; rejects recency/content-size; topic via keyword) | Yes | Yes | Yes | No | No | No | No | No | `scoutline search` |
+| General single-image interpretation | Yes | Yes (JPG/JPEG/PNG/WebP ≤50 MiB) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
+| Specialized Vision (UI-to-code, OCR, error diagnosis, diagram) | Yes | Available (live-attested; conformance-gated) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `vision extract-text`, `vision diagnose-error`, `vision diagram` |
+| Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision chart` |
+| Two-image diff, video | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision diff`, `vision video` |
+| Quota (normalized) | Yes | Yes | Yes | **No** (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | **No** | **No** | Yes (rate-limit telemetry, not spend) | **No** | Yes (credit balance, not spend) | Yes (credit balance, not spend) | No | No | No | No | No | `scoutline quota [--all-providers]` |
+| Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes (single-scrape probe) | Yes | Yes | Yes | Yes | Yes | Yes | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | `scoutline doctor [--no-tools] [--available]`; every row carries `availability` (`ok`/`exhausted`/`error`/`unconfigured`), rows sort healthy-first, and `availableProviders` lists the `ok` providers in registry order |
+| Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes (rejects Z.AI-only options) | Yes (rejects Z.AI-only options) | **No** (UNSUPPORTED_CAPABILITY) | Yes (returns page titles) | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes | Yes (rejects Z.AI-only options plus `--format text`) | Yes (renders JavaScript; rejects `--format text` and `--no-images`) | Yes (rejects Z.AI-only options) | No | No | No | No | No | `scoutline read` |
+| Repository exploration (search/read/tree/brief) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | No | No | No | No | No | `scoutline repo ...` |
+| Crawl | **No** | **No** | Yes | **No** | **No** | Yes (async; resumable after Ctrl-C) | **No** | **No** | **No** | **No** | **No** | Yes (sync) | No | No | No | No | No | `scoutline crawl` |
+| Map | **No** | **No** | Yes | **No** | **No** | Yes | **No** | **No** | **No** | **No** | **No** | Yes | No | No | No | No | No | `scoutline map` |
+| Research (4-250 credits) | **No** | **No** | Yes | Yes | **No** | **No** (`/deep-research` deprecated) | Yes | Yes | Yes | Yes | Yes | **No** | No | No | No | No | No | `scoutline research` |
+| Science (scholarly search/get) | No | No | No | No | No | No | No | No | No | No | No | No | Yes | Yes | Yes | Yes | Yes | `scoutline science search <query>` / `scoutline science get <identifier>`; keyless — no API key required; controls `--author`/`--year`/`--venue`/`--type` consumed only where the supplier wire supports them |
+| Raw tools | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline tools`, `tool`, `call` |
+| Code Mode | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline code ...` |
 
 Vision results are never cached. Z.AI image limits are JPG/JPEG/PNG ≤5 MiB.
 Search result count is applied locally after normalization and is never sent
 to the active Provider.
+
+## Science
+
+Keyless scholarly literature search and retrieval across five
+suppliers: arXiv, OpenAlex, Crossref, PubMed, and Europe PMC. No API
+key is required for any of them — `scoutline science` dispatches
+credential-free. Optional `OPENALEX_API_KEY` and `NCBI_API_KEY`
+environment variables unlock higher rate limits but are never required.
+
+```bash
+scoutline science search "graph transformers" --year 2020:2024
+scoutline science search "attention" --author Vaswani --provider crossref
+scoutline science get 10.1038/nature12373
+```
+
+- `science search <query>` — merged, deduplicated works across the
+  suppliers (default fan-out; `--provider <id>` pins one).
+  Controls: `--author <name>`, `--year <y|y:y>` (e.g. `2020` or
+  `2018:2022`), `--venue <name>`, `--type <article|preprint|
+  conference-paper|chapter|dataset|review|other>`. Each control is
+  consumed only on suppliers whose wire supports it and rejected with
+  `UNSUPPORTED_OPTION` elsewhere (never silently dropped).
+- `science get <identifier>` — fetch one work by bare DOI
+  (`10.1038/nature12373`), numeric PMID (`31672840`), or arXiv id
+  (`2401.12345`); the identifier grammar routes to the suppliers that
+  can serve it.
 
 ## Batch (manifest runner)
 
@@ -300,6 +327,7 @@ input).
 | vision | Analyze images, screenshots, videos (incl. `batch`) | `--help` for 9 subcommands |
 | batch | Manifest of operations run across providers (distribution by default) | `--help` for manifest + flags |
 | search | Real-time web search | `--help` for filtering options (incl. `--topic`) and local context |
+| science | Keyless scholarly search/get across five suppliers | `--help` for search/get and controls |
 | read | Fetch web pages as markdown (nine providers) | `--help` for format options |
 | fetch | Direct evidentiary HTTP retrieval (credential-free) | `--help` for `--out`/`--md5`/`--sha256`/`--pdf`/`-X`/`--data` |
 | archive | Wayback CDX indexing, verbatim snapshot replay, snapshot-vs-live diff (credential-free) | `--help` for `cdx`/`get` (`--at`, `--raw`) and `diff` (`--since`) |
@@ -444,6 +472,7 @@ npx scoutline@0.20.0 config get routing
 | You.com | Search/reader/research; no quota endpoint. |
 | Linkup | Research priced by reasoning depth ($0.25-$2.50/query); quota reports the prepaid USD balance. |
 | Spider.cloud | Crawl/map (sync) plus search/reader; credit-based. |
+| arXiv, OpenAlex, Crossref, PubMed, Europe PMC | `scoutline science search` / `science get` only — keyless scholarly lookups (five suppliers, DOI-deduped merge; `--provider` pins one). |
 
 ## Repository Exploration
 

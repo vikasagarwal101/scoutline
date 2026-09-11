@@ -91,14 +91,14 @@ async function runMain(argv) {
 // ---------------------------------------------------------------------------
 
 describe("the dispatcher's --max-chars partition is complete over all dispatched commands", () => {
-  it("DISPATCHED_COMMANDS matches the full 22-command audit list exactly", () => {
+  it("DISPATCHED_COMMANDS matches the full 23-command audit list exactly", () => {
     assert.deepEqual(
       [...DISPATCHED_COMMANDS].sort(),
       [
         "archive", "batch", "call", "cache", "code", "config", "crawl",
         "doctor", "fetch", "history", "init", "map", "quota", "read",
-        "repo", "research", "search", "tool", "tools", "usage", "vision",
-        "watch",
+        "repo", "research", "science", "search", "tool", "tools", "usage",
+        "vision", "watch",
       ].sort(),
     );
   });
@@ -116,12 +116,12 @@ describe("the dispatcher's --max-chars partition is complete over all dispatched
       [...DISPATCHED_COMMANDS].sort(),
       "dispatch surface (switch cases + if arms) must equal DISPATCHED_COMMANDS",
     );
-    assert.equal(SWITCH_CASES.size + IF_ARMS.size, 22, "14 switch cases + 8 if arms");
+    assert.equal(SWITCH_CASES.size + IF_ARMS.size, 23, "14 switch cases + 9 if arms");
     for (const c of SWITCH_CASES) assert.ok(!IF_ARMS.has(c), `"${c}" dispatched twice`);
   });
 
   it("every dispatched command is either a ladder surface or in the rejection set", () => {
-    const ladder = new Set(["search", "read", "crawl", "research", "repo"]);
+    const ladder = new Set(["search", "read", "crawl", "research", "repo", "science"]);
     for (const command of DISPATCHED_COMMANDS) {
       assert.ok(
         ladder.has(command) || REJECT_MAX_CHARS_COMMANDS.has(command),
@@ -139,7 +139,7 @@ describe("the dispatcher's --max-chars partition is complete over all dispatched
     // the dispatched set without giving it a ladder or a rejection row.
     const simulated = new Set(DISPATCHED_COMMANDS);
     simulated.add("transmogrify");
-    const ladder = new Set(["search", "read", "crawl", "research", "repo"]);
+    const ladder = new Set(["search", "read", "crawl", "research", "repo", "science"]);
     const uncovered = [...simulated].filter(
       (c) => !ladder.has(c) && !REJECT_MAX_CHARS_COMMANDS.has(c),
     );

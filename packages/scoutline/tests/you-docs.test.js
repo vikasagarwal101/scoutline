@@ -18,6 +18,13 @@ import * as fs from "node:fs/promises";
 import { SEARCH_HELP } from "../dist/commands/search.js";
 import { runProcess } from "./helpers/run-process.js";
 
+// GROUND: T2 originally widened the --provider enumeration 12→17 with
+// the five science ids (PRD AC-9b). Review ruling (science verticals
+// round 3): the shared-command enumeration must list only the
+// shared-capability suppliers — the science seats are never
+// search/read-eligible, so advertising them invited a guaranteed
+// failing pin. You.com stays in the 12. Pinned here as a literal so a
+// widening that misses any surface fails loudly.
 const PROVIDER_ENUM =
   "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>";
 const PROVIDER_LIST_TAIL =
@@ -29,10 +36,7 @@ const configuration = fs.readFile(
   new URL("../../../docs/configuration.md", import.meta.url),
   "utf8",
 );
-const changelog = fs.readFile(
-  new URL("../../../CHANGELOG.md", import.meta.url),
-  "utf8",
-);
+const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url), "utf8");
 
 describe("You.com docs — public READMEs", () => {
   it("package README lists You.com in the provider selection surface", async () => {
@@ -61,15 +65,9 @@ describe("You.com docs — public READMEs", () => {
       text.includes(PROVIDER_ENUM),
       "root README must list you in the --provider enumeration",
     );
-    assert.ok(
-      text.includes("### Using You.com"),
-      "root README must carry a Using You.com section",
-    );
+    assert.ok(text.includes("### Using You.com"), "root README must carry a Using You.com section");
     assert.ok(text.includes("YDC_API_KEY"), "root README must document YDC_API_KEY");
-    assert.ok(
-      text.includes("YOU_API_KEY"),
-      "root README must document the YOU_API_KEY alias",
-    );
+    assert.ok(text.includes("YOU_API_KEY"), "root README must document the YOU_API_KEY alias");
     assert.ok(
       text.includes("| You.com |"),
       "root README capability matrix must have a You.com column",
@@ -85,10 +83,7 @@ describe("You.com docs — configuration", () => {
       "configuration.md must have a You.com Settings section",
     );
     assert.ok(text.includes("YDC_API_KEY"), "configuration.md must document YDC_API_KEY");
-    assert.ok(
-      text.includes("YOU_API_KEY"),
-      "configuration.md must document the YOU_API_KEY alias",
-    );
+    assert.ok(text.includes("YOU_API_KEY"), "configuration.md must document the YOU_API_KEY alias");
     assert.ok(
       text.includes(PROVIDER_ENUM),
       "configuration.md --provider enumeration must list the full registry (incl. you)",
@@ -113,19 +108,13 @@ describe("You.com docs — CHANGELOG", () => {
     assert.ok(next > start, "0.18.0 must be followed by a prior version section");
     const section = text.slice(start, next);
     assert.ok(section.includes("You.com"), "the 0.18.0 section must mention You.com");
-    assert.ok(
-      section.includes("YDC_API_KEY"),
-      "the 0.18.0 section must mention YDC_API_KEY",
-    );
+    assert.ok(section.includes("YDC_API_KEY"), "the 0.18.0 section must mention YDC_API_KEY");
   });
 });
 
 describe("You.com docs — CLI help enumerations", () => {
   it("SEARCH_HELP lists you in the --provider enumeration", () => {
-    assert.ok(
-      SEARCH_HELP.includes(PROVIDER_ENUM),
-      "SEARCH_HELP must list you in --provider",
-    );
+    assert.ok(SEARCH_HELP.includes(PROVIDER_ENUM), "SEARCH_HELP must list you in --provider");
   });
 
   it("main help names You.com among the providers", async () => {
@@ -135,18 +124,20 @@ describe("You.com docs — CLI help enumerations", () => {
     assert.equal(result.code, 0);
     assert.ok(
       result.stdout.includes("all 12 Providers"),
-      "main help must count 12 providers",
+      "main help must count the 12 shared-capability providers",
     );
     assert.ok(
       result.stdout.includes("perplexity|jina|you|linkup|spider>"),
-      "main help must list you in --provider",
+      "main help --provider enumeration keeps you and stops at the shared suppliers",
     );
     assert.ok(
       result.stdout.includes("You.com advertises search, reader, and research"),
       "main help must advertise You.com capabilities",
     );
     assert.ok(
-      result.stdout.includes("Exa, Firecrawl, Parallel, Jina, You.com, Linkup, and Spider.cloud supply it"),
+      result.stdout.includes(
+        "Exa, Firecrawl, Parallel, Jina, You.com, Linkup, and Spider.cloud supply it",
+      ),
       "main help must list You.com among the read suppliers",
     );
     assert.ok(

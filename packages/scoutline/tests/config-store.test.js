@@ -89,17 +89,14 @@ describe("readConfig", () => {
       await fs.writeFile(filePath, "{not-json");
       const { readConfig } = await import("../dist/lib/config-store.js");
 
-      await assert.rejects(
-        readConfig({ filePath }),
-        (error) => {
-          assert.ok(error instanceof ConfigurationError);
-          assert.strictEqual(error.code, "CONFIGURATION_ERROR");
-          assert.strictEqual(error.exitCode, 3);
-          assert.match(error.message, /config\.json is corrupt/i);
-          assert.match(error.help, /scoutline init/i);
-          return true;
-        },
-      );
+      await assert.rejects(readConfig({ filePath }), (error) => {
+        assert.ok(error instanceof ConfigurationError);
+        assert.strictEqual(error.code, "CONFIGURATION_ERROR");
+        assert.strictEqual(error.exitCode, 3);
+        assert.match(error.message, /config\.json is corrupt/i);
+        assert.match(error.help, /scoutline init/i);
+        return true;
+      });
     });
   });
 
@@ -109,15 +106,12 @@ describe("readConfig", () => {
       await fs.writeFile(filePath, JSON.stringify({ version: 2, providers: {} }));
       const { readConfig } = await import("../dist/lib/config-store.js");
 
-      await assert.rejects(
-        readConfig({ filePath }),
-        (error) => {
-          assert.ok(error instanceof ConfigurationError);
-          assert.match(error.message, /unsupported config version 2/i);
-          assert.match(error.help, /upgrade scoutline/i);
-          return true;
-        },
-      );
+      await assert.rejects(readConfig({ filePath }), (error) => {
+        assert.ok(error instanceof ConfigurationError);
+        assert.match(error.message, /unsupported config version 2/i);
+        assert.match(error.help, /upgrade scoutline/i);
+        return true;
+      });
     });
   });
 
@@ -175,15 +169,12 @@ describe("readConfig", () => {
       await fs.mkdir(filePath);
       const { readConfig } = await import("../dist/lib/config-store.js");
 
-      await assert.rejects(
-        readConfig({ filePath }),
-        (error) => {
-          assert.ok(error instanceof ConfigurationError);
-          assert.match(error.message, /unable to read config\.json/i);
-          assert.match(error.help, /scoutline init/i);
-          return true;
-        },
-      );
+      await assert.rejects(readConfig({ filePath }), (error) => {
+        assert.ok(error instanceof ConfigurationError);
+        assert.match(error.message, /unable to read config\.json/i);
+        assert.match(error.help, /scoutline init/i);
+        return true;
+      });
     });
   });
 });
@@ -453,6 +444,41 @@ describe("config routing key", () => {
     assert.strictEqual(result.config.routing, undefined);
     assert.deepStrictEqual(result.warnings, []);
   });
+
+  // Science routing dead letter (DESIGN D5 ruling) — routing.science.* is
+  // an unknown capability on purpose: lenient load warn-drops it; strict
+  // set rejects it (covered separately below); the science executor
+  // never reads routing.
+  it("routing.science.search is warn-dropped by lenient load, not stored (science routing dead letter)", async () => {
+    const result = await inspect({
+      version: 1,
+      providers: {},
+      routing: { "science.search": ["openalex"], search: ["tavily"] },
+    });
+    assert.strictEqual(result.status, "valid");
+    assert.strictEqual(result.config.routing["science.search"], undefined);
+    assert.deepStrictEqual(result.config.routing.search, ["tavily"]);
+    const dropped = result.warnings.some(
+      (w) => w.code === "UNKNOWN_CAPABILITY" && /science\.search/.test(w.message),
+    );
+    assert.ok(dropped, "load must warn about the dropped science.search routing key");
+  });
+
+  it("routing.science.get in config.json is warn-dropped by lenient load (science routing dead letter)", async () => {
+    const result = await inspect({
+      version: 1,
+      providers: {},
+      routing: { "science.get": ["openalex"], search: ["tavily"] },
+    });
+    assert.strictEqual(result.status, "valid");
+    // The science entry is gone; the valid search entry survives.
+    assert.strictEqual(result.config.routing["science.get"], undefined);
+    assert.deepStrictEqual(result.config.routing.search, ["tavily"]);
+    const dropped = result.warnings.some(
+      (w) => w.code === "UNKNOWN_CAPABILITY" && /science\.get/.test(w.message),
+    );
+    assert.ok(dropped, "load must warn about the dropped science routing key");
+  });
 });
 
 // ===========================================================================
@@ -511,8 +537,7 @@ describe("config key registry", () => {
       const filePath = path.join(blocker, "config.json");
       await assert.rejects(
         () => setConfigValue("fallbackEnabled", "true", { filePath }),
-        (error) =>
-          error.name === "ConfigurationError" && error.help.includes("permissions"),
+        (error) => error.name === "ConfigurationError" && error.help.includes("permissions"),
       );
       // A validation failure inside the locked section stays a
       // ValidationError, never the lock/ConfigurationError wrap.
@@ -586,21 +611,17 @@ describe("config key registry", () => {
   });
 
   it("unset fallbackEnabled removes the switch; absent switch fails", async (t) => {
-    await withConfig(
-      t,
-      { version: 1, providers: {}, fallbackEnabled: false },
-      async (filePath) => {
-        const { unsetConfigValue, readConfig } = await import("../dist/lib/config-store.js");
-        const updated = await unsetConfigValue("fallbackEnabled", { filePath });
-        assert.strictEqual(updated.fallbackEnabled, undefined);
-        const reread = await readConfig({ filePath, onWarning: () => {} });
-        assert.strictEqual(reread.fallbackEnabled, undefined);
-        await assert.rejects(
-          () => unsetConfigValue("fallbackEnabled", { filePath }),
-          (error) => error.name === "ValidationError" && error.message.includes("not set"),
-        );
-      },
-    );
+    await withConfig(t, { version: 1, providers: {}, fallbackEnabled: false }, async (filePath) => {
+      const { unsetConfigValue, readConfig } = await import("../dist/lib/config-store.js");
+      const updated = await unsetConfigValue("fallbackEnabled", { filePath });
+      assert.strictEqual(updated.fallbackEnabled, undefined);
+      const reread = await readConfig({ filePath, onWarning: () => {} });
+      assert.strictEqual(reread.fallbackEnabled, undefined);
+      await assert.rejects(
+        () => unsetConfigValue("fallbackEnabled", { filePath }),
+        (error) => error.name === "ValidationError" && error.message.includes("not set"),
+      );
+    });
   });
 
   it("routing set parses a strict comma list and persists", async (t) => {
@@ -634,6 +655,22 @@ describe("config key registry", () => {
       await assert.rejects(
         () => setConfigValue("routing.serch", "tavily", { filePath }),
         (error) => error.name === "ValidationError",
+      );
+    });
+  });
+
+  // GROUND: T2 dead-letter pin (DESIGN D5) — config set rejects
+  // routing.science.* as an unknown capability.
+  it("routing set rejects routing.science.search as an unknown capability (science routing dead letter)", async (t) => {
+    await withConfig(t, { version: 1, providers: {} }, async (filePath) => {
+      const { setConfigValue } = await import("../dist/lib/config-store.js");
+      await assert.rejects(
+        () => setConfigValue("routing.science.search", "openalex", { filePath }),
+        (error) => {
+          assert.strictEqual(error.name, "ValidationError");
+          assert.match(error.message, /science\.search|Use one of/i);
+          return true;
+        },
       );
     });
   });

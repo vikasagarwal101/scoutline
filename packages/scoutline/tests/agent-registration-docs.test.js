@@ -58,7 +58,20 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // body edits (history/journal documentation) are absorbed here —
 // verified the integrated body is byte-identical to origin/main's
 // body, i.e. the agent stream still contributes zero body delta.
-const SKILL_BODY_SHA256 = "784e8e5a2a60bf864428f0cdd4c1e815b03c5bdd8f25d625d3d9fc8f8f511dfc";
+// Rebaselined again at the science seat registration: the capability
+// matrix gained five provider COLUMNS (data columns, registry-derived —
+// the T2 same-commit docs edit). No agent-facing body copy changed.
+// Rebaselined at the science docs pass: SKILL.md gained a Science
+// section (usage, controls, keyless posture) and the matrix gained the
+// Science ROW (the sanctioned per-ticket docs edit; see the science
+// docs tests).
+// Rebaselined at the science review round 3: the Commands index table
+// gained its missing `science` row (cubic finding — every top-level
+// command must be indexed). No other body copy changed.
+// Rebaselined at the ruling round: the journal paragraph's capability
+// list gained `science`, and the Which-provider-when table gained the
+// five-supplier science row (owner ruling text edits).
+const SKILL_BODY_SHA256 = "a23e7ee2513b165d624c0cd2308cc30f066797bfa7ee1d30b9394e6d1b46f4cc";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

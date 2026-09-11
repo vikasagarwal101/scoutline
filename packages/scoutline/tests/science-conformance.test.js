@@ -139,6 +139,24 @@ function makeInvocation() {
   };
 }
 
+/**
+ * T10: control-exclusion notices precede the JSON error envelope on
+ * pinned-reject stderr; keep the structured envelope chunk.
+ */
+function parseErrorEnvelope(stderr) {
+  for (const chunk of stderr) {
+    try {
+      const parsed = JSON.parse(chunk);
+      if (parsed !== null && typeof parsed === "object" && typeof parsed.code === "string") {
+        return parsed;
+      }
+    } catch {
+      // plain-text notice chunk — skip
+    }
+  }
+  throw new Error(`no error envelope in stderr: ${JSON.stringify(stderr)}`);
+}
+
 async function runMain(argv, descriptors) {
   const { adapter, stdout, stderr } = makeInvocation();
   const status = await main(argv, {
@@ -178,7 +196,7 @@ describe("interim controls-vs-supplier: pinned rejecting supplier fails UNSUPPOR
     );
     assert.equal(status, 1, "pinned rejecting supplier fails the command");
     assert.deepEqual(stdout, [], "data-only stdout contract — nothing on stdout");
-    const err = JSON.parse(stderr.join(""));
+    const err = parseErrorEnvelope(stderr);
     assert.equal(err.code, "UNSUPPORTED_OPTION", "error class is UNSUPPORTED_OPTION");
     assert.match(err.error, /arxiv/, "the message names the pinned supplier");
     assert.match(err.error, /author/, "the message names the rejected control");
@@ -199,7 +217,7 @@ describe("interim controls-vs-supplier: pinned rejecting supplier fails UNSUPPOR
       [openalex.descriptor],
     );
     assert.equal(status, 1);
-    const err = JSON.parse(stderr.join(""));
+    const err = parseErrorEnvelope(stderr);
     assert.equal(err.code, "UNSUPPORTED_OPTION");
     assert.match(err.error, /venue/);
   });

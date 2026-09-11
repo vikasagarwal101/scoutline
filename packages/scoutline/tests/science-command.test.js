@@ -425,8 +425,14 @@ describe("science envelope shape — data CommandResult, data-only stdout", () =
         url: "https://example.org/second",
       },
     ];
+    // T10 flip: the no-pin default is the fan-out; zeroing the four
+    // sibling arms keeps this envelope pin single-supplier-shaped.
     const { descriptors } = scienceFive({
       openalex: { searchWorks: () => works },
+      arxiv: { searchWorks: () => [] },
+      crossref: { searchWorks: () => [] },
+      pubmed: { searchWorks: () => [] },
+      europepmc: { searchWorks: () => [] },
     });
     const { status, stdout } = await runMain(["science", "search", "attention"], {
       descriptors,
@@ -467,6 +473,9 @@ describe("science envelope shape — data CommandResult, data-only stdout", () =
     // GROUND: DESIGN D6 "Errors through the invocation error path
     // (JSON contract preserved)" — one structured stderr envelope, no
     // stdout, typed error code pass-through.
+    // T10 flip: pin the failing arm — an unpinned fan-out deliberately
+    // continues past a failed arm when others serve; the single-arm
+    // failure contract is the pin.
     const { descriptors } = scienceFive({
       openalex: {
         searchWorks: () => {
@@ -474,9 +483,10 @@ describe("science envelope shape — data CommandResult, data-only stdout", () =
         },
       },
     });
-    const { status, stdout, stderr } = await runMain(["science", "search", "q"], {
-      descriptors,
-    });
+    const { status, stdout, stderr } = await runMain(
+      ["science", "search", "q", "--provider", "openalex"],
+      { descriptors },
+    );
     assert.equal(status, 1);
     assert.deepEqual(stdout, [], "failure path keeps stdout empty");
     const err = parseStderr(stderr);
@@ -486,42 +496,42 @@ describe("science envelope shape — data CommandResult, data-only stdout", () =
 });
 
 // ---------------------------------------------------------------------------
-// Interim resolver — EXPLICITLY-INTERIM pins (TASKS T6 interim bullet;
-// DESIGN D5 openalex-first arm order). T10 is the flip owner: its diff
-// UPDATES these tests to fan-out semantics, never deletes the pin.
+// Resolver — interim pins FLIPPED to fan-out semantics (TASKS T10 flip
+// ownership, named in the T6-era TODO(T10) comments; DESIGN D5
+// openalex-first arm order governs first-supplier-wins merge). The
+// merge/dedup/enrichment teeth live in science-fanout-merge.test.js.
 // ---------------------------------------------------------------------------
 
-describe("interim resolver (T10 flips to fan-out semantics)", () => {
-  it("interim-no-pin: search invokes ONLY the first configured+capable supplier in D5 openalex-first order — single arm, not merged", async () => {
-    // GROUND: TASKS T6 interim bullet "no pin → first configured+
-    // capable science supplier in the D5 openalex-first order" +
-    // interim-pin guard: assert SINGLE-ARM output (exactly one
-    // supplier invoked, output equals that supplier's works — NOT a
-    // merged multi-supplier result set). TODO(T10): default becomes
-    // fan-out across all enabled science suppliers; T10 updates this
-    // test to merged/dedup semantics.
+describe("resolver (T10 fan-out semantics — interim pins flipped in-ticket)", () => {
+  it("default-no-pin: search invokes EVERY enabled supplier in D5 arm order — merged fan-out, not single-arm", async () => {
+    // GROUND: TASKS T10 "NO-PIN DEFAULT fan-out across all enabled
+    // science suppliers" — the T6 interim pin (single openalex arm,
+    // openalex-only output) flipped in-ticket per the interim-pin
+    // guard: T10's diff UPDATES these tests, never deletes them.
+    // Asserts the arm SET + merged output; dedup/enrichment detail is
+    // science-fanout-merge.test.js's.
     const { descriptors, byId } = scienceFive();
     const { status, stdout } = await runMain(["science", "search", "attention"], {
       descriptors,
     });
     assert.equal(status, 0);
-    assert.equal(byId.openalex.calls.search.length, 1, "openalex (D5 arm #1) invoked once");
-    for (const id of ["arxiv", "crossref", "pubmed", "europepmc"]) {
-      assert.equal(byId[id].calls.search.length, 0, `${id} must NOT run in the interim default`);
+    for (const id of D5_ARM_ORDER) {
+      assert.equal(byId[id].calls.search.length, 1, `${id} invoked once in the fan-out`);
     }
     const parsed = JSON.parse(stdout.join(""));
     assert.ok(Array.isArray(parsed));
+    assert.equal(parsed.length, 5, "merged across all five arms");
     assert.deepEqual(
-      parsed,
-      [{ title: "search-from-openalex", url: "https://example.org/openalex" }],
-      "single-arm output: openalex's works only, never a cross-supplier merge",
+      parsed.map((w) => w.title).sort(),
+      ["search-from-arxiv", "search-from-crossref", "search-from-europepmc", "search-from-openalex", "search-from-pubmed"],
+      "fan-out output: every arm's works merged — never a single-arm result",
     );
   });
 
-  it("interim-pin: --provider <id> is honored over the default order", async () => {
-    // GROUND: TASKS T6 interim bullet "pin honored"; D5 "`--provider
-    // openalex` pins directly (bare id — no new grammar)". TODO(T10):
-    // pin stays single-arm (no change), only the no-pin default widens.
+  it("pin: --provider <id> is honored over the fan-out default", async () => {
+    // GROUND: TASKS T10 "single `--provider <id>` pin" (unchanged from
+    // T6: a pin is single-arm by design); D5 "`--provider openalex`
+    // pins directly (bare id — no new grammar)".
     const { descriptors, byId } = scienceFive();
     const { status } = await runMain(
       ["science", "search", "q", "--provider", "crossref"],
@@ -529,28 +539,31 @@ describe("interim resolver (T10 flips to fan-out semantics)", () => {
     );
     assert.equal(status, 0);
     assert.equal(byId.crossref.calls.search.length, 1, "pinned supplier invoked");
-    assert.equal(byId.openalex.calls.search.length, 0, "default first arm not consulted");
+    assert.equal(byId.openalex.calls.search.length, 0, "other arms not consulted");
+    assert.equal(byId.arxiv.calls.search.length, 0);
   });
 
-  it("interim-provider-all: --provider all is treated as the no-pin default for now", async () => {
-    // GROUND: TASKS T6 interim bullet "`--provider all` treated as the
-    // no-pin default for now; marked TODO(T10)". NOT an unknown-
-    // provider error, NOT yet fan-out.
+  it("provider-all: --provider all runs the real fan-out (all five arms, merged array)", async () => {
+    // GROUND: TASKS T10 "`--provider all`" — flipped from the T6
+    // interim "treated as the no-pin default" to the actual fan-out:
+    // every arm invokes, one merged result set.
     const { descriptors, byId } = scienceFive();
-    const { status } = await runMain(
+    const { status, stdout } = await runMain(
       ["science", "search", "q", "--provider", "all"],
       { descriptors },
     );
     assert.equal(status, 0, "--provider all must not fail as an unknown provider");
-    assert.equal(byId.openalex.calls.search.length, 1);
-    assert.equal(byId.crossref.calls.search.length, 0, "interim: still single-arm");
+    for (const id of D5_ARM_ORDER) {
+      assert.equal(byId[id].calls.search.length, 1, `${id} runs in the pinned fan-out`);
+    }
+    assert.equal(JSON.parse(stdout.join("")).length, 5);
   });
 
-  it("interim-skip-unconfigured: an unconfigured first arm is skipped in D5 arm order", async () => {
-    // GROUND: TASKS T6 "first CONFIGURED+capable science supplier in
-    // the D5 openalex-first order" — eligibility filters walk the arm
-    // order; openalex down → arxiv next. TODO(T10): default becomes
-    // fan-out over the remaining ENABLED arms instead.
+  it("fanout-skip-unconfigured: an unconfigured arm is excluded; the fan-out proceeds on the remaining enabled arms", async () => {
+    // GROUND: DESIGN D5 "fan-out across all ENABLED science suppliers"
+    // — the T6 interim single-arm walk flipped: openalex down no
+    // longer selects arxiv ALONE; the remaining four arms all run and
+    // merge.
     const { descriptors, byId } = scienceFive({
       openalex: { configured: () => false },
     });
@@ -558,33 +571,41 @@ describe("interim resolver (T10 flips to fan-out semantics)", () => {
       descriptors,
     });
     assert.equal(status, 0);
-    assert.equal(byId.arxiv.calls.search.length, 1, "arxiv is D5 arm #2");
-    assert.equal(byId.openalex.calls.search.length, 0);
-    assert.deepEqual(JSON.parse(stdout.join("")), [
-      { title: "search-from-arxiv", url: "https://example.org/arxiv" },
-    ]);
+    assert.equal(byId.openalex.calls.search.length, 0, "unconfigured arm excluded");
+    for (const id of ["arxiv", "crossref", "pubmed", "europepmc"]) {
+      assert.equal(byId[id].calls.search.length, 1, `${id} runs in the narrowed fan-out`);
+    }
+    const parsed = JSON.parse(stdout.join(""));
+    assert.equal(parsed.length, 4);
+    assert.deepEqual(
+      parsed.map((w) => w.title).sort(),
+      ["search-from-arxiv", "search-from-crossref", "search-from-europepmc", "search-from-pubmed"],
+    );
   });
 
-  it("interim-skip-incapable: a supplier not advertising science.search is skipped", async () => {
-    // GROUND: TASKS T6 "configured+CAPABLE" — capabilities() gates the
-    // walk beside isConfigured (the resolver's two eligibility checks).
+  it("fanout-skip-incapable: a supplier not advertising science.search is excluded from the fan-out", async () => {
+    // GROUND: DESIGN D5 "enabled = configured+capable" — capabilities()
+    // gates the fan-out arm set beside isConfigured.
     const { descriptors, byId } = scienceFive({
       openalex: { caps: ["science.get", "diagnostics"] },
     });
     const { status } = await runMain(["science", "search", "q"], { descriptors });
     assert.equal(status, 0);
-    assert.equal(byId.arxiv.calls.search.length, 1, "incapable openalex skipped");
-    assert.equal(byId.openalex.calls.search.length, 0);
+    assert.equal(byId.openalex.calls.search.length, 0, "incapable arm excluded");
+    for (const id of ["arxiv", "crossref", "pubmed", "europepmc"]) {
+      assert.equal(byId[id].calls.search.length, 1, `${id} still runs`);
+    }
   });
 
-  it("interim-get-routing: get routes by identifier type through the D5 arm order (DOI→openalex, arXiv→arxiv, legacy arXiv→arxiv, PMID→openalex)", async () => {
+  it("get-routing: get routes by identifier type through the D5 arm order (DOI→openalex, arXiv→arxiv, legacy arXiv→arxiv, PMID→openalex)", async () => {
     // GROUND: DESIGN D6 "parse once, route to suppliers that serve
     // that id type … id-type→supplier membership … consumed by
     // T6/T10, pinned by test" + D10 Q3 membership (DOI → all but
     // arxiv; PMID → openalex/europepmc/pubmed; arXiv → arxiv only).
-    // The fakes' validate is a no-op — routing must be decided by the
-    // command layer, not by letting every supplier try. TODO(T10):
-    // gains fallback reroute on failure; T6 interim is single-attempt.
+    // The routing table itself survives the T10 fallback flip
+    // unchanged — fallback reroutes ON FAILURE (see
+    // science-fanout-merge.test.js), the first-attempt routing still
+    // walks the same order.
     const cases = [
       { identifier: "10.1038/nature12373", expected: "openalex" },
       { identifier: "2401.12345", expected: "arxiv" },
@@ -714,8 +735,14 @@ describe("science output budget — SCIENCE_LADDER partition (D6b, AC-5d)", () =
         authors: ["A", "B", "C"],
         venue: "Some Venue",
       }));
+      // T10 flip: zero the sibling arms so the fan-out default yields
+      // exactly these works (budget assertions unchanged).
       const { descriptors } = scienceFive({
         openalex: { searchWorks: () => works },
+        arxiv: { searchWorks: () => [] },
+        crossref: { searchWorks: () => [] },
+        pubmed: { searchWorks: () => [] },
+        europepmc: { searchWorks: () => [] },
       });
       const full = await runMain(["science", "search", "q"], {
         descriptors,

@@ -24,11 +24,15 @@
  *   - a missing query / identifier, a `doi:`-prefixed identifier, and
  *     free-text identifiers throw ValidationError.
  *
- * Interim selection (T6; T10 owns the full D5 grammar): no pin → the
- * FIRST configured+capable science supplier in the D5 openalex-first
- * arm order; `--provider <id>` pins; `--provider all` is treated as
- * the no-pin default for now. TODO(T10): the default becomes fan-out
- * across all enabled science suppliers with DOI-dedup merge.
+ * Selection (T10, the full D5 grammar): no pin or `--provider all` →
+ * fan-out across every enabled science supplier in the D5
+ * openalex-first arm order, merged with DOI-first dedup identity
+ * (exact-url fallback) and D12 field-wise union enrichment;
+ * `--provider <id>` pins one arm. Control-rejecting arms are EXCLUDED
+ * at validation with a per-arm stderr notice (never a silent drop);
+ * all enabled arms rejecting fails UNSUPPORTED_OPTION. `science get`
+ * reroutes along the id-type-filtered arm order on supplier failure
+ * with a stderr note; `--no-fallback` fails strict.
  */
 
 import type {
@@ -47,7 +51,7 @@ import { parseScienceIdentifier } from "../capabilities/science.js";
 import { applyBudget, type BudgetLadder, type LadderRule } from "../lib/output-budget.js";
 import { persistCompaction } from "../lib/output-budget-persistence.js";
 import { redactSecrets } from "../lib/redact.js";
-import { ValidationError } from "../lib/errors.js";
+import { UnsupportedOptionError, ValidationError } from "../lib/errors.js";
 import type { OutputMode } from "../lib/output.js";
 import type { HandlerDependencies } from "../index.js";
 import { parseBriefMaxChars } from "./repo.js";
@@ -403,7 +407,7 @@ function buildScienceControls(
 }
 
 // ---------------------------------------------------------------------------
-// Interim supplier selection (T6; TODO(T10): fan-out)
+// Supplier selection (T10: the full D5 fan-out grammar)
 // ---------------------------------------------------------------------------
 
 interface ScienceDescriptorLike {
@@ -447,96 +451,183 @@ function scienceDescriptorIndex(
   );
 }
 
-function assertEligible(
-  descriptor: ScienceDescriptorLike,
-  capabilityId: "science.search" | "science.get",
-  env: NodeJS.ProcessEnv,
-): void {
-  if (!descriptor.isConfigured(env, capabilityId)) {
-    throw new ValidationError(
-      `Provider "${descriptor.id}" is not configured for ${capabilityId}.`,
-      `Science suppliers: ${D5_ARM_ORDER.join(", ")}.`,
-    );
-  }
-  if (!descriptor.capabilities().has(capabilityId)) {
-    throw new ValidationError(
-      `Provider "${descriptor.id}" does not advertise ${capabilityId}.`,
-      `Science suppliers: ${D5_ARM_ORDER.join(", ")}.`,
-    );
-  }
-}
 
 /**
- * Resolve the interim supplier for a science capability: explicit
- * `--provider <id>` pin first; otherwise walk the D5 arm order for the
- * FIRST configured+capable supplier (TODO(T10): the no-pin default
- * becomes fan-out across all enabled arms). `--provider all` is
- * treated as the no-pin default for now.
+ * Resolve the D5 arm set for a science capability (T10): an explicit
+ * `--provider <id>` pin narrows the set to that ONE supplier (eligible
+ * checks still apply); no pin or `--provider all` selects EVERY
+ * configured+capable supplier in the D5 arm order. `notice` receives
+ * one line per EXCLUDED control-rejecting arm (D5 ruling: visible
+ * narrowing, never a silent drop) — the caller runs inside the
+ * invokeCommand behavior so notices flush on both the success and
+ * failure paths.
  */
-function resolveInterimScienceSupplier(
+function resolveScienceArms(
   capabilityId: "science.search" | "science.get",
   opts: SupplierSelection,
-): ScienceDescriptorLike {
+  request: { controls?: ScienceControls } | { identifier: string },
+  notice: (message: string) => void,
+): readonly ScienceDescriptorLike[] {
   const byId = scienceDescriptorIndex(opts.descriptors);
-  if (opts.explicitProvider !== undefined && opts.explicitProvider !== "all") {
-    const pinned = byId.get(opts.explicitProvider);
-    if (pinned === undefined) {
-      throw new ValidationError(
-        `Unknown provider "${opts.explicitProvider}".`,
-        `Science suppliers: ${D5_ARM_ORDER.join(", ")}.`,
-      );
-    }
-    assertEligible(pinned, capabilityId, opts.env);
-    return pinned;
+  const pinned =
+    opts.explicitProvider !== undefined && opts.explicitProvider !== "all"
+      ? byId.get(opts.explicitProvider)
+      : undefined;
+  if (opts.explicitProvider !== undefined && opts.explicitProvider !== "all" && pinned === undefined) {
+    throw new ValidationError(
+      `Unknown provider "${opts.explicitProvider}".`,
+      `Science suppliers: ${D5_ARM_ORDER.join(", ")}.`,
+    );
   }
-  for (const id of D5_ARM_ORDER) {
-    const descriptor = byId.get(id);
+  const candidates: readonly string[] = pinned !== undefined ? [pinned.id] : D5_ARM_ORDER;
+  const arms: ScienceDescriptorLike[] = [];
+  for (const id of candidates) {
+    const descriptor = pinned ?? byId.get(id);
     if (descriptor === undefined) continue;
     if (!descriptor.isConfigured(opts.env, capabilityId)) continue;
     if (!descriptor.capabilities().has(capabilityId)) continue;
-    return descriptor;
+    arms.push(descriptor);
   }
-  throw new ValidationError(
-    "No configured science supplier is available.",
-    `Science suppliers: ${D5_ARM_ORDER.join(", ")}.`,
-  );
+  // Controls vs fan-out (D5 audit-round-2 ruling): validate EVERY arm
+  // up front; a rejecting arm is excluded with a per-arm notice naming
+  // supplier + control. Never the house classifyError silent-skip path.
+  const controls =
+    "controls" in request && request.controls !== undefined ? request.controls : undefined;
+  const accepting: ScienceDescriptorLike[] = [];
+  for (const arm of arms) {
+    const capability = arm.create({ env: opts.env }).science?.[
+      capabilityId === "science.search" ? "search" : "get"
+    ];
+    if (capability === undefined) {
+      throw new ValidationError(
+        `Provider "${arm.id}" does not provide science ${
+          capabilityId === "science.search" ? "search" : "get"
+        }.`,
+        `Science suppliers: ${D5_ARM_ORDER.join(", ")}.`,
+      );
+    }
+    if (controls === undefined) {
+      accepting.push(arm);
+      continue;
+    }
+    try {
+      if (capabilityId === "science.search") {
+        (capability as { validate(r: ScienceSearchRequest): void }).validate(
+          request as ScienceSearchRequest,
+        );
+      } else {
+        (capability as { validate(r: ScienceGetRequest): void }).validate(
+          request as ScienceGetRequest,
+        );
+      }
+    } catch (error) {
+      if (!(error instanceof UnsupportedOptionError)) throw error;
+      // The notice names the control the arm's error actually carried
+      // (PRD AC-1/AC-3: supplier+control) — never the full requested
+      // set, which would misattribute controls the arm accepts.
+      // ponytail: one notice per caught error; adapters throw the
+      // first rejected control per validate() pass. A future
+      // aggregate multi-reject validate would collect here.
+      notice(
+        `scoutline: ${arm.id} does not support ${error.option} — excluded from this science fan-out.`,
+      );
+      continue;
+    }
+    accepting.push(arm);
+  }
+  if (accepting.length === 0) {
+    if (arms.length === 1 && arms[0] !== undefined && capabilityId === "science.search") {
+      // The pin (or a narrowed set) is the whole arm set: exclusion
+      // empties it — fail loud with the rejecting arm's own error by
+      // re-validating the single arm so its UnsupportedOptionError
+      // surfaces verbatim (AC-5b: control rejection is NOT fallback).
+      const capability = arms[0].create({ env: opts.env }).science?.search;
+      if (capability !== undefined && controls !== undefined) {
+        (capability as { validate(r: ScienceSearchRequest): void }).validate(
+          request as ScienceSearchRequest,
+        );
+      }
+    }
+    if (controls === undefined) {
+      // No controls to reject: this is an AVAILABILITY failure (a pin
+      // to an unconfigured/incapable supplier, or every supplier
+      // disabled) — the stderr JSON contract demands the error class
+      // describe the actual failure, not a nonsense
+      // "does not support option request" sentence.
+      throw new ValidationError(
+        `Provider "${arms[0]?.id ?? opts.explicitProvider ?? "science"}" is not configured/capable for ${capabilityId}.`,
+        `Science suppliers: ${D5_ARM_ORDER.join(", ")}.`,
+      );
+    }
+    throw new UnsupportedOptionError(
+      "science",
+      capabilityId,
+      Object.keys(controls).join(", "),
+    );
+  }
+  return accepting;
+}
+
+// ---------------------------------------------------------------------------
+// T10 fan-out merge (DESIGN D5 audit round 2 correction + D12 union)
+// ---------------------------------------------------------------------------
+
+/**
+ * Dedup identity (D5): identifiers.doi FIRST; exact normalized-url
+ * fallback for DOI-less works. Normalization is the exact-twin floor
+ * (trim + lowercase); further trimming is deliberate latitude.
+ */
+function scienceMergeKey(work: ScienceWork): string | undefined {
+  const doi = work.identifiers?.doi;
+  if (doi !== undefined && doi.trim() !== "") return `doi:${doi.trim().toLowerCase()}`;
+  const url = work.url?.trim().toLowerCase();
+  return url !== undefined && url !== "" ? `url:${url}` : undefined;
 }
 
 /**
- * Route `science get` by identifier type (D6/D10 Q3): the D5 arm
- * order filtered to suppliers that serve the parsed id kind. TODO(T10):
- * gains fallback reroute on failure; T6 interim is single-attempt.
- * Routing is command-layer by design — suppliers' `validate` is not
- * consulted for routing (the probes closed the membership table).
+ * D12 field-wise union enrichment: fill fields the first arm's body
+ * lacks from a duplicate later arm's body (nothing hidden), merge
+ * `identifiers` subfield-wise, and KEEP the first arm's value on any
+ * conflicting scalar (D5 first-supplier-wins preference). Returns a
+ * NEW row; both inputs stay untouched.
  */
-function resolveGetSupplier(
-  identifier: string,
-  opts: SupplierSelection,
-): ScienceDescriptorLike {
-  if (opts.explicitProvider !== undefined && opts.explicitProvider !== "all") {
-    return resolveInterimScienceSupplier("science.get", opts);
+function unionScienceWorks(first: ScienceWork, later: ScienceWork): ScienceWork {
+  const merged: Record<string, unknown> = { ...first };
+  for (const [key, value] of Object.entries(later)) {
+    if (key === "identifiers") continue;
+    if (merged[key] === undefined) merged[key] = value;
   }
-  const kind = parseScienceIdentifier(identifier);
-  if (kind === null) {
-    throw new ValidationError(
-      `Invalid identifier "${identifier}": expected a bare DOI, numeric PMID, or arXiv id`,
-      'Bare forms only: 10.1038/nature12373, 31672840, 2401.12345, cs/0501001 (no "doi:" prefix).',
-    );
+  const ids = { ...(first.identifiers ?? {}), ...(later.identifiers ?? {}) };
+  if (Object.keys(ids).length > 0) merged.identifiers = ids;
+  return merged as unknown as ScienceWork;
+}
+
+/**
+ * Merge multi-arm result sets (T10): concatenate, then collapse
+ * duplicates in FIRST-OCCURRENCE order — the D5 arm order of the
+ * caller's `works` (openalex first) governs which body survives;
+ * union enrichment fills the survivor. Distinct works keep their
+ * relative order.
+ */
+function mergeScienceWorks(works: readonly ScienceWork[]): ScienceWork[] {
+  const byKey = new Map<string, ScienceWork>();
+  const order: string[] = [];
+  const keyless: ScienceWork[] = [];
+  for (const work of works) {
+    const key = scienceMergeKey(work);
+    if (key === undefined) {
+      keyless.push(work);
+      continue;
+    }
+    const prior = byKey.get(key);
+    if (prior === undefined) {
+      byKey.set(key, work);
+      order.push(key);
+    } else {
+      byKey.set(key, unionScienceWorks(prior, work));
+    }
   }
-  const byId = scienceDescriptorIndex(opts.descriptors);
-  // D5 arm order filtered by the id-type membership table.
-  const ordered = D5_ARM_ORDER.filter((id) => ID_TYPE_SUPPLIERS[kind].includes(id));
-  for (const id of ordered) {
-    const descriptor = byId.get(id);
-    if (descriptor === undefined) continue;
-    if (!descriptor.isConfigured(opts.env, "science.get")) continue;
-    if (!descriptor.capabilities().has("science.get")) continue;
-    return descriptor;
-  }
-  throw new ValidationError(
-    "No configured science supplier serves that identifier type.",
-    `Science suppliers: ${D5_ARM_ORDER.join(", ")}.`,
-  );
+  return [...order.map((key) => byKey.get(key) as ScienceWork), ...keyless];
 }
 
 // ---------------------------------------------------------------------------
@@ -567,7 +658,7 @@ function renderWorkText(work: ScienceWork): string {
 // ---------------------------------------------------------------------------
 
 export interface HandleScienceOptions {
-  /** Interim pin from the global `--provider` flag (command-local wins). */
+  /** Pin from the global `--provider` flag (command-local wins). */
   readonly explicitProvider?: string;
 }
 
@@ -634,6 +725,8 @@ function createScienceJournalHook(
     readonly resultRows: () => readonly ScienceWork[] | undefined;
     /** The science cache key, derived from the supplier identity (thunk — resolved post-dispatch). */
     readonly cacheKey: () => string | undefined;
+    /** T10: the resolved fan-out arm ids (thunk — multi-arm runs journal the ordered arm set). */
+    readonly arms?: () => readonly string[] | undefined;
   },
 ): SaveHook {
   const { capability, capture } = meta.journal;
@@ -645,13 +738,20 @@ function createScienceJournalHook(
     const works = meta.resultRows();
     if (works === undefined) return;
     const skeleton = buildSearchSkeleton(works);
+    // T10 fan-out routing (AC-12c): a multi-arm search run records the
+    // ordered arm set ({mode:"fanout", arms}); a single-arm run (pin,
+    // or `science get`'s single-serving walk) keeps the single shape.
+    const arms = meta.arms?.();
     const entry = buildJournalEntry({
       capability,
-      provider: {
-        mode: "single",
-        effective: servedProvider,
-        servedFrom: "live",
-      },
+      provider:
+        arms !== undefined && arms.length > 1
+          ? { mode: "fanout", arms }
+          : {
+              mode: "single",
+              effective: servedProvider,
+              servedFrom: "live",
+            },
       query: meta.query,
       cacheKey,
       skeleton,
@@ -707,16 +807,6 @@ export async function handleScience(
     const request: ScienceSearchRequest =
       controls !== undefined ? { query, controls } : { query };
 
-    const descriptor = resolveInterimScienceSupplier("science.search", selectionOpts);
-    const adapter = descriptor.create({ env: deps.env });
-    const capability = adapter.science?.search;
-    if (capability === undefined) {
-      throw new ValidationError(
-        `Provider "${descriptor.id}" does not provide science search.`,
-        `Science suppliers: ${D5_ARM_ORDER.join(", ")}.`,
-      );
-    }
-    capability.validate(request);
     // Output Budget parse (strict positive-integer gate; valueless
     // flag wording per the T4 surfaces).
     const rawMaxChars = flags["max-chars"];
@@ -726,23 +816,82 @@ export async function handleScience(
     const maxChars = rawMaxChars === undefined ? undefined : parseBriefMaxChars(rawMaxChars);
     let journalRows: readonly ScienceWork[] | undefined;
     let journalIdentity: unknown;
+    let journalArms: readonly string[] | undefined;
     return invokeCommand(
       deps.invocation,
       async (context) => {
-        // T7: the direct-invoke executor bypasses the shared execution
-        // layer, so the supplier's (capture-wrapped) cacheIdentity is
-        // consulted HERE — pre-invoke, matching execution.ts step 2.
-        // The capture wrapper stamps servedProvider/servedFrom from
-        // the invoke; science identities use `supplier` (not
-        // `provider`), so the journal cacheKey is derived from the
-        // captured identity in the hook thunk below.
-        if (deps.journal !== undefined) journalIdentity = capability.cacheIdentity?.(request);
-        const works = await capability.invoke(request);
-        journalRows = works;
+        // T10 fan-out: resolve the arm set INSIDE the behavior so the
+        // per-arm exclusion notices ride the invokeCommand notice
+        // channel (flushed on both success and failure). Controls vs
+        // fan-out (D5 ruling): rejecting arms are excluded at
+        // validation with one notice each — never the silent
+        // classifyError continue path.
+        const arms = resolveScienceArms("science.search", selectionOpts, request, context.notice);
+        journalArms = arms.map((arm) => arm.id);
+        // Parallel arms, one client per arm (the search fan-out
+        // orchestration shape). allSettled: a later arm's failure must
+        // not discard an earlier arm's already-merged works.
+        const settled = await Promise.allSettled(
+          arms.map(async (arm) => {
+            const capability = arm.create({ env: deps.env }).science?.search;
+            if (capability === undefined) {
+              throw new ValidationError(
+                `Provider "${arm.id}" does not provide science search.`,
+                `Science suppliers: ${D5_ARM_ORDER.join(", ")}.`,
+              );
+            }
+            capability.validate(request);
+            // T7: the direct-invoke executor bypasses the shared
+            // execution layer, so the supplier's (capture-wrapped)
+            // cacheIdentity is consulted HERE — pre-invoke, matching
+            // execution.ts step 2. Science identities use `supplier`
+            // (not `provider`); the journal cacheKey is derived from
+            // the first arm's captured identity in the hook thunk.
+            if (deps.journal !== undefined && journalIdentity === undefined) {
+              journalIdentity = capability.cacheIdentity?.(request);
+            }
+            return await capability.invoke(request);
+          }),
+        );
+        // Deterministic failure: if every arm rejected, surface the
+        // FIRST arm's (D5 order) error — never a silent all-fail.
+        const firstRejected = settled.find(
+          (outcome) => outcome.status === "rejected",
+        ) as PromiseRejectedResult | undefined;
+        const works = settled.flatMap((outcome) =>
+          outcome.status === "fulfilled" ? outcome.value : [],
+        );
+        if (works.length === 0 && firstRejected !== undefined) {
+          throw firstRejected.reason;
+        }
+        // D5 visible narrowing — never a silent drop: an arm that
+        // failed at INVOKE time (ApiError/network) while other arms
+        // serve is disclosed per-arm on stderr (search-command
+        // armNotice precedent), then the partial set merges. settled
+        // order equals arms order, so the index recovers the arm id.
+        settled.forEach((outcome, index) => {
+          if (outcome.status !== "rejected") return;
+          const message =
+            outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
+          context.notice(
+            `scoutline: ${arms[index]?.id ?? "unknown"} arm failed (${message}) — dropped from this fan-out.`,
+          );
+        });
+        // D5 visible narrowing — never a silent drop: an arm that
+        // failed at INVOKE time (ApiError/network) while other arms
+        // serve is disclosed per-arm on stderr (search-command
+        // armNotice precedent), then the partial set merges. settled
+        // order equals arms order, so the index recovers the arm id.
+
+        // T10 merge: DOI-first dedup identity (exact-url fallback) +
+        // D12 field-wise union enrichment, first-arm (D5 order)
+        // preference — mergeScienceWorks below.
+        const merged = mergeScienceWorks(works);
+        journalRows = merged;
         const result: CommandResult = {
           kind: "data",
-          data: works,
-          presentations: sciencePresentations(renderWorksText(works)),
+          data: merged,
+          presentations: sciencePresentations(renderWorksText(merged)),
         };
         return applyScienceOutputBudget(result, maxChars, {
           subcommand: "search",
@@ -763,6 +912,7 @@ export async function handleScience(
             query,
             resultRows: () => journalRows,
             cacheKey: () => scienceCacheKey(journalIdentity),
+            arms: () => journalArms,
           }),
     );
   }
@@ -782,16 +932,8 @@ export async function handleScience(
     );
   }
   const request: ScienceGetRequest = { identifier };
-  const descriptor = resolveGetSupplier(identifier, selectionOpts);
-  const adapter = descriptor.create({ env: deps.env });
-  const capability = adapter.science?.get;
-  if (capability === undefined) {
-    throw new ValidationError(
-      `Provider "${descriptor.id}" does not provide science get.`,
-      `Science suppliers: ${D5_ARM_ORDER.join(", ")}.`,
-    );
-  }
-  capability.validate(request);
+  // Output Budget parse (strict positive-integer gate; valueless
+  // flag wording per the T4 surfaces).
   const rawMaxChars = flags["max-chars"];
   if (rawMaxChars === true) {
     throw new ValidationError("--max-chars requires a value.");
@@ -802,9 +944,81 @@ export async function handleScience(
   return invokeCommand(
     deps.invocation,
     async (context) => {
-      // T7: same pre-invoke cacheIdentity consult as search above.
-      if (deps.journal !== undefined) journalIdentity = capability.cacheIdentity?.(request);
-      const work = await capability.invoke(request);
+      // T10 get fallback (AC-5b): walk the id-type-filtered D5 arm
+      // order; a supplier ApiError reroutes to the next configured arm
+      // with a stderr note naming the failed supplier AND the reroute
+      // target. `--no-fallback` (fallbackEnabled === false) fails
+      // strict — the effective arm's own error surfaces, no reroute.
+      const kind = parseScienceIdentifier(identifier);
+      const byId = scienceDescriptorIndex(deps.providerDescriptors);
+      const pinnedId =
+        explicitProvider !== undefined && explicitProvider !== "all"
+          ? explicitProvider
+          : undefined;
+      if (pinnedId !== undefined && !byId.has(pinnedId)) {
+        throw new ValidationError(
+          `Unknown provider "${pinnedId}".`,
+          `Science suppliers: ${D5_ARM_ORDER.join(", ")}.`,
+        );
+      }
+      const ordered = pinnedId !== undefined
+        ? [pinnedId]
+        : kind !== null
+          ? D5_ARM_ORDER.filter((id) => ID_TYPE_SUPPLIERS[kind].includes(id))
+          : [];
+      const arms: ScienceDescriptorLike[] = [];
+      for (const id of ordered) {
+        const descriptor = byId.get(id);
+        if (descriptor === undefined) continue;
+        if (!descriptor.isConfigured(deps.env, "science.get")) continue;
+        if (!descriptor.capabilities().has("science.get")) continue;
+        arms.push(descriptor);
+      }
+      if (arms.length === 0) {
+        throw new ValidationError(
+          pinnedId !== undefined
+            ? `Provider "${pinnedId}" is not available for science get.`
+            : "No configured science supplier serves that identifier type.",
+          `Science suppliers: ${D5_ARM_ORDER.join(", ")}.`,
+        );
+      }
+      let work: ScienceWork | undefined;
+      for (let attempt = 0; attempt < arms.length; attempt += 1) {
+        const arm: ScienceDescriptorLike = arms[attempt] as ScienceDescriptorLike;
+        const capability = arm.create({ env: deps.env }).science?.get;
+        if (capability === undefined) {
+          throw new ValidationError(
+            `Provider "${arm.id}" does not provide science get.`,
+            `Science suppliers: ${D5_ARM_ORDER.join(", ")}.`,
+          );
+        }
+        capability.validate(request);
+        // T7: the direct-invoke executor bypasses the shared execution
+        // layer, so the supplier's (capture-wrapped) cacheIdentity is
+        // consulted HERE — pre-invoke, matching execution.ts step 2.
+        if (deps.journal !== undefined && journalIdentity === undefined) {
+          journalIdentity = capability.cacheIdentity?.(request);
+        }
+        try {
+          work = await capability.invoke(request);
+          break;
+        } catch (error) {
+          const next: ScienceDescriptorLike | undefined = arms[attempt + 1];
+          if (next === undefined || deps.fallbackEnabled === false) throw error;
+          // AC-5b reroute note: failed supplier AND reroute target.
+          context.notice(
+            `scoutline: ${arm.id} get failed (${
+              error instanceof Error ? error.message : String(error)
+            }) — rerouting to ${next.id}.`,
+          );
+        }
+      }
+      if (work === undefined) {
+        throw new ValidationError(
+          "science get did not resolve a work.",
+          "This is an internal error.",
+        );
+      }
       journalWork = work;
       const result: CommandResult = {
         kind: "data",

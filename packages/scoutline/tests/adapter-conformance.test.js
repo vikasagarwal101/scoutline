@@ -10,6 +10,11 @@
  * Also covers the static production registry: exact order [zai, minimax],
  * unique IDs, pure metadata, side-effect-free creation, configured
  * filtering, and production reachability from src/index.ts.
+ *
+ * #134 fixture-secret classification: BENIGN. Adapter-level suite (fake
+ * transports; never drives main() and never crosses the stdout redaction
+ * boundary), so its short fixture secrets have no rendered envelope to
+ * rewrite — outside the #120 collision class by construction.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";

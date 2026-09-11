@@ -373,6 +373,9 @@ describe("formatErrorOutput", () => {
     assert.strictEqual(parsed.code, "UNKNOWN_ERROR");
   });
 
+  // #134 fixture-secret classification: BENIGN — formatErrorOutput unit
+  // test; no main() dispatch, no rendered randomized path under the pin
+  // (the literals here are long distinctive non-colliding values).
   it("omits stack, cause, raw response body, and credentials from the public envelope", () => {
     const err = new ZaiError("leak", "CODE", 500);
     err.stack = "ZaiError: leak\n    at secret:1:1";

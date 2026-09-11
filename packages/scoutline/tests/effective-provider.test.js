@@ -13,6 +13,13 @@
  *   - Negative assertions: Doctor / quota / raw Z.AI commands never
  *     call `resolveEffectiveProvider`.
  *
+ * #134 fixture-secret classification: BENIGN. The dispatch tests are
+ * main()-driven with short fixture credentials ("z"/"t"/"e"/...), but the
+ * only mkdtemp roots are SCOUTLINE_CONFIG_DIR config dirs — never rendered
+ * into any envelope — and no assertion pins an absolute path: no #120
+ * collision space. (Residual note: "e"/"f" are hex-class; safe today
+ * because nothing rendered under them is pinned.)
+ *
  * The ranking primitives themselves (`rankProvidersForCapability`,
  * `scoreCapability`) are exhaustively covered by
  * `tests/quota-mapping.test.js`; this file asserts the resolver's OWN

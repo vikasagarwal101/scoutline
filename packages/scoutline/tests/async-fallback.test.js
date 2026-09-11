@@ -42,6 +42,12 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
+// #134 fixture-secret classification: BENIGN. This suite is main()-driven
+// (the stdout redaction boundary is live over the "mm"/"tv"/"fc"/"exa"
+// fixture credentials), but no assertion pins a rendered absolute path
+// containing a randomized mkdtemp suffix — envelopes are fixture URLs and
+// report text; config/quota roots never render. No #120 collision space.
+
 import { main } from "../dist/index.js";
 import {
   ApiError,

@@ -149,7 +149,10 @@ function reconstructAbstract(
       slots[position] = word;
     }
   }
-  return slots.filter((s) => s !== undefined).join(" ");
+  // An EMPTY inverted index reconstructs to "" — that is an absent
+  // abstract (AC-7c), not an empty-string summary (review).
+  const text = slots.filter((s) => s !== undefined).join(" ");
+  return text === "" ? undefined : text;
 }
 
 /** `https://doi.org/10.1038/...` → `10.1038/...`; null stays absent. */

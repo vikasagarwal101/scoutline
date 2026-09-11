@@ -8,7 +8,14 @@ import { buildMcpCallTemplate } from "./mcp-config.js";
 import { getApiKey, getMcpEndpoints } from "./config.js";
 import { ApiError, AuthError, ConfigurationError, NetworkError, TimeoutError } from "./errors.js";
 
-const DEFAULT_TIMEOUT_MS = parseInt(process.env.Z_AI_TIMEOUT || "30000", 10);
+// Fallback request timeout (PR #142 review): the effective value is
+// resolved per-instance from options.env ?? process.env in the
+// constructor — never read ambient at module import time — so an
+// injected { Z_AI_TIMEOUT: "1000" } bounds the failure-path probe (and
+// the timeout classification) at 1s, and junk values fall back here
+// instead of NaN-ing AbortSignal.timeout (which throws and would
+// silently disable the probe via the catch-all null).
+const FALLBACK_TIMEOUT_MS = 30_000;
 
 /**
  * #135 — upper bound for the failure-path auth probe (mirrors the #117
@@ -69,8 +76,15 @@ export class ZaiCodeModeClient {
   private isInitialized = false;
   private options: ZaiCodeModeClientOptions;
 
+  // 1.7 parity with ZaiMcpClient: retry/timeout knobs resolve from the
+  // invocation-local env at construction time, not module import.
+  private readonly timeoutMs: number;
+
   constructor(options: ZaiCodeModeClientOptions = {}) {
     this.options = options;
+    const raw = (options.env ?? process.env).Z_AI_TIMEOUT;
+    const parsed = raw === undefined || raw === "" ? NaN : parseInt(raw, 10);
+    this.timeoutMs = Number.isFinite(parsed) ? parsed : FALLBACK_TIMEOUT_MS;
   }
 
   static getPromptTemplate(): string {
@@ -156,7 +170,7 @@ export class ZaiCodeModeClient {
           throw new AuthError("Authentication failed");
         }
         if (error.message.includes("timeout") || error.message.includes("ETIMEDOUT")) {
-          throw new TimeoutError(DEFAULT_TIMEOUT_MS);
+          throw new TimeoutError(this.timeoutMs);
         }
         if (
           error.message.includes("ECONNREFUSED") ||
@@ -213,7 +227,7 @@ export class ZaiCodeModeClient {
         // full request timeout — auth rejections answer fast, so a short
         // bound keeps classification quality while capping the added
         // latency on inconclusive probes.
-        signal: AbortSignal.timeout(Math.min(PROBE_TIMEOUT_MS, DEFAULT_TIMEOUT_MS)),
+        signal: AbortSignal.timeout(Math.min(PROBE_TIMEOUT_MS, this.timeoutMs)),
       });
       // undici retains the connection until the body is consumed or
       // cancelled — release it on every exit that does not read the body.

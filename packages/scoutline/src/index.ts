@@ -6202,8 +6202,8 @@ export async function main(
   // suppliers are keyless, so missing or unconfigured
   // ~/.scoutline/config.json never blocks a literature search (the
   // archive precedent — dispatch BEFORE the credentialed config load).
-  // TODO(T10): the interim single-supplier default becomes the D5
-  // fan-out across all enabled science suppliers.
+  // T10: the science executor fans out across all enabled suppliers by
+  // default (the D5 arm order) with DOI-dedup merge.
   if (command === "science") {
     try {
       // T7 journal wiring: journaling is decided the same way the
@@ -6238,7 +6238,15 @@ export async function main(
       // cacheIdentity); the journal input is consumed by handleScience
       // through the same deps.journal seam search/read/research use.
       const scienceCapture: ServingCapture | undefined = scienceJournaling ? {} : undefined;
-      const scienceDeps = buildHandlerDeps(env, envSecrets, true);
+      // T10: `science get` fallback honors the kill-switch (flag or
+      // SCOUTLINE_NO_FALLBACK env — same precedence as the credentialed
+      // path below, minus the config consult the credential-free arm
+      // never runs); `true` is the always-on default.
+      const scienceFallback = !(
+        noFallback ||
+        (typeof env.SCOUTLINE_NO_FALLBACK === "string" && env.SCOUTLINE_NO_FALLBACK.length > 0)
+      );
+      const scienceDeps = buildHandlerDeps(env, envSecrets, scienceFallback);
       return await handleScience(
         commandArgs,
         outputMode,

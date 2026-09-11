@@ -260,8 +260,14 @@ describe("T7: science search journals one skeleton entry (main-driven)", () => {
         { title: "Attention Is All You Need", url: "https://doi.org/10.5555/3295222" },
         { title: "A second work", url: "https://example.org/second" },
       ];
+      // T10 flip: the no-pin default fans out — zero the sibling arms
+      // so the merged result set is exactly openalex's works.
       const { descriptors, byId } = scienceFive({
         openalex: { searchWorks: works },
+        arxiv: { searchWorks: [] },
+        crossref: { searchWorks: [] },
+        pubmed: { searchWorks: [] },
+        europepmc: { searchWorks: [] },
       });
       const { status, stderr } = await runMain(
         ["science", "search", "attention mechanism"],
@@ -277,11 +283,13 @@ describe("T7: science search journals one skeleton entry (main-driven)", () => {
       assert.strictEqual(entry.repeatOf, undefined, "full entry, not a marker (live run)");
       assert.strictEqual(entry.capability, "science");
       assert.strictEqual(entry.query, "attention mechanism", "the USER's query, verbatim (AC-12)");
-      // Interim single-arm provider: D5 arm #1, live serve.
+      // T10 flip (AC-12c; the interim pin's named flip owner): the
+      // default search is the FAN-OUT — routing records the ordered
+      // arm set, not a single effective. Fan-out journal detail lives
+      // in science-fanout-merge.test.js.
       assert.deepStrictEqual(entry.provider, {
-        mode: "single",
-        effective: "openalex",
-        servedFrom: "live",
+        mode: "fanout",
+        arms: [...D5_ARM_ORDER],
       });
       // Search skeleton = the merged result-set identity: url+title of
       // every returned work, in row order (AC-11).
@@ -307,8 +315,13 @@ describe("T7: science search journals one skeleton entry (main-driven)", () => {
     // pinned nor grounded — deleted; this test pins the widened shape.
     const dir = makeTempDir("scoutline-scijr-empty-");
     try {
+      // T10 flip: every arm returns nothing so the merged set is [].
       const { descriptors, byId } = scienceFive({
         openalex: { searchWorks: [] },
+        arxiv: { searchWorks: [] },
+        crossref: { searchWorks: [] },
+        pubmed: { searchWorks: [] },
+        europepmc: { searchWorks: [] },
       });
       const { status, stderr } = await runMain(
         ["science", "search", "attention mechanism"],

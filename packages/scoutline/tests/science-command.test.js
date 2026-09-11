@@ -815,25 +815,33 @@ describe("science command module uses the CommandResult seam, not the removed ou
 });
 
 // ---------------------------------------------------------------------------
-// --no-journal gate (T2a command-local gate; T7 is the flip owner)
+// --no-journal gate (T2a command-local gate; FLIPPED by T7 — the
+// journal-integration ticket named as flip owner in the T6-era pin)
 // ---------------------------------------------------------------------------
 
-describe("science is outside the journalable set until T7", () => {
-  it("science search --no-journal is rejected UNSUPPORTED_OPTION at parse (T2a gate)", async () => {
-    // GROUND: index.ts ACCEPT_NO_JOURNAL_COMMANDS gate (T2a): every
-    // command outside {search, read, research} rejects --no-journal
-    // at parse — no accept-and-drop hole for a privacy flag. T6 does
-    // NOT widen the set; T7 (journal integration) flips this pin when
-    // science capabilities join JournalableCapability.
-    const { descriptors } = scienceFive();
+describe("science joins the --no-journal accept set (T7 flip)", () => {
+  it("science search --no-journal is ACCEPTED: exit 0, the run journals nothing", async () => {
+    // GROUND: TASKS T7 REVISED 2026-09-10 — "`--no-journal` escape
+    // (src/index.ts command-local parse)": science capabilities join
+    // JournalableCapability, so `science` joins
+    // ACCEPT_NO_JOURNAL_COMMANDS. This test is the T6-era rejection
+    // pin UPDATED in-ticket (the "legacy tests may encode the bug"
+    // rule — T6's comment named T7 as the flip owner). The full
+    // escape-switch matrix (kill-switch, help exemption, entry
+    // append pins) lives in tests/science-journal.test.js.
+    const { descriptors, byId } = scienceFive();
     const { status, stdout, stderr } = await runMain(
       ["science", "search", "q", "--no-journal"],
       { descriptors },
     );
-    assert.equal(status, 1);
-    assert.deepEqual(stdout, []);
-    const err = parseStderr(stderr);
-    assert.equal(err.code, "UNSUPPORTED_OPTION");
-    assert.match(err.error, /--no-journal/);
+    assert.equal(status, 0, "--no-journal must be accepted on science after T7");
+    assert.equal(byId.openalex.calls.search.length, 1, "the search itself ran");
+    assert.ok(stdout.length > 0, "data envelope still emitted");
+    const err = stderr.length > 0 ? parseStderr(stderr) : undefined;
+    assert.equal(
+      err !== undefined && err.code === "UNSUPPORTED_OPTION",
+      false,
+      "never the T2a UNSUPPORTED_OPTION rejection",
+    );
   });
 });

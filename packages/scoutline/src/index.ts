@@ -512,6 +512,9 @@ export const ACCEPT_NO_JOURNAL_COMMANDS: ReadonlySet<string> = new Set([
   "search",
   "read",
   "research",
+  // Science verticals (T7): the science noun journals (skeleton entries,
+  // PRD AC-5c), so its --no-journal per-call escape must exist too.
+  "science",
 ]);
 
 /**
@@ -6203,10 +6206,52 @@ export async function main(
   // fan-out across all enabled science suppliers.
   if (command === "science") {
     try {
+      // T7 journal wiring: journaling is decided the same way the
+      // credentialed path below decides it — journalable command, not
+      // a help run, not `--no-journal`, not config `"journal": false`.
+      // Science dispatches credential-free BEFORE the shared config
+      // load (the archive precedent), so the kill-switch check reads
+      // the config through a FAIL-OPEN consult here: an injected
+      // loader that throws or an unreadable file degrades to
+      // journaling-on (absent = on, the inverted-fanout idiom) and
+      // never blocks the keyless run — the credential-free contract
+      // pins a throwing loader to exit 0, and the config warnings the
+      // credentialed path prints are not worth a second consult.
+      let scienceJournaling = !isHelpInvocation && !noJournal;
+      if (scienceJournaling) {
+        try {
+          if (loadScoutlineConfig) {
+            const scienceConfig = await loadScoutlineConfig();
+            scienceJournaling = (scienceConfig as { journal?: unknown }).journal !== false;
+          } else {
+            const inspection = await inspectConfig();
+            scienceJournaling =
+              inspection.status !== "valid" ||
+              (inspection.config as { journal?: unknown }).journal !== false;
+          }
+        } catch {
+          scienceJournaling = true; // fail-open: absent/unreadable = on
+        }
+      }
+      // The capture-wrapped descriptors record which supplier actually
+      // served (servedFrom/cacheKey from the supplier's own
+      // cacheIdentity); the journal input is consumed by handleScience
+      // through the same deps.journal seam search/read/research use.
+      const scienceCapture: ServingCapture | undefined = scienceJournaling ? {} : undefined;
+      const scienceDeps = buildHandlerDeps(env, envSecrets, true);
       return await handleScience(
         commandArgs,
         outputMode,
-        buildHandlerDeps(env, envSecrets, true),
+        scienceCapture === undefined
+          ? scienceDeps
+          : {
+              ...scienceDeps,
+              providerDescriptors: captureServingDescriptors(
+                providerDescriptors,
+                scienceCapture,
+              ),
+              journal: { capability: "science", capture: scienceCapture },
+            },
         { explicitProvider: provider },
       );
     } catch (error) {

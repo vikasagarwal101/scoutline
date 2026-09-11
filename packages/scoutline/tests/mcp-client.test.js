@@ -1592,7 +1592,6 @@ describe("ZaiMcpClient — instance-level env resolution (1.7)", () => {
   });
 });
 
-
 // ---------------------------------------------------------------------------
 // #117 — failure-path direct-initialize auth probe.
 //
@@ -1675,7 +1674,11 @@ describe("ZaiMcpClient — failure-path auth probe (#117)", () => {
 
   /** A fetch handler answering every api.z.ai request with `body` at `status`. */
   const zaiFetch = (body, status) => (real) => async (input, init) => {
-    if (!urlOf(input).includes("api.z.ai")) return real(input, init);
+    // #135 rider: closed mock — any non-api.z.ai URL is a test bug, never
+    // a passthrough to real fetch (same class the #129 fix closed at :2027).
+    if (!urlOf(input).includes("api.z.ai")) {
+      throw new Error(`unexpected non-probe fetch in #117 suite: ${urlOf(input)}`);
+    }
     return new Response(body, { status, headers: { "content-type": "application/json" } });
   };
 
@@ -1844,8 +1847,7 @@ describe("ZaiMcpClient — failure-path auth probe (#117)", () => {
       disableRetry: true,
     });
     await withMockFetch(
-      (real) =>
-      (input, init) =>
+      (real) => (input, init) =>
         new Promise((_resolve, reject) => {
           if (!urlOf(input).includes("api.z.ai")) {
             // Not reached in this test (UTCP is faked); keep the pass-through.
@@ -1898,7 +1900,10 @@ describe("ZaiMcpClient — failure-path auth probe (#117)", () => {
       let cancelled = false;
       await withMockFetch(
         (real) => async (input, init) => {
-          if (!urlOf(input).includes("api.z.ai")) return real(input, init);
+          // #135 rider: closed mock — never fall through to real fetch.
+          if (!urlOf(input).includes("api.z.ai")) {
+            throw new Error(`unexpected non-probe fetch in body-cancel test: ${urlOf(input)}`);
+          }
           const stream = new ReadableStream({
             start(controller) {
               controller.enqueue(new TextEncoder().encode("{}"));
@@ -1962,14 +1967,10 @@ describe("ZaiMcpClient — failure-path auth probe (#117)", () => {
         !allStderr.includes(AUTH_REJECTION_BODY),
         "raw provider body reached the public envelope",
       );
-      assert.ok(
-        !allStderr.includes("expired-dummy-key"),
-        "credential reached the public envelope",
-      );
+      assert.ok(!allStderr.includes("expired-dummy-key"), "credential reached the public envelope");
     });
   });
 });
-
 
 // ---------------------------------------------------------------------------
 // #128 — probe provenance gate.

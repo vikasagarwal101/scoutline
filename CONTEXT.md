@@ -323,3 +323,18 @@ One cache-miss recording of a query — the skeleton as returned at that
 moment. Repeat asks over time create multiple generations, so recall and
 `--as-of` can answer "what did I know when" as results drift.
 _Avoid_: version, snapshot
+
+**Science Supplier**:
+A keyless scholarly API (arXiv, OpenAlex, Crossref, PubMed, Europe PMC) that
+serves the science capability — distinct from both Providers (credentialed,
+quota-ranked, shared-capability) and direct commands (single-source,
+deterministic). Has its own selection grammar, fan-out merge, and D5-order
+fallback. No quota surface, no exhaustion ranking.
+_Avoid_: provider, direct command, academic provider
+
+**Agent Registration**:
+The init-wizard flow that deploys scoutline into an agent tool's native homes
+— a thin rules file (always-loaded awareness) plus the full agent skill
+(on-demand depth). Per-tool wiring follows each tool's native discovery
+convention. Reversible via `init --unregister`.
+_Avoid_: installation, agent setup, skill sync

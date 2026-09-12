@@ -25,6 +25,7 @@ import { configuredSecrets } from "../dist/lib/redact.js";
 import { loadConfig, getApiKey } from "../dist/lib/config.js";
 import { ConfigurationError, NetworkError } from "../dist/lib/errors.js";
 import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+import { getHermeticArtifactsDir } from "./helpers/hermetic-main.js";
 
 useTempConfigDir();
 
@@ -346,7 +347,7 @@ describe("fallback wiring: config.fallbackEnabled narrows the executor", () => {
     const { adapter } = createTestAdapter();
     const status = await main(["--provider", "minimax", "search", "q"], {
       invocation: adapter,
-      env: { Z_AI_API_KEY: "env-zai", MINIMAX_API_KEY: "env-mmx" },
+      env: { Z_AI_API_KEY: "env-zai", MINIMAX_API_KEY: "env-mmx", SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
       providerDescriptors: [zai.descriptor, minimax.descriptor],
       searchCache: inMemoryCache(),
       searchSleep: async () => {},
@@ -372,7 +373,7 @@ describe("fallback wiring: config.fallbackEnabled narrows the executor", () => {
     const { adapter } = createTestAdapter();
     const status = await main(["--provider", "minimax", "search", "q"], {
       invocation: adapter,
-      env: { Z_AI_API_KEY: "env-zai", MINIMAX_API_KEY: "env-mmx" },
+      env: { Z_AI_API_KEY: "env-zai", MINIMAX_API_KEY: "env-mmx", SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
       providerDescriptors: [zai.descriptor, minimax.descriptor],
       searchCache: inMemoryCache(),
       searchSleep: async () => {},
@@ -394,7 +395,7 @@ describe("fallback wiring: config.fallbackEnabled narrows the executor", () => {
     const { adapter } = createTestAdapter();
     const status = await main(["--provider", "minimax", "search", "q"], {
       invocation: adapter,
-      env: { Z_AI_API_KEY: "env-zai", MINIMAX_API_KEY: "env-mmx" },
+      env: { Z_AI_API_KEY: "env-zai", MINIMAX_API_KEY: "env-mmx", SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
       providerDescriptors: [zai.descriptor, minimax.descriptor],
       searchCache: inMemoryCache(),
       searchSleep: async () => {},
@@ -411,7 +412,7 @@ describe("fallback wiring: config.fallbackEnabled narrows the executor", () => {
     const { adapter } = createTestAdapter();
     const status = await main(["--no-fallback", "--provider", "minimax", "search", "q"], {
       invocation: adapter,
-      env: { Z_AI_API_KEY: "env-zai", MINIMAX_API_KEY: "env-mmx" },
+      env: { Z_AI_API_KEY: "env-zai", MINIMAX_API_KEY: "env-mmx", SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
       providerDescriptors: [zai.descriptor, minimax.descriptor],
       searchCache: inMemoryCache(),
       searchSleep: async () => {},
@@ -514,7 +515,7 @@ describe("acceptance probe: file-only key reaches a shared command and is redact
     const FILE_KEY = "file-only-secret-key";
     const status = await main(["search", "probe-query"], {
       invocation: adapter,
-      env: {},
+      env: { SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
       providerDescriptors: [zai.descriptor],
       searchCache: inMemoryCache(),
       searchSleep: async () => {},
@@ -566,7 +567,7 @@ describe("acceptance probe: file-only key reaches a shared command and is redact
     const FILE_KEY = "tvly-file-only";
     const status = await main(["--provider", "tavily", "search", "q"], {
       invocation: adapter,
-      env: {},
+      env: { SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
       providerDescriptors: [tavily.descriptor],
       searchCache: inMemoryCache(),
       searchSleep: async () => {},
@@ -607,7 +608,7 @@ describe("hermeticity: main() tests inject in-memory config stores", () => {
     const { adapter } = createTestAdapter();
     await main(["search", "q"], {
       invocation: adapter,
-      env: { Z_AI_API_KEY: "k" },
+      env: { Z_AI_API_KEY: "k", SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
       providerDescriptors: [zai.descriptor],
       searchCache: inMemoryCache(),
       searchSleep: async () => {},
@@ -641,7 +642,7 @@ describe("hermeticity: main() tests inject in-memory config stores", () => {
     const { adapter } = createTestAdapter();
     await main(["search", "q"], {
       invocation: adapter,
-      env: {},
+      env: { SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
       providerDescriptors: [zai.descriptor],
       searchCache: inMemoryCache(),
       searchSleep: async () => {},

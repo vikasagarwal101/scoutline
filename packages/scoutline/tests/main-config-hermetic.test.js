@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { main } from "../dist/index.js";
-import { hermeticMainDeps, createInMemoryResponseCache } from "./helpers/hermetic-main.js";
+import { hermeticMainDeps, createInMemoryResponseCache, getHermeticArtifactsDir } from "./helpers/hermetic-main.js";
 
 // Ambient config with fanout enabled — the exact leak vector of #63-#65.
 let ambientDir;
@@ -93,7 +93,7 @@ describe("main() config hermeticity (#73)", () => {
     const status = await withAmbientConfigDir(() =>
       main(["search", "q"], {
         invocation: adapter,
-        env: {},
+        env: { SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
         providerDescriptors: [makeSearchDescriptor("zai"), makeSearchDescriptor("tavily")],
         config: { version: 1, providers: {} },
         searchCache: createInMemoryResponseCache(),
@@ -131,7 +131,7 @@ describe("main() config hermeticity (#73)", () => {
     };
     const baseDeps = (extra) => ({
       invocation: makeAdapter().adapter,
-      env: {},
+      env: { SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
       providerDescriptors: [trackingDescriptor("zai"), trackingDescriptor("tavily")],
       config: { version: 1, providers: {}, routing: { search: ["zai", "tavily"] } },
       searchCache: createInMemoryResponseCache(),
@@ -162,7 +162,7 @@ describe("main() config hermeticity (#73)", () => {
     const status = await withAmbientConfigDir(() =>
       main(["search", "q"], {
         invocation: adapter,
-        env: {},
+        env: { SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
         providerDescriptors: [makeSearchDescriptor("zai"), makeSearchDescriptor("tavily")],
         searchCache: createInMemoryResponseCache(),
         searchSleep: async () => {},

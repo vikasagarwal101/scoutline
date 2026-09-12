@@ -2,7 +2,9 @@
 
 ## [Unreleased]
 
-No changes yet.
+### Fixed
+
+- **Test suites no longer write to the ambient ~/.scoutline/artifacts store (issue #137):** `resolveArtifactsDir` now refuses the ambient fallback under `NODE_TEST_CONTEXT` unless isolated via `SCOUTLINE_ARTIFACTS_DIR`/`SCOUTLINE_CONFIG_DIR` or bypassed with `SCOUTLINE_NO_TEST_GUARD=1`.
 
 All notable changes to this project will be documented in this file.
 

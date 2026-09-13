@@ -171,14 +171,32 @@ export function buildSearchSkeleton(
   }[],
 ): SearchSkeleton {
   return {
-    results: results.map((row) => ({
-      url: typeof row.url === "string" ? row.url : "",
-      title: typeof row.title === "string" ? row.title : "",
-      ...(row.identifiers !== undefined && Object.keys(row.identifiers).length > 0
-        ? { identifiers: row.identifiers }
-        : {}),
-    })),
+    results: results.map((row) => {
+      // #141 review hygiene: COPY the identifiers object (never alias
+      // the source row — url/title are primitives, identifiers is the
+      // first object field on the seam) and DROP blank-string values
+      // (no upstream adapter emits them, but the seam must not thread
+      // junk identity). All-blank or {} collapses to no field at all.
+      const identifiers = cleanSkeletonIdentifiers(row.identifiers);
+      return {
+        url: typeof row.url === "string" ? row.url : "",
+        title: typeof row.title === "string" ? row.title : "",
+        ...(identifiers !== undefined ? { identifiers } : {}),
+      };
+    }),
   };
+}
+
+/** Copy + sanitize row identifiers for a skeleton item (#141 review). */
+function cleanSkeletonIdentifiers(
+  ids: { readonly doi?: string; readonly pmid?: string; readonly arxivId?: string } | undefined,
+): { readonly doi?: string; readonly pmid?: string; readonly arxivId?: string } | undefined {
+  if (ids === undefined) return undefined;
+  const out: { doi?: string; pmid?: string; arxivId?: string } = {};
+  if (ids.doi !== undefined && ids.doi !== "") out.doi = ids.doi;
+  if (ids.pmid !== undefined && ids.pmid !== "") out.pmid = ids.pmid;
+  if (ids.arxivId !== undefined && ids.arxivId !== "") out.arxivId = ids.arxivId;
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**

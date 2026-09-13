@@ -364,6 +364,145 @@ describe("T2a: always-on journal writer unit pins", () => {
   });
 });
 
+describe("#141 review: skeleton identifier hygiene + validator teeth", () => {
+  /** Minimal valid journal entry with a skeleton row's identifiers set. */
+  function entryWithIdentifiers(identifiers) {
+    return {
+      kind: "journal",
+      requestId: "20260913T000000Z-0001",
+      timestamp: 1800000000000,
+      capability: "search",
+      provider: { mode: "single", effective: "zai", servedFrom: "live" },
+      query: "attention",
+      contentHash: skeletonContentHash(buildSearchSkeleton([{ title: "T", url: "https://example.org" }])),
+      cacheKey: "v2.search.zai.fp.json",
+      skeleton: {
+        results: [{ url: "https://example.org", title: "T", identifiers }],
+      },
+    };
+  }
+
+  it("builder drops blank identifier values — all-blank collapses to no identifiers field", () => {
+    const skeleton = buildSearchSkeleton([
+      { title: "A", url: "https://a", identifiers: { doi: "", pmid: "", arxivId: "" } },
+      { title: "B", url: "https://b", identifiers: { doi: "10.5555/3295222", pmid: "" } },
+    ]);
+    assert.strictEqual(skeleton.results[0].identifiers, undefined, "all-blank → no field");
+    assert.deepStrictEqual(skeleton.results[1].identifiers, { doi: "10.5555/3295222" }, "blank pmid dropped, doi kept");
+  });
+
+  it("builder pins the empty-object guard: identifiers:{} emits no identifiers field", () => {
+    const skeleton = buildSearchSkeleton([{ title: "A", url: "https://a", identifiers: {} }]);
+    assert.strictEqual(skeleton.results[0].identifiers, undefined);
+  });
+
+  it("builder COPIES identifiers — mutating the source row never reaches the skeleton (alias kill)", () => {
+    const row = { title: "A", url: "https://a", identifiers: { doi: "10.1/original" } };
+    const skeleton = buildSearchSkeleton([row]);
+    row.identifiers.doi = "10.9/mutated";
+    assert.strictEqual(skeleton.results[0].identifiers?.doi, "10.1/original", "skeleton owns its copy");
+  });
+
+  it("asJournalEntry: valid identifiers accepted, absent accepted (fail-open), four malformed shapes REJECTED", async () => {
+    const { asJournalEntry } = await import("../dist/lib/journal.js");
+    // ACCEPT — with identifiers (the #141 shape)
+    assert.ok(asJournalEntry(entryWithIdentifiers({ doi: "10.5555/3295222" })) !== undefined, "valid identifiers accepted");
+    // ACCEPT — without (legacy fail-open half)
+    assert.ok(asJournalEntry(entryWithIdentifiers(undefined)) !== undefined, "absent identifiers accepted (legacy)");
+    // REJECT — malformed identifiers would blank whole-log reads; the
+    // chokepoint must reject them loudly, not accept-and-tolerate.
+    for (const bad of ["doi-as-string", ["array"], null]) {
+      assert.strictEqual(
+        asJournalEntry(entryWithIdentifiers(bad)),
+        undefined,
+        `identifiers=${JSON.stringify(bad)} REJECTED`,
+      );
+    }
+    assert.strictEqual(
+      asJournalEntry(entryWithIdentifiers({ doi: 42 })),
+      undefined,
+      "numeric doi REJECTED",
+    );
+  });
+
+  it("real crossref rows thread identifiers through buildSearchSkeleton (beyond the test double)", async () => {
+    const { createCrossrefDescriptor } = await import("../dist/providers/crossref/adapter.js");
+    const worksList = {
+      status: "ok",
+      "message-type": "work-list",
+      "message-version": "1.0.0",
+      message: {
+        "total-results": 1,
+        items: [
+          {
+            DOI: "10.1038/nature12373",
+            title: ["Deep learning"],
+            author: [],
+            "container-title": [],
+            type: "journal-article",
+            issued: { "date-parts": [[2015, 6]] },
+            URL: "https://doi.org/10.1038/nature12373",
+          },
+        ],
+      },
+    };
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          json: async () => worksList,
+          text: async () => JSON.stringify(worksList),
+          headers: { get: () => null },
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const works = await adapter.science.search.invoke({ query: "deep learning" });
+    assert.equal(works.length, 1);
+    assert.equal(works[0].identifiers?.doi, "10.1038/nature12373", "the real crossref adapter normalizes the DOI");
+    const skeleton = buildSearchSkeleton(works);
+    assert.deepStrictEqual(
+      skeleton.results[0].identifiers,
+      { doi: "10.1038/nature12373" },
+      "real adapter rows carry identifiers into the skeleton",
+    );
+  });
+
+  it("real pubmed rows thread identifiers through buildSearchSkeleton (beyond the test double)", async () => {
+    const { createPubmedDescriptor } = await import("../dist/providers/pubmed/adapter.js");
+    const esearch = {
+      header: { type: "esearch", version: "0.3" },
+      esearchresult: { count: "1", retmax: "1", retstart: "0", idlist: ["36959025"] },
+    };
+    const efetchXml = `<?xml version="1.0" ?>
+<PubmedArticleSet>
+<PubmedArticle><MedlineCitation Status="MEDLINE" Owner="NLM"><PMID Version="1">36959025</PMID><Article PubModel="Print-Electronic"><ArticleTitle>T Cells Remember SARS-CoV-2.</ArticleTitle><ELocationID EIdType="doi" ValidYN="Y">10.1016/j.jid.2023.02.002</ELocationID></Article></MedlineCitation></PubmedArticle>
+</PubmedArticleSet>`;
+    const descriptor = createPubmedDescriptor({
+      transport: {
+        fetch: async (url) => {
+          const path = new URL(String(url)).pathname;
+          if (path.endsWith("/esearch.fcgi")) {
+            return { ok: true, status: 200, json: async () => esearch, text: async () => JSON.stringify(esearch), headers: { get: () => null } };
+          }
+          return { ok: true, status: 200, text: async () => efetchXml, headers: { get: () => null } };
+        },
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const works = await adapter.science.search.invoke({ query: "t cells" });
+    assert.equal(works.length, 1);
+    assert.equal(works[0].identifiers?.doi, "10.1016/j.jid.2023.02.002", "the real pubmed adapter normalizes DOI+PMID");
+    const skeleton = buildSearchSkeleton(works);
+    assert.deepStrictEqual(
+      skeleton.results[0].identifiers,
+      { doi: "10.1016/j.jid.2023.02.002", pmid: "36959025" },
+      "real adapter rows carry identifiers into the skeleton",
+    );
+  });
+});
+
 describe("PR #111 cluster C: requestId collision remint under the log lock", () => {
   // Fixed colliding id: buildJournalRecall keys rows by requestId
   // last-wins, so a second append with this id would orphan the first

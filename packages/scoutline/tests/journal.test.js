@@ -423,6 +423,18 @@ describe("#141 review: skeleton identifier hygiene + validator teeth", () => {
       undefined,
       "numeric doi REJECTED",
     );
+    // PR #162 review: present-but-empty identifiers carry no identity.
+    assert.strictEqual(asJournalEntry(entryWithIdentifiers({})), undefined, "{} REJECTED (no identity)");
+    assert.strictEqual(asJournalEntry(entryWithIdentifiers({ doi: "   " })), undefined, "whitespace-only doi REJECTED");
+    assert.strictEqual(asJournalEntry(entryWithIdentifiers({ pmid: "", arxivId: "  " })), undefined, "all-blank values REJECTED");
+    assert.ok(asJournalEntry(entryWithIdentifiers({ doi: " 10.x/ok " })) !== undefined, "trimmable non-blank accepted");
+  });
+
+  it("cleanSkeletonIdentifiers trims before dropping (PR #162 review)", () => {
+    const skeleton = buildSearchSkeleton([
+      { title: "A", url: "https://a", identifiers: { doi: "  ", pmid: "  123  " } },
+    ]);
+    assert.deepStrictEqual(skeleton.results[0].identifiers, { pmid: "123" }, "whitespace dropped, value trimmed");
   });
 
   it("real crossref rows thread identifiers through buildSearchSkeleton (beyond the test double)", async () => {

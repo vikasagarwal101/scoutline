@@ -588,10 +588,12 @@ scoutline doctor
 ```
 
 Note: with the OpenAlex probe exercising the search surface, `doctor`
-issues ONE real anonymous search (`search=test`) — it draws on the same
-small anonymous budget as your searches (see the OpenAlex tier note
-above), not a separate free lane. The other suppliers' probes are
-keyless reads with no billing surface.
+issues ONE real search (`search=test`). Without `OPENALEX_API_KEY` this
+ride is anonymous — it draws on the same small anonymous budget as your
+searches (see the OpenAlex tier note above), not a separate free lane.
+With a configured key the probe passes `api_key` and uses the
+authenticated tier instead. The other suppliers' probes are keyless
+reads with no billing surface.
 
 Science suppliers are excluded from quota spend dashboards (`scoutline quota`)
 because they carry no usage billing pool.

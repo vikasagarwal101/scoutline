@@ -193,9 +193,14 @@ function cleanSkeletonIdentifiers(
 ): { readonly doi?: string; readonly pmid?: string; readonly arxivId?: string } | undefined {
   if (ids === undefined) return undefined;
   const out: { doi?: string; pmid?: string; arxivId?: string } = {};
-  if (ids.doi !== undefined && ids.doi !== "") out.doi = ids.doi;
-  if (ids.pmid !== undefined && ids.pmid !== "") out.pmid = ids.pmid;
-  if (ids.arxivId !== undefined && ids.arxivId !== "") out.arxivId = ids.arxivId;
+  // Trim before the emptiness check: whitespace-only values carry no
+  // identity and must not reach the content hash (PR #162 review).
+  const doi = ids.doi?.trim();
+  const pmid = ids.pmid?.trim();
+  const arxivId = ids.arxivId?.trim();
+  if (doi) out.doi = doi;
+  if (pmid) out.pmid = pmid;
+  if (arxivId) out.arxivId = arxivId;
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
@@ -307,6 +312,15 @@ export function asJournalEntry(value: unknown): JournalLogEntry | JournalRepeatM
       if (ids.doi !== undefined && typeof ids.doi !== "string") return undefined;
       if (ids.pmid !== undefined && typeof ids.pmid !== "string") return undefined;
       if (ids.arxivId !== undefined && typeof ids.arxivId !== "string") return undefined;
+      // Present-but-empty identifiers carry no identity: an object with
+      // no non-whitespace recognized value is rejected (absent stays
+      // valid for legacy rows; rejection keeps the whole-log fail-open
+      // semantics — the entry is dropped, reads keep working). PR #162
+      // review: `{}` / all-blank previously passed shape+type checks.
+      const hasIdentity = [ids.doi, ids.pmid, ids.arxivId].some(
+        (v) => typeof v === "string" && v.trim() !== "",
+      );
+      if (!hasIdentity) return undefined;
     }
   }
   if (e.tags !== undefined && !Array.isArray(e.tags)) return undefined;

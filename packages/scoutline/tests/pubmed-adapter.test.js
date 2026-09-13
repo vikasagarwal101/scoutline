@@ -511,6 +511,82 @@ describe("pubmed search invoke — XML mapping to ScienceWork (TASKS T4c; PRD AC
     );
   });
 
+  it("#147 review B1: a cited ReferenceList DOI never retargets the record — own PubmedData ArticleIdList wins", async () => {
+    // GROUND: cited works carry their OWN ArticleIdList inside
+    // ReferenceList spans, and eutils emits line-joined XML where the
+    // cited list can precede the record's own PubmedData list. A
+    // block-level leftmost ArticleIdList match lands on the CITED list
+    // and stamps the record with a citation's DOI — scienceMergeKey's
+    // first choice, so fan-out dedup would merge unrelated works. The
+    // fallback must read the record's OWN list: PubmedData-scoped,
+    // ReferenceList spans stripped.
+    const xml = `<?xml version="1.0" ?>
+<PubmedArticleSet>
+<PubmedArticle><MedlineCitation Status="MEDLINE" Owner="NLM"><PMID Version="1">11111111</PMID><Article PubModel="Print"><ArticleTitle>Own record with cited references.</ArticleTitle><ReferenceList><Reference><ArticleIdList><ArticleId IdType="pubmed">99999999</ArticleId><ArticleId IdType="doi">10.9999/CITED</ArticleId></ArticleIdList></Reference></ReferenceList></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType="pubmed">11111111</ArticleId><ArticleId IdType="doi">10.1000/OWN</ArticleId></ArticleIdList></PubmedData></PubmedArticle>
+</PubmedArticleSet>`;
+    const { adapter } = makeAdapter({ efetch: xml });
+    const works = await adapter.science.search.invoke({ query: "own record" });
+    assert.equal(works.length, 1);
+    assert.equal(
+      works[0].identifiers?.doi,
+      "10.1000/OWN",
+      "the record's OWN PubmedData doi — never the cited 10.9999/CITED",
+    );
+  });
+
+  it("#147 review: present-but-empty ELocationID carries no DOI — the ArticleIdList fallback fires on VALUE, not presence", async () => {
+    // GROUND: `<ELocationID EIdType="doi"></ELocationID>` (or whitespace-
+    // only) is PRESENT but carries no value; keying the fallback on
+    // element presence suppressed it and the record parsed doi-less even
+    // though its own ArticleIdList carries a doi. The contract keys on
+    // "carries no DOI" — an empty/blank element carries none.
+    const xml = `<?xml version="1.0" ?>
+<PubmedArticleSet>
+<PubmedArticle><MedlineCitation Status="MEDLINE" Owner="NLM"><PMID Version="1">22222221</PMID><Article PubModel="Print"><ArticleTitle>Empty ELocationID record.</ArticleTitle><ELocationID EIdType="doi" ValidYN="N"></ELocationID></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType="pubmed">22222221</ArticleId><ArticleId IdType="doi">10.1000/EMPTY-ELOC</ArticleId></ArticleIdList></PubmedData></PubmedArticle>
+<PubmedArticle><MedlineCitation Status="MEDLINE" Owner="NLM"><PMID Version="1">22222222</PMID><Article PubModel="Print"><ArticleTitle>Whitespace ELocationID record.</ArticleTitle><ELocationID EIdType="doi" ValidYN="N">   </ELocationID></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType="pubmed">22222222</ArticleId><ArticleId IdType="doi">10.1000/BLANK-ELOC</ArticleId></ArticleIdList></PubmedData></PubmedArticle>
+</PubmedArticleSet>`;
+    const { adapter } = makeAdapter({ efetch: xml });
+    const works = await adapter.science.search.invoke({ query: "elocation" });
+    assert.equal(works.length, 2);
+    assert.equal(works[0].identifiers?.doi, "10.1000/EMPTY-ELOC", "empty element falls through to ArticleIdList");
+    assert.equal(works[1].identifiers?.doi, "10.1000/BLANK-ELOC", "whitespace-only element falls through too");
+  });
+
+  it("#147: ELocationID wins when both sources carry a DOI (precedence pin)", async () => {
+    // GROUND: contract pin — when ELocationID AND ArticleIdList both
+    // carry a doi, the ELocationID value wins (the modern record's own
+    // declaration). Inverted-precedence mutants must fail this.
+    const xml = `<?xml version="1.0" ?>
+<PubmedArticleSet>
+<PubmedArticle><MedlineCitation Status="MEDLINE" Owner="NLM"><PMID Version="1">33333331</PMID><Article PubModel="Print"><ArticleTitle>Both sources present.</ArticleTitle><ELocationID EIdType="doi">10.1111/ELOC</ELocationID></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType="pubmed">33333331</ArticleId><ArticleId IdType="doi">10.2222/ARTC</ArticleId></ArticleIdList></PubmedData></PubmedArticle>
+</PubmedArticleSet>`;
+    const { adapter } = makeAdapter({ efetch: xml });
+    const works = await adapter.science.search.invoke({ query: "both present" });
+    assert.equal(works.length, 1);
+    assert.equal(works[0].identifiers?.doi, "10.1111/ELOC", "ELocationID doi wins over ArticleIdList doi");
+  });
+
+  it("#147 review: per-record ReferenceLists never bleed across records (multi-record isolation pin)", async () => {
+    // GROUND: every record parses inside its own PubmedArticle block;
+    // a cited doi in record A's ReferenceList must never surface on
+    // record B. B's own list carries no doi, so B must stay honestly
+    // doi-less (identifiers absent) even though A cites a doi.
+    const xml = `<?xml version="1.0" ?>
+<PubmedArticleSet>
+<PubmedArticle><MedlineCitation Status="MEDLINE" Owner="NLM"><PMID Version="1">44444441</PMID><Article PubModel="Print"><ArticleTitle>Record A citing a doi.</ArticleTitle></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType="pubmed">44444441</ArticleId><ArticleId IdType="doi">10.1/A-OWN</ArticleId></ArticleIdList><ReferenceList><Reference><ArticleIdList><ArticleId IdType="doi">10.9/A-CITED</ArticleId></ArticleIdList></Reference></ReferenceList></PubmedData></PubmedArticle>
+<PubmedArticle><MedlineCitation Status="MEDLINE" Owner="NLM"><PMID Version="1">44444442</PMID><Article PubModel="Print"><ArticleTitle>Record B without own doi.</ArticleTitle></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType="pubmed">44444442</ArticleId></ArticleIdList></PubmedData></PubmedArticle>
+</PubmedArticleSet>`;
+    const { adapter } = makeAdapter({ efetch: xml });
+    const works = await adapter.science.search.invoke({ query: "records" });
+    assert.equal(works.length, 2);
+    assert.equal(works[0].identifiers?.doi, "10.1/A-OWN", "A keeps its own doi (cited 10.9/A-CITED ignored)");
+    assert.equal(
+      Object.hasOwn(works[1], "identifiers"),
+      false,
+      "B stays honestly doi-less — A's cited doi never bleeds across records",
+    );
+  });
+
   it("PubmedBookArticle records parse — book PMIDs no longer vanish (review round 6)", async () => {
     // Review: eutils emits <PubmedBookArticle> for book-oriented PMIDs;
     // the block matcher dropped them, so searches omitted ids esearch

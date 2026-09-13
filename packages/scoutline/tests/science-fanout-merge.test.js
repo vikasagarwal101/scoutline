@@ -672,6 +672,121 @@ describe("T10 controls vs fan-out: rejecting arms excluded with per-arm stderr n
 });
 
 // ---------------------------------------------------------------------------
+// Fan-out journal arms = SURVIVORS (T3 ruling: `mode` stays "fanout"
+// whenever >=2 arms were ATTEMPTED; `arms` records the survivors)
+// ---------------------------------------------------------------------------
+
+describe("T3 fan-out journal arms = SURVIVORS (a failed arm is never journaled as served)", () => {
+  it("two of five arms failing at invoke time -> ONE fanout entry whose arms list exactly the three survivor ids", async () => {
+    // GROUND: the failed-arm INVOKE pin above proves the stderr half of
+    // the D5 visible-narrowing rule ("visible narrowing — never a
+    // silent drop"); this pins the JOURNAL half. Without it, a 5-arm
+    // run with 2 invoke failures journals all five arms — the routing
+    // record is indistinguishable from a clean full merge. The failed
+    // arms were ATTEMPTED, so the run stays mode "fanout"; only the
+    // SURVIVORS belong in the arms list.
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-fanout-survivors-"));
+    try {
+      const { descriptors, byId } = scienceFive({
+        crossref: {
+          searchWorks: () => {
+            throw new ApiError("crossref exploded", 503);
+          },
+        },
+        pubmed: {
+          searchWorks: () => {
+            throw new ApiError("pubmed exploded", 503);
+          },
+        },
+      });
+      const { status, stderr } = await runMain(
+        ["science", "search", "graph transformers"],
+        { descriptors, artifactsDir: dir },
+      );
+      assert.equal(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      assert.equal(byId.crossref.calls.search.length, 1, "the crossref arm was attempted");
+      assert.equal(byId.pubmed.calls.search.length, 1, "the pubmed arm was attempted");
+      const { log, notice } = await readLog(dir);
+      assert.strictEqual(notice, undefined, "no corruption notice");
+      const entries = log.entries.filter((e) => e.kind === "journal");
+      assert.strictEqual(entries.length, 1, "ONE entry regardless of failed arms (AC-12c)");
+      const entry = entries[0];
+      assert.deepStrictEqual(
+        entry.provider,
+        { mode: "fanout", arms: ["openalex", "arxiv", "europepmc"] },
+        "journaled arm set = SURVIVORS only, in D5 arm order",
+      );
+      // The merged-identity side must agree: the two failed arms
+      // contributed no rows, so the skeleton carries the three that did.
+      assert.equal(entry.skeleton.results.length, 3, "skeleton = the merged SURVIVOR rows");
+      assert.deepEqual(
+        sortedSkeletonRows(entry.skeleton.results),
+        sortedSkeletonRows(
+          ["openalex", "arxiv", "europepmc"].map((id) => ({
+            url: `https://example.org/${id}`,
+            title: `search-from-${id}`,
+          })),
+        ),
+      );
+      assert.strictEqual(entry.contentHash, skeletonContentHash(entry.skeleton));
+      assert.ok(typeof entry.cacheKey === "string" && entry.cacheKey.length > 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('one survivor of five keeps mode:"fanout" with the single surviving arm id — routing narrowed, it did not become a single-arm run', async () => {
+    // GROUND: the T3 shape ruling — `mode` records whether the run was
+    // a fan-out, not how many arms survived. Five arms were ATTEMPTED
+    // and routing narrowed them to one; that is a different fact from a
+    // pinned/rerouted single-arm run (journaled mode "single", the
+    // science-journal single pins). The journal validator only demands
+    // a NON-EMPTY arms array, so a one-arm fanout entry validates
+    // cleanly — and dropping the entry on narrowing would be a silent
+    // drop of a real run.
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-fanout-1survivor-"));
+    try {
+      const failing = ["arxiv", "crossref", "pubmed", "europepmc"];
+      const { descriptors } = scienceFive(
+        Object.fromEntries(
+          failing.map((id) => [
+            id,
+            {
+              searchWorks: () => {
+                throw new ApiError(`${id} exploded`, 503);
+              },
+            },
+          ]),
+        ),
+      );
+      const { status, stderr } = await runMain(
+        ["science", "search", "graph transformers"],
+        { descriptors, artifactsDir: dir },
+      );
+      assert.equal(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const { log, notice } = await readLog(dir);
+      assert.strictEqual(notice, undefined, "no corruption notice");
+      const entries = log.entries.filter((e) => e.kind === "journal");
+      assert.strictEqual(entries.length, 1, "the narrowed run still journals ONE entry");
+      const entry = entries[0];
+      assert.strictEqual(
+        entry.provider.mode,
+        "fanout",
+        ">=2 arms ATTEMPTED — narrowing to one survivor never collapses to mode single",
+      );
+      assert.deepStrictEqual(
+        entry.provider.arms,
+        ["openalex"],
+        "the lone surviving arm id, not the attempted five",
+      );
+      assert.strictEqual(entry.skeleton.results.length, 1, "only the survivor's rows merge");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // science get fallback (TASKS T10; PRD AC-5b)
 // ---------------------------------------------------------------------------
 

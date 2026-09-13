@@ -825,8 +825,19 @@ function createScienceJournalHook(
     readonly resultRows: () => readonly ScienceWork[] | undefined;
     /** The science cache key, derived from the supplier identity (thunk — resolved post-dispatch). */
     readonly cacheKey: () => string | undefined;
-    /** T10: the resolved fan-out arm ids (thunk — multi-arm runs journal the ordered arm set). */
+    /**
+     * T10/T3: the journaled arm ids (thunk — resolved post-dispatch).
+     * For a fan-out run these are the SURVIVORS: the arms that actually
+     * served, never the attempted set.
+     */
     readonly arms?: () => readonly string[] | undefined;
+    /**
+     * T3: whether the run FANNED OUT — >=2 arms attempted at resolution
+     * (thunk). THIS, not the survivor count, picks the routing shape: a
+     * five-arm run narrowed to one survivor stays {mode:"fanout"}, and a
+     * pinned one-arm run that rerouted stays {mode:"single"}.
+     */
+    readonly fannedOut?: () => boolean;
   },
 ): SaveHook {
   const { capability, capture } = meta.journal;
@@ -838,14 +849,19 @@ function createScienceJournalHook(
     const works = meta.resultRows();
     if (works === undefined) return;
     const skeleton = buildSearchSkeleton(works);
-    // T10 fan-out routing (AC-12c): a multi-arm search run records the
-    // ordered arm set ({mode:"fanout", arms}); a single-arm run (pin,
-    // or `science get`'s single-serving walk) keeps the single shape.
+    // T10 fan-out routing (AC-12c) + T3 shape ruling: the shape records
+    // whether the run FANNED OUT (>=2 arms attempted), not how many arms
+    // survived. A fan-out journals its SURVIVOR arm set; a genuinely
+    // single-arm run (pin, a one-arm run under `--no-fallback`, or
+    // `science get`'s single-serving walk) keeps the single shape. The
+    // arms array is always non-empty when an entry is written — an
+    // all-rejected run throws before resultRows resolves.
     const arms = meta.arms?.();
+    const fannedOut = meta.fannedOut?.() === true;
     const entry = buildJournalEntry({
       capability,
       provider:
-        arms !== undefined && arms.length > 1
+        fannedOut && arms !== undefined && arms.length > 0
           ? { mode: "fanout", arms }
           : {
               mode: "single",
@@ -948,6 +964,10 @@ export async function handleScience(
     let journalRows: readonly ScienceWork[] | undefined;
     let journalIdentity: unknown;
     let journalArms: readonly string[] | undefined;
+    // T3: >=2 arms ATTEMPTED at resolution — captured before the one-arm
+    // reroute below (and before survivors are recomputed) so the routing
+    // SHAPE survives narrowing. `mode` follows this, not arms.length.
+    let journalFannedOut = false;
     return invokeCommand(
       deps.invocation,
       async (context) => {
@@ -959,6 +979,7 @@ export async function handleScience(
         // classifyError continue path.
         const arms = resolveScienceArms("science.search", selectionOpts, request, context.notice);
         journalArms = arms.map((arm) => arm.id);
+        journalFannedOut = arms.length > 1;
         // Pinned-search reroute (ruling): a one-arm run is a get-style
         // walk, not a fan-out — if the pinned supplier FAILS at invoke
         // time and fallback is on, reroute to the next D5-order arm
@@ -1068,6 +1089,15 @@ export async function handleScience(
             `scoutline: ${arms[index]?.id ?? "unknown"} arm failed (${message}) — dropped from this fan-out.`,
           );
         });
+        // T3 routing record: `mode:"fanout"` records that the run FANNED
+        // OUT (>=2 arms attempted) — narrowing to one survivor stays a
+        // fanout, it never collapses to a single/served shape. `arms`
+        // records the arms that actually SERVED: journaling the attempted
+        // set made a run with failed arms indistinguishable from a clean
+        // full merge. settled order equals arms order (as above).
+        journalArms = settled.flatMap((outcome, index) =>
+          outcome.status === "fulfilled" ? [arms[index]?.id ?? "unknown"] : [],
+        );
         // D5 visible narrowing — never a silent drop: an arm that
         // failed at INVOKE time (ApiError/network) while other arms
         // serve is disclosed per-arm on stderr (search-command
@@ -1104,6 +1134,7 @@ export async function handleScience(
             resultRows: () => journalRows,
             cacheKey: () => scienceCacheKey(journalIdentity),
             arms: () => journalArms,
+            fannedOut: () => journalFannedOut,
           }),
     );
   }

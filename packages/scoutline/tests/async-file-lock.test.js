@@ -45,7 +45,12 @@ async function displacementRace(t, lockName, timeoutLabel) {
     running -= 1;
     return "done";
   };
-  const opts = { timeoutMs: 10000, staleMs: 30, timeoutLabel };
+  // staleMs 600 (was 30): refresh cadence is staleMs/2 (300ms here), so a steal
+  // needs >600ms of refresher silence — tolerating loaded-runner timer/fs jitter
+  // (CI leg-22 flake, PR #155) while keeping teeth: a build with NO mtime refresh
+  // still goes stale at 600ms + one 500ms contender poll, well inside the 1500ms
+  // hold, so maxConcurrent flips to 2 and the pin reddens.
+  const opts = { timeoutMs: 10000, staleMs: 600, timeoutLabel };
   const a = withAsyncFileLock(dir, lockName, fn, opts);
   await new Promise((r) => setImmediate(r));
   const b = withAsyncFileLock(dir, lockName, fn, opts);

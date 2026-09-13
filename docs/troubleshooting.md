@@ -352,7 +352,11 @@ invokes a model:
 - `repo brief` → applied once to the assembled brief; README excerpts and
   file bodies trim, file inventory drops late; repository name and
   structure summary never cut;
-- `repo tree` → **rejects** the flag (`UNSUPPORTED_OPTION`).
+- `repo tree` → **rejects** the flag (`UNSUPPORTED_OPTION`);
+- `science search` → summaries trim, authors tail halves, venue drops,
+  trailing works drop down to one; titles, URLs, and identifiers never cut;
+- `science get` → summaries trim, authors tail halves, venue drops; titles,
+  URLs, and identifiers never cut.
 
 If the budget fired, nothing is lost: the payload carries `compaction:
 {budget, ref}` and the full untrimmed envelope is in the artifacts store —
@@ -537,6 +541,196 @@ healthy percentage — for example a "plan limit exceeded" error
 alongside a fresh snapshot showing `plan` at 4.5% remaining. Doctor's
 availability verdict and quota-based selection derive from the
 key-pool `requests` category, never `plan`.
+
+## Science Supplier Keys and Rate-Limit Tiers
+
+Science suppliers (arXiv, Crossref, Europe PMC, OpenAlex, PubMed) are
+keyless-by-default — none of them requires a paid subscription or billing
+account:
+
+- **arXiv**, **Crossref**, and **Europe PMC** are permanently keyless. No
+  credential environment variables exist (`credentialEnvVars: []`). Crossref
+  automatically sends a polite-pool contact in the User-Agent header
+  (`scoutline/<version> (mailto:scoutline@localhost)`); Europe PMC and arXiv
+  send the standard User-Agent header.
+- **OpenAlex** and **PubMed** accept optional, free API keys that elevate
+  rate limits rather than bill for usage:
+  - `OPENALEX_API_KEY`: Keyless default provides 1,000 credits/day with
+    polite `mailto=scoutline@localhost` query attribution. Setting an API key
+    routes requests via `api_key=<key>`, lifting rate limits and shielding
+    against anonymous traffic pauses.
+  - `NCBI_API_KEY`: Keyless default throttles requests to 3 requests/second.
+    Setting an NCBI API key lifts the rate limit to 10 requests/second via
+    the `api_key=<key>` query parameter.
+
+API keys can be supplied via environment variables or stored interactively:
+
+```bash
+# Optional upgrade keys (free rate-limit tiers)
+export OPENALEX_API_KEY="your-openalex-key"
+export NCBI_API_KEY="your-ncbi-key"
+
+# Or configure interactively
+scoutline init
+```
+
+To verify connectivity and rate-limit access for all configured science
+suppliers without spending credits, run:
+
+```bash
+scoutline doctor
+```
+
+Science suppliers are excluded from quota spend dashboards (`scoutline quota`)
+because they carry no usage billing pool.
+
+## OpenAlex Anonymous Search 503 or `doctor` Probe Is Red
+
+```
+OpenAlex request failed (anonymous search may be paused under load — a free API key via `scoutline init` restores it)
+```
+
+Under heavy upstream server load, OpenAlex may temporarily pause anonymous
+search requests by returning HTTP 503, even while entity endpoints or bare
+works queries respond normally.
+
+In `scoutline doctor`, the OpenAlex diagnostic probe exercises the search
+surface (`search=test`, `per-page=1`). A red probe row during an anonymous
+pause is intentional — doctor verifies capability health (search functionality),
+not bare network connectivity.
+
+Unauthenticated search requests that encounter this pause fail with `API_ERROR`
+(`exit 1`). To resolve this:
+
+1. Obtain a free OpenAlex API key from <https://openalex.org/users/me>.
+2. Configure it via `export OPENALEX_API_KEY="..."` or run `scoutline init`.
+
+Requests with an API key are routed to OpenAlex's authenticated pool, which
+is not subject to anonymous search pauses.
+
+## Science Fan-Out Reports "arm failed (…) — dropped from this fan-out"
+
+```
+scoutline: <supplier> arm failed (<message>) — dropped from this fan-out.
+```
+
+When running `scoutline science search <query>` without pinning a single
+provider, scoutline fans out the search concurrently across all eligible
+science suppliers.
+
+If an individual supplier fails at invocation time (for example, HTTP 503,
+transient network drop, or upstream timeout), scoutline emits a stderr notice
+identifying the failed arm and message, then drops that arm from the merge.
+
+Exit codes and partial fan-out:
+- **Partial success (`exit 0`):** As long as at least one arm fulfills (even
+  if that arm returns an empty works list), the fan-out succeeds with `exit 0`.
+  The surviving arms are merged, deduplicated by persistent identifiers (DOI
+  first, then normalized URL), and returned. The research journal records
+  `{ mode: "fanout", arms: [...] }` listing only the survivor arms that
+  actually served.
+- **Complete failure (`exit 1`):** `science search` fails if and only if
+  **every** attempted arm rejects. In this case, scoutline throws the error
+  from the first attempted arm in priority order.
+
+## arXiv Multi-Word Search and Unsupported Controls
+
+```
+Provider "arxiv" does not support option "<option>" for capability "science.search"
+```
+
+The arXiv Atom API query parser treats unquoted space-separated terms as
+an implicit-OR expression across fields, which causes multi-word queries
+to return unrelated matches for individual words.
+
+To ensure exact topic matching and prevent result flooding, scoutline wraps
+multi-word search queries in a single quoted phrase under the `all:` field
+operand (`all:"<phrase>"`), folding internal double quotes to spaces and
+collapsing whitespace.
+
+Key syntax considerations:
+- **Raw boolean and field syntax:** Because scoutline wraps the input in
+  `all:"..."`, explicit arXiv boolean operators (such as `AND`, `OR`, `ANDNOT`)
+  or field prefixes (such as `ti:`, `au:`) typed into the query string are
+  interpreted as literal text within the phrase rather than evaluated by
+  arXiv as query operators.
+- **Unsupported CLI controls (`exit 1`):** The arXiv adapter rejects all
+  structured science controls (`--author`, `--year`, `--venue`, `--type`)
+  at validation time with `UNSUPPORTED_OPTION` (`exit 1`). arXiv's API does
+  not support exact equivalents (e.g. arXiv filters `submittedDate`, not
+  publication year). To search by author or keyword on arXiv, include the
+  terms directly in the query text.
+
+## `--max-chars` on Science Commands
+
+`--max-chars` applies a deterministic local Output Budget to both
+`scoutline science search` and `scoutline science get` envelopes after
+results are retrieved.
+
+The science budget ladder (`SCIENCE_LADDER`) applies lossy reductions in
+strict priority order:
+1. `trim-summaries`: Cuts `summary` text in half, adding an ellipsis prefix.
+2. `drop-authors-tail`: Halves the `authors` list, keeping the first half.
+3. `drop-venue`: Drops the `venue` field entirely.
+4. `drop-last-work`: Drops trailing works from the result array, down to a
+   floor of one work.
+
+Guaranteed survivals:
+- `title`, `url`, and persistent `identifiers` (`doi`, `pmid`, `arxivId`) are
+  **never** cut or dropped by any budget step.
+- For `science get`, the single-work envelope is budgeted with the same ladder
+  steps (summaries trim, authors halve, venue drops).
+
+Envelope recovery and text rendering:
+- When compaction triggers, scoutline emits a stderr notice:
+  ```
+  output budget: <maxChars> chars — full untrimmed envelope saved (<ref>)
+  ```
+- The full untrimmed envelope is stored in the local artifacts store and can
+  be inspected or recovered using:
+  ```bash
+  scoutline history show <ref>
+  ```
+- Terminal and Markdown presentations (`tty`, `markdown`, `compact`) are
+  re-rendered directly from the projected data to guarantee that displayed
+  text matches the compacted envelope.
+
+## Science Journal Records Carry Persistent Identifiers
+
+`scoutline science search` writes entries to the persistent research
+journal (`~/.scoutline/artifacts/`) alongside standard `search`, `read`,
+and `research` commands.
+
+Post-T4, skeleton rows recorded in the journal carry optional persistent
+identifiers in `SkeletonItem.identifiers`:
+
+```json
+{
+  "url": "https://doi.org/10.5555/3295222",
+  "title": "Attention Is All You Need",
+  "identifiers": {
+    "doi": "10.5555/3295222",
+    "pmid": "31672840",
+    "arxivId": "1706.03762"
+  }
+}
+```
+
+Key behaviors:
+- **Cross-supplier identity:** Because science suppliers emit differing URLs
+  for identical works (e.g. OpenAlex work URL vs. DOI landing URL vs. PubMed
+  record), persistent identifiers anchor the canonical identity across
+  providers.
+- **Backward compatibility:** Journal entries recorded without `identifiers`
+  (pre-T4 entries or non-science commands) continue to validate and parse
+  without error or corruption warnings.
+- **Content hash:** The journal's `contentHash` is the SHA-256 digest of
+  the normalized skeleton serialization. It is per-entry display metadata,
+  not a cross-entry deduplication anchor; new entries with identifiers hash
+  differently from legacy entries.
+- **Surviving arms in fan-out:** The journal entry's `provider.arms` array
+  records only the supplier arms that actually fulfilled the request, rather
+  than all attempted arms.
 
 ## Need more information
 

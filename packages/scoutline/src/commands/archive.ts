@@ -21,12 +21,9 @@ import { invokeCommand } from "../command-invocation.js";
 import type { OutputMode } from "../lib/output.js";
 import { ValidationError, TimeoutError, NetworkError } from "../lib/errors.js";
 import { rejectSmuggledMaxChars } from "../lib/output-budget.js";
+import { readBoundedResponseBody } from "../lib/bounded-body.js";
 import type { HandlerDependencies } from "../index.js";
-import {
-  readBoundedResponseBody,
-  DEFAULT_USER_AGENT,
-  DEFAULT_FETCH_TIMEOUT_MS,
-} from "./fetch.js";
+import { DEFAULT_USER_AGENT, DEFAULT_FETCH_TIMEOUT_MS } from "./fetch.js";
 import {
   extractSections,
   extractSectionsHashOnly,

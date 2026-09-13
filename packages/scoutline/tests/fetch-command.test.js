@@ -12,12 +12,12 @@ import {
   fetchCommand,
   parseFetchArgs,
   validateFetchUrl,
-  readBoundedResponseBody,
   FETCH_HELP,
   DEFAULT_USER_AGENT,
 } from "../dist/commands/fetch.js";
 import { main } from "../dist/index.js";
 import { FileError } from "../dist/lib/errors.js";
+import { readBoundedResponseBody } from "../dist/lib/bounded-body.js";
 import { useTempConfigDir } from "./helpers/config-dir-pin.js";
 
 useTempConfigDir();

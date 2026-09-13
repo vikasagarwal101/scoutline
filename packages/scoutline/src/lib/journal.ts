@@ -43,6 +43,16 @@ export type JournalableCapability = "search" | "read" | "research" | "science";
 export interface SkeletonItem {
   readonly url: string;
   readonly title: string;
+  /**
+   * Optional persistent identifiers (e.g. science works).
+   * Note: contentHash is per-entry display context, never a cross-entry identity anchor,
+   * so new entries hashing differently from legacy entries is acceptable.
+   */
+  readonly identifiers?: {
+    readonly doi?: string;
+    readonly pmid?: string;
+    readonly arxivId?: string;
+  };
 }
 
 /** Search skeleton (D2): url+title list of the result rows. */
@@ -135,7 +145,10 @@ export function normalizeSkeleton(skeleton: JournalSkeleton): unknown {
   return sortDeep(skeleton);
 }
 
-/** sha256 hex of the normalized skeleton serialization (the recall/export comparison anchor). */
+/**
+ * sha256 hex of the normalized skeleton serialization (the recall/export comparison anchor).
+ * Note: contentHash is per-entry display context, never a cross-entry identity anchor.
+ */
 export function skeletonContentHash(skeleton: JournalSkeleton): string {
   return createHash("sha256").update(JSON.stringify(normalizeSkeleton(skeleton))).digest("hex");
 }
@@ -144,14 +157,26 @@ export function skeletonContentHash(skeleton: JournalSkeleton): string {
  * Search skeleton builder: the url+title identity of each result row.
  * Accepts the normalized search result rows (`FormattedResult` shape —
  * rank/title/url/summary) and keeps only url+title, in row order.
+ * Science rows carry optional persistent identifiers threaded through to SkeletonItem.
  */
 export function buildSearchSkeleton(
-  results: readonly { readonly url?: string; readonly title?: string }[],
+  results: readonly {
+    readonly url?: string;
+    readonly title?: string;
+    readonly identifiers?: {
+      readonly doi?: string;
+      readonly pmid?: string;
+      readonly arxivId?: string;
+    };
+  }[],
 ): SearchSkeleton {
   return {
     results: results.map((row) => ({
       url: typeof row.url === "string" ? row.url : "",
       title: typeof row.title === "string" ? row.title : "",
+      ...(row.identifiers !== undefined && Object.keys(row.identifiers).length > 0
+        ? { identifiers: row.identifiers }
+        : {}),
     })),
   };
 }
@@ -252,6 +277,19 @@ export function asJournalEntry(value: unknown): JournalLogEntry | JournalRepeatM
     if (typeof item !== "object" || item === null) return undefined;
     const row = item as Record<string, unknown>;
     if (typeof row.url !== "string" || typeof row.title !== "string") return undefined;
+    if (row.identifiers !== undefined) {
+      if (
+        typeof row.identifiers !== "object" ||
+        row.identifiers === null ||
+        Array.isArray(row.identifiers)
+      ) {
+        return undefined;
+      }
+      const ids = row.identifiers as Record<string, unknown>;
+      if (ids.doi !== undefined && typeof ids.doi !== "string") return undefined;
+      if (ids.pmid !== undefined && typeof ids.pmid !== "string") return undefined;
+      if (ids.arxivId !== undefined && typeof ids.arxivId !== "string") return undefined;
+    }
   }
   if (e.tags !== undefined && !Array.isArray(e.tags)) return undefined;
   if (e.tags !== undefined && !e.tags.every((t) => typeof t === "string")) return undefined;

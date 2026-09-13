@@ -426,6 +426,53 @@ describe("T7: science search journals one skeleton entry (main-driven)", () => {
     }
   });
 
+  it("science search skeletoning carries identifiers through buildSearchSkeleton (T4 #141)", async () => {
+    const dir = makeTempDir("scoutline-scijr-ids-");
+    try {
+      const works = [
+        {
+          title: "Attention Is All You Need",
+          url: "https://doi.org/10.5555/3295222",
+          identifiers: {
+            doi: "10.5555/3295222",
+            pmid: "31672840",
+            arxivId: "1706.03762",
+          },
+        },
+      ];
+      const { descriptors } = scienceFive({
+        openalex: { searchWorks: works },
+        arxiv: { searchWorks: [] },
+        crossref: { searchWorks: [] },
+        pubmed: { searchWorks: [] },
+        europepmc: { searchWorks: [] },
+      });
+      const { status, stderr } = await runMain(
+        ["science", "search", "attention mechanism"],
+        { descriptors, artifactsDir: dir },
+      );
+      assert.equal(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const { entries, notice } = await readJournalEntries(dir);
+      assert.strictEqual(notice, undefined);
+      assert.strictEqual(entries.length, 1);
+      const entry = entries[0];
+      assert.deepStrictEqual(entry.skeleton.results, [
+        {
+          url: "https://doi.org/10.5555/3295222",
+          title: "Attention Is All You Need",
+          identifiers: {
+            doi: "10.5555/3295222",
+            pmid: "31672840",
+            arxivId: "1706.03762",
+          },
+        },
+      ]);
+      assert.strictEqual(entry.contentHash, skeletonContentHash(entry.skeleton));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("science search with ZERO results still appends exactly ONE full entry — skeleton.results deep-equals [] (the search precedent)", async (t) => {
     // GROUND: FIX round — the search seam journals a zero-result run as
     // one full entry with an EMPTY results array; the science twin must

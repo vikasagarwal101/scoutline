@@ -327,6 +327,41 @@ describe("T2a: always-on journal writer unit pins", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("legacy round-trip: entry WITHOUT identifiers still parses, validates, and round-trips through readLog (T4 fail-open pin)", async () => {
+    const dir = makeTempDir("scoutline-journal-legacy-");
+    try {
+      const legacyEntry = {
+        kind: "journal",
+        requestId: "20260908T000000Z-0001",
+        timestamp: 1800000000000,
+        capability: "search",
+        provider: { mode: "single", effective: "zai", servedFrom: "live" },
+        query: "rust vs go",
+        contentHash: skeletonContentHash(buildSearchSkeleton([{ title: "Rust", url: "https://rust-lang.org" }])),
+        cacheKey: "v2.search.zai.fp.json",
+        skeleton: {
+          results: [{ url: "https://rust-lang.org", title: "Rust" }],
+        },
+      };
+      const notice = await appendJournalEntry(dir, legacyEntry);
+      assert.strictEqual(notice, undefined);
+      const { log, notice: readNotice } = await readLog(dir);
+      assert.strictEqual(readNotice, undefined, "no corruption notice for legacy entry");
+      assert.strictEqual(log.entries.length, 1);
+      const retrieved = log.entries[0];
+      assert.strictEqual(retrieved.kind, "journal");
+      assert.strictEqual(retrieved.requestId, legacyEntry.requestId);
+      assert.strictEqual(retrieved.capability, "search");
+      assert.deepStrictEqual(retrieved.skeleton.results, [
+        { url: "https://rust-lang.org", title: "Rust" },
+      ]);
+      assert.strictEqual(retrieved.skeleton.results[0].identifiers, undefined);
+      assert.strictEqual(retrieved.contentHash, legacyEntry.contentHash);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("PR #111 cluster C: requestId collision remint under the log lock", () => {

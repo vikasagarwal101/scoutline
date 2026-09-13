@@ -109,6 +109,25 @@ describe("ZaiApiClient — visionComplete request shape (#136 remainder)", () =>
     // The rest of the recipe still applies.
     assert.deepStrictEqual(body.thinking, { type: "enabled" });
   });
+
+  it("sends reasoning_effort max for two-digit GLM-5 minors (glm-5.10)", async () => {
+    // The documented rule is "GLM-5.2 and above". A single-digit minor
+    // class ([2-9]) stops matching at glm-5.10, which would silently drop
+    // the parameter for a supported model.
+    global.fetch = async (url, options) => {
+      calls.push({ url: String(url), body: JSON.parse(options.body) });
+      return okResponse;
+    };
+
+    await clientWithVisionModel("glm-5.10").visionComplete([
+      { role: "user", content: "describe" },
+    ]);
+
+    assert.strictEqual(calls.length, 1);
+    const body = calls[0].body;
+    assert.strictEqual(body.reasoning_effort, "max", "two-digit minor glm-5.10 must receive reasoning_effort");
+    assert.deepStrictEqual(body.thinking, { type: "enabled" });
+  });
 });
 
 describe("ZaiApiClient — redirect handling (1.2)", () => {

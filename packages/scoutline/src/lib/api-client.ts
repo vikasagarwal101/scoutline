@@ -153,10 +153,13 @@ async function withRetry<T>(
  * above (glm-5.2, glm-5.3, glm-5.3-flash...). Z_AI_VISION_MODEL keeps
  * older vision models selectable and they REJECT the parameter (the
  * request fails after withRetry), so the wire gates it (PR #142
- * review). Widen the range when Z.AI ships newer supported families —
- * omitting the param on an unknown model is the safe direction.
+ * review). Two-digit minors (glm-5.10+) match through `\d{2,}` rather
+ * than a fixed single-digit class, so the gate tracks the documented
+ * rule past 5.9. Widen the range when Z.AI ships newer supported
+ * families — omitting the param on an unknown model is the safe
+ * direction.
  */
-const REASONING_EFFORT_MODEL_RE = /^glm-5\.[2-9]/;
+const REASONING_EFFORT_MODEL_RE = /^glm-5\.(?:[2-9]|\d{2,})/;
 
 export class ZaiApiClient {
   private config: ZaiConfig;

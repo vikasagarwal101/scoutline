@@ -9,6 +9,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
 
 import {
   HERMETIC_CAPABILITIES,
@@ -71,5 +72,39 @@ describe("hermeticMainDeps (#42)", () => {
     assert.notEqual(deps.searchCache, undefined);
     assert.equal(typeof deps.searchCache.get, "function");
     assert.equal(typeof deps.searchCache.set, "function");
+  });
+});
+
+describe("hermeticMainDeps SCOUTLINE_ARTIFACTS_DIR (#137)", () => {
+  it("defaults SCOUTLINE_ARTIFACTS_DIR to a stable temp dir singleton under os.tmpdir()", () => {
+    const deps1 = hermeticMainDeps();
+    assert.equal(typeof deps1.env.SCOUTLINE_ARTIFACTS_DIR, "string");
+    assert.ok(deps1.env.SCOUTLINE_ARTIFACTS_DIR.length > 0);
+    assert.ok(deps1.env.SCOUTLINE_ARTIFACTS_DIR.startsWith(tmpdir()));
+
+    const deps2 = hermeticMainDeps();
+    assert.equal(deps2.env.SCOUTLINE_ARTIFACTS_DIR, deps1.env.SCOUTLINE_ARTIFACTS_DIR);
+  });
+
+  it("injects default SCOUTLINE_ARTIFACTS_DIR when env is explicitly {}", () => {
+    const deps = hermeticMainDeps({ env: {} });
+    assert.equal(typeof deps.env.SCOUTLINE_ARTIFACTS_DIR, "string");
+    assert.ok(deps.env.SCOUTLINE_ARTIFACTS_DIR.length > 0);
+    assert.ok(deps.env.SCOUTLINE_ARTIFACTS_DIR.startsWith(tmpdir()));
+  });
+
+  it("preserves explicit SCOUTLINE_ARTIFACTS_DIR from caller env", () => {
+    const customDir = "/custom/artifacts/dir";
+    const deps = hermeticMainDeps({ env: { SCOUTLINE_ARTIFACTS_DIR: customDir } });
+    assert.equal(deps.env.SCOUTLINE_ARTIFACTS_DIR, customDir);
+  });
+
+  it("exports getHermeticArtifactsDir returning the lazy singleton", async () => {
+    const helper = await import("./helpers/hermetic-main.js");
+    assert.equal(typeof helper.getHermeticArtifactsDir, "function");
+    const dir = helper.getHermeticArtifactsDir();
+    assert.equal(typeof dir, "string");
+    assert.ok(dir.startsWith(tmpdir()));
+    assert.equal(hermeticMainDeps().env.SCOUTLINE_ARTIFACTS_DIR, dir);
   });
 });

@@ -37,6 +37,7 @@ import { ValidationError } from "../dist/lib/errors.js";
 import { createInMemoryQuotaStore } from "../dist/lib/quota-store.js";
 import { main } from "../dist/index.js";
 import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+import { getHermeticArtifactsDir } from "./helpers/hermetic-main.js";
 
 useTempConfigDir();
 
@@ -402,7 +403,7 @@ describe("resolveEffectiveProvider: KNOWN_EXHAUSTED demotion (#97)", () => {
     const { adapter, stderr } = createTestAdapter();
     const status = await main(["search", "hello"], {
       invocation: adapter,
-      env: { Z_AI_API_KEY: "z", EXA_API_KEY: "e" },
+      env: { Z_AI_API_KEY: "z", EXA_API_KEY: "e", SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
       providerDescriptors: built.map((b) => b.descriptor),
       quotaState: snapshot,
       // #63: pin fanout-off (mirrors the DISPATCH_CASES harness).
@@ -860,7 +861,7 @@ describe("resolveEffectiveProvider: 7-handler dispatch wiring", () => {
 
       const deps = {
         invocation: adapter,
-        env: tc.env,
+        env: { ...tc.env, SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
         providerDescriptors: built.map((b) => b.descriptor),
         quotaState: snapshot,
         // #63: pin fanout-off so the ambient config's fanout:true cannot

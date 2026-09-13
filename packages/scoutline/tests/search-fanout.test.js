@@ -33,6 +33,7 @@ import {
 import { main } from "../dist/index.js";
 import { ValidationError, UnsupportedOptionError } from "../dist/lib/errors.js";
 import { useTempConfigDir } from "./helpers/config-dir-pin.js";
+import { getHermeticArtifactsDir } from "./helpers/hermetic-main.js";
 
 useTempConfigDir();
 
@@ -1237,7 +1238,7 @@ describe("executeFanoutPlan: single-pin golden via main() (byte-identical stdout
     };
     const statusA = await main(["--provider", "tavily", "search", "q"], {
       invocation: adapter,
-      env: {},
+      env: { SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
       loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
       providerDescriptors: [tav.descriptor, exa.descriptor],
       configFanout: true,
@@ -1251,7 +1252,7 @@ describe("executeFanoutPlan: single-pin golden via main() (byte-identical stdout
     stderr.length = 0;
     const statusB = await main(["--provider", "tavily", "search", "q"], {
       invocation: adapter,
-      env: {},
+      env: { SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
       providerDescriptors: [tav.descriptor, exa.descriptor],
       searchCache: freshCache(),
       // #64: hermetic config — without this, main() reads the real
@@ -1370,7 +1371,7 @@ describe("executeFanoutPlan: single-pin golden via main() (byte-identical stdout
       };
       const status2 = await main(["search", "q", "--type", "video"], {
         invocation: adapter2,
-        env: {},
+        env: { SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
         providerDescriptors: [supporting.descriptor, rejecting.descriptor],
         configFanout: true,
         searchCache: freshCache2(),
@@ -1539,7 +1540,7 @@ describe("config toggle: fanout on → off restores the single path (golden)", (
       };
       const status = await main(["search", "q"], {
         invocation: adapter,
-        env: {},
+        env: { SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
         providerDescriptors: [zai.descriptor, tav.descriptor, exa.descriptor],
         loadScoutlineConfig: () => readConfig(mkOptions(dir)),
         searchCache: freshCache(),
@@ -1672,7 +1673,7 @@ describe("Ticket 5 — main-driven hermetic wire test (fan-out end-to-end)", () 
     // switch and NO env pin.
     const status = await main(["--provider", "tavily,exa", "search", "q"], {
       invocation: adapter,
-      env: {},
+      env: { SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
       providerDescriptors: [tav.descriptor, exa.descriptor],
       loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
       searchCache: freshCache(),
@@ -1908,7 +1909,7 @@ describe("executeFanoutPlan: consumption sink (review fix)", () => {
     const store = new Map();
     const status = await main(["--provider", "tavily,exa", "search", "q"], {
       invocation: adapter,
-      env: {},
+      env: { SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
       providerDescriptors: [
         makeSinkDescriptor("tavily", [{ title: "T", url: "https://e/t", summary: "t" }]),
         makeSinkDescriptor("exa", [{ title: "E", url: "https://e/e", summary: "e" }]),

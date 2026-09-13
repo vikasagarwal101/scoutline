@@ -36,7 +36,7 @@ import {
   type ConfigRootEnvironment,
   type ConfigRootPlatform,
 } from "./config-store.js";
-import { FileError, ScoutlineError } from "./errors.js";
+import { ConfigurationError, FileError, ScoutlineError } from "./errors.js";
 import {
   DEFAULT_LOCK_STALE_MS,
   DEFAULT_LOCK_TIMEOUT_MS,
@@ -93,11 +93,35 @@ export interface ArtifactsPlatform extends ConfigRootPlatform {
  * legacy alias) wins; otherwise the config root's `artifacts/` sibling.
  * Pure — the caller supplies env and platform; the convenience wrapper is
  * left to the command layer (T2/T3) so tests never touch process.env.
+ *
+ * Test-isolation guard (issue #137): `node --test` sets NODE_TEST_CONTEXT
+ * in every spawned test child, so a bare default-dir resolve there means
+ * the caller FORGOT dependency injection and is about to touch the real
+ * `~/.scoutline/artifacts` — fail loud instead. Decided ONLY from the injected env
+ * (the resolver never reads process.env.SCOUTLINE_ARTIFACTS_DIR — an ambient value must
+ * NOT silence the guard). Lives only on this ambient-env
+ * seam; pure resolver stays total/pure. `SCOUTLINE_NO_TEST_GUARD=1` is the
+ * documented escape hatch for suites deliberately exercising the default path.
+ * Note the shell convention: ANY non-empty value bypasses (JS truthiness) —
+ * `=0` does NOT re-arm the guard; unset it (or set it empty) to re-arm.
  */
 export function resolveArtifactsDir(
   env: ArtifactsDirEnvironment,
   platform: ArtifactsPlatform = { homedir: os.homedir(), pid: process.pid },
 ): string {
+  if (
+    process.env.NODE_TEST_CONTEXT &&
+    !process.env.SCOUTLINE_NO_TEST_GUARD &&
+    !env.SCOUTLINE_ARTIFACTS_DIR &&
+    !env.SCOUTLINE_CONFIG_DIR &&
+    platform.homedir === os.homedir()
+  ) {
+    throw new ConfigurationError(
+      "Refusing resolve default artifacts dir under test context: set SCOUTLINE_ARTIFACTS_DIR isolated directory (or SCOUTLINE_NO_TEST_GUARD=1 bypass).",
+      "Inject SCOUTLINE_ARTIFACTS_DIR in test (hermeticMainDeps or temp dir); direct node --test runs ~/.scoutline/artifacts.",
+    );
+  }
+
   const baseDir =
     env.SCOUTLINE_ARTIFACTS_DIR || path.join(resolveConfigRootPure(env, platform), "artifacts");
 

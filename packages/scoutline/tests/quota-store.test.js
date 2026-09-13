@@ -922,7 +922,13 @@ describe("quota-store: spawned-CLI lifecycle (state.json survives process.exit)"
       // instead verify the broader contract: the process exits
       // cleanly and the config dir is intact.
       const r = await runProcess(["quota"], {
-        env: { BRAVE_SEARCH_API_KEY: "fake-key-no-network" },
+        env: {
+          BRAVE_SEARCH_API_KEY: "fake-key-no-network",
+          // Flake guard (PR #155 CI): CI runners have egress; API-side
+          // rate-limiting (429) stacks shared-executor retry backoff
+          // against the spawn budget. Cap each transport attempt at 2s.
+          BRAVE_TIMEOUT: "2000",
+        },
         configDir,
         timeoutMs: 30000,
       });
@@ -1020,7 +1026,13 @@ describe("quota-store: PB-T2 spawned-CLI consumption write survives process.exit
       // the process exits cleanly without losing a pending write — the
       // write is awaited before `process.exit`.
       const r = await runProcess(["quota"], {
-        env: { BRAVE_SEARCH_API_KEY: "fake-key-no-network" },
+        env: {
+          BRAVE_SEARCH_API_KEY: "fake-key-no-network",
+          // Flake guard (PR #155 CI): CI runners have egress; API-side
+          // rate-limiting (429) stacks shared-executor retry backoff
+          // against the spawn budget. Cap each transport attempt at 2s.
+          BRAVE_TIMEOUT: "2000",
+        },
         configDir,
         timeoutMs: 30000,
       });

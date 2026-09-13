@@ -60,11 +60,20 @@ function defaultHermeticQuotaStore() {
   return hermeticQuotaStore;
 }
 
+let hermeticArtifactsDir;
+export function getHermeticArtifactsDir() {
+  hermeticArtifactsDir ??= mkdtempSync(join(tmpdir(), "scoutline-hermetic-artifacts-"));
+  return hermeticArtifactsDir;
+}
+export const defaultHermeticArtifactsDir = getHermeticArtifactsDir;
+export const HERMETIC_ARTIFACTS_DIR = getHermeticArtifactsDir;
+
 // Exit handlers are sync-only; rmSync(force) tolerates an already-removed
 // dir. Registered at module scope but a no-op until the lazy singleton
 // has actually created its dir, so non-consumers pay nothing.
 process.on("exit", () => {
   if (hermeticQuotaDir !== undefined) rmSync(hermeticQuotaDir, { recursive: true, force: true });
+  if (hermeticArtifactsDir !== undefined) rmSync(hermeticArtifactsDir, { recursive: true, force: true });
 });
 
 function firstDefined(deps, suffix) {
@@ -111,5 +120,13 @@ export function hermeticMainDeps(partial = {}) {
   };
   if (deps.configFanout === undefined) deps.configFanout = false;
   if (deps.quotaStore === undefined) deps.quotaStore = defaultHermeticQuotaStore();
+  if (deps.env == null) deps.env = {};
+  if (!("SCOUTLINE_ARTIFACTS_DIR" in deps.env)) {
+    if (Object.isFrozen(deps.env)) {
+      deps.env = { SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir(), ...deps.env };
+    } else {
+      deps.env.SCOUTLINE_ARTIFACTS_DIR = getHermeticArtifactsDir();
+    }
+  }
   return fillOmittedTriples(deps);
 }

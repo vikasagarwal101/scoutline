@@ -9,7 +9,7 @@ import {
   type ProviderId,
 } from "../providers/types.js";
 import { ConfigurationError, ValidationError } from "./errors.js";
-import { assertTestSafeWrite } from "./test-isolation.js";
+import { assertTestSafeWrite, isTestIsolationViolation } from "./test-isolation.js";
 import {
   withAsyncFileLock,
   LockTimeoutError,
@@ -522,12 +522,14 @@ export async function writeConfig(
   try {
     const contents = await fs.readFile(filePath);
     await atomicReplaceFile(`${filePath}.bak`, contents, options.atomic);
-  } catch {
+  } catch (error) {
+    if (isTestIsolationViolation(error)) throw error;
     // best-effort backup; the write proceeds regardless
   }
   try {
     await atomicReplaceFile(filePath, payload, options.atomic);
-  } catch {
+  } catch (error) {
+    if (isTestIsolationViolation(error)) throw error;
     throw new ConfigurationError(
       "Unable to write config.json",
       "Check the config directory permissions and try again.",

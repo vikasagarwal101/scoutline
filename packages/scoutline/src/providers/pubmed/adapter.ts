@@ -219,7 +219,17 @@ function authorDisplayName(authorBlock: string): string | undefined {
 function parsePubmedArticle(block: string): ScienceWork {
   const pmid = elementText(block, "PMID");
   const doiElement = /<ELocationID[^>]*EIdType="doi"[^>]*>([\s\S]*?)<\/ELocationID>/i.exec(block);
-  const doi = doiElement !== null ? innerText(doiElement[1] ?? "").trim() : undefined;
+  // Fallback (#147): a pre-2007 record carries its doi ONLY inside
+  // `PubmedData/ArticleIdList/ArticleId[@IdType="doi"]` — no ELocationID
+  // doi element at all. Read only when ELocationID misses, and scoped to
+  // the ArticleIdList block so the match cannot run across siblings.
+  const articleIdList = /<ArticleIdList(?:\s[^>]*)?>([\s\S]*?)<\/ArticleIdList>/i.exec(block);
+  const doiIdElement =
+    doiElement ??
+    (articleIdList === null
+      ? null
+      : /<ArticleId[^>]*IdType="doi"[^>]*>([\s\S]*?)<\/ArticleId>/i.exec(articleIdList[1] ?? ""));
+  const doi = doiIdElement !== null ? innerText(doiIdElement[1] ?? "").trim() : undefined;
 
   const out: ScienceWork = {
     title: (elementText(block, "ArticleTitle") ?? "").trim(),

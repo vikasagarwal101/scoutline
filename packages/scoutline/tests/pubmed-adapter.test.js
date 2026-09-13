@@ -490,6 +490,27 @@ describe("pubmed search invoke — XML mapping to ScienceWork (TASKS T4c; PRD AC
     );
   });
 
+  it("pre-2007 record: DOI comes from PubmedData/ArticleIdList when ELocationID carries none (#147)", async () => {
+    // GROUND: pre-2007 eutils records carry the doi ONLY in
+    // `PubmedData/ArticleIdList/ArticleId[@IdType="doi"]` — no ELocationID
+    // doi element. Without the fallback the record parses doi-less, so
+    // `identifiers` is omitted entirely and `scienceMergeKey` (DOI-first,
+    // normalized-url fallback) can never merge this row with the Europe
+    // PMC / OpenAlex row for the same work: duplicate fanout rows.
+    const pre2007Xml = `<?xml version="1.0" ?>
+<PubmedArticleSet>
+<PubmedArticle><MedlineCitation Status="MEDLINE" Owner="NLM"><PMID Version="1">12345678</PMID><Article PubModel="Print"><Journal><JournalIssue CitedMedium="Print"><PubDate><Year>2003</Year><Month>Jan</Month></PubDate></JournalIssue><Title>Journal of old records</Title></Journal><ArticleTitle>An older record with an ArticleIdList doi.</ArticleTitle></Article></MedlineCitation><PubmedData><ArticleIdList><ArticleId IdType="pubmed">12345678</ArticleId><ArticleId IdType="doi">10.1234/x</ArticleId></ArticleIdList></PubmedData></PubmedArticle>
+</PubmedArticleSet>`;
+    const { adapter } = makeAdapter({ efetch: pre2007Xml });
+    const works = await adapter.science.search.invoke({ query: "older record" });
+    assert.equal(works.length, 1, "the pre-2007 record parses");
+    assert.equal(
+      works[0].identifiers?.doi,
+      "10.1234/x",
+      "ArticleIdList ArticleId[@IdType=doi] → identifiers.doi (no ELocationID doi present)",
+    );
+  });
+
   it("PubmedBookArticle records parse — book PMIDs no longer vanish (review round 6)", async () => {
     // Review: eutils emits <PubmedBookArticle> for book-oriented PMIDs;
     // the block matcher dropped them, so searches omitted ids esearch

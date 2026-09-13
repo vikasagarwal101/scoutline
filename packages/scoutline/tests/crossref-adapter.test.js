@@ -856,6 +856,101 @@ describe("crossref abort signal threading and honest cancellation (#151)", () =>
     );
   });
 
+  it("external abort during body consumption classifies by abort source, not error shape (review)", async () => {
+    // undici may reject an in-flight body read with a raw non-AbortError
+    // (`TypeError: terminated`) when the connection is torn down by an
+    // abort. The abort SOURCE decides the class — a caller cancel is
+    // never a retryable network failure.
+    const ac = new AbortController();
+    let readStarted = false;
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          body: {
+            getReader: () => ({
+              read: () => {
+                readStarted = true;
+                return Promise.reject(new TypeError("terminated"));
+              },
+              cancel: async () => {},
+            }),
+            cancel: async () => {},
+          },
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const promise = adapter.science.search.invoke({ query: "x" }, ac.signal);
+    ac.abort();
+    await assert.rejects(
+      promise,
+      (e) => {
+        assert.ok(e instanceof ApiError, `expected ApiError, got ${e?.constructor?.name}`);
+        assert.equal(e.statusCode, 499);
+        assert.equal(e.code, "API_ERROR");
+        assert.match(e.message, /Crossref request was aborted by the caller/);
+        assert.doesNotMatch(e.message, /timed out/i);
+        assert.doesNotMatch(e.message, /network error/i);
+        return true;
+      },
+      "a caller cancel during body consumption is never a NetworkError",
+    );
+    assert.equal(readStarted, true, "the body read must have been attempted");
+  });
+
+  it("a fired timeout during body consumption is never rewritten to a caller cancel (review)", async () => {
+    // Guard teeth for the abort-source branch: with the timeout fired,
+    // the same raw body-read rejection must NOT wear caller-cancel
+    // wording — the abort source decides.
+    let timerCallback;
+    let rejectRead;
+    const readPromise = new Promise((_res, rej) => {
+      rejectRead = rej;
+    });
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          body: {
+            getReader: () => ({ read: () => readPromise, cancel: async () => {} }),
+            cancel: async () => {},
+          },
+        }),
+        setTimeout: (cb) => {
+          timerCallback = cb;
+          return 123;
+        },
+        clearTimeout: () => {},
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const promise = adapter.science.search.invoke({ query: "x" });
+    assert.ok(timerCallback, "the timeout must be armed before the body read");
+    timerCallback();
+    rejectRead(new TypeError("terminated"));
+    await assert.rejects(
+      promise,
+      (e) => {
+        assert.notEqual(
+          e?.statusCode,
+          499,
+          "a fired timeout is not a caller cancel — the abort source decides",
+        );
+        assert.doesNotMatch(
+          e?.message ?? "",
+          /aborted by the caller/i,
+          "timeout-abort must not wear caller-cancel wording",
+        );
+        return true;
+      },
+    );
+  });
+
   it("internal timer timeout rejects with TimeoutError", async () => {
     let timerCallback;
     const descriptor = createCrossrefDescriptor({

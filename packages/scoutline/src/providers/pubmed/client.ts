@@ -214,7 +214,16 @@ async function eutilsRequest(
       return {};
     } catch (err) {
       // The timeout stays armed through body consumption; an abort here
-      // is the injected timeout firing, not a malformed payload.
+      // may be the injected timeout firing OR a caller cancel. A caller
+      // cancel can surface as a raw non-AbortError (undici "terminated"
+      // TypeError) — classify by abort SOURCE, not error shape: a caller
+      // cancel is never a network failure.
+      if (controller.signal.aborted && !timedOut) {
+        throw new ApiError(
+          "PubMed request was aborted by the caller (Ctrl-C or external signal)",
+          499,
+        );
+      }
       if (controller.signal.aborted) throw err;
       if (err instanceof ApiError || err instanceof ValidationError) throw err;
       throw new ApiError("PubMed returned a malformed response", 500);

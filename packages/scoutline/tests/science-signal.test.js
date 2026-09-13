@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { handleScience } from "../dist/commands/science.js";
-import { ApiError, TimeoutError } from "../dist/lib/errors.js";
+import { ApiError } from "../dist/lib/errors.js";
 import { fetchArxivQuery } from "../dist/providers/arxiv/client.js";
 import { fetchCrossrefJson } from "../dist/providers/crossref/client.js";
 import { fetchEuropepmcJson } from "../dist/providers/europepmc/client.js";
@@ -445,6 +445,179 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
     assert.ok(receivedSignal !== null, "get capability must receive signal");
     assert.ok(receivedSignal.aborted, "get capability signal must be aborted");
     const stderrText = inv.stderr.join("");
+    assert.match(stderrText, /aborted by the caller/i);
+    assert.doesNotMatch(stderrText, /timed out/i);
+  });
+
+  it("get walk: a caller cancel ends the walk — remaining arms are never attempted (review)", async () => {
+    // Minor 2: the serial get walk caught the arm's abort and rerouted to
+    // the next arm, fast-failing at its pre-abort check and emitting a
+    // misleading `— rerouting to <arm>` notice for a user cancel.
+    let registeredHandler = null;
+    const fakeRegistrar = (handler) => {
+      registeredHandler = handler;
+      return () => {};
+    };
+
+    const attempted = [];
+    const descriptors = ["openalex", "crossref", "pubmed"].map((id) =>
+      makeScienceDescriptor(id, {
+        get: (_req, signal) =>
+          new Promise((_res, rej) => {
+            attempted.push(id);
+            // The walk's abort contract: the in-flight arm rejects with the
+            // honest caller-cancel error once the shared signal fires.
+            const abortErr = () =>
+              rej(new ApiError(`${id} request was aborted by the caller (Ctrl-C or external signal)`, 499));
+            if (signal.aborted) {
+              abortErr();
+              return;
+            }
+            signal.addEventListener("abort", abortErr);
+          }),
+      }),
+    );
+
+    const inv = makeInvocation();
+    const deps = {
+      invocation: inv.adapter,
+      env: {},
+      secrets: [],
+      providerDescriptors: descriptors.map((d) => d.descriptor),
+      fallbackEnabled: true,
+    };
+
+    const p = handleScience(["get", "10.1038/nature12373"], "data", deps, {
+      registerInterrupt: fakeRegistrar,
+    });
+    assert.ok(typeof registeredHandler === "function", "handler must be registered before invoke");
+    registeredHandler();
+    const exitCode = await p;
+    assert.equal(exitCode, 1, "aborted get must return exitCode 1");
+    assert.deepEqual(
+      attempted,
+      ["openalex"],
+      "a caller cancel must end the walk — no further arm may be attempted",
+    );
+    const stderrText = inv.stderr.join("");
+    assert.doesNotMatch(
+      stderrText,
+      /rerouting to/i,
+      "a caller cancel must never emit a reroute notice",
+    );
+    assert.match(stderrText, /aborted by the caller/i);
+    assert.doesNotMatch(stderrText, /timed out/i);
+  });
+
+  it("pinned-search reroute walk: a caller cancel ends the reroute walk (review)", async () => {
+    let registeredHandler = null;
+    const fakeRegistrar = (handler) => {
+      registeredHandler = handler;
+      return () => {};
+    };
+
+    const attempted = [];
+    const openalex = makeScienceDescriptor("openalex", {
+      search: (_req, signal) =>
+        new Promise((_res, rej) => {
+          attempted.push("openalex");
+          const abortErr = () =>
+            rej(new ApiError("openalex request was aborted by the caller (Ctrl-C or external signal)", 499));
+          if (signal.aborted) {
+            abortErr();
+            return;
+          }
+          signal.addEventListener("abort", abortErr);
+        }),
+    });
+    const arxiv = makeScienceDescriptor("arxiv");
+    const crossref = makeScienceDescriptor("crossref");
+
+    const inv = makeInvocation();
+    const deps = {
+      invocation: inv.adapter,
+      env: {},
+      secrets: [],
+      providerDescriptors: [openalex.descriptor, arxiv.descriptor, crossref.descriptor],
+      fallbackEnabled: true,
+    };
+
+    const p = handleScience(["search", "quantum", "--provider", "openalex"], "data", deps, {
+      registerInterrupt: fakeRegistrar,
+    });
+    assert.ok(typeof registeredHandler === "function", "handler must be registered before invoke");
+    registeredHandler();
+    const exitCode = await p;
+    assert.equal(exitCode, 1, "aborted pinned search must return exitCode 1");
+    assert.equal(openalex.calls.search.length, 1, "the pinned arm was attempted");
+    assert.equal(arxiv.calls.search.length, 0, "reroute target must never be attempted");
+    assert.equal(crossref.calls.search.length, 0, "reroute target must never be attempted");
+    const stderrText = inv.stderr.join("");
+    assert.doesNotMatch(
+      stderrText,
+      /rerouting to/i,
+      "a caller cancel must never emit a reroute notice",
+    );
+    assert.match(stderrText, /aborted by the caller/i);
+    assert.doesNotMatch(stderrText, /timed out/i);
+  });
+
+  it("pinned-search reroute walk: a caller cancel during a reroute ATTEMPT ends the walk (review)", async () => {
+    let registeredHandler = null;
+    const fakeRegistrar = (handler) => {
+      registeredHandler = handler;
+      return () => {};
+    };
+
+    const attempted = [];
+    const openalex = makeScienceDescriptor("openalex", {
+      search: () => {
+        attempted.push("openalex");
+        throw new ApiError("openalex search failed (boom)", 500);
+      },
+    });
+    const arxiv = makeScienceDescriptor("arxiv", {
+      search: (_req, _signal) =>
+        new Promise((_res, rej) => {
+          attempted.push("arxiv");
+          registeredHandler();
+          rej(
+            new ApiError(
+              "arXiv request was aborted by the caller (Ctrl-C or external signal)",
+              499,
+            ),
+          );
+        }),
+    });
+    const crossref = makeScienceDescriptor("crossref");
+
+    const inv = makeInvocation();
+    const deps = {
+      invocation: inv.adapter,
+      env: {},
+      secrets: [],
+      providerDescriptors: [openalex.descriptor, arxiv.descriptor, crossref.descriptor],
+      fallbackEnabled: true,
+    };
+
+    const p = handleScience(["search", "quantum", "--provider", "openalex"], "data", deps, {
+      registerInterrupt: fakeRegistrar,
+    });
+    const exitCode = await p;
+    assert.equal(exitCode, 1, "cancelled reroute search must return exitCode 1");
+    assert.deepEqual(
+      attempted,
+      ["openalex", "arxiv"],
+      "a cancel during a reroute attempt must end the walk — no further arm may be attempted",
+    );
+    assert.equal(crossref.calls.search.length, 0, "crossref must never be attempted");
+    const stderrText = inv.stderr.join("");
+    assert.doesNotMatch(stderrText, /rerouting to/i, "no reroute notice after a cancel");
+    assert.doesNotMatch(
+      stderrText,
+      /dropped from this reroute walk/i,
+      "no drop notice for a cancelled reroute attempt",
+    );
     assert.match(stderrText, /aborted by the caller/i);
     assert.doesNotMatch(stderrText, /timed out/i);
   });

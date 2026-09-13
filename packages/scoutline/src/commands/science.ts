@@ -692,10 +692,18 @@ async function runScienceSearchWithReroute(
   try {
     return { works: await capability.invoke(request, signal), identity, armId: pinned.id };
   } catch (error) {
+    // A caller cancel ends the walk. Rerouting from a user's Ctrl-C would
+    // attempt the next arm only to fast-fail at its pre-abort check and
+    // emit a misleading "rerouting to <arm>" notice for a cancellation.
+    if (signal?.aborted) throw error;
     // eligible = configured + capable + validating, D5 order, pin first
     const order = [pinned.id, ...D5_ARM_ORDER.filter((id) => id !== pinned.id)];
     const byId = scienceDescriptorIndex(descriptors);
     for (const id of order.slice(1)) {
+      // A caller cancel BETWEEN reroute attempts ends the walk too —
+      // the remaining arms would only fast-fail at their pre-abort
+      // checks while emitting misleading reroute notices.
+      if (signal?.aborted) throw error;
       const next = byId.get(id);
       if (next === undefined) continue;
       if (!next.isConfigured(env, "science.search")) continue;
@@ -717,6 +725,10 @@ async function runScienceSearchWithReroute(
         );
         return { works, identity: nextIdentity, armId: next.id };
       } catch (nextError) {
+        // A caller cancel DURING a reroute attempt surfaces that
+        // attempt's honest abort error and ends the walk — no further
+        // arms, no "dropped from this reroute walk" notice.
+        if (signal?.aborted) throw nextError;
         notice(
           `scoutline: ${next.id} search failed (${
             nextError instanceof Error ? nextError.message : String(nextError)
@@ -1120,12 +1132,6 @@ export async function handleScience(
         journalArms = settled.flatMap((outcome, index) =>
           outcome.status === "fulfilled" ? [arms[index]?.id ?? "unknown"] : [],
         );
-        // D5 visible narrowing — never a silent drop: an arm that
-        // failed at INVOKE time (ApiError/network) while other arms
-        // serve is disclosed per-arm on stderr (search-command
-        // armNotice precedent), then the partial set merges. settled
-        // order equals arms order, so the index recovers the arm id.
-
         // T10 merge: DOI-first dedup identity (exact-url fallback) +
         // D12 field-wise union enrichment, first-arm (D5 order)
         // preference — mergeScienceWorks below.
@@ -1250,6 +1256,10 @@ export async function handleScience(
           work = await capability.invoke(request, controller.signal);
           break;
         } catch (error) {
+          // A caller cancel ends the walk (same ruling as the pinned-search
+          // reroute walk): the remaining arms would only fast-fail at their
+          // pre-abort check while emitting a misleading reroute notice.
+          if (controller.signal.aborted) throw error;
           const next: ScienceDescriptorLike | undefined = arms[attempt + 1];
           if (next === undefined || deps.fallbackEnabled === false) throw error;
           // AC-5b reroute note: failed supplier AND reroute target.

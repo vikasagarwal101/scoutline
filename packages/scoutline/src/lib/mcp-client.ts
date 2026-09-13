@@ -206,7 +206,11 @@ export class ZaiMcpClient {
 
       this.isInitialized = true;
     } catch (error) {
-      this.initPromise = null;
+      // #143 / PR #142 round 2 twin (code-mode 8b3a824): the single-flight
+      // guard stays armed for the WHOLE failure path — including the auth
+      // probe's await — and is cleared in the finally below, once _doInit
+      // has fully settled. Clearing it here would let a concurrent caller
+      // start a duplicate registration + probe while this one is pending.
 
       // NFR-001 + Fixup C — B8: a missing or invalid credential surfaces
       // as ConfigurationError (exit 3). The dispatched handler must fail
@@ -273,6 +277,11 @@ export class ZaiMcpClient {
       }
 
       throw new ApiError("MCP initialization failed", 500);
+    } finally {
+      // Cleared only once the attempt has fully settled (success or
+      // classified failure) — retry-on-next-call semantics unchanged;
+      // only the in-flight window is closed (twin: code-mode 8b3a824).
+      this.initPromise = null;
     }
   }
 

@@ -97,7 +97,9 @@ export interface ArtifactsPlatform extends ConfigRootPlatform {
  * Test-isolation guard (issue #137): `node --test` sets NODE_TEST_CONTEXT
  * in every spawned test child, so a bare default-dir resolve there means
  * the caller FORGOT dependency injection and is about to touch the real
- * `~/.scoutline/artifacts` — fail loud instead. Lives only on this ambient-env
+ * `~/.scoutline/artifacts` — fail loud instead. Decided ONLY from the injected env
+ * (the resolver never reads process.env.SCOUTLINE_ARTIFACTS_DIR — an ambient value must
+ * NOT silence the guard). Lives only on this ambient-env
  * seam; pure resolver stays total/pure. `SCOUTLINE_NO_TEST_GUARD=1` is the
  * documented escape hatch for suites deliberately exercising the default path.
  * Note the shell convention: ANY non-empty value bypasses (JS truthiness) —
@@ -112,7 +114,6 @@ export function resolveArtifactsDir(
     !process.env.SCOUTLINE_NO_TEST_GUARD &&
     !env.SCOUTLINE_ARTIFACTS_DIR &&
     !env.SCOUTLINE_CONFIG_DIR &&
-    !process.env.SCOUTLINE_ARTIFACTS_DIR &&
     platform.homedir === os.homedir()
   ) {
     throw new ConfigurationError(

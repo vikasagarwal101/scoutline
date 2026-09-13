@@ -51,6 +51,22 @@ describe("resolveArtifactsDir test-isolation guard (issue #137)", () => {
     });
   });
 
+  it("ambient process.env.SCOUTLINE_ARTIFACTS_DIR does NOT satisfy the guard (resolver ignores it)", async () => {
+    const { resolveArtifactsDir } = await import("../dist/lib/artifacts.js");
+    // Regression pin (PR #155 review): the guard must decide ONLY from the injected env,
+    // because the resolver never reads process.env.SCOUTLINE_ARTIFACTS_DIR. If the ambient
+    // var is set but the injected env lacks isolation, resolution lands on the REAL store.
+    await withEnv({ ...guardOverrides, SCOUTLINE_ARTIFACTS_DIR: "/tmp/ambient-should-not-matter" }, async () => {
+      assert.throws(
+        () => resolveArtifactsDir({}),
+        (error) => {
+          assert.ok(error instanceof ConfigurationError);
+          return true;
+        },
+      );
+    });
+  });
+
   it("SCOUTLINE_NO_TEST_GUARD=1 bypasses the guard to the real default", async () => {
     const { resolveArtifactsDir } = await import("../dist/lib/artifacts.js");
     await withEnv({ ...guardOverrides, SCOUTLINE_NO_TEST_GUARD: "1" }, async () => {

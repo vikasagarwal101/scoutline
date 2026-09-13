@@ -44,15 +44,27 @@ describe("runProcess buildIsolatedEnv", () => {
     assert.equal(env.SCOUTLINE_ARTIFACTS_DIR, "/custom/artifacts");
   });
 
-  it("inherited process.env values win over injection", async () => {
+  it("ambient store roots are STRIPPED and replaced by temp defaults (PR #160 review)", async () => {
+    // Ambient SCOUTLINE_CACHE_DIR / SCOUTLINE_ARTIFACTS_DIR must NOT flow
+    // into spawned children — an inherited value could direct the child's
+    // writes at a persistent host store. The strip happens before the
+    // options.env merge; explicit options.env values still win.
     const prevCache = process.env.SCOUTLINE_CACHE_DIR;
     const prevArtifacts = process.env.SCOUTLINE_ARTIFACTS_DIR;
     process.env.SCOUTLINE_CACHE_DIR = "/ambient/cache";
     process.env.SCOUTLINE_ARTIFACTS_DIR = "/ambient/artifacts";
     try {
       const env = await buildIsolatedEnv({});
-      assert.equal(env.SCOUTLINE_CACHE_DIR, "/ambient/cache");
-      assert.equal(env.SCOUTLINE_ARTIFACTS_DIR, "/ambient/artifacts");
+      assert.notEqual(env.SCOUTLINE_CACHE_DIR, "/ambient/cache");
+      assert.notEqual(env.SCOUTLINE_ARTIFACTS_DIR, "/ambient/artifacts");
+      assert.ok(env.SCOUTLINE_CACHE_DIR.startsWith(os.tmpdir()), "replaced by per-call temp default");
+      assert.ok(env.SCOUTLINE_ARTIFACTS_DIR.startsWith(os.tmpdir()), "replaced by per-call temp default");
+
+      const explicit = await buildIsolatedEnv({
+        env: { SCOUTLINE_CACHE_DIR: "/explicit/cache" },
+      });
+      assert.equal(explicit.SCOUTLINE_CACHE_DIR, "/explicit/cache", "explicit options.env still wins");
+      assert.notEqual(explicit.SCOUTLINE_ARTIFACTS_DIR, "/ambient/artifacts");
     } finally {
       if (prevCache === undefined) delete process.env.SCOUTLINE_CACHE_DIR;
       else process.env.SCOUTLINE_CACHE_DIR = prevCache;

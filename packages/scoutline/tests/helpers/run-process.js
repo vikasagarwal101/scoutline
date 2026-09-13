@@ -47,6 +47,16 @@ const PROVIDER_CREDENTIAL_ENV = [
 ];
 
 /**
+ * Ambient store roots (PR #160 review): an inherited SCOUTLINE_CACHE_DIR /
+ * SCOUTLINE_ARTIFACTS_DIR would direct the spawned child's cache/artifact
+ * writes at a persistent host store (including ~/.scoutline). Deleted from
+ * the cloned ambient env BEFORE the options.env merge — explicit
+ * options.env values still win, and the per-call temp defaults below fill
+ * the now-undefined keys.
+ */
+const AMBIENT_STORE_ROOT_ENV = ["SCOUTLINE_CACHE_DIR", "SCOUTLINE_ARTIFACTS_DIR"];
+
+/**
  * @param {string[]} args - CLI arguments (without the node executable)
  * @param {object} [options]
  * @param {Record<string, string|undefined>} [options.env]
@@ -70,6 +80,9 @@ const PROVIDER_CREDENTIAL_ENV = [
 export async function buildIsolatedEnv(options = {}) {
   const baseEnv = { ...process.env };
   for (const key of PROVIDER_CREDENTIAL_ENV) {
+    delete baseEnv[key];
+  }
+  for (const key of AMBIENT_STORE_ROOT_ENV) {
     delete baseEnv[key];
   }
   const env = { ...baseEnv, ...(options.env || {}) };

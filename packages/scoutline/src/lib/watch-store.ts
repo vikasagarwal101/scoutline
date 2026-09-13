@@ -39,6 +39,7 @@ import {
   type ConfigRootPlatform,
 } from "./config-store.js";
 import { ValidationError } from "./errors.js";
+import { assertTestSafeWrite } from "./test-isolation.js";
 import {
   DEFAULT_LOCK_STALE_MS,
   DEFAULT_LOCK_TIMEOUT_MS,
@@ -530,6 +531,7 @@ export async function removeTarget(
         // a writer slipping in between still hits the registry-membership
         // re-check and refuses before writing.
         const targetDir = path.join(root, target.id);
+        assertTestSafeWrite(targetDir, "watch:purgeTarget");
         const rmContents = () =>
           withAsyncFileLock(targetDir, "watch-target-" + target.id, async () => {
             // lstat, not stat (review): a hand-swapped SYMLINKED target
@@ -643,6 +645,7 @@ export async function appendSnapshot(
   id: string,
   options: AppendSnapshotOptions,
 ): Promise<number> {
+  assertTestSafeWrite(path.join(root, id), "watch:appendSnapshot");
   const target = await requireTarget(root, id);
   return withAsyncFileLock(
     path.join(root, id),
@@ -852,6 +855,7 @@ export async function appendChangeLog(
   entry: ChangeLogEntry,
   options: WatchStoreOptions = {},
 ): Promise<void> {
+  assertTestSafeWrite(path.join(root, id), "watch:appendChangeLog");
   validateKind(entry.kind);
   const line = `${JSON.stringify({
     at: toIso(entry.at),

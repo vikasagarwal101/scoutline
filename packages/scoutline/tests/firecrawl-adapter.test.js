@@ -20,8 +20,9 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import * as fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
+import { mkdtempSync } from "node:fs";
+import os, { tmpdir } from "node:os";
+import path, { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -82,6 +83,9 @@ function makeAdapter(fakeFetch) {
   };
   const descriptor = createFirecrawlDescriptor({
     transport: { fetch: fn, env: { FIRECRAWL_TIMEOUT: "5000" } },
+    // #154: without crawlStateDir the crawl-state lock defaults to the
+    // real ~/.scoutline/crawl and mkdirs it on every crawl invoke.
+    crawlStateDir: mkdtempSync(join(tmpdir(), "firecrawl-test-crawl-")),
   });
   const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
   return { adapter, calls };
@@ -433,6 +437,9 @@ function makeCrawlAdapter(handlers, stateFile) {
       env: { FIRECRAWL_TIMEOUT: "5000", FIRECRAWL_CRAWL_POLL_INTERVAL_MS: "0" },
     },
     crawlStateFile: stateFile ?? createInMemoryAsyncJobStateFile(),
+    // #154: the crawl-state lock still defaults to ~/.scoutline/crawl
+    // even when the state FILE is in-memory — pin the dir too.
+    crawlStateDir: mkdtempSync(join(tmpdir(), "firecrawl-test-crawl-")),
   });
   const adapter = descriptor.create({
     env: { FIRECRAWL_API_KEY: TEST_API_KEY, FIRECRAWL_CRAWL_POLL_INTERVAL_MS: "0" },
@@ -556,6 +563,8 @@ describe("Firecrawl Crawl Adapter", () => {
         env: { FIRECRAWL_TIMEOUT: "5000", FIRECRAWL_CRAWL_POLL_INTERVAL_MS: "0" },
       },
       crawlStateFile: createInMemoryAsyncJobStateFile(),
+      // #154: lock dir must not default to ~/.scoutline/crawl.
+      crawlStateDir: mkdtempSync(join(tmpdir(), "firecrawl-test-crawl-")),
     });
     const adapter = descriptor.create({
       env: { FIRECRAWL_API_KEY: TEST_API_KEY, FIRECRAWL_CRAWL_POLL_INTERVAL_MS: "0" },
@@ -672,6 +681,8 @@ describe("Firecrawl Crawl Adapter", () => {
     const descriptor = createFirecrawlDescriptor({
       transport: { fetch: fn, env: { FIRECRAWL_TIMEOUT: "5000" } },
       crawlStateFile: createInMemoryAsyncJobStateFile(),
+      // #154: lock dir must not default to ~/.scoutline/crawl.
+      crawlStateDir: mkdtempSync(join(tmpdir(), "firecrawl-test-crawl-")),
     });
     const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
     await assert.rejects(() => adapter.crawl.fetch.invoke({ url: "https://a.example" }), AuthError);
@@ -709,6 +720,8 @@ describe("Firecrawl Crawl Adapter", () => {
         env: { FIRECRAWL_TIMEOUT: "5000", FIRECRAWL_CRAWL_POLL_INTERVAL_MS: "0" },
       },
       crawlStateFile: createInMemoryAsyncJobStateFile(),
+      // #154: lock dir must not default to ~/.scoutline/crawl.
+      crawlStateDir: mkdtempSync(join(tmpdir(), "firecrawl-test-crawl-")),
     });
     const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
     const out = await adapter.crawl.fetch.invoke({ url: "https://n404.example" });
@@ -750,6 +763,8 @@ describe("Firecrawl Crawl Adapter", () => {
     const descriptor = createFirecrawlDescriptor({
       transport: { fetch: fn, env: { FIRECRAWL_TIMEOUT: "5000" } },
       crawlStateFile: createInMemoryAsyncJobStateFile(),
+      // #154: lock dir must not default to ~/.scoutline/crawl.
+      crawlStateDir: mkdtempSync(join(tmpdir(), "firecrawl-test-crawl-")),
     });
     const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
     const out = await adapter.crawl.fetch.invoke({ url: "https://pg.example" });
@@ -779,6 +794,8 @@ describe("Firecrawl Crawl Adapter", () => {
     const descriptor = createFirecrawlDescriptor({
       transport: { fetch: fn, env: { FIRECRAWL_TIMEOUT: "5000" } },
       crawlStateFile: stateFile,
+      // #154: lock dir must not default to ~/.scoutline/crawl.
+      crawlStateDir: mkdtempSync(join(tmpdir(), "firecrawl-test-crawl-")),
     });
     const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
     await assert.rejects(() => adapter.crawl.fetch.invoke({ url: "https://c.example" }), ApiError);
@@ -804,6 +821,8 @@ describe("Firecrawl Crawl Adapter", () => {
         env: { FIRECRAWL_TIMEOUT: "5000", FIRECRAWL_CRAWL_POLL_INTERVAL_MS: "0" },
       },
       crawlStateFile: createInMemoryAsyncJobStateFile(),
+      // #154: lock dir must not default to ~/.scoutline/crawl.
+      crawlStateDir: mkdtempSync(join(tmpdir(), "firecrawl-test-crawl-")),
     });
     const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
     await assert.rejects(() => adapter.crawl.fetch.invoke({ url: "https://v.example" }), ApiError);
@@ -914,6 +933,8 @@ describe("Firecrawl Crawl Adapter", () => {
     const descriptor = createFirecrawlDescriptor({
       transport: { fetch: fn, env: { FIRECRAWL_TIMEOUT: "5000" } },
       crawlStateFile: createInMemoryAsyncJobStateFile(),
+      // #154: lock dir must not default to ~/.scoutline/crawl.
+      crawlStateDir: mkdtempSync(join(tmpdir(), "firecrawl-test-crawl-")),
     });
     const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
     const out = await adapter.crawl.fetch.invoke({ url: "https://ac.example" });

@@ -325,6 +325,29 @@ describe("ZaiMcpClient — public identity contract", () => {
 describe("ZaiMcpClient — error normalization (Fixup B — B2 + B6b)", () => {
   const RAW_BODY = '{"error":"RAW_PROVIDER_BODY","detail":"<html>secret</html>"}';
 
+  // #152: describe-level cache-dir isolation. This suite constructs
+  // ZaiMcpClient without arming ZAI_CACHE_DIR, so a discovery-miss
+  // writeToolCache resolves the ambient cache root (~/.scoutline/tools)
+  // and rewrites the real store on every run. Mirrors the arming pattern
+  // used by the other suites in this file.
+  let cacheTempDir;
+  let savedCacheDir;
+  let savedToolCache;
+  before(async () => {
+    cacheTempDir = await fs.mkdtemp(path.join(os.tmpdir(), TEMP_PREFIX));
+    savedCacheDir = process.env.ZAI_CACHE_DIR;
+    savedToolCache = process.env.ZAI_MCP_TOOL_CACHE;
+    process.env.ZAI_CACHE_DIR = cacheTempDir;
+    process.env.ZAI_MCP_TOOL_CACHE = "0";
+  });
+  after(async () => {
+    if (savedCacheDir === undefined) delete process.env.ZAI_CACHE_DIR;
+    else process.env.ZAI_CACHE_DIR = savedCacheDir;
+    if (savedToolCache === undefined) delete process.env.ZAI_MCP_TOOL_CACHE;
+    else process.env.ZAI_MCP_TOOL_CACHE = savedToolCache;
+    await fs.rm(cacheTempDir, { recursive: true, force: true }).catch(() => {});
+  });
+
   async function clientThrowing(thrownError) {
     const fixture = await readFixture("providers", "zai", "tools.json");
     const fake = new FakeUtcpClient({
@@ -610,6 +633,28 @@ describe("ZaiMcpClient — legacy ZRead wrappers resolve through discovered iden
   assert.notStrictEqual(PUBLIC_SEARCH_DOC, INTERNAL_SEARCH_DOC);
   assert.notStrictEqual(PUBLIC_GET_REPO_STRUCTURE, INTERNAL_GET_REPO_STRUCTURE);
   assert.notStrictEqual(PUBLIC_READ_FILE, INTERNAL_READ_FILE);
+
+  // #152: describe-level cache-dir isolation. The noCache clients here
+  // still resolve through discovery (resolveToolName → discoverTools →
+  // writeToolCache), and without ZAI_CACHE_DIR armed that write lands in
+  // the real store. Mirrors the arming pattern used by the other suites.
+  let cacheTempDir;
+  let savedCacheDir;
+  let savedToolCache;
+  before(async () => {
+    cacheTempDir = await fs.mkdtemp(path.join(os.tmpdir(), TEMP_PREFIX));
+    savedCacheDir = process.env.ZAI_CACHE_DIR;
+    savedToolCache = process.env.ZAI_MCP_TOOL_CACHE;
+    process.env.ZAI_CACHE_DIR = cacheTempDir;
+    process.env.ZAI_MCP_TOOL_CACHE = "0";
+  });
+  after(async () => {
+    if (savedCacheDir === undefined) delete process.env.ZAI_CACHE_DIR;
+    else process.env.ZAI_CACHE_DIR = savedCacheDir;
+    if (savedToolCache === undefined) delete process.env.ZAI_MCP_TOOL_CACHE;
+    else process.env.ZAI_MCP_TOOL_CACHE = savedToolCache;
+    await fs.rm(cacheTempDir, { recursive: true, force: true }).catch(() => {});
+  });
 
   const discoveredZreadTools = [
     {

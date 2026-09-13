@@ -28,7 +28,8 @@ export type ScoutlineErrorCode =
   | "API_ERROR"
   | "FILE_ERROR"
   | "UNKNOWN_ERROR"
-  | "CONFIGURATION_ERROR";
+  | "CONFIGURATION_ERROR"
+  | "TEST_ISOLATION_VIOLATION";
 
 export interface ScoutlineErrorOptions {
   statusCode?: number;

@@ -42,6 +42,7 @@
 import crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
+import { assertTestSafeWrite, isTestIsolationViolation } from "./test-isolation.js";
 
 // ---------------------------------------------------------------------------
 // State shape
@@ -173,6 +174,7 @@ export function createProductionAsyncJobStateFile(dir: string): AsyncJobStateFil
       try {
         const parsed = JSON.parse(raw) as unknown;
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          assertTestSafeWrite(file, "async-job-state:read-unlink");
           await fs.unlink(file).catch(() => {});
           return null;
         }
@@ -188,19 +190,23 @@ export function createProductionAsyncJobStateFile(dir: string): AsyncJobStateFil
           typeof createdAt !== "string" ||
           (status !== "pending" && status !== "in_progress")
         ) {
+          assertTestSafeWrite(file, "async-job-state:read-unlink");
           await fs.unlink(file).catch(() => {});
           return null;
         }
         return { requestId, identityHash: storedHash, createdAt, status };
-      } catch {
+      } catch (error) {
+        if (isTestIsolationViolation(error)) throw error;
         // Corrupt JSON — delete the file so the next run creates a fresh
         // job instead of forever reading garbage.
+        assertTestSafeWrite(file, "async-job-state:read-unlink");
         await fs.unlink(file).catch(() => {});
         return null;
       }
     },
 
     async write(identityHash: string, state: AsyncJobState): Promise<void> {
+      assertTestSafeWrite(dir, "async-job-state:write");
       await fs.mkdir(dir, { recursive: true });
       const file = filePath(identityHash);
       const payload = JSON.stringify(state);
@@ -213,6 +219,7 @@ export function createProductionAsyncJobStateFile(dir: string): AsyncJobStateFil
 
     async remove(identityHash: string): Promise<void> {
       const file = filePath(identityHash);
+      assertTestSafeWrite(file, "async-job-state:remove");
       await fs.unlink(file).catch((err: NodeJS.ErrnoException) => {
         // ENOENT is expected (already removed, or never written). Swallow
         // it; any other error re-throws.

@@ -68,12 +68,19 @@ export function getHermeticArtifactsDir() {
 export const defaultHermeticArtifactsDir = getHermeticArtifactsDir;
 export const HERMETIC_ARTIFACTS_DIR = getHermeticArtifactsDir;
 
+let hermeticCacheDir;
+export function getHermeticCacheDir() {
+  hermeticCacheDir ??= mkdtempSync(join(tmpdir(), "scoutline-hermetic-cache-"));
+  return hermeticCacheDir;
+}
+
 // Exit handlers are sync-only; rmSync(force) tolerates an already-removed
 // dir. Registered at module scope but a no-op until the lazy singleton
 // has actually created its dir, so non-consumers pay nothing.
 process.on("exit", () => {
   if (hermeticQuotaDir !== undefined) rmSync(hermeticQuotaDir, { recursive: true, force: true });
   if (hermeticArtifactsDir !== undefined) rmSync(hermeticArtifactsDir, { recursive: true, force: true });
+  if (hermeticCacheDir !== undefined) rmSync(hermeticCacheDir, { recursive: true, force: true });
 });
 
 function firstDefined(deps, suffix) {
@@ -126,6 +133,17 @@ export function hermeticMainDeps(partial = {}) {
       deps.env = { SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir(), ...deps.env };
     } else {
       deps.env.SCOUTLINE_ARTIFACTS_DIR = getHermeticArtifactsDir();
+    }
+  }
+  // #152/#154: tool-cache + cache/job/watch seams read the ambient cache
+  // root. Default the INJECTED env (deps.env) so subprocess-free main()
+  // runs land resolveCacheRoot() in temp, not ~/.scoutline. This never
+  // touches process.env — T3/T4 own that seam.
+  if (!("SCOUTLINE_CACHE_DIR" in deps.env)) {
+    if (Object.isFrozen(deps.env)) {
+      deps.env = { SCOUTLINE_CACHE_DIR: getHermeticCacheDir(), ...deps.env };
+    } else {
+      deps.env.SCOUTLINE_CACHE_DIR = getHermeticCacheDir();
     }
   }
   return fillOmittedTriples(deps);

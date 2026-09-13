@@ -27,6 +27,7 @@
  *     same plus a notice for stderr. Never throws.
  */
 import { randomBytes as cryptoRandomBytes, randomUUID } from "node:crypto";
+import { assertTestSafeWrite } from "./test-isolation.js";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
@@ -224,6 +225,7 @@ export async function writeArtifact(
  * place are one atomic step now).
  */
 export async function atomicPlaceNoClobber(filePath: string, contents: string): Promise<boolean> {
+  assertTestSafeWrite(filePath, "atomicPlaceNoClobber");
   const root = path.dirname(filePath);
   // Harden only directories WE created (review r5, race-closed r7): a
   // pre-mkdir stat goes stale if a concurrent creator makes `root` first,

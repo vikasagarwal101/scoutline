@@ -41,6 +41,7 @@ import * as path from "node:path";
 
 import type { QuotaCategory, QuotaWindow } from "../capabilities/quota.js";
 import type { ProviderId } from "../providers/types.js";
+import { assertTestSafeWrite, isTestIsolationViolation } from "./test-isolation.js";
 import {
   atomicReplaceFile,
   resolveConfigRoot,
@@ -606,10 +607,12 @@ export function createDefaultQuotaStore(options: QuotaStoreOptions = {}): QuotaS
   }
 
   async function writeStateFile(state: QuotaState): Promise<void> {
+    assertTestSafeWrite(filePath, "quota-store:writeStateFile");
     const payload = `${JSON.stringify(state, null, 2)}\n`;
     try {
       await atomicReplaceFile(filePath, payload, options.atomic);
     } catch (error) {
+      if (isTestIsolationViolation(error)) throw error;
       onWarning({
         code: "STATE_WRITE_ERROR",
         message: `Unable to write state.json: ${error instanceof Error ? error.message : String(error)}`,

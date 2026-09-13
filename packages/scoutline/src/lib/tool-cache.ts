@@ -35,6 +35,7 @@ import type { Tool } from "@utcp/sdk";
 import { toolCacheDir, isCacheEnabled, getCacheTtlMs } from "./cache.js";
 import { atomicReplaceFile } from "./config-store.js";
 import { redactTool } from "./redact.js";
+import { assertTestSafeWrite, isTestIsolationViolation } from "./test-isolation.js";
 
 /**
  * Cache envelope version. Bumped when the on-disk shape of
@@ -125,12 +126,14 @@ export async function readToolCache(config: ToolCacheConfig): Promise<Tool[] | n
     if (!entry || entry.version !== TOOL_CACHE_VERSION || !Array.isArray(entry.tools)) {
       // Legacy envelope: drop the file so un-redacted secrets do not
       // linger. Best-effort — a failed unlink still returns null.
+      assertTestSafeWrite(filePath, "readToolCache:unlink");
       await fs.unlink(filePath).catch(() => {});
       return null;
     }
     if (Date.now() - (entry.timestamp ?? 0) > ttlMs) return null;
     return entry.tools;
-  } catch {
+  } catch (error) {
+    if (isTestIsolationViolation(error)) throw error;
     return null;
   }
 }
@@ -157,6 +160,7 @@ export async function writeToolCache(
   if (getCacheTtlMs() <= 0) return;
   try {
     const filePath = buildToolCachePath(config);
+    assertTestSafeWrite(filePath, "writeToolCache");
     const payload: ToolCachePayload = {
       version: TOOL_CACHE_VERSION,
       timestamp: Date.now(),
@@ -167,7 +171,8 @@ export async function writeToolCache(
     // handles directory creation (mode 0700), exclusive temp-file
     // creation (mode 0600), fsync, rename, and directory sync.
     await atomicReplaceFile(filePath, JSON.stringify(payload));
-  } catch {
+  } catch (error) {
+    if (isTestIsolationViolation(error)) throw error;
     // Best-effort cache only.
   }
 }

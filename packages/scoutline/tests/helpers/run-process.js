@@ -12,6 +12,11 @@
  * (depending on whether the developer has run `scoutline init`). Pass
  * `configDir: false` to disable the isolation (rare; only for tests that
  * intentionally exercise the real config root).
+ *
+ * #154: subprocess children cannot inherit the test process's perimeter
+ * guards, so buildIsolatedEnv also default-injects fresh per-call
+ * SCOUTLINE_CACHE_DIR and SCOUTLINE_ARTIFACTS_DIR temp dirs (caller- or
+ * ambient-supplied values win). This is the child's ONLY isolation.
  */
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -42,6 +47,16 @@ const PROVIDER_CREDENTIAL_ENV = [
 ];
 
 /**
+ * Ambient store roots (PR #160 review): an inherited SCOUTLINE_CACHE_DIR /
+ * SCOUTLINE_ARTIFACTS_DIR would direct the spawned child's cache/artifact
+ * writes at a persistent host store (including ~/.scoutline). Deleted from
+ * the cloned ambient env BEFORE the options.env merge — explicit
+ * options.env values still win, and the per-call temp defaults below fill
+ * the now-undefined keys.
+ */
+const AMBIENT_STORE_ROOT_ENV = ["SCOUTLINE_CACHE_DIR", "SCOUTLINE_ARTIFACTS_DIR"];
+
+/**
  * @param {string[]} args - CLI arguments (without the node executable)
  * @param {object} [options]
  * @param {Record<string, string|undefined>} [options.env]
@@ -55,12 +70,19 @@ const PROVIDER_CREDENTIAL_ENV = [
  *   and does not emit the env-only hint). Use this for tests that need
  *   a credential to pass provider preflight but want clean stderr.
  */
-export async function runProcess(args, options = {}) {
-  // Start from process.env minus provider credentials so the developer's
-  // real keys do not leak into the subprocess. Tests that need a key
-  // pass it explicitly via options.env, which is merged on top.
+/**
+ * Build the final child env for a runProcess call: process.env minus
+ * provider credentials, options.env merged on top, then the isolation
+ * defaults (#154). Caller-supplied SCOUTLINE_CONFIG_DIR /
+ * SCOUTLINE_CACHE_DIR / SCOUTLINE_ARTIFACTS_DIR always win — the temp-dir
+ * injections are defaults only. Exported for direct pinning.
+ */
+export async function buildIsolatedEnv(options = {}) {
   const baseEnv = { ...process.env };
   for (const key of PROVIDER_CREDENTIAL_ENV) {
+    delete baseEnv[key];
+  }
+  for (const key of AMBIENT_STORE_ROOT_ENV) {
     delete baseEnv[key];
   }
   const env = { ...baseEnv, ...(options.env || {}) };
@@ -86,6 +108,26 @@ export async function runProcess(args, options = {}) {
       await fs.writeFile(path.join(configDir, "config.json"), JSON.stringify(options.config));
     }
   }
+
+  // #154: subprocess children cannot inherit the test process's
+  // perimeter guards. Default-inject fresh per-call cache + artifacts
+  // temp dirs unless the merged env already carries a value (explicit
+  // options.env or an ambient process.env var — both win).
+  if (env.SCOUTLINE_CACHE_DIR === undefined) {
+    env.SCOUTLINE_CACHE_DIR = await fs.mkdtemp(
+      path.join(os.tmpdir(), "scoutline-subprocess-cache-"),
+    );
+  }
+  if (env.SCOUTLINE_ARTIFACTS_DIR === undefined) {
+    env.SCOUTLINE_ARTIFACTS_DIR = await fs.mkdtemp(
+      path.join(os.tmpdir(), "scoutline-subprocess-artifacts-"),
+    );
+  }
+  return env;
+}
+
+export async function runProcess(args, options = {}) {
+  const env = await buildIsolatedEnv(options);
 
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 

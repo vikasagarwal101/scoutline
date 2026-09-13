@@ -14,6 +14,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   getLinkupApiKey,
@@ -431,6 +434,8 @@ describe("Linkup Research Adapter — async polling lifecycle", () => {
         clearTimeout: () => {},
       },
       researchStateFile: createInMemoryAsyncJobStateFile(),
+      // #154: lock dir must not default to ~/.scoutline/research.
+      researchStateDir: mkdtempSync(join(tmpdir(), "linkup-test-research-")),
     }).create({ env: { LINKUP_API_KEY: "k" } });
     const result = await adapter.research.run.invoke({ query: "q", model: "auto" });
     assert.equal(calls.filter((c) => c.method === "POST").length, 1);
@@ -455,6 +460,8 @@ describe("Linkup Research Adapter — async polling lifecycle", () => {
         clearTimeout: () => {},
       },
       researchStateFile: createInMemoryAsyncJobStateFile(),
+      // #154: lock dir must not default to ~/.scoutline/research.
+      researchStateDir: mkdtempSync(join(tmpdir(), "linkup-test-research-")),
     }).create({ env: { LINKUP_API_KEY: "k" } });
 
     await makeAdapter().research.run.invoke({ query: "q", model: "mini" });
@@ -483,6 +490,8 @@ describe("Linkup Research Adapter — async polling lifecycle", () => {
         clearTimeout: () => {},
       },
       researchStateFile: createInMemoryAsyncJobStateFile(),
+      // #154: lock dir must not default to ~/.scoutline/research.
+      researchStateDir: mkdtempSync(join(tmpdir(), "linkup-test-research-")),
     }).create({ env: { LINKUP_API_KEY: "k" } });
     await assert.rejects(
       adapter.research.run.invoke({ query: "q" }),
@@ -530,6 +539,8 @@ describe("Linkup Research Adapter — async polling lifecycle", () => {
         clearTimeout: () => {},
       },
       researchStateFile: stateFile,
+      // #154: lock dir must not default to ~/.scoutline/research.
+      researchStateDir: mkdtempSync(join(tmpdir(), "linkup-test-research-")),
     }).create({ env: { LINKUP_API_KEY: "k" } });
 
     const identity = adapter.research.run.cacheIdentity({ query: "resume q", model: "auto" });
@@ -583,6 +594,8 @@ describe("Linkup Research Adapter — async polling lifecycle", () => {
         clearTimeout: () => {},
       },
       researchStateFile: failingWrite,
+      // #154: lock dir must not default to ~/.scoutline/research.
+      researchStateDir: mkdtempSync(join(tmpdir(), "linkup-test-research-")),
     }).create({ env: { LINKUP_API_KEY: "k" } });
 
     // The POST already succeeded (the task is paid for); losing its id on a

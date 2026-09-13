@@ -970,3 +970,99 @@ describe("openalex bounded response execution hardening (#150)", () => {
     assert.equal(readerCalled, false, "body stream must not be read on non-ok response");
   });
 });
+
+describe("openalex abort signal threading and honest cancellation (#151)", () => {
+  it("a pre-aborted caller signal rejects before transport is invoked", async () => {
+    let fetchCalls = 0;
+    const descriptor = createOpenalexDescriptor({
+      transport: {
+        fetch: async () => {
+          fetchCalls += 1;
+          return { ok: true, status: 200, json: async () => ({ results: [] }) };
+        },
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const ac = new AbortController();
+    ac.abort();
+    await assert.rejects(
+      adapter.science.search.invoke({ query: "x" }, ac.signal),
+      (e) => {
+        assert.ok(e instanceof ApiError, `expected ApiError, got ${e?.constructor?.name}`);
+        assert.equal(e.statusCode, 499);
+        assert.match(e.message, /OpenAlex request was aborted by the caller/);
+        assert.doesNotMatch(e.message, /timed out/i);
+        return true;
+      },
+    );
+    assert.equal(fetchCalls, 0, "transport fetch must never be invoked");
+  });
+
+  it("external abort mid-flight rejects with honest abort ApiError(499), not TimeoutError", async () => {
+    const ac = new AbortController();
+    const descriptor = createOpenalexDescriptor({
+      transport: {
+        fetch: async (_url, init) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              reject(err);
+            });
+          }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const promise = adapter.science.search.invoke({ query: "x" }, ac.signal);
+    ac.abort();
+    await assert.rejects(
+      promise,
+      (e) => {
+        assert.ok(e instanceof ApiError, `expected ApiError, got ${e?.constructor?.name}`);
+        assert.equal(e.statusCode, 499);
+        assert.match(e.message, /OpenAlex request was aborted by the caller/);
+        assert.doesNotMatch(e.message, /timed out/i);
+        return true;
+      },
+    );
+  });
+
+  it("internal timer timeout rejects with TimeoutError", async () => {
+    let timerCallback;
+    const descriptor = createOpenalexDescriptor({
+      transport: {
+        fetch: async (_url, init) =>
+          new Promise((_res, rej) => {
+            if (init?.signal?.aborted) {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+              return;
+            }
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+            });
+          }),
+        setTimeout: (cb) => {
+          timerCallback = cb;
+          return 123;
+        },
+        clearTimeout: () => {},
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const promise = adapter.science.search.invoke({ query: "x" });
+    assert.ok(timerCallback);
+    timerCallback();
+    await assert.rejects(
+      promise,
+      (e) => {
+        assert.ok(e instanceof TimeoutError, `expected TimeoutError, got ${e?.constructor?.name}`);
+        assert.match(e.message, /Request timed out/i);
+        return true;
+      },
+    );
+  });
+});

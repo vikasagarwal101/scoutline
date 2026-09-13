@@ -86,7 +86,11 @@ function mapStatusError(status: number, timeoutMs: number): Error {
  * everything else (refused connections, DNS, `fetch failed`) is a
  * transient NetworkError. No raw provider body crosses the seam.
  */
-function normalizeTransportError(error: unknown, timeoutMs: number): Error {
+function normalizeTransportError(
+  error: unknown,
+  timeoutMs: number,
+  timedOut = false,
+): Error {
   if (
     error instanceof AuthError ||
     error instanceof ApiError ||
@@ -97,7 +101,13 @@ function normalizeTransportError(error: unknown, timeoutMs: number): Error {
     return error;
   }
   if (error instanceof Error && error.name === "AbortError") {
-    return new TimeoutError(timeoutMs);
+    if (timedOut) {
+      return new TimeoutError(timeoutMs);
+    }
+    return new ApiError(
+      "arXiv request was aborted by the caller (Ctrl-C or external signal)",
+      499,
+    );
   }
   return new NetworkError("arXiv network error");
 }
@@ -127,10 +137,17 @@ export async function fetchArxivQuery(
   // A pre-aborted caller signal must not reach the transport (review):
   // reject before the fetch is invoked at all.
   if (signal?.aborted) {
-    throw new TimeoutError(DEFAULT_TIMEOUT_MS);
+    throw new ApiError(
+      "arXiv request was aborted by the caller (Ctrl-C or external signal)",
+      499,
+    );
   }
+  let timedOut = false;
   const controller = new AbortController();
-  const timeoutId = setT(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  const timeoutId = setT(() => {
+    timedOut = true;
+    controller.abort();
+  }, DEFAULT_TIMEOUT_MS);
   const abortWithExternal = () => controller.abort();
   if (signal !== undefined) {
     if (signal.aborted) {
@@ -185,7 +202,7 @@ export async function fetchArxivQuery(
       throw new ApiError("arXiv returned a malformed response", 500);
     }
   } catch (err) {
-    throw normalizeTransportError(err, DEFAULT_TIMEOUT_MS);
+    throw normalizeTransportError(err, DEFAULT_TIMEOUT_MS, timedOut);
   } finally {
     if (signal !== undefined) {
       signal.removeEventListener("abort", abortWithExternal);

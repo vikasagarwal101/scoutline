@@ -501,10 +501,85 @@ describe("arXiv 429 — keyless rate limit maps to QuotaError (DESIGN D4b honest
     controller.abort();
     await assert.rejects(
       adapter.science.search.invoke({ query: "x" }, controller.signal),
-      (e) => e instanceof TimeoutError,
-      "pre-aborted signal rejects with TimeoutError",
+      (e) => {
+        assert.ok(e instanceof ApiError, `expected ApiError, got ${e?.constructor?.name}`);
+        assert.equal(e.statusCode, 499);
+        assert.match(e.message, /arXiv request was aborted by the caller/);
+        assert.doesNotMatch(e.message, /timed out/i);
+        return true;
+      },
+      "pre-aborted signal rejects with honest ApiError(499), not TimeoutError",
     );
     assert.equal(fetchCalls, 0, "transport fetch must never be invoked");
+  });
+
+  it("external abort mid-flight rejects with honest abort ApiError(499), not TimeoutError (#151)", async () => {
+    const controller = new AbortController();
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async (_url, init) => {
+          return new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              reject(err);
+            });
+          });
+        },
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const promise = adapter.science.search.invoke({ query: "x" }, controller.signal);
+    controller.abort();
+    await assert.rejects(
+      promise,
+      (e) => {
+        assert.ok(e instanceof ApiError, `expected ApiError, got ${e?.constructor?.name}`);
+        assert.equal(e.statusCode, 499);
+        assert.match(e.message, /arXiv request was aborted by the caller/);
+        assert.doesNotMatch(e.message, /timed out/i);
+        return true;
+      },
+    );
+  });
+
+  it("internal timer timeout rejects with TimeoutError (#151)", async () => {
+    let timerCallback;
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async (_url, init) =>
+          new Promise((_res, rej) => {
+            if (init?.signal?.aborted) {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+              return;
+            }
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+            });
+          }),
+        setTimeout: (cb) => {
+          timerCallback = cb;
+          return 123;
+        },
+        clearTimeout: () => {},
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const promise = adapter.science.search.invoke({ query: "x" });
+    assert.ok(timerCallback);
+    timerCallback();
+    await assert.rejects(
+      promise,
+      (e) => {
+        assert.ok(e instanceof TimeoutError, `expected TimeoutError, got ${e?.constructor?.name}`);
+        assert.match(e.message, /Request timed out/i);
+        return true;
+      },
+    );
   });
 });
 

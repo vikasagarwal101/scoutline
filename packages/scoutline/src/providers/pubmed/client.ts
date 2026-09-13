@@ -88,7 +88,11 @@ function mapStatusError(status: number, timeoutMs: number): Error {
 }
 
 /** Same transport-error normalization contract as the arXiv/OpenAlex clients. */
-function normalizeTransportError(error: unknown, timeoutMs: number): Error {
+function normalizeTransportError(
+  error: unknown,
+  timeoutMs: number,
+  timedOut = false,
+): Error {
   if (
     error instanceof AuthError ||
     error instanceof ApiError ||
@@ -99,7 +103,13 @@ function normalizeTransportError(error: unknown, timeoutMs: number): Error {
     return error;
   }
   if (error instanceof Error && error.name === "AbortError") {
-    return new TimeoutError(timeoutMs);
+    if (timedOut) {
+      return new TimeoutError(timeoutMs);
+    }
+    return new ApiError(
+      "PubMed request was aborted by the caller (Ctrl-C or external signal)",
+      499,
+    );
   }
   return new NetworkError("PubMed network error");
 }
@@ -135,10 +145,17 @@ async function eutilsRequest(
   // A pre-aborted caller signal must not reach the transport (review):
   // reject before the fetch is invoked at all.
   if (signal?.aborted) {
-    throw new TimeoutError(DEFAULT_TIMEOUT_MS);
+    throw new ApiError(
+      "PubMed request was aborted by the caller (Ctrl-C or external signal)",
+      499,
+    );
   }
+  let timedOut = false;
   const controller = new AbortController();
-  const timeoutId = setT(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  const timeoutId = setT(() => {
+    timedOut = true;
+    controller.abort();
+  }, DEFAULT_TIMEOUT_MS);
   const abortWithExternal = () => controller.abort();
   if (signal !== undefined) {
     if (signal.aborted) {
@@ -203,7 +220,7 @@ async function eutilsRequest(
       throw new ApiError("PubMed returned a malformed response", 500);
     }
   } catch (err) {
-    throw normalizeTransportError(err, DEFAULT_TIMEOUT_MS);
+    throw normalizeTransportError(err, DEFAULT_TIMEOUT_MS, timedOut);
   } finally {
     if (signal !== undefined) {
       signal.removeEventListener("abort", abortWithExternal);

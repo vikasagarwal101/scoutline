@@ -442,13 +442,13 @@ interface ScienceDescriptorLike {
         validate(request: ScienceSearchRequest): void;
         /** Present on every real supplier adapter; test doubles may omit it. */
         cacheIdentity?(request: ScienceSearchRequest): unknown;
-        invoke(request: ScienceSearchRequest): Promise<readonly ScienceWork[]>;
+        invoke(request: ScienceSearchRequest, signal?: AbortSignal): Promise<readonly ScienceWork[]>;
       };
       get?: {
         validate(request: ScienceGetRequest): void;
         /** Present on every real supplier adapter; test doubles may omit it. */
         cacheIdentity?(request: ScienceGetRequest): unknown;
-        invoke(request: ScienceGetRequest): Promise<ScienceWork>;
+        invoke(request: ScienceGetRequest, signal?: AbortSignal): Promise<ScienceWork>;
       };
     };
   };
@@ -676,9 +676,10 @@ async function runScienceSearchWithReroute(
     readonly descriptors: readonly unknown[];
     readonly notice: (message: string) => void;
     readonly journal: boolean;
+    readonly signal?: AbortSignal;
   },
 ): Promise<{ readonly works: readonly ScienceWork[]; readonly identity: unknown; readonly armId: string } | undefined> {
-  const { request, env, descriptors, notice, journal } = options;
+  const { request, env, descriptors, notice, journal, signal } = options;
   const capability = pinned.create({ env }).science?.search;
   if (capability === undefined) {
     throw new ValidationError(
@@ -689,7 +690,7 @@ async function runScienceSearchWithReroute(
   capability.validate(request);
   const identity = journal ? capability.cacheIdentity?.(request) : undefined;
   try {
-    return { works: await capability.invoke(request), identity, armId: pinned.id };
+    return { works: await capability.invoke(request, signal), identity, armId: pinned.id };
   } catch (error) {
     // eligible = configured + capable + validating, D5 order, pin first
     const order = [pinned.id, ...D5_ARM_ORDER.filter((id) => id !== pinned.id)];
@@ -708,7 +709,7 @@ async function runScienceSearchWithReroute(
       }
       const nextIdentity = journal ? nextCapability.cacheIdentity?.(request) : undefined;
       try {
-        const works = await nextCapability.invoke(request);
+        const works = await nextCapability.invoke(request, signal);
         notice(
           `scoutline: ${pinned.id} search failed (${
             error instanceof Error ? error.message : String(error)
@@ -760,6 +761,12 @@ function renderWorkText(work: ScienceWork): string {
 export interface HandleScienceOptions {
   /** Pin from the global `--provider` flag (command-local wins). */
   readonly explicitProvider?: string;
+  /**
+   * Optional interrupt registrar injection (matches research.ts precedent).
+   * Accepts a handler closure and returns a teardown. When absent, defaults
+   * to process.on("SIGINT", handler) and returns () => process.off("SIGINT", handler).
+   */
+  readonly registerInterrupt?: (handler: () => void) => () => void;
 }
 
 /**
@@ -939,7 +946,21 @@ export async function handleScience(
     descriptors: deps.providerDescriptors,
   };
 
-  if (subcommand === "search") {
+  const controller = new AbortController();
+  const registerInterrupt =
+    options.registerInterrupt ??
+    ((handler: () => void) => {
+      process.on("SIGINT", handler);
+      return () => {
+        process.off("SIGINT", handler);
+      };
+    });
+  const cleanup = registerInterrupt(() => {
+    controller.abort();
+  });
+
+  try {
+    if (subcommand === "search") {
     // Multiple positionals join with spaces (deep-review fix; the main
     // search command's `positional.join(" ")` idiom). Taking only
     // positional[0] silently dropped every word after the first, and
@@ -968,7 +989,7 @@ export async function handleScience(
     // reroute below (and before survivors are recomputed) so the routing
     // SHAPE survives narrowing. `mode` follows this, not arms.length.
     let journalFannedOut = false;
-    return invokeCommand(
+    return await invokeCommand(
       deps.invocation,
       async (context) => {
         // T10 fan-out: resolve the arm set INSIDE the behavior so the
@@ -997,6 +1018,7 @@ export async function handleScience(
               descriptors: selectionOpts.descriptors,
               notice: context.notice,
               journal: deps.journal !== undefined,
+              signal: controller.signal,
             },
           );
           if (served !== undefined) {
@@ -1044,7 +1066,7 @@ export async function handleScience(
             if (deps.journal !== undefined) {
               armIdentities[index] = capability.cacheIdentity?.(request);
             }
-            return await capability.invoke(request);
+            return await capability.invoke(request, controller.signal);
           }),
         );
         // Deterministic failure: if every arm rejected, surface the
@@ -1163,7 +1185,7 @@ export async function handleScience(
   const maxChars = rawMaxChars === undefined ? undefined : parseBriefMaxChars(rawMaxChars);
   let journalWork: ScienceWork | undefined;
   let journalIdentity: unknown;
-  return invokeCommand(
+  return await invokeCommand(
     deps.invocation,
     async (context) => {
       // T10 get fallback (AC-5b): walk the id-type-filtered D5 arm
@@ -1225,7 +1247,7 @@ export async function handleScience(
           journalIdentity = capability.cacheIdentity?.(request);
         }
         try {
-          work = await capability.invoke(request);
+          work = await capability.invoke(request, controller.signal);
           break;
         } catch (error) {
           const next: ScienceDescriptorLike | undefined = arms[attempt + 1];
@@ -1272,4 +1294,7 @@ export async function handleScience(
           cacheKey: () => scienceCacheKey(journalIdentity),
         }),
   );
+  } finally {
+    cleanup();
+  }
 }

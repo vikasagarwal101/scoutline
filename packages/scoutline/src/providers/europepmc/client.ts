@@ -67,7 +67,11 @@ function mapStatusError(status: number, timeoutMs: number): Error {
 }
 
 /** Same transport-error normalization contract as the arXiv/OpenAlex/Crossref clients. */
-function normalizeTransportError(error: unknown, timeoutMs: number): Error {
+function normalizeTransportError(
+  error: unknown,
+  timeoutMs: number,
+  timedOut = false,
+): Error {
   if (
     error instanceof AuthError ||
     error instanceof ApiError ||
@@ -78,7 +82,13 @@ function normalizeTransportError(error: unknown, timeoutMs: number): Error {
     return error;
   }
   if (error instanceof Error && error.name === "AbortError") {
-    return new TimeoutError(timeoutMs);
+    if (timedOut) {
+      return new TimeoutError(timeoutMs);
+    }
+    return new ApiError(
+      "Europe PMC request was aborted by the caller (Ctrl-C or external signal)",
+      499,
+    );
   }
   return new NetworkError("Europe PMC network error");
 }
@@ -111,10 +121,17 @@ export async function fetchEuropepmcJson(
   // A pre-aborted caller signal must not reach the transport (review):
   // reject before the fetch is invoked at all.
   if (signal?.aborted) {
-    throw new TimeoutError(DEFAULT_TIMEOUT_MS);
+    throw new ApiError(
+      "Europe PMC request was aborted by the caller (Ctrl-C or external signal)",
+      499,
+    );
   }
+  let timedOut = false;
   const controller = new AbortController();
-  const timeoutId = setT(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  const timeoutId = setT(() => {
+    timedOut = true;
+    controller.abort();
+  }, DEFAULT_TIMEOUT_MS);
   const abortWithExternal = () => controller.abort();
   if (signal !== undefined) {
     if (signal.aborted) {
@@ -172,7 +189,7 @@ export async function fetchEuropepmcJson(
       throw new ApiError("Europe PMC returned a malformed response", 500);
     }
   } catch (err) {
-    throw normalizeTransportError(err, DEFAULT_TIMEOUT_MS);
+    throw normalizeTransportError(err, DEFAULT_TIMEOUT_MS, timedOut);
   } finally {
     if (signal !== undefined) {
       signal.removeEventListener("abort", abortWithExternal);

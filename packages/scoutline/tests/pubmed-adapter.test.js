@@ -58,7 +58,7 @@ import { Readable } from "node:stream";
 
 import { createPubmedDescriptor } from "../dist/providers/pubmed/adapter.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "../dist/providers/registry.js";
-import { ApiError, QuotaError, UnsupportedOptionError, ValidationError } from "../dist/lib/errors.js";
+import { ApiError, QuotaError, TimeoutError, UnsupportedOptionError, ValidationError } from "../dist/lib/errors.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures — real-shape eutils responses.
@@ -1024,5 +1024,101 @@ describe("pubmed bounded response execution hardening (#150)", () => {
     assert.equal(textCalled, false, "text() must never be called on non-ok response");
     assert.equal(jsonCalled, false, "json() must never be called on non-ok response");
     assert.equal(readerCalled, false, "body stream must not be read on non-ok response");
+  });
+});
+
+describe("pubmed abort signal threading and honest cancellation (#151)", () => {
+  it("a pre-aborted caller signal rejects before transport is invoked", async () => {
+    let fetchCalls = 0;
+    const descriptor = createPubmedDescriptor({
+      transport: {
+        fetch: async () => {
+          fetchCalls += 1;
+          return { ok: true, status: 200, json: async () => ({ esearchresult: { idlist: [] } }) };
+        },
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const ac = new AbortController();
+    ac.abort();
+    await assert.rejects(
+      adapter.science.search.invoke({ query: "x" }, ac.signal),
+      (e) => {
+        assert.ok(e instanceof ApiError, `expected ApiError, got ${e?.constructor?.name}`);
+        assert.equal(e.statusCode, 499);
+        assert.match(e.message, /PubMed request was aborted by the caller/);
+        assert.doesNotMatch(e.message, /timed out/i);
+        return true;
+      },
+    );
+    assert.equal(fetchCalls, 0, "transport fetch must never be invoked");
+  });
+
+  it("external abort mid-flight rejects with honest abort ApiError(499), not TimeoutError", async () => {
+    const ac = new AbortController();
+    const descriptor = createPubmedDescriptor({
+      transport: {
+        fetch: async (_url, init) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              reject(err);
+            });
+          }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const promise = adapter.science.search.invoke({ query: "x" }, ac.signal);
+    ac.abort();
+    await assert.rejects(
+      promise,
+      (e) => {
+        assert.ok(e instanceof ApiError, `expected ApiError, got ${e?.constructor?.name}`);
+        assert.equal(e.statusCode, 499);
+        assert.match(e.message, /PubMed request was aborted by the caller/);
+        assert.doesNotMatch(e.message, /timed out/i);
+        return true;
+      },
+    );
+  });
+
+  it("internal timer timeout rejects with TimeoutError", async () => {
+    let timerCallback;
+    const descriptor = createPubmedDescriptor({
+      transport: {
+        fetch: async (_url, init) =>
+          new Promise((_res, rej) => {
+            if (init?.signal?.aborted) {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+              return;
+            }
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+            });
+          }),
+        setTimeout: (cb) => {
+          timerCallback = cb;
+          return 123;
+        },
+        clearTimeout: () => {},
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const promise = adapter.science.search.invoke({ query: "x" });
+    assert.ok(timerCallback);
+    timerCallback();
+    await assert.rejects(
+      promise,
+      (e) => {
+        assert.ok(e instanceof TimeoutError, `expected TimeoutError, got ${e?.constructor?.name}`);
+        assert.match(e.message, /Request timed out/i);
+        return true;
+      },
+    );
   });
 });

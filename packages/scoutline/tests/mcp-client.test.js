@@ -1874,6 +1874,78 @@ describe("ZaiMcpClient — failure-path auth probe (#117)", () => {
     );
   });
 
+  it("concurrent callers share ONE in-flight failed init (single-flight holds during the probe, #143 twin of code-mode PR #142 round 2)", async () => {
+    // #143 — the mcp-client twin of the code-mode pin in
+    // tests/code-mode.test.js ("concurrent callers share ONE in-flight
+    // failed init"). The failure-path auth probe can be parked for up to
+    // PROBE_TIMEOUT_MS; the single-flight guard (initPromise) must stay
+    // armed across that await so a second caller joins the SAME failing
+    // init instead of starting a fresh registration + probe.
+    let registerCalls = 0;
+    const fake = {
+      registerManual() {
+        registerCalls += 1;
+        return Promise.resolve({ success: false, errors: ["Unrecognized keys: code,msg,success"] });
+      },
+      getTools() { return Promise.reject(new Error("should not reach getTools")); },
+      callToolChain() { return Promise.reject(new Error("should not reach callToolChain")); },
+      close() { return Promise.resolve(); },
+    };
+    let probeCalls = 0;
+    let releaseProbe;
+    const gate = new Promise((resolve) => { releaseProbe = resolve; });
+    const real = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      if (!urlOf(input).includes("api.z.ai")) {
+        throw new Error(`unexpected fetch in single-flight test: ${urlOf(input)}`);
+      }
+      probeCalls += 1;
+      await gate; // hold the probe in flight while the second caller arrives
+      return new Response(AUTH_REJECTION_BODY, {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    const client = new ZaiMcpClient({
+      env: PROBE_ENV,
+      noCache: true,
+      utcpFactory: async () => fake,
+    });
+    try {
+      // Public init path (no retry loop, unlike callTool) so the init
+      // count is not perturbed by retry-driven re-entry.
+      const first = client.listTools().then(
+        () => "ok",
+        (err) => err.code,
+      );
+      // Let the first init reach its parked probe (registration failed,
+      // probe fetch issued, gate held) BEFORE the second caller arrives.
+      // Bounded poll on the observable state: the registration -> probe
+      // handoff spans a handful of microtask/macrotask hops whose exact
+      // count is not part of the contract.
+      for (let i = 0; i < 200 && probeCalls === 0; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      assert.strictEqual(probeCalls, 1, "first init must be parked in its probe");
+      // The second caller arrives while the probe is still in flight —
+      // it must join the SAME failing init, not start a fresh one.
+      const second = client.listTools().then(
+        () => "ok",
+        (err) => err.code,
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      releaseProbe();
+      const [a, b] = await Promise.all([first, second]);
+      assert.strictEqual(a, "AUTH_ERROR");
+      assert.strictEqual(b, "AUTH_ERROR");
+      assert.strictEqual(registerCalls, 1, `one registration, got ${registerCalls}`);
+      assert.strictEqual(probeCalls, 1, `one probe, got ${probeCalls}`);
+    } finally {
+      globalThis.fetch = real;
+      await client.close().catch(() => {});
+    }
+  });
+
   it("probe latency is bounded (~5s cap, not the full request timeout) — PR #125 review", async () => {
     // A hanging probe endpoint that honors init.signal exactly like real
     // fetch (rejects on abort, never resolves otherwise). Against the

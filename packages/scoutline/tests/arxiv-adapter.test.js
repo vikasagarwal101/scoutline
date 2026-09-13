@@ -36,7 +36,9 @@ import assert from "node:assert/strict";
 
 import { createArxivDescriptor } from "../dist/providers/arxiv/adapter.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "../dist/providers/registry.js";
+import { Readable } from "node:stream";
 import {
+  ApiError,
   QuotaError,
   TimeoutError,
   UnsupportedOptionError,
@@ -108,6 +110,7 @@ function xmlResponse(xml) {
   return {
     ok: true,
     status: 200,
+    body: Readable.toWeb(Readable.from([Buffer.from(xml)])),
     json: async () => {
       throw new Error("json() must not be called on an Atom feed");
     },
@@ -502,5 +505,135 @@ describe("arXiv 429 — keyless rate limit maps to QuotaError (DESIGN D4b honest
       "pre-aborted signal rejects with TimeoutError",
     );
     assert.equal(fetchCalls, 0, "transport fetch must never be invoked");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bounded response execution hardening (#150)
+// ---------------------------------------------------------------------------
+
+describe("arxiv bounded response execution hardening (#150)", () => {
+  it("pre-read rejection: content-length > 50MB ceiling rejects with terminal 413 ApiError and cancels body without reading", async () => {
+    let cancelCalled = false;
+    let readCalled = false;
+    const mockBody = {
+      cancel: async () => {
+        cancelCalled = true;
+      },
+      getReader: () => {
+        readCalled = true;
+        throw new Error("getReader must not be called when content-length exceeds ceiling");
+      },
+    };
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: (name) => (name.toLowerCase() === "content-length" ? "55000000" : null),
+          },
+          body: mockBody,
+          text: async () => {
+            readCalled = true;
+            return "";
+          },
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      () => adapter.science.search.invoke({ query: "attention" }),
+      (err) => {
+        assert.equal(err.code, "API_ERROR");
+        assert.equal(err.statusCode, 413);
+        assert.match(err.message, /arxiv response exceeds.*50MB.*refusing to buffer/i);
+        return true;
+      },
+    );
+    assert.equal(cancelCalled, true, "body.cancel() must be called before throwing");
+    assert.equal(readCalled, false, "body must never be read when declared size exceeds ceiling");
+  });
+
+  it("chunked mid-stream rejection: stream exceeding 50MB ceiling cancels reader and rejects with size error", async () => {
+    let chunksYielded = 0;
+    async function* generateChunks() {
+      const chunk = Buffer.alloc(1024 * 1024, "x");
+      while (true) {
+        chunksYielded++;
+        yield chunk;
+      }
+    }
+    const stream = Readable.toWeb(Readable.from(generateChunks()));
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: () => null,
+          },
+          body: stream,
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      () => adapter.science.search.invoke({ query: "attention" }),
+      (err) => {
+        assert.equal(err.code, "VALIDATION_ERROR");
+        assert.match(err.message, /exceeds in-memory ceiling/i);
+        return true;
+      },
+    );
+    assert.ok(chunksYielded > 50, "should have read past 50MB before rejecting");
+    assert.ok(chunksYielded <= 53, "stream should stop yielding chunks once cancelled");
+  });
+
+  it("drain replacement: non-ok response cancels body and never buffers via text() or json()", async () => {
+    let cancelCalled = false;
+    let textCalled = false;
+    let jsonCalled = false;
+    let readerCalled = false;
+    const mockBody = {
+      cancel: async () => {
+        cancelCalled = true;
+      },
+      getReader: () => {
+        readerCalled = true;
+        throw new Error("getReader must not be called on non-ok response");
+      },
+    };
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: false,
+          status: 500,
+          headers: { get: () => null },
+          body: mockBody,
+          text: async () => {
+            textCalled = true;
+            return "error body";
+          },
+          json: async () => {
+            jsonCalled = true;
+            return {};
+          },
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      () => adapter.science.search.invoke({ query: "attention" }),
+      (err) => {
+        assert.equal(err.code, "API_ERROR");
+        assert.equal(err.statusCode, 500);
+        return true;
+      },
+    );
+    assert.equal(cancelCalled, true, "body.cancel() must be called on non-ok response");
+    assert.equal(textCalled, false, "text() must never be called on non-ok response");
+    assert.equal(jsonCalled, false, "json() must never be called on non-ok response");
+    assert.equal(readerCalled, false, "body stream must not be read on non-ok response");
   });
 });

@@ -10,12 +10,23 @@
  * house `USER_AGENT` rides every request either way.
  *
  * Boundary rules (ARCHITECTURE.md §2), cloning the arXiv client shape:
- *   - May import normalized errors and the provider fetch seam.
+ *   - May import normalized errors, the provider fetch seam, and the bounded-body lib helper.
  *   - Must NOT perform response field normalization — the Adapter owns
  *     parsing. This module returns the parsed JSON document as unknown.
  */
 import pkg from "../../../package.json" with { type: "json" };
-import { ApiError, AuthError, NetworkError, QuotaError, TimeoutError } from "../../lib/errors.js";
+import {
+  readBoundedResponseBody,
+  MAX_BUFFERED_RESPONSE_BYTES,
+} from "../../lib/bounded-body.js";
+import {
+  ApiError,
+  AuthError,
+  NetworkError,
+  QuotaError,
+  TimeoutError,
+  ValidationError,
+} from "../../lib/errors.js";
 import type { ProviderQuotaFetch } from "../types.js";
 import { getGlobalFetch } from "../types.js";
 
@@ -80,7 +91,8 @@ function normalizeTransportError(error: unknown, timeoutMs: number): Error {
     error instanceof AuthError ||
     error instanceof ApiError ||
     error instanceof QuotaError ||
-    error instanceof TimeoutError
+    error instanceof TimeoutError ||
+    error instanceof ValidationError
   ) {
     return error;
   }
@@ -160,21 +172,51 @@ export async function fetchOpenalexJson(
     }
   }
   try {
-    const res = await f(url, {
+    const res = (await f(url, {
       method: "GET",
       headers: { "User-Agent": USER_AGENT },
       signal: controller.signal,
-    });
+    })) as unknown as {
+      readonly ok: boolean;
+      readonly status: number;
+      readonly headers: { get(name: string): string | null };
+      readonly body?: ReadableStream<Uint8Array> | null;
+      text?(): Promise<string>;
+      json?(): Promise<unknown>;
+    };
     if (!res.ok) {
-      await res.text().catch(() => {});
+      await res.body?.cancel().catch(() => {});
       throw mapStatusError(res.status, DEFAULT_TIMEOUT_MS);
     }
+    const contentLengthHeader = res.headers.get("content-length");
+    if (contentLengthHeader && Number(contentLengthHeader) > MAX_BUFFERED_RESPONSE_BYTES) {
+      await res.body?.cancel().catch(() => {});
+      throw new ApiError(
+        `OpenAlex response exceeds the 50MB in-memory ceiling (${contentLengthHeader} bytes declared) — refusing to buffer`,
+        413,
+      );
+    }
     try {
-      return await res.json();
+      if (res.body) {
+        const buf = await readBoundedResponseBody(
+          res.body,
+          MAX_BUFFERED_RESPONSE_BYTES,
+          "OpenAlex response",
+        );
+        return JSON.parse(buf.toString("utf8"));
+      }
+      if (typeof res.json === "function") {
+        return await res.json();
+      }
+      if (typeof res.text === "function") {
+        return JSON.parse(await res.text());
+      }
+      return {};
     } catch (err) {
       // The timeout stays armed through body consumption; an abort here
       // is the injected timeout firing, not a malformed payload.
       if (controller.signal.aborted) throw err;
+      if (err instanceof ApiError || err instanceof ValidationError) throw err;
       throw new ApiError("OpenAlex returned a malformed response", 500);
     }
   } catch (err) {

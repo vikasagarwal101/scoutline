@@ -9,6 +9,12 @@
 import { ValidationError } from "./errors.js";
 
 /**
+ * Shared in-memory response ceiling for direct commands and provider clients.
+ * Responses declaring or streaming beyond this ceiling reject immediately.
+ */
+export const MAX_BUFFERED_RESPONSE_BYTES = 50 * 1024 * 1024;
+
+/**
  * Incrementally read from a ReadableStream up to maxBytes.
  * Throws ValidationError if incoming data exceeds maxBytes without buffering the remainder.
  */

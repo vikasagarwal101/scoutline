@@ -78,8 +78,7 @@ describe("assertTestSafeWrite comparator pins (T4 rework §1)", () => {
 
   it("nested isolated-in-homedir: SCOUTLINE_CONFIG_DIR under the real homedir allows its subtree", async () => {
     const { assertTestSafeWrite } = await loadGuard();
-    const nested = path.join(os.homedir(), "scoutline-t4a-iso-pin");
-    fs.mkdirSync(nested, { recursive: true });
+    const nested = fs.mkdtempSync(path.join(os.homedir(), "scoutline-t4a-iso-pin-"));
     try {
       await withEnv({ ...testContextOverrides, SCOUTLINE_CONFIG_DIR: nested }, () => {
         assert.doesNotThrow(() =>

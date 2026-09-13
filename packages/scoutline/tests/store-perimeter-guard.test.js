@@ -46,15 +46,36 @@ const baseTestEnv = {
   SCOUTLINE_NO_TEST_GUARD: undefined,
 };
 
-// "Real-homedir-alike": a path OUTSIDE every isolation root and outside
-// os.tmpdir() (so the guard must fire for the same lexical reason the real
-// ~/.scoutline would), but on a scratch dir this file owns and cleans — never
-// the developer's actual $HOME (a production-mode leg performs a REAL write).
-const fakeRealHomedirRoot = fs.mkdtempSync("/var/tmp/scoutline-guard-home-");
-process.on("exit", () => fs.rmSync(fakeRealHomedirRoot, { recursive: true, force: true }));
-const fakeRealHomedir = path.join(fakeRealHomedirRoot, ".scoutline");
+// "Real-homedir-alike": a path OUTSIDE every isolation root and outside the
+// RESOLVED os.tmpdir() (so the guard must fire for the same lexical reason
+// the real ~/.scoutline would), but on a scratch dir this file owns and
+// cleans — never the developer's actual $HOME (a production-mode leg performs
+// a REAL write). PR #160 review: the base must not be hard-coded /var/tmp —
+// under TMPDIR=/var/tmp that resolves INTO the tmpdir allowance and the
+// negative asserts would silently stop testing un-isolated writes.
+const tmpdirReal = fs.realpathSync(os.tmpdir());
+const nonTmpBase = ["/var/tmp", "/srv", "/opt"].find((base) => {
+  try {
+    return fs.realpathSync(base) !== tmpdirReal && fs.accessSync(base, fs.constants.W_OK) === undefined;
+  } catch {
+    return false;
+  }
+});
+const fakeRealHomedirRoot = nonTmpBase
+  ? fs.mkdtempSync(path.join(nonTmpBase, "scoutline-guard-home-"))
+  : undefined;
+process.on("exit", () => {
+  if (fakeRealHomedirRoot) fs.rmSync(fakeRealHomedirRoot, { recursive: true, force: true });
+});
+const fakeRealHomedir = fakeRealHomedirRoot
+  ? path.join(fakeRealHomedirRoot, ".scoutline")
+  : path.join(os.tmpdir(), "scoutline-guard-SKIPPED-no-non-tmpdir-base");
 
-describe("write-chokepoint test-isolation guards (T4 rework §5)", () => {
+const maybeDescribe = fakeRealHomedirRoot ? describe : describe.skip;
+maybeDescribe("write-chokepoint test-isolation guards (T4 rework §5)", () => {
+  // Skipped entirely when every candidate base resolves into os.tmpdir()
+  // (TMPDIR remapped): the negative asserts would not test un-isolated
+  // writes. PR #160 review instruction: skip with a clear reason.
   describe("chokepoint: atomicReplaceFile", () => {
     it("throws TestIsolationViolationError on un-isolated write under NODE_TEST_CONTEXT", async () => {
       const target = path.join(fakeRealHomedir, "config.json");

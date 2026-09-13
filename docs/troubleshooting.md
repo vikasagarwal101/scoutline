@@ -555,13 +555,20 @@ account:
   send the standard User-Agent header.
 - **OpenAlex** and **PubMed** accept optional, free API keys that elevate
   rate limits rather than bill for usage:
-  - `OPENALEX_API_KEY`: Keyless default provides 1,000 credits/day with
-    polite `mailto=scoutline@localhost` query attribution. Setting an API key
-    routes requests via `api_key=<key>`, lifting rate limits and shielding
-    against anonymous traffic pauses.
-  - `NCBI_API_KEY`: Keyless default throttles requests to 3 requests/second.
-    Setting an NCBI API key lifts the rate limit to 10 requests/second via
-    the `api_key=<key>` query parameter.
+  - `OPENALEX_API_KEY`: keyless requests ride OpenAlex's anonymous tier
+    with polite `mailto=scoutline@localhost` query attribution (the shipped
+    `scoutline init` summary: "keyless 1000 credits/day (~100 searches;
+    doi:get free); free key recommended" — OpenAlex's published pricing
+    currently prices search around $1/day ≈ 1,000 searches). Setting an
+    API key routes requests via `api_key=<key>` instead, and per OpenAlex's
+    docs authenticated traffic uses a separate pool not subject to the
+    anonymous search pause.
+  - `NCBI_API_KEY`: scoutline applies NO client-side rate limiting — it
+    sends every request immediately. The key, when set, rides the request
+    as an `api_key=<key>` query parameter, and per NCBI's own docs a
+    registered key raises your SERVER-SIDE allowance (the commonly quoted
+    tier moves from ~3 to ~10 requests/second). Those numbers are
+    NCBI-side facts, not limits scoutline enforces.
 
 API keys can be supplied via environment variables or stored interactively:
 
@@ -574,12 +581,17 @@ export NCBI_API_KEY="your-ncbi-key"
 scoutline init
 ```
 
-To verify connectivity and rate-limit access for all configured science
-suppliers without spending credits, run:
+To check every configured science supplier, run:
 
 ```bash
 scoutline doctor
 ```
+
+Note: with the OpenAlex probe exercising the search surface, `doctor`
+issues ONE real anonymous search (`search=test`) — it draws on the same
+small anonymous budget as your searches (see the OpenAlex tier note
+above), not a separate free lane. The other suppliers' probes are
+keyless reads with no billing surface.
 
 Science suppliers are excluded from quota spend dashboards (`scoutline quota`)
 because they carry no usage billing pool.
@@ -605,8 +617,9 @@ Unauthenticated search requests that encounter this pause fail with `API_ERROR`
 1. Obtain a free OpenAlex API key from <https://openalex.org/users/me>.
 2. Configure it via `export OPENALEX_API_KEY="..."` or run `scoutline init`.
 
-Requests with an API key are routed to OpenAlex's authenticated pool, which
-is not subject to anonymous search pauses.
+Requests with an API key carry `api_key=` instead of `mailto=`; per
+OpenAlex's docs, authenticated requests use a separate pool that is not
+subject to the anonymous search pause.
 
 ## Science Fan-Out Reports "arm failed (…) — dropped from this fan-out"
 
@@ -626,7 +639,7 @@ Exit codes and partial fan-out:
 - **Partial success (`exit 0`):** As long as at least one arm fulfills (even
   if that arm returns an empty works list), the fan-out succeeds with `exit 0`.
   The surviving arms are merged, deduplicated by persistent identifiers (DOI
-  first, then normalized URL), and returned. The research journal records
+  first, then normalized URL), and returned. The history journal records
   `{ mode: "fanout", arms: [...] }` listing only the survivor arms that
   actually served.
 - **Complete failure (`exit 1`):** `science search` fails if and only if
@@ -667,9 +680,10 @@ Key syntax considerations:
 `scoutline science search` and `scoutline science get` envelopes after
 results are retrieved.
 
-The science budget ladder (`SCIENCE_LADDER`) applies lossy reductions in
-strict priority order:
-1. `trim-summaries`: Cuts `summary` text in half, adding an ellipsis prefix.
+The science budget ladder (internally `SCIENCE_LADDER`) applies lossy
+reductions in strict priority order:
+1. `trim-summaries`: Cuts `summary` text in half, prefixing an ellipsis
+   (unless the halved remainder is empty, which stays empty).
 2. `drop-authors-tail`: Halves the `authors` list, keeping the first half.
 3. `drop-venue`: Drops the `venue` field entirely.
 4. `drop-last-work`: Drops trailing works from the result array, down to a
@@ -691,17 +705,17 @@ Envelope recovery and text rendering:
   ```bash
   scoutline history show <ref>
   ```
-- Terminal and Markdown presentations (`tty`, `markdown`, `compact`) are
-  re-rendered directly from the projected data to guarantee that displayed
-  text matches the compacted envelope.
+- Terminal and Markdown presentations (`tty`, `markdown`, `compact`,
+  `refs`) are re-rendered directly from the projected data to guarantee
+  that displayed text matches the compacted envelope.
 
 ## Science Journal Records Carry Persistent Identifiers
 
-`scoutline science search` writes entries to the persistent research
+`scoutline science search` writes entries to the persistent history
 journal (`~/.scoutline/artifacts/`) alongside standard `search`, `read`,
 and `research` commands.
 
-Post-T4, skeleton rows recorded in the journal carry optional persistent
+Skeleton rows recorded in the journal carry optional persistent
 identifiers in `SkeletonItem.identifiers`:
 
 ```json
@@ -722,7 +736,7 @@ Key behaviors:
   record), persistent identifiers anchor the canonical identity across
   providers.
 - **Backward compatibility:** Journal entries recorded without `identifiers`
-  (pre-T4 entries or non-science commands) continue to validate and parse
+  (older entries and non-science commands) continue to validate and parse
   without error or corruption warnings.
 - **Content hash:** The journal's `contentHash` is the SHA-256 digest of
   the normalized skeleton serialization. It is per-entry display metadata,

@@ -394,10 +394,13 @@ describe("openalex search invoke — JSON mapping to ScienceWork (TASKS T4; DESI
     // europepmc `.map(...).filter(defined)`. A malformed supplier entry
     // (null / scalar) is not a work: it must be SKIPPED, never mapped
     // through `?? {}` into a phantom {title:"",url:""} row that pollutes
-    // every consumer downstream.
+    // every consumer downstream. An EMPTY RECORD `{}` (#148 review) is
+    // an object, so the pre-map record check passes it — only a post-map
+    // drop of fully-empty rows (a real work always carries `id` → a
+    // non-empty url) catches it.
     const { adapter } = makeAdapter({
       meta: { count: 3 },
-      results: [null, "scalar", WORK_DEEP_LEARNING],
+      results: [null, "scalar", {}, WORK_DEEP_LEARNING],
     });
     const works = await adapter.science.search.invoke({ query: "deep learning" });
     assert.equal(works.length, 1, "only the record entry survives the filter");

@@ -319,7 +319,13 @@ function createOpenalexScienceCapability(options: {
       // phantom `{title:"",url:""}` row (#148).
       return openalexResults(doc)
         .filter((r): r is OpenalexWorkWire => toOpenalexWork(r) !== undefined)
-        .map((r) => mapWork(r));
+        .map((r) => mapWork(r))
+        // #148 review: an empty RECORD (`{}` / all-unknown keys) passes
+        // the record check yet maps to a fully-empty work. A real work
+        // always carries `id` (→ non-empty url), so a post-map drop of
+        // rows with neither title nor url is the honest catch-all —
+        // such a row carries no identity for any consumer downstream.
+        .filter((w) => !(w.title === "" && w.url === ""));
     },
   };
 

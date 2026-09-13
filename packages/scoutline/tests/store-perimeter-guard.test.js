@@ -46,7 +46,13 @@ const baseTestEnv = {
   SCOUTLINE_NO_TEST_GUARD: undefined,
 };
 
-const fakeRealHomedir = path.join(os.homedir(), ".scoutline");
+// "Real-homedir-alike": a path OUTSIDE every isolation root and outside
+// os.tmpdir() (so the guard must fire for the same lexical reason the real
+// ~/.scoutline would), but on a scratch dir this file owns and cleans — never
+// the developer's actual $HOME (a production-mode leg performs a REAL write).
+const fakeRealHomedirRoot = fs.mkdtempSync("/var/tmp/scoutline-guard-home-");
+process.on("exit", () => fs.rmSync(fakeRealHomedirRoot, { recursive: true, force: true }));
+const fakeRealHomedir = path.join(fakeRealHomedirRoot, ".scoutline");
 
 describe("write-chokepoint test-isolation guards (T4 rework §5)", () => {
   describe("chokepoint: atomicReplaceFile", () => {

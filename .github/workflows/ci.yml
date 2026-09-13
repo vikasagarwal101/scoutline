@@ -30,6 +30,8 @@ jobs:
       - run: npm run build
       # Publish gate = offline suite (tests import dist/; build ran above)
       - run: node scripts/run-tests.mjs offline
+      # Store census: fake-HOME full suite must leave ~/.scoutline empty
+      - run: node scripts/store-census.mjs
 
   typecheck:
     runs-on: ubuntu-latest

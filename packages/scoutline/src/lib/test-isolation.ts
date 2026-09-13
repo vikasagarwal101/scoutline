@@ -19,10 +19,12 @@
  * unlike the #119/#137 truthiness convention: `=0` and every other value do
  * NOT bypass. The error message says so.
  *
- * Known limitation: the target is compared LEXICALLY (`path.resolve`, no
- * realpath on the target's ancestor chain). A symlinked target whose real
- * location is under an isolated root may false-positive. Deepest-existing-
- * ancestor realpath is a possible cheap fix if this ever bites.
+ * Containment compares the DEEPEST-EXISTING-ANCESTOR realpath of both the
+ * target and each approved root (PR #160 review): a symlink at any existing
+ * level of either path is resolved before the prefix test, so a link inside
+ * an allowed root pointing at a real store can no longer authorize the
+ * write, and an allowed root that IS a symlink compares as its real target.
+ * Valid symlinked roots (link -> isolated dir) keep working.
  */
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -55,13 +57,33 @@ export function isTestIsolationViolation(
   return error instanceof TestIsolationViolationError;
 }
 
+/**
+ * realpath the DEEPEST EXISTING ANCESTOR of `p`, then append the
+ * nonexistent suffix (PR #160 review: lexical containment can be bypassed by
+ * a symlink at any existing path level — target OR root). A missing path
+ * stays lexical. Throws on realpath errors other than ENOENT (incl. symlink
+ * loops — ELOOP), so a loop can never be silently authorized.
+ */
+function realpathDeepestExisting(p: string): string {
+  const resolved = path.resolve(p);
+  const segments = resolved.split(path.sep);
+  // Walk from the root down; the deepest prefix that exists gets realpath'd.
+  for (let i = segments.length; i >= 1; i -= 1) {
+    const prefix = segments.slice(0, i).join(path.sep) || path.sep;
+    try {
+      return fs.realpathSync(prefix) + path.sep + segments.slice(i).join(path.sep);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") continue;
+      throw error; // ELOOP, EACCES, ... — fail loud, never silently allow.
+    }
+  }
+  return resolved;
+}
+
 /** realpath the root where its segments exist; nonexistent root stays lexical. */
 function realpathBestEffort(root: string): string {
-  try {
-    return fs.realpathSync(root);
-  } catch {
-    return root;
-  }
+  return realpathDeepestExisting(root);
 }
 
 /**
@@ -77,8 +99,8 @@ export function assertTestSafeWrite(absPath: string, seam: string): void {
   if (!process.env.NODE_TEST_CONTEXT) return;
   if (process.env.SCOUTLINE_NO_TEST_GUARD === "1") return;
 
-  const target = path.resolve(absPath);
-  const allowedRoots: string[] = [os.tmpdir()];
+  const target = realpathDeepestExisting(absPath);
+  const allowedRoots: string[] = [realpathDeepestExisting(os.tmpdir())];
   for (const name of ISOLATION_ENV_VARS) {
     const value = process.env[name];
     if (value) allowedRoots.push(realpathBestEffort(value));

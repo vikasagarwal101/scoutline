@@ -234,3 +234,89 @@ describe("assertTestSafeWrite comparator pins (T4 rework §1)", () => {
     });
   });
 });
+
+
+// --- PR #160 review: symlink-escape vectors (RED before the realpath fix) ---
+describe("assertTestSafeWrite symlink escapes (PR #160)", () => {
+  it("symlink INSIDE an allowed root pointing at a real store still throws", async () => {
+    const { assertTestSafeWrite, isTestIsolationViolation } = await loadGuard();
+    const base = fs.mkdtempSync(path.join("/var/tmp", "iso-escape-"));
+    try {
+      const root = path.join(base, "root");
+      const realStore = path.join(base, "real-store");
+      fs.mkdirSync(root, { recursive: true });
+      fs.mkdirSync(realStore, { recursive: true });
+      fs.symlinkSync(realStore, path.join(root, "link"));
+      const target = path.join(root, "link", "file.json");
+      await withEnv({ ...testContextOverrides, SCOUTLINE_CACHE_DIR: root }, async () => {
+        assert.throws(
+          () => assertTestSafeWrite(target, "escape-inside"),
+          (e) => isTestIsolationViolation(e),
+        );
+      });
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("symlink under the tmpdir allowance pointing at a real store still throws", async () => {
+    // Reviewer's vector (test-isolation.ts:80): tmpdir IS in the allowlist, so
+    // a link under os.tmpdir() -> real store passed the LEXICAL prefix test.
+    // Realpath containment must resolve the link and refuse.
+    const { assertTestSafeWrite, isTestIsolationViolation } = await loadGuard();
+    const tmp = fs.realpathSync(os.tmpdir());
+    const realStore = fs.mkdtempSync(path.join("/var/tmp", "iso-escape-real-"));
+    const link = path.join(tmp, `iso-escape-link-${process.pid}`);
+    try {
+      fs.symlinkSync(realStore, link);
+      const target = path.join(link, "usage.json");
+      await withEnv({ ...testContextOverrides }, async () => {
+        assert.throws(
+          () => assertTestSafeWrite(target, "escape-tmpdir-symlink"),
+          (e) => isTestIsolationViolation(e),
+        );
+      });
+    } finally {
+      fs.rmSync(link, { force: true });
+      fs.rmSync(realStore, { recursive: true, force: true });
+    }
+  });
+
+  it("symlink loop in target path is never silently authorized", async () => {
+    const { assertTestSafeWrite } = await loadGuard();
+    const base = fs.mkdtempSync(path.join("/var/tmp", "iso-escape-"));
+    try {
+      const loop = path.join(base, "loop");
+      fs.symlinkSync(loop, loop);
+      const target = path.join(loop, "f");
+      await withEnv({ ...testContextOverrides, SCOUTLINE_CACHE_DIR: path.join(base, "root") }, async () => {
+        let threw = false;
+        try {
+          assertTestSafeWrite(target, "loop");
+        } catch {
+          threw = true;
+        }
+        assert.ok(threw, "symlink loop must not be silently authorized");
+      });
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("VALID symlinked root still passes (existing behavior preserved)", async () => {
+    const { assertTestSafeWrite } = await loadGuard();
+    const base = fs.mkdtempSync(path.join("/var/tmp", "iso-escape-"));
+    try {
+      const realRoot = path.join(base, "real-root");
+      const linkRoot = path.join(base, "link-root");
+      fs.mkdirSync(realRoot, { recursive: true });
+      fs.symlinkSync(realRoot, linkRoot);
+      const target = path.join(realRoot, "sub", "file.json");
+      await withEnv({ ...testContextOverrides, SCOUTLINE_CACHE_DIR: linkRoot }, async () => {
+        assert.doesNotThrow(() => assertTestSafeWrite(target, "valid-symlinked-root"));
+      });
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+});

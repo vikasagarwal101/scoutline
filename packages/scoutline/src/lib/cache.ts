@@ -39,6 +39,7 @@ import path from "node:path";
 import { getApiKey } from "./config.js";
 import { atomicReplaceFile } from "./config-store.js";
 import { FileError } from "./errors.js";
+import { assertTestSafeWrite, isTestIsolationViolation } from "./test-isolation.js";
 import {
   withAsyncFileLock,
   LockTimeoutError,
@@ -417,9 +418,11 @@ export async function readCache(
     if (!entry || typeof entry.ts !== "number") return null;
     if (Date.now() - entry.ts > resolvedTtl) return null;
     // Touch the file for LRU freshness (best-effort)
+    assertTestSafeWrite(file, "readCache:utimes");
     await fs.utimes(file, new Date(), new Date()).catch(() => {});
     data = entry.data;
-  } catch {
+  } catch (error) {
+    if (isTestIsolationViolation(error)) throw error;
     return null;
   }
   // Run the decoder outside the file-I/O catch so a throwing validator
@@ -433,6 +436,7 @@ export async function writeCache<T>(key: string, data: T): Promise<void> {
   if (!isCacheEnabled()) return;
   const dir = responseCacheDir();
   const file = path.join(dir, key);
+  assertTestSafeWrite(file, "writeCache");
   try {
     const entry: CacheEntry<T> = { ts: Date.now(), data };
     // 5.5: serialize the write+evict critical section with an inter-process
@@ -459,7 +463,8 @@ export async function writeCache<T>(key: string, data: T): Promise<void> {
         timeoutLabel: "Cache write",
       },
     );
-  } catch {
+  } catch (error) {
+    if (isTestIsolationViolation(error)) throw error;
     // Best-effort cache only
   }
 }
@@ -494,10 +499,13 @@ async function evictIfNeeded(dir: string): Promise<void> {
     let bytes = totalBytes;
     for (const entry of sorted) {
       if (bytes <= sizeCapBytes * 0.8) break;
-      await fs.unlink(path.join(dir, entry.name)).catch(() => {});
+      const target = path.join(dir, entry.name);
+      assertTestSafeWrite(target, "cache:evict");
+      await fs.unlink(target).catch(() => {});
       bytes -= entry.size;
     }
-  } catch {
+  } catch (error) {
+    if (isTestIsolationViolation(error)) throw error;
     // Best-effort
   }
 }
@@ -521,14 +529,17 @@ export async function clearCache(): Promise<{ cleared: number; bytesFreed: numbe
       const p = path.join(dir, name);
       try {
         const s = await fs.stat(p);
+        assertTestSafeWrite(p, "clearCache:unlink");
         await fs.unlink(p);
         cleared += 1;
         bytesFreed += s.size;
-      } catch {
+      } catch (error) {
+        if (isTestIsolationViolation(error)) throw error;
         // skip
       }
     }
-  } catch {
+  } catch (error) {
+    if (isTestIsolationViolation(error)) throw error;
     // dir doesn't exist
   }
   return { cleared, bytesFreed };
@@ -548,14 +559,17 @@ async function clearSubdir(dir: string): Promise<{ cleared: number; bytesFreed: 
       const p = path.join(dir, name);
       try {
         const s = await fs.stat(p);
+        assertTestSafeWrite(p, "clearSubdir:unlink");
         await fs.unlink(p);
         cleared += 1;
         bytesFreed += s.size;
-      } catch {
+      } catch (error) {
+        if (isTestIsolationViolation(error)) throw error;
         // skip
       }
     }
-  } catch {
+  } catch (error) {
+    if (isTestIsolationViolation(error)) throw error;
     // dir doesn't exist
   }
   return { cleared, bytesFreed };
@@ -780,14 +794,17 @@ async function pruneSubdirByAge(
         if (current.ino !== s.ino || current.size !== s.size) {
           continue;
         }
+        assertTestSafeWrite(p, "pruneCache:unlink");
         await fs.unlink(p);
         pruned += 1;
         bytesFreed += s.size;
-      } catch {
+      } catch (error) {
+        if (isTestIsolationViolation(error)) throw error;
         // Best-effort per entry, like clearSubdir.
       }
     }
-  } catch {
+  } catch (error) {
+    if (isTestIsolationViolation(error)) throw error;
     // dir doesn't exist yet
   }
   return { pruned, bytesFreed };

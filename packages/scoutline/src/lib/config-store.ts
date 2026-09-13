@@ -9,6 +9,7 @@ import {
   type ProviderId,
 } from "../providers/types.js";
 import { ConfigurationError, ValidationError } from "./errors.js";
+import { assertTestSafeWrite } from "./test-isolation.js";
 import {
   withAsyncFileLock,
   LockTimeoutError,
@@ -449,6 +450,7 @@ export async function atomicReplaceFile(
   contents: string | Uint8Array,
   options: AtomicReplaceOptions = {},
 ): Promise<void> {
+  assertTestSafeWrite(filePath, "atomicReplaceFile");
   const platform = options.platform ?? process.platform;
   const root = path.dirname(filePath);
   await fs.mkdir(root, { recursive: true, mode: 0o700 });

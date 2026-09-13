@@ -33,6 +33,7 @@ import * as path from "node:path";
 
 import type { ProviderId } from "../providers/types.js";
 import { resolveConfigRoot } from "./config-store.js";
+import { assertTestSafeWrite, isTestIsolationViolation } from "./test-isolation.js";
 import type { ConsumptionEvent, ConsumptionSink } from "./consumption.js";
 
 // ---------------------------------------------------------------------------
@@ -556,9 +557,11 @@ export function createUsageLedgerSink(options: UsageLedgerSinkOptions): Consumpt
             onWarning: () => onWarning(USAGE_LEDGER_SINK_READ_WARNING),
           });
           const merged = mergeEventIntoLedger(ledger, { ...event, at }, { retentionDays });
+          assertTestSafeWrite(filePath, "usage-ledger:writeFile");
           await writeFile(filePath, `${JSON.stringify(merged, null, 2)}\n`);
         });
-      } catch {
+      } catch (error) {
+        if (isTestIsolationViolation(error)) throw error;
         // Redacted by construction: no error text, no event detail.
         onWarning(USAGE_LEDGER_SINK_WARNING);
       }

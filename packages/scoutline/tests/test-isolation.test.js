@@ -91,6 +91,23 @@ describe("assertTestSafeWrite comparator pins (T4 rework §1)", () => {
     }
   });
 
+  it("legacy aliases: ZAI_CACHE_DIR-armed root allows its subtree", async () => {
+    const { assertTestSafeWrite } = await loadGuard();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-iso-zaicache-"));
+    try {
+      await withEnv(
+        { ...testContextOverrides, ZAI_CACHE_DIR: root },
+        () => {
+          assert.doesNotThrow(() =>
+            assertTestSafeWrite(path.join(root, "cache", "x.json"), "cache"),
+          );
+        },
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("trailing slash on the env-var root still allows the subtree", async () => {
     const { assertTestSafeWrite } = await loadGuard();
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-iso-slash-"));

@@ -34,6 +34,8 @@ const ISOLATION_ENV_VARS = [
   "SCOUTLINE_ARTIFACTS_DIR",
   "SCOUTLINE_CACHE_DIR",
   "SCOUTLINE_WATCH_DIR",
+  "ZAI_MCP_CACHE_DIR",
+  "ZAI_CACHE_DIR",
 ] as const;
 
 export class TestIsolationViolationError extends ScoutlineError {

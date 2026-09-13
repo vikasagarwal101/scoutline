@@ -21,6 +21,7 @@
 
 import * as fs from "node:fs/promises";
 import path from "node:path";
+import { assertTestSafeWrite } from "./test-isolation.js";
 
 /**
  * Default lock timing constants. Consumers that need the standard values
@@ -161,6 +162,7 @@ export async function withAsyncFileLock<T>(
   options: AsyncFileLockOptions,
 ): Promise<T> {
   if (stateDir === undefined) return fn();
+  assertTestSafeWrite(stateDir, "withAsyncFileLock");
 
   const setT = options.setTimeout ?? setTimeout;
   const signal = options.signal;

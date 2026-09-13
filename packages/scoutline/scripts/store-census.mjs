@@ -31,8 +31,7 @@ import {
   statSync,
   rmSync,
   mkdirSync,
-  writeFileSync,
-} from "node:fs";
+  writeFileSync, lstatSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -92,18 +91,31 @@ function census(dir) {
     let names;
     try {
       names = readdirSync(current).sort();
-    } catch {
-      return;
+    } catch (error) {
+      // Only a disappearing directory reads as absent; anything else
+      // (EACCES, EIO, ...) must fail the census, never pass it blind.
+      if (error?.code === "ENOENT") return;
+      throw new Error(`Unable to inspect census directory: ${current}`, { cause: error });
     }
     for (const name of names) {
       const full = path.join(current, name);
-      const st = statSync(full);
+      // lstat, never stat: a symlink entry is a FINDING (recorded, not
+      // followed) — following could recurse outside the fake home, hit a
+      // loop, or hang on a link to /.
+      const st = lstatSync(full);
+      const type = st.isSymbolicLink()
+        ? "symlink"
+        : st.isDirectory()
+          ? "dir"
+          : st.isFile()
+            ? "file"
+            : "other";
       entries.push({
         path: path.relative(fakeHome, full),
         inode: st.ino,
         mtimeMs: st.mtimeMs,
         size: st.size,
-        type: st.isDirectory() ? "dir" : st.isFile() ? "file" : "other",
+        type,
       });
       if (st.isDirectory()) {
         walk(full);

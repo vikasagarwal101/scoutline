@@ -5,8 +5,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import * as fs from "node:fs";
+import { mkdtempSync } from "node:fs";
 import path from "node:path";
-import os from "node:os";
+import os, { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { createParallelDescriptor, ParallelAdapter } from "../dist/providers/parallel/adapter.js";
 import {
@@ -494,7 +496,7 @@ describe("Parallel AI Descriptor & Adapter", () => {
 
     const adapter = new ParallelAdapter(
       { env: { PARALLEL_API_KEY: TEST_KEY } },
-      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile, researchStateDir: mkdtempSync(join(tmpdir(), "parallel-test-research-")) }
     );
 
     adapter.research.run.validate({ query: "AI search engines" });
@@ -542,7 +544,7 @@ describe("Parallel AI Descriptor & Adapter", () => {
 
     const adapter = new ParallelAdapter(
       { env: { PARALLEL_API_KEY: TEST_KEY } },
-      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile, researchStateDir: mkdtempSync(join(tmpdir(), "parallel-test-research-")) }
     );
 
     await adapter.research.run.invoke({ query: "test query" });
@@ -586,7 +588,7 @@ describe("Parallel AI Descriptor & Adapter", () => {
     const { fetch: taskFetch } = makeTaskFetch({ pollResponses: [dedupResult] });
     const adapter = new ParallelAdapter(
       { env: { PARALLEL_API_KEY: TEST_KEY } },
-      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile, researchStateDir: mkdtempSync(join(tmpdir(), "parallel-test-research-")) }
     );
 
     const res = await adapter.research.run.invoke({ query: "dedup test" });
@@ -605,7 +607,7 @@ describe("Parallel AI Descriptor & Adapter", () => {
     });
     const adapter = new ParallelAdapter(
       { env: { PARALLEL_API_KEY: TEST_KEY } },
-      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile, researchStateDir: mkdtempSync(join(tmpdir(), "parallel-test-research-")) }
     );
 
     await adapter.research.run.invoke({ query: "model test", model: "pro" });
@@ -621,7 +623,7 @@ describe("Parallel AI Descriptor & Adapter", () => {
     });
     const adapter = new ParallelAdapter(
       { env: { PARALLEL_API_KEY: TEST_KEY } },
-      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile, researchStateDir: mkdtempSync(join(tmpdir(), "parallel-test-research-")) }
     );
 
     await adapter.research.run.invoke({ query: "domain test", domain: "example.com" });
@@ -656,7 +658,7 @@ describe("Parallel AI Descriptor & Adapter", () => {
     });
     const adapter = new ParallelAdapter(
       { env: { PARALLEL_API_KEY: TEST_KEY } },
-      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile, researchStateDir: mkdtempSync(join(tmpdir(), "parallel-test-research-")) }
     );
 
     const res = await adapter.research.run.invoke(request);
@@ -677,7 +679,7 @@ describe("Parallel AI Descriptor & Adapter", () => {
     });
     const adapter = new ParallelAdapter(
       { env: { PARALLEL_API_KEY: TEST_KEY } },
-      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile, researchStateDir: mkdtempSync(join(tmpdir(), "parallel-test-research-")) }
     );
 
     await assert.rejects(
@@ -704,7 +706,7 @@ describe("Parallel AI Descriptor & Adapter", () => {
     });
     const adapter = new ParallelAdapter(
       { env: { PARALLEL_API_KEY: TEST_KEY } },
-      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile, researchStateDir: mkdtempSync(join(tmpdir(), "parallel-test-research-")) }
     );
 
     const res = await adapter.research.run.invoke({ query: "404 recovery" });
@@ -723,7 +725,7 @@ describe("Parallel AI Descriptor & Adapter", () => {
     });
     const adapter = new ParallelAdapter(
       { env: { PARALLEL_API_KEY: TEST_KEY } },
-      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile, researchStateDir: mkdtempSync(join(tmpdir(), "parallel-test-research-")) }
     );
 
     await assert.rejects(
@@ -748,7 +750,7 @@ describe("Parallel AI Descriptor & Adapter", () => {
     const { fetch: taskFetch } = makeTaskFetch({ pollResponses: [cancelledResult] });
     const adapter = new ParallelAdapter(
       { env: { PARALLEL_API_KEY: TEST_KEY } },
-      { transport: { fetch: taskFetch }, researchStateFile: stateFile },
+      { transport: { fetch: taskFetch }, researchStateFile: stateFile, researchStateDir: mkdtempSync(join(tmpdir(), "parallel-test-research-")) }
     );
 
     await assert.rejects(
@@ -865,7 +867,7 @@ describe("Parallel AI Descriptor & Adapter", () => {
     };
     const adapter = new ParallelAdapter(
       { env: { PARALLEL_API_KEY: TEST_KEY } },
-      { transport: { fetch: fakeFetch }, researchStateFile: stateFile },
+      { transport: { fetch: fakeFetch }, researchStateFile: stateFile, researchStateDir: mkdtempSync(join(tmpdir(), "parallel-test-research-")) }
     );
 
     await adapter.research.run.invoke({ query: "header test" });

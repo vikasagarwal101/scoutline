@@ -27,6 +27,34 @@ import { ConfigurationError, NetworkError } from "../dist/lib/errors.js";
 import { useTempConfigDir } from "./helpers/config-dir-pin.js";
 import { getHermeticArtifactsDir } from "./helpers/hermetic-main.js";
 
+// #152: file-level cache-root isolation. The `cache stats` / `cache clear`
+// main() runs here dispatch to cacheStats()/clearAllCaches(), which read
+// the AMBIENT cache root (process.env) rather than the injected deps.env —
+// without arming they scan/empty the developer's real ~/.scoutline/cache
+// and ~/.scoutline/tools. Same shape as useTempConfigDir() above.
+import { after, before } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+{
+  let pinned = false;
+  let dir;
+  let previous;
+  before(() => {
+    dir = mkdtempSync(join(tmpdir(), "scoutline-test-cache-"));
+    previous = process.env.SCOUTLINE_CACHE_DIR;
+    process.env.SCOUTLINE_CACHE_DIR = dir;
+    pinned = true;
+  });
+  after(() => {
+    if (pinned) {
+      if (previous === undefined) delete process.env.SCOUTLINE_CACHE_DIR;
+      else process.env.SCOUTLINE_CACHE_DIR = previous;
+    }
+    if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
+  });
+}
+
 useTempConfigDir();
 
 // ---------------------------------------------------------------------------

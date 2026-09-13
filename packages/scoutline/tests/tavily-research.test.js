@@ -20,6 +20,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { createTavilyDescriptor } from "../dist/providers/tavily/adapter.js";
 import { ApiError, AuthError, TimeoutError, ValidationError } from "../dist/lib/errors.js";
@@ -109,6 +112,9 @@ function makeResearchAdapter({ fakeFetch, stateFile, env, fetchCalls }) {
       },
     },
     researchStateFile: stateFile ?? createInMemoryAsyncJobStateFile(),
+    // #154: the research-state lock still defaults to ~/.scoutline/research
+    // even when the state FILE is in-memory — pin the dir too.
+    researchStateDir: mkdtempSync(join(tmpdir(), "tavily-test-research-")),
   });
   const adapter = descriptor.create({ env: { TAVILY_API_KEY: TEST_API_KEY } });
   return { adapter, calls };

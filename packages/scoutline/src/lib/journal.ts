@@ -43,6 +43,16 @@ export type JournalableCapability = "search" | "read" | "research" | "science";
 export interface SkeletonItem {
   readonly url: string;
   readonly title: string;
+  /**
+   * Optional persistent identifiers (e.g. science works).
+   * Note: contentHash is per-entry display context, never a cross-entry identity anchor,
+   * so new entries hashing differently from legacy entries is acceptable.
+   */
+  readonly identifiers?: {
+    readonly doi?: string;
+    readonly pmid?: string;
+    readonly arxivId?: string;
+  };
 }
 
 /** Search skeleton (D2): url+title list of the result rows. */
@@ -135,7 +145,10 @@ export function normalizeSkeleton(skeleton: JournalSkeleton): unknown {
   return sortDeep(skeleton);
 }
 
-/** sha256 hex of the normalized skeleton serialization (the recall/export comparison anchor). */
+/**
+ * sha256 hex of the normalized skeleton serialization (the recall/export comparison anchor).
+ * Note: contentHash is per-entry display context, never a cross-entry identity anchor.
+ */
 export function skeletonContentHash(skeleton: JournalSkeleton): string {
   return createHash("sha256").update(JSON.stringify(normalizeSkeleton(skeleton))).digest("hex");
 }
@@ -144,16 +157,51 @@ export function skeletonContentHash(skeleton: JournalSkeleton): string {
  * Search skeleton builder: the url+title identity of each result row.
  * Accepts the normalized search result rows (`FormattedResult` shape —
  * rank/title/url/summary) and keeps only url+title, in row order.
+ * Science rows carry optional persistent identifiers threaded through to SkeletonItem.
  */
 export function buildSearchSkeleton(
-  results: readonly { readonly url?: string; readonly title?: string }[],
+  results: readonly {
+    readonly url?: string;
+    readonly title?: string;
+    readonly identifiers?: {
+      readonly doi?: string;
+      readonly pmid?: string;
+      readonly arxivId?: string;
+    };
+  }[],
 ): SearchSkeleton {
   return {
-    results: results.map((row) => ({
-      url: typeof row.url === "string" ? row.url : "",
-      title: typeof row.title === "string" ? row.title : "",
-    })),
+    results: results.map((row) => {
+      // #141 review hygiene: COPY the identifiers object (never alias
+      // the source row — url/title are primitives, identifiers is the
+      // first object field on the seam) and DROP blank-string values
+      // (no upstream adapter emits them, but the seam must not thread
+      // junk identity). All-blank or {} collapses to no field at all.
+      const identifiers = cleanSkeletonIdentifiers(row.identifiers);
+      return {
+        url: typeof row.url === "string" ? row.url : "",
+        title: typeof row.title === "string" ? row.title : "",
+        ...(identifiers !== undefined ? { identifiers } : {}),
+      };
+    }),
   };
+}
+
+/** Copy + sanitize row identifiers for a skeleton item (#141 review). */
+function cleanSkeletonIdentifiers(
+  ids: { readonly doi?: string; readonly pmid?: string; readonly arxivId?: string } | undefined,
+): { readonly doi?: string; readonly pmid?: string; readonly arxivId?: string } | undefined {
+  if (ids === undefined) return undefined;
+  const out: { doi?: string; pmid?: string; arxivId?: string } = {};
+  // Trim before the emptiness check: whitespace-only values carry no
+  // identity and must not reach the content hash (PR #162 review).
+  const doi = ids.doi?.trim();
+  const pmid = ids.pmid?.trim();
+  const arxivId = ids.arxivId?.trim();
+  if (doi) out.doi = doi;
+  if (pmid) out.pmid = pmid;
+  if (arxivId) out.arxivId = arxivId;
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**
@@ -252,6 +300,28 @@ export function asJournalEntry(value: unknown): JournalLogEntry | JournalRepeatM
     if (typeof item !== "object" || item === null) return undefined;
     const row = item as Record<string, unknown>;
     if (typeof row.url !== "string" || typeof row.title !== "string") return undefined;
+    if (row.identifiers !== undefined) {
+      if (
+        typeof row.identifiers !== "object" ||
+        row.identifiers === null ||
+        Array.isArray(row.identifiers)
+      ) {
+        return undefined;
+      }
+      const ids = row.identifiers as Record<string, unknown>;
+      if (ids.doi !== undefined && typeof ids.doi !== "string") return undefined;
+      if (ids.pmid !== undefined && typeof ids.pmid !== "string") return undefined;
+      if (ids.arxivId !== undefined && typeof ids.arxivId !== "string") return undefined;
+      // Present-but-empty identifiers carry no identity: an object with
+      // no non-whitespace recognized value is rejected (absent stays
+      // valid for legacy rows; rejection keeps the whole-log fail-open
+      // semantics — the entry is dropped, reads keep working). PR #162
+      // review: `{}` / all-blank previously passed shape+type checks.
+      const hasIdentity = [ids.doi, ids.pmid, ids.arxivId].some(
+        (v) => typeof v === "string" && v.trim() !== "",
+      );
+      if (!hasIdentity) return undefined;
+    }
   }
   if (e.tags !== undefined && !Array.isArray(e.tags)) return undefined;
   if (e.tags !== undefined && !e.tags.every((t) => typeof t === "string")) return undefined;

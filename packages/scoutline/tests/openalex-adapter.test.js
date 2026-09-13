@@ -389,6 +389,28 @@ describe("openalex search invoke — JSON mapping to ScienceWork (TASKS T4; DESI
     assert.deepEqual(w.authors, ["Petar Veličković"], "unicode author names survive");
   });
 
+  it("non-record results[] entries are dropped, never coerced into phantom works (#148)", async () => {
+    // GROUND: sibling precedent — crossref `items.filter(isRecord)`,
+    // europepmc `.map(...).filter(defined)`. A malformed supplier entry
+    // (null / scalar) is not a work: it must be SKIPPED, never mapped
+    // through `?? {}` into a phantom {title:"",url:""} row that pollutes
+    // every consumer downstream. An EMPTY RECORD `{}` (#148 review) is
+    // an object, so the pre-map record check passes it — only a post-map
+    // drop of fully-empty rows (a real work always carries `id` → a
+    // non-empty url) catches it.
+    const { adapter } = makeAdapter({
+      meta: { count: 3 },
+      results: [null, "scalar", {}, WORK_DEEP_LEARNING],
+    });
+    const works = await adapter.science.search.invoke({ query: "deep learning" });
+    assert.equal(works.length, 1, "only the record entry survives the filter");
+    assert.equal(works[0].title, "Deep learning");
+    assert.ok(
+      !works.some((w) => w.title === "" && w.url === ""),
+      "no phantom {title:'',url:''} work (#148)",
+    );
+  });
+
   it("a results:[] response maps to an empty array", async () => {
     const { adapter } = makeAdapter(OPENALEX_EMPTY_RESPONSE);
     const works = await adapter.science.search.invoke({ query: "nonexistenttermxyz" });
@@ -646,11 +668,15 @@ describe("openalex diagnostics — keyless bounded probe (TASKS T4; DESIGN D2 ro
     assert.equal(calls.length, 0);
   });
 
-  it("probe:true makes exactly ONE keyless wire call on the works endpoint, politeness included", async () => {
+  it("probe:true makes exactly ONE keyless wire call exercising the SEARCH surface, politeness included", async () => {
     // GROUND: DESIGN D2 round-3 — doctor probes every always-configured
     // supplier; the probe is ONE minimal keyless wire call on the
-    // supplier's endpoint. On an empty env the probe is keyless, so the
-    // politeness posture (house UA + mailto) applies to it too.
+    // supplier's endpoint. #145: that call must ride the SEARCH surface
+    // (`search=` + `per-page=1`), because anonymous OpenAlex SEARCH can
+    // be 503-paused while the bare works list stays green — a
+    // works-list-only probe reports capability health it never tested.
+    // On an empty env the probe is keyless, so the politeness posture
+    // (house UA + mailto) applies to it too.
     const { adapter, calls } = makeAdapter();
     await adapter.diagnostics.invoke({ probe: true });
     assert.equal(calls.length, 1, "exactly one wire call");
@@ -665,6 +691,13 @@ describe("openalex diagnostics — keyless bounded probe (TASKS T4; DESIGN D2 ro
         wireUrl.searchParams.get("mailto") !== "",
       "keyless probe carries the mailto politeness param",
     );
+    // #145: the probe must ride the SEARCH surface — a bare works list
+    // can stay green while anonymous search is 503-paused.
+    assert.equal(
+      wireUrl.searchParams.get("search"),
+      "test",
+      "probe exercises the search capability (search= is on the wire)",
+    );
     // Review: the works API request parameter is `per-page` —
     // `per_page` is response metadata the server ignores.
     assert.equal(
@@ -676,6 +709,36 @@ describe("openalex diagnostics — keyless bounded probe (TASKS T4; DESIGN D2 ro
       wireUrl.searchParams.get("per_page"),
       null,
       "per_page (response-metadata name) must NOT be sent",
+    );
+  });
+
+  it("#145: an anonymous 503 on the probe rejects the row — the probe rides the SEARCH surface", async () => {
+    // GROUND: #145 — anonymous OpenAlex SEARCH may be 503-paused while
+    // the bare works list stays green. The probe therefore rides the
+    // search surface, and a 503 on THAT call must surface as a failed
+    // row (ApiError 503 → the probe normalizer rethrows). Red during an
+    // anonymous pause is INTENDED: the row reports capability health,
+    // not connectivity.
+    const probeCalls = [];
+    const descriptor = createOpenalexDescriptor({
+      transport: {
+        fetch: async (url) => {
+          probeCalls.push(String(url));
+          return { ok: false, status: 503, text: async () => "" };
+        },
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      adapter.diagnostics.invoke({ probe: true }),
+      (e) => e instanceof ApiError && e.statusCode === 503,
+      "503 on the probe call rejects as ApiError(503) — a failed doctor row",
+    );
+    assert.equal(probeCalls.length, 1, "the probe issued the failing call itself");
+    assert.equal(
+      new URL(probeCalls[0]).searchParams.get("search"),
+      "test",
+      "the failing call was the SEARCH probe, not the bare works list",
     );
   });
 

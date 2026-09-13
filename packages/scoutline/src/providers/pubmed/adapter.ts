@@ -210,6 +210,29 @@ function authorDisplayName(authorBlock: string): string | undefined {
 }
 
 /**
+ * DOI from the record's OWN `ArticleIdList` (#147 review B1): prefer
+ * the `PubmedData` scope when present, and strip `ReferenceList` spans
+ * first — every cited work carries its own ArticleIdList inside them,
+ * and eutils can emit the ReferenceList before the record's own list.
+ * Without a `PubmedData` wrapper (ancient schema), the block itself
+ * minus ReferenceList spans is the honest scope.
+ */
+function ownArticleIdListDoi(block: string): string | undefined {
+  const pubmedData = /<PubmedData(?:\s[^>]*)?>([\s\S]*?)<\/PubmedData>/i.exec(block);
+  const scope = pubmedData !== null ? (pubmedData[1] ?? "") : block;
+  const withoutReferences = scope.replace(
+    /<ReferenceList(?:\s[^>]*)?>[\s\S]*?<\/ReferenceList>/gi,
+    "",
+  );
+  const list = /<ArticleIdList(?:\s[^>]*)?>([\s\S]*?)<\/ArticleIdList>/i.exec(withoutReferences);
+  if (list === null) return undefined;
+  const doiElement =
+    /<ArticleId[^>]*IdType="doi"[^>]*>([\s\S]*?)<\/ArticleId>/i.exec(list[1] ?? "");
+  const doi = doiElement !== null ? innerText(doiElement[1] ?? "").trim() : undefined;
+  return doi !== undefined && doi !== "" ? doi : undefined;
+}
+
+/**
  * Map one `<PubmedArticle>` block to a `ScienceWork`. Absent supplier
  * fields stay absent — keys are omitted, never set to undefined (the
  * AC-7c honesty teeth: `Object.hasOwn(w, k) === false`), never
@@ -219,7 +242,21 @@ function authorDisplayName(authorBlock: string): string | undefined {
 function parsePubmedArticle(block: string): ScienceWork {
   const pmid = elementText(block, "PMID");
   const doiElement = /<ELocationID[^>]*EIdType="doi"[^>]*>([\s\S]*?)<\/ELocationID>/i.exec(block);
-  const doi = doiElement !== null ? innerText(doiElement[1] ?? "").trim() : undefined;
+  // Fallback (#147 + review B1): a pre-2007 record carries its doi
+  // ONLY inside the record's OWN `PubmedData/ArticleIdList` — no
+  // ELocationID doi at all. Cited works carry their OWN ArticleIdList
+  // inside ReferenceList spans (which eutils can emit BEFORE the
+  // record's own list, line-joined), so a block-level leftmost match
+  // would stamp the record with a citation's doi — ownArticleIdListDoi
+  // reads only the record's own list.
+  const elocationDoi = doiElement !== null ? innerText(doiElement[1] ?? "").trim() : undefined;
+  // Value-keyed, not presence-keyed (review): an empty/whitespace-only
+  // ELocationID element is PRESENT but carries no DOI — the fallback
+  // must fire for it too. A real ELocationID doi always wins.
+  const doi =
+    elocationDoi !== undefined && elocationDoi !== ""
+      ? elocationDoi
+      : ownArticleIdListDoi(block);
 
   const out: ScienceWork = {
     title: (elementText(block, "ArticleTitle") ?? "").trim(),

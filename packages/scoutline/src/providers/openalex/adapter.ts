@@ -313,7 +313,13 @@ function createOpenalexScienceCapability(options: {
       const params: Record<string, string> = { search: request.query.trim() };
       if (filter !== "") params["filter"] = filter;
       const doc = await fetchOpenalexJson(params, deps, signal);
-      return openalexResults(doc).map((r) => mapWork(toOpenalexWork(r) ?? {}));
+      // Non-record entries in `results[]` (null, scalars) are NOT works:
+      // skip them (crossref `items.filter(isRecord)` / europepmc
+      // `.filter(defined)` precedent) rather than coercing each into a
+      // phantom `{title:"",url:""}` row (#148).
+      return openalexResults(doc)
+        .filter((r): r is OpenalexWorkWire => toOpenalexWork(r) !== undefined)
+        .map((r) => mapWork(r));
     },
   };
 

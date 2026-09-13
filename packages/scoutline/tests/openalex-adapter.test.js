@@ -389,6 +389,25 @@ describe("openalex search invoke — JSON mapping to ScienceWork (TASKS T4; DESI
     assert.deepEqual(w.authors, ["Petar Veličković"], "unicode author names survive");
   });
 
+  it("non-record results[] entries are dropped, never coerced into phantom works (#148)", async () => {
+    // GROUND: sibling precedent — crossref `items.filter(isRecord)`,
+    // europepmc `.map(...).filter(defined)`. A malformed supplier entry
+    // (null / scalar) is not a work: it must be SKIPPED, never mapped
+    // through `?? {}` into a phantom {title:"",url:""} row that pollutes
+    // every consumer downstream.
+    const { adapter } = makeAdapter({
+      meta: { count: 3 },
+      results: [null, "scalar", WORK_DEEP_LEARNING],
+    });
+    const works = await adapter.science.search.invoke({ query: "deep learning" });
+    assert.equal(works.length, 1, "only the record entry survives the filter");
+    assert.equal(works[0].title, "Deep learning");
+    assert.ok(
+      !works.some((w) => w.title === "" && w.url === ""),
+      "no phantom {title:'',url:''} work (#148)",
+    );
+  });
+
   it("a results:[] response maps to an empty array", async () => {
     const { adapter } = makeAdapter(OPENALEX_EMPTY_RESPONSE);
     const works = await adapter.science.search.invoke({ query: "nonexistenttermxyz" });

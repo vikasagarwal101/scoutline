@@ -16,6 +16,8 @@
 
 - **Science skeletons carry optional DOI/PMID/arXiv identifiers (issue #141):** `SkeletonItem` gains an optional `identifiers: { doi?, pmid?, arxivId? }` populated on the science search path (`buildSearchSkeleton` threads the optional field off rows that carry it; every non-science caller's skeleton shape is unchanged). Suppliers emit different URLs per work (openalex `W…` vs `doi.org/…`), so url+title-only skeletons hashed the same work into distinct "generations" — persistent identifiers give the record the work's real identity. The field is OPTIONAL from day one: the journal validator accepts entries with it AND legacy entries without it (a legacy round-trip pin guards the whole-log fail-open surface), and recall matching is unchanged — tokens of query+url+title only (identifier-aware recall is #140). New entries hash differently from legacy ones; acceptable, since `contentHash` is per-entry display context, never a cross-entry identity anchor (recorded in a code comment).
 
+- **`doctor`'s OpenAlex probe exercises the search capability, not bare connectivity (issue #145):** the probe is still ONE minimal keyless wire call with `per-page=1`, but it now carries `search=test` — previously a bare works-list call could stay green while anonymous OpenAlex SEARCH was 503-paused under load, so the doctor row reported capability health it never tested. Red during an anonymous pause is INTENDED: the row reports the search capability, and the remedy is a free API key via `scoutline init` (`OPENALEX_API_KEY` restores a higher rate-limit tier). A 503 on the probe call already surfaces as a failed row via the ApiError pass-through normalizer — unchanged.
+
 
 All notable changes to this project will be documented in this file.
 

@@ -108,3 +108,21 @@ describe("hermeticMainDeps SCOUTLINE_ARTIFACTS_DIR (#137)", () => {
     assert.equal(hermeticMainDeps().env.SCOUTLINE_ARTIFACTS_DIR, dir);
   });
 });
+
+describe("hermeticMainDeps SCOUTLINE_CACHE_DIR (#152)", () => {
+  it("hermeticMainDeps defaults SCOUTLINE_CACHE_DIR to a per-process mkdtemp", () => {
+    const deps = hermeticMainDeps();
+    assert.equal(typeof deps.env.SCOUTLINE_CACHE_DIR, "string");
+    assert.ok(deps.env.SCOUTLINE_CACHE_DIR.length > 0);
+    assert.ok(deps.env.SCOUTLINE_CACHE_DIR.startsWith(tmpdir()));
+
+    const deps2 = hermeticMainDeps();
+    assert.equal(deps2.env.SCOUTLINE_CACHE_DIR, deps.env.SCOUTLINE_CACHE_DIR); // singleton
+
+    const explicit = hermeticMainDeps({ env: { SCOUTLINE_CACHE_DIR: "/custom" } });
+    assert.equal(explicit.env.SCOUTLINE_CACHE_DIR, "/custom"); // explicit wins
+
+    const empty = hermeticMainDeps({ env: {} });
+    assert.ok(empty.env.SCOUTLINE_CACHE_DIR); // env:{} keeps the default
+  });
+});

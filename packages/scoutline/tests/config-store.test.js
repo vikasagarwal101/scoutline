@@ -4,6 +4,7 @@ import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import { withTempDir } from "./helpers/temp-dir.js";
 import { ConfigurationError } from "../dist/lib/errors.js";
+import { fileURLToPath } from "node:url";
 
 describe("resolveConfigRootPure", () => {
   it("uses only SCOUTLINE_CONFIG_DIR and otherwise defaults to homedir/.scoutline", async () => {
@@ -974,5 +975,187 @@ describe("review r3: config journal leniency (cubic P2/P3)", () => {
         assert.strictEqual(config.journal, journal);
       }
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T1: writeConfig refuse-to-empty guard (#168)
+// ---------------------------------------------------------------------------
+
+describe("writeConfig refuse-to-empty guard (#168)", () => {
+  it("empty payload over populated file + populated .bak throws ConfigurationError naming .bak; file not replaced", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const bakPath = path.join(dir, "config.json.bak");
+      const populated = {
+        version: 1,
+        providers: { tavily: { apiKey: "tvly-test", onboarded: true } },
+      };
+      const populatedContent = JSON.stringify(populated, null, 2);
+      await fs.writeFile(filePath, populatedContent, "utf8");
+      await fs.writeFile(bakPath, populatedContent, "utf8");
+
+      const { writeConfig } = await import("../dist/lib/config-store.js");
+      await assert.rejects(
+        () => writeConfig({ version: 1, providers: {} }, { filePath }),
+        (error) => {
+          assert.strictEqual(error.name, "ConfigurationError");
+          assert.ok(
+            error.help && error.help.includes(".bak"),
+            `advice must name .bak: ${error.help}`,
+          );
+          return true;
+        },
+      );
+
+      const contentsAfter = await fs.readFile(filePath, "utf8");
+      assert.strictEqual(contentsAfter, populatedContent);
+    });
+  });
+
+  it("empty payload over empty file and over absent prior file are allowed", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const { writeConfig, readConfig } = await import("../dist/lib/config-store.js");
+
+      // Empty over absent prior file
+      await writeConfig({ version: 1, providers: {} }, { filePath });
+      let read = await readConfig({ filePath });
+      assert.deepStrictEqual(read.providers, {});
+
+      // Empty over empty prior file
+      await writeConfig({ version: 1, providers: {} }, { filePath });
+      read = await readConfig({ filePath });
+      assert.deepStrictEqual(read.providers, {});
+    });
+  });
+
+  it("allowEmpty: true over populated file is allowed", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const populated = {
+        version: 1,
+        providers: { tavily: { apiKey: "tvly-test", onboarded: true } },
+      };
+      await fs.writeFile(filePath, JSON.stringify(populated, null, 2), "utf8");
+      const { writeConfig, readConfig } = await import("../dist/lib/config-store.js");
+
+      await writeConfig({ version: 1, providers: {} }, { filePath, allowEmpty: true });
+      const read = await readConfig({ filePath });
+      assert.deepStrictEqual(read.providers, {});
+    });
+  });
+
+  it("empty payload over populated file with absent .bak throws ConfigurationError naming .bak", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const populated = {
+        version: 1,
+        providers: { tavily: { apiKey: "tvly-test", onboarded: true } },
+      };
+      await fs.writeFile(filePath, JSON.stringify(populated, null, 2), "utf8");
+
+      const { writeConfig } = await import("../dist/lib/config-store.js");
+      await assert.rejects(
+        () => writeConfig({ version: 1, providers: {} }, { filePath }),
+        (error) => {
+          assert.strictEqual(error.name, "ConfigurationError");
+          assert.ok(
+            error.help && error.help.includes(".bak"),
+            `advice must name .bak: ${error.help}`,
+          );
+          return true;
+        },
+      );
+    });
+  });
+
+  it("empty payload over empty file with populated .bak throws ConfigurationError naming .bak", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const bakPath = path.join(dir, "config.json.bak");
+      const empty = { version: 1, providers: {} };
+      const populated = {
+        version: 1,
+        providers: { tavily: { apiKey: "tvly-test", onboarded: true } },
+      };
+      await fs.writeFile(filePath, JSON.stringify(empty, null, 2), "utf8");
+      await fs.writeFile(bakPath, JSON.stringify(populated, null, 2), "utf8");
+
+      const { writeConfig } = await import("../dist/lib/config-store.js");
+      await assert.rejects(
+        () => writeConfig({ version: 1, providers: {} }, { filePath }),
+        (error) => {
+          assert.strictEqual(error.name, "ConfigurationError");
+          assert.ok(
+            error.help && error.help.includes(".bak"),
+            `advice must name .bak: ${error.help}`,
+          );
+          return true;
+        },
+      );
+    });
+  });
+});
+
+describe("sandbox-run wrapper (#168)", () => {
+  it("isolates HOME and announces sandbox directory matching child os.homedir()", async () => {
+    const { spawn } = await import("node:child_process");
+    const os = await import("node:os");
+    const scriptPath = fileURLToPath(new URL("../scripts/sandbox-run.mjs", import.meta.url));
+
+    const realHome = os.homedir();
+    let stdout = "";
+    let stderr = "";
+
+    const exitCode = await new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        [scriptPath, process.execPath, "-e", "console.log(os.homedir())"],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env },
+        },
+      );
+      child.stdout.on("data", (d) => {
+        stdout += d.toString();
+      });
+      child.stderr.on("data", (d) => {
+        stderr += d.toString();
+      });
+      child.on("error", reject);
+      child.on("close", resolve);
+    });
+
+    assert.strictEqual(exitCode, 0);
+    const childHome = stdout.trim();
+    assert.notStrictEqual(childHome, realHome);
+    assert.ok(childHome.startsWith("/var/tmp/scoutline-sandbox-home-"), `childHome: ${childHome}`);
+    assert.ok(stderr.includes(childHome), `announced dir in stderr must match childHome: ${stderr}`);
+  });
+
+  it("refuses to run when SCOUTLINE_NO_TEST_GUARD is set", async () => {
+    const { spawn } = await import("node:child_process");
+    const scriptPath = fileURLToPath(new URL("../scripts/sandbox-run.mjs", import.meta.url));
+
+    let stderr = "";
+    const exitCode = await new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        [scriptPath, process.execPath, "-e", "console.log('should not run')"],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env, SCOUTLINE_NO_TEST_GUARD: "1" },
+        },
+      );
+      child.stderr.on("data", (d) => {
+        stderr += d.toString();
+      });
+      child.on("error", reject);
+      child.on("close", resolve);
+    });
+
+    assert.notStrictEqual(exitCode, 0);
+    assert.ok(stderr.includes("SCOUTLINE_NO_TEST_GUARD"), stderr);
   });
 });

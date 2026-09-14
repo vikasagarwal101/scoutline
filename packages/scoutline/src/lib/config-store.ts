@@ -94,6 +94,7 @@ export interface AtomicReplaceOptions {
 
 export interface WriteConfigOptions extends ConfigStoreOptions {
   readonly atomic?: AtomicReplaceOptions;
+  readonly allowEmpty?: boolean;
 }
 
 export interface ConfigWarning {
@@ -512,6 +513,35 @@ export async function writeConfig(
   for (const warning of parsed.warnings) onWarning(warning);
   const payload = `${JSON.stringify(parsed.config, null, 2)}\n`;
   const filePath = options.filePath ?? configFilePath();
+
+  // Refuse-to-empty guard (issue #168): refuse to overwrite a populated config
+  // with zero providers unless allowEmpty: true is explicitly passed.
+  if (Object.keys(parsed.config.providers).length === 0 && !options.allowEmpty) {
+    const isPopulated = async (targetPath: string): Promise<boolean> => {
+      try {
+        const contents = await fs.readFile(targetPath, "utf8");
+        const existing = parseConfig(contents);
+        return Object.keys(existing.config.providers).length > 0;
+      } catch (error) {
+        if (isTestIsolationViolation(error)) throw error;
+        return false;
+      }
+    };
+
+    // ponytail: checks target and single .bak only; upgrade to backup-chain scan if .bak history grows.
+    const [filePopulated, bakPopulated] = await Promise.all([
+      isPopulated(filePath),
+      isPopulated(`${filePath}.bak`),
+    ]);
+
+    if (filePopulated || bakPopulated) {
+      throw new ConfigurationError(
+        "Refusing to overwrite populated config with zero providers",
+        `Pass allowEmpty: true to overwrite, or restore from the .bak file (${filePath}.bak).`,
+      );
+    }
+  }
+
   // Single-generation .bak (issue #119): the previous config survives on
   // disk before the atomic replace, so a botched write or a bad set/unset
   // is one rename away from recovery. Best-effort by contract — ENOENT on

@@ -21,7 +21,7 @@ import { invokeCommand } from "../command-invocation.js";
 import type { OutputMode } from "../lib/output.js";
 import { ValidationError, FileError, TimeoutError, NetworkError, ApiError } from "../lib/errors.js";
 import { rejectSmuggledMaxChars } from "../lib/output-budget.js";
-import { readBoundedResponseBody } from "../lib/bounded-body.js";
+import { MAX_BUFFERED_RESPONSE_BYTES, readBoundedResponseBody } from "../lib/bounded-body.js";
 import { isPdfBuffer, extractPdfText, repairPdf } from "../lib/pdf.js";
 import type { HandlerDependencies } from "../index.js";
 
@@ -411,8 +411,6 @@ export async function executeFetch(
 
     const isPdfHeader = Boolean(contentTypeLower && contentTypeLower.includes("application/pdf"));
 
-    const MAX_IN_MEMORY_BYTES = 50 * 1024 * 1024; // 50MB ceiling without --out
-
     if (options.out && response.ok && response.body && !options.pdfRepair && options.pdf !== "text") {
       outPath = path.resolve(process.cwd(), options.out);
       const tempPath = `${outPath}.tmp.${process.pid}.${crypto.randomUUID()}`;
@@ -471,7 +469,7 @@ export async function executeFetch(
       if (
         !bodiless &&
         contentLengthHeader &&
-        Number(contentLengthHeader) > MAX_IN_MEMORY_BYTES
+        Number(contentLengthHeader) > MAX_BUFFERED_RESPONSE_BYTES
       ) {
         // Release the connection before throwing: an uncancelled body
         // keeps the keep-alive socket pinned until process exit.
@@ -483,7 +481,7 @@ export async function executeFetch(
       }
       rawBuffer = await readBoundedResponseBody(
         response.body as ReadableStream<Uint8Array> | null,
-        MAX_IN_MEMORY_BYTES,
+        MAX_BUFFERED_RESPONSE_BYTES,
         "Response size",
       );
       bytes = rawBuffer.length;

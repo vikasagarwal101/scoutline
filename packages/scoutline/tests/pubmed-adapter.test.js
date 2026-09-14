@@ -56,6 +56,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 
+import { MAX_BUFFERED_RESPONSE_BYTES } from "../dist/lib/bounded-body.js";
+
 import { createPubmedDescriptor } from "../dist/providers/pubmed/adapter.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "../dist/providers/registry.js";
 import { ApiError, QuotaError, TimeoutError, UnsupportedOptionError, ValidationError } from "../dist/lib/errors.js";
@@ -1079,6 +1081,49 @@ describe("pubmed bounded response execution hardening (#150)", () => {
     const adapter = descriptor.create({ env: {} });
     const works = await adapter.science.search.invoke({ query: "attention" });
     assert.deepEqual(works, []);
+  });
+
+  it("BOM fallback-path parse: text() double returning U+FEFF on esearch strips BOM and parses (pin a)", async () => {
+    const payload = "\uFEFF" + JSON.stringify({
+      esearchresult: { idlist: [] },
+    });
+    const descriptor = createPubmedDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: (name) => (name.toLowerCase() === "content-length" ? String(Buffer.byteLength(payload)) : null),
+          },
+          text: async () => payload,
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const works = await adapter.science.search.invoke({ query: "attention" });
+    assert.deepEqual(works, []);
+  });
+
+  it("content-length boundary: declared length exactly equal to 50MB ceiling on esearch is allowed (strict >)", async () => {
+    const payload = JSON.stringify({
+      esearchresult: { idlist: [] },
+    });
+    const descriptor = createPubmedDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: (h) => (h.toLowerCase() === "content-length" ? String(MAX_BUFFERED_RESPONSE_BYTES) : null),
+          },
+          body: Readable.toWeb(Readable.from([Buffer.from(payload, "utf8")])),
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const result = await adapter.science.search.invoke({ query: "attention" });
+    assert.ok(result);
+    assert.deepEqual(result, []);
   });
 
   it("drain replacement: non-ok response cancels body and never buffers via text() or json()", async () => {

@@ -272,8 +272,6 @@ function formatTargetRow(target: WatchTarget): string {
 
 /** Default live-fetch timeout (reuses the fetch-command constant value). */
 const RUN_DEFAULT_TIMEOUT_MS = 30000;
-/** Live response cap per tick (the 50MB fetch-command default class). */
-const RUN_MAX_BYTES = 50 * 1024 * 1024;
 
 /** `watch run` report payload (frozen contract; data-only stdout). */
 export interface WatchRunReport {

@@ -32,9 +32,10 @@ features next; features that reverse a written decision (ADR) last.
   endpoint; empirically NOT covered by the GLM Coding Plan (PAYG $0.03);
   grill resolves the supersession-vs-cost tension before plan flesh-out.
 - **Science-vertical search commands**
-  (`docs/plans/v2/18-science-verticals.md`) — **SHIPPED** (PR #139); the
-  seed is retained for reference. Deferred follow-ups: #140 (cache/retry
-  plan gap), #141 (DOI-in-skeleton).
+  (`docs/plans/v2/18-science-verticals.md`) — **SHIPPED** (PR #139; polish
+  + execution-hardening rounds in 0.21.1: PRs #162/#169 closed #141/#145/
+  #147/#148/#149/#150/#151); the seed is retained for reference. Remaining
+  follow-up: #140 (cache/retry plan gap).
 
 - **`compare` command** (`docs/plans/v2/03-compare-command.md`) —
   *shelved (product decision 2026-08-15)*: superseded by multi-provider

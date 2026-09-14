@@ -205,12 +205,13 @@ describe("architecture.md local surfaces (PRD AC-12)", () => {
 describe("CHANGELOG newest section (PRD AC-12 — APPEND; release-lock relaxed to newest-section form)", () => {
   it("the agent-registration entry lives in the newest CHANGELOG section", async () => {
     const text = await changelog;
-    // Release-lock form: the newest section with CONTENT (released > the
-    // empty [Unreleased] stub created at version cut).
-    const start = text.search(/^## \[\d/m);
+    // Release-lock form (0.21.1 cut): pin to the entry's SHIPPING section
+    // (the you-docs 0.18.0 precedent) — the newest-section extraction
+    // reddened at the 0.21.1 cut because the entry shipped in 0.21.0.
+    const start = text.indexOf("## [0.21.0]");
     assert.ok(
-      start >= 0,
-      "CHANGELOG must have a released version section",
+      start > 0,
+      "CHANGELOG must have the ## [0.21.0] section that shipped agent registration",
     );
     const next = text.indexOf("## [", start + 1);
     const section = text.slice(start, next === -1 ? text.length : next);

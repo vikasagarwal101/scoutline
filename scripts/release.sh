@@ -49,6 +49,15 @@ marker = "## [Unreleased]\n"
 assert marker in s, "Unreleased vanished before retitle"
 s = s.replace(marker, f"## [{version}] - {today}\n", 1)
 assert f"## [{version}]" in s and "## [Unreleased]" not in s, "retitle did not land"
+# 0.21.1 cut: create the successor [Unreleased] stub in the SAME edit —
+# science-conformance pins its existence, and the post-release
+# disappearance trap has bitten twice before (MEMORY).
+s = s.replace(
+    "# Changelog\n\n## [" + version + "]",
+    "# Changelog\n\n## [Unreleased]\n\n## [" + version + "]",
+    1,
+)
+assert "## [Unreleased]" in s, "successor stub did not land"
 open(p, "w").write(s)
 PYEOF
 

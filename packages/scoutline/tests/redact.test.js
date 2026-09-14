@@ -863,3 +863,106 @@ describe("v3 provider keys (2026-08 #78)", () => {
     );
   });
 });
+
+describe("scheme-pass JSON boundary termination (#171)", () => {
+  it("issue repro (a): does not swallow JSON structure after token keyword", () => {
+    const input = '{"d":"1M-token context...","context_len":123}';
+    const out = redactCredentialString(input);
+    const parsed = JSON.parse(out);
+    assert.strictEqual(parsed.context_len, 123);
+    assert.ok(out.includes('"context_len"'), "context_len key must survive");
+  });
+
+  it("openrouter shape (b): comma terminates candidate capture so following words survive", () => {
+    const input = '{"model":"foo","description":"faster token generation, and better performance"}';
+    const out = redactCredentialString(input);
+    assert.ok(out.includes("generation"), `generation should survive in: ${out}`);
+    const parsed = JSON.parse(out);
+    assert.strictEqual(parsed.model, "foo");
+  });
+
+  it("authorization-context JSON (c): pass 1 does not swallow quotes or subsequent keys", () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.payload";
+    const input = `{"m":"Authorization: Bearer ${jwt}","n":2}`;
+    const out = redactCredentialString(input);
+    assert.ok(!out.includes("eyJhbGciOiJIUzI1NiJ9"), `credential must be redacted: ${out}`);
+    const parsed = JSON.parse(out);
+    assert.strictEqual(parsed.m, "Authorization: [REDACTED]");
+    assert.strictEqual(parsed.n, 2);
+  });
+
+  it("genuine credentials still redacted in prose and JSON (d)", () => {
+    const bearerJwt = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.t-IDcSemACt8x4iTMCda8Yhe3iZaWbvV5XKSTbuAn0M";
+    const tokenGhp = "Token ghp_16C7e42F292c6912E7710c838347Ae178B4a";
+    const apiKeySk = "ApiKey sk-abc1234567890def";
+
+    // Plain prose
+    assert.strictEqual(redactCredentialString(bearerJwt), "[REDACTED]");
+    assert.strictEqual(redactCredentialString(tokenGhp), "[REDACTED]");
+    assert.strictEqual(redactCredentialString(apiKeySk), "[REDACTED]");
+
+    // Authorization-context in prose
+    assert.strictEqual(
+      redactCredentialString(`Authorization: ${bearerJwt}`),
+      "Authorization: [REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString(`Authorization: ${tokenGhp}`),
+      "Authorization: [REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString(`Authorization: ${apiKeySk}`),
+      "Authorization: [REDACTED]",
+    );
+
+    // Inside JSON string values
+    const jsonJwt = JSON.stringify({ token: bearerJwt });
+    const redactedJsonJwt = redactCredentialString(jsonJwt);
+    assert.ok(!redactedJsonJwt.includes("eyJhbGciOi"));
+    assert.deepStrictEqual(JSON.parse(redactedJsonJwt), { token: "[REDACTED]" });
+
+    const jsonGhp = JSON.stringify({ key: tokenGhp });
+    const redactedJsonGhp = redactCredentialString(jsonGhp);
+    assert.ok(!redactedJsonGhp.includes("ghp_16C7e42F292c6912E7710c838347Ae178B4a"));
+    assert.deepStrictEqual(JSON.parse(redactedJsonGhp), { key: "[REDACTED]" });
+
+    const jsonSk = JSON.stringify({ auth: apiKeySk });
+    const redactedJsonSk = redactCredentialString(jsonSk);
+    assert.ok(!redactedJsonSk.includes("sk-abc1234567890def"));
+    assert.deepStrictEqual(JSON.parse(redactedJsonSk), { auth: "[REDACTED]" });
+  });
+
+  it("existing #44 prose-guard pins stay green (e)", () => {
+    assert.strictEqual(
+      redactCredentialString("MiniMax Token Plan subscription"),
+      "MiniMax Token Plan subscription",
+    );
+    assert.strictEqual(
+      redactCredentialString("The bearer of bad news"),
+      "The bearer of bad news",
+    );
+  });
+
+  it("class guard: JSON bodies with scheme-words near boundaries parse cleanly (f)", () => {
+    const payloads = [
+      '{"message":"1M-token context window","valid":true}',
+      '{"note":"faster token generation, and better performance","code":200}',
+      '{"status":"Bearer token required","ok":false}',
+      '{"info":"ApiKey format: Bearer <token>","count":5}',
+      '{"header":"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.sig","retries":0}',
+      '{"text":"The Token Economy, volume 2","pages":300}',
+      '{"a":"token","b":1}',
+      '{"desc":"Token-based auth, apiKey-based access, and bearer credentials"}',
+      '{"d":"1M-token context...","context_len":123}',
+    ];
+    for (const payload of payloads) {
+      const redacted = redactCredentialString(payload);
+      assert.doesNotThrow(
+        () => JSON.parse(redacted),
+        `JSON.parse failed on redacted output for input: ${payload}
+Output was: ${redacted}`,
+      );
+    }
+  });
+});
+

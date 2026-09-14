@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Scheme-pass credential redaction terminates at JSON structural boundaries (issue #171):** value-matching in Bearer, Token, and ApiKey scheme passes (both Authorization-context and bare) now excludes `"` and `,` from captured tokens, terminating at JSON string quotes and comma boundaries so `[REDACTED]` replacement preserves JSON structure without swallowing adjacent keys or breaking downstream JSON parsing, while continuing to redact genuine credentials.
+
 ## [0.21.1] - 2026-09-14
 
 ### Fixed

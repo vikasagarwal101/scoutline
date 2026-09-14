@@ -751,13 +751,64 @@ describe("arxiv bounded response execution hardening (#150)", () => {
     await assert.rejects(
       () => adapter.science.search.invoke({ query: "attention" }),
       (err) => {
-        assert.equal(err.code, "VALIDATION_ERROR");
-        assert.match(err.message, /exceeds in-memory ceiling/i);
+        assert.equal(err.code, "API_ERROR");
+        assert.equal(err.statusCode, 413);
+        assert.match(err.message, /arxiv response exceeds.*50MB.*refusing to buffer/i);
         return true;
       },
     );
     assert.ok(chunksYielded > 50, "should have read past 50MB before rejecting");
     assert.ok(chunksYielded <= 53, "stream should stop yielding chunks once cancelled");
+  });
+
+  it("headerless test double seam: minimal {ok, status, text()} double succeeds (pin a)", async () => {
+    const minimalXml = `<feed xmlns="http://www.w3.org/2005/Atom"><title>test</title><updated>2024-01-01T00:00:00Z</updated></feed>`;
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          text: async () => minimalXml,
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const works = await adapter.science.search.invoke({ query: "attention" });
+    assert.deepEqual(works, []);
+  });
+
+  it("parity: content-length declares small size but streamed body exceeds ceiling rejects with terminal 413 ApiError (pin b)", async () => {
+    async function* generateChunks() {
+      const chunk = Buffer.alloc(1024 * 1024, "x");
+      while (true) {
+        yield chunk;
+      }
+    }
+    const stream = Readable.toWeb(Readable.from(generateChunks()));
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: (name) => (name.toLowerCase() === "content-length" ? "1024" : null),
+          },
+          body: stream,
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      () => adapter.science.search.invoke({ query: "attention" }),
+      (err) => {
+        assert.equal(err.code, "API_ERROR");
+        assert.equal(err.statusCode, 413);
+        assert.notEqual(err.code, "VALIDATION_ERROR");
+        assert.match(err.message, /arxiv response exceeds.*50MB.*refusing to buffer/i);
+        assert.doesNotMatch(err.message, /--out/);
+        return true;
+      },
+    );
   });
 
   it("drain replacement: non-ok response cancels body and never buffers via text() or json()", async () => {

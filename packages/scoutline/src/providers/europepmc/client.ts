@@ -101,6 +101,10 @@ function normalizeTransportError(
  * route. Returns the parsed JSON document. No internal retry — shared
  * execution owns retry policy.
  */
+function stripBom(s: string): string {
+  return s.charCodeAt(0) === 0xfeff ? s.slice(1) : s;
+}
+
 export async function fetchEuropepmcJson(
   params: Record<string, string>,
   deps: EuropepmcTransportDeps = {},
@@ -148,7 +152,7 @@ export async function fetchEuropepmcJson(
     })) as unknown as {
       readonly ok: boolean;
       readonly status: number;
-      readonly headers: { get(name: string): string | null };
+      readonly headers?: { get?(name: string): string | null };
       readonly body?: ReadableStream<Uint8Array> | null;
       text?(): Promise<string>;
       json?(): Promise<unknown>;
@@ -157,7 +161,7 @@ export async function fetchEuropepmcJson(
       await res.body?.cancel().catch(() => {});
       throw mapStatusError(res.status, DEFAULT_TIMEOUT_MS);
     }
-    const contentLengthHeader = res.headers.get("content-length");
+    const contentLengthHeader = res.headers?.get?.("content-length");
     if (contentLengthHeader && Number(contentLengthHeader) > MAX_BUFFERED_RESPONSE_BYTES) {
       await res.body?.cancel().catch(() => {});
       throw new ApiError(
@@ -167,18 +171,29 @@ export async function fetchEuropepmcJson(
     }
     try {
       if (res.body) {
-        const buf = await readBoundedResponseBody(
-          res.body,
-          MAX_BUFFERED_RESPONSE_BYTES,
-          "Europe PMC response",
-        );
-        return JSON.parse(buf.toString("utf8"));
+        let buf;
+        try {
+          buf = await readBoundedResponseBody(
+            res.body,
+            MAX_BUFFERED_RESPONSE_BYTES,
+            "Europe PMC response",
+          );
+        } catch (err) {
+          if (err instanceof ValidationError) {
+            throw new ApiError(
+              "Europe PMC response exceeds the 50MB in-memory ceiling (stream exceeded it mid-read) — refusing to buffer",
+              413,
+            );
+          }
+          throw err;
+        }
+        return JSON.parse(stripBom(buf.toString("utf8")));
+      }
+      if (typeof res.text === "function") {
+        return JSON.parse(stripBom(await res.text()));
       }
       if (typeof res.json === "function") {
         return await res.json();
-      }
-      if (typeof res.text === "function") {
-        return JSON.parse(await res.text());
       }
       return {};
     } catch (err) {

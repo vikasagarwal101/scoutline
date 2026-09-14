@@ -743,13 +743,88 @@ describe("crossref bounded response execution hardening (#150)", () => {
     await assert.rejects(
       () => adapter.science.search.invoke({ query: "attention" }),
       (err) => {
-        assert.equal(err.code, "VALIDATION_ERROR");
-        assert.match(err.message, /exceeds in-memory ceiling/i);
+        assert.equal(err.code, "API_ERROR");
+        assert.equal(err.statusCode, 413);
+        assert.match(err.message, /crossref response exceeds.*50MB.*refusing to buffer/i);
         return true;
       },
     );
     assert.ok(chunksYielded > 50, "should have read past 50MB before rejecting");
     assert.ok(chunksYielded <= 53, "stream should stop yielding chunks once cancelled");
+  });
+
+  it("headerless test double seam: minimal {ok, status, json()} double succeeds (pin a)", async () => {
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({ status: "ok", message: { items: [] } }),
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const works = await adapter.science.search.invoke({ query: "attention" });
+    assert.deepEqual(works, []);
+  });
+
+  it("parity: content-length declares small size but streamed body exceeds ceiling rejects with terminal 413 ApiError (pin b)", async () => {
+    async function* generateChunks() {
+      const chunk = Buffer.alloc(1024 * 1024, "x");
+      while (true) {
+        yield chunk;
+      }
+    }
+    const stream = Readable.toWeb(Readable.from(generateChunks()));
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: (name) => (name.toLowerCase() === "content-length" ? "1024" : null),
+          },
+          body: stream,
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      () => adapter.science.search.invoke({ query: "attention" }),
+      (err) => {
+        assert.equal(err.code, "API_ERROR");
+        assert.equal(err.statusCode, 413);
+        assert.notEqual(err.code, "VALIDATION_ERROR");
+        assert.match(err.message, /crossref response exceeds.*50MB.*refusing to buffer/i);
+        assert.doesNotMatch(err.message, /--out/);
+        return true;
+      },
+    );
+  });
+
+  it("BOM-safe JSON parse: leading U+FEFF is stripped and parses successfully (pin c)", async () => {
+    const payload = "\uFEFF" + JSON.stringify({
+      status: "ok",
+      message: {
+        items: [WORK_JOURNAL_ARTICLE],
+      },
+    });
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: (name) => (name.toLowerCase() === "content-length" ? String(Buffer.byteLength(payload)) : null),
+          },
+          body: Readable.toWeb(Readable.from([Buffer.from(payload)])),
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const works = await adapter.science.search.invoke({ query: "attention" });
+    assert.equal(works.length, 1);
+    assert.equal(works[0].title, "Deep learning");
   });
 
   it("drain replacement: non-ok response cancels body and never buffers via text() or json()", async () => {

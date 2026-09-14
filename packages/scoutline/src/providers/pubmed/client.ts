@@ -125,6 +125,10 @@ type EutilsEndpoint = "esearch.fcgi" | "efetch.fcgi";
  * (asText=true). No internal retry — shared execution owns retry
  * policy.
  */
+function stripBom(s: string): string {
+  return s.charCodeAt(0) === 0xfeff ? s.slice(1) : s;
+}
+
 async function eutilsRequest(
   endpoint: EutilsEndpoint,
   params: Record<string, string>,
@@ -172,7 +176,7 @@ async function eutilsRequest(
     })) as unknown as {
       readonly ok: boolean;
       readonly status: number;
-      readonly headers: { get(name: string): string | null };
+      readonly headers?: { get?(name: string): string | null };
       readonly body?: ReadableStream<Uint8Array> | null;
       text?(): Promise<string>;
       json?(): Promise<unknown>;
@@ -181,7 +185,7 @@ async function eutilsRequest(
       await res.body?.cancel().catch(() => {});
       throw mapStatusError(res.status, DEFAULT_TIMEOUT_MS);
     }
-    const contentLengthHeader = res.headers.get("content-length");
+    const contentLengthHeader = res.headers?.get?.("content-length");
     if (contentLengthHeader && Number(contentLengthHeader) > MAX_BUFFERED_RESPONSE_BYTES) {
       await res.body?.cancel().catch(() => {});
       throw new ApiError(
@@ -191,13 +195,24 @@ async function eutilsRequest(
     }
     try {
       if (res.body) {
-        const buf = await readBoundedResponseBody(
-          res.body,
-          MAX_BUFFERED_RESPONSE_BYTES,
-          "PubMed response",
-        );
+        let buf;
+        try {
+          buf = await readBoundedResponseBody(
+            res.body,
+            MAX_BUFFERED_RESPONSE_BYTES,
+            "PubMed response",
+          );
+        } catch (err) {
+          if (err instanceof ValidationError) {
+            throw new ApiError(
+              "PubMed response exceeds the 50MB in-memory ceiling (stream exceeded it mid-read) — refusing to buffer",
+              413,
+            );
+          }
+          throw err;
+        }
         const text = buf.toString("utf8");
-        return asText ? text : JSON.parse(text);
+        return asText ? text : JSON.parse(stripBom(text));
       }
       if (asText) {
         if (typeof res.text === "function") {
@@ -205,11 +220,11 @@ async function eutilsRequest(
         }
         return "";
       }
+      if (typeof res.text === "function") {
+        return JSON.parse(stripBom(await res.text()));
+      }
       if (typeof res.json === "function") {
         return await res.json();
-      }
-      if (typeof res.text === "function") {
-        return JSON.parse(await res.text());
       }
       return {};
     } catch (err) {

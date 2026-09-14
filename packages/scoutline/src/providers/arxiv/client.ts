@@ -164,7 +164,7 @@ export async function fetchArxivQuery(
     })) as unknown as {
       readonly ok: boolean;
       readonly status: number;
-      readonly headers: { get(name: string): string | null };
+      readonly headers?: { get?(name: string): string | null };
       readonly body?: ReadableStream<Uint8Array> | null;
       text?(): Promise<string>;
       json?(): Promise<unknown>;
@@ -173,7 +173,7 @@ export async function fetchArxivQuery(
       await res.body?.cancel().catch(() => {});
       throw mapStatusError(res.status, DEFAULT_TIMEOUT_MS);
     }
-    const contentLengthHeader = res.headers.get("content-length");
+    const contentLengthHeader = res.headers?.get?.("content-length");
     if (contentLengthHeader && Number(contentLengthHeader) > MAX_BUFFERED_RESPONSE_BYTES) {
       await res.body?.cancel().catch(() => {});
       throw new ApiError(
@@ -183,11 +183,22 @@ export async function fetchArxivQuery(
     }
     try {
       if (res.body) {
-        const buf = await readBoundedResponseBody(
-          res.body,
-          MAX_BUFFERED_RESPONSE_BYTES,
-          "arXiv response",
-        );
+        let buf;
+        try {
+          buf = await readBoundedResponseBody(
+            res.body,
+            MAX_BUFFERED_RESPONSE_BYTES,
+            "arXiv response",
+          );
+        } catch (err) {
+          if (err instanceof ValidationError) {
+            throw new ApiError(
+              "arXiv response exceeds the 50MB in-memory ceiling (stream exceeded it mid-read) — refusing to buffer",
+              413,
+            );
+          }
+          throw err;
+        }
         return buf.toString("utf8");
       }
       if (typeof res.text === "function") {

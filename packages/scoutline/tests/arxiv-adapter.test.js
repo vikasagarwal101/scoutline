@@ -678,6 +678,82 @@ describe("arXiv 429 — keyless rate limit maps to QuotaError (DESIGN D4b honest
       },
     );
   });
+
+  it("tie-break: caller abort wins over timer in both race orders (review)", async () => {
+    // Order 1: timer fires, THEN caller aborts
+    let timerCallback1;
+    const descriptor1 = createArxivDescriptor({
+      transport: {
+        fetch: async (_url, init) =>
+          new Promise((_res, rej) => {
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+            });
+          }),
+        setTimeout: (cb) => {
+          timerCallback1 = cb;
+          return 123;
+        },
+        clearTimeout: () => {},
+      },
+    });
+    const adapter1 = descriptor1.create({ env: {} });
+    const ac1 = new AbortController();
+    const p1 = adapter1.science.search.invoke({ query: "x" }, ac1.signal);
+    assert.ok(timerCallback1);
+    timerCallback1();
+    ac1.abort();
+    await assert.rejects(
+      p1,
+      (e) => {
+        assert.ok(e instanceof ApiError, `expected ApiError, got ${e?.constructor?.name}`);
+        assert.equal(e.statusCode, 499);
+        assert.match(e.message, /arXiv request was aborted by the caller/);
+        assert.doesNotMatch(e.message, /timed out/i);
+        return true;
+      },
+      "order 1: caller abort must win over raced timer",
+    );
+
+    // Order 2: caller aborts, THEN timer fires
+    let timerCallback2;
+    const descriptor2 = createArxivDescriptor({
+      transport: {
+        fetch: async (_url, init) =>
+          new Promise((_res, rej) => {
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+            });
+          }),
+        setTimeout: (cb) => {
+          timerCallback2 = cb;
+          return 123;
+        },
+        clearTimeout: () => {},
+      },
+    });
+    const adapter2 = descriptor2.create({ env: {} });
+    const ac2 = new AbortController();
+    const p2 = adapter2.science.search.invoke({ query: "x" }, ac2.signal);
+    assert.ok(timerCallback2);
+    ac2.abort();
+    timerCallback2();
+    await assert.rejects(
+      p2,
+      (e) => {
+        assert.ok(e instanceof ApiError, `expected ApiError, got ${e?.constructor?.name}`);
+        assert.equal(e.statusCode, 499);
+        assert.match(e.message, /arXiv request was aborted by the caller/);
+        assert.doesNotMatch(e.message, /timed out/i);
+        return true;
+      },
+      "order 2: caller abort must win over raced timer",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

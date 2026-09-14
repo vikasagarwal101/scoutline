@@ -72,6 +72,7 @@ function normalizeTransportError(
   error: unknown,
   timeoutMs: number,
   timedOut = false,
+  signal?: AbortSignal,
 ): Error {
   if (
     error instanceof AuthError ||
@@ -83,6 +84,12 @@ function normalizeTransportError(
     return error;
   }
   if (error instanceof Error && error.name === "AbortError") {
+    if (signal?.aborted) {
+      return new ApiError(
+        "Crossref request was aborted by the caller (Ctrl-C or external signal)",
+        499,
+      );
+    }
     if (timedOut) {
       return new TimeoutError(timeoutMs);
     }
@@ -223,6 +230,12 @@ export async function fetchCrossrefJson(
       // cancel can surface as a raw non-AbortError (undici "terminated"
       // TypeError) — classify by abort SOURCE, not error shape: a caller
       // cancel is never a network failure.
+      if (controller.signal.aborted && signal?.aborted) {
+        throw new ApiError(
+          "Crossref request was aborted by the caller (Ctrl-C or external signal)",
+          499,
+        );
+      }
       if (controller.signal.aborted && !timedOut) {
         throw new ApiError(
           "Crossref request was aborted by the caller (Ctrl-C or external signal)",
@@ -234,7 +247,7 @@ export async function fetchCrossrefJson(
       throw new ApiError("Crossref returned a malformed response", 500);
     }
   } catch (err) {
-    throw normalizeTransportError(err, DEFAULT_TIMEOUT_MS, timedOut);
+    throw normalizeTransportError(err, DEFAULT_TIMEOUT_MS, timedOut, signal);
   } finally {
     if (signal !== undefined) {
       signal.removeEventListener("abort", abortWithExternal);

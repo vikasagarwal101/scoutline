@@ -47,7 +47,7 @@ import { parseScienceIdentifier } from "../capabilities/science.js";
 import { applyBudget, type BudgetLadder, type LadderRule } from "../lib/output-budget.js";
 import { persistCompaction } from "../lib/output-budget-persistence.js";
 import { redactSecrets } from "../lib/redact.js";
-import { UnsupportedOptionError, ValidationError } from "../lib/errors.js";
+import { ApiError, UnsupportedOptionError, ValidationError } from "../lib/errors.js";
 import type { OutputMode } from "../lib/output.js";
 import type { HandlerDependencies } from "../index.js";
 import { parseBriefMaxChars } from "./repo.js";
@@ -695,7 +695,12 @@ async function runScienceSearchWithReroute(
     // A caller cancel ends the walk. Rerouting from a user's Ctrl-C would
     // attempt the next arm only to fast-fail at its pre-abort check and
     // emit a misleading "rerouting to <arm>" notice for a cancellation.
-    if (signal?.aborted) throw error;
+    if (signal?.aborted) {
+      throw new ApiError(
+        "science request was aborted by the caller (Ctrl-C or external signal)",
+        499,
+      );
+    }
     // eligible = configured + capable + validating, D5 order, pin first
     const order = [pinned.id, ...D5_ARM_ORDER.filter((id) => id !== pinned.id)];
     const byId = scienceDescriptorIndex(descriptors);
@@ -703,7 +708,13 @@ async function runScienceSearchWithReroute(
       // A caller cancel BETWEEN reroute attempts ends the walk too —
       // the remaining arms would only fast-fail at their pre-abort
       // checks while emitting misleading reroute notices.
-      if (signal?.aborted) throw error;
+      // defense-in-depth: the per-attempt guard below normally fires first
+      if (signal?.aborted) {
+        throw new ApiError(
+          "science request was aborted by the caller (Ctrl-C or external signal)",
+          499,
+        );
+      }
       const next = byId.get(id);
       if (next === undefined) continue;
       if (!next.isConfigured(env, "science.search")) continue;
@@ -967,11 +978,12 @@ export async function handleScience(
         process.off("SIGINT", handler);
       };
     });
-  const cleanup = registerInterrupt(() => {
-    controller.abort();
-  });
+  let cleanup: (() => void) | undefined;
 
   try {
+    cleanup = registerInterrupt(() => {
+      controller.abort();
+    });
     if (subcommand === "search") {
     // Multiple positionals join with spaces (deep-review fix; the main
     // search command's `positional.join(" ")` idiom). Taking only
@@ -1117,6 +1129,7 @@ export async function handleScience(
         // order equals arms order, so the index recovers the arm id.
         settled.forEach((outcome, index) => {
           if (outcome.status !== "rejected") return;
+          if (controller.signal.aborted) return;
           const message =
             outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
           context.notice(
@@ -1259,7 +1272,12 @@ export async function handleScience(
           // A caller cancel ends the walk (same ruling as the pinned-search
           // reroute walk): the remaining arms would only fast-fail at their
           // pre-abort check while emitting a misleading reroute notice.
-          if (controller.signal.aborted) throw error;
+          if (controller.signal.aborted) {
+            throw new ApiError(
+              "science request was aborted by the caller (Ctrl-C or external signal)",
+              499,
+            );
+          }
           const next: ScienceDescriptorLike | undefined = arms[attempt + 1];
           if (next === undefined || deps.fallbackEnabled === false) throw error;
           // AC-5b reroute note: failed supplier AND reroute target.
@@ -1305,6 +1323,6 @@ export async function handleScience(
         }),
   );
   } finally {
-    cleanup();
+    cleanup?.();
   }
 }

@@ -210,6 +210,126 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
     }
   });
 
+  it("(a) race tie-break: caller abort wins over raced timer in both callback orders (five clients)", async () => {
+    const clients = [
+      {
+        name: "arxiv",
+        call: (ac, deps) =>
+          fetchArxivQuery(
+            { search_query: "test" },
+            deps,
+            ac.signal,
+          ),
+      },
+      {
+        name: "crossref",
+        call: (ac, deps) =>
+          fetchCrossrefJson(
+            { query: "test" },
+            deps,
+            ac.signal,
+          ),
+      },
+      {
+        name: "europepmc",
+        call: (ac, deps) =>
+          fetchEuropepmcJson(
+            { query: "test" },
+            deps,
+            ac.signal,
+          ),
+      },
+      {
+        name: "openalex",
+        call: (ac, deps) =>
+          fetchOpenalexJson(
+            { search: "test" },
+            deps,
+            ac.signal,
+          ),
+      },
+      {
+        name: "pubmed",
+        call: (ac, deps) =>
+          fetchPubmedEsearch(
+            { term: "test" },
+            deps,
+            ac.signal,
+          ),
+      },
+    ];
+
+    // Order (1): timer fires, THEN caller aborts (abort caller signal after timer rejection is in flight)
+    for (const { name, call } of clients) {
+      let timerCb;
+      const ac = new AbortController();
+      const p = call(ac, {
+        setTimeout: (cb) => {
+          timerCb = cb;
+          return 123;
+        },
+        clearTimeout: () => {},
+        fetch: (_url, init) =>
+          new Promise((_res, rej) => {
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+            });
+          }),
+      });
+      assert.ok(typeof timerCb === "function", `${name}: timer callback must be armed`);
+      timerCb();
+      ac.abort();
+      await assert.rejects(
+        p,
+        (err) => {
+          assert.ok(err instanceof ApiError, `${name} order (1) must reject with ApiError, got ${err?.constructor?.name}`);
+          assert.equal(err.statusCode, 499, `${name} order (1) status must be 499`);
+          assert.match(err.message, /request was aborted by the caller/i);
+          assert.doesNotMatch(err.message, /timed out/i);
+          return true;
+        },
+        `${name} order (1): caller abort must win over raced timer`,
+      );
+    }
+
+    // Order (2): caller aborts, THEN timer fires
+    for (const { name, call } of clients) {
+      let timerCb;
+      const ac = new AbortController();
+      const p = call(ac, {
+        setTimeout: (cb) => {
+          timerCb = cb;
+          return 123;
+        },
+        clearTimeout: () => {},
+        fetch: (_url, init) =>
+          new Promise((_res, rej) => {
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+            });
+          }),
+      });
+      assert.ok(typeof timerCb === "function", `${name}: timer callback must be armed`);
+      ac.abort();
+      timerCb();
+      await assert.rejects(
+        p,
+        (err) => {
+          assert.ok(err instanceof ApiError, `${name} order (2) must reject with ApiError, got ${err?.constructor?.name}`);
+          assert.equal(err.statusCode, 499, `${name} order (2) status must be 499`);
+          assert.match(err.message, /request was aborted by the caller/i);
+          assert.doesNotMatch(err.message, /timed out/i);
+          return true;
+        },
+        `${name} order (2): caller abort must win over raced timer`,
+      );
+    }
+  });
+
   it("(b) pre-aborted signal results in zero transport calls", async () => {
     let fetchCalls = 0;
     const ac = new AbortController();
@@ -620,5 +740,218 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
     );
     assert.match(stderrText, /aborted by the caller/i);
     assert.doesNotMatch(stderrText, /timed out/i);
+  });
+
+  it("(b) get walk: abort between attempts surfaces honest abort error, not previous arm error", async () => {
+    let registeredHandler = null;
+    const fakeRegistrar = (handler) => {
+      registeredHandler = handler;
+      return () => {};
+    };
+
+    const attempted = [];
+    const openalex = makeScienceDescriptor("openalex", {
+      get: () => {
+        attempted.push("openalex");
+        registeredHandler();
+        throw new ApiError("openalex get failed (boom)", 500);
+      },
+    });
+    const crossref = makeScienceDescriptor("crossref", {
+      get: () => {
+        attempted.push("crossref");
+        return { title: "work-from-crossref", url: "https://example.org/crossref" };
+      },
+    });
+
+    const inv = makeInvocation();
+    const deps = {
+      invocation: inv.adapter,
+      env: {},
+      secrets: [],
+      providerDescriptors: [openalex.descriptor, crossref.descriptor],
+      fallbackEnabled: true,
+    };
+
+    const p = handleScience(["get", "10.1038/nature12373"], "data", deps, {
+      registerInterrupt: fakeRegistrar,
+    });
+    const exitCode = await p;
+    assert.equal(exitCode, 1, "aborted get must return exitCode 1");
+    assert.deepEqual(attempted, ["openalex"], "second arm must never run after abort");
+    const stderrText = inv.stderr.join("");
+    assert.match(stderrText, /science request was aborted by the caller \(Ctrl-C or external signal\)/);
+    assert.doesNotMatch(stderrText, /boom/);
+    assert.doesNotMatch(stderrText, /rerouting to/i);
+  });
+
+  it("(b) pinned-search reroute walk: abort between attempts surfaces honest abort error, not pinned arm error", async () => {
+    let registeredHandler = null;
+    const fakeRegistrar = (handler) => {
+      registeredHandler = handler;
+      return () => {};
+    };
+
+    const attempted = [];
+    const openalex = makeScienceDescriptor("openalex", {
+      search: () => {
+        attempted.push("openalex");
+        registeredHandler();
+        throw new ApiError("openalex search failed (boom)", 500);
+      },
+    });
+    const arxiv = makeScienceDescriptor("arxiv", {
+      search: () => {
+        attempted.push("arxiv");
+        return [{ title: "work-from-arxiv", url: "https://example.org/arxiv" }];
+      },
+    });
+
+    const inv = makeInvocation();
+    const deps = {
+      invocation: inv.adapter,
+      env: {},
+      secrets: [],
+      providerDescriptors: [openalex.descriptor, arxiv.descriptor],
+      fallbackEnabled: true,
+    };
+
+    const p = handleScience(["search", "quantum", "--provider", "openalex"], "data", deps, {
+      registerInterrupt: fakeRegistrar,
+    });
+    const exitCode = await p;
+    assert.equal(exitCode, 1, "aborted search must return exitCode 1");
+    assert.deepEqual(attempted, ["openalex"], "reroute arm must never run after abort");
+    const stderrText = inv.stderr.join("");
+    assert.match(stderrText, /science request was aborted by the caller \(Ctrl-C or external signal\)/);
+    assert.doesNotMatch(stderrText, /boom/);
+    assert.doesNotMatch(stderrText, /rerouting to/i);
+  });
+
+  it("(c) partial fan-out abort: exit 0 and journal survivor arms, suppress misleading dropped notice", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "sci-fanout-"));
+    try {
+      let registeredHandler = null;
+      const fakeRegistrar = (handler) => {
+        registeredHandler = handler;
+        return () => {};
+      };
+
+      const openalex = {
+        id: "openalex",
+        isConfigured: () => true,
+        capabilities: () => new Set(["science.search"]),
+        create() {
+          return {
+            id: "openalex",
+            science: {
+              search: {
+                validate() {},
+                cacheIdentity: (r) => ({
+                  supplier: "openalex",
+                  capability: "science.search",
+                  credentialFingerprint: "",
+                  request: r,
+                }),
+                async invoke() {
+                  return [{ title: "work-1", url: "https://example.org/work-1" }];
+                },
+              },
+            },
+          };
+        },
+      };
+      const arxiv = {
+        id: "arxiv",
+        isConfigured: () => true,
+        capabilities: () => new Set(["science.search"]),
+        create() {
+          return {
+            id: "arxiv",
+            science: {
+              search: {
+                validate() {},
+                async invoke(_r, signal) {
+                  return new Promise((_, rej) => {
+                    const abortErr = () =>
+                      rej(new ApiError("arXiv request was aborted by the caller (Ctrl-C or external signal)", 499));
+                    if (signal?.aborted) return abortErr();
+                    signal?.addEventListener("abort", abortErr);
+                  });
+                },
+              },
+            },
+          };
+        },
+      };
+
+      const inv = makeInvocation();
+      const capture = { servedProvider: "openalex" };
+      const deps = {
+        invocation: inv.adapter,
+        env: { SCOUTLINE_ARTIFACTS_DIR: tmp },
+        secrets: [],
+        providerDescriptors: [openalex, arxiv],
+        fallbackEnabled: true,
+        journal: {
+          capability: "science",
+          capture,
+        },
+      };
+
+      const p = handleScience(["search", "quantum"], "data", deps, {
+        registerInterrupt: fakeRegistrar,
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
+      assert.ok(typeof registeredHandler === "function");
+      registeredHandler();
+
+      const exitCode = await p;
+      assert.equal(exitCode, 0, "partial fan-out with fulfilled arm must exit 0");
+
+      const logRes = await readLog(tmp);
+      assert.equal(logRes.log.entries.length, 1, "survivor arms must be journaled");
+      assert.deepEqual(
+        logRes.log.entries[0]?.provider,
+        { mode: "fanout", arms: ["openalex"] },
+        "journal provider arms must carry survivor arms only",
+      );
+
+      const stderrText = inv.stderr.join("");
+      assert.doesNotMatch(
+        stderrText,
+        /dropped from this fan-out/i,
+        "suppress misleading dropped from this fan-out notice on abort",
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("(d) injected registrar that throws surfaces registrar error cleanly without secondary crash", async () => {
+    const throwingRegistrar = () => {
+      throw new Error("injected registrar failure");
+    };
+
+    const inv = makeInvocation();
+    const deps = {
+      invocation: inv.adapter,
+      env: {},
+      secrets: [],
+      providerDescriptors: [],
+      fallbackEnabled: true,
+    };
+
+    await assert.rejects(
+      handleScience(["search", "quantum"], "data", deps, {
+        registerInterrupt: throwingRegistrar,
+      }),
+      (err) => {
+        assert.equal(err.message, "injected registrar failure");
+        assert.doesNotMatch(err.stack || "", /cleanup is not a function/);
+        return true;
+      },
+    );
   });
 });

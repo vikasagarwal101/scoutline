@@ -5,6 +5,7 @@
 ### Fixed
 
 - **Scheme-pass credential redaction terminates at JSON structural boundaries (issue #171):** value-matching in Bearer, Token, and ApiKey scheme passes (both Authorization-context and bare) now excludes `"` and `,` from captured tokens, terminating at JSON string quotes and comma boundaries so `[REDACTED]` replacement preserves JSON structure without swallowing adjacent keys or breaking downstream JSON parsing, while continuing to redact genuine credentials.
+- **archive --timeout is parsed, validated, and threaded on cdx and get (issue #172):** `handleArchive` now runs the diff branch's `--timeout` gates (valueless boolean form rejected with `--timeout requires a value.`, positive-integer digits with a non-zero check, 2147483647 ms Node setTimeout ceiling) through a shared `parseArchiveTimeout` helper called in all three archive subcommand branches, and threads the parsed value into the CDX request and both the availability and replay legs of `get` (previously `flags.timeout` was silently dropped on cdx/get, so callers always waited on the 30000 ms default and invalid values like `--timeout abc` or `--timeout 0` were accepted without complaint); `--timeout <ms>` rows added to the 'archive cdx' and 'archive get' help sections. Diff behavior is unchanged — its inline validation collapsed onto the same helper, message strings identical.
 
 ## [0.21.1] - 2026-09-14
 

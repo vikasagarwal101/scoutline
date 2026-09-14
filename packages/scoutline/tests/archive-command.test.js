@@ -1162,3 +1162,118 @@ describe("archive diff review round 4", () => {
         }
     });
 });
+
+
+// ---------------------------------------------------------------------------
+// --timeout wiring on cdx and get (#172): parse, validate, thread — the same
+// gates diff already had. RED-first pins: at HEAD the handler drops
+// flags.timeout in both branches (silently accepted, never threaded).
+// ---------------------------------------------------------------------------
+
+describe("archive --timeout wiring on cdx and get (#172)", () => {
+  // Offline guard: any test that reaches the network has already lost —
+  // validation must fire BEFORE the executor spawns a request.
+  function refusingFetch() {
+    return async () => {
+      throw new Error("network reached — flag should have been handled before any request");
+    };
+  }
+
+  // Hanging fetch that rejects only when the executor's abort signal
+  // fires: a fast TimeoutError can surface ONLY if the threaded
+  // --timeout drove the abort (default 30000ms blows the per-test
+  // timeout instead, which is exactly the RED at HEAD).
+  function hangingFetch() {
+    return (url, options = {}) =>
+      new Promise((resolve, reject) => {
+        options.signal?.addEventListener("abort", () =>
+          reject(new Error("The operation was aborted")),
+        );
+      });
+  }
+
+  async function runMain(args, fetchImpl) {
+    const { adapter, stderr } = makeAdapter();
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = fetchImpl;
+    try {
+      const code = await main(["archive", ...args], {
+        invocation: adapter,
+        env: {},
+        loadScoutlineConfig: () => {
+          throw new Error("Should not be called!");
+        },
+      });
+      return { code, stderr: stderr.join("") };
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  }
+
+  it("rejects a non-numeric --timeout on cdx at parse level", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["cdx", "https://example.com/*", "--timeout", "abc"],
+      refusingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /VALIDATION_ERROR/);
+    assert.match(stderr, /Invalid --timeout: \\"abc\\"\./); // JSON envelope escapes the quotes
+  });
+
+  it("rejects a zero --timeout on get at parse level", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["get", "https://example.com/", "--timeout", "0"],
+      refusingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /VALIDATION_ERROR/);
+    assert.match(stderr, /Invalid --timeout: \\"0\\"\./); // JSON envelope escapes the quotes
+  });
+
+  it("rejects a valueless --timeout on cdx", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["cdx", "https://example.com/*", "--timeout"],
+      refusingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /VALIDATION_ERROR/);
+    assert.match(stderr, /--timeout requires a value/);
+  });
+
+  it("rejects a valueless --timeout on get", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["get", "https://example.com/", "--timeout"],
+      refusingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /VALIDATION_ERROR/);
+    assert.match(stderr, /--timeout requires a value/);
+  });
+
+  it("threads --timeout into the cdx executor (abort at the caller value, not the 30s default)", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["cdx", "https://example.com/*", "--timeout", "150"],
+      hangingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /TIMEOUT_ERROR/);
+    assert.match(stderr, /timed out after 150ms/);
+  });
+
+  it("threads --timeout into the get executor (availability leg aborts at the caller value)", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["get", "https://example.com/", "--timeout", "150"],
+      hangingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /TIMEOUT_ERROR/);
+    assert.match(stderr, /timed out after 150ms/);
+  });
+
+  it("documents --timeout in the cdx and get help sections", () => {
+    const cdxSection = ARCHIVE_HELP.split("Options for 'archive cdx':")[1].split("Options for")[0];
+    const getSection = ARCHIVE_HELP.split("Options for 'archive get':")[1].split("Options for")[0];
+    assert.match(cdxSection, /--timeout <ms>/);
+    assert.match(getSection, /--timeout <ms>/);
+  });
+});

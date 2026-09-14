@@ -718,12 +718,18 @@ describe("crossref bounded response execution hardening (#150)", () => {
   });
 
   it("chunked mid-stream rejection: stream exceeding 50MB ceiling cancels reader and rejects with size error", async () => {
+    const totalChunks = 55;
     let chunksYielded = 0;
+    let cancelCalled = false;
     async function* generateChunks() {
-      const chunk = Buffer.alloc(1024 * 1024, "x");
-      while (true) {
-        chunksYielded++;
-        yield chunk;
+      try {
+        const chunk = Buffer.alloc(1024 * 1024, "x");
+        for (let i = 0; i < totalChunks; i++) {
+          chunksYielded++;
+          yield chunk;
+        }
+      } finally {
+        cancelCalled = true;
       }
     }
     const stream = Readable.toWeb(Readable.from(generateChunks()));
@@ -750,7 +756,9 @@ describe("crossref bounded response execution hardening (#150)", () => {
       },
     );
     assert.ok(chunksYielded > 50, "should have read past 50MB before rejecting");
+    assert.ok(chunksYielded < totalChunks, "stream should stop yielding chunks once cancelled");
     assert.ok(chunksYielded <= 53, "stream should stop yielding chunks once cancelled");
+    assert.equal(cancelCalled, true, "body stream must be cancelled");
   });
 
   it("headerless test double seam: minimal {ok, status, json()} double succeeds (pin a)", async () => {
@@ -769,10 +777,16 @@ describe("crossref bounded response execution hardening (#150)", () => {
   });
 
   it("parity: content-length declares small size but streamed body exceeds ceiling rejects with terminal 413 ApiError (pin b)", async () => {
+    const totalChunks = 55;
+    let cancelCalled = false;
     async function* generateChunks() {
-      const chunk = Buffer.alloc(1024 * 1024, "x");
-      while (true) {
-        yield chunk;
+      try {
+        const chunk = Buffer.alloc(1024 * 1024, "x");
+        for (let i = 0; i < totalChunks; i++) {
+          yield chunk;
+        }
+      } finally {
+        cancelCalled = true;
       }
     }
     const stream = Readable.toWeb(Readable.from(generateChunks()));
@@ -800,6 +814,7 @@ describe("crossref bounded response execution hardening (#150)", () => {
         return true;
       },
     );
+    assert.equal(cancelCalled, true, "body stream must be cancelled");
   });
 
   it("BOM-safe JSON parse: leading U+FEFF is stripped and parses successfully (pin c)", async () => {

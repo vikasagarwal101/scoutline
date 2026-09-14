@@ -33,10 +33,12 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import http from "node:http";
 
 import { createArxivDescriptor } from "../dist/providers/arxiv/adapter.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "../dist/providers/registry.js";
 import { Readable } from "node:stream";
+import { MAX_BUFFERED_RESPONSE_BYTES } from "../dist/lib/bounded-body.js";
 import {
   ApiError,
   QuotaError,
@@ -726,12 +728,18 @@ describe("arxiv bounded response execution hardening (#150)", () => {
   });
 
   it("chunked mid-stream rejection: stream exceeding 50MB ceiling cancels reader and rejects with size error", async () => {
+    const totalChunks = 55;
     let chunksYielded = 0;
+    let cancelCalled = false;
     async function* generateChunks() {
-      const chunk = Buffer.alloc(1024 * 1024, "x");
-      while (true) {
-        chunksYielded++;
-        yield chunk;
+      try {
+        const chunk = Buffer.alloc(1024 * 1024, "x");
+        for (let i = 0; i < totalChunks; i++) {
+          chunksYielded++;
+          yield chunk;
+        }
+      } finally {
+        cancelCalled = true;
       }
     }
     const stream = Readable.toWeb(Readable.from(generateChunks()));
@@ -758,7 +766,9 @@ describe("arxiv bounded response execution hardening (#150)", () => {
       },
     );
     assert.ok(chunksYielded > 50, "should have read past 50MB before rejecting");
+    assert.ok(chunksYielded < totalChunks, "stream should stop yielding chunks once cancelled");
     assert.ok(chunksYielded <= 53, "stream should stop yielding chunks once cancelled");
+    assert.equal(cancelCalled, true, "body stream must be cancelled");
   });
 
   it("headerless test double seam: minimal {ok, status, text()} double succeeds (pin a)", async () => {
@@ -778,10 +788,16 @@ describe("arxiv bounded response execution hardening (#150)", () => {
   });
 
   it("parity: content-length declares small size but streamed body exceeds ceiling rejects with terminal 413 ApiError (pin b)", async () => {
+    const totalChunks = 55;
+    let cancelCalled = false;
     async function* generateChunks() {
-      const chunk = Buffer.alloc(1024 * 1024, "x");
-      while (true) {
-        yield chunk;
+      try {
+        const chunk = Buffer.alloc(1024 * 1024, "x");
+        for (let i = 0; i < totalChunks; i++) {
+          yield chunk;
+        }
+      } finally {
+        cancelCalled = true;
       }
     }
     const stream = Readable.toWeb(Readable.from(generateChunks()));
@@ -809,6 +825,7 @@ describe("arxiv bounded response execution hardening (#150)", () => {
         return true;
       },
     );
+    assert.equal(cancelCalled, true, "body stream must be cancelled");
   });
 
   it("drain replacement: non-ok response cancels body and never buffers via text() or json()", async () => {
@@ -856,5 +873,122 @@ describe("arxiv bounded response execution hardening (#150)", () => {
     assert.equal(textCalled, false, "text() must never be called on non-ok response");
     assert.equal(jsonCalled, false, "json() must never be called on non-ok response");
     assert.equal(readerCalled, false, "body stream must not be read on non-ok response");
+  });
+
+  it("socket-release: breach cancels body stream and releases loopback server socket", async () => {
+    let socketClosed = false;
+    let closeResolve;
+    const socketClosedPromise = new Promise((resolve) => {
+      closeResolve = resolve;
+    });
+
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/xml" });
+      const chunk = Buffer.alloc(1024 * 1024, "x");
+      const writeMore = () => {
+        while (!res.destroyed && !res.writableEnded) {
+          if (!res.write(chunk)) {
+            res.once("drain", writeMore);
+            return;
+          }
+        }
+      };
+      writeMore();
+      req.socket.on("close", () => {
+        socketClosed = true;
+        closeResolve();
+      });
+      res.on("close", () => {
+        socketClosed = true;
+        closeResolve();
+      });
+    });
+
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const serverPort = server.address().port;
+
+    try {
+      const descriptor = createArxivDescriptor({
+        transport: {
+          fetch: (url, init) => {
+            const loopback = new URL(url.toString());
+            loopback.protocol = "http:";
+            loopback.hostname = "127.0.0.1";
+            loopback.port = String(serverPort);
+            return fetch(loopback, init);
+          },
+        },
+      });
+      const adapter = descriptor.create({ env: {} });
+      await assert.rejects(
+        () => adapter.science.search.invoke({ query: "attention" }),
+        (err) => {
+          assert.equal(err.code, "API_ERROR");
+          assert.equal(err.statusCode, 413);
+          assert.match(err.message, /arxiv response exceeds.*50MB.*refusing to buffer/i);
+          return true;
+        },
+      );
+
+      await Promise.race([
+        socketClosedPromise,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("socket close timed out")), 2000),
+        ),
+      ]);
+      assert.equal(socketClosed, true, "server socket must close after breach cancels body");
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("content-length boundary: declared length exactly equal to 50MB ceiling is allowed (strict >)", async () => {
+    const minimalXml = `<feed xmlns="http://www.w3.org/2005/Atom"><title>test</title><updated>2024-01-01T00:00:00Z</updated></feed>`;
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: (h) => (h.toLowerCase() === "content-length" ? String(MAX_BUFFERED_RESPONSE_BYTES) : null),
+          },
+          body: Readable.toWeb(Readable.from([Buffer.from(minimalXml, "utf8")])),
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const result = await adapter.science.search.invoke({ query: "attention" });
+    assert.ok(result);
+    assert.deepEqual(result, []);
+  });
+
+  it("chunked boundary: stream byte count exactly equal to 50MB ceiling is allowed (strict >)", async () => {
+    const minimalXml = `<feed xmlns="http://www.w3.org/2005/Atom"><title>test</title><updated>2024-01-01T00:00:00Z</updated></feed>`;
+    const firstChunk = Buffer.alloc(1024 * 1024, 0x20);
+    Buffer.from(minimalXml, "utf8").copy(firstChunk);
+    const regularChunk = Buffer.alloc(1024 * 1024, 0x20);
+    async function* generateExactChunks() {
+      yield firstChunk;
+      for (let i = 1; i < 50; i++) {
+        yield regularChunk;
+      }
+    }
+    const stream = Readable.toWeb(Readable.from(generateExactChunks()));
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: () => null,
+          },
+          body: stream,
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const result = await adapter.science.search.invoke({ query: "attention" });
+    assert.ok(result);
+    assert.deepEqual(result, []);
   });
 });

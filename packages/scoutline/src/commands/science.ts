@@ -739,7 +739,12 @@ async function runScienceSearchWithReroute(
         // A caller cancel DURING a reroute attempt surfaces that
         // attempt's honest abort error and ends the walk — no further
         // arms, no "dropped from this reroute walk" notice.
-        if (signal?.aborted) throw nextError;
+        if (signal?.aborted) {
+          throw new ApiError(
+            "science request was aborted by the caller (Ctrl-C or external signal)",
+            499,
+          );
+        }
         notice(
           `scoutline: ${next.id} search failed (${
             nextError instanceof Error ? nextError.message : String(nextError)
@@ -752,6 +757,12 @@ async function runScienceSearchWithReroute(
     // surfaces (get-path effective-arm behavior).
     throw error;
   }
+}
+
+function isAbortClassed(reason: unknown): boolean {
+  if (reason instanceof ApiError && reason.statusCode === 499) return true;
+  if (reason instanceof Error && /aborted by the caller/.test(reason.message)) return true;
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1120,6 +1131,12 @@ export async function handleScience(
           firstRejected !== undefined &&
           settled.every((outcome) => outcome.status === "rejected")
         ) {
+          if (controller.signal.aborted) {
+            throw new ApiError(
+              "science request was aborted by the caller (Ctrl-C or external signal)",
+              499,
+            );
+          }
           throw firstRejected.reason;
         }
         // D5 visible narrowing — never a silent drop: an arm that
@@ -1129,7 +1146,7 @@ export async function handleScience(
         // order equals arms order, so the index recovers the arm id.
         settled.forEach((outcome, index) => {
           if (outcome.status !== "rejected") return;
-          if (controller.signal.aborted) return;
+          if (isAbortClassed(outcome.reason)) return;
           const message =
             outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
           context.notice(

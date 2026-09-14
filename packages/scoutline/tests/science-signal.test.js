@@ -954,4 +954,321 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
       },
     );
   });
+
+  it("(a) partial fan-out abort: genuine pre-abort arm failure notice is preserved while abort-classed arm notice is suppressed (review r2)", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "sci-fanout-genuine-"));
+    try {
+      let registeredHandler = null;
+      const fakeRegistrar = (handler) => {
+        registeredHandler = handler;
+        return () => {};
+      };
+
+      let openalexSettled = false;
+      const openalex = {
+        id: "openalex",
+        isConfigured: () => true,
+        capabilities: () => new Set(["science.search"]),
+        create() {
+          return {
+            id: "openalex",
+            science: {
+              search: {
+                validate() {},
+                cacheIdentity: (r) => ({
+                  supplier: "openalex",
+                  capability: "science.search",
+                  credentialFingerprint: "",
+                  request: r,
+                }),
+                async invoke() {
+                  openalexSettled = true;
+                  throw new ApiError("OpenAlex server error (500)", 500);
+                },
+              },
+            },
+          };
+        },
+      };
+
+      const arxiv = {
+        id: "arxiv",
+        isConfigured: () => true,
+        capabilities: () => new Set(["science.search"]),
+        create() {
+          return {
+            id: "arxiv",
+            science: {
+              search: {
+                validate() {},
+                async invoke(_r, signal) {
+                  return new Promise((_, rej) => {
+                    const abortErr = () =>
+                      rej(new ApiError("arXiv request was aborted by the caller (Ctrl-C or external signal)", 499));
+                    if (signal?.aborted) return abortErr();
+                    signal?.addEventListener("abort", abortErr);
+                  });
+                },
+              },
+            },
+          };
+        },
+      };
+
+      const crossref = {
+        id: "crossref",
+        isConfigured: () => true,
+        capabilities: () => new Set(["science.search"]),
+        create() {
+          return {
+            id: "crossref",
+            science: {
+              search: {
+                validate() {},
+                cacheIdentity: (r) => ({
+                  supplier: "crossref",
+                  capability: "science.search",
+                  credentialFingerprint: "",
+                  request: r,
+                }),
+                async invoke() {
+                  return new Promise((res) => {
+                    setTimeout(() => {
+                      res([{ title: "work-crossref", url: "https://example.org/crossref" }]);
+                    }, 25);
+                  });
+                },
+              },
+            },
+          };
+        },
+      };
+
+      const inv = makeInvocation();
+      const capture = { servedProvider: "crossref" };
+      const deps = {
+        invocation: inv.adapter,
+        env: { SCOUTLINE_ARTIFACTS_DIR: tmp },
+        secrets: [],
+        providerDescriptors: [openalex, arxiv, crossref],
+        fallbackEnabled: true,
+        journal: {
+          capability: "science",
+          capture,
+        },
+      };
+
+      const p = handleScience(["search", "quantum"], "data", deps, {
+        registerInterrupt: fakeRegistrar,
+      });
+
+      for (let i = 0; i < 50 && !openalexSettled; i += 1) {
+        await new Promise((r) => setTimeout(r, 2));
+      }
+      assert.ok(openalexSettled, "openalex must have settled first");
+      assert.ok(typeof registeredHandler === "function", "handler must be registered");
+      registeredHandler();
+
+      const exitCode = await p;
+      assert.equal(exitCode, 0, "partial fan-out with fulfilled arm must exit 0");
+
+      const logRes = await readLog(tmp);
+      assert.equal(logRes.log.entries.length, 1, "survivor arms must be journaled");
+      assert.deepEqual(
+        logRes.log.entries[0]?.provider,
+        { mode: "fanout", arms: ["crossref"] },
+        "journal provider arms must carry survivor arms [crossref] only",
+      );
+
+      const stderrText = inv.stderr.join("");
+      assert.match(
+        stderrText,
+        /scoutline: openalex arm failed \(OpenAlex server error \(500\)\) — dropped from this fan-out\./,
+        "genuine pre-abort arm failure notice must be present in stderr",
+      );
+      assert.doesNotMatch(
+        stderrText,
+        /arxiv.*dropped from this fan-out/i,
+        "abort-classed arm failure notice must be suppressed",
+      );
+      assert.doesNotMatch(
+        stderrText,
+        /scoutline: arxiv arm failed/i,
+        "arxiv arm failure notice must not be emitted",
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("(b) fan-out all-rejected envelope: abort wording wins when signal is aborted (order i and ii) (review r2)", async () => {
+    let registeredHandler = null;
+    const fakeRegistrar = (handler) => {
+      registeredHandler = handler;
+      return () => {};
+    };
+
+    // Order (i): first arm genuinely 500s, then abort, remaining arms reject abort-classed
+    {
+      let openalexSettled = false;
+      const openalex = makeScienceDescriptor("openalex", {
+        search: async () => {
+          openalexSettled = true;
+          throw new ApiError("openalex upstream 500", 500);
+        },
+      });
+      const arxiv = makeScienceDescriptor("arxiv", {
+        search: (_req, signal) =>
+          new Promise((_res, rej) => {
+            const abortErr = () =>
+              rej(new ApiError("arXiv request was aborted by the caller (Ctrl-C or external signal)", 499));
+            if (signal?.aborted) return abortErr();
+            signal?.addEventListener("abort", abortErr);
+          }),
+      });
+
+      const inv = makeInvocation();
+      const deps = {
+        invocation: inv.adapter,
+        env: {},
+        secrets: [],
+        providerDescriptors: [openalex.descriptor, arxiv.descriptor],
+        fallbackEnabled: true,
+      };
+
+      const p = handleScience(["search", "quantum"], "data", deps, {
+        registerInterrupt: fakeRegistrar,
+      });
+
+      for (let i = 0; i < 50 && !openalexSettled; i += 1) {
+        await new Promise((r) => setTimeout(r, 2));
+      }
+      assert.ok(openalexSettled, "openalex must have settled first");
+      assert.ok(typeof registeredHandler === "function");
+      registeredHandler();
+
+      const exitCode = await p;
+      assert.equal(exitCode, 1, "aborted search must exit 1");
+      const stderrText = inv.stderr.join("");
+      assert.match(
+        stderrText,
+        /aborted by the caller/i,
+        "envelope must match /aborted by the caller/ when signal was aborted",
+      );
+      assert.doesNotMatch(
+        stderrText,
+        /upstream 500/,
+        "stale upstream 500 error must not be surfaced as the envelope",
+      );
+    }
+
+    // Order (ii): first arm rejection IS the abort
+    {
+      const openalex = makeScienceDescriptor("openalex", {
+        search: (_req, signal) =>
+          new Promise((_res, rej) => {
+            const abortErr = () =>
+              rej(new ApiError("openalex request was aborted by the caller (Ctrl-C or external signal)", 499));
+            if (signal?.aborted) return abortErr();
+            signal?.addEventListener("abort", abortErr);
+          }),
+      });
+      const arxiv = makeScienceDescriptor("arxiv", {
+        search: (_req, signal) =>
+          new Promise((_res, rej) => {
+            const abortErr = () =>
+              rej(new ApiError("arxiv request was aborted by the caller (Ctrl-C or external signal)", 499));
+            if (signal?.aborted) return abortErr();
+            signal?.addEventListener("abort", abortErr);
+          }),
+      });
+
+      const inv = makeInvocation();
+      const deps = {
+        invocation: inv.adapter,
+        env: {},
+        secrets: [],
+        providerDescriptors: [openalex.descriptor, arxiv.descriptor],
+        fallbackEnabled: true,
+      };
+
+      const p = handleScience(["search", "quantum"], "data", deps, {
+        registerInterrupt: fakeRegistrar,
+      });
+      assert.ok(typeof registeredHandler === "function");
+      registeredHandler();
+
+      const exitCode = await p;
+      assert.equal(exitCode, 1, "aborted search must exit 1");
+      const stderrText = inv.stderr.join("");
+      assert.match(
+        stderrText,
+        /aborted by the caller/i,
+        "envelope must match /aborted by the caller/",
+      );
+    }
+  });
+
+  it("(c) pinned-search reroute walk: reroute target genuinely 500s while signal aborted normalizes to abort wording (review r2)", async () => {
+    let registeredHandler = null;
+    const fakeRegistrar = (handler) => {
+      registeredHandler = handler;
+      return () => {};
+    };
+
+    const attempted = [];
+    const openalex = makeScienceDescriptor("openalex", {
+      search: () => {
+        attempted.push("openalex");
+        throw new ApiError("openalex search failed (boom)", 500);
+      },
+    });
+    const arxiv = makeScienceDescriptor("arxiv", {
+      search: (_req, _signal) =>
+        new Promise((_res, rej) => {
+          attempted.push("arxiv");
+          registeredHandler();
+          rej(new ApiError("arxiv 500 upstream server error", 500));
+        }),
+    });
+    const crossref = makeScienceDescriptor("crossref");
+
+    const inv = makeInvocation();
+    const deps = {
+      invocation: inv.adapter,
+      env: {},
+      secrets: [],
+      providerDescriptors: [openalex.descriptor, arxiv.descriptor, crossref.descriptor],
+      fallbackEnabled: true,
+    };
+
+    const p = handleScience(["search", "quantum", "--provider", "openalex"], "data", deps, {
+      registerInterrupt: fakeRegistrar,
+    });
+    const exitCode = await p;
+    assert.equal(exitCode, 1, "cancelled reroute search must return exitCode 1");
+    assert.deepEqual(
+      attempted,
+      ["openalex", "arxiv"],
+      "a cancel during a reroute attempt must end the walk — no further arm may be attempted",
+    );
+    assert.equal(crossref.calls.search.length, 0, "crossref must never be attempted");
+    const stderrText = inv.stderr.join("");
+    assert.doesNotMatch(stderrText, /rerouting to/i, "no reroute notice after a cancel");
+    assert.doesNotMatch(
+      stderrText,
+      /dropped from this reroute walk/i,
+      "no drop notice for a cancelled reroute attempt",
+    );
+    assert.match(
+      stderrText,
+      /science request was aborted by the caller \(Ctrl-C or external signal\)/,
+      "normalized abort wording must be surfaced in envelope",
+    );
+    assert.doesNotMatch(
+      stderrText,
+      /arxiv 500 upstream server error/,
+      "raw non-abort nextError must not leak into envelope when signal aborted",
+    );
+  });
 });

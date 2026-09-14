@@ -517,10 +517,12 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
       const exitCode = await p;
       assert.equal(exitCode, 1);
 
-      const logPath = join(tmp, "journal.log");
-      if (existsSync(logPath)) {
-        const entries = readLog(logPath);
-        assert.equal(entries.length, 0, "no entries should be written on abort");
+      // PR #169 review: readLog takes the artifacts DIR and is async — the old
+      // call passed a file path, skipped the await, and asserted Promise.length
+      // (always 0): a vacuous pin that could never fail.
+      if (existsSync(join(tmp, "journal.log"))) {
+        const logRes = await readLog(tmp);
+        assert.equal(logRes.log.entries.length, 0, "no entries should be written on abort");
       }
     } finally {
       rmSync(tmp, { recursive: true, force: true });

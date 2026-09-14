@@ -44,12 +44,16 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { Readable } from "node:stream";
+
+import { MAX_BUFFERED_RESPONSE_BYTES } from "../dist/lib/bounded-body.js";
 
 import { createCrossrefDescriptor } from "../dist/providers/crossref/adapter.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "../dist/providers/registry.js";
 import {
   ApiError,
   QuotaError,
+  TimeoutError,
   UnsupportedOptionError,
   ValidationError,
 } from "../dist/lib/errors.js";
@@ -135,11 +139,13 @@ const CROSSREF_WORK_RESPONSE = {
 
 /** Response-like double for a JSON body (house pattern). */
 function jsonResponse(obj) {
+  const payload = JSON.stringify(obj);
   return {
     ok: true,
     status: 200,
+    body: Readable.toWeb(Readable.from([Buffer.from(payload)])),
     json: async () => obj,
-    text: async () => JSON.stringify(obj),
+    text: async () => payload,
     headers: { get: () => null },
   };
 }
@@ -658,6 +664,469 @@ describe("Crossref 429 — keyless rate limit maps to QuotaError (DESIGN D4b hon
     await assert.rejects(
       adapter.science.search.invoke({ query: "x" }),
       (e) => e instanceof QuotaError && e.statusCode === 429,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bounded response execution hardening (#150)
+// ---------------------------------------------------------------------------
+
+describe("crossref bounded response execution hardening (#150)", () => {
+  it("pre-read rejection: content-length > 50MB ceiling rejects with terminal 413 ApiError and cancels body without reading", async () => {
+    let cancelCalled = false;
+    let readCalled = false;
+    const mockBody = {
+      cancel: async () => {
+        cancelCalled = true;
+      },
+      getReader: () => {
+        readCalled = true;
+        throw new Error("getReader must not be called when content-length exceeds ceiling");
+      },
+    };
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: (name) => (name.toLowerCase() === "content-length" ? "55000000" : null),
+          },
+          body: mockBody,
+          json: async () => {
+            readCalled = true;
+            return {};
+          },
+          text: async () => {
+            readCalled = true;
+            return "{}";
+          },
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      () => adapter.science.search.invoke({ query: "attention" }),
+      (err) => {
+        assert.equal(err.code, "API_ERROR");
+        assert.equal(err.statusCode, 413);
+        assert.match(err.message, /crossref response exceeds.*50MB.*refusing to buffer/i);
+        return true;
+      },
+    );
+    assert.equal(cancelCalled, true, "body.cancel() must be called before throwing");
+    assert.equal(readCalled, false, "body must never be read when declared size exceeds ceiling");
+  });
+
+  it("chunked mid-stream rejection: stream exceeding 50MB ceiling cancels reader and rejects with size error", async () => {
+    const totalChunks = 55;
+    let chunksYielded = 0;
+    let cancelCalled = false;
+    async function* generateChunks() {
+      try {
+        const chunk = Buffer.alloc(1024 * 1024, "x");
+        for (let i = 0; i < totalChunks; i++) {
+          chunksYielded++;
+          yield chunk;
+        }
+      } finally {
+        cancelCalled = true;
+      }
+    }
+    const stream = Readable.toWeb(Readable.from(generateChunks()));
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: () => null,
+          },
+          body: stream,
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      () => adapter.science.search.invoke({ query: "attention" }),
+      (err) => {
+        assert.equal(err.code, "API_ERROR");
+        assert.equal(err.statusCode, 413);
+        assert.match(err.message, /crossref response exceeds.*50MB.*refusing to buffer/i);
+        return true;
+      },
+    );
+    assert.ok(chunksYielded > 50, "should have read past 50MB before rejecting");
+    assert.ok(chunksYielded < totalChunks, "stream should stop yielding chunks once cancelled");
+    assert.ok(chunksYielded <= 53, "stream should stop yielding chunks once cancelled");
+    assert.equal(cancelCalled, true, "body stream must be cancelled");
+  });
+
+  it("headerless test double seam: minimal {ok, status, json()} double succeeds (pin a)", async () => {
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({ status: "ok", message: { items: [] } }),
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const works = await adapter.science.search.invoke({ query: "attention" });
+    assert.deepEqual(works, []);
+  });
+
+  it("parity: content-length declares small size but streamed body exceeds ceiling rejects with terminal 413 ApiError (pin b)", async () => {
+    const totalChunks = 55;
+    let cancelCalled = false;
+    async function* generateChunks() {
+      try {
+        const chunk = Buffer.alloc(1024 * 1024, "x");
+        for (let i = 0; i < totalChunks; i++) {
+          yield chunk;
+        }
+      } finally {
+        cancelCalled = true;
+      }
+    }
+    const stream = Readable.toWeb(Readable.from(generateChunks()));
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: (name) => (name.toLowerCase() === "content-length" ? "1024" : null),
+          },
+          body: stream,
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      () => adapter.science.search.invoke({ query: "attention" }),
+      (err) => {
+        assert.equal(err.code, "API_ERROR");
+        assert.equal(err.statusCode, 413);
+        assert.notEqual(err.code, "VALIDATION_ERROR");
+        assert.match(err.message, /crossref response exceeds.*50MB.*refusing to buffer/i);
+        assert.doesNotMatch(err.message, /--out/);
+        return true;
+      },
+    );
+    assert.equal(cancelCalled, true, "body stream must be cancelled");
+  });
+
+  it("BOM-safe JSON parse: leading U+FEFF is stripped and parses successfully (pin c)", async () => {
+    const payload = "\uFEFF" + JSON.stringify({
+      status: "ok",
+      message: {
+        items: [WORK_JOURNAL_ARTICLE],
+      },
+    });
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: (name) => (name.toLowerCase() === "content-length" ? String(Buffer.byteLength(payload)) : null),
+          },
+          body: Readable.toWeb(Readable.from([Buffer.from(payload)])),
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const works = await adapter.science.search.invoke({ query: "attention" });
+    assert.equal(works.length, 1);
+    assert.equal(works[0].title, "Deep learning");
+  });
+
+  it("BOM fallback-path parse: text() double returning U+FEFF strips BOM and parses (pin a)", async () => {
+    const payload = "\uFEFF" + JSON.stringify({
+      status: "ok",
+      message: {
+        items: [WORK_JOURNAL_ARTICLE],
+      },
+    });
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: (name) => (name.toLowerCase() === "content-length" ? String(Buffer.byteLength(payload)) : null),
+          },
+          text: async () => payload,
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const works = await adapter.science.search.invoke({ query: "attention" });
+    assert.equal(works.length, 1);
+    assert.equal(works[0].title, "Deep learning");
+  });
+
+  it("content-length boundary: declared length exactly equal to 50MB ceiling is allowed (strict >)", async () => {
+    const payload = JSON.stringify({
+      status: "ok",
+      message: { items: [] },
+    });
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: (h) => (h.toLowerCase() === "content-length" ? String(MAX_BUFFERED_RESPONSE_BYTES) : null),
+          },
+          body: Readable.toWeb(Readable.from([Buffer.from(payload, "utf8")])),
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const result = await adapter.science.search.invoke({ query: "attention" });
+    assert.ok(result);
+    assert.deepEqual(result, []);
+  });
+
+  it("drain replacement: non-ok response cancels body and never buffers via text() or json()", async () => {
+    let cancelCalled = false;
+    let textCalled = false;
+    let jsonCalled = false;
+    let readerCalled = false;
+    const mockBody = {
+      cancel: async () => {
+        cancelCalled = true;
+      },
+      getReader: () => {
+        readerCalled = true;
+        throw new Error("getReader must not be called on non-ok response");
+      },
+    };
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: false,
+          status: 500,
+          headers: { get: () => null },
+          body: mockBody,
+          text: async () => {
+            textCalled = true;
+            return "error body";
+          },
+          json: async () => {
+            jsonCalled = true;
+            return {};
+          },
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      () => adapter.science.search.invoke({ query: "attention" }),
+      (err) => {
+        assert.equal(err.code, "API_ERROR");
+        assert.equal(err.statusCode, 500);
+        return true;
+      },
+    );
+    assert.equal(cancelCalled, true, "body.cancel() must be called on non-ok response");
+    assert.equal(textCalled, false, "text() must never be called on non-ok response");
+    assert.equal(jsonCalled, false, "json() must never be called on non-ok response");
+    assert.equal(readerCalled, false, "body stream must not be read on non-ok response");
+  });
+});
+
+describe("crossref abort signal threading and honest cancellation (#151)", () => {
+  it("a pre-aborted caller signal rejects before transport is invoked", async () => {
+    let fetchCalls = 0;
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async () => {
+          fetchCalls += 1;
+          return { ok: true, status: 200, json: async () => ({}) };
+        },
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const ac = new AbortController();
+    ac.abort();
+    await assert.rejects(
+      adapter.science.search.invoke({ query: "x" }, ac.signal),
+      (e) => {
+        assert.ok(e instanceof ApiError, `expected ApiError, got ${e?.constructor?.name}`);
+        assert.equal(e.statusCode, 499);
+        assert.match(e.message, /Crossref request was aborted by the caller/);
+        assert.doesNotMatch(e.message, /timed out/i);
+        return true;
+      },
+    );
+    assert.equal(fetchCalls, 0, "transport fetch must never be invoked");
+  });
+
+  it("external abort mid-flight rejects with honest abort ApiError(499), not TimeoutError", async () => {
+    const ac = new AbortController();
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async (_url, init) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              reject(err);
+            });
+          }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const promise = adapter.science.search.invoke({ query: "x" }, ac.signal);
+    ac.abort();
+    await assert.rejects(
+      promise,
+      (e) => {
+        assert.ok(e instanceof ApiError, `expected ApiError, got ${e?.constructor?.name}`);
+        assert.equal(e.statusCode, 499);
+        assert.match(e.message, /Crossref request was aborted by the caller/);
+        assert.doesNotMatch(e.message, /timed out/i);
+        return true;
+      },
+    );
+  });
+
+  it("external abort during body consumption classifies by abort source, not error shape (review)", async () => {
+    // undici may reject an in-flight body read with a raw non-AbortError
+    // (`TypeError: terminated`) when the connection is torn down by an
+    // abort. The abort SOURCE decides the class — a caller cancel is
+    // never a retryable network failure.
+    const ac = new AbortController();
+    let readStarted = false;
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          body: {
+            getReader: () => ({
+              read: () => {
+                readStarted = true;
+                return Promise.reject(new TypeError("terminated"));
+              },
+              cancel: async () => {},
+            }),
+            cancel: async () => {},
+          },
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const promise = adapter.science.search.invoke({ query: "x" }, ac.signal);
+    ac.abort();
+    await assert.rejects(
+      promise,
+      (e) => {
+        assert.ok(e instanceof ApiError, `expected ApiError, got ${e?.constructor?.name}`);
+        assert.equal(e.statusCode, 499);
+        assert.equal(e.code, "API_ERROR");
+        assert.match(e.message, /Crossref request was aborted by the caller/);
+        assert.doesNotMatch(e.message, /timed out/i);
+        assert.doesNotMatch(e.message, /network error/i);
+        return true;
+      },
+      "a caller cancel during body consumption is never a NetworkError",
+    );
+    assert.equal(readStarted, true, "the body read must have been attempted");
+  });
+
+  it("a fired timeout during body consumption is never rewritten to a caller cancel (review)", async () => {
+    // Guard teeth for the abort-source branch: with the timeout fired,
+    // the same raw body-read rejection must NOT wear caller-cancel
+    // wording — the abort source decides.
+    let timerCallback;
+    let rejectRead;
+    const readPromise = new Promise((_res, rej) => {
+      rejectRead = rej;
+    });
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          body: {
+            getReader: () => ({ read: () => readPromise, cancel: async () => {} }),
+            cancel: async () => {},
+          },
+        }),
+        setTimeout: (cb) => {
+          timerCallback = cb;
+          return 123;
+        },
+        clearTimeout: () => {},
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const promise = adapter.science.search.invoke({ query: "x" });
+    assert.ok(timerCallback, "the timeout must be armed before the body read");
+    timerCallback();
+    rejectRead(new TypeError("terminated"));
+    await assert.rejects(
+      promise,
+      (e) => {
+        assert.notEqual(
+          e?.statusCode,
+          499,
+          "a fired timeout is not a caller cancel — the abort source decides",
+        );
+        assert.doesNotMatch(
+          e?.message ?? "",
+          /aborted by the caller/i,
+          "timeout-abort must not wear caller-cancel wording",
+        );
+        return true;
+      },
+    );
+  });
+
+  it("internal timer timeout rejects with TimeoutError", async () => {
+    let timerCallback;
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async (_url, init) =>
+          new Promise((_res, rej) => {
+            if (init?.signal?.aborted) {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+              return;
+            }
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+            });
+          }),
+        setTimeout: (cb) => {
+          timerCallback = cb;
+          return 123;
+        },
+        clearTimeout: () => {},
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const promise = adapter.science.search.invoke({ query: "x" });
+    assert.ok(timerCallback);
+    timerCallback();
+    await assert.rejects(
+      promise,
+      (e) => {
+        assert.ok(e instanceof TimeoutError, `expected TimeoutError, got ${e?.constructor?.name}`);
+        assert.match(e.message, /Request timed out/i);
+        return true;
+      },
     );
   });
 });

@@ -33,10 +33,14 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import http from "node:http";
 
 import { createArxivDescriptor } from "../dist/providers/arxiv/adapter.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "../dist/providers/registry.js";
+import { Readable } from "node:stream";
+import { MAX_BUFFERED_RESPONSE_BYTES } from "../dist/lib/bounded-body.js";
 import {
+  ApiError,
   QuotaError,
   TimeoutError,
   UnsupportedOptionError,
@@ -108,6 +112,7 @@ function xmlResponse(xml) {
   return {
     ok: true,
     status: 200,
+    body: Readable.toWeb(Readable.from([Buffer.from(xml)])),
     json: async () => {
       throw new Error("json() must not be called on an Atom feed");
     },
@@ -498,9 +503,568 @@ describe("arXiv 429 — keyless rate limit maps to QuotaError (DESIGN D4b honest
     controller.abort();
     await assert.rejects(
       adapter.science.search.invoke({ query: "x" }, controller.signal),
-      (e) => e instanceof TimeoutError,
-      "pre-aborted signal rejects with TimeoutError",
+      (e) => {
+        assert.ok(e instanceof ApiError, `expected ApiError, got ${e?.constructor?.name}`);
+        assert.equal(e.statusCode, 499);
+        assert.match(e.message, /arXiv request was aborted by the caller/);
+        assert.doesNotMatch(e.message, /timed out/i);
+        return true;
+      },
+      "pre-aborted signal rejects with honest ApiError(499), not TimeoutError",
     );
     assert.equal(fetchCalls, 0, "transport fetch must never be invoked");
+  });
+
+  it("external abort mid-flight rejects with honest abort ApiError(499), not TimeoutError (#151)", async () => {
+    const controller = new AbortController();
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async (_url, init) => {
+          return new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              reject(err);
+            });
+          });
+        },
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const promise = adapter.science.search.invoke({ query: "x" }, controller.signal);
+    controller.abort();
+    await assert.rejects(
+      promise,
+      (e) => {
+        assert.ok(e instanceof ApiError, `expected ApiError, got ${e?.constructor?.name}`);
+        assert.equal(e.statusCode, 499);
+        assert.match(e.message, /arXiv request was aborted by the caller/);
+        assert.doesNotMatch(e.message, /timed out/i);
+        return true;
+      },
+    );
+  });
+
+  it("external abort during body consumption classifies by abort source, not error shape (review)", async () => {
+    // undici may reject an in-flight body read with a raw non-AbortError
+    // (`TypeError: terminated`) when the connection is torn down by an
+    // abort. The abort SOURCE decides the class — a caller cancel is
+    // never a retryable network failure.
+    const ac = new AbortController();
+    let readStarted = false;
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          body: {
+            getReader: () => ({
+              read: () => {
+                readStarted = true;
+                return Promise.reject(new TypeError("terminated"));
+              },
+              cancel: async () => {},
+            }),
+            cancel: async () => {},
+          },
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const promise = adapter.science.search.invoke({ query: "x" }, ac.signal);
+    ac.abort();
+    await assert.rejects(
+      promise,
+      (e) => {
+        assert.ok(e instanceof ApiError, `expected ApiError, got ${e?.constructor?.name}`);
+        assert.equal(e.statusCode, 499);
+        assert.equal(e.code, "API_ERROR");
+        assert.match(e.message, /arXiv request was aborted by the caller/);
+        assert.doesNotMatch(e.message, /timed out/i);
+        assert.doesNotMatch(e.message, /network error/i);
+        return true;
+      },
+      "a caller cancel during body consumption is never a NetworkError",
+    );
+    assert.equal(readStarted, true, "the body read must have been attempted");
+  });
+
+  it("a fired timeout during body consumption is never rewritten to a caller cancel (review)", async () => {
+    // Guard teeth for the abort-source branch: with the timeout fired,
+    // the same raw body-read rejection must NOT wear caller-cancel
+    // wording — the abort source decides.
+    let timerCallback;
+    let rejectRead;
+    const readPromise = new Promise((_res, rej) => {
+      rejectRead = rej;
+    });
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          body: {
+            getReader: () => ({ read: () => readPromise, cancel: async () => {} }),
+            cancel: async () => {},
+          },
+        }),
+        setTimeout: (cb) => {
+          timerCallback = cb;
+          return 123;
+        },
+        clearTimeout: () => {},
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const promise = adapter.science.search.invoke({ query: "x" });
+    assert.ok(timerCallback, "the timeout must be armed before the body read");
+    timerCallback();
+    rejectRead(new TypeError("terminated"));
+    await assert.rejects(
+      promise,
+      (e) => {
+        assert.notEqual(
+          e?.statusCode,
+          499,
+          "a fired timeout is not a caller cancel — the abort source decides",
+        );
+        assert.doesNotMatch(
+          e?.message ?? "",
+          /aborted by the caller/i,
+          "timeout-abort must not wear caller-cancel wording",
+        );
+        return true;
+      },
+    );
+  });
+
+  it("internal timer timeout rejects with TimeoutError (#151)", async () => {
+    let timerCallback;
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async (_url, init) =>
+          new Promise((_res, rej) => {
+            if (init?.signal?.aborted) {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+              return;
+            }
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+            });
+          }),
+        setTimeout: (cb) => {
+          timerCallback = cb;
+          return 123;
+        },
+        clearTimeout: () => {},
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const promise = adapter.science.search.invoke({ query: "x" });
+    assert.ok(timerCallback);
+    timerCallback();
+    await assert.rejects(
+      promise,
+      (e) => {
+        assert.ok(e instanceof TimeoutError, `expected TimeoutError, got ${e?.constructor?.name}`);
+        assert.match(e.message, /Request timed out/i);
+        return true;
+      },
+    );
+  });
+
+  it("tie-break: caller abort wins over timer in both race orders (review)", async () => {
+    // Order 1: timer fires, THEN caller aborts
+    let timerCallback1;
+    const descriptor1 = createArxivDescriptor({
+      transport: {
+        fetch: async (_url, init) =>
+          new Promise((_res, rej) => {
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+            });
+          }),
+        setTimeout: (cb) => {
+          timerCallback1 = cb;
+          return 123;
+        },
+        clearTimeout: () => {},
+      },
+    });
+    const adapter1 = descriptor1.create({ env: {} });
+    const ac1 = new AbortController();
+    const p1 = adapter1.science.search.invoke({ query: "x" }, ac1.signal);
+    assert.ok(timerCallback1);
+    timerCallback1();
+    ac1.abort();
+    await assert.rejects(
+      p1,
+      (e) => {
+        assert.ok(e instanceof ApiError, `expected ApiError, got ${e?.constructor?.name}`);
+        assert.equal(e.statusCode, 499);
+        assert.match(e.message, /arXiv request was aborted by the caller/);
+        assert.doesNotMatch(e.message, /timed out/i);
+        return true;
+      },
+      "order 1: caller abort must win over raced timer",
+    );
+
+    // Order 2: caller aborts, THEN timer fires
+    let timerCallback2;
+    const descriptor2 = createArxivDescriptor({
+      transport: {
+        fetch: async (_url, init) =>
+          new Promise((_res, rej) => {
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+            });
+          }),
+        setTimeout: (cb) => {
+          timerCallback2 = cb;
+          return 123;
+        },
+        clearTimeout: () => {},
+      },
+    });
+    const adapter2 = descriptor2.create({ env: {} });
+    const ac2 = new AbortController();
+    const p2 = adapter2.science.search.invoke({ query: "x" }, ac2.signal);
+    assert.ok(timerCallback2);
+    ac2.abort();
+    timerCallback2();
+    await assert.rejects(
+      p2,
+      (e) => {
+        assert.ok(e instanceof ApiError, `expected ApiError, got ${e?.constructor?.name}`);
+        assert.equal(e.statusCode, 499);
+        assert.match(e.message, /arXiv request was aborted by the caller/);
+        assert.doesNotMatch(e.message, /timed out/i);
+        return true;
+      },
+      "order 2: caller abort must win over raced timer",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bounded response execution hardening (#150)
+// ---------------------------------------------------------------------------
+
+describe("arxiv bounded response execution hardening (#150)", () => {
+  it("pre-read rejection: content-length > 50MB ceiling rejects with terminal 413 ApiError and cancels body without reading", async () => {
+    let cancelCalled = false;
+    let readCalled = false;
+    const mockBody = {
+      cancel: async () => {
+        cancelCalled = true;
+      },
+      getReader: () => {
+        readCalled = true;
+        throw new Error("getReader must not be called when content-length exceeds ceiling");
+      },
+    };
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: (name) => (name.toLowerCase() === "content-length" ? "55000000" : null),
+          },
+          body: mockBody,
+          text: async () => {
+            readCalled = true;
+            return "";
+          },
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      () => adapter.science.search.invoke({ query: "attention" }),
+      (err) => {
+        assert.equal(err.code, "API_ERROR");
+        assert.equal(err.statusCode, 413);
+        assert.match(err.message, /arxiv response exceeds.*50MB.*refusing to buffer/i);
+        return true;
+      },
+    );
+    assert.equal(cancelCalled, true, "body.cancel() must be called before throwing");
+    assert.equal(readCalled, false, "body must never be read when declared size exceeds ceiling");
+  });
+
+  it("chunked mid-stream rejection: stream exceeding 50MB ceiling cancels reader and rejects with size error", async () => {
+    const totalChunks = 55;
+    let chunksYielded = 0;
+    let cancelCalled = false;
+    async function* generateChunks() {
+      try {
+        const chunk = Buffer.alloc(1024 * 1024, "x");
+        for (let i = 0; i < totalChunks; i++) {
+          chunksYielded++;
+          yield chunk;
+        }
+      } finally {
+        cancelCalled = true;
+      }
+    }
+    const stream = Readable.toWeb(Readable.from(generateChunks()));
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: () => null,
+          },
+          body: stream,
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      () => adapter.science.search.invoke({ query: "attention" }),
+      (err) => {
+        assert.equal(err.code, "API_ERROR");
+        assert.equal(err.statusCode, 413);
+        assert.match(err.message, /arxiv response exceeds.*50MB.*refusing to buffer/i);
+        return true;
+      },
+    );
+    assert.ok(chunksYielded > 50, "should have read past 50MB before rejecting");
+    assert.ok(chunksYielded < totalChunks, "stream should stop yielding chunks once cancelled");
+    assert.ok(chunksYielded <= 53, "stream should stop yielding chunks once cancelled");
+    assert.equal(cancelCalled, true, "body stream must be cancelled");
+  });
+
+  it("headerless test double seam: minimal {ok, status, text()} double succeeds (pin a)", async () => {
+    const minimalXml = `<feed xmlns="http://www.w3.org/2005/Atom"><title>test</title><updated>2024-01-01T00:00:00Z</updated></feed>`;
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          text: async () => minimalXml,
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const works = await adapter.science.search.invoke({ query: "attention" });
+    assert.deepEqual(works, []);
+  });
+
+  it("parity: content-length declares small size but streamed body exceeds ceiling rejects with terminal 413 ApiError (pin b)", async () => {
+    const totalChunks = 55;
+    let cancelCalled = false;
+    async function* generateChunks() {
+      try {
+        const chunk = Buffer.alloc(1024 * 1024, "x");
+        for (let i = 0; i < totalChunks; i++) {
+          yield chunk;
+        }
+      } finally {
+        cancelCalled = true;
+      }
+    }
+    const stream = Readable.toWeb(Readable.from(generateChunks()));
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: (name) => (name.toLowerCase() === "content-length" ? "1024" : null),
+          },
+          body: stream,
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      () => adapter.science.search.invoke({ query: "attention" }),
+      (err) => {
+        assert.equal(err.code, "API_ERROR");
+        assert.equal(err.statusCode, 413);
+        assert.notEqual(err.code, "VALIDATION_ERROR");
+        assert.match(err.message, /arxiv response exceeds.*50MB.*refusing to buffer/i);
+        assert.doesNotMatch(err.message, /--out/);
+        return true;
+      },
+    );
+    assert.equal(cancelCalled, true, "body stream must be cancelled");
+  });
+
+  it("drain replacement: non-ok response cancels body and never buffers via text() or json()", async () => {
+    let cancelCalled = false;
+    let textCalled = false;
+    let jsonCalled = false;
+    let readerCalled = false;
+    const mockBody = {
+      cancel: async () => {
+        cancelCalled = true;
+      },
+      getReader: () => {
+        readerCalled = true;
+        throw new Error("getReader must not be called on non-ok response");
+      },
+    };
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: false,
+          status: 500,
+          headers: { get: () => null },
+          body: mockBody,
+          text: async () => {
+            textCalled = true;
+            return "error body";
+          },
+          json: async () => {
+            jsonCalled = true;
+            return {};
+          },
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      () => adapter.science.search.invoke({ query: "attention" }),
+      (err) => {
+        assert.equal(err.code, "API_ERROR");
+        assert.equal(err.statusCode, 500);
+        return true;
+      },
+    );
+    assert.equal(cancelCalled, true, "body.cancel() must be called on non-ok response");
+    assert.equal(textCalled, false, "text() must never be called on non-ok response");
+    assert.equal(jsonCalled, false, "json() must never be called on non-ok response");
+    assert.equal(readerCalled, false, "body stream must not be read on non-ok response");
+  });
+
+  it("socket-release: breach cancels body stream and releases loopback server socket", async () => {
+    let socketClosed = false;
+    let closeResolve;
+    const socketClosedPromise = new Promise((resolve) => {
+      closeResolve = resolve;
+    });
+
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/xml" });
+      const chunk = Buffer.alloc(1024 * 1024, "x");
+      const writeMore = () => {
+        while (!res.destroyed && !res.writableEnded) {
+          if (!res.write(chunk)) {
+            res.once("drain", writeMore);
+            return;
+          }
+        }
+      };
+      writeMore();
+      req.socket.on("close", () => {
+        socketClosed = true;
+        closeResolve();
+      });
+      res.on("close", () => {
+        socketClosed = true;
+        closeResolve();
+      });
+    });
+
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const serverPort = server.address().port;
+
+    try {
+      const descriptor = createArxivDescriptor({
+        transport: {
+          fetch: (url, init) => {
+            const loopback = new URL(url.toString());
+            loopback.protocol = "http:";
+            loopback.hostname = "127.0.0.1";
+            loopback.port = String(serverPort);
+            return fetch(loopback, init);
+          },
+        },
+      });
+      const adapter = descriptor.create({ env: {} });
+      await assert.rejects(
+        () => adapter.science.search.invoke({ query: "attention" }),
+        (err) => {
+          assert.equal(err.code, "API_ERROR");
+          assert.equal(err.statusCode, 413);
+          assert.match(err.message, /arxiv response exceeds.*50MB.*refusing to buffer/i);
+          return true;
+        },
+      );
+
+      await Promise.race([
+        socketClosedPromise,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("socket close timed out")), 2000),
+        ),
+      ]);
+      assert.equal(socketClosed, true, "server socket must close after breach cancels body");
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("content-length boundary: declared length exactly equal to 50MB ceiling is allowed (strict >)", async () => {
+    const minimalXml = `<feed xmlns="http://www.w3.org/2005/Atom"><title>test</title><updated>2024-01-01T00:00:00Z</updated></feed>`;
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: (h) => (h.toLowerCase() === "content-length" ? String(MAX_BUFFERED_RESPONSE_BYTES) : null),
+          },
+          body: Readable.toWeb(Readable.from([Buffer.from(minimalXml, "utf8")])),
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const result = await adapter.science.search.invoke({ query: "attention" });
+    assert.ok(result);
+    assert.deepEqual(result, []);
+  });
+
+  it("chunked boundary: stream byte count exactly equal to 50MB ceiling is allowed (strict >)", async () => {
+    const minimalXml = `<feed xmlns="http://www.w3.org/2005/Atom"><title>test</title><updated>2024-01-01T00:00:00Z</updated></feed>`;
+    const firstChunk = Buffer.alloc(1024 * 1024, 0x20);
+    Buffer.from(minimalXml, "utf8").copy(firstChunk);
+    const regularChunk = Buffer.alloc(1024 * 1024, 0x20);
+    async function* generateExactChunks() {
+      yield firstChunk;
+      for (let i = 1; i < 50; i++) {
+        yield regularChunk;
+      }
+    }
+    const stream = Readable.toWeb(Readable.from(generateExactChunks()));
+    const descriptor = createArxivDescriptor({
+      transport: {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          headers: {
+            get: () => null,
+          },
+          body: stream,
+        }),
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const result = await adapter.science.search.invoke({ query: "attention" });
+    assert.ok(result);
+    assert.deepEqual(result, []);
   });
 });

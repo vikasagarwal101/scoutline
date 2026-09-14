@@ -12,12 +12,12 @@ import {
   fetchCommand,
   parseFetchArgs,
   validateFetchUrl,
-  readBoundedResponseBody,
   FETCH_HELP,
   DEFAULT_USER_AGENT,
 } from "../dist/commands/fetch.js";
 import { main } from "../dist/index.js";
 import { FileError } from "../dist/lib/errors.js";
+import { MAX_BUFFERED_RESPONSE_BYTES, readBoundedResponseBody } from "../dist/lib/bounded-body.js";
 import { useTempConfigDir } from "./helpers/config-dir-pin.js";
 
 useTempConfigDir();
@@ -118,6 +118,26 @@ describe("scoutline fetch command", () => {
         // Metadata-only response: big declared Content-Length, no body.
         res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": String(60 * 1024 * 1024) });
         res.end();
+      } else if (req.url === "/exact-ceiling") {
+        const size = MAX_BUFFERED_RESPONSE_BYTES;
+        res.writeHead(200, {
+          "Content-Type": "text/plain",
+          "Content-Length": String(size),
+        });
+        res.on("error", () => {});
+        const chunk = Buffer.alloc(1024 * 1024, 0x61);
+        let sent = 0;
+        const writeNext = () => {
+          while (sent < size) {
+            sent += chunk.length;
+            if (!res.write(chunk)) {
+              res.once("drain", writeNext);
+              return;
+            }
+          }
+          res.end();
+        };
+        writeNext();
       } else if (req.url === "/damaged-pdf") {
         res.writeHead(200, { "Content-Type": "application/pdf" });
         res.end("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n");
@@ -432,6 +452,12 @@ describe("scoutline fetch command", () => {
       const result = await executeFetch(`${serverBaseUrl}/head-meta`, { method: "HEAD" });
       assert.equal(result.status, 200);
       assert.equal(result.bytes, 0);
+    });
+
+    it("content-length boundary: declared length exactly equal to 50MB ceiling is allowed in-memory (strict >)", async () => {
+      const result = await executeFetch(`${serverBaseUrl}/exact-ceiling`);
+      assert.equal(result.status, 200);
+      assert.equal(result.bytes, MAX_BUFFERED_RESPONSE_BYTES);
     });
 
     it("normalizes mixed-case Content-Type media types (Text/Plain is text)", async () => {

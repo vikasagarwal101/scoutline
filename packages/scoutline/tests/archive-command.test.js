@@ -12,7 +12,9 @@ import {
   resolveSinceInstant,
   charsetFromContentType,
   handleArchive,
+  fetchLiveDocument,
 } from "../dist/commands/archive.js";
+import { MAX_BUFFERED_RESPONSE_BYTES } from "../dist/lib/bounded-body.js";
 import { main } from "../dist/index.js";
 import { NetworkError, ValidationError } from "../dist/lib/errors.js";
 import { useTempConfigDir } from "./helpers/config-dir-pin.js";
@@ -946,6 +948,154 @@ describe("archive diff review round 3", () => {
                 }),
                 (err) => err instanceof ValidationError && /Archive capture size \(62914560 bytes\)/.test(err.message),
             );
+        } finally {
+            await new Promise((resolve) => server.close(resolve));
+        }
+    });
+
+    it("content-length boundary: archive get declared length exactly equal to 50MB ceiling is allowed (strict >)", async () => {
+        const size = MAX_BUFFERED_RESPONSE_BYTES;
+        const server = http.createServer((req, res) => {
+            const u = new URL(req.url, `http://${req.headers.host}`);
+            if (u.pathname === "/available") {
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({
+                    archived_snapshots: {
+                        closest: {
+                            status: "200",
+                            available: true,
+                            url: `${base}/id_/20230601000000/https://example.com/`,
+                            timestamp: "20230601000000",
+                        },
+                    },
+                }));
+                return;
+            }
+            if (u.pathname.includes("id_/")) {
+                res.writeHead(200, {
+                    "Content-Type": "text/html; charset=utf-8",
+                    "Content-Length": String(size),
+                });
+                res.on("error", () => {});
+                const chunk = Buffer.alloc(1024 * 1024, 0x20);
+                let sent = 0;
+                const writeNext = () => {
+                    while (sent < size) {
+                        sent += chunk.length;
+                        if (!res.write(chunk)) {
+                            res.once("drain", writeNext);
+                            return;
+                        }
+                    }
+                    res.end();
+                };
+                writeNext();
+                return;
+            }
+            res.writeHead(404); res.end();
+        });
+        await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const base = `http://127.0.0.1:${server.address().port}`;
+        try {
+            const result = await executeArchiveGet(
+                "https://example.com/",
+                { at: "best" },
+                {
+                    availabilityEndpoint: `${base}/available`,
+                    replayBaseUrl: base,
+                },
+            );
+            assert.equal(result.bytes, MAX_BUFFERED_RESPONSE_BYTES);
+        } finally {
+            await new Promise((resolve) => server.close(resolve));
+        }
+    });
+
+    it("content-length boundary: replay snapshot declared length exactly equal to 50MB ceiling is allowed (strict >)", async () => {
+        const size = MAX_BUFFERED_RESPONSE_BYTES;
+        const server = http.createServer((req, res) => {
+            const u = new URL(req.url, `http://${req.headers.host}`);
+            if (u.pathname === "/cdx") {
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify([
+                    ["timestamp", "statuscode", "length", "digest", "original"],
+                    ["20230601000000", "200", "100", "D2", "https://example.com/docs"],
+                ]));
+                return;
+            }
+            if (u.pathname.startsWith("/replay/")) {
+                res.writeHead(200, {
+                    "Content-Type": "text/html; charset=utf-8",
+                    "Content-Length": String(size),
+                });
+                res.on("error", () => {});
+                const chunk = Buffer.alloc(1024 * 1024, 0x20);
+                let sent = 0;
+                const writeNext = () => {
+                    while (sent < size) {
+                        sent += chunk.length;
+                        if (!res.write(chunk)) {
+                            res.once("drain", writeNext);
+                            return;
+                        }
+                    }
+                    res.end();
+                };
+                writeNext();
+                return;
+            }
+            if (u.pathname === "/live") {
+                res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+                res.end("<h1>Live</h1>");
+                return;
+            }
+            res.writeHead(404); res.end();
+        });
+        await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const base = `http://127.0.0.1:${server.address().port}`;
+        try {
+            const result = await executeArchiveDiff(`${base}/live`, { since: "2023-12-31", timeout: 5000 }, {
+                cdxEndpoint: `${base}/cdx`,
+                replayBaseUrl: `${base}/replay`,
+            });
+            assert.equal(result.schemaVersion, 1);
+        } finally {
+            await new Promise((resolve) => server.close(resolve));
+        }
+    });
+
+    it("content-length boundary: live fetch declared length exactly equal to 50MB ceiling is allowed (strict >)", async () => {
+        const size = MAX_BUFFERED_RESPONSE_BYTES;
+        const server = http.createServer((req, res) => {
+            const u = new URL(req.url, `http://${req.headers.host}`);
+            if (u.pathname === "/live-exact") {
+                res.writeHead(200, {
+                    "Content-Type": "text/html; charset=utf-8",
+                    "Content-Length": String(size),
+                });
+                res.on("error", () => {});
+                const chunk = Buffer.alloc(1024 * 1024, 0x20);
+                let sent = 0;
+                const writeNext = () => {
+                    while (sent < size) {
+                        sent += chunk.length;
+                        if (!res.write(chunk)) {
+                            res.once("drain", writeNext);
+                            return;
+                        }
+                    }
+                    res.end();
+                };
+                writeNext();
+                return;
+            }
+            res.writeHead(404); res.end();
+        });
+        await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const base = `http://127.0.0.1:${server.address().port}`;
+        try {
+            const live = await fetchLiveDocument(`${base}/live-exact`, 5000);
+            assert.equal(live.raw.byteLength, MAX_BUFFERED_RESPONSE_BYTES);
         } finally {
             await new Promise((resolve) => server.close(resolve));
         }

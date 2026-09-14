@@ -21,12 +21,9 @@ import { invokeCommand } from "../command-invocation.js";
 import type { OutputMode } from "../lib/output.js";
 import { ValidationError, TimeoutError, NetworkError } from "../lib/errors.js";
 import { rejectSmuggledMaxChars } from "../lib/output-budget.js";
+import { MAX_BUFFERED_RESPONSE_BYTES, readBoundedResponseBody } from "../lib/bounded-body.js";
 import type { HandlerDependencies } from "../index.js";
-import {
-  readBoundedResponseBody,
-  DEFAULT_USER_AGENT,
-  DEFAULT_FETCH_TIMEOUT_MS,
-} from "./fetch.js";
+import { DEFAULT_USER_AGENT, DEFAULT_FETCH_TIMEOUT_MS } from "./fetch.js";
 import {
   extractSections,
   extractSectionsHashOnly,
@@ -381,15 +378,14 @@ export async function executeArchiveGet(
     },
     async (res) => {
       const contentLength = res.headers.get("content-length");
-      const MAX_ARCHIVE_IN_MEMORY = 50 * 1024 * 1024;
-      if (contentLength && Number(contentLength) > MAX_ARCHIVE_IN_MEMORY) {
+      if (contentLength && Number(contentLength) > MAX_BUFFERED_RESPONSE_BYTES) {
         throw new ValidationError(
           `Archive capture size (${contentLength} bytes) exceeds in-memory limit (50MB).`,
         );
       }
       const buffer = await readBoundedResponseBody(
         res.body as ReadableStream<Uint8Array> | null,
-        MAX_ARCHIVE_IN_MEMORY,
+        MAX_BUFFERED_RESPONSE_BYTES,
         "Archive capture size",
       );
       return {
@@ -762,14 +758,13 @@ async function fetchSnapshotRaw(
       if (res.status >= 400) {
         throw new NetworkError(`Snapshot replay failed with HTTP ${res.status}.`);
       }
-      const MAX_ARCHIVE_IN_MEMORY = 50 * 1024 * 1024;
       // Declared-length preflight (review): an oversized Content-Length
       // is rejected and cancelled BEFORE the bounded read — a stalled
       // oversized body would otherwise hold the request open for the
       // full timeout. Chunked/absent lengths fall through to the
       // incremental bounded reader.
       const declaredLength = Number(res.headers.get("content-length") ?? "");
-      if (Number.isFinite(declaredLength) && declaredLength > MAX_ARCHIVE_IN_MEMORY) {
+      if (Number.isFinite(declaredLength) && declaredLength > MAX_BUFFERED_RESPONSE_BYTES) {
         await res.body?.cancel().catch(() => {});
         throw new ValidationError(
           `Archive capture size (${declaredLength} bytes) exceeds in-memory ceiling (50MB).`,
@@ -777,7 +772,7 @@ async function fetchSnapshotRaw(
       }
       const buffer = await readBoundedResponseBody(
         res.body as ReadableStream<Uint8Array> | null,
-        MAX_ARCHIVE_IN_MEMORY,
+        MAX_BUFFERED_RESPONSE_BYTES,
         "Archive capture size",
       );
       return {
@@ -823,12 +818,11 @@ export async function fetchLiveDocument(
           await res.body?.cancel().catch(() => {});
           throw new NetworkError(`Live fetch failed with HTTP ${res.status}.`);
         }
-        const MAX_LIVE_IN_MEMORY = 50 * 1024 * 1024;
         // Declared-length preflight (review): same discipline as the
         // archive side — reject an oversized declaration and cancel the
         // body instead of stalling in the reader for the full timeout.
         const declaredLength = Number(res.headers.get("content-length") ?? "");
-        if (Number.isFinite(declaredLength) && declaredLength > MAX_LIVE_IN_MEMORY) {
+        if (Number.isFinite(declaredLength) && declaredLength > MAX_BUFFERED_RESPONSE_BYTES) {
           await res.body?.cancel().catch(() => {});
           throw new ValidationError(
             `Live page size (${declaredLength} bytes) exceeds in-memory ceiling (50MB).`,
@@ -836,7 +830,7 @@ export async function fetchLiveDocument(
         }
         const raw = await readBoundedResponseBody(
           res.body as ReadableStream<Uint8Array> | null,
-          MAX_LIVE_IN_MEMORY,
+          MAX_BUFFERED_RESPONSE_BYTES,
           "Live page size",
         );
         return {

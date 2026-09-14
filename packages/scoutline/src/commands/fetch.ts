@@ -21,6 +21,7 @@ import { invokeCommand } from "../command-invocation.js";
 import type { OutputMode } from "../lib/output.js";
 import { ValidationError, FileError, TimeoutError, NetworkError, ApiError } from "../lib/errors.js";
 import { rejectSmuggledMaxChars } from "../lib/output-budget.js";
+import { MAX_BUFFERED_RESPONSE_BYTES, readBoundedResponseBody } from "../lib/bounded-body.js";
 import { isPdfBuffer, extractPdfText, repairPdf } from "../lib/pdf.js";
 import type { HandlerDependencies } from "../index.js";
 
@@ -43,45 +44,6 @@ const CROSS_ORIGIN_ALLOWED_HEADERS = new Set([
   // JSON endpoint needs its Content-Type to parse it.
   "content-type",
 ]);
-
-/**
- * Incrementally read from a ReadableStream up to maxBytes.
- * Throws ValidationError if incoming data exceeds maxBytes without buffering the remainder.
- */
-export async function readBoundedResponseBody(
-  body: ReadableStream<Uint8Array> | null,
-  maxBytes: number,
-  label = "Response size",
-): Promise<Buffer> {
-  if (!body) {
-    return Buffer.alloc(0);
-  }
-  const reader = body.getReader();
-  const chunks: Buffer[] = [];
-  let totalBytes = 0;
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        totalBytes += value.byteLength;
-        if (totalBytes > maxBytes) {
-          await reader.cancel().catch(() => {});
-          throw new ValidationError(
-            `${label} (${totalBytes} bytes) exceeds in-memory ceiling (${Math.round(maxBytes / (1024 * 1024))}MB).`,
-            "Use --out <file> to stream large responses directly to disk.",
-          );
-        }
-        chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
-      }
-    }
-    return Buffer.concat(chunks);
-  } catch (err) {
-    await reader.cancel().catch(() => {});
-    throw err;
-  }
-}
 
 export const FETCH_HELP = `
 scoutline fetch <url> [options] - Direct, binary-safe HTTP client
@@ -449,8 +411,6 @@ export async function executeFetch(
 
     const isPdfHeader = Boolean(contentTypeLower && contentTypeLower.includes("application/pdf"));
 
-    const MAX_IN_MEMORY_BYTES = 50 * 1024 * 1024; // 50MB ceiling without --out
-
     if (options.out && response.ok && response.body && !options.pdfRepair && options.pdf !== "text") {
       outPath = path.resolve(process.cwd(), options.out);
       const tempPath = `${outPath}.tmp.${process.pid}.${crypto.randomUUID()}`;
@@ -509,7 +469,7 @@ export async function executeFetch(
       if (
         !bodiless &&
         contentLengthHeader &&
-        Number(contentLengthHeader) > MAX_IN_MEMORY_BYTES
+        Number(contentLengthHeader) > MAX_BUFFERED_RESPONSE_BYTES
       ) {
         // Release the connection before throwing: an uncancelled body
         // keeps the keep-alive socket pinned until process exit.
@@ -521,7 +481,7 @@ export async function executeFetch(
       }
       rawBuffer = await readBoundedResponseBody(
         response.body as ReadableStream<Uint8Array> | null,
-        MAX_IN_MEMORY_BYTES,
+        MAX_BUFFERED_RESPONSE_BYTES,
         "Response size",
       );
       bytes = rawBuffer.length;

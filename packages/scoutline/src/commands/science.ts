@@ -47,7 +47,7 @@ import { parseScienceIdentifier } from "../capabilities/science.js";
 import { applyBudget, type BudgetLadder, type LadderRule } from "../lib/output-budget.js";
 import { persistCompaction } from "../lib/output-budget-persistence.js";
 import { redactSecrets } from "../lib/redact.js";
-import { UnsupportedOptionError, ValidationError } from "../lib/errors.js";
+import { ApiError, UnsupportedOptionError, ValidationError } from "../lib/errors.js";
 import type { OutputMode } from "../lib/output.js";
 import type { HandlerDependencies } from "../index.js";
 import { parseBriefMaxChars } from "./repo.js";
@@ -442,13 +442,13 @@ interface ScienceDescriptorLike {
         validate(request: ScienceSearchRequest): void;
         /** Present on every real supplier adapter; test doubles may omit it. */
         cacheIdentity?(request: ScienceSearchRequest): unknown;
-        invoke(request: ScienceSearchRequest): Promise<readonly ScienceWork[]>;
+        invoke(request: ScienceSearchRequest, signal?: AbortSignal): Promise<readonly ScienceWork[]>;
       };
       get?: {
         validate(request: ScienceGetRequest): void;
         /** Present on every real supplier adapter; test doubles may omit it. */
         cacheIdentity?(request: ScienceGetRequest): unknown;
-        invoke(request: ScienceGetRequest): Promise<ScienceWork>;
+        invoke(request: ScienceGetRequest, signal?: AbortSignal): Promise<ScienceWork>;
       };
     };
   };
@@ -676,9 +676,10 @@ async function runScienceSearchWithReroute(
     readonly descriptors: readonly unknown[];
     readonly notice: (message: string) => void;
     readonly journal: boolean;
+    readonly signal?: AbortSignal;
   },
 ): Promise<{ readonly works: readonly ScienceWork[]; readonly identity: unknown; readonly armId: string } | undefined> {
-  const { request, env, descriptors, notice, journal } = options;
+  const { request, env, descriptors, notice, journal, signal } = options;
   const capability = pinned.create({ env }).science?.search;
   if (capability === undefined) {
     throw new ValidationError(
@@ -689,12 +690,31 @@ async function runScienceSearchWithReroute(
   capability.validate(request);
   const identity = journal ? capability.cacheIdentity?.(request) : undefined;
   try {
-    return { works: await capability.invoke(request), identity, armId: pinned.id };
+    return { works: await capability.invoke(request, signal), identity, armId: pinned.id };
   } catch (error) {
+    // A caller cancel ends the walk. Rerouting from a user's Ctrl-C would
+    // attempt the next arm only to fast-fail at its pre-abort check and
+    // emit a misleading "rerouting to <arm>" notice for a cancellation.
+    if (signal?.aborted) {
+      throw new ApiError(
+        "science request was aborted by the caller (Ctrl-C or external signal)",
+        499,
+      );
+    }
     // eligible = configured + capable + validating, D5 order, pin first
     const order = [pinned.id, ...D5_ARM_ORDER.filter((id) => id !== pinned.id)];
     const byId = scienceDescriptorIndex(descriptors);
     for (const id of order.slice(1)) {
+      // A caller cancel BETWEEN reroute attempts ends the walk too —
+      // the remaining arms would only fast-fail at their pre-abort
+      // checks while emitting misleading reroute notices.
+      // defense-in-depth: the per-attempt guard below normally fires first
+      if (signal?.aborted) {
+        throw new ApiError(
+          "science request was aborted by the caller (Ctrl-C or external signal)",
+          499,
+        );
+      }
       const next = byId.get(id);
       if (next === undefined) continue;
       if (!next.isConfigured(env, "science.search")) continue;
@@ -708,7 +728,7 @@ async function runScienceSearchWithReroute(
       }
       const nextIdentity = journal ? nextCapability.cacheIdentity?.(request) : undefined;
       try {
-        const works = await nextCapability.invoke(request);
+        const works = await nextCapability.invoke(request, signal);
         notice(
           `scoutline: ${pinned.id} search failed (${
             error instanceof Error ? error.message : String(error)
@@ -716,6 +736,15 @@ async function runScienceSearchWithReroute(
         );
         return { works, identity: nextIdentity, armId: next.id };
       } catch (nextError) {
+        // A caller cancel DURING a reroute attempt surfaces that
+        // attempt's honest abort error and ends the walk — no further
+        // arms, no "dropped from this reroute walk" notice.
+        if (signal?.aborted) {
+          throw new ApiError(
+            "science request was aborted by the caller (Ctrl-C or external signal)",
+            499,
+          );
+        }
         notice(
           `scoutline: ${next.id} search failed (${
             nextError instanceof Error ? nextError.message : String(nextError)
@@ -728,6 +757,12 @@ async function runScienceSearchWithReroute(
     // surfaces (get-path effective-arm behavior).
     throw error;
   }
+}
+
+function isAbortClassed(reason: unknown): boolean {
+  if (reason instanceof ApiError && reason.statusCode === 499) return true;
+  if (reason instanceof Error && /aborted by the caller/.test(reason.message)) return true;
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -760,6 +795,12 @@ function renderWorkText(work: ScienceWork): string {
 export interface HandleScienceOptions {
   /** Pin from the global `--provider` flag (command-local wins). */
   readonly explicitProvider?: string;
+  /**
+   * Optional interrupt registrar injection (matches research.ts precedent).
+   * Accepts a handler closure and returns a teardown. When absent, defaults
+   * to process.on("SIGINT", handler) and returns () => process.off("SIGINT", handler).
+   */
+  readonly registerInterrupt?: (handler: () => void) => () => void;
 }
 
 /**
@@ -939,7 +980,22 @@ export async function handleScience(
     descriptors: deps.providerDescriptors,
   };
 
-  if (subcommand === "search") {
+  const controller = new AbortController();
+  const registerInterrupt =
+    options.registerInterrupt ??
+    ((handler: () => void) => {
+      process.on("SIGINT", handler);
+      return () => {
+        process.off("SIGINT", handler);
+      };
+    });
+  let cleanup: (() => void) | undefined;
+
+  try {
+    cleanup = registerInterrupt(() => {
+      controller.abort();
+    });
+    if (subcommand === "search") {
     // Multiple positionals join with spaces (deep-review fix; the main
     // search command's `positional.join(" ")` idiom). Taking only
     // positional[0] silently dropped every word after the first, and
@@ -968,7 +1024,7 @@ export async function handleScience(
     // reroute below (and before survivors are recomputed) so the routing
     // SHAPE survives narrowing. `mode` follows this, not arms.length.
     let journalFannedOut = false;
-    return invokeCommand(
+    return await invokeCommand(
       deps.invocation,
       async (context) => {
         // T10 fan-out: resolve the arm set INSIDE the behavior so the
@@ -997,6 +1053,7 @@ export async function handleScience(
               descriptors: selectionOpts.descriptors,
               notice: context.notice,
               journal: deps.journal !== undefined,
+              signal: controller.signal,
             },
           );
           if (served !== undefined) {
@@ -1044,7 +1101,7 @@ export async function handleScience(
             if (deps.journal !== undefined) {
               armIdentities[index] = capability.cacheIdentity?.(request);
             }
-            return await capability.invoke(request);
+            return await capability.invoke(request, controller.signal);
           }),
         );
         // Deterministic failure: if every arm rejected, surface the
@@ -1074,6 +1131,12 @@ export async function handleScience(
           firstRejected !== undefined &&
           settled.every((outcome) => outcome.status === "rejected")
         ) {
+          if (controller.signal.aborted) {
+            throw new ApiError(
+              "science request was aborted by the caller (Ctrl-C or external signal)",
+              499,
+            );
+          }
           throw firstRejected.reason;
         }
         // D5 visible narrowing — never a silent drop: an arm that
@@ -1083,6 +1146,7 @@ export async function handleScience(
         // order equals arms order, so the index recovers the arm id.
         settled.forEach((outcome, index) => {
           if (outcome.status !== "rejected") return;
+          if (isAbortClassed(outcome.reason)) return;
           const message =
             outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
           context.notice(
@@ -1098,12 +1162,6 @@ export async function handleScience(
         journalArms = settled.flatMap((outcome, index) =>
           outcome.status === "fulfilled" ? [arms[index]?.id ?? "unknown"] : [],
         );
-        // D5 visible narrowing — never a silent drop: an arm that
-        // failed at INVOKE time (ApiError/network) while other arms
-        // serve is disclosed per-arm on stderr (search-command
-        // armNotice precedent), then the partial set merges. settled
-        // order equals arms order, so the index recovers the arm id.
-
         // T10 merge: DOI-first dedup identity (exact-url fallback) +
         // D12 field-wise union enrichment, first-arm (D5 order)
         // preference — mergeScienceWorks below.
@@ -1163,7 +1221,7 @@ export async function handleScience(
   const maxChars = rawMaxChars === undefined ? undefined : parseBriefMaxChars(rawMaxChars);
   let journalWork: ScienceWork | undefined;
   let journalIdentity: unknown;
-  return invokeCommand(
+  return await invokeCommand(
     deps.invocation,
     async (context) => {
       // T10 get fallback (AC-5b): walk the id-type-filtered D5 arm
@@ -1225,9 +1283,18 @@ export async function handleScience(
           journalIdentity = capability.cacheIdentity?.(request);
         }
         try {
-          work = await capability.invoke(request);
+          work = await capability.invoke(request, controller.signal);
           break;
         } catch (error) {
+          // A caller cancel ends the walk (same ruling as the pinned-search
+          // reroute walk): the remaining arms would only fast-fail at their
+          // pre-abort check while emitting a misleading reroute notice.
+          if (controller.signal.aborted) {
+            throw new ApiError(
+              "science request was aborted by the caller (Ctrl-C or external signal)",
+              499,
+            );
+          }
           const next: ScienceDescriptorLike | undefined = arms[attempt + 1];
           if (next === undefined || deps.fallbackEnabled === false) throw error;
           // AC-5b reroute note: failed supplier AND reroute target.
@@ -1272,4 +1339,7 @@ export async function handleScience(
           cacheKey: () => scienceCacheKey(journalIdentity),
         }),
   );
+  } finally {
+    cleanup?.();
+  }
 }

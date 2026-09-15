@@ -722,11 +722,11 @@ sharing one home directory never read each other's caches or artifact
 stores.
 
 Pass the flag — it is the full contract. `SCOUTLINE_ISOLATED=1` in the
-environment engages only part of it, asymmetrically: the artifact store
-and tool-discovery cache resolvers honor the variable and relocate, and
-`batch` reads it for its per-op refusals, but the response-cache factory
-(in `main()`), the `watch`/`research`/`crawl` refusals, and the
-shared-state skip all key on the flag alone. Prefer `--isolated`.
+environment engages only part of it, asymmetrically: the artifact
+store, the MCP client's tool-discovery and response caches, and `batch`'s
+per-op refusals honor the variable, but the capability response caches
+(the factory in `main()`), the `watch`/`research`/`crawl` refusals, and
+the shared-state skip all key on the flag alone. Prefer `--isolated`.
 
 ### What isolates
 

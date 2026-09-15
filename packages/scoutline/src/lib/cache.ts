@@ -129,10 +129,7 @@ export function resolveResponseCacheDirPure(
  * (`SCOUTLINE_ISOLATED="1"` or `"true"`), derives `<root>/tools/isolated/<pid>`.
  * Returns `<root>/tools` by default.
  */
-export function resolveToolCacheDirPure(
-  env: CacheDirEnvironment,
-  plat: CacheDirPlatform,
-): string {
+export function resolveToolCacheDirPure(env: CacheDirEnvironment, plat: CacheDirPlatform): string {
   const root = resolveCacheRootPure(env, plat);
   const baseDir = path.join(root, "tools");
   if (env.SCOUTLINE_ISOLATED === "1" || env.SCOUTLINE_ISOLATED === "true") {
@@ -550,6 +547,7 @@ export async function readCache<T>(
   key: string,
   decoder: (raw: unknown) => T,
   ttlMs?: number,
+  env?: CacheDirEnvironment,
 ): Promise<T | null>;
 
 /**
@@ -557,18 +555,47 @@ export async function readCache<T>(
  * must narrow the result — no unsafe generic assumption is made about the
  * stored shape.
  */
-export async function readCache(key: string, ttlMs?: number): Promise<unknown | null>;
+export async function readCache(
+  key: string,
+  ttlMs?: number,
+  env?: CacheDirEnvironment,
+): Promise<unknown | null>;
+
+/**
+ * Read a cached value from the directory derived for `env` (the
+ * `cache/isolated/<pid>/` subtree when it carries SCOUTLINE_ISOLATED).
+ */
+export async function readCache(key: string, env?: CacheDirEnvironment): Promise<unknown | null>;
 
 export async function readCache(
   key: string,
-  decoderOrTtl?: number | ((raw: unknown) => unknown),
-  ttlMs = getCacheTtlMs(),
+  decoderOrTtlOrEnv?: number | ((raw: unknown) => unknown) | CacheDirEnvironment,
+  ttlMsOrEnv: number | CacheDirEnvironment = getCacheTtlMs(),
+  env?: CacheDirEnvironment,
 ): Promise<unknown | null> {
-  return readCacheInDir(responseCacheDir(), key, decoderOrTtl as any, ttlMs);
+  // N6: an injected env routes reads through the isolated layout when it
+  // carries SCOUTLINE_ISOLATED (mirrors the tool-cache seam). Absent env
+  // keeps the shared-dir default byte-identical.
+  const envFromArg =
+    typeof decoderOrTtlOrEnv === "object" && decoderOrTtlOrEnv !== null
+      ? (decoderOrTtlOrEnv as CacheDirEnvironment)
+      : undefined;
+  const decoderOrTtl =
+    typeof decoderOrTtlOrEnv === "function" || typeof decoderOrTtlOrEnv === "number"
+      ? decoderOrTtlOrEnv
+      : undefined;
+  const ttlMs = typeof ttlMsOrEnv === "number" ? ttlMsOrEnv : getCacheTtlMs();
+  const resolvedEnv = envFromArg ?? (typeof ttlMsOrEnv === "number" ? env : ttlMsOrEnv);
+  return readCacheInDir(responseCacheDir(resolvedEnv), key, decoderOrTtl as any, ttlMs);
 }
 
-export async function writeCache<T>(key: string, data: T): Promise<void> {
-  return writeCacheInDir(responseCacheDir(), key, data);
+export async function writeCache<T>(
+  key: string,
+  data: T,
+  env?: CacheDirEnvironment,
+): Promise<void> {
+  // N6: see readCache — the injected env picks the isolated layout.
+  return writeCacheInDir(responseCacheDir(env), key, data);
 }
 
 async function evictIfNeeded(dir: string): Promise<void> {
@@ -882,7 +909,8 @@ async function pruneSubdirByAge(
         // they remain eligible under an age-only prune.
         if (!parsed) continue;
         if (selectors.provider !== undefined && parsed.provider !== selectors.provider) continue;
-        if (selectors.capability !== undefined && parsed.capability !== selectors.capability) continue;
+        if (selectors.capability !== undefined && parsed.capability !== selectors.capability)
+          continue;
       }
       const p = path.join(dir, name);
       try {
@@ -1157,9 +1185,7 @@ function addToBucket(
   // Own-key read only: inherited properties (e.g. `constructor` on a
   // plain object, anything on a null-prototype accumulator's chain)
   // must never be mistaken for an existing bucket.
-  const existing = Object.prototype.hasOwnProperty.call(buckets, key)
-    ? buckets[key]
-    : undefined;
+  const existing = Object.prototype.hasOwnProperty.call(buckets, key) ? buckets[key] : undefined;
   buckets[key] = existing
     ? {
         entries: existing.entries + 1,

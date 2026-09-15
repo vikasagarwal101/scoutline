@@ -330,9 +330,10 @@ and per-process caches. Several `scoutline` processes sharing one home
 directory never read each other's caches or artifact stores — built for
 high-throughput headless concurrency. Pass the flag — `SCOUTLINE_ISOLATED=1`
 in the environment engages only part of the contract: the artifact
-store and tool cache relocate and `batch` applies its per-op refusals,
-but the response cache does not relocate and `watch`/`research`/`crawl`
-do not refuse. Prefer `--isolated`.
+store, the MCP client's tool and response caches, and `batch`'s per-op
+refusals honor the variable,
+but the capability response caches (main's factory) and `watch`/
+`research`/`crawl` do not. Prefer `--isolated`.
 
 | Refused under `--isolated` | Why |
 | --- | --- |

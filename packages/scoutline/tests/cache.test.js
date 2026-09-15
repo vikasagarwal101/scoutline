@@ -2203,3 +2203,107 @@ describe("cacheStats — enriched per-provider/capability + live-vs-expired stat
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Science entries in stats + prune selectors (#140 T4b)
+//
+// Science response-cache keys carry a DOTTED capability verbatim
+// (`science.search`/`science.get`) and a KEYLESS empty credential
+// segment, so the pre-science six-segment filename parser nulled them:
+// they bucketed under `legacy` and `--provider`/`--capability` selectors
+// never matched. These two pins exercise the widened parse through the
+// real write seam, stats inventory, and the prune selector scan.
+// ---------------------------------------------------------------------------
+
+describe("cacheStats + pruneCaches — science entries bucketed and selectable (#140 T4b)", () => {
+  const credHash = crypto.createHash("sha256").update("cred").digest("hex");
+  const reqHash = crypto.createHash("sha256").update("req").digest("hex");
+  const scienceKeys = () => ({
+    search: buildProviderCacheKey({
+      provider: "openalex",
+      capability: "science.search",
+      credentialFingerprint: "",
+      request: { query: "graph transformers" },
+    }),
+    get: buildProviderCacheKey({
+      provider: "arxiv",
+      capability: "science.get",
+      credentialFingerprint: "",
+      request: { identifier: "10.1038/nature12373" },
+    }),
+  });
+
+  it("(c) a written science entry buckets under its supplier/capability, not legacy", async (t) => {
+    await withTempDir(t, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const keys = scienceKeys();
+        // Real write seam (isolated root) — not a hand-placed fixture.
+        await writeCache(keys.search, { works: [{ title: "t", url: "https://x" }] });
+        const searchPath = path.join(dir, "cache", keys.search);
+        assert.strictEqual(await fileExists(searchPath), true, "science entry written");
+
+        const rc = (await cacheStats()).responseCache;
+        const size = (await fs.stat(searchPath)).size;
+
+        // The dotted capability is a bucket key verbatim; the keyless
+        // supplier is its own provider bucket — neither is `legacy`.
+        assert.deepStrictEqual(rc.byProvider.openalex, {
+          entries: 1,
+          totalBytes: size,
+          live: 1,
+          expired: 0,
+        });
+        assert.deepStrictEqual(rc.byCapability["science.search"], {
+          entries: 1,
+          totalBytes: size,
+          live: 1,
+          expired: 0,
+        });
+        assert.strictEqual(Object.hasOwn(rc.byProvider, "legacy"), false);
+        assert.strictEqual(Object.hasOwn(rc.byCapability, "legacy"), false);
+
+        // A second science entry under the same dotted capability
+        // accumulates in one capability bucket, split by supplier.
+        await writeCache(keys.get, { work: { title: "t", url: "https://x" } });
+        const rc2 = (await cacheStats()).responseCache;
+        assert.strictEqual(rc2.byProvider.arxiv.entries, 1);
+        assert.strictEqual(rc2.byCapability["science.get"].entries, 1);
+        assert.strictEqual(Object.hasOwn(rc2.byCapability, "legacy"), false);
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+
+  it("(d) prune --provider selects a science entry it previously skipped", async (t) => {
+    await withTempDir(t, async (dir) => {
+      process.env.SCOUTLINE_CACHE_DIR = dir;
+      try {
+        const now = Date.now();
+        const cacheDir = path.join(dir, "cache");
+        await fs.mkdir(cacheDir, { recursive: true });
+        const keys = scienceKeys();
+        // Both science entries expired; a non-science entry as the control.
+        const control = `v2.search.tavily.${credHash}.${reqHash}.json`;
+        for (const name of [keys.search, keys.get, control]) {
+          await fs.writeFile(path.join(cacheDir, name), JSON.stringify({ ts: now - 100_000, data: {} }));
+        }
+
+        const result = await pruneCaches({ provider: "openalex", olderThanMs: 60_000 });
+        assert.strictEqual(result.prunedResponses, 1, "only the selected science supplier dies");
+        assert.strictEqual(await fileExists(path.join(cacheDir, keys.search)), false);
+        assert.strictEqual(await fileExists(path.join(cacheDir, keys.get)), true);
+        assert.strictEqual(await fileExists(path.join(cacheDir, control)), true);
+
+        // The dotted capability selector matches the SAME entry family.
+        const result2 = await pruneCaches({ capability: "science.get", olderThanMs: 60_000 });
+        assert.strictEqual(result2.prunedResponses, 1);
+        assert.strictEqual(await fileExists(path.join(cacheDir, keys.get)), false);
+        assert.strictEqual(await fileExists(path.join(cacheDir, control)), true);
+      } finally {
+        delete process.env.SCOUTLINE_CACHE_DIR;
+      }
+    });
+  });
+});

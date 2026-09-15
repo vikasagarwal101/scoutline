@@ -931,6 +931,27 @@ export interface ParsedCacheFileName {
  * (see {@link buildProviderCacheKey}), so selector matching is a pure
  * string operation with zero content reads.
  *
+ * The grammar is read RIGHT-to-LEFT, because two of its fields are not
+ * fixed-width in the general case:
+ *
+ *   - `capability` MAY carry dots. Science carries its capability
+ *     VERBATIM (`science.search` / `science.get`), so the joined
+ *     remainder — not a single field — is the capability.
+ *   - `credential-hash` MAY be empty. Science suppliers are keyless, so
+ *     their fingerprint is `""` and the key holds an EMPTY segment
+ *     (the keyless partition): `v2.science.search.openalex..<hash>.json`.
+ *
+ * So: strip the `v2.`/`.json` guard, split on ".", and take the last
+ * field as the request hash, the second-to-last as the credential
+ * fingerprint (possibly empty), the third-to-last as the provider, and
+ * everything left of it — rejoined on "." — as the capability.
+ *
+ * The pre-science shape was EXACTLY six segments with every middle
+ * segment non-empty. Widening that is only safe if it does not also
+ * loosen it, so the request hash must carry the SHA-256 house shape
+ * (64 lowercase hex) and both the provider and the capability must be
+ * non-empty.
+ *
  * Returns `null` for every other shape — legacy (non-v2) entries,
  * `.tmp` staging files, `.lock` files, and malformed names. Those are
  * selectable by age only and bucket under `legacy` in stats.
@@ -939,14 +960,32 @@ export function parseCacheFileName(name: string): ParsedCacheFileName | null {
   if (typeof name !== "string" || name === "") return null;
   if (!name.startsWith("v2.") || !name.endsWith(".json")) return null;
 
-  const segments = name.split(".");
-  // v2 | capability | provider | credential-hash | request-hash | json
-  if (segments.length !== 6) return null;
+  const segments = name.slice("v2.".length, -".json".length).split(".");
+  // request-hash | credential-hash | provider | capability(≥1 field)
+  if (segments.length < 4) return null;
 
-  const capability = segments[1];
-  const provider = segments[2];
+  const requestHash = segments[segments.length - 1];
+  const credentialHash = segments[segments.length - 2];
+  const provider = segments[segments.length - 3];
+  // The three right-most fields always exist under the length guard
+  // above; the narrowing keeps `noUncheckedIndexedAccess` honest.
+  if (requestHash === undefined || credentialHash === undefined || provider === undefined) {
+    return null;
+  }
+  const capability = segments.slice(0, segments.length - 3).join(".");
+
+  // Tightened so the widening cannot admit anything the 6-segment
+  // exactness used to reject on shape alone.
+  if (!/^[0-9a-f]{64}$/.test(requestHash)) return null;
   if (!capability || !provider) return null;
-  if (!segments[3] || !segments[4]) return null;
+  // A dotted capability sits BETWEEN dots, so no joined field may be
+  // empty: `a..b` and a leading dot (`.science.get`) are malformed
+  // names, not capabilities. This is also what keeps the widen from
+  // accepting a name like `v2..x.<hash>.<hash>.json`.
+  if (segments.slice(0, segments.length - 3).includes("")) return null;
+  // The credential fingerprint is the SHA-256 hex of a credential when
+  // the supplier is keyed, so it is empty or a full lowercase digest.
+  if (credentialHash !== "" && !/^[0-9a-f]{64}$/.test(credentialHash)) return null;
 
   return { capability, provider };
 }

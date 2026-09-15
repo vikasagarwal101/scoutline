@@ -378,9 +378,9 @@ the supplier wire supports them. `science get <identifier>` fetches one
 work by bare DOI, numeric PMID, or arXiv id. Both consult a 24h local
 response cache keyed per supplier and request; `--no-cache` bypasses the
 cache for one invocation. Transient failures (timeouts, network errors,
-HTTP 429/5xx) retry once with jittered backoff; quota exhaustion is
-terminal, and cache-served runs still record journal warm-repeat markers
-in `history`.
+5xx) retry once with jittered backoff; supplier 429s surface as terminal
+quota errors, and cache-served runs still record journal warm-repeat
+markers in `history`.
 
 ## Usage
 

@@ -74,7 +74,10 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // Rebaselined at #140 T6: the Science section gained the cache/retry
 // blurb — 24h response cache, --no-cache bypass, one transient retry,
 // journal warm-repeat markers (the sanctioned per-ticket docs edit).
-const SKILL_BODY_SHA256 = "44b132389f913570291d971283dcaa1666a3bc4a6812263c551567520dcd741d";
+// Rebaselined at #140 fix-round follow-up: the Science blurb's retry
+// clause reworded to the honest 429 form (supplier 429s surface as
+// terminal quota errors — they are never retried).
+const SKILL_BODY_SHA256 = "a37decbfd95e6401c0465399bfc1c5e0e206f23764c959184c8f1bdcf8dc4c74";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

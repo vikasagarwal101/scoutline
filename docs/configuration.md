@@ -721,11 +721,12 @@ high-throughput headless concurrency: several `scoutline` processes
 sharing one home directory never read each other's caches or artifact
 stores.
 
-Pass the flag — it is the full contract. The store resolvers additionally
-honor `SCOUTLINE_ISOLATED=1` in the environment, so setting it alone does
-relocate the three stores below; it does not, however, trigger the
-stateful-command refusals or the shared-state skip, both of which key on
-the flag. Prefer `--isolated`.
+Pass the flag — it is the full contract. `SCOUTLINE_ISOLATED=1` in the
+environment engages only part of it, asymmetrically: the artifact store
+and tool-discovery cache resolvers honor the variable and relocate, and
+`batch` reads it for its per-op refusals, but the response-cache factory
+(in `main()`), the `watch`/`research`/`crawl` refusals, and the
+shared-state skip all key on the flag alone. Prefer `--isolated`.
 
 ### What isolates
 

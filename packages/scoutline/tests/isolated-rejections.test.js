@@ -11,7 +11,8 @@
  *   4. batch manifest carrying a research op under --isolated → per-op
  *      manifest VALIDATION_ERROR naming `operations[N]`; a manifest with
  *      no research/crawl ops runs fine under --isolated.
- *   5. watch rejection (the wording precedent) is unchanged by this lane.
+ *   5. watch rejection (the wording precedent) is unchanged by this lane —
+ *      pinned in watch-command.test.js, not duplicated here (r2 review).
  *
  * Exit-code pins are env-honest: these rejections fire at parse time in
  * main()'s dispatch switch / parseBatchManifest, before credential
@@ -198,75 +199,10 @@ describe("stateful commands refuse --isolated (#157b)", () => {
 // ---------------------------------------------------------------------------
 
 describe("batch manifest rejects stateful ops under --isolated (#157b)", () => {
-  it("parseBatchManifest unit: research op under isolated=true → operations[0] error", () => {
-    assert.throws(
-      () =>
-        parseBatchManifest(
-          {
-            schemaVersion: 1,
-            operations: [{ name: "op-r", command: "research", input: { query: "q" } }],
-          },
-          { ...BATCH_DEPS, isolated: true },
-        ),
-      (err) => {
-        assert.ok(err instanceof ValidationError, `got ${err?.name}: ${err?.message}`);
-        assert.strictEqual(
-          err.message,
-          'operations[0]: command "research" is stateful and cannot run under --isolated (drop --isolated to keep resume state)',
-        );
-        return true;
-      },
-    );
-  });
-
-  it("parseBatchManifest unit: crawl op under isolated=true → operations[1] error (index named)", () => {
-    assert.throws(
-      () =>
-        parseBatchManifest(
-          {
-            schemaVersion: 1,
-            operations: [
-              { name: "ok", command: "search", input: { query: "q" } },
-              { name: "bad", command: "crawl", input: { url: "https://example.com/" } },
-            ],
-          },
-          { ...BATCH_DEPS, isolated: true },
-        ),
-      (err) => {
-        assert.strictEqual(
-          err.message,
-          'operations[1]: command "crawl" is stateful and cannot run under --isolated (drop --isolated to keep resume state)',
-        );
-        return true;
-      },
-    );
-  });
-
-  it("parseBatchManifest unit: allowlist error still fires first for an out-of-allowlist command", () => {
-    assert.throws(
-      () =>
-        parseBatchManifest(
-          { schemaVersion: 1, operations: [{ name: "x", command: "frobnicate", input: {} }] },
-          { ...BATCH_DEPS, isolated: true },
-        ),
-      (err) => {
-        assert.strictEqual(err.message, BATCH_ALLOWLIST_MESSAGE);
-        return true;
-      },
-    );
-  });
-
-  it("parseBatchManifest unit: isolated=false/absent leaves manifests unchanged (research parses)", () => {
-    const raw = {
-      schemaVersion: 1,
-      operations: [{ name: "op-r", command: "research", input: { query: "q" } }],
-    };
-    for (const isolated of [undefined, false]) {
-      const parsed = parseBatchManifest(raw, { ...BATCH_DEPS, isolated });
-      assert.strictEqual(parsed.operations.length, 1);
-      assert.strictEqual(parsed.operations[0].command, "research");
-    }
-  });
+  // The four parseBatchManifest unit pins (operations[0]/[1] error,
+  // allowlist-first, isolated-absent parses) live in
+  // batch-manifest.test.js ("batch manifest isolated rejection") — the
+  // manifest-parse home — not duplicated here (r2 review nit).
 
   it("main()-driven: batch manifest with a research op under --isolated rejects per-op before any op runs", async () => {
     const { file, dir } = writeManifest({

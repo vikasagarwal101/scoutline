@@ -10,6 +10,9 @@ import {
   resolveToolCacheDirPure,
   createFileResponseCache,
   defaultResponseCache,
+  cacheStats,
+  clearAllCaches,
+  writeCacheInDir,
 } from "../dist/lib/cache.js";
 import {
   buildToolCachePath,
@@ -335,5 +338,61 @@ describe("N3: Isolated Cache Resolution and Directory Derivation", () => {
       const isolatedDir = path.join(tempCacheDir, "cache", "isolated", `${process.pid}`);
       assert.ok(!fs.existsSync(isolatedDir));
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// r2 review CR-1 — the non-isolated stats/clear views skip isolated subtrees
+// ---------------------------------------------------------------------------
+
+describe("non-isolated cache stats/clear skip the isolated subtree (#157, r2 CR-1)", () => {
+  let tempCacheDir;
+  let prevCacheDir;
+
+  beforeEach(() => {
+    tempCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-n3-skip-"));
+    prevCacheDir = process.env.SCOUTLINE_CACHE_DIR;
+    process.env.SCOUTLINE_CACHE_DIR = tempCacheDir;
+  });
+
+  afterEach(() => {
+    if (prevCacheDir === undefined) delete process.env.SCOUTLINE_CACHE_DIR;
+    else process.env.SCOUTLINE_CACHE_DIR = prevCacheDir;
+    if (tempCacheDir && fs.existsSync(tempCacheDir)) {
+      fs.rmSync(tempCacheDir, { recursive: true, force: true });
+    }
+  });
+
+  async function seedIsolatedEntry() {
+    const isolatedDir = path.join(tempCacheDir, "cache", "isolated", `${process.pid}`);
+    const cache = createFileResponseCache(isolatedDir);
+    await cache.set("v2.search.zai.fp.hash.json", { ts: Date.now(), data: {} });
+    const entry = path.join(isolatedDir, "v2.search.zai.fp.hash.json");
+    assert.ok(fs.existsSync(entry), "seed: isolated entry must exist");
+    return { isolatedDir, entry };
+  }
+
+  it("cacheStats does not count entries inside cache/isolated/<pid>/", async () => {
+    await seedIsolatedEntry();
+    const stats = await cacheStats();
+    assert.equal(
+      stats.responseCache.entries,
+      0,
+      "non-isolated stats view must not see the isolated subtree",
+    );
+  });
+
+  it("clearAllCaches leaves cache/isolated/<pid>/ entries intact", async () => {
+    const { entry } = await seedIsolatedEntry();
+    await clearAllCaches();
+    assert.ok(
+      fs.existsSync(entry),
+      "non-isolated clear must not delete another process's in-flight isolated entries",
+    );
+    // And the non-isolated cache/ dir itself is still emptied by the clear.
+    const top = fs
+      .readdirSync(path.join(tempCacheDir, "cache"))
+      .filter((name) => name !== "isolated");
+    assert.deepEqual(top, [], "non-isolated entries are cleared as before");
   });
 });

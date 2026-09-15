@@ -372,3 +372,134 @@ describe("T1: hermeticMainDeps fills the science triple", () => {
     assert.strictEqual(deps.scienceCache, explicit);
   });
 });
+
+// ---------------------------------------------------------------------------
+// T2 — search fan-out per-arm consult + --no-cache
+// ---------------------------------------------------------------------------
+
+describe("T2: fan-out per-arm cache consult", () => {
+  it("identical second search serves from cache — ZERO supplier invokes", async () => {
+    const cache = createDecodingCache();
+    const { descriptors, byId } = scienceFive();
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t2-warm-"));
+    try {
+      const r1 = await runMain(["science", "search", "warm query"], {
+        descriptors, artifactsDir: dir, scienceCache: cache,
+      });
+      assert.equal(r1.status, 0, `run 1 stderr=${JSON.stringify(r1.stderr)}`);
+      for (const id of D5_ARM_ORDER) {
+        assert.equal(byId[id].calls.search.length, 1, `run 1: ${id} invoked once`);
+      }
+      const r2 = await runMain(["science", "search", "warm query"], {
+        descriptors, artifactsDir: dir, scienceCache: cache,
+      });
+      assert.equal(r2.status, 0, `run 2 stderr=${JSON.stringify(r2.stderr)}`);
+      for (const id of D5_ARM_ORDER) {
+        assert.equal(byId[id].calls.search.length, 1, `run 2: ${id} NOT re-invoked (cache hit)`);
+      }
+      assert.equal(
+        JSON.parse(r2.stdout.join("")).length,
+        JSON.parse(r1.stdout.join("")).length,
+        "run 2 output equals run 1 (merged cache hits)",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--no-cache re-invokes every arm and skips BOTH read and write", async () => {
+    const cache = createDecodingCache();
+    const { descriptors, byId } = scienceFive();
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t2-nocache-"));
+    try {
+      const r1 = await runMain(["science", "search", "nocache query"], {
+        descriptors, artifactsDir: dir, scienceCache: cache,
+      });
+      assert.equal(r1.status, 0);
+      assert.equal(cache.store.size, 5, "run 1 seeded five per-arm entries");
+      const r2 = await runMain(["science", "search", "nocache query", "--no-cache"], {
+        descriptors, artifactsDir: dir, scienceCache: cache,
+      });
+      assert.equal(r2.status, 0, `--no-cache run stderr=${JSON.stringify(r2.stderr)}`);
+      for (const id of D5_ARM_ORDER) {
+        assert.equal(byId[id].calls.search.length, 2, `--no-cache: ${id} re-invoked`);
+      }
+      assert.equal(cache.store.size, 5, "--no-cache wrote nothing (five run-1 keys only)");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("hit arm + live sibling merge: dedup still works across cache/live arms", async () => {
+    const cache = createDecodingCache();
+    let arxivEnabled = false;
+    const { descriptors, byId } = scienceFive({
+      arxiv: { configured: () => arxivEnabled },
+    });
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t2-mixed-"));
+    try {
+      const r1 = await runMain(["science", "search", "mixed query"], {
+        descriptors, artifactsDir: dir, scienceCache: cache,
+      });
+      assert.equal(r1.status, 0);
+      assert.equal(byId.arxiv.calls.search.length, 0, "run 1: arxiv not an arm");
+      arxivEnabled = true;
+      const r2 = await runMain(["science", "search", "mixed query"], {
+        descriptors, artifactsDir: dir, scienceCache: cache,
+      });
+      assert.equal(r2.status, 0, `stderr=${JSON.stringify(r2.stderr)}`);
+      assert.equal(byId.arxiv.calls.search.length, 1, "run 2: arxiv ran LIVE");
+      for (const id of ["openalex", "crossref", "pubmed", "europepmc"]) {
+        assert.equal(byId[id].calls.search.length, 1, `run 2: ${id} served from cache`);
+      }
+      const rows = JSON.parse(r2.stdout.join(""));
+      assert.equal(rows.length, 5, "live arxiv row + four cached rows merge to five");
+      const urls = rows.map((w) => w.url).sort();
+      assert.deepEqual(urls, D5_ARM_ORDER.map((id) => `https://example.org/${id}`).sort());
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("malformed cached entry = miss + re-set (decoder null → invoke → overwrite)", async () => {
+    const cache = createDecodingCache();
+    const key = scienceCacheKey({
+      supplier: "openalex",
+      capability: "science.search",
+      credentialFingerprint: "",
+      request: { query: "malformed test" },
+    });
+    cache.store.set(key, { not: "an array" });
+    const { descriptors, byId } = scienceFive();
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t2-malformed-"));
+    try {
+      const r = await runMain(["science", "search", "malformed test"], {
+        descriptors, artifactsDir: dir, scienceCache: cache,
+      });
+      assert.equal(r.status, 0, `stderr=${JSON.stringify(r.stderr)}`);
+      assert.equal(byId.openalex.calls.search.length, 1, "malformed entry → miss → openalex invoked");
+      assert.notStrictEqual(decodeScienceWorks(cache.store.get(key)), null, "the key was overwritten with good works");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--no-cache parses on get too (accepted, invokes live)", async () => {
+    const cache = createDecodingCache();
+    const { descriptors, byId } = scienceFive();
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t2-getnc-"));
+    try {
+      const r1 = await runMain(["science", "get", "10.1038/nature12373"], {
+        descriptors, artifactsDir: dir, scienceCache: cache,
+      });
+      const r2 = await runMain(["science", "get", "10.1038/nature12373", "--no-cache"], {
+        descriptors, artifactsDir: dir, scienceCache: cache,
+      });
+      assert.equal(r1.status, 0);
+      assert.equal(r2.status, 0, "--no-cache accepted on get");
+      assert.equal(byId.openalex.calls.get.length, 2, "--no-cache re-invoked openalex get");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

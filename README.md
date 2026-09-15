@@ -375,7 +375,9 @@ scoutline science get 10.1038/nature12373
 (`--provider <id>` pins one) and merges a deduplicated work list, with
 `--author`, `--year`, `--venue`, and `--type` filters consumed only where
 the supplier wire supports them. `science get <identifier>` fetches one
-work by bare DOI, numeric PMID, or arXiv id.
+work by bare DOI, numeric PMID, or arXiv id. Both consult a 24h local
+response cache keyed per supplier and request; `--no-cache` bypasses the
+cache for one invocation.
 
 ## Usage
 

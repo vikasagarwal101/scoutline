@@ -43,7 +43,7 @@ import type {
   ScienceSearchRequest,
   ScienceWork,
 } from "../capabilities/science.js";
-import { parseScienceIdentifier } from "../capabilities/science.js";
+import { decodeScienceWorks, parseScienceIdentifier } from "../capabilities/science.js";
 import { applyBudget, type BudgetLadder, type LadderRule } from "../lib/output-budget.js";
 import { persistCompaction } from "../lib/output-budget-persistence.js";
 import { redactSecrets } from "../lib/redact.js";
@@ -111,6 +111,7 @@ Search options:
   --type <type>      Filter by work type: article, preprint,
                      conference-paper, chapter, dataset, review, other
   --provider <id>    Pin one supplier (${D5_ARM_ORDER.join(", ")}); "all" is the default fan-out
+  --no-cache         Bypass the response cache for this invocation (search and get)
 
 Identifier grammar (get):
   DOI    10.1038/nature12373      (bare — no "doi:" prefix)
@@ -927,6 +928,9 @@ export async function handleScience(
   options: HandleScienceOptions = {},
 ): Promise<number> {
   const { subcommand, positional, flags, showHelp } = parseScienceArgs(args);
+  // #140: `--no-cache` skips BOTH the response-cache read and write for
+  // this invocation (house idiom: the valueless boolean flag form).
+  const noCache = flags["no-cache"] === true;
 
   if (showHelp || subcommand === undefined) {
     deps.invocation.writeStdout(SCIENCE_HELP);
@@ -1080,6 +1084,11 @@ export async function handleScience(
         // orchestration shape). allSettled: a later arm's failure must
         // not discard an earlier arm's already-merged works.
         const armIdentities: unknown[] = [];
+        // #140 T2: per-arm cache-hit flags — direct truth from the
+        // consult owner. The journal's every-arm-cache gate (T5) reads
+        // THESE, never the capture cell (last-write-wins across arms
+        // and stays the save hook's seam).
+        const armCacheHits: boolean[] = [];
         const settled = await Promise.allSettled(
           arms.map(async (arm, index) => {
             const capability = arm.create({ env: deps.env }).science?.search;
@@ -1098,10 +1107,30 @@ export async function handleScience(
             // and the journal cacheKey is derived from the FIRST
             // FULFILLED arm below (review: a failed first arm must
             // not stamp the journal's provider partition).
+            // #140 ruling 5: the identity consult is no longer
+            // journal-gated — the response cache needs the key
+            // whenever it is consulted; extra capture-wrapper
+            // stamping on the added calls is harmless.
+            const identity = capability.cacheIdentity?.(request);
             if (deps.journal !== undefined) {
-              armIdentities[index] = capability.cacheIdentity?.(request);
+              armIdentities[index] = identity;
             }
-            return await capability.invoke(request, controller.signal);
+            const cacheKey = scienceCacheKey(identity);
+            // #140 T2: per-arm cache consult. A hit is a FULFILLED arm
+            // (allSettled shape preserved — no invoke, no transport);
+            // a miss invokes and sets the FULL normalized works.
+            if (!noCache && cacheKey !== undefined) {
+              const cached = await deps.scienceCache.get(cacheKey, decodeScienceWorks);
+              if (cached !== null) {
+                armCacheHits[index] = true;
+                return cached;
+              }
+            }
+            const works = await capability.invoke(request, controller.signal);
+            if (!noCache && cacheKey !== undefined) {
+              await deps.scienceCache.set(cacheKey, works);
+            }
+            return works;
           }),
         );
         // Deterministic failure: if every arm rejected, surface the

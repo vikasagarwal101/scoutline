@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { handleScience } from "../dist/commands/science.js";
+import { createInMemoryResponseCache } from "./helpers/hermetic-main.js";
 import { ApiError } from "../dist/lib/errors.js";
 import { fetchArxivQuery } from "../dist/providers/arxiv/client.js";
 import { fetchCrossrefJson } from "../dist/providers/crossref/client.js";
@@ -375,6 +376,9 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
       secrets: [],
       providerDescriptors: [d1.descriptor],
       fallbackEnabled: true,
+      scienceCache: createInMemoryResponseCache(),
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
     };
 
     const status1 = await handleScience(["search", "quantum"], "data", deps1, {
@@ -410,6 +414,9 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
       secrets: [],
       providerDescriptors: [d2.descriptor],
       fallbackEnabled: true,
+      scienceCache: createInMemoryResponseCache(),
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
     };
 
     const p2 = handleScience(["search", "quantum"], "data", deps2, {
@@ -458,6 +465,9 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
       secrets: [],
       providerDescriptors: descriptors.map((d) => d.descriptor),
       fallbackEnabled: true,
+      scienceCache: createInMemoryResponseCache(),
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
     };
 
     const p = handleScience(["search", "quantum"], "data", deps, {
@@ -500,6 +510,9 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
         secrets: [],
         providerDescriptors: [d.descriptor],
         fallbackEnabled: true,
+      scienceCache: createInMemoryResponseCache(),
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
         journal: {
           input: {
             command: "science",
@@ -555,6 +568,9 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
       secrets: [],
       providerDescriptors: [d.descriptor],
       fallbackEnabled: true,
+      scienceCache: createInMemoryResponseCache(),
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
     };
 
     const p = handleScience(["get", "10.1038/nature12373"], "data", deps, {
@@ -607,6 +623,9 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
       secrets: [],
       providerDescriptors: descriptors.map((d) => d.descriptor),
       fallbackEnabled: true,
+      scienceCache: createInMemoryResponseCache(),
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
     };
 
     const p = handleScience(["get", "10.1038/nature12373"], "data", deps, {
@@ -662,6 +681,9 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
       secrets: [],
       providerDescriptors: [openalex.descriptor, arxiv.descriptor, crossref.descriptor],
       fallbackEnabled: true,
+      scienceCache: createInMemoryResponseCache(),
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
     };
 
     const p = handleScience(["search", "quantum", "--provider", "openalex"], "data", deps, {
@@ -720,6 +742,9 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
       secrets: [],
       providerDescriptors: [openalex.descriptor, arxiv.descriptor, crossref.descriptor],
       fallbackEnabled: true,
+      scienceCache: createInMemoryResponseCache(),
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
     };
 
     const p = handleScience(["search", "quantum", "--provider", "openalex"], "data", deps, {
@@ -773,6 +798,9 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
       secrets: [],
       providerDescriptors: [openalex.descriptor, crossref.descriptor],
       fallbackEnabled: true,
+      scienceCache: createInMemoryResponseCache(),
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
     };
 
     const p = handleScience(["get", "10.1038/nature12373"], "data", deps, {
@@ -816,6 +844,9 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
       secrets: [],
       providerDescriptors: [openalex.descriptor, arxiv.descriptor],
       fallbackEnabled: true,
+      scienceCache: createInMemoryResponseCache(),
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
     };
 
     const p = handleScience(["search", "quantum", "--provider", "openalex"], "data", deps, {
@@ -895,6 +926,9 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
         secrets: [],
         providerDescriptors: [openalex, arxiv],
         fallbackEnabled: true,
+      scienceCache: createInMemoryResponseCache(),
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
         journal: {
           capability: "science",
           capture,
@@ -943,6 +977,9 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
       secrets: [],
       providerDescriptors: [],
       fallbackEnabled: true,
+      scienceCache: createInMemoryResponseCache(),
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
     };
 
     await assert.rejects(
@@ -1054,6 +1091,9 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
         secrets: [],
         providerDescriptors: [openalex, arxiv, crossref],
         fallbackEnabled: true,
+      scienceCache: createInMemoryResponseCache(),
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
         journal: {
           capability: "science",
           capture,
@@ -1136,6 +1176,9 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
         secrets: [],
         providerDescriptors: [openalex.descriptor, arxiv.descriptor],
         fallbackEnabled: true,
+      scienceCache: createInMemoryResponseCache(),
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
       };
 
       const p = handleScience(["search", "quantum"], "data", deps, {
@@ -1192,6 +1235,9 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
         secrets: [],
         providerDescriptors: [openalex.descriptor, arxiv.descriptor],
         fallbackEnabled: true,
+      scienceCache: createInMemoryResponseCache(),
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
       };
 
       const p = handleScience(["search", "quantum"], "data", deps, {
@@ -1242,6 +1288,9 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
       secrets: [],
       providerDescriptors: [openalex.descriptor, arxiv.descriptor, crossref.descriptor],
       fallbackEnabled: true,
+      scienceCache: createInMemoryResponseCache(),
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
     };
 
     const p = handleScience(["search", "quantum", "--provider", "openalex"], "data", deps, {

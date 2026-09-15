@@ -80,9 +80,51 @@ describe("JSON array insert engine (D2 — opencode instructions)", () => {
     );
     assert.ok(after.endsWith('"model":"xyz"}'), "bytes after the array untouched");
     assert.ok(
-      after.includes(`,\n    "${SKILL_POINTER}"`),
-      'inserted as D2\'s ,\\n    "<path>" text form before ]',
+      after.includes(`\n\t"${SKILL_POINTER}"\n   ]`),
+      "inserted as its own member line at the last member's indent, close bracket on its own line (#177)",
     );
+  });
+
+  it("append to canonical formatting is byte-identical to a hand-formatted edit; pre-existing trailing comma is refused (fixes #177)", async (t) => {
+    const home = await mkHome(t);
+    const file = path.join(home, "opencode.json");
+    const before = JSON.stringify(
+      {
+        instructions: ["~/.config/opencode/rules/a.md", "~/.config/opencode/rules/b.md"],
+        provider: {},
+      },
+      null,
+      2,
+    );
+    await fs.writeFile(file, before, "utf8");
+    await jsonArrayInsert({ filePath: file, element: "/home/x/skills/scoutline/SKILL.md" });
+    const after = await fs.readFile(file, "utf8");
+    const expected = JSON.stringify(
+      {
+        instructions: [
+          "~/.config/opencode/rules/a.md",
+          "~/.config/opencode/rules/b.md",
+          "/home/x/skills/scoutline/SKILL.md",
+        ],
+        provider: {},
+      },
+      null,
+      2,
+    );
+    assert.equal(after, expected, "append must be byte-identical to the canonical edit");
+    // Strict-contract pin: a pre-existing trailing comma on the last member
+    // is invalid strict JSON. Consuming it as a separator would silently
+    // "repair" a file the engine must refuse to touch (the rollback class).
+    const file2 = path.join(home, "style2.json");
+    const before2 = '{\n  "instructions": [\n    "a.md",\n    "b.md",\n  ],\n  "provider": {}\n}\n';
+    await fs.writeFile(file2, before2, "utf8");
+    await assert.rejects(
+      jsonArrayInsert({ filePath: file2, element: "c.md" }),
+      /trailing comma/,
+      "pre-existing trailing comma is refused, never silently repaired",
+    );
+    const after2 = await fs.readFile(file2, "utf8");
+    assert.equal(after2, before2, "refused insert leaves the file byte-identical");
   });
 
   it("empty instructions: [] inserts without a leading comma", async (t) => {
@@ -373,7 +415,6 @@ describe('top-level key location (A6 — nested "instructions" decoys)', () => {
   });
 });
 
-
 describe("invalid pre-existing JSON (PR #116 round 2)", () => {
   it("a parse failure leaves the untouched file byte-identical — no rollback rewrite", async (t) => {
     // GROUND: validation precedes every write, so the failed insert must
@@ -391,9 +432,8 @@ describe("invalid pre-existing JSON (PR #116 round 2)", () => {
   });
 });
 
-
 describe("nested-array decoys (PR #116 round 3)", () => {
-  it("a nested [\"<element>\"] copy is not top-level membership: insert still adds, removal never splices the nested copy", async (t) => {
+  it('a nested ["<element>"] copy is not top-level membership: insert still adds, removal never splices the nested copy', async (t) => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-nested-"));
     t.after(async () => fs.rm(dir, { recursive: true, force: true }));
     const element = "/skills/scoutline/SKILL.md";
@@ -404,22 +444,30 @@ describe("nested-array decoys (PR #116 round 3)", () => {
     await fs.writeFile(file, nested);
     await jsonArrayInsert({ filePath: file, element });
     const added = JSON.parse(await fs.readFile(file, "utf8"));
-    assert.deepEqual(added.instructions, [[element], element],
-      "the nested copy must not satisfy top-level membership");
+    assert.deepEqual(
+      added.instructions,
+      [[element], element],
+      "the nested copy must not satisfy top-level membership",
+    );
 
     // Removal with ONLY the nested copy present: no-op, file untouched.
     const file2 = path.join(dir, "opencode2.json");
     await fs.writeFile(file2, nested);
     const before = await fs.readFile(file2);
     await jsonArrayRemove({ filePath: file2, element });
-    assert.ok((await fs.readFile(file2)).equals(before),
-      "a nested-only copy must never be spliced at the wrong level");
+    assert.ok(
+      (await fs.readFile(file2)).equals(before),
+      "a nested-only copy must never be spliced at the wrong level",
+    );
 
     // Removal after a real top-level insert: only the top-level entry goes.
     await jsonArrayInsert({ filePath: file, element: element });
     await jsonArrayRemove({ filePath: file, element });
     const removed = JSON.parse(await fs.readFile(file, "utf8"));
-    assert.deepEqual(removed.instructions, [[element]],
-      "removal takes only the top-level entry, nested structure survives");
+    assert.deepEqual(
+      removed.instructions,
+      [[element]],
+      "removal takes only the top-level entry, nested structure survives",
+    );
   });
 });

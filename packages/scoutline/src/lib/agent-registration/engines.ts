@@ -354,7 +354,29 @@ export async function jsonArrayInsert(options: JsonArrayInsertOptions): Promise<
       // removal restores the bare `[]` byte-exactly (AC-8 reversal symmetry).
       next = `${original.slice(0, insertAt)}${encoded}${original.slice(insertAt)}`;
     } else {
-      next = `${original.slice(0, insertAt)},\n    ${encoded}${original.slice(insertAt)}`;
+      // #177: formatting-preserving append. Canonical JSON ends the last
+      // member bare (no trailing comma) and puts the close bracket on its
+      // own line; the old unconditional `,...` splice orphaned the comma on
+      // its own line and glued the new element to the bracket. Strip the
+      // whitespace run before the close, detect the member indentation from
+      // the existing last member, and re-emit: [last-member][, if it lacked
+      // one]\n<memberIndent><encoded>\n<closeIndent>].
+      const closeWs = /\n(\s*)$/.exec(original.slice(0, insertAt));
+      const closeIndent = closeWs ? closeWs[1] ?? "" : "";
+      const head = closeWs ? original.slice(0, insertAt - closeWs[0].length) : original.slice(0, insertAt);
+      // A trailing comma on the last member is INVALID strict JSON — the
+      // file was already broken (V8's lenient JSON.parse accepts trailing
+      // commas on Node 24, so validation of the mutated text alone cannot
+      // be trusted to catch it; consuming the stray comma as a separator
+      // would silently "repair" a file we must refuse to touch).
+      if (/,$/.test(head)) {
+        throw jsonInsertError(
+          "pre-existing trailing comma in the instructions array (invalid strict JSON)",
+        );
+      }
+      const lastMemberLine = /(^|\n)(\s*)\S[^\n]*$/.exec(head);
+      const memberIndent = lastMemberLine ? lastMemberLine[2] ?? "" : "    ";
+      next = `${head},\n${memberIndent}${encoded}\n${closeIndent}${original.slice(insertAt)}`;
     }
   } else if (original === "" || /^\{\s*\}$/.test(original.trim())) {
     // Absent key on a missing or empty object (including internal
@@ -534,7 +556,13 @@ export async function jsonArrayRemove(options: {
     let f = from;
     while (f > openAt + 1 && /\s/.test(original[f - 1]!)) f -= 1;
     if (original[f - 1] === ",") from = f - 1;
-    const candidate = original.slice(0, from) + original.slice(i + needle.length);
+    // Forward-symmetric swallow (#177): the formatting-preserving insert
+    // writes `\n<closeIndent>` AFTER the element — removal must take the
+    // whitespace run after the element too (stops at the next member's
+    // comma in mid-array forms, so only the element's own line vanishes).
+    let to = i + needle.length;
+    while (to < closeAt && /\s/.test(original[to]!)) to += 1;
+    const candidate = original.slice(0, from) + original.slice(to);
     try {
       JSON.parse(candidate);
     } catch {

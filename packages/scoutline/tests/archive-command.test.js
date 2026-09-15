@@ -16,7 +16,7 @@ import {
 } from "../dist/commands/archive.js";
 import { MAX_BUFFERED_RESPONSE_BYTES } from "../dist/lib/bounded-body.js";
 import { main } from "../dist/index.js";
-import { NetworkError, ValidationError } from "../dist/lib/errors.js";
+import { NetworkError, TimeoutError, ValidationError } from "../dist/lib/errors.js";
 import { useTempConfigDir } from "./helpers/config-dir-pin.js";
 
 useTempConfigDir();
@@ -1275,5 +1275,181 @@ describe("archive --timeout wiring on cdx and get (#172)", () => {
     const getSection = ARCHIVE_HELP.split("Options for 'archive get':")[1].split("Options for")[0];
     assert.match(cdxSection, /--timeout <ms>/);
     assert.match(getSection, /--timeout <ms>/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live-leg transport failures (#173): the diff's live fetch is the one
+// archive path that rethrew raw undici transport errors — a
+// `TypeError: fetch failed` the formatter reports as UNKNOWN_ERROR,
+// breaking the typed-error contract every sibling archive path honors.
+// RED-first: at HEAD the catch converts only aborts.
+// ---------------------------------------------------------------------------
+
+describe("archive diff live-leg transport failures (#173)", () => {
+  const ROWS_173 = [
+    ["timestamp", "statuscode", "length", "digest", "original"],
+    ["20230601000000", "200", "100", "D2", "https://example.com/docs"],
+  ];
+
+  async function listen(server) {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return `http://127.0.0.1:${server.address().port}`;
+  }
+
+  async function close(server) {
+    await new Promise((resolve) => server.close(resolve));
+  }
+
+  // CDX + replay fixture server: the injected endpoints answer here so
+  // the snapshot leg always succeeds — only the LIVE leg can fail.
+  function snapshotLegServer({ hangPath } = {}) {
+    const server = http.createServer((req, res) => {
+      const u = new URL(req.url, `http://${req.headers.host}`);
+      // ponytail: short keepAliveTimeout — unconsumed pooled response
+      // bodies otherwise stall server.close() ~3s (fixture convention).
+      server.keepAliveTimeout = 50;
+      if (u.pathname === "/cdx") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(ROWS_173));
+      } else if (u.pathname.startsWith("/replay/")) {
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end("<h1>Old</h1>");
+      } else if (hangPath && u.pathname === hangPath) {
+        // Hold the socket open; never respond. Only the caller's
+        // timeout aborting the live request can end this.
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    return server;
+  }
+
+  it("live leg on a closed port rejects NetworkError, not a raw TypeError", { timeout: 10000 }, async () => {
+    const snapServer = snapshotLegServer();
+    const snapBase = await listen(snapServer);
+    // A port that provably listened and is now closed: ECONNREFUSED is
+    // guaranteed (guessing a fixed port would be a collision gamble).
+    const dead = http.createServer();
+    const deadBase = await listen(dead);
+    await close(dead);
+    try {
+      await assert.rejects(
+        () =>
+          executeArchiveDiff(`${deadBase}/live`, { since: "2023-12-31" }, {
+            cdxEndpoint: `${snapBase}/cdx`,
+            replayBaseUrl: `${snapBase}/replay`,
+          }),
+        (err) =>
+          err instanceof NetworkError &&
+          err.code === "NETWORK_ERROR" &&
+          /ECONNREFUSED/.test(err.message),
+      );
+    } finally {
+      await close(snapServer);
+    }
+  });
+
+  it("undici shape pinned directly: TypeError('fetch failed') with an ENOTFOUND cause becomes NetworkError carrying the CAUSE text", async () => {
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      throw new TypeError("fetch failed", {
+        cause: new Error("getaddrinfo ENOTFOUND no.such.host"),
+      });
+    };
+    try {
+      await assert.rejects(
+        () => fetchLiveDocument("https://no.such.host/", 5000),
+        (err) =>
+          err instanceof NetworkError &&
+          /getaddrinfo ENOTFOUND/.test(err.message) &&
+          !/Live fetch failed: Live fetch failed/.test(err.message),
+      );
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  it("handler boundary: the formatter reports NETWORK_ERROR, not UNKNOWN_ERROR", { timeout: 10000 }, async () => {
+    const savedFetch = globalThis.fetch;
+    // Route-aware stub: CDX (output=json) and the id_ replay both
+    // succeed; the live leg — the only other call — dies with the
+    // exact undici transport shape.
+    globalThis.fetch = async (url) => {
+      const target = String(url);
+      if (target.includes("/cdx")) {
+        return new Response(JSON.stringify(ROWS_173), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (target.includes("id_")) {
+        return new Response("<h1>Old</h1>", {
+          status: 200,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
+      }
+      throw new TypeError("fetch failed", {
+        cause: new Error("getaddrinfo ENOTFOUND no.such.host"),
+      });
+    };
+    const { adapter, stderr } = makeAdapter();
+    try {
+      const code = await main(["archive", "diff", "https://example.com/docs", "--since", "2023-12-31"], {
+        invocation: adapter,
+        env: {},
+        loadScoutlineConfig: () => {
+          throw new Error("Should not be called!");
+        },
+      });
+      assert.equal(code, 1);
+      assert.match(stderr.join(""), /NETWORK_ERROR/);
+      assert.doesNotMatch(stderr.join(""), /UNKNOWN_ERROR/);
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  it("abort path unchanged: hanging live fetch + small timeout rejects TimeoutError", { timeout: 10000 }, async () => {
+    const server = snapshotLegServer({ hangPath: "/hang-live" });
+    const base = await listen(server);
+    try {
+      await assert.rejects(
+        () =>
+          executeArchiveDiff(`${base}/hang-live`, { since: "2023-12-31", timeout: 300 }, {
+            cdxEndpoint: `${base}/cdx`,
+            replayBaseUrl: `${base}/replay`,
+          }),
+        // TimeoutError's message shape is `Request timed out after
+        // <ms>ms`; the live-leg context lives on `help`, and the caller
+        // value is preserved on `durationMs`.
+        (err) =>
+          err instanceof TimeoutError &&
+          err.durationMs === 300 &&
+          /Live fetch timed out after 300ms/.test(err.help ?? ""),
+      );
+    } finally {
+      await close(server);
+    }
+  });
+
+  it("typed pass-through: live HTTP >= 400 keeps its exact message (no double-wrap)", async () => {
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response("<h1>err</h1>", {
+        status: 503,
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      });
+    try {
+      await assert.rejects(
+        () => fetchLiveDocument("https://example.com/docs", 5000),
+        (err) =>
+          err instanceof NetworkError &&
+          err.message === "Live fetch failed with HTTP 503.",
+      );
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
   });
 });

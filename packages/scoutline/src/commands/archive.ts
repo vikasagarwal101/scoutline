@@ -854,7 +854,25 @@ export async function fetchLiveDocument(
     if (controller.signal.aborted) {
       throw new TimeoutError(timeoutMs, `Live fetch timed out after ${timeoutMs}ms`);
     }
-    throw err;
+    // Typed errors thrown inside the loop (HTTP >= 400 failed capture,
+    // >10 redirects, size ceiling) pass through untouched — no double-wrap.
+    if (
+      err instanceof NetworkError ||
+      err instanceof TimeoutError ||
+      err instanceof ValidationError
+    ) {
+      throw err;
+    }
+    // No FileError branch (unlike executeFetch): this seam has no @file
+    // request body, the diff path's CDX/snapshot gate precedes the live
+    // fetch, and watch targets are http(s) — a filesystem-coded cause
+    // cannot legitimately reach this catch.
+    const causeMessage =
+      err instanceof Error && err.cause instanceof Error
+        ? err.cause.message
+        : undefined;
+    const message = causeMessage ?? (err instanceof Error ? err.message : String(err));
+    throw new NetworkError(`Live fetch failed: ${message}`);
   } finally {
     clearTimeout(timer);
   }

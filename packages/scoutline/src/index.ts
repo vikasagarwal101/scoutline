@@ -309,7 +309,7 @@ Global Options:
   --save [<path>]      Save the result as a clean report (content + requestId) after a successful shared-capability run (search/read/crawl/map/research/repo/vision). Master copy in the artifact store; <path> also receives an export copy. A valueless --save (trailing, or followed by another option, e.g. --save --save-format markdown) writes the master only. Refuses an existing export target without --save-force.
   --save-format <json|markdown>  Report format (default: json)
   --save-force         Overwrite an existing export target
-  --isolated           Run in process-isolated state (unique artifacts namespace)
+  --isolated           Run in process-isolated state: unique artifacts namespace and per-process caches; stateful commands refuse
 
 Help:
   scoutline --help

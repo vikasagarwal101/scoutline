@@ -323,6 +323,45 @@ rewrite the whole log under a write lock. Measured appends stay well under
 100ms through ~20k entries; segmented-log/compaction is the named future
 policy for larger journals.
 
+### Process Isolation (`--isolated`)
+
+`--isolated` runs in process-isolated state: unique artifacts namespace
+and per-process caches. Several `scoutline` processes sharing one home
+directory never read each other's caches or artifact stores — built for
+high-throughput headless concurrency. Pass the flag: `SCOUTLINE_ISOLATED=1`
+in the environment also relocates the three stores, but does not by
+itself trigger the refusals or the shared-state skip.
+
+| Refused under `--isolated` | Why |
+| --- | --- |
+| `watch` (all subcommands) | Persistent snapshot ring + never-pruned change log |
+| `research` | Async-job resume state under `SCOUTLINE_CACHE_DIR/research` |
+| `crawl` | Async-job resume state under `SCOUTLINE_CACHE_DIR/crawl` |
+| `batch` ops whose `command` is `research`/`crawl` | Rejected per op, naming the index |
+
+`map` is allowed (synchronous, stateless). `research` and `crawl` are
+credit-intensive and resume an interrupted job instead of paying for a
+second one; that resume works by finding the job's state file under the
+shared cache root — exactly the shared state an isolated run must not
+touch. Bringing it under the per-pid contract would hide it from the next
+run and silently break the double-charge guard, so the rejections name the
+store and the remedy (`drop --isolated to keep resume state`) instead of
+running with silently broken state.
+
+What isolates: the response cache (`<cache root>/cache/isolated/<pid>/`),
+the tool-discovery cache (`<cache root>/tools/isolated/<pid>/`), and the
+`--save` artifact store (`<artifacts root>/isolated/<pid>/`). Isolated
+subtrees stay inside their parent so the usual LRU/TTL eviction bounds
+them while the process lives. A cache injected through the embedding API
+still wins over the isolated default, and shared-state persistence (usage
+ledger, quota snapshots, background quota refresh) is skipped entirely.
+
+`cache stats`/`clear`/`prune` are non-isolated views — they skip the
+`isolated/` subdirectories, so a cleanup in one process never deletes
+another's in-flight entries. See
+[docs/configuration.md](https://github.com/vikasagarwal101/scoutline/blob/main/docs/configuration.md#process-isolation---isolated)
+for the full contract.
+
 ## Capability Matrix
 
 The matrix below is generated from the production provider registry

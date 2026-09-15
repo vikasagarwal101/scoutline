@@ -714,6 +714,80 @@ projection applies on every read. Extract reads share the same cache entries
 as content reads (the cache stores the normalized content; `--extract`
 slices it on the way out).
 
+## Process Isolation (`--isolated`)
+
+`--isolated` runs the CLI in process-isolated state. It is built for
+high-throughput headless concurrency: several `scoutline` processes
+sharing one home directory never read each other's caches or artifact
+stores.
+
+Pass the flag — it is the full contract. The store resolvers additionally
+honor `SCOUTLINE_ISOLATED=1` in the environment, so setting it alone does
+relocate the three stores below; it does not, however, trigger the
+stateful-command refusals or the shared-state skip, both of which key on
+the flag. Prefer `--isolated`.
+
+### What isolates
+
+Three local surfaces gain a per-process (`<pid>`) segment:
+
+| Surface | Normal location | Under `--isolated` |
+| --- | --- | --- |
+| Response cache | `<cache root>/cache/` | `<cache root>/cache/isolated/<pid>/` |
+| Tool-discovery cache | `<cache root>/tools/` | `<cache root>/tools/isolated/<pid>/` |
+| `--save` artifact store | `<artifacts root>/` | `<artifacts root>/isolated/<pid>/` |
+
+The cache root is `SCOUTLINE_CACHE_DIR` (default `~/.scoutline/`); the
+artifact root is `SCOUTLINE_ARTIFACTS_DIR` (default
+`~/.scoutline/artifacts/`). Isolated subtrees stay inside their parent so
+the same LRU size cap and TTL eviction bound their growth while the
+process lives. A cache injected through the embedding API still wins over
+the isolated default — dependency injection is never overridden.
+
+Isolation also skips shared-state persistence entirely (ADR-0006 §5):
+the usage ledger and quota-snapshot writes, and background quota refresh,
+do not run.
+
+### What refuses
+
+Stateful commands are rejected at parse time with `VALIDATION_ERROR`
+(exit 1) rather than run with silently broken state:
+
+| Refused | Why |
+| --- | --- |
+| `watch` (all subcommands) | Persistent snapshot ring plus a never-pruned change log under `SCOUTLINE_WATCH_DIR` |
+| `research` | Async-job resume state under `SCOUTLINE_CACHE_DIR/research` |
+| `crawl` | Async-job resume state under `SCOUTLINE_CACHE_DIR/crawl` |
+| `batch` ops whose `command` is `research` or `crawl` | Rejected per op, naming the operation index |
+
+`map` is allowed — it is synchronous and stateless.
+
+Both `research` and `crawl` are credit-intensive and carry a
+double-charge guard: Ctrl-C preserves the in-flight task so a re-run
+resumes polling instead of paying for a second job. That resume works by
+finding the job's state file under the cache root — shared state, which
+is exactly what an isolated run must not touch. There is no way to bring
+the job-state store under the per-pid contract without making the state
+invisible to the next run, which would silently break the guard and
+charge twice; rejecting is the honest contract rather than isolating the
+store. The rejection names the store and the remedy:
+
+```text
+research cannot run under --isolated.
+research is stateful: async-job resume state lives under
+SCOUTLINE_CACHE_DIR/research (default ~/.scoutline/research).
+Drop --isolated to keep resume state.
+```
+
+### Inspecting isolated subtrees
+
+`scoutline cache stats`, `cache clear`, and `cache prune` are
+non-isolated views: they scan `cache/` and `tools/` but skip the
+`isolated/` subdirectories, so a cleanup in one process never deletes
+another process's in-flight entries. Isolated subtrees are reclaimed by
+the ordinary LRU/TTL eviction while their process runs; the directory
+itself remains until removed manually.
+
 ## Usage Ledger
 
 Every billable invoke also appends counters to a local usage ledger at

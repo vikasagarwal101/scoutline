@@ -609,12 +609,15 @@ describe("crossref diagnostics — keyless bounded probe (TASKS T4b; DESIGN D2 r
     assert.equal(calls.length, 0);
   });
 
-  it("probe:true makes exactly ONE bounded keyless wire call on the works endpoint, polite UA included", async () => {
+  it("probe:true makes exactly ONE bounded keyless wire call exercising the SEARCH capability, polite UA included", async () => {
     // GROUND: DESIGN D2 round-3 — doctor probes every always-configured
     // supplier; the probe is ONE minimal keyless wire call on the
     // supplier's endpoint (rows=1 — the cheapest credible liveness
-    // check, arXiv max_results=1 precedent). The politeness posture
-    // applies to it too (house UA carrying mailto).
+    // check, arXiv max_results=1 precedent). #163: the call exercises
+    // the SEARCH capability (query=test) — a bare works list can stay
+    // green while the search surface degrades, so a works-list-only
+    // probe reports capability health it never tested. The politeness
+    // posture applies to it too (house UA carrying mailto).
     const { adapter, calls } = makeAdapter();
     await adapter.diagnostics.invoke({ probe: true });
     assert.equal(calls.length, 1, "exactly one wire call");
@@ -629,10 +632,46 @@ describe("crossref diagnostics — keyless bounded probe (TASKS T4b; DESIGN D2 r
       "1",
       "probe is bounded — rows=1, never a full search",
     );
+    // #163: the probe must exercise the search capability — a bare
+    // works list can stay green while the search surface degrades.
+    assert.equal(
+      wireUrl.searchParams.get("query"),
+      "test",
+      "probe exercises the search capability (query= is on the wire)",
+    );
     const ua = calls[0].init?.headers?.["User-Agent"];
     assert.ok(
       typeof ua === "string" && ua.startsWith("scoutline/") && ua.includes("mailto:"),
       "keyless probe carries the house UA with the mailto contact",
+    );
+  });
+
+  it("#163: a degraded search (HTTP 500) on the probe rejects the row — the probe carries the search param", async () => {
+    // GROUND: #163 — the probe rides the search capability, so a
+    // degraded search on THAT call must surface as a failed row
+    // (ApiError 500 → the probe normalizer's ApiError pass-through
+    // rethrows). Red on a degraded search is INTENDED: the row
+    // reports capability health, not connectivity.
+    const probeCalls = [];
+    const descriptor = createCrossrefDescriptor({
+      transport: {
+        fetch: async (url) => {
+          probeCalls.push(String(url));
+          return { ok: false, status: 500, text: async () => "" };
+        },
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    await assert.rejects(
+      adapter.diagnostics.invoke({ probe: true }),
+      (e) => e instanceof ApiError && e.statusCode === 500,
+      "500 on the probe call rejects as ApiError(500) — a failed doctor row",
+    );
+    assert.equal(probeCalls.length, 1, "the probe issued the failing call itself");
+    assert.equal(
+      new URL(probeCalls[0]).searchParams.get("query"),
+      "test",
+      "the failing call was the search probe, not the bare works list",
     );
   });
 

@@ -16,7 +16,7 @@ import {
 } from "../dist/commands/archive.js";
 import { MAX_BUFFERED_RESPONSE_BYTES } from "../dist/lib/bounded-body.js";
 import { main } from "../dist/index.js";
-import { NetworkError, ValidationError } from "../dist/lib/errors.js";
+import { NetworkError, TimeoutError, ValidationError } from "../dist/lib/errors.js";
 import { useTempConfigDir } from "./helpers/config-dir-pin.js";
 
 useTempConfigDir();
@@ -1161,4 +1161,381 @@ describe("archive diff review round 4", () => {
             await new Promise((resolve) => server.close(resolve));
         }
     });
+});
+
+
+// ---------------------------------------------------------------------------
+// --timeout wiring on cdx and get (#172): parse, validate, thread — the same
+// gates diff already had. RED-first pins: at HEAD the handler drops
+// flags.timeout in both branches (silently accepted, never threaded).
+// ---------------------------------------------------------------------------
+
+describe("archive --timeout wiring on cdx and get (#172)", () => {
+  // Offline guard: any test that reaches the network has already lost —
+  // validation must fire BEFORE the executor spawns a request.
+  function refusingFetch() {
+    return async () => {
+      throw new Error("network reached — flag should have been handled before any request");
+    };
+  }
+
+  // Hanging fetch that rejects only when the executor's abort signal
+  // fires: a fast TimeoutError can surface ONLY if the threaded
+  // --timeout drove the abort (default 30000ms blows the per-test
+  // timeout instead, which is exactly the RED at HEAD).
+  function hangingFetch() {
+    return (url, options = {}) =>
+      new Promise((resolve, reject) => {
+        options.signal?.addEventListener("abort", () =>
+          reject(new Error("The operation was aborted")),
+        );
+      });
+  }
+
+  async function runMain(args, fetchImpl) {
+    const { adapter, stderr } = makeAdapter();
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = fetchImpl;
+    try {
+      const code = await main(["archive", ...args], {
+        invocation: adapter,
+        env: {},
+        loadScoutlineConfig: () => {
+          throw new Error("Should not be called!");
+        },
+      });
+      return { code, stderr: stderr.join("") };
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  }
+
+  it("rejects a non-numeric --timeout on cdx at parse level", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["cdx", "https://example.com/*", "--timeout", "abc"],
+      refusingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /VALIDATION_ERROR/);
+    assert.match(stderr, /Invalid --timeout: \\"abc\\"\./); // JSON envelope escapes the quotes
+  });
+
+  it("rejects a zero --timeout on get at parse level", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["get", "https://example.com/", "--timeout", "0"],
+      refusingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /VALIDATION_ERROR/);
+    assert.match(stderr, /Invalid --timeout: \\"0\\"\./); // JSON envelope escapes the quotes
+  });
+
+  it("rejects a valueless --timeout on cdx", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["cdx", "https://example.com/*", "--timeout"],
+      refusingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /VALIDATION_ERROR/);
+    assert.match(stderr, /--timeout requires a value/);
+  });
+
+  it("rejects a valueless --timeout on get", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["get", "https://example.com/", "--timeout"],
+      refusingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /VALIDATION_ERROR/);
+    assert.match(stderr, /--timeout requires a value/);
+  });
+
+  it("threads --timeout into the cdx executor (abort at the caller value, not the 30s default)", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["cdx", "https://example.com/*", "--timeout", "150"],
+      hangingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /TIMEOUT_ERROR/);
+    assert.match(stderr, /timed out after 150ms/);
+  });
+
+  it("threads --timeout into the get executor (availability leg aborts at the caller value)", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["get", "https://example.com/", "--timeout", "150"],
+      hangingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /TIMEOUT_ERROR/);
+    assert.match(stderr, /timed out after 150ms/);
+  });
+
+  it("documents --timeout in the cdx and get help sections", () => {
+    const cdxSection = ARCHIVE_HELP.split("Options for 'archive cdx':")[1].split("Options for")[0];
+    const getSection = ARCHIVE_HELP.split("Options for 'archive get':")[1].split("Options for")[0];
+    assert.match(cdxSection, /--timeout <ms>/);
+    assert.match(getSection, /--timeout <ms>/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live-leg transport failures (#173): the diff's live fetch is the one
+// archive path that rethrew raw undici transport errors — a
+// `TypeError: fetch failed` the formatter reports as UNKNOWN_ERROR,
+// breaking the typed-error contract every sibling archive path honors.
+// RED-first: at HEAD the catch converts only aborts.
+// ---------------------------------------------------------------------------
+
+describe("archive diff live-leg transport failures (#173)", () => {
+  const ROWS_173 = [
+    ["timestamp", "statuscode", "length", "digest", "original"],
+    ["20230601000000", "200", "100", "D2", "https://example.com/docs"],
+  ];
+
+  async function listen(server) {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return `http://127.0.0.1:${server.address().port}`;
+  }
+
+  async function close(server) {
+    await new Promise((resolve) => server.close(resolve));
+  }
+
+  // CDX + replay fixture server: the injected endpoints answer here so
+  // the snapshot leg always succeeds — only the LIVE leg can fail.
+  function snapshotLegServer({ hangPath } = {}) {
+    const server = http.createServer((req, res) => {
+      const u = new URL(req.url, `http://${req.headers.host}`);
+      // ponytail: short keepAliveTimeout — unconsumed pooled response
+      // bodies otherwise stall server.close() ~3s (fixture convention).
+      server.keepAliveTimeout = 50;
+      if (u.pathname === "/cdx") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(ROWS_173));
+      } else if (u.pathname.startsWith("/replay/")) {
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end("<h1>Old</h1>");
+      } else if (hangPath && u.pathname === hangPath) {
+        // Hold the socket open; never respond. Only the caller's
+        // timeout aborting the live request can end this.
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    return server;
+  }
+
+  it("live leg on a closed port rejects NetworkError, not a raw TypeError", { timeout: 10000 }, async () => {
+    const snapServer = snapshotLegServer();
+    const snapBase = await listen(snapServer);
+    // A port that provably listened and is now closed: ECONNREFUSED is
+    // guaranteed (guessing a fixed port would be a collision gamble).
+    const dead = http.createServer();
+    const deadBase = await listen(dead);
+    await close(dead);
+    try {
+      await assert.rejects(
+        () =>
+          executeArchiveDiff(`${deadBase}/live`, { since: "2023-12-31" }, {
+            cdxEndpoint: `${snapBase}/cdx`,
+            replayBaseUrl: `${snapBase}/replay`,
+          }),
+        (err) =>
+          err instanceof NetworkError &&
+          err.code === "NETWORK_ERROR" &&
+          /ECONNREFUSED/.test(err.message),
+      );
+    } finally {
+      await close(snapServer);
+    }
+  });
+
+  it("undici shape pinned directly: TypeError('fetch failed') with an ENOTFOUND cause becomes NetworkError carrying the CAUSE text", async () => {
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      throw new TypeError("fetch failed", {
+        cause: new Error("getaddrinfo ENOTFOUND no.such.host"),
+      });
+    };
+    try {
+      await assert.rejects(
+        () => fetchLiveDocument("https://no.such.host/", 5000),
+        (err) =>
+          err instanceof NetworkError &&
+          /getaddrinfo ENOTFOUND/.test(err.message) &&
+          !/Live fetch failed: Live fetch failed/.test(err.message),
+      );
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  it("handler boundary: the formatter reports NETWORK_ERROR, not UNKNOWN_ERROR", { timeout: 10000 }, async () => {
+    const savedFetch = globalThis.fetch;
+    // Route-aware stub: CDX (output=json) and the id_ replay both
+    // succeed; the live leg — the only other call — dies with the
+    // exact undici transport shape.
+    globalThis.fetch = async (url) => {
+      const target = String(url);
+      if (target.includes("/cdx")) {
+        return new Response(JSON.stringify(ROWS_173), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (target.includes("id_")) {
+        return new Response("<h1>Old</h1>", {
+          status: 200,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
+      }
+      throw new TypeError("fetch failed", {
+        cause: new Error("getaddrinfo ENOTFOUND no.such.host"),
+      });
+    };
+    const { adapter, stderr } = makeAdapter();
+    try {
+      const code = await main(["archive", "diff", "https://example.com/docs", "--since", "2023-12-31"], {
+        invocation: adapter,
+        env: {},
+        loadScoutlineConfig: () => {
+          throw new Error("Should not be called!");
+        },
+      });
+      assert.equal(code, 1);
+      assert.match(stderr.join(""), /NETWORK_ERROR/);
+      assert.doesNotMatch(stderr.join(""), /UNKNOWN_ERROR/);
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  it("abort path unchanged: hanging live fetch + small timeout rejects TimeoutError", { timeout: 10000 }, async () => {
+    const server = snapshotLegServer({ hangPath: "/hang-live" });
+    const base = await listen(server);
+    try {
+      await assert.rejects(
+        () =>
+          executeArchiveDiff(`${base}/hang-live`, { since: "2023-12-31", timeout: 300 }, {
+            cdxEndpoint: `${base}/cdx`,
+            replayBaseUrl: `${base}/replay`,
+          }),
+        // TimeoutError's message shape is `Request timed out after
+        // <ms>ms`; the live-leg context lives on `help`, and the caller
+        // value is preserved on `durationMs`.
+        (err) =>
+          err instanceof TimeoutError &&
+          err.durationMs === 300 &&
+          /Live fetch timed out after 300ms/.test(err.help ?? ""),
+      );
+    } finally {
+      await close(server);
+    }
+  });
+
+  it("typed pass-through: live HTTP >= 400 keeps its exact message (no double-wrap)", async () => {
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response("<h1>err</h1>", {
+        status: 503,
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      });
+    try {
+      await assert.rejects(
+        () => fetchLiveDocument("https://example.com/docs", 5000),
+        (err) =>
+          err instanceof NetworkError &&
+          err.message === "Live fetch failed with HTTP 503.",
+      );
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix round 1 (#172 review F6/F7/m7): reject the `--flag=value` form at
+// parse level. Defect: `--timeout=300` parsed as a boolean flag under a
+// garbage key (`flags["timeout=300"] === true`, `flags.timeout` undefined)
+// and was silently dropped on every subcommand.
+// ---------------------------------------------------------------------------
+
+describe("archive --flag=value form rejection (#172 review F6)", () => {
+  function refusingFetch() {
+    return async () => {
+      throw new Error("network reached — flag should have been handled before any request");
+    };
+  }
+
+  async function runMain(args, fetchImpl) {
+    const { adapter, stderr } = makeAdapter();
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = fetchImpl;
+    try {
+      const code = await main(["archive", ...args], {
+        invocation: adapter,
+        env: {},
+        loadScoutlineConfig: () => {
+          throw new Error("Should not be called!");
+        },
+      });
+      return { code, stderr: stderr.join("") };
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  }
+
+  it("rejects the =-form for archive flags in parseArchiveArgs", () => {
+    assert.throws(() => parseArchiveArgs(["--timeout=300"]), ValidationError);
+    assert.throws(() => parseArchiveArgs(["--limit=50"]), ValidationError);
+  });
+
+  it("rejects --timeout=300 on cdx at parse level", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["cdx", "https://example.com/*", "--timeout=300"],
+      refusingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /VALIDATION_ERROR/);
+    assert.match(stderr, /--timeout=300/);
+    assert.match(stderr, /not supported/);
+  });
+
+  it("rejects --timeout=300 on get at parse level", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["get", "https://example.com/", "--timeout=300"],
+      refusingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /VALIDATION_ERROR/);
+    assert.match(stderr, /--timeout=300/);
+    assert.match(stderr, /not supported/);
+  });
+
+  it("rejects --timeout above the Node setTimeout ceiling on cdx (coverage mirror of the diff pin)", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["cdx", "https://example.com/*", "--timeout", "3000000000"],
+      refusingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /VALIDATION_ERROR/);
+    assert.match(stderr, /2147483647/);
+  });
+
+  it("rejects --timeout above the Node setTimeout ceiling on get (coverage mirror of the diff pin)", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["get", "https://example.com/", "--timeout", "3000000000"],
+      refusingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /VALIDATION_ERROR/);
+    assert.match(stderr, /2147483647/);
+  });
+
+  it("documents --timeout in the diff help section", () => {
+    const diffSection = ARCHIVE_HELP.split("Options for 'archive diff':")[1].split("Global Options")[0];
+    assert.match(diffSection, /--timeout <ms>/);
+    assert.match(diffSection, /2147483647/);
+  });
 });

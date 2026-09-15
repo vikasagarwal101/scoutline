@@ -39,6 +39,13 @@ if git ls-remote --tags origin "refs/tags/v$VERSION" | grep -q "refs/tags/v$VERS
   echo "tag v$VERSION already exists on origin" >&2; exit 1
 fi
 
+# Dry-run safety net (#170): retitle+bump mutate the tree and the old
+# happy-path-only restore stranded them on any gate failure under set -e.
+# One EXIT trap restores on any exit — bash fires it for fatal signals too.
+if [ "$DRY_RUN" = "--dry-run" ]; then
+  trap 'git checkout -- CHANGELOG.md packages/scoutline/package.json packages/scoutline/package-lock.json' EXIT
+fi
+
 step "retitle CHANGELOG Unreleased -> $VERSION (verified)"
 python3 - "$VERSION" "$TODAY" <<'PYEOF'
 import sys

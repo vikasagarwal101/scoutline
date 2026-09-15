@@ -224,6 +224,7 @@ function createInitDeps({
   env = {},
   now = () => 1_700_000_000_000,
   stdinIsTTY = true,
+  agentRegistrationRoots,
 } = {}) {
   const stderrChunks = [];
   const stdoutChunks = [];
@@ -237,6 +238,7 @@ function createInitDeps({
       stdinIsTTY,
       writeStderr: (v) => stderrChunks.push(v),
       writeStdout: (v) => stdoutChunks.push(v),
+      ...(agentRegistrationRoots !== undefined ? { agentRegistrationRoots } : {}),
     },
     stderrChunks,
     stdoutChunks,
@@ -1889,6 +1891,90 @@ describe("init re-config: remove-provider drops the entry", () => {
 
       const written = JSON.parse(await fs.readFile(filePath, "utf8"));
       assert.deepStrictEqual(written.providers, {});
+    });
+  });
+
+  it("fresh onboarding flow on torn-down config (empty file + populated .bak) exits 0 and writes config", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const bakPath = path.join(dir, "config.json.bak");
+      const empty = { version: 1, providers: {} };
+      const populated = {
+        version: 1,
+        providers: {
+          tavily: { apiKey: "tvly-test", onboarded: true },
+        },
+      };
+      await fs.writeFile(filePath, JSON.stringify(empty, null, 2), "utf8");
+      await fs.writeFile(bakPath, JSON.stringify(populated, null, 2), "utf8");
+
+      const { createDefaultConfigStore } = await import("../dist/commands/init.js");
+      const store = createDefaultConfigStore({ filePath });
+
+      const script = createScriptedPrompts();
+      // Fresh flow reached on empty valid config: checklist with no selection
+      script.queueCheckbox([]);
+      script.queueConfirm(true); // continue with no providers
+      script.queueConfirm(true); // fallback preference
+      script.queueConfirm(true); // journal prompt
+
+      const { deps } = createInitDeps({
+        descriptors: [],
+        prompts: script.prompts,
+        configStore: store,
+      });
+
+      const status = await handleInitWithHelp([], deps);
+      assert.strictEqual(status, 0);
+
+      const written = JSON.parse(await fs.readFile(filePath, "utf8"));
+      assert.deepStrictEqual(written.providers, {});
+    });
+  });
+
+  it("agent-step write succeeds on torn-down config (empty file + populated .bak)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const bakPath = path.join(dir, "config.json.bak");
+      const empty = { version: 1, providers: {} };
+      const populated = {
+        version: 1,
+        providers: {
+          tavily: { apiKey: "tvly-test", onboarded: true },
+        },
+      };
+      await fs.writeFile(filePath, JSON.stringify(empty, null, 2), "utf8");
+      await fs.writeFile(bakPath, JSON.stringify(populated, null, 2), "utf8");
+
+      const home = path.join(dir, "home");
+      const configRoot = path.join(home, ".config", "scoutline");
+      await fs.mkdir(path.join(home, ".claude"), { recursive: true });
+
+      const { createDefaultConfigStore } = await import("../dist/commands/init.js");
+      const store = createDefaultConfigStore({ filePath });
+
+      const script = createScriptedPrompts();
+      // Agent registration step prompt:
+      script.queueConfirm(true); // register claude
+      // Subsequent onboarding checklist:
+      script.queueCheckbox([]);
+      script.queueConfirm(true); // continue with none
+      script.queueConfirm(true); // fallback preference
+      script.queueConfirm(true); // journal prompt
+
+      const { deps } = createInitDeps({
+        descriptors: [],
+        prompts: script.prompts,
+        configStore: store,
+        agentRegistrationRoots: { home, configRoot },
+      });
+
+      const status = await handleInitWithHelp([], deps);
+      assert.strictEqual(status, 0);
+
+      const written = JSON.parse(await fs.readFile(filePath, "utf8"));
+      assert.deepStrictEqual(written.providers, {});
+      assert.strictEqual(written.agentRules?.claude, true);
     });
   });
 });

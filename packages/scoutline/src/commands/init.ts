@@ -796,6 +796,8 @@ async function runAgentRegistrationStep(deps: InitDependencies): Promise<number>
 
   // Persist agentRules NOW (merge under any existing config) so a later
   // wizard cancel cannot un-register an accepted tool.
+  // Note: with file-only wipe guard (#168 review), writing over a torn-down
+  // (empty) config on disk is permitted without allowEmpty.
   const inspection = await deps.configStore.inspect();
   const agentRules = {
     ...(inspection.status === "valid" ? inspection.config.agentRules : undefined),

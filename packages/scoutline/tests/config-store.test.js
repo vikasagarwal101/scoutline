@@ -1070,7 +1070,7 @@ describe("writeConfig refuse-to-empty guard (#168)", () => {
     });
   });
 
-  it("empty payload over empty file with populated .bak throws ConfigurationError naming .bak", async (t) => {
+  it("empty payload over empty file with populated .bak is allowed (.bak is history, not state)", async (t) => {
     await withTempDir(t, async (dir) => {
       const filePath = path.join(dir, "config.json");
       const bakPath = path.join(dir, "config.json.bak");
@@ -1082,18 +1082,70 @@ describe("writeConfig refuse-to-empty guard (#168)", () => {
       await fs.writeFile(filePath, JSON.stringify(empty, null, 2), "utf8");
       await fs.writeFile(bakPath, JSON.stringify(populated, null, 2), "utf8");
 
-      const { writeConfig } = await import("../dist/lib/config-store.js");
-      await assert.rejects(
-        () => writeConfig({ version: 1, providers: {} }, { filePath }),
-        (error) => {
-          assert.strictEqual(error.name, "ConfigurationError");
-          assert.ok(
-            error.help && error.help.includes(".bak"),
-            `advice must name .bak: ${error.help}`,
-          );
-          return true;
-        },
-      );
+      const { writeConfig, readConfig } = await import("../dist/lib/config-store.js");
+      await writeConfig({ version: 1, providers: {} }, { filePath });
+      const read = await readConfig({ filePath });
+      assert.deepStrictEqual(read.providers, {});
+    });
+  });
+
+  it("empty payload over corrupt file is allowed (fail-open classification)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      await fs.writeFile(filePath, "{not-json", "utf8");
+
+      const { writeConfig, readConfig } = await import("../dist/lib/config-store.js");
+      await writeConfig({ version: 1, providers: {} }, { filePath });
+      const read = await readConfig({ filePath });
+      assert.deepStrictEqual(read.providers, {});
+    });
+  });
+
+  it("hint-store creates minimal config when config is absent or empty with populated .bak and does not repeat", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const bakPath = path.join(dir, "config.json.bak");
+      const populated = {
+        version: 1,
+        providers: { tavily: { apiKey: "tvly-test", onboarded: true } },
+      };
+      await fs.writeFile(bakPath, JSON.stringify(populated, null, 2), "utf8");
+
+      const { createDefaultHintShownStore, readConfig } = await import("../dist/lib/config-store.js");
+      const store = createDefaultHintShownStore({ filePath });
+
+      await store.setHintShown();
+      const firstRead = await readConfig({ filePath });
+      assert.strictEqual(firstRead.hintShown, true);
+      assert.deepStrictEqual(firstRead.providers, {});
+
+      await store.setHintShown();
+      const secondRead = await readConfig({ filePath });
+      assert.strictEqual(secondRead.hintShown, true);
+      assert.deepStrictEqual(secondRead.providers, {});
+    });
+  });
+
+  it("config set on torn-down config (empty file + populated .bak) succeeds", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const bakPath = path.join(dir, "config.json.bak");
+      const empty = { version: 1, providers: {} };
+      const populated = {
+        version: 1,
+        providers: { tavily: { apiKey: "tvly-test", onboarded: true } },
+      };
+      await fs.writeFile(filePath, JSON.stringify(empty, null, 2), "utf8");
+      await fs.writeFile(bakPath, JSON.stringify(populated, null, 2), "utf8");
+
+      const { setConfigValue, readConfig } = await import("../dist/lib/config-store.js");
+      const updated = await setConfigValue("fallbackEnabled", "false", { filePath });
+      assert.strictEqual(updated.fallbackEnabled, false);
+      assert.deepStrictEqual(updated.providers, {});
+
+      const reread = await readConfig({ filePath, onWarning: () => {} });
+      assert.strictEqual(reread.fallbackEnabled, false);
+      assert.deepStrictEqual(reread.providers, {});
     });
   });
 });

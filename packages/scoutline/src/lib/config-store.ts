@@ -514,27 +514,30 @@ export async function writeConfig(
   const payload = `${JSON.stringify(parsed.config, null, 2)}\n`;
   const filePath = options.filePath ?? configFilePath();
 
-  // Refuse-to-empty guard (issue #168): refuse to overwrite a populated config
-  // with zero providers unless allowEmpty: true is explicitly passed.
+  // Refuse-to-empty guard (issue #168, #168 review): refuse to overwrite a
+  // populated live config file with zero providers unless allowEmpty: true is
+  // explicitly passed. The .bak file is recoverable history, never live state —
+  // writes while the live file is already empty or absent are always allowed.
   if (Object.keys(parsed.config.providers).length === 0 && !options.allowEmpty) {
+    /**
+     * Checks if targetPath exists and contains at least one provider.
+     * Fails open: ENOENT (absent), EACCES, EISDIR, or any JSON/parse failure
+     * is classified as not populated (allowing the write).
+     * Dead-code note: reads do not pass through write chokepoints and cannot
+     * throw TestIsolationViolationError, so no isolation catch is needed.
+     */
     const isPopulated = async (targetPath: string): Promise<boolean> => {
       try {
         const contents = await fs.readFile(targetPath, "utf8");
         const existing = parseConfig(contents);
         return Object.keys(existing.config.providers).length > 0;
-      } catch (error) {
-        if (isTestIsolationViolation(error)) throw error;
+      } catch {
         return false;
       }
     };
 
-    // ponytail: checks target and single .bak only; upgrade to backup-chain scan if .bak history grows.
-    const [filePopulated, bakPopulated] = await Promise.all([
-      isPopulated(filePath),
-      isPopulated(`${filePath}.bak`),
-    ]);
-
-    if (filePopulated || bakPopulated) {
+    // ponytail: checks live file only; upgrade to backup-chain inspection if live vs history reconciliation is ever needed.
+    if (await isPopulated(filePath)) {
       throw new ConfigurationError(
         "Refusing to overwrite populated config with zero providers",
         `Pass allowEmpty: true to overwrite, or restore from the .bak file (${filePath}.bak).`,

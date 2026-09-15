@@ -43,7 +43,11 @@ import type {
   ScienceSearchRequest,
   ScienceWork,
 } from "../capabilities/science.js";
-import { decodeScienceWorks, parseScienceIdentifier } from "../capabilities/science.js";
+import {
+  decodeScienceWork,
+  decodeScienceWorks,
+  parseScienceIdentifier,
+} from "../capabilities/science.js";
 import { applyBudget, type BudgetLadder, type LadderRule } from "../lib/output-budget.js";
 import { persistCompaction } from "../lib/output-budget-persistence.js";
 import { redactSecrets } from "../lib/redact.js";
@@ -677,9 +681,22 @@ async function runScienceSearchWithReroute(
     readonly descriptors: readonly unknown[];
     readonly notice: (message: string) => void;
     readonly journal: boolean;
+    /** #140: the response cache consulted per attempt (the science seam). */
+    readonly cache: import("../lib/cache.js").ResponseCache;
+    /** #140: `--no-cache` skips the consult and the set. */
+    readonly noCache: boolean;
     readonly signal?: AbortSignal;
   },
-): Promise<{ readonly works: readonly ScienceWork[]; readonly identity: unknown; readonly armId: string } | undefined> {
+): Promise<
+  | {
+      readonly works: readonly ScienceWork[];
+      readonly identity: unknown;
+      readonly armId: string;
+      /** #140: whether the serving attempt came from the cache (T5 journal truth). */
+      readonly servedFrom: "live" | "cache";
+    }
+  | undefined
+> {
   const { request, env, descriptors, notice, journal, signal } = options;
   const capability = pinned.create({ env }).science?.search;
   if (capability === undefined) {
@@ -689,9 +706,24 @@ async function runScienceSearchWithReroute(
     );
   }
   capability.validate(request);
-  const identity = journal ? capability.cacheIdentity?.(request) : undefined;
+  // #140 ruling 5: the identity consult is no longer journal-gated —
+  // the response cache needs the key whenever it is consulted.
+  const identity = capability.cacheIdentity?.(request);
+  const cacheKey = scienceCacheKey(identity);
+  // #140 T3: consult before invoke. A hit serves with ZERO invokes and
+  // no reroute notice (the cache never failed).
+  if (!options.noCache && cacheKey !== undefined) {
+    const cached = await options.cache.get(cacheKey, decodeScienceWorks);
+    if (cached !== null) {
+      return { works: cached, identity, armId: pinned.id, servedFrom: "cache" };
+    }
+  }
   try {
-    return { works: await capability.invoke(request, signal), identity, armId: pinned.id };
+    const works = await capability.invoke(request, signal);
+    if (!options.noCache && cacheKey !== undefined) {
+      await options.cache.set(cacheKey, works);
+    }
+    return { works, identity, armId: pinned.id, servedFrom: "live" };
   } catch (error) {
     // A caller cancel ends the walk. Rerouting from a user's Ctrl-C would
     // attempt the next arm only to fast-fail at its pre-abort check and
@@ -727,15 +759,34 @@ async function runScienceSearchWithReroute(
       } catch {
         continue; // a rejecting arm is excluded, never the reroute target
       }
-      const nextIdentity = journal ? nextCapability.cacheIdentity?.(request) : undefined;
+      // #140 ruling 5: identity unconditional at the consult site.
+      const nextIdentity = nextCapability.cacheIdentity?.(request);
+      const nextCacheKey = scienceCacheKey(nextIdentity);
+      if (!options.noCache && nextCacheKey !== undefined) {
+        const cachedNext = await options.cache.get(nextCacheKey, decodeScienceWorks);
+        if (cachedNext !== null) {
+          // The PINNED arm failed at invoke — its failure is still
+          // disclosed (visible narrowing); the serving attempt itself
+          // was a cache hit, so it emits nothing of its own.
+          notice(
+            `scoutline: ${pinned.id} search failed (${
+              error instanceof Error ? error.message : String(error)
+            }) — rerouting to ${next.id}.`,
+          );
+          return { works: cachedNext, identity: nextIdentity, armId: next.id, servedFrom: "cache" };
+        }
+      }
       try {
         const works = await nextCapability.invoke(request, signal);
+        if (!options.noCache && nextCacheKey !== undefined) {
+          await options.cache.set(nextCacheKey, works);
+        }
         notice(
           `scoutline: ${pinned.id} search failed (${
             error instanceof Error ? error.message : String(error)
           }) — rerouting to ${next.id}.`,
         );
-        return { works, identity: nextIdentity, armId: next.id };
+        return { works, identity: nextIdentity, armId: next.id, servedFrom: "live" };
       } catch (nextError) {
         // A caller cancel DURING a reroute attempt surfaces that
         // attempt's honest abort error and ends the walk — no further
@@ -1057,6 +1108,8 @@ export async function handleScience(
               descriptors: selectionOpts.descriptors,
               notice: context.notice,
               journal: deps.journal !== undefined,
+              cache: deps.scienceCache,
+              noCache,
               signal: controller.signal,
             },
           );
@@ -1250,6 +1303,9 @@ export async function handleScience(
   const maxChars = rawMaxChars === undefined ? undefined : parseBriefMaxChars(rawMaxChars);
   let journalWork: ScienceWork | undefined;
   let journalIdentity: unknown;
+  // #140 T3: whether the serving get attempt was cache-served (the
+  // direct consult truth the T5 journal hook reads).
+  let journalCacheHit = false;
   return await invokeCommand(
     deps.invocation,
     async (context) => {
@@ -1308,11 +1364,27 @@ export async function handleScience(
         // identity would journal the fingerprint of a supplier that
         // failed and rerouted; the loop breaks on success, so the last
         // assignment is always the arm that actually served.
+        // #140 ruling 5: identity unconditional at the consult site.
+        const identity = capability.cacheIdentity?.(request);
         if (deps.journal !== undefined) {
-          journalIdentity = capability.cacheIdentity?.(request);
+          journalIdentity = identity;
+        }
+        const cacheKey = scienceCacheKey(identity);
+        // #140 T3: consult per attempt. A hit breaks the walk with the
+        // cached work — no invoke, no reroute toward later arms.
+        if (!noCache && cacheKey !== undefined) {
+          const cached = await deps.scienceCache.get(cacheKey, decodeScienceWork);
+          if (cached !== null) {
+            work = cached;
+            journalCacheHit = true;
+            break;
+          }
         }
         try {
           work = await capability.invoke(request, controller.signal);
+          if (!noCache && cacheKey !== undefined) {
+            await deps.scienceCache.set(cacheKey, work);
+          }
           break;
         } catch (error) {
           // A caller cancel ends the walk (same ruling as the pinned-search

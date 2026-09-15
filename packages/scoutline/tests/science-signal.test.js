@@ -402,6 +402,15 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
       search: (_req, signal) =>
         new Promise((_res, rej) => {
           assert.ok(signal, "invoke must receive signal");
+          // Production-client fidelity (#151 pin b): an already-aborted
+          // signal rejects immediately — addEventListener never fires
+          // post-abort. Required since #140 T3: the per-arm cache
+          // consult is an await boundary that can land the abort
+          // before invoke starts.
+          if (signal.aborted) {
+            rej(new ApiError("OpenAlex request was aborted by the caller (Ctrl-C or external signal)", 499));
+            return;
+          }
           signal.addEventListener("abort", () => {
             rej(new ApiError("OpenAlex request was aborted by the caller (Ctrl-C or external signal)", 499));
           });
@@ -497,6 +506,10 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
       const d = makeScienceDescriptor("openalex", {
         search: (_req, signal) =>
           new Promise((_res, rej) => {
+            if (signal.aborted) {
+              rej(new ApiError("OpenAlex request was aborted by the caller (Ctrl-C or external signal)", 499));
+              return;
+            }
             signal.addEventListener("abort", () => {
               rej(new ApiError("OpenAlex request was aborted by the caller (Ctrl-C or external signal)", 499));
             });
@@ -554,6 +567,10 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
       get: (_req, signal) => {
         receivedSignal = signal;
         return new Promise((_res, rej) => {
+          if (signal.aborted) {
+            rej(new ApiError("OpenAlex request was aborted by the caller (Ctrl-C or external signal)", 499));
+            return;
+          }
           signal.addEventListener("abort", () => {
             rej(new ApiError("OpenAlex request was aborted by the caller (Ctrl-C or external signal)", 499));
           });

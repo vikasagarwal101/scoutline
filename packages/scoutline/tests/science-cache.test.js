@@ -65,6 +65,7 @@ function makeScienceDescriptor(id, opts = {}) {
             }),
             async invoke(request, signal) {
               calls.search.push({ request, signal });
+              if (opts.searchThrows !== undefined) throw opts.searchThrows;
               if (opts.search !== undefined)
                 return opts.search(request, signal, calls.search.length);
               return opts.searchWorks !== undefined
@@ -82,6 +83,7 @@ function makeScienceDescriptor(id, opts = {}) {
             }),
             async invoke(request, signal) {
               calls.get.push({ request, signal });
+              if (opts.getThrows !== undefined) throw opts.getThrows;
               if (opts.get !== undefined) return opts.get(request, signal, calls.get.length);
               return (
                 opts.getWork?.(request) ?? {
@@ -384,14 +386,18 @@ describe("T2: fan-out per-arm cache consult", () => {
     const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t2-warm-"));
     try {
       const r1 = await runMain(["science", "search", "warm query"], {
-        descriptors, artifactsDir: dir, scienceCache: cache,
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
       });
       assert.equal(r1.status, 0, `run 1 stderr=${JSON.stringify(r1.stderr)}`);
       for (const id of D5_ARM_ORDER) {
         assert.equal(byId[id].calls.search.length, 1, `run 1: ${id} invoked once`);
       }
       const r2 = await runMain(["science", "search", "warm query"], {
-        descriptors, artifactsDir: dir, scienceCache: cache,
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
       });
       assert.equal(r2.status, 0, `run 2 stderr=${JSON.stringify(r2.stderr)}`);
       for (const id of D5_ARM_ORDER) {
@@ -413,12 +419,16 @@ describe("T2: fan-out per-arm cache consult", () => {
     const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t2-nocache-"));
     try {
       const r1 = await runMain(["science", "search", "nocache query"], {
-        descriptors, artifactsDir: dir, scienceCache: cache,
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
       });
       assert.equal(r1.status, 0);
       assert.equal(cache.store.size, 5, "run 1 seeded five per-arm entries");
       const r2 = await runMain(["science", "search", "nocache query", "--no-cache"], {
-        descriptors, artifactsDir: dir, scienceCache: cache,
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
       });
       assert.equal(r2.status, 0, `--no-cache run stderr=${JSON.stringify(r2.stderr)}`);
       for (const id of D5_ARM_ORDER) {
@@ -439,13 +449,17 @@ describe("T2: fan-out per-arm cache consult", () => {
     const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t2-mixed-"));
     try {
       const r1 = await runMain(["science", "search", "mixed query"], {
-        descriptors, artifactsDir: dir, scienceCache: cache,
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
       });
       assert.equal(r1.status, 0);
       assert.equal(byId.arxiv.calls.search.length, 0, "run 1: arxiv not an arm");
       arxivEnabled = true;
       const r2 = await runMain(["science", "search", "mixed query"], {
-        descriptors, artifactsDir: dir, scienceCache: cache,
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
       });
       assert.equal(r2.status, 0, `stderr=${JSON.stringify(r2.stderr)}`);
       assert.equal(byId.arxiv.calls.search.length, 1, "run 2: arxiv ran LIVE");
@@ -474,11 +488,21 @@ describe("T2: fan-out per-arm cache consult", () => {
     const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t2-malformed-"));
     try {
       const r = await runMain(["science", "search", "malformed test"], {
-        descriptors, artifactsDir: dir, scienceCache: cache,
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
       });
       assert.equal(r.status, 0, `stderr=${JSON.stringify(r.stderr)}`);
-      assert.equal(byId.openalex.calls.search.length, 1, "malformed entry → miss → openalex invoked");
-      assert.notStrictEqual(decodeScienceWorks(cache.store.get(key)), null, "the key was overwritten with good works");
+      assert.equal(
+        byId.openalex.calls.search.length,
+        1,
+        "malformed entry → miss → openalex invoked",
+      );
+      assert.notStrictEqual(
+        decodeScienceWorks(cache.store.get(key)),
+        null,
+        "the key was overwritten with good works",
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -490,14 +514,164 @@ describe("T2: fan-out per-arm cache consult", () => {
     const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t2-getnc-"));
     try {
       const r1 = await runMain(["science", "get", "10.1038/nature12373"], {
-        descriptors, artifactsDir: dir, scienceCache: cache,
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
       });
       const r2 = await runMain(["science", "get", "10.1038/nature12373", "--no-cache"], {
-        descriptors, artifactsDir: dir, scienceCache: cache,
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
       });
       assert.equal(r1.status, 0);
       assert.equal(r2.status, 0, "--no-cache accepted on get");
       assert.equal(byId.openalex.calls.get.length, 2, "--no-cache re-invoked openalex get");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3 — reroute walk + get walk consult
+// ---------------------------------------------------------------------------
+
+describe("T3: pinned-search reroute walk consult", () => {
+  it("pinned cache hit serves with ZERO supplier invokes and no stderr noise", async () => {
+    const cache = createDecodingCache();
+    const { descriptors, byId } = scienceFive();
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t3-pinhit-"));
+    try {
+      const r1 = await runMain(["science", "search", "pinned q", "--provider", "openalex"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r1.status, 0, `run 1 stderr=${JSON.stringify(r1.stderr)}`);
+      assert.equal(byId.openalex.calls.search.length, 1);
+      const r2 = await runMain(["science", "search", "pinned q", "--provider", "openalex"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r2.status, 0, `run 2 stderr=${JSON.stringify(r2.stderr)}`);
+      assert.equal(byId.openalex.calls.search.length, 1, "run 2 served from cache — no re-invoke");
+      assert.deepEqual(JSON.parse(r2.stdout.join("")), JSON.parse(r1.stdout.join("")));
+      assert.equal(r2.stderr.length, 0, "a cache hit never failed — no reroute notice");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("miss + arm failure still reroutes with the stderr notice (cache consult must not swallow reroute)", async () => {
+    const cache = createDecodingCache();
+    const { descriptors, byId } = scienceFive({
+      openalex: { searchThrows: new ApiError("openalex down", 503) },
+    });
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t3-reroute-"));
+    try {
+      const r = await runMain(["science", "search", "reroute q", "--provider", "openalex"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r.status, 0, `stderr=${JSON.stringify(r.stderr)}`);
+      assert.equal(byId.openalex.calls.search.length, 1, "pinned arm attempted and failed");
+      assert.equal(byId.arxiv.calls.search.length, 1, "rerouted to arxiv (D5 next)");
+      assert.match(r.stderr.join(""), /rerouting to arxiv/, "reroute notice fires");
+      // arxiv served live → its entry is cached for the next ask
+      const arxivKey = scienceCacheKey({
+        supplier: "arxiv",
+        capability: "science.search",
+        credentialFingerprint: "",
+        request: { query: "reroute q" },
+      });
+      assert.ok(cache.store.has(arxivKey), "reroute-arm result was cached");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reroute-arm cache hit serves without re-invoking (pinned failure still disclosed)", async () => {
+    const cache = createDecodingCache();
+    // run 1: pinned arxiv (arxiv seeds its entry)
+    const { descriptors, byId } = scienceFive();
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t3-rerhit-"));
+    try {
+      const r1 = await runMain(["science", "search", "rh q", "--provider", "arxiv"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r1.status, 0);
+      assert.equal(byId.arxiv.calls.search.length, 1);
+      // run 2: pinned openalex fails → reroute walk reaches arxiv → HIT
+      const { descriptors: d2, byId: b2 } = scienceFive({
+        openalex: { searchThrows: new ApiError("openalex down", 503) },
+      });
+      // reuse run 1's arxiv cache entry by sharing the cache, fresh descriptors
+      const r2 = await runMain(["science", "search", "rh q", "--provider", "openalex"], {
+        descriptors: d2,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r2.status, 0, `stderr=${JSON.stringify(r2.stderr)}`);
+      assert.equal(b2.arxiv.calls.search.length, 0, "arxiv served from cache in the reroute walk");
+      assert.match(
+        r2.stderr.join(""),
+        /rerouting to arxiv/,
+        "the pinned failure is still disclosed",
+      );
+      assert.deepEqual(JSON.parse(r2.stdout.join(""))[0], {
+        title: "search-from-arxiv",
+        url: "https://example.org/arxiv",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("T3: get walk consult", () => {
+  it("get hit short-circuits the walk before later arms (failed-first-arm reroute → cached crossref)", async () => {
+    const cache = createDecodingCache();
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t3-gethit-"));
+    try {
+      // run 1: openalex fails → crossref serves → crossref entry cached
+      const { descriptors: d1, byId: b1 } = scienceFive({
+        openalex: { getThrows: new ApiError("openalex down", 503) },
+      });
+      const r1 = await runMain(["science", "get", "10.1038/nature12373"], {
+        descriptors: d1,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r1.status, 0, `run 1 stderr=${JSON.stringify(r1.stderr)}`);
+      assert.equal(b1.crossref.calls.get.length, 1);
+      // run 2: openalex fails again → reroute → crossref consult HIT → no invoke
+      const { descriptors: d2, byId: b2 } = scienceFive({
+        openalex: { getThrows: new ApiError("openalex down", 503) },
+      });
+      const r2 = await runMain(["science", "get", "10.1038/nature12373"], {
+        descriptors: d2,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r2.status, 0, `run 2 stderr=${JSON.stringify(r2.stderr)}`);
+      assert.equal(
+        b2.openalex.calls.get.length,
+        1,
+        "failed first arm still attempted (miss → invoke → fail)",
+      );
+      assert.equal(
+        b2.crossref.calls.get.length,
+        0,
+        "crossref served from cache — walk short-circuited",
+      );
+      assert.deepEqual(JSON.parse(r2.stdout.join("")), {
+        title: "work-from-crossref",
+        url: "https://example.org/crossref/work",
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

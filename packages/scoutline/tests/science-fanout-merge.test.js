@@ -658,7 +658,8 @@ describe("T10 controls vs fan-out: rejecting arms excluded with per-arm stderr n
       { descriptors },
     );
     assert.equal(status, 0, "four serving arms keep the run green");
-    assert.equal(byId.crossref.calls.search.length, 1, "the failing arm was attempted");
+    // #140 T4 flip: shared-seam retry — a retryable 5xx/503 failure now gets ONE retry (maxRetries: 1) before the walk reroutes/drops.
+    assert.equal(byId.crossref.calls.search.length, 2, "the failing arm was attempted (initial + 1 retry)");
     assert.equal(JSON.parse(stdout.join("")).length, 4, "merged rows from surviving arms");
     const joined = stderr.join("");
     assert.match(joined, /crossref/, "the failure notice names the dropped arm");
@@ -704,8 +705,9 @@ describe("T3 fan-out journal arms = SURVIVORS (a failed arm is never journaled a
         { descriptors, artifactsDir: dir },
       );
       assert.equal(status, 0, `stderr=${JSON.stringify(stderr)}`);
-      assert.equal(byId.crossref.calls.search.length, 1, "the crossref arm was attempted");
-      assert.equal(byId.pubmed.calls.search.length, 1, "the pubmed arm was attempted");
+      // #140 T4 flip: shared-seam retry — a retryable 5xx/503 failure now gets ONE retry (maxRetries: 1) before the walk reroutes/drops.
+      assert.equal(byId.crossref.calls.search.length, 2, "the crossref arm was attempted (initial + 1 retry)");
+      assert.equal(byId.pubmed.calls.search.length, 2, "the pubmed arm was attempted (initial + 1 retry)");
       const { log, notice } = await readLog(dir);
       assert.strictEqual(notice, undefined, "no corruption notice");
       const entries = log.entries.filter((e) => e.kind === "journal");
@@ -805,7 +807,8 @@ describe("T10 science get fallback: reroute with stderr note; --no-fallback stri
       { descriptors },
     );
     assert.equal(status, 0, "reroute succeeds");
-    assert.equal(byId.openalex.calls.get.length, 1, "the failed arm attempted first");
+    // #140 T4 flip: shared-seam retry — a retryable 5xx/503 failure now gets ONE retry (maxRetries: 1) before the walk reroutes/drops.
+    assert.equal(byId.openalex.calls.get.length, 2, "the failed arm attempted first (initial + 1 retry)");
     assert.equal(byId.crossref.calls.get.length, 1, "rerouted to crossref (DOI arm #2)");
     assert.equal(byId.pubmed.calls.get.length, 0, "pubmed not needed");
     assert.equal(byId.europepmc.calls.get.length, 0, "europepmc not needed");

@@ -487,8 +487,10 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
     registeredHandler();
     const exitCode = await p;
     assert.equal(exitCode, 1, "exit code must be 1 on abort");
-    assert.equal(armSignals.length, 3, "all 3 arms must have been started");
-    assert.ok(armSignals.every((a) => a.signal && a.signal.aborted), "all arms must share aborted signal");
+    // #140 T4 flip: the retry executor's pre-invoke cancellation check
+    // (#47 contract) means a signal aborted before the arm map invokes
+    // starts ZERO arms — no provider work for an already-gone caller.
+    assert.equal(armSignals.length, 0, "a pre-aborted signal starts zero arms");
     const stderrText = inv.stderr.join("");
     assert.match(stderrText, /aborted by the caller/i);
     assert.doesNotMatch(stderrText, /timed out/i);
@@ -597,8 +599,10 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
     registeredHandler();
     const exitCode = await p;
     assert.equal(exitCode, 1);
-    assert.ok(receivedSignal !== null, "get capability must receive signal");
-    assert.ok(receivedSignal.aborted, "get capability signal must be aborted");
+    // #140 T4 flip: the executor wrapper's pre-invoke check skips the
+    // invoke entirely on an aborted signal (the #47 never-invoke
+    // contract) — the capability sees no signal because it never runs.
+    assert.ok(receivedSignal === null, "get capability never invoked under a pre-aborted signal");
     const stderrText = inv.stderr.join("");
     assert.match(stderrText, /aborted by the caller/i);
     assert.doesNotMatch(stderrText, /timed out/i);
@@ -654,8 +658,10 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
     assert.equal(exitCode, 1, "aborted get must return exitCode 1");
     assert.deepEqual(
       attempted,
-      ["openalex"],
-      "a caller cancel must end the walk — no further arm may be attempted",
+      // #140 T4 flip: pre-abort lands before the first invoke; the
+      // executor's pre-invoke check starts ZERO arms.
+      [],
+      "a pre-aborted cancel starts no arms — the walk ends before any invoke",
     );
     const stderrText = inv.stderr.join("");
     assert.doesNotMatch(
@@ -710,7 +716,9 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
     registeredHandler();
     const exitCode = await p;
     assert.equal(exitCode, 1, "aborted pinned search must return exitCode 1");
-    assert.equal(openalex.calls.search.length, 1, "the pinned arm was attempted");
+    // #140 T4 flip: pre-abort — the executor's pre-invoke check never
+    /// invokes the pinned arm (zero provider work for a gone caller).
+    assert.equal(openalex.calls.search.length, 0, "the pinned arm was never invoked (pre-abort)");
     assert.equal(arxiv.calls.search.length, 0, "reroute target must never be attempted");
     assert.equal(crossref.calls.search.length, 0, "reroute target must never be attempted");
     const stderrText = inv.stderr.join("");
@@ -771,8 +779,10 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
     assert.equal(exitCode, 1, "cancelled reroute search must return exitCode 1");
     assert.deepEqual(
       attempted,
-      ["openalex", "arxiv"],
-      "a cancel during a reroute attempt must end the walk — no further arm may be attempted",
+      // #140 T4 flip: openalex's 500 gets one retry (attempted twice)
+      // before the walk reroutes; the cancel during arxiv ends it.
+      ["openalex", "openalex", "arxiv"],
+      "one retry per arm, then the cancel during a reroute attempt ends the walk",
     );
     assert.equal(crossref.calls.search.length, 0, "crossref must never be attempted");
     const stderrText = inv.stderr.join("");
@@ -1317,8 +1327,10 @@ describe("science abort signal threading and honest cancellation (#151)", () => 
     assert.equal(exitCode, 1, "cancelled reroute search must return exitCode 1");
     assert.deepEqual(
       attempted,
-      ["openalex", "arxiv"],
-      "a cancel during a reroute attempt must end the walk — no further arm may be attempted",
+      // #140 T4 flip: openalex's 500 retried once (two attempts) before
+      // the reroute; the abort during arxiv's rejection ends the walk.
+      ["openalex", "openalex", "arxiv"],
+      "one retry per arm, then the cancel during a reroute attempt ends the walk",
     );
     assert.equal(crossref.calls.search.length, 0, "crossref must never be attempted");
     const stderrText = inv.stderr.join("");

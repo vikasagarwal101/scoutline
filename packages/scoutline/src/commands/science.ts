@@ -51,7 +51,8 @@ import {
 import { applyBudget, type BudgetLadder, type LadderRule } from "../lib/output-budget.js";
 import { persistCompaction } from "../lib/output-budget-persistence.js";
 import { redactSecrets } from "../lib/redact.js";
-import { ApiError, UnsupportedOptionError, ValidationError } from "../lib/errors.js";
+import { ApiError, TimeoutError, UnsupportedOptionError, ValidationError } from "../lib/errors.js";
+import { executeProviderOperation } from "../lib/execution.js";
 import type { OutputMode } from "../lib/output.js";
 import type { HandlerDependencies } from "../index.js";
 import { parseBriefMaxChars } from "./repo.js";
@@ -685,6 +686,8 @@ async function runScienceSearchWithReroute(
     readonly cache: import("../lib/cache.js").ResponseCache;
     /** #140: `--no-cache` skips the consult and the set. */
     readonly noCache: boolean;
+    readonly sleep: (ms: number) => Promise<void>;
+    readonly random: () => number;
     readonly signal?: AbortSignal;
   },
 ): Promise<
@@ -697,7 +700,7 @@ async function runScienceSearchWithReroute(
     }
   | undefined
 > {
-  const { request, env, descriptors, notice, journal, signal } = options;
+  const { request, env, descriptors, notice, journal, signal, sleep, random } = options;
   const capability = pinned.create({ env }).science?.search;
   if (capability === undefined) {
     throw new ValidationError(
@@ -719,7 +722,14 @@ async function runScienceSearchWithReroute(
     }
   }
   try {
-    const works = await capability.invoke(request, signal);
+    const works = await executeProviderOperation(
+      "science-search",
+      () => capability.invoke(request, signal),
+      { sleep, random },
+      undefined,
+      undefined,
+      signal,
+    );
     if (!options.noCache && cacheKey !== undefined) {
       await options.cache.set(cacheKey, works);
     }
@@ -777,7 +787,14 @@ async function runScienceSearchWithReroute(
         }
       }
       try {
-        const works = await nextCapability.invoke(request, signal);
+        const works = await executeProviderOperation(
+          "science-search",
+          () => nextCapability.invoke(request, signal),
+          { sleep, random },
+          undefined,
+          undefined,
+          signal,
+        );
         if (!options.noCache && nextCacheKey !== undefined) {
           await options.cache.set(nextCacheKey, works);
         }
@@ -814,6 +831,10 @@ async function runScienceSearchWithReroute(
 function isAbortClassed(reason: unknown): boolean {
   if (reason instanceof ApiError && reason.statusCode === 499) return true;
   if (reason instanceof Error && /aborted by the caller/.test(reason.message)) return true;
+  // #140 T4: the retry executor classifies caller cancellation as
+  // TimeoutError ("aborted before invoke" / "aborted during backoff") —
+  // an arm lost to that must not print a misleading per-arm drop notice.
+  if (reason instanceof TimeoutError && /aborted/.test(reason.message)) return true;
   return false;
 }
 
@@ -1110,6 +1131,8 @@ export async function handleScience(
               journal: deps.journal !== undefined,
               cache: deps.scienceCache,
               noCache,
+              sleep: deps.scienceSleep,
+              random: deps.scienceRandom,
               signal: controller.signal,
             },
           );
@@ -1179,7 +1202,14 @@ export async function handleScience(
                 return cached;
               }
             }
-            const works = await capability.invoke(request, controller.signal);
+            const works = await executeProviderOperation(
+              "science-search",
+              () => capability.invoke(request, controller.signal),
+              { sleep: deps.scienceSleep, random: deps.scienceRandom },
+              undefined,
+              undefined,
+              controller.signal,
+            );
             if (!noCache && cacheKey !== undefined) {
               await deps.scienceCache.set(cacheKey, works);
             }
@@ -1381,7 +1411,14 @@ export async function handleScience(
           }
         }
         try {
-          work = await capability.invoke(request, controller.signal);
+          work = await executeProviderOperation(
+            "science-get",
+            () => capability.invoke(request, controller.signal),
+            { sleep: deps.scienceSleep, random: deps.scienceRandom },
+            undefined,
+            undefined,
+            controller.signal,
+          );
           if (!noCache && cacheKey !== undefined) {
             await deps.scienceCache.set(cacheKey, work);
           }

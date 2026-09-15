@@ -35,7 +35,7 @@ import {
   decodeScienceWorks,
   SCIENCE_SUPPLIER_IDS,
 } from "../dist/capabilities/science.js";
-import { scienceCacheKey } from "../dist/commands/science.js";
+import { handleScience, scienceCacheKey } from "../dist/commands/science.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 import { readLog } from "../dist/lib/artifacts.js";
 
@@ -576,7 +576,11 @@ describe("T3: pinned-search reroute walk consult", () => {
         scienceCache: cache,
       });
       assert.equal(r.status, 0, `stderr=${JSON.stringify(r.stderr)}`);
-      assert.equal(byId.openalex.calls.search.length, 1, "pinned arm attempted and failed");
+      assert.equal(
+        byId.openalex.calls.search.length,
+        2,
+        "pinned arm attempted (initial + 1 retry) and failed",
+      );
       assert.equal(byId.arxiv.calls.search.length, 1, "rerouted to arxiv (D5 next)");
       assert.match(r.stderr.join(""), /rerouting to arxiv/, "reroute notice fires");
       // arxiv served live → its entry is cached for the next ask
@@ -660,8 +664,8 @@ describe("T3: get walk consult", () => {
       assert.equal(r2.status, 0, `run 2 stderr=${JSON.stringify(r2.stderr)}`);
       assert.equal(
         b2.openalex.calls.get.length,
-        1,
-        "failed first arm still attempted (miss → invoke → fail)",
+        2,
+        "failed first arm still attempted (initial + 1 retry: miss → invoke → fail)",
       );
       assert.equal(
         b2.crossref.calls.get.length,
@@ -672,6 +676,193 @@ describe("T3: get walk consult", () => {
         title: "work-from-crossref",
         url: "https://example.org/crossref/work",
       });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T4 — retry via executeProviderOperation
+// ---------------------------------------------------------------------------
+
+describe("T4: retry via executeProviderOperation", () => {
+  it("transient 503 → one retry, success, no stderr noise", async () => {
+    const cache = createDecodingCache();
+    let sleepCalls = 0;
+    const { descriptors, byId } = scienceFive({
+      openalex: {
+        search: (_req, _signal, callNumber) => {
+          if (callNumber === 1) {
+            throw new ApiError("transient boom", 503);
+          }
+          return [{ title: "openalex-retry-success", url: "https://example.org/oa" }];
+        },
+      },
+    });
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t4-retry-"));
+    try {
+      const r = await runMain(["science", "search", "retry test"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+        scienceSleep: async () => {
+          sleepCalls += 1;
+        },
+        scienceRandom: () => 0.5,
+      });
+      assert.equal(r.status, 0, `stderr=${JSON.stringify(r.stderr)}`);
+      assert.equal(
+        byId.openalex.calls.search.length,
+        2,
+        "openalex invoked twice (initial + 1 retry)",
+      );
+      assert.equal(sleepCalls, 1, "sleep called once during backoff");
+      assert.equal(r.stderr.length, 0, "retry is silent — no stderr notices");
+      const parsed = JSON.parse(r.stdout.join(""));
+      assert.ok(
+        parsed.some((w) => w.title === "openalex-retry-success"),
+        "openalex output merged",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("QuotaError terminal", async () => {
+    const cache = createDecodingCache();
+    let sleepCalls = 0;
+    const { descriptors, byId } = scienceFive({
+      openalex: {
+        search: () => {
+          throw new QuotaError("OpenAlex rate limit exceeded");
+        },
+      },
+    });
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t4-quota-"));
+    try {
+      const r = await runMain(
+        ["science", "search", "quota test", "--provider", "openalex", "--no-fallback"],
+        {
+          descriptors,
+          artifactsDir: dir,
+          scienceCache: cache,
+          scienceSleep: async () => {
+            sleepCalls += 1;
+          },
+          scienceRandom: () => 0.5,
+        },
+      );
+      assert.notEqual(r.status, 0, "command fails on terminal QuotaError");
+      assert.equal(
+        byId.openalex.calls.search.length,
+        1,
+        "openalex invoked exactly once — no retry",
+      );
+      assert.equal(sleepCalls, 0, "never slept for retry backoff");
+      const stderr = r.stderr.join("");
+      assert.match(stderr, /QUOTA_ERROR/, "stderr envelope carries QUOTA_ERROR code");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("abort during backoff → immediate abort (499-class)", async () => {
+    let captured = null;
+    let resolveBackoff;
+    const backoffGate = new Promise((resolve) => {
+      resolveBackoff = resolve;
+    });
+    const d = makeScienceDescriptor("openalex", {
+      search: () => {
+        throw new ApiError("openalex 503", 503);
+      },
+    });
+    const inv = makeInvocation();
+    const deps = {
+      invocation: inv.adapter,
+      env: {},
+      secrets: [],
+      providerDescriptors: [d.descriptor],
+      fallbackEnabled: true,
+      scienceCache: createDecodingCache(),
+      scienceSleep: async () => {
+        resolveBackoff();
+        await new Promise(() => {}); // never resolves
+      },
+      scienceRandom: () => 0.5,
+    };
+
+    const p = handleScience(["search", "q", "--provider", "openalex"], "data", deps, {
+      registerInterrupt: (h) => {
+        captured = h;
+        return () => {};
+      },
+    });
+
+    await backoffGate;
+    assert.ok(typeof captured === "function", "registerInterrupt captured handler");
+    captured();
+    const status = await p;
+    assert.equal(status, 1, "aborted command returns exitCode 1");
+    const stderrText = inv.stderr.join("");
+    // 499-class abort (plan T4): the executor's abortableSleep rejects
+    // mid-backoff (TimeoutError), and the reroute walk's signal.aborted
+    // catch converts it to the honest ApiError 499 cancellation — the
+    // same envelope every #151 abort path surfaces.
+    assert.match(stderrText, /API_ERROR/, "stderr envelope code is API_ERROR");
+    assert.match(stderrText, /aborted by the caller/i, "honest cancellation wording");
+    assert.match(stderrText, /499/, "499-class abort");
+    assert.doesNotMatch(stderrText, /timed out/i, "never reads as a timeout");
+  });
+
+  it("cache hit NEVER retries", async () => {
+    const cache = createDecodingCache();
+    let sleepCalls = 0;
+    let shouldThrow = false;
+    const { descriptors, byId } = scienceFive({
+      openalex: {
+        search: () => {
+          if (shouldThrow) {
+            throw new ApiError("openalex down", 503);
+          }
+          return [{ title: "cached-work", url: "https://example.org/oa" }];
+        },
+      },
+    });
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t4-hithold-"));
+    try {
+      // run 1: seeds cache
+      const r1 = await runMain(["science", "search", "cache q", "--provider", "openalex"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+        scienceSleep: async () => {
+          sleepCalls += 1;
+        },
+        scienceRandom: () => 0.5,
+      });
+      assert.equal(r1.status, 0);
+      assert.equal(byId.openalex.calls.search.length, 1);
+
+      // run 2: warm cache, supplier would throw 503 if invoked
+      shouldThrow = true;
+      const r2 = await runMain(["science", "search", "cache q", "--provider", "openalex"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+        scienceSleep: async () => {
+          sleepCalls += 1;
+        },
+        scienceRandom: () => 0.5,
+      });
+      assert.equal(r2.status, 0, `run 2 stderr=${JSON.stringify(r2.stderr)}`);
+      assert.equal(
+        byId.openalex.calls.search.length,
+        1,
+        "no second invoke — cache hit short-circuits",
+      );
+      assert.equal(sleepCalls, 0, "no retry backoff sleep occurred");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

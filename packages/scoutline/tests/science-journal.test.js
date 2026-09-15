@@ -212,7 +212,8 @@ describe("science journal cacheKey follows the serving supplier (review)", () =>
         artifactsDir: dir,
       });
       assert.equal(status, 0, `reroute serves; stderr=${JSON.stringify(stderr)}`);
-      assert.equal(byId.openalex.calls.get.length, 1, "openalex was attempted first");
+      // {FLIP}
+      assert.equal(byId.openalex.calls.get.length, 2, "openalex attempted first (initial + 1 retry)");
       assert.equal(byId.crossref.calls.get.length, 1, "rerouted to crossref");
       const { entries, notice } = await readJournalEntries(dir);
       assert.strictEqual(notice, undefined);
@@ -249,7 +250,8 @@ describe("science journal cacheKey follows the serving supplier (review)", () =>
         artifactsDir: dir,
       });
       assert.equal(status, 0, "empty-but-fulfilled fan-out succeeds");
-      assert.equal(byId.openalex.calls.search.length, 1, "the failing first arm ran");
+      // {FLIP}
+      assert.equal(byId.openalex.calls.search.length, 2, "the failing first arm ran (initial + 1 retry)");
       assert.deepEqual(
         JSON.parse(stdout.join("")).map((w) => w.title),
         ["from-arxiv"],

@@ -834,10 +834,16 @@ async function runScienceSearchWithReroute(
 function isAbortClassed(reason: unknown): boolean {
   if (reason instanceof ApiError && reason.statusCode === 499) return true;
   if (reason instanceof Error && /aborted by the caller/.test(reason.message)) return true;
-  // #140 T4: the retry executor classifies caller cancellation as
-  // TimeoutError ("aborted before invoke" / "aborted during backoff") —
-  // an arm lost to that must not print a misleading per-arm drop notice.
-  if (reason instanceof TimeoutError && /aborted/.test(reason.message)) return true;
+  // #140 fix round (external review F1/F2): the retry executor classifies
+  // caller cancellation as TimeoutError, but the abort wording lives in
+  // TimeoutError.HELP — .message is always "Request timed out after Nms",
+  // so the old /aborted/-on-.message branch was dead code and an
+  // abort-during-backoff arm printed a misleading drop notice. Match the
+  // help field; a genuine pre-abort failure (plain ApiError 5xx) keeps
+  // its disclosure (#151 r2 pin).
+  if (reason instanceof TimeoutError && /aborted/.test(String(reason.help ?? ""))) {
+    return true;
+  }
   return false;
 }
 

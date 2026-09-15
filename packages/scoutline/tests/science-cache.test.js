@@ -1084,3 +1084,65 @@ describe("T5: journal warm-repeat markers", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fix round (external review F1): fan-out abort-during-backoff arm must
+// not print the misleading per-arm drop notice.
+// ---------------------------------------------------------------------------
+
+describe("fix F1: aborted fan-out skips arm-failure notices", () => {
+  it("an arm lost to abort-during-backoff prints NO dropped notice (signal-based guard)", async () => {
+    let captured = null;
+    let backoffStarted;
+    const gate = new Promise((resolve) => {
+      backoffStarted = resolve;
+    });
+    // openalex: throws 503 → the executor enters its retry BACKOFF (the
+    // never-resolving sleep) → abort lands MID-BACKOFF → abortableSleep
+    // rejects with TimeoutError whose ABORT WORDING lives in .help
+    // (.message is always "Request timed out after Nms" — the dead
+    // isAbortClassed branch premise the external review caught). The
+    // gate fires from INSIDE the sleep so the abort provably lands
+    // mid-backoff, not between invoke-failure and the catch re-check
+    // (that ordering is the genuine-pre-abort-failure case whose notice
+    // the #151 r2 pin deliberately PRESERVES).
+    const openalex = makeScienceDescriptor("openalex", {
+      searchThrows: new ApiError("openalex 503", 503),
+    });
+    const arxiv = makeScienceDescriptor("arxiv", { searchWorks: () => [{ title: "a", url: "https://example.org/arxiv" }] });
+    const crossref = makeScienceDescriptor("crossref", { searchWorks: () => [{ title: "c", url: "https://example.org/crossref" }] });
+    const inv = makeInvocation();
+    const deps = {
+      invocation: inv.adapter,
+      env: {},
+      secrets: [],
+      providerDescriptors: [openalex.descriptor, arxiv.descriptor, crossref.descriptor],
+      fallbackEnabled: true,
+      scienceCache: createDecodingCache(),
+      scienceSleep: async () => {
+        backoffStarted();
+        await new Promise(() => {}); // never resolves — backoff hangs until abort
+      },
+      scienceRandom: () => 0.5,
+    };
+    const p = handleScience(["search", "q"], "data", deps, {
+      registerInterrupt: (h) => {
+        captured = h;
+        return () => {};
+      },
+    });
+    await gate;
+    assert.ok(typeof captured === "function");
+    captured();
+    const status = await p;
+    assert.equal(status, 0, "survivors serve the run (partial fan-out, exit 0)");
+    const stderrText = inv.stderr.join("");
+    assert.doesNotMatch(
+      stderrText,
+      /dropped from this fan-out/,
+      "an arm lost to an abort-during-backoff must not print a drop notice (#151)",
+    );
+    assert.doesNotMatch(stderrText, /openalex arm failed/, "no per-arm failure disclosure for the aborted arm");
+    assert.equal(openalex.calls.search.length, 1, "the arm threw once (retry backoff aborted)");
+  });
+});

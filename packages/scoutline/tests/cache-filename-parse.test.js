@@ -153,7 +153,10 @@ describe("parseCacheFileName — back-compat: every pre-science shape parses ide
 describe("parseCacheFileName — malformed shapes stay null (#140 T4b)", () => {
   it("(f) rejects a non-hex request hash instead of widening into it", () => {
     assert.strictEqual(parseCacheFileName(`v2.search.zai.${credHash}.not-a-hash.json`), null);
-    assert.strictEqual(parseCacheFileName(`v2.search.zai.${credHash}.${"r".repeat(64)}.json`), null);
+    assert.strictEqual(
+      parseCacheFileName(`v2.search.zai.${credHash}.${"r".repeat(64)}.json`),
+      null,
+    );
   });
 
   it("(f) rejects an uppercase hex request hash (the house shape is lowercase)", () => {
@@ -165,8 +168,14 @@ describe("parseCacheFileName — malformed shapes stay null (#140 T4b)", () => {
   });
 
   it("(f) rejects a short or over-long request hash", () => {
-    assert.strictEqual(parseCacheFileName(`v2.search.zai.${credHash}.${"a".repeat(63)}.json`), null);
-    assert.strictEqual(parseCacheFileName(`v2.search.zai.${credHash}.${"a".repeat(65)}.json`), null);
+    assert.strictEqual(
+      parseCacheFileName(`v2.search.zai.${credHash}.${"a".repeat(63)}.json`),
+      null,
+    );
+    assert.strictEqual(
+      parseCacheFileName(`v2.search.zai.${credHash}.${"a".repeat(65)}.json`),
+      null,
+    );
   });
 
   it("(f) rejects junk that has enough segments but no v2 hash shape", () => {
@@ -175,6 +184,31 @@ describe("parseCacheFileName — malformed shapes stay null (#140 T4b)", () => {
     // opaque strings), but a non-hex request hash at the right-hand end
     // is what disqualifies the name.
     assert.strictEqual(parseCacheFileName("v2.foo.bar.baz.qux.zzzz.json"), null);
+  });
+
+  it("(f) rejects a NON-HEX credential fingerprint (empty or 64-lowercase-hex only — fix round F3)", () => {
+    // External-review F3: the credential shape check was not
+    // load-bearing (deleting it survived the full suite). A junk
+    // credential segment must null — the widening admits the KEYLESS
+    // empty fingerprint and the keyed SHA-256 digest, nothing between.
+    assert.strictEqual(
+      parseCacheFileName(`v2.science.search.openalex.junk-not-hex.${reqHash}.json`),
+      null,
+    );
+    assert.strictEqual(
+      parseCacheFileName(`v2.science.search.openalex.${"R".repeat(64)}.${reqHash}.json`),
+      null,
+      "uppercase hex credential is not the house shape either",
+    );
+    // The two legal shapes stay admitted (boundary neighbors of the pin).
+    assert.deepStrictEqual(parseCacheFileName(`v2.science.search.openalex..${reqHash}.json`), {
+      capability: "science.search",
+      provider: "openalex",
+    });
+    assert.deepStrictEqual(
+      parseCacheFileName(`v2.science.search.openalex.${credHash}.${reqHash}.json`),
+      { capability: "science.search", provider: "openalex" },
+    );
   });
 
   it("(f) rejects fewer than four segments after the v2./.json strip", () => {
@@ -193,10 +227,7 @@ describe("parseCacheFileName — malformed shapes stay null (#140 T4b)", () => {
 
   it("(f) rejects an empty provider", () => {
     assert.strictEqual(parseCacheFileName(`v2.search..${credHash}.${reqHash}.json`), null);
-    assert.strictEqual(
-      parseCacheFileName(`v2.science.search...${credHash}.${reqHash}.json`),
-      null,
-    );
+    assert.strictEqual(parseCacheFileName(`v2.science.search...${credHash}.${reqHash}.json`), null);
   });
 
   it("(f) rejects names missing the v2 prefix or the .json suffix", () => {

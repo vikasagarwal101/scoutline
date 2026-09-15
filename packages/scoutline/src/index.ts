@@ -159,7 +159,12 @@ import {
   type CommandInvocationAdapter,
   type CommandResult,
 } from "./command-invocation.js";
-import { defaultResponseCache, type ResponseCache } from "./lib/cache.js";
+import {
+  createFileResponseCache,
+  defaultResponseCache,
+  responseCacheDir,
+  type ResponseCache,
+} from "./lib/cache.js";
 import { MAX_SUBQUERIES, parseContextText, readContextSource } from "./lib/context-file.js";
 import type { ContextSourceKind } from "./lib/context-file.js";
 import { configuredSecrets, redactSecrets } from "./lib/redact.js";
@@ -5487,43 +5492,6 @@ export async function main(
     dependencies.loadScoutlineConfig ??
     (depsConfig !== undefined ? async () => depsConfig : undefined);
   const providerDescriptors = dependencies.providerDescriptors ?? BUILT_IN_PROVIDER_DESCRIPTORS;
-  const searchCache = dependencies.searchCache ?? defaultResponseCache;
-  const searchSleep = dependencies.searchSleep ?? realSleep;
-  const searchRandom = dependencies.searchRandom ?? Math.random;
-  // P6-07: Repository execution defaults to the same production values
-  // as Search but stays as separate optional MainDependencies so
-  // repository tests can inject isolated in-memory doubles.
-  const repositoryCache = dependencies.repositoryCache ?? defaultResponseCache;
-  const repositorySleep = dependencies.repositorySleep ?? realSleep;
-  const repositoryRandom = dependencies.repositoryRandom ?? Math.random;
-  // Reader Migration Ticket 04: Reader execution defaults to the same
-  // production values as Search/Repository but stays as separate
-  // optional MainDependencies so reader tests can inject isolated
-  // in-memory doubles.
-  const readerCache = dependencies.readerCache ?? defaultResponseCache;
-  const readerSleep = dependencies.readerSleep ?? realSleep;
-  const readerRandom = dependencies.readerRandom ?? Math.random;
-  // Tavily integration Ticket 05: Crawl execution defaults to the same
-  // production values as Search/Repository/Reader but stays as separate
-  // optional MainDependencies so crawl tests can inject isolated
-  // in-memory doubles.
-  const crawlCache = dependencies.crawlCache ?? defaultResponseCache;
-  const crawlSleep = dependencies.crawlSleep ?? realSleep;
-  const crawlRandom = dependencies.crawlRandom ?? Math.random;
-  // Tavily integration Ticket 06: Map execution defaults to the same
-  // production values as Search/Repository/Reader/Crawl but stays as
-  // separate optional MainDependencies so map tests can inject isolated
-  // in-memory doubles.
-  const mapCache = dependencies.mapCache ?? defaultResponseCache;
-  const mapSleep = dependencies.mapSleep ?? realSleep;
-  const mapRandom = dependencies.mapRandom ?? Math.random;
-  // Tavily integration Ticket 07: Research execution defaults to the same
-  // production values as Search/Repository/Reader/Crawl/Map but stays as
-  // separate optional MainDependencies so research tests can inject
-  // isolated in-memory doubles.
-  const researchCache = dependencies.researchCache ?? defaultResponseCache;
-  const researchSleep = dependencies.researchSleep ?? realSleep;
-  const researchRandom = dependencies.researchRandom ?? Math.random;
   // Resolve configured Provider credentials from the INJECTED env (B3) so
   // redaction follows the same environment the handlers see — a secret
   // that exists only in MainDependencies.env is still redacted from output.
@@ -5550,6 +5518,50 @@ export async function main(
   if (isolated) {
     env = { ...env, SCOUTLINE_ISOLATED: "1" };
   }
+
+  // Under `--isolated`, build response caches scoped to `<root>/cache/isolated/<pid>`
+  // via createFileResponseCache. An injected `dependencies.*Cache` always wins.
+  const defaultCache = isolated
+    ? createFileResponseCache(() => responseCacheDir(env))
+    : defaultResponseCache;
+
+  const searchCache = dependencies.searchCache ?? defaultCache;
+  const searchSleep = dependencies.searchSleep ?? realSleep;
+  const searchRandom = dependencies.searchRandom ?? Math.random;
+  // P6-07: Repository execution defaults to the same production values
+  // as Search but stays as separate optional MainDependencies so
+  // repository tests can inject isolated in-memory doubles.
+  const repositoryCache = dependencies.repositoryCache ?? defaultCache;
+  const repositorySleep = dependencies.repositorySleep ?? realSleep;
+  const repositoryRandom = dependencies.repositoryRandom ?? Math.random;
+  // Reader Migration Ticket 04: Reader execution defaults to the same
+  // production values as Search/Repository but stays as separate
+  // optional MainDependencies so reader tests can inject isolated
+  // in-memory doubles.
+  const readerCache = dependencies.readerCache ?? defaultCache;
+  const readerSleep = dependencies.readerSleep ?? realSleep;
+  const readerRandom = dependencies.readerRandom ?? Math.random;
+  // Tavily integration Ticket 05: Crawl execution defaults to the same
+  // production values as Search/Repository/Reader but stays as separate
+  // optional MainDependencies so crawl tests can inject isolated
+  // in-memory doubles.
+  const crawlCache = dependencies.crawlCache ?? defaultCache;
+  const crawlSleep = dependencies.crawlSleep ?? realSleep;
+  const crawlRandom = dependencies.crawlRandom ?? Math.random;
+  // Tavily integration Ticket 06: Map execution defaults to the same
+  // production values as Search/Repository/Reader/Crawl but stays as
+  // separate optional MainDependencies so map tests can inject isolated
+  // in-memory doubles.
+  const mapCache = dependencies.mapCache ?? defaultCache;
+  const mapSleep = dependencies.mapSleep ?? realSleep;
+  const mapRandom = dependencies.mapRandom ?? Math.random;
+  // Tavily integration Ticket 07: Research execution defaults to the same
+  // production values as Search/Repository/Reader/Crawl/Map but stays as
+  // separate optional MainDependencies so research tests can inject
+  // isolated in-memory doubles.
+  const researchCache = dependencies.researchCache ?? defaultCache;
+  const researchSleep = dependencies.researchSleep ?? realSleep;
+  const researchRandom = dependencies.researchRandom ?? Math.random;
 
   // Fixup C — B10: resolve the output mode BEFORE the dispatch try/catch.
   // An invalid explicit mode still surfaces as a typed ValidationError,

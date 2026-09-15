@@ -550,7 +550,7 @@ export class ZaiMcpClient {
    */
   private async discoverTools(refresh: boolean = false): Promise<Tool[]> {
     if (!refresh) {
-      const cached = await readToolCache(this.getToolCacheConfig());
+      const cached = await readToolCache(this.getToolCacheConfig(), this.options.env);
       if (cached) {
         return cached;
       }
@@ -561,7 +561,12 @@ export class ZaiMcpClient {
       throw new ApiError("MCP client not initialized", 500);
     }
     const tools = await this.client.getTools();
-    await writeToolCache(this.getToolCacheConfig(), tools, configuredSecrets(this.options.env));
+    await writeToolCache(
+      this.getToolCacheConfig(),
+      tools,
+      configuredSecrets(this.options.env),
+      this.options.env,
+    );
     return tools;
   }
 

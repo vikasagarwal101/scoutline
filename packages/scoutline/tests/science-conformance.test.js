@@ -196,12 +196,7 @@ describe("interim controls-vs-supplier: pinned rejecting supplier fails UNSUPPOR
     // fails the command outright (D5 ruling), it does not reroute" /
     // PRD AC-3 "rejects it with UNSUPPORTED_OPTION at validation —
     // never accept-and-drop". arXiv-shaped double rejects --author.
-    const arxiv = makeRejectingScienceDescriptor("arxiv", [
-      "author",
-      "year",
-      "venue",
-      "type",
-    ]);
+    const arxiv = makeRejectingScienceDescriptor("arxiv", ["author", "year", "venue", "type"]);
     const openalex = makeRejectingScienceDescriptor("openalex", ["venue"]);
     const { status, stdout, stderr } = await runMain(
       ["science", "search", "attention", "--provider", "arxiv", "--author", "Vaswani"],
@@ -257,10 +252,7 @@ describe("interim controls-vs-supplier: pinned rejecting supplier fails UNSUPPOR
 // ---------------------------------------------------------------------------
 
 describe("dispatch enumeration pins have teeth (mutation evidence)", () => {
-  const SOURCE = readFileSync(
-    fileURLToPath(new URL("../src/index.ts", import.meta.url)),
-    "utf8",
-  );
+  const SOURCE = readFileSync(fileURLToPath(new URL("../src/index.ts", import.meta.url)), "utf8");
 
   it("science is a dispatched noun and the dispatch surface is 23 (14 switch cases + 9 if arms)", () => {
     // GROUND: TASKS T8 "DISPATCHED_COMMANDS pin widened 22→23 (one
@@ -277,7 +269,7 @@ describe("dispatch enumeration pins have teeth (mutation evidence)", () => {
     );
   });
 
-  it("the science arm is a credential-free line-start `if (command === \"science\") {` inside main() — the F-6-extractable shape", () => {
+  it('the science arm is a credential-free line-start `if (command === "science") {` inside main() — the F-6-extractable shape', () => {
     // GROUND: TASKS T8 "Arm shape: credential-free `if (command ===
     // \"science\") {` inside main() (line-start, `archive` precedent —
     // NOT an `else if` chain or a switch case, both of which evade the
@@ -326,11 +318,7 @@ describe("dispatch enumeration pins have teeth (mutation evidence)", () => {
     for (const command of badSet) {
       if (!ladder.has(command) && !REJECT_MAX_CHARS_COMMANDS.has(command)) uncovered.push(command);
     }
-    assert.deepEqual(
-      uncovered,
-      ["transmogrify"],
-      "an unladdered, unrejected command is caught",
-    );
+    assert.deepEqual(uncovered, ["transmogrify"], "an unladdered, unrejected command is caught");
     assert.ok(
       !REJECT_MAX_CHARS_COMMANDS.has("science"),
       "science must sit on the LADDER side (D6b), never the rejection set",
@@ -385,16 +373,14 @@ describe("CHANGELOG newest section carries the science feature bullet (AC-10c; r
     // lands in the same commit as the behavior". The bullet names the
     // science command (the shipped behavior: search+get across five
     // scholarly suppliers).
-    // Release-lock form: extract the newest RELEASED section (the empty
-    // [Unreleased] stub above it carries nothing).
-    const start = changelog.search(/^## \[\d/m);
-    const end = start === -1 ? undefined : changelog.indexOf("## [", start + 1);
-    const section = changelog.slice(start, end === -1 || end === undefined ? undefined : end);
-    assert.ok(start !== -1, "a released version section exists");
-    assert.match(
-      section,
-      /science/i,
-      "the Unreleased block must carry the science feature bullet",
-    );
+    // Release-lock form (0.21.1 cut): pin to the bullet's SHIPPING section
+    // `## [0.21.0]` (you-docs 0.18.0 + agent-docs 0.21.0 precedent) — the
+    // newest-section extraction reddened mid-driver on any cut whose notes
+    // lacked a science bullet (the actual 0.21.1 strander, #179).
+    const start = changelog.indexOf("## [0.21.0]");
+    assert.ok(start > 0, "CHANGELOG must have the ## [0.21.0] section that shipped science");
+    const end = changelog.indexOf("## [", start + 1);
+    const section = changelog.slice(start, end === -1 ? undefined : end);
+    assert.match(section, /science/i, "the Unreleased block must carry the science feature bullet");
   });
 });

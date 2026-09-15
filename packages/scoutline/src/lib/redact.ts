@@ -117,25 +117,48 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
       return CREDENTIAL_CHAR.test(candidate) ? REDACTED : match;
     },
   );
+  // Quoted-scheme recovery pass (#171 review F3): recover coverage for
+  // quoted credentials (e.g. Bearer "ghp_..." or JSON Bearer \"ghp_...\")
+  // that bare [^\s"]{8,} cannot match. Exclude backslash, quotes, and
+  // whitespace from capture so JSON escape backslashes are swallowed into
+  // the match without leaving orphan backslashes, while CREDENTIAL_CHAR
+  // protects quoted prose.
+  // ponytail: M4b escape-spanning omitted — RFC 6750 token68 and standard
+  // credentials never embed escaped quotes mid-token; upgrade if exotic token grammar arises.
+  result = result.replace(
+    /(?:Bearer|Token|ApiKey)\s+\\?"([^"\\\s]{8,})\\?"/gi,
+    (match, value: string) => {
+      const candidate = value.replace(/[",.;:)\]]+$/, "");
+      return CREDENTIAL_CHAR.test(candidate) ? REDACTED : match;
+    },
+  );
   // Same two-pass approach for Basic. The Authorization-context pass
   // covers `Authorization: Basic …` regardless of value composition; the
   // outside-context pass requires a credential-like character (same
   // case-sensitive CREDENTIAL_CHAR check) to keep prose like
-  // `Basic understanding` untouched.
+  // `Basic understanding` untouched. Both terminate at `"` so JSON
+  // property boundaries are preserved.
   result = result.replace(
-    /(Authorization\s*:\s*)Basic\s+\S+/gi,
+    /(Authorization\s*:\s*)Basic\s+[^\s"]+/gi,
     (_match, prefix: string) => prefix + REDACTED,
   );
-  result = result.replace(/Basic\s+(\S{8,})/gi, (match, value: string) =>
-    CREDENTIAL_CHAR.test(value) ? REDACTED : match,
+  result = result.replace(
+    /Basic\s+([^\s"]{8,})/gi,
+    (match, value: string) => {
+      const candidate = value.replace(/[",.;:)\]]+$/, "");
+      return CREDENTIAL_CHAR.test(candidate) ? REDACTED : match;
+    },
   );
   // Honor RFC 7235 quoted-string values in Digest parameters. The value
-  // span may be either a bare token `[^\s,]+` or a quoted string
-  // `"[^"]*"`, and the comma-separated param list must consume every
-  // parameter (including `nonce=` and `response=`) so they don't leak
-  // when a quoted realm contains an internal space, e.g. `realm="My App"`.
+  // span may be either a bare token `[^\s,"]+` or a quoted string
+  // `\\?"(?:[^"\\]|\\.)*?\\?"` (supporting JSON-escaped quotes without
+  // swallowing closing delimiters), and the comma-separated param list
+  // must consume every parameter (including `nonce=` and `response=`) so
+  // they don't leak when a quoted realm contains an internal space, e.g.
+  // `realm="My App"`. Bare alternative excludes `"` to prevent swallowing
+  // JSON structural string boundaries.
   result = result.replace(
-    /Digest\s+(?:[^\s,=]+=(?:"[^"]*"|[^\s,]+)|[^\s,]+)(?:,\s*(?:[^\s,=]+=(?:"[^"]*"|[^\s,]+)|[^\s,]+))*/gi,
+    /Digest\s+(?:[^\s,=]+=(?:\\?"(?:[^"\\]|\\.)*?\\?"|[^\s,"]+)|[^\s,"]+)(?:,\s*(?:[^\s,=]+=(?:\\?"(?:[^"\\]|\\.)*?\\?"|[^\s,"]+)|[^\s,"]+))*/gi,
     REDACTED,
   );
   // Tavily API keys carry the `tvly-` prefix; redact the full token
@@ -157,24 +180,25 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   // prose error messages ("MINIMAX_API_KEY environment variable is
   // required") and a whitespace separator would over-redact that prose.
   // The `\s*[=:]\s*` class is a strict superset of the prior `\s*=\s*`.
-  result = result.replace(/Z_AI_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
-  result = result.replace(/ZAI_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
-  result = result.replace(/MINIMAX_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
-  result = result.replace(/TAVILY_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
-  result = result.replace(/EXA_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
-  result = result.replace(/BRAVE_SEARCH_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
-  result = result.replace(/FIRECRAWL_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
-  result = result.replace(/PARALLEL_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
-  result = result.replace(/PERPLEXITY_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
-  result = result.replace(/JINA_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
+  // Value span `[^\s"]+` terminates at `"` to preserve JSON string boundaries.
+  result = result.replace(/Z_AI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/ZAI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/MINIMAX_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/TAVILY_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/EXA_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/BRAVE_SEARCH_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/FIRECRAWL_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/PARALLEL_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/PERPLEXITY_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/JINA_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   // v3 providers (#78): incumbent [=:] shape plus the x-api-key
   // whitespace-separator convention, guarded by the #44 true-credential
   // bar (8+ chars containing both a letter and a digit) so ordinary
   // prose naming the variable ("LINKUP_API_KEY is not set") stays intact.
-  result = result.replace(/YDC_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
-  result = result.replace(/YOU_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
-  result = result.replace(/LINKUP_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
-  result = result.replace(/SPIDER_API_KEY\s*[=:]\s*\S+/gi, REDACTED);
+  result = result.replace(/YDC_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/YOU_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/LINKUP_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/SPIDER_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   result = result.replace(/YDC_API_KEY\s+(?=\S*\d)(?=\S*[A-Za-z])\S{8,}/gi, REDACTED);
   result = result.replace(/YOU_API_KEY\s+(?=\S*\d)(?=\S*[A-Za-z])\S{8,}/gi, REDACTED);
   result = result.replace(/LINKUP_API_KEY\s+(?=\S*\d)(?=\S*[A-Za-z])\S{8,}/gi, REDACTED);

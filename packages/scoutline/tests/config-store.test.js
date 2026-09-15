@@ -5,6 +5,7 @@ import * as fs from "node:fs/promises";
 import { withTempDir } from "./helpers/temp-dir.js";
 import { ConfigurationError } from "../dist/lib/errors.js";
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 
 describe("resolveConfigRootPure", () => {
   it("uses only SCOUTLINE_CONFIG_DIR and otherwise defaults to homedir/.scoutline", async () => {
@@ -1209,5 +1210,127 @@ describe("sandbox-run wrapper (#168)", () => {
 
     assert.notStrictEqual(exitCode, 0);
     assert.ok(stderr.includes("SCOUTLINE_NO_TEST_GUARD"), stderr);
+  });
+
+  it("does not refuse SCOUTLINE_NO_TEST_GUARD=0 (strict =1 contract)", async () => {
+    const { spawn } = await import("node:child_process");
+    const scriptPath = fileURLToPath(new URL("../scripts/sandbox-run.mjs", import.meta.url));
+
+    let stdout = "";
+    const exitCode = await new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        [scriptPath, process.execPath, "-e", "console.log('RAN')"],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env, SCOUTLINE_NO_TEST_GUARD: "0" },
+        },
+      );
+      child.stdout.on("data", (d) => {
+        stdout += d.toString();
+      });
+      child.on("error", reject);
+      child.on("close", resolve);
+    });
+
+    assert.strictEqual(exitCode, 0);
+    assert.ok(stdout.includes("RAN"), stdout);
+  });
+
+  it("carries NONE of the caller's six guard roots — each is a fresh sandbox dir", async () => {
+    const { spawn } = await import("node:child_process");
+    const scriptPath = fileURLToPath(new URL("../scripts/sandbox-run.mjs", import.meta.url));
+
+    const callerRoots = {
+      SCOUTLINE_CONFIG_DIR: "/var/tmp/pin-REAL-config",
+      SCOUTLINE_ARTIFACTS_DIR: "/var/tmp/pin-REAL-artifacts",
+      SCOUTLINE_CACHE_DIR: "/var/tmp/pin-REAL-cache",
+      SCOUTLINE_WATCH_DIR: "/var/tmp/pin-REAL-watch",
+      ZAI_MCP_CACHE_DIR: "/var/tmp/pin-REAL-zaimcp",
+      ZAI_CACHE_DIR: "/var/tmp/pin-REAL-zai",
+    };
+    const probeKeys = {
+      CONFIG: "SCOUTLINE_CONFIG_DIR",
+      ARTIFACTS: "SCOUTLINE_ARTIFACTS_DIR",
+      CACHE: "SCOUTLINE_CACHE_DIR",
+      WATCH: "SCOUTLINE_WATCH_DIR",
+      ZAIMCP: "ZAI_MCP_CACHE_DIR",
+      ZAI: "ZAI_CACHE_DIR",
+    };
+    const probe = `console.log("PROBE:" + JSON.stringify({${Object.entries(probeKeys)
+      .map(([short, name]) => `${short}: process.env.${name}`)
+      .join(",")}}))`;
+
+    let stdout = "";
+    const exitCode = await new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        [scriptPath, process.execPath, "--input-type=commonjs", "-e", probe],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env, ...callerRoots },
+        },
+      );
+      child.stdout.on("data", (d) => {
+        stdout += d.toString();
+      });
+      child.on("error", reject);
+      child.on("close", resolve);
+    });
+
+    assert.strictEqual(exitCode, 0);
+    const childRoots = JSON.parse(stdout.match(/PROBE:(\{.*\})/)[1]);
+    for (const [short, name] of Object.entries(probeKeys)) {
+      assert.notStrictEqual(
+        childRoots[short],
+        callerRoots[name],
+        `${name} must not be forwarded from the caller`,
+      );
+      assert.ok(
+        childRoots[short].startsWith("/var/tmp/scoutline-sandbox-"),
+        `${name} must be a fresh sandbox dir, got ${childRoots[short]}`,
+      );
+    }
+  });
+
+  it("relative-path writes land in the sandbox cwd, not the repo", async () => {
+    const { spawn } = await import("node:child_process");
+    const scriptPath = fileURLToPath(new URL("../scripts/sandbox-run.mjs", import.meta.url));
+
+    // The wrapper removes the sandbox on close, so the child self-verifies the
+    // marker landed in its cwd; the parent verifies the repo stayed clean.
+    const probe =
+      'const fs = require("node:fs");' +
+      'fs.writeFileSync("./probe-marker", "x", "utf8");' +
+      'console.log("PROBE:" + JSON.stringify({ cwd: process.cwd(), marker: fs.existsSync("./probe-marker") }))';
+
+    let stdout = "";
+    const exitCode = await new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        [scriptPath, process.execPath, "--input-type=commonjs", "-e", probe],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env },
+        },
+      );
+      child.stdout.on("data", (d) => {
+        stdout += d.toString();
+      });
+      child.on("error", reject);
+      child.on("close", resolve);
+    });
+
+    assert.strictEqual(exitCode, 0);
+    const result = JSON.parse(stdout.match(/PROBE:(\{.*\})/)[1]);
+    assert.ok(result.marker, "child must see its own relative write");
+    assert.ok(
+      result.cwd.startsWith("/var/tmp/scoutline-sandbox-cwd-"),
+      `child cwd must be the sandbox scratch, got ${result.cwd}`,
+    );
+    assert.ok(
+      !existsSync(path.join(process.cwd(), "probe-marker")),
+      "repo working tree must stay clean",
+    );
   });
 });

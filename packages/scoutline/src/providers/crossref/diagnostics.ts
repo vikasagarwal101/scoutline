@@ -3,8 +3,13 @@
  *
  * Keyless bounded probe (DESIGN D2 round-3 ruling): doctor probes
  * every always-configured science supplier, so the Crossref probe is
- * ONE minimal keyless wire call on the works endpoint (`rows=1`) —
- * never a full search. The politeness posture applies to it too: the
+ * ONE minimal keyless wire call on the works endpoint — still one
+ * call, still `rows=1`, but it exercises the SEARCH capability
+ * (`query=test`). #163: a bare works list can stay green while the
+ * search surface degrades, so a works-list-only probe reports
+ * capability health it never tested. Red on a degraded search is
+ * INTENDED — the row reports the search capability, not bare
+ * connectivity. The politeness posture applies to it too: the
  * house UA carrying the mailto contact. When `diagOptions.probe` is
  * false, `invoke` resolves immediately without touching the network.
  */
@@ -30,8 +35,10 @@ export function createCrossrefDiagnosticsCapability(
     async invoke(diagOptions: DiagnosticOptions): Promise<void> {
       if (!diagOptions.probe) return;
       try {
-        // One minimal keyless wire call on the works endpoint.
-        await fetchCrossrefJson({ rows: "1" }, transport);
+        // One minimal keyless wire call, exercising the search
+        // capability (#163): `query` is the Crossref-native search
+        // param the Adapter itself sends (buildSearchParams).
+        await fetchCrossrefJson({ query: "test", rows: "1" }, transport);
       } catch (error) {
         throw normalizeProbeError(error);
       }

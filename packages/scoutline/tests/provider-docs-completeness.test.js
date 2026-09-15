@@ -97,3 +97,42 @@ describe("doc completeness — architecture.md and SKILL.md follow PROVIDER_IDS 
     );
   });
 });
+
+const troubleshooting = fs.readFile(
+  new URL("../../../docs/troubleshooting.md", import.meta.url),
+  "utf8",
+);
+
+describe("doc completeness — troubleshooting.md unknown-provider surfaces (#166 review)", () => {
+  async function unknownProviderSection() {
+    const text = await troubleshooting;
+    const start = text.indexOf("## Unknown Provider ID");
+    assert.ok(start >= 0, "troubleshooting.md must have ## Unknown Provider ID");
+    const next = text.indexOf("\n## ", start + 1);
+    return text.slice(start, next > start ? next : undefined);
+  }
+
+  it("fenced error example matches the built enumeration verbatim", async () => {
+    const section = await unknownProviderSection();
+    const expected = `Unknown provider "<value>". Accepted provider IDs: ${PROVIDER_IDS.join(", ")}.`;
+    assert.ok(
+      section.includes(expected),
+      `troubleshooting.md fenced example must equal the built enumeration verbatim:\n${expected}`,
+    );
+  });
+
+  it("prose acceptance sentence covers exactly the registry ids, in order", async () => {
+    const section = await unknownProviderSection();
+    // Extract the id sequence from the prose sentence (backticked ids
+    // between "accept" and its closing period) — punctuation/backtick
+    // wording may differ, the ID SET and ORDER may not.
+    const sentence = section.match(/ accept ([^.]*?)\./);
+    assert.ok(sentence, "prose acceptance sentence not found");
+    const ids = [...sentence[1].matchAll(/`([a-z][a-z0-9-]*)`/g)].map((m) => m[1]);
+    assert.deepEqual(
+      ids,
+      [...PROVIDER_IDS],
+      "prose id sequence must equal PROVIDER_IDS in registry order",
+    );
+  });
+});

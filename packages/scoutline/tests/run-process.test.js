@@ -10,9 +10,11 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
 import * as os from "node:os";
+import * as path from "node:path";
 
-import { buildIsolatedEnv } from "./helpers/run-process.js";
+import { buildIsolatedEnv, runProcess } from "./helpers/run-process.js";
 
 describe("runProcess buildIsolatedEnv", () => {
   it("injects all three isolation dirs as distinct temp paths", async () => {
@@ -81,5 +83,84 @@ describe("runProcess buildIsolatedEnv", () => {
     const env = await buildIsolatedEnv({ configDir: false });
     assert.ok(env.SCOUTLINE_CACHE_DIR.startsWith(os.tmpdir()));
     assert.ok(env.SCOUTLINE_ARTIFACTS_DIR.startsWith(os.tmpdir()));
+  });
+});
+
+describe("runProcess per-call temp cleanup (#167)", () => {
+  it("removes the config/cache/artifacts dirs it created once the child closes", async () => {
+    const { code, createdTempDirs } = await runProcess(["--help"]);
+    assert.equal(code, 0);
+    assert.equal(createdTempDirs.length, 3);
+    for (const dir of createdTempDirs) {
+      assert.equal(fs.existsSync(dir), false, `leaked: ${dir}`);
+    }
+  });
+
+  it("caller-supplied configDir survives the call", async () => {
+    const keep = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-pin-keep-"));
+    try {
+      const { code, createdTempDirs } = await runProcess(["--help"], { configDir: keep });
+      assert.equal(code, 0);
+      assert.equal(fs.existsSync(keep), true, "caller configDir must not be removed");
+      // Only cache + artifacts were mkdtemp'd this call; the config dir
+      // was caller-supplied, so it must not be in the tracked set.
+      assert.equal(createdTempDirs.length, 2);
+      for (const dir of createdTempDirs) {
+        assert.equal(fs.existsSync(dir), false, `leaked: ${dir}`);
+      }
+    } finally {
+      fs.rmSync(keep, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("runProcess error/partial-failure cleanup (#167 review)", () => {
+  // Both pins keep every created temp dir inside a PRIVATE pen (TMPDIR
+  // retarget, honored by os.tmpdir() at call time) so the leak assertion
+  // is immune to sibling test files' concurrent subprocess temp dirs in
+  // the shared os.tmpdir().
+  it("buildIsolatedEnv partial failure cleans the dirs created so far", async () => {
+    const pen = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-pin-pen-"));
+    const prevTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = pen;
+    try {
+      // JSON.stringify throws on BigInt: the config write fails AFTER the
+      // config dir was created — the partial-failure leak shape.
+      await assert.rejects(
+        buildIsolatedEnv({ config: { v: 1n } }),
+        /Do not know how to serialize/,
+      );
+    } finally {
+      if (prevTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = prevTmpdir;
+    }
+    const left = fs.readdirSync(pen);
+    fs.rmSync(pen, { recursive: true, force: true });
+    assert.deepEqual(left, [], `partial failure leaked created-so-far dirs: ${left}`);
+  });
+
+  it("spawn-error rejects deterministically with the spawn error, dirs cleaned (#176)", async () => {
+    const pen = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-pin-pen-"));
+    const prevTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = pen;
+    try {
+      // Missing cwd: spawn emits 'error' (ENOENT) then 'close'. At HEAD the
+      // two finalizers raced — the async 'error' handler could lose to
+      // 'close', which RESOLVED (probe: 1 resolve in 200 missing-cwd runs).
+      // Loop the race window: every iteration must reject with the spawn
+      // error itself, and the cleanup must run BEFORE the reject.
+      for (let i = 0; i < 10; i++) {
+        await assert.rejects(
+          runProcess(["--help"], { cwd: "/nonexistent-scoutline-pin-cwd" }),
+          { code: "ENOENT" },
+        );
+      }
+    } finally {
+      if (prevTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = prevTmpdir;
+    }
+    const left = fs.readdirSync(pen);
+    fs.rmSync(pen, { recursive: true, force: true });
+    assert.deepEqual(left, [], `spawn-error path leaked per-call dirs: ${left}`);
   });
 });

@@ -39,6 +39,15 @@ if git ls-remote --tags origin "refs/tags/v$VERSION" | grep -q "refs/tags/v$VERS
   echo "tag v$VERSION already exists on origin" >&2; exit 1
 fi
 
+# Dry-run safety net (#170): retitle+bump mutate the tree and the old
+# happy-path-only restore stranded them on any gate failure under set -e.
+# One EXIT trap restores on normal exits, set -e failures, SIGTERM, and
+# SIGINT (job control on — the real Ctrl-C case); SIGKILL cannot be
+# trapped by any shell.
+if [ "$DRY_RUN" = "--dry-run" ]; then
+  trap 'git checkout -- CHANGELOG.md packages/scoutline/package.json packages/scoutline/package-lock.json' EXIT
+fi
+
 step "retitle CHANGELOG Unreleased -> $VERSION (verified)"
 python3 - "$VERSION" "$TODAY" <<'PYEOF'
 import sys
@@ -76,7 +85,6 @@ echo "notes: $(wc -c < /tmp/scoutline-release-notes.md) bytes"
 
 if [ "$DRY_RUN" = "--dry-run" ]; then
   step "dry run — restoring tree"
-  git checkout -- CHANGELOG.md packages/scoutline/package.json packages/scoutline/package-lock.json
   echo "dry run complete — tree restored, nothing committed/shipped"
   exit 0
 fi

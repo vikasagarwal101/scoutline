@@ -4,6 +4,8 @@ import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import { withTempDir } from "./helpers/temp-dir.js";
 import { ConfigurationError } from "../dist/lib/errors.js";
+import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 
 describe("resolveConfigRootPure", () => {
   it("uses only SCOUTLINE_CONFIG_DIR and otherwise defaults to homedir/.scoutline", async () => {
@@ -974,5 +976,413 @@ describe("review r3: config journal leniency (cubic P2/P3)", () => {
         assert.strictEqual(config.journal, journal);
       }
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T1: writeConfig refuse-to-empty guard (#168)
+// ---------------------------------------------------------------------------
+
+describe("writeConfig refuse-to-empty guard (#168)", () => {
+  it("empty payload over populated file + populated .bak throws ConfigurationError naming .bak; file not replaced", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const bakPath = path.join(dir, "config.json.bak");
+      const populated = {
+        version: 1,
+        providers: { tavily: { apiKey: "tvly-test", onboarded: true } },
+      };
+      const populatedContent = JSON.stringify(populated, null, 2);
+      await fs.writeFile(filePath, populatedContent, "utf8");
+      await fs.writeFile(bakPath, populatedContent, "utf8");
+
+      const { writeConfig } = await import("../dist/lib/config-store.js");
+      await assert.rejects(
+        () => writeConfig({ version: 1, providers: {} }, { filePath }),
+        (error) => {
+          assert.strictEqual(error.name, "ConfigurationError");
+          assert.ok(
+            error.help && error.help.includes(".bak"),
+            `advice must name .bak: ${error.help}`,
+          );
+          return true;
+        },
+      );
+
+      const contentsAfter = await fs.readFile(filePath, "utf8");
+      assert.strictEqual(contentsAfter, populatedContent);
+    });
+  });
+
+  it("empty payload over empty file and over absent prior file are allowed", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const { writeConfig, readConfig } = await import("../dist/lib/config-store.js");
+
+      // Empty over absent prior file
+      await writeConfig({ version: 1, providers: {} }, { filePath });
+      let read = await readConfig({ filePath });
+      assert.deepStrictEqual(read.providers, {});
+
+      // Empty over empty prior file
+      await writeConfig({ version: 1, providers: {} }, { filePath });
+      read = await readConfig({ filePath });
+      assert.deepStrictEqual(read.providers, {});
+    });
+  });
+
+  it("allowEmpty: true over populated file is allowed", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const populated = {
+        version: 1,
+        providers: { tavily: { apiKey: "tvly-test", onboarded: true } },
+      };
+      await fs.writeFile(filePath, JSON.stringify(populated, null, 2), "utf8");
+      const { writeConfig, readConfig } = await import("../dist/lib/config-store.js");
+
+      await writeConfig({ version: 1, providers: {} }, { filePath, allowEmpty: true });
+      const read = await readConfig({ filePath });
+      assert.deepStrictEqual(read.providers, {});
+    });
+  });
+
+  it("empty payload over populated file with absent .bak throws ConfigurationError naming .bak", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const populated = {
+        version: 1,
+        providers: { tavily: { apiKey: "tvly-test", onboarded: true } },
+      };
+      await fs.writeFile(filePath, JSON.stringify(populated, null, 2), "utf8");
+
+      const { writeConfig } = await import("../dist/lib/config-store.js");
+      await assert.rejects(
+        () => writeConfig({ version: 1, providers: {} }, { filePath }),
+        (error) => {
+          assert.strictEqual(error.name, "ConfigurationError");
+          assert.ok(
+            error.help && error.help.includes(".bak"),
+            `advice must name .bak: ${error.help}`,
+          );
+          return true;
+        },
+      );
+    });
+  });
+
+  it("empty payload over empty file with populated .bak is allowed (.bak is history, not state)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const bakPath = path.join(dir, "config.json.bak");
+      const empty = { version: 1, providers: {} };
+      const populated = {
+        version: 1,
+        providers: { tavily: { apiKey: "tvly-test", onboarded: true } },
+      };
+      await fs.writeFile(filePath, JSON.stringify(empty, null, 2), "utf8");
+      await fs.writeFile(bakPath, JSON.stringify(populated, null, 2), "utf8");
+
+      const { writeConfig, readConfig } = await import("../dist/lib/config-store.js");
+      await writeConfig({ version: 1, providers: {} }, { filePath });
+      const read = await readConfig({ filePath });
+      assert.deepStrictEqual(read.providers, {});
+    });
+  });
+
+  it("empty payload over corrupt file is allowed (fail-open classification)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      await fs.writeFile(filePath, "{not-json", "utf8");
+
+      const { writeConfig, readConfig } = await import("../dist/lib/config-store.js");
+      await writeConfig({ version: 1, providers: {} }, { filePath });
+      const read = await readConfig({ filePath });
+      assert.deepStrictEqual(read.providers, {});
+    });
+  });
+
+  it("hint-store creates minimal config when config is absent or empty with populated .bak and does not repeat", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const bakPath = path.join(dir, "config.json.bak");
+      const populated = {
+        version: 1,
+        providers: { tavily: { apiKey: "tvly-test", onboarded: true } },
+      };
+      await fs.writeFile(bakPath, JSON.stringify(populated, null, 2), "utf8");
+
+      const { createDefaultHintShownStore, readConfig } = await import("../dist/lib/config-store.js");
+      const store = createDefaultHintShownStore({ filePath });
+
+      await store.setHintShown();
+      const firstRead = await readConfig({ filePath });
+      assert.strictEqual(firstRead.hintShown, true);
+      assert.deepStrictEqual(firstRead.providers, {});
+
+      await store.setHintShown();
+      const secondRead = await readConfig({ filePath });
+      assert.strictEqual(secondRead.hintShown, true);
+      assert.deepStrictEqual(secondRead.providers, {});
+    });
+  });
+
+  it("config set on torn-down config (empty file + populated .bak) succeeds", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const bakPath = path.join(dir, "config.json.bak");
+      const empty = { version: 1, providers: {} };
+      const populated = {
+        version: 1,
+        providers: { tavily: { apiKey: "tvly-test", onboarded: true } },
+      };
+      await fs.writeFile(filePath, JSON.stringify(empty, null, 2), "utf8");
+      await fs.writeFile(bakPath, JSON.stringify(populated, null, 2), "utf8");
+
+      const { setConfigValue, readConfig } = await import("../dist/lib/config-store.js");
+      const updated = await setConfigValue("fallbackEnabled", "false", { filePath });
+      assert.strictEqual(updated.fallbackEnabled, false);
+      assert.deepStrictEqual(updated.providers, {});
+
+      const reread = await readConfig({ filePath, onWarning: () => {} });
+      assert.strictEqual(reread.fallbackEnabled, false);
+      assert.deepStrictEqual(reread.providers, {});
+    });
+  });
+});
+
+describe("sandbox-run wrapper (#168)", () => {
+  it("isolates HOME and announces sandbox directory matching child os.homedir()", async () => {
+    const { spawn } = await import("node:child_process");
+    const os = await import("node:os");
+    const scriptPath = fileURLToPath(new URL("../scripts/sandbox-run.mjs", import.meta.url));
+
+    const realHome = os.homedir();
+    let stdout = "";
+    let stderr = "";
+
+    const exitCode = await new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        [scriptPath, process.execPath, "-e", "console.log(os.homedir())"],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env },
+        },
+      );
+      child.stdout.on("data", (d) => {
+        stdout += d.toString();
+      });
+      child.stderr.on("data", (d) => {
+        stderr += d.toString();
+      });
+      child.on("error", reject);
+      child.on("close", resolve);
+    });
+
+    assert.strictEqual(exitCode, 0);
+    const childHome = stdout.trim();
+    assert.notStrictEqual(childHome, realHome);
+    assert.ok(childHome.startsWith("/var/tmp/scoutline-sandbox-home-"), `childHome: ${childHome}`);
+    assert.ok(stderr.includes(childHome), `announced dir in stderr must match childHome: ${stderr}`);
+  });
+
+  it("refuses to run when SCOUTLINE_NO_TEST_GUARD is set", async () => {
+    const { spawn } = await import("node:child_process");
+    const scriptPath = fileURLToPath(new URL("../scripts/sandbox-run.mjs", import.meta.url));
+
+    let stderr = "";
+    const exitCode = await new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        [scriptPath, process.execPath, "-e", "console.log('should not run')"],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env, SCOUTLINE_NO_TEST_GUARD: "1" },
+        },
+      );
+      child.stderr.on("data", (d) => {
+        stderr += d.toString();
+      });
+      child.on("error", reject);
+      child.on("close", resolve);
+    });
+
+    assert.notStrictEqual(exitCode, 0);
+    assert.ok(stderr.includes("SCOUTLINE_NO_TEST_GUARD"), stderr);
+  });
+
+  it("does not refuse SCOUTLINE_NO_TEST_GUARD=0 (strict =1 contract)", async () => {
+    const { spawn } = await import("node:child_process");
+    const scriptPath = fileURLToPath(new URL("../scripts/sandbox-run.mjs", import.meta.url));
+
+    let stdout = "";
+    const exitCode = await new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        [scriptPath, process.execPath, "-e", "console.log('RAN')"],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env, SCOUTLINE_NO_TEST_GUARD: "0" },
+        },
+      );
+      child.stdout.on("data", (d) => {
+        stdout += d.toString();
+      });
+      child.on("error", reject);
+      child.on("close", resolve);
+    });
+
+    assert.strictEqual(exitCode, 0);
+    assert.ok(stdout.includes("RAN"), stdout);
+  });
+
+  it("carries NONE of the caller's six guard roots — each is a fresh sandbox dir", async () => {
+    const { spawn } = await import("node:child_process");
+    const scriptPath = fileURLToPath(new URL("../scripts/sandbox-run.mjs", import.meta.url));
+
+    const callerRoots = {
+      SCOUTLINE_CONFIG_DIR: "/var/tmp/pin-REAL-config",
+      SCOUTLINE_ARTIFACTS_DIR: "/var/tmp/pin-REAL-artifacts",
+      SCOUTLINE_CACHE_DIR: "/var/tmp/pin-REAL-cache",
+      SCOUTLINE_WATCH_DIR: "/var/tmp/pin-REAL-watch",
+      ZAI_MCP_CACHE_DIR: "/var/tmp/pin-REAL-zaimcp",
+      ZAI_CACHE_DIR: "/var/tmp/pin-REAL-zai",
+    };
+    const probeKeys = {
+      CONFIG: "SCOUTLINE_CONFIG_DIR",
+      ARTIFACTS: "SCOUTLINE_ARTIFACTS_DIR",
+      CACHE: "SCOUTLINE_CACHE_DIR",
+      WATCH: "SCOUTLINE_WATCH_DIR",
+      ZAIMCP: "ZAI_MCP_CACHE_DIR",
+      ZAI: "ZAI_CACHE_DIR",
+    };
+    const probe = `console.log("PROBE:" + JSON.stringify({${Object.entries(probeKeys)
+      .map(([short, name]) => `${short}: process.env.${name}`)
+      .join(",")}}))`;
+
+    let stdout = "";
+    const exitCode = await new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        [scriptPath, process.execPath, "--input-type=commonjs", "-e", probe],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env, ...callerRoots },
+        },
+      );
+      child.stdout.on("data", (d) => {
+        stdout += d.toString();
+      });
+      child.on("error", reject);
+      child.on("close", resolve);
+    });
+
+    assert.strictEqual(exitCode, 0);
+    const childRoots = JSON.parse(stdout.match(/PROBE:(\{.*\})/)[1]);
+    for (const [short, name] of Object.entries(probeKeys)) {
+      assert.notStrictEqual(
+        childRoots[short],
+        callerRoots[name],
+        `${name} must not be forwarded from the caller`,
+      );
+      assert.ok(
+        childRoots[short].startsWith("/var/tmp/scoutline-sandbox-"),
+        `${name} must be a fresh sandbox dir, got ${childRoots[short]}`,
+      );
+    }
+  });
+
+  it("relative-path writes land in the sandbox cwd, not the repo", async () => {
+    const { spawn } = await import("node:child_process");
+    const scriptPath = fileURLToPath(new URL("../scripts/sandbox-run.mjs", import.meta.url));
+
+    // The wrapper removes the sandbox on close, so the child self-verifies the
+    // marker landed in its cwd; the parent verifies the repo stayed clean.
+    const probe =
+      'const fs = require("node:fs");' +
+      'fs.writeFileSync("./probe-marker", "x", "utf8");' +
+      'console.log("PROBE:" + JSON.stringify({ cwd: process.cwd(), marker: fs.existsSync("./probe-marker") }))';
+
+    let stdout = "";
+    const exitCode = await new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        [scriptPath, process.execPath, "--input-type=commonjs", "-e", probe],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env },
+        },
+      );
+      child.stdout.on("data", (d) => {
+        stdout += d.toString();
+      });
+      child.on("error", reject);
+      child.on("close", resolve);
+    });
+
+    assert.strictEqual(exitCode, 0);
+    const result = JSON.parse(stdout.match(/PROBE:(\{.*\})/)[1]);
+    assert.ok(result.marker, "child must see its own relative write");
+    assert.ok(
+      result.cwd.startsWith("/var/tmp/scoutline-sandbox-cwd-"),
+      `child cwd must be the sandbox scratch, got ${result.cwd}`,
+    );
+    assert.ok(
+      !existsSync(path.join(process.cwd(), "probe-marker")),
+      "repo working tree must stay clean",
+    );
+  });
+
+  it("wrapper-directed SIGTERM forwards to the child and still cleans the sandbox (#176)", async () => {
+    const { spawn } = await import("node:child_process");
+    const scriptPath = fileURLToPath(new URL("../scripts/sandbox-run.mjs", import.meta.url));
+
+    // Pen lives OUTSIDE the sandbox: the wrapper deletes its scratch dirs
+    // on cleanup, so markers the child leaves for this pin must not land there.
+    const pen = await fs.mkdtemp(path.join(path.join("/var/tmp"), "scoutline-sigpin-pen-"));
+    const readyMarker = path.join(pen, "child-ready");
+    const sigMarker = path.join(pen, "child-got-sigterm");
+    try {
+      // Child announces readiness (SIGTERM handler installed), then idles.
+      // On SIGTERM it leaves a marker and exits with a signal-specific code.
+      const childScript =
+        'const fs = require("node:fs");' +
+        `fs.writeFileSync(${JSON.stringify(readyMarker)}, "1");` +
+        'process.on("SIGTERM", () => {' +
+        `fs.writeFileSync(${JSON.stringify(sigMarker)}, "1");` +
+        'process.exit(7);});' +
+        "setTimeout(() => process.exit(0), 5000);";
+
+      let stderr = "";
+      const wrapper = spawn(
+        process.execPath,
+        [scriptPath, process.execPath, "--input-type=commonjs", "-e", childScript],
+        { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env } },
+      );
+      wrapper.stderr.on("data", (d) => {
+        stderr += d.toString();
+      });
+      const wrapperClosed = new Promise((resolve) => wrapper.on("close", resolve));
+
+      for (let i = 0; i < 100 && !existsSync(readyMarker); i++) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      assert.ok(existsSync(readyMarker), "child never became ready");
+
+      wrapper.kill("SIGTERM"); // directed at the WRAPPER, not the child
+      await wrapperClosed;
+
+      // Census-style: every sandbox dir the wrapper announced must be gone.
+      const dirs = [
+        ...stderr.matchAll(/(?:HOME|[A-Z_]+)=(\/var\/tmp\/scoutline-sandbox-\S+)/g),
+      ].map((m) => m[1]);
+      assert.ok(dirs.length >= 7, `expected 7 announced sandbox dirs: ${stderr}`);
+      const leaked = dirs.filter((d) => existsSync(d));
+      assert.deepEqual(leaked, [], `wrapper-directed SIGTERM leaked sandbox dirs: ${leaked}`);
+      assert.ok(existsSync(sigMarker), "child must receive the forwarded SIGTERM");
+    } finally {
+      await fs.rm(pen, { recursive: true, force: true });
+    }
   });
 });

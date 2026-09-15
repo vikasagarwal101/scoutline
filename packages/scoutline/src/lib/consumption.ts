@@ -37,6 +37,7 @@
 
 import type { ProviderId } from "../providers/types.js";
 import type { QuotaUnit, ConsumptionAmount, QuotaStore } from "./quota-store.js";
+import { isTestIsolationViolation } from "./test-isolation.js";
 
 // ---------------------------------------------------------------------------
 // Event + context types
@@ -180,6 +181,7 @@ export function createQuotaStoreConsumptionSink(options: ConsumptionSinkOptions)
           event.at ?? now(),
         );
       } catch (error) {
+        if (isTestIsolationViolation(error)) throw error;
         // Redacted: never log event detail (provider, capability) —
         // accounting failure is observational only.
         const reason = error instanceof Error ? error.message : String(error);
@@ -229,7 +231,8 @@ export function createCompositeConsumptionSink(
       const recordIsolated = async (sink: ConsumptionSink): Promise<void> => {
         try {
           await sink.record(event);
-        } catch {
+        } catch (error) {
+          if (isTestIsolationViolation(error)) throw error;
           // Warning delivery gets its OWN guard (review P2): a throwing
           // warning channel is a defective channel, but it must not
           // rethrow through here — that would reject `record()` itself
@@ -301,9 +304,10 @@ export async function emitConsumption(
       attempt,
       at: now(),
     });
-  } catch {
+  } catch (error) {
     // Defensive double-wall: the production sink already swallows.
     // If a test sink throws, we still don't let it reach the retry
     // classifier.
+    if (isTestIsolationViolation(error)) throw error;
   }
 }

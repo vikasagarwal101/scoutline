@@ -17,6 +17,14 @@
  * guards, so buildIsolatedEnv also default-injects fresh per-call
  * SCOUTLINE_CACHE_DIR and SCOUTLINE_ARTIFACTS_DIR temp dirs (caller- or
  * ambient-supplied values win). This is the child's ONLY isolation.
+ *
+ * #167: the per-call dirs this helper mkdtemp'd are removed once the
+ * child closes — the spawn-error close included (#176 review: 'close' is
+ * the SINGLE finalizer; the 'error' listener only records); a
+ * buildIsolatedEnv partial failure cleans the dirs created so far before
+ * rethrowing. Caller-supplied values are never touched. The resolved
+ * object carries `createdTempDirs` — the dirs THIS call created — for
+ * pins.
  */
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -57,6 +65,26 @@ const PROVIDER_CREDENTIAL_ENV = [
 const AMBIENT_STORE_ROOT_ENV = ["SCOUTLINE_CACHE_DIR", "SCOUTLINE_ARTIFACTS_DIR"];
 
 /**
+ * Dirs THIS call mkdtemp'd (config/cache/artifacts defaults only —
+ * never caller-supplied values). Attached to the returned env under a
+ * Symbol: spawn ignores symbol keys, and the env object's visible
+ * shape stays unchanged for direct pinning.
+ */
+const CREATED_TEMP_DIRS = Symbol("scoutline.runProcess.createdTempDirs");
+
+/**
+ * Best-effort removal of the dirs a call tracked under CREATED_TEMP_DIRS
+ * (allSettled: an rm failure never fails the caller's outcome). Shared by
+ * the close path, the spawn-error path, and buildIsolatedEnv's
+ * partial-failure catch (#167 review).
+ */
+function cleanupCreatedDirs(dirs) {
+  return Promise.allSettled(
+    dirs.map((dir) => fs.rm(dir, { recursive: true, force: true })),
+  );
+}
+
+/**
  * @param {string[]} args - CLI arguments (without the node executable)
  * @param {object} [options]
  * @param {Record<string, string|undefined>} [options.env]
@@ -91,38 +119,51 @@ export async function buildIsolatedEnv(options = {}) {
     if (value === undefined) delete env[key];
   }
 
-  // T3b: isolate the subprocess from the developer's real config. A
-  // fresh temp dir means inspectConfig returns "absent" and trigger
-  // detection never sees a stale file-configured state from the host.
-  let configDir = options.configDir;
-  if (configDir === undefined) {
-    configDir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-subprocess-"));
-  }
-  if (configDir !== false) {
-    env.SCOUTLINE_CONFIG_DIR = configDir;
-    // When a config object is supplied, write it to the temp dir so the
-    // subprocess starts file-configured. This avoids the env-only hint
-    // while keeping stderr clean for tests that only care about
-    // validation behavior past the provider preflight.
-    if (options.config && typeof options.config === "object") {
-      await fs.writeFile(path.join(configDir, "config.json"), JSON.stringify(options.config));
+  const createdTempDirs = [];
+  // #167 review: a failure partway through this section (e.g. the config
+  // write throws) must not leak the dirs created so far — clean them
+  // before rethrowing.
+  try {
+    // T3b: isolate the subprocess from the developer's real config. A
+    // fresh temp dir means inspectConfig returns "absent" and trigger
+    // detection never sees a stale file-configured state from the host.
+    let configDir = options.configDir;
+    if (configDir === undefined) {
+      configDir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-subprocess-"));
+      createdTempDirs.push(configDir);
     }
-  }
+    if (configDir !== false) {
+      env.SCOUTLINE_CONFIG_DIR = configDir;
+      // When a config object is supplied, write it to the temp dir so the
+      // subprocess starts file-configured. This avoids the env-only hint
+      // while keeping stderr clean for tests that only care about
+      // validation behavior past the provider preflight.
+      if (options.config && typeof options.config === "object") {
+        await fs.writeFile(path.join(configDir, "config.json"), JSON.stringify(options.config));
+      }
+    }
 
-  // #154: subprocess children cannot inherit the test process's
-  // perimeter guards. Default-inject fresh per-call cache + artifacts
-  // temp dirs unless the merged env already carries a value (explicit
-  // options.env or an ambient process.env var — both win).
-  if (env.SCOUTLINE_CACHE_DIR === undefined) {
-    env.SCOUTLINE_CACHE_DIR = await fs.mkdtemp(
-      path.join(os.tmpdir(), "scoutline-subprocess-cache-"),
-    );
+    // #154: subprocess children cannot inherit the test process's
+    // perimeter guards. Default-inject fresh per-call cache + artifacts
+    // temp dirs unless the merged env already carries a value (explicit
+    // options.env or an ambient process.env var — both win).
+    if (env.SCOUTLINE_CACHE_DIR === undefined) {
+      env.SCOUTLINE_CACHE_DIR = await fs.mkdtemp(
+        path.join(os.tmpdir(), "scoutline-subprocess-cache-"),
+      );
+      createdTempDirs.push(env.SCOUTLINE_CACHE_DIR);
+    }
+    if (env.SCOUTLINE_ARTIFACTS_DIR === undefined) {
+      env.SCOUTLINE_ARTIFACTS_DIR = await fs.mkdtemp(
+        path.join(os.tmpdir(), "scoutline-subprocess-artifacts-"),
+      );
+      createdTempDirs.push(env.SCOUTLINE_ARTIFACTS_DIR);
+    }
+  } catch (err) {
+    await cleanupCreatedDirs(createdTempDirs);
+    throw err;
   }
-  if (env.SCOUTLINE_ARTIFACTS_DIR === undefined) {
-    env.SCOUTLINE_ARTIFACTS_DIR = await fs.mkdtemp(
-      path.join(os.tmpdir(), "scoutline-subprocess-artifacts-"),
-    );
-  }
+  env[CREATED_TEMP_DIRS] = createdTempDirs;
   return env;
 }
 
@@ -153,13 +194,27 @@ export async function runProcess(args, options = {}) {
       stderr += chunk.toString();
     });
 
+    // #176 review: record-only. Node emits 'error' AND 'close' on a spawn
+    // failure; the old async 'error' handler raced 'close' — both cleaned
+    // and both settled, so close could win and RESOLVE a spawn error
+    // (probe at HEAD: 1 resolve in 200 missing-cwd runs). 'close' is the
+    // single finalizer.
+    let spawnError = null;
     proc.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
+      spawnError = err;
     });
 
-    proc.on("close", (code) => {
+    proc.on("close", async (code) => {
       clearTimeout(timer);
+      // #167 per-call cleanup: remove ONLY the dirs this call mkdtemp'd.
+      // allSettled keeps an rm failure from failing a green subprocess
+      // run (best-effort); awaiting it keeps pins deterministic.
+      const created = env[CREATED_TEMP_DIRS] ?? [];
+      await cleanupCreatedDirs(created);
+      if (spawnError) {
+        reject(spawnError);
+        return;
+      }
       if (timedOut) {
         reject(
           new Error(
@@ -171,7 +226,7 @@ export async function runProcess(args, options = {}) {
         );
         return;
       }
-      resolve({ stdout, stderr, code: code ?? 0 });
+      resolve({ stdout, stderr, code: code ?? 0, createdTempDirs: created });
     });
   });
 }

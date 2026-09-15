@@ -796,6 +796,8 @@ async function runAgentRegistrationStep(deps: InitDependencies): Promise<number>
 
   // Persist agentRules NOW (merge under any existing config) so a later
   // wizard cancel cannot un-register an accepted tool.
+  // Note: with file-only wipe guard (#168 review), writing over a torn-down
+  // (empty) config on disk is permitted without allowEmpty.
   const inspection = await deps.configStore.inspect();
   const agentRules = {
     ...(inspection.status === "valid" ? inspection.config.agentRules : undefined),
@@ -820,7 +822,10 @@ async function runAgentRegistrationStep(deps: InitDependencies): Promise<number>
  * a fresh write clears the marker so the trigger-detection hint can
  * fire again if the user later switches to env-only usage).
  */
-async function runFreshFlow(deps: InitDependencies): Promise<number> {
+async function runFreshFlow(
+  deps: InitDependencies,
+  options: WriteConfigOptions = {},
+): Promise<number> {
   // Splash (init-only). Sent to stderr so stdout stays data-only for the
   // final summary.
   deps.writeStderr(
@@ -910,7 +915,10 @@ async function runFreshFlow(deps: InitDependencies): Promise<number> {
     ...(agentRules !== undefined ? { agentRules } : {}),
   };
   try {
-    await deps.configStore.write(config);
+    const isZeroProviders = Object.keys(config.providers).length === 0;
+    const writeOptions =
+      options.allowEmpty && isZeroProviders ? { allowEmpty: true } : undefined;
+    await deps.configStore.write(config, writeOptions);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     deps.writeStderr(`Failed to write config: ${message}\n`);
@@ -1138,7 +1146,7 @@ async function runReconfigMenu(
       deps.writeStderr(
         "Re-running the full onboarding flow. The live config will be replaced atomically.\n",
       );
-      return runFreshFlow(deps);
+      return runFreshFlow(deps, { allowEmpty: true });
     }
 
     // Mutating actions: each returns the next config (or null on cancel).
@@ -1591,7 +1599,12 @@ async function removeProvider(
     providers: nextProviders,
     ...(config.hintShown !== undefined ? { hintShown: config.hintShown } : {}),
   };
-  const status = persistConfig(deps, updated);
+  const isNowEmpty = Object.keys(nextProviders).length === 0;
+  const status = persistConfig(
+    deps,
+    updated,
+    isNowEmpty ? { allowEmpty: true } : undefined,
+  );
   if ((await status) === "written") {
     deps.writeStdout(`${providerMeta(providerId).label}: removed.\n`);
   }
@@ -1691,9 +1704,10 @@ async function editProviderKey(
 async function persistConfig(
   deps: InitDependencies,
   config: ScoutlineConfig,
+  options?: WriteConfigOptions,
 ): Promise<"written" | "write-error"> {
   try {
-    await deps.configStore.write(config);
+    await deps.configStore.write(config, options);
     return "written";
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

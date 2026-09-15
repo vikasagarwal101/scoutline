@@ -1453,3 +1453,89 @@ describe("archive diff live-leg transport failures (#173)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fix round 1 (#172 review F6/F7/m7): reject the `--flag=value` form at
+// parse level. Defect: `--timeout=300` parsed as a boolean flag under a
+// garbage key (`flags["timeout=300"] === true`, `flags.timeout` undefined)
+// and was silently dropped on every subcommand.
+// ---------------------------------------------------------------------------
+
+describe("archive --flag=value form rejection (#172 review F6)", () => {
+  function refusingFetch() {
+    return async () => {
+      throw new Error("network reached — flag should have been handled before any request");
+    };
+  }
+
+  async function runMain(args, fetchImpl) {
+    const { adapter, stderr } = makeAdapter();
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = fetchImpl;
+    try {
+      const code = await main(["archive", ...args], {
+        invocation: adapter,
+        env: {},
+        loadScoutlineConfig: () => {
+          throw new Error("Should not be called!");
+        },
+      });
+      return { code, stderr: stderr.join("") };
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  }
+
+  it("rejects the =-form for archive flags in parseArchiveArgs", () => {
+    assert.throws(() => parseArchiveArgs(["--timeout=300"]), ValidationError);
+    assert.throws(() => parseArchiveArgs(["--limit=50"]), ValidationError);
+  });
+
+  it("rejects --timeout=300 on cdx at parse level", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["cdx", "https://example.com/*", "--timeout=300"],
+      refusingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /VALIDATION_ERROR/);
+    assert.match(stderr, /--timeout=300/);
+    assert.match(stderr, /not supported/);
+  });
+
+  it("rejects --timeout=300 on get at parse level", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["get", "https://example.com/", "--timeout=300"],
+      refusingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /VALIDATION_ERROR/);
+    assert.match(stderr, /--timeout=300/);
+    assert.match(stderr, /not supported/);
+  });
+
+  it("rejects --timeout above the Node setTimeout ceiling on cdx (coverage mirror of the diff pin)", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["cdx", "https://example.com/*", "--timeout", "3000000000"],
+      refusingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /VALIDATION_ERROR/);
+    assert.match(stderr, /2147483647/);
+  });
+
+  it("rejects --timeout above the Node setTimeout ceiling on get (coverage mirror of the diff pin)", { timeout: 5000 }, async () => {
+    const { code, stderr } = await runMain(
+      ["get", "https://example.com/", "--timeout", "3000000000"],
+      refusingFetch(),
+    );
+    assert.equal(code, 1);
+    assert.match(stderr, /VALIDATION_ERROR/);
+    assert.match(stderr, /2147483647/);
+  });
+
+  it("documents --timeout in the diff help section", () => {
+    const diffSection = ARCHIVE_HELP.split("Options for 'archive diff':")[1].split("Global Options")[0];
+    assert.match(diffSection, /--timeout <ms>/);
+    assert.match(diffSection, /2147483647/);
+  });
+});

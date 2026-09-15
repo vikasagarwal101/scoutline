@@ -54,6 +54,7 @@ Options for 'archive get':
 Options for 'archive diff':
   --since <date|duration>  Snapshot boundary: ISO date (2026-08-01), ISO datetime
                            (2026-08-01T12:00:00Z), or duration (30d, 12h, 1w, 2y)
+  --timeout <ms>           Per-request timeout in ms (default: 30000, max: 2147483647)
 
 Global Options:
   --output-format, -O      Output format: data, json, pretty, compact, markdown, refs, tty
@@ -864,9 +865,11 @@ export async function fetchLiveDocument(
       throw err;
     }
     // No FileError branch (unlike executeFetch): this seam has no @file
-    // request body, the diff path's CDX/snapshot gate precedes the live
-    // fetch, and watch targets are http(s) — a filesystem-coded cause
-    // cannot legitimately reach this catch.
+    // body (no fs access), so a filesystem-coded cause is never legitimate
+    // here. Observable behavior at the second caller (watch tick, via
+    // fetchFailureReason watch.ts:331): only error.message is consumed, so
+    // typed-wrap vs raw-rethrow is equivalent (same change-log error entry,
+    // gen:null, exit 2) and the wrap only improves the reason text.
     const causeMessage =
       err instanceof Error && err.cause instanceof Error
         ? err.cause.message
@@ -1044,6 +1047,14 @@ export function parseArchiveArgs(args: readonly string[]): {
       showHelp = true;
       i++;
     } else if (arg.startsWith("--")) {
+      if (arg.includes("=")) {
+        // The `--flag=value` form is not supported: without this gate the
+        // token parses as a boolean flag under a garbage key
+        // ("timeout=300") and is silently dropped (#172 review F6).
+        throw new ValidationError(
+          `Invalid flag "${arg}": the --flag=value form is not supported; pass the value as the next argument.`,
+        );
+      }
       const key = arg.slice(2);
       const next = args[i + 1];
       if (next && !next.startsWith("-")) {
@@ -1090,20 +1101,21 @@ function parseArchiveTimeout(raw: string | boolean | undefined): number | undefi
     );
   }
   if (typeof raw === "string") {
-    if (!/^\d+$/.test(raw) || Number(raw) === 0) {
+    const ms = Number(raw);
+    if (!/^\d+$/.test(raw) || ms === 0) {
       throw new ValidationError(
         `Invalid --timeout: "${raw}".`,
         "Must be a positive integer number of milliseconds.",
       );
     }
-    if (Number(raw) > 2147483647) {
+    if (ms > 2147483647) {
       // Node setTimeout ceiling (review): larger values clamp to ~1ms.
       throw new ValidationError(
         `Invalid --timeout: "${raw}".`,
         "Must be at most 2147483647 ms (Node setTimeout limit).",
       );
     }
-    return Number(raw);
+    return ms;
   }
   return undefined;
 }

@@ -65,8 +65,6 @@ export function getHermeticArtifactsDir() {
   hermeticArtifactsDir ??= mkdtempSync(join(tmpdir(), "scoutline-hermetic-artifacts-"));
   return hermeticArtifactsDir;
 }
-export const defaultHermeticArtifactsDir = getHermeticArtifactsDir;
-export const HERMETIC_ARTIFACTS_DIR = getHermeticArtifactsDir;
 
 let hermeticCacheDir;
 export function getHermeticCacheDir() {

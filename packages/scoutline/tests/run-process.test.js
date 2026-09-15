@@ -10,9 +10,11 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
 import * as os from "node:os";
+import * as path from "node:path";
 
-import { buildIsolatedEnv } from "./helpers/run-process.js";
+import { buildIsolatedEnv, runProcess } from "./helpers/run-process.js";
 
 describe("runProcess buildIsolatedEnv", () => {
   it("injects all three isolation dirs as distinct temp paths", async () => {
@@ -81,5 +83,33 @@ describe("runProcess buildIsolatedEnv", () => {
     const env = await buildIsolatedEnv({ configDir: false });
     assert.ok(env.SCOUTLINE_CACHE_DIR.startsWith(os.tmpdir()));
     assert.ok(env.SCOUTLINE_ARTIFACTS_DIR.startsWith(os.tmpdir()));
+  });
+});
+
+describe("runProcess per-call temp cleanup (#167)", () => {
+  it("removes the config/cache/artifacts dirs it created once the child closes", async () => {
+    const { code, createdTempDirs } = await runProcess(["--help"]);
+    assert.equal(code, 0);
+    assert.equal(createdTempDirs.length, 3);
+    for (const dir of createdTempDirs) {
+      assert.equal(fs.existsSync(dir), false, `leaked: ${dir}`);
+    }
+  });
+
+  it("caller-supplied configDir survives the call", async () => {
+    const keep = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-pin-keep-"));
+    try {
+      const { code, createdTempDirs } = await runProcess(["--help"], { configDir: keep });
+      assert.equal(code, 0);
+      assert.equal(fs.existsSync(keep), true, "caller configDir must not be removed");
+      // Only cache + artifacts were mkdtemp'd this call; the config dir
+      // was caller-supplied, so it must not be in the tracked set.
+      assert.equal(createdTempDirs.length, 2);
+      for (const dir of createdTempDirs) {
+        assert.equal(fs.existsSync(dir), false, `leaked: ${dir}`);
+      }
+    } finally {
+      fs.rmSync(keep, { recursive: true, force: true });
+    }
   });
 });

@@ -59,10 +59,13 @@ import { parseBriefMaxChars } from "./repo.js";
 import { createSaveArtifactHook } from "../lib/save-artifacts.js";
 import { resolveArtifactsDir } from "../lib/artifacts.js";
 import { buildProviderCacheKey } from "../lib/cache.js";
+import type { ProviderRouting } from "../lib/artifacts.js";
 import type { ProviderId } from "../providers/types.js";
 import {
   appendJournalEntry,
+  appendJournalEntryMaybeRepeat,
   buildJournalEntry,
+  buildJournalRepeatMarker,
   buildSearchSkeleton,
   type JournalSkeleton,
 } from "../lib/journal.js";
@@ -911,22 +914,23 @@ export function scienceCacheKey(identity: unknown): string | undefined {
 
 /**
  * T7 journal hook — the science twin of main's `createJournalHook`,
- * scoped to the interim direct-invoke executor: the supplier
- * capability is invoked directly (no response-cache consult yet —
- * T10's executor adds that seam), so every completed run served LIVE
- * and journals ONE full entry. Facts, all read AFTER dispatch
+ * scoped to the direct-invoke executor (which since #140 consults the
+ * response cache per arm/attempt). Facts, all read AFTER dispatch
  * resolves (thunks, matching the search precedent):
  *   - query: what the USER passed verbatim — the search query or the
  *     get identifier (AC-12: journaled identity = user-visible
  *     identity, never a supplier-munged form).
- *   - provider: the interim single-arm pin
- *     {mode:"single", effective:<served supplier>, servedFrom:"live"}
- *     from the capture cell; once T10 fans out, the arm routing takes
- *     over per the fan-out journal rules.
+ *   - provider: {mode:"fanout", arms} for a run that fanned out,
+ *     {mode:"single", effective, servedFrom} otherwise. servedFrom and
+ *     the every-arm-cache gate read the per-arm hit truth threaded in
+ *     by handleScience (#140 T5, ruling 4 — never the capture cell).
  *   - cacheKey/skeleton: the supplier's own science cacheIdentity
  *     recomputed through the capture wrapper's key derivation, and the
  *     url+title skeleton — the merged result-set list (search) or the
  *     single-work row (get).
+ * A cache-served run appends via appendJournalEntryMaybeRepeat — the
+ * tiny repeat marker when the cacheKey map resolves a prior FULL
+ * entry, journal-cold → that same full entry (honest servedFrom).
  * Runs where no supplier resolved (pre-dispatch failures threw before
  * this hook could exist) journal nothing; a capture without a
  * cacheKey skips rather than poisons the log (validator NIT 1).
@@ -952,10 +956,23 @@ function createScienceJournalHook(
      * pinned one-arm run that rerouted stays {mode:"single"}.
      */
     readonly fannedOut?: () => boolean;
+    /**
+     * #140 T5: whether the serving attempt was CACHE-served — the single
+     * shape's truth (thunk). Sources: the reroute walk's `servedFrom`
+     * (pinned search) and `journalCacheHit` (get). Defaults "live".
+     */
+    readonly servedFrom?: () => "live" | "cache";
+    /**
+     * #140 T5: whether EVERY attempted arm of a fan-out was cache-served
+     * (thunk) — the every-arm-cache gate. Any live (or rejected) arm
+     * means a fresh generation → full entry. Defaults false.
+     */
+    readonly everyArmCache?: () => boolean;
   },
 ): SaveHook {
   const { capability, capture } = meta.journal;
   return async ({ resolvedSecrets, now }) => {
+    const artifactsDir = resolveArtifactsDir(deps.env);
     const servedProvider = capture.servedProvider;
     if (servedProvider === undefined) return;
     const cacheKey = meta.cacheKey() ?? capture.cacheKey;
@@ -972,16 +989,19 @@ function createScienceJournalHook(
     // all-rejected run throws before resultRows resolves.
     const arms = meta.arms?.();
     const fannedOut = meta.fannedOut?.() === true;
+    // #140 T5 (ruling 4): the routing picks its own cache truth — the
+    // fan-out gate is EVERY attempted arm cache-served; the single shape
+    // reads the serving attempt's servedFrom. NEVER the capture cell
+    // (last-write-wins across arms; the save hook's seam).
+    const fanoutShape = fannedOut && arms !== undefined && arms.length > 0;
+    const everyArmCache = meta.everyArmCache?.() === true;
+    const servedFrom = meta.servedFrom?.() === "cache" ? "cache" : "live";
+    const provider: ProviderRouting = fanoutShape
+      ? { mode: "fanout", arms }
+      : { mode: "single", effective: servedProvider, servedFrom };
     const entry = buildJournalEntry({
       capability,
-      provider:
-        fannedOut && arms !== undefined && arms.length > 0
-          ? { mode: "fanout", arms }
-          : {
-              mode: "single",
-              effective: servedProvider,
-              servedFrom: "live",
-            },
+      provider,
       query: meta.query,
       cacheKey,
       skeleton,
@@ -989,7 +1009,23 @@ function createScienceJournalHook(
       secrets: resolvedSecrets,
       ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
     });
-    await appendJournalEntry(resolveArtifactsDir(deps.env), entry);
+    // #140 T5: a cache-served run (fan-out: every arm; single: the
+    // serving attempt) is a warm re-ask — tiny repeat marker when the
+    // cacheKey map resolves a prior FULL entry, journal-cold → the SAME
+    // full entry (honest servedFrom). Any live arm → full entry.
+    if ((fanoutShape && everyArmCache) || (!fanoutShape && servedFrom === "cache")) {
+      await appendJournalEntryMaybeRepeat(artifactsDir, entry, (repeatOf) =>
+        buildJournalRepeatMarker({
+          capability,
+          provider,
+          repeatOf,
+          ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
+          now,
+        }),
+      );
+      return;
+    }
+    await appendJournalEntry(artifactsDir, entry);
   };
 }
 
@@ -1096,6 +1132,12 @@ export async function handleScience(
     let journalRows: readonly ScienceWork[] | undefined;
     let journalIdentity: unknown;
     let journalArms: readonly string[] | undefined;
+    // #140 T5: the single shape's cache truth — set by the reroute walk
+    // (pinned search) or the single-arm allSettled path below.
+    let journalServedFrom: "live" | "cache" = "live";
+    // #140 T5: the every-arm-cache gate — computed from `armCacheHits`
+    // after the fan-out settles (every ATTEMPTED arm cache-served).
+    let journalEveryArmCache = false;
     // T3: >=2 arms ATTEMPTED at resolution — captured before the one-arm
     // reroute below (and before survivors are recomputed) so the routing
     // SHAPE survives narrowing. `mode` follows this, not arms.length.
@@ -1142,6 +1184,10 @@ export async function handleScience(
               journalIdentity = served.identity;
             }
             journalArms = [served.armId];
+            // #140 T5: the reroute walk's serving attempt is the single
+            // shape's cache truth (direct knowledge from the consult
+            // owner — never the capture cell).
+            journalServedFrom = served.servedFrom;
             const single: CommandResult = {
               kind: "data",
               data: served.works,
@@ -1274,6 +1320,16 @@ export async function handleScience(
         journalArms = settled.flatMap((outcome, index) =>
           outcome.status === "fulfilled" ? [arms[index]?.id ?? "unknown"] : [],
         );
+        // #140 T5 (ruling 4): the gate reads the per-arm hit flags —
+        // every ATTEMPTED arm cache-served (a rejected arm's slot is
+        // never true, so a mixed run stays a full entry). A !fannedOut
+        // single-arm arrival through this path derives its servedFrom
+        // from the same truth (arm index 0).
+        journalEveryArmCache =
+          settled.length > 0 && settled.every((_, index) => armCacheHits[index] === true);
+        if (!journalFannedOut && settled.length === 1) {
+          journalServedFrom = armCacheHits[0] === true ? "cache" : "live";
+        }
         // T10 merge: DOI-first dedup identity (exact-url fallback) +
         // D12 field-wise union enrichment, first-arm (D5 order)
         // preference — mergeScienceWorks below.
@@ -1305,6 +1361,8 @@ export async function handleScience(
             cacheKey: () => scienceCacheKey(journalIdentity),
             arms: () => journalArms,
             fannedOut: () => journalFannedOut,
+            servedFrom: () => journalServedFrom,
+            everyArmCache: () => journalEveryArmCache,
           }),
     );
   }
@@ -1475,6 +1533,9 @@ export async function handleScience(
           // Single-work identity (AC-11 amendment 2): exactly one row.
           resultRows: () => (journalWork === undefined ? undefined : [journalWork]),
           cacheKey: () => scienceCacheKey(journalIdentity),
+          // #140 T5: the get walk's own consult truth — never the
+          // capture cell.
+          servedFrom: () => (journalCacheHit ? "cache" : "live"),
         }),
   );
   } finally {

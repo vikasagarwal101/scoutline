@@ -868,3 +868,219 @@ describe("T4: retry via executeProviderOperation", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// T5 — journal warm-repeat markers (ruling 4): per-arm cache-hit truth
+// (armCacheHits / the reroute walk's servedFrom / the get walk's
+// journalCacheHit) drives servedFrom + the every-arm-cache gate; the
+// capture cell is NOT read (last-write-wins, save-hook seam).
+// ---------------------------------------------------------------------------
+
+describe("T5: journal warm-repeat markers", () => {
+  it("same query twice (SHARED cache): run 2 journals exactly one MARKER — repeatOf = run 1's requestId, provider is the all-arms fanout", async () => {
+    const cache = createDecodingCache();
+    const { descriptors } = scienceFive();
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t5-repeat-"));
+    try {
+      const r1 = await runMain(["science", "search", "warm repeat"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r1.status, 0, `run 1 stderr=${JSON.stringify(r1.stderr)}`);
+      const r2 = await runMain(["science", "search", "warm repeat"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r2.status, 0, `run 2 stderr=${JSON.stringify(r2.stderr)}`);
+      const { log } = await readLog(dir);
+      const journalEntries = log.entries.filter((e) => e.kind === "journal");
+      assert.equal(journalEntries.length, 2, "run 1 full entry + run 2 marker");
+      const [full, second] = journalEntries;
+      assert.strictEqual(full.repeatOf, undefined, "run 1 is the full entry");
+      assert.strictEqual(second.repeatOf, full.requestId, "marker resolves run 1's requestId");
+      assert.strictEqual(second.requestId, undefined, "markers carry no requestId");
+      assert.deepStrictEqual(second.provider, {
+        mode: "fanout",
+        arms: [...D5_ARM_ORDER],
+      }, "every arm cache-hit → the fanout routing on the marker too");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("mixed live+cache fan-out (hit arm + live sibling): run 2 journals a FULL entry (repeatOf undefined)", async () => {
+    const cache = createDecodingCache();
+    let arxivEnabled = false;
+    const { descriptors } = scienceFive({
+      arxiv: { configured: () => arxivEnabled },
+    });
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t5-mixed-"));
+    try {
+      const r1 = await runMain(["science", "search", "mixed repeat"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r1.status, 0);
+      arxivEnabled = true;
+      const r2 = await runMain(["science", "search", "mixed repeat"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r2.status, 0, `run 2 stderr=${JSON.stringify(r2.stderr)}`);
+      const { log } = await readLog(dir);
+      const journalEntries = log.entries.filter((e) => e.kind === "journal");
+      assert.equal(journalEntries.length, 2, "two runs, both FULL");
+      const second = journalEntries[1];
+      assert.strictEqual(
+        second.repeatOf,
+        undefined,
+        "any live arm is a fresh generation — never a marker",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("journal-cold-cache-warm (journal index deleted, cache warm): ONE full entry, single shape servedFrom \"cache\"", async () => {
+    const cache = createDecodingCache();
+    const { descriptors } = scienceFive();
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t5-cold-"));
+    try {
+      const r1 = await runMain(["science", "search", "cold journal", "--provider", "openalex"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r1.status, 0);
+      rmSync(join(dir, "index.json"), { force: true });
+      const r2 = await runMain(["science", "search", "cold journal", "--provider", "openalex"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r2.status, 0, `run 2 stderr=${JSON.stringify(r2.stderr)}`);
+      const { log } = await readLog(dir);
+      const journalEntries = log.entries.filter((e) => e.kind === "journal");
+      assert.equal(journalEntries.length, 1, "journal-cold → ONE full entry, no marker");
+      const entry = journalEntries[0];
+      assert.strictEqual(entry.repeatOf, undefined, "full entry, not a marker");
+      assert.deepStrictEqual(entry.provider, {
+        mode: "single",
+        effective: "openalex",
+        servedFrom: "cache",
+      }, "honest servedFrom on the journal-cold full entry");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--no-journal on a cache-hit run writes NO journal entry (unchanged escape)", async () => {
+    const cache = createDecodingCache();
+    const { descriptors, byId } = scienceFive();
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t5-nojournal-"));
+    try {
+      const r1 = await runMain(["science", "search", "escape q"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r1.status, 0);
+      const r2 = await runMain(["science", "search", "escape q", "--no-journal"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r2.status, 0, `run 2 stderr=${JSON.stringify(r2.stderr)}`);
+      assert.equal(byId.openalex.calls.search.length, 1, "run 2 was a cache hit (zero invokes)");
+      const { log } = await readLog(dir);
+      const journalEntries = log.entries.filter((e) => e.kind === "journal");
+      assert.equal(
+        journalEntries.length,
+        1,
+        "--no-journal cache-hit run appended nothing — only run 1's entry remains",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("get: same identifier twice (SHARED cache) → run 2 marker {mode:\"single\", effective, servedFrom:\"cache\"}, repeatOf = run 1's requestId", async () => {
+    const cache = createDecodingCache();
+    const { descriptors } = scienceFive();
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t5-get-"));
+    try {
+      const r1 = await runMain(["science", "get", "10.1038/nature12373"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r1.status, 0);
+      const r2 = await runMain(["science", "get", "10.1038/nature12373"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r2.status, 0, `run 2 stderr=${JSON.stringify(r2.stderr)}`);
+      const { log } = await readLog(dir);
+      const journalEntries = log.entries.filter((e) => e.kind === "journal");
+      assert.equal(journalEntries.length, 2, "full entry + marker");
+      const [full, second] = journalEntries;
+      assert.deepStrictEqual(full.provider, {
+        mode: "single",
+        effective: "openalex",
+        servedFrom: "live",
+      }, "run 1 (get walk, openalex first) journals single/live");
+      assert.strictEqual(second.repeatOf, full.requestId);
+      assert.deepStrictEqual(second.provider, {
+        mode: "single",
+        effective: "openalex",
+        servedFrom: "cache",
+      }, "the marker carries the single/cache routing");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("pinned search single shape: run 1 live full entry servedFrom \"live\"; run 2 cache-hit MARKER servedFrom \"cache\"", async () => {
+    const cache = createDecodingCache();
+    const { descriptors } = scienceFive();
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t5-pinned-"));
+    try {
+      const r1 = await runMain(["science", "search", "pinned shape", "--provider", "openalex"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r1.status, 0, `run 1 stderr=${JSON.stringify(r1.stderr)}`);
+      const { log: log1 } = await readLog(dir);
+      const [full1] = log1.entries.filter((e) => e.kind === "journal");
+      assert.deepStrictEqual(full1.provider, {
+        mode: "single",
+        effective: "openalex",
+        servedFrom: "live",
+      });
+      const r2 = await runMain(["science", "search", "pinned shape", "--provider", "openalex"], {
+        descriptors,
+        artifactsDir: dir,
+        scienceCache: cache,
+      });
+      assert.equal(r2.status, 0, `run 2 stderr=${JSON.stringify(r2.stderr)}`);
+      const { log: log2 } = await readLog(dir);
+      const journalEntries = log2.entries.filter((e) => e.kind === "journal");
+      assert.equal(journalEntries.length, 2);
+      const second = journalEntries[1];
+      assert.strictEqual(second.repeatOf, full1.requestId, "marker resolves the pinned run 1");
+      assert.deepStrictEqual(second.provider, {
+        mode: "single",
+        effective: "openalex",
+        servedFrom: "cache",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

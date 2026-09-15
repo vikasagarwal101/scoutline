@@ -1138,6 +1138,26 @@ describe("quoted-scheme recovery and family-wide boundary invariants (#171 revie
         "export [REDACTED]",
       );
     }
+
+    // Whitespace-guarded v3 env-var passes (#174): terminate at quotes to preserve JSON boundaries
+    const wsEnvVars = ["YDC_API_KEY", "YOU_API_KEY", "LINKUP_API_KEY", "SPIDER_API_KEY"];
+    for (const key of wsEnvVars) {
+      // Whitespace syntax in JSON (#174)
+      const jsonWs = JSON.stringify({ h: `${key} key12345aB`, n: 1 });
+      const outWs = redactCredentialString(jsonWs);
+      assert.deepStrictEqual(
+        JSON.parse(outWs),
+        { h: "[REDACTED]", n: 1 },
+        `${key} whitespace failed in JSON`,
+      );
+
+      // Genuine-key-still-redacted pin in prose (#174)
+      assert.strictEqual(
+        redactCredentialString(`${key} key12345aB`),
+        "[REDACTED]",
+        `${key} whitespace failed in prose`,
+      );
+    }
   });
 
   it("M3 x-api-key: verify-only charset preserves JSON string boundaries", () => {

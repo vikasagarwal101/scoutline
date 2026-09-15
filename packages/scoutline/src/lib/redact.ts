@@ -195,14 +195,15 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   // whitespace-separator convention, guarded by the #44 true-credential
   // bar (8+ chars containing both a letter and a digit) so ordinary
   // prose naming the variable ("LINKUP_API_KEY is not set") stays intact.
+  // Value span `[^\s"]{8,}` terminates at `"` to preserve JSON string boundaries (#174).
   result = result.replace(/YDC_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   result = result.replace(/YOU_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   result = result.replace(/LINKUP_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   result = result.replace(/SPIDER_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/YDC_API_KEY\s+(?=\S*\d)(?=\S*[A-Za-z])\S{8,}/gi, REDACTED);
-  result = result.replace(/YOU_API_KEY\s+(?=\S*\d)(?=\S*[A-Za-z])\S{8,}/gi, REDACTED);
-  result = result.replace(/LINKUP_API_KEY\s+(?=\S*\d)(?=\S*[A-Za-z])\S{8,}/gi, REDACTED);
-  result = result.replace(/SPIDER_API_KEY\s+(?=\S*\d)(?=\S*[A-Za-z])\S{8,}/gi, REDACTED);
+  result = result.replace(/YDC_API_KEY\s+(?=\S*\d)(?=\S*[A-Za-z])[^\s"]{8,}/gi, REDACTED);
+  result = result.replace(/YOU_API_KEY\s+(?=\S*\d)(?=\S*[A-Za-z])[^\s"]{8,}/gi, REDACTED);
+  result = result.replace(/LINKUP_API_KEY\s+(?=\S*\d)(?=\S*[A-Za-z])[^\s"]{8,}/gi, REDACTED);
+  result = result.replace(/SPIDER_API_KEY\s+(?=\S*\d)(?=\S*[A-Za-z])[^\s"]{8,}/gi, REDACTED);
   // Embedded credential substrings inside URLs, e.g.
   // `https://user:secret@host/path`. Catches both `https://` and
   // `http://` schemes and replaces the entire URL with the marker so

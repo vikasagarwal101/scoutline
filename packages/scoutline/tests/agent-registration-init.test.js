@@ -785,16 +785,12 @@ describe("undetected tools and the cursor notice-only row (DESIGN D1, AC-6)", ()
     assert.deepEqual(await findBackups(home), [], "no backups may be minted");
   });
 
-  it("cursor home detected → the registry's unsupportedNotice prints verbatim (notice-only row: no prompt, no files, no stamp)", async (t) => {
-    // GROUND: T5 "cursor home detected → honest unsupported notice (pinned
-    // text; notice-only registry row)"; DESIGN D1 "cursor ... participates in
-    // detection/wizard iteration with no engines, emitting unsupportedNotice
-    // instead of a prompt".
+  it("cursor home detected → silence: no stderr, no prompt, no files, no stamp (#178 reversal)", async (t) => {
+    // GROUND (#178 design reversal): an unsupported tool gets silence, not a
+    // notice. The old "notice-only row" pins encoded the reversed decision.
     const home = await mkHome(t, ["cursor"]);
     const configRoot = await mkTemp(t, "scoutline-agent-cfg-");
     const script = createRecordingPrompts({ checkboxAnswer: null });
-    const cursorRow = AGENT_TOOLS.find((row) => row.id === "cursor");
-    assert.ok(cursorRow?.unsupportedNotice, "the registry must carry the cursor notice");
 
     const { deps, stderrChunks } = createWizardDeps({
       prompts: script.prompts,
@@ -806,27 +802,25 @@ describe("undetected tools and the cursor notice-only row (DESIGN D1, AC-6)", ()
     await handleInitWithHelp([], deps);
 
     const joined = stderrChunks.join("");
-    const occurrences = joined.split(cursorRow.unsupportedNotice).length - 1;
-    assert.equal(occurrences, 1, "the unsupportedNotice must print exactly once, verbatim");
-    assert.equal(script.confirmCalls.length, 0, "a notice-only row must never prompt");
+    assert.ok(!/cursor/i.test(joined), "detected cursor must never be mentioned");
+    assert.equal(script.confirmCalls.length, 0, "cursor must never prompt");
     assert.deepEqual(
       await fs.readdir(path.join(home, ".cursor")),
       [],
-      "cursor stays notice-only: no engines may write under ~/.cursor",
+      "cursor stays engine-less: no engines may write under ~/.cursor",
     );
     await assertAbsent(path.join(configRoot, STAMP_NAME), "nothing registered → no stamp");
   });
 
-  it("cursor + claude detected → notice once, confirm only for the engine row", async (t) => {
-    // GROUND: AC-6 mixed case — the notice and the prompt coexist; the
-    // notice-only row never turns into a registration.
+  it("cursor + claude detected → claude confirms alone, cursor silent (#178 reversal)", async (t) => {
+    // GROUND: AC-6 mixed case under the reversal — cursor is invisible, only
+    // the engine row prompts and registers.
     const home = await mkHome(t, ["cursor", "claude"]);
     const configRoot = await mkTemp(t, "scoutline-agent-cfg-");
     const script = createRecordingPrompts({
       confirmHandler: confirmByTool({ claude: true }),
       checkboxAnswer: null,
     });
-    const cursorRow = AGENT_TOOLS.find((row) => row.id === "cursor");
 
     const { deps, stderrChunks } = createWizardDeps({
       prompts: script.prompts,
@@ -838,7 +832,7 @@ describe("undetected tools and the cursor notice-only row (DESIGN D1, AC-6)", ()
     await handleInitWithHelp([], deps);
 
     const joined = stderrChunks.join("");
-    assert.equal(joined.split(cursorRow.unsupportedNotice).length - 1, 1, "notice exactly once");
+    assert.ok(!/cursor/i.test(joined), "cursor silently skipped even alongside an engine row");
     assert.equal(script.confirmCalls.length, 1, "only the claude row prompts");
     assert.ok(/claude/i.test(script.confirmCalls[0].message), "the one prompt is for claude");
     assert.deepEqual(

@@ -109,12 +109,9 @@ describe("agent tool registry (D1)", () => {
     }
   });
 
-  it("cursor is a detection-only row: honest notice, no mutation engines, no skill home", () => {
+  it("cursor is a detection-only row: silence, no engines, no skill home (#178)", () => {
     const row = tool("cursor");
-    assert.ok(
-      typeof row.unsupportedNotice === "string" && row.unsupportedNotice.length > 0,
-      "cursor row must carry an unsupportedNotice",
-    );
+    assert.strictEqual(row.rulesFile, undefined, "cursor must have no rules engine");
     assert.strictEqual(row.pointer, undefined, "cursor must have no pointer engine");
     assert.strictEqual(row.skillHome, undefined, "cursor must have no skill home");
   });

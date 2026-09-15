@@ -46,7 +46,6 @@ export interface AgentTool {
   /** Real-copy skill destination (every tool row except detect-only cursor). */
   skillHome?: (home: string) => string;
   /** Set only on detect-only rows: printed instead of a registration prompt. */
-  unsupportedNotice?: string;
 }
 
 function dirProbe(...segments: string[]): (home: string) => boolean {
@@ -120,6 +119,5 @@ export const AGENT_TOOLS: AgentTool[] = [
   {
     id: "cursor",
     detect: dirProbe(".cursor"),
-    unsupportedNotice: "Cursor registration is unsupported until MCP server mode ships.",
   },
 ];

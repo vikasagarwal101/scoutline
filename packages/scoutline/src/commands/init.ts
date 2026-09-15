@@ -761,9 +761,8 @@ async function runAgentRegistrationStep(deps: InitDependencies): Promise<number>
   const choices: Record<string, boolean> = {};
   const registered: string[] = [];
   for (const row of detected) {
-    if (row.unsupportedNotice !== undefined) {
-      deps.writeStderr(`${row.unsupportedNotice}\n`);
-      continue; // notice-only row: no prompt, no files, no stamp entry
+    if (row.rulesFile === undefined && row.skillHome === undefined && row.pointer === undefined) {
+      continue; // engine-less row (e.g. cursor): detected but unsupported — silence, never mention (#178)
     }
     if (priorChoices?.[row.id] !== undefined) continue; // choice already recorded
     let answer: boolean;
@@ -916,8 +915,7 @@ async function runFreshFlow(
   };
   try {
     const isZeroProviders = Object.keys(config.providers).length === 0;
-    const writeOptions =
-      options.allowEmpty && isZeroProviders ? { allowEmpty: true } : undefined;
+    const writeOptions = options.allowEmpty && isZeroProviders ? { allowEmpty: true } : undefined;
     await deps.configStore.write(config, writeOptions);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1600,11 +1598,7 @@ async function removeProvider(
     ...(config.hintShown !== undefined ? { hintShown: config.hintShown } : {}),
   };
   const isNowEmpty = Object.keys(nextProviders).length === 0;
-  const status = persistConfig(
-    deps,
-    updated,
-    isNowEmpty ? { allowEmpty: true } : undefined,
-  );
+  const status = persistConfig(deps, updated, isNowEmpty ? { allowEmpty: true } : undefined);
   if ((await status) === "written") {
     deps.writeStdout(`${providerMeta(providerId).label}: removed.\n`);
   }

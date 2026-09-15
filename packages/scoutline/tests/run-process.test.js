@@ -113,3 +113,48 @@ describe("runProcess per-call temp cleanup (#167)", () => {
     }
   });
 });
+
+describe("runProcess error/partial-failure cleanup (#167 review)", () => {
+  // Both pins keep every created temp dir inside a PRIVATE pen (TMPDIR
+  // retarget, honored by os.tmpdir() at call time) so the leak assertion
+  // is immune to sibling test files' concurrent subprocess temp dirs in
+  // the shared os.tmpdir().
+  it("buildIsolatedEnv partial failure cleans the dirs created so far", async () => {
+    const pen = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-pin-pen-"));
+    const prevTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = pen;
+    try {
+      // JSON.stringify throws on BigInt: the config write fails AFTER the
+      // config dir was created — the partial-failure leak shape.
+      await assert.rejects(
+        buildIsolatedEnv({ config: { v: 1n } }),
+        /Do not know how to serialize/,
+      );
+    } finally {
+      if (prevTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = prevTmpdir;
+    }
+    const left = fs.readdirSync(pen);
+    fs.rmSync(pen, { recursive: true, force: true });
+    assert.deepEqual(left, [], `partial failure leaked created-so-far dirs: ${left}`);
+  });
+
+  it("spawn-error path cleans the per-call temp dirs before rejecting", async () => {
+    const pen = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-pin-pen-"));
+    const prevTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = pen;
+    try {
+      // Missing cwd: spawn emits 'error' (ENOENT) then 'close'. The
+      // cleanup must run BEFORE the reject, not only on the close path.
+      await assert.rejects(
+        runProcess(["--help"], { cwd: "/nonexistent-scoutline-pin-cwd" }),
+      );
+    } finally {
+      if (prevTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = prevTmpdir;
+    }
+    const left = fs.readdirSync(pen);
+    fs.rmSync(pen, { recursive: true, force: true });
+    assert.deepEqual(left, [], `spawn-error path leaked per-call dirs: ${left}`);
+  });
+});

@@ -44,14 +44,17 @@ Options for 'archive cdx':
   --to <timestamp>         Latest timestamp (e.g. 2025, 20251231)
   --status <statuscode>    Filter by HTTP status code (e.g. 200)
   --limit <number>         Max records to return (default: 50, max: 10000)
+  --timeout <ms>           Per-request timeout in ms (default: 30000, max: 2147483647)
 
 Options for 'archive get':
   --at <timestamp|best>    Target timestamp or 'best' for nearest (default: best)
   --raw                    Emit raw body content directly
+  --timeout <ms>           Per-request timeout in ms (default: 30000, max: 2147483647)
 
 Options for 'archive diff':
   --since <date|duration>  Snapshot boundary: ISO date (2026-08-01), ISO datetime
                            (2026-08-01T12:00:00Z), or duration (30d, 12h, 1w, 2y)
+  --timeout <ms>           Per-request timeout in ms (default: 30000, max: 2147483647)
 
 Global Options:
   --output-format, -O      Output format: data, json, pretty, compact, markdown, refs, tty
@@ -852,7 +855,27 @@ export async function fetchLiveDocument(
     if (controller.signal.aborted) {
       throw new TimeoutError(timeoutMs, `Live fetch timed out after ${timeoutMs}ms`);
     }
-    throw err;
+    // Typed errors thrown inside the loop (HTTP >= 400 failed capture,
+    // >10 redirects, size ceiling) pass through untouched — no double-wrap.
+    if (
+      err instanceof NetworkError ||
+      err instanceof TimeoutError ||
+      err instanceof ValidationError
+    ) {
+      throw err;
+    }
+    // No FileError branch (unlike executeFetch): this seam has no @file
+    // body (no fs access), so a filesystem-coded cause is never legitimate
+    // here. Observable behavior at the second caller (watch tick, via
+    // fetchFailureReason watch.ts:331): only error.message is consumed, so
+    // typed-wrap vs raw-rethrow is equivalent (same change-log error entry,
+    // gen:null, exit 2) and the wrap only improves the reason text.
+    const causeMessage =
+      err instanceof Error && err.cause instanceof Error
+        ? err.cause.message
+        : undefined;
+    const message = causeMessage ?? (err instanceof Error ? err.message : String(err));
+    throw new NetworkError(`Live fetch failed: ${message}`);
   } finally {
     clearTimeout(timer);
   }
@@ -1024,6 +1047,14 @@ export function parseArchiveArgs(args: readonly string[]): {
       showHelp = true;
       i++;
     } else if (arg.startsWith("--")) {
+      if (arg.includes("=")) {
+        // The `--flag=value` form is not supported: without this gate the
+        // token parses as a boolean flag under a garbage key
+        // ("timeout=300") and is silently dropped (#172 review F6).
+        throw new ValidationError(
+          `Invalid flag "${arg}": the --flag=value form is not supported; pass the value as the next argument.`,
+        );
+      }
       const key = arg.slice(2);
       const next = args[i + 1];
       if (next && !next.startsWith("-")) {
@@ -1050,6 +1081,43 @@ export function parseArchiveArgs(args: readonly string[]): {
     flags,
     showHelp,
   };
+}
+
+/**
+ * Parse and validate the shared `--timeout` flag: positive integer ms,
+ * capped at the Node setTimeout ceiling. Throws ValidationError on every
+ * failure mode (valueless boolean form, non-digit/zero, over-ceiling);
+ * returns undefined when the flag is absent. Shared by cdx, get, and diff
+ * so invalid values fail loudly on every subcommand (#172 — cdx/get
+ * previously dropped the flag silently).
+ */
+function parseArchiveTimeout(raw: string | boolean | undefined): number | undefined {
+  if (raw !== undefined && typeof raw !== "string") {
+    // Boolean form (`--timeout` with no value) is not silently
+    // ignored — matches the watch family's --timeout/--since gates.
+    throw new ValidationError(
+      "--timeout requires a value.",
+      "Must be a positive integer number of milliseconds.",
+    );
+  }
+  if (typeof raw === "string") {
+    const ms = Number(raw);
+    if (!/^\d+$/.test(raw) || ms === 0) {
+      throw new ValidationError(
+        `Invalid --timeout: "${raw}".`,
+        "Must be a positive integer number of milliseconds.",
+      );
+    }
+    if (ms > 2147483647) {
+      // Node setTimeout ceiling (review): larger values clamp to ~1ms.
+      throw new ValidationError(
+        `Invalid --timeout: "${raw}".`,
+        "Must be at most 2147483647 ms (Node setTimeout limit).",
+      );
+    }
+    return ms;
+  }
+  return undefined;
 }
 
 /**
@@ -1091,11 +1159,14 @@ export async function handleArchive(
       limit = parsedLimit;
     }
 
+    const timeout = parseArchiveTimeout(flags.timeout);
+
     const options: ArchiveCdxOptions = {
       ...(typeof flags.from === "string" ? { from: flags.from } : {}),
       ...(typeof flags.to === "string" ? { to: flags.to } : {}),
       ...(typeof flags.status === "string" ? { status: flags.status } : {}),
       ...(limit !== undefined ? { limit } : {}),
+      ...(timeout !== undefined ? { timeout } : {}),
     };
 
     return invokeCommand(
@@ -1123,9 +1194,12 @@ export async function handleArchive(
       );
     }
 
+    const timeout = parseArchiveTimeout(flags.timeout);
+
     const options: ArchiveGetOptions = {
       ...(typeof flags.at === "string" ? { at: flags.at } : {}),
       ...(flags.raw === true || forceRaw ? { raw: true } : {}),
+      ...(timeout !== undefined ? { timeout } : {}),
     };
 
     return invokeCommand(
@@ -1153,31 +1227,7 @@ export async function handleArchive(
     }
     const since = flags.since;
 
-    let timeout: number | undefined;
-    if (flags.timeout !== undefined && typeof flags.timeout !== "string") {
-      // Boolean form (`--timeout` with no value) is not silently
-      // ignored — matches the watch family's --timeout/--since gates.
-      throw new ValidationError(
-        "--timeout requires a value.",
-        "Must be a positive integer number of milliseconds.",
-      );
-    }
-    if (typeof flags.timeout === "string") {
-      if (!/^\d+$/.test(flags.timeout) || Number(flags.timeout) === 0) {
-        throw new ValidationError(
-          `Invalid --timeout: "${flags.timeout}".`,
-          "Must be a positive integer number of milliseconds.",
-        );
-      }
-      if (Number(flags.timeout) > 2147483647) {
-        // Node setTimeout ceiling (review): larger values clamp to ~1ms.
-        throw new ValidationError(
-          `Invalid --timeout: "${flags.timeout}".`,
-          "Must be at most 2147483647 ms (Node setTimeout limit).",
-        );
-      }
-      timeout = Number(flags.timeout);
-    }
+    const timeout = parseArchiveTimeout(flags.timeout);
 
     return invokeCommand(
       deps.invocation,

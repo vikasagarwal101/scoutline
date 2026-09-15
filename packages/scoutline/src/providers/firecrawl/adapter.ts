@@ -62,13 +62,18 @@ import type {
 } from "../../capabilities/crawl.js";
 import { decodeCrawlResult } from "../../capabilities/crawl.js";
 import {
+  assertAsyncJobStateKnobPair,
   computeAsyncJobStateHash,
   createProductionAsyncJobStateFile,
   type AsyncJobState,
   type AsyncJobStateFile,
 } from "../../lib/async-job-state.js";
 import { asyncJobStateDir } from "../../lib/cache.js";
-import { withAsyncFileLock, DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_LOCK_STALE_MS } from "../../lib/async-file-lock.js";
+import {
+  withAsyncFileLock,
+  DEFAULT_LOCK_TIMEOUT_MS,
+  DEFAULT_LOCK_STALE_MS,
+} from "../../lib/async-file-lock.js";
 import {
   ApiError,
   AuthError,
@@ -1194,6 +1199,15 @@ export interface FirecrawlAdapterDependencies {
 export function createFirecrawlDescriptor(
   dependencies?: FirecrawlAdapterDependencies,
 ): ProviderDescriptor {
+  // #158: half-paired state knobs reject at construction — the lock dir
+  // cannot be derived from an in-memory state file.
+  assertAsyncJobStateKnobPair(
+    "firecrawl",
+    "crawlStateFile",
+    "crawlStateDir",
+    dependencies?.crawlStateFile !== undefined,
+    dependencies?.crawlStateDir !== undefined,
+  );
   const transport = dependencies?.transport;
   const crawlStateDir = dependencies?.crawlStateDir ?? asyncJobStateDir("crawl");
   const crawlStateFile =

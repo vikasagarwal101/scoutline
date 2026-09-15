@@ -687,14 +687,21 @@ function makeHarness(provider, capability) {
         adapter: createTavilyDescriptor({
           transport,
           researchStateFile: stateFile,
-          researchStateDir: capability === "research" ? tmpStateDir() : undefined,
+          // #158: the knobs pair unconditionally — a conditional dir
+          // re-encodes the file-without-dir footgun for other capabilities.
+          researchStateDir: tmpStateDir(),
         }).create(context),
         calls,
         timerDelays,
       };
     case "exa":
       return {
-        adapter: createExaDescriptor({ transport, researchStateFile: stateFile }).create(context),
+        // #158: exa gains the researchStateDir knob; the pair is mandatory.
+        adapter: createExaDescriptor({
+          transport,
+          researchStateFile: stateFile,
+          researchStateDir: tmpStateDir(),
+        }).create(context),
         calls,
         timerDelays,
       };
@@ -705,7 +712,8 @@ function makeHarness(provider, capability) {
         adapter: createFirecrawlDescriptor({
           transport,
           crawlStateFile: stateFile,
-          crawlStateDir: capability === "crawl" ? tmpStateDir() : undefined,
+          // #158: the knobs pair unconditionally.
+          crawlStateDir: tmpStateDir(),
         }).create(context),
         calls,
         timerDelays,
@@ -715,7 +723,8 @@ function makeHarness(provider, capability) {
         adapter: new ParallelAdapter(context, {
           transport,
           researchStateFile: stateFile,
-          researchStateDir: capability === "research" ? tmpStateDir() : undefined,
+          // #158: the knobs pair unconditionally.
+          researchStateDir: tmpStateDir(),
         }),
         calls,
         timerDelays,
@@ -731,7 +740,8 @@ function makeHarness(provider, capability) {
         adapter: createLinkupDescriptor({
           transport,
           researchStateFile: stateFile,
-          researchStateDir: capability === "research" ? tmpStateDir() : undefined,
+          // #158: the knobs pair unconditionally.
+          researchStateDir: tmpStateDir(),
         }).create(context),
         calls,
         timerDelays,

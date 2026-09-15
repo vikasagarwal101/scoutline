@@ -90,6 +90,7 @@ import { decodeResearchResult } from "../../capabilities/research.js";
 import type { DiagnosticsCapability } from "../../capabilities/diagnostics.js";
 import type { AsyncJobState, AsyncJobStateFile } from "../../lib/async-job-state.js";
 import {
+  assertAsyncJobStateKnobPair,
   computeAsyncJobStateHash,
   createProductionAsyncJobStateFile,
 } from "../../lib/async-job-state.js";
@@ -100,7 +101,13 @@ import {
 } from "../../lib/async-file-lock.js";
 import { asyncJobStateDir } from "../../lib/cache.js";
 import type { CacheIdentity } from "../../lib/execution.js";
-import { ApiError, NetworkError, TimeoutError, UnsupportedOptionError, ValidationError } from "../../lib/errors.js";
+import {
+  ApiError,
+  NetworkError,
+  TimeoutError,
+  UnsupportedOptionError,
+  ValidationError,
+} from "../../lib/errors.js";
 import { hashLinkupApiKey, isLinkupConfigured, requireLinkupApiKey } from "./credentials.js";
 import {
   createLinkupResearch,
@@ -303,9 +310,7 @@ interface LinkupSearchCapabilityOptions {
   readonly now: () => number;
 }
 
-function createLinkupSearchCapability(
-  options: LinkupSearchCapabilityOptions,
-): SearchCapability {
+function createLinkupSearchCapability(options: LinkupSearchCapabilityOptions): SearchCapability {
   const { env, transport, now } = options;
 
   const capability: SearchCapability = {
@@ -443,9 +448,7 @@ function assertNoUnsupportedReaderControls(request: ReaderFetchRequest): void {
   }
 }
 
-function createLinkupReaderCapability(
-  options: LinkupReaderCapabilityOptions,
-): ReaderCapability {
+function createLinkupReaderCapability(options: LinkupReaderCapabilityOptions): ReaderCapability {
   const { env, transport } = options;
 
   const fetch: ReaderOperation<ReaderFetchRequest, ReaderFetchResult> = {
@@ -503,7 +506,6 @@ function createLinkupReaderCapability(
 
   return { fetch };
 }
-
 
 // ---------------------------------------------------------------------------
 // Research Capability (async submit/poll lifecycle — Linkup SPEC §Research)
@@ -631,8 +633,7 @@ function normalizeLinkupResearchResult(
       if (!isPlainObject(entry)) continue;
       const url = entry.url;
       if (typeof url !== "string" || url.length === 0) continue;
-      const title =
-        typeof entry.name === "string" && entry.name.length > 0 ? entry.name : url;
+      const title = typeof entry.name === "string" && entry.name.length > 0 ? entry.name : url;
       sources.push({ title, url });
     }
   }
@@ -799,13 +800,7 @@ function createLinkupResearchCapability(
             if (state !== null) {
               return state.requestId;
             }
-            return createResearchTask(
-              apiKey,
-              request,
-              identityHash,
-              researchStateFile,
-              transport,
-            );
+            return createResearchTask(apiKey, request, identityHash, researchStateFile, transport);
           },
           lockOpts,
         );
@@ -853,10 +848,7 @@ function createLinkupResearchCapability(
           // paid creations (Tavily/Parallel guard).
           if (recreatedAfterNotFound) {
             await researchStateFile.remove(identityHash);
-            throw new ApiError(
-              "Linkup research task not found after recreation",
-              500,
-            );
+            throw new ApiError("Linkup research task not found after recreation", 500);
           }
           recreatedAfterNotFound = true;
           taskId = await withAsyncFileLock(
@@ -908,13 +900,20 @@ function createLinkupResearchCapability(
 export function createLinkupDescriptor(
   dependencies?: LinkupAdapterDependencies,
 ): ProviderDescriptor {
+  // #158: half-paired state knobs reject at construction — the lock dir
+  // cannot be derived from an in-memory state file.
+  assertAsyncJobStateKnobPair(
+    "linkup",
+    "researchStateFile",
+    "researchStateDir",
+    dependencies?.researchStateFile !== undefined,
+    dependencies?.researchStateDir !== undefined,
+  );
   const transport = dependencies?.transport;
   const now = dependencies?.now ?? (() => Date.now());
-  const researchStateDir =
-    dependencies?.researchStateDir ?? asyncJobStateDir("research");
+  const researchStateDir = dependencies?.researchStateDir ?? asyncJobStateDir("research");
   const researchStateFile =
-    dependencies?.researchStateFile ??
-    createProductionAsyncJobStateFile(researchStateDir);
+    dependencies?.researchStateFile ?? createProductionAsyncJobStateFile(researchStateDir);
 
   return {
     id: "linkup",
@@ -922,13 +921,7 @@ export function createLinkupDescriptor(
       return isLinkupConfigured(env);
     },
     capabilities(): ReadonlySet<ProviderCapability> {
-      return new Set<ProviderCapability>([
-        "search",
-        "reader",
-        "research",
-        "quota",
-        "diagnostics",
-      ]);
+      return new Set<ProviderCapability>(["search", "reader", "research", "quota", "diagnostics"]);
     },
     create(context: ProviderContext): ProviderAdapter {
       const search = createLinkupSearchCapability({

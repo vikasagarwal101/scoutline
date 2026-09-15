@@ -76,6 +76,7 @@ import type {
 import { decodeResearchResult } from "../../capabilities/research.js";
 import type { AsyncJobState, AsyncJobStateFile } from "../../lib/async-job-state.js";
 import {
+  assertAsyncJobStateKnobPair,
   computeAsyncJobStateHash,
   createProductionAsyncJobStateFile,
 } from "../../lib/async-job-state.js";
@@ -1272,6 +1273,15 @@ async function createResearchTask(
 export function createTavilyDescriptor(
   dependencies?: TavilyAdapterDependencies,
 ): ProviderDescriptor {
+  // #158: half-paired state knobs reject at construction — the lock dir
+  // cannot be derived from an in-memory state file.
+  assertAsyncJobStateKnobPair(
+    "tavily",
+    "researchStateFile",
+    "researchStateDir",
+    dependencies?.researchStateFile !== undefined,
+    dependencies?.researchStateDir !== undefined,
+  );
   const transport = dependencies?.transport;
   const researchStateFile =
     dependencies?.researchStateFile ??

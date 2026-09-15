@@ -813,7 +813,7 @@ export interface HandleScienceOptions {
  * response cache will use once the executor consults it (T10):
  * `buildProviderCacheKey` over the identity, namespace verbatim.
  */
-function scienceCacheKey(identity: unknown): string | undefined {
+export function scienceCacheKey(identity: unknown): string | undefined {
   if (identity === null || typeof identity !== "object") return undefined;
   const record = identity as {
     supplier?: unknown;

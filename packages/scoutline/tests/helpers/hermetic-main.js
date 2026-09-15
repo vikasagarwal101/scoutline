@@ -33,6 +33,7 @@ export const HERMETIC_CAPABILITIES = Object.freeze([
   "map",
   "research",
   "repository",
+  "science",
 ]);
 
 export function createInMemoryResponseCache() {

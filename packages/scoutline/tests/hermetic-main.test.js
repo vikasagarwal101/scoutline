@@ -39,6 +39,7 @@ describe("hermeticMainDeps (#42)", () => {
       "map",
       "research",
       "repository",
+      "science",
     ]);
     for (const key of TRIPLE_KEYS) {
       assert.notEqual(deps[key], undefined, `missing ${key}`);

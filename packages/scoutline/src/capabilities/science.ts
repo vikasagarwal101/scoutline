@@ -297,3 +297,72 @@ export function validateScienceGetRequest(request: ScienceGetRequest): void {
     );
   }
 }
+
+
+// ---------------------------------------------------------------------------
+// Total cached-entry decoders (issue #140; DESIGN D4 response cache)
+// ---------------------------------------------------------------------------
+
+/**
+ * Shape guard for one `ScienceWork`. `title` and `url` are required
+ * strings; every KNOWN optional field is type-checked (a wrong-typed
+ * field is a malformed entry → the caller treats it as a cache miss and
+ * re-fetches, overwriting). UNKNOWN extra keys are kept verbatim — the
+ * decoder must never drop fields a future enrichment added before the
+ * entry was cached (cached shapes survive round-trip). Total: never
+ * throws, never coerces.
+ */
+function isScienceWorkShape(value: unknown): value is ScienceWork {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const work = value as Record<string, unknown>;
+  if (typeof work.title !== "string" || typeof work.url !== "string") return false;
+  if (work.identifiers !== undefined) {
+    const ids = work.identifiers;
+    if (ids === null || typeof ids !== "object" || Array.isArray(ids)) return false;
+    const record = ids as Record<string, unknown>;
+    for (const key of ["doi", "pmid", "arxivId"] as const) {
+      const v = record[key];
+      if (v !== undefined && typeof v !== "string") return false;
+    }
+  }
+  if (work.authors !== undefined) {
+    if (!Array.isArray(work.authors) || !work.authors.every((a) => typeof a === "string")) {
+      return false;
+    }
+  }
+  if (work.year !== undefined && typeof work.year !== "number") return false;
+  if (work.venue !== undefined && typeof work.venue !== "string") return false;
+  if (work.summary !== undefined && typeof work.summary !== "string") return false;
+  if (work.citationCount !== undefined && typeof work.citationCount !== "number") return false;
+  if (work.pdfUrl !== undefined && typeof work.pdfUrl !== "string") return false;
+  if (work.openAccess !== undefined && typeof work.openAccess !== "boolean") return false;
+  if (work.type !== undefined && typeof work.type !== "string") return false;
+  if (work.language !== undefined && typeof work.language !== "string") return false;
+  if (work.updated !== undefined && typeof work.updated !== "string") return false;
+  return true;
+}
+
+/**
+ * Total decoder for a cached science SEARCH entry (the normalized
+ * `readonly ScienceWork[]` an arm's invoke produced). Returns the typed
+ * array, or `null` when the raw value is not a well-formed works array
+ * — a malformed cached entry is a miss (the consult site re-invokes and
+ * overwrites). Never throws.
+ */
+export function decodeScienceWorks(value: unknown): readonly ScienceWork[] | null {
+  if (!Array.isArray(value)) return null;
+  for (const row of value) {
+    if (!isScienceWorkShape(row)) return null;
+  }
+  return value as readonly ScienceWork[];
+}
+
+/**
+ * Total decoder for a cached science GET entry (one normalized
+ * `ScienceWork`). Returns the typed work, or `null` on any malformed
+ * shape — same miss-and-overwrite contract as
+ * {@link decodeScienceWorks}. Never throws.
+ */
+export function decodeScienceWork(value: unknown): ScienceWork | null {
+  return isScienceWorkShape(value) ? (value as ScienceWork) : null;
+}

@@ -967,6 +967,9 @@ export interface HandlerDependencies {
   readonly researchCache: ResponseCache;
   readonly researchSleep: (ms: number) => Promise<void>;
   readonly researchRandom: () => number;
+  readonly scienceCache: ResponseCache;
+  readonly scienceSleep: (ms: number) => Promise<void>;
+  readonly scienceRandom: () => number;
   /**
    * Optional SIGINT registrar for the research command (Review Fix 3).
    * Production wires `process.on('SIGINT', ...)`. When provided, the
@@ -5293,6 +5296,15 @@ export interface MainDependencies {
   readonly researchSleep?: (ms: number) => Promise<void>;
   readonly researchRandom?: () => number;
   /**
+   * Injectable shared-Science execution dependencies (issue #140).
+   * Production defaults to the same on-disk cache and real sleep/random
+   * as every prior triple; tests inject in-memory doubles so science
+   * dispatch tests stay isolated. NOT a rename of any prior seam.
+   */
+  readonly scienceCache?: ResponseCache;
+  readonly scienceSleep?: (ms: number) => Promise<void>;
+  readonly scienceRandom?: () => number;
+  /**
    * Optional injectable SIGINT registrar factory for the research
    * command. Production wraps `process.on('SIGINT', ...)` inside the
    * command module; tests inject a recorder so they can capture the
@@ -5524,6 +5536,13 @@ export async function main(
   const researchCache = dependencies.researchCache ?? defaultResponseCache;
   const researchSleep = dependencies.researchSleep ?? realSleep;
   const researchRandom = dependencies.researchRandom ?? Math.random;
+  // Issue #140: Science execution defaults to the same production
+  // values as every prior triple but stays as separate optional
+  // MainDependencies so science tests can inject isolated in-memory
+  // doubles.
+  const scienceCache = dependencies.scienceCache ?? defaultResponseCache;
+  const scienceSleep = dependencies.scienceSleep ?? realSleep;
+  const scienceRandom = dependencies.scienceRandom ?? Math.random;
   // Resolve configured Provider credentials from the INJECTED env (B3) so
   // redaction follows the same environment the handlers see — a secret
   // that exists only in MainDependencies.env is still redacted from output.
@@ -5772,6 +5791,9 @@ export async function main(
     researchCache,
     researchSleep,
     researchRandom,
+    scienceCache,
+    scienceSleep,
+    scienceRandom,
     researchRegisterInterrupt: dependencies.researchRegisterInterrupt,
     // Promoter wiring (T3b). When the caller explicitly injects a
     // promoter, use it (tests assert behavior this way). Otherwise, in

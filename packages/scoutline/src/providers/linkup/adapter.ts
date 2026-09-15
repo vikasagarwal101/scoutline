@@ -911,9 +911,6 @@ export function createLinkupDescriptor(
   );
   const transport = dependencies?.transport;
   const now = dependencies?.now ?? (() => Date.now());
-  const researchStateDir = dependencies?.researchStateDir ?? asyncJobStateDir("research");
-  const researchStateFile =
-    dependencies?.researchStateFile ?? createProductionAsyncJobStateFile(researchStateDir);
 
   return {
     id: "linkup",
@@ -924,6 +921,14 @@ export function createLinkupDescriptor(
       return new Set<ProviderCapability>(["search", "reader", "research", "quota", "diagnostics"]);
     },
     create(context: ProviderContext): ProviderAdapter {
+      // #159: state-seam defaults resolve at create()-time, not at
+      // descriptor construction — the registry constructs this factory's
+      // result at MODULE IMPORT, so a construction-time string capture
+      // would freeze asyncJobStateDir against the import-time env and
+      // never see a SCOUTLINE_CACHE_DIR set later.
+      const researchStateDir = dependencies?.researchStateDir ?? asyncJobStateDir("research");
+      const researchStateFile =
+        dependencies?.researchStateFile ?? createProductionAsyncJobStateFile(researchStateDir);
       const search = createLinkupSearchCapability({
         env: context.env,
         transport,

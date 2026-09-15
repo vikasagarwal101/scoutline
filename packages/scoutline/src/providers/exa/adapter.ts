@@ -1128,9 +1128,6 @@ export function createExaDescriptor(dependencies?: ExaAdapterDependencies): Prov
     dependencies?.researchStateDir !== undefined,
   );
   const transport = dependencies?.transport;
-  const researchStateDir = dependencies?.researchStateDir ?? asyncJobStateDir("research");
-  const researchStateFile =
-    dependencies?.researchStateFile ?? createProductionAsyncJobStateFile(researchStateDir);
 
   return {
     id: "exa",
@@ -1141,6 +1138,14 @@ export function createExaDescriptor(dependencies?: ExaAdapterDependencies): Prov
       return new Set<ProviderCapability>(["search", "reader", "research", "diagnostics"]);
     },
     create(context: ProviderContext): ProviderAdapter {
+      // #159: state-seam defaults resolve at create()-time, not at
+      // descriptor construction — the registry constructs this factory's
+      // result at MODULE IMPORT, so a construction-time string capture
+      // would freeze asyncJobStateDir against the import-time env and
+      // never see a SCOUTLINE_CACHE_DIR set later.
+      const researchStateDir = dependencies?.researchStateDir ?? asyncJobStateDir("research");
+      const researchStateFile =
+        dependencies?.researchStateFile ?? createProductionAsyncJobStateFile(researchStateDir);
       const search = createExaSearchCapability({
         env: context.env,
         transport,

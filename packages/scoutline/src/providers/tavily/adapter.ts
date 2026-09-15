@@ -93,7 +93,11 @@ import {
 } from "../../lib/errors.js";
 import type { CacheIdentity } from "../../lib/execution.js";
 import { asyncJobStateDir } from "../../lib/cache.js";
-import { withAsyncFileLock, DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_LOCK_STALE_MS } from "../../lib/async-file-lock.js";
+import {
+  withAsyncFileLock,
+  DEFAULT_LOCK_TIMEOUT_MS,
+  DEFAULT_LOCK_STALE_MS,
+} from "../../lib/async-file-lock.js";
 import { requireTavilyApiKey, isTavilyConfigured } from "./credentials.js";
 import {
   fetchTavilySearch,
@@ -1156,10 +1160,7 @@ function createTavilyResearchCapability(
             // unbounded paid creations (mirrors Parallel's guard).
             if (recreatedAfterNotFound) {
               await safeRemoveState(requestId);
-              throw new ApiError(
-                "Tavily research task not found after recreation",
-                500,
-              );
+              throw new ApiError("Tavily research task not found after recreation", 500);
             }
             recreatedAfterNotFound = true;
             // Route the recreation through the same lock as initial
@@ -1283,10 +1284,6 @@ export function createTavilyDescriptor(
     dependencies?.researchStateDir !== undefined,
   );
   const transport = dependencies?.transport;
-  const researchStateFile =
-    dependencies?.researchStateFile ??
-    createProductionAsyncJobStateFile(asyncJobStateDir("research"));
-  const researchStateDir = dependencies?.researchStateDir ?? asyncJobStateDir("research");
 
   return {
     id: "tavily",
@@ -1305,6 +1302,14 @@ export function createTavilyDescriptor(
       ]);
     },
     create(context: ProviderContext): ProviderAdapter {
+      // #159: state-seam defaults resolve at create()-time, not at
+      // descriptor construction — the registry constructs this factory's
+      // result at MODULE IMPORT, so a construction-time string capture
+      // would freeze asyncJobStateDir against the import-time env and
+      // never see a SCOUTLINE_CACHE_DIR set later.
+      const researchStateDir = dependencies?.researchStateDir ?? asyncJobStateDir("research");
+      const researchStateFile =
+        dependencies?.researchStateFile ?? createProductionAsyncJobStateFile(researchStateDir);
       const search = createTavilySearchCapability({
         env: context.env,
         transport,

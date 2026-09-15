@@ -886,8 +886,10 @@ export interface HandleScienceOptions {
  * the `supplier`/`capability` naming differs from the
  * provider-capability identities the capture wrapper keys off, so the
  * journal derives the SAME partitioned-key shape the supplier's
- * response cache will use once the executor consults it (T10):
- * `buildProviderCacheKey` over the identity, namespace verbatim.
+ * response cache is keyed under (since #140 science consults and
+ * fills that cache at its own invoke sites, deriving the key right
+ * there): `buildProviderCacheKey` over the identity, namespace
+ * verbatim.
  */
 export function scienceCacheKey(identity: unknown): string | undefined {
   if (identity === null || typeof identity !== "object") return undefined;
@@ -915,7 +917,10 @@ export function scienceCacheKey(identity: unknown): string | undefined {
 /**
  * T7 journal hook — the science twin of main's `createJournalHook`,
  * scoped to the direct-invoke executor (which since #140 consults the
- * response cache per arm/attempt). Facts, all read AFTER dispatch
+ * response cache per arm/attempt before invoking, and invokes through
+ * the shared `executeProviderOperation` retry seam — one retry on
+ * transient timeout/network/429/5xx failures, QuotaError terminal).
+ * Facts, all read AFTER dispatch
  * resolves (thunks, matching the search precedent):
  *   - query: what the USER passed verbatim — the search query or the
  *     get identifier (AC-12: journaled identity = user-visible
@@ -1221,14 +1226,15 @@ export async function handleScience(
               );
             }
             capability.validate(request);
-            // T7: the direct-invoke executor bypasses the shared
-            // execution layer, so the supplier's (capture-wrapped)
-            // cacheIdentity is consulted HERE — pre-invoke, matching
-            // execution.ts step 2. Science identities use `supplier`
-            // (not `provider`); per-arm identities are captured here
-            // and the journal cacheKey is derived from the FIRST
-            // FULFILLED arm below (review: a failed first arm must
-            // not stamp the journal's provider partition).
+            // T7: the direct-invoke executor runs outside the shared
+            // execution layer's cache step, so the supplier's
+            // (capture-wrapped) cacheIdentity is consulted HERE —
+            // pre-invoke, matching execution.ts step 2. Science
+            // identities use `supplier` (not `provider`); per-arm
+            // identities are captured here and the journal cacheKey is
+            // derived from the FIRST FULFILLED arm below (review: a
+            // failed first arm must not stamp the journal's provider
+            // partition).
             // #140 ruling 5: the identity consult is no longer
             // journal-gated — the response cache needs the key
             // whenever it is consulted; extra capture-wrapper
@@ -1445,9 +1451,10 @@ export async function handleScience(
           );
         }
         capability.validate(request);
-        // T7: the direct-invoke executor bypasses the shared execution
-        // layer, so the supplier's (capture-wrapped) cacheIdentity is
-        // consulted HERE — pre-invoke, matching execution.ts step 2.
+        // T7: the direct-invoke executor runs outside the shared
+        // execution layer's cache step, so the supplier's
+        // (capture-wrapped) cacheIdentity is consulted HERE —
+        // pre-invoke, matching execution.ts step 2.
         // REPLACED per attempt (review): retaining the first supplier's
         // identity would journal the fingerprint of a supplier that
         // failed and rerouted; the loop breaks on success, so the last

@@ -71,7 +71,10 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // Rebaselined at the ruling round: the journal paragraph's capability
 // list gained `science`, and the Which-provider-when table gained the
 // five-supplier science row (owner ruling text edits).
-const SKILL_BODY_SHA256 = "a23e7ee2513b165d624c0cd2308cc30f066797bfa7ee1d30b9394e6d1b46f4cc";
+// Rebaselined at #140 T6: the Science section gained the cache/retry
+// blurb — 24h response cache, --no-cache bypass, one transient retry,
+// journal warm-repeat markers (the sanctioned per-ticket docs edit).
+const SKILL_BODY_SHA256 = "44b132389f913570291d971283dcaa1666a3bc4a6812263c551567520dcd741d";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

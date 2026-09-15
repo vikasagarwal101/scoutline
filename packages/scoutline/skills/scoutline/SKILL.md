@@ -294,6 +294,11 @@ scoutline science get 10.1038/nature12373
   (`2401.12345`); the identifier grammar routes to the suppliers that
   can serve it.
 
+Responses cache locally for 24h per supplier and request (`--no-cache`
+bypasses for one invocation); transient failures (timeouts, 5xx, 429)
+retry once with backoff — quota errors do not. Cache-served runs record
+journal warm-repeat markers.
+
 ## Batch (manifest runner)
 
 Run many operations in one process — one summary envelope on stdout,

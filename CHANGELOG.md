@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.21.2] - 2026-09-15
+
 ### Fixed
 
 - **`writeConfig` refuses empty-over-populated wipes and introduces `scripts/sandbox-run.mjs` wrapper (issue #168):** `writeConfig` now checks if a normalized zero-provider config would overwrite an existing populated config file, throwing `ConfigurationError` with `.bak` recovery advice unless `allowEmpty: true` is explicitly passed; the guard is file-only because `.bak` is recoverable history rather than live state, so writes while the live config is already empty or absent are always allowed; deliberate empty-over-populated flows in `scoutline init` (`remove-provider` removing the final provider and `rerun-full` selecting zero providers) pass `allowEmpty: true` to permit intentional teardown; new `scripts/sandbox-run.mjs` wrapper provides isolated scratch execution under `/var/tmp` for probes and mutations without triggering perimeter-guard false positives.

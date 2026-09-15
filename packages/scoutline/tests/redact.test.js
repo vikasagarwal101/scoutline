@@ -865,25 +865,86 @@ describe("v3 provider keys (2026-08 #78)", () => {
 });
 
 describe("scheme-pass JSON boundary termination (#171)", () => {
-  it("issue repro (a): does not swallow JSON structure after token keyword", () => {
-    const input = '{"d":"1M-token context...","context_len":123}';
+  it("discriminating JSON boundary pin (a): does not swallow quotes or subsequent keys", () => {
+    const input = JSON.stringify({ d: "token abcdef123", n: 1 });
+    const out = redactCredentialString(input);
+    const parsed = JSON.parse(out);
+    assert.strictEqual(parsed.n, 1);
+    assert.strictEqual(parsed.d, "[REDACTED]");
+    assert.ok(out.includes('"n"'), "n key must survive");
+  });
+
+  it("comma-credential corpus redacted whole in prose and JSON (b — F1)", () => {
+    const bearerComma = "Bearer abcdefghij,IJKLMNOP";
+    const apiKeyComma = "ApiKey lowerpart,UPPERPART123";
+    const tokenCsv = "Token key1,key2,key3_DEF";
+
+    // Plain prose: full run redacted whole, no partial [REDACTED],TAIL or verbatim leak
+    assert.strictEqual(redactCredentialString(bearerComma), "[REDACTED]");
+    assert.strictEqual(redactCredentialString(apiKeyComma), "[REDACTED]");
+    assert.strictEqual(redactCredentialString(tokenCsv), "[REDACTED]");
+    assert.ok(!redactCredentialString(bearerComma).includes(","), "no comma remnant in prose");
+    assert.ok(!redactCredentialString(bearerComma).includes("IJKLMNOP"), "no tail leak in prose");
+
+    // Inside JSON string values
+    const jsonBearer = JSON.stringify({ token: bearerComma, ok: true });
+    const outJsonBearer = redactCredentialString(jsonBearer);
+    assert.ok(!outJsonBearer.includes("[REDACTED],"), "no partial [REDACTED],TAIL in JSON");
+    assert.ok(!outJsonBearer.includes("IJKLMNOP"), "no tail leak in JSON");
+    assert.deepStrictEqual(JSON.parse(outJsonBearer), { token: "[REDACTED]", ok: true });
+
+    const jsonApiKey = JSON.stringify({ key: apiKeyComma, status: 200 });
+    const outJsonApiKey = redactCredentialString(jsonApiKey);
+    assert.deepStrictEqual(JSON.parse(outJsonApiKey), { key: "[REDACTED]", status: 200 });
+
+    const jsonTokenCsv = JSON.stringify({ list: tokenCsv });
+    const outJsonTokenCsv = redactCredentialString(jsonTokenCsv);
+    assert.deepStrictEqual(JSON.parse(outJsonTokenCsv), { list: "[REDACTED]" });
+  });
+
+  it("anchored comma shape redacts whole with no tail remainder (c)", () => {
+    const h1 = "Authorization: Bearer abcdefghij,DEF12345678";
+    const h2 = "Authorization: Bearer abc,DEF12345678";
+
+    assert.strictEqual(redactCredentialString(h1), "Authorization: [REDACTED]");
+    assert.strictEqual(redactCredentialString(h2), "Authorization: [REDACTED]");
+    assert.ok(!redactCredentialString(h1).includes(",DEF"), "no tail remainder on h1");
+    assert.ok(!redactCredentialString(h2).includes(",DEF"), "no tail remainder on h2");
+
+    const jsonH = JSON.stringify({ header: h2, code: 401 });
+    const outJsonH = redactCredentialString(jsonH);
+    assert.deepStrictEqual(JSON.parse(outJsonH), { header: "Authorization: [REDACTED]", code: 401 });
+  });
+
+  it("prose guard: trailing punctuation stripped before credential check (d)", () => {
+    assert.strictEqual(
+      redactCredentialString("Token subscription, and more"),
+      "Token subscription, and more",
+    );
+    const inputJson = JSON.stringify({ msg: "Token subscription, and more" });
+    assert.strictEqual(redactCredentialString(inputJson), inputJson);
+  });
+
+  it("M5 pin: 1M-token context... survives unredacted and JSON parses (e)", () => {
+    const input = JSON.stringify({ d: "1M-token context...", context_len: 123 });
     const out = redactCredentialString(input);
     const parsed = JSON.parse(out);
     assert.strictEqual(parsed.context_len, 123);
-    assert.ok(out.includes('"context_len"'), "context_len key must survive");
+    assert.strictEqual(parsed.d, "1M-token context...");
+    assert.ok(out.includes("context..."), `context... must survive in: ${out}`);
   });
 
-  it("openrouter shape (b): comma terminates candidate capture so following words survive", () => {
-    const input = '{"model":"foo","description":"faster token generation, and better performance"}';
+  it("openrouter shape: trailing punctuation stripped so generation survives (f1)", () => {
+    const input = JSON.stringify({ model: "foo", description: "faster token generation, and better performance" });
     const out = redactCredentialString(input);
     assert.ok(out.includes("generation"), `generation should survive in: ${out}`);
     const parsed = JSON.parse(out);
     assert.strictEqual(parsed.model, "foo");
   });
 
-  it("authorization-context JSON (c): pass 1 does not swallow quotes or subsequent keys", () => {
+  it("authorization-context JSON (f2): pass 1 does not swallow quotes or subsequent keys", () => {
     const jwt = "eyJhbGciOiJIUzI1NiJ9.payload";
-    const input = `{"m":"Authorization: Bearer ${jwt}","n":2}`;
+    const input = JSON.stringify({ m: `Authorization: Bearer ${jwt}`, n: 2 });
     const out = redactCredentialString(input);
     assert.ok(!out.includes("eyJhbGciOiJIUzI1NiJ9"), `credential must be redacted: ${out}`);
     const parsed = JSON.parse(out);
@@ -891,7 +952,7 @@ describe("scheme-pass JSON boundary termination (#171)", () => {
     assert.strictEqual(parsed.n, 2);
   });
 
-  it("genuine credentials still redacted in prose and JSON (d)", () => {
+  it("genuine credentials still redacted in prose and JSON (f3)", () => {
     const bearerJwt = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.t-IDcSemACt8x4iTMCda8Yhe3iZaWbvV5XKSTbuAn0M";
     const tokenGhp = "Token ghp_16C7e42F292c6912E7710c838347Ae178B4a";
     const apiKeySk = "ApiKey sk-abc1234567890def";
@@ -932,7 +993,7 @@ describe("scheme-pass JSON boundary termination (#171)", () => {
     assert.deepStrictEqual(JSON.parse(redactedJsonSk), { auth: "[REDACTED]" });
   });
 
-  it("existing #44 prose-guard pins stay green (e)", () => {
+  it("existing #44 prose-guard pins stay green (f4)", () => {
     assert.strictEqual(
       redactCredentialString("MiniMax Token Plan subscription"),
       "MiniMax Token Plan subscription",
@@ -943,26 +1004,24 @@ describe("scheme-pass JSON boundary termination (#171)", () => {
     );
   });
 
-  it("class guard: JSON bodies with scheme-words near boundaries parse cleanly (f)", () => {
+  it("class guard: JSON bodies with scheme-words near boundaries parse cleanly (f5)", () => {
     const payloads = [
-      '{"message":"1M-token context window","valid":true}',
-      '{"note":"faster token generation, and better performance","code":200}',
-      '{"status":"Bearer token required","ok":false}',
-      '{"info":"ApiKey format: Bearer <token>","count":5}',
-      '{"header":"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.sig","retries":0}',
-      '{"text":"The Token Economy, volume 2","pages":300}',
-      '{"a":"token","b":1}',
-      '{"desc":"Token-based auth, apiKey-based access, and bearer credentials"}',
-      '{"d":"1M-token context...","context_len":123}',
+      JSON.stringify({ message: "1M-token context window", valid: true }),
+      JSON.stringify({ note: "faster token generation, and better performance", code: 200 }),
+      JSON.stringify({ status: "Bearer token required", ok: false }),
+      JSON.stringify({ info: "ApiKey format: Bearer <token>", count: 5 }),
+      JSON.stringify({ header: "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.sig", retries: 0 }),
+      JSON.stringify({ text: "The Token Economy, volume 2", pages: 300 }),
+      JSON.stringify({ a: "token", b: 1 }),
+      JSON.stringify({ desc: "Token-based auth, apiKey-based access, and bearer credentials" }),
+      JSON.stringify({ d: "1M-token context...", context_len: 123 }),
     ];
     for (const payload of payloads) {
       const redacted = redactCredentialString(payload);
       assert.doesNotThrow(
         () => JSON.parse(redacted),
-        `JSON.parse failed on redacted output for input: ${payload}
-Output was: ${redacted}`,
+        `JSON.parse failed on redacted output for input: ${payload}\nOutput was: ${redacted}`,
       );
     }
   });
 });
-

@@ -99,18 +99,23 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   //      24 accepts, Node 22 runtimes reject at compile time; engines
   //      promises >=22).
   const CREDENTIAL_CHAR = /[^a-z\s]/; // case-sensitive by design (no /i) — any non-lowercase-letter char: uppercase, digit, punctuation
-  // Genuine credential shapes — Bearer eyJhbGciOi... (JWT: base64 chars + dots),
-  // Token ghp_16C7e42F292c6912E7710c838347Ae178B4a, ApiKey sk-abc123... — contain
-  // no `"` or `,`, so excluding them from the value capture terminates at JSON
-  // string/property boundaries without shortening real credentials. Tradeoff: a
-  // value containing a raw comma inside JSON prose is not a credential shape.
+  // Value capture terminates at `"` and whitespace so JSON string/property
+  // boundaries are never crossed. Comma-bearing credentials (CSV key lists,
+  // Bearer abcdefghij,IJKLMNOP) are captured and redacted whole. In the bare
+  // pass, trailing punctuation is stripped before the CREDENTIAL_CHAR check
+  // so prose like "Token subscription," or "token context..." survives.
   result = result.replace(
-    /(Authorization\s*:\s*)(?:Bearer|Token|ApiKey)\s+[^\s",]{8,}/gi,
+    /(Authorization\s*:\s*)(?:Bearer|Token|ApiKey)\s+[^\s"]{8,}/gi,
     (_match, prefix: string) => prefix + REDACTED,
   );
   result = result.replace(
-    /(?:Bearer|Token|ApiKey)\s+([^\s",]{8,})/gi,
-    (match, value: string) => (CREDENTIAL_CHAR.test(value) ? REDACTED : match),
+    /(?:Bearer|Token|ApiKey)\s+([^\s"]{8,})/gi,
+    (match, value: string) => {
+      // ponytail: quote cut defensive since regex excludes ", upgrade to AST parser if complex grammar needed
+      const quoteIdx = value.indexOf('"');
+      const candidate = (quoteIdx === -1 ? value : value.slice(0, quoteIdx)).replace(/[",.;:)\]]+$/, "");
+      return CREDENTIAL_CHAR.test(candidate) ? REDACTED : match;
+    },
   );
   // Same two-pass approach for Basic. The Authorization-context pass
   // covers `Authorization: Basic …` regardless of value composition; the

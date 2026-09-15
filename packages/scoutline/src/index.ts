@@ -3207,6 +3207,10 @@ async function handleBatch(
   const manifest = parseBatchManifest(rawManifest, {
     descriptors: deps.providerDescriptors,
     dirExists: (dir) => existsSync(dir),
+    // #157b: under --isolated, stateful ops reject per-op at parse time.
+    // The injected env carries the isolation stamp from main() (the same
+    // env view the artifact/cache resolvers read).
+    isolated: deps.env.SCOUTLINE_ISOLATED === "1",
   });
 
   // D4 precedence: per-op pin > global --provider > distribution. The
@@ -6508,6 +6512,16 @@ export async function main(
         break;
       case "crawl":
         commandRecognized = true;
+        // #157b: crawl is stateful (async-job resume state lives under
+        // SCOUTLINE_CACHE_DIR/crawl). A per-pid isolated state dir is
+        // invisible to any later resume run, silently defeating the
+        // double-charge guard — reject at parse time (watch precedent).
+        if (isolated) {
+          throw new ValidationError(
+            "crawl cannot run under --isolated.",
+            "crawl is stateful: async-job resume state lives under SCOUTLINE_CACHE_DIR/crawl (default ~/.scoutline/crawl). Drop --isolated to keep resume state.",
+          );
+        }
         exitCode = await handleCrawl(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "map":
@@ -6516,6 +6530,15 @@ export async function main(
         break;
       case "research":
         commandRecognized = true;
+        // #157b: research is stateful (async-job resume state lives under
+        // SCOUTLINE_CACHE_DIR/research). Same per-pid resume break as
+        // crawl — reject at parse time (watch precedent).
+        if (isolated) {
+          throw new ValidationError(
+            "research cannot run under --isolated.",
+            "research is stateful: async-job resume state lives under SCOUTLINE_CACHE_DIR/research (default ~/.scoutline/research). Drop --isolated to keep resume state.",
+          );
+        }
         exitCode = await handleResearch(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "repo":

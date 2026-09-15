@@ -433,6 +433,15 @@ export interface BatchManifest {
 export interface BatchManifestDeps {
   readonly descriptors: readonly ProviderDescriptor[];
   readonly dirExists: (dir: string) => boolean;
+  /**
+   * #157b: true when the enclosing CLI run is under `--isolated`. The
+   * stateful async-job commands (research/crawl) then reject per-op: a
+   * per-pid state dir can never be found by a later resume run, so the
+   * manifest must not pretend the ops carry resume state. Optional —
+   * callers that don't run under isolation (vision batch) omit it and
+   * parse byte-identically to before.
+   */
+  readonly isolated?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -649,6 +658,17 @@ export function parseBatchManifest(raw: unknown, deps: BatchManifestDeps): Batch
     if (!isAllowedBatchCommand(command)) {
       // D3 pins this rejection message verbatim (no per-op prefix).
       throw new ValidationError(BATCH_ALLOWLIST_MESSAGE);
+    }
+
+    // #157b: the stateful async-job commands refuse --isolated per-op
+    // (AFTER the allowlist error, which stays first). Same rationale as
+    // the noun-level rejection in the dispatcher: a per-pid isolated
+    // state dir is invisible to any later resume run, silently defeating
+    // the double-charge guard.
+    if (deps.isolated === true && (command === "research" || command === "crawl")) {
+      throw new ValidationError(
+        `${where}: command "${command}" is stateful and cannot run under --isolated (drop --isolated to keep resume state)`,
+      );
     }
 
     if (rawOp.input === undefined) {

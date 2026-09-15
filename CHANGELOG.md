@@ -5,6 +5,7 @@
 ### Fixed
 
 - **`writeConfig` refuses empty-over-populated wipes and introduces `scripts/sandbox-run.mjs` wrapper (issue #168):** `writeConfig` now checks if a normalized zero-provider config would overwrite an existing populated file or its `.bak` backup, throwing `ConfigurationError` with `.bak` recovery advice unless `allowEmpty: true` is explicitly passed; deliberate empty-over-populated flows in `scoutline init` (`remove-provider` removing the final provider and `rerun-full` selecting zero providers) now pass `allowEmpty: true` to permit intentional teardown; new `scripts/sandbox-run.mjs` wrapper provides isolated scratch execution under `/var/tmp` for probes and mutations without triggering perimeter-guard false positives.
+- **Consumption layer no longer swallows test-isolation violations (issue #156):** the three best-effort catch sites in the consumption emission path — `createQuotaStoreConsumptionSink`'s `record`, the composite sink's `recordIsolated`, and `emitConsumption`'s defensive outer catch — now rethrow `TestIsolationViolationError` FIRST, before the warn-and-swallow (mirroring the 9b41730 `writeConfigFile` fix). Direct-sink guard pins already existed, but a violation routed THROUGH the consumption layer was eaten as an accounting warning — a test writing un-isolated through the emission path passed with a warning instead of failing loud. Genuine accounting failures still warn-and-resolve, unchanged.
 
 ## [0.21.1] - 2026-09-14
 

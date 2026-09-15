@@ -37,6 +37,7 @@ import { withTempDir } from "./helpers/temp-dir.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 import { main } from "../dist/index.js";
 import { NetworkError } from "../dist/lib/errors.js";
+import { TestIsolationViolationError } from "../dist/lib/test-isolation.js";
 import {
   createFakeCrawlDescriptor,
   createFakeMapDescriptor,
@@ -483,6 +484,92 @@ describe("consumption: createCompositeConsumptionSink", () => {
       },
     });
     await assert.doesNotReject(composite.record(makeCompositeEvent()));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test-isolation violations are NEVER swallowed (#156)
+//
+// Direct-sink pins existed (assertTestSafeWrite throws when a test writes
+// un-isolated) but the best-effort catches INSIDE the consumption layer ate
+// the violation when the write routed through emitConsumption /
+// recordIsolated / the quota-store sink — a test that should fail loud
+// passed with a warning. Mirrors 9b41730's writeConfigFile fix: every
+// best-effort catch rethrows TestIsolationViolationError FIRST.
+// ---------------------------------------------------------------------------
+
+describe("consumption: test-isolation violations are never swallowed (#156)", () => {
+  const violation = new TestIsolationViolationError(
+    "consumption",
+    "/home/vikas/.scoutline/state.json",
+    "test write outside the isolation roots",
+  );
+
+  it("quota-store sink rethrows the violation instead of warning (#156)", async () => {
+    /** @type {any} */
+    const violatingStore = {
+      async read() {
+        return { version: 1, quota: {} };
+      },
+      async writeObserved() {},
+      async writeConsumption() {
+        throw violation;
+      },
+      async clear() {},
+    };
+    const warnings = [];
+    const sink = createQuotaStoreConsumptionSink({
+      store: violatingStore,
+      now: () => 0,
+      onWarning: (m) => warnings.push(m),
+    });
+    await assert.rejects(
+      sink.record({
+        provider: "zai",
+        capabilityId: "search",
+        amount: { kind: "exact", value: 1 },
+        attempt: 1,
+        at: 0,
+      }),
+      (error) => error === violation,
+    );
+    assert.strictEqual(warnings.length, 0, "the violation bypasses the warning channel");
+  });
+
+  it("composite recordIsolated rethrows the violation instead of warning (#156)", async () => {
+    const violating = {
+      async record() {
+        throw violation;
+      },
+    };
+    const other = createInMemoryConsumptionSink();
+    const warnings = [];
+    const composite = createCompositeConsumptionSink(violating, other, {
+      onWarning: (m) => warnings.push(m),
+    });
+    await assert.rejects(composite.record(makeCompositeEvent()), (error) => error === violation);
+    assert.strictEqual(warnings.length, 0, "the violation bypasses the warning channel");
+  });
+
+  it("emitConsumption rethrows the violation instead of absorbing it (#156)", async () => {
+    const violatingSink = {
+      async record() {
+        throw violation;
+      },
+    };
+    await assert.rejects(
+      emitConsumption(
+        violatingSink,
+        {
+          provider: "zai",
+          capabilityId: "search",
+          amount: { kind: "estimate", value: 1 },
+        },
+        1,
+        () => 0,
+      ),
+      (error) => error === violation,
+    );
   });
 });
 

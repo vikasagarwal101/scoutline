@@ -82,6 +82,23 @@ const env = {
 };
 
 const [command, ...commandArgs] = args;
+
+// A signal sent to the WRAPPER (not the child) must not skip the close-path
+// cleanup — the default disposition would kill this process before the
+// child's close handler removes the /var/tmp scratch dirs (#176 review).
+// Forward the first signal to the child and let the close path run to
+// completion. One-time guard: later signals change nothing the first
+// forward has not already done, and a handler-less second signal would
+// terminate before cleanup (the exact leak this prevents).
+let forwarded = false;
+function forwardToChild(signal) {
+  if (forwarded) return;
+  forwarded = true;
+  child.kill(signal);
+}
+process.on("SIGINT", forwardToChild);
+process.on("SIGTERM", forwardToChild);
+
 const child = spawn(command, commandArgs, {
   stdio: "inherit",
   env,
@@ -104,6 +121,11 @@ child.on("error", (error) => {
 
 child.on("close", (code, signal) => {
   cleanup();
+  // Remove the forwarders BEFORE the self-signal below: signal delivery is
+  // asynchronous, and a still-attached handler would make this re-signal
+  // loop back through forwardToChild instead of terminating the wrapper.
+  process.removeListener("SIGINT", forwardToChild);
+  process.removeListener("SIGTERM", forwardToChild);
   if (signal) {
     process.kill(process.pid, signal);
   } else {

@@ -19,11 +19,12 @@
  * ambient-supplied values win). This is the child's ONLY isolation.
  *
  * #167: the per-call dirs this helper mkdtemp'd are removed once the
- * child closes and on the spawn-error path (resolve and reject paths
- * alike); a buildIsolatedEnv partial failure cleans the dirs created so
- * far before rethrowing. Caller-supplied values are never touched. The
- * resolved object carries `createdTempDirs` — the dirs THIS call
- * created — for pins.
+ * child closes — the spawn-error close included (#176 review: 'close' is
+ * the SINGLE finalizer; the 'error' listener only records); a
+ * buildIsolatedEnv partial failure cleans the dirs created so far before
+ * rethrowing. Caller-supplied values are never touched. The resolved
+ * object carries `createdTempDirs` — the dirs THIS call created — for
+ * pins.
  */
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -193,12 +194,14 @@ export async function runProcess(args, options = {}) {
       stderr += chunk.toString();
     });
 
-    proc.on("error", async (err) => {
-      clearTimeout(timer);
-      // #167 review: the spawn-error path cleans the tracked dirs too —
-      // awaited so the rejection observes a cleaned state (pins).
-      await cleanupCreatedDirs(env[CREATED_TEMP_DIRS] ?? []);
-      reject(err);
+    // #176 review: record-only. Node emits 'error' AND 'close' on a spawn
+    // failure; the old async 'error' handler raced 'close' — both cleaned
+    // and both settled, so close could win and RESOLVE a spawn error
+    // (probe at HEAD: 1 resolve in 200 missing-cwd runs). 'close' is the
+    // single finalizer.
+    let spawnError = null;
+    proc.on("error", (err) => {
+      spawnError = err;
     });
 
     proc.on("close", async (code) => {
@@ -208,6 +211,10 @@ export async function runProcess(args, options = {}) {
       // run (best-effort); awaiting it keeps pins deterministic.
       const created = env[CREATED_TEMP_DIRS] ?? [];
       await cleanupCreatedDirs(created);
+      if (spawnError) {
+        reject(spawnError);
+        return;
+      }
       if (timedOut) {
         reject(
           new Error(

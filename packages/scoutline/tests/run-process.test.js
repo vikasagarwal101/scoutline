@@ -139,16 +139,22 @@ describe("runProcess error/partial-failure cleanup (#167 review)", () => {
     assert.deepEqual(left, [], `partial failure leaked created-so-far dirs: ${left}`);
   });
 
-  it("spawn-error path cleans the per-call temp dirs before rejecting", async () => {
+  it("spawn-error rejects deterministically with the spawn error, dirs cleaned (#176)", async () => {
     const pen = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-pin-pen-"));
     const prevTmpdir = process.env.TMPDIR;
     process.env.TMPDIR = pen;
     try {
-      // Missing cwd: spawn emits 'error' (ENOENT) then 'close'. The
-      // cleanup must run BEFORE the reject, not only on the close path.
-      await assert.rejects(
-        runProcess(["--help"], { cwd: "/nonexistent-scoutline-pin-cwd" }),
-      );
+      // Missing cwd: spawn emits 'error' (ENOENT) then 'close'. At HEAD the
+      // two finalizers raced — the async 'error' handler could lose to
+      // 'close', which RESOLVED (probe: 1 resolve in 200 missing-cwd runs).
+      // Loop the race window: every iteration must reject with the spawn
+      // error itself, and the cleanup must run BEFORE the reject.
+      for (let i = 0; i < 10; i++) {
+        await assert.rejects(
+          runProcess(["--help"], { cwd: "/nonexistent-scoutline-pin-cwd" }),
+          { code: "ENOENT" },
+        );
+      }
     } finally {
       if (prevTmpdir === undefined) delete process.env.TMPDIR;
       else process.env.TMPDIR = prevTmpdir;

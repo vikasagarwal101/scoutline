@@ -1333,4 +1333,56 @@ describe("sandbox-run wrapper (#168)", () => {
       "repo working tree must stay clean",
     );
   });
+
+  it("wrapper-directed SIGTERM forwards to the child and still cleans the sandbox (#176)", async () => {
+    const { spawn } = await import("node:child_process");
+    const scriptPath = fileURLToPath(new URL("../scripts/sandbox-run.mjs", import.meta.url));
+
+    // Pen lives OUTSIDE the sandbox: the wrapper deletes its scratch dirs
+    // on cleanup, so markers the child leaves for this pin must not land there.
+    const pen = await fs.mkdtemp(path.join(path.join("/var/tmp"), "scoutline-sigpin-pen-"));
+    const readyMarker = path.join(pen, "child-ready");
+    const sigMarker = path.join(pen, "child-got-sigterm");
+    try {
+      // Child announces readiness (SIGTERM handler installed), then idles.
+      // On SIGTERM it leaves a marker and exits with a signal-specific code.
+      const childScript =
+        'const fs = require("node:fs");' +
+        `fs.writeFileSync(${JSON.stringify(readyMarker)}, "1");` +
+        'process.on("SIGTERM", () => {' +
+        `fs.writeFileSync(${JSON.stringify(sigMarker)}, "1");` +
+        'process.exit(7);});' +
+        "setTimeout(() => process.exit(0), 5000);";
+
+      let stderr = "";
+      const wrapper = spawn(
+        process.execPath,
+        [scriptPath, process.execPath, "--input-type=commonjs", "-e", childScript],
+        { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env } },
+      );
+      wrapper.stderr.on("data", (d) => {
+        stderr += d.toString();
+      });
+      const wrapperClosed = new Promise((resolve) => wrapper.on("close", resolve));
+
+      for (let i = 0; i < 100 && !existsSync(readyMarker); i++) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      assert.ok(existsSync(readyMarker), "child never became ready");
+
+      wrapper.kill("SIGTERM"); // directed at the WRAPPER, not the child
+      await wrapperClosed;
+
+      // Census-style: every sandbox dir the wrapper announced must be gone.
+      const dirs = [
+        ...stderr.matchAll(/(?:HOME|[A-Z_]+)=(\/var\/tmp\/scoutline-sandbox-\S+)/g),
+      ].map((m) => m[1]);
+      assert.ok(dirs.length >= 7, `expected 7 announced sandbox dirs: ${stderr}`);
+      const leaked = dirs.filter((d) => existsSync(d));
+      assert.deepEqual(leaked, [], `wrapper-directed SIGTERM leaked sandbox dirs: ${leaked}`);
+      assert.ok(existsSync(sigMarker), "child must receive the forwarded SIGTERM");
+    } finally {
+      await fs.rm(pen, { recursive: true, force: true });
+    }
+  });
 });

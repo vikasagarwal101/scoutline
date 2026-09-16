@@ -12,7 +12,6 @@ import {
   defaultResponseCache,
   cacheStats,
   clearAllCaches,
-  writeCacheInDir,
 } from "../dist/lib/cache.js";
 import {
   buildToolCachePath,

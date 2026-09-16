@@ -83,7 +83,11 @@ invocation and threaded through the handler boundary — including into
 the raw Z.AI clients (`ZaiMcpClient`, `ZaiCodeModeClient`) and the cache
 key builder. File keys are redacted at every outward boundary (output,
 errors, diagnostics, quota failures, and cached metadata) exactly like
-environment-variable keys.
+environment-variable keys. The
+`Credential=` redaction pass is context-free: ANY `Credential=…`
+occurrence redacts (including prose like `Credential=readonly-user`) —
+redaction errs toward over-redaction; the label is kept, only the value
+is replaced.
 
 Users without a `config.json` see byte-for-byte identical behavior to the
 previous release — the environment-variable path is unchanged.

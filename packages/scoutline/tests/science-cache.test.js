@@ -33,7 +33,6 @@ import { buildProviderCacheKey } from "../dist/lib/cache.js";
 import {
   decodeScienceWork,
   decodeScienceWorks,
-  SCIENCE_SUPPLIER_IDS,
 } from "../dist/capabilities/science.js";
 import { handleScience, scienceCacheKey } from "../dist/commands/science.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";

@@ -399,7 +399,9 @@ response cache keyed per supplier and request; `--no-cache` bypasses the
 cache for one invocation. Transient failures (timeouts, network errors,
 5xx) retry once with jittered backoff; supplier 429s surface as terminal
 quota errors, and cache-served runs still record journal warm-repeat
-markers in `history`.
+markers in `history`. Cache filenames admit dotted capability ids and
+empty keyless credential fingerprints (ADR-0011), so `cache stats` and
+`cache prune --provider/--capability` see science entries.
 
 ## Usage
 

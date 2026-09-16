@@ -27,6 +27,7 @@
  *     same plus a notice for stderr. Never throws.
  */
 import { randomBytes as cryptoRandomBytes, randomUUID } from "node:crypto";
+import { isIsolatedEnv } from "./cache.js";
 import { assertTestSafeWrite } from "./test-isolation.js";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -126,7 +127,9 @@ export function resolveArtifactsDir(
   const baseDir =
     env.SCOUTLINE_ARTIFACTS_DIR || path.join(resolveConfigRootPure(env, platform), "artifacts");
 
-  if (env.SCOUTLINE_ISOLATED === "1" || env.SCOUTLINE_ISOLATED === "true") {
+  // #187 follow-up (PR #183 review): one shared predicate — the accepted
+  // value set can never drift between the resolvers and the batch seam.
+  if (isIsolatedEnv(env)) {
     const pid = platform.pid ?? process.pid;
     return path.join(baseDir, "isolated", `${pid}`);
   }

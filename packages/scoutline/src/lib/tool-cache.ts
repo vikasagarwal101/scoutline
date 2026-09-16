@@ -32,7 +32,7 @@ import crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import type { Tool } from "@utcp/sdk";
-import { toolCacheDir, isCacheEnabled, getCacheTtlMs } from "./cache.js";
+import { toolCacheDir, isCacheEnabled, getCacheTtlMs, type CacheDirEnvironment } from "./cache.js";
 import { atomicReplaceFile } from "./config-store.js";
 import { redactTool } from "./redact.js";
 import { assertTestSafeWrite, isTestIsolationViolation } from "./test-isolation.js";
@@ -96,10 +96,15 @@ export function buildToolCacheKey(config: ToolCacheConfig): string {
 
 /**
  * Build the absolute on-disk path for a config's tool-cache envelope.
- * Always lands under the `tools/` subdirectory (sibling of `cache/`).
+ * Always lands under the `tools/` subdirectory (or `tools/isolated/<pid>`
+ * under `--isolated`).
  */
-export function buildToolCachePath(config: ToolCacheConfig): string {
-  return path.join(toolCacheDir(), `tools-${buildToolCacheKey(config)}.json`);
+export function buildToolCachePath(
+  config: ToolCacheConfig,
+  envOrDir?: CacheDirEnvironment | string,
+): string {
+  const dir = typeof envOrDir === "string" ? envOrDir : toolCacheDir(envOrDir);
+  return path.join(dir, `tools-${buildToolCacheKey(config)}.json`);
 }
 
 /**
@@ -115,11 +120,14 @@ export function buildToolCachePath(config: ToolCacheConfig): string {
  * wrapped — a failure to remove the file (race, permissions) degrades to
  * a clean miss; it never surfaces as an error from the read path.
  */
-export async function readToolCache(config: ToolCacheConfig): Promise<Tool[] | null> {
+export async function readToolCache(
+  config: ToolCacheConfig,
+  envOrDir?: CacheDirEnvironment | string,
+): Promise<Tool[] | null> {
   if (!isToolCacheEnabled()) return null;
   const ttlMs = getCacheTtlMs();
   if (ttlMs <= 0) return null;
-  const filePath = buildToolCachePath(config);
+  const filePath = buildToolCachePath(config, envOrDir);
   try {
     const raw = await fs.readFile(filePath, "utf8");
     const entry = JSON.parse(raw) as Partial<ToolCachePayload>;
@@ -155,11 +163,12 @@ export async function writeToolCache(
   config: ToolCacheConfig,
   tools: Tool[],
   secrets?: string[],
+  envOrDir?: CacheDirEnvironment | string,
 ): Promise<void> {
   if (!isToolCacheEnabled()) return;
   if (getCacheTtlMs() <= 0) return;
   try {
-    const filePath = buildToolCachePath(config);
+    const filePath = buildToolCachePath(config, envOrDir);
     assertTestSafeWrite(filePath, "writeToolCache");
     const payload: ToolCachePayload = {
       version: TOOL_CACHE_VERSION,

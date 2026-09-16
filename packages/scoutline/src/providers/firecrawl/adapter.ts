@@ -62,13 +62,18 @@ import type {
 } from "../../capabilities/crawl.js";
 import { decodeCrawlResult } from "../../capabilities/crawl.js";
 import {
+  assertAsyncJobStateKnobPair,
   computeAsyncJobStateHash,
   createProductionAsyncJobStateFile,
   type AsyncJobState,
   type AsyncJobStateFile,
 } from "../../lib/async-job-state.js";
 import { asyncJobStateDir } from "../../lib/cache.js";
-import { withAsyncFileLock, DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_LOCK_STALE_MS } from "../../lib/async-file-lock.js";
+import {
+  withAsyncFileLock,
+  DEFAULT_LOCK_TIMEOUT_MS,
+  DEFAULT_LOCK_STALE_MS,
+} from "../../lib/async-file-lock.js";
 import {
   ApiError,
   AuthError,
@@ -1194,10 +1199,16 @@ export interface FirecrawlAdapterDependencies {
 export function createFirecrawlDescriptor(
   dependencies?: FirecrawlAdapterDependencies,
 ): ProviderDescriptor {
+  // #158: half-paired state knobs reject at construction — the lock dir
+  // cannot be derived from an in-memory state file.
+  assertAsyncJobStateKnobPair(
+    "firecrawl",
+    "crawlStateFile",
+    "crawlStateDir",
+    dependencies?.crawlStateFile !== undefined,
+    dependencies?.crawlStateDir !== undefined,
+  );
   const transport = dependencies?.transport;
-  const crawlStateDir = dependencies?.crawlStateDir ?? asyncJobStateDir("crawl");
-  const crawlStateFile =
-    dependencies?.crawlStateFile ?? createProductionAsyncJobStateFile(crawlStateDir);
 
   return {
     id: "firecrawl",
@@ -1215,6 +1226,14 @@ export function createFirecrawlDescriptor(
       ]);
     },
     create(context: ProviderContext): ProviderAdapter {
+      // #159: state-seam defaults resolve at create()-time, not at
+      // descriptor construction — the registry constructs this factory's
+      // result at MODULE IMPORT, so a construction-time string capture
+      // would freeze asyncJobStateDir against the import-time env and
+      // never see a SCOUTLINE_CACHE_DIR set later.
+      const crawlStateDir = dependencies?.crawlStateDir ?? asyncJobStateDir("crawl");
+      const crawlStateFile =
+        dependencies?.crawlStateFile ?? createProductionAsyncJobStateFile(crawlStateDir);
       const search = createFirecrawlSearchCapability({ env: context.env, transport });
       const reader = createFirecrawlReaderCapability({ env: context.env, transport });
       const crawl = createFirecrawlCrawlCapability({

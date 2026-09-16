@@ -68,11 +68,13 @@ export interface CacheDirEnvironment {
   readonly SCOUTLINE_CACHE_DIR?: string | undefined;
   readonly ZAI_MCP_CACHE_DIR?: string | undefined; // legacy alias (precedence over ZAI_CACHE_DIR)
   readonly ZAI_CACHE_DIR?: string | undefined; // legacy alias
+  readonly SCOUTLINE_ISOLATED?: string | undefined;
 }
 
 export interface CacheDirPlatform {
   readonly platform: NodeJS.Platform;
   readonly homedir: string;
+  readonly pid?: number | undefined;
 }
 
 /**
@@ -105,22 +107,93 @@ function resolveCacheRoot(): string {
 }
 
 /**
- * Internal directory for response-cache entries. Always a `cache/`
- * subdirectory under the unified root.
+ * Single-source isolation predicate for env-derived surfaces (#157, PR
+ * #183 F1): the canonical values are `SCOUTLINE_ISOLATED="1"` and
+ * `"true"`. Consumers that branch on the env variable — both cache-dir
+ * resolvers below and main()'s batch seam — must agree on the accepted
+ * set, or an env-only `=true` run isolates the stores while skipping the
+ * batch per-op refusals (the predicate split Kody flagged).
  */
-function responseCacheDir(): string {
-  return path.join(resolveCacheRoot(), "cache");
+export function isIsolatedEnv(env: CacheDirEnvironment | undefined): boolean {
+  return env?.SCOUTLINE_ISOLATED === "1" || env?.SCOUTLINE_ISOLATED === "true";
+}
+
+/**
+ * Pure response-cache directory resolver. Under isolation
+ * (`SCOUTLINE_ISOLATED="1"` or `"true"`), derives `<root>/cache/isolated/<pid>`.
+ * Returns `<root>/cache` by default.
+ */
+export function resolveResponseCacheDirPure(
+  env: CacheDirEnvironment,
+  plat: CacheDirPlatform,
+): string {
+  const root = resolveCacheRootPure(env, plat);
+  const baseDir = path.join(root, "cache");
+  if (isIsolatedEnv(env)) {
+    const pid = plat.pid ?? process.pid;
+    return path.join(baseDir, "isolated", `${pid}`);
+  }
+  return baseDir;
+}
+
+/**
+ * Pure tool-cache directory resolver. Under isolation
+ * (`SCOUTLINE_ISOLATED="1"` or `"true"`), derives `<root>/tools/isolated/<pid>`.
+ * Returns `<root>/tools` by default.
+ */
+export function resolveToolCacheDirPure(env: CacheDirEnvironment, plat: CacheDirPlatform): string {
+  const root = resolveCacheRootPure(env, plat);
+  const baseDir = path.join(root, "tools");
+  if (isIsolatedEnv(env)) {
+    const pid = plat.pid ?? process.pid;
+    return path.join(baseDir, "isolated", `${pid}`);
+  }
+  return baseDir;
+}
+
+/**
+ * Directory for response-cache entries. Always a `cache/` subdirectory
+ * under the unified root (or `cache/isolated/<pid>` under `--isolated`).
+ */
+export function responseCacheDir(env?: CacheDirEnvironment): string {
+  if (!env) {
+    return path.join(resolveCacheRoot(), "cache");
+  }
+  const mergedEnv: CacheDirEnvironment = {
+    SCOUTLINE_CACHE_DIR: env.SCOUTLINE_CACHE_DIR ?? process.env.SCOUTLINE_CACHE_DIR,
+    ZAI_MCP_CACHE_DIR: env.ZAI_MCP_CACHE_DIR ?? process.env.ZAI_MCP_CACHE_DIR,
+    ZAI_CACHE_DIR: env.ZAI_CACHE_DIR ?? process.env.ZAI_CACHE_DIR,
+    SCOUTLINE_ISOLATED: env.SCOUTLINE_ISOLATED,
+  };
+  return resolveResponseCacheDirPure(mergedEnv, {
+    platform: process.platform,
+    homedir: os.homedir(),
+    pid: process.pid,
+  });
 }
 
 /**
  * Directory for the tool-discovery cache (consumed by mcp-client.ts).
- * Always a `tools/` subdirectory under the unified root, sibling of
- * {@link responseCacheDir}. Scanned by `cacheStats()` and cleared by
- * `clearAllCaches()`, but never touched by the response cache's LRU
- * eviction loop.
+ * Always a `tools/` subdirectory under the unified root (or `tools/isolated/<pid>`
+ * under `--isolated`). Scanned by `cacheStats()` and cleared by
+ * `clearAllCaches()` in its non-isolated view (no-arg), but never touched by the
+ * response cache's LRU eviction loop.
  */
-export function toolCacheDir(): string {
-  return path.join(resolveCacheRoot(), "tools");
+export function toolCacheDir(env?: CacheDirEnvironment): string {
+  if (!env) {
+    return path.join(resolveCacheRoot(), "tools");
+  }
+  const mergedEnv: CacheDirEnvironment = {
+    SCOUTLINE_CACHE_DIR: env.SCOUTLINE_CACHE_DIR ?? process.env.SCOUTLINE_CACHE_DIR,
+    ZAI_MCP_CACHE_DIR: env.ZAI_MCP_CACHE_DIR ?? process.env.ZAI_MCP_CACHE_DIR,
+    ZAI_CACHE_DIR: env.ZAI_CACHE_DIR ?? process.env.ZAI_CACHE_DIR,
+    SCOUTLINE_ISOLATED: env.SCOUTLINE_ISOLATED,
+  };
+  return resolveToolCacheDirPure(mergedEnv, {
+    platform: process.platform,
+    homedir: os.homedir(),
+    pid: process.pid,
+  });
 }
 
 /**
@@ -380,27 +453,33 @@ export function buildLegacyReaderCacheKey(
 }
 
 // ---------------------------------------------------------------------------
-// Response cache I/O (writes land under <root>/cache/)
+// Response cache I/O (writes land under <root>/cache/ or <root>/cache/isolated/<pid>)
 // ---------------------------------------------------------------------------
 
 /**
- * Read a cached value with a decoder function that validates and narrows
- * the raw JSON. Returns `null` on miss, expiry, or disabled cache.
+ * Read a cached value from a specific directory with a decoder function that
+ * validates and narrows the raw JSON. Returns `null` on miss, expiry, or
+ * disabled cache.
  */
-export async function readCache<T>(
+export async function readCacheInDir<T>(
+  dir: string,
   key: string,
   decoder: (raw: unknown) => T,
   ttlMs?: number,
 ): Promise<T | null>;
 
 /**
- * Read a cached value without a decoder. Returns `unknown` so the caller
- * must narrow the result — no unsafe generic assumption is made about the
- * stored shape.
+ * Read a cached value from a specific directory without a decoder. Returns
+ * `unknown` so the caller must narrow the result.
  */
-export async function readCache(key: string, ttlMs?: number): Promise<unknown | null>;
+export async function readCacheInDir(
+  dir: string,
+  key: string,
+  ttlMs?: number,
+): Promise<unknown | null>;
 
-export async function readCache(
+export async function readCacheInDir(
+  dir: string,
   key: string,
   decoderOrTtl?: number | ((raw: unknown) => unknown),
   ttlMs = getCacheTtlMs(),
@@ -410,7 +489,7 @@ export async function readCache(
   // the env was at first import.
   const resolvedTtl = typeof decoderOrTtl === "number" ? decoderOrTtl : ttlMs;
   if (!isCacheEnabled() || resolvedTtl <= 0) return null;
-  const file = path.join(responseCacheDir(), key);
+  const file = path.join(dir, key);
   let data: unknown;
   try {
     const raw = await fs.readFile(file, "utf8");
@@ -431,10 +510,13 @@ export async function readCache(
   return data;
 }
 
-export async function writeCache<T>(key: string, data: T): Promise<void> {
+/**
+ * Write a cache entry to a specific directory. Serializes through an
+ * inter-process advisory lock on the directory and evicts if over cap.
+ */
+export async function writeCacheInDir<T>(dir: string, key: string, data: T): Promise<void> {
   // H1 fix: call-time enabled check.
   if (!isCacheEnabled()) return;
-  const dir = responseCacheDir();
   const file = path.join(dir, key);
   assertTestSafeWrite(file, "writeCache");
   try {
@@ -469,17 +551,80 @@ export async function writeCache<T>(key: string, data: T): Promise<void> {
   }
 }
 
+/**
+ * Read a cached value with a decoder function that validates and narrows
+ * the raw JSON. Returns `null` on miss, expiry, or disabled cache.
+ */
+export async function readCache<T>(
+  key: string,
+  decoder: (raw: unknown) => T,
+  ttlMs?: number,
+  env?: CacheDirEnvironment,
+): Promise<T | null>;
+
+/**
+ * Read a cached value without a decoder. Returns `unknown` so the caller
+ * must narrow the result — no unsafe generic assumption is made about the
+ * stored shape.
+ */
+export async function readCache(
+  key: string,
+  ttlMs?: number,
+  env?: CacheDirEnvironment,
+): Promise<unknown | null>;
+
+/**
+ * Read a cached value from the directory derived for `env` (the
+ * `cache/isolated/<pid>/` subtree when it carries SCOUTLINE_ISOLATED).
+ */
+export async function readCache(key: string, env?: CacheDirEnvironment): Promise<unknown | null>;
+
+export async function readCache(
+  key: string,
+  decoderOrTtlOrEnv?: number | ((raw: unknown) => unknown) | CacheDirEnvironment,
+  ttlMsOrEnv: number | CacheDirEnvironment = getCacheTtlMs(),
+  env?: CacheDirEnvironment,
+): Promise<unknown | null> {
+  // N6: an injected env routes reads through the isolated layout when it
+  // carries SCOUTLINE_ISOLATED (mirrors the tool-cache seam). Absent env
+  // keeps the shared-dir default byte-identical.
+  const envFromArg =
+    typeof decoderOrTtlOrEnv === "object" && decoderOrTtlOrEnv !== null
+      ? (decoderOrTtlOrEnv as CacheDirEnvironment)
+      : undefined;
+  const decoderOrTtl =
+    typeof decoderOrTtlOrEnv === "function" || typeof decoderOrTtlOrEnv === "number"
+      ? decoderOrTtlOrEnv
+      : undefined;
+  const ttlMs = typeof ttlMsOrEnv === "number" ? ttlMsOrEnv : getCacheTtlMs();
+  const resolvedEnv = envFromArg ?? (typeof ttlMsOrEnv === "number" ? env : ttlMsOrEnv);
+  return readCacheInDir(responseCacheDir(resolvedEnv), key, decoderOrTtl as any, ttlMs);
+}
+
+export async function writeCache<T>(
+  key: string,
+  data: T,
+  env?: CacheDirEnvironment,
+): Promise<void> {
+  // N6: see readCache — the injected env picks the isolated layout.
+  return writeCacheInDir(responseCacheDir(env), key, data);
+}
+
 async function evictIfNeeded(dir: string): Promise<void> {
   try {
     const entries = await fs.readdir(dir);
     const stats = await Promise.all(
       entries.map(async (name) => {
-        // Skip atomic-write temp files (.<basename>.<pid>.<uuid>.tmp)
+        // Skip isolated directory, atomic-write temp files (.<basename>.<pid>.<uuid>.tmp)
         // so eviction cannot unlink a concurrent write's staging file
         // and cause its rename to fail (Greptile P2).
         // Also skip the inter-process write lockfile (cache-write.lock)
         // so eviction cannot delete the lock while a writer holds it (5.5).
-        if ((name.startsWith(".") && name.endsWith(".tmp")) || name.endsWith(".lock"))
+        if (
+          name === "isolated" ||
+          (name.startsWith(".") && name.endsWith(".tmp")) ||
+          name.endsWith(".lock")
+        )
           return null;
         try {
           const p = path.join(dir, name);
@@ -526,6 +671,7 @@ export async function clearCache(): Promise<{ cleared: number; bytesFreed: numbe
   try {
     const entries = await fs.readdir(dir);
     for (const name of entries) {
+      if (name === "isolated") continue;
       const p = path.join(dir, name);
       try {
         const s = await fs.stat(p);
@@ -556,6 +702,7 @@ async function clearSubdir(dir: string): Promise<{ cleared: number; bytesFreed: 
   try {
     const entries = await fs.readdir(dir);
     for (const name of entries) {
+      if (name === "isolated") continue;
       const p = path.join(dir, name);
       try {
         const s = await fs.stat(p);
@@ -760,8 +907,13 @@ async function pruneSubdirByAge(
   try {
     const names = await fs.readdir(dir);
     for (const name of names) {
-      // Skip atomic-write staging files and lockfiles (D4 skip discipline).
-      if ((name.startsWith(".") && name.endsWith(".tmp")) || name.endsWith(".lock")) continue;
+      // Skip isolated directory, atomic-write staging files and lockfiles (D4 skip discipline).
+      if (
+        name === "isolated" ||
+        (name.startsWith(".") && name.endsWith(".tmp")) ||
+        name.endsWith(".lock")
+      )
+        continue;
       // Filename-first selector matching (D2) — zero content reads.
       if (selectors.provider !== undefined || selectors.capability !== undefined) {
         const parsed = parseCacheFileName(name);
@@ -769,7 +921,8 @@ async function pruneSubdirByAge(
         // they remain eligible under an age-only prune.
         if (!parsed) continue;
         if (selectors.provider !== undefined && parsed.provider !== selectors.provider) continue;
-        if (selectors.capability !== undefined && parsed.capability !== selectors.capability) continue;
+        if (selectors.capability !== undefined && parsed.capability !== selectors.capability)
+          continue;
       }
       const p = path.join(dir, name);
       try {
@@ -977,11 +1130,16 @@ async function inventorySubdir(
     // every entry is the D8 cost note — stats is an explicit invocation.
     const ttlMs = getCacheTtlMs();
     for (const name of names) {
-      // Skip lockfiles and atomic-write staging files — the same
-      // discipline as `evictIfNeeded`/`pruneSubdirByAge`. They are
-      // coordination artifacts, not cache entries, and must not be
-      // counted as live entries or bucketed as `legacy` (review P2).
-      if ((name.startsWith(".") && name.endsWith(".tmp")) || name.endsWith(".lock")) continue;
+      // Skip lockfiles, atomic-write staging files, and isolated subtrees.
+      // Isolated cache subtrees (cache/isolated/<pid> and tools/isolated/<pid>) live
+      // inside cache/ and tools/ so LRU/TTL can bound their growth per-process.
+      // The non-isolated cache stats/clear/prune views do not see isolated subtrees.
+      if (
+        name === "isolated" ||
+        (name.startsWith(".") && name.endsWith(".tmp")) ||
+        name.endsWith(".lock")
+      )
+        continue;
       const p = path.join(dir, name);
       try {
         const s = await fs.stat(p);
@@ -1039,9 +1197,7 @@ function addToBucket(
   // Own-key read only: inherited properties (e.g. `constructor` on a
   // plain object, anything on a null-prototype accumulator's chain)
   // must never be mistaken for an existing bucket.
-  const existing = Object.prototype.hasOwnProperty.call(buckets, key)
-    ? buckets[key]
-    : undefined;
+  const existing = Object.prototype.hasOwnProperty.call(buckets, key) ? buckets[key] : undefined;
   buckets[key] = existing
     ? {
         entries: existing.entries + 1,
@@ -1124,15 +1280,32 @@ export function buildProviderCacheKey(input: ProviderCacheKeyInput): string {
 }
 
 /**
- * Default `ResponseCache` bound to the existing on-disk store. Reads
- * and writes flow through `readCache`/`writeCache`, so TTL, eviction,
- * and directory resolution remain identical to the legacy path.
+ * Create a directory-scoped `ResponseCache`. Accepts a fixed directory path
+ * or a dynamic resolver function called on each get/set operation.
+ *
+ * `defaultResponseCache` is the non-isolated special case of this factory
+ * wired to `responseCacheDir` so call-time root resolution is preserved.
  */
-export const defaultResponseCache: ResponseCache = {
-  get(key: string, decoder?: (raw: unknown) => unknown): Promise<unknown | null> {
-    return decoder ? readCache(key, decoder) : readCache(key);
-  },
-  set<T>(key: string, value: T): Promise<void> {
-    return writeCache<T>(key, value);
-  },
-};
+export function createFileResponseCache(
+  dirOrResolver: string | (() => string) = responseCacheDir,
+): ResponseCache {
+  const resolveDir = typeof dirOrResolver === "function" ? dirOrResolver : () => dirOrResolver;
+  return {
+    get(key: string, decoder?: (raw: unknown) => unknown): Promise<unknown | null> {
+      return decoder
+        ? readCacheInDir(resolveDir(), key, decoder)
+        : readCacheInDir(resolveDir(), key);
+    },
+    set<T>(key: string, value: T): Promise<void> {
+      return writeCacheInDir<T>(resolveDir(), key, value);
+    },
+  };
+}
+
+/**
+ * Default `ResponseCache` bound to the existing on-disk store. Reads
+ * and writes flow through `readCacheInDir`/`writeCacheInDir` using call-time
+ * root resolution, so TTL, eviction, and directory resolution remain
+ * identical to the legacy path.
+ */
+export const defaultResponseCache: ResponseCache = createFileResponseCache(responseCacheDir);

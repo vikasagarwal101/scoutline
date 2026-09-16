@@ -17,9 +17,13 @@
  * `ExaAdapterDependencies.transport`; the fake returns Response-shaped
  * objects (ok/status/json/text). No real network is touched.
  */
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { createExaDescriptor } from "../dist/providers/exa/adapter.js";
 import { createInMemoryAsyncJobStateFile } from "../dist/lib/async-job-state.js";
@@ -35,6 +39,20 @@ import {
 } from "../dist/lib/errors.js";
 
 const TEST_API_KEY = "exa-test-key-DO-NOT-LEAK";
+
+// PR #183 F2: research-state dirs are registered and removed once the
+// file's suites finish instead of leaking per construction.
+const exaResearchDirs = [];
+
+function exaTestResearchDir() {
+  const dir = mkdtempSync(join(tmpdir(), "exa-test-research-"));
+  exaResearchDirs.push(dir);
+  return dir;
+}
+
+after(() => {
+  for (const dir of exaResearchDirs) rmSync(dir, { recursive: true, force: true });
+});
 const EXPECTED_FINGERPRINT = crypto.createHash("sha256").update(TEST_API_KEY).digest("hex");
 
 // ---------------------------------------------------------------------------
@@ -936,6 +954,9 @@ function makeResearchAdapter({ onCreate, onPoll, fallbackFetch } = {}) {
       env: { EXA_TIMEOUT: "5000", EXA_RESEARCH_POLL_INTERVAL_MS: "0" },
     },
     researchStateFile: stateFile,
+    // #158: the state knobs pair — an in-memory file without a dir now
+    // rejects at descriptor construction.
+    researchStateDir: exaTestResearchDir(),
   });
   const adapter = descriptor.create({ env: { EXA_API_KEY: TEST_API_KEY } });
   return { adapter, calls, stateFile, descriptor };

@@ -71,7 +71,11 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // Rebaselined at the ruling round: the journal paragraph's capability
 // list gained `science`, and the Which-provider-when table gained the
 // five-supplier science row (owner ruling text edits).
-const SKILL_BODY_SHA256 = "a23e7ee2513b165d624c0cd2308cc30f066797bfa7ee1d30b9394e6d1b46f4cc";
+// Rebaselined at the lane-n isolation sweep (#157): the Watch section's
+// prose gained the `research`/`crawl` rejections and the per-pid
+// `isolated/<pid>` cache/artifact segments (the N5 docs ticket — the
+// sanctioned same-commit docs edit, no agent-facing copy removed).
+const SKILL_BODY_SHA256 = "6676ebf0ddfea93207b5b3f7ea40908508f5ce5184d3b0682bf3cd5b33766aa9";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

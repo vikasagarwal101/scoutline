@@ -77,7 +77,11 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // Rebaselined at #140 fix-round follow-up: the Science blurb's retry
 // clause reworded to the honest 429 form (supplier 429s surface as
 // terminal quota errors — they are never retried).
-const SKILL_BODY_SHA256 = "a37decbfd95e6401c0465399bfc1c5e0e206f23764c959184c8f1bdcf8dc4c74";
+// Rebaselined at the #183+... integration merge (PR #182 into
+// post-#183 main): SKILL.md now carries BOTH the science cache/retry
+// blurb and the Watch-section --isolated contract sentence — hash
+// recomputed over the merged body.
+const SKILL_BODY_SHA256 = "238c2afcbae98472e309049be37d012d6ba4545788bd6c6dc7a749762b33e805";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

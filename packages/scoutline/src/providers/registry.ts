@@ -45,6 +45,18 @@ import {
  * constructed once at module load with its production (no-argument)
  * factory; the Adapters bind their real transports lazily, only inside
  * Capability invocation.
+ *
+ * IO-FREE IMPORT INVARIANT (#159): module import constructs every
+ * descriptor below, so a descriptor factory must perform NO filesystem
+ * I/O and must not resolve environment-derived paths into strings at
+ * construction time — a value like `asyncJobStateDir(...)` captured
+ * here freezes against the import-time env and never sees a
+ * `SCOUTLINE_CACHE_DIR` set later. Environment-derived defaults must
+ * stay deferred pure computations, resolved inside `create()` (or
+ * later). The spawn-based import canary in
+ * `tests/async-job-state-lazy.test.js` pins the no-writes half of this
+ * invariant; the lazy-resolution pins in the same file pin the
+ * deferred-resolution half.
  */
 export const BUILT_IN_PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [
   createZaiDescriptor(),

@@ -332,6 +332,25 @@ scoutline history clear --all                       # also wipes --save artifact
 
 **Privacy**: the journal is local-only (`~/.scoutline/artifacts/` — the directory is created 0700 and the files inside 0600, never uploaded), and query text passes the configured-secrets redaction seam before it is written. Disclosure is one prompt in `scoutline init` (default: enabled, writing `"journal": true`); users who never run init get the enabled default too. Escape hatches: `--no-journal` on any single `search`/`read`/`research`/`science` call (rejected as `UNSUPPORTED_OPTION` everywhere else), or `config set journal false` / the init re-config menu to switch it off entirely. Science journaling follows the same warm/cold rules as search: live runs record full skeleton entries, cache-warm re-asks record the tiny repeat markers.
 
+### Process Isolation (`--isolated`)
+
+`--isolated` runs in process-isolated state: unique artifacts namespace and per-process caches. Several `scoutline` processes sharing one home directory never read each other's caches or artifact stores — built for high-throughput headless concurrency. Pass the flag — `SCOUTLINE_ISOLATED=1` in the environment engages only part of the contract: the artifact store, the MCP client's tool and response caches, and `batch`'s per-op refusals honor the variable, but the capability response caches (main's factory), `watch`/`research`/`crawl`, and the shared-state skip key on the flag alone. Prefer `--isolated`.
+
+What isolates: the response cache (`<cache root>/cache/isolated/<pid>/`), the tool-discovery cache (`<cache root>/tools/isolated/<pid>/`), and the `--save` artifact store (`<artifacts root>/isolated/<pid>/`). Isolated subtrees stay inside their parent, so the usual LRU/TTL eviction bounds them while the process lives. A cache injected through the embedding API still wins over the isolated default, and shared-state persistence (usage ledger, quota snapshots, background quota refresh) is skipped entirely.
+
+Stateful commands refuse at parse time (`VALIDATION_ERROR`, exit 1) rather than run with silently broken state:
+
+| Refused under `--isolated` | Why |
+|---|---|
+| `watch` (all subcommands) | Persistent snapshot ring plus a never-pruned change log under `SCOUTLINE_WATCH_DIR` |
+| `research` | Async-job resume state under `SCOUTLINE_CACHE_DIR/research` |
+| `crawl` | Async-job resume state under `SCOUTLINE_CACHE_DIR/crawl` |
+| `batch` ops whose `command` is `research`/`crawl` | Rejected per op, naming the operation index |
+
+`map` is allowed (synchronous, stateless). `research` and `crawl` are credit-intensive and resume an interrupted job instead of paying for a second one; that resume works by finding the job's state file under the shared cache root — exactly the shared state an isolated run must not touch. Bringing it under the per-pid contract would hide it from the next run and silently break the double-charge guard, so the rejection names the store and the remedy (`Drop --isolated to keep resume state.`) instead.
+
+`cache stats` / `cache clear` / `cache prune` are non-isolated views — they skip the `isolated/` subdirectories, so a cleanup in one process never deletes another's in-flight entries. See [docs/configuration.md](docs/configuration.md#process-isolation---isolated) for the full contract.
+
 ### Capability Matrix
 
 | Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Spider.cloud | Command |

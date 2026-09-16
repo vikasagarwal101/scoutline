@@ -139,6 +139,44 @@ export function computeAsyncJobStateHash(input: AsyncJobStateHashInput): string 
 }
 
 // ---------------------------------------------------------------------------
+// Descriptor-construction pairing guard (#158)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fail loud when a Provider Descriptor is built with exactly ONE of the
+ * async-job state knobs injected (#158). This is a DI-programmer error,
+ * not a CLI input error, so it throws a plain `Error` — there is no
+ * exit-code contract and no user remedy beyond fixing the injection
+ * site. Deriving the dir from the file is impossible (in-memory doubles
+ * have no path), and deriving the file from the dir silently re-wires
+ * the state file the injector thought they had replaced, so BOTH
+ * half-pairings reject.
+ *
+ * @param provider provider id for the error message (e.g. `"tavily"`)
+ * @param fileKnob dependency key of the state-file port
+ * @param dirKnob dependency key of the create-lock dir
+ * @param fileInjected whether the file knob was supplied
+ * @param dirInjected whether the dir knob was supplied
+ */
+export function assertAsyncJobStateKnobPair(
+  provider: string,
+  fileKnob: string,
+  dirKnob: string,
+  fileInjected: boolean,
+  dirInjected: boolean,
+): void {
+  if (fileInjected === dirInjected) return;
+  const injected = fileInjected ? fileKnob : dirKnob;
+  const missing = fileInjected ? dirKnob : fileKnob;
+  throw new Error(
+    `${provider}: async-job state seam misconfigured — "${injected}" was injected without "${missing}" (#158). ` +
+      `The create-lock dir cannot be derived from the state file (in-memory doubles have no path), ` +
+      `and the file cannot be derived from the dir without silently replacing the injected port. ` +
+      `Inject BOTH knobs (an in-memory ${fileKnob} pairs with a temp ${dirKnob}) or NEITHER (production defaults).`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Production state-file implementation
 // ---------------------------------------------------------------------------
 

@@ -367,7 +367,9 @@ export class ZaiMcpClient {
     const cacheable = !this.options.noCache && !toolName.includes(".vision.");
     if (cacheable) {
       const key = buildCacheKey(toolName, args, this.options.env);
-      const hit = await readCache(key) as T | null;
+      // N6: thread the invocation env so an isolated client reads its
+      // per-pid cache/isolated/<pid>/ subtree, not the shared cache/.
+      const hit = (await readCache(key, this.options.env)) as T | null;
       if (hit !== null) return hit;
       try {
         const result = await this.callToolUncached<T>(toolName, args);
@@ -380,7 +382,7 @@ export class ZaiMcpClient {
         // T2b: scrub against the captured env's configured secrets so a
         // file-only key is redacted identically to an ambient one.
         const safe = redactSecrets(result, configuredSecrets(this.options.env)) as T;
-        await writeCache(key, safe);
+        await writeCache(key, safe, this.options.env);
         return safe;
       } catch (err) {
         throw err;
@@ -550,7 +552,7 @@ export class ZaiMcpClient {
    */
   private async discoverTools(refresh: boolean = false): Promise<Tool[]> {
     if (!refresh) {
-      const cached = await readToolCache(this.getToolCacheConfig());
+      const cached = await readToolCache(this.getToolCacheConfig(), this.options.env);
       if (cached) {
         return cached;
       }
@@ -561,7 +563,12 @@ export class ZaiMcpClient {
       throw new ApiError("MCP client not initialized", 500);
     }
     const tools = await this.client.getTools();
-    await writeToolCache(this.getToolCacheConfig(), tools, configuredSecrets(this.options.env));
+    await writeToolCache(
+      this.getToolCacheConfig(),
+      tools,
+      configuredSecrets(this.options.env),
+      this.options.env,
+    );
     return tools;
   }
 
@@ -658,7 +665,8 @@ export class ZaiMcpClient {
       return this.callToolUncached<T>(internal, args);
     }
     const key = buildCacheKey(publicToolName, args, this.options.env);
-    const hit = await readCache(key) as T | null;
+    // N6: same isolation threading as callTool above.
+    const hit = (await readCache(key, this.options.env)) as T | null;
     if (hit !== null) return hit;
     const internal = await this.resolveToolName(publicToolName);
     try {
@@ -667,7 +675,7 @@ export class ZaiMcpClient {
       // T2b: configuredSecrets against the captured env so a file-only
       // key is the secret scrubbed against, not just ambient values.
       const safe = redactSecrets(result, configuredSecrets(this.options.env)) as T;
-      await writeCache(key, safe);
+      await writeCache(key, safe, this.options.env);
       return safe;
     } catch (err) {
       throw err;

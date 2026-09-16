@@ -671,7 +671,10 @@ construction — ambient `process.env` is never reread.
 
 Keyless and credential-free like `fetch`/`archive`; watch is stateful
 (state under `SCOUTLINE_WATCH_DIR`, default `~/.scoutline/watch`) and
-therefore rejected under `--isolated`. Page targets only (http(s)) in v1.
+therefore rejected under `--isolated`, as are `research` and `crawl`
+(async-job resume state; `map` is stateless and allowed). Under
+`--isolated` the response cache, tool cache, and `--save` artifact store
+each gain an `isolated/<pid>` segment. Page targets only (http(s)) in v1.
 
 `watch run` exit codes are a cron contract:
 

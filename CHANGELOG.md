@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.21.3] - 2026-09-16
 ### Added
 
 - **Science response cache, shared-seam retry, and journal warm-repeat markers (issue #140):** `science search`/`science get` consult a 24h local response cache keyed per supplier and request — per-arm/attempt consult with honest `servedFrom` journal truth, `--no-cache` bypass for one invocation. Invocations go through the shared `executeProviderOperation` retry seam: transient failures (timeouts, network errors, 5xx) retry once with jittered backoff; supplier 429s surface as terminal quota errors. Cache-served runs journal tiny warm-repeat markers (journal-cold recall resolves to the same full entry). `parseCacheFileName` widened for dotted capabilities and keyless (empty) credential fingerprints, so `cache stats` buckets and `cache prune --provider/--capability` selectors now see science entries — hand-authored/foreign cache filenames with non-hex hashes bucket as `legacy` and stop matching provider/capability selectors (real keys are always SHA-256). Closes #140.

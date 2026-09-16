@@ -81,7 +81,10 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // post-#183 main): SKILL.md now carries BOTH the science cache/retry
 // blurb and the Watch-section --isolated contract sentence — hash
 // recomputed over the merged body.
-const SKILL_BODY_SHA256 = "238c2afcbae98472e309049be37d012d6ba4545788bd6c6dc7a749762b33e805";
+// Rebaselined at #184: all npx@version invocations replaced with the
+// installed `scoutline` CLI (the agent-registration deployment model
+// version-locks skill to binary; the npx pin fought the refresh system).
+const SKILL_BODY_SHA256 = "628f1177e08ca3613589df1b43e210006719cfb961b12f72ca0bc68153bc02d7";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

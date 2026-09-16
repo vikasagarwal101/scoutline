@@ -71,11 +71,17 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // Rebaselined at the ruling round: the journal paragraph's capability
 // list gained `science`, and the Which-provider-when table gained the
 // five-supplier science row (owner ruling text edits).
-// Rebaselined at the lane-n isolation sweep (#157): the Watch section's
-// prose gained the `research`/`crawl` rejections and the per-pid
-// `isolated/<pid>` cache/artifact segments (the N5 docs ticket — the
-// sanctioned same-commit docs edit, no agent-facing copy removed).
-const SKILL_BODY_SHA256 = "6676ebf0ddfea93207b5b3f7ea40908508f5ce5184d3b0682bf3cd5b33766aa9";
+// Rebaselined at #140 T6: the Science section gained the cache/retry
+// blurb — 24h response cache, --no-cache bypass, one transient retry,
+// journal warm-repeat markers (the sanctioned per-ticket docs edit).
+// Rebaselined at #140 fix-round follow-up: the Science blurb's retry
+// clause reworded to the honest 429 form (supplier 429s surface as
+// terminal quota errors — they are never retried).
+// Rebaselined at the #183+... integration merge (PR #182 into
+// post-#183 main): SKILL.md now carries BOTH the science cache/retry
+// blurb and the Watch-section --isolated contract sentence — hash
+// recomputed over the merged body.
+const SKILL_BODY_SHA256 = "238c2afcbae98472e309049be37d012d6ba4545788bd6c6dc7a749762b33e805";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

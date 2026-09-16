@@ -43,21 +43,29 @@ import type {
   ScienceSearchRequest,
   ScienceWork,
 } from "../capabilities/science.js";
-import { parseScienceIdentifier } from "../capabilities/science.js";
+import {
+  decodeScienceWork,
+  decodeScienceWorks,
+  parseScienceIdentifier,
+} from "../capabilities/science.js";
 import { applyBudget, type BudgetLadder, type LadderRule } from "../lib/output-budget.js";
 import { persistCompaction } from "../lib/output-budget-persistence.js";
 import { redactSecrets } from "../lib/redact.js";
-import { ApiError, UnsupportedOptionError, ValidationError } from "../lib/errors.js";
+import { ApiError, TimeoutError, UnsupportedOptionError, ValidationError } from "../lib/errors.js";
+import { executeProviderOperation } from "../lib/execution.js";
 import type { OutputMode } from "../lib/output.js";
 import type { HandlerDependencies } from "../index.js";
 import { parseBriefMaxChars } from "./repo.js";
 import { createSaveArtifactHook } from "../lib/save-artifacts.js";
 import { resolveArtifactsDir } from "../lib/artifacts.js";
 import { buildProviderCacheKey } from "../lib/cache.js";
+import type { ProviderRouting } from "../lib/artifacts.js";
 import type { ProviderId } from "../providers/types.js";
 import {
   appendJournalEntry,
+  appendJournalEntryMaybeRepeat,
   buildJournalEntry,
+  buildJournalRepeatMarker,
   buildSearchSkeleton,
   type JournalSkeleton,
 } from "../lib/journal.js";
@@ -111,6 +119,7 @@ Search options:
   --type <type>      Filter by work type: article, preprint,
                      conference-paper, chapter, dataset, review, other
   --provider <id>    Pin one supplier (${D5_ARM_ORDER.join(", ")}); "all" is the default fan-out
+  --no-cache         Bypass the response cache for this invocation (search and get)
 
 Identifier grammar (get):
   DOI    10.1038/nature12373      (bare — no "doi:" prefix)
@@ -253,6 +262,8 @@ async function applyScienceOutputBudget(
     readonly deps: HandlerDependencies;
     readonly outputMode: OutputMode;
     readonly explicitProvider?: string;
+    /** #140 wave 1 (F1): rides the compaction artifact metadata. */
+    readonly noCache?: boolean;
   },
 ): Promise<CommandResult> {
   if (maxChars === undefined || result.kind !== "data") return result;
@@ -271,6 +282,7 @@ async function applyScienceOutputBudget(
       command: "science",
       args: {
         ...(options.explicitProvider !== undefined ? { provider: options.explicitProvider } : {}),
+        ...(options.noCache ? { "no-cache": true } : {}),
       },
       provider: {
         mode: "single",
@@ -676,10 +688,25 @@ async function runScienceSearchWithReroute(
     readonly descriptors: readonly unknown[];
     readonly notice: (message: string) => void;
     readonly journal: boolean;
+    /** #140: the response cache consulted per attempt (the science seam). */
+    readonly cache: import("../lib/cache.js").ResponseCache;
+    /** #140: `--no-cache` skips the consult and the set. */
+    readonly noCache: boolean;
+    readonly sleep: (ms: number) => Promise<void>;
+    readonly random: () => number;
     readonly signal?: AbortSignal;
   },
-): Promise<{ readonly works: readonly ScienceWork[]; readonly identity: unknown; readonly armId: string } | undefined> {
-  const { request, env, descriptors, notice, journal, signal } = options;
+): Promise<
+  | {
+      readonly works: readonly ScienceWork[];
+      readonly identity: unknown;
+      readonly armId: string;
+      /** #140: whether the serving attempt came from the cache (T5 journal truth). */
+      readonly servedFrom: "live" | "cache";
+    }
+  | undefined
+> {
+  const { request, env, descriptors, notice, journal, signal, sleep, random } = options;
   const capability = pinned.create({ env }).science?.search;
   if (capability === undefined) {
     throw new ValidationError(
@@ -688,18 +715,43 @@ async function runScienceSearchWithReroute(
     );
   }
   capability.validate(request);
-  const identity = journal ? capability.cacheIdentity?.(request) : undefined;
+  // #140 ruling 5: the identity consult is no longer journal-gated —
+  // the response cache needs the key whenever it is consulted.
+  const identity = capability.cacheIdentity?.(request);
+  const cacheKey = scienceCacheKey(identity);
+  // #140 T3: consult before invoke. A hit serves with ZERO invokes and
+  // no reroute notice (the cache never failed).
+  if (!options.noCache && cacheKey !== undefined) {
+    const cached = await options.cache.get(cacheKey, decodeScienceWorks);
+    if (cached !== null) {
+      // Wave 1 F4: a pre-aborted signal must never serve warm results
+      // (#47/#151 — the consult sits outside the retry executor's own
+      // pre-invoke check, so the guard lives at the hit).
+      if (signal?.aborted) {
+        throwCallerAborted();
+      }
+      return { works: cached, identity, armId: pinned.id, servedFrom: "cache" };
+    }
+  }
   try {
-    return { works: await capability.invoke(request, signal), identity, armId: pinned.id };
+    const works = await executeProviderOperation(
+      "science-search",
+      () => capability.invoke(request, signal),
+      { sleep, random },
+      undefined,
+      undefined,
+      signal,
+    );
+    if (!options.noCache && cacheKey !== undefined) {
+      await options.cache.set(cacheKey, works);
+    }
+    return { works, identity, armId: pinned.id, servedFrom: "live" };
   } catch (error) {
     // A caller cancel ends the walk. Rerouting from a user's Ctrl-C would
     // attempt the next arm only to fast-fail at its pre-abort check and
     // emit a misleading "rerouting to <arm>" notice for a cancellation.
     if (signal?.aborted) {
-      throw new ApiError(
-        "science request was aborted by the caller (Ctrl-C or external signal)",
-        499,
-      );
+      throwCallerAborted();
     }
     // eligible = configured + capable + validating, D5 order, pin first
     const order = [pinned.id, ...D5_ARM_ORDER.filter((id) => id !== pinned.id)];
@@ -710,10 +762,7 @@ async function runScienceSearchWithReroute(
       // checks while emitting misleading reroute notices.
       // defense-in-depth: the per-attempt guard below normally fires first
       if (signal?.aborted) {
-        throw new ApiError(
-          "science request was aborted by the caller (Ctrl-C or external signal)",
-          499,
-        );
+        throwCallerAborted();
       }
       const next = byId.get(id);
       if (next === undefined) continue;
@@ -726,24 +775,51 @@ async function runScienceSearchWithReroute(
       } catch {
         continue; // a rejecting arm is excluded, never the reroute target
       }
-      const nextIdentity = journal ? nextCapability.cacheIdentity?.(request) : undefined;
+      // #140 ruling 5: identity unconditional at the consult site.
+      const nextIdentity = nextCapability.cacheIdentity?.(request);
+      const nextCacheKey = scienceCacheKey(nextIdentity);
+      if (!options.noCache && nextCacheKey !== undefined) {
+        const cachedNext = await options.cache.get(nextCacheKey, decodeScienceWorks);
+        if (cachedNext !== null) {
+          // Wave 1 F4: same pre-abort guard on the reroute-arm consult.
+          if (signal?.aborted) {
+            throwCallerAborted();
+          }
+          // The PINNED arm failed at invoke — its failure is still
+          // disclosed (visible narrowing); the serving attempt itself
+          // was a cache hit, so it emits nothing of its own.
+          notice(
+            `scoutline: ${pinned.id} search failed (${
+              error instanceof Error ? error.message : String(error)
+            }) — rerouting to ${next.id}.`,
+          );
+          return { works: cachedNext, identity: nextIdentity, armId: next.id, servedFrom: "cache" };
+        }
+      }
       try {
-        const works = await nextCapability.invoke(request, signal);
+        const works = await executeProviderOperation(
+          "science-search",
+          () => nextCapability.invoke(request, signal),
+          { sleep, random },
+          undefined,
+          undefined,
+          signal,
+        );
+        if (!options.noCache && nextCacheKey !== undefined) {
+          await options.cache.set(nextCacheKey, works);
+        }
         notice(
           `scoutline: ${pinned.id} search failed (${
             error instanceof Error ? error.message : String(error)
           }) — rerouting to ${next.id}.`,
         );
-        return { works, identity: nextIdentity, armId: next.id };
+        return { works, identity: nextIdentity, armId: next.id, servedFrom: "live" };
       } catch (nextError) {
         // A caller cancel DURING a reroute attempt surfaces that
         // attempt's honest abort error and ends the walk — no further
         // arms, no "dropped from this reroute walk" notice.
         if (signal?.aborted) {
-          throw new ApiError(
-            "science request was aborted by the caller (Ctrl-C or external signal)",
-            499,
-          );
+          throwCallerAborted();
         }
         notice(
           `scoutline: ${next.id} search failed (${
@@ -759,9 +835,32 @@ async function runScienceSearchWithReroute(
   }
 }
 
+/**
+ * Wave 3 (Kody, PR #182): the one honest caller-cancellation error every
+ * science abort site throws — walk cancels, consult pre-abort guards,
+ * per-arm warm-hit guards, and the post-settle warm re-check. Named so
+ * the byte-identical message lives in exactly one place.
+ */
+function throwCallerAborted(): never {
+  throw new ApiError(
+    "science request was aborted by the caller (Ctrl-C or external signal)",
+    499,
+  );
+}
+
 function isAbortClassed(reason: unknown): boolean {
   if (reason instanceof ApiError && reason.statusCode === 499) return true;
   if (reason instanceof Error && /aborted by the caller/.test(reason.message)) return true;
+  // #140 fix round (external review F1/F2): the retry executor classifies
+  // caller cancellation as TimeoutError, but the abort wording lives in
+  // TimeoutError.HELP — .message is always "Request timed out after Nms",
+  // so the old /aborted/-on-.message branch was dead code and an
+  // abort-during-backoff arm printed a misleading drop notice. Match the
+  // help field; a genuine pre-abort failure (plain ApiError 5xx) keeps
+  // its disclosure (#151 r2 pin).
+  if (reason instanceof TimeoutError && /aborted/.test(String(reason.help ?? ""))) {
+    return true;
+  }
   return false;
 }
 
@@ -810,10 +909,12 @@ export interface HandleScienceOptions {
  * the `supplier`/`capability` naming differs from the
  * provider-capability identities the capture wrapper keys off, so the
  * journal derives the SAME partitioned-key shape the supplier's
- * response cache will use once the executor consults it (T10):
- * `buildProviderCacheKey` over the identity, namespace verbatim.
+ * response cache is keyed under (since #140 science consults and
+ * fills that cache at its own invoke sites, deriving the key right
+ * there): `buildProviderCacheKey` over the identity, namespace
+ * verbatim.
  */
-function scienceCacheKey(identity: unknown): string | undefined {
+export function scienceCacheKey(identity: unknown): string | undefined {
   if (identity === null || typeof identity !== "object") return undefined;
   const record = identity as {
     supplier?: unknown;
@@ -838,22 +939,26 @@ function scienceCacheKey(identity: unknown): string | undefined {
 
 /**
  * T7 journal hook — the science twin of main's `createJournalHook`,
- * scoped to the interim direct-invoke executor: the supplier
- * capability is invoked directly (no response-cache consult yet —
- * T10's executor adds that seam), so every completed run served LIVE
- * and journals ONE full entry. Facts, all read AFTER dispatch
+ * scoped to the direct-invoke executor (which since #140 consults the
+ * response cache per arm/attempt before invoking, and invokes through
+ * the shared `executeProviderOperation` retry seam — one retry on
+ * transient timeout/network/429/5xx failures, QuotaError terminal).
+ * Facts, all read AFTER dispatch
  * resolves (thunks, matching the search precedent):
  *   - query: what the USER passed verbatim — the search query or the
  *     get identifier (AC-12: journaled identity = user-visible
  *     identity, never a supplier-munged form).
- *   - provider: the interim single-arm pin
- *     {mode:"single", effective:<served supplier>, servedFrom:"live"}
- *     from the capture cell; once T10 fans out, the arm routing takes
- *     over per the fan-out journal rules.
+ *   - provider: {mode:"fanout", arms} for a run that fanned out,
+ *     {mode:"single", effective, servedFrom} otherwise. servedFrom and
+ *     the every-arm-cache gate read the per-arm hit truth threaded in
+ *     by handleScience (#140 T5, ruling 4 — never the capture cell).
  *   - cacheKey/skeleton: the supplier's own science cacheIdentity
  *     recomputed through the capture wrapper's key derivation, and the
  *     url+title skeleton — the merged result-set list (search) or the
  *     single-work row (get).
+ * A cache-served run appends via appendJournalEntryMaybeRepeat — the
+ * tiny repeat marker when the cacheKey map resolves a prior FULL
+ * entry, journal-cold → that same full entry (honest servedFrom).
  * Runs where no supplier resolved (pre-dispatch failures threw before
  * this hook could exist) journal nothing; a capture without a
  * cacheKey skips rather than poisons the log (validator NIT 1).
@@ -879,10 +984,23 @@ function createScienceJournalHook(
      * pinned one-arm run that rerouted stays {mode:"single"}.
      */
     readonly fannedOut?: () => boolean;
+    /**
+     * #140 T5: whether the serving attempt was CACHE-served — the single
+     * shape's truth (thunk). Sources: the reroute walk's `servedFrom`
+     * (pinned search) and `journalCacheHit` (get). Defaults "live".
+     */
+    readonly servedFrom?: () => "live" | "cache";
+    /**
+     * #140 T5: whether EVERY attempted arm of a fan-out was cache-served
+     * (thunk) — the every-arm-cache gate. Any live (or rejected) arm
+     * means a fresh generation → full entry. Defaults false.
+     */
+    readonly everyArmCache?: () => boolean;
   },
 ): SaveHook {
   const { capability, capture } = meta.journal;
   return async ({ resolvedSecrets, now }) => {
+    const artifactsDir = resolveArtifactsDir(deps.env);
     const servedProvider = capture.servedProvider;
     if (servedProvider === undefined) return;
     const cacheKey = meta.cacheKey() ?? capture.cacheKey;
@@ -899,16 +1017,19 @@ function createScienceJournalHook(
     // all-rejected run throws before resultRows resolves.
     const arms = meta.arms?.();
     const fannedOut = meta.fannedOut?.() === true;
+    // #140 T5 (ruling 4): the routing picks its own cache truth — the
+    // fan-out gate is EVERY attempted arm cache-served; the single shape
+    // reads the serving attempt's servedFrom. NEVER the capture cell
+    // (last-write-wins across arms; the save hook's seam).
+    const fanoutShape = fannedOut && arms !== undefined && arms.length > 0;
+    const everyArmCache = meta.everyArmCache?.() === true;
+    const servedFrom = meta.servedFrom?.() === "cache" ? "cache" : "live";
+    const provider: ProviderRouting = fanoutShape
+      ? { mode: "fanout", arms }
+      : { mode: "single", effective: servedProvider, servedFrom };
     const entry = buildJournalEntry({
       capability,
-      provider:
-        fannedOut && arms !== undefined && arms.length > 0
-          ? { mode: "fanout", arms }
-          : {
-              mode: "single",
-              effective: servedProvider,
-              servedFrom: "live",
-            },
+      provider,
       query: meta.query,
       cacheKey,
       skeleton,
@@ -916,7 +1037,23 @@ function createScienceJournalHook(
       secrets: resolvedSecrets,
       ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
     });
-    await appendJournalEntry(resolveArtifactsDir(deps.env), entry);
+    // #140 T5: a cache-served run (fan-out: every arm; single: the
+    // serving attempt) is a warm re-ask — tiny repeat marker when the
+    // cacheKey map resolves a prior FULL entry, journal-cold → the SAME
+    // full entry (honest servedFrom). Any live arm → full entry.
+    if ((fanoutShape && everyArmCache) || (!fanoutShape && servedFrom === "cache")) {
+      await appendJournalEntryMaybeRepeat(artifactsDir, entry, (repeatOf) =>
+        buildJournalRepeatMarker({
+          capability,
+          provider,
+          repeatOf,
+          ...(capture.savedRequestId !== undefined ? { saveRef: capture.savedRequestId } : {}),
+          now,
+        }),
+      );
+      return;
+    }
+    await appendJournalEntry(artifactsDir, entry);
   };
 }
 
@@ -927,6 +1064,9 @@ export async function handleScience(
   options: HandleScienceOptions = {},
 ): Promise<number> {
   const { subcommand, positional, flags, showHelp } = parseScienceArgs(args);
+  // #140: `--no-cache` skips BOTH the response-cache read and write for
+  // this invocation (house idiom: the valueless boolean flag form).
+  const noCache = flags["no-cache"] === true;
 
   if (showHelp || subcommand === undefined) {
     deps.invocation.writeStdout(SCIENCE_HELP);
@@ -963,6 +1103,7 @@ export async function handleScience(
     args: {
       ...(explicitProvider !== undefined ? { provider: explicitProvider } : {}),
       ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+      ...(noCache ? { "no-cache": true } : {}),
     },
     provider: {
       mode: "single",
@@ -1020,6 +1161,12 @@ export async function handleScience(
     let journalRows: readonly ScienceWork[] | undefined;
     let journalIdentity: unknown;
     let journalArms: readonly string[] | undefined;
+    // #140 T5: the single shape's cache truth — set by the reroute walk
+    // (pinned search) or the single-arm allSettled path below.
+    let journalServedFrom: "live" | "cache" = "live";
+    // #140 T5: the every-arm-cache gate — computed from `armCacheHits`
+    // after the fan-out settles (every ATTEMPTED arm cache-served).
+    let journalEveryArmCache = false;
     // T3: >=2 arms ATTEMPTED at resolution — captured before the one-arm
     // reroute below (and before survivors are recomputed) so the routing
     // SHAPE survives narrowing. `mode` follows this, not arms.length.
@@ -1053,6 +1200,10 @@ export async function handleScience(
               descriptors: selectionOpts.descriptors,
               notice: context.notice,
               journal: deps.journal !== undefined,
+              cache: deps.scienceCache,
+              noCache,
+              sleep: deps.scienceSleep,
+              random: deps.scienceRandom,
               signal: controller.signal,
             },
           );
@@ -1062,6 +1213,10 @@ export async function handleScience(
               journalIdentity = served.identity;
             }
             journalArms = [served.armId];
+            // #140 T5: the reroute walk's serving attempt is the single
+            // shape's cache truth (direct knowledge from the consult
+            // owner — never the capture cell).
+            journalServedFrom = served.servedFrom;
             const single: CommandResult = {
               kind: "data",
               data: served.works,
@@ -1073,6 +1228,7 @@ export async function handleScience(
               deps,
               outputMode,
               ...(explicitProvider !== undefined ? { explicitProvider } : {}),
+              noCache,
             });
           }
         }
@@ -1080,6 +1236,11 @@ export async function handleScience(
         // orchestration shape). allSettled: a later arm's failure must
         // not discard an earlier arm's already-merged works.
         const armIdentities: unknown[] = [];
+        // #140 T2: per-arm cache-hit flags — direct truth from the
+        // consult owner. The journal's every-arm-cache gate (T5) reads
+        // THESE, never the capture cell (last-write-wins across arms
+        // and stays the save hook's seam).
+        const armCacheHits: boolean[] = [];
         const settled = await Promise.allSettled(
           arms.map(async (arm, index) => {
             const capability = arm.create({ env: deps.env }).science?.search;
@@ -1090,20 +1251,71 @@ export async function handleScience(
               );
             }
             capability.validate(request);
-            // T7: the direct-invoke executor bypasses the shared
-            // execution layer, so the supplier's (capture-wrapped)
-            // cacheIdentity is consulted HERE — pre-invoke, matching
-            // execution.ts step 2. Science identities use `supplier`
-            // (not `provider`); per-arm identities are captured here
-            // and the journal cacheKey is derived from the FIRST
-            // FULFILLED arm below (review: a failed first arm must
-            // not stamp the journal's provider partition).
+            // T7: the direct-invoke executor runs outside the shared
+            // execution layer's cache step, so the supplier's
+            // (capture-wrapped) cacheIdentity is consulted HERE —
+            // pre-invoke, matching execution.ts step 2. Science
+            // identities use `supplier` (not `provider`); per-arm
+            // identities are captured here and the journal cacheKey is
+            // derived from the FIRST FULFILLED arm below (review: a
+            // failed first arm must not stamp the journal's provider
+            // partition).
+            // #140 ruling 5: the identity consult is no longer
+            // journal-gated — the response cache needs the key
+            // whenever it is consulted; extra capture-wrapper
+            // stamping on the added calls is harmless.
+            const identity = capability.cacheIdentity?.(request);
             if (deps.journal !== undefined) {
-              armIdentities[index] = capability.cacheIdentity?.(request);
+              armIdentities[index] = identity;
             }
-            return await capability.invoke(request, controller.signal);
+            const cacheKey = scienceCacheKey(identity);
+            // #140 T2: per-arm cache consult. A hit is a FULFILLED arm
+            // (allSettled shape preserved — no invoke, no transport);
+            // a miss invokes and sets the FULL normalized works.
+            if (!noCache && cacheKey !== undefined) {
+              const cached = await deps.scienceCache.get(cacheKey, decodeScienceWorks);
+              if (cached !== null) {
+                // Wave 1 F4: a cancelled caller never receives warm
+                // results (the consult bypasses the executor's
+                // pre-invoke check — the guard lives at the hit).
+                if (controller.signal.aborted) {
+                  throwCallerAborted();
+                }
+                armCacheHits[index] = true;
+                return cached;
+              }
+            }
+            const works = await executeProviderOperation(
+              "science-search",
+              () => capability.invoke(request, controller.signal),
+              { sleep: deps.scienceSleep, random: deps.scienceRandom },
+              undefined,
+              undefined,
+              controller.signal,
+            );
+            if (!noCache && cacheKey !== undefined) {
+              await deps.scienceCache.set(cacheKey, works);
+            }
+            return works;
           }),
         );
+        // Wave 2 F6 (parent ruling, scoped): post-settle abort re-check
+        // for the WARM path — a cancelled caller never receives results
+        // no live work produced. Scoped to every-fulfilled-arm-was-cache-
+        // served (armCacheHits is recorded at consult time REGARDLESS of
+        // journaling, so a --no-journal run gets the same 499): the
+        // #151 live-partial-abort contract (exit 0, survivors serve +
+        // journal) is a deliberate, twice-pinned product ruling and
+        // stays intact — an abort after genuinely-live completed arms
+        // still serves. The per-arm hit guards (wave 1 F4) established
+        // aborted+warm=499 at consult time; this closes the identical
+        // gap between a passed guard and the merge.
+        const warmOnly =
+          settled.length > 0 &&
+          settled.every((outcome, index) => outcome.status !== "fulfilled" || armCacheHits[index] === true);
+        if (warmOnly && controller.signal.aborted) {
+          throwCallerAborted();
+        }
         // Deterministic failure: if every arm rejected, surface the
         // FIRST arm's (D5 order) error — never a silent all-fail.
         const firstRejected = settled.find((outcome) => outcome.status === "rejected") as
@@ -1132,10 +1344,7 @@ export async function handleScience(
           settled.every((outcome) => outcome.status === "rejected")
         ) {
           if (controller.signal.aborted) {
-            throw new ApiError(
-              "science request was aborted by the caller (Ctrl-C or external signal)",
-              499,
-            );
+            throwCallerAborted();
           }
           throw firstRejected.reason;
         }
@@ -1162,6 +1371,16 @@ export async function handleScience(
         journalArms = settled.flatMap((outcome, index) =>
           outcome.status === "fulfilled" ? [arms[index]?.id ?? "unknown"] : [],
         );
+        // #140 T5 (ruling 4): the gate reads the per-arm hit flags —
+        // every ATTEMPTED arm cache-served (a rejected arm's slot is
+        // never true, so a mixed run stays a full entry). A !fannedOut
+        // single-arm arrival through this path derives its servedFrom
+        // from the same truth (arm index 0).
+        journalEveryArmCache =
+          settled.length > 0 && settled.every((_, index) => armCacheHits[index] === true);
+        if (!journalFannedOut && settled.length === 1) {
+          journalServedFrom = armCacheHits[0] === true ? "cache" : "live";
+        }
         // T10 merge: DOI-first dedup identity (exact-url fallback) +
         // D12 field-wise union enrichment, first-arm (D5 order)
         // preference — mergeScienceWorks below.
@@ -1178,6 +1397,7 @@ export async function handleScience(
           deps,
           outputMode,
           ...(explicitProvider !== undefined ? { explicitProvider } : {}),
+          noCache,
         });
       },
       outputMode,
@@ -1193,6 +1413,8 @@ export async function handleScience(
             cacheKey: () => scienceCacheKey(journalIdentity),
             arms: () => journalArms,
             fannedOut: () => journalFannedOut,
+            servedFrom: () => journalServedFrom,
+            everyArmCache: () => journalEveryArmCache,
           }),
     );
   }
@@ -1221,6 +1443,9 @@ export async function handleScience(
   const maxChars = rawMaxChars === undefined ? undefined : parseBriefMaxChars(rawMaxChars);
   let journalWork: ScienceWork | undefined;
   let journalIdentity: unknown;
+  // #140 T3: whether the serving get attempt was cache-served (the
+  // direct consult truth the T5 journal hook reads).
+  let journalCacheHit = false;
   return await invokeCommand(
     deps.invocation,
     async (context) => {
@@ -1272,28 +1497,53 @@ export async function handleScience(
           );
         }
         capability.validate(request);
-        // T7: the direct-invoke executor bypasses the shared execution
-        // layer, so the supplier's (capture-wrapped) cacheIdentity is
-        // consulted HERE — pre-invoke, matching execution.ts step 2.
+        // T7: the direct-invoke executor runs outside the shared
+        // execution layer's cache step, so the supplier's
+        // (capture-wrapped) cacheIdentity is consulted HERE —
+        // pre-invoke, matching execution.ts step 2.
         // REPLACED per attempt (review): retaining the first supplier's
         // identity would journal the fingerprint of a supplier that
         // failed and rerouted; the loop breaks on success, so the last
         // assignment is always the arm that actually served.
+        // #140 ruling 5: identity unconditional at the consult site.
+        const identity = capability.cacheIdentity?.(request);
         if (deps.journal !== undefined) {
-          journalIdentity = capability.cacheIdentity?.(request);
+          journalIdentity = identity;
+        }
+        const cacheKey = scienceCacheKey(identity);
+        // #140 T3: consult per attempt. A hit breaks the walk with the
+        // cached work — no invoke, no reroute toward later arms.
+        if (!noCache && cacheKey !== undefined) {
+          const cached = await deps.scienceCache.get(cacheKey, decodeScienceWork);
+          if (cached !== null) {
+            // Wave 1 F4: same pre-abort guard on the get-walk consult.
+            if (controller.signal.aborted) {
+              throwCallerAborted();
+            }
+            work = cached;
+            journalCacheHit = true;
+            break;
+          }
         }
         try {
-          work = await capability.invoke(request, controller.signal);
+          work = await executeProviderOperation(
+            "science-get",
+            () => capability.invoke(request, controller.signal),
+            { sleep: deps.scienceSleep, random: deps.scienceRandom },
+            undefined,
+            undefined,
+            controller.signal,
+          );
+          if (!noCache && cacheKey !== undefined) {
+            await deps.scienceCache.set(cacheKey, work);
+          }
           break;
         } catch (error) {
           // A caller cancel ends the walk (same ruling as the pinned-search
           // reroute walk): the remaining arms would only fast-fail at their
           // pre-abort check while emitting a misleading reroute notice.
           if (controller.signal.aborted) {
-            throw new ApiError(
-              "science request was aborted by the caller (Ctrl-C or external signal)",
-              499,
-            );
+            throwCallerAborted();
           }
           const next: ScienceDescriptorLike | undefined = arms[attempt + 1];
           if (next === undefined || deps.fallbackEnabled === false) throw error;
@@ -1323,6 +1573,7 @@ export async function handleScience(
         deps,
         outputMode,
         ...(explicitProvider !== undefined ? { explicitProvider } : {}),
+        noCache,
       });
     },
     outputMode,
@@ -1337,6 +1588,9 @@ export async function handleScience(
           // Single-work identity (AC-11 amendment 2): exactly one row.
           resultRows: () => (journalWork === undefined ? undefined : [journalWork]),
           cacheKey: () => scienceCacheKey(journalIdentity),
+          // #140 T5: the get walk's own consult truth — never the
+          // capture cell.
+          servedFrom: () => (journalCacheHit ? "cache" : "live"),
         }),
   );
   } finally {

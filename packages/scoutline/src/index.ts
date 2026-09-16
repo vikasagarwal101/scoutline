@@ -973,6 +973,9 @@ export interface HandlerDependencies {
   readonly researchCache: ResponseCache;
   readonly researchSleep: (ms: number) => Promise<void>;
   readonly researchRandom: () => number;
+  readonly scienceCache: ResponseCache;
+  readonly scienceSleep: (ms: number) => Promise<void>;
+  readonly scienceRandom: () => number;
   /**
    * Optional SIGINT registrar for the research command (Review Fix 3).
    * Production wires `process.on('SIGINT', ...)`. When provided, the
@@ -5304,6 +5307,15 @@ export interface MainDependencies {
   readonly researchSleep?: (ms: number) => Promise<void>;
   readonly researchRandom?: () => number;
   /**
+   * Injectable shared-Science execution dependencies (issue #140).
+   * Production defaults to the same on-disk cache and real sleep/random
+   * as every prior triple; tests inject in-memory doubles so science
+   * dispatch tests stay isolated. NOT a rename of any prior seam.
+   */
+  readonly scienceCache?: ResponseCache;
+  readonly scienceSleep?: (ms: number) => Promise<void>;
+  readonly scienceRandom?: () => number;
+  /**
    * Optional injectable SIGINT registrar factory for the research
    * command. Production wraps `process.on('SIGINT', ...)` inside the
    * command module; tests inject a recorder so they can capture the
@@ -5568,6 +5580,14 @@ export async function main(
   const researchCache = dependencies.researchCache ?? defaultCache;
   const researchSleep = dependencies.researchSleep ?? realSleep;
   const researchRandom = dependencies.researchRandom ?? Math.random;
+  // Issue #140: Science execution defaults to the same production
+  // values as every prior triple but stays as separate optional
+  // MainDependencies so science tests can inject isolated in-memory
+  // doubles. (Integration merge with #183: the isolated `defaultCache`
+  // factory applies to science like every other capability.)
+  const scienceCache = dependencies.scienceCache ?? defaultCache;
+  const scienceSleep = dependencies.scienceSleep ?? realSleep;
+  const scienceRandom = dependencies.scienceRandom ?? Math.random;
 
   // Fixup C — B10: resolve the output mode BEFORE the dispatch try/catch.
   // An invalid explicit mode still surfaces as a typed ValidationError,
@@ -5790,6 +5810,9 @@ export async function main(
     researchCache,
     researchSleep,
     researchRandom,
+    scienceCache,
+    scienceSleep,
+    scienceRandom,
     researchRegisterInterrupt: dependencies.researchRegisterInterrupt,
     // Promoter wiring (T3b). When the caller explicitly injects a
     // promoter, use it (tests assert behavior this way). Otherwise, in

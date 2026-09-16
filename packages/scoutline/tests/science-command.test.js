@@ -663,7 +663,8 @@ describe("resolver (T10 fan-out semantics — interim pins flipped in-ticket)", 
       descriptors: five.descriptors,
     });
     assert.equal(result.status, 0, "empty-but-fulfilled fan-out succeeds");
-    assert.equal(five.byId.openalex.calls.search.length, 1, "the failing arm was attempted");
+    // #140 T4 flip: shared-seam retry — a retryable 5xx/503 failure now gets ONE retry (maxRetries: 1) before the walk reroutes/drops.
+    assert.equal(five.byId.openalex.calls.search.length, 2, "the failing arm was attempted (initial + 1 retry)");
     assert.deepEqual(JSON.parse(result.stdout.join("")), [], "merged set is honestly empty");
     assert.match(
       result.stderr.join(""),
@@ -1109,7 +1110,8 @@ describe("pinned-search invoke failure reroutes (ruling)", () => {
       { descriptors },
     );
     assert.equal(status, 0, "the reroute serves the search");
-    assert.equal(byId.openalex.calls.search.length, 1, "the pinned arm was attempted");
+    // #140 T4 flip: shared-seam retry — a retryable 5xx/503 failure now gets ONE retry (maxRetries: 1) before the walk reroutes/drops.
+    assert.equal(byId.openalex.calls.search.length, 2, "the pinned arm was attempted (initial + 1 retry)");
     assert.equal(byId.arxiv.calls.search.length, 1, "rerouted to the next D5-order arm");
     const parsed = JSON.parse(stdout.join(""));
     assert.deepEqual(
@@ -1277,7 +1279,9 @@ describe("science get fallback honors persisted config.fallbackEnabled (T10 prec
       const err = parseStderr(stderr);
       assert.equal(err.code, "API_ERROR", "the effective arm's own error surfaces");
       assert.match(err.error, /openalex down/);
-      assert.equal(byId.openalex.calls.get.length, 1, "first arm attempted");
+      // #140 T4 flip: shared-seam retry — a retryable 5xx/503 failure now gets ONE retry (maxRetries: 1) before the walk reroutes/drops. Retry is per-arm, not fallback — strict mode still
+      // retries the failing arm once before surfacing its error.
+      assert.equal(byId.openalex.calls.get.length, 2, "first arm attempted (initial + 1 retry)");
       assert.equal(byId.crossref.calls.get.length, 0, "no reroute to the next supplier");
       assert.ok(!/rerouting/.test(stderr.join("")), "no reroute stderr notice");
     });
@@ -1296,7 +1300,8 @@ describe("science get fallback honors persisted config.fallbackEnabled (T10 prec
         loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
       });
       assert.equal(status, 0);
-      assert.equal(byId.openalex.calls.get.length, 1, "first arm attempted");
+      // #140 T4 flip: shared-seam retry — a retryable 5xx/503 failure now gets ONE retry (maxRetries: 1) before the walk reroutes/drops.
+      assert.equal(byId.openalex.calls.get.length, 2, "first arm attempted (initial + 1 retry)");
       assert.equal(byId.crossref.calls.get.length, 1, "rerouted to the next DOI arm");
       const parsed = JSON.parse(stdout.join(""));
       assert.equal(parsed.title, "work-from-crossref", "the reroute target served the work");

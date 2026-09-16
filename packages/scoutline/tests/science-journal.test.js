@@ -135,7 +135,10 @@ function scienceFive(perIdOpts = {}) {
   return { descriptors, byId };
 }
 
-async function runMain(argv, { descriptors, artifactsDir, loadScoutlineConfig } = {}) {
+async function runMain(
+  argv,
+  { descriptors, artifactsDir, scienceCache, loadScoutlineConfig } = {},
+) {
   const { adapter, stdout, stderr } = makeInvocation();
   const status = await main(argv, {
     ...hermeticMainDeps({
@@ -144,6 +147,7 @@ async function runMain(argv, { descriptors, artifactsDir, loadScoutlineConfig } 
         ...(artifactsDir !== undefined ? { SCOUTLINE_ARTIFACTS_DIR: artifactsDir } : {}),
       },
       ...(descriptors !== undefined ? { providerDescriptors: descriptors } : {}),
+      ...(scienceCache !== undefined ? { scienceCache } : {}),
       ...(loadScoutlineConfig !== undefined ? { loadScoutlineConfig } : {}),
     }),
   });
@@ -212,7 +216,8 @@ describe("science journal cacheKey follows the serving supplier (review)", () =>
         artifactsDir: dir,
       });
       assert.equal(status, 0, `reroute serves; stderr=${JSON.stringify(stderr)}`);
-      assert.equal(byId.openalex.calls.get.length, 1, "openalex was attempted first");
+      // {FLIP}
+      assert.equal(byId.openalex.calls.get.length, 2, "openalex attempted first (initial + 1 retry)");
       assert.equal(byId.crossref.calls.get.length, 1, "rerouted to crossref");
       const { entries, notice } = await readJournalEntries(dir);
       assert.strictEqual(notice, undefined);
@@ -249,7 +254,8 @@ describe("science journal cacheKey follows the serving supplier (review)", () =>
         artifactsDir: dir,
       });
       assert.equal(status, 0, "empty-but-fulfilled fan-out succeeds");
-      assert.equal(byId.openalex.calls.search.length, 1, "the failing first arm ran");
+      // {FLIP}
+      assert.equal(byId.openalex.calls.search.length, 2, "the failing first arm ran (initial + 1 retry)");
       assert.deepEqual(
         JSON.parse(stdout.join("")).map((w) => w.title),
         ["from-arxiv"],
@@ -541,25 +547,65 @@ describe("T7: science search journals one skeleton entry (main-driven)", () => {
     }
   });
 
-  it("a second identical live run appends a SECOND full entry — no false repeat marker from a cacheless path (interim; T10 owns the executor cache)", async (t) => {
-    // GROUND: TASKS T7 "marker/full branch per capability (cache-hit
-    // rules hold)": the marker branch fires ONLY on a cache-served
-    // re-ask. The interim science path invokes the supplier directly
-    // (no response-cache consult), so a re-ask is LIVE again and must
-    // journal a second FULL entry — never a fabricated marker. Hold
-    // pin for the flip: once a science executor consults a response
-    // cache (T10's seam), the cache-hit rules from T2b apply unchanged.
+  it("a second identical run: SHARED cache → repeat marker; separate caches (live re-ask) → SECOND full entry (FLIP: #140 T5 owns the executor cache)", async (t) => {
+    // {FLIP #140 T5} The interim pin ("no false repeat marker from a
+    // cacheless path — interim; T10 owns the executor cache") encoded a
+    // premise that #140 made false: the science path NOW consults the
+    // response cache per arm. Both directions are pinned —
+    //   SHARED cache (run 2 warm): every arm cache-served → run 2
+    //     journals the tiny repeat marker resolving run 1 (the T2b
+    //     cache-hit rules, unchanged).
+    //   SEPARATE caches (fresh hermetic cache per runMain call — what
+    //     this test's runs do below): a re-ask is LIVE again and
+    //     journals a second FULL entry — never a fabricated marker.
+    const sharedCache = {
+      store: new Map(),
+      async get(key, decoder) {
+        if (!this.store.has(key)) return null;
+        return decoder ? decoder(this.store.get(key)) : this.store.get(key);
+      },
+      async set(key, value) {
+        this.store.set(key, value);
+      },
+    };
     const dir = makeTempDir("scoutline-scijr-twice-");
     try {
       const { descriptors } = scienceFive();
+      // Direction 1 — SHARED cache: run 2 is an all-arms cache hit.
       for (let i = 0; i < 2; i += 1) {
-        const { status, stderr } = await runMain(
-          ["science", "search", "attention mechanism"],
-          { descriptors, artifactsDir: dir },
-        );
-        assert.equal(status, 0, `run ${i + 1}: stderr=${JSON.stringify(stderr)}`);
+        const { status, stderr } = await runMain(["science", "search", "attention mechanism"], {
+          descriptors,
+          artifactsDir: dir,
+          scienceCache: sharedCache,
+        });
+        assert.equal(status, 0, `shared run ${i + 1}: stderr=${JSON.stringify(stderr)}`);
       }
-      const { entries, notice } = await readJournalEntries(dir);
+      const shared = await readJournalEntries(dir);
+      assert.strictEqual(shared.notice, undefined);
+      assert.strictEqual(shared.entries.length, 2, "full entry + repeat marker");
+      assert.strictEqual(shared.entries[0].repeatOf, undefined, "run 1 is the full entry");
+      assert.strictEqual(
+        shared.entries[1].repeatOf,
+        shared.entries[0].requestId,
+        "the warm re-ask journals the marker resolving run 1",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    // Direction 2 — separate caches (the original interim premise):
+    // runMain below passes NO scienceCache, so each run gets a FRESH
+    // hermetic in-memory cache — the re-ask is live.
+    const dir2 = makeTempDir("scoutline-scijr-twice-live-");
+    try {
+      const { descriptors } = scienceFive();
+      for (let i = 0; i < 2; i += 1) {
+        const { status, stderr } = await runMain(["science", "search", "attention mechanism"], {
+          descriptors,
+          artifactsDir: dir2,
+        });
+        assert.equal(status, 0, `live run ${i + 1}: stderr=${JSON.stringify(stderr)}`);
+      }
+      const { entries, notice } = await readJournalEntries(dir2);
       assert.strictEqual(notice, undefined);
       assert.strictEqual(entries.length, 2, "two live runs → two full entries");
       for (const entry of entries) {
@@ -569,7 +615,7 @@ describe("T7: science search journals one skeleton entry (main-driven)", () => {
       // Append-only: the first entry is byte-identical after the second.
       assert.notStrictEqual(entries[0].requestId, entries[1].requestId);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir2, { recursive: true, force: true });
     }
   });
 });

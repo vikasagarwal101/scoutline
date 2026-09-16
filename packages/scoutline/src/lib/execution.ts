@@ -130,7 +130,9 @@ export type ProviderOperation =
   | ReaderOperationKind
   | "crawl"
   | "map"
-  | "research";
+  | "research"
+  | "science-search"
+  | "science-get";
 
 const DEFAULT_BASE_DELAY_MS = 500;
 const DEFAULT_MAX_DELAY_MS = 8000;
@@ -138,12 +140,12 @@ const DEFAULT_JITTER_MS = 250;
 
 /**
  * Default retry policy per operation. Search, quota, diagnostics, the
- * three repository operations, and the reader operation allow one
- * retry; Vision allows two to preserve shipped Z.AI behaviour. Base
- * delay 500 ms, max delay 8000 ms, jitter up to 250 ms.
+ * three repository operations, the reader operation, and the two science
+ * operations allow one retry; Vision allows two to preserve shipped Z.AI
+ * behaviour. Base delay 500 ms, max delay 8000 ms, jitter up to 250 ms.
  *
- * The repository and reader operations inherit the existing single-
- * retry non-Vision policy (DESIGN.md §18) without altering the
+ * The repository, reader, and science operations inherit the existing
+ * single-retry non-Vision policy (DESIGN.md §18) without altering the
  * behaviour of Search/Vision/Quota/Diagnostics; the new values are
  * routed through the same default branch as Search/Quota/Diagnostics.
  */
@@ -163,6 +165,8 @@ export function defaultRetryPolicy(operation: ProviderOperation): RetryPolicy {
     case "repository-read-file":
     case "repository-list-directory":
     case "reader-fetch":
+    case "science-search":
+    case "science-get":
       return { ...base, maxRetries: 1 };
     case "crawl":
     case "research":

@@ -774,10 +774,11 @@ describe("CLI: scoutline cache prune (Ticket 5)", () => {
       const now = Date.now();
       const cacheDir = path.join(dir, "cache");
       await fs.mkdir(cacheDir, { recursive: true });
-      // Hash segments only need to be non-empty for filename parsing;
-      // prune never validates them against credentials.
+      // Filename parsing validates the request-hash SHAPE (64 lowercase
+      // hex, #140 T4b) but never checks the digests against real
+      // credentials.
       const cred = "c".repeat(64);
-      const req = "r".repeat(64);
+      const req = "a".repeat(64);
       const zaiEntry = `v2.search.zai.${cred}.${req}.json`;
       const tavilyEntry = `v2.search.tavily.${cred}.${req}.json`;
       await fs.writeFile(

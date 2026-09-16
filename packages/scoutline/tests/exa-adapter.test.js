@@ -21,6 +21,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { createExaDescriptor } from "../dist/providers/exa/adapter.js";
 import { createInMemoryAsyncJobStateFile } from "../dist/lib/async-job-state.js";
 import { readFixture } from "./helpers/fixtures.js";
@@ -936,6 +940,9 @@ function makeResearchAdapter({ onCreate, onPoll, fallbackFetch } = {}) {
       env: { EXA_TIMEOUT: "5000", EXA_RESEARCH_POLL_INTERVAL_MS: "0" },
     },
     researchStateFile: stateFile,
+    // #158: the state knobs pair — an in-memory file without a dir now
+    // rejects at descriptor construction.
+    researchStateDir: mkdtempSync(join(tmpdir(), "exa-test-research-")),
   });
   const adapter = descriptor.create({ env: { EXA_API_KEY: TEST_API_KEY } });
   return { adapter, calls, stateFile, descriptor };

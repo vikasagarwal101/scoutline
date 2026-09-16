@@ -85,6 +85,9 @@ function makeAdapter(fakeFetch) {
     transport: { fetch: fn, env: { FIRECRAWL_TIMEOUT: "5000" } },
     // #154: without crawlStateDir the crawl-state lock defaults to the
     // real ~/.scoutline/crawl and mkdirs it on every crawl invoke.
+    // #158: the dir now pairs with an explicit in-memory state file —
+    // a dir-without-file injection rejects at construction.
+    crawlStateFile: createInMemoryAsyncJobStateFile(),
     crawlStateDir: mkdtempSync(join(tmpdir(), "firecrawl-test-crawl-")),
   });
   const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });

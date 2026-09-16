@@ -1228,3 +1228,80 @@ describe("read batch input maxChars (ADR-0007 D7)", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// #157b — per-op --isolated rejection (stateful research/crawl ops)
+// ---------------------------------------------------------------------------
+
+describe("batch manifest isolated rejection (operations[N])", () => {
+  it("rejects a research op when deps.isolated is true", async () => {
+    const m = await load();
+    assert.throws(
+      () =>
+        m.parseBatchManifest(
+          manifest(op("op-r", "research", { query: "q" })),
+          { ...DEPS, isolated: true },
+        ),
+      (err) => {
+        assert.ok(err instanceof ValidationError, `got ${err?.name}: ${err?.message}`);
+        assert.strictEqual(
+          err.message,
+          'operations[0]: command "research" is stateful and cannot run under --isolated (drop --isolated to keep resume state)',
+        );
+        return true;
+      },
+    );
+  });
+
+  it("rejects a crawl op when deps.isolated is true, naming the op index", async () => {
+    const m = await load();
+    assert.throws(
+      () =>
+        m.parseBatchManifest(
+          manifest(
+            op("ok", "search", { query: "q" }),
+            op("bad", "crawl", { url: "https://example.com/" }),
+          ),
+          { ...DEPS, isolated: true },
+        ),
+      (err) => {
+        assert.strictEqual(
+          err.message,
+          'operations[1]: command "crawl" is stateful and cannot run under --isolated (drop --isolated to keep resume state)',
+        );
+        return true;
+      },
+    );
+  });
+
+  it("allowlist error stays first (out-of-allowlist command under isolated)", async () => {
+    const m = await load();
+    assert.throws(
+      () =>
+        m.parseBatchManifest(
+          manifest(op("x", "frobnicate", {})),
+          { ...DEPS, isolated: true },
+        ),
+      (err) => {
+        assert.match(
+          err.message,
+          /^batch accepts capability operations only \(/,
+          "allowlist rejection must win",
+        );
+        return true;
+      },
+    );
+  });
+
+  it("parses research/crawl ops unchanged when deps.isolated is absent or false", async () => {
+    const m = await load();
+    const raw = manifest(
+      op("op-r", "research", { query: "q" }),
+      op("op-c", "crawl", { url: "https://example.com/" }),
+    );
+    for (const isolated of [undefined, false]) {
+      const parsed = m.parseBatchManifest(raw, { ...DEPS, isolated });
+      assert.strictEqual(parsed.operations.length, 2);
+    }
+  });
+});

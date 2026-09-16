@@ -66,6 +66,7 @@ import type {
 import { decodeResearchResult } from "../../capabilities/research.js";
 import type { AsyncJobState, AsyncJobStateFile } from "../../lib/async-job-state.js";
 import {
+  assertAsyncJobStateKnobPair,
   computeAsyncJobStateHash,
   createProductionAsyncJobStateFile,
 } from "../../lib/async-job-state.js";
@@ -106,6 +107,13 @@ export interface ExaAdapterDependencies {
   readonly transport?: ExaTransportDeps;
   /** Optional Research state-file port (tech-plan §3). */
   readonly researchStateFile?: AsyncJobStateFile;
+  /**
+   * Optional Research state dir. Exa's research has no create-lock
+   * today, but the seam knob ships (#158) so the file/dir pairing
+   * contract is uniform across the async-job adapters and the dir is
+   * the single source the default state file derives from.
+   */
+  readonly researchStateDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1110,10 +1118,16 @@ function createExaResearchCapability(options: ExaResearchCapabilityOptions): Res
  * timers inside the transport Module.
  */
 export function createExaDescriptor(dependencies?: ExaAdapterDependencies): ProviderDescriptor {
+  // #158: half-paired state knobs reject at construction — the state
+  // dir cannot be derived from an in-memory state file.
+  assertAsyncJobStateKnobPair(
+    "exa",
+    "researchStateFile",
+    "researchStateDir",
+    dependencies?.researchStateFile !== undefined,
+    dependencies?.researchStateDir !== undefined,
+  );
   const transport = dependencies?.transport;
-  const researchStateFile =
-    dependencies?.researchStateFile ??
-    createProductionAsyncJobStateFile(asyncJobStateDir("research"));
 
   return {
     id: "exa",
@@ -1124,6 +1138,14 @@ export function createExaDescriptor(dependencies?: ExaAdapterDependencies): Prov
       return new Set<ProviderCapability>(["search", "reader", "research", "diagnostics"]);
     },
     create(context: ProviderContext): ProviderAdapter {
+      // #159: state-seam defaults resolve at create()-time, not at
+      // descriptor construction — the registry constructs this factory's
+      // result at MODULE IMPORT, so a construction-time string capture
+      // would freeze asyncJobStateDir against the import-time env and
+      // never see a SCOUTLINE_CACHE_DIR set later.
+      const researchStateDir = dependencies?.researchStateDir ?? asyncJobStateDir("research");
+      const researchStateFile =
+        dependencies?.researchStateFile ?? createProductionAsyncJobStateFile(researchStateDir);
       const search = createExaSearchCapability({
         env: context.env,
         transport,

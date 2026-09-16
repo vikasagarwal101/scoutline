@@ -68,11 +68,16 @@ import { decodeReaderFetchResult } from "../../capabilities/reader.js";
 import type { DiagnosticsCapability } from "../../capabilities/diagnostics.js";
 import type { AsyncJobStateFile } from "../../lib/async-job-state.js";
 import {
+  assertAsyncJobStateKnobPair,
   computeAsyncJobStateHash,
   createProductionAsyncJobStateFile,
 } from "../../lib/async-job-state.js";
 import { asyncJobStateDir } from "../../lib/cache.js";
-import { withAsyncFileLock, DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_LOCK_STALE_MS } from "../../lib/async-file-lock.js";
+import {
+  withAsyncFileLock,
+  DEFAULT_LOCK_TIMEOUT_MS,
+  DEFAULT_LOCK_STALE_MS,
+} from "../../lib/async-file-lock.js";
 import {
   ApiError,
   AuthError,
@@ -469,6 +474,17 @@ export class ParallelAdapter implements ProviderAdapter {
     private readonly context: ProviderContext,
     deps: ParallelAdapterDependencies = {},
   ) {
+    // #158: half-paired state knobs reject at construction — the lock
+    // dir cannot be derived from an in-memory state file. Guarding the
+    // constructor (not just the descriptor factory) also covers direct
+    // `new ParallelAdapter(...)` test construction.
+    assertAsyncJobStateKnobPair(
+      "parallel",
+      "researchStateFile",
+      "researchStateDir",
+      deps.researchStateFile !== undefined,
+      deps.researchStateDir !== undefined,
+    );
     const transport = deps.transport;
     const env = context.env;
     const researchStateFile =
@@ -646,12 +662,7 @@ export class ParallelAdapter implements ProviderAdapter {
               if (signal?.aborted) {
                 throw new TimeoutError(0, "Research polling aborted");
               }
-              const result = await retrieveParallelTaskRunResult(
-                apiKey,
-                runId,
-                transport,
-                signal,
-              );
+              const result = await retrieveParallelTaskRunResult(apiKey, runId, transport, signal);
 
               if (result.status === "completed") {
                 // Best-effort cleanup — a filesystem error here must
@@ -675,10 +686,7 @@ export class ParallelAdapter implements ProviderAdapter {
                 // terminate rather than risk unbounded paid creations.
                 if (recreatedAfterNotFound) {
                   await researchStateFile.remove(identityHash).catch(() => {});
-                  throw new ApiError(
-                    "Parallel AI research task not found after creation",
-                    500,
-                  );
+                  throw new ApiError("Parallel AI research task not found after creation", 500);
                 }
                 recreatedAfterNotFound = true;
                 await researchStateFile.remove(identityHash).catch(() => {});
@@ -857,10 +865,21 @@ async function createParallelResearchTask(
 export function createParallelDescriptor(
   dependencies?: ParallelAdapterDependencies,
 ): ProviderDescriptor {
-  const transport = dependencies?.transport;
-  const researchStateDir = dependencies?.researchStateDir ?? asyncJobStateDir("research");
-  const researchStateFile =
-    dependencies?.researchStateFile ?? createProductionAsyncJobStateFile(researchStateDir);
+  // #158: half-paired state knobs reject at descriptor construction —
+  // the adapter constructor re-checks for direct `new ParallelAdapter`
+  // test construction.
+  assertAsyncJobStateKnobPair(
+    "parallel",
+    "researchStateFile",
+    "researchStateDir",
+    dependencies?.researchStateFile !== undefined,
+    dependencies?.researchStateDir !== undefined,
+  );
+  // #158/#159: dependencies pass through UNRESOLVED — the adapter
+  // constructor (invoked at create()-time) owns the production defaults.
+  // Pre-resolving here would both capture asyncJobStateDir at module
+  // import (stale env) and mask a half-paired injection behind the
+  // filled-in default.
   return {
     id: "parallel",
     credentialEnvVars: ["PARALLEL_API_KEY"],
@@ -868,7 +887,6 @@ export function createParallelDescriptor(
     capabilities(): ReadonlySet<ProviderCapability> {
       return new Set(["search", "research", "reader", "diagnostics"]);
     },
-    create: (context: ProviderContext) =>
-      new ParallelAdapter(context, { transport, researchStateFile, researchStateDir }),
+    create: (context: ProviderContext) => new ParallelAdapter(context, { ...dependencies }),
   };
 }

@@ -56,6 +56,9 @@ const REDACTED = "[REDACTED]";
  * Replaces:
  *   - Authorization header values under common schemes: `Bearer`,
  *     `Basic`, `Digest`, `Token`, and `ApiKey` (any case).
+ *   - `Credential=` parameter values, covering the AWS SigV4 header form
+ *     (`AWS4-HMAC-SHA256 Credential=AKIA…/scope`) that carries no scheme
+ *     keyword of its own (#180). The label is preserved; the value is not.
  *   - x-api-key assignments (any case; `=`, `:`, or whitespace as the
  *     key/value separator — covers both `x-api-key=value` and
  *     `x-api-key value`).
@@ -161,6 +164,17 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
     /Digest\s+(?:[^\s,=]+=(?:\\?"(?:[^"\\]|\\.)*?\\?"|[^\s,"]+)|[^\s,"]+)(?:,\s*(?:[^\s,=]+=(?:\\?"(?:[^"\\]|\\.)*?\\?"|[^\s,"]+)|[^\s,"]+))*/gi,
     REDACTED,
   );
+  // #180 gap 1: AWS SigV4 (and any other scheme that carries its credential
+  // in a `Credential=` parameter) was uncovered by the Bearer/Token/ApiKey/
+  // Basic/Digest family, so the access-key-id in
+  // `Authorization: AWS4-HMAC-SHA256 Credential=AKIA…/20260916/…,
+  // SignedHeaders=…, Signature=…` survived redaction. Value capture
+  // terminates at whitespace, comma, or quote — the Digest param
+  // discipline — so the comma-separated sibling params stay readable.
+  // The `Credential=` label is preserved like the `Authorization: ` prefix
+  // above; only the value is replaced. No context gate: a bare `Credential=`
+  // in prose is rare and redaction errs toward redacting.
+  result = result.replace(/(Credential=)[^\s,"]+/gi, `$1${REDACTED}`);
   // Tavily API keys carry the `tvly-` prefix; redact the full token
   // wherever it appears (logs, URLs, error bodies).
   result = result.replace(/tvly-[A-Za-z0-9_-]+/gi, REDACTED);
@@ -200,10 +214,16 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   result = result.replace(/YOU_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   result = result.replace(/LINKUP_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   result = result.replace(/SPIDER_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/YDC_API_KEY\s+(?=\S*\d)(?=\S*[A-Za-z])[^\s"]{8,}/gi, REDACTED);
-  result = result.replace(/YOU_API_KEY\s+(?=\S*\d)(?=\S*[A-Za-z])[^\s"]{8,}/gi, REDACTED);
-  result = result.replace(/LINKUP_API_KEY\s+(?=\S*\d)(?=\S*[A-Za-z])[^\s"]{8,}/gi, REDACTED);
-  result = result.replace(/SPIDER_API_KEY\s+(?=\S*\d)(?=\S*[A-Za-z])[^\s"]{8,}/gi, REDACTED);
+  // #180 gap 2: the lookaheads are scoped to the value token (`[^\s"]*`)
+  // rather than to a bare non-space run. `\S` includes the JSON quote, so
+  // `{"h":"YDC_API_KEY abcdefgh","n":1}` saw the sibling `1` across the
+  // closing quote and redacted a value carrying no digit of its own. The
+  // capture below already terminated at `"` (#174); only the lookaheads
+  // still crossed it.
+  result = result.replace(/YDC_API_KEY\s+(?=[^\s"]*\d)(?=[^\s"]*[A-Za-z])[^\s"]{8,}/gi, REDACTED);
+  result = result.replace(/YOU_API_KEY\s+(?=[^\s"]*\d)(?=[^\s"]*[A-Za-z])[^\s"]{8,}/gi, REDACTED);
+  result = result.replace(/LINKUP_API_KEY\s+(?=[^\s"]*\d)(?=[^\s"]*[A-Za-z])[^\s"]{8,}/gi, REDACTED);
+  result = result.replace(/SPIDER_API_KEY\s+(?=[^\s"]*\d)(?=[^\s"]*[A-Za-z])[^\s"]{8,}/gi, REDACTED);
   // Embedded credential substrings inside URLs, e.g.
   // `https://user:secret@host/path`. Catches both `https://` and
   // `http://` schemes and replaces the entire URL with the marker so

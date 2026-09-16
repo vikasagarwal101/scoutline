@@ -1191,3 +1191,59 @@ describe("quoted-scheme recovery and family-wide boundary invariants (#171 revie
   });
 });
 
+describe("#180 — SigV4 Credential= pass and cross-quote lookahead narrowing", () => {
+  // RFC-shaped AWS SigV4 Authorization header. The access-key-id rides
+  // inside the `Credential=` param; the sibling params are comma-separated.
+  const SIGV4_ACCESS_KEY = "AKIAIOSFODNN7EXAMPLE";
+  const SIGV4_SCOPE = "20260916/us-east-1/s3/aws4_request";
+  const SIGV4_HEADER = `Authorization: AWS4-HMAC-SHA256 Credential=${SIGV4_ACCESS_KEY}/${SIGV4_SCOPE}, SignedHeaders=host;x-amz-date, Signature=abc123def456`;
+
+  it("true positive: redacts the SigV4 access key inside Credential=, keeps the label and sibling params", () => {
+    const out = redactCredentialString(SIGV4_HEADER);
+
+    assert.ok(!out.includes(SIGV4_ACCESS_KEY), `access key leaked: ${out}`);
+    assert.ok(!out.includes(SIGV4_SCOPE), `credential scope leaked: ${out}`);
+    assert.ok(out.includes("Credential=[REDACTED]"), `Credential= label not preserved: ${out}`);
+    // Capture terminates at the comma + whitespace, mirroring the Digest param
+    // discipline, so the sibling params are untouched.
+    assert.ok(out.includes("SignedHeaders=host;x-amz-date"), `SignedHeaders dropped: ${out}`);
+    assert.ok(out.includes("Signature=abc123def456"), `Signature dropped: ${out}`);
+    assert.strictEqual(
+      out,
+      "Authorization: AWS4-HMAC-SHA256 Credential=[REDACTED], SignedHeaders=host;x-amz-date, Signature=abc123def456",
+    );
+  });
+
+  it("true positive: terminates at the quote in the JSON-embedded form", () => {
+    const input = JSON.stringify({ auth: `Credential=${SIGV4_ACCESS_KEY}/${SIGV4_SCOPE}`, n: 1 });
+    const out = redactCredentialString(input);
+
+    assert.ok(!out.includes(SIGV4_ACCESS_KEY), `access key leaked: ${out}`);
+    assert.deepStrictEqual(JSON.parse(out), { auth: "Credential=[REDACTED]", n: 1 });
+  });
+
+  it("documented judgment: a bare Credential= in prose is redacted (the pass is context-free)", () => {
+    // Ruling: no `Authorization:` context gate — a bare `Credential=` in prose
+    // is rare and redaction errs toward redacting.
+    assert.strictEqual(
+      redactCredentialString("Credential=foobar123"),
+      "Credential=[REDACTED]",
+    );
+  });
+
+  it("false positive: a JSON sibling digit no longer crosses the closing quote (#180 gap 2)", () => {
+    const input = JSON.stringify({ h: "YDC_API_KEY abcdefgh", n: 1 });
+    const out = redactCredentialString(input);
+
+    assert.strictEqual(out, input, "value carries no digit of its own — must stay intact");
+    assert.deepStrictEqual(JSON.parse(out), { h: "YDC_API_KEY abcdefgh", n: 1 });
+  });
+
+  it("narrowing keeps the whitespace-guarded pass firing when the digit is in-token", () => {
+    const input = JSON.stringify({ h: "YDC_API_KEY abcdefgh1", n: 1 });
+    const out = redactCredentialString(input);
+
+    assert.deepStrictEqual(JSON.parse(out), { h: "[REDACTED]", n: 1 });
+  });
+});
+

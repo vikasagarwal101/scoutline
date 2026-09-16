@@ -111,15 +111,15 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
     /(Authorization\s*:\s*)(?:Bearer|Token|ApiKey)\s+[^\s"]{8,}/gi,
     (_match, prefix: string) => prefix + REDACTED,
   );
-  result = result.replace(
-    /(?:Bearer|Token|ApiKey)\s+([^\s"]{8,})/gi,
-    (match, value: string) => {
-      // ponytail: quote cut defensive since regex excludes ", upgrade to AST parser if complex grammar needed
-      const quoteIdx = value.indexOf('"');
-      const candidate = (quoteIdx === -1 ? value : value.slice(0, quoteIdx)).replace(/[",.;:)\]]+$/, "");
-      return CREDENTIAL_CHAR.test(candidate) ? REDACTED : match;
-    },
-  );
+  result = result.replace(/(?:Bearer|Token|ApiKey)\s+([^\s"]{8,})/gi, (match, value: string) => {
+    // ponytail: quote cut defensive since regex excludes ", upgrade to AST parser if complex grammar needed
+    const quoteIdx = value.indexOf('"');
+    const candidate = (quoteIdx === -1 ? value : value.slice(0, quoteIdx)).replace(
+      /[",.;:)\]]+$/,
+      "",
+    );
+    return CREDENTIAL_CHAR.test(candidate) ? REDACTED : match;
+  });
   // Quoted-scheme recovery pass (#171 review F3): recover coverage for
   // quoted credentials (e.g. Bearer "ghp_..." or JSON Bearer \"ghp_...\")
   // that bare [^\s"]{8,} cannot match. Exclude backslash, quotes, and
@@ -145,13 +145,10 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
     /(Authorization\s*:\s*)Basic\s+[^\s"]+/gi,
     (_match, prefix: string) => prefix + REDACTED,
   );
-  result = result.replace(
-    /Basic\s+([^\s"]{8,})/gi,
-    (match, value: string) => {
-      const candidate = value.replace(/[",.;:)\]]+$/, "");
-      return CREDENTIAL_CHAR.test(candidate) ? REDACTED : match;
-    },
-  );
+  result = result.replace(/Basic\s+([^\s"]{8,})/gi, (match, value: string) => {
+    const candidate = value.replace(/[",.;:)\]]+$/, "");
+    return CREDENTIAL_CHAR.test(candidate) ? REDACTED : match;
+  });
   // Honor RFC 7235 quoted-string values in Digest parameters. The value
   // span may be either a bare token `[^\s,"]+` or a quoted string
   // `\\?"(?:[^"\\]|\\.)*?\\?"` (supporting JSON-escaped quotes without
@@ -173,8 +170,12 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   // discipline — so the comma-separated sibling params stay readable.
   // The `Credential=` label is preserved like the `Authorization: ` prefix
   // above; only the value is replaced. No context gate: a bare `Credential=`
-  // in prose is rare and redaction errs toward redacting.
-  result = result.replace(/(Credential=)[^\s,"]+/gi, `$1${REDACTED}`);
+  // in prose is rare and redaction errs toward redacting. Terminators are
+  // whitespace, comma, quote, ampersand, and semicolon — the header form's
+  // comma-separated siblings AND the presigned-URL query form's `&`-separated
+  // params (X-Amz-Credential=…&X-Amz-Signature=…) both keep their sibling
+  // labels readable (PR #185 review).
+  result = result.replace(/(Credential=)[^\s,"&;]+/gi, `$1${REDACTED}`);
   // Tavily API keys carry the `tvly-` prefix; redact the full token
   // wherever it appears (logs, URLs, error bodies).
   result = result.replace(/tvly-[A-Za-z0-9_-]+/gi, REDACTED);
@@ -220,10 +221,14 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   // closing quote and redacted a value carrying no digit of its own. The
   // capture below already terminated at `"` (#174); only the lookaheads
   // still crossed it.
-  result = result.replace(/YDC_API_KEY\s+(?=[^\s"]*\d)(?=[^\s"]*[A-Za-z])[^\s"]{8,}/gi, REDACTED);
-  result = result.replace(/YOU_API_KEY\s+(?=[^\s"]*\d)(?=[^\s"]*[A-Za-z])[^\s"]{8,}/gi, REDACTED);
-  result = result.replace(/LINKUP_API_KEY\s+(?=[^\s"]*\d)(?=[^\s"]*[A-Za-z])[^\s"]{8,}/gi, REDACTED);
-  result = result.replace(/SPIDER_API_KEY\s+(?=[^\s"]*\d)(?=[^\s"]*[A-Za-z])[^\s"]{8,}/gi, REDACTED);
+  // #185 review: one guarded pattern, four key names — kept as a loop so
+  // the lookahead/capture boundary can never drift between rows again.
+  for (const key of ["YDC_API_KEY", "YOU_API_KEY", "LINKUP_API_KEY", "SPIDER_API_KEY"]) {
+    result = result.replace(
+      new RegExp(`${key}\\s+(?=[^\\s"]*\\d)(?=[^\\s"]*[A-Za-z])[^\\s"]{8,}`, "gi"),
+      REDACTED,
+    );
+  }
   // Embedded credential substrings inside URLs, e.g.
   // `https://user:secret@host/path`. Catches both `https://` and
   // `http://` schemes and replaces the entire URL with the marker so

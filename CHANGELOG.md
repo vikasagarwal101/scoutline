@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Credential=` redaction terminates at `&`/`;` (PR #185 review):** the SigV4 query-string form (`X-Amz-Credential=…&X-Amz-Signature=…`) previously swallowed the sibling param label into the redaction — the header form's comma-delimited siblings stayed readable but the presigned-URL form's `&`-separated ones did not. Both sibling shapes now keep their labels; the credential value still redacts whole. The four v3-key lookahead rows also collapse into one guarded loop (same pattern, four names — boundary can no longer drift between rows).
 ## [0.21.3] - 2026-09-16
 ### Added
 

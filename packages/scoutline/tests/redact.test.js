@@ -1198,6 +1198,16 @@ describe("#180 — SigV4 Credential= pass and cross-quote lookahead narrowing", 
   const SIGV4_SCOPE = "20260916/us-east-1/s3/aws4_request";
   const SIGV4_HEADER = `Authorization: AWS4-HMAC-SHA256 Credential=${SIGV4_ACCESS_KEY}/${SIGV4_SCOPE}, SignedHeaders=host;x-amz-date, Signature=abc123def456`;
 
+  // PR #185 review (Kody): the query-string SigV4 form — presigned URLs carry
+  // X-Amz-Credential=...&X-Amz-Signature=... — must terminate the capture at
+  // `&` so the sibling param LABEL stays readable (the value redacts whole).
+  it("query-string form: capture terminates at & — sibling param label preserved", () => {
+    const url = `https://example.s3.amazonaws.com/file?X-Amz-Credential=${SIGV4_ACCESS_KEY}/${SIGV4_SCOPE}&X-Amz-Signature=abc123def456`;
+    const out = redactCredentialString(url);
+    assert.ok(out.includes("X-Amz-Credential=[REDACTED]"), `label not preserved: ${out}`);
+    assert.ok(out.includes("&X-Amz-Signature="), `sibling param label swallowed: ${out}`);
+  });
+
   it("true positive: redacts the SigV4 access key inside Credential=, keeps the label and sibling params", () => {
     const out = redactCredentialString(SIGV4_HEADER);
 

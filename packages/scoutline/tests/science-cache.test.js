@@ -901,10 +901,14 @@ describe("T5: journal warm-repeat markers", () => {
       assert.strictEqual(full.repeatOf, undefined, "run 1 is the full entry");
       assert.strictEqual(second.repeatOf, full.requestId, "marker resolves run 1's requestId");
       assert.strictEqual(second.requestId, undefined, "markers carry no requestId");
-      assert.deepStrictEqual(second.provider, {
-        mode: "fanout",
-        arms: [...D5_ARM_ORDER],
-      }, "every arm cache-hit → the fanout routing on the marker too");
+      assert.deepStrictEqual(
+        second.provider,
+        {
+          mode: "fanout",
+          arms: [...D5_ARM_ORDER],
+        },
+        "every arm cache-hit → the fanout routing on the marker too",
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -945,7 +949,7 @@ describe("T5: journal warm-repeat markers", () => {
     }
   });
 
-  it("journal-cold-cache-warm (journal index deleted, cache warm): ONE full entry, single shape servedFrom \"cache\"", async () => {
+  it('journal-cold-cache-warm (journal index deleted, cache warm): ONE full entry, single shape servedFrom "cache"', async () => {
     const cache = createDecodingCache();
     const { descriptors } = scienceFive();
     const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t5-cold-"));
@@ -968,11 +972,15 @@ describe("T5: journal warm-repeat markers", () => {
       assert.equal(journalEntries.length, 1, "journal-cold → ONE full entry, no marker");
       const entry = journalEntries[0];
       assert.strictEqual(entry.repeatOf, undefined, "full entry, not a marker");
-      assert.deepStrictEqual(entry.provider, {
-        mode: "single",
-        effective: "openalex",
-        servedFrom: "cache",
-      }, "honest servedFrom on the journal-cold full entry");
+      assert.deepStrictEqual(
+        entry.provider,
+        {
+          mode: "single",
+          effective: "openalex",
+          servedFrom: "cache",
+        },
+        "honest servedFrom on the journal-cold full entry",
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1008,7 +1016,7 @@ describe("T5: journal warm-repeat markers", () => {
     }
   });
 
-  it("get: same identifier twice (SHARED cache) → run 2 marker {mode:\"single\", effective, servedFrom:\"cache\"}, repeatOf = run 1's requestId", async () => {
+  it('get: same identifier twice (SHARED cache) → run 2 marker {mode:"single", effective, servedFrom:"cache"}, repeatOf = run 1\'s requestId', async () => {
     const cache = createDecodingCache();
     const { descriptors } = scienceFive();
     const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t5-get-"));
@@ -1029,23 +1037,31 @@ describe("T5: journal warm-repeat markers", () => {
       const journalEntries = log.entries.filter((e) => e.kind === "journal");
       assert.equal(journalEntries.length, 2, "full entry + marker");
       const [full, second] = journalEntries;
-      assert.deepStrictEqual(full.provider, {
-        mode: "single",
-        effective: "openalex",
-        servedFrom: "live",
-      }, "run 1 (get walk, openalex first) journals single/live");
+      assert.deepStrictEqual(
+        full.provider,
+        {
+          mode: "single",
+          effective: "openalex",
+          servedFrom: "live",
+        },
+        "run 1 (get walk, openalex first) journals single/live",
+      );
       assert.strictEqual(second.repeatOf, full.requestId);
-      assert.deepStrictEqual(second.provider, {
-        mode: "single",
-        effective: "openalex",
-        servedFrom: "cache",
-      }, "the marker carries the single/cache routing");
+      assert.deepStrictEqual(
+        second.provider,
+        {
+          mode: "single",
+          effective: "openalex",
+          servedFrom: "cache",
+        },
+        "the marker carries the single/cache routing",
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("pinned search single shape: run 1 live full entry servedFrom \"live\"; run 2 cache-hit MARKER servedFrom \"cache\"", async () => {
+  it('pinned search single shape: run 1 live full entry servedFrom "live"; run 2 cache-hit MARKER servedFrom "cache"', async () => {
     const cache = createDecodingCache();
     const { descriptors } = scienceFive();
     const dir = mkdtempSync(join(tmpdir(), "scoutline-sci-t5-pinned-"));
@@ -1109,8 +1125,12 @@ describe("fix F1: aborted fan-out skips arm-failure notices", () => {
     const openalex = makeScienceDescriptor("openalex", {
       searchThrows: new ApiError("openalex 503", 503),
     });
-    const arxiv = makeScienceDescriptor("arxiv", { searchWorks: () => [{ title: "a", url: "https://example.org/arxiv" }] });
-    const crossref = makeScienceDescriptor("crossref", { searchWorks: () => [{ title: "c", url: "https://example.org/crossref" }] });
+    const arxiv = makeScienceDescriptor("arxiv", {
+      searchWorks: () => [{ title: "a", url: "https://example.org/arxiv" }],
+    });
+    const crossref = makeScienceDescriptor("crossref", {
+      searchWorks: () => [{ title: "c", url: "https://example.org/crossref" }],
+    });
     const inv = makeInvocation();
     const deps = {
       invocation: inv.adapter,
@@ -1142,7 +1162,196 @@ describe("fix F1: aborted fan-out skips arm-failure notices", () => {
       /dropped from this fan-out/,
       "an arm lost to an abort-during-backoff must not print a drop notice (#151)",
     );
-    assert.doesNotMatch(stderrText, /openalex arm failed/, "no per-arm failure disclosure for the aborted arm");
+    assert.doesNotMatch(
+      stderrText,
+      /openalex arm failed/,
+      "no per-arm failure disclosure for the aborted arm",
+    );
     assert.equal(openalex.calls.search.length, 1, "the arm threw once (retry backoff aborted)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR #182 bot-review wave 1
+// ---------------------------------------------------------------------------
+
+describe("wave1 F1: --no-cache rides the artifact metadata", () => {
+  it("a --no-cache save carries the flag in the save entry's args", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-w1-f1-save-"));
+    try {
+      const { descriptors } = scienceFive();
+      const { status, stderr } = await runMain(
+        ["science", "search", "meta q", "--no-cache", "--save"],
+        { descriptors, artifactsDir: dir },
+      );
+      assert.equal(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const { log } = await readLog(dir);
+      const save = log.entries.find((e) => e.kind === "save");
+      assert.ok(save, "save entry written");
+      assert.strictEqual(save.args["no-cache"], true, "save args carry --no-cache");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a --no-cache budget compaction carries the flag in its args", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scoutline-w1-f1-budget-"));
+    try {
+      const { descriptors } = scienceFive();
+      const { status, stderr } = await runMain(
+        ["science", "search", "meta q", "--no-cache", "--max-chars", "120"],
+        { descriptors, artifactsDir: dir },
+      );
+      assert.equal(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const { log } = await readLog(dir);
+      // No --save on this run, so the ONE save-kind entry is the
+      // compaction artifact's mandatory log entry (persistCompaction).
+      const compaction = log.entries.find((e) => e.kind === "save");
+      assert.ok(compaction, "compaction entry written (the small budget fired)");
+      assert.strictEqual(compaction.args["no-cache"], true, "compaction args carry --no-cache");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("wave1 F3: decoders reject non-finite numbers", () => {
+  it("decodeScienceWorks: NaN year and Infinity citationCount decode null (cache miss, not a poisoned serve)", () => {
+    assert.strictEqual(
+      decodeScienceWorks([{ title: "t", url: "https://x", year: Number.NaN }]),
+      null,
+      "NaN year is malformed",
+    );
+    assert.strictEqual(
+      decodeScienceWorks([
+        { title: "t", url: "https://x", citationCount: Number.POSITIVE_INFINITY },
+      ]),
+      null,
+      "Infinity citationCount is malformed",
+    );
+    assert.notStrictEqual(
+      decodeScienceWorks([{ title: "t", url: "https://x", year: 2017, citationCount: 42 }]),
+      null,
+      "finite values still decode",
+    );
+  });
+
+  it("decodeScienceWork: non-finite year decodes null on the get path too", () => {
+    assert.strictEqual(decodeScienceWork({ title: "t", url: "https://x", year: Number.NaN }), null);
+  });
+});
+
+describe("wave1 F4: warm-cache consults honor a pre-aborted signal (#47/#151)", () => {
+  function abortedInvocation() {
+    const inv = makeInvocation();
+    let handler = null;
+    const registrar = (h) => {
+      handler = h;
+      return () => {};
+    };
+    return { inv, registrar, fire: () => handler() };
+  }
+
+  it("fan-out (MULTI-ARM arm map): warm caches + aborted signal → 499 abort, NO stdout result", async () => {
+    // Seeds TWO arms so the run is a genuine multi-arm fan-out — the
+    // arm-map consult site, not the single-arm reroute walk.
+    const cache = createDecodingCache();
+    for (const supplier of ["openalex", "arxiv"]) {
+      cache.store.set(
+        scienceCacheKey({
+          supplier,
+          capability: "science.search",
+          credentialFingerprint: "",
+          request: { query: "warm abort q" },
+        }),
+        [{ title: `warm-${supplier}`, url: `https://example.org/${supplier}` }],
+      );
+    }
+    const { descriptors } = scienceFive({
+      crossref: { configured: () => false },
+      pubmed: { configured: () => false },
+      europepmc: { configured: () => false },
+    });
+    const { inv, registrar, fire } = abortedInvocation();
+    const deps = {
+      invocation: inv.adapter,
+      env: {},
+      secrets: [],
+      providerDescriptors: descriptors,
+      fallbackEnabled: true,
+      scienceCache: cache,
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
+    };
+    const p = handleScience(["search", "warm abort q"], "data", deps, {
+      registerInterrupt: registrar,
+    });
+    fire();
+    const status = await p;
+    assert.equal(status, 1, "aborted warm run fails, never serves");
+    assert.match(inv.stderr.join(""), /aborted by the caller/);
+    assert.equal(inv.stdout.length, 0, "no results printed for a cancelled caller");
+  });
+
+  it("pinned reroute walk: warm cache + aborted signal → 499 abort, NO stdout result", async () => {
+    const cache = createDecodingCache();
+    const key = scienceCacheKey({
+      supplier: "openalex",
+      capability: "science.search",
+      credentialFingerprint: "",
+      request: { query: "pinned warm q" },
+    });
+    cache.store.set(key, [{ title: "warm", url: "https://example.org/warm" }]);
+    const { descriptors } = scienceFive();
+    const { inv, registrar, fire } = abortedInvocation();
+    const deps = {
+      invocation: inv.adapter,
+      env: {},
+      secrets: [],
+      providerDescriptors: descriptors,
+      fallbackEnabled: true,
+      scienceCache: cache,
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
+    };
+    const p = handleScience(["search", "pinned warm q", "--provider", "openalex"], "data", deps, {
+      registerInterrupt: registrar,
+    });
+    fire();
+    const status = await p;
+    assert.equal(status, 1, "aborted warm pinned run fails, never serves");
+    assert.match(inv.stderr.join(""), /aborted by the caller/);
+    assert.equal(inv.stdout.length, 0, "no results printed");
+  });
+
+  it("get walk: warm cache + aborted signal → 499 abort, NO stdout result", async () => {
+    const cache = createDecodingCache();
+    const key = scienceCacheKey({
+      supplier: "openalex",
+      capability: "science.get",
+      credentialFingerprint: "",
+      request: { identifier: "10.1038/nature12373" },
+    });
+    cache.store.set(key, { title: "warm", url: "https://example.org/warm" });
+    const { descriptors } = scienceFive();
+    const { inv, registrar, fire } = abortedInvocation();
+    const deps = {
+      invocation: inv.adapter,
+      env: {},
+      secrets: [],
+      providerDescriptors: descriptors,
+      fallbackEnabled: true,
+      scienceCache: cache,
+      scienceSleep: async () => {},
+      scienceRandom: () => 0.5,
+    };
+    const p = handleScience(["get", "10.1038/nature12373"], "data", deps, {
+      registerInterrupt: registrar,
+    });
+    fire();
+    const status = await p;
+    assert.equal(status, 1, "aborted warm get fails, never serves");
+    assert.match(inv.stderr.join(""), /aborted by the caller/);
+    assert.equal(inv.stdout.length, 0, "no results printed");
   });
 });

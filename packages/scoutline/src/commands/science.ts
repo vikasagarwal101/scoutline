@@ -262,6 +262,8 @@ async function applyScienceOutputBudget(
     readonly deps: HandlerDependencies;
     readonly outputMode: OutputMode;
     readonly explicitProvider?: string;
+    /** #140 wave 1 (F1): rides the compaction artifact metadata. */
+    readonly noCache?: boolean;
   },
 ): Promise<CommandResult> {
   if (maxChars === undefined || result.kind !== "data") return result;
@@ -280,6 +282,7 @@ async function applyScienceOutputBudget(
       command: "science",
       args: {
         ...(options.explicitProvider !== undefined ? { provider: options.explicitProvider } : {}),
+        ...(options.noCache ? { "no-cache": true } : {}),
       },
       provider: {
         mode: "single",
@@ -721,6 +724,15 @@ async function runScienceSearchWithReroute(
   if (!options.noCache && cacheKey !== undefined) {
     const cached = await options.cache.get(cacheKey, decodeScienceWorks);
     if (cached !== null) {
+      // Wave 1 F4: a pre-aborted signal must never serve warm results
+      // (#47/#151 — the consult sits outside the retry executor's own
+      // pre-invoke check, so the guard lives at the hit).
+      if (signal?.aborted) {
+        throw new ApiError(
+          "science request was aborted by the caller (Ctrl-C or external signal)",
+          499,
+        );
+      }
       return { works: cached, identity, armId: pinned.id, servedFrom: "cache" };
     }
   }
@@ -778,6 +790,13 @@ async function runScienceSearchWithReroute(
       if (!options.noCache && nextCacheKey !== undefined) {
         const cachedNext = await options.cache.get(nextCacheKey, decodeScienceWorks);
         if (cachedNext !== null) {
+          // Wave 1 F4: same pre-abort guard on the reroute-arm consult.
+          if (signal?.aborted) {
+            throw new ApiError(
+              "science request was aborted by the caller (Ctrl-C or external signal)",
+              499,
+            );
+          }
           // The PINNED arm failed at invoke — its failure is still
           // disclosed (visible narrowing); the serving attempt itself
           // was a cache hit, so it emits nothing of its own.
@@ -1086,6 +1105,7 @@ export async function handleScience(
     args: {
       ...(explicitProvider !== undefined ? { provider: explicitProvider } : {}),
       ...(deps.fallbackEnabled ? {} : { "no-fallback": true }),
+      ...(noCache ? { "no-cache": true } : {}),
     },
     provider: {
       mode: "single",
@@ -1210,6 +1230,7 @@ export async function handleScience(
               deps,
               outputMode,
               ...(explicitProvider !== undefined ? { explicitProvider } : {}),
+              noCache,
             });
           }
         }
@@ -1256,6 +1277,15 @@ export async function handleScience(
             if (!noCache && cacheKey !== undefined) {
               const cached = await deps.scienceCache.get(cacheKey, decodeScienceWorks);
               if (cached !== null) {
+                // Wave 1 F4: a cancelled caller never receives warm
+                // results (the consult bypasses the executor's
+                // pre-invoke check — the guard lives at the hit).
+                if (controller.signal.aborted) {
+                  throw new ApiError(
+                    "science request was aborted by the caller (Ctrl-C or external signal)",
+                    499,
+                  );
+                }
                 armCacheHits[index] = true;
                 return cached;
               }
@@ -1358,6 +1388,7 @@ export async function handleScience(
           deps,
           outputMode,
           ...(explicitProvider !== undefined ? { explicitProvider } : {}),
+          noCache,
         });
       },
       outputMode,
@@ -1476,6 +1507,13 @@ export async function handleScience(
         if (!noCache && cacheKey !== undefined) {
           const cached = await deps.scienceCache.get(cacheKey, decodeScienceWork);
           if (cached !== null) {
+            // Wave 1 F4: same pre-abort guard on the get-walk consult.
+            if (controller.signal.aborted) {
+              throw new ApiError(
+                "science request was aborted by the caller (Ctrl-C or external signal)",
+                499,
+              );
+            }
             work = cached;
             journalCacheHit = true;
             break;
@@ -1532,6 +1570,7 @@ export async function handleScience(
         deps,
         outputMode,
         ...(explicitProvider !== undefined ? { explicitProvider } : {}),
+        noCache,
       });
     },
     outputMode,

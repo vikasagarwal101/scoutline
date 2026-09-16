@@ -330,10 +330,10 @@ function isScienceWorkShape(value: unknown): value is ScienceWork {
       return false;
     }
   }
-  if (work.year !== undefined && typeof work.year !== "number") return false;
+  if (work.year !== undefined && !Number.isFinite(work.year)) return false;
   if (work.venue !== undefined && typeof work.venue !== "string") return false;
   if (work.summary !== undefined && typeof work.summary !== "string") return false;
-  if (work.citationCount !== undefined && typeof work.citationCount !== "number") return false;
+  if (work.citationCount !== undefined && !Number.isFinite(work.citationCount)) return false;
   if (work.pdfUrl !== undefined && typeof work.pdfUrl !== "string") return false;
   if (work.openAccess !== undefined && typeof work.openAccess !== "boolean") return false;
   if (work.type !== undefined && typeof work.type !== "string") return false;

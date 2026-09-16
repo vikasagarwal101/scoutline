@@ -728,10 +728,7 @@ async function runScienceSearchWithReroute(
       // (#47/#151 — the consult sits outside the retry executor's own
       // pre-invoke check, so the guard lives at the hit).
       if (signal?.aborted) {
-        throw new ApiError(
-          "science request was aborted by the caller (Ctrl-C or external signal)",
-          499,
-        );
+        throwCallerAborted();
       }
       return { works: cached, identity, armId: pinned.id, servedFrom: "cache" };
     }
@@ -754,10 +751,7 @@ async function runScienceSearchWithReroute(
     // attempt the next arm only to fast-fail at its pre-abort check and
     // emit a misleading "rerouting to <arm>" notice for a cancellation.
     if (signal?.aborted) {
-      throw new ApiError(
-        "science request was aborted by the caller (Ctrl-C or external signal)",
-        499,
-      );
+      throwCallerAborted();
     }
     // eligible = configured + capable + validating, D5 order, pin first
     const order = [pinned.id, ...D5_ARM_ORDER.filter((id) => id !== pinned.id)];
@@ -768,10 +762,7 @@ async function runScienceSearchWithReroute(
       // checks while emitting misleading reroute notices.
       // defense-in-depth: the per-attempt guard below normally fires first
       if (signal?.aborted) {
-        throw new ApiError(
-          "science request was aborted by the caller (Ctrl-C or external signal)",
-          499,
-        );
+        throwCallerAborted();
       }
       const next = byId.get(id);
       if (next === undefined) continue;
@@ -792,10 +783,7 @@ async function runScienceSearchWithReroute(
         if (cachedNext !== null) {
           // Wave 1 F4: same pre-abort guard on the reroute-arm consult.
           if (signal?.aborted) {
-            throw new ApiError(
-              "science request was aborted by the caller (Ctrl-C or external signal)",
-              499,
-            );
+            throwCallerAborted();
           }
           // The PINNED arm failed at invoke — its failure is still
           // disclosed (visible narrowing); the serving attempt itself
@@ -831,10 +819,7 @@ async function runScienceSearchWithReroute(
         // attempt's honest abort error and ends the walk — no further
         // arms, no "dropped from this reroute walk" notice.
         if (signal?.aborted) {
-          throw new ApiError(
-            "science request was aborted by the caller (Ctrl-C or external signal)",
-            499,
-          );
+          throwCallerAborted();
         }
         notice(
           `scoutline: ${next.id} search failed (${
@@ -848,6 +833,19 @@ async function runScienceSearchWithReroute(
     // surfaces (get-path effective-arm behavior).
     throw error;
   }
+}
+
+/**
+ * Wave 3 (Kody, PR #182): the one honest caller-cancellation error every
+ * science abort site throws — walk cancels, consult pre-abort guards,
+ * per-arm warm-hit guards, and the post-settle warm re-check. Named so
+ * the byte-identical message lives in exactly one place.
+ */
+function throwCallerAborted(): never {
+  throw new ApiError(
+    "science request was aborted by the caller (Ctrl-C or external signal)",
+    499,
+  );
 }
 
 function isAbortClassed(reason: unknown): boolean {
@@ -1281,10 +1279,7 @@ export async function handleScience(
                 // results (the consult bypasses the executor's
                 // pre-invoke check — the guard lives at the hit).
                 if (controller.signal.aborted) {
-                  throw new ApiError(
-                    "science request was aborted by the caller (Ctrl-C or external signal)",
-                    499,
-                  );
+                  throwCallerAborted();
                 }
                 armCacheHits[index] = true;
                 return cached;
@@ -1319,10 +1314,7 @@ export async function handleScience(
           settled.length > 0 &&
           settled.every((outcome, index) => outcome.status !== "fulfilled" || armCacheHits[index] === true);
         if (warmOnly && controller.signal.aborted) {
-          throw new ApiError(
-            "science request was aborted by the caller (Ctrl-C or external signal)",
-            499,
-          );
+          throwCallerAborted();
         }
         // Deterministic failure: if every arm rejected, surface the
         // FIRST arm's (D5 order) error — never a silent all-fail.
@@ -1352,10 +1344,7 @@ export async function handleScience(
           settled.every((outcome) => outcome.status === "rejected")
         ) {
           if (controller.signal.aborted) {
-            throw new ApiError(
-              "science request was aborted by the caller (Ctrl-C or external signal)",
-              499,
-            );
+            throwCallerAborted();
           }
           throw firstRejected.reason;
         }
@@ -1529,10 +1518,7 @@ export async function handleScience(
           if (cached !== null) {
             // Wave 1 F4: same pre-abort guard on the get-walk consult.
             if (controller.signal.aborted) {
-              throw new ApiError(
-                "science request was aborted by the caller (Ctrl-C or external signal)",
-                499,
-              );
+              throwCallerAborted();
             }
             work = cached;
             journalCacheHit = true;
@@ -1557,10 +1543,7 @@ export async function handleScience(
           // reroute walk): the remaining arms would only fast-fail at their
           // pre-abort check while emitting a misleading reroute notice.
           if (controller.signal.aborted) {
-            throw new ApiError(
-              "science request was aborted by the caller (Ctrl-C or external signal)",
-              499,
-            );
+            throwCallerAborted();
           }
           const next: ScienceDescriptorLike | undefined = arms[attempt + 1];
           if (next === undefined || deps.fallbackEnabled === false) throw error;

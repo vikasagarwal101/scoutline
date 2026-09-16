@@ -1304,6 +1304,26 @@ export async function handleScience(
             return works;
           }),
         );
+        // Wave 2 F6 (parent ruling, scoped): post-settle abort re-check
+        // for the WARM path — a cancelled caller never receives results
+        // no live work produced. Scoped to every-fulfilled-arm-was-cache-
+        // served (armCacheHits is recorded at consult time REGARDLESS of
+        // journaling, so a --no-journal run gets the same 499): the
+        // #151 live-partial-abort contract (exit 0, survivors serve +
+        // journal) is a deliberate, twice-pinned product ruling and
+        // stays intact — an abort after genuinely-live completed arms
+        // still serves. The per-arm hit guards (wave 1 F4) established
+        // aborted+warm=499 at consult time; this closes the identical
+        // gap between a passed guard and the merge.
+        const warmOnly =
+          settled.length > 0 &&
+          settled.every((outcome, index) => outcome.status !== "fulfilled" || armCacheHits[index] === true);
+        if (warmOnly && controller.signal.aborted) {
+          throw new ApiError(
+            "science request was aborted by the caller (Ctrl-C or external signal)",
+            499,
+          );
+        }
         // Deterministic failure: if every arm rejected, surface the
         // FIRST arm's (D5 order) error — never a silent all-fail.
         const firstRejected = settled.find((outcome) => outcome.status === "rejected") as

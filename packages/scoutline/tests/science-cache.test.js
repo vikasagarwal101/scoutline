@@ -1355,3 +1355,62 @@ describe("wave1 F4: warm-cache consults honor a pre-aborted signal (#47/#151)", 
     assert.equal(inv.stdout.length, 0, "no results printed");
   });
 });
+
+describe("wave2 F6: post-settle abort re-check (the between-guard window)", () => {
+  it("abort landing AFTER both consult guards pass → 499 abort, NO stdout (partial warm merge never serves)", async () => {
+    let fireAbort = null;
+    const registrar = (h) => {
+      fireAbort = h;
+      return () => {};
+    };
+    // Cache double targeting the BETWEEN-GUARD window: the second
+    // arm's get() queues the abort as a microtask AFTER its own
+    // resolution, so arm 1's per-arm guard passes (not yet aborted),
+    // THEN the abort lands, then arm 2's guard rejects it — settled =
+    // [fulfilled, rejected], not all-rejected: pre-F6 the partial warm
+    // merge still prints. (Firing synchronously instead lands before
+    // arm 1's guard — both arms reject and the all-rejected abort
+    // branch already covers it.)
+    const arxivKey = scienceCacheKey({
+      supplier: "arxiv", capability: "science.search", credentialFingerprint: "",
+      request: { query: "window q" },
+    });
+    const cache = {
+      store: new Map(),
+      async get(key, decoder) {
+        if (key === arxivKey) {
+          queueMicrotask(() => fireAbort());
+        }
+        if (!this.store.has(key)) return null;
+        const raw = this.store.get(key);
+        return decoder ? decoder(raw) : raw;
+      },
+      async set(key, value) { this.store.set(key, value); },
+    };
+    for (const supplier of ["openalex", "arxiv"]) {
+      cache.store.set(
+        scienceCacheKey({
+          supplier, capability: "science.search", credentialFingerprint: "",
+          request: { query: "window q" },
+        }),
+        [{ title: `warm-${supplier}`, url: `https://example.org/${supplier}` }],
+      );
+    }
+    const { descriptors } = scienceFive({
+      crossref: { configured: () => false },
+      pubmed: { configured: () => false },
+      europepmc: { configured: () => false },
+    });
+    const inv = makeInvocation();
+    const deps = {
+      invocation: inv.adapter, env: {}, secrets: [],
+      providerDescriptors: descriptors,
+      fallbackEnabled: true,
+      scienceCache: cache, scienceSleep: async () => {}, scienceRandom: () => 0.5,
+    };
+    const status = await handleScience(["search", "window q"], "data", deps, { registerInterrupt: registrar });
+    assert.equal(status, 1, "the post-settle re-check fails the run — a cancelled caller never receives the partial warm merge");
+    assert.match(inv.stderr.join(""), /aborted by the caller/);
+    assert.equal(inv.stdout.length, 0, "no results printed");
+  });
+});

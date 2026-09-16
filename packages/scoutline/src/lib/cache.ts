@@ -107,6 +107,18 @@ function resolveCacheRoot(): string {
 }
 
 /**
+ * Single-source isolation predicate for env-derived surfaces (#157, PR
+ * #183 F1): the canonical values are `SCOUTLINE_ISOLATED="1"` and
+ * `"true"`. Consumers that branch on the env variable — both cache-dir
+ * resolvers below and main()'s batch seam — must agree on the accepted
+ * set, or an env-only `=true` run isolates the stores while skipping the
+ * batch per-op refusals (the predicate split Kody flagged).
+ */
+export function isIsolatedEnv(env: CacheDirEnvironment | undefined): boolean {
+  return env?.SCOUTLINE_ISOLATED === "1" || env?.SCOUTLINE_ISOLATED === "true";
+}
+
+/**
  * Pure response-cache directory resolver. Under isolation
  * (`SCOUTLINE_ISOLATED="1"` or `"true"`), derives `<root>/cache/isolated/<pid>`.
  * Returns `<root>/cache` by default.
@@ -117,7 +129,7 @@ export function resolveResponseCacheDirPure(
 ): string {
   const root = resolveCacheRootPure(env, plat);
   const baseDir = path.join(root, "cache");
-  if (env.SCOUTLINE_ISOLATED === "1" || env.SCOUTLINE_ISOLATED === "true") {
+  if (isIsolatedEnv(env)) {
     const pid = plat.pid ?? process.pid;
     return path.join(baseDir, "isolated", `${pid}`);
   }
@@ -132,7 +144,7 @@ export function resolveResponseCacheDirPure(
 export function resolveToolCacheDirPure(env: CacheDirEnvironment, plat: CacheDirPlatform): string {
   const root = resolveCacheRootPure(env, plat);
   const baseDir = path.join(root, "tools");
-  if (env.SCOUTLINE_ISOLATED === "1" || env.SCOUTLINE_ISOLATED === "true") {
+  if (isIsolatedEnv(env)) {
     const pid = plat.pid ?? process.pid;
     return path.join(baseDir, "isolated", `${pid}`);
   }

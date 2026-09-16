@@ -162,6 +162,7 @@ import {
 import {
   createFileResponseCache,
   defaultResponseCache,
+  isIsolatedEnv,
   responseCacheDir,
   type ResponseCache,
 } from "./lib/cache.js";
@@ -3209,8 +3210,9 @@ async function handleBatch(
     dirExists: (dir) => existsSync(dir),
     // #157b: under --isolated, stateful ops reject per-op at parse time.
     // The injected env carries the isolation stamp from main() (the same
-    // env view the artifact/cache resolvers read).
-    isolated: deps.env.SCOUTLINE_ISOLATED === "1",
+    // env view the artifact/cache resolvers read). PR #183 F1: the shared
+    // predicate keeps the accepted value set identical to the resolvers'.
+    isolated: isIsolatedEnv(deps.env),
   });
 
   // D4 precedence: per-op pin > global --provider > distribution. The

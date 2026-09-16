@@ -11,9 +11,9 @@
  * naming BOTH knobs whenever exactly one is injected, and to construct
  * cleanly when both or neither are.
  */
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -25,9 +25,19 @@ import { createParallelDescriptor } from "../dist/providers/parallel/adapter.js"
 import { createInMemoryAsyncJobStateFile } from "../dist/lib/async-job-state.js";
 import { ScoutlineError } from "../dist/lib/errors.js";
 
+// PR #183 F2: dirs are registered and removed once the file's suites
+// finish instead of leaking per call.
+const stateDirs = [];
+
 function tempStateDir() {
-  return mkdtempSync(join(tmpdir(), "state-seam-pairing-"));
+  const dir = mkdtempSync(join(tmpdir(), "state-seam-pairing-"));
+  stateDirs.push(dir);
+  return dir;
 }
+
+after(() => {
+  for (const dir of stateDirs) rmSync(dir, { recursive: true, force: true });
+});
 
 /**
  * One entry per adapter carrying the async-job state seam. `knobs` names

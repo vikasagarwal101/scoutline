@@ -23,7 +23,7 @@
  * SCOUTLINE_CACHE_DIR/ARTIFACTS_DIR into the INJECTED env — T3/T4 own the
  * ambient seam).
  */
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -71,12 +71,55 @@ function makeDeps(descriptors) {
   };
 }
 
+/**
+ * PR #183 F3: parse the LAST non-empty stderr line as an error envelope.
+ * Cross-process output can interleave provider-fallback notices, so a
+ * malformed pick must fail the test with the raw line instead of an
+ * unhandled SyntaxError, and the shape is asserted before use.
+ */
+function parseStderrEnvelope(stderr) {
+  const line = stderr.join("").split("\n").filter(Boolean).pop();
+  let envelope;
+  try {
+    envelope = JSON.parse(line);
+  } catch (err) {
+    assert.fail(`stderr last line is not a JSON error envelope: ${line} (${err.message})`);
+  }
+  assert.ok(envelope && typeof envelope === "object", `envelope is an object: ${line}`);
+  return envelope;
+}
+
+/**
+ * PR #183 F3: guarded single-document parse for stdout envelopes — same
+ * fail-with-raw-output discipline as the stderr pick.
+ */
+function parseStdoutEnvelope(stdout) {
+  const raw = stdout.join("");
+  let envelope;
+  try {
+    envelope = JSON.parse(raw);
+  } catch (err) {
+    assert.fail(`stdout is not a JSON document: ${raw} (${err.message})`);
+  }
+  assert.ok(envelope && typeof envelope === "object", `envelope is an object: ${raw}`);
+  return envelope;
+}
+
+// PR #183 F2: every manifest dir is registered and removed once the
+// file's suites finish (node:test `after`), instead of leaking in tmp.
+const manifestDirs = [];
+
 function writeManifest(manifest) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scoutline-iso-batch-"));
+  manifestDirs.push(dir);
   const file = path.join(dir, "manifest.json");
   fs.writeFileSync(file, JSON.stringify(manifest), "utf8");
   return { dir, file };
 }
+
+after(() => {
+  for (const dir of manifestDirs) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 /** Metadata-only descriptor double for parseBatchManifest unit calls. */
 const ZAI_ALL = {
@@ -122,7 +165,7 @@ describe("stateful commands refuse --isolated (#157b)", () => {
     const code = await main(["--isolated", "research", "deep query"], mainDeps);
     assert.strictEqual(code, 1);
     assert.strictEqual(stdout.length, 0, "no stdout data before rejection");
-    const envelope = JSON.parse(stderr.join("").split("\n").filter(Boolean).pop());
+    const envelope = parseStderrEnvelope(stderr);
     assert.strictEqual(envelope.code, "VALIDATION_ERROR");
     assert.strictEqual(envelope.error, "research cannot run under --isolated.");
     assert.match(
@@ -137,7 +180,7 @@ describe("stateful commands refuse --isolated (#157b)", () => {
     const code = await main(["--isolated", "crawl", "https://example.com/"], mainDeps);
     assert.strictEqual(code, 1);
     assert.strictEqual(stdout.length, 0);
-    const envelope = JSON.parse(stderr.join("").split("\n").filter(Boolean).pop());
+    const envelope = parseStderrEnvelope(stderr);
     assert.strictEqual(envelope.code, "VALIDATION_ERROR");
     assert.strictEqual(envelope.error, "crawl cannot run under --isolated.");
     assert.match(
@@ -171,7 +214,7 @@ describe("stateful commands refuse --isolated (#157b)", () => {
     const { stdout, stderr, mainDeps } = makeDeps([map.descriptor]);
     const code = await main(["--isolated", "map", "https://example.com/"], mainDeps);
     assert.strictEqual(code, 0, `stderr: ${JSON.stringify(stderr.join(""))}`);
-    const envelope = JSON.parse(stdout.join(""));
+    const envelope = parseStdoutEnvelope(stdout);
     assert.strictEqual(envelope.schemaVersion, 1);
     assert.strictEqual(envelope.baseUrl, "https://example.com/");
     assert.deepStrictEqual(envelope.urls, ["https://example.com/a"]);
@@ -190,7 +233,7 @@ describe("stateful commands refuse --isolated (#157b)", () => {
     });
     const code = await main(["map", "https://example.com/"], deps);
     assert.strictEqual(code, 0, `stderr: ${JSON.stringify(stderr.join(""))}`);
-    assert.strictEqual(JSON.parse(stdout.join("")).schemaVersion, 1);
+    assert.strictEqual(parseStdoutEnvelope(stdout).schemaVersion, 1);
   });
 });
 
@@ -204,6 +247,22 @@ describe("batch manifest rejects stateful ops under --isolated (#157b)", () => {
   // batch-manifest.test.js ("batch manifest isolated rejection") — the
   // manifest-parse home — not duplicated here (r2 review nit).
 
+  it("env SCOUTLINE_ISOLATED=\"true\" (no flag) drives the batch per-op refusal (PR #183 F1)", async () => {
+    const { file } = writeManifest({
+      schemaVersion: 1,
+      operations: [{ name: "op-r", command: "research", input: { query: "q" } }],
+    });
+    const search = makeSearchDescriptor();
+    const { stderr, mainDeps } = makeDeps([search]);
+    // NO --isolated flag on argv: the env form alone must reach the
+    // refusal through the same predicate the resolvers use.
+    mainDeps.env = { ...mainDeps.env, SCOUTLINE_ISOLATED: "true" };
+    const code = await main(["batch", file], mainDeps);
+    assert.strictEqual(code, 1);
+    const envelope = parseStderrEnvelope(stderr);
+    assert.match(envelope.error, /operations\[0\]/);
+  });
+
   it("main()-driven: batch manifest with a research op under --isolated rejects per-op before any op runs", async () => {
     const { file, dir } = writeManifest({
       schemaVersion: 1,
@@ -215,7 +274,7 @@ describe("batch manifest rejects stateful ops under --isolated (#157b)", () => {
       const code = await main(["--isolated", "batch", file], mainDeps);
       assert.strictEqual(code, 1);
       assert.strictEqual(stdout.length, 0, "no summary envelope on manifest rejection");
-      const envelope = JSON.parse(stderr.join("").split("\n").filter(Boolean).pop());
+      const envelope = parseStderrEnvelope(stderr);
       assert.strictEqual(envelope.code, "VALIDATION_ERROR");
       assert.match(envelope.error, /operations\[0\]/);
     } finally {
@@ -233,7 +292,7 @@ describe("batch manifest rejects stateful ops under --isolated (#157b)", () => {
       const { stdout, stderr, mainDeps } = makeDeps([search]);
       const code = await main(["--isolated", "batch", file], mainDeps);
       assert.strictEqual(code, 0, `stderr: ${JSON.stringify(stderr.join(""))}`);
-      const envelope = JSON.parse(stdout.join(""));
+      const envelope = parseStdoutEnvelope(stdout);
       assert.strictEqual(envelope.ok, 1);
       assert.strictEqual(envelope.failed, 0);
     } finally {

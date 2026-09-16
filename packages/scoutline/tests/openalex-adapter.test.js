@@ -420,6 +420,18 @@ describe("openalex search invoke — JSON mapping to ScienceWork (TASKS T4; DESI
     const works = await adapter.science.search.invoke({ query: "nonexistenttermxyz" });
     assert.deepEqual(works, []);
   });
+
+  it("a top-level ARRAY payload is read as the work list (#165)", async () => {
+    // GROUND: #165 — openalexResults bails on !isRecord, so a top-level
+    // array payload returned [] and the search yielded zero works.
+    // Defensive only (no observed wire shape): the array itself is the
+    // work list; each entry flows the normal normalize path.
+    const { adapter } = makeAdapter([WORK_DEEP_LEARNING, WORK_GAT]);
+    const works = await adapter.science.search.invoke({ query: "attention" });
+    assert.equal(works.length, 2, "both array entries normalize into works");
+    assert.equal(works[0].title, "Deep learning");
+    assert.equal(works[1].title, "Graph attention networks");
+  });
 });
 
 // ---------------------------------------------------------------------------

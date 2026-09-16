@@ -217,6 +217,7 @@ function mapWork(work: OpenalexWorkWire): ScienceWork {
 
 /** Extract the `results` array (search) or accept a single work (get). */
 function openalexResults(doc: unknown): unknown[] {
+  if (Array.isArray(doc)) return doc as unknown[]; // #165: top-level array = the work list
   if (!isRecord(doc)) return [];
   if (Array.isArray(doc["results"])) return doc["results"] as unknown[];
   return [doc];

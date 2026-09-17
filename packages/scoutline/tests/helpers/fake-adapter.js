@@ -37,7 +37,24 @@ import { decodeMapResult } from "../../dist/capabilities/map.js";
 import { decodeResearchResult } from "../../dist/capabilities/research.js";
 import { ValidationError } from "../../dist/lib/errors.js";
 
+/**
+ * #181 — every createFake* helper takes an OPTIONS OBJECT exclusively.
+ * A positional call (e.g. createFakeSearchDescriptor("my-id")) silently
+ * destructures the string's (nonexistent) properties and every default
+ * applies — a green-looking, wrong-configured double. Fail loud instead.
+ */
+function assertOptionsObject(fnName, arg, argCount) {
+  if (argCount === 0 || arg === undefined) return;
+  if (arg === null || typeof arg !== "object" || Array.isArray(arg)) {
+    throw new Error(
+      `${fnName}: expected a single options object, got ${arg === null ? "null" : Array.isArray(arg) ? "an array" : typeof arg}. ` +
+        `Usage: ${fnName}({ ... }) — see the helper's JSDoc.`,
+    );
+  }
+}
+
 export function createFakeAdapter(overrides = {}) {
+  assertOptionsObject("createFakeAdapter", arguments[0], arguments.length);
   const calls = {
     search: [],
     vision: [],
@@ -178,6 +195,7 @@ export function createFakeAdapter(overrides = {}) {
  *   evidence.
  */
 export function createFakeRepositoryCapability(options = {}) {
+  assertOptionsObject("createFakeRepositoryCapability", arguments[0], arguments.length);
   const apiKey = options.apiKey || "fake-adapter-key";
   const provider = options.provider || "fake";
   const fingerprint = crypto.createHash("sha256").update(apiKey).digest("hex");
@@ -318,6 +336,7 @@ export function createFakeRepositoryDescriptor({
   extraCapabilities = [],
   omitRepositoryOnAdapter = false,
 } = {}) {
+  assertOptionsObject("createFakeRepositoryDescriptor", arguments[0], arguments.length);
   const stats = {
     isConfiguredCalls: 0,
     capabilitiesCalls: 0,
@@ -444,6 +463,7 @@ export function createFakeRepositoryDescriptor({
  *   Adapter algorithm).
  */
 export function createFakeReaderCapability(options = {}) {
+  assertOptionsObject("createFakeReaderCapability", arguments[0], arguments.length);
   const apiKey = options.apiKey || "fake-adapter-key";
   const provider = options.provider || "fake";
   const fingerprint = crypto.createHash("sha256").update(apiKey).digest("hex");
@@ -557,6 +577,7 @@ export function createFakeReaderDescriptor({
   extraCapabilities = [],
   omitReaderOnAdapter = false,
 } = {}) {
+  assertOptionsObject("createFakeReaderDescriptor", arguments[0], arguments.length);
   const stats = {
     isConfiguredCalls: 0,
     capabilitiesCalls: 0,
@@ -729,6 +750,7 @@ function makeCapabilityDescriptor({
  *   lastRequest }` for the fetch operation.
  */
 export function createFakeCrawlCapability(options = {}) {
+  assertOptionsObject("createFakeCrawlCapability", arguments[0], arguments.length);
   const apiKey = options.apiKey || "fake-adapter-key";
   const providerId = options.provider || "fake";
   const fingerprint = crypto.createHash("sha256").update(apiKey).digest("hex");
@@ -775,6 +797,7 @@ export function createFakeCrawlDescriptor({
   extraCapabilities = [],
   omitCrawlOnAdapter = false,
 } = {}) {
+  assertOptionsObject("createFakeCrawlDescriptor", arguments[0], arguments.length);
   const stats = { isConfiguredCalls: 0, capabilitiesCalls: 0, createCalls: 0 };
   const descriptor = makeCapabilityDescriptor({
     id,
@@ -797,6 +820,7 @@ export function createFakeCrawlDescriptor({
  * @returns {{capability: object, stats: object, fingerprint: string}}
  */
 export function createFakeMapCapability(options = {}) {
+  assertOptionsObject("createFakeMapCapability", arguments[0], arguments.length);
   const apiKey = options.apiKey || "fake-adapter-key";
   const providerId = options.provider || "fake";
   const fingerprint = crypto.createHash("sha256").update(apiKey).digest("hex");
@@ -834,6 +858,7 @@ export function createFakeMapDescriptor({
   extraCapabilities = [],
   omitMapOnAdapter = false,
 } = {}) {
+  assertOptionsObject("createFakeMapDescriptor", arguments[0], arguments.length);
   const stats = { isConfiguredCalls: 0, capabilitiesCalls: 0, createCalls: 0 };
   const descriptor = makeCapabilityDescriptor({
     id,
@@ -860,6 +885,7 @@ export function createFakeMapDescriptor({
  * @returns {{capability: object, stats: object, fingerprint: string}}
  */
 export function createFakeResearchCapability(options = {}) {
+  assertOptionsObject("createFakeResearchCapability", arguments[0], arguments.length);
   const apiKey = options.apiKey || "fake-adapter-key";
   const providerId = options.provider || "fake";
   const fingerprint = crypto.createHash("sha256").update(apiKey).digest("hex");
@@ -897,6 +923,7 @@ export function createFakeResearchDescriptor({
   extraCapabilities = [],
   omitResearchOnAdapter = false,
 } = {}) {
+  assertOptionsObject("createFakeResearchDescriptor", arguments[0], arguments.length);
   const stats = { isConfiguredCalls: 0, capabilitiesCalls: 0, createCalls: 0 };
   const descriptor = makeCapabilityDescriptor({
     id,
@@ -926,6 +953,7 @@ export function createFakeResearchDescriptor({
  * @returns {{capability: object, stats: object, fingerprint: string}}
  */
 export function createFakeSearchCapability(options = {}) {
+  assertOptionsObject("createFakeSearchCapability", arguments[0], arguments.length);
   const apiKey = options.apiKey || "fake-adapter-key";
   const providerId = options.provider || "fake";
   const fingerprint = crypto.createHash("sha256").update(apiKey).digest("hex");
@@ -986,6 +1014,7 @@ export function createFakeSearchDescriptor({
   extraCapabilities = [],
   omitSearchOnAdapter = false,
 } = {}) {
+  assertOptionsObject("createFakeSearchDescriptor", arguments[0], arguments.length);
   const stats = { isConfiguredCalls: 0, capabilitiesCalls: 0, createCalls: 0 };
   const descriptor = makeCapabilityDescriptor({
     id,

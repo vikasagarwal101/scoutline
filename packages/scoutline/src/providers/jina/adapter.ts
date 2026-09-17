@@ -67,6 +67,7 @@ import {
 } from "../../lib/errors.js";
 import { resolveJinaApiKey, isJinaConfigured } from "./credentials.js";
 import { applySearchTopic } from "../../lib/search-topic.js";
+import { retryHintOptions } from "../../lib/retry-after.js";
 import { validateDomain } from "../../lib/domain-validation.js";
 import {
   fetchJinaReader,
@@ -79,6 +80,21 @@ import { createJinaQuotaCapability } from "./quota.js";
 
 function credentialFingerprint(apiKey: string | undefined): string {
   return crypto.createHash("sha256").update(apiKey || "keyless").digest("hex");
+}
+
+/**
+ * The parsed Provider retry hint on an inbound error, wrapped as
+ * constructor options (or nothing when absent).
+ *
+ * The transport already attached the hint to its own error (#186 P3);
+ * the rewrap below builds a FRESH `ApiError`, so the field has to be
+ * forwarded explicitly or it dies at this boundary and the shared
+ * executor never sees it. `retryHintOptions` keeps an absent hint as
+ * an omitted field rather than a materialized `undefined`.
+ */
+function jinaRetryHintOptions(error: unknown): { retryAfterMs?: number } {
+  const hint = (error as { retryAfterMs?: unknown } | null | undefined)?.retryAfterMs;
+  return retryHintOptions(typeof hint === "number" ? hint : undefined);
 }
 
 /**
@@ -122,14 +138,20 @@ function normalizeJinaError(error: unknown): Error {
       "Try again or increase timeout with JINA_TIMEOUT env var",
     );
   }
+  // Every ApiError rewrap below forwards the inbound hint: the transport
+  // parsed it off the Response (#186 P3), and this normalizer builds a
+  // FRESH error, so without the forward the shared executor never sees it
+  // (P3b). `AuthError` / `NetworkError` / `TimeoutError` take no options
+  // parameter — they are not retry-hint carriers by design.
+  const hintOptions = jinaRetryHintOptions(error);
   if (error instanceof ApiError) {
     const statusCode = error.statusCode || 500;
     if (statusCode === 429) {
-      return new ApiError("Jina AI rate limit exceeded", 429);
+      return new ApiError("Jina AI rate limit exceeded", 429, hintOptions);
     }
-    return new ApiError("Jina AI request failed", statusCode);
+    return new ApiError("Jina AI request failed", statusCode, hintOptions);
   }
-  return new ApiError("Jina AI request failed", 500);
+  return new ApiError("Jina AI request failed", 500, hintOptions);
 }
 
 function assertHttpUrl(url: unknown): asserts url is string {

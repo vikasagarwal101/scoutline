@@ -1532,3 +1532,88 @@ describe("Jina retry-hint seam — every status-map site reads the Response head
     assert.equal(hinted.message, bare.message, "the hint never reaches the message");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Retry-hint forwarding across the adapter boundary — Lane P P3b (#186)
+// ---------------------------------------------------------------------------
+
+describe("Jina retry-hint forwarding — the adapter rewrap keeps the parsed hint (#186 P3b)", () => {
+  // GROUND: the transport attaches the parsed hint to its OWN error (P3),
+  // but `normalizeJinaError` builds a FRESH ApiError. Without an explicit
+  // forward the hint dies at that boundary, so a 5xx driven through the
+  // PRODUCTION adapter path reaches the shared executor hint-less and the
+  // parsed `Retry-After` is inert. These pins drive the whole way:
+  // injected transport -> capability invoke -> normalizeJinaError -> caller.
+  function hintHeaders(pairs) {
+    const lower = new Map(
+      Object.entries(pairs).map(([k, v]) => [k.toLowerCase(), v]),
+    );
+    return { get: (name) => lower.get(String(name).toLowerCase()) ?? null };
+  }
+
+  function hintFetch(status, headers) {
+    return async () => ({
+      ok: false,
+      status,
+      headers: hintHeaders(headers),
+      text: async () => '{"message":"upstream"}',
+    });
+  }
+
+  function adapterOver(fetchImpl) {
+    return new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fetchImpl } },
+    );
+  }
+
+  function thrown(promise) {
+    return promise.then(() => null, (e) => e);
+  }
+
+  it("search.invoke: a 503 with Retry-After: 2 surfaces retryAfterMs 2000 on the normalized error", async () => {
+    const adapter = adapterOver(hintFetch(503, { "Retry-After": "2" }));
+    const err = await thrown(adapter.search.invoke({ query: "x" }));
+    assert.ok(err instanceof ApiError, "the normalized class is unchanged");
+    assert.equal(err.statusCode, 503);
+    assert.equal(
+      err.retryAfterMs,
+      2000,
+      "the parsed hint must survive the adapter rewrap (P3b)",
+    );
+  });
+
+  it("reader.fetch.invoke: the hint survives that rewrap too", async () => {
+    const adapter = adapterOver(hintFetch(503, { "Retry-After": "2" }));
+    const err = await thrown(adapter.reader.fetch.invoke({ url: "https://example.com" }));
+    assert.ok(err instanceof ApiError);
+    assert.equal(err.retryAfterMs, 2000);
+  });
+
+  it("search.invoke: absent hint headers → field absent AND message byte-identical", async () => {
+    const bare = await thrown(adapterOver(hintFetch(503, {})).search.invoke({ query: "x" }));
+    const hinted = await thrown(
+      adapterOver(hintFetch(503, { "Retry-After": "2" })).search.invoke({ query: "x" }),
+    );
+    assert.ok(bare instanceof ApiError);
+    assert.equal(bare.retryAfterMs, undefined, "an absent hint materializes no field");
+    assert.equal(hinted.message, bare.message, "the hint never reaches the message");
+    assert.equal(hinted.statusCode, bare.statusCode);
+  });
+
+  it("the verbatim outward messages are unchanged by the forwarding", async () => {
+    const fivexx = await thrown(adapterOver(hintFetch(503, {})).search.invoke({ query: "x" }));
+    assert.equal(fivexx.message, "Jina AI request failed");
+    const fourxx = await thrown(adapterOver(hintFetch(400, {})).search.invoke({ query: "x" }));
+    assert.equal(fourxx.message, "Jina AI request failed");
+    assert.equal(fourxx.statusCode, 400);
+  });
+
+  it("the 429 QuotaError keeps its class, terminal ruling, and informational hint", async () => {
+    const adapter = adapterOver(hintFetch(429, { "Retry-After": "60" }));
+    const err = await thrown(adapter.search.invoke({ query: "x" }));
+    assert.ok(err instanceof QuotaError, "the honest 429 class is unchanged");
+    assert.equal(err.retryAfterMs, 60000, "the hint still lands informationally");
+    assert.equal(err.retryable, false, "the terminal ruling is untouched by the hint");
+  });
+});

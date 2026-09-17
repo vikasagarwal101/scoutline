@@ -44,6 +44,7 @@ import {
   ValidationError,
 } from "../../lib/errors.js";
 import { applySearchTopic } from "../../lib/search-topic.js";
+import { retryHintOptions } from "../../lib/retry-after.js";
 import { requireBraveApiKey, isBraveConfigured } from "./credentials.js";
 import {
   fetchBraveSearch,
@@ -397,6 +398,21 @@ function braveApiErrorMessage(statusCode: number): string {
 }
 
 /**
+ * The parsed Provider retry hint on an inbound error, wrapped as
+ * constructor options (or nothing when absent).
+ *
+ * The transport already attached the hint to its own error (#186 P3);
+ * the rewrap below builds a FRESH `ApiError`, so the field has to be
+ * forwarded explicitly or it dies at this boundary and the shared
+ * executor never sees it. `retryHintOptions` keeps an absent hint as
+ * an omitted field rather than a materialized `undefined`.
+ */
+function braveRetryHintOptions(error: unknown): { retryAfterMs?: number } {
+  const hint = (error as { retryAfterMs?: unknown } | null | undefined)?.retryAfterMs;
+  return retryHintOptions(typeof hint === "number" ? hint : undefined);
+}
+
+/**
  * Normalize a Provider failure with sanitized messages. Raw response
  * bodies never cross the adapter boundary. Same pattern as
  * `normalizeTavilyError` / `normalizeMiniMaxError`.
@@ -429,9 +445,14 @@ function normalizeBraveError(error: unknown): Error {
       "Try again or increase timeout with BRAVE_TIMEOUT env var",
     );
   }
+  // Every ApiError rewrap below forwards the inbound hint: a retryable
+  // class that reaches the shared executor must still carry it (#186
+  // P3b). `AuthError` / `NetworkError` / `TimeoutError` take no options
+  // parameter — they are not retry-hint carriers by design.
+  const hintOptions = braveRetryHintOptions(error);
   if (error instanceof ApiError) {
     const statusCode = inferStatusCode("", error.statusCode);
-    return new ApiError(braveApiErrorMessage(statusCode), statusCode);
+    return new ApiError(braveApiErrorMessage(statusCode), statusCode, hintOptions);
   }
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
@@ -461,9 +482,9 @@ function normalizeBraveError(error: unknown): Error {
     return new NetworkError("Brave network error");
   }
   if (lower.includes("429") || lower.includes("rate limit")) {
-    return new ApiError("Brave rate limit exceeded", 429);
+    return new ApiError("Brave rate limit exceeded", 429, hintOptions);
   }
-  return new ApiError("Brave request failed", inferStatusCode(lower));
+  return new ApiError("Brave request failed", inferStatusCode(lower), hintOptions);
 }
 
 // ---------------------------------------------------------------------------

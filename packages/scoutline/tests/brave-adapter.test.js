@@ -1609,3 +1609,93 @@ describe("Brave retry-hint seam — every status-map site reads the Response hea
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Retry-hint forwarding across the adapter boundary — Lane P P3b (#186)
+// ---------------------------------------------------------------------------
+
+describe("Brave retry-hint forwarding — the adapter rewrap keeps the parsed hint (#186 P3b)", () => {
+  // GROUND: the transport attaches the parsed hint to its OWN error (P3),
+  // but `normalizeBraveError` builds a FRESH ApiError. Without an explicit
+  // forward the hint dies at that boundary, so a 5xx driven through the
+  // PRODUCTION search path reaches the shared executor hint-less and the
+  // parsed `X-RateLimit-Reset` is inert. These pins drive the whole way:
+  // injected transport -> search.invoke -> normalizeBraveError -> caller.
+  function hintHeaders(pairs) {
+    const lower = new Map(
+      Object.entries(pairs).map(([k, v]) => [k.toLowerCase(), v]),
+    );
+    return { get: (name) => lower.get(String(name).toLowerCase()) ?? null };
+  }
+
+  function hintFetch(status, headers) {
+    return async () => ({
+      ok: false,
+      status,
+      headers: hintHeaders(headers),
+      text: async () => "",
+      json: async () => ({}),
+      arrayBuffer: async () => new ArrayBuffer(0),
+    });
+  }
+
+  function adapterOver(fetchImpl) {
+    return createBraveDescriptor({ transport: { fetch: fetchImpl } }).create({
+      env: { BRAVE_SEARCH_API_KEY: TEST_API_KEY },
+    });
+  }
+
+  function thrown(promise) {
+    return promise.then(() => null, (e) => e);
+  }
+
+  const TWO_WINDOWS = {
+    "X-RateLimit-Policy": "1;w=1, 15000;w=2592000",
+    "X-RateLimit-Limit": "1, 15000",
+    "X-RateLimit-Remaining": "0, 14999",
+  };
+
+  it("search.invoke: a 503 with X-RateLimit-Reset: 2 surfaces retryAfterMs 2000 on the normalized error", async () => {
+    const adapter = adapterOver(hintFetch(503, { ...TWO_WINDOWS, "X-RateLimit-Reset": "2" }));
+    const err = await thrown(adapter.search.invoke({ query: "x" }));
+    assert.ok(err instanceof ApiError, "the normalized class is unchanged");
+    assert.equal(err.statusCode, 503);
+    assert.equal(
+      err.retryAfterMs,
+      2000,
+      "the parsed hint must survive the adapter rewrap (P3b)",
+    );
+  });
+
+  it("search.invoke: a scalar Retry-After also survives the rewrap", async () => {
+    const adapter = adapterOver(hintFetch(503, { "Retry-After": "3" }));
+    const err = await thrown(adapter.search.invoke({ query: "x" }));
+    assert.ok(err instanceof ApiError);
+    assert.equal(err.retryAfterMs, 3000);
+  });
+
+  it("search.invoke: absent hint headers → field absent AND message byte-identical", async () => {
+    const bare = await thrown(adapterOver(hintFetch(503, {})).search.invoke({ query: "x" }));
+    const hinted = await thrown(
+      adapterOver(hintFetch(503, { ...TWO_WINDOWS, "X-RateLimit-Reset": "2" })).search.invoke({
+        query: "x",
+      }),
+    );
+    assert.ok(bare instanceof ApiError);
+    assert.equal(bare.retryAfterMs, undefined, "an absent hint materializes no field");
+    assert.equal(hinted.message, bare.message, "the hint never reaches the message");
+    assert.equal(hinted.statusCode, bare.statusCode);
+  });
+
+  it("the verbatim outward messages are unchanged by the forwarding", async () => {
+    const fivexx = await thrown(adapterOver(hintFetch(503, {})).search.invoke({ query: "x" }));
+    assert.equal(fivexx.message, "Brave request failed");
+    const quota = await thrown(
+      adapterOver(hintFetch(429, { "Retry-After": "30" })).search.invoke({ query: "x" }),
+    );
+    assert.ok(quota instanceof QuotaError, "the 429 class is unchanged");
+    assert.equal(quota.message, "Brave quota exhausted. Check your Brave plan rate limits.");
+    assert.equal(quota.retryAfterMs, 30000, "the informational field still lands on the pass-through");
+    assert.equal(quota.retryable, false, "the #140 terminal ruling is untouched");
+  });
+});

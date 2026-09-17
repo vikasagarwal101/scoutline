@@ -193,6 +193,14 @@ type TavilyEndpointLabel = "search" | "extract" | "crawl" | "map" | "research" |
  * carrying the configured duration (and the `TAVILY_TIMEOUT` help
  * text). The transport never embeds credential material in any error
  * message.
+ *
+ * Retry-hint audit (Lane P P3, 2026-09): audited — Tavily documents NO
+ * `Retry-After` and no `X-RateLimit-*` delay-hint header; its documented
+ * rate signal is a 429 status with no timing metadata. The seam is
+ * available if that changes (`parseRetryAfterHintMs` in
+ * `lib/retry-after.ts`); wiring is deliberately omitted per lane P
+ * ruling 3 (no speculative wiring). Re-audit if Tavily ships a hint
+ * header.
  */
 function mapStatusError(
   status: number,

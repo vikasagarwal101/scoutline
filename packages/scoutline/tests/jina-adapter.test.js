@@ -7,6 +7,12 @@ import assert from "node:assert/strict";
 import { createJinaDescriptor, JinaAdapter } from "../dist/providers/jina/adapter.js";
 import { resolveJinaApiKey, isJinaConfigured } from "../dist/providers/jina/credentials.js";
 import {
+  fetchJinaDeepSearch,
+  fetchJinaRateLimit,
+  fetchJinaReader,
+  fetchJinaSearch,
+} from "../dist/providers/jina/client.js";
+import {
   ApiError,
   AuthError,
   ConfigurationError,
@@ -1432,5 +1438,97 @@ describe("Jina AI Quota (8J.5 telemetry)", () => {
         err.message.includes("Jina AI rate-limit probe failed") &&
         err.message.includes("socket exploded"),
     );
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Retry-After / rate-limit hint seam — Lane P P3 (#186)
+// ---------------------------------------------------------------------------
+
+describe("Jina retry-hint seam — every status-map site reads the Response headers (#186 P3)", () => {
+  // GROUND: Jina's documented rate headers are REMAINING COUNTERS only
+  // (`X-RateLimit-Remaining-Requests` / `-Tokens`, free-tier
+  // `x-ratelimit-limit` / `-remaining`) — no documented delay hint. Jina is
+  // Cloudflare-fronted (the client already special-cases CF's 524), and CF
+  // emits the RFC `Retry-After` on its own 429/503 answers, so the seam is
+  // wired at all four status-map sites and fires only when a header actually
+  // arrives. The doubles here stand in for that CF-originated header.
+  function hintHeaders(pairs) {
+    const lower = new Map(
+      Object.entries(pairs).map(([k, v]) => [k.toLowerCase(), v]),
+    );
+    return { get: (name) => lower.get(String(name).toLowerCase()) ?? null };
+  }
+
+  function hintFetch(status, headers) {
+    return async () => ({
+      ok: false,
+      status,
+      headers: hintHeaders(headers),
+      text: async () => '{"message":"upstream"}',
+    });
+  }
+
+  function thrown(promise) {
+    return promise.then(() => null, (e) => e);
+  }
+
+  const HINT = { "Retry-After": "2" };
+
+  it("reader: a 503 with Retry-After: 2 surfaces retryAfterMs 2000 on the ApiError", async () => {
+    const err = await thrown(
+      fetchJinaReader(undefined, "https://example.com", { fetch: hintFetch(503, HINT) }),
+    );
+    assert.ok(err instanceof ApiError, "503 keeps the pinned ApiError class");
+    assert.equal(err.statusCode, 503);
+    assert.equal(err.retryAfterMs, 2000, "RFC delta-seconds convert to ms");
+  });
+
+  it("search: a 503 with Retry-After: 2 surfaces retryAfterMs 2000 on the ApiError", async () => {
+    const err = await thrown(
+      fetchJinaSearch(TEST_KEY, "q", { fetch: hintFetch(503, HINT) }),
+    );
+    assert.ok(err instanceof ApiError);
+    assert.equal(err.retryAfterMs, 2000);
+  });
+
+  it("deepsearch: a 503 with Retry-After: 2 surfaces retryAfterMs 2000 on the ApiError", async () => {
+    const err = await thrown(
+      fetchJinaDeepSearch(TEST_KEY, "q", { fetch: hintFetch(503, HINT) }),
+    );
+    assert.ok(err instanceof ApiError);
+    assert.equal(err.retryAfterMs, 2000);
+  });
+
+  it("quota probe: a 503 with Retry-After: 2 surfaces retryAfterMs 2000 on the ApiError", async () => {
+    const err = await thrown(
+      fetchJinaRateLimit(TEST_KEY, { fetch: hintFetch(503, HINT) }),
+    );
+    assert.ok(err instanceof ApiError);
+    assert.equal(err.retryAfterMs, 2000);
+  });
+
+  it("a 429 QuotaError carries the hint informationally (class + terminal ruling unchanged)", async () => {
+    const err = await thrown(
+      fetchJinaReader(undefined, "https://example.com", {
+        fetch: hintFetch(429, { "Retry-After": "60" }),
+      }),
+    );
+    assert.ok(err instanceof QuotaError, "the honest 429 class is unchanged");
+    assert.equal(err.retryAfterMs, 60000, "the hint lands as an informational field");
+    assert.equal(err.retryable, false, "the terminal ruling is untouched by the hint");
+  });
+
+  it("absent hint headers → the field stays absent and the message is byte-identical", async () => {
+    const bare = await thrown(
+      fetchJinaReader(undefined, "https://example.com", { fetch: hintFetch(503, {}) }),
+    );
+    const hinted = await thrown(
+      fetchJinaReader(undefined, "https://example.com", { fetch: hintFetch(503, HINT) }),
+    );
+    assert.ok(bare instanceof ApiError);
+    assert.equal(bare.retryAfterMs, undefined, "absent headers contribute no field");
+    assert.equal(hinted.message, bare.message, "the hint never reaches the message");
   });
 });

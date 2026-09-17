@@ -6,6 +6,10 @@
 
 import pkg from "../../../package.json" with { type: "json" };
 import { ApiError, AuthError, NetworkError, QuotaError, TimeoutError } from "../../lib/errors.js";
+import {
+  parseRetryAfterHintMs,
+  retryHintOptions,
+} from "../../lib/retry-after.js";
 import type { ProviderQuotaFetchResponse } from "../types.js";
 
 const { version: VERSION } = pkg;
@@ -129,10 +133,21 @@ function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
  *     otherwise → {@link AuthError} (invalid/missing credentials).
  *   - 401 → {@link AuthError}.
  *
+ * `hintMs` — the Provider's parsed retry delay (#186 P3). Jina's documented
+ * rate headers are REMAINING COUNTERS only (`X-RateLimit-Remaining-Requests`
+ * / `-Tokens`, free-tier `x-ratelimit-limit` / `-remaining`) with no delay
+ * hint. Jina is Cloudflare-fronted (the 524 branch above is CF's
+ * origin-timeout), and CF emits the RFC `Retry-After` on its own 429/503
+ * answers — so the seam is wired at every status-map site and stays a no-op
+ * until such a header actually arrives. Retryable ApiErrors carry it to the
+ * shared executor; the terminal QuotaError branches carry it
+ * informationally (`retryable: false` is fixed — the #140 ruling), and an
+ * absent hint attaches nothing, so every error path stays byte-identical.
+ *
  * The transport never embeds credential material or raw response bodies
  * in any error message.
  */
-function mapStatusError(status: number, timeoutMs: number, errorBody?: string, timeoutHelpText: string = TIMEOUT_HELP_TEXT): Error {
+function mapStatusError(status: number, timeoutMs: number, errorBody?: string, timeoutHelpText: string = TIMEOUT_HELP_TEXT, hintMs?: number): Error {
   if (status === 401) {
     return new AuthError("Jina AI authentication failed", "JINA_API_KEY");
   }
@@ -157,6 +172,7 @@ function mapStatusError(status: number, timeoutMs: number, errorBody?: string, t
       return new QuotaError(
         "Jina AI quota exhausted. Insufficient balance or resource limit.",
         "Check your Jina AI account balance and plan at jina.ai",
+        retryHintOptions(hintMs),
       );
     }
     return new AuthError("Jina AI authentication failed", "JINA_API_KEY");
@@ -171,15 +187,24 @@ function mapStatusError(status: number, timeoutMs: number, errorBody?: string, t
     return new QuotaError(
       "Jina AI rate limit exceeded.",
       "Try again later or upgrade your Jina AI plan for higher rate limits",
+      retryHintOptions(hintMs),
     );
   }
   if (status >= 400 && status < 500) {
-    return new ApiError(`Jina AI API client error (${status})`, status);
+    return new ApiError(
+      `Jina AI API client error (${status})`,
+      status,
+      retryHintOptions(hintMs),
+    );
   }
   if (status >= 500) {
-    return new ApiError(`Jina AI API server error (${status})`, status);
+    return new ApiError(
+      `Jina AI API server error (${status})`,
+      status,
+      retryHintOptions(hintMs),
+    );
   }
-  return new ApiError(`Jina AI request failed (${status})`, status);
+  return new ApiError(`Jina AI request failed (${status})`, status, retryHintOptions(hintMs));
 }
 
 export async function fetchJinaReader(
@@ -252,7 +277,13 @@ export async function fetchJinaReader(
 
     if (!response.ok) {
       const errorBody = await readErrorBody(response);
-      throw mapStatusError(response.status, clientTimeoutMs, errorBody);
+      throw mapStatusError(
+        response.status,
+        clientTimeoutMs,
+        errorBody,
+        TIMEOUT_HELP_TEXT,
+        parseRetryAfterHintMs(response.headers),
+      );
     }
 
     const text = await response.text();
@@ -349,7 +380,13 @@ export async function fetchJinaSearch(
 
     if (!response.ok) {
       const errorBody = await readErrorBody(response);
-      throw mapStatusError(response.status, timeoutMs, errorBody);
+      throw mapStatusError(
+        response.status,
+        timeoutMs,
+        errorBody,
+        TIMEOUT_HELP_TEXT,
+        parseRetryAfterHintMs(response.headers),
+      );
     }
 
     const text = await response.text();
@@ -630,7 +667,13 @@ export async function fetchJinaDeepSearch(
 
     if (!response.ok) {
       const errorBody = await readErrorBody(response);
-      throw mapStatusError(response.status, timeoutMs, errorBody, DEEPSEARCH_TIMEOUT_HELP_TEXT);
+      throw mapStatusError(
+        response.status,
+        timeoutMs,
+        errorBody,
+        DEEPSEARCH_TIMEOUT_HELP_TEXT,
+        parseRetryAfterHintMs(response.headers),
+      );
     }
 
     const text = await response.text();
@@ -749,7 +792,13 @@ export async function fetchJinaRateLimit(
 
     if (!response.ok) {
       const errorBody = await readErrorBody(response);
-      throw mapStatusError(response.status, timeoutMs, errorBody);
+      throw mapStatusError(
+        response.status,
+        timeoutMs,
+        errorBody,
+        TIMEOUT_HELP_TEXT,
+        parseRetryAfterHintMs(response.headers),
+      );
     }
 
     // Drain the body to free the socket — only headers are needed.

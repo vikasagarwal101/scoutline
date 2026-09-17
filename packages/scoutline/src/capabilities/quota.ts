@@ -23,10 +23,11 @@
  *     are omitted rather than fabricated. Additive under QuotaDashboard
  *     schema v1.
  *   - A Provider whose counts are invalid but which publishes an exact
- *     `remaining` (e.g. Z.AI's cumulative `currentValue` past the
- *     window cap — GitHub #109) has `remaining` published verbatim next
- *     to any explicit remaining percentage; counts are omitted rather
- *     than derived from contradicting fields.
+ *     `remaining` (historically Z.AI's cumulative `currentValue` past
+ *     the window cap — GitHub #109; the zai adapter now rejects such
+ *     entries whole — #191) has `remaining` published verbatim next to
+ *     any explicit remaining percentage; counts are omitted rather than
+ *     derived from contradicting fields.
  *   - Invalid optional counts are omitted together (not set to zero).
  *   - A category that has neither a valid percentage, nor valid counts,
  *     nor an explicit remaining is rejected with `QUOTA_ERROR`.
@@ -210,10 +211,13 @@ export interface QuotaWindowInputs {
    * (GitHub #49) a window whose limit is unknown and neither an
    * explicit percentage nor a valid count set is present — the built
    * window carries `remaining` verbatim and omits `used`, `limit`, and
-   * `remainingPercent`; and (GitHub #109) a window whose counts are
-   * invalid — `remaining` is published verbatim next to any explicit
-   * remaining percentage, counts omitted. Nothing is ever inferred
-   * from tier tables or fabricated as a percentage.
+   * `remainingPercent`; and (GitHub #109 — historically Z.AI's
+   * cumulative `currentValue` past the window cap; the zai adapter now
+   * rejects such entries whole — #191, though the branch stays for
+   * other Providers) a window whose counts are invalid — `remaining`
+   * is published verbatim next to any explicit remaining percentage,
+   * counts omitted. Nothing is ever inferred from tier tables or
+   * fabricated as a percentage.
    */
   remaining?: number;
 }
@@ -349,8 +353,9 @@ export function buildQuotaWindow(inputs: QuotaWindowInputs): QuotaWindow {
     inputs.remaining >= 0
   ) {
     // Invalid counts but a Provider-published EXACT remaining count
-    // (e.g. Z.AI cumulative currentValue > cap): publish `remaining`
-    // verbatim next to any explicit percentage; never derive counts.
+    // (historically Z.AI cumulative currentValue > cap — #191 now
+    // rejects such entries whole): publish `remaining` verbatim next to
+    // any explicit percentage; never derive counts.
     // Ordered after the #99 used-only path so every pre-existing
     // accepting input keeps its exact pre-#109 shape.
     window.remaining = inputs.remaining;

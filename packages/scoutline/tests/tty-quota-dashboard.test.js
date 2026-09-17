@@ -84,19 +84,45 @@ describe("quota dashboard TTY rendering (#49 ripple)", () => {
   });
 
   it("renders no per-tool rows when toolUsage is absent (no empty scaffolding)", () => {
-    const out = formatQuotaDashboard({
+    // The renderer never prints the literal word "tool", so an absence
+    // pin on that string is vacuous. Honest form: render the SAME
+    // category with and without toolUsage and require the row count to
+    // differ by exactly the number of tool rows — an extra rendered row
+    // under the counts line would shift the count.
+    const category = {
+      name: "requests",
+      unit: "requests",
+      current: { used: 750, limit: 1000, remaining: 250, remainingPercent: 25 },
+    };
+    const withTools = formatQuotaDashboard({
       providers: [
         {
-          provider: "minimax",
+          provider: "zai",
           status: "ok",
           categories: [
-            { name: "abab6.5s", unit: "requests", current: { remainingPercent: 70 } },
+            {
+              ...category,
+              toolUsage: [
+                { tool: "search-prime", usage: 500 },
+                { tool: "web-reader", usage: 250 },
+              ],
+            },
           ],
         },
       ],
     });
-    assert.ok(!out.includes("undefined"));
-    assert.strictEqual(out.includes("tool"), false, `no per-tool scaffolding: ${out}`);
+    const withoutTools = formatQuotaDashboard({
+      providers: [{ provider: "zai", status: "ok", categories: [{ ...category }] }],
+    });
+    assert.ok(!withoutTools.includes("undefined"));
+    for (const line of withoutTools.split("\n")) {
+      assert.doesNotMatch(line, /search-prime|web-reader/, `no tool id in any line: ${line}`);
+    }
+    assert.strictEqual(
+      withoutTools.split("\n").length,
+      withTools.split("\n").length - 2,
+      `no-toolUsage render must have exactly two fewer lines:\n--- with ---\n${withTools}\n--- without ---\n${withoutTools}`,
+    );
   });
 
   it("renders a used-only window's observed count (#99 residue)", () => {

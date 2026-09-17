@@ -721,7 +721,10 @@ additive optional fields to both schemas
 Parallel, Perplexity, You.com),
 and each `doctor` provider entry may carry `quota: { source:
 "snapshot" | "none", observedAt?, authoritative }` plus `verification:
-{ status, checkedAt, reason? }`. Each doctor row also carries
+{ status, checkedAt, reason? }`. Each `quota` requests category may
+also carry an additive optional `toolUsage` array of per-tool
+consumption rows (rendered on the TTY; carried verbatim in json/data;
+no version bump). Each doctor row also carries
 `availability: "ok" | "exhausted" | "error" | "unconfigured"`
 (snapshot-based exhaustion evidence, healthy-first row ordering,
 `availableProviders` short list; `--available` filters the rows to

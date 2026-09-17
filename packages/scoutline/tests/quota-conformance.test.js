@@ -675,6 +675,33 @@ describe("Z.AI quota normalization", () => {
     assert.strictEqual(JSON.stringify(category.current), "{}");
   });
 
+  it("emits an empty window when a consistent sum hides a single guard-term violation (#191)", () => {
+    // Teeth pins for guard terms the older corruption tests do not
+    // isolate: each entry below PASSES the |usage-used-remaining|<=1 sum
+    // check and every positivity check, so exactly ONE term of the
+    // consistency predicate is what rejects it. The normalizer keeps only
+    // the FIRST TIME_LIMIT entry, so each term gets its own payload.
+    const cases = [
+      // remaining (1001) above the cap (1000): only "remaining <= usage"
+      // rejects — currentValue 0 keeps the sum consistent.
+      { marker: "remaining-over-cap", usage: 1000, currentValue: 0, remaining: 1001, percentage: 0 },
+      // percentage 150 over 100: counts are perfectly consistent.
+      { marker: "percent-over-100", usage: 1000, currentValue: 100, remaining: 900, percentage: 150 },
+      // percentage -5 under 0: counts are perfectly consistent.
+      { marker: "percent-negative", usage: 1000, currentValue: 100, remaining: 900, percentage: -5 },
+    ];
+    const failures = [];
+    for (const { marker, ...fields } of cases) {
+      const normalized = normalizeZaiQuota({
+        level: "pro",
+        limits: [{ type: "TIME_LIMIT", unit: 5, number: 1, nextResetTime: 1791411480983, ...fields }],
+      });
+      const current = normalized.categories.find((c) => c.name === "requests").current;
+      if (JSON.stringify(current) !== "{}") failures.push(marker);
+    }
+    assert.deepStrictEqual(failures, [], "each single-term violation must suppress the window");
+  });
+
   it("prefers the raw percentage over counts derivation when TIME_LIMIT is consistent (#191)", () => {
     // 100 - percentage(11) = 89 remaining, NOT the counts-derived 88.7
     // ((1000 - 113) / 1000 * 100). Raw-field trust is the ruling.

@@ -850,6 +850,121 @@ describe("OpenAlex 429 — keyless rate limit maps to QuotaError (DESIGN D4b hon
   });
 });
 
+/** Case-insensitive Headers double mirroring the fetch `Headers` contract. */
+function headersOf(values = {}) {
+  const lower = new Map();
+  for (const [key, value] of Object.entries(values)) {
+    lower.set(key.toLowerCase(), value);
+  }
+  return {
+    get(name) {
+      const hit = lower.get(String(name).toLowerCase());
+      return hit === undefined ? null : hit;
+    },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Retry-After / rate-limit header seam — Lane P P2 (#186)
+// ---------------------------------------------------------------------------
+
+describe("OpenAlex retry-hint seam — status-map site reads the Response headers (#186 P2)", () => {
+  // GROUND: OpenAlex documents `X-RateLimit-Reset` as SECONDS UNTIL RESET
+  // (relative, midnight UTC) on every response; it documents no
+  // `Retry-After`. The emitter form pinned here is the DOCUMENTED one —
+  // `X-RateLimit-Reset` — plus a `Retry-After` variant that proves the
+  // parser/transport seam handles the RFC form too. #186 is about the
+  // executor honoring hints; these pins are the producer end.
+  function hintDescriptor(status, headers) {
+    return createOpenalexDescriptor({
+      transport: {
+        fetch: async () => ({ ok: false, status, headers, text: async () => "" }),
+      },
+    });
+  }
+
+  it("a 503 with X-RateLimit-Reset: 2 surfaces retryAfterMs 2000 on the ApiError", async () => {
+    const adapter = hintDescriptor(503, headersOf({ "X-RateLimit-Reset": "2" })).create({ env: {} });
+    await assert.rejects(
+      adapter.science.search.invoke({ query: "x" }),
+      (e) => {
+        assert.ok(e instanceof ApiError, "503 keeps the documented ApiError class");
+        assert.equal(e.statusCode, 503);
+        assert.equal(e.retryAfterMs, 2000, "relative reset seconds convert to ms");
+        return true;
+      },
+    );
+  });
+
+  it("a 503 with the RFC Retry-After: 2 form surfaces retryAfterMs 2000 (seam pin — OpenAlex does not document it)", async () => {
+    const adapter = hintDescriptor(503, headersOf({ "Retry-After": "2" })).create({ env: {} });
+    await assert.rejects(
+      adapter.science.search.invoke({ query: "x" }),
+      (e) => {
+        assert.ok(e instanceof ApiError);
+        assert.equal(e.retryAfterMs, 2000, "the RFC delta-seconds form rides the same seam");
+        return true;
+      },
+    );
+  });
+
+  it("the hint is ADDITIVE — the pinned 503 remedy message is byte-identical with and without a hint", async () => {
+    const withoutHint = hintDescriptor(503, headersOf({})).create({ env: {} });
+    const withHint = hintDescriptor(503, headersOf({ "X-RateLimit-Reset": "2" })).create({ env: {} });
+    let bare;
+    let hinted;
+    await assert.rejects(withoutHint.science.search.invoke({ query: "x" }), (e) => {
+      bare = e;
+      return true;
+    });
+    await assert.rejects(withHint.science.search.invoke({ query: "x" }), (e) => {
+      hinted = e;
+      return true;
+    });
+    assert.equal(hinted.message, bare.message, "the remedy text is unchanged by the hint");
+    assert.match(bare.message, /anonymous search may be paused under load/);
+  });
+
+  it("a 429 with X-RateLimit-Reset: 3600 surfaces retryAfterMs 3600000 on the QuotaError (informational only)", async () => {
+    const adapter = hintDescriptor(429, headersOf({ "X-RateLimit-Reset": "3600" })).create({ env: {} });
+    await assert.rejects(
+      adapter.science.search.invoke({ query: "x" }),
+      (e) => {
+        assert.ok(e instanceof QuotaError, "the honest 429 class is unchanged");
+        assert.equal(e.statusCode, 429);
+        // 3600 SECONDS until reset → 3_600_000 ms; the field is always ms.
+        assert.equal(e.retryAfterMs, 3600000, "the hint lands as an informational field");
+        assert.equal(e.retryable, false, "the #140 terminal ruling is untouched by the hint");
+        return true;
+      },
+    );
+  });
+
+  it("no hint headers → the field stays absent (byte-identical error path)", async () => {
+    const adapter = hintDescriptor(503, headersOf({ "Content-Type": "application/json" })).create({ env: {} });
+    await assert.rejects(
+      adapter.science.search.invoke({ query: "x" }),
+      (e) => {
+        assert.ok(e instanceof ApiError);
+        assert.equal(e.retryAfterMs, undefined, "absent headers contribute no field");
+        return true;
+      },
+    );
+  });
+
+  it("a garbage hint value contributes nothing (no invented delay)", async () => {
+    const adapter = hintDescriptor(503, headersOf({ "X-RateLimit-Reset": "soon" })).create({ env: {} });
+    await assert.rejects(
+      adapter.science.search.invoke({ query: "x" }),
+      (e) => {
+        assert.equal(e.retryAfterMs, undefined, "unparseable header → field omitted");
+        return true;
+      },
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Bounded response execution hardening (#150)
 // ---------------------------------------------------------------------------

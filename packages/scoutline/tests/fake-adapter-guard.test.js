@@ -51,6 +51,14 @@ describe("#181 — createFake* helpers reject positional arguments", () => {
     });
   }
 
+  it("#194 review: the guard labels null as \"null\", not \"object\"", () => {
+    assert.throws(
+      () => createFakeAdapter(null),
+      /got null\./,
+      "typeof null === 'object' — the label must special-case null",
+    );
+  });
+
   it("the original repro: createFakeSearchDescriptor(\"my-id\") no longer silently keeps id \"fake\"", () => {
     assert.throws(() => createFakeSearchDescriptor("my-id"));
   });

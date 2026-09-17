@@ -47,7 +47,7 @@ function assertOptionsObject(fnName, arg, argCount) {
   if (argCount === 0 || arg === undefined) return;
   if (arg === null || typeof arg !== "object" || Array.isArray(arg)) {
     throw new Error(
-      `${fnName}: expected a single options object, got ${Array.isArray(arg) ? "an array" : typeof arg}. ` +
+      `${fnName}: expected a single options object, got ${arg === null ? "null" : Array.isArray(arg) ? "an array" : typeof arg}. ` +
         `Usage: ${fnName}({ ... }) — see the helper's JSDoc.`,
     );
   }

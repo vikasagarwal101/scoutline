@@ -27,7 +27,10 @@
  */
 
 import type { ProviderId } from "../providers/types.js";
-import { getProviderQuotaCategoryNames } from "./quota-mapping.js";
+import {
+  getProviderQuotaCategoryNames,
+  SNAPSHOT_EXHAUSTION_EXEMPT_PROVIDERS,
+} from "./quota-mapping.js";
 import { isQuotaSnapshotStale, type ProviderQuotaSnapshot } from "./quota-store.js";
 
 // ---------------------------------------------------------------------------
@@ -101,7 +104,13 @@ export function classifyAvailability(
   if (row.status === "skipped" && row.reason === "not-configured") {
     return "unconfigured";
   }
-  if (snapshotEntry !== undefined && !isQuotaSnapshotStale(snapshotEntry, now)) {
+  if (
+    snapshotEntry !== undefined &&
+    !isQuotaSnapshotStale(snapshotEntry, now) &&
+    // #191: exempt providers' categories are plan telemetry, not gates —
+    // a fresh 0% reading never fabricates "exhausted" for them.
+    !SNAPSHOT_EXHAUSTION_EXEMPT_PROVIDERS.has(row.provider)
+  ) {
     const relevant = getProviderQuotaCategoryNames(row.provider);
     const exhausted =
       relevant === undefined || relevant.size === 0

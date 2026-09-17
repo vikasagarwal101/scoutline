@@ -64,7 +64,10 @@ const ZAI_CATEGORIES_5 = [
   { name: "tokens", unit: "tokens", current: { remainingPercent: 100 } },
 ];
 
-const ZAI_CATEGORIES_0 = [
+// (#191: renamed from DEPLETED_REQUESTS — the exhausted subject flipped
+// from zai, now snapshot-exhaustion-exempt, to tavily, whose `requests`
+// fallback category IS a mapped gate.)
+const DEPLETED_REQUESTS = [
   {
     name: "requests",
     unit: "requests",
@@ -349,15 +352,15 @@ describe("resolveEffectiveProvider: KNOWN_EXHAUSTED demotion (#97)", () => {
     // resolver is called without `now`, so it evaluates freshness
     // against the current clock — the production shape.
     const snapshot = await stateWith([
-      { provider: "zai", categories: ZAI_CATEGORIES_0, observedAt: Date.now() - 60_000 },
+      { provider: "tavily", categories: DEPLETED_REQUESTS, observedAt: Date.now() - 60_000 },
       // exa has no snapshot entry: a natural unknown-tier provider.
     ]);
     const result = resolveEffectiveProvider({
       explicitProvider: undefined,
-      env: { Z_AI_API_KEY: "z", EXA_API_KEY: "e" },
+      env: { TAVILY_API_KEY: "t", EXA_API_KEY: "e" },
       capabilityId: "search",
       descriptors: [
-        makeDescriptor("zai", { configured: true, capabilities: ["search"] }),
+        makeDescriptor("tavily", { configured: true, capabilities: ["search"] }),
         makeDescriptor("exa", { configured: true, capabilities: ["search"] }),
       ],
       quotaSnapshot: snapshot,
@@ -368,42 +371,43 @@ describe("resolveEffectiveProvider: KNOWN_EXHAUSTED demotion (#97)", () => {
   it("threads an explicit `now` into the ranker; without one the resolver uses the current clock", async () => {
     const observedAt = 1_700_000_000_000;
     const snapshot = await stateWith([
-      { provider: "zai", categories: ZAI_CATEGORIES_0, observedAt },
+      { provider: "tavily", categories: DEPLETED_REQUESTS, observedAt },
       { provider: "exa", categories: [] },
     ]);
     const options = {
       explicitProvider: undefined,
-      env: { Z_AI_API_KEY: "z", EXA_API_KEY: "e" },
+      env: { TAVILY_API_KEY: "t", EXA_API_KEY: "e" },
       capabilityId: "search",
       descriptors: [
-        makeDescriptor("zai", { configured: true, capabilities: ["search"] }),
+        makeDescriptor("tavily", { configured: true, capabilities: ["search"] }),
         makeDescriptor("exa", { configured: true, capabilities: ["search"] }),
       ],
       quotaSnapshot: snapshot,
     };
-    // Explicit `now` within the horizon ⇒ zai demotes, exa wins.
+    // Explicit `now` within the horizon ⇒ tavily demotes, exa wins.
     assert.strictEqual(
       resolveEffectiveProvider({ ...options, now: observedAt + 1_000 }),
       "exa",
     );
     // No `now` ⇒ current clock. The Nov-2023 snapshot is far older
-    // than the 24h horizon, so zai stays known-at-0 and wins — the
+    // than the 24h horizon, so tavily stays known-at-0 and wins — the
     // pre-#97 behavior for stale evidence flows through the resolver.
-    assert.strictEqual(resolveEffectiveProvider(options), "zai");
+    assert.strictEqual(resolveEffectiveProvider(options), "tavily");
   });
 
   it("dispatch: a fresh-0% known provider is demoted below the unknown tier (exa is invoked first)", async () => {
+    // (#191 subject swap: tavily exhausted, exa natural unknown.)
     const snapshot = await stateWith([
-      { provider: "zai", categories: ZAI_CATEGORIES_0, observedAt: Date.now() - 60_000 },
+      { provider: "tavily", categories: DEPLETED_REQUESTS, observedAt: Date.now() - 60_000 },
     ]);
     const built = [
-      makeDispatchDescriptor("zai", "Z_AI_API_KEY", "search", () => []),
+      makeDispatchDescriptor("tavily", "TAVILY_API_KEY", "search", () => []),
       makeDispatchDescriptor("exa", "EXA_API_KEY", "search", () => []),
     ];
     const { adapter, stderr } = createTestAdapter();
     const status = await main(["search", "hello"], {
       invocation: adapter,
-      env: { Z_AI_API_KEY: "z", EXA_API_KEY: "e", SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
+      env: { TAVILY_API_KEY: "t", EXA_API_KEY: "e", SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
       providerDescriptors: built.map((b) => b.descriptor),
       quotaState: snapshot,
       // #63: pin fanout-off (mirrors the DISPATCH_CASES harness).

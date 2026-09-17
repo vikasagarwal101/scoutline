@@ -585,6 +585,23 @@ export interface QuotaMappingWarning {
  * policy row; the scorer treats undefined as `"always-unknown"` so an
  * unmapped provider never accidentally wins.
  */
+/**
+ * #191 — providers whose quota-API categories are PLAN TELEMETRY, not
+ * capability gates, and therefore never fabricate exhaustion evidence.
+ * zai: the quota endpoint's `requests` bucket was observed at 0%
+ * remaining (used 5067/1000) while MCP search/reader calls succeeded —
+ * the bucket that actually gates MCP tools is not exposed by this
+ * endpoint at all. Exempt providers keep their known-tier SCORE (a 0%
+ * reading still sorts them last within the known tier) but are exempt
+ * from (a) the #97 KNOWN_EXHAUSTED demotion and (b) doctor's
+ * snapshot-based "exhausted" availability. Real exhaustion still
+ * surfaces honestly at call time (typed QUOTA_ERROR) and through
+ * doctor's probe-error class.
+ */
+export const SNAPSHOT_EXHAUSTION_EXEMPT_PROVIDERS: ReadonlySet<ProviderId> = new Set([
+  "zai",
+]);
+
 export function getProviderAuthorityPolicy(
   provider: ProviderId,
 ): ProviderAuthorityPolicy | undefined {
@@ -999,6 +1016,7 @@ export function rankProvidersForCapability(
     const onWarning = options.onWarning ?? (() => {});
     for (const s of staged) {
       if (s.score.authority !== "known" || s.score.score !== 0) continue;
+      if (SNAPSHOT_EXHAUSTION_EXEMPT_PROVIDERS.has(s.provider)) continue; // #191
       if (!getCapabilityMapping(s.provider, capability)) continue;
       const snapshot = state.quota[s.provider];
       if (!snapshot) continue;

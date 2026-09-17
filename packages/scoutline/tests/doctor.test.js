@@ -1327,10 +1327,12 @@ describe("doctor availability — classification and ordering (#94)", () => {
       ),
       "unconfigured",
     );
-    // exhausted beats error: probe failure + fresh 0% evidence.
+    // exhausted beats error: probe failure + fresh 0% evidence. (#191
+    // flipped the subject from zai — now exemption — to tavily, whose
+    // `requests` fallback category IS a mapped gate.)
     assert.strictEqual(
       classifyAvailability(
-        { status: "error", provider: "zai" },
+        { status: "error", provider: "tavily" },
         availabilitySnapshot([["requests", 0]]),
         AVAIL_NOW,
       ),
@@ -1418,18 +1420,52 @@ describe("doctor availability — classification and ordering (#94)", () => {
     assert.deepStrictEqual(report.availableProviders, ["minimax"]);
   });
 
-  it("probe-ok row with a fresh capability-relevant category at 0% is exhausted", async () => {
+  it("#191: zai is EXEMPT from snapshot exhaustion — a fresh 0% requests category stays ok", async () => {
+    // The quota API's `requests` bucket is plan telemetry, not the MCP
+    // gate: observed 0% while MCP search/read calls succeed (2026-09-16
+    // live evidence, issue #191). zai availability falls through to the
+    // probe outcome; real exhaustion still surfaces at call time as a
+    // typed QUOTA_ERROR.
     const descriptors = [makeZaiDescriptor({ listToolsImpl: () => [] })];
     const report = await buildDiagnosticsReport(
       availabilityDeps({
         descriptors,
         env: { Z_AI_API_KEY: ZAI_KEY },
-        quotaSnapshot: { version: 1, quota: { zai: availabilitySnapshot([["tokens", 0]]) } },
+        quotaSnapshot: { version: 1, quota: { zai: availabilitySnapshot([["requests", 0]]) } },
       }),
     );
     const zai = report.providers[0];
-    assert.strictEqual(zai.status, "ok", "probe outcome is preserved");
-    assert.strictEqual(zai.availability, "exhausted");
+    assert.strictEqual(zai.status, "ok");
+    assert.strictEqual(zai.availability, "ok", "exempt provider never fabricates exhaustion");
+    assert.deepStrictEqual(report.availableProviders, ["zai"]);
+  });
+
+  it("probe-ok row with a fresh capability-relevant category at 0% is exhausted", async () => {
+    // (#191 flipped the subject from zai to tavily — zai is exempt, its
+    // categories are plan telemetry not gates.)
+    const descriptors = [
+      createTavilyDescriptor({
+        transport: {
+          fetch: async () =>
+            new Response(JSON.stringify({ query: "probe", results: [] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          setTimeout: () => 0,
+          clearTimeout: () => {},
+        },
+      }),
+    ];
+    const report = await buildDiagnosticsReport(
+      availabilityDeps({
+        descriptors,
+        env: { TAVILY_API_KEY: "tvly-test" },
+        quotaSnapshot: { version: 1, quota: { tavily: availabilitySnapshot([["requests", 0]]) } },
+      }),
+    );
+    const tavily = report.providers[0];
+    assert.strictEqual(tavily.status, "ok", "probe outcome is preserved");
+    assert.strictEqual(tavily.availability, "exhausted");
     assert.deepStrictEqual(report.availableProviders, [], "an exhausted row is not available");
   });
 

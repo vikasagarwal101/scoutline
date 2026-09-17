@@ -148,6 +148,7 @@ function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
  * in any error message.
  */
 function mapStatusError(status: number, timeoutMs: number, errorBody?: string, timeoutHelpText: string = TIMEOUT_HELP_TEXT, hintMs?: number): Error {
+  const hintOptions = retryHintOptions(hintMs);
   if (status === 401) {
     return new AuthError("Jina AI authentication failed", "JINA_API_KEY");
   }
@@ -172,7 +173,7 @@ function mapStatusError(status: number, timeoutMs: number, errorBody?: string, t
       return new QuotaError(
         "Jina AI quota exhausted. Insufficient balance or resource limit.",
         "Check your Jina AI account balance and plan at jina.ai",
-        retryHintOptions(hintMs),
+        hintOptions,
       );
     }
     return new AuthError("Jina AI authentication failed", "JINA_API_KEY");
@@ -187,24 +188,24 @@ function mapStatusError(status: number, timeoutMs: number, errorBody?: string, t
     return new QuotaError(
       "Jina AI rate limit exceeded.",
       "Try again later or upgrade your Jina AI plan for higher rate limits",
-      retryHintOptions(hintMs),
+      hintOptions,
     );
   }
   if (status >= 400 && status < 500) {
     return new ApiError(
       `Jina AI API client error (${status})`,
       status,
-      retryHintOptions(hintMs),
+      hintOptions,
     );
   }
   if (status >= 500) {
     return new ApiError(
       `Jina AI API server error (${status})`,
       status,
-      retryHintOptions(hintMs),
+      hintOptions,
     );
   }
-  return new ApiError(`Jina AI request failed (${status})`, status, retryHintOptions(hintMs));
+  return new ApiError(`Jina AI request failed (${status})`, status, hintOptions);
 }
 
 export async function fetchJinaReader(

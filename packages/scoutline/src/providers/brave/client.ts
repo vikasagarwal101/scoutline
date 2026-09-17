@@ -92,7 +92,8 @@ function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
  * Brave documents `X-RateLimit-Reset` as a CSV ALIGNED by index with
  * `X-RateLimit-Policy`, one entry per window, each in SECONDS UNTIL that
  * window resets. The shared scalar parser (`lib/retry-after.ts`) reads the
- * header as ONE value and would take the first CSV element — wrong here:
+ * header as ONE value — its integer grammar rejects a multi-value CSV
+ * outright, so control falls through to the max-of-windows fold below:
  * the window that governs when we may come back is the MOST-CONSTRAINED
  * one, so the hint is the MAX across the entries (the per-second window
  * resetting in 1s does not excuse the monthly window still exhausted).

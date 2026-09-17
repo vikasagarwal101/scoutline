@@ -19,6 +19,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 
 import {
   classifyCredentialState,
@@ -327,6 +328,38 @@ describe("trigger detection subprocess: env-only hint fires once + persists", ()
       // hintShown was persisted to the config file.
       const configPath = path.join(configDir, "config.json");
       const written = JSON.parse(await fs.readFile(configPath, "utf8"));
+      assert.strictEqual(written.hintShown, true);
+    });
+  });
+
+  // #188 — the env-only hintShown write is a SHARED-config-root write;
+  // under --isolated it must be skipped entirely (the hint may print, the
+  // marker must not persist — an absent config must not even be CREATED).
+  it("#188: --isolated run never writes the shared hintShown marker", async (t) => {
+    await withTempDir(t, async (configDir) => {
+      const r = await runProcess(["--isolated", "--output-format", "data", "code", "prompt"], {
+        env: { Z_AI_API_KEY: "env-only-key" },
+        configDir,
+      });
+      assert.strictEqual(r.code, 0, "command itself must still succeed");
+      const configPath = path.join(configDir, "config.json");
+      assert.ok(
+        !existsSync(configPath),
+        "--isolated must not create or write the shared config for the hint marker",
+      );
+    });
+  });
+
+  it("#188: without --isolated the marker still persists (control)", async (t) => {
+    await withTempDir(t, async (configDir) => {
+      const r = await runProcess(["--output-format", "data", "code", "prompt"], {
+        env: { Z_AI_API_KEY: "env-only-key" },
+        configDir,
+      });
+      assert.strictEqual(r.code, 0);
+      const written = JSON.parse(
+        await fs.readFile(path.join(configDir, "config.json"), "utf8"),
+      );
       assert.strictEqual(written.hintShown, true);
     });
   });

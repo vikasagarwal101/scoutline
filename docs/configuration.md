@@ -730,7 +730,7 @@ environment engages only part of it, asymmetrically: the artifact
 store, the MCP client's tool-discovery and response caches, and `batch`'s
 per-op refusals honor the variable, but the capability response caches
 (the factory in `main()`), the `watch`/`research`/`crawl` refusals, and
-the shared-state skip all key on the flag alone. Prefer `--isolated`.
+the shared-state skip (which includes the env-only `hintShown` marker — an isolated run never creates or writes the shared config for it) all key on the flag alone. Prefer `--isolated`.
 
 ### What isolates
 

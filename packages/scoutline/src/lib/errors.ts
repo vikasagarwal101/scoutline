@@ -36,6 +36,14 @@ export interface ScoutlineErrorOptions {
   help?: string;
   retryable?: boolean;
   exitCode?: number;
+  /**
+   * Provider-supplied retry delay hint, in milliseconds (the transport
+   * form of `Retry-After` / `X-RateLimit-Retry-After`). Adaptors parse
+   * the header and set this; the shared executor honours it as a floor
+   * over its own backoff, capped by the policy. Executor-internal
+   * transport — it is never part of the public error envelope.
+   */
+  retryAfterMs?: number;
 }
 
 export class ScoutlineError extends Error {
@@ -44,6 +52,7 @@ export class ScoutlineError extends Error {
   readonly help?: string;
   readonly retryable: boolean;
   readonly exitCode: number;
+  readonly retryAfterMs?: number;
 
   constructor(
     message: string,
@@ -57,6 +66,7 @@ export class ScoutlineError extends Error {
     this.help = options.help;
     this.retryable = options.retryable ?? false;
     this.exitCode = options.exitCode ?? 1;
+    this.retryAfterMs = options.retryAfterMs;
   }
 }
 
@@ -72,10 +82,24 @@ export class ScoutlineError extends Error {
  * compiling. The value is cast through `ScoutlineErrorCode` at the
  * super call because TypeScript types are erased at runtime — the
  * parent constructor stores whatever string was passed.
+ *
+ * The trailing `options` parameter is additive and optional; the 4-arg
+ * signature every current caller uses is unchanged. It carries the
+ * normalized error's optional fields — currently the Provider retry hint.
  */
 export class ZaiError extends ScoutlineError {
-  constructor(message: string, code: string, statusCode?: number, help?: string) {
-    super(message, code as ScoutlineErrorCode, { statusCode, help });
+  constructor(
+    message: string,
+    code: string,
+    statusCode?: number,
+    help?: string,
+    options: Pick<ScoutlineErrorOptions, "retryAfterMs"> = {},
+  ) {
+    super(message, code as ScoutlineErrorCode, {
+      statusCode,
+      help,
+      retryAfterMs: options.retryAfterMs,
+    });
     this.name = "ZaiError";
   }
 }
@@ -183,12 +207,24 @@ export class ConfigurationError extends ScoutlineError {
  * `lib/execution.ts` relies on `retryable === false` here.
  */
 export class QuotaError extends ScoutlineError {
-  constructor(message?: string, help?: string) {
+  /**
+   * `options` is additive and optional: the 0/1/2-arg forms every
+   * current throw site uses behave exactly as before. A Provider
+   * retry hint may be carried through it, but it stays informational —
+   * `retryable: false` is fixed here, so the hint can never make an
+   * exhausted quota retryable (the #140 ruling).
+   */
+  constructor(
+    message?: string,
+    help?: string,
+    options: Pick<ScoutlineErrorOptions, "retryAfterMs"> = {},
+  ) {
     super(message ?? "Provider quota has been exhausted", "QUOTA_ERROR", {
       statusCode: 429,
       help,
       retryable: false,
       exitCode: 1,
+      retryAfterMs: options.retryAfterMs,
     });
     this.name = "QuotaError";
   }
@@ -228,8 +264,18 @@ export class AuthError extends ZaiError {
 }
 
 export class ApiError extends ZaiError {
-  constructor(message: string, statusCode: number) {
-    super(message, "API_ERROR", statusCode);
+  /**
+   * `options` is additive and optional: the 2-arg form every current
+   * throw site uses behaves exactly as before. It exists so an Adapter
+   * that parsed a Provider retry header can surface the delay on the
+   * NORMALIZED error (the seam the shared executor reads).
+   */
+  constructor(
+    message: string,
+    statusCode: number,
+    options: Pick<ScoutlineErrorOptions, "retryAfterMs"> = {},
+  ) {
+    super(message, "API_ERROR", statusCode, undefined, options);
   }
 }
 

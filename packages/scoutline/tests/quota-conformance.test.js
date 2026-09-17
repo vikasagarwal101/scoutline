@@ -6,12 +6,15 @@
  *   - Contract types exist and normalize both Provider response shapes.
  *   - Remaining percentages are finite numbers clamped to 0..100.
  *   - Z.AI: rolling time limit -> requests category; token percentage ->
- *     tokens category; per-tool breakdown omitted.
+ *     tokens category; per-tool breakdown omitted. An internally
+ *     inconsistent TIME_LIMIT counter (GitHub #191) still emits the
+ *     requests category, but with an EMPTY window.
  *   - MiniMax: each model_remains -> category named by model_name, sorted
  *     ascending; epoch-ms timestamps -> ISO.
  *   - Invalid optional count sets are omitted together.
  *   - A required category with neither valid percentage nor valid counts
- *     throws QUOTA_ERROR.
+ *     throws QUOTA_ERROR — in the shared builder and in MiniMax. Z.AI
+ *     converts that case into the empty-window emission above (#191).
  *   - No raw Provider field crosses the Interface.
  *   - Z.AI monitor auth fallback (raw key then Bearer on 401); raw
  *     response text never enters public errors.
@@ -343,18 +346,27 @@ describe("Z.AI quota normalization", () => {
     assertQuotaSuccessConformance(normalized, ZAI_RAW_DENY);
   });
 
-  it("throws QUOTA_ERROR when a present limit has neither valid percent nor counts", () => {
-    assert.throws(
-      () =>
-        normalizeZaiQuota({
-          level: "pro",
-          limits: [{ type: "TIME_LIMIT", unit: 5, number: 1 }],
-        }),
-      (err) => err instanceof ScoutlineError && err.code === "QUOTA_ERROR",
-    );
+  it("emits an empty current window when a TIME_LIMIT entry is wholly unusable", () => {
+    // #191: a TIME_LIMIT entry missing every field the consistency
+    // predicate needs is corrupt, not fatal — the category must still
+    // reach doctor/ranking (which treat an absent window as unknown)
+    // rather than aborting the whole provider's quota probe.
+    const normalized = normalizeZaiQuota({
+      level: "pro",
+      limits: [{ type: "TIME_LIMIT", unit: 5, number: 1 }],
+    });
+    const category = normalized.categories.find((c) => c.name === "requests");
+    assert.ok(category);
+    assert.strictEqual(JSON.stringify(category.current), "{}");
   });
 
-  it("honors API remaining + percentage when TIME_LIMIT currentValue exceeds the cap (#109)", () => {
+  it("rejects the whole TIME_LIMIT window when currentValue exceeds the cap (#191)", () => {
+    // #191 supersedes #109: this entry is self-contradictory — 4912 used
+    // against a 1000 cap with 88 remaining means |1000 - 4912 - 88| =
+    // 4000 > 1 — so the raw counts, the raw remaining, AND the raw
+    // percentage are all distrusted together. #109's partial rescue
+    // (publish `remaining` verbatim off unverifiable counts) was the
+    // fabrication channel that produced a false 0%-remaining.
     const normalized = normalizeZaiQuota({
       level: "pro",
       limits: [
@@ -377,17 +389,24 @@ describe("Z.AI quota normalization", () => {
         },
       ],
     });
-    const w = normalized.categories.find((c) => c.name === "requests").current;
-    assert.strictEqual(w.remaining, 88);
-    assert.strictEqual(w.remainingPercent, 1.2);
-    assert.strictEqual(w.durationSeconds, 18000);
-    assert.strictEqual(w.resetsAt, "2026-10-07T22:18:00.983Z");
-    assert.ok(!("used" in w), "cumulative used not published as window counts");
-    assert.ok(!("limit" in w), "cap not published against cumulative used");
+    assert.strictEqual(
+      JSON.stringify(normalized.categories.find((c) => c.name === "requests").current),
+      "{}",
+    );
+    // The sibling TOKENS_LIMIT entry is untouched: one corrupt window
+    // must not suppress a healthy category.
+    assert.strictEqual(
+      normalized.categories.find((c) => c.name === "tokens").current.remainingPercent,
+      96,
+    );
   });
 
-  it("treats negative currentValue or zero cap as invalid counts and falls back to API signals (#109)", () => {
-    const normalized = normalizeZaiQuota({
+  it("rejects negative currentValue and zero cap as corrupt windows (#191)", () => {
+    // #191: a negative count and a zero cap each fail the consistency
+    // predicate, so the entry emits an empty window instead of falling
+    // back to the same entry's `remaining`/`percentage` — the fields the
+    // predicate just proved untrustworthy.
+    const negativeUsed = normalizeZaiQuota({
       level: "pro",
       limits: [
         {
@@ -402,11 +421,7 @@ describe("Z.AI quota normalization", () => {
         },
       ],
     });
-    const w = normalized.categories[0].current;
-    assert.strictEqual(w.remaining, 95);
-    assert.strictEqual(w.remainingPercent, 95);
-    assert.ok(!("used" in w), "negative used not published as window counts");
-    assert.ok(!("limit" in w), "cap not published against invalid used");
+    assert.strictEqual(JSON.stringify(negativeUsed.categories[0].current), "{}");
 
     const zeroCap = normalizeZaiQuota({
       level: "pro",
@@ -423,13 +438,14 @@ describe("Z.AI quota normalization", () => {
         },
       ],
     });
-    const w0 = zeroCap.categories[0].current;
-    assert.strictEqual(w0.remaining, 100, "zero cap falls back to API remaining");
-    assert.ok(!("used" in w0), "zero-cap counts not published");
-    assert.ok(!("limit" in w0), "zero cap not published");
+    assert.strictEqual(JSON.stringify(zeroCap.categories[0].current), "{}");
   });
 
-  it("keeps counts-derived output for a sane TIME_LIMIT payload (#109 both-ways pin)", () => {
+  it("keeps the count fields on a sane TIME_LIMIT payload while preferring the raw percentage (#191)", () => {
+    // #191 raw-preference: the Provider's own percentage (1 used -> 99
+    // remaining) wins over the counts-derived 98.5, which differs inside
+    // the rounding tolerance. The counts themselves are still published —
+    // only the percentage's PROVENANCE changes.
     const normalized = normalizeZaiQuota({
       level: "pro",
       limits: [
@@ -446,7 +462,7 @@ describe("Z.AI quota normalization", () => {
       ],
     });
     const w = normalized.categories[0].current;
-    assert.strictEqual(w.remainingPercent, 98.5);
+    assert.strictEqual(w.remainingPercent, 99);
     assert.strictEqual(w.used, 15);
     assert.strictEqual(w.limit, 1000);
     assert.strictEqual(w.remaining, 985);
@@ -458,6 +474,77 @@ describe("Z.AI quota normalization", () => {
       limits: [{ type: "TOKENS_LIMIT", unit: 1, number: 1, percentage: 40 }],
     });
     assert.strictEqual(a.plan, "max");
+  });
+
+  it("drops the current window when TIME_LIMIT counts contradict the published remaining (#191)", () => {
+    // Pathological upstream counter observed live: currentValue 5067 past
+    // a 1000 cap while `remaining` reads 0 — the entry fails the internal
+    // consistency predicate, so no field of it may reach a window.
+    const normalized = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 1000,
+          currentValue: 5067,
+          remaining: 0,
+          percentage: 100,
+          nextResetTime: 1791411480983,
+          usageDetails: [{ modelCode: "search-prime", usage: 97 }],
+        },
+      ],
+    });
+    const category = normalized.categories.find((c) => c.name === "requests");
+    assert.ok(category, "category is still emitted (doctor/ranking must see the row)");
+    assert.strictEqual(JSON.stringify(category.current), "{}");
+  });
+
+  it("prefers the raw percentage over counts derivation when TIME_LIMIT is consistent (#191)", () => {
+    // 100 - percentage(11) = 89 remaining, NOT the counts-derived 88.7
+    // ((1000 - 113) / 1000 * 100). Raw-field trust is the ruling.
+    const normalized = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 1000,
+          currentValue: 113,
+          remaining: 887,
+          percentage: 11,
+          nextResetTime: 1791411480983,
+        },
+      ],
+    });
+    const w = normalized.categories.find((c) => c.name === "requests").current;
+    assert.strictEqual(w.remainingPercent, 89);
+    assert.strictEqual(w.used, 113);
+    assert.strictEqual(w.limit, 1000);
+    assert.strictEqual(w.remaining, 887);
+  });
+
+  it("keeps exhaustion detectable on a consistent TIME_LIMIT at zero remaining (#191)", () => {
+    const normalized = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 1000,
+          currentValue: 1000,
+          remaining: 0,
+          percentage: 100,
+          nextResetTime: 1791411480983,
+        },
+      ],
+    });
+    const w = normalized.categories.find((c) => c.name === "requests").current;
+    assert.strictEqual(w.remainingPercent, 0);
+    assert.strictEqual(w.remaining, 0);
   });
 });
 

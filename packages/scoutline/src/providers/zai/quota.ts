@@ -9,7 +9,10 @@
  * Z.AI mapping (DESIGN.md §13):
  *   - `level` -> `plan`.
  *   - Rolling `TIME_LIMIT` -> `requests` category with current counts,
- *     duration in seconds, derived remaining percent, and ISO reset.
+ *     duration in seconds, the Provider's own remaining percentage, and
+ *     ISO reset. The entry is trusted only when self-consistent
+ *     (GitHub #191); an inconsistent counter emits the category with an
+ *     empty window rather than a fabricated one.
  *   - `TOKENS_LIMIT` -> `tokens` category; convert the Provider's used
  *     percentage to a remaining percentage.
  *   - Categories are named `requests` then `tokens` when present.
@@ -89,14 +92,64 @@ function readNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+/**
+ * Is a raw `TIME_LIMIT` entry internally consistent? Z.AI's counter and
+ * its own `remaining`/`percentage` must tell the same story before any
+ * of them is trusted (GitHub #191). All five conditions are required
+ * with PRESENT fields — an absent field fails its comparison, so a
+ * partially-populated entry is corrupt rather than partially trusted:
+ *
+ *   - `usage > 0` — a zero cap describes no window.
+ *   - `currentValue >= 0` — a negative count is impossible.
+ *   - `0 <= remaining <= usage` — remaining cannot exceed the window.
+ *   - `0 <= percentage <= 100` — `percentage` is a USED share.
+ *   - `|(usage - currentValue) - remaining| <= 1` — the counts and the
+ *     published remaining agree, allowing for upstream rounding.
+ */
+function isConsistentTimeLimit(entry: {
+  usage?: number;
+  currentValue?: number;
+  remaining?: number;
+  percentage?: number;
+}): boolean {
+  const usage = readNumber(entry.usage);
+  const currentValue = readNumber(entry.currentValue);
+  const remaining = readNumber(entry.remaining);
+  const percentage = readNumber(entry.percentage);
+  if (
+    usage === undefined ||
+    currentValue === undefined ||
+    remaining === undefined ||
+    percentage === undefined
+  ) {
+    return false;
+  }
+  return (
+    usage > 0 &&
+    currentValue >= 0 &&
+    remaining >= 0 &&
+    remaining <= usage &&
+    percentage >= 0 &&
+    percentage <= 100 &&
+    Math.abs(usage - currentValue - remaining) <= 1
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Normalizer
 // ---------------------------------------------------------------------------
 
 /**
  * Normalize a raw Z.AI quota-limit payload into the shared Interface.
- * Throws `QUOTA_ERROR` (via {@link buildQuotaWindow}) when a present
- * limit entry has neither a valid percentage nor valid counts.
+ *
+ * The `requests` category trusts the RAW fields (`remaining` /
+ * `percentage`, converted to a remaining percentage) over anything
+ * derived from the counts, and only while {@link isConsistentTimeLimit}
+ * holds. An inconsistent entry emits the category with an EMPTY
+ * `current` window rather than a fabricated one: downstream consumers
+ * read an absent `remainingPercent` as unknown (never `exhausted`,
+ * never `KNOWN_EXHAUSTED` demotion, `PERCENT_CORRUPT` when scoring),
+ * which is the honest report for a counter that contradicts itself.
  */
 export function normalizeZaiQuota(raw: unknown): ProviderQuotaSuccess {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -113,41 +166,35 @@ export function normalizeZaiQuota(raw: unknown): ProviderQuotaSuccess {
       typeof timeLimit.unit === "number" && Number.isFinite(timeLimit.unit)
         ? timeLimit.unit * 3600
         : undefined;
-    // Counts are trustworthy only while currentValue stays within the
-    // window cap. Z.AI also reports cumulative currentValue (observed
-    // live: currentValue 4912 vs usage 1000) — then counts are invalid
-    // and the API's OWN explicit `remaining` + USED `percentage` are
-    // the honest signal (percentage 98.8 used => 1.2 remaining).
-    // The predicate must mirror what buildQuotaWindow accepts downstream
-    // (validCountSet: finite, nonnegative, used <= limit; plus
-    // derivePercentFromCounts's limit > 0 divisor guard): a negative
-    // currentValue or zero cap passes `used <= limit` yet is rejected
-    // downstream, re-throwing QUOTA_ERROR the fallback exists to fix.
+    // Trust the RAW fields while they agree with each other (#191).
+    // Z.AI also reports cumulative currentValue (observed live: 5067
+    // against a usage of 1000, with `remaining` 0) — there the counts and
+    // the published remaining contradict each other by thousands, so
+    // neither is evidence: deriving a percentage from such a counter
+    // fabricated 0% remaining, which downstream read as exhaustion while
+    // MCP calls kept succeeding (#109's partial rescue had the same
+    // failure mode, publishing the untrustworthy `remaining` verbatim).
+    // The category is still emitted so doctor and ranking can see the
+    // provider row; it simply carries no window.
     const used = readNumber(timeLimit.currentValue);
     const limit = readNumber(timeLimit.usage);
     const usedPercent = readNumber(timeLimit.percentage);
-    const countsValid =
-      used !== undefined && limit !== undefined && used >= 0 && limit > 0 && used <= limit;
+    const duration = { durationSeconds, resetsAtEpochMs: readNumber(timeLimit.nextResetTime) };
     categories.push({
       name: "requests",
       unit: "requests",
-      current: buildQuotaWindow(
-        countsValid
-          ? {
-              used,
-              limit,
-              durationSeconds,
-              resetsAtEpochMs: readNumber(timeLimit.nextResetTime),
-              // Z.AI `percentage` is a USED percentage — do NOT treat it as an
-              // explicit remaining percentage. Derive from counts instead.
-            }
-          : {
-              explicitRemainingPercent: usedPercent !== undefined ? 100 - usedPercent : undefined,
-              remaining: readNumber(timeLimit.remaining),
-              durationSeconds,
-              resetsAtEpochMs: readNumber(timeLimit.nextResetTime),
-            },
-      ),
+      current: isConsistentTimeLimit(timeLimit)
+        ? buildQuotaWindow({
+            ...duration,
+            used,
+            limit,
+            // Z.AI `percentage` is a USED percentage — convert it to a
+            // remaining one. It is present whenever the entry is
+            // consistent, and it wins over the counts-derived value, so
+            // the Provider's own reading is what callers see.
+            explicitRemainingPercent: 100 - usedPercent!,
+          })
+        : {},
     });
   }
 

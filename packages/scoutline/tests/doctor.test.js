@@ -1348,6 +1348,54 @@ describe("doctor availability — classification and ordering (#94)", () => {
     );
   });
 
+  it("a corrupt zai counter never reads exhausted; a consistent zero still does (#191)", async () => {
+    const { classifyAvailability } = await import("../dist/lib/availability.js");
+    const { normalizeZaiQuota } = await import("../dist/providers/zai/quota.js");
+    const snapshotOf = (timeLimit) => ({
+      observedAt: AVAIL_NOW - 1_000,
+      categories: normalizeZaiQuota({ level: "pro", limits: [timeLimit] }).categories,
+    });
+    // Pathological live shape (5067 used vs a 1000 cap, `remaining` 0):
+    // the inconsistency guard drops the window, so there is no 0% datum
+    // to stamp `exhausted` from — the row falls back to a probe class.
+    assert.strictEqual(
+      classifyAvailability(
+        { status: "ok", provider: "zai" },
+        snapshotOf({
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 1000,
+          currentValue: 5067,
+          remaining: 0,
+          percentage: 100,
+          nextResetTime: 1791411480983,
+        }),
+        AVAIL_NOW,
+      ),
+      "ok",
+    );
+    // Genuinely exhausted (counts and percentage agree at 0): the same
+    // rule must still fire, or the guard would hide real exhaustion.
+    assert.strictEqual(
+      classifyAvailability(
+        { status: "ok", provider: "zai" },
+        snapshotOf({
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 1000,
+          currentValue: 1000,
+          remaining: 0,
+          percentage: 100,
+          nextResetTime: 1791411480983,
+        }),
+        AVAIL_NOW,
+      ),
+      "exhausted",
+    );
+  });
+
   it("compareAvailabilityRows sorts by class rank then injected registry rank, stable on full ties", async () => {
     const { AVAILABILITY_CLASS_RANK, compareAvailabilityRows } = await import(
       "../dist/lib/availability.js"

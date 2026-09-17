@@ -104,6 +104,18 @@ export function parseRetryAfterHintMs(
 }
 
 /**
+ * #186 ocr review finding: brave and jina adapters carried identical
+ * read-and-wrap helpers — hoisted here so the forwarding rule changes in
+ * exactly one place.
+ */
+export function retryHintOptionsFromError(
+  error: unknown,
+): { retryAfterMs?: number } {
+  const hint = (error as { retryAfterMs?: unknown } | null | undefined)?.retryAfterMs;
+  return retryHintOptions(typeof hint === "number" ? hint : undefined);
+}
+
+/**
  * Error-constructor options carrying the hint, or NOTHING when there was
  * no parseable hint — the options object omits the key entirely, so nothing
  * is attached and the error message and stdout envelope stay byte-identical.

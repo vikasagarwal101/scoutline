@@ -135,3 +135,92 @@ describe("MCP client response cache follows the invocation env's isolation (N6)"
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// #189 — the TOOL-cache env wiring is pinned at the client level too.
+// mcp-client.ts:555/:566 thread this.options.env into read/writeToolCache;
+// these pins drive listTools() through the fake UTCP factory (the public
+// path to discoverTools) and assert the tool-cache entry lands under
+// <root>/tools/isolated/<pid>/ with the shared top level untouched.
+// Teeth: mutation — drop the env arg at the two tool-cache sites and this
+// block fails while the response-cache blocks above stay green.
+// ---------------------------------------------------------------------------
+describe("#189 — MCP tool-cache isolation (client-level pin)", () => {
+  before(() => {
+    // The file-level before() parks the tool cache OUT of the way
+    // (ZAI_MCP_TOOL_CACHE=0); this block re-enables it — the subject here
+    // IS the tool cache. Restored by the file-level after() via the saved
+    // value.
+  });
+
+  function toolEntryFiles(dir) {
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir).filter((name) => name.endsWith(".json"));
+  }
+
+  it("isolated client: tool-cache entry lands under tools/isolated/<pid>, shared tools/ untouched", async () => {
+    const root = freshRoot();
+    process.env.ZAI_MCP_TOOL_CACHE = "1";
+    const fake = new FakeUtcpClient({ discoveredTools: [TOOL] });
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      env: { Z_AI_API_KEY: FAKE_KEY, SCOUTLINE_CACHE_DIR: root, SCOUTLINE_ISOLATED: "1" },
+    });
+    try {
+      const tools = await client.listTools();
+      assert.equal(tools.length, 1, "fake tool must be discovered through listTools");
+    } finally {
+      await client.close().catch(() => {});
+    }
+    const shared = path.join(root, "tools");
+    const isolated = path.join(root, "tools", "isolated", String(process.pid));
+    assert.equal(toolEntryFiles(shared).length, 0, "shared tools/ top level must stay empty");
+    const isolatedEntries = toolEntryFiles(isolated);
+    assert.ok(isolatedEntries.length > 0, `expected a tool-cache entry under ${isolated}`);
+  });
+
+  it("isolated read path: a SECOND isolated client serves from the isolated cache — zero UTCP discovery calls", async () => {
+    const root = freshRoot();
+    process.env.ZAI_MCP_TOOL_CACHE = "1";
+    const first = new ZaiMcpClient({
+      utcpFactory: async () => new FakeUtcpClient({ discoveredTools: [TOOL] }),
+      env: { Z_AI_API_KEY: FAKE_KEY, SCOUTLINE_CACHE_DIR: root, SCOUTLINE_ISOLATED: "1" },
+    });
+    await first.listTools().catch(() => {});
+    await first.close().catch(() => {});
+    // Second client, fresh fake: the ONLY way it sees the tool without
+    // discovery is reading the isolated cache entry the first wrote.
+    const secondFake = new FakeUtcpClient({ discoveredTools: [] });
+    const second = new ZaiMcpClient({
+      utcpFactory: async () => secondFake,
+      env: { Z_AI_API_KEY: FAKE_KEY, SCOUTLINE_CACHE_DIR: root, SCOUTLINE_ISOLATED: "1" },
+    });
+    try {
+      const tools = await second.listTools();
+      assert.equal(tools.length, 1, "must serve the cached tool from the isolated entry");
+      assert.equal(secondFake.getToolsCalls, 0, "read must resolve the ISOLATED dir — a discovery call means it did not");
+    } finally {
+      await second.close().catch(() => {});
+    }
+  });
+
+  it("non-isolated client: tool-cache entry stays in the shared tools/ dir", async () => {
+    const root = freshRoot();
+    process.env.ZAI_MCP_TOOL_CACHE = "1";
+    const fake = new FakeUtcpClient({ discoveredTools: [TOOL] });
+    const client = new ZaiMcpClient({
+      utcpFactory: async () => fake,
+      env: { Z_AI_API_KEY: FAKE_KEY, SCOUTLINE_CACHE_DIR: root },
+    });
+    try {
+      const tools = await client.listTools();
+      assert.equal(tools.length, 1);
+    } finally {
+      await client.close().catch(() => {});
+    }
+    const shared = path.join(root, "tools");
+    const entries = toolEntryFiles(shared);
+    assert.ok(entries.length > 0, "shared tools/ must carry the entry when not isolated");
+    assert.ok(!fs.existsSync(path.join(root, "tools", "isolated")), "no isolated/ subtree without isolation");
+  });
+});

@@ -77,6 +77,12 @@ interface QuotaCategoryLike {
   weekly?: {
     remainingPercent?: number;
   };
+  /**
+   * Per-tool breakdown (GitHub #191) — additive optional, mirroring the
+   * public {@link QuotaCategory} field. Rendered as one dim row per
+   * tool beneath the category's counts line; absent means no rows.
+   */
+  toolUsage?: readonly { tool: string; usage: number }[];
 }
 
 interface QuotaSourceLike {
@@ -145,6 +151,16 @@ function renderCategory(category: QuotaCategoryLike, lines: string[]): void {
   }
   if (counts.length > 0 || resetTxt) {
     lines.push(`      ${[...counts, resetTxt].filter(Boolean).join("  ·  ")}`);
+  }
+  // Per-tool rows (GitHub #191): one dim row per tool, id then count,
+  // beneath the category's counts line. They qualify the window rather
+  // than belong to it — and they render whether or not the window
+  // survived the Adapter's consistency guard, so a corrupt counter still
+  // shows which tools consumed the budget. No rows when absent.
+  if (Array.isArray(category.toolUsage)) {
+    for (const row of category.toolUsage) {
+      lines.push(`      ${color.gray(row.tool)} ${row.usage}`);
+    }
   }
   const w = category.weekly;
   if (w && typeof w.remainingPercent === "number") {

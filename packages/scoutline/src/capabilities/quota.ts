@@ -63,6 +63,25 @@ export interface QuotaCategory {
   unit: "requests" | "tokens" | "credits" | "USD";
   current: QuotaWindow;
   weekly?: QuotaWindow;
+  /**
+   * Per-tool consumption inside this category (GitHub #191). Additive
+   * OPTIONAL field under schema version 1 — the PB-T5 precedent: a
+   * Provider that publishes a breakdown (Z.AI's `usageDetails`, whose
+   * `modelCode` names the tool and `usage` counts the calls) populates
+   * it; a Provider with none simply omits the field, so every
+   * pre-#191 consumer (TTY renderer, snapshot round-trip, envelope)
+   * keeps working unchanged and no schema-version bump is needed.
+   *
+   * Entries are published in Provider order with non-positive and
+   * unnamed entries dropped, so a present array is always observably
+   * non-empty — an absent field and an empty-breakdown provider are
+   * deliberately indistinguishable (neither says "these tools used
+   * nothing"). The rows are informational window detail: they are
+   * carried independently of whether `current` is populated, so a
+   * category whose window was rejected as inconsistent still reports
+   * which tools consumed the budget.
+   */
+  toolUsage?: readonly { readonly tool: string; readonly usage: number }[];
 }
 
 export interface ProviderQuotaSuccess {

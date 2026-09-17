@@ -13,11 +13,15 @@
  *     ISO reset. The entry is trusted only when self-consistent
  *     (GitHub #191); an inconsistent counter emits the category with an
  *     empty window rather than a fabricated one.
+ *   - `TIME_LIMIT.usageDetails` -> the additive optional `toolUsage`
+ *     field on `requests` (`modelCode` -> `tool`, `usage` -> `usage`;
+ *     entries without a name or without a positive count are dropped,
+ *     and an all-dropped list omits the field rather than publishing an
+ *     empty array). Mapped independently of the consistency guard: the
+ *     per-tool rows are informational and survive a corrupt window.
  *   - `TOKENS_LIMIT` -> `tokens` category; convert the Provider's used
  *     percentage to a remaining percentage.
  *   - Categories are named `requests` then `tokens` when present.
- *   - Per-tool breakdown (`usageDetails`) is omitted — no field in
- *     ADR-0001.
  *
  * Boundary rules (ARCHITECTURE.md §2):
  *   - May import the quota capability contract, Provider-local monitor
@@ -135,6 +139,35 @@ function isConsistentTimeLimit(entry: {
   );
 }
 
+/**
+ * Map `TIME_LIMIT.usageDetails` onto the additive `toolUsage` field
+ * (GitHub #191). An entry contributes a row only when it carries BOTH a
+ * nonempty string `modelCode` (the tool id, which IS the row's label)
+ * and a finite `usage` greater than zero. An absent or non-positive
+ * count is dropped rather than published as 0 — a zero row would assert
+ * "this tool consumed nothing", a claim the Provider never made — and a
+ * non-finite or non-numeric count is not an observation at all.
+ *
+ * Returns `undefined` (the field is omitted) when nothing survives,
+ * which deliberately covers both an absent `usageDetails` and an
+ * all-filtered one: an empty array would be a claim of its own. The
+ * filter is self-contained and deliberately NOT coupled to
+ * {@link isConsistentTimeLimit} — see {@link normalizeZaiQuota}.
+ */
+function readToolUsage(entry: ZaiTimeLimit): QuotaCategory["toolUsage"] {
+  if (!Array.isArray(entry.usageDetails)) return undefined;
+  const rows: { tool: string; usage: number }[] = [];
+  for (const detail of entry.usageDetails) {
+    if (!detail || typeof detail !== "object") continue;
+    const tool = detail.modelCode;
+    const usage = readNumber(detail.usage);
+    if (typeof tool !== "string" || tool.length === 0) continue;
+    if (usage === undefined || usage <= 0) continue;
+    rows.push({ tool, usage });
+  }
+  return rows.length > 0 ? rows : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Normalizer
 // ---------------------------------------------------------------------------
@@ -150,6 +183,12 @@ function isConsistentTimeLimit(entry: {
  * read an absent `remainingPercent` as unknown (never `exhausted`,
  * never `KNOWN_EXHAUSTED` demotion, `PERCENT_CORRUPT` when scoring),
  * which is the honest report for a counter that contradicts itself.
+ *
+ * The per-tool `toolUsage` rows are mapped from the SAME entry but
+ * INDEPENDENTLY of that guard: they are informational detail that
+ * stands on its own filter, so a corrupt window suppresses the window
+ * only. A category whose counts contradicted each other is exactly when
+ * per-tool detail is most useful.
  */
 export function normalizeZaiQuota(raw: unknown): ProviderQuotaSuccess {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -180,6 +219,10 @@ export function normalizeZaiQuota(raw: unknown): ProviderQuotaSuccess {
     const limit = readNumber(timeLimit.usage);
     const usedPercent = readNumber(timeLimit.percentage);
     const duration = { durationSeconds, resetsAtEpochMs: readNumber(timeLimit.nextResetTime) };
+    // Mapped OUTSIDE the guard, deliberately: a corrupt window (the
+    // inconsistent-counter case below) suppresses the window, never the
+    // per-tool rows.
+    const toolUsage = readToolUsage(timeLimit);
     categories.push({
       name: "requests",
       unit: "requests",
@@ -195,6 +238,8 @@ export function normalizeZaiQuota(raw: unknown): ProviderQuotaSuccess {
             explicitRemainingPercent: 100 - usedPercent!,
           })
         : {},
+      // Omitted entirely when nothing survives the filter — never `[]`.
+      ...(toolUsage !== undefined ? { toolUsage } : {}),
     });
   }
 

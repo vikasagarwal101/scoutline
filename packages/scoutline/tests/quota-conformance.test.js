@@ -6,9 +6,10 @@
  *   - Contract types exist and normalize both Provider response shapes.
  *   - Remaining percentages are finite numbers clamped to 0..100.
  *   - Z.AI: rolling time limit -> requests category; token percentage ->
- *     tokens category; per-tool breakdown omitted. An internally
- *     inconsistent TIME_LIMIT counter (GitHub #191) still emits the
- *     requests category, but with an EMPTY window.
+ *     tokens category; per-tool usage carried as the additive optional
+ *     `toolUsage` field (GitHub #191). An internally inconsistent
+ *     TIME_LIMIT counter (GitHub #191) still emits the requests
+ *     category, but with an EMPTY window.
  *   - MiniMax: each model_remains -> category named by model_name, sorted
  *     ascending; epoch-ms timestamps -> ISO.
  *   - Invalid optional count sets are omitted together.
@@ -66,7 +67,10 @@ const ZAI_RAW_DENY = [
   "currentValue",
   "nextResetTime",
   "modelCode",
-  "usage",
+  // `usage` is the normalized toolUsage count key (Q2/#191); the raw
+  // TIME_LIMIT `usage` (the cap) crosses as `limit`, pinned by the
+  // golden shape. `usageDetails`/`modelCode` stay denied — the raw
+  // container and its field name must never cross.
 ];
 const MINIMAX_RAW_DENY = [
   "model_remains",
@@ -317,7 +321,12 @@ describe("Z.AI quota normalization", () => {
     assert.strictEqual(normalized.categories[0].current.remainingPercent, 40);
   });
 
-  it("omits per-tool breakdown", () => {
+  it("carries the per-tool breakdown as additive toolUsage (#191/Q2)", () => {
+    // Q2 supersedes the former "per-tool breakdown is omitted" pin: the
+    // raw `usageDetails` list must not cross, but its per-tool content
+    // DOES — normalized onto the additive `toolUsage` field, modelCode
+    // as `tool` and usage as `usage`. The raw container name and its
+    // raw field name stay inside the Adapter.
     const normalized = normalizeZaiQuota({
       level: "pro",
       limits: [
@@ -330,14 +339,179 @@ describe("Z.AI quota normalization", () => {
           remaining: 90,
           percentage: 10,
           nextResetTime: 1700000000000,
-          usageDetails: [{ modelCode: "search-prime", usage: 5 }],
+          usageDetails: [
+            { modelCode: "search-prime", usage: 5 },
+            { modelCode: "web-reader", usage: 3 },
+          ],
         },
       ],
     });
+    const category = normalized.categories.find((c) => c.name === "requests");
+    assert.deepStrictEqual(category.toolUsage, [
+      { tool: "search-prime", usage: 5 },
+      { tool: "web-reader", usage: 3 },
+    ]);
     const keys = new Set();
     collectKeys(normalized, keys);
-    assert.ok(!keys.has("usageDetails"));
+    assert.ok(!keys.has("usageDetails"), "raw container never crosses");
+    assert.ok(!keys.has("modelCode"), "raw per-tool field name never crosses");
     assert.ok(!keys.has("byTool"));
+  });
+
+  it("drops usage entries with a zero, negative, or absent usage count (#191/Q2)", () => {
+    // A non-positive count is not a usage observation; an absent one is
+    // not a number at all. Both are dropped rather than published as 0 —
+    // a zero row would read as "this tool was available and unused",
+    // which the Provider never said.
+    const normalized = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 100,
+          currentValue: 10,
+          remaining: 90,
+          percentage: 10,
+          nextResetTime: 1700000000000,
+          usageDetails: [
+            { modelCode: "search-prime", usage: 7 },
+            { modelCode: "zero", usage: 0 },
+            { modelCode: "negative", usage: -3 },
+            { modelCode: "absent" },
+            { modelCode: "not-a-number", usage: "12" },
+          ],
+        },
+      ],
+    });
+    assert.deepStrictEqual(
+      normalized.categories.find((c) => c.name === "requests").toolUsage,
+      [{ tool: "search-prime", usage: 7 }],
+    );
+  });
+
+  it("drops a usage entry with an absent or non-string tool id (#191/Q2)", () => {
+    // The tool id IS the normalized row's label; an entry without one
+    // has nothing to name.
+    const normalized = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 100,
+          currentValue: 10,
+          remaining: 90,
+          percentage: 10,
+          nextResetTime: 1700000000000,
+          usageDetails: [
+            { modelCode: "search-prime", usage: 7 },
+            { usage: 4 },
+            { modelCode: "", usage: 4 },
+            { modelCode: 42, usage: 4 },
+          ],
+        },
+      ],
+    });
+    assert.deepStrictEqual(
+      normalized.categories.find((c) => c.name === "requests").toolUsage,
+      [{ tool: "search-prime", usage: 7 }],
+    );
+  });
+
+  it("omits toolUsage entirely when no entry survives the filter (no empty array)", () => {
+    // Two distinct absent cases, one rule: an absent `usageDetails`, and
+    // one whose every entry is filtered out. Neither may publish
+    // `toolUsage: []` — an empty array is a claim ("this window has
+    // tools, and none used any"), which a silent Provider never made.
+    const absentList = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 100,
+          currentValue: 10,
+          remaining: 90,
+          percentage: 10,
+          nextResetTime: 1700000000000,
+        },
+      ],
+    });
+    const requests = absentList.categories.find((c) => c.name === "requests");
+    assert.ok(!("toolUsage" in requests), "absent usageDetails omits the field");
+    assert.strictEqual(JSON.stringify(requests).includes("toolUsage"), false);
+
+    const allFiltered = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 100,
+          currentValue: 10,
+          remaining: 90,
+          percentage: 10,
+          nextResetTime: 1700000000000,
+          usageDetails: [{ modelCode: "zero", usage: 0 }, { usage: 0 }],
+        },
+      ],
+    });
+    assert.ok(
+      !("toolUsage" in allFiltered.categories.find((c) => c.name === "requests")),
+      "an all-filtered list omits the field rather than publishing []",
+    );
+  });
+
+  it("carries toolUsage even when the TIME_LIMIT window is corrupt (#191/Q2 independence)", () => {
+    // The per-tool rows are informational; they are NOT gated on the
+    // Q1 consistency guard. A window whose counts contradict each other
+    // suppresses the WINDOW, never the per-tool observations — those
+    // stand on their own filter.
+    const normalized = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 1000,
+          currentValue: 5067,
+          remaining: 0,
+          percentage: 100,
+          nextResetTime: 1791411480983,
+          usageDetails: [{ modelCode: "search-prime", usage: 97 }],
+        },
+      ],
+    });
+    const category = normalized.categories.find((c) => c.name === "requests");
+    assert.strictEqual(JSON.stringify(category.current), "{}", "window still suppressed");
+    assert.deepStrictEqual(category.toolUsage, [{ tool: "search-prime", usage: 97 }]);
+  });
+
+  it("never attaches toolUsage to a non-requests category (#191/Q2)", () => {
+    // `usageDetails` lives only on TIME_LIMIT. TOKENS_LIMIT maps to
+    // `tokens`, which has no per-tool breakdown to carry.
+    const normalized = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        {
+          type: "TOKENS_LIMIT",
+          unit: 1,
+          number: 1,
+          percentage: 60,
+          nextResetTime: 1700000000000,
+        },
+      ],
+    });
+    assert.ok(
+      !("toolUsage" in normalized.categories.find((c) => c.name === "tokens")),
+      "tokens category carries no toolUsage",
+    );
   });
 
   it("passes conformance and leaks no raw Z.AI field", async () => {
@@ -854,7 +1028,20 @@ const ZAI_SUCCESS = {
   provider: "zai",
   status: "ok",
   plan: "pro",
-  categories: [{ name: "requests", unit: "requests", current: { remainingPercent: 25 } }],
+  categories: [
+    {
+      name: "requests",
+      unit: "requests",
+      current: { remainingPercent: 25 },
+      // Additive optional field (#191/Q2): the shape a real Adapter emits
+      // for a live zai probe. Existing dashboard pins that only read
+      // `current` are unaffected.
+      toolUsage: [
+        { tool: "search-prime", usage: 700 },
+        { tool: "web-reader", usage: 250 },
+      ],
+    },
+  ],
 };
 const MINIMAX_SUCCESS = {
   provider: "minimax",
@@ -1049,6 +1236,28 @@ describe("quota dashboard — all-provider mode", () => {
     );
   });
 
+  it("carries toolUsage rows through the dashboard for zai verbatim (#191/Q2)", async () => {
+    // The dashboard is a pass-through: the Adapter's normalized categories
+    // (including the additive toolUsage field) reach `data` untouched. This
+    // pins the surfacing contract at the dashboard boundary — the renderer
+    // (tty.ts) and the JSON envelope both read this same object.
+    const zai = makeQuotaDescriptor("zai", { result: ZAI_SUCCESS });
+    const dashboard = await buildQuotaDashboard({
+      allProviders: false,
+      effectiveProvider: "zai",
+      descriptors: [zai],
+      env: { Z_AI_API_KEY: "k" },
+      sleep,
+      random,
+    });
+    const row = dashboard.providers[0];
+    assert.strictEqual(row.status, "ok");
+    assert.deepStrictEqual(row.categories[0].toolUsage, [
+      { tool: "search-prime", usage: 700 },
+      { tool: "web-reader", usage: 250 },
+    ]);
+  });
+
   it("keyless Jina is excluded by the quota-capability filter instead of yielding a ConfigurationError row (#49)", async () => {
     const zai = makeQuotaDescriptor("zai", { result: ZAI_SUCCESS });
     const dashboard = await buildQuotaDashboard({
@@ -1127,6 +1336,54 @@ describe("Brave quota normalization", () => {
 // ===========================================================================
 // 11. Quota command — provider-neutral warnings → stderr (T6)
 // ===========================================================================
+
+describe("quota command — toolUsage reaches the envelope verbatim (#191/Q2)", () => {
+  it("carries toolUsage on the result data (the json/pretty payload)", async () => {
+    // `pretty` mode is JSON-indent-2 of this same `data` object and `json`
+    // is JSON of it — so pinning the data object pins both envelope
+    // shapes. The field must arrive byte-for-byte as the Adapter emitted
+    // it: the command is presentation-only and never rewrites a category.
+    const category = {
+      name: "requests",
+      unit: "requests",
+      current: { remainingPercent: 25 },
+      toolUsage: [
+        { tool: "search-prime", usage: 700 },
+        { tool: "web-reader", usage: 250 },
+      ],
+    };
+    const result = await quota({
+      buildDashboard: async () => ({
+        schemaVersion: 1,
+        effectiveProvider: "zai",
+        providers: [{ provider: "zai", status: "ok", categories: [category] }],
+      }),
+    });
+    assert.strictEqual(result.exitCode, 0);
+    assert.deepStrictEqual(result.data.providers[0].categories[0], category);
+    assert.ok(
+      JSON.stringify(result.data).includes('"toolUsage":[{"tool":"search-prime","usage":700}'),
+      "json envelope carries toolUsage verbatim",
+    );
+  });
+
+  it("omits toolUsage from the envelope when the Adapter omitted it (no fabricated [])", async () => {
+    const result = await quota({
+      buildDashboard: async () => ({
+        schemaVersion: 1,
+        effectiveProvider: "minimax",
+        providers: [
+          {
+            provider: "minimax",
+            status: "ok",
+            categories: [{ name: "abab6.5s", unit: "requests", current: { remainingPercent: 70 } }],
+          },
+        ],
+      }),
+    });
+    assert.ok(!JSON.stringify(result.data).includes("toolUsage"));
+  });
+});
 
 describe("quota command — warnings rendered to stderr", () => {
   it("writes each warning from a successful entry to writeStderr (generic, no provider branch)", async () => {

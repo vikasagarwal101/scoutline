@@ -13,7 +13,11 @@
         "durationSeconds": 18000,
         "remainingPercent": 25,
         "resetsAt": "2023-11-14T22:13:20.000Z"
-      }
+      },
+      "toolUsage": [
+        { "tool": "search-prime", "usage": 500 },
+        { "tool": "web-reader", "usage": 250 }
+      ]
     },
     {
       "name": "tokens",

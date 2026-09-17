@@ -151,6 +151,7 @@ describe("#189 — MCP tool-cache isolation (client-level pin)", () => {
     // (ZAI_MCP_TOOL_CACHE=0); this block re-enables it — the subject here
     // IS the tool cache. Restored by the file-level after() via the saved
     // value.
+    process.env.ZAI_MCP_TOOL_CACHE = "1";
   });
 
   function toolEntryFiles(dir) {
@@ -160,7 +161,6 @@ describe("#189 — MCP tool-cache isolation (client-level pin)", () => {
 
   it("isolated client: tool-cache entry lands under tools/isolated/<pid>, shared tools/ untouched", async () => {
     const root = freshRoot();
-    process.env.ZAI_MCP_TOOL_CACHE = "1";
     const fake = new FakeUtcpClient({ discoveredTools: [TOOL] });
     const client = new ZaiMcpClient({
       utcpFactory: async () => fake,
@@ -181,7 +181,6 @@ describe("#189 — MCP tool-cache isolation (client-level pin)", () => {
 
   it("isolated read path: a SECOND isolated client serves from the isolated cache — zero UTCP discovery calls", async () => {
     const root = freshRoot();
-    process.env.ZAI_MCP_TOOL_CACHE = "1";
     const first = new ZaiMcpClient({
       utcpFactory: async () => new FakeUtcpClient({ discoveredTools: [TOOL] }),
       env: { Z_AI_API_KEY: FAKE_KEY, SCOUTLINE_CACHE_DIR: root, SCOUTLINE_ISOLATED: "1" },
@@ -206,7 +205,6 @@ describe("#189 — MCP tool-cache isolation (client-level pin)", () => {
 
   it("non-isolated client: tool-cache entry stays in the shared tools/ dir", async () => {
     const root = freshRoot();
-    process.env.ZAI_MCP_TOOL_CACHE = "1";
     const fake = new FakeUtcpClient({ discoveredTools: [TOOL] });
     const client = new ZaiMcpClient({
       utcpFactory: async () => fake,

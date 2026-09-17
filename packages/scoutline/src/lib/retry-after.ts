@@ -105,8 +105,10 @@ export function parseRetryAfterHintMs(
 
 /**
  * Error-constructor options carrying the hint, or NOTHING when there was
- * no parseable hint — so an absent header leaves the error byte-identical
- * rather than materializing an `undefined`-valued field.
+ * no parseable hint — the options object omits the key entirely, so nothing
+ * is attached and the error message and stdout envelope stay byte-identical.
+ * (The instance itself still materializes an own `retryAfterMs: undefined`
+ * — the constructor's standing idiom, same as `statusCode`/`help`.)
  */
 export function retryHintOptions(
   retryAfterMs: number | undefined,

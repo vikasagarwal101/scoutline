@@ -109,6 +109,10 @@ function readNumber(value: unknown): number | undefined {
  *   - `0 <= percentage <= 100` — `percentage` is a USED share.
  *   - `|(usage - currentValue) - remaining| <= 1` — the counts and the
  *     published remaining agree, allowing for upstream rounding.
+ *   - `|(currentValue / usage) * 100 - percentage| <= 2` — the
+ *     percentage agrees with the counts (ocr + opus converged finding:
+ *     a pathological percentage alone re-created false exhaustion
+ *     through the one field the five-condition guard didn't cross-check).
  */
 function isConsistentTimeLimit(entry: {
   usage?: number;
@@ -135,7 +139,8 @@ function isConsistentTimeLimit(entry: {
     remaining <= usage &&
     percentage >= 0 &&
     percentage <= 100 &&
-    Math.abs(usage - currentValue - remaining) <= 1
+    Math.abs(usage - currentValue - remaining) <= 1 &&
+    Math.abs((currentValue / usage) * 100 - percentage) <= 2
   );
 }
 

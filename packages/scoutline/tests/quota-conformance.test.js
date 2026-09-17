@@ -727,6 +727,31 @@ describe("Z.AI quota normalization", () => {
     assert.strictEqual(w.remaining, 887);
   });
 
+  it("drops the current window when percentage contradicts the counts (#191 ocr+opus converged)", async () => {
+    // The pathological percentage channel: counts are internally
+    // consistent (1000-0-1000=0, within tolerance) but percentage says
+    // 100% used — the ONE field the five-condition guard never
+    // cross-checked, re-creating false exhaustion through a second path.
+    const { normalizeZaiQuota } = await import("../dist/providers/zai/quota.js");
+    const result = await normalizeZaiQuota({
+      limits: [
+        {
+          type: "TIME_LIMIT", unit: 5, number: 1,
+          usage: 1000, currentValue: 0, remaining: 1000,
+          percentage: 100,
+          nextResetTime: 1791411480983,
+        },
+      ],
+      level: "pro",
+    });
+    const requests = result.categories.find((c) => c.name === "requests");
+    assert.ok(requests, "requests category exists");
+    assert.strictEqual(
+      JSON.stringify(requests.current), "{}",
+      "percentage-contradicting-counts window must be dropped (empty current)",
+    );
+  });
+
   it("keeps exhaustion detectable on a consistent TIME_LIMIT at zero remaining (#191)", () => {
     const normalized = normalizeZaiQuota({
       level: "pro",

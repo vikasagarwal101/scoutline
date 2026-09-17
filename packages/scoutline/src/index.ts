@@ -6317,11 +6317,17 @@ export async function main(
       // Persist hintShown best-effort. A write failure is isolated: the
       // hint simply does not repeat within this process; the next run
       // tries again. The injected store keeps tests hermetic.
-      const hintStore = dependencies.hintShownStore ?? createDefaultHintShownStore();
-      try {
-        await hintStore.setHintShown();
-      } catch {
-        // Best-effort: do not turn a hint into a failure.
+      // #188: the hintShown marker is a SHARED-config-root write (the
+      // default store resolves the ambient root) — under --isolated it is
+      // skipped entirely: an isolated run never creates or writes the
+      // shared config, and the one-time hint simply repeats next run.
+      if (!isolated) {
+        const hintStore = dependencies.hintShownStore ?? createDefaultHintShownStore();
+        try {
+          await hintStore.setHintShown();
+        } catch {
+          // Best-effort: do not turn a hint into a failure.
+        }
       }
     }
   }

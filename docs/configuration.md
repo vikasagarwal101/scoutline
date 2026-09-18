@@ -168,14 +168,14 @@ non-TTY settings surface (dotted paths: `routing`, `routing.<capability>`,
 
 Shared commands (`search`, `vision`, `quota`, `doctor`), **`repo`**,
 **`read`**, **`crawl`**, **`map`**, and **`research`** accept the global
-`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi>` flag. When the flag
+`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>` flag. When the flag
 is omitted the value of the `SCOUTLINE_PROVIDER` environment variable is
 consulted; when neither is supplied Scoutline falls back to the compatibility
 default `zai`.
 
 Resolution precedence (highest first):
 
-1. `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi>` on the command line
+1. `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>` on the command line
 2. `SCOUTLINE_PROVIDER`
 3. `zai` (default)
 
@@ -546,6 +546,41 @@ scoutline --provider searchapi search "AI policy news" --topic news
 scoutline --provider searchapi search "raft consensus" --domain github.io --recency oneWeek
 scoutline --provider searchapi quota
 scoutline doctor --provider searchapi
+```
+
+## Kagi Settings
+
+The Kagi Adapter is configured through one environment variable. Every
+request authenticates against `https://kagi.com` with an
+`Authorization: Bot` header — the key is never sent as a query
+parameter.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `KAGI_API_KEY` | (none) | Required for Kagi. Kagi API key. |
+| `KAGI_TOKEN` | (none) | Legacy fallback, used only when `KAGI_API_KEY` is absent or blank. |
+| `KAGI_TIMEOUT` | `30000` | Per-request timeout in milliseconds for every Kagi HTTP call (search, news, diagnostics probe). Non-numeric or non-positive values fall back to the default. |
+
+- `KAGI_API_KEY` is preferred; `KAGI_TOKEN` is accepted as a
+  lower-precedence fallback. Whitespace-only values are treated as
+  absent.
+- The key is redacted in all output, exactly like every other provider
+  credential.
+- Kagi supplies Search and Diagnostics. `--domain` maps to a `site:`
+  operator prefixed onto the query, and `--topic news` routes to
+  `GET /api/v0/enrich/news` (general search rides
+  `GET /api/v1/search`); `--recency`, `--location`,
+  `--content-size`, and `--type` are rejected before any I/O.
+- The diagnostics probe rides the same `GET /api/v1/search` with
+  `limit=1` and costs one search credit. Kagi advertises no quota
+  capability, so its quota authority is `always-unknown`.
+
+```bash
+export KAGI_API_KEY="your-kagi-key"
+
+scoutline --provider kagi search "AI policy news" --topic news
+scoutline --provider kagi search "raft consensus" --domain github.io
+scoutline doctor --provider kagi
 ```
 
 ## Science Settings

@@ -33,6 +33,7 @@ const PROVIDER_MATRIX_LABELS = {
   spider: "Spider.cloud",
   bocha: "Bocha AI",
   searchapi: "SearchApi",
+  kagi: "Kagi",
   arxiv: "arXiv",
   openalex: "OpenAlex",
   crossref: "Crossref",

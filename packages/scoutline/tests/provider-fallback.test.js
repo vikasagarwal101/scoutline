@@ -1361,6 +1361,9 @@ describe("executeWithFallback — production registry carries credential hint en
       spider: ["SPIDER_API_KEY"],
       bocha: ["BOCHA_API_KEY"],
       searchapi: ["SEARCHAPI_API_KEY", "SERPAPI_API_KEY"],
+      // Kagi documents the same-key legacy alias the credentials module
+      // resolves: KAGI_TOKEN is accepted when KAGI_API_KEY is absent.
+      kagi: ["KAGI_API_KEY", "KAGI_TOKEN"],
       // Science seats (T2): keyless trio carries no credential model;
       // openalex/pubmed accept an optional free key.
       arxiv: [],

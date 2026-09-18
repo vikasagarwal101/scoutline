@@ -24,6 +24,7 @@ import { ApiError, AuthError, NetworkError, TimeoutError } from "../../lib/error
 import type { ProviderQuotaFetch } from "../types.js";
 import { getGlobalFetch } from "../types.js";
 import type { MiniMaxTransportDeps } from "./coding-plan-client.js";
+import { clampTimeoutMs } from "../../lib/timeout.js";
 
 const QUOTA_PATH = "/v1/api/openplatform/coding_plan/remains";
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -47,9 +48,9 @@ export interface MiniMaxRawQuotaResponse {
   model_remains?: unknown[];
 }
 
-function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
+export function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = parseInt(env.MINIMAX_TIMEOUT || String(DEFAULT_TIMEOUT_MS), 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
+  return clampTimeoutMs(raw, DEFAULT_TIMEOUT_MS);
 }
 
 function mapStatusError(status: number): Error {

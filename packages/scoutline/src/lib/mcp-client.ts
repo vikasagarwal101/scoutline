@@ -29,6 +29,7 @@ import { buildCacheKey, readCache, writeCache } from "./cache.js";
 import { readToolCache, writeToolCache, type ToolCacheConfig } from "./tool-cache.js";
 import { redactSecrets, configuredSecrets } from "./redact.js";
 import type { ReaderRawResponse } from "../capabilities/reader.js";
+import { clampTimeoutMs } from "./timeout.js";
 
 // Retry/timeout defaults resolved per-instance from the invocation-local
 // env (options.env ?? process.env) in the constructor — not frozen at
@@ -80,6 +81,16 @@ function parseIntOrDefault(value: string | undefined, fallback: number): number 
   if (value === undefined || value === "") return fallback;
   const parsed = parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+/**
+ * Resolve the Z.AI MCP request timeout from `Z_AI_TIMEOUT` (#214):
+ * parse with the env fallback, then clamp to the setTimeout 32-bit
+ * signed maximum so an out-of-range override cannot surface in
+ * TimeoutError metadata unclamped.
+ */
+export function resolveZaiMcpTimeoutMs(env: NodeJS.ProcessEnv): number {
+  return clampTimeoutMs(parseIntOrDefault(env.Z_AI_TIMEOUT, FALLBACK_TIMEOUT_MS), FALLBACK_TIMEOUT_MS);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -166,7 +177,7 @@ export class ZaiMcpClient {
   constructor(options: ZaiMcpClientOptions = {}) {
     this.options = options;
     const env = options.env ?? process.env;
-    this.timeoutMs = parseIntOrDefault(env.Z_AI_TIMEOUT, FALLBACK_TIMEOUT_MS);
+    this.timeoutMs = resolveZaiMcpTimeoutMs(env);
     this.retryBaseMs = parseIntOrDefault(env.ZAI_MCP_RETRY_BASE_MS, FALLBACK_RETRY_BASE_MS);
     this.retryMaxMs = parseIntOrDefault(env.ZAI_MCP_RETRY_MAX_MS, FALLBACK_RETRY_MAX_MS);
     this.retryJitterMs = parseIntOrDefault(env.ZAI_MCP_RETRY_JITTER_MS, FALLBACK_RETRY_JITTER_MS);

@@ -63,6 +63,7 @@ import {
   ZaiMcpClient,
 } from "../../lib/mcp-client.js";
 import { buildLegacyRepositoryCacheKey } from "../../lib/cache.js";
+import { resolveTimeoutMs } from "./monitor-client.js";
 import { applySearchTopic } from "../../lib/search-topic.js";
 import { isZaiConfigured, requireZaiApiKey } from "./credentials.js";
 import {
@@ -387,7 +388,7 @@ function normalizeZaiError(error: unknown): Error {
     return new AuthError("Z.AI authentication failed");
   }
   if (lower.includes("timeout") || lower.includes("timed out") || lower.includes("etimedout")) {
-    return new TimeoutError(parseInt(process.env.Z_AI_TIMEOUT || "30000", 10));
+    return new TimeoutError(resolveTimeoutMs(process.env));
   }
   if (
     lower.includes("econnrefused") ||

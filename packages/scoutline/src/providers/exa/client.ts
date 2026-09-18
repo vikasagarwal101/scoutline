@@ -30,6 +30,7 @@
 import pkg from "../../../package.json" with { type: "json" };
 
 import { ApiError, AuthError, NetworkError, QuotaError, TimeoutError } from "../../lib/errors.js";
+import { clampTimeoutMs } from "../../lib/timeout.js";
 import type { ProviderQuotaFetch } from "../types.js";
 import { getGlobalFetch } from "../types.js";
 
@@ -85,9 +86,9 @@ export interface ExaContentsParams {
   readonly livecrawlTimeout?: number;
 }
 
-function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
+export function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = parseInt(env.EXA_TIMEOUT || String(DEFAULT_TIMEOUT_MS), 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
+  return clampTimeoutMs(raw, DEFAULT_TIMEOUT_MS);
 }
 
 /**

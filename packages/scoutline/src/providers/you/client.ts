@@ -37,6 +37,7 @@ import {
   ValidationError,
 } from "../../lib/errors.js";
 import { getGlobalFetch } from "../types.js";
+import { clampTimeoutMs } from "../../lib/timeout.js";
 
 const { version: VERSION } = pkg;
 
@@ -312,11 +313,10 @@ export async function fetchYouContents(
 /**
  * Resolve effective timeout for You.com research requests from environment or default.
  */
-function resolveResearchTimeoutMs(env?: NodeJS.ProcessEnv): number {
+export function resolveResearchTimeoutMs(env?: NodeJS.ProcessEnv): number {
   const envVal = env?.YOU_RESEARCH_TIMEOUT || env?.YDC_RESEARCH_TIMEOUT;
   if (envVal) {
-    const parsed = parseInt(envVal, 10);
-    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    return clampTimeoutMs(parseInt(envVal, 10), DEFAULT_RESEARCH_TIMEOUT_MS);
   }
   return DEFAULT_RESEARCH_TIMEOUT_MS;
 }

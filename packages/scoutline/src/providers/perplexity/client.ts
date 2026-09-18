@@ -9,6 +9,7 @@
 
 import pkg from "../../../package.json" with { type: "json" };
 import { ApiError, AuthError, NetworkError, TimeoutError } from "../../lib/errors.js";
+import { clampTimeoutMs } from "../../lib/timeout.js";
 import type { ProviderQuotaFetchResponse } from "../types.js";
 
 const { version: VERSION } = pkg;
@@ -95,17 +96,17 @@ export interface PerplexityAgentResponse {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
+export function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = parseInt(env.PERPLEXITY_TIMEOUT || String(DEFAULT_TIMEOUT_MS), 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
+  return clampTimeoutMs(raw, DEFAULT_TIMEOUT_MS);
 }
 
-function resolveResearchTimeoutMs(env: NodeJS.ProcessEnv): number {
+export function resolveResearchTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = parseInt(
     env.PERPLEXITY_RESEARCH_TIMEOUT || String(DEFAULT_DEEPSEARCH_TIMEOUT_MS),
     10,
   );
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_DEEPSEARCH_TIMEOUT_MS;
+  return clampTimeoutMs(raw, DEFAULT_DEEPSEARCH_TIMEOUT_MS);
 }
 
 function mapStatusError(

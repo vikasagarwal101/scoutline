@@ -467,6 +467,45 @@ describe("configuredSecrets — credential discovery from environment", () => {
     assert.ok(secrets.includes(M_KEY), "MINIMAX_API_KEY value should be in configuredSecrets");
   });
 
+  it("surfaces the searchapi and serpapi credentials (#216)", () => {
+    const SEARCHAPI = "sk-live-searchapi-e5";
+    const SERPAPI = "sk-live-serpapi-f6";
+    const secrets = configuredSecrets({
+      SEARCHAPI_API_KEY: SEARCHAPI,
+      SERPAPI_API_KEY: SERPAPI,
+    });
+    for (const [name, value] of [
+      ["SEARCHAPI_API_KEY", SEARCHAPI],
+      ["SERPAPI_API_KEY", SERPAPI],
+    ]) {
+      assert.ok(
+        secrets.includes(value),
+        `configuredSecrets must include the ${name} value so it is redacted at every outward boundary`,
+      );
+    }
+  });
+
+  it("surfaces the kagi credentials (kagi amendment)", () => {
+    const KAGI = "kagi-live-amend-a7";
+    const TOKEN = "kagi-legacy-amend-b8";
+    for (const [name, value] of [
+      ["KAGI_API_KEY", KAGI],
+      ["KAGI_TOKEN", TOKEN],
+    ]) {
+      const secrets = configuredSecrets({ [name]: value });
+      assert.ok(
+        secrets.includes(value),
+        `configuredSecrets must include the ${name} value so it is redacted at every outward boundary`,
+      );
+    }
+  });
+
+  it("omits the searchapi/serpapi credentials when not set (#216)", () => {
+    const secrets = configuredSecrets({ Z_AI_API_KEY: Z_KEY });
+    assert.ok(!secrets.includes("sk-absent-searchapi"));
+    assert.ok(!secrets.includes("sk-absent-serpapi"));
+  });
+
   it("omits EXA_API_KEY when not set", () => {
     const secrets = configuredSecrets({ Z_AI_API_KEY: Z_KEY });
     assert.ok(!secrets.includes(E_KEY));
@@ -847,6 +886,25 @@ describe("v3 provider keys (2026-08 #78)", () => {
     );
   });
 
+  it("redacts SEARCHAPI_API_KEY and SERPAPI_API_KEY assignments (#216)", () => {
+    assert.strictEqual(
+      redactCredentialString("SEARCHAPI_API_KEY=searchapi-secret-6789"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("SERPAPI_API_KEY: serpapi-secret-4321"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("SEARCHAPI_API_KEY sk-searchapi-1a2b3c"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("SERPAPI_API_KEY sk-serpapi-9z8y7x"),
+      "[REDACTED]",
+    );
+  });
+
   it("redacts science credential env-var assignments (#208)", () => {
     assert.strictEqual(
       redactCredentialString("NCBI_API_KEY: k"),
@@ -858,6 +916,93 @@ describe("v3 provider keys (2026-08 #78)", () => {
     );
     assert.strictEqual(
       redactSecrets({ NCBI_API_KEY: "n", OPENALEX_API_KEY: "o" }).NCBI_API_KEY,
+      "[REDACTED]",
+    );
+  });
+
+  it("masks searchapi/serpapi credential object keys by name (#216)", () => {
+    assert.deepStrictEqual(
+      redactSecrets({ searchapi_api_key: "sk-searchapi-6789" }),
+      { searchapi_api_key: "[REDACTED]" },
+    );
+    assert.deepStrictEqual(
+      redactSecrets({ SERPAPI_API_KEY: "sk-serpapi-4321" }),
+      { SERPAPI_API_KEY: "[REDACTED]" },
+    );
+  });
+
+  it("leaves ordinary prose naming the searchapi/serpapi variables intact (#216, #44 bar)", () => {
+    for (const prose of [
+      "SEARCHAPI_API_KEY is not set",
+      "configure SERPAPI_API_KEY before use",
+    ]) {
+      assert.strictEqual(redactCredentialString(prose), prose);
+    }
+  });
+
+  it("redacts KAGI_API_KEY and KAGI_TOKEN assignments (kagi amendment)", () => {
+    assert.strictEqual(
+      redactCredentialString("KAGI_API_KEY=kagi-secret-1357"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("KAGI_TOKEN: kagi-legacy-token-2468"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("KAGI_API_KEY kagi-key-9a8b7c6d"),
+      "[REDACTED]",
+    );
+  });
+
+  it("masks kagi credential object keys by name (kagi amendment)", () => {
+    assert.deepStrictEqual(
+      redactSecrets({ kagi_api_key: "kagi-secret-1357" }),
+      { kagi_api_key: "[REDACTED]" },
+    );
+    assert.deepStrictEqual(
+      redactSecrets({ KAGI_TOKEN: "kagi-legacy-token-2468" }),
+      { KAGI_TOKEN: "[REDACTED]" },
+    );
+  });
+
+  it("leaves ordinary prose naming the kagi variables intact (kagi amendment, #44 bar)", () => {
+    for (const prose of [
+      "KAGI_API_KEY or KAGI_TOKEN environment variable is required",
+      "KAGI_API_KEY is not set",
+    ]) {
+      assert.strictEqual(redactCredentialString(prose), prose);
+    }
+  });
+
+  it("leaves identifier-prefixed key names fully intact — no partial MY_[REDACTED] (PR #220 review)", () => {
+    for (const line of [
+      "MY_SEARCHAPI_API_KEY=searchapi-secret-6789",
+      "MY_SERPAPI_API_KEY: serpapi-secret-4321",
+      "MY_TAVILY_API_KEY=tavily-secret-1",
+      "MY_KAGI_API_KEY=kagi-secret-1357",
+      "PREFIXED_KAGI_TOKEN kagi-legacy-2468",
+      "WRAPPED_YDC_API_KEY ydc-AA11bb22cc",
+    ]) {
+      assert.strictEqual(
+        redactCredentialString(line),
+        line,
+        `prefixed identifier form must not partially redact: ${line}`,
+      );
+    }
+  });
+
+  it("still redacts unprefixed key names after the identifier-start boundary (PR #220 review)", () => {
+    assert.strictEqual(
+      redactCredentialString("SEARCHAPI_API_KEY=searchapi-secret-6789"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("KAGI_TOKEN kagi-legacy-2468"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("TAVILY_API_KEY: sk-tvly-9988"),
       "[REDACTED]",
     );
   });
@@ -1145,7 +1290,8 @@ describe("quoted-scheme recovery and family-wide boundary invariants (#171 revie
       "Z_AI_API_KEY", "ZAI_API_KEY", "MINIMAX_API_KEY", "TAVILY_API_KEY",
       "EXA_API_KEY", "BRAVE_SEARCH_API_KEY", "FIRECRAWL_API_KEY", "PARALLEL_API_KEY",
       "PERPLEXITY_API_KEY", "JINA_API_KEY", "YDC_API_KEY", "YOU_API_KEY",
-      "LINKUP_API_KEY", "SPIDER_API_KEY",
+      "LINKUP_API_KEY", "SPIDER_API_KEY", "SEARCHAPI_API_KEY", "SERPAPI_API_KEY",
+      "KAGI_API_KEY", "KAGI_TOKEN",
     ];
 
     for (const key of envVars) {
@@ -1175,7 +1321,16 @@ describe("quoted-scheme recovery and family-wide boundary invariants (#171 revie
     }
 
     // Whitespace-guarded v3 env-var passes (#174): terminate at quotes to preserve JSON boundaries
-    const wsEnvVars = ["YDC_API_KEY", "YOU_API_KEY", "LINKUP_API_KEY", "SPIDER_API_KEY"];
+    const wsEnvVars = [
+      "YDC_API_KEY",
+      "YOU_API_KEY",
+      "LINKUP_API_KEY",
+      "SPIDER_API_KEY",
+      "SEARCHAPI_API_KEY",
+      "SERPAPI_API_KEY",
+      "KAGI_API_KEY",
+      "KAGI_TOKEN",
+    ];
     for (const key of wsEnvVars) {
       // Whitespace syntax in JSON (#174)
       const jsonWs = JSON.stringify({ h: `${key} key12345aB`, n: 1 });

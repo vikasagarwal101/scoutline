@@ -25,6 +25,7 @@
 import { ApiError, AuthError, NetworkError, TimeoutError } from "../../lib/errors.js";
 import type { ProviderQuotaFetch } from "../types.js";
 import { getGlobalFetch } from "../types.js";
+import { clampTimeoutMs } from "../../lib/timeout.js";
 
 const DEFAULT_MONITOR_BASE = "https://api.z.ai";
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -53,9 +54,9 @@ function resolveBase(env: NodeJS.ProcessEnv): string {
   return env.ZAI_MONITOR_BASE_URL || DEFAULT_MONITOR_BASE;
 }
 
-function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
+export function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = parseInt(env.Z_AI_TIMEOUT || String(DEFAULT_TIMEOUT_MS), 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
+  return clampTimeoutMs(raw, DEFAULT_TIMEOUT_MS);
 }
 
 function mapStatusError(status: number): Error {

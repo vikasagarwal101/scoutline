@@ -6,6 +6,7 @@
 
 import pkg from "../../../package.json" with { type: "json" };
 import { ApiError, AuthError, NetworkError, QuotaError, TimeoutError } from "../../lib/errors.js";
+import { clampTimeoutMs } from "../../lib/timeout.js";
 import {
   parseRetryAfterHintMs,
   retryHintOptions,
@@ -113,9 +114,9 @@ async function readErrorBody(response: { text(): Promise<string> }): Promise<str
   }
 }
 
-function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
+export function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = parseInt(env.JINA_TIMEOUT || String(DEFAULT_TIMEOUT_MS), 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
+  return clampTimeoutMs(raw, DEFAULT_TIMEOUT_MS);
 }
 
 /**
@@ -599,9 +600,9 @@ function parseDeepSearchSSE(text: string): JinaDeepSearchResponse {
   };
 }
 
-function resolveDeepSearchTimeoutMs(env: NodeJS.ProcessEnv): number {
+export function resolveDeepSearchTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = parseInt(env.JINA_DEEPSEARCH_TIMEOUT || String(DEFAULT_DEEPSEARCH_TIMEOUT_MS), 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_DEEPSEARCH_TIMEOUT_MS;
+  return clampTimeoutMs(raw, DEFAULT_DEEPSEARCH_TIMEOUT_MS);
 }
 
 export async function fetchJinaDeepSearch(

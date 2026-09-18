@@ -26,11 +26,12 @@ import { runProcess } from "./helpers/run-process.js";
 // failing pin. You.com is one of the shared suppliers. Pinned here as a
 // literal so a widening that misses any surface fails loudly.
 // amendment-4: shared --provider surfaces widened 12→13 with bocha;
-// the searchapi integration merge widens them again 13→14.
+// the searchapi integration merge widens them again 13→14; the kagi
+// integration widens them 14→15.
 const PROVIDER_ENUM_WIDENED =
-  "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi>";
+  "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>";
 const PROVIDER_LIST_TAIL =
-  "Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, or SearchApi.io";
+  "Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, SearchApi.io, or Kagi";
 
 const packageReadme = fs.readFile(new URL("../README.md", import.meta.url), "utf8");
 const rootReadme = fs.readFile(new URL("../../../README.md", import.meta.url), "utf8");
@@ -128,11 +129,11 @@ describe("You.com docs — CLI help enumerations", () => {
     });
     assert.equal(result.code, 0);
     assert.ok(
-      result.stdout.includes("all 14 Providers"),
-      "main help must count the 13 shared-capability providers",
+      result.stdout.includes("all 15 Providers"),
+      "main help must count the 14 shared-capability providers",
     );
     assert.ok(
-      result.stdout.includes("perplexity|jina|you|linkup|spider|bocha|searchapi>"),
+      result.stdout.includes("perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>"),
       "main help --provider enumeration keeps you and stops at the shared suppliers",
     );
     assert.ok(

@@ -21,7 +21,7 @@
 - **Repo** - Search and read GitHub repository code via ZRead
 - **Tools** - MCP tool discovery, schemas, and raw calls
 - **Code Mode** - TypeScript tool chaining for agent automation
-- **Provider selection** - Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, or SearchApi.io
+- **Provider selection** - Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, SearchApi.io, or Kagi
 - **Usage ledger** - Local 90-day call-usage history per provider and capability (`scoutline usage`), counters only
 - **Saved artifacts** - Durable clean reports from any provider-backed run (`--save`), content + request id only, plus a credential-free `scoutline history` inventory (list/show/stats/recall/export/note/clear)
 - **Research journal** - Always-on local memory of every `search`/`read`/`research` call: thin skeletons (query, provider, url+title identity, content hash) recorded under `~/.scoutline/artifacts/` and re-found offline via `history recall`; opt out per call (`--no-journal`) or globally (`journal: false`)
@@ -62,6 +62,21 @@ npx scoutline --provider bocha search "AI policy news"
 
 Get your Bocha AI API key at: https://open.bochaai.com/
 
+To use Kagi (Search and Diagnostics):
+
+```bash
+export KAGI_API_KEY="your-kagi-key"
+npx scoutline --provider kagi search "AI policy news"
+npx scoutline --provider kagi search "AI policy" --topic news
+npx scoutline doctor --provider kagi
+```
+
+Kagi reads the key from `KAGI_API_KEY` (legacy alias `KAGI_TOKEN`).
+Search rides `GET /api/v1/search` (`Authorization: Bot <key>`);
+`--topic news` routes to `GET /api/v0/enrich/news`.
+
+Get your Kagi API key at: https://kagi.com/settings/api
+
 ### Interactive Onboarding (`scoutline init`)
 
 Instead of exporting environment variables, run the interactive wizard to
@@ -72,7 +87,7 @@ scoutline init
 ```
 
 The wizard walks you through a registry-derived provider checklist
-(all 12 built-in Providers, rendered in registry order — equal
+(all 15 built-in Providers, rendered in registry order — equal
 weight, none pre-checked), takes each key via
 hidden input, and performs a single inline validation probe against an
 ephemeral in-memory environment (the candidate key is never persisted or
@@ -151,9 +166,9 @@ npx scoutline --help
 ## Provider Selection
 
 Shared commands (`search`, `vision`, `quota`, `doctor`, `repo`) accept a global
-`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi>` flag. Resolution precedence:
+`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>` flag. Resolution precedence:
 
-1. Explicit `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi>` on the command line
+1. Explicit `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>` on the command line
 2. `SCOUTLINE_PROVIDER` environment variable
 3. Per-capability **routing table** (`config.json` `routing` key; the first
    configured, capable provider in the list wins — over quota ranking)
@@ -196,7 +211,7 @@ selected provider does not advertise the capability (for example,
 MiniMax does not advertise `repository-exploration` or `reader`) or
 fails at runtime, Scoutline emits a stderr notice and silently
 reroutes to the next eligible configured provider in registry order
-`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, arxiv, openalex, crossref, pubmed, europepmc]`. Pass `--no-fallback`
+`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, kagi, arxiv, openalex, crossref, pubmed, europepmc]`. Pass `--no-fallback`
 (or set `SCOUTLINE_NO_FALLBACK=1`) to restore the previous strict
 single-provider, fail-loud behavior for scripting or cost-sensitive
 workflows. See
@@ -379,33 +394,33 @@ for the full contract.
 The matrix below is generated from the production provider registry
 (`packages/scoutline/src/providers/registry.ts`) and reflects the
 release-shipped capability advertisements; the registry order is
-`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, arxiv, openalex, crossref, pubmed, europepmc]`.
+`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, kagi, arxiv, openalex, crossref, pubmed, europepmc]`.
 The matrix columns cover the shared-capability providers — the five
 keyless science suppliers (arXiv, OpenAlex, Crossref, PubMed, Europe
 PMC) serve only `scoutline science ...` and `doctor` (see the Science
 section). The exact same `descriptor.capabilities()` set drives
 executor preflight, Provider selection, and `doctor`.
 
-| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina | You.com | Linkup | Spider.cloud | Bocha AI | SearchApi | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `search` | Yes | Yes | Yes | Yes | Yes (incl. `type: "video"`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Parallel (declarative semantic), Jina (neural web search) |
-| `vision.interpret-image` (analyze) | Yes | Yes | No | No | No | No | No | No | No | No | No | No | No | No | Provider-specific media limits; uncached |
-| `vision.ui-artifact` (ui-to-code) | Yes | Available | No | No | No | No | No | No | No | No | No | No | No | No | Live-attested; conformance-gated |
-| `vision.extract-text` | Yes | Pending | No | No | No | No | No | No | No | No | No | No | No | No | Implemented, pending live conformance |
-| `vision.diagnose-error` | Yes | Available | No | No | No | No | No | No | No | No | No | No | No | No | Live-attested; conformance-gated |
-| `vision.diagram` | Yes | Pending | No | No | No | No | No | No | No | No | No | No | No | No | Implemented, pending live conformance |
-| `vision.chart` | Yes | Pending | No | No | No | No | No | No | No | No | No | No | No | No | Implemented, pending live conformance |
-| `vision.diff` (image diff) | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
-| `vision.video` | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
-| `quota` | Yes | Yes | Yes | No | Yes | Yes (USD balance) | No | No | Yes (rate-limit telemetry, not spend) | No | Yes (credits) | Yes (credits) | No | Yes (credits) | Normalized `QuotaDashboard` (ADR-0001) |
-| `diagnostics` (`doctor`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Lists every Provider; probes configured |
-| `read` (Reader) | Yes | **No** | Yes | Yes | No | Yes | Yes | No | Yes | Yes | Yes | Yes | No | **No** | Parallel (Extract API), Jina, You.com, Linkup, and Spider.cloud add Reader support |
-| `crawl` | **No** | **No** | Yes | No | No | Yes (async) | No | No | No | No | No | Yes (sync) | No | **No** | Tavily sync; Firecrawl async (resumable after Ctrl-C) |
-| `map` | **No** | **No** | Yes | No | No | Yes | No | No | No | No | No | Yes | No | **No** | URL-set discovery; no per-page content |
-| `research` | **No** | **No** | Yes | Yes | **No** | **No** | Yes | Yes | Yes | Yes | Yes | No | No | **No** | Tavily, Exa, Parallel, Perplexity (Agent API `high` preset), Jina DeepSearch, You.com, and Linkup research report synthesis |
-| `repo search` / `repo read` / `repo tree` / `repo brief` | Yes | **No** | **No** | **No** | **No** | **No** | **No** | **No** | **No** | No | No | No | No | No | Participates in selection; only Z.AI supplies `repository-exploration` |
-| `tools`, `tool`, `call` (Raw tools) | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
-| `code` (Code Mode) | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina | You.com | Linkup | Spider.cloud | Bocha AI | SearchApi | Kagi | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `search` | Yes | Yes | Yes | Yes | Yes (incl. `type: "video"`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Parallel (declarative semantic), Jina (neural web search) |
+| `vision.interpret-image` (analyze) | Yes | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | Provider-specific media limits; uncached |
+| `vision.ui-artifact` (ui-to-code) | Yes | Available | No | No | No | No | No | No | No | No | No | No | No | No | No | Live-attested; conformance-gated |
+| `vision.extract-text` | Yes | Pending | No | No | No | No | No | No | No | No | No | No | No | No | No | Implemented, pending live conformance |
+| `vision.diagnose-error` | Yes | Available | No | No | No | No | No | No | No | No | No | No | No | No | No | Live-attested; conformance-gated |
+| `vision.diagram` | Yes | Pending | No | No | No | No | No | No | No | No | No | No | No | No | No | Implemented, pending live conformance |
+| `vision.chart` | Yes | Pending | No | No | No | No | No | No | No | No | No | No | No | No | No | Implemented, pending live conformance |
+| `vision.diff` (image diff) | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
+| `vision.video` | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
+| `quota` | Yes | Yes | Yes | No | Yes | Yes (USD balance) | No | No | Yes (rate-limit telemetry, not spend) | No | Yes (credits) | Yes (credits) | No | Yes (credits) | No | Normalized `QuotaDashboard` (ADR-0001) |
+| `diagnostics` (`doctor`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Lists every Provider; probes configured |
+| `read` (Reader) | Yes | **No** | Yes | Yes | No | Yes | Yes | No | Yes | Yes | Yes | Yes | No | **No** | No | Parallel (Extract API), Jina, You.com, Linkup, and Spider.cloud add Reader support |
+| `crawl` | **No** | **No** | Yes | No | No | Yes (async) | No | No | No | No | No | Yes (sync) | No | **No** | No | Tavily sync; Firecrawl async (resumable after Ctrl-C) |
+| `map` | **No** | **No** | Yes | No | No | Yes | No | No | No | No | No | Yes | No | **No** | No | URL-set discovery; no per-page content |
+| `research` | **No** | **No** | Yes | Yes | **No** | **No** | Yes | Yes | Yes | Yes | Yes | No | No | **No** | No | Tavily, Exa, Parallel, Perplexity (Agent API `high` preset), Jina DeepSearch, You.com, and Linkup research report synthesis |
+| `repo search` / `repo read` / `repo tree` / `repo brief` | Yes | **No** | **No** | **No** | **No** | **No** | **No** | **No** | **No** | No | No | No | No | No | Yes | Participates in selection; only Z.AI supplies `repository-exploration` |
+| `tools`, `tool`, `call` (Raw tools) | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
+| `code` (Code Mode) | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
 
 Media limits for general single-image interpretation:
 

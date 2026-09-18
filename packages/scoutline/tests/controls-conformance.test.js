@@ -53,6 +53,7 @@ import { createFirecrawlDescriptor } from "../dist/providers/firecrawl/adapter.j
 import { createSpiderDescriptor } from "../dist/providers/spider/adapter.js";
 import { createBochaDescriptor } from "../dist/providers/bocha/adapter.js";
 import { createSearchApiDescriptor } from "../dist/providers/searchapi/adapter.js";
+import { createKagiDescriptor } from "../dist/providers/kagi/adapter.js";
 import { createArxivDescriptor } from "../dist/providers/arxiv/adapter.js";
 import { createOpenalexDescriptor } from "../dist/providers/openalex/adapter.js";
 import { createCrossrefDescriptor } from "../dist/providers/crossref/adapter.js";
@@ -379,6 +380,25 @@ const SEARCHAPI_ME_RAW = {
   },
 };
 
+// Kagi search envelope — same fixture shape as kagi-adapter.test.js:
+// `{ meta, data: [...] }`, where only `t === 0` rows with a url are
+// results and `t: 1` rows are related-query suggestions. The news row
+// reads this payload from the v0 enrich/news GET too.
+const KAGI_SEARCH_RAW = {
+  meta: { id: "kagi_search_uuid_001", node: "us-east", ms: 125 },
+  data: [
+    {
+      t: 0,
+      rank: 1,
+      url: "https://docs.kernel.org/scheduler/index.html",
+      title: "Linux Kernel Scheduler Documentation",
+      snippet: "The Linux scheduler controls CPU task scheduling across cores...",
+      published: "2026-06-15T00:00:00Z",
+    },
+    { t: 1, list: ["linux scheduler benchmarks", "cfs scheduler tuning"] },
+  ],
+};
+
 // Science fixtures — minimal real-shape supplier payloads, enough for
 // every consumed row to observe its control on the wire and normalize
 // (TASKS T8 "controls-conformance rows 5x4"; DESIGN D7 table + value
@@ -616,6 +636,14 @@ const RESPONDERS = {
     if (url.includes("/me")) return jsonResponse(SEARCHAPI_ME_RAW);
     return jsonResponse(SEARCHAPI_SEARCH_RAW);
   },
+  // Kagi: search + diagnostics scope only — the search v1 GET is the
+  // sole wire surface exercised here, and the v0 enrich/news GET when
+  // controls.topic is "news". Reader/research are deferred by owner
+  // ruling (2026-09-18); add no /summarize or /fastgpt branch until the
+  // owner re-opens them.
+  kagi(url, method) {
+    return jsonResponse(KAGI_SEARCH_RAW);
+  },
   // Science suppliers: one minimal endpoint each (keyless wire).
   arxiv() {
     return xmlResponse(ARXIV_SEARCH_ATOM);
@@ -650,6 +678,7 @@ const ENV_BY_PROVIDER = {
   spider: { SPIDER_API_KEY: "k" },
   bocha: { BOCHA_API_KEY: "k" },
   searchapi: { SEARCHAPI_API_KEY: "k" },
+  kagi: { KAGI_API_KEY: "k" },
   // Science suppliers are keyless by default (D2) — every conformance
   // row rides the keyless partition (""). openalex/pubmed keyed rows
   // are not needed for control mapping.
@@ -802,6 +831,8 @@ function makeHarness(provider, capability) {
         calls,
         timerDelays,
       };
+    case "kagi":
+      return { adapter: createKagiDescriptor({ transport }).create(context), calls, timerDelays };
     case "arxiv":
       return { adapter: createArxivDescriptor({ transport }).create(context), calls, timerDelays };
     case "openalex":
@@ -2930,6 +2961,56 @@ const ROWS = [
     on: "query",
     path: "engine",
     equals: "google_news",
+  },
+
+  // ----- kagi / search — site: operator + news topic routing;
+  // recency, location, contentSize and type rejected ---------------------
+  {
+    provider: "kagi",
+    capability: "search",
+    control: "domain",
+    input: { domain: "example.com" },
+    expect: "consumed",
+    on: "query",
+    path: "q",
+    includes: "site:example.com",
+  },
+  {
+    provider: "kagi",
+    capability: "search",
+    control: "recency",
+    input: { recency: "oneWeek" },
+    expect: "rejected",
+  },
+  {
+    provider: "kagi",
+    capability: "search",
+    control: "location",
+    input: { location: "us" },
+    expect: "rejected",
+  },
+  {
+    provider: "kagi",
+    capability: "search",
+    control: "contentSize",
+    input: { contentSize: "high" },
+    expect: "rejected",
+  },
+  {
+    provider: "kagi",
+    capability: "search",
+    control: "type",
+    input: { type: "video" },
+    expect: "rejected",
+  },
+  {
+    provider: "kagi",
+    capability: "search",
+    control: "topic",
+    input: { topic: "news" },
+    expect: "consumed",
+    on: "url",
+    includes: "/enrich/news",
   },
 
   // ----- spider / reader — locked /scrape body; every extra control is

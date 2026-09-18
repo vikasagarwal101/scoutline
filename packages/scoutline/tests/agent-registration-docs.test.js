@@ -87,7 +87,11 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // Rebaselined at the bocha×searchapi integration merge: SKILL.md's
 // capability matrix now carries BOTH the Bocha AI and SearchApi columns
 // (registry-derived provider columns). No agent-facing body copy changed.
-const SKILL_BODY_SHA256 = "c5bcc7d48e4345c290b2912b9a2f29985a77b63cbb9e1ff8d0270be0f5982acb";
+// Rebaselined at the kagi integration: SKILL.md's capability matrix
+// gains the Kagi column and the Which-provider-when table gains the Kagi
+// row (search + diagnostics only; reader/research/crawl/map/vision/quota
+// are NOT available). No unrelated agent-facing copy changed.
+const SKILL_BODY_SHA256 = "7af96bd734dab9c5eaa437dab37d48a388284ffff4fa2e5fddcd44b37256ef7e";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

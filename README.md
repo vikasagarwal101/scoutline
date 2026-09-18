@@ -28,7 +28,7 @@
 - **Research journal** — Always-on local memory of every `search`/`read`/`research`/`science` call: thin skeletons (query, provider, url+title identity, content hash) recorded to `~/.scoutline/artifacts/` and re-found offline via `history recall`; opt out per call (`--no-journal`) or globally (`journal: false`)
 - **Tools** — MCP tool discovery, schemas, and raw calls
 - **Code Mode** — TypeScript tool chaining for agent automation
-- **Provider selection** — Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, or SearchApi.io
+- **Provider selection** — Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, SearchApi.io, or Kagi
 
 ## Quick Start
 
@@ -203,6 +203,19 @@ npx scoutline --provider spider map https://example.com
 ```
 Get your Spider.cloud API key at: https://spider.cloud
 
+### Using Kagi (Search)
+
+```bash
+export KAGI_API_KEY="your-kagi-key"
+npx scoutline --provider kagi search "rust async runtime comparison"
+npx scoutline --provider kagi search "AI policy" --topic news
+```
+
+Kagi reads the key from `KAGI_API_KEY` (legacy alias `KAGI_TOKEN`).
+Search rides `GET /api/v1/search`; `--topic news` routes to
+`GET /api/v0/enrich/news`. `doctor` probes the same v1 endpoint with
+`limit=1`. Get your Kagi API key at: https://kagi.com/settings/api
+
 ## Installation
 
 ### As an Agent Skill
@@ -228,7 +241,7 @@ npx scoutline --help
 
 ## Provider Selection
 
-Shared commands accept `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi>`. (Science suppliers accept `--provider` only within `scoutline science ...`.) Resolution precedence:
+Shared commands accept `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>`. (Science suppliers accept `--provider` only within `scoutline science ...`.) Resolution precedence:
 
 1. Explicit `--provider` flag
 2. `SCOUTLINE_PROVIDER` environment variable
@@ -353,19 +366,19 @@ Stateful commands refuse at parse time (`VALIDATION_ERROR`, exit 1) rather than 
 
 ### Capability Matrix
 
-| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Spider.cloud | SearchApi | Command |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Search | Yes | Yes | Yes | Yes | Yes (web/news/video) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline search` |
-| Reader | Yes | No | Yes | Yes | No | Yes | Yes | No | Yes | Yes | Yes | Yes | No | `scoutline read` |
-| Crawl | No | No | Yes | No | No | Yes (async) | No | No | No | No | No | Yes (sync) | No | `scoutline crawl` |
-| Map | No | No | Yes | No | No | Yes | No | No | No | No | No | Yes | No | `scoutline map` |
-| Research | No | No | Yes | Yes | No | No | Yes | Yes | Yes | Yes | Yes | No | No | `scoutline research` |
-| Vision (interpret-image) | Yes | Yes | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
-| Quota | Yes | Yes | Yes | No | Yes (rate-limit window) | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | No | Yes (credits) | Yes (credits) | Yes (credits) | `scoutline quota` |
-| Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
-| Repo exploration | Yes | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline repo` |
-| Raw tools | Yes | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline tools` |
-| Code Mode | Yes | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline code` |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Spider.cloud | SearchApi | Kagi | Command |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Search | Yes | Yes | Yes | Yes | Yes (web/news/video) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline search` |
+| Reader | Yes | No | Yes | Yes | No | Yes | Yes | No | Yes | Yes | Yes | Yes | No | No | `scoutline read` |
+| Crawl | No | No | Yes | No | No | Yes (async) | No | No | No | No | No | Yes (sync) | No | No | `scoutline crawl` |
+| Map | No | No | Yes | No | No | Yes | No | No | No | No | No | Yes | No | No | `scoutline map` |
+| Research | No | No | Yes | Yes | No | No | Yes | Yes | Yes | Yes | Yes | No | No | No | `scoutline research` |
+| Vision (interpret-image) | Yes | Yes | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
+| Quota | Yes | Yes | Yes | No | Yes (rate-limit window) | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | No | Yes (credits) | Yes (credits) | Yes (credits) | No | `scoutline quota` |
+| Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
+| Repo exploration | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline repo` |
+| Raw tools | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline tools` |
+| Code Mode | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline code` |
 
 ### Search Controls
 

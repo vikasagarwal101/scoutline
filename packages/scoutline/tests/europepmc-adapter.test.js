@@ -686,6 +686,86 @@ describe("Europe PMC 429 — keyless rate limit maps to QuotaError (DESIGN D4b h
   });
 });
 
+/** Case-insensitive Headers double mirroring the fetch `Headers` contract. */
+function headersOf(values = {}) {
+  const lower = new Map();
+  for (const [key, value] of Object.entries(values)) {
+    lower.set(key.toLowerCase(), value);
+  }
+  return {
+    get(name) {
+      const hit = lower.get(String(name).toLowerCase());
+      return hit === undefined ? null : hit;
+    },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Retry-After header seam — Lane P P2 no-op pin (#186)
+// ---------------------------------------------------------------------------
+
+describe("Europe PMC retry-hint seam — no documented emitter; no-op pin (#186 P2)", () => {
+  // GROUND: Europe PMC documents NO delay-hint headers. NO-OP pin: the status-map site now consults the parser; with no hint headers the error path stays byte-identical (field absent).
+  //
+  // The SEAM is still exercised: the Response headers are consulted at
+  // the status-map site, and the no-op observable truth is that no
+  // header value means no field.
+  function hintDescriptor(status, headers) {
+    return createEuropepmcDescriptor({
+      transport: {
+        fetch: async () => ({ ok: false, status, headers, text: async () => "" }),
+      },
+    });
+  }
+
+  it("a 429 with no hint headers still rejects as QuotaError with retryAfterMs absent", async () => {
+    const adapter = hintDescriptor(429, headersOf({})).create({ env: {} });
+    await assert.rejects(
+      adapter.science.search.invoke({ query: "x" }),
+      (e) => {
+        assert.ok(e instanceof QuotaError, "the honest 429 class is unchanged");
+        assert.equal(e.statusCode, 429);
+        assert.equal(e.retryAfterMs, undefined, "no documented emitter → no field");
+        return true;
+      },
+    );
+  });
+
+  it("a 500 with no hint headers still rejects as ApiError with retryAfterMs absent", async () => {
+    const adapter = hintDescriptor(500, headersOf({})).create({ env: {} });
+    await assert.rejects(
+      adapter.science.search.invoke({ query: "x" }),
+      (e) => {
+        assert.ok(e instanceof ApiError, "the 5xx class is unchanged");
+        assert.equal(e.statusCode, 500);
+        assert.equal(e.retryAfterMs, undefined, "field stays absent on the 5xx path");
+        return true;
+      },
+    );
+  });
+
+  it("headers that carry no hint are inert — the error is byte-identical", async () => {
+    const bare = hintDescriptor(500, headersOf({})).create({ env: {} });
+    const withOtherHeaders = hintDescriptor(
+      500,
+      headersOf({ "Content-Type": "text/plain", "Retry-After-Not": "5" }),
+    ).create({ env: {} });
+    let bareErr;
+    let otherErr;
+    await assert.rejects(bare.science.search.invoke({ query: "x" }), (e) => {
+      bareErr = e;
+      return true;
+    });
+    await assert.rejects(withOtherHeaders.science.search.invoke({ query: "x" }), (e) => {
+      otherErr = e;
+      return true;
+    });
+    assert.equal(otherErr.message, bareErr.message, "unrelated headers change nothing");
+    assert.equal(otherErr.retryAfterMs, undefined);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Bounded response execution hardening (#150)
 // ---------------------------------------------------------------------------

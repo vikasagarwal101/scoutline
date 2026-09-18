@@ -35,7 +35,10 @@ import {
   requireBraveApiKey,
   isBraveConfigured,
 } from "../dist/providers/brave/credentials.js";
-import { getBraveJson } from "../dist/providers/brave/client.js";
+import {
+  fetchBraveRateLimit,
+  getBraveJson,
+} from "../dist/providers/brave/client.js";
 import { normalizeBraveQuota, BRAVE_QUOTA_CAVEAT } from "../dist/providers/brave/quota.js";
 import {
   ApiError,
@@ -1486,5 +1489,213 @@ describe("Brave quota normalizer (normalizeBraveQuota)", () => {
         }),
       (err) => err instanceof ScoutlineError && err.code === "QUOTA_ERROR",
     );
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Retry-After / rate-limit hint seam — Lane P P3 (#186)
+// ---------------------------------------------------------------------------
+
+describe("Brave retry-hint seam — every status-map site reads the Response headers (#186 P3)", () => {
+  // GROUND: Brave documents `X-RateLimit-Policy` as a CSV of windows
+  // (`"<limit>;w=<sec>"`) with `X-RateLimit-Limit` / `-Remaining` /
+  // `-Reset` as comma-separated arrays ALIGNED by index, and `-Reset` as
+  // SECONDS UNTIL that window resets (relative, never epoch). Once the
+  // window has been exhausted the MOST-CONSTRAINED window is the one that
+  // governs when we may come back — so the hint is the MAX across the CSV,
+  // not the first element. These pins are the producer end of #186: the
+  // shared executor already honours the parsed value (P1).
+  const TWO_WINDOWS = {
+    "X-RateLimit-Policy": "1;w=1, 15000;w=2592000",
+    "X-RateLimit-Limit": "1, 15000",
+    "X-RateLimit-Remaining": "0, 14999",
+  };
+
+  function hintHeaders(pairs) {
+    const lower = new Map(
+      Object.entries(pairs).map(([k, v]) => [k.toLowerCase(), v]),
+    );
+    return { get: (name) => lower.get(String(name).toLowerCase()) ?? null };
+  }
+
+  function hintFetch(status, headers) {
+    return async () => ({
+      ok: false,
+      status,
+      headers: hintHeaders(headers),
+      text: async () => "",
+      json: async () => ({}),
+      arrayBuffer: async () => new ArrayBuffer(0),
+    });
+  }
+
+  function thrown(promise) {
+    return promise.then(() => null, (e) => e);
+  }
+
+  it("a retryable 5xx with X-RateLimit-Reset: 2 surfaces retryAfterMs 2000 on the ApiError", async () => {
+    const err = await thrown(
+      getBraveJson(
+        TEST_API_KEY,
+        "/res/v1/web/search",
+        { q: "x" },
+        { fetch: hintFetch(500, { ...TWO_WINDOWS, "X-RateLimit-Reset": "2" }) },
+      ),
+    );
+    assert.ok(err instanceof ApiError, "5xx keeps the pinned ApiError class");
+    assert.equal(err.statusCode, 500);
+    assert.equal(err.retryAfterMs, 2000, "relative reset seconds convert to ms");
+  });
+
+  it("the CSV Reset contributes the MAX across aligned windows (1, 30 → 30000)", async () => {
+    const err = await thrown(
+      getBraveJson(
+        TEST_API_KEY,
+        "/res/v1/web/search",
+        { q: "x" },
+        { fetch: hintFetch(500, { ...TWO_WINDOWS, "X-RateLimit-Reset": "1, 30" }) },
+      ),
+    );
+    assert.ok(err instanceof ApiError);
+    assert.equal(
+      err.retryAfterMs,
+      30000,
+      "the most-constrained window governs, not the first CSV element",
+    );
+  });
+
+  it("absent hint headers → the field stays absent and the message is byte-identical", async () => {
+    const bare = await thrown(
+      getBraveJson(TEST_API_KEY, "/res/v1/web/search", { q: "x" }, { fetch: hintFetch(500, {}) }),
+    );
+    const hinted = await thrown(
+      getBraveJson(
+        TEST_API_KEY,
+        "/res/v1/web/search",
+        { q: "x" },
+        { fetch: hintFetch(500, { ...TWO_WINDOWS, "X-RateLimit-Reset": "2" }) },
+      ),
+    );
+    assert.ok(bare instanceof ApiError);
+    assert.equal(bare.retryAfterMs, undefined, "absent headers contribute no field");
+    assert.equal(hinted.message, bare.message, "the hint never reaches the message");
+  });
+
+  it("the quota-probe path (fetchBraveRateLimit) reads the hint too", async () => {
+    const err = await thrown(
+      fetchBraveRateLimit(TEST_API_KEY, {
+        fetch: hintFetch(500, { ...TWO_WINDOWS, "X-RateLimit-Reset": "4" }),
+      }),
+    );
+    assert.ok(err instanceof ApiError, "the 5xx class is unchanged on the probe path");
+    assert.equal(err.retryAfterMs, 4000);
+  });
+
+  it("a 429 QuotaError carries the hint informationally (class + terminal ruling unchanged)", async () => {
+    const adapter = createBraveDescriptor({
+      transport: {
+        fetch: hintFetch(429, { ...TWO_WINDOWS, "X-RateLimit-Reset": "30" }),
+      },
+    }).create({ env: { BRAVE_SEARCH_API_KEY: TEST_API_KEY } });
+    await assert.rejects(
+      adapter.search.invoke({ query: "x" }),
+      (e) => {
+        assert.ok(e instanceof QuotaError, "the honest 429 class is unchanged");
+        assert.equal(e.retryAfterMs, 30000, "the hint lands as an informational field");
+        assert.equal(e.retryable, false, "the #140 terminal ruling is untouched by the hint");
+        return true;
+      },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Retry-hint forwarding across the adapter boundary — Lane P P3b (#186)
+// ---------------------------------------------------------------------------
+
+describe("Brave retry-hint forwarding — the adapter rewrap keeps the parsed hint (#186 P3b)", () => {
+  // GROUND: the transport attaches the parsed hint to its OWN error (P3),
+  // but `normalizeBraveError` builds a FRESH ApiError. Without an explicit
+  // forward the hint dies at that boundary, so a 5xx driven through the
+  // PRODUCTION search path reaches the shared executor hint-less and the
+  // parsed `X-RateLimit-Reset` is inert. These pins drive the whole way:
+  // injected transport -> search.invoke -> normalizeBraveError -> caller.
+  function hintHeaders(pairs) {
+    const lower = new Map(
+      Object.entries(pairs).map(([k, v]) => [k.toLowerCase(), v]),
+    );
+    return { get: (name) => lower.get(String(name).toLowerCase()) ?? null };
+  }
+
+  function hintFetch(status, headers) {
+    return async () => ({
+      ok: false,
+      status,
+      headers: hintHeaders(headers),
+      text: async () => "",
+      json: async () => ({}),
+      arrayBuffer: async () => new ArrayBuffer(0),
+    });
+  }
+
+  function adapterOver(fetchImpl) {
+    return createBraveDescriptor({ transport: { fetch: fetchImpl } }).create({
+      env: { BRAVE_SEARCH_API_KEY: TEST_API_KEY },
+    });
+  }
+
+  function thrown(promise) {
+    return promise.then(() => null, (e) => e);
+  }
+
+  const TWO_WINDOWS = {
+    "X-RateLimit-Policy": "1;w=1, 15000;w=2592000",
+    "X-RateLimit-Limit": "1, 15000",
+    "X-RateLimit-Remaining": "0, 14999",
+  };
+
+  it("search.invoke: a 503 with X-RateLimit-Reset: 2 surfaces retryAfterMs 2000 on the normalized error", async () => {
+    const adapter = adapterOver(hintFetch(503, { ...TWO_WINDOWS, "X-RateLimit-Reset": "2" }));
+    const err = await thrown(adapter.search.invoke({ query: "x" }));
+    assert.ok(err instanceof ApiError, "the normalized class is unchanged");
+    assert.equal(err.statusCode, 503);
+    assert.equal(
+      err.retryAfterMs,
+      2000,
+      "the parsed hint must survive the adapter rewrap (P3b)",
+    );
+  });
+
+  it("search.invoke: a scalar Retry-After also survives the rewrap", async () => {
+    const adapter = adapterOver(hintFetch(503, { "Retry-After": "3" }));
+    const err = await thrown(adapter.search.invoke({ query: "x" }));
+    assert.ok(err instanceof ApiError);
+    assert.equal(err.retryAfterMs, 3000);
+  });
+
+  it("search.invoke: absent hint headers → field absent AND message byte-identical", async () => {
+    const bare = await thrown(adapterOver(hintFetch(503, {})).search.invoke({ query: "x" }));
+    const hinted = await thrown(
+      adapterOver(hintFetch(503, { ...TWO_WINDOWS, "X-RateLimit-Reset": "2" })).search.invoke({
+        query: "x",
+      }),
+    );
+    assert.ok(bare instanceof ApiError);
+    assert.equal(bare.retryAfterMs, undefined, "an absent hint materializes no field");
+    assert.equal(hinted.message, bare.message, "the hint never reaches the message");
+    assert.equal(hinted.statusCode, bare.statusCode);
+  });
+
+  it("the verbatim outward messages are unchanged by the forwarding", async () => {
+    const fivexx = await thrown(adapterOver(hintFetch(503, {})).search.invoke({ query: "x" }));
+    assert.equal(fivexx.message, "Brave request failed");
+    const quota = await thrown(
+      adapterOver(hintFetch(429, { "Retry-After": "30" })).search.invoke({ query: "x" }),
+    );
+    assert.ok(quota instanceof QuotaError, "the 429 class is unchanged");
+    assert.equal(quota.message, "Brave quota exhausted. Check your Brave plan rate limits.");
+    assert.equal(quota.retryAfterMs, 30000, "the informational field still lands on the pass-through");
+    assert.equal(quota.retryable, false, "the #140 terminal ruling is untouched");
   });
 });

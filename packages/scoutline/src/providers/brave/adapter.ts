@@ -44,6 +44,7 @@ import {
   ValidationError,
 } from "../../lib/errors.js";
 import { applySearchTopic } from "../../lib/search-topic.js";
+import { retryHintOptionsFromError } from "../../lib/retry-after.js";
 import { requireBraveApiKey, isBraveConfigured } from "./credentials.js";
 import {
   fetchBraveSearch,
@@ -429,9 +430,14 @@ function normalizeBraveError(error: unknown): Error {
       "Try again or increase timeout with BRAVE_TIMEOUT env var",
     );
   }
+  // Every ApiError rewrap below forwards the inbound hint: a retryable
+  // class that reaches the shared executor must still carry it (#186
+  // P3b). `AuthError` / `NetworkError` / `TimeoutError` take no options
+  // parameter — they are not retry-hint carriers by design.
+  const hintOptions = retryHintOptionsFromError(error);
   if (error instanceof ApiError) {
     const statusCode = inferStatusCode("", error.statusCode);
-    return new ApiError(braveApiErrorMessage(statusCode), statusCode);
+    return new ApiError(braveApiErrorMessage(statusCode), statusCode, hintOptions);
   }
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
@@ -461,9 +467,9 @@ function normalizeBraveError(error: unknown): Error {
     return new NetworkError("Brave network error");
   }
   if (lower.includes("429") || lower.includes("rate limit")) {
-    return new ApiError("Brave rate limit exceeded", 429);
+    return new ApiError("Brave rate limit exceeded", 429, hintOptions);
   }
-  return new ApiError("Brave request failed", inferStatusCode(lower));
+  return new ApiError("Brave request failed", inferStatusCode(lower), hintOptions);
 }
 
 // ---------------------------------------------------------------------------

@@ -21,6 +21,10 @@ import {
   MAX_BUFFERED_RESPONSE_BYTES,
 } from "../../lib/bounded-body.js";
 import {
+  parseRetryAfterHintMs,
+  retryHintOptions,
+} from "../../lib/retry-after.js";
+import {
   ApiError,
   AuthError,
   NetworkError,
@@ -67,7 +71,7 @@ export interface ArxivQueryParams {
  * 401/403 → AuthError; 408/504 → TimeoutError; other 4xx/5xx → ApiError
  * with the real status preserved for the shared retry classifier.
  */
-function mapStatusError(status: number, timeoutMs: number): Error {
+function mapStatusError(status: number, timeoutMs: number, hintMs?: number): Error {
   if (status === 401 || status === 403) {
     return new AuthError("arXiv rejected the request");
   }
@@ -75,9 +79,13 @@ function mapStatusError(status: number, timeoutMs: number): Error {
     return new TimeoutError(timeoutMs);
   }
   if (status === 429) {
-    return new QuotaError("arXiv rate-limited — keyless service; retry later");
+    return new QuotaError(
+      "arXiv rate-limited — keyless service; retry later",
+      undefined,
+      retryHintOptions(hintMs),
+    );
   }
-  return new ApiError("arXiv request failed", status);
+  return new ApiError("arXiv request failed", status, retryHintOptions(hintMs));
 }
 
 /**
@@ -178,7 +186,11 @@ export async function fetchArxivQuery(
     };
     if (!res.ok) {
       await res.body?.cancel().catch(() => {});
-      throw mapStatusError(res.status, DEFAULT_TIMEOUT_MS);
+      throw mapStatusError(
+        res.status,
+        DEFAULT_TIMEOUT_MS,
+        parseRetryAfterHintMs(res.headers),
+      );
     }
     const contentLengthHeader = res.headers?.get?.("content-length");
     if (contentLengthHeader && Number(contentLengthHeader) > MAX_BUFFERED_RESPONSE_BYTES) {

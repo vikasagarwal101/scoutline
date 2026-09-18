@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- **Provider retry hints are honored (issue #186):** the shared retry executor now raises its backoff to `min(8s, max(policy backoff + jitter, retryAfterMs))` when an adapter parsed a `Retry-After` / `X-RateLimit-Retry-After` / `X-RateLimit-Reset` header onto the normalized error — a floor, never a replacement, capped against hostile values. Covered suppliers: the five science suppliers (OpenAlex documented), Brave, and Jina; Tavily and Firecrawl were audited as non-emitters and deliberately unwired. Absent headers keep the previous backoff byte-identical, and `QuotaError` stays terminal (the hint is informational there).
 - **`Credential=` redaction terminates at `&`/`;` (PR #185 review):** the SigV4 query-string form (`X-Amz-Credential=…&X-Amz-Signature=…`) previously swallowed the sibling param label into the redaction — the header form's comma-delimited siblings stayed readable but the presigned-URL form's `&`-separated ones did not. Both sibling shapes now keep their labels; the credential value still redacts whole. The four v3-key lookahead rows also collapse into one guarded loop (same pattern, four names — boundary can no longer drift between rows).
 ## [0.21.3] - 2026-09-16
 ### Added

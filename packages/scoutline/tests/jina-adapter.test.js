@@ -7,6 +7,12 @@ import assert from "node:assert/strict";
 import { createJinaDescriptor, JinaAdapter } from "../dist/providers/jina/adapter.js";
 import { resolveJinaApiKey, isJinaConfigured } from "../dist/providers/jina/credentials.js";
 import {
+  fetchJinaDeepSearch,
+  fetchJinaRateLimit,
+  fetchJinaReader,
+  fetchJinaSearch,
+} from "../dist/providers/jina/client.js";
+import {
   ApiError,
   AuthError,
   ConfigurationError,
@@ -1432,5 +1438,182 @@ describe("Jina AI Quota (8J.5 telemetry)", () => {
         err.message.includes("Jina AI rate-limit probe failed") &&
         err.message.includes("socket exploded"),
     );
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Retry-After / rate-limit hint seam — Lane P P3 (#186)
+// ---------------------------------------------------------------------------
+
+describe("Jina retry-hint seam — every status-map site reads the Response headers (#186 P3)", () => {
+  // GROUND: Jina's documented rate headers are REMAINING COUNTERS only
+  // (`X-RateLimit-Remaining-Requests` / `-Tokens`, free-tier
+  // `x-ratelimit-limit` / `-remaining`) — no documented delay hint. Jina is
+  // Cloudflare-fronted (the client already special-cases CF's 524), and CF
+  // emits the RFC `Retry-After` on its own 429/503 answers, so the seam is
+  // wired at all four status-map sites and fires only when a header actually
+  // arrives. The doubles here stand in for that CF-originated header.
+  function hintHeaders(pairs) {
+    const lower = new Map(
+      Object.entries(pairs).map(([k, v]) => [k.toLowerCase(), v]),
+    );
+    return { get: (name) => lower.get(String(name).toLowerCase()) ?? null };
+  }
+
+  function hintFetch(status, headers) {
+    return async () => ({
+      ok: false,
+      status,
+      headers: hintHeaders(headers),
+      text: async () => '{"message":"upstream"}',
+    });
+  }
+
+  function thrown(promise) {
+    return promise.then(() => null, (e) => e);
+  }
+
+  const HINT = { "Retry-After": "2" };
+
+  it("reader: a 503 with Retry-After: 2 surfaces retryAfterMs 2000 on the ApiError", async () => {
+    const err = await thrown(
+      fetchJinaReader(undefined, "https://example.com", { fetch: hintFetch(503, HINT) }),
+    );
+    assert.ok(err instanceof ApiError, "503 keeps the pinned ApiError class");
+    assert.equal(err.statusCode, 503);
+    assert.equal(err.retryAfterMs, 2000, "RFC delta-seconds convert to ms");
+  });
+
+  it("search: a 503 with Retry-After: 2 surfaces retryAfterMs 2000 on the ApiError", async () => {
+    const err = await thrown(
+      fetchJinaSearch(TEST_KEY, "q", { fetch: hintFetch(503, HINT) }),
+    );
+    assert.ok(err instanceof ApiError);
+    assert.equal(err.retryAfterMs, 2000);
+  });
+
+  it("deepsearch: a 503 with Retry-After: 2 surfaces retryAfterMs 2000 on the ApiError", async () => {
+    const err = await thrown(
+      fetchJinaDeepSearch(TEST_KEY, "q", { fetch: hintFetch(503, HINT) }),
+    );
+    assert.ok(err instanceof ApiError);
+    assert.equal(err.retryAfterMs, 2000);
+  });
+
+  it("quota probe: a 503 with Retry-After: 2 surfaces retryAfterMs 2000 on the ApiError", async () => {
+    const err = await thrown(
+      fetchJinaRateLimit(TEST_KEY, { fetch: hintFetch(503, HINT) }),
+    );
+    assert.ok(err instanceof ApiError);
+    assert.equal(err.retryAfterMs, 2000);
+  });
+
+  it("a 429 QuotaError carries the hint informationally (class + terminal ruling unchanged)", async () => {
+    const err = await thrown(
+      fetchJinaReader(undefined, "https://example.com", {
+        fetch: hintFetch(429, { "Retry-After": "60" }),
+      }),
+    );
+    assert.ok(err instanceof QuotaError, "the honest 429 class is unchanged");
+    assert.equal(err.retryAfterMs, 60000, "the hint lands as an informational field");
+    assert.equal(err.retryable, false, "the terminal ruling is untouched by the hint");
+  });
+
+  it("absent hint headers → the field stays absent and the message is byte-identical", async () => {
+    const bare = await thrown(
+      fetchJinaReader(undefined, "https://example.com", { fetch: hintFetch(503, {}) }),
+    );
+    const hinted = await thrown(
+      fetchJinaReader(undefined, "https://example.com", { fetch: hintFetch(503, HINT) }),
+    );
+    assert.ok(bare instanceof ApiError);
+    assert.equal(bare.retryAfterMs, undefined, "absent headers contribute no field");
+    assert.equal(hinted.message, bare.message, "the hint never reaches the message");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Retry-hint forwarding across the adapter boundary — Lane P P3b (#186)
+// ---------------------------------------------------------------------------
+
+describe("Jina retry-hint forwarding — the adapter rewrap keeps the parsed hint (#186 P3b)", () => {
+  // GROUND: the transport attaches the parsed hint to its OWN error (P3),
+  // but `normalizeJinaError` builds a FRESH ApiError. Without an explicit
+  // forward the hint dies at that boundary, so a 5xx driven through the
+  // PRODUCTION adapter path reaches the shared executor hint-less and the
+  // parsed `Retry-After` is inert. These pins drive the whole way:
+  // injected transport -> capability invoke -> normalizeJinaError -> caller.
+  function hintHeaders(pairs) {
+    const lower = new Map(
+      Object.entries(pairs).map(([k, v]) => [k.toLowerCase(), v]),
+    );
+    return { get: (name) => lower.get(String(name).toLowerCase()) ?? null };
+  }
+
+  function hintFetch(status, headers) {
+    return async () => ({
+      ok: false,
+      status,
+      headers: hintHeaders(headers),
+      text: async () => '{"message":"upstream"}',
+    });
+  }
+
+  function adapterOver(fetchImpl) {
+    return new JinaAdapter(
+      { env: { JINA_API_KEY: TEST_KEY } },
+      { transport: { fetch: fetchImpl } },
+    );
+  }
+
+  function thrown(promise) {
+    return promise.then(() => null, (e) => e);
+  }
+
+  it("search.invoke: a 503 with Retry-After: 2 surfaces retryAfterMs 2000 on the normalized error", async () => {
+    const adapter = adapterOver(hintFetch(503, { "Retry-After": "2" }));
+    const err = await thrown(adapter.search.invoke({ query: "x" }));
+    assert.ok(err instanceof ApiError, "the normalized class is unchanged");
+    assert.equal(err.statusCode, 503);
+    assert.equal(
+      err.retryAfterMs,
+      2000,
+      "the parsed hint must survive the adapter rewrap (P3b)",
+    );
+  });
+
+  it("reader.fetch.invoke: the hint survives that rewrap too", async () => {
+    const adapter = adapterOver(hintFetch(503, { "Retry-After": "2" }));
+    const err = await thrown(adapter.reader.fetch.invoke({ url: "https://example.com" }));
+    assert.ok(err instanceof ApiError);
+    assert.equal(err.retryAfterMs, 2000);
+  });
+
+  it("search.invoke: absent hint headers → field absent AND message byte-identical", async () => {
+    const bare = await thrown(adapterOver(hintFetch(503, {})).search.invoke({ query: "x" }));
+    const hinted = await thrown(
+      adapterOver(hintFetch(503, { "Retry-After": "2" })).search.invoke({ query: "x" }),
+    );
+    assert.ok(bare instanceof ApiError);
+    assert.equal(bare.retryAfterMs, undefined, "an absent hint materializes no field");
+    assert.equal(hinted.message, bare.message, "the hint never reaches the message");
+    assert.equal(hinted.statusCode, bare.statusCode);
+  });
+
+  it("the verbatim outward messages are unchanged by the forwarding", async () => {
+    const fivexx = await thrown(adapterOver(hintFetch(503, {})).search.invoke({ query: "x" }));
+    assert.equal(fivexx.message, "Jina AI request failed");
+    const fourxx = await thrown(adapterOver(hintFetch(400, {})).search.invoke({ query: "x" }));
+    assert.equal(fourxx.message, "Jina AI request failed");
+    assert.equal(fourxx.statusCode, 400);
+  });
+
+  it("the 429 QuotaError keeps its class, terminal ruling, and informational hint", async () => {
+    const adapter = adapterOver(hintFetch(429, { "Retry-After": "60" }));
+    const err = await thrown(adapter.search.invoke({ query: "x" }));
+    assert.ok(err instanceof QuotaError, "the honest 429 class is unchanged");
+    assert.equal(err.retryAfterMs, 60000, "the hint still lands informationally");
+    assert.equal(err.retryable, false, "the terminal ruling is untouched by the hint");
   });
 });

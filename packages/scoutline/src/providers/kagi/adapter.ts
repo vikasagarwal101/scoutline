@@ -24,7 +24,7 @@
  *   type        -> REJECTED (UnsupportedOptionError)
  *
  * Auth is `Authorization: Bot <key>` — Kagi wire truth, not Bearer.
- * Diagnostics capability slot arrives in Task 3.
+ * Diagnostics probes the same v1 search endpoint with q=test&limit=1.
  */
 
 import type { ProviderAdapter, ProviderContext, ProviderDescriptor, ProviderId } from "../types.js";
@@ -33,6 +33,7 @@ import type {
   SearchRequest,
   SearchSource,
 } from "../../capabilities/search.js";
+import type { DiagnosticsCapability } from "../../capabilities/diagnostics.js";
 import {
   ApiError,
   ConfigurationError,
@@ -48,6 +49,7 @@ import {
   requireKagiApiKey,
 } from "./credentials.js";
 import { fetchKagiSearch, fetchKagiNews, type KagiTransportDeps } from "./client.js";
+import { createKagiDiagnosticsCapability } from "./diagnostics.js";
 
 // ponytail: PROVIDER_IDS in ../types.ts has no "kagi" seat yet; adding it is
 // a registry task (Task 3+). Ceiling: remove the cast when the seat lands.
@@ -116,6 +118,7 @@ function normalizeSearchResults(response: {
 export class KagiAdapter implements ProviderAdapter {
   readonly id: ProviderId = KAGI_PROVIDER_ID;
   readonly search;
+  readonly diagnostics: DiagnosticsCapability;
 
   constructor(
     private readonly context: ProviderContext,
@@ -179,6 +182,8 @@ export class KagiAdapter implements ProviderAdapter {
         return normalizeSearchResults(response);
       },
     };
+
+    this.diagnostics = createKagiDiagnosticsCapability({ env, transport });
   }
 }
 
@@ -187,8 +192,8 @@ export function createKagiDescriptor(deps: KagiAdapterDependencies = {}): Provid
     id: KAGI_PROVIDER_ID,
     credentialEnvVars: ["KAGI_API_KEY", "KAGI_TOKEN"],
     isConfigured: isKagiConfigured,
-    capabilities(): ReadonlySet<"search"> {
-      return new Set(["search"] as const);
+    capabilities(): ReadonlySet<import("../types.js").ProviderCapability> {
+      return new Set(["search", "diagnostics"]);
     },
     create: (context: ProviderContext) => new KagiAdapter(context, deps),
   };

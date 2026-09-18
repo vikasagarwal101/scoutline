@@ -168,6 +168,80 @@ describe("kagi search", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Diagnostics (T3)
+// ---------------------------------------------------------------------------
+
+describe("kagi diagnostics", () => {
+  it("diagnostics.invoke GETs limit=1 and create() does not fetch", async () => {
+    let calls = 0;
+    const descriptor = createKagiDescriptor({
+      transport: { fetch: async (url) => {
+        calls += 1;
+        assert.match(String(url), /limit=1/);
+        return jsonRes(KAGI_SEARCH_RAW);
+      } },
+    });
+    descriptor.create({ env: { KAGI_API_KEY: "k" } });
+    assert.equal(calls, 0);
+    await descriptor.create({ env: { KAGI_API_KEY: "k" } }).diagnostics.invoke({ probe: true });
+    assert.equal(calls, 1);
+  });
+
+  it("diagnostics probe GETs v1 search with q=test and Bot auth", async () => {
+    const fetchFn = makeFetchRecorder();
+    const adapter = createKagiDescriptor({ transport: { fetch: fetchFn } }).create({
+      env: { KAGI_API_KEY: "k" },
+    });
+    await adapter.diagnostics.invoke({ probe: true });
+    assert.equal(fetchFn.calls.length, 1);
+    const parsed = new URL(fetchFn.calls[0].url);
+    assert.equal(`${parsed.origin}${parsed.pathname}`, "https://kagi.com/api/v1/search");
+    assert.equal(parsed.searchParams.get("q"), "test");
+    assert.equal(parsed.searchParams.get("limit"), "1");
+    assert.equal(header(fetchFn.calls[0].init, "Authorization"), "Bot k");
+  });
+
+  it("diagnostics HTTP 401 maps to ConfigurationError", async () => {
+    const adapter = createKagiDescriptor({
+      transport: { fetch: async () => jsonRes({}, 401) },
+    }).create({ env: { KAGI_API_KEY: "k" } });
+    await assert.rejects(
+      adapter.diagnostics.invoke({ probe: true }),
+      (e) => {
+        assert.ok(e instanceof ConfigurationError, `wrong type: ${e}`);
+        assert.equal(e.exitCode, 3);
+        return true;
+      },
+    );
+  });
+
+  it("invoke({probe:false}) resolves without any fetch call", async () => {
+    let calls = 0;
+    const adapter = createKagiDescriptor({
+      transport: { fetch: async () => { calls += 1; return jsonRes(KAGI_SEARCH_RAW); } },
+    }).create({ env: { KAGI_API_KEY: "k" } });
+    await adapter.diagnostics.invoke({ probe: false });
+    assert.equal(calls, 0);
+  });
+
+  it("a missing key throws ConfigurationError before any fetch", async () => {
+    let calls = 0;
+    const adapter = createKagiDescriptor({
+      transport: { fetch: async () => { calls += 1; return jsonRes(KAGI_SEARCH_RAW); } },
+    }).create({ env: {} });
+    const err = await adapter.diagnostics.invoke({ probe: true }).then(() => null, (e) => e);
+    assert.ok(err instanceof ConfigurationError, `wrong type: ${err}`);
+    assert.equal(err.exitCode, 3);
+    assert.equal(calls, 0);
+  });
+
+  it("capabilities() advertises exactly search and diagnostics", () => {
+    const caps = [...createKagiDescriptor().capabilities()].sort();
+    assert.deepEqual(caps, ["diagnostics", "search"]);
+  });
+});
+
 // Shared helpers used by later tasks.
 function jsonRes(json, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => json, text: async () => JSON.stringify(json), headers: { get: () => null } };

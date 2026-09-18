@@ -151,9 +151,9 @@ npx scoutline --help
 ## Provider Selection
 
 Shared commands (`search`, `vision`, `quota`, `doctor`, `repo`) accept a global
-`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>` flag. Resolution precedence:
+`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha>` flag. Resolution precedence:
 
-1. Explicit `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>` on the command line
+1. Explicit `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha>` on the command line
 2. `SCOUTLINE_PROVIDER` environment variable
 3. Per-capability **routing table** (`config.json` `routing` key; the first
    configured, capable provider in the list wins — over quota ranking)

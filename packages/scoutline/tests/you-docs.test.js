@@ -27,6 +27,11 @@ import { runProcess } from "./helpers/run-process.js";
 // widening that misses any surface fails loudly.
 const PROVIDER_ENUM =
   "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>";
+// amendment-4: shared --provider surfaces widened 12→13 with bocha.
+// PROVIDER_ENUM above still pins docs/configuration.md, whose
+// enumeration has not widened in this amendment.
+const PROVIDER_ENUM_WIDENED =
+  "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha>";
 const PROVIDER_LIST_TAIL =
   "Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, or Spider.cloud";
 
@@ -46,7 +51,7 @@ describe("You.com docs — public READMEs", () => {
       "package README features must name You.com in the provider list",
     );
     assert.ok(
-      text.includes(PROVIDER_ENUM),
+      text.includes(PROVIDER_ENUM_WIDENED),
       "package README must list you in the --provider enumeration",
     );
     assert.ok(
@@ -62,7 +67,7 @@ describe("You.com docs — public READMEs", () => {
       "root README features must name You.com in the provider list",
     );
     assert.ok(
-      text.includes(PROVIDER_ENUM),
+      text.includes(PROVIDER_ENUM_WIDENED),
       "root README must list you in the --provider enumeration",
     );
     assert.ok(text.includes("### Using You.com"), "root README must carry a Using You.com section");
@@ -114,7 +119,10 @@ describe("You.com docs — CHANGELOG", () => {
 
 describe("You.com docs — CLI help enumerations", () => {
   it("SEARCH_HELP lists you in the --provider enumeration", () => {
-    assert.ok(SEARCH_HELP.includes(PROVIDER_ENUM), "SEARCH_HELP must list you in --provider");
+    assert.ok(
+      SEARCH_HELP.includes(PROVIDER_ENUM_WIDENED),
+      "SEARCH_HELP must list you in --provider",
+    );
   });
 
   it("main help names You.com among the providers", async () => {
@@ -127,7 +135,7 @@ describe("You.com docs — CLI help enumerations", () => {
       "main help must count the 12 shared-capability providers",
     );
     assert.ok(
-      result.stdout.includes("perplexity|jina|you|linkup|spider>"),
+      result.stdout.includes("perplexity|jina|you|linkup|spider|bocha>"),
       "main help --provider enumeration keeps you and stops at the shared suppliers",
     );
     assert.ok(

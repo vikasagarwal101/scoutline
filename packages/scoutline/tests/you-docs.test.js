@@ -31,7 +31,7 @@ import { runProcess } from "./helpers/run-process.js";
 const PROVIDER_ENUM_WIDENED =
   "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>";
 const PROVIDER_LIST_TAIL =
-  "Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, SearchApi.io, or Kagi";
+  "Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, Bocha AI, SearchApi.io, or Kagi";
 
 const packageReadme = fs.readFile(new URL("../README.md", import.meta.url), "utf8");
 const rootReadme = fs.readFile(new URL("../../../README.md", import.meta.url), "utf8");

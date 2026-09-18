@@ -32,6 +32,11 @@
 import pkg from "../../../package.json" with { type: "json" };
 
 import { ApiError, AuthError, NetworkError, QuotaError, TimeoutError } from "../../lib/errors.js";
+import {
+  parseRetryAfterHintMs,
+  retryHintOptions,
+  type RetryHintHeaders,
+} from "../../lib/retry-after.js";
 import type { ProviderImageFetchResponse } from "../types.js";
 import { getGlobalFetch } from "../types.js";
 
@@ -82,15 +87,69 @@ function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
 }
 
 /**
+ * Brave retry hint in milliseconds, or `undefined` (#186 P3).
+ *
+ * Brave documents `X-RateLimit-Reset` as a CSV ALIGNED by index with
+ * `X-RateLimit-Policy`, one entry per window, each in SECONDS UNTIL that
+ * window resets. The shared scalar parser (`lib/retry-after.ts`) reads the
+ * header as ONE value — its integer grammar rejects a multi-value CSV
+ * outright, so control falls through to the max-of-windows fold below:
+ * the window that governs when we may come back is the MOST-CONSTRAINED
+ * one, so the hint is the MAX across the entries (the per-second window
+ * resetting in 1s does not excuse the monthly window still exhausted).
+ *
+ * Precedence is unchanged otherwise: the shared parser is tried FIRST, so
+ * a scalar `Retry-After` / `X-RateLimit-Retry-After` / single-value
+ * `X-RateLimit-Reset` resolves there; only a multi-window CSV Reset falls
+ * through to the fold. The CSV semantics live here rather than in the
+ * shared parser because they are Brave's documented shape — the other
+ * suppliers' scalar behavior (P2) stays untouched. Header VALUES never
+ * leave this module's own error path: only a number is returned.
+ */
+function parseBraveRetryHintMs(
+  headers: RetryHintHeaders | null | undefined,
+): number | undefined {
+  const scalar = parseRetryAfterHintMs(headers);
+  if (scalar !== undefined) {
+    return scalar;
+  }
+  const raw = headers?.get?.("X-RateLimit-Reset");
+  if (raw === null || raw === undefined || !raw.includes(",")) {
+    return undefined;
+  }
+  let max: number | undefined;
+  for (const entry of raw.split(",")) {
+    // Re-enter the shared parser per entry so the grammar checks
+    // (integer-only, no fractional/negative/garbage) are not duplicated
+    // and cannot drift from the scalar contract.
+    const entryMs = parseRetryAfterHintMs({
+      get: (name) => (name === "X-RateLimit-Reset" ? entry : null),
+    });
+    if (entryMs !== undefined && (max === undefined || entryMs > max)) {
+      max = entryMs;
+    }
+  }
+  return max;
+}
+
+/**
  * Layer 1 — HTTP-status mapping. Runs BEFORE the body is parsed; on a
  * non-200 response we discard the body and throw a typed error.
  *
  * `timeoutMs` is forwarded so 408/504 can throw `TimeoutError`
  * carrying the configured duration (and the `BRAVE_TIMEOUT` help text).
+ *
+ * `hintMs` (#186) is the Provider's parsed retry delay, attached to every
+ * error class that accepts the options parameter: the shared executor
+ * honours it as a floor over its own backoff on the retryable ApiError
+ * branches, and it stays informational on the terminal 429 `QuotaError`
+ * (whose `retryable: false` is fixed — the #140 ruling). An absent hint
+ * attaches nothing, so those error paths stay byte-identical.
+ *
  * The transport never embeds credential material or raw response bodies
  * in any error message.
  */
-function mapStatusError(status: number, timeoutMs: number): Error {
+function mapStatusError(status: number, timeoutMs: number, hintMs?: number): Error {
   if (status === 401 || status === 403) {
     return new AuthError("Brave authentication failed", "BRAVE_SEARCH_API_KEY");
   }
@@ -101,15 +160,16 @@ function mapStatusError(status: number, timeoutMs: number): Error {
     return new QuotaError(
       "Brave quota exhausted. Check your Brave plan rate limits.",
       "Inspect your Brave subscription tier and current X-RateLimit-* values via scoutline quota --provider brave",
+      retryHintOptions(hintMs),
     );
   }
   if (status === 400 || status === 404 || status === 410 || status === 422) {
-    return new ApiError("Brave request failed", status);
+    return new ApiError("Brave request failed", status, retryHintOptions(hintMs));
   }
   if (status >= 500) {
-    return new ApiError("Brave request failed", status);
+    return new ApiError("Brave request failed", status, retryHintOptions(hintMs));
   }
-  return new ApiError("Brave request failed", status);
+  return new ApiError("Brave request failed", status, retryHintOptions(hintMs));
 }
 
 function normalizeTransportError(err: unknown, timeoutMs: number): Error {
@@ -217,7 +277,7 @@ export async function getBraveJson(
       // Drain the body to free the socket, then drop it. The body must
       // NEVER reach the error message (NFR-006).
       await res.text().catch(() => {});
-      throw mapStatusError(res.status, timeoutMs);
+      throw mapStatusError(res.status, timeoutMs, parseBraveRetryHintMs(res.headers));
     }
     // PB-T1: fire the header callback AFTER res.ok is confirmed but
     // BEFORE the body is parsed. The callback reads the live headers
@@ -456,7 +516,7 @@ export async function fetchBraveRateLimit(
       // Drain the body to free the socket, then drop it. The body must
       // NEVER reach the error message (NFR-006).
       await res.text().catch(() => {});
-      throw mapStatusError(res.status, timeoutMs);
+      throw mapStatusError(res.status, timeoutMs, parseBraveRetryHintMs(res.headers));
     }
     // Only the headers are needed; drain the body to free the socket.
     await res.text().catch(() => {});

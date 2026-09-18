@@ -223,6 +223,26 @@ function isOperationRetryableError(error: unknown): boolean {
   }
 }
 
+/**
+ * Provider-supplied retry delay hint on a normalized error, in
+ * milliseconds. Only finite, non-negative values are honoured — an
+ * absent, `NaN`, `Infinity`, or negative field degrades to `undefined`
+ * so the caller falls back to the policy backoff. The upper bound is
+ * NOT applied here; the caller caps the merged delay with
+ * `policy.maxDelayMs` so a hostile header can never extend a backoff
+ * past the operation's ceiling.
+ *
+ * QuotaError is deliberately not consulted: it never reaches this
+ * reader, because the classifier rejects it as terminal before the
+ * backoff is computed. The hint stays informational there.
+ */
+function providerRetryHintMs(error: unknown): number | undefined {
+  if (!(error instanceof ScoutlineError)) return undefined;
+  const hint = error.retryAfterMs;
+  if (typeof hint !== "number" || !Number.isFinite(hint) || hint < 0) return undefined;
+  return hint;
+}
+
 // ---------------------------------------------------------------------------
 // Abortable backoff sleep (issue #47)
 // ---------------------------------------------------------------------------
@@ -302,6 +322,14 @@ function abortableSleep(
  * performs no Provider work, no consumption event, and no backoff. An
  * abort that lands mid-backoff unwinds the sleep immediately
  * (`abortableSleep`) instead of running it to completion.
+ *
+ * Provider retry hint: an error carrying a finite, non-negative
+ * `retryAfterMs` (parsed by an Adapter from `Retry-After` /
+ * `X-RateLimit-Retry-After`) raises the backoff to
+ * `min(maxDelayMs, max(policy backoff + jitter, retryAfterMs))`. An
+ * absent field leaves the sleep byte-identical to the policy value.
+ * Only retryable-class errors reach this point, so a hint on a
+ * terminal `QuotaError` is never consumed.
  */
 export async function executeProviderOperation<T>(
   operation: ProviderOperation,
@@ -338,9 +366,23 @@ export async function executeProviderOperation<T>(
       if (!isOperationRetryableError(error)) throw error;
       const backoff = Math.min(policy.maxDelayMs, policy.baseDelayMs * Math.pow(2, attempt));
       const jitter = Math.floor(dependencies.random() * policy.jitterMs);
+      // A Provider retry hint is a FLOOR over the policy backoff, never a
+      // replacement: the wait is the larger of the two, bounded by the
+      // policy ceiling so a hostile header cannot extend it. Without a
+      // hint the computed delay is exactly the policy value.
+      const hint = providerRetryHintMs(error);
+      // #197 review: cap the HINT only, not the merged delay — the
+      // no-hint path lets backoff+jitter exceed maxDelayMs, so capping
+      // the merge could pull the sleep BELOW what the same attempt
+      // would have slept without a hint (the floor must be
+      // unconditional). The cap still bounds hostile header values.
+      const delay =
+        hint === undefined
+          ? backoff + jitter
+          : Math.max(backoff + jitter, Math.min(policy.maxDelayMs, hint));
       // Abortable backoff (issue #47): an abort mid-sleep rejects
       // immediately instead of outliving the caller.
-      await abortableSleep(dependencies.sleep, backoff + jitter, signal);
+      await abortableSleep(dependencies.sleep, delay, signal);
       // Re-check after backoff: signal may have aborted during sleep.
       if (signal?.aborted) throw error;
       attempt += 1;

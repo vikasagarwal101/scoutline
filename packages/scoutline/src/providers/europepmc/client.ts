@@ -24,6 +24,10 @@ import {
   MAX_BUFFERED_RESPONSE_BYTES,
 } from "../../lib/bounded-body.js";
 import {
+  parseRetryAfterHintMs,
+  retryHintOptions,
+} from "../../lib/retry-after.js";
+import {
   ApiError,
   AuthError,
   NetworkError,
@@ -53,7 +57,7 @@ export interface EuropepmcTransportDeps {
  * → AuthError; 408/504 → TimeoutError; other 4xx/5xx → ApiError with
  * the real status preserved for the shared retry classifier.
  */
-function mapStatusError(status: number, timeoutMs: number): Error {
+function mapStatusError(status: number, timeoutMs: number, hintMs?: number): Error {
   if (status === 401 || status === 403) {
     return new AuthError("Europe PMC rejected the request");
   }
@@ -61,9 +65,13 @@ function mapStatusError(status: number, timeoutMs: number): Error {
     return new TimeoutError(timeoutMs);
   }
   if (status === 429) {
-    return new QuotaError("Europe PMC rate-limited — keyless service; retry later");
+    return new QuotaError(
+      "Europe PMC rate-limited — keyless service; retry later",
+      undefined,
+      retryHintOptions(hintMs),
+    );
   }
-  return new ApiError("Europe PMC request failed", status);
+  return new ApiError("Europe PMC request failed", status, retryHintOptions(hintMs));
 }
 
 /** Same transport-error normalization contract as the arXiv/OpenAlex/Crossref clients. */
@@ -166,7 +174,11 @@ export async function fetchEuropepmcJson(
     };
     if (!res.ok) {
       await res.body?.cancel().catch(() => {});
-      throw mapStatusError(res.status, DEFAULT_TIMEOUT_MS);
+      throw mapStatusError(
+        res.status,
+        DEFAULT_TIMEOUT_MS,
+        parseRetryAfterHintMs(res.headers),
+      );
     }
     const contentLengthHeader = res.headers?.get?.("content-length");
     if (contentLengthHeader && Number(contentLengthHeader) > MAX_BUFFERED_RESPONSE_BYTES) {

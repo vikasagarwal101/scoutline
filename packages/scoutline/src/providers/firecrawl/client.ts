@@ -105,6 +105,13 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * with the real status preserved so `isOperationRetryableError` classifies
  * retry correctly (terminal 400/404/410/422; retryable 429/5xx). The
  * transport never embeds credential material in any error message.
+ *
+ * Retry-hint audit (Lane P P3, 2026-09): audited — Firecrawl documents NO
+ * `Retry-After` and no `X-RateLimit-*` delay-hint header; its documented
+ * error catalog carries status codes and credit balances, not timing. The
+ * seam is available if that changes (`parseRetryAfterHintMs` in
+ * `lib/retry-after.ts`); wiring is deliberately omitted per lane P ruling
+ * 3 (no speculative wiring). Re-audit if Firecrawl ships a hint header.
  */
 function mapStatusError(status: number, timeoutMs: number): Error {
   if (status === 401 || status === 403) {

@@ -20,6 +20,10 @@ import {
   MAX_BUFFERED_RESPONSE_BYTES,
 } from "../../lib/bounded-body.js";
 import {
+  parseRetryAfterHintMs,
+  retryHintOptions,
+} from "../../lib/retry-after.js";
+import {
   ApiError,
   AuthError,
   NetworkError,
@@ -61,7 +65,7 @@ export function resolveOpenalexCredentials(env: NodeJS.ProcessEnv): OpenalexCred
  * → AuthError; 408/504 → TimeoutError; other 4xx/5xx → ApiError with
  * the real status preserved for the shared retry classifier.
  */
-function mapStatusError(status: number, timeoutMs: number): Error {
+function mapStatusError(status: number, timeoutMs: number, hintMs?: number): Error {
   if (status === 401 || status === 403) {
     return new AuthError("OpenAlex rejected the request");
   }
@@ -71,6 +75,8 @@ function mapStatusError(status: number, timeoutMs: number): Error {
   if (status === 429) {
     return new QuotaError(
       "OpenAlex rate-limited — keyless budget; a free key raises the limit (see `scoutline init`)",
+      undefined,
+      retryHintOptions(hintMs),
     );
   }
   if (status === 503) {
@@ -80,9 +86,10 @@ function mapStatusError(status: number, timeoutMs: number): Error {
     return new ApiError(
       "OpenAlex request failed (anonymous search may be paused under load — a free API key via `scoutline init` restores it)",
       status,
+      retryHintOptions(hintMs),
     );
   }
-  return new ApiError("OpenAlex request failed", status);
+  return new ApiError("OpenAlex request failed", status, retryHintOptions(hintMs));
 }
 
 /** Same transport-error normalization contract as the arXiv client. */
@@ -214,7 +221,11 @@ export async function fetchOpenalexJson(
     };
     if (!res.ok) {
       await res.body?.cancel().catch(() => {});
-      throw mapStatusError(res.status, DEFAULT_TIMEOUT_MS);
+      throw mapStatusError(
+        res.status,
+        DEFAULT_TIMEOUT_MS,
+        parseRetryAfterHintMs(res.headers),
+      );
     }
     const contentLengthHeader = res.headers?.get?.("content-length");
     if (contentLengthHeader && Number(contentLengthHeader) > MAX_BUFFERED_RESPONSE_BYTES) {

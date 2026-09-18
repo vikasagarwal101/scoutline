@@ -17,6 +17,7 @@ import {
   ValidationError,
   AuthError,
   ApiError,
+  QuotaError,
   TimeoutError,
   NetworkError,
   UnsupportedCapabilityError,
@@ -553,6 +554,154 @@ describe("executeSearch — retry policy", () => {
     assert.strictEqual(sleep.calls.length, 3);
     // backoff sequence: 100, 200, 400 (capped at 1000)
     assert.deepStrictEqual(sleep.calls, [100, 200, 400]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provider-supplied retry hint (Retry-After / X-RateLimit-Retry-After) — P1
+// ---------------------------------------------------------------------------
+
+describe("executeProviderOperation — provider retry hint", () => {
+  // Default policy shape: base 500, cap 8000, jitter 250. random 0.4 makes
+  // jitter floor(0.4 * 250) = 100, so policy backoff+jitter is
+  // 600 / 1100 / 2100 for attempts 0..2.
+  const policy = (over = {}) => ({
+    maxRetries: 1,
+    baseDelayMs: 500,
+    maxDelayMs: 8000,
+    jitterMs: 250,
+    ...over,
+  });
+  const failing = (makeError) => async () => {
+    throw makeError();
+  };
+
+  it("sleeps max(policy, hint) when the hint exceeds the policy backoff", async () => {
+    const sleep = makeSleep();
+    const random = makeRandom([0.4]);
+    await assert.rejects(
+      executeProviderOperation(
+        "search",
+        failing(() => new ApiError("overloaded", 503, { retryAfterMs: 3000 })),
+        { sleep, random },
+        policy(),
+      ),
+    );
+    assert.deepStrictEqual(sleep.calls, [3000]);
+  });
+
+  it("keeps the policy backoff when the hint is smaller", async () => {
+    const sleep = makeSleep();
+    const random = makeRandom([0.4]);
+    await assert.rejects(
+      executeProviderOperation(
+        "search",
+        failing(() => new ApiError("overloaded", 503, { retryAfterMs: 300 })),
+        { sleep, random },
+        policy(),
+      ),
+    );
+    assert.deepStrictEqual(sleep.calls, [600]);
+  });
+
+  it("caps a hostile hint at maxDelayMs", async () => {
+    const sleeps = [];
+    for (const hostile of [600000, Number.MAX_SAFE_INTEGER]) {
+      const sleep = makeSleep();
+      const random = makeRandom([0.4]);
+      await assert.rejects(
+        executeProviderOperation(
+          "search",
+          failing(() => new ApiError("overloaded", 503, { retryAfterMs: hostile })),
+          { sleep, random },
+          policy(),
+        ),
+      );
+      sleeps.push(sleep.calls[0]);
+    }
+    assert.deepStrictEqual(sleeps, [8000, 8000]);
+  });
+
+  it("ignores a non-finite hint so the sleep is never NaN", async () => {
+    const sleep = makeSleep();
+    const random = makeRandom([0.4]);
+    await assert.rejects(
+      executeProviderOperation(
+        "search",
+        failing(() => new ApiError("overloaded", 503, { retryAfterMs: NaN })),
+        { sleep, random },
+        policy(),
+      ),
+    );
+    assert.deepStrictEqual(sleep.calls, [600]);
+  });
+
+  it("without a hint the sleeps are byte-identical to policy backoff", async () => {
+    const sleep = makeSleep();
+    const random = makeRandom([0.4]);
+    await assert.rejects(
+      executeProviderOperation(
+        "search",
+        failing(() => new ApiError("overloaded", 503)),
+        { sleep, random },
+        policy({ maxRetries: 3 }),
+      ),
+    );
+    assert.deepStrictEqual(sleep.calls, [600, 1100, 2100]);
+  });
+
+  it("QuotaError carrying a hint stays terminal: no retry, zero sleeps", async () => {
+    const sleep = makeSleep();
+    const random = makeRandom([0.4]);
+    let attempts = 0;
+    await assert.rejects(
+      executeProviderOperation(
+        "search",
+        async () => {
+          attempts += 1;
+          throw new QuotaError("exhausted", "top up", { retryAfterMs: 3000 });
+        },
+        { sleep, random },
+        policy({ maxRetries: 3 }),
+      ),
+      (error) => error instanceof QuotaError,
+    );
+    assert.strictEqual(attempts, 1);
+    assert.deepStrictEqual(sleep.calls, []);
+  });
+
+  it("an abort mid-backoff still rejects while a hint is honoured", async () => {
+    const calls = [];
+    let markStarted;
+    const started = new Promise((resolve) => {
+      markStarted = resolve;
+    });
+    const sleep = (ms) => {
+      calls.push(ms);
+      markStarted();
+      return new Promise(() => {});
+    };
+    const controller = new AbortController();
+    const pending = executeProviderOperation(
+      "search",
+      failing(() => new ApiError("overloaded", 503, { retryAfterMs: 3000 })),
+      { sleep, random: makeRandom([0.4]) },
+      policy(),
+      undefined,
+      controller.signal,
+    );
+    await started;
+    controller.abort();
+    // The abort classification is an abort-classified TimeoutError; its
+    // message is the constructor's duration text, so the abort marker is
+    // observable on `help`.
+    await assert.rejects(
+      pending,
+      (error) =>
+        error instanceof TimeoutError &&
+        error.help === "Provider operation was aborted during backoff",
+    );
+    assert.deepStrictEqual(calls, [3000]);
   });
 });
 

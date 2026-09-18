@@ -51,6 +51,7 @@ import { createExaDescriptor } from "../dist/providers/exa/adapter.js";
 import { createBraveDescriptor } from "../dist/providers/brave/adapter.js";
 import { createFirecrawlDescriptor } from "../dist/providers/firecrawl/adapter.js";
 import { createSpiderDescriptor } from "../dist/providers/spider/adapter.js";
+import { createBochaDescriptor } from "../dist/providers/bocha/adapter.js";
 import { createSearchApiDescriptor } from "../dist/providers/searchapi/adapter.js";
 import { createArxivDescriptor } from "../dist/providers/arxiv/adapter.js";
 import { createOpenalexDescriptor } from "../dist/providers/openalex/adapter.js";
@@ -605,6 +606,12 @@ const RESPONDERS = {
     if (url.endsWith("/links")) return jsonResponse(SPIDER_LINKS_RAW);
     return jsonResponse({});
   },
+  bocha() {
+    return jsonResponse({
+      code: 200,
+      data: { webPages: { value: [{ name: "T", url: "https://example.test/a", snippet: "S" }] } },
+    });
+  },
   searchapi(url) {
     if (url.includes("/me")) return jsonResponse(SEARCHAPI_ME_RAW);
     return jsonResponse(SEARCHAPI_SEARCH_RAW);
@@ -641,6 +648,7 @@ const ENV_BY_PROVIDER = {
   you: { YDC_API_KEY: "k" },
   linkup: { LINKUP_API_KEY: "k" },
   spider: { SPIDER_API_KEY: "k" },
+  bocha: { BOCHA_API_KEY: "k" },
   searchapi: { SEARCHAPI_API_KEY: "k" },
   // Science suppliers are keyless by default (D2) — every conformance
   // row rides the keyless partition (""). openalex/pubmed keyed rows
@@ -786,6 +794,8 @@ function makeHarness(provider, capability) {
       };
     case "spider":
       return { adapter: createSpiderDescriptor({ transport }).create(context), calls, timerDelays };
+    case "bocha":
+      return { adapter: createBochaDescriptor({ transport }).create(context), calls, timerDelays };
     case "searchapi":
       return {
         adapter: createSearchApiDescriptor({ transport }).create(context),
@@ -2809,6 +2819,61 @@ const ROWS = [
     input: { type: "video" },
     expect: "rejected",
   },
+  // ----- bocha / search — site: prefix, freshness, summary; location/type rejected
+  {
+    provider: "bocha",
+    capability: "search",
+    control: "domain",
+    input: { domain: "example.com" },
+    expect: "consumed",
+    on: "body",
+    path: "query",
+    includes: "site:example.com",
+  },
+  {
+    provider: "bocha",
+    capability: "search",
+    control: "recency",
+    input: { recency: "oneWeek" },
+    expect: "consumed",
+    on: "body",
+    path: "freshness",
+    equals: "oneWeek",
+  },
+  {
+    provider: "bocha",
+    capability: "search",
+    control: "location",
+    input: { location: "us" },
+    expect: "rejected",
+  },
+  {
+    provider: "bocha",
+    capability: "search",
+    control: "contentSize",
+    input: { contentSize: "high" },
+    expect: "consumed",
+    on: "body",
+    path: "summary",
+    equals: true,
+  },
+  {
+    provider: "bocha",
+    capability: "search",
+    control: "type",
+    input: { type: "video" },
+    expect: "rejected",
+  },
+  {
+    provider: "bocha",
+    capability: "search",
+    control: "topic",
+    input: { topic: "news" },
+    expect: "consumed",
+    on: "body",
+    path: "query",
+    includes: "news",
+  },
 
   // ----- searchapi / search — site: operator, time_period, gl, engine
   // routing; contentSize and type rejected -------------------------------
@@ -3349,6 +3414,7 @@ describe("controls class-guard — table integrity", () => {
         crawl: CRAWL_CONTROLS,
         map: MAP_CONTROLS,
       },
+      bocha: { search: SEARCH_CONTROLS },
       arxiv: { science: SCIENCE_CONTROLS },
       openalex: { science: SCIENCE_CONTROLS },
       crossref: { science: SCIENCE_CONTROLS },

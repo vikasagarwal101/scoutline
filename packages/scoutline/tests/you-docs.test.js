@@ -23,10 +23,12 @@ import { runProcess } from "./helpers/run-process.js";
 // round 3): the shared-command enumeration must list only the
 // shared-capability suppliers — the science seats are never
 // search/read-eligible, so advertising them invited a guaranteed
-// failing pin. You.com stays in the 13. Pinned here as a literal so a
-// widening that misses any surface fails loudly.
-const PROVIDER_ENUM =
-  "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|searchapi>";
+// failing pin. You.com is one of the shared suppliers. Pinned here as a
+// literal so a widening that misses any surface fails loudly.
+// amendment-4: shared --provider surfaces widened 12→13 with bocha;
+// the searchapi integration merge widens them again 13→14.
+const PROVIDER_ENUM_WIDENED =
+  "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi>";
 const PROVIDER_LIST_TAIL =
   "Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, or SearchApi.io";
 
@@ -46,7 +48,7 @@ describe("You.com docs — public READMEs", () => {
       "package README features must name You.com in the provider list",
     );
     assert.ok(
-      text.includes(PROVIDER_ENUM),
+      text.includes(PROVIDER_ENUM_WIDENED),
       "package README must list you in the --provider enumeration",
     );
     assert.ok(
@@ -62,7 +64,7 @@ describe("You.com docs — public READMEs", () => {
       "root README features must name You.com in the provider list",
     );
     assert.ok(
-      text.includes(PROVIDER_ENUM),
+      text.includes(PROVIDER_ENUM_WIDENED),
       "root README must list you in the --provider enumeration",
     );
     assert.ok(text.includes("### Using You.com"), "root README must carry a Using You.com section");
@@ -85,7 +87,7 @@ describe("You.com docs — configuration", () => {
     assert.ok(text.includes("YDC_API_KEY"), "configuration.md must document YDC_API_KEY");
     assert.ok(text.includes("YOU_API_KEY"), "configuration.md must document the YOU_API_KEY alias");
     assert.ok(
-      text.includes(PROVIDER_ENUM),
+      text.includes(PROVIDER_ENUM_WIDENED),
       "configuration.md --provider enumeration must list the full registry (incl. you)",
     );
     assert.match(
@@ -114,7 +116,10 @@ describe("You.com docs — CHANGELOG", () => {
 
 describe("You.com docs — CLI help enumerations", () => {
   it("SEARCH_HELP lists you in the --provider enumeration", () => {
-    assert.ok(SEARCH_HELP.includes(PROVIDER_ENUM), "SEARCH_HELP must list you in --provider");
+    assert.ok(
+      SEARCH_HELP.includes(PROVIDER_ENUM_WIDENED),
+      "SEARCH_HELP must list you in --provider",
+    );
   });
 
   it("main help names You.com among the providers", async () => {
@@ -123,11 +128,11 @@ describe("You.com docs — CLI help enumerations", () => {
     });
     assert.equal(result.code, 0);
     assert.ok(
-      result.stdout.includes("all 13 Providers"),
+      result.stdout.includes("all 14 Providers"),
       "main help must count the 13 shared-capability providers",
     );
     assert.ok(
-      result.stdout.includes("perplexity|jina|you|linkup|spider|searchapi>"),
+      result.stdout.includes("perplexity|jina|you|linkup|spider|bocha|searchapi>"),
       "main help --provider enumeration keeps you and stops at the shared suppliers",
     );
     assert.ok(

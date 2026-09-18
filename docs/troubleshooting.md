@@ -69,12 +69,12 @@ once until the config is removed or `hintShown` is reset (which a fresh
 ## Unknown Provider ID
 
 ```
-Unknown provider "<value>". Accepted provider IDs: zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, searchapi, arxiv, openalex, crossref, pubmed, europepmc.
+Unknown provider "<value>". Accepted provider IDs: zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, arxiv, openalex, crossref, pubmed, europepmc.
 ```
 
 `--provider` and `SCOUTLINE_PROVIDER` accept `zai`, `minimax`, `tavily`,
 `exa`, `brave`, `firecrawl`, `parallel`, `perplexity`, `jina`, `you`,
-`linkup`, `spider`, `searchapi`, `arxiv`, `openalex`, `crossref`, `pubmed`, or
+`linkup`, `spider`, `bocha`, `searchapi`, `arxiv`, `openalex`, `crossref`, `pubmed`, or
 `europepmc`. Unknown or empty values fail with `VALIDATION_ERROR` (`exit 1`) before
 any Provider invocation. `read`, `repo`, `crawl`, `map`, and `research`
 participate in selection but are supplied by different subsets of Providers

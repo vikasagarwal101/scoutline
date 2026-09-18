@@ -827,6 +827,17 @@ describe("v3 provider keys (2026-08 #78)", () => {
     );
   });
 
+  it("redacts BOCHA_API_KEY assignments (env-var-name form)", () => {
+    assert.strictEqual(
+      redactCredentialString("BOCHA_API_KEY: sk-test-bocha-345"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("BOCHA_API_KEY sk-test-bocha-345"),
+      "[REDACTED]",
+    );
+  });
+
   it("redacts whitespace-separated v3 key assignments (x-api-key separator convention)", () => {
     assert.strictEqual(
       redactCredentialString("SPIDER_API_KEY sk-abc123xyz"),

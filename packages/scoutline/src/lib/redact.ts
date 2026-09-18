@@ -44,6 +44,7 @@ const CREDENTIAL_KEYS: ReadonlySet<string> = new Set([
   "parallel_api_key",
   "perplexity_api_key",
   "jina_api_key",
+  "bocha_api_key",
 ]);
 
 const REDACTED = "[REDACTED]";
@@ -64,8 +65,8 @@ const REDACTED = "[REDACTED]";
  *     `x-api-key value`).
  *   - Z_AI_API_KEY, ZAI_API_KEY, MINIMAX_API_KEY, TAVILY_API_KEY,
  *     EXA_API_KEY, BRAVE_SEARCH_API_KEY, FIRECRAWL_API_KEY,
- *     YDC_API_KEY, YOU_API_KEY, LINKUP_API_KEY, SPIDER_API_KEY
- *     assignments.
+ *     YDC_API_KEY, YOU_API_KEY, LINKUP_API_KEY, SPIDER_API_KEY,
+ *     BOCHA_API_KEY assignments.
  *   - The literal credentials passed in `extraSecrets` (each value is
  *     replaced wherever it appears; empty strings are skipped).
  *
@@ -215,15 +216,16 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   result = result.replace(/YOU_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   result = result.replace(/LINKUP_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   result = result.replace(/SPIDER_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/BOCHA_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   // #180 gap 2: the lookaheads are scoped to the value token (`[^\s"]*`)
   // rather than to a bare non-space run. `\S` includes the JSON quote, so
   // `{"h":"YDC_API_KEY abcdefgh","n":1}` saw the sibling `1` across the
   // closing quote and redacted a value carrying no digit of its own. The
   // capture below already terminated at `"` (#174); only the lookaheads
   // still crossed it.
-  // #185 review: one guarded pattern, four key names — kept as a loop so
+  // #185 review: one guarded pattern, five key names — kept as a loop so
   // the lookahead/capture boundary can never drift between rows again.
-  for (const key of ["YDC_API_KEY", "YOU_API_KEY", "LINKUP_API_KEY", "SPIDER_API_KEY"]) {
+  for (const key of ["YDC_API_KEY", "YOU_API_KEY", "LINKUP_API_KEY", "SPIDER_API_KEY", "BOCHA_API_KEY"]) {
     result = result.replace(
       new RegExp(`${key}\\s+(?=[^\\s"]*\\d)(?=[^\\s"]*[A-Za-z])[^\\s"]{8,}`, "gi"),
       REDACTED,
@@ -289,6 +291,7 @@ export function configuredSecrets(env: NodeJS.ProcessEnv = process.env): string[
     // URLs must not reach the always-on journal unredacted.
     env.LINKUP_API_KEY,
     env.SPIDER_API_KEY,
+    env.BOCHA_API_KEY,
     env.YDC_API_KEY,
     env.YOU_API_KEY,
   ];

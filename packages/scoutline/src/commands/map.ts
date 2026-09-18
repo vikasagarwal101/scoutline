@@ -164,7 +164,7 @@ Options:
   --no-cache           Bypass the response cache for this invocation
 
 Common Options:
-  --provider <id>            Override the active Provider (zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | you | linkup | spider | searchapi)
+  --provider <id>            Override the active Provider (zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | you | linkup | spider | bocha | searchapi)
   --output-format <mode>     One of: ${OUTPUT_MODE_LIST} (default: data)
   -O <mode>                  Alias for --output-format
 

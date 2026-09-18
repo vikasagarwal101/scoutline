@@ -14,10 +14,11 @@
  *
  * Order of operations for `executeSearch`:
  *   1. `capability.validate(request)`
- *   2. `capability.cacheIdentity(request, { legacyCount: options.count })`
+ *   2. `capability.cacheIdentity(request, { legacyCount, count })`
  *   3. Read the provider-partitioned cache key
  *   4. Try and decode Adapter-supplied legacy candidates when applicable
- *   5. Invoke through `executeProviderOperation`
+ *   5. Invoke through `executeProviderOperation` (search also passes
+ *      the optional count; only Bocha consumes it, #211)
  *   6. Retry only normalized retryable failures
  *   7. Cache the full normalized result
  *   8. Apply local count truncation

@@ -279,6 +279,7 @@ const PROVIDER_PROMPT_META: Record<ProviderId, ProviderPromptMeta> = {
   searchapi: {
     label: "SearchApi.io",
     envVar: "SEARCHAPI_API_KEY",
+    envAliases: ["SERPAPI_API_KEY"],
     registrationUrl: "https://www.searchapi.io/",
     probeCostsCredit: false,
   },

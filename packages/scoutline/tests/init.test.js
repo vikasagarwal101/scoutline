@@ -327,6 +327,34 @@ describe("init non-TTY refuse: formal refuse before any prompt, exit 1", () => {
     assert.match(joined, /Detected env keys.*Z_AI_API_KEY/);
     assert.ok(!joined.includes("secret-do-not-leak"), "key value must not leak in refuse");
   });
+
+  it("non-TTY refuse detects a legacy SERPAPI_API_KEY-only environment for searchapi", async () => {
+    // Teeth for envAliases: ["SERPAPI_API_KEY"] — credentials accept the
+    // legacy var, so the wizard's env detection must see it too.
+    const script = createScriptedPrompts();
+    const store = createFakeConfigStore();
+    const searchapi = makeFakeDescriptor({
+      id: "searchapi",
+      credentialEnvVars: ["SEARCHAPI_API_KEY", "SERPAPI_API_KEY"],
+    });
+    const { deps, stderrChunks } = createInitDeps({
+      descriptors: [searchapi.descriptor],
+      prompts: script.prompts,
+      configStore: store,
+      stdinIsTTY: false,
+      env: { SERPAPI_API_KEY: "legacy-secret-do-not-leak" },
+    });
+
+    const status = await handleInitWithHelp([], deps);
+
+    assert.strictEqual(status, 1);
+    const joined = stderrChunks.join("");
+    assert.match(joined, /Detected env keys.*\$SERPAPI_API_KEY/);
+    assert.ok(
+      !joined.includes("legacy-secret-do-not-leak"),
+      "legacy key value must not leak in refuse",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

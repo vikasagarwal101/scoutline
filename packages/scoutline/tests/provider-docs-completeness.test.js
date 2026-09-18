@@ -32,6 +32,7 @@ const PROVIDER_MATRIX_LABELS = {
   linkup: "Linkup",
   spider: "Spider.cloud",
   bocha: "Bocha AI",
+  searchapi: "SearchApi",
   arxiv: "arXiv",
   openalex: "OpenAlex",
   crossref: "Crossref",

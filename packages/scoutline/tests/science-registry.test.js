@@ -57,6 +57,7 @@ const SHARED_IDS = [
   "linkup",
   "spider",
   "bocha",
+  "searchapi",
 ];
 const SCIENCE_IDS = ["arxiv", "openalex", "crossref", "pubmed", "europepmc"];
 const EXPECTED_IDS = [...SHARED_IDS, ...SCIENCE_IDS];
@@ -238,7 +239,7 @@ describe("quota authority — five always-unknown rows (T2 round-5 bullet; D5 pr
 });
 
 describe("RESEARCH_HELP provider enumeration (T2 literal surface; review rounds 3/6 ruling)", () => {
-  it("RESEARCH_HELP lists the 12 shared-capability suppliers — science ids are not research-eligible", () => {
+  it("RESEARCH_HELP lists the 13 shared-capability suppliers — science ids are not research-eligible", () => {
     // T2 originally widened the hand-written list 12→17 (PRD AC-9b
     // literal-surfaces bullet). The review ruling reversed that for
     // capability-gated commands: science suppliers advertise
@@ -246,10 +247,10 @@ describe("RESEARCH_HELP provider enumeration (T2 literal surface; review rounds 
     // guaranteed-failing pin (or a credit-consuming reroute under
     // fallback). Same ruling as SEARCH_HELP/quota/map.
     const expected =
-      "(zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | you | linkup | spider | bocha)";
+      "(zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | you | linkup | spider | bocha | searchapi)";
     assert.ok(
       RESEARCH_HELP.includes(expected),
-      `RESEARCH_HELP --provider list must be the 12-id shared list: ${expected}`,
+      `RESEARCH_HELP --provider list must be the 13-id shared list: ${expected}`,
     );
     assert.ok(
       !RESEARCH_HELP.includes("| arxiv |"),

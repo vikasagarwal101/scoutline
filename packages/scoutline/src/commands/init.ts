@@ -282,6 +282,13 @@ const PROVIDER_PROMPT_META: Record<ProviderId, ProviderPromptMeta> = {
     registrationUrl: "https://open.bochaai.com/",
     probeCostsCredit: true,
   },
+  searchapi: {
+    label: "SearchApi.io",
+    envVar: "SEARCHAPI_API_KEY",
+    envAliases: ["SERPAPI_API_KEY"],
+    registrationUrl: "https://www.searchapi.io/",
+    probeCostsCredit: false,
+  },
   // Science suppliers — keyless by default. The trio (arxiv, crossref,
   // europepmc) carries no credential model at all; openalex and pubmed
   // accept an optional free key. T2 owns the rows and the minimum

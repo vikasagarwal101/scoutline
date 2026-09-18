@@ -35,6 +35,7 @@ import { createYouDescriptor } from "../dist/providers/you/adapter.js";
 import { createLinkupDescriptor } from "../dist/providers/linkup/adapter.js";
 import { createSpiderDescriptor } from "../dist/providers/spider/adapter.js";
 import { createBochaDescriptor } from "../dist/providers/bocha/adapter.js";
+import { createSearchApiDescriptor } from "../dist/providers/searchapi/adapter.js";
 import {
   BUILT_IN_PROVIDER_DESCRIPTORS,
   getProviderDescriptor,
@@ -243,6 +244,24 @@ function makeSpiderCapability(rawResult) {
   });
   const descriptor = createSpiderDescriptor({ transport: { fetch: fetchFn } });
   const adapter = descriptor.create({ env: { SPIDER_API_KEY: "k" } });
+  return adapter.search;
+}
+
+/**
+ * SearchApi Adapter factory: accepts a raw SearchApi-shaped response
+ * (`organic_results[].title/link/snippet`), builds a fake fetch, and
+ * returns the adapter's Search Capability.
+ */
+function makeSearchApiCapability(rawResult) {
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(rawResult),
+    json: async () => rawResult,
+    headers: { get: () => null },
+  });
+  const descriptor = createSearchApiDescriptor({ transport: { fetch: fetchFn } });
+  const adapter = descriptor.create({ env: { SEARCHAPI_API_KEY: "k" } });
   return adapter.search;
 }
 
@@ -508,6 +527,7 @@ const SEARCH_CONFORMANCE_FACTORIES = new Map([
   ["linkup", makeLinkupCapability],
   ["spider", makeSpiderCapability],
   ["bocha", makeBochaCapability],
+  ["searchapi", makeSearchApiCapability],
 ]);
 
 /**
@@ -763,6 +783,25 @@ const SEARCH_CONFORMANCE_RAW = new Map([
         snippet: "Shared normalized summary two.",
       },
     ],
+  ],
+  // SearchApi.io raw response (organic_results[].title/link/snippet; no
+  // date so the normalized form carries no source/date).
+  [
+    "searchapi",
+    {
+      organic_results: [
+        {
+          title: "Conformance result one",
+          link: "https://example.test/one",
+          snippet: "Shared normalized summary one.",
+        },
+        {
+          title: "Conformance result two",
+          link: "https://example.test/two",
+          snippet: "Shared normalized summary two.",
+        },
+      ],
+    },
   ],
 ]);
 describe("CI completeness gate — every search Provider has a conformance factory (6.2)", () => {
@@ -1075,7 +1114,7 @@ describe("AbortSignal — new research invokes honour pre-aborted signal (2.6)",
 // ---------------------------------------------------------------------------
 
 describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
-  it("contains exactly [zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, arxiv, openalex, crossref, pubmed, europepmc] in that order", () => {
+  it("contains exactly [zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, searchapi, arxiv, openalex, crossref, pubmed, europepmc] in that order", () => {
     // GROUND: T2 — the five science ids append in the D2 listing order
     // (openalex-first is the executor arm order, NOT the registry
     // insertion order).
@@ -1095,6 +1134,7 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
         "linkup",
         "spider",
         "bocha",
+        "searchapi",
         "arxiv",
         "openalex",
         "crossref",

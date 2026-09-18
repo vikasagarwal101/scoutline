@@ -1360,6 +1360,7 @@ describe("executeWithFallback — production registry carries credential hint en
       linkup: ["LINKUP_API_KEY"],
       spider: ["SPIDER_API_KEY"],
       bocha: ["BOCHA_API_KEY"],
+      searchapi: ["SEARCHAPI_API_KEY", "SERPAPI_API_KEY"],
       // Science seats (T2): keyless trio carries no credential model;
       // openalex/pubmed accept an optional free key.
       arxiv: [],

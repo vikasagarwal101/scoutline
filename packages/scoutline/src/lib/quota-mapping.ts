@@ -386,6 +386,13 @@ export const CAPABILITY_MAPPINGS: readonly CapabilityMappingEntry[] = [
     }),
   ),
 
+  // SearchApi.io — search consumes the shared `searches` pool.
+  {
+    provider: "searchapi",
+    capability: "search",
+    categoryAliases: ["searches"],
+  },
+
 ];
 
 // ---------------------------------------------------------------------------
@@ -518,6 +525,11 @@ export const PROVIDER_AUTHORITY_POLICIES: readonly ProviderAuthorityPolicy[] = [
     provider: "bocha",
     kind: "always-unknown",
     reason: "Bocha AI does not advertise a quota capability.",
+  },
+  {
+    provider: "searchapi",
+    kind: "mapped",
+    reason: "SearchApi.io exposes GET /api/v1/me remaining credits.",
   },
   // Science suppliers (D5 pre-merge exclusion): keyless scholarly
   // indexes with no spend signal — excluded from quota-snapshot

@@ -153,6 +153,11 @@ export function normalizeSearchApiResults(raw: unknown): readonly SearchSource[]
     throw new ApiError("SearchApi.io returned a malformed response", 500);
   }
   const results = raw.organic_results;
+  // The `google_news` engine (topic:"news") legitimately returns only a
+  // `top_stories` block with `organic_results` ABSENT — a valid engine
+  // response, not a malformed payload. An absent array normalizes to an
+  // empty list; only a present-but-non-array value is malformed.
+  if (results === undefined) return [];
   if (!Array.isArray(results)) {
     throw new ApiError("SearchApi.io returned a malformed response", 500);
   }

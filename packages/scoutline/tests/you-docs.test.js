@@ -23,7 +23,7 @@ import { runProcess } from "./helpers/run-process.js";
 // round 3): the shared-command enumeration must list only the
 // shared-capability suppliers — the science seats are never
 // search/read-eligible, so advertising them invited a guaranteed
-// failing pin. You.com stays in the 12. Pinned here as a literal so a
+// failing pin. You.com stays in the 13. Pinned here as a literal so a
 // widening that misses any surface fails loudly.
 const PROVIDER_ENUM =
   "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|searchapi>";

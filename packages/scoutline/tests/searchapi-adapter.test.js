@@ -23,7 +23,12 @@ import {
   hashSearchApiKey,
 } from "../dist/providers/searchapi/credentials.js";
 import { createSearchApiDescriptor } from "../dist/providers/searchapi/adapter.js";
-import { ConfigurationError, UnsupportedOptionError, ValidationError } from "../dist/lib/errors.js";
+import {
+  ApiError,
+  ConfigurationError,
+  UnsupportedOptionError,
+  ValidationError,
+} from "../dist/lib/errors.js";
 
 describe("searchapi credentials", () => {
   it("prefers SEARCHAPI_API_KEY over SERPAPI_API_KEY and computes fingerprint", () => {
@@ -111,6 +116,13 @@ function makeSearchAdapter(fetchImpl) {
   return { adapter, calls };
 }
 
+/** Build an adapter serving `fetchImpl` (no call recording needed). */
+function makeQuotaAdapter(fetchImpl) {
+  const descriptor = createSearchApiDescriptor({ transport: { fetch: fetchImpl } });
+  const adapter = descriptor.create({ env: { SEARCHAPI_API_KEY: TEST_API_KEY } });
+  return { adapter };
+}
+
 describe("searchapi search capability", () => {
   it("search validate rejects contentSize and type before fetch", async () => {
     let calls = 0;
@@ -196,6 +208,35 @@ describe("searchapi search capability", () => {
     await adapter.search.invoke({ query: "q", controls: { location: "cn" } });
     assert.strictEqual(new URL(calls[0].url).searchParams.get("gl"), "cn");
   });
+
+  it("search tolerates a google_news payload with only top_stories (no organic_results)", async () => {
+    // google_news (topic:"news") legitimately returns a top_stories block
+    // with organic_results absent — a valid engine response, not a
+    // malformed payload. It must normalize to an empty list, not throw.
+    const newsRaw = {
+      search_metadata: { id: "news_001", status: "Success" },
+      search_parameters: { engine: "google_news", q: "raft" },
+      top_stories: [{ title: "A story", link: "https://example.test/s" }],
+    };
+    const { adapter } = makeSearchAdapter(async () => jsonRes(newsRaw));
+    const rows = await adapter.search.invoke({ query: "raft", controls: { topic: "news" } });
+    assert.deepStrictEqual(rows, []);
+  });
+
+  it("search still rejects a malformed organic_results and a non-object root", async () => {
+    const { adapter: badResults } = makeSearchAdapter(async () =>
+      jsonRes({ organic_results: "nope" }),
+    );
+    await assert.rejects(
+      () => badResults.search.invoke({ query: "q" }),
+      (e) => e instanceof ApiError && e.statusCode === 500,
+    );
+    const { adapter: badRoot } = makeSearchAdapter(async () => jsonRes([1, 2, 3]));
+    await assert.rejects(
+      () => badRoot.search.invoke({ query: "q" }),
+      (e) => e instanceof ApiError && e.statusCode === 500,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -251,5 +292,34 @@ describe("searchapi quota and diagnostics capabilities", () => {
     assert.strictEqual(calls, 1);
     await adapter.diagnostics.invoke({ probe: false });
     assert.strictEqual(calls, 1);
+  });
+
+  it("quota rejects negative counts and anchors a zone-less period_end to UTC", async () => {
+    const negRaw = {
+      account: { current_month_usage: -1, monthly_allowance: 10000, remaining_credits: 10001 },
+      subscription: { period_end: "2026-09-01T00:00:00Z" },
+    };
+    const { adapter: negAdapter } = makeQuotaAdapter(async () => jsonRes(negRaw));
+    await assert.rejects(
+      () => negAdapter.quota.invoke(),
+      (e) => e instanceof ApiError && e.statusCode === 500,
+    );
+
+    // A zone-less timestamp must be read as UTC, never the host's local
+    // offset: resetsAt is otherwise silently shifted by the offset.
+    const zonelessRaw = {
+      account: { current_month_usage: 3200, monthly_allowance: 10000, remaining_credits: 6800 },
+      subscription: { period_end: "2026-09-01 00:00:00" },
+    };
+    const prevTz = process.env.TZ;
+    process.env.TZ = "America/New_York";
+    try {
+      const { adapter: zlAdapter } = makeQuotaAdapter(async () => jsonRes(zonelessRaw));
+      const q = await zlAdapter.quota.invoke();
+      assert.strictEqual(q.categories[0].current.resetsAt, "2026-09-01T00:00:00.000Z");
+    } finally {
+      if (prevTz === undefined) delete process.env.TZ;
+      else process.env.TZ = prevTz;
+    }
   });
 });

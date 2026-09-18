@@ -38,9 +38,24 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Read a finite number, or `undefined` for anything else. */
+/** Read a finite NONNEGATIVE number, or `undefined` for anything else. */
 function readFiniteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+/**
+ * Parse a subscription instant to epoch ms, anchoring a zone-less
+ * datetime to UTC. `Date.parse` reads a zone-less form (e.g.
+ * `"2026-09-01 00:00:00"`) in the HOST's local time, silently shifting
+ * `resetsAt` by the offset; the reset instant is user-visible via
+ * `scoutline quota`, so the zone-less form is normalized to an explicit
+ * UTC `Z` before parsing. Values already carrying a zone (`Z` or
+ * `±HH:MM`) parse as-is; anything unparseable yields `NaN` (omitted).
+ */
+function parseZonedInstant(value: string): number {
+  const ZONELESS_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
+  const normalized = ZONELESS_RE.test(value) ? `${value.replace(" ", "T")}Z` : value;
+  return Date.parse(normalized);
 }
 
 // ---------------------------------------------------------------------------
@@ -57,8 +72,9 @@ function readFiniteNumber(value: unknown): number | undefined {
  * throws `ApiError` 500. On success a single `"searches"` category
  * (`unit: "credits"`) is built through
  * `buildQuotaWindow({ used, limit, resetsAtEpochMs })`, where
- * `resetsAtEpochMs` is `Date.parse(subscription.period_end)` when that
- * parses and is omitted otherwise.
+ * `resetsAtEpochMs` is `parseZonedInstant(subscription.period_end)` when
+ * that parses (a zone-less form is anchored to UTC) and is omitted
+ * otherwise.
  */
 export function normalizeSearchApiQuota(raw: unknown): ProviderQuotaSuccess {
   if (!isPlainObject(raw)) {
@@ -77,7 +93,7 @@ export function normalizeSearchApiQuota(raw: unknown): ProviderQuotaSuccess {
 
   const subscription = isPlainObject(raw.subscription) ? raw.subscription : undefined;
   const periodEnd = subscription ? subscription.period_end : undefined;
-  const resetsAtEpochMs = typeof periodEnd === "string" ? Date.parse(periodEnd) : NaN;
+  const resetsAtEpochMs = typeof periodEnd === "string" ? parseZonedInstant(periodEnd) : NaN;
 
   const inputs: { used: number; limit: number; resetsAtEpochMs?: number } = { used, limit };
   if (Number.isFinite(resetsAtEpochMs)) {

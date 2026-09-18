@@ -28,6 +28,7 @@ import pkg from "../../../package.json" with { type: "json" };
 import { ApiError, AuthError, NetworkError, QuotaError, TimeoutError } from "../../lib/errors.js";
 import type { ProviderQuotaFetch } from "../types.js";
 import { getGlobalFetch } from "../types.js";
+import { clampTimeoutMs } from "../../lib/timeout.js";
 
 const { version: VERSION } = pkg;
 
@@ -87,9 +88,9 @@ export interface FirecrawlMapParams {
   readonly search?: string;
 }
 
-function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
+export function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = parseInt(env.FIRECRAWL_TIMEOUT || String(DEFAULT_TIMEOUT_MS), 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
+  return clampTimeoutMs(raw, DEFAULT_TIMEOUT_MS);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

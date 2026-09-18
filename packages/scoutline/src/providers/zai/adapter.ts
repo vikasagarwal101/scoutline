@@ -75,6 +75,7 @@ import { createZaiQuotaCapability, type ZaiQuotaCapabilityOptions } from "./quot
 import { createZaiRepositoryCapability } from "./repository.js";
 import { createZaiReaderCapability } from "./reader.js";
 import type { ZaiMonitorFetch } from "./monitor-client.js";
+import { clampTimeoutMs } from "../../lib/timeout.js";
 
 const SEARCH_TOOL_PUBLIC_NAME = getMcpToolName("search", "web_search_prime");
 const VISION_ANALYZE_TOOL_PUBLIC_NAME = getMcpToolName("vision", "analyze_image");
@@ -387,7 +388,7 @@ function normalizeZaiError(error: unknown): Error {
     return new AuthError("Z.AI authentication failed");
   }
   if (lower.includes("timeout") || lower.includes("timed out") || lower.includes("etimedout")) {
-    return new TimeoutError(parseInt(process.env.Z_AI_TIMEOUT || "30000", 10));
+    return new TimeoutError(clampTimeoutMs(parseInt(process.env.Z_AI_TIMEOUT || "30000", 10), 30000));
   }
   if (
     lower.includes("econnrefused") ||

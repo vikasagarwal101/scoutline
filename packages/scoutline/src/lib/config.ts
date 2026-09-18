@@ -3,6 +3,7 @@
  */
 
 import { ConfigurationError } from "./errors.js";
+import { clampTimeoutMs } from "./timeout.js";
 
 export interface ZaiConfig {
   apiKey: string;
@@ -63,7 +64,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ZaiConfig {
     apiKey,
     mode,
     baseUrl,
-    timeout: parseInt(env.Z_AI_TIMEOUT || "30000", 10),
+    timeout: clampTimeoutMs(parseInt(env.Z_AI_TIMEOUT || "30000", 10), 30000),
     visionModel: env.Z_AI_VISION_MODEL || "glm-5.3-flash",
     temperature: parseFloat(env.Z_AI_TEMPERATURE || "1"), // #136: glm-5.3-flash documented recipe
     topP: parseFloat(env.Z_AI_TOP_P || "0.95"), // #136: glm-5.3-flash documented recipe

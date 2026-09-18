@@ -75,6 +75,7 @@ import {
   type SpecializedVisionOperation,
 } from "./vision-conformance.js";
 import { MINIMAX_VISION_MAPPINGS } from "./vision-mappings.generated.js";
+import { clampTimeoutMs } from "../../lib/timeout.js";
 
 // ---------------------------------------------------------------------------
 // Provider-owned credential fingerprint
@@ -255,7 +256,7 @@ function normalizeMiniMaxError(error: unknown): Error {
     return new AuthError("MiniMax authentication failed");
   }
   if (lower.includes("timeout") || lower.includes("timed out") || lower.includes("etimedout")) {
-    return new TimeoutError(parseInt(process.env.MINIMAX_TIMEOUT || "30000", 10));
+    return new TimeoutError(clampTimeoutMs(parseInt(process.env.MINIMAX_TIMEOUT || "30000", 10), 30000));
   }
   if (
     lower.includes("econnrefused") ||

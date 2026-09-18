@@ -18,6 +18,7 @@ import {
   ValidationError,
 } from "../../lib/errors.js";
 import { MISSING_KEY_HELP } from "./credentials.js";
+import { clampTimeoutMs } from "../../lib/timeout.js";
 
 const BASE_URL = "https://kagi.com";
 const SEARCH_URL = `${BASE_URL}/api/v1/search`;
@@ -60,9 +61,9 @@ export interface KagiSearchParams {
   readonly limit?: number;
 }
 
-function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
+export function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = parseInt(env.KAGI_TIMEOUT || String(DEFAULT_TIMEOUT_MS), 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
+  return clampTimeoutMs(raw, DEFAULT_TIMEOUT_MS);
 }
 
 /**

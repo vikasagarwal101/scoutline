@@ -418,7 +418,7 @@ export interface ProviderAuthorityPolicy {
 }
 
 /**
- * The static authority-policy table. Six providers are explicitly
+ * The static authority-policy table. Eighteen providers are explicitly
  * non-authoritative:
  *
  * - **Brave**: reports a rate-limit window via `X-RateLimit-*` headers,
@@ -442,8 +442,10 @@ export interface ProviderAuthorityPolicy {
  *   (`createSpiderQuotaCapability`), but its signal is an exact
  *   remaining credit balance with an unknown limit, not a
  *   percentage-bounded plan signal.
+ * - **Bocha AI**: does not advertise a `quota` capability; there is
+ *   no signal to map.
  *
- * All six providers stay **eligible** for PB-T4 fallback (their
+ * All eighteen providers stay **eligible** for PB-T4 fallback (their
  * `authority:"unknown"` score sorts after every healthy known
  * provider), so they can still be picked when no healthy known
  * provider remains. Since #97 they can even outrank a mapped provider:
@@ -511,6 +513,11 @@ export const PROVIDER_AUTHORITY_POLICIES: readonly ProviderAuthorityPolicy[] = [
     kind: "always-unknown",
     reason:
       "Spider.cloud exposes GET /data/credits as an exact credit remaining balance (limit unknown); not a percentage-bounded plan signal.",
+  },
+  {
+    provider: "bocha",
+    kind: "always-unknown",
+    reason: "Bocha AI does not advertise a quota capability.",
   },
   // Science suppliers (D5 pre-merge exclusion): keyless scholarly
   // indexes with no spend signal — excluded from quota-snapshot

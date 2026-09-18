@@ -38,8 +38,8 @@ The version-1 shape is:
 ```
 
 Supported provider IDs are `zai`, `minimax`, `tavily`, `exa`, `brave`,
-`firecrawl`, `parallel`, `perplexity`, `jina`, `you`, `linkup`, and
-`spider`. Unknown IDs are ignored
+`firecrawl`, `parallel`, `perplexity`, `jina`, `you`, `linkup`, `spider`, and
+`bocha`. Unknown IDs are ignored
 with a warning, and blank API keys are
 treated as absent. Malformed files fail as corrupt configuration; unsupported
 versions require a Scoutline upgrade. Writes use a private (`0600`) temporary
@@ -168,14 +168,14 @@ non-TTY settings surface (dotted paths: `routing`, `routing.<capability>`,
 
 Shared commands (`search`, `vision`, `quota`, `doctor`), **`repo`**,
 **`read`**, **`crawl`**, **`map`**, and **`research`** accept the global
-`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>` flag. When the flag
+`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha>` flag. When the flag
 is omitted the value of the `SCOUTLINE_PROVIDER` environment variable is
 consulted; when neither is supplied Scoutline falls back to the compatibility
 default `zai`.
 
 Resolution precedence (highest first):
 
-1. `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>` on the command line
+1. `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha>` on the command line
 2. `SCOUTLINE_PROVIDER`
 3. `zai` (default)
 
@@ -191,7 +191,7 @@ Provider fallback is **always-on** (0.11.0+). When the selected provider
 does not supply the capability (for example, MiniMax does not advertise
 `repository-exploration` or `reader`) or fails at runtime, scoutline
 emits a stderr notice and silently tries the next eligible provider in
-registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider]`. The
+registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha]`. The
 selected provider is still the *first* one tried, so the user-visible
 behavior is the same when the pin works; the fallback only changes
 what happens when it does not. See
@@ -246,7 +246,7 @@ scoutline --no-fallback --provider minimax read https://example.com
 | `Z_AI_TEMPERATURE` | `1` | Vision generation temperature (glm-5.3-flash documented recipe). |
 | `Z_AI_TOP_P` | `0.95` | Vision generation top-p value (glm-5.3-flash documented recipe). |
 | `Z_AI_MAX_TOKENS` | `32768` | Vision response token limit. |
-| `SCOUTLINE_PROVIDER` | (none) | Selects the effective Provider (`zai`, `minimax`, `tavily`, `exa`, `brave`, `firecrawl`, `parallel`, `perplexity`, `jina`, `you`, `linkup`, or `spider`) for shared capabilities. |
+| `SCOUTLINE_PROVIDER` | (none) | Selects the effective Provider (`zai`, `minimax`, `tavily`, `exa`, `brave`, `firecrawl`, `parallel`, `perplexity`, `jina`, `you`, `linkup`, `spider`, or `bocha`) for shared capabilities. |
 | `SCOUTLINE_NO_FALLBACK` | (unset) | When set to a non-empty value, restores the strict single-provider, fail-loud behavior for shared capabilities — `--no-fallback` on the CLI is the per-invocation equivalent. |
 
 ## MiniMax Token Plan Settings
@@ -472,6 +472,42 @@ scoutline --provider spider crawl https://docs.example.com --limit 10
 scoutline --provider spider map https://docs.example.com
 scoutline --provider spider quota
 scoutline doctor --provider spider
+```
+
+## Bocha AI Settings
+
+The Bocha AI Adapter is configured through one environment variable.
+Every request authenticates against `https://api.bochaai.com/v1` with an
+`Authorization: Bearer` header. Create a key at
+https://open.bochaai.com/.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `BOCHA_API_KEY` | (none) | Required for Bocha AI. Bocha AI API key. |
+
+- `BOCHA_API_KEY` is required and non-empty. Whitespace-only values are
+  treated as absent.
+- The key is redacted in all output, exactly like every other provider
+  credential.
+- Bocha AI supplies Search and Diagnostics. Search results are unwrapped
+  from the Bing-compatible `data.webPages.value[]` envelope (`name` maps to
+  title, `summary` is preferred over `snippet`, rows without a URL are
+  dropped). Search controls map `--domain` to a `site:` query prefix,
+  `--recency` to the pass-through `freshness` field, `--content-size high`
+  to `summary: true`, and `--topic` to a query keyword append; `--location`
+  and `--type` are rejected with `UNSUPPORTED_OPTION` before any I/O
+  instead of being silently dropped.
+- An HTTP 200 response carrying application `code: 401` is still a
+  `CONFIGURATION_ERROR` — the key is rejected, not retried.
+- Bocha AI advertises **no Quota capability**: there is no spend endpoint,
+  so quota ranking never fabricates a remaining or limit value. The
+  diagnostics probe issues a single `count: 1` search.
+
+```bash
+export BOCHA_API_KEY="your-bocha-key"
+
+scoutline --provider bocha search "AI policy news"
+scoutline doctor --provider bocha
 ```
 
 ## Science Settings
@@ -894,6 +930,7 @@ Authority and score are kept on separate axes. A provider is either:
 | `jina` | always-unknown | Rate-limit telemetry (`X-RateLimit-Remaining-*` headers), not spend; not a budget signal. |
 | `linkup` | always-unknown | USD remaining balance (limit unknown; `unit: "USD"` — Linkup's "credits" are dollars); not a percentage-bounded plan signal. |
 | `spider` | always-unknown | Credit remaining balance (limit unknown); not a percentage-bounded plan signal. |
+| `bocha` | always-unknown | Advertises no `quota` capability; Bocha AI exposes no spend endpoint. Nothing to map. |
 | `exa`, `parallel`, `perplexity` | always-unknown | Advertise no `quota` capability; nothing to map. |
 | `you` | always-unknown | Advertises no `quota` capability; You.com exposes no spend endpoint. Nothing to map. |
 | `arxiv` | always-unknown | Keyless scholarly index; no spend signal exists. Excluded from quota-snapshot availability ranking in v1. |
@@ -1007,7 +1044,7 @@ ordered list:
    strictly below every natural unknown, so a still-exhausted provider
    can never ride registry order back to the top.
 4. Ties within a band break by registry order
-   (`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider]` by default;
+   (`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha]` by default;
    overridable via the `registryOrder` option).
 
 Calls that supply no clock (no `now` option) skip the exhaustion check

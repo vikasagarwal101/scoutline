@@ -243,7 +243,7 @@ Usage: scoutline <command> [args] [options]
 
 Commands:
   vision   Image and video analysis (Z.AI; MiniMax for interpret-image)
-  search   Real-time web search (shared: all 12 Providers; --topic
+  search   Real-time web search (shared: all 13 Providers; --topic
            honored by every Provider)
   read     Fetch and parse web pages (Provider Capability; Z.AI, Tavily,
            Exa, Firecrawl, Parallel, Jina, You.com, Linkup, and Spider.cloud supply it)  crawl    Crawl a website from a starting URL (Provider Capability;
@@ -284,7 +284,7 @@ Commands:
            credential-free)
 
 Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER, then zai):
-  --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>   Select the active Provider for shared capabilities (science suppliers pin only within "scoutline science ...")  SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
+  --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha>   Select the active Provider for shared capabilities (science suppliers pin only within "scoutline science ...")  SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
 
 Shared capabilities accept --provider. The 'repo', 'read', 'crawl', 'map',
 and 'research' commands participate in Provider selection: Z.AI
@@ -294,7 +294,8 @@ advertises and supplies search, reader, and research; Parallel AI
 advertises search, research, and reader; Perplexity advertises search
 and research; Jina AI advertises search, reader, and research (keyless
 supported); You.com advertises search, reader, and research; Linkup advertises search, reader, and research; Spider.cloud
-advertises search, reader, crawl, and map; MiniMax advertises and supplies none of those
+advertises search, reader, crawl, and map; Bocha AI advertises and
+supplies search; MiniMax advertises and supplies none of those
 Provider-only Capabilities.
 Provider fallback is always-on by default (0.11.0+): selecting a
 non-supplier emits a stderr notice and silently reroutes to the next

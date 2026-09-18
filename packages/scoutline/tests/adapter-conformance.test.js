@@ -34,6 +34,7 @@ import { createJinaDescriptor, JinaAdapter } from "../dist/providers/jina/adapte
 import { createYouDescriptor } from "../dist/providers/you/adapter.js";
 import { createLinkupDescriptor } from "../dist/providers/linkup/adapter.js";
 import { createSpiderDescriptor } from "../dist/providers/spider/adapter.js";
+import { createBochaDescriptor } from "../dist/providers/bocha/adapter.js";
 import {
   BUILT_IN_PROVIDER_DESCRIPTORS,
   getProviderDescriptor,
@@ -335,6 +336,26 @@ function makeLinkupCapability(rawResult) {
   return adapter.search;
 }
 
+/**
+ * Bocha AI Adapter factory: accepts a raw `data.webPages.value[]` array
+ * (Bing-shaped name/url/snippet rows), wraps it in the Bocha
+ * `{ code, data }` envelope, builds a fake fetch, and returns the
+ * descriptor's Search Capability.
+ */
+function makeBochaCapability(rawResult) {
+  const envelope = { code: 200, data: { webPages: { value: rawResult } } };
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(envelope),
+    json: async () => envelope,
+    headers: { get: () => null },
+  });
+  const descriptor = createBochaDescriptor({ transport: { fetch: fetchFn } });
+  const adapter = descriptor.create({ env: { BOCHA_API_KEY: "k" } });
+  return adapter.search;
+}
+
 // ---------------------------------------------------------------------------
 // Vision conformance: same interpret-image request, same normalized text (P3-03)
 // ---------------------------------------------------------------------------
@@ -486,6 +507,7 @@ const SEARCH_CONFORMANCE_FACTORIES = new Map([
   ["you", makeYouCapability],
   ["linkup", makeLinkupCapability],
   ["spider", makeSpiderCapability],
+  ["bocha", makeBochaCapability],
 ]);
 
 /**
@@ -721,6 +743,24 @@ const SEARCH_CONFORMANCE_RAW = new Map([
           title: "Conformance result two",
           description: "Shared normalized summary two.",
         },
+      },
+    ],
+  ],
+  // Bocha AI raw response (Bing-shaped `data.webPages.value[]` rows:
+  // name -> title, url, snippet -> summary; the factory wraps them in
+  // the `{ code, data }` envelope).
+  [
+    "bocha",
+    [
+      {
+        name: "Conformance result one",
+        url: "https://example.test/one",
+        snippet: "Shared normalized summary one.",
+      },
+      {
+        name: "Conformance result two",
+        url: "https://example.test/two",
+        snippet: "Shared normalized summary two.",
       },
     ],
   ],
@@ -1054,6 +1094,7 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
         "you",
         "linkup",
         "spider",
+        "bocha",
         "arxiv",
         "openalex",
         "crossref",

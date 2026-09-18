@@ -113,8 +113,8 @@ The fresh flow:
     skill copied into that tool's home. Choices persist to the
     additive agentRules config key; undetected tools never prompt;
     detected-but-unsupported homes (cursor) print an honest notice.
-  - shows the registry-derived provider checklist (all 12 built-in
-    Providers, rendered in registry order) with NO pre-checked
+  - shows the registry-derived provider checklist (every built-in
+    Provider, rendered in registry order) with NO pre-checked
     defaults — every provider has equal weight
   - for each selected provider, asks whether you have a key, takes a
     hidden input, and performs a single inline validation probe
@@ -275,6 +275,12 @@ const PROVIDER_PROMPT_META: Record<ProviderId, ProviderPromptMeta> = {
     registrationUrl: "https://spider.cloud",
     // The validation probe rides GET /data/credits, a free read.
     probeCostsCredit: false,
+  },
+  bocha: {
+    label: "Bocha AI",
+    envVar: "BOCHA_API_KEY",
+    registrationUrl: "https://open.bochaai.com/",
+    probeCostsCredit: true,
   },
   // Science suppliers — keyless by default. The trio (arxiv, crossref,
   // europepmc) carries no credential model at all; openalex and pubmed

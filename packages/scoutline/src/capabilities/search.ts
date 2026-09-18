@@ -102,13 +102,14 @@ export interface LegacySearchCacheCandidate {
  * `credentialFingerprint` is the full lowercase SHA-256 hex digest of
  * the active credential and is never hashed a second time by cache
  * code. Request identity uses recursively key-sorted JSON of only
- * `query` and Provider controls.
+ * `query` and Provider controls — plus `count` for the forwarded-count
+ * Adapter (Bocha, #211), whose wire request differs per count.
  */
 export interface SearchCacheIdentity {
   readonly provider: ProviderId;
   readonly capability: "search";
   readonly credentialFingerprint: string;
-  readonly request: Readonly<SearchRequest>;
+  readonly request: Readonly<SearchRequest & { readonly count?: number }>;
   readonly legacyCandidates?: readonly LegacySearchCacheCandidate[];
 }
 
@@ -136,11 +137,16 @@ export interface SearchCapability {
    * Build the cache identity for a request. Called only after
    * `validate` succeeds. `compatibility.legacyCount` is the optional
    * command count; it may enter only `legacyCandidates` and never the
-   * new request identity.
+   * new request identity. `compatibility.count` is the same command
+   * count for Adapters that forward it to their wire request (Bocha,
+   * #211): those Adapters MUST include it in their new request
+   * identity so entries partition by count, while Adapters that apply
+   * count locally (every other Provider) MUST NOT let it near the
+   * identity.
    */
   cacheIdentity(
     request: SearchRequest,
-    compatibility?: { readonly legacyCount?: number },
+    compatibility?: { readonly legacyCount?: number; readonly count?: number },
   ): SearchCacheIdentity;
 
   /**
@@ -152,6 +158,15 @@ export interface SearchCapability {
    * caller threads an `AbortSignal` through `executeSearch`, the Adapter
    * MAY observe it to stop early. Operations that have nothing to abort
    * simply ignore it.
+   *
+   * `count` is the optional requested result count (#211). An Adapter
+   * whose wire request carries a count parameter (Bocha) forwards it;
+   * every other Adapter applies count locally in shared execution and
+   * ignores this argument.
    */
-  invoke(request: SearchRequest, signal?: AbortSignal): Promise<readonly SearchSource[]>;
+  invoke(
+    request: SearchRequest,
+    signal?: AbortSignal,
+    count?: number,
+  ): Promise<readonly SearchSource[]>;
 }

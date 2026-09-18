@@ -904,7 +904,7 @@ Brief Options:
 
 Common Options:
   --no-cache                 Bypass the response cache for this invocation
-  --provider <id>            Override the active Provider (zai | minimax | tavily | exa)
+  --provider <id>            Override the active Provider (repo is Z.AI-supplied; any other id falls back to zai — see below)
   --output-format <mode>     One of: ${OUTPUT_MODE_LIST} (default: data)
   -O <mode>                  Alias for --output-format
 

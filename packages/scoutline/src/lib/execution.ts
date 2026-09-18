@@ -14,10 +14,11 @@
  *
  * Order of operations for `executeSearch`:
  *   1. `capability.validate(request)`
- *   2. `capability.cacheIdentity(request, { legacyCount: options.count })`
+ *   2. `capability.cacheIdentity(request, { legacyCount, count })`
  *   3. Read the provider-partitioned cache key
  *   4. Try and decode Adapter-supplied legacy candidates when applicable
- *   5. Invoke through `executeProviderOperation`
+ *   5. Invoke through `executeProviderOperation` (search also passes
+ *      the optional count; only Bocha consumes it, #211)
  *   6. Retry only normalized retryable failures
  *   7. Cache the full normalized result
  *   8. Apply local count truncation
@@ -414,9 +415,14 @@ function applyCount(
  * read-through → invoke with retry → cache the full result → apply
  * count truncation.
  *
- * Count never enters the cache identity request or the Provider
- * request; it is supplied only as `legacyCount` so the Z.AI Adapter
- * can reconstruct old keys.
+ * Count stays a local concern for every Adapter except Bocha (#211).
+ * The count is OFFERED to every Adapter through the cacheIdentity
+ * compatibility options and the third invoke argument; only Bocha
+ * consumes it (forwarding it to the wire and partitioning its cache
+ * entries by it). Every other Adapter ignores both channels, so for
+ * them the count enters neither the cache identity request nor the
+ * Provider request — for Z.AI it reaches the Adapter only as
+ * `legacyCount`, to reconstruct old keys.
  */
 export async function executeSearch(
   capability: SearchCapability,
@@ -430,6 +436,7 @@ export async function executeSearch(
   // 2. Adapter-owned cache identity (after validation).
   const identity = capability.cacheIdentity(request, {
     legacyCount: options.count,
+    count: options.count,
   });
 
   // 3. Read the provider-partitioned cache key.
@@ -485,7 +492,7 @@ export async function executeSearch(
       : undefined;
   const result = await executeProviderOperation(
     "search",
-    () => capability.invoke(request, options.signal),
+    () => capability.invoke(request, options.signal, options.count),
     dependencies,
     options.retryPolicy,
     consumption,

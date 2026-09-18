@@ -263,6 +263,52 @@ describe("Bocha envelope unwrap", () => {
     );
     assert.equal(identity.request.query, "q");
   });
+
+  it("forwards the caller's requested count to the wire and defaults to 10 (#211)", async () => {
+    const calls = [];
+    const adapter = createBochaDescriptor({
+      transport: {
+        fetch: async (url, init) => {
+          calls.push({ body: JSON.parse(init.body) });
+          return jsonRes({
+            code: 200,
+            data: { webPages: { value: [{ name: "T", url: "https://example.test/a", snippet: "S" }] } },
+          });
+        },
+      },
+    }).create({ env: { BOCHA_API_KEY: "k" } });
+    await adapter.search.invoke({ query: "wide" }, undefined, 50);
+    assert.equal(calls[0].body.count, 50, "requested count must reach the Bocha wire request");
+    await adapter.search.invoke({ query: "narrow" }, undefined, 3);
+    assert.equal(calls[1].body.count, 3);
+    await adapter.search.invoke({ query: "default" });
+    assert.equal(calls[2].body.count, 10, "absent count keeps the wire default of 10");
+  });
+
+  it("partitions the cache identity by requested count; default stays count-free (#211)", () => {
+    const adapter = createBochaDescriptor().create({ env: { BOCHA_API_KEY: "k" } });
+    const withCount = adapter.search.cacheIdentity({ query: "q" }, { count: 50 });
+    assert.equal(withCount.request.count, 50, "forwarded count must partition the cache entry");
+    const withoutCount = adapter.search.cacheIdentity({ query: "q" });
+    assert.equal(
+      withoutCount.request.count,
+      undefined,
+      "default path must stay byte-compatible with pre-#211 cache keys",
+    );
+  });
+
+  it("byte-identical wire requests share one cache entry (PR #219 review)", () => {
+    const adapter = createBochaDescriptor().create({ env: { BOCHA_API_KEY: "k" } });
+    const absent = JSON.stringify(adapter.search.cacheIdentity({ query: "q" }).request);
+    const explicitTen = JSON.stringify(
+      adapter.search.cacheIdentity({ query: "q" }, { count: 10 }).request,
+    );
+    const zero = JSON.stringify(adapter.search.cacheIdentity({ query: "q" }, { count: 0 }).request);
+    assert.equal(explicitTen, absent, "explicit --count 10 must key like the absent-count default");
+    assert.equal(zero, absent, "--count 0 degrades to the wire default and must key identically");
+    const fifty = JSON.stringify(adapter.search.cacheIdentity({ query: "q" }, { count: 50 }).request);
+    assert.notEqual(fifty, absent, "a different wire count must still partition");
+  });
 });
 
 // ---------------------------------------------------------------------------

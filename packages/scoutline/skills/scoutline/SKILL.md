@@ -265,8 +265,10 @@ scoutline search "x" --no-journal                           # skip this one call
 | Code Mode | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline code ...` |
 
 Vision results are never cached. Z.AI image limits are JPG/JPEG/PNG ≤5 MiB.
-Search result count is applied locally after normalization and is never sent
-to the active Provider.
+Search result count is applied locally after normalization; for every
+Provider except Bocha it is never sent to the active Provider. Bocha's
+wire request carries a native count parameter, so its Adapter forwards
+the requested count (default 10) and partitions its cache entries by it.
 
 ## Science
 

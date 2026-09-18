@@ -520,6 +520,15 @@ describe("configuredSecrets — credential discovery from environment", () => {
     }
   });
 
+  it("surfaces the science credential values (NCBI/OPENALEX) — #208", () => {
+    const secrets = configuredSecrets({
+      NCBI_API_KEY: "ncbi-live-key-1",
+      OPENALEX_API_KEY: "openalex-live-key-2",
+    });
+    assert.ok(secrets.includes("ncbi-live-key-1"));
+    assert.ok(secrets.includes("openalex-live-key-2"));
+  });
+
   it("redacts an EXA_API_KEY leaked into an error message via redactCredentialString", () => {
     const leaked = `Exa request failed: EXA_API_KEY=${E_KEY}`;
     const redacted = redactCredentialString(leaked);
@@ -877,6 +886,21 @@ describe("v3 provider keys (2026-08 #78)", () => {
     );
     assert.strictEqual(
       redactCredentialString("SERPAPI_API_KEY sk-serpapi-9z8y7x"),
+      "[REDACTED]",
+    );
+  });
+
+  it("redacts science credential env-var assignments (#208)", () => {
+    assert.strictEqual(
+      redactCredentialString("NCBI_API_KEY: k"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("OPENALEX_API_KEY=alex-key-123"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactSecrets({ NCBI_API_KEY: "n", OPENALEX_API_KEY: "o" }).NCBI_API_KEY,
       "[REDACTED]",
     );
   });

@@ -485,6 +485,9 @@ Examples:
   scoutline quota -O json          # envelope-wrapped for scripts
 
 Notes:
+  - A requests category may carry an additive optional "toolUsage"
+    array (per-tool consumption rows; the TTY renders them, json/data
+    carry them verbatim, no schema-version bump).
   - Quota is never cached by the local response cache.
   - Multi-Provider mode never invokes a Provider that is not
     configured for quota (capability-aware: keyless Jina Reader does

@@ -37,6 +37,7 @@ import {
   QUOTA_EXHAUSTION_DEMOTION_HORIZON_MS,
   createInMemoryQuotaStore,
 } from "../dist/lib/quota-store.js";
+import { normalizeZaiQuota } from "../dist/providers/zai/quota.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "../dist/providers/registry.js";
 
 // ---------------------------------------------------------------------------
@@ -918,6 +919,72 @@ describe("quota-mapping: KNOWN_EXHAUSTED demotion (#97)", () => {
     assert.strictEqual(ranked[0].reason, "KNOWN_EXHAUSTED");
     assert.strictEqual(warnings.length, 1);
     assert.strictEqual(warnings[0].code, "KNOWN_EXHAUSTED");
+  });
+
+  it("a corrupt zai counter never reaches the exhaustion demotion (#191)", async () => {
+    const observedAt = 1_700_000_000_000;
+    // Live pathological shape: currentValue 5067 against a 1000 cap with
+    // `remaining` 0. The guard strips the window, so the category scores
+    // PERCENT_CORRUPT rather than the fabricated known/0 that used to
+    // demote zai for 24h.
+    const corrupt = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 1000,
+          currentValue: 5067,
+          remaining: 0,
+          percentage: 100,
+          nextResetTime: 1791411480983,
+        },
+      ],
+    }).categories;
+    const state = await stateWith([{ provider: "zai", categories: corrupt, observedAt }]);
+    const { onWarning, warnings } = captureWarnings();
+    const ranked = rankProvidersForCapability(state, "search", ["minimax", "zai"], {
+      now: observedAt + 1_000,
+      onWarning,
+    });
+    const zai = ranked.find((r) => r.provider === "zai");
+    assert.strictEqual(zai.authority, "unknown");
+    assert.strictEqual(zai.reason, "PERCENT_CORRUPT");
+    assert.ok(
+      !ranked.some((r) => r.reason === "KNOWN_EXHAUSTED"),
+      "no entry is demoted over a counter that contradicts itself",
+    );
+    assert.ok(!warnings.some((w) => w.code === "KNOWN_EXHAUSTED"));
+  });
+
+  it("a genuinely exhausted zai snapshot still demotes below a natural unknown (#191 both-ways)", async () => {
+    const observedAt = 1_700_000_000_000;
+    const exhausted = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 1000,
+          currentValue: 1000,
+          remaining: 0,
+          percentage: 100,
+          nextResetTime: 1791411480983,
+        },
+      ],
+    }).categories;
+    const state = await stateWith([{ provider: "zai", categories: exhausted, observedAt }]);
+    const { onWarning, warnings } = captureWarnings();
+    const ranked = rankProvidersForCapability(state, "search", ["zai", "minimax"], {
+      now: observedAt + 1_000,
+      onWarning,
+    });
+    assert.deepStrictEqual(ranked.map((r) => r.provider), ["minimax", "zai"]);
+    assert.strictEqual(ranked[0].reason, "SNAPSHOT_MISSING");
+    assert.strictEqual(ranked[1].reason, "KNOWN_EXHAUSTED");
+    assert.strictEqual(warnings.filter((w) => w.code === "KNOWN_EXHAUSTED").length, 1);
   });
 });
 

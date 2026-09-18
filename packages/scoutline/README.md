@@ -599,13 +599,16 @@ Quota output is a schema-version-1 `QuotaDashboard`:
       "provider": "zai",
       "status": "ok",
       "categories": [
-        { "name": "requests", "unit": "requests", "current": { "remainingPercent": 87.5 } },
+        { "name": "requests", "unit": "requests", "current": { "remainingPercent": 87.5 },
+          "toolUsage": [ { "tool": "search-prime", "usage": 500 }, { "tool": "web-reader", "usage": 250 } ] },
         { "name": "tokens",   "unit": "tokens",   "current": { "remainingPercent": 64.2 } }
       ]
     }
   ]
 }
 ```
+
+A category may also carry an additive optional `toolUsage` array — one `{ tool, usage }` row per tool the Provider attributes consumption to (Z.AI's `TIME_LIMIT.usageDetails`) — shown as per-tool rows in the tty dashboard and carried verbatim in `json`/`data`; it is optional under schema version 1, so there is no schema-version bump, and a Provider that publishes no breakdown simply omits the field.
 
 Doctor output is a schema-version-2 `DiagnosticsReport` listing every built-in
 Provider with its configured state, declared capabilities, probe status, and a

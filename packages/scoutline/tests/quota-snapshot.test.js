@@ -361,6 +361,43 @@ describe("PB-T5 quota — live-probe write-through is awaited", () => {
     assert.strictEqual(dashboard.providers[0].quotaSource.source, "live");
   });
 
+  it("a writeObserved -> snapshot dashboard round-trip preserves toolUsage (#191/Q2)", async () => {
+    // The snapshot stores `QuotaCategory[]` verbatim (PB-T1's contract), so
+    // the additive toolUsage field must survive store -> read -> dashboard
+    // untouched — including the consumption overlay path, which rebuilds a
+    // category via spread and must not drop the field.
+    const store = createInMemoryQuotaStore();
+    const categories = [
+      {
+        name: "requests",
+        unit: "requests",
+        current: { used: 750, limit: 1000, remaining: 250, remainingPercent: 25 },
+        toolUsage: [
+          { tool: "search-prime", usage: 500 },
+          { tool: "web-reader", usage: 250 },
+        ],
+      },
+    ];
+    await store.writeObserved("zai", { observedAt: NOW, categories });
+    await store.writeConsumption("zai", { category: "requests", amount: { kind: "estimate", value: 3 } }, NOW);
+    const zai = makeQuotaDescriptor("zai", { result: ZAI_SUCCESS });
+    const dashboard = await buildQuotaDashboard({
+      allProviders: false,
+      effectiveProvider: "zai",
+      descriptors: [zai],
+      env: { Z_AI_API_KEY: "k" },
+      sleep,
+      random,
+      quotaSnapshot: await store.read(),
+      now: fixedNow,
+    });
+    assert.strictEqual(zai.invokeCount(), 0, "fresh snapshot short-circuits the probe");
+    assert.deepStrictEqual(dashboard.providers[0].categories[0].toolUsage, [
+      { tool: "search-prime", usage: 500 },
+      { tool: "web-reader", usage: 250 },
+    ]);
+  });
+
   it("write-through is NOT attempted when quotaStore is omitted (test path)", async () => {
     const zai = makeQuotaDescriptor("zai", { result: ZAI_SUCCESS });
     const dashboard = await buildQuotaDashboard({

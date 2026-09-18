@@ -305,7 +305,10 @@ export async function fetchYouContents(
   }
   const timeoutMs =
     request.crawl_timeout !== undefined
-      ? Math.max(DEFAULT_TIMEOUT_MS, request.crawl_timeout * 1000 + 5000)
+      ? Math.max(
+          DEFAULT_TIMEOUT_MS,
+          clampTimeoutMs(request.crawl_timeout * 1000 + 5000, DEFAULT_TIMEOUT_MS), // #221
+        )
       : undefined;
   return postYouJson(apiKey, INDEX_BASE_URL, CONTENTS_PATH, body, deps, "contents", timeoutMs);
 }

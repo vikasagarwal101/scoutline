@@ -171,6 +171,12 @@ export function normalizeSearchApiResults(raw: unknown): readonly SearchSource[]
       url: link,
       summary: typeof entry.snippet === "string" ? entry.snippet : "",
     };
+    // Publisher attribution (e.g. "Forbes" on google_news) — carried
+    // only when the wire supplies a string, mirroring Brave's
+    // meta_url.netloc discipline. Absent on the plain google engine.
+    if (typeof entry.source === "string") {
+      source.source = entry.source;
+    }
     if (typeof entry.date === "string") {
       source.date = entry.date;
     }

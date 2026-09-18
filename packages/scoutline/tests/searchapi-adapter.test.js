@@ -67,6 +67,7 @@ const SEARCHAPI_SEARCH_RAW = {
       position: 1,
       title: "In Search of an Understandable Consensus Algorithm (Raft)",
       link: "https://raft.github.io/raft.pdf",
+      source: "raft.github.io",
       snippet: "Raft is consensus algorithm managing replicated log equivalent to Paxos...",
       date: "2026-05-12",
     },
@@ -162,6 +163,7 @@ describe("searchapi search capability", () => {
     assert.strictEqual(url.searchParams.get("api_key"), null);
     assert.strictEqual(rows[0].url, "https://raft.github.io/raft.pdf");
     assert.strictEqual(rows[0].title, "In Search of an Understandable Consensus Algorithm (Raft)");
+    assert.strictEqual(rows[0].source, "raft.github.io");
   });
 
   it("search topic news uses engine=google_news", async () => {

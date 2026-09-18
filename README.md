@@ -353,7 +353,7 @@ Stateful commands refuse at parse time (`VALIDATION_ERROR`, exit 1) rather than 
 
 ### Capability Matrix
 
-| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Spider.cloud | | Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Spider.cloud | SearchApi | Command |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Spider.cloud | SearchApi | Command |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | Search | Yes | Yes | Yes | Yes | Yes (web/news/video) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline search` |
 | Reader | Yes | No | Yes | Yes | No | Yes | Yes | No | Yes | Yes | Yes | Yes | No | `scoutline read` |

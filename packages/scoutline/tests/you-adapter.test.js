@@ -226,6 +226,37 @@ it("fetchYouContents propagates crawl_timeout into body and raises client timeou
   assert.equal(capturedTimeoutMs, 50000); // 45 * 1000 + 5000
 });
 
+it("fetchYouContents clamps an out-of-range crawl_timeout to the setTimeout 32-bit max (#221)", async () => {
+  // crawl_timeout * 1000 + 5000 hit a raw setTimeout with only a lower
+  // bound: a large --timeout (e.g. 999999999 s -> ~1e12 ms) exceeds the
+  // 32-bit signed max, Node emits TimeoutOverflowWarning and the timer
+  // fires at 1 ms — the read aborts instantly instead of running long.
+  // The shared clampTimeoutMs seam (#214) supplies the upper bound; the
+  // #221 lower bound (DEFAULT_TIMEOUT_MS) stays.
+  let capturedTimeoutMs;
+  const raw = [{ url: "https://example.test/page", title: "Page", markdown: "# Hi", status: 200 }];
+  const { fetchYouContents } = await import("../dist/providers/you/client.js");
+  await fetchYouContents(
+    "k",
+    { urls: ["https://example.test/page"], crawl_timeout: 999999999 },
+    {
+      fetch: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => raw,
+        text: async () => JSON.stringify(raw),
+        headers: { get: () => null },
+      }),
+      setTimeout: (fn, ms) => {
+        capturedTimeoutMs = ms;
+        return 123;
+      },
+      clearTimeout: () => {},
+    },
+  );
+  assert.equal(capturedTimeoutMs, 2147483647);
+});
+
 const YOU_RESEARCH_RAW = {
   output: {
     content: "RocksDB and LMDB represent two distinct database engine architectures [[1]]:\n\n### 1. Write Throughput\nRocksDB utilizes a Log-Structured Merge (LSM) tree architecture [[1]]...",

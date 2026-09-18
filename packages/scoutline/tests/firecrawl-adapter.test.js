@@ -654,6 +654,76 @@ describe("Firecrawl Crawl Adapter", () => {
     assert.ok(calls.some((c) => c.method === "POST" && c.url.endsWith("/v2/crawl")));
   });
 
+  it("anchors a zone-less active-crawl createdAt to UTC regardless of TZ (#218)", async () => {
+    // Same defect class as the quota timestamps (#212): matchActiveCrawl
+    // parsed `createdAt` with bare Date.parse, so a zone-less wire value
+    // inherited the HOST timezone and shifted the 24h staleness window
+    // by the local offset — reclaiming (or refusing to reclaim) an
+    // active crawl incorrectly. A createdAt 23h ago in UTC is fresh
+    // (reclaim); read as -04:00 New York it is 27h old (stale, create
+    // POST instead) — the boundary exposes which parser ran.
+    const createdAt = new Date(Date.now() - 23 * 60 * 60 * 1000)
+      .toISOString()
+      .replace(/\.\d{3}Z$/, ""); // zone-less minute form
+    const calls = [];
+    const fn = async (url, init) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      calls.push({ url: u, method, init });
+      if (method === "GET" && u.endsWith("/v2/crawl/active")) {
+        return makeResponse({
+          json: {
+            success: true,
+            data: [
+              {
+                id: "job-zoneless",
+                url: "https://rec.example",
+                createdAt,
+                options: {
+                  // depth:2 -> maxDiscoveryDepth 1 (0-based, mapCrawlControls)
+                  maxDiscoveryDepth: 1,
+                  scrapeOptions: { formats: ["markdown"] },
+                  proxy: "basic",
+                },
+              },
+            ],
+          },
+        });
+      }
+      return makeResponse({
+        json: {
+          success: true,
+          status: "completed",
+          data: [{ markdown: "# x", metadata: { sourceURL: "https://rec.example" } }],
+        },
+      });
+    };
+    const prevTz = process.env.TZ;
+    process.env.TZ = "America/New_York";
+    try {
+      const descriptor = createFirecrawlDescriptor({
+        transport: {
+          fetch: fn,
+          env: { FIRECRAWL_TIMEOUT: "5000", FIRECRAWL_CRAWL_POLL_INTERVAL_MS: "0" },
+        },
+        crawlStateFile: createInMemoryAsyncJobStateFile(),
+        crawlStateDir: mkdtempSync(join(tmpdir(), "firecrawl-test-crawl-")),
+      });
+      const adapter = descriptor.create({
+        env: { FIRECRAWL_API_KEY: TEST_API_KEY, FIRECRAWL_CRAWL_POLL_INTERVAL_MS: "0" },
+      });
+      const out = await adapter.crawl.fetch.invoke({ url: "https://rec.example", depth: 2 });
+      assert.equal(out.totalPages, 1);
+      assert.ok(
+        !calls.some((c) => c.method === "POST" && c.url.endsWith("/v2/crawl")),
+        "fresh zone-less createdAt must reclaim, not re-POST create",
+      );
+    } finally {
+      if (prevTz === undefined) delete process.env.TZ;
+      else process.env.TZ = prevTz;
+    }
+  });
+
   it("removes state and throws ApiError on a failed job", async () => {
     const stateFile = createInMemoryAsyncJobStateFile();
     const { adapter } = makeCrawlAdapter(

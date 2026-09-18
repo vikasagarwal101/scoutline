@@ -51,6 +51,7 @@ import { createExaDescriptor } from "../dist/providers/exa/adapter.js";
 import { createBraveDescriptor } from "../dist/providers/brave/adapter.js";
 import { createFirecrawlDescriptor } from "../dist/providers/firecrawl/adapter.js";
 import { createSpiderDescriptor } from "../dist/providers/spider/adapter.js";
+import { createSearchApiDescriptor } from "../dist/providers/searchapi/adapter.js";
 import { createArxivDescriptor } from "../dist/providers/arxiv/adapter.js";
 import { createOpenalexDescriptor } from "../dist/providers/openalex/adapter.js";
 import { createCrossrefDescriptor } from "../dist/providers/crossref/adapter.js";
@@ -345,6 +346,38 @@ const SPIDER_LINKS_RAW = [
   },
 ];
 
+const SEARCHAPI_SEARCH_RAW = {
+  search_metadata: { id: "search_conformance_001", status: "Success" },
+  search_parameters: { engine: "google", q: "conformance query" },
+  organic_results: [
+    {
+      position: 1,
+      title: "Conformance result one",
+      link: "https://example.test/one",
+      snippet: "Shared normalized summary one.",
+    },
+    {
+      position: 2,
+      title: "Conformance result two",
+      link: "https://example.test/two",
+      snippet: "Shared normalized summary two.",
+    },
+  ],
+};
+
+const SEARCHAPI_ME_RAW = {
+  account: {
+    current_month_usage: 3200,
+    monthly_allowance: 10000,
+    remaining_credits: 6800,
+  },
+  api_usage: { searches_this_hour: 120, hourly_rate_limit: 200000 },
+  subscription: {
+    period_start: "2026-08-01T00:00:00Z",
+    period_end: "2026-09-01T00:00:00Z",
+  },
+};
+
 // Science fixtures — minimal real-shape supplier payloads, enough for
 // every consumed row to observe its control on the wire and normalize
 // (TASKS T8 "controls-conformance rows 5x4"; DESIGN D7 table + value
@@ -572,6 +605,10 @@ const RESPONDERS = {
     if (url.endsWith("/links")) return jsonResponse(SPIDER_LINKS_RAW);
     return jsonResponse({});
   },
+  searchapi(url) {
+    if (url.includes("/me")) return jsonResponse(SEARCHAPI_ME_RAW);
+    return jsonResponse(SEARCHAPI_SEARCH_RAW);
+  },
   // Science suppliers: one minimal endpoint each (keyless wire).
   arxiv() {
     return xmlResponse(ARXIV_SEARCH_ATOM);
@@ -604,6 +641,7 @@ const ENV_BY_PROVIDER = {
   you: { YDC_API_KEY: "k" },
   linkup: { LINKUP_API_KEY: "k" },
   spider: { SPIDER_API_KEY: "k" },
+  searchapi: { SEARCHAPI_API_KEY: "k" },
   // Science suppliers are keyless by default (D2) — every conformance
   // row rides the keyless partition (""). openalex/pubmed keyed rows
   // are not needed for control mapping.
@@ -748,6 +786,12 @@ function makeHarness(provider, capability) {
       };
     case "spider":
       return { adapter: createSpiderDescriptor({ transport }).create(context), calls, timerDelays };
+    case "searchapi":
+      return {
+        adapter: createSearchApiDescriptor({ transport }).create(context),
+        calls,
+        timerDelays,
+      };
     case "arxiv":
       return { adapter: createArxivDescriptor({ transport }).create(context), calls, timerDelays };
     case "openalex":
@@ -2764,6 +2808,63 @@ const ROWS = [
     control: "type",
     input: { type: "video" },
     expect: "rejected",
+  },
+
+  // ----- searchapi / search — site: operator, time_period, gl, engine
+  // routing; contentSize and type rejected -------------------------------
+  {
+    provider: "searchapi",
+    capability: "search",
+    control: "domain",
+    input: { domain: "example.com" },
+    expect: "consumed",
+    on: "query",
+    path: "q",
+    includes: "site:example.com",
+  },
+  {
+    provider: "searchapi",
+    capability: "search",
+    control: "recency",
+    input: { recency: "oneWeek" },
+    expect: "consumed",
+    on: "query",
+    path: "time_period",
+    equals: "last_week",
+  },
+  {
+    provider: "searchapi",
+    capability: "search",
+    control: "location",
+    input: { location: "us" },
+    expect: "consumed",
+    on: "query",
+    path: "gl",
+    equals: "us",
+  },
+  {
+    provider: "searchapi",
+    capability: "search",
+    control: "contentSize",
+    input: { contentSize: "high" },
+    expect: "rejected",
+  },
+  {
+    provider: "searchapi",
+    capability: "search",
+    control: "type",
+    input: { type: "video" },
+    expect: "rejected",
+  },
+  {
+    provider: "searchapi",
+    capability: "search",
+    control: "topic",
+    input: { topic: "news" },
+    expect: "consumed",
+    on: "query",
+    path: "engine",
+    equals: "google_news",
   },
 
   // ----- spider / reader — locked /scrape body; every extra control is

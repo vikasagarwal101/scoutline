@@ -26,9 +26,9 @@ import { runProcess } from "./helpers/run-process.js";
 // failing pin. You.com stays in the 12. Pinned here as a literal so a
 // widening that misses any surface fails loudly.
 const PROVIDER_ENUM =
-  "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>";
+  "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|searchapi>";
 const PROVIDER_LIST_TAIL =
-  "Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, or Spider.cloud";
+  "Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, or SearchApi.io";
 
 const packageReadme = fs.readFile(new URL("../README.md", import.meta.url), "utf8");
 const rootReadme = fs.readFile(new URL("../../../README.md", import.meta.url), "utf8");

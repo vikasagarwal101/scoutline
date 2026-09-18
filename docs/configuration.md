@@ -168,14 +168,14 @@ non-TTY settings surface (dotted paths: `routing`, `routing.<capability>`,
 
 Shared commands (`search`, `vision`, `quota`, `doctor`), **`repo`**,
 **`read`**, **`crawl`**, **`map`**, and **`research`** accept the global
-`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>` flag. When the flag
+`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|searchapi>` flag. When the flag
 is omitted the value of the `SCOUTLINE_PROVIDER` environment variable is
 consulted; when neither is supplied Scoutline falls back to the compatibility
 default `zai`.
 
 Resolution precedence (highest first):
 
-1. `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>` on the command line
+1. `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|searchapi>` on the command line
 2. `SCOUTLINE_PROVIDER`
 3. `zai` (default)
 
@@ -472,6 +472,44 @@ scoutline --provider spider crawl https://docs.example.com --limit 10
 scoutline --provider spider map https://docs.example.com
 scoutline --provider spider quota
 scoutline doctor --provider spider
+```
+
+## SearchApi.io Settings
+
+The SearchApi.io Adapter is configured through one environment variable.
+Every request authenticates against `https://www.searchapi.io` with an
+`Authorization: Bearer` header — the key is never sent as a query
+parameter.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SEARCHAPI_API_KEY` | (none) | Required for SearchApi.io. SearchApi.io API key. |
+| `SERPAPI_API_KEY` | (none) | Legacy fallback, used only when `SEARCHAPI_API_KEY` is absent or blank. |
+
+- `SEARCHAPI_API_KEY` is preferred; `SERPAPI_API_KEY` is accepted as a
+  lower-precedence fallback. Whitespace-only values are treated as
+  absent.
+- The key is redacted in all output, exactly like every other provider
+  credential.
+- SearchApi.io supplies Search, Quota, and Diagnostics. Search controls
+  map to a `site:` operator for `--domain`, `time_period` for
+  `--recency`, `gl` for `--location`, and `--topic news` routes to
+  `engine=google_news` (other topics stay on `engine=google`);
+  `--content-size` and `--type` are rejected before any I/O.
+- Quota reads the non-destructive `GET /api/v1/me` and reports a single
+  `searches` category (unit `credits`) from
+  `current_month_usage`/`monthly_allowance`, with `resetsAt` derived
+  from `subscription.period_end`. The authority is `mapped`: a real
+  credit signal with a known limit. The diagnostics probe rides the
+  same `/me` GET and costs no search credit.
+
+```bash
+export SEARCHAPI_API_KEY="your-searchapi-key"
+
+scoutline --provider searchapi search "AI policy news" --topic news
+scoutline --provider searchapi search "raft consensus" --domain github.io --recency oneWeek
+scoutline --provider searchapi quota
+scoutline doctor --provider searchapi
 ```
 
 ## Science Settings

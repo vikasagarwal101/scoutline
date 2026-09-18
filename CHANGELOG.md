@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **SearchApi.io provider (`searchapi`)**: a thirteenth built-in Provider supplying Search, Quota, and Diagnostics. Search runs exact Google SERP through `GET https://www.searchapi.io/api/v1/search` (Bearer-header auth only — the key never travels as a query parameter); `--domain` maps to a `site:` operator, `--recency` to `time_period` (`last_day`/`last_week`/`last_month`/`last_year`), `--location` to `gl`, and `--topic news` routes to `engine=google_news` (every other topic stays on `engine=google` — engine-only routing, no keyword appendage). `--content-size` and `--type` are rejected before any transport call. Quota reads the non-destructive `GET /api/v1/me` (costs no search credit) and maps `current_month_usage`/`monthly_allowance` into a single `searches` category (unit `credits`) through `buildQuotaWindow`, with `resetsAt` derived from `subscription.period_end`; SearchApi is a `mapped` quota-authority provider (real credit signal, honest limit). The diagnostics probe rides the same `/me` GET. Credentials: `SEARCHAPI_API_KEY` wins over the legacy `SERPAPI_API_KEY`; whitespace-only values count as absent.
+
 ## [0.22.0] - 2026-09-18
 
 ### Fixed

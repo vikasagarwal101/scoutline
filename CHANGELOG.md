@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Bocha AI provider (`--provider bocha`)** — Search and Diagnostics against the Bocha AI API (`BOCHA_API_KEY`): search unwraps the Bing-compatible `data.webPages.value[]` envelope (`name` → title, `summary` preferred over `snippet`, rows without a URL dropped), maps `--domain` to a `site:` query prefix, `--recency` to the pass-through `freshness` field, `--content-size high` to `summary: true`, and `--topic` to a query keyword append — `--location` and `--type` are rejected with `UNSUPPORTED_OPTION` before any I/O; an HTTP 200 response carrying application `code: 401` is still a `CONFIGURATION_ERROR`. The diagnostics probe issues a single `count: 1` search. Quota authority is always-unknown (no `quota` capability, no spend endpoint). Wired into the static registry, the init wizard, the controls-conformance table (six search control rows), and the provider docs.
+
 ## [0.22.0] - 2026-09-18
 
 ### Fixed

@@ -215,6 +215,7 @@ import {
 import { resolveProviderId, resolveEffectiveProvider } from "./providers/selection.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "./providers/registry.js";
 import { PROVIDER_IDS } from "./providers/types.js";
+import { SHARED_PROVIDER_FLAG_IDS, SHARED_PROVIDER_IDS } from "./providers/catalog.js";
 import type {
   ProviderAdapter,
   ProviderContext,
@@ -243,7 +244,7 @@ Usage: scoutline <command> [args] [options]
 
 Commands:
   vision   Image and video analysis (Z.AI; MiniMax for interpret-image)
-  search   Real-time web search (shared: all 15 Providers; --topic
+  search   Real-time web search (shared: all ${SHARED_PROVIDER_IDS.length} Providers; --topic
            honored by every Provider)
   read     Fetch and parse web pages (Provider Capability; Z.AI, Tavily,
            Exa, Firecrawl, Parallel, Jina, You.com, Linkup, and Spider.cloud supply it)  crawl    Crawl a website from a starting URL (Provider Capability;
@@ -284,7 +285,7 @@ Commands:
            credential-free)
 
 Provider selection (precedence: --provider, then SCOUTLINE_PROVIDER, then zai):
-  --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>   Select the active Provider for shared capabilities (science suppliers pin only within "scoutline science ...")  SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
+  --provider <${SHARED_PROVIDER_FLAG_IDS}>   Select the active Provider for shared capabilities (science suppliers pin only within "scoutline science ...")  SCOUTLINE_PROVIDER=<id>    Fallback when --provider is not passed
 
 Shared capabilities accept --provider. The 'repo', 'read', 'crawl', 'map',
 and 'research' commands participate in Provider selection: Z.AI

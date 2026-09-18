@@ -22,6 +22,7 @@ import { ConfigurationError } from "../dist/lib/errors.js";
 import { createKagiDescriptor } from "../dist/providers/kagi/adapter.js";
 import {
   QuotaError,
+  TimeoutError,
   UnsupportedOptionError,
   ValidationError,
 } from "../dist/lib/errors.js";
@@ -31,12 +32,15 @@ describe("kagi credentials", () => {
     assert.equal(getKagiApiKey({ KAGI_API_KEY: "a", KAGI_TOKEN: "b" }), "a");
     assert.equal(getKagiApiKey({ KAGI_TOKEN: " b " }), "b");
     assert.equal(isKagiConfigured({ KAGI_API_KEY: "  " }), false);
-    assert.throws(() => requireKagiApiKey({}), (err) => {
-      assert.ok(err instanceof ConfigurationError);
-      assert.equal(err.code, "CONFIGURATION_ERROR");
-      assert.equal(err.exitCode, 3);
-      return true;
-    });
+    assert.throws(
+      () => requireKagiApiKey({}),
+      (err) => {
+        assert.ok(err instanceof ConfigurationError);
+        assert.equal(err.code, "CONFIGURATION_ERROR");
+        assert.equal(err.exitCode, 3);
+        return true;
+      },
+    );
   });
 
   it("hashKagiApiKey returns deterministic 64-char lowercase hex digests", () => {
@@ -47,10 +51,7 @@ describe("kagi credentials", () => {
     assert.notEqual(h1, h2);
     assert.equal(h1.length, 64);
     assert.match(h1, /^[0-9a-f]{64}$/);
-    assert.equal(
-      h1,
-      crypto.createHash("sha256").update("key-one").digest("hex"),
-    );
+    assert.equal(h1, crypto.createHash("sha256").update("key-one").digest("hex"));
   });
 });
 
@@ -61,7 +62,14 @@ describe("kagi credentials", () => {
 const KAGI_SEARCH_RAW = {
   meta: { id: "kagi_search_uuid_001", node: "us-east", ms: 125 },
   data: [
-    { t: 0, rank: 1, url: "https://docs.kernel.org/scheduler/index.html", title: "Linux Kernel Scheduler Documentation", snippet: "The Linux scheduler controls CPU task scheduling across cores...", published: "2026-06-15T00:00:00Z" },
+    {
+      t: 0,
+      rank: 1,
+      url: "https://docs.kernel.org/scheduler/index.html",
+      title: "Linux Kernel Scheduler Documentation",
+      snippet: "The Linux scheduler controls CPU task scheduling across cores...",
+      published: "2026-06-15T00:00:00Z",
+    },
     { t: 1, list: ["linux scheduler benchmarks", "cfs scheduler tuning"] },
   ],
 };
@@ -95,10 +103,7 @@ describe("kagi search", () => {
         assert.equal(e.option, option);
       }
     }
-    assert.throws(
-      () => adapter.search.validate({ query: "   " }),
-      ValidationError,
-    );
+    assert.throws(() => adapter.search.validate({ query: "   " }), ValidationError);
     assert.equal(fetchFn.calls.length, 0);
   });
 
@@ -148,15 +153,12 @@ describe("kagi search", () => {
     const adapter = createKagiDescriptor({ transport: { fetch: fetchFn } }).create({
       env: { KAGI_API_KEY: "k" },
     });
-    await assert.rejects(
-      adapter.search.invoke({ query: "q" }),
-      (e) => {
-        assert.ok(e instanceof ConfigurationError);
-        assert.equal(e.code, "CONFIGURATION_ERROR");
-        assert.equal(e.exitCode, 3);
-        return true;
-      },
-    );
+    await assert.rejects(adapter.search.invoke({ query: "q" }), (e) => {
+      assert.ok(e instanceof ConfigurationError);
+      assert.equal(e.code, "CONFIGURATION_ERROR");
+      assert.equal(e.exitCode, 3);
+      return true;
+    });
   });
 
   it("HTTP 403 maps to QuotaError", async () => {
@@ -176,11 +178,13 @@ describe("kagi diagnostics", () => {
   it("diagnostics.invoke GETs limit=1 and create() does not fetch", async () => {
     let calls = 0;
     const descriptor = createKagiDescriptor({
-      transport: { fetch: async (url) => {
-        calls += 1;
-        assert.match(String(url), /limit=1/);
-        return jsonRes(KAGI_SEARCH_RAW);
-      } },
+      transport: {
+        fetch: async (url) => {
+          calls += 1;
+          assert.match(String(url), /limit=1/);
+          return jsonRes(KAGI_SEARCH_RAW);
+        },
+      },
     });
     descriptor.create({ env: { KAGI_API_KEY: "k" } });
     assert.equal(calls, 0);
@@ -206,20 +210,22 @@ describe("kagi diagnostics", () => {
     const adapter = createKagiDescriptor({
       transport: { fetch: async () => jsonRes({}, 401) },
     }).create({ env: { KAGI_API_KEY: "k" } });
-    await assert.rejects(
-      adapter.diagnostics.invoke({ probe: true }),
-      (e) => {
-        assert.ok(e instanceof ConfigurationError, `wrong type: ${e}`);
-        assert.equal(e.exitCode, 3);
-        return true;
-      },
-    );
+    await assert.rejects(adapter.diagnostics.invoke({ probe: true }), (e) => {
+      assert.ok(e instanceof ConfigurationError, `wrong type: ${e}`);
+      assert.equal(e.exitCode, 3);
+      return true;
+    });
   });
 
   it("invoke({probe:false}) resolves without any fetch call", async () => {
     let calls = 0;
     const adapter = createKagiDescriptor({
-      transport: { fetch: async () => { calls += 1; return jsonRes(KAGI_SEARCH_RAW); } },
+      transport: {
+        fetch: async () => {
+          calls += 1;
+          return jsonRes(KAGI_SEARCH_RAW);
+        },
+      },
     }).create({ env: { KAGI_API_KEY: "k" } });
     await adapter.diagnostics.invoke({ probe: false });
     assert.equal(calls, 0);
@@ -228,9 +234,17 @@ describe("kagi diagnostics", () => {
   it("a missing key throws ConfigurationError before any fetch", async () => {
     let calls = 0;
     const adapter = createKagiDescriptor({
-      transport: { fetch: async () => { calls += 1; return jsonRes(KAGI_SEARCH_RAW); } },
+      transport: {
+        fetch: async () => {
+          calls += 1;
+          return jsonRes(KAGI_SEARCH_RAW);
+        },
+      },
     }).create({ env: {} });
-    const err = await adapter.diagnostics.invoke({ probe: true }).then(() => null, (e) => e);
+    const err = await adapter.diagnostics.invoke({ probe: true }).then(
+      () => null,
+      (e) => e,
+    );
     assert.ok(err instanceof ConfigurationError, `wrong type: ${err}`);
     assert.equal(err.exitCode, 3);
     assert.equal(calls, 0);
@@ -244,8 +258,94 @@ describe("kagi diagnostics", () => {
 
 // Shared helpers used by later tasks.
 function jsonRes(json, status = 200) {
-  return { ok: status >= 200 && status < 300, status, json: async () => json, text: async () => JSON.stringify(json), headers: { get: () => null } };
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => json,
+    text: async () => JSON.stringify(json),
+    headers: { get: () => null },
+  };
 }
+
+// ---------------------------------------------------------------------------
+// Wire-trap teeth (mutation-pinned — adversarial review M4/M5/M6/M7)
+// ---------------------------------------------------------------------------
+
+describe("kagi wire-trap teeth", () => {
+  it("result filter drops t!==0 rows even when they carry a url, and rows without url", async () => {
+    const RAW = {
+      meta: { id: "teeth", node: "us-east", ms: 1 },
+      data: [
+        { t: 0, rank: 1, url: "https://example.test/keep", title: "Keep", snippet: "s" },
+        { t: 1, url: "https://example.test/suggestion-with-url", title: "Drop: t is 1" },
+        { url: "https://example.test/no-t-field", title: "Drop: t absent is not t===0" },
+        { t: 0, title: "Drop: no url" },
+      ],
+    };
+    const adapter = createKagiDescriptor({
+      transport: { fetch: async () => jsonRes(RAW) },
+    }).create({ env: { KAGI_API_KEY: "k" } });
+    const rows = await adapter.search.invoke({ query: "q" });
+    assert.deepEqual(
+      rows.map((r) => r.url),
+      ["https://example.test/keep"],
+    );
+  });
+
+  it("malformed envelope (missing or non-array data) rejects instead of returning []", async () => {
+    for (const body of [{ meta: {} }, { meta: {}, data: { not: "array" } }]) {
+      const adapter = createKagiDescriptor({
+        transport: { fetch: async () => jsonRes(body) },
+      }).create({ env: { KAGI_API_KEY: "k" } });
+      await assert.rejects(
+        adapter.search.invoke({ query: "q" }),
+        (e) => e instanceof Error && e.constructor.name === "ApiError",
+      );
+    }
+  });
+
+  it("search and news requests are HTTP GET with an abort signal wired to KAGI_TIMEOUT", async () => {
+    const seen = [];
+    const fetchFn = (url, init) => {
+      seen.push({ url: String(url), init });
+      return Promise.resolve(jsonRes(KAGI_SEARCH_RAW));
+    };
+    const adapter = createKagiDescriptor({ transport: { fetch: fetchFn } }).create({
+      env: { KAGI_API_KEY: "k" },
+    });
+    await adapter.search.invoke({ query: "q" });
+    await adapter.search.invoke({ query: "q", controls: { topic: "news" } });
+    assert.equal(seen.length, 2);
+    for (const call of seen) {
+      assert.equal(call.init.method, "GET");
+      assert.ok(call.init.signal, "request must carry an AbortSignal (timeout controller)");
+    }
+  });
+
+  it("news path aborts into TimeoutError when the timeout fires (never-resolving fetch)", async () => {
+    const fetchFn = (url, init) =>
+      new Promise((_, reject) => {
+        init.signal.addEventListener("abort", () => {
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      });
+    const adapter = createKagiDescriptor({
+      transport: {
+        fetch: fetchFn,
+        // Defer the abort to the next tick so the fetch promise has
+        // registered its listener before the controller fires.
+        setTimeout: (fn) => setTimeout(fn, 0),
+        clearTimeout: (t) => clearTimeout(t),
+      },
+    }).create({ env: { KAGI_API_KEY: "k" } });
+    await assert.rejects(
+      adapter.search.invoke({ query: "q", controls: { topic: "news" } }),
+      TimeoutError,
+    );
+  });
+});
 function header(init, name) {
   const h = init?.headers;
   if (!h) return undefined;

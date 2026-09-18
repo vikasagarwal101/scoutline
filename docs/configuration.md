@@ -559,6 +559,7 @@ parameter.
 | --- | --- | --- |
 | `KAGI_API_KEY` | (none) | Required for Kagi. Kagi API key. |
 | `KAGI_TOKEN` | (none) | Legacy fallback, used only when `KAGI_API_KEY` is absent or blank. |
+| `KAGI_TIMEOUT` | `30000` | Per-request timeout in milliseconds for every Kagi HTTP call (search, news, diagnostics probe). Non-numeric or non-positive values fall back to the default. |
 
 - `KAGI_API_KEY` is preferred; `KAGI_TOKEN` is accepted as a
   lower-precedence fallback. Whitespace-only values are treated as

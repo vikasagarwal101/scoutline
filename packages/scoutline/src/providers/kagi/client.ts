@@ -86,18 +86,22 @@ function mapStatusError(status: number): Error {
   return new ApiError(`Kagi request failed (${status})`, status);
 }
 
-export async function fetchKagiSearch(
-  apiKey: string,
-  params: KagiSearchParams,
-  deps: KagiTransportDeps = {},
-): Promise<KagiSearchResponse> {
-  const fetchFn = deps.fetch || getGlobalFetch();
-  const setTimer = deps.setTimeout || globalThis.setTimeout;
-  const clearTimer = deps.clearTimeout || globalThis.clearTimeout;
-  const env = deps.env || process.env;
-  const timeoutMs = resolveTimeoutMs(env);
+function resolveTransport(deps: KagiTransportDeps) {
+  return {
+    fetchFn: deps.fetch || getGlobalFetch(),
+    setTimer: deps.setTimeout || globalThis.setTimeout,
+    clearTimer: deps.clearTimeout || globalThis.clearTimeout,
+    timeoutMs: resolveTimeoutMs(deps.env || process.env),
+  };
+}
 
-  const url = `${SEARCH_URL}?q=${encodeURIComponent(params.query)}&limit=${params.limit ?? 10}`;
+/** GET with Bot auth + timeout; owns the HTTP status mapping. */
+async function kagiGet(
+  url: string,
+  apiKey: string,
+  deps: KagiTransportDeps,
+): Promise<KagiSearchResponse> {
+  const { fetchFn, setTimer, clearTimer, timeoutMs } = resolveTransport(deps);
   const controller = new AbortController();
   const timer = setTimer(() => controller.abort(), timeoutMs);
 
@@ -140,27 +144,21 @@ export async function fetchKagiSearch(
   }
 }
 
+export async function fetchKagiSearch(
+  apiKey: string,
+  params: KagiSearchParams,
+  deps: KagiTransportDeps = {},
+): Promise<KagiSearchResponse> {
+  const url = `${SEARCH_URL}?q=${encodeURIComponent(params.query)}&limit=${params.limit ?? 10}`;
+  return kagiGet(url, apiKey, deps);
+}
+
 /** Topic:"news" GET — same q/limit params, v0 enrich/news endpoint. */
 export async function fetchKagiNews(
   apiKey: string,
   params: KagiSearchParams,
   deps: KagiTransportDeps = {},
 ): Promise<KagiSearchResponse> {
-  const fetchFn = deps.fetch || getGlobalFetch();
   const url = `${NEWS_URL}?q=${encodeURIComponent(params.query)}&limit=${params.limit ?? 10}`;
-  const response = await fetchFn(url, {
-    method: "GET",
-    headers: {
-      Authorization: `Bot ${apiKey}`,
-    },
-  });
-  if (!response.ok) {
-    throw mapStatusError(response.status);
-  }
-  const text = await response.text();
-  try {
-    return JSON.parse(text) as KagiSearchResponse;
-  } catch {
-    throw new ApiError("Kagi returned a malformed JSON response", 500);
-  }
+  return kagiGet(url, apiKey, deps);
 }

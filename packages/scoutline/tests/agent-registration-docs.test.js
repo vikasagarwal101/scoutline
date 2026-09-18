@@ -91,7 +91,9 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // gains the Kagi column and the Which-provider-when table gains the Kagi
 // row (search + diagnostics only; reader/research/crawl/map/vision/quota
 // are NOT available). No unrelated agent-facing copy changed.
-const SKILL_BODY_SHA256 = "7af96bd734dab9c5eaa437dab37d48a388284ffff4fa2e5fddcd44b37256ef7e";
+// Rebaselined again after the adversarial-review fixes (diagnostics cell
+// parenthetical corrected, search cell names the domain -> site: control).
+const SKILL_BODY_SHA256 = "457341736fad92339ce5cdbc6684566968a2e5a6be8234267af8a3fa7a8e8741";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

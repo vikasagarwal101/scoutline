@@ -87,7 +87,8 @@ scoutline init
 ```
 
 The wizard walks you through a registry-derived provider checklist
-(all 15 built-in Providers, rendered in registry order — equal
+(all 20 built-in registry entries — 15 Providers plus the five science
+suppliers — rendered in registry order — equal
 weight, none pre-checked), takes each key via
 hidden input, and performs a single inline validation probe against an
 ephemeral in-memory environment (the candidate key is never persisted or
@@ -413,12 +414,12 @@ executor preflight, Provider selection, and `doctor`.
 | `vision.diff` (image diff) | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
 | `vision.video` | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | Z.AI-only (never MiniMax-claimable) |
 | `quota` | Yes | Yes | Yes | No | Yes | Yes (USD balance) | No | No | Yes (rate-limit telemetry, not spend) | No | Yes (credits) | Yes (credits) | No | Yes (credits) | No | Normalized `QuotaDashboard` (ADR-0001) |
-| `diagnostics` (`doctor`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Lists every Provider; probes configured |
+| `diagnostics` (`doctor`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Lists every Provider; probes configured |
 | `read` (Reader) | Yes | **No** | Yes | Yes | No | Yes | Yes | No | Yes | Yes | Yes | Yes | No | **No** | No | Parallel (Extract API), Jina, You.com, Linkup, and Spider.cloud add Reader support |
 | `crawl` | **No** | **No** | Yes | No | No | Yes (async) | No | No | No | No | No | Yes (sync) | No | **No** | No | Tavily sync; Firecrawl async (resumable after Ctrl-C) |
 | `map` | **No** | **No** | Yes | No | No | Yes | No | No | No | No | No | Yes | No | **No** | No | URL-set discovery; no per-page content |
 | `research` | **No** | **No** | Yes | Yes | **No** | **No** | Yes | Yes | Yes | Yes | Yes | No | No | **No** | No | Tavily, Exa, Parallel, Perplexity (Agent API `high` preset), Jina DeepSearch, You.com, and Linkup research report synthesis |
-| `repo search` / `repo read` / `repo tree` / `repo brief` | Yes | **No** | **No** | **No** | **No** | **No** | **No** | **No** | **No** | No | No | No | No | No | Yes | Participates in selection; only Z.AI supplies `repository-exploration` |
+| `repo search` / `repo read` / `repo tree` / `repo brief` | Yes | **No** | **No** | **No** | **No** | **No** | **No** | **No** | **No** | No | No | No | No | No | No | Participates in selection; only Z.AI supplies `repository-exploration` |
 | `tools`, `tool`, `call` (Raw tools) | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
 | `code` (Code Mode) | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
 

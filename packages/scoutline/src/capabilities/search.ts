@@ -102,13 +102,14 @@ export interface LegacySearchCacheCandidate {
  * `credentialFingerprint` is the full lowercase SHA-256 hex digest of
  * the active credential and is never hashed a second time by cache
  * code. Request identity uses recursively key-sorted JSON of only
- * `query` and Provider controls.
+ * `query` and Provider controls — plus `count` for the forwarded-count
+ * Adapter (Bocha, #211), whose wire request differs per count.
  */
 export interface SearchCacheIdentity {
   readonly provider: ProviderId;
   readonly capability: "search";
   readonly credentialFingerprint: string;
-  readonly request: Readonly<SearchRequest>;
+  readonly request: Readonly<SearchRequest & { readonly count?: number }>;
   readonly legacyCandidates?: readonly LegacySearchCacheCandidate[];
 }
 

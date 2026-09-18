@@ -300,6 +300,47 @@ describe("Bocha controls + application errors", () => {
     );
   });
 
+  it("HTTP 200 code 200 with NO webPages in data fails closed (ApiError)", async () => {
+    const adapter = createBochaDescriptor({
+      transport: { fetch: async () => jsonRes({ code: 200, msg: "success", data: {} }) },
+    }).create({ env: { BOCHA_API_KEY: "k" } });
+    const err = await adapter.search.invoke({ query: "q" }).then(() => null, (e) => e);
+    assert.ok(err instanceof ApiError, `must be ApiError, got ${err && err.constructor.name}`);
+    assert.match(err.message, /malformed response envelope/);
+  });
+
+  it("HTTP 200 with non-array webPages.value fails closed (ApiError)", async () => {
+    const adapter = createBochaDescriptor({
+      transport: {
+        fetch: async () =>
+          jsonRes({ code: 200, msg: "success", data: { webPages: { value: "garbage" } } }),
+      },
+    }).create({ env: { BOCHA_API_KEY: "k" } });
+    const err = await adapter.search.invoke({ query: "q" }).then(() => null, (e) => e);
+    assert.ok(err instanceof ApiError, `must be ApiError, got ${err && err.constructor.name}`);
+    assert.match(err.message, /malformed response envelope/);
+  });
+
+  it("HTTP 200 envelope code 403 is terminal QuotaError", async () => {
+    const adapter = createBochaDescriptor({
+      transport: { fetch: async () => jsonRes({ code: 403, msg: "insufficient balance", data: {} }) },
+    }).create({ env: { BOCHA_API_KEY: "k" } });
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "q" }),
+      (e) => e instanceof QuotaError && e.code === "QUOTA_ERROR",
+    );
+  });
+
+  it("HTTP 200 envelope code 400 is ValidationError", async () => {
+    const adapter = createBochaDescriptor({
+      transport: { fetch: async () => jsonRes({ code: 400, msg: "bad param", data: {} }) },
+    }).create({ env: { BOCHA_API_KEY: "k" } });
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "q" }),
+      (e) => e instanceof ValidationError && e.code === "VALIDATION_ERROR",
+    );
+  });
+
   it("HTTP 200 with a non-200 non-401 envelope code is an ApiError; raw msg never leaks", async () => {
     const leakMsg = "internal boom DO-NOT-SURFACE";
     const adapter = createBochaDescriptor({

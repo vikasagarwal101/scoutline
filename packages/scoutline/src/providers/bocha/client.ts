@@ -128,13 +128,20 @@ export async function fetchBochaWebSearch(
     const text = await response.text();
     const parsed = JSON.parse(text) as BochaSearchResponse;
     // Success only when HTTP 2xx AND (code undefined or code === 200).
-    // HTTP 200 + application code 401 is still a credential failure.
+    // HTTP 200 + application code 401 is still a credential failure;
+    // 403/400 mirror mapStatusError semantics (terminal quota / invalid).
     if (parsed.code !== undefined && parsed.code !== 200) {
       if (parsed.code === 401) {
         throw new ConfigurationError(
           "Bocha AI rejected the API key (application code 401)",
           MISSING_KEY_HELP,
         );
+      }
+      if (parsed.code === 403) {
+        throw new QuotaError("Bocha AI account balance is insufficient (application code 403)");
+      }
+      if (parsed.code === 400) {
+        throw new ValidationError("Bocha AI rejected the request as invalid (application code 400)");
       }
       throw new ApiError(`Bocha AI web-search failed (application code ${parsed.code})`, 502);
     }

@@ -108,7 +108,13 @@ function normalizeBochaError(error: unknown): Error {
 }
 
 function normalizeSearchResults(response: BochaSearchResponse): SearchSource[] {
-  const value = response.data?.webPages?.value ?? response.webPages?.value ?? [];
+  // Fail closed (SCHEMA.md): results live at data.webPages.value[] ONLY —
+  // envelope drift must reject, never degrade to a silent empty success.
+  const webPages = response.data?.webPages;
+  if (webPages === undefined || !Array.isArray(webPages.value)) {
+    throw new ApiError("Bocha AI returned a malformed response envelope", 502);
+  }
+  const value = webPages.value;
   return value
     .filter((item) => item.url)
     .map((item) => {
@@ -176,12 +182,13 @@ export class BochaAdapter implements ProviderAdapter {
           ...(controls?.recency ? { freshness: controls.recency } : {}),
         };
 
-        try {
-          const response = await fetchBochaWebSearch(apiKey, params, transport);
-          return normalizeSearchResults(response);
-        } catch (error) {
+        // Only the transport call is rewrapped (raw-body sanitization);
+        // normalizeSearchResults fails closed with a curated ApiError
+        // that must surface verbatim.
+        const response = await fetchBochaWebSearch(apiKey, params, transport).catch((error) => {
           throw normalizeBochaError(error);
-        }
+        });
+        return normalizeSearchResults(response);
       },
     };
 

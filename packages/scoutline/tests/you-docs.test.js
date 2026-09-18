@@ -23,13 +23,9 @@ import { runProcess } from "./helpers/run-process.js";
 // round 3): the shared-command enumeration must list only the
 // shared-capability suppliers — the science seats are never
 // search/read-eligible, so advertising them invited a guaranteed
-// failing pin. You.com stays in the 12. Pinned here as a literal so a
-// widening that misses any surface fails loudly.
-const PROVIDER_ENUM =
-  "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>";
+// failing pin. You.com is one of the shared suppliers. Pinned here as a
+// literal so a widening that misses any surface fails loudly.
 // amendment-4: shared --provider surfaces widened 12→13 with bocha.
-// PROVIDER_ENUM above still pins docs/configuration.md, whose
-// enumeration has not widened in this amendment.
 const PROVIDER_ENUM_WIDENED =
   "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha>";
 const PROVIDER_LIST_TAIL =
@@ -90,7 +86,7 @@ describe("You.com docs — configuration", () => {
     assert.ok(text.includes("YDC_API_KEY"), "configuration.md must document YDC_API_KEY");
     assert.ok(text.includes("YOU_API_KEY"), "configuration.md must document the YOU_API_KEY alias");
     assert.ok(
-      text.includes(PROVIDER_ENUM),
+      text.includes(PROVIDER_ENUM_WIDENED),
       "configuration.md --provider enumeration must list the full registry (incl. you)",
     );
     assert.match(

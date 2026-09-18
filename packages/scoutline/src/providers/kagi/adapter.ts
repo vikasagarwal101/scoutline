@@ -102,18 +102,38 @@ function normalizeSearchResults(response: {
   if (!Array.isArray(data)) {
     throw new ApiError("Kagi returned a malformed response envelope", 502);
   }
-  return data
-    .filter((item) => item.t === 0 && item.url)
-    .map((item) => {
-      const result: SearchSource = {
-        title: item.title ?? "",
-        url: item.url!,
-        summary: item.snippet ?? "",
-        source: "kagi",
-      };
-      if (item.published) result.date = item.published;
-      return result;
-    });
+  const malformed = () => new ApiError("Kagi returned a malformed result row", 502);
+  const results: SearchSource[] = [];
+  for (const item of data) {
+    if (item === null || typeof item !== "object") throw malformed();
+    const { t, url, title, snippet, published } = item as {
+      t?: unknown;
+      url?: unknown;
+      title?: unknown;
+      snippet?: unknown;
+      published?: unknown;
+    };
+    // Rows without `t` and numeric t !== 0 rows (related-query
+    // suggestions, t: 1) are dropped per the wire contract.
+    if (t === undefined) continue;
+    if (typeof t !== "number") throw malformed();
+    if (t !== 0) continue;
+    // t === 0 is a standard result by definition: url is required;
+    // optional text fields, when present, must be strings.
+    if (typeof url !== "string" || url.length === 0) throw malformed();
+    if (title !== undefined && typeof title !== "string") throw malformed();
+    if (snippet !== undefined && typeof snippet !== "string") throw malformed();
+    if (published !== undefined && typeof published !== "string") throw malformed();
+    const result: SearchSource = {
+      title: (title as string | undefined) ?? "",
+      url: url as string,
+      summary: (snippet as string | undefined) ?? "",
+      source: "kagi",
+    };
+    if (published) result.date = published as string;
+    results.push(result);
+  }
+  return results;
 }
 
 export class KagiAdapter implements ProviderAdapter {

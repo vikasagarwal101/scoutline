@@ -284,14 +284,13 @@ function jsonRes(json, status = 200) {
 // ---------------------------------------------------------------------------
 
 describe("kagi wire-trap teeth", () => {
-  it("result filter drops t!==0 rows even when they carry a url, and rows without url", async () => {
+  it("result filter drops t!==0 rows even when they carry a url, and rows without t", async () => {
     const RAW = {
       meta: { id: "teeth", node: "us-east", ms: 1 },
       data: [
         { t: 0, rank: 1, url: "https://example.test/keep", title: "Keep", snippet: "s" },
         { t: 1, url: "https://example.test/suggestion-with-url", title: "Drop: t is 1" },
         { url: "https://example.test/no-t-field", title: "Drop: t absent is not t===0" },
-        { t: 0, title: "Drop: no url" },
       ],
     };
     const adapter = createKagiDescriptor({
@@ -302,6 +301,27 @@ describe("kagi wire-trap teeth", () => {
       rows.map((r) => r.url),
       ["https://example.test/keep"],
     );
+  });
+
+  it("malformed result rows reject with ApiError (fail closed, never silently dropped)", async () => {
+    const cases = [
+      { t: 0, title: "url absent on a standard result" },
+      { t: 0, url: "", title: "empty-string url" },
+      { t: 0, url: "https://example.test/x", title: 42 },
+      { t: 0, url: "https://example.test/x", snippet: null },
+      { t: "0", url: "https://example.test/x" },
+      "not-an-object",
+    ];
+    for (const bad of cases) {
+      const adapter = createKagiDescriptor({
+        transport: { fetch: async () => jsonRes({ meta: {}, data: [bad] }) },
+      }).create({ env: { KAGI_API_KEY: "k" } });
+      await assert.rejects(
+        adapter.search.invoke({ query: "q" }),
+        (e) => e.constructor.name === "ApiError",
+        `row ${JSON.stringify(bad)} must fail closed`,
+      );
+    }
   });
 
   it("malformed envelope (missing or non-array data) rejects instead of returning []", async () => {

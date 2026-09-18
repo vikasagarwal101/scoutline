@@ -148,6 +148,18 @@ describe("kagi search", () => {
     assert.match(fetchFn.calls[0].url, /\/api\/v0\/enrich\/news/);
   });
 
+  it("search topic finance appends the shared keyword (never silently dropped)", async () => {
+    const fetchFn = makeFetchRecorder();
+    const adapter = createKagiDescriptor({ transport: { fetch: fetchFn } }).create({
+      env: { KAGI_API_KEY: "k" },
+    });
+    await adapter.search.invoke({ query: "interest rates", controls: { topic: "finance" } });
+    assert.equal(fetchFn.calls.length, 1);
+    const parsed = new URL(fetchFn.calls[0].url);
+    assert.equal(`${parsed.origin}${parsed.pathname}`, "https://kagi.com/api/v1/search");
+    assert.equal(parsed.searchParams.get("q"), "interest rates financial");
+  });
+
   it("HTTP 401 maps to ConfigurationError", async () => {
     const fetchFn = makeFetchRecorder([jsonRes(KAGI_SEARCH_RAW, 401)]);
     const adapter = createKagiDescriptor({ transport: { fetch: fetchFn } }).create({

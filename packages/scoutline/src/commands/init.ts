@@ -292,6 +292,7 @@ const PROVIDER_PROMPT_META: Record<ProviderId, ProviderPromptMeta> = {
   kagi: {
     label: "Kagi",
     envVar: "KAGI_API_KEY",
+    envAliases: ["KAGI_TOKEN"],
     registrationUrl: "https://kagi.com/settings/api",
     probeCostsCredit: true,
   },

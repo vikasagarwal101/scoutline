@@ -43,11 +43,8 @@ import {
   UnsupportedOptionError,
   ValidationError,
 } from "../../lib/errors.js";
-import {
-  hashKagiApiKey,
-  isKagiConfigured,
-  requireKagiApiKey,
-} from "./credentials.js";
+import { hashKagiApiKey, isKagiConfigured, requireKagiApiKey } from "./credentials.js";
+import { applySearchTopic } from "../../lib/search-topic.js";
 import { fetchKagiSearch, fetchKagiNews, type KagiTransportDeps } from "./client.js";
 import { createKagiDiagnosticsCapability } from "./diagnostics.js";
 
@@ -91,7 +88,13 @@ function normalizeKagiError(error: unknown): Error {
 }
 
 function normalizeSearchResults(response: {
-  data?: readonly { t?: number; url?: string; title?: string; snippet?: string; published?: string }[];
+  data?: readonly {
+    t?: number;
+    url?: string;
+    title?: string;
+    snippet?: string;
+    published?: string;
+  }[];
 }): SearchSource[] {
   // Fail closed (SCHEMA.md): results live at data[] ONLY — envelope
   // drift must reject, never degrade to a silent empty success.
@@ -166,14 +169,21 @@ export class KagiAdapter implements ProviderAdapter {
         if (controls?.domain) {
           query = `site:${controls.domain} ${query}`;
         }
+        // Topic: "news" is native (v0 enrich/news). Every other
+        // non-general topic rides v1 search with the shared keyword
+        // appendage (lib/search-topic.ts) — never silently dropped.
+        if (controls?.topic !== "news") {
+          query = applySearchTopic(query, controls?.topic);
+        }
         const params = { query, limit: 10 };
 
         // Only the transport call is rewrapped (raw-body sanitization);
         // normalizeSearchResults fails closed with a curated ApiError
         // that must surface verbatim.
-        const response = await (controls?.topic === "news"
-          ? fetchKagiNews(apiKey, params, transport)
-          : fetchKagiSearch(apiKey, params, transport)
+        const response = await (
+          controls?.topic === "news"
+            ? fetchKagiNews(apiKey, params, transport)
+            : fetchKagiSearch(apiKey, params, transport)
         ).catch((error) => {
           throw normalizeKagiError(error);
         });

@@ -66,6 +66,7 @@ import { fetchMiniMaxQuota, type MiniMaxQuotaClientDeps } from "./quota-client.j
 import {
   fetchMiniMaxSearch,
   fetchMiniMaxVlm,
+  resolveTimeoutMs,
   type MiniMaxTransportDeps,
 } from "./coding-plan-client.js";
 import {
@@ -75,7 +76,6 @@ import {
   type SpecializedVisionOperation,
 } from "./vision-conformance.js";
 import { MINIMAX_VISION_MAPPINGS } from "./vision-mappings.generated.js";
-import { clampTimeoutMs } from "../../lib/timeout.js";
 
 // ---------------------------------------------------------------------------
 // Provider-owned credential fingerprint
@@ -256,7 +256,7 @@ function normalizeMiniMaxError(error: unknown): Error {
     return new AuthError("MiniMax authentication failed");
   }
   if (lower.includes("timeout") || lower.includes("timed out") || lower.includes("etimedout")) {
-    return new TimeoutError(clampTimeoutMs(parseInt(process.env.MINIMAX_TIMEOUT || "30000", 10), 30000));
+    return new TimeoutError(resolveTimeoutMs(process.env));
   }
   if (
     lower.includes("econnrefused") ||

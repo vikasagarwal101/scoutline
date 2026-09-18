@@ -6,7 +6,7 @@
 
 import { ConfigurationError } from "../../lib/errors.js";
 
-const MISSING_KEY_HELP = 'export BOCHA_API_KEY="your-bocha-api-key"';
+export const MISSING_KEY_HELP = 'export BOCHA_API_KEY="your-bocha-api-key"';
 
 function pickTrimmedNonBlank(raw: unknown): string | undefined {
   if (typeof raw !== "string") return undefined;

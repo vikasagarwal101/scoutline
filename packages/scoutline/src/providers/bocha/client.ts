@@ -17,14 +17,13 @@ import {
   TimeoutError,
   ValidationError,
 } from "../../lib/errors.js";
+import { MISSING_KEY_HELP } from "./credentials.js";
 import type { ProviderQuotaFetchResponse } from "../types.js";
 
 const { version: VERSION } = pkg;
 
 const BASE_URL = "https://api.bochaai.com/v1";
 const DEFAULT_TIMEOUT_MS = 30000;
-const MISSING_KEY_HELP = 'export BOCHA_API_KEY="your-bocha-api-key"';
-
 const USER_AGENT = `scoutline/${VERSION}`;
 
 export interface BochaTransportDeps {

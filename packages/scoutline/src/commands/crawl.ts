@@ -19,6 +19,7 @@
  */
 
 import type { CommandContext, CommandResult } from "../command-invocation.js";
+import { PROVIDER_PIPE_ENUM } from "../providers/catalog.js";
 import type {
   CrawlCapability,
   CrawlRequest,
@@ -284,7 +285,7 @@ Options:
   --no-cache           Bypass the response cache for this invocation
 
 Common Options:
-  --provider <id>            Override the active Provider (zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | you | linkup | spider | bocha | searchapi | kagi | arxiv | openalex | crossref | pubmed | europepmc)
+  --provider <id>            Override the active Provider ${PROVIDER_PIPE_ENUM}
   --output-format <mode>     One of: ${OUTPUT_MODE_LIST} (default: data)
   -O <mode>                  Alias for --output-format
 

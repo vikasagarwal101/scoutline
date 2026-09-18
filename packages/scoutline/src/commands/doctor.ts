@@ -31,6 +31,7 @@ import { executeProviderOperation } from "../lib/execution.js";
 import { UnsupportedCapabilityError } from "../lib/errors.js";
 import { redactSecrets, configuredSecrets } from "../lib/redact.js";
 import type { ProviderDescriptor, ProviderId, ProviderCapability } from "../providers/types.js";
+import { PROVIDER_COMMA_ENUM } from "../providers/catalog.js";
 import type { VerificationPromotionStore } from "../lib/config-store.js";
 import {
   AVAILABILITY_CLASS_RANK,
@@ -559,7 +560,7 @@ Doctor - Provider-aware environment and connectivity diagnostics
 Usage: scoutline doctor [options]
 
 Reports a schema-version-2 diagnostics report listing every built-in
-Provider (zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, kagi, arxiv, openalex, crossref, pubmed, europepmc) with its configured state, declaredCapabilities, and connectivity status. The effective Provider (resolved
+Provider ${PROVIDER_COMMA_ENUM} with its configured state, declaredCapabilities, and connectivity status. The effective Provider (resolved
 from --provider, SCOUTLINE_PROVIDER, or a per-capability routing table
 in config.json, or the quota-ranked default) is the
 Provider that serves a requested capability. The routing field embeds

@@ -30,6 +30,7 @@ import type {
   ResearchResult,
 } from "../capabilities/research.js";
 import type { ProviderId } from "../providers/types.js";
+import { SHARED_PROVIDER_PIPE_ENUM } from "../providers/catalog.js";
 import type { ExecutionDependencies } from "../lib/execution.js";
 import { executeCachedOperation } from "../lib/execution.js";
 import { asyncJobStateDir } from "../lib/cache.js";
@@ -763,7 +764,7 @@ source flags are mutually exclusive):
                         different mode is a fresh (paid) job.
 
 Common Options:
-  --provider <id>            Override the active Provider (zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | you | linkup | spider | bocha | searchapi | kagi)
+  --provider <id>            Override the active Provider ${SHARED_PROVIDER_PIPE_ENUM}
   --output-format <mode>     One of: ${OUTPUT_MODE_LIST} (default: data)
   -O <mode>                  Alias for --output-format
 

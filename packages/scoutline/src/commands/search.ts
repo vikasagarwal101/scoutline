@@ -25,6 +25,7 @@ import { executeSearch } from "../lib/execution.js";
 import { rejectSmuggledMaxChars, type LadderRule } from "../lib/output-budget.js";
 import { canonicalUrl } from "../lib/url.js";
 import type { ProviderDescriptor, ProviderId } from "../providers/types.js";
+import { SHARED_PROVIDER_FLAG_IDS, SHARED_PROVIDER_IDS } from "../providers/catalog.js";
 import { formatSearchResultsPretty, type SearchResultLike } from "../lib/tty.js";
 import {
   ValidationError,
@@ -881,12 +882,12 @@ export async function executeFanoutPlan(
 
 // Help text
 export const SEARCH_HELP = `
-Search Command - Real-time web search (all 15 Providers)
+Search Command - Real-time web search (all ${SHARED_PROVIDER_IDS.length} Providers)
 
 Usage: scoutline search <query> [options]
 
 Provider selection (precedence: explicit flag, then SCOUTLINE_PROVIDER, then zai):
-  --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>   Select the search provider (default: zai)  SCOUTLINE_PROVIDER=<id>                 Fallback when --provider is not passed
+  --provider <${SHARED_PROVIDER_FLAG_IDS}>   Select the search provider (default: zai)  SCOUTLINE_PROVIDER=<id>                 Fallback when --provider is not passed
 
 Multi-provider fan-out — activation tiers (highest precedence first):
   1. --provider <tavily,exa,...> or --provider all

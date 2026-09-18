@@ -43,6 +43,7 @@ import type {
   ReaderFetchRequest,
   ReaderFetchResult,
 } from "../capabilities/reader.js";
+import { PROVIDER_PIPE_ENUM } from "../providers/catalog.js";
 import type { ExecutionDependencies } from "../lib/execution.js";
 import { executeReaderOperation } from "../lib/execution.js";
 import { OUTPUT_MODES } from "../lib/output.js";
@@ -650,7 +651,7 @@ Options:
                   code | links | tables | headings
 
 Common Options:
-  --provider <id>            Override the active Provider (zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | you | linkup | spider | bocha | searchapi | kagi | arxiv | openalex | crossref | pubmed | europepmc)
+  --provider <id>            Override the active Provider ${PROVIDER_PIPE_ENUM}
   --output-format <mode>     One of: ${OUTPUT_MODE_LIST} (default: data)
   -O <mode>                  Alias for --output-format
 

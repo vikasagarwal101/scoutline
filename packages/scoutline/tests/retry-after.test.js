@@ -118,15 +118,13 @@ describe("parseRetryAfterHintMs — Retry-After HTTP-date (RFC 9110 §10.2.1)", 
     // this pin would pass in UTC and fail in Asia/Calcutta. The delta is
     // what the parser reports; the absolute instant is not the contract.
     const asctime = "Sun Nov  6 08:49:37 1994";
-    // #197 review (CodeRabbit): a fixed GMT instant was suggested, but
-    // asctime carries NO zone — Date.parse reads it in the runner's zone
-    // on BOTH sides of the subtraction. Injecting GMT for the clock while
-    // the parser reads local time breaks the pin outside UTC. The
-    // symmetric local-time reading IS the contract.
+    // #197 CodeRabbit round 2: RFC 9110 §5.6.7 defines asctime as UTC.
+    // The parser anchors it to GMT; the injected clock uses the explicit
+    // GMT form of the same instant (60s before the target) so the pin is
+    // timezone-independent.
     assert.equal(
-      parseRetryAfterHintMs(
-        headersOf({ "Retry-After": asctime }),
-        () => Date.parse(asctime) - 60000,
+      parseRetryAfterHintMs(headersOf({ "Retry-After": asctime }), () =>
+        Date.parse("Sun, 06 Nov 1994 08:48:37 GMT"),
       ),
       60000,
     );

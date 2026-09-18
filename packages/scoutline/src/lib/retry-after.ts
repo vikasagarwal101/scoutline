@@ -61,7 +61,14 @@ function parseHttpDate(raw: string, now: () => number): number | undefined {
   if (!HTTP_DATE_RE.test(trimmed)) {
     return undefined;
   }
-  const at = Date.parse(trimmed);
+  // #197 CodeRabbit round 2: RFC 9110 §5.6.7 defines EVERY HTTP-date as
+  // UTC — including asctime, which carries no GMT suffix. Node's
+  // Date.parse reads a zone-less string in the runner's LOCAL zone, so
+  // the asctime form must be explicitly anchored to UTC before parsing.
+  const utcAnchored = trimmed.endsWith("GMT")
+    ? trimmed
+    : trimmed + " GMT";
+  const at = Date.parse(utcAnchored);
   if (Number.isNaN(at)) {
     return undefined;
   }

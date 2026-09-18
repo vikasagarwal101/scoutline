@@ -41,6 +41,7 @@ import {
   NetworkError,
   QuotaError,
   TimeoutError,
+  UnsupportedOptionError,
   ValidationError,
 } from "../../lib/errors.js";
 import { requireBochaApiKey, isBochaConfigured } from "./credentials.js";
@@ -135,8 +136,16 @@ export class BochaAdapter implements ProviderAdapter {
     const env = context.env;
 
     this.search = {
-      validate(_request: SearchRequest): void {
-        // Control guards arrive with the T3 tests.
+      validate(request: SearchRequest): void {
+        if (!request.query || request.query.trim().length === 0) {
+          throw new ValidationError("Search query must not be empty");
+        }
+        if (request.controls?.type !== undefined) {
+          throw new UnsupportedOptionError("bocha", "search", "type");
+        }
+        if (request.controls?.location !== undefined) {
+          throw new UnsupportedOptionError("bocha", "search", "location");
+        }
       },
 
       cacheIdentity(request: SearchRequest): SearchCacheIdentity {
@@ -167,8 +176,12 @@ export class BochaAdapter implements ProviderAdapter {
           ...(controls?.recency ? { freshness: controls.recency } : {}),
         };
 
-        const response = await fetchBochaWebSearch(apiKey, params, transport);
-        return normalizeSearchResults(response);
+        try {
+          const response = await fetchBochaWebSearch(apiKey, params, transport);
+          return normalizeSearchResults(response);
+        } catch (error) {
+          throw normalizeBochaError(error);
+        }
       },
     };
   }

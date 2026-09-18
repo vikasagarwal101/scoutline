@@ -9,13 +9,21 @@
  */
 
 import pkg from "../../../package.json" with { type: "json" };
-import { ApiError, NetworkError, TimeoutError } from "../../lib/errors.js";
+import {
+  ApiError,
+  ConfigurationError,
+  NetworkError,
+  QuotaError,
+  TimeoutError,
+  ValidationError,
+} from "../../lib/errors.js";
 import type { ProviderQuotaFetchResponse } from "../types.js";
 
 const { version: VERSION } = pkg;
 
 const BASE_URL = "https://api.bochaai.com/v1";
 const DEFAULT_TIMEOUT_MS = 30000;
+const MISSING_KEY_HELP = 'export BOCHA_API_KEY="your-bocha-api-key"';
 
 const USER_AGENT = `scoutline/${VERSION}`;
 
@@ -66,10 +74,23 @@ function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
 }
 
 /**
- * HTTP status → normalized Scoutline error. Curated constant messages
- * only — the raw Provider body never enters an error message.
+ * HTTP status → normalized Scoutline error (ERROR_HANDLING.md §1).
+ * Curated constant messages only — the raw Provider body never enters
+ * an error message.
  */
 function mapStatusError(status: number): Error {
+  if (status === 401) {
+    return new ConfigurationError("Bocha AI rejected the API key (HTTP 401)", MISSING_KEY_HELP);
+  }
+  if (status === 403) {
+    return new QuotaError("Bocha AI account balance is insufficient (HTTP 403)");
+  }
+  if (status === 429) {
+    return new ApiError("Bocha AI rate limit exceeded (HTTP 429)", 429);
+  }
+  if (status === 400) {
+    return new ValidationError("Bocha AI rejected the request as invalid (HTTP 400)");
+  }
   return new ApiError(`Bocha AI request failed (${status})`, status);
 }
 
@@ -105,9 +126,27 @@ export async function fetchBochaWebSearch(
     }
 
     const text = await response.text();
-    return JSON.parse(text) as BochaSearchResponse;
+    const parsed = JSON.parse(text) as BochaSearchResponse;
+    // Success only when HTTP 2xx AND (code undefined or code === 200).
+    // HTTP 200 + application code 401 is still a credential failure.
+    if (parsed.code !== undefined && parsed.code !== 200) {
+      if (parsed.code === 401) {
+        throw new ConfigurationError(
+          "Bocha AI rejected the API key (application code 401)",
+          MISSING_KEY_HELP,
+        );
+      }
+      throw new ApiError(`Bocha AI web-search failed (application code ${parsed.code})`, 502);
+    }
+    return parsed;
   } catch (err: unknown) {
-    if (err instanceof ApiError || err instanceof TimeoutError) {
+    if (
+      err instanceof ApiError ||
+      err instanceof TimeoutError ||
+      err instanceof ConfigurationError ||
+      err instanceof QuotaError ||
+      err instanceof ValidationError
+    ) {
       throw err;
     }
     if (err instanceof SyntaxError) {

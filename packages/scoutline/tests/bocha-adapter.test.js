@@ -29,7 +29,15 @@ import {
   isBochaConfigured,
   requireBochaApiKey,
 } from "../dist/providers/bocha/credentials.js";
-import { ConfigurationError } from "../dist/lib/errors.js";
+import {
+  ApiError,
+  ConfigurationError,
+  NetworkError,
+  QuotaError,
+  TimeoutError,
+  UnsupportedOptionError,
+  ValidationError,
+} from "../dist/lib/errors.js";
 
 // ---------------------------------------------------------------------------
 // Fake fetch helpers
@@ -254,5 +262,130 @@ describe("Bocha envelope unwrap", () => {
       crypto.createHash("sha256").update("k").digest("hex"),
     );
     assert.equal(identity.request.query, "q");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rejected controls + HTTP-200 application errors (T3)
+// ---------------------------------------------------------------------------
+
+describe("Bocha controls + application errors", () => {
+  it("search validate rejects location and type before fetch", () => {
+    let calls = 0;
+    const adapter = createBochaDescriptor({
+      transport: { fetch: async () => { calls += 1; throw new Error("no"); } },
+    }).create({ env: { BOCHA_API_KEY: "k" } });
+    assert.throws(
+      () => adapter.search.validate({ query: "q", controls: { location: "us" } }),
+      (e) => e instanceof UnsupportedOptionError && e.provider === "bocha" && e.capability === "search" && e.option === "location",
+    );
+    assert.throws(
+      () => adapter.search.validate({ query: "q", controls: { type: "video" } }),
+      (e) => e instanceof UnsupportedOptionError && e.provider === "bocha" && e.capability === "search" && e.option === "type",
+    );
+    assert.throws(
+      () => adapter.search.validate({ query: "   " }),
+      (e) => e instanceof ValidationError,
+    );
+    assert.equal(calls, 0);
+  });
+
+  it("HTTP 200 code 401 is ConfigurationError", async () => {
+    const adapter = createBochaDescriptor({
+      transport: { fetch: async () => jsonRes({ code: 401, msg: "invalid key", data: {} }) },
+    }).create({ env: { BOCHA_API_KEY: "k" } });
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "q" }),
+      (e) => e instanceof ConfigurationError && e.code === "CONFIGURATION_ERROR",
+    );
+  });
+
+  it("HTTP 200 with a non-200 non-401 envelope code is an ApiError; raw msg never leaks", async () => {
+    const leakMsg = "internal boom DO-NOT-SURFACE";
+    const adapter = createBochaDescriptor({
+      transport: { fetch: async () => jsonRes({ code: 500, msg: leakMsg, data: {} }) },
+    }).create({ env: { BOCHA_API_KEY: "k" } });
+    const err = await adapter.search.invoke({ query: "q" }).then(() => null, (e) => e);
+    assert.ok(err instanceof ApiError, `must be ApiError, got ${err && err.constructor.name}`);
+    assert.ok(!err.message.includes(leakMsg), `raw msg must not leak: ${err.message}`);
+  });
+
+  it("invoke() rejects location before any fetch (validate runs inside invoke)", async () => {
+    let calls = 0;
+    const adapter = createBochaDescriptor({
+      transport: { fetch: async () => { calls += 1; return jsonRes({ code: 200, data: {} }); } },
+    }).create({ env: { BOCHA_API_KEY: "k" } });
+    await assert.rejects(
+      () => adapter.search.invoke({ query: "q", controls: { type: "video" } }),
+      (e) => e instanceof UnsupportedOptionError && e.option === "type",
+    );
+    assert.equal(calls, 0);
+  });
+
+  it("HTTP 403 maps to a terminal QuotaError (insufficient balance)", async () => {
+    const adapter = createBochaDescriptor({
+      transport: { fetch: async () => errorRes(403) },
+    }).create({ env: { BOCHA_API_KEY: "k" } });
+    const err = await adapter.search.invoke({ query: "q" }).then(() => null, (e) => e);
+    assert.ok(err instanceof QuotaError, `must be QuotaError, got ${err && err.constructor.name}`);
+    assert.equal(err.retryable, false, "exhausted quota must never retry");
+  });
+
+  it("HTTP 401 maps to ConfigurationError with the export hint", async () => {
+    const adapter = createBochaDescriptor({
+      transport: { fetch: async () => errorRes(401) },
+    }).create({ env: { BOCHA_API_KEY: "k" } });
+    const err = await adapter.search.invoke({ query: "q" }).then(() => null, (e) => e);
+    assert.ok(err instanceof ConfigurationError);
+    assert.equal(err.exitCode, 3);
+    assert.equal(err.help, 'export BOCHA_API_KEY="your-bocha-api-key"');
+  });
+
+  it("HTTP 429 maps to ApiError 429", async () => {
+    const adapter = createBochaDescriptor({
+      transport: { fetch: async () => errorRes(429) },
+    }).create({ env: { BOCHA_API_KEY: "k" } });
+    const err = await adapter.search.invoke({ query: "q" }).then(() => null, (e) => e);
+    assert.ok(err instanceof ApiError && err.statusCode === 429);
+  });
+
+  it("HTTP 400 maps to ValidationError", async () => {
+    const adapter = createBochaDescriptor({
+      transport: { fetch: async () => errorRes(400) },
+    }).create({ env: { BOCHA_API_KEY: "k" } });
+    const err = await adapter.search.invoke({ query: "q" }).then(() => null, (e) => e);
+    assert.ok(err instanceof ValidationError, `must be ValidationError, got ${err && err.constructor.name}`);
+  });
+
+  it("HTTP 5xx maps to ApiError with the real status; raw body never leaks", async () => {
+    const bodyText = "leak-marker-DO-NOT-EMBED-this-string-into-errors";
+    const adapter = createBochaDescriptor({
+      transport: { fetch: async () => errorRes(500, bodyText) },
+    }).create({ env: { BOCHA_API_KEY: "k" } });
+    const err = await adapter.search.invoke({ query: "q" }).then(() => null, (e) => e);
+    assert.ok(err instanceof ApiError && err.statusCode === 500);
+    assert.ok(!err.message.includes(bodyText), `raw body must not leak: ${err.message}`);
+  });
+
+  it("a fetch network failure maps to NetworkError with a sanitized message", async () => {
+    const adapter = createBochaDescriptor({
+      transport: { fetch: async () => { throw new Error("fetch failed: ECONNREFUSED"); } },
+    }).create({ env: { BOCHA_API_KEY: "k" } });
+    const err = await adapter.search.invoke({ query: "q" }).then(() => null, (e) => e);
+    assert.ok(err instanceof NetworkError, `must be NetworkError, got ${err && err.constructor.name}`);
+    assert.equal(err.message, "Bocha AI network error");
+  });
+
+  it("an AbortError from the AbortController maps to TimeoutError", async () => {
+    const adapter = createBochaDescriptor({
+      transport: {
+        fetch: async () => {
+          throw Object.assign(new Error("aborted"), { name: "AbortError" });
+        },
+      },
+    }).create({ env: { BOCHA_API_KEY: "k" } });
+    const err = await adapter.search.invoke({ query: "q" }).then(() => null, (e) => e);
+    assert.ok(err instanceof TimeoutError, `must be TimeoutError, got ${err && err.constructor.name}`);
+    assert.ok(err.help.includes("BOCHA_TIMEOUT"), `help must name BOCHA_TIMEOUT: ${err.help}`);
   });
 });

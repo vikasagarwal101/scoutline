@@ -8,9 +8,9 @@ gate.
 
 Shared commands (`search`, `vision analyze`, `quota`, `doctor`),
 **`repo`**, **`read`**, **`crawl`**, **`map`**, and **`research`** accept
-the global `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>` flag. Precedence:
+the global `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>` flag. Precedence:
 
-1. `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>` on the command line
+1. `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>` on the command line
 2. `SCOUTLINE_PROVIDER` environment variable
 3. Default `zai`
 
@@ -19,11 +19,12 @@ invocation. Provider selection is never inferred from credentials.
 
 `tools`, `tool`, `call`, and `code` accept the flag but ignore it; they
 remain Z.AI-only and do not validate the supplied value. `repo` and `read`
-participate in selection: Z.AI, Tavily, Exa, Firecrawl, Parallel, and
-Jina supply `reader`; only Z.AI supplies `repository-exploration`.
-`crawl` and `map` participate in selection and are supplied by Tavily
-and Firecrawl. `research` is supplied by Tavily, Exa, Parallel,
-Perplexity, and Jina. By default (0.11.0+) Provider
+participate in selection: Z.AI, Tavily, Exa, Firecrawl, Parallel, Jina,
+You.com, Linkup, and Spider.cloud supply `reader`; only Z.AI supplies
+`repository-exploration`. `crawl` and `map` participate in selection and
+are supplied by Tavily, Firecrawl, and Spider.cloud. `research` is
+supplied by Tavily, Exa, Parallel, Perplexity, Jina, You.com, and
+Linkup. By default (0.11.0+) Provider
 fallback is always-on: selecting a non-supplier emits a stderr notice
 and silently reroutes to the next eligible configured supplier in
 registry order. Under `--no-fallback` (or `SCOUTLINE_NO_FALLBACK=1`)
@@ -342,9 +343,10 @@ each advertised capability, exactly which built-in Providers supply it.
 `sharedCapabilities` and `zaiOnlyCapabilities` are gone; their two-array
 derivation silently hid capabilities supplied by a subset of providers.
 The matrix replaces them. `repository-exploration` is reported under
-Z.AI alone; `reader` under Z.AI, Tavily, Exa, Firecrawl, Parallel, and
-Jina; `crawl` and `map` under Tavily and Firecrawl; `research` under
-Tavily, Exa, Parallel, Perplexity, and Jina. Doctor help derives its
+Z.AI alone; `reader` under Z.AI, Tavily, Exa, Firecrawl, Parallel, Jina,
+You.com, Linkup, and Spider.cloud; `crawl` and `map` under Tavily,
+Firecrawl, and Spider.cloud; `research` under Tavily, Exa, Parallel,
+Perplexity, Jina, You.com, and Linkup. Doctor help derives its
 unsupported lists from the same descriptor metadata for every other
 Provider.
 

@@ -31,6 +31,7 @@ import type {
 } from "../../capabilities/quota.js";
 import { buildQuotaWindow } from "../../capabilities/quota.js";
 import { ApiError, ScoutlineError } from "../../lib/errors.js";
+import { parseZonedInstant } from "../../lib/parse-zoned-instant.js";
 import { requireSearchApiKey } from "./credentials.js";
 import { fetchSearchApiMe, type SearchApiTransportDeps } from "./client.js";
 
@@ -43,20 +44,6 @@ function readFiniteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
-/**
- * Parse a subscription instant to epoch ms, anchoring a zone-less
- * datetime to UTC. `Date.parse` reads a zone-less form (e.g.
- * `"2026-09-01 00:00:00"`) in the HOST's local time, silently shifting
- * `resetsAt` by the offset; the reset instant is user-visible via
- * `scoutline quota`, so the zone-less form is normalized to an explicit
- * UTC `Z` before parsing. Values already carrying a zone (`Z` or
- * `±HH:MM`) parse as-is; anything unparseable yields `NaN` (omitted).
- */
-function parseZonedInstant(value: string): number {
-  const ZONELESS_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
-  const normalized = ZONELESS_RE.test(value) ? `${value.replace(" ", "T")}Z` : value;
-  return Date.parse(normalized);
-}
 
 // ---------------------------------------------------------------------------
 // Normalizer

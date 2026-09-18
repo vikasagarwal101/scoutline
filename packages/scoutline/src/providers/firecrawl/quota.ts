@@ -33,6 +33,7 @@ import {
   QuotaError,
   TimeoutError,
 } from "../../lib/errors.js";
+import { parseZonedInstant } from "../../lib/parse-zoned-instant.js";
 import { requireFirecrawlApiKey } from "./credentials.js";
 import { fetchFirecrawlCreditUsage, type FirecrawlTransportDeps } from "./client.js";
 
@@ -87,8 +88,10 @@ export function normalizeFirecrawlQuota(raw: unknown): ProviderQuotaSuccess {
     typeof record.billingPeriodEnd === "string" ? record.billingPeriodEnd : undefined;
   const periodStart =
     typeof record.billingPeriodStart === "string" ? record.billingPeriodStart : undefined;
-  const endMs = periodEnd !== undefined ? Date.parse(periodEnd) : NaN;
-  const startMs = periodStart !== undefined ? Date.parse(periodStart) : NaN;
+  // #212: zone-less timestamps anchor to UTC, not the host timezone
+  // (same defect class as SearchApi #207).
+  const endMs = periodEnd !== undefined ? parseZonedInstant(periodEnd) : NaN;
+  const startMs = periodStart !== undefined ? parseZonedInstant(periodStart) : NaN;
 
   const window = buildQuotaWindow({
     used,

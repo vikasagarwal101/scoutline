@@ -38,6 +38,32 @@ Providers because the Providers do not offer idempotency or refunds
 — the kill-switch is the documented opt-out for cost-sensitive
 workflows.
 
+**Fusion**:
+The config-selectable ranking algorithm that orders a merged search
+result list: `rrf` (Reciprocal Rank Fusion over the arms × sub-queries
+grid — the default) or `occurrence` (the legacy count-then-position
+ordering). Selected by the `fusion` config key or `SCOUTLINE_FUSION`,
+never by a query flag; it governs every merge the search command
+performs, fan-out and multi-sub-query alike. Deterministic and
+model-free by contract — model-based re-ranking is excluded.
+_Avoid_: ranking, re-ranking, scoring (all erase the config-key contract and the determinism guarantee)
+
+**Fusion Score**:
+The additive-optional number a merged result carries under rrf Fusion —
+the fixed 3-decimal sum of `1/(k + rank)` across every arm and
+sub-query that surfaced the result (k = 60). Present on every rrf
+result for inspectability; absent entirely under occurrence Fusion.
+_Avoid_: relevance score, provider score (provider-emitted scores are dropped at normalization and never enter Fusion)
+
+**Near-duplicate Cluster**:
+The group of search results a fan-out merge collapses into one
+representative because they are the same story: identical after URL
+canonicalization (including `www.`/apex host collapse) or
+title-shingle-similar across different URLs. The representative is the
+highest-Fusion-Score member; `mergedFrom` and `occurrences` accumulate
+the whole cluster. Deterministic thresholds, fixed by contract.
+_Avoid_: dedupe group, similar results (both blur the identity-versus-similarity layering)
+
 **Direct command**:
 A command that communicates directly with a target origin or public index
 without an AI provider, provider fallback, or LLM/markdown synthesis

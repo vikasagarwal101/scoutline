@@ -26,6 +26,13 @@ features next; features that reverse a written decision (ADR) last.
 
 ### Studied seeds — contract-extending
 
+- **Fan-out fusion & ranking layer**
+  (`docs/plans/v2/24-fanout-fusion-ranking-layer.md`) — **grilled
+  Q1–Q7 (2026-09-18)**: RRF default-on via `config set fusion` (no
+  query flag) + init prompt; near-dup clustering in v1 (canonicalization
+  widening + title shingles); provider weights deferred behind an
+  unseeded routing-preference capability; a new ADR supersedes
+  ADR-0004. Ready to graduate to a plan.
 - **GLM-OCR: supersede the vision-model OCR path**
   (`docs/plans/v2/20-glm-ocr-supersede-vision-ocr.md`) — purpose-built
   0.9B OCR model (SOTA OmniDocBench 94.6) via the `layout_parsing`

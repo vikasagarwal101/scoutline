@@ -43,7 +43,7 @@ import { RESEARCH_HELP } from "../dist/commands/research.js";
 // this pin (T2: "PROVIDER_IDS insertion order stays the D2 listing;
 // openalex-first is the science fan-out arm order (D5), implemented in
 // the executor").
-const TWELVE = [
+const THIRTEEN = [
   "zai",
   "minimax",
   "tavily",
@@ -56,19 +56,20 @@ const TWELVE = [
   "you",
   "linkup",
   "spider",
+  "searchapi",
 ];
 const SCIENCE_IDS = ["arxiv", "openalex", "crossref", "pubmed", "europepmc"];
-const EXPECTED_17 = [...TWELVE, ...SCIENCE_IDS];
+const EXPECTED_18 = [...THIRTEEN, ...SCIENCE_IDS];
 
 describe("science registry seats — PROVIDER_IDS and BUILT_IN registry (T2 bullet 1; D2)", () => {
-  it("PROVIDER_IDS is exactly the 12 existing ids plus the five science ids in D2 order", () => {
-    assert.deepEqual(PROVIDER_IDS, EXPECTED_17);
+  it("PROVIDER_IDS is exactly the 13 existing ids plus the five science ids in D2 order", () => {
+    assert.deepEqual(PROVIDER_IDS, EXPECTED_18);
   });
 
-  it("BUILT_IN_PROVIDER_DESCRIPTORS lists all 17 ids in the same order", () => {
+  it("BUILT_IN_PROVIDER_DESCRIPTORS lists all 18 ids in the same order", () => {
     assert.deepEqual(
       BUILT_IN_PROVIDER_DESCRIPTORS.map((d) => d.id),
-      EXPECTED_17,
+      EXPECTED_18,
     );
   });
 
@@ -237,7 +238,7 @@ describe("quota authority — five always-unknown rows (T2 round-5 bullet; D5 pr
 });
 
 describe("RESEARCH_HELP provider enumeration (T2 literal surface; review rounds 3/6 ruling)", () => {
-  it("RESEARCH_HELP lists the 12 shared-capability suppliers — science ids are not research-eligible", () => {
+  it("RESEARCH_HELP lists the 13 shared-capability suppliers — science ids are not research-eligible", () => {
     // T2 originally widened the hand-written list 12→17 (PRD AC-9b
     // literal-surfaces bullet). The review ruling reversed that for
     // capability-gated commands: science suppliers advertise
@@ -245,10 +246,10 @@ describe("RESEARCH_HELP provider enumeration (T2 literal surface; review rounds 
     // guaranteed-failing pin (or a credit-consuming reroute under
     // fallback). Same ruling as SEARCH_HELP/quota/map.
     const expected =
-      "(zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | you | linkup | spider)";
+      "(zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | you | linkup | spider | searchapi)";
     assert.ok(
       RESEARCH_HELP.includes(expected),
-      `RESEARCH_HELP --provider list must be the 12-id shared list: ${expected}`,
+      `RESEARCH_HELP --provider list must be the 13-id shared list: ${expected}`,
     );
     assert.ok(
       !RESEARCH_HELP.includes("| arxiv |"),

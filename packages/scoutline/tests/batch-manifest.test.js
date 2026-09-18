@@ -733,7 +733,7 @@ describe("batch manifest provider pin validation", () => {
       // GROUND: T2 — the joined-list error string derives from
       // PROVIDER_IDS.join() and widens 12→17 automatically; the literal
       // here is hand-pinned so drift cannot ship silently.
-      'operations[0]: unknown provider "notaprovider". Built-in providers: zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, arxiv, openalex, crossref, pubmed, europepmc.',    );
+      'operations[0]: unknown provider "notaprovider". Built-in providers: zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, searchapi, arxiv, openalex, crossref, pubmed, europepmc.',    );
   });
 
   it("rejects a registry provider that is not capable (read on minimax)", async () => {

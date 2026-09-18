@@ -25,7 +25,6 @@ import type {
   ProviderCapability,
   ProviderContext,
   ProviderDescriptor,
-  ProviderId,
 } from "../types.js";
 import type {
   SearchCacheIdentity,
@@ -299,8 +298,7 @@ function createSearchApiSearchCapability(
         identityRequest.controls = request.controls;
       }
       return {
-        // ponytail: same PROVIDER_IDS cast as the descriptor (above).
-        provider: "searchapi" as ProviderId,
+        provider: "searchapi",
         capability: "search",
         credentialFingerprint: hashSearchApiKey(apiKey),
         request: identityRequest,
@@ -357,11 +355,7 @@ export function createSearchApiDescriptor(
   const transport = dependencies?.transport;
 
   return {
-    // ponytail: `searchapi` joins PROVIDER_IDS when the registry ticket
-    // lands; until then the cast keeps the adapter compilable without
-    // widening the built-in provider union (fallback order, fan-out
-    // "all", routing validation all read PROVIDER_IDS).
-    id: "searchapi" as ProviderId,
+    id: "searchapi",
     isConfigured(env: NodeJS.ProcessEnv): boolean {
       return isSearchApiConfigured(env);
     },
@@ -375,8 +369,8 @@ export function createSearchApiDescriptor(
         env: context.env,
         transport,
       });
-      return { id: "searchapi" as ProviderId, search, diagnostics, quota };
+      return { id: "searchapi", search, diagnostics, quota };
     },
-    credentialEnvVars: ["SEARCHAPI_API_KEY"],
+    credentialEnvVars: ["SEARCHAPI_API_KEY", "SERPAPI_API_KEY"],
   };
 }

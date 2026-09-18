@@ -386,6 +386,13 @@ export const CAPABILITY_MAPPINGS: readonly CapabilityMappingEntry[] = [
     }),
   ),
 
+  // SearchApi.io — search consumes the shared `searches` pool.
+  {
+    provider: "searchapi",
+    capability: "search",
+    categoryAliases: ["searches"],
+  },
+
 ];
 
 // ---------------------------------------------------------------------------
@@ -511,6 +518,11 @@ export const PROVIDER_AUTHORITY_POLICIES: readonly ProviderAuthorityPolicy[] = [
     kind: "always-unknown",
     reason:
       "Spider.cloud exposes GET /data/credits as an exact credit remaining balance (limit unknown); not a percentage-bounded plan signal.",
+  },
+  {
+    provider: "searchapi",
+    kind: "mapped",
+    reason: "SearchApi.io exposes GET /api/v1/me remaining credits.",
   },
   // Science suppliers (D5 pre-merge exclusion): keyless scholarly
   // indexes with no spend signal — excluded from quota-snapshot

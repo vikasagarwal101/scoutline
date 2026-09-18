@@ -84,7 +84,7 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // Rebaselined at #184: all npx@version invocations replaced with the
 // installed `scoutline` CLI (the agent-registration deployment model
 // version-locks skill to binary; the npx pin fought the refresh system).
-const SKILL_BODY_SHA256 = "729df0875f2f637dcaa20a10cfb4e5c3e01297ffcd8e898463f9d1118cb46198";
+const SKILL_BODY_SHA256 = "6140365c2982aca777a633ce8431506ef7fc482fb45205a6732104f4d95b29a0";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

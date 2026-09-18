@@ -31,7 +31,6 @@ import type {
 } from "../../capabilities/quota.js";
 import { buildQuotaWindow } from "../../capabilities/quota.js";
 import { ApiError, ScoutlineError } from "../../lib/errors.js";
-import type { ProviderId } from "../types.js";
 import { requireSearchApiKey } from "./credentials.js";
 import { fetchSearchApiMe, type SearchApiTransportDeps } from "./client.js";
 
@@ -92,9 +91,7 @@ export function normalizeSearchApiQuota(raw: unknown): ProviderQuotaSuccess {
   };
 
   return {
-    // ponytail: `searchapi` joins PROVIDER_IDS in T4; the cast keeps the
-    // adapter compilable until then (mirrors the descriptor casts).
-    provider: "searchapi" as ProviderId,
+    provider: "searchapi",
     status: "ok",
     categories: [category],
   };

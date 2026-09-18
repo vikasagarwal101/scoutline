@@ -123,11 +123,11 @@ describe("You.com docs — CLI help enumerations", () => {
     });
     assert.equal(result.code, 0);
     assert.ok(
-      result.stdout.includes("all 12 Providers"),
-      "main help must count the 12 shared-capability providers",
+      result.stdout.includes("all 13 Providers"),
+      "main help must count the 13 shared-capability providers",
     );
     assert.ok(
-      result.stdout.includes("perplexity|jina|you|linkup|spider>"),
+      result.stdout.includes("perplexity|jina|you|linkup|spider|searchapi>"),
       "main help --provider enumeration keeps you and stops at the shared suppliers",
     );
     assert.ok(

@@ -186,6 +186,36 @@ describe("redactSecrets — recursive case-insensitive key redaction", () => {
     assert.strictEqual(mixed.plain, "abc");
   });
 
+  it("never treats a whitespace-only secret as a replacement token (#222)", () => {
+    // A credential env var set to "  " previously produced a whitespace
+    // replacement token: any output text containing that exact space
+    // sequence was mangled into [REDACTED] markers. Whitespace-only
+    // entries are dropped by the same rule as empty strings — drop-only,
+    // never trimmed to a narrower match (a trimmed match would redact
+    // differently than the literal secret the operator configured).
+    const result = redactCredentialString("keep the gaps  here", ["  ", "\t", "\n"]);
+    assert.strictEqual(result, "keep the gaps  here");
+
+    // A whitespace-only entry alongside a real secret: the real secret
+    // still does its replacement, the whitespace entry does nothing.
+    const mixed = redactCredentialString(`x ${Z_KEY} y`, ["  ", Z_KEY]);
+    assert.strictEqual(mixed, "x [REDACTED] y");
+  });
+
+  it("keeps a secret with legitimate leading/trailing whitespace intact (#222)", () => {
+    // Drop-only (not trim-then-match): a padded secret matches only its
+    // exact literal — the padded form in text redacts whole (the match
+    // includes the literal's own edge spaces), while the UNPADDED form
+    // in text is untouched because the literal never appears there.
+    const padded = "  padded-secret-value-123  ";
+    // Exact literal present (incl. its padding) -> redacted whole.
+    const exact = redactCredentialString("val  padded-secret-value-123  end", [padded]);
+    assert.strictEqual(exact, "val[REDACTED]end");
+    // Only the unpadded form in text -> NOT redacted (no trim-to-match).
+    const unpadded = redactCredentialString("val padded-secret-value-123 end", [padded]);
+    assert.strictEqual(unpadded, "val padded-secret-value-123 end");
+  });
+
   it("leaves ordinary non-secret strings unchanged", () => {
     const input = {
       title: "A normal title",

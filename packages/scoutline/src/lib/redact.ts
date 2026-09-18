@@ -280,7 +280,7 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
 
 /**
  * Normalise the `secrets` argument to a deduplicated array of
- * non-empty strings. A `undefined` argument yields an empty list;
+ * non-empty strings. Whitespace-only entries are dropped (#222). A `undefined` argument yields an empty list;
  * a single string yields `[string]`; an array yields the filtered
  * list.
  */
@@ -291,7 +291,12 @@ function normalizeSecrets(secrets?: string | string[]): string[] {
   const seen = new Set<string>();
   for (const item of list) {
     if (typeof item !== "string") continue;
-    if (item.length === 0) continue;
+    if (item.length === 0) continue; // empty string is never a token
+    // #222: drop-only — a whitespace-only value (e.g. a credential env
+    // var set to "  ") must not become a whitespace replacement token
+    // that mangles any matching gap in output. Never trim-to-match: a
+    // secret with meaningful edge spaces matches only its exact literal.
+    if (item.trim().length === 0) continue;
     if (seen.has(item)) continue;
     seen.add(item);
     out.push(item);

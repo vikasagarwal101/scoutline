@@ -21,7 +21,7 @@
 - **Repo** - Search and read GitHub repository code via ZRead
 - **Tools** - MCP tool discovery, schemas, and raw calls
 - **Code Mode** - TypeScript tool chaining for agent automation
-- **Provider selection** - Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, SearchApi.io, or Kagi
+- **Provider selection** - Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, Bocha AI, SearchApi.io, or Kagi
 - **Usage ledger** - Local 90-day call-usage history per provider and capability (`scoutline usage`), counters only
 - **Saved artifacts** - Durable clean reports from any provider-backed run (`--save`), content + request id only, plus a credential-free `scoutline history` inventory (list/show/stats/recall/export/note/clear)
 - **Research journal** - Always-on local memory of every `search`/`read`/`research` call: thin skeletons (query, provider, url+title identity, content hash) recorded under `~/.scoutline/artifacts/` and re-found offline via `history recall`; opt out per call (`--no-journal`) or globally (`journal: false`)

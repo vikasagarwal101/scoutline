@@ -28,7 +28,7 @@
 - **Research journal** — Always-on local memory of every `search`/`read`/`research`/`science` call: thin skeletons (query, provider, url+title identity, content hash) recorded to `~/.scoutline/artifacts/` and re-found offline via `history recall`; opt out per call (`--no-journal`) or globally (`journal: false`)
 - **Tools** — MCP tool discovery, schemas, and raw calls
 - **Code Mode** — TypeScript tool chaining for agent automation
-- **Provider selection** — Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, SearchApi.io, or Kagi
+- **Provider selection** — Run shared capabilities through Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, Bocha AI, SearchApi.io, or Kagi
 
 ## Quick Start
 
@@ -366,19 +366,19 @@ Stateful commands refuse at parse time (`VALIDATION_ERROR`, exit 1) rather than 
 
 ### Capability Matrix
 
-| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Spider.cloud | SearchApi | Kagi | Command |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Search | Yes | Yes | Yes | Yes | Yes (web/news/video) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline search` |
-| Reader | Yes | No | Yes | Yes | No | Yes | Yes | No | Yes | Yes | Yes | Yes | No | No | `scoutline read` |
-| Crawl | No | No | Yes | No | No | Yes (async) | No | No | No | No | No | Yes (sync) | No | No | `scoutline crawl` |
-| Map | No | No | Yes | No | No | Yes | No | No | No | No | No | Yes | No | No | `scoutline map` |
-| Research | No | No | Yes | Yes | No | No | Yes | Yes | Yes | Yes | Yes | No | No | No | `scoutline research` |
-| Vision (interpret-image) | Yes | Yes | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
-| Quota | Yes | Yes | Yes | No | Yes (rate-limit window) | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | No | Yes (credits) | Yes (credits) | Yes (credits) | No | `scoutline quota` |
-| Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
-| Repo exploration | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline repo` |
-| Raw tools | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline tools` |
-| Code Mode | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline code` |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Spider.cloud | Bocha AI | SearchApi | Kagi | Command |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Search | Yes | Yes | Yes | Yes | Yes (web/news/video) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline search` |
+| Reader | Yes | No | Yes | Yes | No | Yes | Yes | No | Yes | Yes | Yes | Yes | No | No | No | `scoutline read` |
+| Crawl | No | No | Yes | No | No | Yes (async) | No | No | No | No | No | Yes (sync) | No | No | No | `scoutline crawl` |
+| Map | No | No | Yes | No | No | Yes | No | No | No | No | No | Yes | No | No | No | `scoutline map` |
+| Research | No | No | Yes | Yes | No | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No | `scoutline research` |
+| Vision (interpret-image) | Yes | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
+| Quota | Yes | Yes | Yes | No | Yes (rate-limit window) | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | No | Yes (credits) | Yes (credits) | No | Yes (credits) | No | `scoutline quota` |
+| Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
+| Repo exploration | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline repo` |
+| Raw tools | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline tools` |
+| Code Mode | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline code` |
 
 ### Search Controls
 
@@ -386,7 +386,7 @@ Stateful commands refuse at parse time (`VALIDATION_ERROR`, exit 1) rather than 
 
 `--type <video>` is Brave-only (mutually exclusive with `--topic`).
 
-`--domain` and `--recency` are honored by Z.AI, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and You.com (Brave maps `--domain` → `site:`, `--recency` → `freshness`; Parallel forwards both through `advanced_settings`; Perplexity forwards both as native search filters). Jina honors `--domain` (`X-Site`) but not `--recency`; Linkup honors both (`includeDomains`, `fromDate` date window); Spider.cloud honors both (`whitelist`, Google-style `tbs` filter). `--location` is honored by Z.AI, Brave (`country`), Parallel AI (`us` only), Jina (`gl`), You.com (`country`), Linkup (locale keyword appended to the query), and Spider.cloud (`country_code`); MiniMax rejects these controls.
+`--domain` and `--recency` are honored by Z.AI, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and You.com (Brave maps `--domain` → `site:`, `--recency` → `freshness`; Parallel forwards both through `advanced_settings`; Perplexity forwards both as native search filters). Jina honors `--domain` (`X-Site`) but not `--recency`; Linkup honors both (`includeDomains`, `fromDate` date window); Spider.cloud honors both (`whitelist`, Google-style `tbs` filter). `--location` is honored by Z.AI, Brave (`country`), Parallel AI (`us` only), Jina (`gl`), You.com (`country`), Linkup (locale keyword appended to the query), and Spider.cloud (`country_code`); MiniMax rejects these controls. SearchApi.io honors `--domain` (a `site:` operator appended to the query), `--recency` (`time_period`), and `--location` (`gl`), and routes `--topic news` to the `google_news` engine (every other topic stays on the default `google` engine — no keyword appendage).
 
 `--content-size` is a deliberate per-provider overload: `high` maps to Z.AI `content_size`, Tavily `search_depth=advanced`, Brave's LLM Context endpoint (extracted passages joined into summaries), and Parallel AI's per-result excerpt budget; Exa accepts it; You.com maps it to an extraction mode (`full_page`/`highlights`); Firecrawl returns scraped markdown summaries (+1 credit/result); MiniMax and Jina reject it (`UNSUPPORTED_OPTION`); Linkup maps it to a `depth` search parameter (`high` -> `deep`); Spider.cloud pins the markdown `return_format` (the canonical payload is the observation).
 

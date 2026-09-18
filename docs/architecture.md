@@ -1,9 +1,12 @@
 # Architecture
 
 Scoutline is a Node.js command-line client that presents several shared
-Capabilities through one consistent interface. It supports twelve Providers —
-Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity,
-Jina AI, You.com, Linkup, and Spider.cloud — through a common Adapter boundary.
+Capabilities through one consistent interface. It supports twenty built-in
+Providers — fifteen shared-capability suppliers (Z.AI, MiniMax, Tavily, Exa,
+Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup,
+Spider.cloud, Bocha AI, SearchApi, and Kagi) plus five keyless science
+suppliers (arXiv, OpenAlex, Crossref, PubMed, and Europe PMC) — through a
+common Adapter boundary.
 
 ## Runtime Flow
 
@@ -35,9 +38,11 @@ normalization. It never imports command presentation, output mode, or another
 Provider's Adapter.
 
 The production registry at `src/providers/registry.ts` is a static,
-twelve-entry list `[zai, minimax, tavily, exa, brave, firecrawl, parallel,
-perplexity, jina, you, linkup, spider]`. There is no dynamic loading, no
-package-name lookup,
+twenty-entry list `[zai, minimax, tavily, exa, brave, firecrawl, parallel,
+perplexity, jina, you, linkup, spider, bocha, searchapi, kagi, arxiv,
+openalex, crossref, pubmed, europepmc]` — the fifteen shared-capability
+Providers followed by the five science-supplier seats. There is no dynamic
+loading, no package-name lookup,
 no Adapter file paths, and no externally supplied factories. Tests
 inject descriptor lists explicitly through optional parameters.
 

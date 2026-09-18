@@ -38,8 +38,8 @@ The version-1 shape is:
 ```
 
 Supported provider IDs are `zai`, `minimax`, `tavily`, `exa`, `brave`,
-`firecrawl`, `parallel`, `perplexity`, `jina`, `you`, `linkup`, `spider`, and
-`bocha`. Unknown IDs are ignored
+`firecrawl`, `parallel`, `perplexity`, `jina`, `you`, `linkup`, `spider`, `bocha`,
+`searchapi`, and `kagi`. Unknown IDs are ignored
 with a warning, and blank API keys are
 treated as absent. Malformed files fail as corrupt configuration; unsupported
 versions require a Scoutline upgrade. Writes use a private (`0600`) temporary
@@ -191,7 +191,7 @@ Provider fallback is **always-on** (0.11.0+). When the selected provider
 does not supply the capability (for example, MiniMax does not advertise
 `repository-exploration` or `reader`) or fails at runtime, scoutline
 emits a stderr notice and silently tries the next eligible provider in
-registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha]`. The
+registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, kagi]`. The
 selected provider is still the *first* one tried, so the user-visible
 behavior is the same when the pin works; the fallback only changes
 what happens when it does not. See
@@ -246,7 +246,7 @@ scoutline --no-fallback --provider minimax read https://example.com
 | `Z_AI_TEMPERATURE` | `1` | Vision generation temperature (glm-5.3-flash documented recipe). |
 | `Z_AI_TOP_P` | `0.95` | Vision generation top-p value (glm-5.3-flash documented recipe). |
 | `Z_AI_MAX_TOKENS` | `32768` | Vision response token limit. |
-| `SCOUTLINE_PROVIDER` | (none) | Selects the effective Provider (`zai`, `minimax`, `tavily`, `exa`, `brave`, `firecrawl`, `parallel`, `perplexity`, `jina`, `you`, `linkup`, `spider`, or `bocha`) for shared capabilities. |
+| `SCOUTLINE_PROVIDER` | (none) | Selects the effective Provider (`zai`, `minimax`, `tavily`, `exa`, `brave`, `firecrawl`, `parallel`, `perplexity`, `jina`, `you`, `linkup`, `spider`, `bocha`, `searchapi`, or `kagi`) for shared capabilities. |
 | `SCOUTLINE_NO_FALLBACK` | (unset) | When set to a non-empty value, restores the strict single-provider, fail-loud behavior for shared capabilities — `--no-fallback` on the CLI is the per-invocation equivalent. |
 
 ## MiniMax Token Plan Settings
@@ -1117,7 +1117,7 @@ ordered list:
    strictly below every natural unknown, so a still-exhausted provider
    can never ride registry order back to the top.
 4. Ties within a band break by registry order
-   (`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha]` by default;
+    (`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, kagi]` by default;
    overridable via the `registryOrder` option).
 
 Calls that supply no clock (no `now` option) skip the exhaustion check

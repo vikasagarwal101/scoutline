@@ -36,6 +36,7 @@ import { createLinkupDescriptor } from "../dist/providers/linkup/adapter.js";
 import { createSpiderDescriptor } from "../dist/providers/spider/adapter.js";
 import { createBochaDescriptor } from "../dist/providers/bocha/adapter.js";
 import { createSearchApiDescriptor } from "../dist/providers/searchapi/adapter.js";
+import { createKagiDescriptor } from "../dist/providers/kagi/adapter.js";
 import {
   BUILT_IN_PROVIDER_DESCRIPTORS,
   getProviderDescriptor,
@@ -262,6 +263,26 @@ function makeSearchApiCapability(rawResult) {
   });
   const descriptor = createSearchApiDescriptor({ transport: { fetch: fetchFn } });
   const adapter = descriptor.create({ env: { SEARCHAPI_API_KEY: "k" } });
+  return adapter.search;
+}
+
+/**
+ * Kagi Adapter factory: accepts a Kagi `data[]` row array (t/url/title/
+ * snippet rows), wraps it in the `{ meta, data }` envelope, builds a
+ * fake fetch, and returns the descriptor's Search Capability. Rows with
+ * `t: 0` are results; the adapter drops related-query rows.
+ */
+function makeKagiCapability(rawResult) {
+  const envelope = { meta: { id: "kagi_conformance_001" }, data: rawResult };
+  const fetchFn = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(envelope),
+    json: async () => envelope,
+    headers: { get: () => null },
+  });
+  const descriptor = createKagiDescriptor({ transport: { fetch: fetchFn } });
+  const adapter = descriptor.create({ env: { KAGI_API_KEY: "k" } });
   return adapter.search;
 }
 
@@ -528,6 +549,7 @@ const SEARCH_CONFORMANCE_FACTORIES = new Map([
   ["spider", makeSpiderCapability],
   ["bocha", makeBochaCapability],
   ["searchapi", makeSearchApiCapability],
+  ["kagi", makeKagiCapability],
 ]);
 
 /**
@@ -802,6 +824,25 @@ const SEARCH_CONFORMANCE_RAW = new Map([
         },
       ],
     },
+  ],
+  // Kagi raw response (`data[].t/url/title/snippet`; only `t === 0`
+  // rows are results — related-query rows carry `t: 1` and no url).
+  [
+    "kagi",
+    [
+      {
+        t: 0,
+        url: "https://example.test/one",
+        title: "Conformance result one",
+        snippet: "Shared normalized summary one.",
+      },
+      {
+        t: 0,
+        url: "https://example.test/two",
+        title: "Conformance result two",
+        snippet: "Shared normalized summary two.",
+      },
+    ],
   ],
 ]);
 describe("CI completeness gate — every search Provider has a conformance factory (6.2)", () => {
@@ -1114,7 +1155,7 @@ describe("AbortSignal — new research invokes honour pre-aborted signal (2.6)",
 // ---------------------------------------------------------------------------
 
 describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
-  it("contains exactly [zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, searchapi, arxiv, openalex, crossref, pubmed, europepmc] in that order", () => {
+  it("contains exactly [zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, kagi, arxiv, openalex, crossref, pubmed, europepmc] in that order", () => {
     // GROUND: T2 — the five science ids append in the D2 listing order
     // (openalex-first is the executor arm order, NOT the registry
     // insertion order).
@@ -1135,6 +1176,7 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
         "spider",
         "bocha",
         "searchapi",
+        "kagi",
         "arxiv",
         "openalex",
         "crossref",

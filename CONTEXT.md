@@ -27,7 +27,7 @@ _Avoid_: normal command
 **Provider fallback**:
 The always-on default (0.11.0+) in which Scoutline silently reroutes a
 shared-capability command to the next eligible configured Provider
-(registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina]`) when
+(registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, kagi, arxiv, openalex, crossref, pubmed, europepmc]`) when
 the selected Provider does not advertise the Capability or fails at
 runtime. Every Provider switch is announced on stderr; the data
 envelope on stdout is unchanged. `--no-fallback` (or

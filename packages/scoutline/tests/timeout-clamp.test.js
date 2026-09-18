@@ -29,6 +29,7 @@ import assert from "node:assert/strict";
 import { clampTimeoutMs, TIMEOUT_MS_MAX } from "../dist/lib/timeout.js";
 import * as zaiMcpClient from "../dist/lib/mcp-client.js";
 import * as zaiCodeModeClient from "../dist/lib/code-mode.js";
+import { loadConfig } from "../dist/lib/config.js";
 import * as braveClient from "../dist/providers/brave/client.js";
 import * as exaClient from "../dist/providers/exa/client.js";
 import * as jinaClient from "../dist/providers/jina/client.js";
@@ -192,20 +193,28 @@ const RESOLVER_ROWS = [
     resolve: zaiCodeModeClient.resolveCodeModeTimeoutMs,
     defaultMs: 30000,
   },
+  {
+    // loadConfig requires a credential; every row spreads the test key
+    // first so the Z_AI_TIMEOUT override is the only variable.
+    provider: "zai-config-loadconfig",
+    envVar: "Z_AI_TIMEOUT",
+    resolve: (env) => loadConfig({ Z_AI_API_KEY: "clamp-conformance-key", ...env }).timeout,
+    defaultMs: 30000,
+  },
 ];
 
 describe("cross-provider timeout clamp conformance (#214)", () => {
   it("covers every provider that ships a *_TIMEOUT env resolver", () => {
-    // Guardrail against accidental row loss: 20 resolver rows across 17
+    // Guardrail against accidental row loss: 21 resolver rows across 18
     // modules — 15 provider client modules (jina, perplexity, and
     // minimax contribute two resolvers each; you contributes the legacy
-    // YDC alias row) plus the two shared Z.AI lib clients (mcp-client,
-    // code-mode). A resolver added to the codebase but not to this table
-    // is NOT caught here — extend the table whenever a client gains a
-    // *_TIMEOUT env resolver.
-    assert.equal(RESOLVER_ROWS.length, 20);
+    // YDC alias row), the two shared Z.AI lib clients (mcp-client,
+    // code-mode), and loadConfig's inline Z_AI_TIMEOUT parse. A resolver
+    // added to the codebase but not to this table is NOT caught here —
+    // extend the table whenever a client gains a *_TIMEOUT env resolver.
+    assert.equal(RESOLVER_ROWS.length, 21);
     const providers = new Set(RESOLVER_ROWS.map((r) => r.provider));
-    assert.equal(providers.size, 20);
+    assert.equal(providers.size, 21);
   });
 
   for (const row of RESOLVER_ROWS) {

@@ -32,6 +32,7 @@ import { quotaFailureFromError } from "../capabilities/quota.js";
 import { executeProviderOperation } from "../lib/execution.js";
 import { ConfigurationError, UnsupportedCapabilityError } from "../lib/errors.js";
 import type { ProviderDescriptor, ProviderId } from "../providers/types.js";
+import { SHARED_PROVIDER_PIPE_ENUM } from "../providers/catalog.js";
 import { getProviderDescriptor } from "../providers/selection.js";
 import { redactSecrets, configuredSecrets, redactCredentialString } from "../lib/redact.js";
 import { formatQuotaDashboard } from "../lib/tty.js";
@@ -473,8 +474,7 @@ Options:
   --all-providers   Force multi-Provider mode (the default). Successful
                     and failed entries both appear; the command exits 1
                     when any Provider fails.
-  --provider <id>   Pin a single Provider (zai | minimax | tavily | exa |
-                    brave | firecrawl | parallel | perplexity | jina | you | linkup | spider | bocha | searchapi | kagi) instead of the multi-Provider default.
+  --provider <id>   Pin a single Provider ${SHARED_PROVIDER_PIPE_ENUM} instead of the multi-Provider default.
                     (Science suppliers pin only "scoutline science ...";
                     none of them advertise quota.)
 Examples:

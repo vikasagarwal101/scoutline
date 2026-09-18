@@ -389,3 +389,56 @@ describe("Bocha controls + application errors", () => {
     assert.ok(err.help.includes("BOCHA_TIMEOUT"), `help must name BOCHA_TIMEOUT: ${err.help}`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Diagnostics (T4)
+// ---------------------------------------------------------------------------
+
+describe("Bocha diagnostics", () => {
+  it("diagnostics POSTs count 1; create() does not fetch", async () => {
+    let calls = 0;
+    const descriptor = createBochaDescriptor({
+      transport: { fetch: async (_url, init) => {
+        calls += 1;
+        const body = JSON.parse(init.body);
+        assert.equal(body.count, 1);
+        assert.equal(body.query, "scoutline-doctor-probe");
+        return jsonRes({ code: 200, data: { webPages: { value: [] } } });
+      } },
+    });
+    descriptor.create({ env: { BOCHA_API_KEY: "k" } });
+    assert.equal(calls, 0);
+    await descriptor.create({ env: { BOCHA_API_KEY: "k" } }).diagnostics.invoke({ probe: true });
+    assert.equal(calls, 1);
+  });
+
+  it("invoke({probe:false}) resolves without any fetch call", async () => {
+    let calls = 0;
+    const adapter = createBochaDescriptor({
+      transport: { fetch: async () => { calls += 1; return jsonRes({ code: 200, data: {} }); } },
+    }).create({ env: { BOCHA_API_KEY: "k" } });
+    await adapter.diagnostics.invoke({ probe: false });
+    assert.equal(calls, 0);
+  });
+
+  it("a probe failure surfaces a normalized error with no raw body leak", async () => {
+    const bodyText = "leak-marker-DO-NOT-EMBED-in-diagnostics";
+    const adapter = createBochaDescriptor({
+      transport: { fetch: async () => errorRes(500, bodyText) },
+    }).create({ env: { BOCHA_API_KEY: "k" } });
+    const err = await adapter.diagnostics.invoke({ probe: true }).then(() => null, (e) => e);
+    assert.ok(err instanceof ApiError, `must be ApiError, got ${err && err.constructor.name}`);
+    assert.ok(!err.message.includes(bodyText), `raw body must not leak: ${err.message}`);
+  });
+
+  it("a missing key throws ConfigurationError (exit 3) BEFORE any fetch", async () => {
+    let calls = 0;
+    const adapter = createBochaDescriptor({
+      transport: { fetch: async () => { calls += 1; return jsonRes({ code: 200, data: {} }); } },
+    }).create({ env: {} });
+    const err = await adapter.diagnostics.invoke({ probe: true }).then(() => null, (e) => e);
+    assert.ok(err instanceof ConfigurationError);
+    assert.equal(err.exitCode, 3);
+    assert.equal(calls, 0);
+  });
+});

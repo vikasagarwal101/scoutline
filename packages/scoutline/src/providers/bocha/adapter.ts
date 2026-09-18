@@ -34,6 +34,7 @@ import type {
   SearchRequest,
   SearchSource,
 } from "../../capabilities/search.js";
+import type { DiagnosticsCapability } from "../../capabilities/diagnostics.js";
 import {
   ApiError,
   AuthError,
@@ -46,6 +47,7 @@ import {
 } from "../../lib/errors.js";
 import { requireBochaApiKey, isBochaConfigured } from "./credentials.js";
 import { applySearchTopic } from "../../lib/search-topic.js";
+import { createBochaDiagnosticsCapability } from "./diagnostics.js";
 import {
   fetchBochaWebSearch,
   type BochaSearchParams,
@@ -127,6 +129,7 @@ function normalizeSearchResults(response: BochaSearchResponse): SearchSource[] {
 export class BochaAdapter implements ProviderAdapter {
   readonly id: ProviderId = BOCHA_PROVIDER_ID;
   readonly search: SearchCapability;
+  readonly diagnostics: DiagnosticsCapability;
 
   constructor(
     private readonly context: ProviderContext,
@@ -184,6 +187,8 @@ export class BochaAdapter implements ProviderAdapter {
         }
       },
     };
+
+    this.diagnostics = createBochaDiagnosticsCapability({ env, transport });
   }
 }
 

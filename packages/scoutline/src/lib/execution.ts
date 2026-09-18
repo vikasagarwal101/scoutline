@@ -414,9 +414,12 @@ function applyCount(
  * read-through → invoke with retry → cache the full result → apply
  * count truncation.
  *
- * Count never enters the cache identity request or the Provider
- * request; it is supplied only as `legacyCount` so the Z.AI Adapter
- * can reconstruct old keys.
+ * Count stays local for every Provider except Bocha (#211): it enters
+ * neither the cache identity request nor the Provider request, and is
+ * supplied only as `legacyCount` so the Z.AI Adapter can reconstruct
+ * old keys. Bocha is the forwarded-count exception — its Adapter
+ * receives the count through the explicit `count` invoke argument and
+ * `count` identity option, and partitions its cache entries by it.
  */
 export async function executeSearch(
   capability: SearchCapability,
@@ -430,6 +433,7 @@ export async function executeSearch(
   // 2. Adapter-owned cache identity (after validation).
   const identity = capability.cacheIdentity(request, {
     legacyCount: options.count,
+    count: options.count,
   });
 
   // 3. Read the provider-partitioned cache key.
@@ -485,7 +489,7 @@ export async function executeSearch(
       : undefined;
   const result = await executeProviderOperation(
     "search",
-    () => capability.invoke(request, options.signal),
+    () => capability.invoke(request, options.signal, options.count),
     dependencies,
     options.retryPolicy,
     consumption,

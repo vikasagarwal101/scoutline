@@ -128,8 +128,11 @@ Every search Adapter returns the same normalized `SearchSource[]`
 (`title`, `url`, `summary`, optional `source`, optional `date`). Shared
 command meaning — query splitting, parallel scheduling, dedupe, ranking,
 summary truncation, field projection, and presentation — is identical
-for every Provider. Result count is applied locally after normalization
-and never enters an Adapter request or cache key.
+for every Provider. Result count is applied locally after normalization;
+for every Provider except Bocha it never enters an Adapter request or
+cache key. Bocha's wire request carries a native `count` parameter, so
+its Adapter forwards the requested count and partitions its cache
+entries by it (#211).
 
 `--topic <general|news|finance>` is the only search control every
 Provider advertises. For Providers that lack a native topic parameter,

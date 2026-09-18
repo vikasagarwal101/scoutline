@@ -154,7 +154,10 @@ export class BochaAdapter implements ProviderAdapter {
         }
       },
 
-      cacheIdentity(request: SearchRequest): SearchCacheIdentity {
+      cacheIdentity(
+        request: SearchRequest,
+        compatibility?: { readonly legacyCount?: number; readonly count?: number },
+      ): SearchCacheIdentity {
         const apiKey = requireBochaApiKey(env);
         return {
           provider: BOCHA_PROVIDER_ID,
@@ -163,11 +166,20 @@ export class BochaAdapter implements ProviderAdapter {
           request: {
             query: request.query.trim(),
             controls: request.controls,
+            // #211: the count is forwarded to the wire, so entries must
+            // partition by it — otherwise a short-count page cached
+            // first would under-serve a later larger count. Absent
+            // count stays key-less to keep pre-#211 entries readable.
+            ...(compatibility?.count !== undefined ? { count: compatibility.count } : {}),
           },
         };
       },
 
-      async invoke(request: SearchRequest): Promise<readonly SearchSource[]> {
+      async invoke(
+        request: SearchRequest,
+        _signal?: AbortSignal,
+        count?: number,
+      ): Promise<readonly SearchSource[]> {
         this.validate(request);
         const apiKey = requireBochaApiKey(env);
         const controls = request.controls;
@@ -178,7 +190,11 @@ export class BochaAdapter implements ProviderAdapter {
         const params: BochaSearchParams = {
           query,
           summary: true,
-          count: 10,
+          // #211: Bocha's web-search wire accepts `count` (SCHEMA
+          // BochaSearchWireRequest), so the caller's requested count is
+          // forwarded; no documented max, so no cap. The wire default
+          // stays 10 when no count was requested.
+          count: typeof count === "number" && count >= 1 ? count : 10,
           ...(controls?.recency ? { freshness: controls.recency } : {}),
         };
 

@@ -99,7 +99,7 @@ function readNumber(value: unknown): number | undefined {
 /**
  * Is a raw `TIME_LIMIT` entry internally consistent? Z.AI's counter and
  * its own `remaining`/`percentage` must tell the same story before any
- * of them is trusted (GitHub #191). All five conditions are required
+ * of them is trusted (GitHub #191). All six conditions are required
  * with PRESENT fields — an absent field fails its comparison, so a
  * partially-populated entry is corrupt rather than partially trusted:
  *

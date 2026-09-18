@@ -45,6 +45,8 @@ const CREDENTIAL_KEYS: ReadonlySet<string> = new Set([
   "perplexity_api_key",
   "jina_api_key",
   "bocha_api_key",
+  "ncbi_api_key",
+  "openalex_api_key",
 ]);
 
 const REDACTED = "[REDACTED]";
@@ -217,6 +219,11 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   result = result.replace(/LINKUP_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   result = result.replace(/SPIDER_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   result = result.replace(/BOCHA_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  // Science credential env vars (#208): PubMed (NCBI_API_KEY) and
+  // OpenAlex (OPENALEX_API_KEY) rate-tier keys are optional but real
+  // credentials — same [=:] assignment shape as the Provider keys.
+  result = result.replace(/NCBI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/OPENALEX_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   // #180 gap 2: the lookaheads are scoped to the value token (`[^\s"]*`)
   // rather than to a bare non-space run. `\S` includes the JSON quote, so
   // `{"h":"YDC_API_KEY abcdefgh","n":1}` saw the sibling `1` across the
@@ -225,7 +232,13 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   // still crossed it.
   // #185 review: one guarded pattern, five key names — kept as a loop so
   // the lookahead/capture boundary can never drift between rows again.
-  for (const key of ["YDC_API_KEY", "YOU_API_KEY", "LINKUP_API_KEY", "SPIDER_API_KEY", "BOCHA_API_KEY"]) {
+  for (const key of [
+    "YDC_API_KEY",
+    "YOU_API_KEY",
+    "LINKUP_API_KEY",
+    "SPIDER_API_KEY",
+    "BOCHA_API_KEY",
+  ]) {
     result = result.replace(
       new RegExp(`${key}\\s+(?=[^\\s"]*\\d)(?=[^\\s"]*[A-Za-z])[^\\s"]{8,}`, "gi"),
       REDACTED,
@@ -294,6 +307,10 @@ export function configuredSecrets(env: NodeJS.ProcessEnv = process.env): string[
     env.BOCHA_API_KEY,
     env.YDC_API_KEY,
     env.YOU_API_KEY,
+    // #208: science supplier rate-tier credentials ride the same
+    // literal-value pass as the Provider credentials.
+    env.NCBI_API_KEY,
+    env.OPENALEX_API_KEY,
   ];
   return normalizeSecrets(candidates.filter((c): c is string => typeof c === "string"));
 }

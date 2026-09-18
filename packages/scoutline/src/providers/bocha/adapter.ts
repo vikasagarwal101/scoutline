@@ -57,6 +57,22 @@ import {
 
 const BOCHA_PROVIDER_ID: ProviderId = "bocha";
 
+/**
+ * The Bocha wire request's count value when the caller requested none
+ * (#211). SCHEMA documents no maximum, so requested counts pass through
+ * uncapped; values below 1 degrade to this default (they cannot be
+ * represented on the wire, and `applyCount` empties the result anyway).
+ * Both `invoke` and the cache identity resolve through this one helper
+ * so an entry's key always matches its actual wire request (PR #219
+ * review: keying on the raw requested value split byte-identical
+ * requests into distinct entries).
+ */
+const BOCHA_WIRE_DEFAULT_COUNT = 10;
+
+function resolveBochaWireCount(count: number | undefined): number {
+  return typeof count === "number" && count >= 1 ? count : BOCHA_WIRE_DEFAULT_COUNT;
+}
+
 export interface BochaAdapterDependencies {
   readonly transport?: BochaTransportDeps;
 }
@@ -154,7 +170,10 @@ export class BochaAdapter implements ProviderAdapter {
         }
       },
 
-      cacheIdentity(request: SearchRequest): SearchCacheIdentity {
+      cacheIdentity(
+        request: SearchRequest,
+        compatibility?: { readonly legacyCount?: number; readonly count?: number },
+      ): SearchCacheIdentity {
         const apiKey = requireBochaApiKey(env);
         return {
           provider: BOCHA_PROVIDER_ID,
@@ -163,11 +182,27 @@ export class BochaAdapter implements ProviderAdapter {
           request: {
             query: request.query.trim(),
             controls: request.controls,
+            // #211: the count is forwarded to the wire, so entries must
+            // partition by the RESOLVED wire count — otherwise a
+            // short-count page cached first would under-serve a later
+            // larger count. Keying on the resolved count (not the raw
+            // request value) means an explicit --count 10, a --count 0
+            // (degrades to the wire default), and an absent count all
+            // issue byte-identical wire requests and share ONE entry;
+            // the default key stays count-less to keep pre-#211
+            // entries readable (PR #219 review).
+            ...(resolveBochaWireCount(compatibility?.count) !== BOCHA_WIRE_DEFAULT_COUNT
+              ? { count: resolveBochaWireCount(compatibility?.count) }
+              : {}),
           },
         };
       },
 
-      async invoke(request: SearchRequest): Promise<readonly SearchSource[]> {
+      async invoke(
+        request: SearchRequest,
+        _signal?: AbortSignal,
+        count?: number,
+      ): Promise<readonly SearchSource[]> {
         this.validate(request);
         const apiKey = requireBochaApiKey(env);
         const controls = request.controls;
@@ -178,7 +213,10 @@ export class BochaAdapter implements ProviderAdapter {
         const params: BochaSearchParams = {
           query,
           summary: true,
-          count: 10,
+          // #211: Bocha's web-search wire accepts `count` (SCHEMA
+          // BochaSearchWireRequest), so the caller's requested count is
+          // forwarded; no documented max, so no cap.
+          count: resolveBochaWireCount(count),
           ...(controls?.recency ? { freshness: controls.recency } : {}),
         };
 

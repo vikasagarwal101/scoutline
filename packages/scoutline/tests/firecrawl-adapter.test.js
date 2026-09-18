@@ -1038,6 +1038,37 @@ describe("Firecrawl Quota Adapter", () => {
     assert.equal(cat.current.resetsAt, "2026-08-11T22:57:29.086Z");
   });
 
+  it("anchors zone-less billing-period timestamps to UTC regardless of TZ (#212)", async () => {
+    // Same defect class as SearchApi (#207): a zone-less
+    // billingPeriodEnd parsed with bare Date.parse inherits the host
+    // timezone, silently shifting resetsAt by the local offset.
+    const fn = async () =>
+      makeResponse({
+        json: {
+          success: true,
+          data: [
+            {
+              remainingCredits: 75,
+              planCredits: 100,
+              billingPeriodStart: "2026-07-11 22:57:29",
+              billingPeriodEnd: "2026-08-11 22:57:29",
+            },
+          ],
+        },
+      });
+    const prevTz = process.env.TZ;
+    process.env.TZ = "America/New_York";
+    try {
+      const descriptor = createFirecrawlDescriptor({ transport: { fetch: fn, env: {} } });
+      const adapter = descriptor.create({ env: { FIRECRAWL_API_KEY: TEST_API_KEY } });
+      const cat = (await adapter.quota.invoke()).categories[0];
+      assert.strictEqual(cat.current.resetsAt, "2026-08-11T22:57:29.000Z");
+    } finally {
+      if (prevTz === undefined) delete process.env.TZ;
+      else process.env.TZ = prevTz;
+    }
+  });
+
   it("clamps used to 0 and caps at 100% when banked credits exceed the plan", async () => {
     // Matches the live shape: remainingCredits (11003) > planCredits (1000).
     const fn = async () =>

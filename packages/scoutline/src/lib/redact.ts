@@ -47,6 +47,8 @@ const CREDENTIAL_KEYS: ReadonlySet<string> = new Set([
   "bocha_api_key",
   "searchapi_api_key",
   "serpapi_api_key",
+  "kagi_api_key",
+  "kagi_token",
   "ncbi_api_key",
   "openalex_api_key",
 ]);
@@ -70,7 +72,8 @@ const REDACTED = "[REDACTED]";
  *   - Z_AI_API_KEY, ZAI_API_KEY, MINIMAX_API_KEY, TAVILY_API_KEY,
  *     EXA_API_KEY, BRAVE_SEARCH_API_KEY, FIRECRAWL_API_KEY,
  *     YDC_API_KEY, YOU_API_KEY, LINKUP_API_KEY, SPIDER_API_KEY,
- *     BOCHA_API_KEY, SEARCHAPI_API_KEY, SERPAPI_API_KEY assignments.
+ *     BOCHA_API_KEY, SEARCHAPI_API_KEY, SERPAPI_API_KEY,
+ *     KAGI_API_KEY, KAGI_TOKEN assignments.
  *   - The literal credentials passed in `extraSecrets` (each value is
  *     replaced wherever it appears; empty strings are skipped).
  *
@@ -116,7 +119,10 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
     /(Authorization\s*:\s*)(?:Bearer|Token|ApiKey)\s+[^\s"]{8,}/gi,
     (_match, prefix: string) => prefix + REDACTED,
   );
-  result = result.replace(/(?:Bearer|Token|ApiKey)\s+([^\s"]{8,})/gi, (match, value: string) => {
+  // The lookbehind keeps a bare scheme match from starting mid-identifier
+  // (KAGI_TOKEN abc123 must not become KAGI_[REDACTED]); an env-var-name
+  // form is handled by the key-specific rows below.
+  result = result.replace(/(?<![A-Za-z0-9_])(?:Bearer|Token|ApiKey)\s+([^\s"]{8,})/gi, (match, value: string) => {
     // ponytail: quote cut defensive since regex excludes ", upgrade to AST parser if complex grammar needed
     const quoteIdx = value.indexOf('"');
     const candidate = (quoteIdx === -1 ? value : value.slice(0, quoteIdx)).replace(
@@ -134,7 +140,7 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   // ponytail: M4b escape-spanning omitted — RFC 6750 token68 and standard
   // credentials never embed escaped quotes mid-token; upgrade if exotic token grammar arises.
   result = result.replace(
-    /(?:Bearer|Token|ApiKey)\s+\\?"([^"\\\s]{8,})\\?"/gi,
+    /(?<![A-Za-z0-9_])(?:Bearer|Token|ApiKey)\s+\\?"([^"\\\s]{8,})\\?"/gi,
     (match, value: string) => {
       const candidate = value.replace(/[",.;:)\]]+$/, "");
       return CREDENTIAL_CHAR.test(candidate) ? REDACTED : match;
@@ -223,6 +229,10 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   result = result.replace(/BOCHA_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   result = result.replace(/SEARCHAPI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   result = result.replace(/SERPAPI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  // Kagi (#215): canonical KAGI_API_KEY plus the legacy KAGI_TOKEN
+  // alias accepted by providers/kagi/credentials.ts.
+  result = result.replace(/KAGI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/KAGI_TOKEN\s*[=:]\s*[^\s"]+/gi, REDACTED);
   // Science credential env vars (#208): PubMed (NCBI_API_KEY) and
   // OpenAlex (OPENALEX_API_KEY) rate-tier keys are optional but real
   // credentials — same [=:] assignment shape as the Provider keys.
@@ -234,7 +244,7 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   // closing quote and redacted a value carrying no digit of its own. The
   // capture below already terminated at `"` (#174); only the lookaheads
   // still crossed it.
-  // #185 review: one guarded pattern, seven key names — kept as a loop so
+  // #185 review: one guarded pattern, nine key names — kept as a loop so
   // the lookahead/capture boundary can never drift between rows again.
   for (const key of [
     "YDC_API_KEY",
@@ -244,6 +254,8 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
     "BOCHA_API_KEY",
     "SEARCHAPI_API_KEY",
     "SERPAPI_API_KEY",
+    "KAGI_API_KEY",
+    "KAGI_TOKEN",
   ]) {
     result = result.replace(
       new RegExp(`${key}\\s+(?=[^\\s"]*\\d)(?=[^\\s"]*[A-Za-z])[^\\s"]{8,}`, "gi"),
@@ -315,6 +327,8 @@ export function configuredSecrets(env: NodeJS.ProcessEnv = process.env): string[
     env.YOU_API_KEY,
     env.SEARCHAPI_API_KEY,
     env.SERPAPI_API_KEY,
+    env.KAGI_API_KEY,
+    env.KAGI_TOKEN,
     // #208: science supplier rate-tier credentials ride the same
     // literal-value pass as the Provider credentials.
     env.NCBI_API_KEY,

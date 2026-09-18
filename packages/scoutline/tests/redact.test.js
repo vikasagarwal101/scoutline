@@ -485,6 +485,21 @@ describe("configuredSecrets — credential discovery from environment", () => {
     }
   });
 
+  it("surfaces the kagi credentials (kagi amendment)", () => {
+    const KAGI = "kagi-live-amend-a7";
+    const TOKEN = "kagi-legacy-amend-b8";
+    for (const [name, value] of [
+      ["KAGI_API_KEY", KAGI],
+      ["KAGI_TOKEN", TOKEN],
+    ]) {
+      const secrets = configuredSecrets({ [name]: value });
+      assert.ok(
+        secrets.includes(value),
+        `configuredSecrets must include the ${name} value so it is redacted at every outward boundary`,
+      );
+    }
+  });
+
   it("omits the searchapi/serpapi credentials when not set (#216)", () => {
     const secrets = configuredSecrets({ Z_AI_API_KEY: Z_KEY });
     assert.ok(!secrets.includes("sk-absent-searchapi"));
@@ -925,6 +940,41 @@ describe("v3 provider keys (2026-08 #78)", () => {
     }
   });
 
+  it("redacts KAGI_API_KEY and KAGI_TOKEN assignments (kagi amendment)", () => {
+    assert.strictEqual(
+      redactCredentialString("KAGI_API_KEY=kagi-secret-1357"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("KAGI_TOKEN: kagi-legacy-token-2468"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("KAGI_API_KEY kagi-key-9a8b7c6d"),
+      "[REDACTED]",
+    );
+  });
+
+  it("masks kagi credential object keys by name (kagi amendment)", () => {
+    assert.deepStrictEqual(
+      redactSecrets({ kagi_api_key: "kagi-secret-1357" }),
+      { kagi_api_key: "[REDACTED]" },
+    );
+    assert.deepStrictEqual(
+      redactSecrets({ KAGI_TOKEN: "kagi-legacy-token-2468" }),
+      { KAGI_TOKEN: "[REDACTED]" },
+    );
+  });
+
+  it("leaves ordinary prose naming the kagi variables intact (kagi amendment, #44 bar)", () => {
+    for (const prose of [
+      "KAGI_API_KEY or KAGI_TOKEN environment variable is required",
+      "KAGI_API_KEY is not set",
+    ]) {
+      assert.strictEqual(redactCredentialString(prose), prose);
+    }
+  });
+
   it("redacts whitespace-separated v3 key assignments (x-api-key separator convention)", () => {
     assert.strictEqual(
       redactCredentialString("SPIDER_API_KEY sk-abc123xyz"),
@@ -1209,6 +1259,7 @@ describe("quoted-scheme recovery and family-wide boundary invariants (#171 revie
       "EXA_API_KEY", "BRAVE_SEARCH_API_KEY", "FIRECRAWL_API_KEY", "PARALLEL_API_KEY",
       "PERPLEXITY_API_KEY", "JINA_API_KEY", "YDC_API_KEY", "YOU_API_KEY",
       "LINKUP_API_KEY", "SPIDER_API_KEY", "SEARCHAPI_API_KEY", "SERPAPI_API_KEY",
+      "KAGI_API_KEY", "KAGI_TOKEN",
     ];
 
     for (const key of envVars) {
@@ -1245,6 +1296,8 @@ describe("quoted-scheme recovery and family-wide boundary invariants (#171 revie
       "SPIDER_API_KEY",
       "SEARCHAPI_API_KEY",
       "SERPAPI_API_KEY",
+      "KAGI_API_KEY",
+      "KAGI_TOKEN",
     ];
     for (const key of wsEnvVars) {
       // Whitespace syntax in JSON (#174)

@@ -19,6 +19,12 @@ import {
   requireKagiApiKey,
 } from "../dist/providers/kagi/credentials.js";
 import { ConfigurationError } from "../dist/lib/errors.js";
+import { createKagiDescriptor } from "../dist/providers/kagi/adapter.js";
+import {
+  QuotaError,
+  UnsupportedOptionError,
+  ValidationError,
+} from "../dist/lib/errors.js";
 
 describe("kagi credentials", () => {
   it("kagi credentials prefer KAGI_API_KEY over KAGI_TOKEN", () => {
@@ -45,6 +51,120 @@ describe("kagi credentials", () => {
       h1,
       crypto.createHash("sha256").update("key-one").digest("hex"),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Search fixture + fetch recorder (T2)
+// ---------------------------------------------------------------------------
+
+const KAGI_SEARCH_RAW = {
+  meta: { id: "kagi_search_uuid_001", node: "us-east", ms: 125 },
+  data: [
+    { t: 0, rank: 1, url: "https://docs.kernel.org/scheduler/index.html", title: "Linux Kernel Scheduler Documentation", snippet: "The Linux scheduler controls CPU task scheduling across cores...", published: "2026-06-15T00:00:00Z" },
+    { t: 1, list: ["linux scheduler benchmarks", "cfs scheduler tuning"] },
+  ],
+};
+
+function makeFetchRecorder(responses = []) {
+  const calls = [];
+  const queue = responses.slice();
+  const fetchFn = async (url, init) => {
+    calls.push({ url: String(url), init });
+    const res = queue.shift() ?? jsonRes(KAGI_SEARCH_RAW);
+    return res;
+  };
+  fetchFn.calls = calls;
+  return fetchFn;
+}
+
+describe("kagi search", () => {
+  it("search validate rejects recency location contentSize type before fetch", () => {
+    const fetchFn = makeFetchRecorder();
+    const adapter = createKagiDescriptor({ transport: { fetch: fetchFn } }).create({
+      env: { KAGI_API_KEY: "k" },
+    });
+    for (const option of ["recency", "location", "contentSize", "type"]) {
+      try {
+        adapter.search.validate({ query: "q", controls: { [option]: "x" } });
+        assert.fail(`expected UnsupportedOptionError for ${option}`);
+      } catch (e) {
+        assert.ok(e instanceof UnsupportedOptionError, `${option}: wrong type ${e}`);
+        assert.equal(e.provider, "kagi");
+        assert.equal(e.capability, "search");
+        assert.equal(e.option, option);
+      }
+    }
+    assert.throws(
+      () => adapter.search.validate({ query: "   " }),
+      ValidationError,
+    );
+    assert.equal(fetchFn.calls.length, 0);
+  });
+
+  it("search cacheIdentity returns provider kagi and 64-char fingerprint without fetching", () => {
+    const fetchFn = makeFetchRecorder();
+    const adapter = createKagiDescriptor({ transport: { fetch: fetchFn } }).create({
+      env: { KAGI_API_KEY: "k" },
+    });
+    const id = adapter.search.cacheIdentity({ query: "q" });
+    assert.equal(id.provider, "kagi");
+    assert.equal(id.capability, "search");
+    assert.equal(id.credentialFingerprint.length, 64);
+    assert.equal(fetchFn.calls.length, 0);
+  });
+
+  it("search GET v1 drops t===1 and sends Bot header plus site:", async () => {
+    const fetchFn = makeFetchRecorder();
+    const adapter = createKagiDescriptor({ transport: { fetch: fetchFn } }).create({
+      env: { KAGI_API_KEY: "k" },
+    });
+    const rows = await adapter.search.invoke({
+      query: "linux scheduler",
+      controls: { domain: "kernel.org" },
+    });
+    assert.equal(fetchFn.calls.length, 1);
+    const parsed = new URL(fetchFn.calls[0].url);
+    assert.equal(`${parsed.origin}${parsed.pathname}`, "https://kagi.com/api/v1/search");
+    assert.match(parsed.searchParams.get("q"), /site:kernel\.org/);
+    assert.equal(parsed.searchParams.get("limit"), "10");
+    assert.equal(header(fetchFn.calls[0].init, "Authorization"), "Bot k");
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].url, "https://docs.kernel.org/scheduler/index.html");
+    assert.equal(rows[0].title, "Linux Kernel Scheduler Documentation");
+  });
+
+  it("search topic news uses enrich/news", async () => {
+    const fetchFn = makeFetchRecorder();
+    const adapter = createKagiDescriptor({ transport: { fetch: fetchFn } }).create({
+      env: { KAGI_API_KEY: "k" },
+    });
+    await adapter.search.invoke({ query: "q", controls: { topic: "news" } });
+    assert.match(fetchFn.calls[0].url, /\/api\/v0\/enrich\/news/);
+  });
+
+  it("HTTP 401 maps to ConfigurationError", async () => {
+    const fetchFn = makeFetchRecorder([jsonRes(KAGI_SEARCH_RAW, 401)]);
+    const adapter = createKagiDescriptor({ transport: { fetch: fetchFn } }).create({
+      env: { KAGI_API_KEY: "k" },
+    });
+    await assert.rejects(
+      adapter.search.invoke({ query: "q" }),
+      (e) => {
+        assert.ok(e instanceof ConfigurationError);
+        assert.equal(e.code, "CONFIGURATION_ERROR");
+        assert.equal(e.exitCode, 3);
+        return true;
+      },
+    );
+  });
+
+  it("HTTP 403 maps to QuotaError", async () => {
+    const fetchFn = makeFetchRecorder([jsonRes(KAGI_SEARCH_RAW, 403)]);
+    const adapter = createKagiDescriptor({ transport: { fetch: fetchFn } }).create({
+      env: { KAGI_API_KEY: "k" },
+    });
+    await assert.rejects(adapter.search.invoke({ query: "q" }), QuotaError);
   });
 });
 

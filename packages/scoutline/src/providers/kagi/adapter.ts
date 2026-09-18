@@ -1,0 +1,195 @@
+/**
+ * Kagi Provider Adapter.
+ *
+ * Implements Search for the Kagi API (GET /api/v1/search, or
+ * GET /api/v0/enrich/news when controls.topic === "news").
+ *
+ * Wire response is `{ meta, data: [...] }`. Only `t === 0` rows with a
+ * truthy url are results; `t: 1` rows are related-query suggestions and
+ * MUST be dropped (SCHEMA.md — pinned).
+ *
+ * Field mapping:
+ *   item.title      -> title
+ *   item.url        -> url
+ *   item.snippet    -> summary
+ *   item.published  -> date (when present)
+ *   source          -> "kagi" (constant)
+ *
+ * Control mapping (SearchControls → wire):
+ *   domain      -> `site:<domain> ` query prefix
+ *   topic:news  -> v0 enrich/news endpoint (same q/limit)
+ *   recency     -> REJECTED (UnsupportedOptionError)
+ *   location    -> REJECTED (UnsupportedOptionError)
+ *   contentSize -> REJECTED (UnsupportedOptionError)
+ *   type        -> REJECTED (UnsupportedOptionError)
+ *
+ * Auth is `Authorization: Bot <key>` — Kagi wire truth, not Bearer.
+ * Diagnostics capability slot arrives in Task 3.
+ */
+
+import type { ProviderAdapter, ProviderContext, ProviderDescriptor, ProviderId } from "../types.js";
+import type {
+  SearchCacheIdentity,
+  SearchRequest,
+  SearchSource,
+} from "../../capabilities/search.js";
+import {
+  ApiError,
+  ConfigurationError,
+  NetworkError,
+  QuotaError,
+  TimeoutError,
+  UnsupportedOptionError,
+  ValidationError,
+} from "../../lib/errors.js";
+import {
+  hashKagiApiKey,
+  isKagiConfigured,
+  requireKagiApiKey,
+} from "./credentials.js";
+import { fetchKagiSearch, fetchKagiNews, type KagiTransportDeps } from "./client.js";
+
+// ponytail: PROVIDER_IDS in ../types.ts has no "kagi" seat yet; adding it is
+// a registry task (Task 3+). Ceiling: remove the cast when the seat lands.
+const KAGI_PROVIDER_ID = "kagi" as unknown as ProviderId;
+
+export interface KagiAdapterDependencies {
+  readonly transport?: KagiTransportDeps;
+}
+
+/**
+ * Normalize a Provider failure with sanitized messages. Raw response
+ * bodies and envelope `msg` strings never cross the adapter boundary.
+ */
+function normalizeKagiError(error: unknown): Error {
+  // QuotaError pass-through — terminal retry guarantee preserved.
+  if (error instanceof QuotaError) return error;
+  if (error instanceof ValidationError || error instanceof ConfigurationError) {
+    return error;
+  }
+  if (error instanceof NetworkError) {
+    return new NetworkError("Kagi network error");
+  }
+  if (error instanceof TimeoutError) {
+    const help = error.help;
+    if (help && help.includes("KAGI_")) {
+      return new TimeoutError(error.durationMs, help);
+    }
+    return new TimeoutError(
+      error.durationMs,
+      "Try again or increase timeout with KAGI_TIMEOUT env var",
+    );
+  }
+  if (error instanceof ApiError) {
+    const statusCode = error.statusCode || 500;
+    if (statusCode === 429) {
+      return new ApiError("Kagi rate limit exceeded", 429);
+    }
+    return new ApiError("Kagi request failed", statusCode);
+  }
+  return new ApiError("Kagi request failed", 500);
+}
+
+function normalizeSearchResults(response: {
+  data?: readonly { t?: number; url?: string; title?: string; snippet?: string; published?: string }[];
+}): SearchSource[] {
+  // Fail closed (SCHEMA.md): results live at data[] ONLY — envelope
+  // drift must reject, never degrade to a silent empty success.
+  const data = response.data;
+  if (!Array.isArray(data)) {
+    throw new ApiError("Kagi returned a malformed response envelope", 502);
+  }
+  return data
+    .filter((item) => item.t === 0 && item.url)
+    .map((item) => {
+      const result: SearchSource = {
+        title: item.title ?? "",
+        url: item.url!,
+        summary: item.snippet ?? "",
+        source: "kagi",
+      };
+      if (item.published) result.date = item.published;
+      return result;
+    });
+}
+
+export class KagiAdapter implements ProviderAdapter {
+  readonly id: ProviderId = KAGI_PROVIDER_ID;
+  readonly search;
+
+  constructor(
+    private readonly context: ProviderContext,
+    deps: KagiAdapterDependencies = {},
+  ) {
+    const transport = deps.transport;
+    const env = context.env;
+
+    this.search = {
+      validate(request: SearchRequest): void {
+        if (!request.query || request.query.trim().length === 0) {
+          throw new ValidationError("Search query must not be empty");
+        }
+        const controls = request.controls;
+        if (controls?.type !== undefined) {
+          throw new UnsupportedOptionError("kagi", "search", "type");
+        }
+        if (controls?.location !== undefined) {
+          throw new UnsupportedOptionError("kagi", "search", "location");
+        }
+        if (controls?.contentSize !== undefined) {
+          throw new UnsupportedOptionError("kagi", "search", "contentSize");
+        }
+        if (controls?.recency !== undefined) {
+          throw new UnsupportedOptionError("kagi", "search", "recency");
+        }
+      },
+
+      cacheIdentity(request: SearchRequest): SearchCacheIdentity {
+        const apiKey = requireKagiApiKey(env);
+        return {
+          provider: KAGI_PROVIDER_ID,
+          capability: "search",
+          credentialFingerprint: hashKagiApiKey(apiKey),
+          request: {
+            query: request.query.trim(),
+            controls: request.controls,
+          },
+        };
+      },
+
+      async invoke(request: SearchRequest): Promise<readonly SearchSource[]> {
+        this.validate(request);
+        const apiKey = requireKagiApiKey(env);
+        const controls = request.controls;
+        let query = request.query.trim();
+        if (controls?.domain) {
+          query = `site:${controls.domain} ${query}`;
+        }
+        const params = { query, limit: 10 };
+
+        // Only the transport call is rewrapped (raw-body sanitization);
+        // normalizeSearchResults fails closed with a curated ApiError
+        // that must surface verbatim.
+        const response = await (controls?.topic === "news"
+          ? fetchKagiNews(apiKey, params, transport)
+          : fetchKagiSearch(apiKey, params, transport)
+        ).catch((error) => {
+          throw normalizeKagiError(error);
+        });
+        return normalizeSearchResults(response);
+      },
+    };
+  }
+}
+
+export function createKagiDescriptor(deps: KagiAdapterDependencies = {}): ProviderDescriptor {
+  return {
+    id: KAGI_PROVIDER_ID,
+    credentialEnvVars: ["KAGI_API_KEY", "KAGI_TOKEN"],
+    isConfigured: isKagiConfigured,
+    capabilities(): ReadonlySet<"search"> {
+      return new Set(["search"] as const);
+    },
+    create: (context: ProviderContext) => new KagiAdapter(context, deps),
+  };
+}

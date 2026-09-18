@@ -198,7 +198,7 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   // as the key/value separator. The trailing `\S+` consumes the secret
   // value; the entire `key + separator + value` span is replaced with
   // the redaction marker.
-  result = result.replace(/x-api-key[\s=:]+[^\s,;"'`]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])x-api-key[\s=:]+[^\s,;"'`]+/gi, REDACTED);
   // F5 (code-review-baseline): add `:` as a separator so the JSON/YAML/
   // HTTP-header form `Z_AI_API_KEY: sk-foo` is redacted, not just the
   // `=` shell form. Bare whitespace is intentionally NOT a separator
@@ -207,37 +207,37 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   // required") and a whitespace separator would over-redact that prose.
   // The `\s*[=:]\s*` class is a strict superset of the prior `\s*=\s*`.
   // Value span `[^\s"]+` terminates at `"` to preserve JSON string boundaries.
-  result = result.replace(/Z_AI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/ZAI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/MINIMAX_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/TAVILY_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/EXA_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/BRAVE_SEARCH_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/FIRECRAWL_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/PARALLEL_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/PERPLEXITY_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/JINA_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])Z_AI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])ZAI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])MINIMAX_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])TAVILY_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])EXA_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])BRAVE_SEARCH_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])FIRECRAWL_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])PARALLEL_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])PERPLEXITY_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])JINA_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   // v3 providers (#78): incumbent [=:] shape plus the x-api-key
   // whitespace-separator convention, guarded by the #44 true-credential
   // bar (8+ chars containing both a letter and a digit) so ordinary
   // prose naming the variable ("LINKUP_API_KEY is not set") stays intact.
   // Value span `[^\s"]{8,}` terminates at `"` to preserve JSON string boundaries (#174).
-  result = result.replace(/YDC_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/YOU_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/LINKUP_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/SPIDER_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/BOCHA_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/SEARCHAPI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/SERPAPI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])YDC_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])YOU_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])LINKUP_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])SPIDER_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])BOCHA_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])SEARCHAPI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])SERPAPI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   // Kagi (#215): canonical KAGI_API_KEY plus the legacy KAGI_TOKEN
   // alias accepted by providers/kagi/credentials.ts.
-  result = result.replace(/KAGI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/KAGI_TOKEN\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])KAGI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])KAGI_TOKEN\s*[=:]\s*[^\s"]+/gi, REDACTED);
   // Science credential env vars (#208): PubMed (NCBI_API_KEY) and
   // OpenAlex (OPENALEX_API_KEY) rate-tier keys are optional but real
   // credentials — same [=:] assignment shape as the Provider keys.
-  result = result.replace(/NCBI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
-  result = result.replace(/OPENALEX_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])NCBI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])OPENALEX_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   // #180 gap 2: the lookaheads are scoped to the value token (`[^\s"]*`)
   // rather than to a bare non-space run. `\S` includes the JSON quote, so
   // `{"h":"YDC_API_KEY abcdefgh","n":1}` saw the sibling `1` across the
@@ -258,7 +258,7 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
     "KAGI_TOKEN",
   ]) {
     result = result.replace(
-      new RegExp(`${key}\\s+(?=[^\\s"]*\\d)(?=[^\\s"]*[A-Za-z])[^\\s"]{8,}`, "gi"),
+      new RegExp(`(?<![A-Za-z0-9_])${key}\\s+(?=[^\\s"]*\\d)(?=[^\\s"]*[A-Za-z])[^\\s"]{8,}`, "gi"),
       REDACTED,
     );
   }

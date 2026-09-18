@@ -975,6 +975,38 @@ describe("v3 provider keys (2026-08 #78)", () => {
     }
   });
 
+  it("leaves identifier-prefixed key names fully intact — no partial MY_[REDACTED] (PR #220 review)", () => {
+    for (const line of [
+      "MY_SEARCHAPI_API_KEY=searchapi-secret-6789",
+      "MY_SERPAPI_API_KEY: serpapi-secret-4321",
+      "MY_TAVILY_API_KEY=tavily-secret-1",
+      "MY_KAGI_API_KEY=kagi-secret-1357",
+      "PREFIXED_KAGI_TOKEN kagi-legacy-2468",
+      "WRAPPED_YDC_API_KEY ydc-AA11bb22cc",
+    ]) {
+      assert.strictEqual(
+        redactCredentialString(line),
+        line,
+        `prefixed identifier form must not partially redact: ${line}`,
+      );
+    }
+  });
+
+  it("still redacts unprefixed key names after the identifier-start boundary (PR #220 review)", () => {
+    assert.strictEqual(
+      redactCredentialString("SEARCHAPI_API_KEY=searchapi-secret-6789"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("KAGI_TOKEN kagi-legacy-2468"),
+      "[REDACTED]",
+    );
+    assert.strictEqual(
+      redactCredentialString("TAVILY_API_KEY: sk-tvly-9988"),
+      "[REDACTED]",
+    );
+  });
+
   it("redacts whitespace-separated v3 key assignments (x-api-key separator convention)", () => {
     assert.strictEqual(
       redactCredentialString("SPIDER_API_KEY sk-abc123xyz"),

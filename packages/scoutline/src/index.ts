@@ -294,7 +294,8 @@ advertises and supplies search, reader, and research; Parallel AI
 advertises search, research, and reader; Perplexity advertises search
 and research; Jina AI advertises search, reader, and research (keyless
 supported); You.com advertises search, reader, and research; Linkup advertises search, reader, and research; Spider.cloud
-advertises search, reader, crawl, and map; MiniMax advertises and supplies none of those
+advertises search, reader, crawl, and map; Bocha AI advertises and
+supplies search; MiniMax advertises and supplies none of those
 Provider-only Capabilities.
 Provider fallback is always-on by default (0.11.0+): selecting a
 non-supplier emits a stderr notice and silently reroutes to the next

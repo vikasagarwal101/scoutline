@@ -223,7 +223,7 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   // closing quote and redacted a value carrying no digit of its own. The
   // capture below already terminated at `"` (#174); only the lookaheads
   // still crossed it.
-  // #185 review: one guarded pattern, four key names — kept as a loop so
+  // #185 review: one guarded pattern, five key names — kept as a loop so
   // the lookahead/capture boundary can never drift between rows again.
   for (const key of ["YDC_API_KEY", "YOU_API_KEY", "LINKUP_API_KEY", "SPIDER_API_KEY", "BOCHA_API_KEY"]) {
     result = result.replace(

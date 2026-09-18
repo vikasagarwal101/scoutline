@@ -113,8 +113,8 @@ The fresh flow:
     skill copied into that tool's home. Choices persist to the
     additive agentRules config key; undetected tools never prompt;
     detected-but-unsupported homes (cursor) print an honest notice.
-  - shows the registry-derived provider checklist (all 12 built-in
-    Providers, rendered in registry order) with NO pre-checked
+  - shows the registry-derived provider checklist (every built-in
+    Provider, rendered in registry order) with NO pre-checked
     defaults — every provider has equal weight
   - for each selected provider, asks whether you have a key, takes a
     hidden input, and performs a single inline validation probe

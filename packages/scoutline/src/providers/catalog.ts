@@ -24,10 +24,10 @@ export const SHARED_PROVIDER_IDS: readonly ProviderId[] = PROVIDER_IDS.filter(
 );
 
 /** Full registry, pipe-separated in parens: `(zai | minimax | … | europepmc)`. */
-export const PROVIDER_PIPE_ENUM = `(${PROVIDER_IDS.slice(0, 1)} | ${PROVIDER_IDS.slice(1).join(" | ")})`;
+export const PROVIDER_PIPE_ENUM = `(${PROVIDER_IDS.join(" | ")})`;
 
 /** Shared 15-id subset, pipe-separated in parens. */
-export const SHARED_PROVIDER_PIPE_ENUM = `(${SHARED_PROVIDER_IDS.slice(0, 1)} | ${SHARED_PROVIDER_IDS.slice(1).join(" | ")})`;
+export const SHARED_PROVIDER_PIPE_ENUM = `(${SHARED_PROVIDER_IDS.join(" | ")})`;
 
 /** Full registry, comma-separated in parens (doctor style). */
 export const PROVIDER_COMMA_ENUM = `(${PROVIDER_IDS.join(", ")})`;

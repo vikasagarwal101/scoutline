@@ -48,9 +48,11 @@ Run `npx scoutline init` once to record API keys in
 `~/.scoutline/config.json` (mode 0600). The wizard:
 
 - offers to import a key already present in your environment;
-- walks a provider checklist (Z.AI, MiniMax, Tavily, Exa, Brave,
-  Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup,
-  Spider.cloud, Bocha AI, SearchApi.io, and Kagi — none pre-checked);
+- walks a provider checklist covering every registry entry (Z.AI,
+  MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity,
+  Jina AI, You.com, Linkup, Spider.cloud, Bocha AI, SearchApi.io,
+  Kagi, and the five keyless science suppliers — arXiv, OpenAlex,
+  Crossref, PubMed, and Europe PMC — none pre-checked);
 - validates each key with a single inline probe against an ephemeral
   environment (the candidate never touches disk until the final
   atomic write);

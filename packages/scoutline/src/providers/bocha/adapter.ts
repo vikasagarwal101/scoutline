@@ -55,10 +55,7 @@ import {
   type BochaTransportDeps,
 } from "./client.js";
 
-// "bocha" joins PROVIDER_IDS when the registry wires this descriptor
-// (PLAN Task 5); until then the literal is widened to keep this module
-// compiling inside the ProviderId union.
-const BOCHA_PROVIDER_ID = "bocha" as unknown as ProviderId;
+const BOCHA_PROVIDER_ID: ProviderId = "bocha";
 
 export interface BochaAdapterDependencies {
   readonly transport?: BochaTransportDeps;

@@ -53,6 +53,7 @@ export const PROVIDER_IDS = [
   "you",
   "linkup",
   "spider",
+  "bocha",
   "arxiv",
   "openalex",
   "crossref",

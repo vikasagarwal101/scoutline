@@ -512,6 +512,11 @@ export const PROVIDER_AUTHORITY_POLICIES: readonly ProviderAuthorityPolicy[] = [
     reason:
       "Spider.cloud exposes GET /data/credits as an exact credit remaining balance (limit unknown); not a percentage-bounded plan signal.",
   },
+  {
+    provider: "bocha",
+    kind: "always-unknown",
+    reason: "Bocha AI does not advertise a quota capability.",
+  },
   // Science suppliers (D5 pre-merge exclusion): keyless scholarly
   // indexes with no spend signal — excluded from quota-snapshot
   // availability ranking in v1; no CAPABILITY_MAPPING rows exist.

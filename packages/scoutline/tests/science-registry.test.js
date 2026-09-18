@@ -56,6 +56,7 @@ const TWELVE = [
   "you",
   "linkup",
   "spider",
+  "bocha",
 ];
 const SCIENCE_IDS = ["arxiv", "openalex", "crossref", "pubmed", "europepmc"];
 const EXPECTED_17 = [...TWELVE, ...SCIENCE_IDS];
@@ -245,7 +246,7 @@ describe("RESEARCH_HELP provider enumeration (T2 literal surface; review rounds 
     // guaranteed-failing pin (or a credit-consuming reroute under
     // fallback). Same ruling as SEARCH_HELP/quota/map.
     const expected =
-      "(zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | you | linkup | spider)";
+      "(zai | minimax | tavily | exa | brave | firecrawl | parallel | perplexity | jina | you | linkup | spider | bocha)";
     assert.ok(
       RESEARCH_HELP.includes(expected),
       `RESEARCH_HELP --provider list must be the 12-id shared list: ${expected}`,

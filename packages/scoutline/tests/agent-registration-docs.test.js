@@ -84,7 +84,10 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // Rebaselined at #184: all npx@version invocations replaced with the
 // installed `scoutline` CLI (the agent-registration deployment model
 // version-locks skill to binary; the npx pin fought the refresh system).
-const SKILL_BODY_SHA256 = "729df0875f2f637dcaa20a10cfb4e5c3e01297ffcd8e898463f9d1118cb46198";
+// Rebaselined for the Bocha AI provider: the capability matrix gained
+// the Bocha AI provider COLUMN (data column, registry-derived — the
+// bocha same-commit docs edit). No agent-facing body copy changed.
+const SKILL_BODY_SHA256 = "3c7e7fc769f56edac34057b660a23513f442a92c7e2ad02bd5a025a52ec57f61";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

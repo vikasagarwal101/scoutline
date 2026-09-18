@@ -243,7 +243,7 @@ Usage: scoutline <command> [args] [options]
 
 Commands:
   vision   Image and video analysis (Z.AI; MiniMax for interpret-image)
-  search   Real-time web search (shared: all 12 Providers; --topic
+  search   Real-time web search (shared: all 13 Providers; --topic
            honored by every Provider)
   read     Fetch and parse web pages (Provider Capability; Z.AI, Tavily,
            Exa, Firecrawl, Parallel, Jina, You.com, Linkup, and Spider.cloud supply it)  crawl    Crawl a website from a starting URL (Provider Capability;

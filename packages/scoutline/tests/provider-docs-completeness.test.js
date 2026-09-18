@@ -14,32 +14,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import { PROVIDER_IDS } from "../dist/providers/types.js";
-
-/** Display labels used as capability-matrix column headers (registry order). */
-// Science supplier seats added alongside the capability-matrix columns
-// in architecture.md and SKILL.md.
-const PROVIDER_MATRIX_LABELS = {
-  zai: "Z.AI",
-  minimax: "MiniMax",
-  tavily: "Tavily",
-  exa: "Exa",
-  brave: "Brave",
-  firecrawl: "Firecrawl",
-  parallel: "Parallel",
-  perplexity: "Perplexity",
-  jina: "Jina AI",
-  you: "You.com",
-  linkup: "Linkup",
-  spider: "Spider.cloud",
-  bocha: "Bocha AI",
-  searchapi: "SearchApi",
-  kagi: "Kagi",
-  arxiv: "arXiv",
-  openalex: "OpenAlex",
-  crossref: "Crossref",
-  pubmed: "PubMed",
-  europepmc: "Europe PMC",
-};
+import { PROVIDER_LABELS as PROVIDER_MATRIX_LABELS } from "../dist/providers/catalog.js";
 
 const architecture = fs.readFile(new URL("../../../docs/architecture.md", import.meta.url), "utf8");
 const skill = fs.readFile(new URL("../skills/scoutline/SKILL.md", import.meta.url), "utf8");

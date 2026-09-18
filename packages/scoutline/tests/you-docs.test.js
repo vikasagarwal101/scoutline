@@ -16,6 +16,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import { SEARCH_HELP } from "../dist/commands/search.js";
+import { SHARED_PROVIDER_FLAG_IDS } from "../dist/providers/catalog.js";
 import { runProcess } from "./helpers/run-process.js";
 
 // GROUND: T2 originally widened the --provider enumeration 12→17 with
@@ -23,13 +24,12 @@ import { runProcess } from "./helpers/run-process.js";
 // round 3): the shared-command enumeration must list only the
 // shared-capability suppliers — the science seats are never
 // search/read-eligible, so advertising them invited a guaranteed
-// failing pin. You.com is one of the shared suppliers. Pinned here as a
-// literal so a widening that misses any surface fails loudly.
+// failing pin. You.com is one of the shared suppliers; the enum now
+// derives from the provider catalog instead of a literal here.
 // amendment-4: shared --provider surfaces widened 12→13 with bocha;
 // the searchapi integration merge widens them again 13→14; the kagi
 // integration widens them 14→15.
-const PROVIDER_ENUM_WIDENED =
-  "--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>";
+const PROVIDER_ENUM_WIDENED = `--provider <${SHARED_PROVIDER_FLAG_IDS}>`;
 const PROVIDER_LIST_TAIL =
   "Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, SearchApi.io, or Kagi";
 

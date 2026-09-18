@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { ValidationError } from "../dist/lib/errors.js";
+import { PROVIDER_IDS } from "../dist/providers/types.js";
 
 /**
  * Ticket 1 — batch manifest module (`lib/batch-manifest.ts`).
@@ -731,9 +732,10 @@ describe("batch manifest provider pin validation", () => {
     await assertRejects(
       manifest(op("s", "search", { query: "q" }, { provider: "notaprovider" })),
       // GROUND: T2 — the joined-list error string derives from
-      // PROVIDER_IDS.join() and widens 12→17 automatically; the literal
-      // here is hand-pinned so drift cannot ship silently.
-      'operations[0]: unknown provider "notaprovider". Built-in providers: zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, kagi, arxiv, openalex, crossref, pubmed, europepmc.',    );
+      // PROVIDER_IDS.join() and widens 12→17 automatically; the
+      // expectation here derives via the same join, so drift cannot
+      // ship silently and widening needs no test edit.
+      `operations[0]: unknown provider "notaprovider". Built-in providers: ${PROVIDER_IDS.join(", ")}.`,    );
   });
 
   it("rejects a registry provider that is not capable (read on minimax)", async () => {

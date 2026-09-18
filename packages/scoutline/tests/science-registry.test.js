@@ -43,24 +43,13 @@ import { RESEARCH_HELP } from "../dist/commands/research.js";
 // this pin (T2: "PROVIDER_IDS insertion order stays the D2 listing;
 // openalex-first is the science fan-out arm order (D5), implemented in
 // the executor").
-const SHARED_IDS = [
-  "zai",
-  "minimax",
-  "tavily",
-  "exa",
-  "brave",
-  "firecrawl",
-  "parallel",
-  "perplexity",
-  "jina",
-  "you",
-  "linkup",
-  "spider",
-  "bocha",
-  "searchapi",
-  "kagi",
-];
 const SCIENCE_IDS = ["arxiv", "openalex", "crossref", "pubmed", "europepmc"];
+// SHARED_IDS derives as the non-science partition of the registry; the
+// literal SCIENCE_IDS above plus the [...SHARED_IDS, ...SCIENCE_IDS]
+// deepEqual below still pin that science ids occupy the registry tail
+// in D2 order. Full registry order stays pinned by
+// adapter-conformance.test.js.
+const SHARED_IDS = PROVIDER_IDS.filter((id) => !SCIENCE_IDS.includes(id));
 const EXPECTED_IDS = [...SHARED_IDS, ...SCIENCE_IDS];
 
 describe("science registry seats — PROVIDER_IDS and BUILT_IN registry (T2 bullet 1; D2)", () => {

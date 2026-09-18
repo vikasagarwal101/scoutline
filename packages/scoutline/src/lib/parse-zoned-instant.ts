@@ -10,7 +10,8 @@
  * yields `NaN` (callers omit the field).
  */
 export function parseZonedInstant(value: string): number {
-  const ZONELESS_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
-  const normalized = ZONELESS_RE.test(value) ? `${value.replace(" ", "T")}Z` : value;
+  const ZONELESS_RE =
+    /^\s*\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?\s*$/; // #217: optional seconds + trim
+  const normalized = ZONELESS_RE.test(value) ? `${value.trim().replace(" ", "T")}Z` : value;
   return Date.parse(normalized);
 }

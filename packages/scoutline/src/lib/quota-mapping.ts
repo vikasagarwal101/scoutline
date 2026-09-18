@@ -531,6 +531,11 @@ export const PROVIDER_AUTHORITY_POLICIES: readonly ProviderAuthorityPolicy[] = [
     kind: "mapped",
     reason: "SearchApi.io exposes GET /api/v1/me remaining credits.",
   },
+  {
+    provider: "kagi",
+    kind: "always-unknown",
+    reason: "Kagi does not advertise a quota capability.",
+  },
   // Science suppliers (D5 pre-merge exclusion): keyless scholarly
   // indexes with no spend signal — excluded from quota-snapshot
   // availability ranking in v1; no CAPABILITY_MAPPING rows exist.

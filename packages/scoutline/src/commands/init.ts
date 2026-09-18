@@ -289,6 +289,12 @@ const PROVIDER_PROMPT_META: Record<ProviderId, ProviderPromptMeta> = {
     registrationUrl: "https://www.searchapi.io/",
     probeCostsCredit: false,
   },
+  kagi: {
+    label: "Kagi",
+    envVar: "KAGI_API_KEY",
+    registrationUrl: "https://kagi.com/settings/api",
+    probeCostsCredit: true,
+  },
   // Science suppliers — keyless by default. The trio (arxiv, crossref,
   // europepmc) carries no credential model at all; openalex and pubmed
   // accept an optional free key. T2 owns the rows and the minimum

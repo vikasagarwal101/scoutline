@@ -51,9 +51,7 @@ import {
 import { fetchKagiSearch, fetchKagiNews, type KagiTransportDeps } from "./client.js";
 import { createKagiDiagnosticsCapability } from "./diagnostics.js";
 
-// ponytail: PROVIDER_IDS in ../types.ts has no "kagi" seat yet; adding it is
-// a registry task (Task 3+). Ceiling: remove the cast when the seat lands.
-const KAGI_PROVIDER_ID = "kagi" as unknown as ProviderId;
+const KAGI_PROVIDER_ID: ProviderId = "kagi";
 
 export interface KagiAdapterDependencies {
   readonly transport?: KagiTransportDeps;

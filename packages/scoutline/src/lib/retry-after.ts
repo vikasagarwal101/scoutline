@@ -48,10 +48,20 @@ function parseDeltaSeconds(raw: string): number | undefined {
  * this is a grammar check, not a heuristic.
  */
 function parseHttpDate(raw: string, now: () => number): number | undefined {
-  if (/^[+-]?[\d.]/.test(raw.trim())) {
+  // #197 review: validate HTTP-date grammar BEFORE Date.parse — the
+  // JS parser accepts non-HTTP forms like "September 18, 2026" that
+  // RFC 9110 Retry-After never carries.
+  const trimmed = raw.trim();
+  if (/^[+-]?[\d.]/.test(trimmed)) {
     return undefined;
   }
-  const at = Date.parse(raw);
+  // RFC 9110 IMF-fixdate / RFC 850 / asctime — the three HTTP-date forms
+  const HTTP_DATE_RE =
+    /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s\d{2}\s(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s\d{4}\s\d{2}:\d{2}:\d{2}\sGMT$|^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s\d{2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{2}\s\d{2}:\d{2}:\d{2}\sGMT$|^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s\d{2}:\d{2}:\d{2}\s\d{4}$/;
+  if (!HTTP_DATE_RE.test(trimmed)) {
+    return undefined;
+  }
+  const at = Date.parse(trimmed);
   if (Number.isNaN(at)) {
     return undefined;
   }
@@ -108,9 +118,7 @@ export function parseRetryAfterHintMs(
  * read-and-wrap helpers — hoisted here so the forwarding rule changes in
  * exactly one place.
  */
-export function retryHintOptionsFromError(
-  error: unknown,
-): { retryAfterMs?: number } {
+export function retryHintOptionsFromError(error: unknown): { retryAfterMs?: number } {
   const hint = (error as { retryAfterMs?: unknown } | null | undefined)?.retryAfterMs;
   return retryHintOptions(typeof hint === "number" ? hint : undefined);
 }
@@ -122,8 +130,6 @@ export function retryHintOptionsFromError(
  * (The instance itself still materializes an own `retryAfterMs: undefined`
  * — the constructor's standing idiom, same as `statusCode`/`help`.)
  */
-export function retryHintOptions(
-  retryAfterMs: number | undefined,
-): { retryAfterMs?: number } {
+export function retryHintOptions(retryAfterMs: number | undefined): { retryAfterMs?: number } {
   return retryAfterMs === undefined ? {} : { retryAfterMs };
 }

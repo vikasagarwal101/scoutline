@@ -73,10 +73,7 @@ describe("parseRetryAfterHintMs — Retry-After delta-seconds (RFC 9110 §10.2.1
   });
 
   it("a value that overflows the safe integer range contributes nothing", () => {
-    assert.equal(
-      parseRetryAfterHintMs(headersOf({ "Retry-After": "9".repeat(400) })),
-      undefined,
-    );
+    assert.equal(parseRetryAfterHintMs(headersOf({ "Retry-After": "9".repeat(400) })), undefined);
   });
 });
 
@@ -108,9 +105,8 @@ describe("parseRetryAfterHintMs — Retry-After HTTP-date (RFC 9110 §10.2.1)", 
 
   it("the obsolete RFC 850 date shape is accepted (§5.6.7 recipient rule)", () => {
     assert.equal(
-      parseRetryAfterHintMs(
-        headersOf({ "Retry-After": "Sunday, 06-Nov-94 08:49:37 GMT" }),
-        () => Date.parse("Sun, 06 Nov 1994 08:48:37 GMT"),
+      parseRetryAfterHintMs(headersOf({ "Retry-After": "Sunday, 06-Nov-94 08:49:37 GMT" }), () =>
+        Date.parse("Sun, 06 Nov 1994 08:48:37 GMT"),
       ),
       60000,
     );
@@ -122,8 +118,16 @@ describe("parseRetryAfterHintMs — Retry-After HTTP-date (RFC 9110 §10.2.1)", 
     // this pin would pass in UTC and fail in Asia/Calcutta. The delta is
     // what the parser reports; the absolute instant is not the contract.
     const asctime = "Sun Nov  6 08:49:37 1994";
+    // #197 review (CodeRabbit): a fixed GMT instant was suggested, but
+    // asctime carries NO zone — Date.parse reads it in the runner's zone
+    // on BOTH sides of the subtraction. Injecting GMT for the clock while
+    // the parser reads local time breaks the pin outside UTC. The
+    // symmetric local-time reading IS the contract.
     assert.equal(
-      parseRetryAfterHintMs(headersOf({ "Retry-After": asctime }), () => Date.parse(asctime) - 60000),
+      parseRetryAfterHintMs(
+        headersOf({ "Retry-After": asctime }),
+        () => Date.parse(asctime) - 60000,
+      ),
       60000,
     );
   });
@@ -181,16 +185,17 @@ describe("parseRetryAfterHintMs — lookup, precedence, absence", () => {
 
   it("an unparseable higher-precedence header falls THROUGH to the next source", () => {
     assert.equal(
-      parseRetryAfterHintMs(
-        headersOf({ "Retry-After": "garbage", "X-RateLimit-Reset": "7" }),
-      ),
+      parseRetryAfterHintMs(headersOf({ "Retry-After": "garbage", "X-RateLimit-Reset": "7" })),
       7000,
     );
   });
 
   it("no hint headers at all → undefined (the absence contract)", () => {
     assert.equal(parseRetryAfterHintMs(headersOf({})), undefined);
-    assert.equal(parseRetryAfterHintMs(headersOf({ "Content-Type": "application/json" })), undefined);
+    assert.equal(
+      parseRetryAfterHintMs(headersOf({ "Content-Type": "application/json" })),
+      undefined,
+    );
   });
 
   it("a header source with no readable headers → undefined (never throws)", () => {

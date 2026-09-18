@@ -371,8 +371,15 @@ export async function executeProviderOperation<T>(
       // policy ceiling so a hostile header cannot extend it. Without a
       // hint the computed delay is exactly the policy value.
       const hint = providerRetryHintMs(error);
+      // #197 review: cap the HINT only, not the merged delay — the
+      // no-hint path lets backoff+jitter exceed maxDelayMs, so capping
+      // the merge could pull the sleep BELOW what the same attempt
+      // would have slept without a hint (the floor must be
+      // unconditional). The cap still bounds hostile header values.
       const delay =
-        hint === undefined ? backoff + jitter : Math.min(policy.maxDelayMs, Math.max(backoff + jitter, hint));
+        hint === undefined
+          ? backoff + jitter
+          : Math.max(backoff + jitter, Math.min(policy.maxDelayMs, hint));
       // Abortable backoff (issue #47): an abort mid-sleep rejects
       // immediately instead of outliving the caller.
       await abortableSleep(dependencies.sleep, delay, signal);

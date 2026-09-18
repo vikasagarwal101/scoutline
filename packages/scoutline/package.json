@@ -33,7 +33,7 @@
     "prepublishOnly": "npm run test:offline"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=24.0.0"
   },
   "keywords": [
     "zai",
@@ -56,7 +56,7 @@
   "dependencies": {
     "@inquirer/prompts": "^8.5.2",
     "@utcp/code-mode": "^1.2.12",
-    "@utcp/mcp": "^1.1.3",
+    "@utcp/mcp": "1.2.0",
     "@utcp/sdk": "^1.1.2"
   },
   "devDependencies": {

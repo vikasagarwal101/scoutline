@@ -280,7 +280,7 @@ describe("Bocha envelope unwrap", () => {
     await adapter.search.invoke({ query: "wide" }, undefined, 50);
     assert.equal(calls[0].body.count, 50, "requested count must reach the Bocha wire request");
     await adapter.search.invoke({ query: "narrow" }, undefined, 3);
-    assert.equal(calls[0].body ? calls[1].body.count : undefined, 3);
+    assert.equal(calls[1].body.count, 3);
     await adapter.search.invoke({ query: "default" });
     assert.equal(calls[2].body.count, 10, "absent count keeps the wire default of 10");
   });

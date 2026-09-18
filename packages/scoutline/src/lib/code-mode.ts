@@ -7,6 +7,7 @@ import "@utcp/mcp";
 import { buildMcpCallTemplate } from "./mcp-config.js";
 import { getApiKey, getMcpEndpoints } from "./config.js";
 import { ApiError, AuthError, ConfigurationError, NetworkError, TimeoutError } from "./errors.js";
+import { clampTimeoutMs } from "./timeout.js";
 
 // Fallback request timeout (PR #142 review): the effective value is
 // resolved per-instance from options.env ?? process.env in the
@@ -70,6 +71,23 @@ export interface ZaiCodeModeClientOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+/**
+ * Resolve the Code Mode request timeout from `Z_AI_TIMEOUT` (#214).
+ *
+ * PR #142 round 3 (macroscope): only supported positive delays — a
+ * parseable-but-invalid value ("-1", out-of-range) must never reach
+ * AbortSignal.timeout, whose throw degrades the failure-path probe to
+ * inconclusive (generic ApiError instead of AuthError). #214 unifies
+ * the bound at the shared setTimeout 32-bit signed maximum
+ * (clampTimeoutMs) so this resolver matches every other Z_AI_TIMEOUT
+ * consumer.
+ */
+export function resolveCodeModeTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = env.Z_AI_TIMEOUT;
+  const parsed = raw === undefined || raw === "" ? NaN : parseInt(raw, 10);
+  return clampTimeoutMs(parsed, FALLBACK_TIMEOUT_MS);
+}
+
 export class ZaiCodeModeClient {
   private client: CodeModeUtcpClient | null = null;
   private initPromise: Promise<void> | null = null;
@@ -82,16 +100,7 @@ export class ZaiCodeModeClient {
 
   constructor(options: ZaiCodeModeClientOptions = {}) {
     this.options = options;
-    const raw = (options.env ?? process.env).Z_AI_TIMEOUT;
-    const parsed = raw === undefined || raw === "" ? NaN : parseInt(raw, 10);
-    // PR #142 round 3 (macroscope): only supported positive delays —
-    // a parseable-but-invalid value ("-1", above-u32) would otherwise
-    // reach AbortSignal.timeout, whose throw degrades the failure-path
-    // probe to inconclusive (generic ApiError instead of AuthError).
-    this.timeoutMs =
-      Number.isFinite(parsed) && parsed > 0 && parsed <= 0xffffffff
-        ? parsed
-        : FALLBACK_TIMEOUT_MS;
+    this.timeoutMs = resolveCodeModeTimeoutMs(options.env ?? process.env);
   }
 
   static getPromptTemplate(): string {

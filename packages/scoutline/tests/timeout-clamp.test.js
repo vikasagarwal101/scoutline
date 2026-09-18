@@ -8,9 +8,11 @@
  * #214 lifts it into the shared `clampTimeoutMs` helper
  * (`src/lib/timeout.ts`) and makes every resolver use it.
  *
- * This table is the guardrail: a provider whose resolver ships its own
- * ad-hoc parse (no clamp) fails its row, so a new client cannot ship
- * unclamped without this file going RED.
+ * This table is the guardrail for every resolver it lists: reverting a
+ * listed resolver's clamp fails its row, and dropping a row fails the
+ * count guard below. It cannot catch a resolver it has never heard of —
+ * a new client must add its row here when it gains a *_TIMEOUT env
+ * resolver.
  *
  * Teeth are by mutation — reverting one provider's clamp (restoring
  * its ad-hoc `Number.isFinite(raw) && raw > 0 ? raw : DEFAULT` return)
@@ -25,6 +27,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { clampTimeoutMs, TIMEOUT_MS_MAX } from "../dist/lib/timeout.js";
+import * as zaiMcpClient from "../dist/lib/mcp-client.js";
+import * as zaiCodeModeClient from "../dist/lib/code-mode.js";
 import * as braveClient from "../dist/providers/brave/client.js";
 import * as exaClient from "../dist/providers/exa/client.js";
 import * as jinaClient from "../dist/providers/jina/client.js";
@@ -176,16 +180,32 @@ const RESOLVER_ROWS = [
     resolve: youClient.resolveResearchTimeoutMs,
     defaultMs: 300000,
   },
+  {
+    provider: "zai-mcp",
+    envVar: "Z_AI_TIMEOUT",
+    resolve: zaiMcpClient.resolveZaiMcpTimeoutMs,
+    defaultMs: 30000,
+  },
+  {
+    provider: "zai-code-mode",
+    envVar: "Z_AI_TIMEOUT",
+    resolve: zaiCodeModeClient.resolveCodeModeTimeoutMs,
+    defaultMs: 30000,
+  },
 ];
 
 describe("cross-provider timeout clamp conformance (#214)", () => {
   it("covers every provider that ships a *_TIMEOUT env resolver", () => {
-    // Guardrail against accidental row loss: 18 resolver rows across
-    // 15 provider client modules (minimax and jina/perplexity/you
-    // contribute two resolvers each; you contributes the legacy alias).
-    assert.equal(RESOLVER_ROWS.length, 18);
+    // Guardrail against accidental row loss: 20 resolver rows across 17
+    // modules — 15 provider client modules (jina, perplexity, and
+    // minimax contribute two resolvers each; you contributes the legacy
+    // YDC alias row) plus the two shared Z.AI lib clients (mcp-client,
+    // code-mode). A resolver added to the codebase but not to this table
+    // is NOT caught here — extend the table whenever a client gains a
+    // *_TIMEOUT env resolver.
+    assert.equal(RESOLVER_ROWS.length, 20);
     const providers = new Set(RESOLVER_ROWS.map((r) => r.provider));
-    assert.equal(providers.size, 18);
+    assert.equal(providers.size, 20);
   });
 
   for (const row of RESOLVER_ROWS) {

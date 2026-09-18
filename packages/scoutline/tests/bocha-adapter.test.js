@@ -296,6 +296,19 @@ describe("Bocha envelope unwrap", () => {
       "default path must stay byte-compatible with pre-#211 cache keys",
     );
   });
+
+  it("byte-identical wire requests share one cache entry (PR #219 review)", () => {
+    const adapter = createBochaDescriptor().create({ env: { BOCHA_API_KEY: "k" } });
+    const absent = JSON.stringify(adapter.search.cacheIdentity({ query: "q" }).request);
+    const explicitTen = JSON.stringify(
+      adapter.search.cacheIdentity({ query: "q" }, { count: 10 }).request,
+    );
+    const zero = JSON.stringify(adapter.search.cacheIdentity({ query: "q" }, { count: 0 }).request);
+    assert.equal(explicitTen, absent, "explicit --count 10 must key like the absent-count default");
+    assert.equal(zero, absent, "--count 0 degrades to the wire default and must key identically");
+    const fifty = JSON.stringify(adapter.search.cacheIdentity({ query: "q" }, { count: 50 }).request);
+    assert.notEqual(fifty, absent, "a different wire count must still partition");
+  });
 });
 
 // ---------------------------------------------------------------------------
